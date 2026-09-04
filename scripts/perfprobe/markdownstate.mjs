@@ -7,11 +7,11 @@ try {
   const rows = await evaluate(page, `(() => {
     const result = [];
     for (const body of document.querySelectorAll('[data-testid="assistant-message-body"]')) {
-      const forensics = body.__aoMarkdownForensics;
-      if (!forensics) continue;
+      const diagnostics = body.__aoMarkdownDiagnostics;
+      if (!diagnostics) continue;
       const roots = [];
       for (const root of body.querySelectorAll('.md-committed, .md-volatile')) {
-        const streamdown = root.__aoStreamdownForensics;
+        const streamdown = root.__aoStreamdownDiagnostics;
         roots.push({
           region: root.classList.contains('md-committed') ? 'committed' : 'volatile',
           contentCodeUnits: streamdown?.content?.length ?? null,
@@ -25,11 +25,11 @@ try {
       }
       result.push({
         paneId: body.closest('[data-pane-id]')?.getAttribute('data-pane-id') ?? null,
-        itemId: forensics.itemId,
-        streaming: forensics.streaming,
-        canonicalCodeUnits: forensics.canonicalSource.length,
-        parserCodeUnits: forensics.parserSource.length,
-        renderedCodeUnits: forensics.renderedSource.length,
+        itemId: diagnostics.itemId,
+        streaming: diagnostics.streaming,
+        canonicalCodeUnits: diagnostics.canonicalSource.length,
+        parserCodeUnits: diagnostics.parserSource.length,
+        renderedCodeUnits: diagnostics.renderedSource.length,
         roots,
       });
     }

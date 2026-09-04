@@ -88,7 +88,7 @@ func (f *MCPStatusFetcher) Fetch(ctx context.Context, _ mcpstatus.Provider) ([]m
 	client := newMCPStatusRPCClient(stdin, stdout)
 
 	// initialize is required before any other request — Codex enforces
-	// the JSON-RPC v2 handshake. The client info is for forensics; the
+	// the JSON-RPC v2 handshake. The client info is for diagnostics; the
 	// response payload is ignored.
 	//
 	// Deliberately not codexInitializeParams: this fetcher makes exactly

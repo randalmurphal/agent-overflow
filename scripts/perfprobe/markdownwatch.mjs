@@ -245,7 +245,7 @@ if (process.argv[2] === '--self-test') {
         mutationBatches: 0,
         rowsObserved: 0,
         maxConcurrentRows: 0,
-        missingForensics: 0,
+        missingDiagnostics: 0,
         canonicalAdvances: 0,
         parserAdvances: 0,
         directOnlyAdvances: 0,
@@ -271,7 +271,7 @@ if (process.argv[2] === '--self-test') {
         queued: false,
       };
       for (const root of document.querySelectorAll('.md-committed, .md-volatile')) {
-        const calls = root.__aoStreamdownForensics?.documentParseCalls;
+        const calls = root.__aoStreamdownDiagnostics?.documentParseCalls;
         if (typeof calls === 'number') documentParsePrevious.set(root, calls);
       }
       const head = (value) => value.slice(0, 128);
@@ -292,22 +292,22 @@ if (process.argv[2] === '--self-test') {
         return {
           count: roots.length,
           tail: roots.slice(-12).map((root) => {
-            const forensics = root.__aoStreamdownForensics;
-            const content = forensics?.content || '';
+            const diagnostics = root.__aoStreamdownDiagnostics;
+            const content = diagnostics?.content || '';
             return {
               region: root.classList.contains('md-committed') ? 'committed' : 'volatile',
               contentLength: content.length,
               contentHead: head(content),
               contentTail: tail(content),
-              parsePath: forensics?.lastPath ?? '<missing>',
-              trailingBlock: forensics?.trailingBlock ?? null,
+              parsePath: diagnostics?.lastPath ?? '<missing>',
+              trailingBlock: diagnostics?.trailingBlock ?? null,
             };
           }),
         };
       };
       const codeMismatchDetail = (
         body,
-        forensics,
+        diagnostics,
         codeNode,
         index,
         expected,
@@ -315,10 +315,10 @@ if (process.argv[2] === '--self-test') {
       ) => {
         const actual = codeNode?.textContent;
         const codeRoot = codeNode?.closest('[data-code-source]');
-        const codeForensics = codeRoot?.__aoCodeForensics;
+        const codeDiagnostics = codeRoot?.__aoCodeDiagnostics;
         const streamdownRoot = codeRoot?.closest('.md-committed, .md-volatile');
-        const streamdownForensics = streamdownRoot?.__aoStreamdownForensics;
-        const blocks = streamdownForensics?.blocks || [];
+        const streamdownDiagnostics = streamdownRoot?.__aoStreamdownDiagnostics;
+        const blocks = streamdownDiagnostics?.blocks || [];
         return {
           reason,
           index,
@@ -326,35 +326,35 @@ if (process.argv[2] === '--self-test') {
           actualLength: actual?.length ?? -1,
           expectedTail: expected === undefined ? '<no code block>' : tail(expected),
           actualTail: actual === undefined ? '<missing>' : tail(actual),
-          canonicalSourceLength: forensics.canonicalSource.length,
-          canonicalSourceTail: tail(forensics.canonicalSource),
-          parserIsCanonicalPrefix: forensics.canonicalSource.startsWith(
-            forensics.parserSource,
+          canonicalSourceLength: diagnostics.canonicalSource.length,
+          canonicalSourceTail: tail(diagnostics.canonicalSource),
+          parserIsCanonicalPrefix: diagnostics.canonicalSource.startsWith(
+            diagnostics.parserSource,
           ),
-          parserSourceLength: forensics.parserSource.length,
-          parserSourceTail: tail(forensics.parserSource),
+          parserSourceLength: diagnostics.parserSource.length,
+          parserSourceTail: tail(diagnostics.parserSource),
           region: streamdownRoot?.classList.contains('md-committed')
             ? 'committed'
             : 'volatile',
-          regionSourceLength: streamdownForensics?.content.length ?? -1,
-          regionSourceTail: streamdownForensics
-            ? tail(streamdownForensics.content)
+          regionSourceLength: streamdownDiagnostics?.content.length ?? -1,
+          regionSourceTail: streamdownDiagnostics
+            ? tail(streamdownDiagnostics.content)
             : '<missing>',
           regions: regionsFor(body),
-          parsePath: streamdownForensics?.lastPath ?? '<missing>',
-          trailingBlock: streamdownForensics?.trailingBlock ?? null,
+          parsePath: streamdownDiagnostics?.lastPath ?? '<missing>',
+          trailingBlock: streamdownDiagnostics?.trailingBlock ?? null,
           blockTails: Array.from(blocks).slice(-3).map((block) => ({
             length: block.length,
             tail: tail(block),
           })),
-          tokenLength: codeForensics?.tokenText.length ?? -1,
-          tokenTail: codeForensics ? tail(codeForensics.tokenText) : '<missing>',
-          renderedLength: codeForensics?.renderedText.length ?? -1,
-          renderedTail: codeForensics
-            ? tail(codeForensics.renderedText)
+          tokenLength: codeDiagnostics?.tokenText.length ?? -1,
+          tokenTail: codeDiagnostics ? tail(codeDiagnostics.tokenText) : '<missing>',
+          renderedLength: codeDiagnostics?.renderedText.length ?? -1,
+          renderedTail: codeDiagnostics
+            ? tail(codeDiagnostics.renderedText)
             : '<missing>',
-          renderedLinesLength: codeForensics?.renderedLines.length ?? -1,
-          spansForLength: codeForensics?.spansFor.length ?? -1,
+          renderedLinesLength: codeDiagnostics?.renderedLines.length ?? -1,
+          spansForLength: codeDiagnostics?.spansFor.length ?? -1,
         };
       };
       const sample = (timestamp = performance.now()) => {
@@ -363,16 +363,16 @@ if (process.argv[2] === '--self-test') {
         if (!state.running) return;
         state.samples++;
         for (const root of document.querySelectorAll('.md-committed, .md-volatile')) {
-          const streamdownForensics = root.__aoStreamdownForensics;
-          const documentCalls = streamdownForensics?.documentParseCalls;
+          const streamdownDiagnostics = root.__aoStreamdownDiagnostics;
+          const documentCalls = streamdownDiagnostics?.documentParseCalls;
           if (typeof documentCalls === 'number') {
             const priorDocumentCalls = documentParsePrevious.get(root) ?? 0;
             state.documentParseCalls += Math.max(0, documentCalls - priorDocumentCalls);
             documentParsePrevious.set(root, documentCalls);
-            const path = streamdownForensics.lastPath ?? '<missing>';
+            const path = streamdownDiagnostics.lastPath ?? '<missing>';
             state.parsePathSamples[path] = (state.parsePathSamples[path] ?? 0) + 1;
           }
-          const metrics = streamdownForensics?.incrementalLexMetrics;
+          const metrics = streamdownDiagnostics?.incrementalLexMetrics;
           if (!metrics) continue;
           if (!incrementalLexRoots.has(root)) {
             incrementalLexRoots.add(root);
@@ -407,12 +407,12 @@ if (process.argv[2] === '--self-test') {
         const activeKeys = new Set();
         let activeRows = 0;
         for (const body of bodies) {
-          const forensics = body.__aoMarkdownForensics;
-          if (!forensics) {
-            state.missingForensics++;
+          const diagnostics = body.__aoMarkdownDiagnostics;
+          if (!diagnostics) {
+            state.missingDiagnostics++;
             continue;
           }
-          if (!forensics.streaming) continue;
+          if (!diagnostics.streaming) continue;
           activeRows++;
           state.rowsObserved++;
           const pane = body.closest('[data-pane-id]')?.getAttribute('data-pane-id') || '?';
@@ -423,10 +423,10 @@ if (process.argv[2] === '--self-test') {
             bodyID = nextBodyID++;
             bodyIDs.set(body, bodyID);
           }
-          const key = pane + ':' + forensics.itemId;
+          const key = pane + ':' + diagnostics.itemId;
           activeKeys.add(key);
-          const source = forensics.canonicalSource;
-          const parserSource = forensics.parserSource;
+          const source = diagnostics.canonicalSource;
+          const parserSource = diagnostics.parserSource;
           const markdown = body.querySelector('.markdown-body');
           const domText = markdown?.textContent || '';
           const prior = previous.get(key);
@@ -531,7 +531,7 @@ if (process.argv[2] === '--self-test') {
           const code = markdown?.querySelectorAll('[data-code-source] code') || [];
           let mismatch = '';
           for (const root of body.querySelectorAll('.md-committed')) {
-            const regionSource = root.__aoStreamdownForensics?.content;
+            const regionSource = root.__aoStreamdownDiagnostics?.content;
             if (typeof regionSource !== 'string') continue;
             const regionFences = scanCompletedTopLevelFences(regionSource);
             if (!regionFences.open) continue;
@@ -539,8 +539,8 @@ if (process.argv[2] === '--self-test') {
               reason: 'open-fence-in-committed-region',
               canonicalSourceLength: source.length,
               canonicalSourceTail: tail(source),
-              parserSourceLength: forensics.parserSource.length,
-              parserSourceTail: tail(forensics.parserSource),
+              parserSourceLength: diagnostics.parserSource.length,
+              parserSourceTail: tail(diagnostics.parserSource),
               regions: regionsFor(body),
             });
             break;
@@ -550,7 +550,7 @@ if (process.argv[2] === '--self-test') {
             if (!code.item(index)?.textContent?.includes('Visible progress marker')) continue;
             mismatch = JSON.stringify(codeMismatchDetail(
               body,
-              forensics,
+              diagnostics,
               code.item(index),
               index,
               undefined,
@@ -567,7 +567,7 @@ if (process.argv[2] === '--self-test') {
             if (actual !== expected) {
               mismatch = JSON.stringify(codeMismatchDetail(
                 body,
-                forensics,
+                diagnostics,
                 codeNode,
                 index,
                 expected,
@@ -587,7 +587,7 @@ if (process.argv[2] === '--self-test') {
             ) {
               mismatch = JSON.stringify(codeMismatchDetail(
                 body,
-                forensics,
+                diagnostics,
                 codeNode,
                 index,
                 expected,
@@ -599,7 +599,7 @@ if (process.argv[2] === '--self-test') {
           if (!mismatch && code.length > expectedCodeCount) {
             mismatch = JSON.stringify(codeMismatchDetail(
               body,
-              forensics,
+              diagnostics,
               code.item(expectedCodeCount),
               expectedCodeCount,
               undefined,
@@ -711,7 +711,7 @@ if (process.argv[2] === '--self-test') {
     }
     resultPage = pollPage;
     // Send the detailed result over a binding and return only a tiny CDP value.
-    // A long soak can accumulate enough bounded forensic detail that returning
+    // A long soak can accumulate enough bounded diagnostic detail that returning
     // it as Runtime.evaluate's value makes WebView2 finish the expression but
     // stall the command response. The binding event is delivered independently,
     // so the operator gets the evidence even if that response is lost.
@@ -729,7 +729,7 @@ if (process.argv[2] === '--self-test') {
         mutationBatches: state.mutationBatches,
         rowsObserved: state.rowsObserved,
         maxConcurrentRows: state.maxConcurrentRows,
-        missingForensics: state.missingForensics,
+        missingDiagnostics: state.missingDiagnostics,
         canonicalAdvances: state.canonicalAdvances,
         parserAdvances: state.parserAdvances,
         directOnlyAdvances: state.directOnlyAdvances,
@@ -762,7 +762,7 @@ if (process.argv[2] === '--self-test') {
     }
     const result = reportedResult;
     result.transportWarnings = transportWarnings;
-    if (result.maxConcurrentRows === 0 || result.missingForensics > 0) exitCode = 2;
+    if (result.maxConcurrentRows === 0 || result.missingDiagnostics > 0) exitCode = 2;
     else if (
       result.sourceRegressions.length > 0 ||
       result.sourceRewrites.length > 0 ||

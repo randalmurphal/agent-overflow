@@ -39,7 +39,7 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     viewportHeight` and caches that absolute target alongside the last
     observed `scrollTop`. Content deliveries and ordinary spring frames use
     those two facts without re-reading `scrollHeight` / `clientHeight` at
-    display rate. Sentinel clamp detection and write-refusal probes force a
+    display rate. Sentinel clamp detection and write-refusal retries force a
     real target read; viewport/width changes take one real resync. Composer
     clearance is scroller padding, so it cancels from `scrollHeight -
     clientHeight` and cannot become hidden target-offset state.
@@ -83,7 +83,7 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     1, 1.25, 1.5, and 2 — the premise of the spring's grid witness. It
     also pins constant hairline raster energy while fractional DPR
     turns equal CSS-space steps into alternating device-pixel displacement.
-    The soak rig's `make soak-contract` probe checks quantization and
+    The soak rig's `make soak-contract` check verifies quantization and
     compositor ownership in WebView2.
   - `intent.ts` is the event-sourced intent machine: wheel/scroll/pointer/
     key/touch listeners, escape and re-stick, restore-snap consent, and
@@ -183,7 +183,7 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     (`revealedNodes`), rail classification, and response-pill duration.
   - `timelineDiagnostics.ts` owns render/state tracing and the dev-only
     memory-stats, pane-geometry, row-resize, margin-divergence, and
-    reasoning-tail-jump probes.
+    reasoning-tail-jump checks.
   - `timelineQuietWork.ts` owns the quiet scheduler: one cadence
     (structural changes + scroll end, debounced, with a recheck timer
     bridging the sentinel outliving the last scrollend) for the
@@ -1252,7 +1252,7 @@ there. That chaining is deliberate, because browsing up out of a nested
 box has to reach the pane, which is why nested boxes keep the default
 `overscroll-behavior` rather than `contain`.
 
-A registry, not a computed-style probe: wheel handling runs while layout
+A registry, not a computed-style measurement: wheel handling runs while layout
 is dirty mid-stream, so `getComputedStyle` over every ancestor of every
 wheel event would force reflows at gesture rate. Geometry reads stay
 confined to explicitly marked elements, usually zero or one per gesture.
@@ -1548,7 +1548,7 @@ Useful trace records:
 - `scroll.writeRefusal` records that the spring's write-refusal guard
   latched, healed, or was abandoned (`phase`, where 'abandoned' means the
   chase was cancelled while still latched, so no heal was ever observed), with
-  element forensics (computed `overflowY` / `scrollBehavior` /
+  element diagnostics (computed `overflowY` / `scrollBehavior` /
   `display` / `position`, `connected`, `surface`, geometry) and the
   wedge's shape (`consecutiveRefusals`, `wedgeMs`). Background
   (bug-report-20260818T003129Z): an ActivityRun clip spent 227s as a
@@ -1564,7 +1564,7 @@ Useful trace records:
   (no motion, sub-threshold, evidence of nothing; deliberately does
   NOT heal, so a still-wedged sliver can't silently unlatch). Five
   consecutive refusals latch the whole tick body, forced-layout reads
-  included, to ~4Hz probes with a parked-style velocity decay. The
+  included, to ~4Hz samples with a parked-style velocity decay. The
   guard covers spring writes only, deliberately: one-shot placement
   writers fail once and bounded during a wedge, and any sustained wedge
   during bottom-follow reaches the spring, the only writer that can
@@ -1573,7 +1573,7 @@ Useful trace records:
   latch per 10s window and its matching bookend (per controller). The
   trigger for the wedge itself sits below the app (renderer state;
   nothing in the codebase mutates overflow). If it recurs, this
-  record's forensics are the root-cause capture the original incident
+  record's diagnostics are the root-cause capture the original incident
   lacked.
 - `scroll.contentRO`: content-geometry delta, width-reflow state, and pin
   decisions (in chat the delivery is engine-sourced, not an RO fire; the
@@ -1679,7 +1679,7 @@ holds.
   snap) when tail-ness ends with the inner glide mid-flight; the comment in
   the file names the case. Mid-glide APPEND bursts are proven clean
   (`activityRunBurstMotion.browser.test.ts`), so the suspect space is the
-  teardown only. Probe: `scripts/perfprobe/jumpwatch.mjs` samples pane
+  teardown only. Sampler: `scripts/perfprobe/jumpwatch.mjs` samples pane
   scrollers and run clips per frame and flags scrollTop steps beside clip
   teardown frames; a first capture saw 44 teardowns all with zero bottom
   gap, so the mid-flight case needs a longer watch synced to turn ends.

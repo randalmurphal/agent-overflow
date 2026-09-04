@@ -14,7 +14,7 @@
 // Nothing registered can consume it -> the event belongs to the boundary,
 // and native scroll chaining takes it there.
 //
-// Deliberately a registry rather than a computed-style probe: wheel
+// Deliberately a registry rather than a computed-style measurement: wheel
 // handling runs while layout is dirty mid-stream, and `getComputedStyle`
 // on every ancestor of every wheel event would force reflows at gesture
 // rate. Geometry reads stay confined to explicitly marked elements —

@@ -1,4 +1,0 @@
-# The *.log files here are committed PTY terminal-capture evidence backing the
-# spec (§6), not throwaway runtime logs. Re-include them despite the global
-# `*.log` ignore (~/.gitignore_global). Re-runs regenerate to /tmp, not here.
-!*.log

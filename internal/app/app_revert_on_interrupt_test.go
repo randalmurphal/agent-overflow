@@ -645,7 +645,7 @@ func TestInterruptRollbackPreservesConcurrentEffortChange(t *testing.T) {
 // TestInterruptAndRevertIfCleanRevertsClaudeTUIWithoutKillingSession covers the
 // claude-tui revert-on-interrupt path. The interactive TUI reverts the just-sent
 // prompt natively on the Esc that InterruptAndRevertIfClean delivers (LIVE:
-// spike/claude-mitm/probe_hook_escrevert.py), so AO mirrors it — truncate the
+// the CLI capture spike hook_escrevert), so AO mirrors it — truncate the
 // turn + restore the draft — WITHOUT the headless-Claude steps of stopping the
 // session and rewriting a session file (claude-tui owns its own conversation; AO
 // has no fork file to write). Before the claude-tui branch existed this hit the

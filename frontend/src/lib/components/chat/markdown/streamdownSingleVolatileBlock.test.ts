@@ -17,7 +17,7 @@ import { chatMarkdownTheme } from './streamdownTheme';
 
 type StreamdownContext = ReturnType<typeof useStreamdown>;
 
-type StreamdownForensics = {
+type StreamdownDiagnostics = {
   readonly content: string;
   readonly blocks: readonly string[];
   readonly lastPath: string;
@@ -62,14 +62,14 @@ function normalizeElement(root: Element): NormalizedElement {
   return { tag: root.tagName.toLowerCase(), attributes, children };
 }
 
-function forensics(container: HTMLElement): StreamdownForensics {
+function diagnostics(container: HTMLElement): StreamdownDiagnostics {
   const root = container.firstElementChild as (HTMLElement & {
-    __aoStreamdownForensics?: StreamdownForensics;
+    __aoStreamdownDiagnostics?: StreamdownDiagnostics;
   }) | null;
-  if (!root?.__aoStreamdownForensics) {
+  if (!root?.__aoStreamdownDiagnostics) {
     throw new Error('diagnostic Streamdown root did not mount');
   }
-  return root.__aoStreamdownForensics;
+  return root.__aoStreamdownDiagnostics;
 }
 
 function legacyVolatileTokens(source: string) {
@@ -196,7 +196,7 @@ describe('single volatile Streamdown block', () => {
       },
     });
     await tick();
-    const state = forensics(view.container);
+    const state = diagnostics(view.container);
     expect(state.documentPublications).toBe(1);
 
     // A sibling-derived prop can invalidate Streamdown even though this
@@ -243,7 +243,7 @@ describe('single volatile Streamdown block', () => {
     });
     await tick();
 
-    const state = forensics(view.container);
+    const state = diagnostics(view.container);
     expect(state.content).toEqualWithFirstDivergence(initial);
     expect(state.lastPath).toBe('initial-boundary');
     expect(state.trailingBlock?.kind).toBe('paragraph');
@@ -327,7 +327,7 @@ describe('single volatile Streamdown block', () => {
       },
     });
     await tick();
-    const state = forensics(view.container);
+    const state = diagnostics(view.container);
     expect(state.documentParseCalls).toBe(1);
 
     const sameLine = createProvenAppend(initial, ' + 1');
@@ -395,7 +395,7 @@ describe('single volatile Streamdown block', () => {
       },
     });
     await tick();
-    const state = forensics(view.container);
+    const state = diagnostics(view.container);
     expect(state.documentParseCalls).toBe(1);
 
     const delta = ' forged';
@@ -434,7 +434,7 @@ describe('single volatile Streamdown block', () => {
       },
     });
     await tick();
-    const state = forensics(view.container);
+    const state = diagnostics(view.container);
     const append = createProvenAppend(initial, 'Value');
     await view.rerender({
       theme: chatMarkdownTheme,
@@ -480,7 +480,7 @@ describe('single volatile Streamdown block', () => {
       },
     });
     await tick();
-    const state = forensics(view.container);
+    const state = diagnostics(view.container);
     const append = createProvenAppend(initial, '!Beta');
     await view.rerender({
       theme: chatMarkdownTheme,

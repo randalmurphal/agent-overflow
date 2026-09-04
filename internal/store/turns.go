@@ -212,7 +212,7 @@ func (s *Store) UpdateTurnLatePayload(turnID string, payload LateTurnPayload) er
 // in SQL: a row already carrying a provider id is never overwritten, so a
 // misdirected backfill costs nothing. Zero rows affected is a normal
 // outcome (the row already has an id, or was relocated meanwhile), not an
-// error — provider_turn_id is forensic identity plus the Codex fork/revert
+// error — provider_turn_id is diagnostic identity plus the Codex fork/revert
 // anchor, and both readers tolerate absence.
 func (s *Store) BackfillTurnProviderID(turnID, providerTurnID string) error {
 	if turnID == "" {

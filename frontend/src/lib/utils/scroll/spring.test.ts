@@ -5,7 +5,7 @@
 // seed exemption, integrator
 // composability), the integer-rounding error carry, the clamp-not-zero
 // momentum carry, the write-refusal
-// guard (latch, probe backoff, three-way write classification, heal /
+// guard (latch, retry backoff, three-way write classification, heal /
 // abandon reporting), and the per-chase
 // telemetry summary. Controller-level
 // choreography (when a chase runs) lives in index.svelte.test.ts; these
@@ -18,7 +18,7 @@ import {
   SPRING_QUANTIZED_MOTION_FLOOR_PX_PER_FRAME,
   quantizedFloorRung,
   SPRING_WRITE_REFUSAL_LATCH_TICKS,
-  SPRING_WRITE_REFUSAL_PROBE_INTERVAL_MS,
+  SPRING_WRITE_REFUSAL_RETRY_INTERVAL_MS,
   type ArrivalReadback,
   type SpringChaseDeps,
   type SpringWriteRefusalEvent,
@@ -61,7 +61,7 @@ interface Harness {
 /**
  * `quantize: true` models the browser's scrollTop contract: a write lands
  * on the engine's pixel grid — whole CSS pixels at the default `dpr` of
- * 1, whole DEVICE pixels otherwise (the Pixel 9a probe, 2026-09-04:
+ * 1, whole DEVICE pixels otherwise (the Pixel 9a measurement, 2026-09-04:
  * 1/2.625 CSS px steps) — and readbacks return that snapped value. The
  * default (fractional storage) keeps the kinematic assertions exact.
  * `dpr` is also what the spring's `devicePixelRatio` dep reports.
@@ -286,7 +286,7 @@ describe('spring velocity cap', () => {
     const move = h.getScrollTop() - before;
     // ONE capped step: the resume tick advances no further than an
     // ordinary cruising frame, so a stall can never present as a jump.
-    // Stalls are routine on WebKit (2026-08-05 probe: 6–7 per chase), and
+    // Stalls are routine on WebKit (2026-08-05 measurement: 6–7 per chase), and
     // the lost time is recovered by the spring's distance term over the
     // following frames, not paid off in this write.
     expect(move).toBeLessThanOrEqual(27.5);
@@ -834,7 +834,7 @@ describe('acceleration slew (onset ramp + retarget bridge + parked decay)', () =
     expect(Math.abs(at60 - at120)).toBeLessThan(at60 * 0.04);
   });
 
-  it('re-ramps a reversal from the base: the flipped direction never opens with a hard attack', () => {
+  it('re-ramps a reversal from the base: the flipped direction never opens with a hard onset', () => {
     const h = makeHarness();
     // Build real upward speed (~9.6 px/frame at frame 20), then flip
     // the target far below the current position mid-chase.
@@ -1417,7 +1417,7 @@ describe('write-refusal guard', () => {
     h.spring.start();
   }
 
-  it('latches after consecutive refusals and drops to probe cadence', () => {
+  it('latches after consecutive refusals and drops to retry cadence', () => {
     const h = makeHarness({ refuse: true, clientHeight: 288 });
     startWedgedChase(h, 900);
     for (let i = 0; i < 60; i++) frame(); // ~1s at 60Hz
@@ -1428,7 +1428,7 @@ describe('write-refusal guard', () => {
     expect(latched[0].wedgeMs).toBe(0);
     expect(h.refusalEvents.filter((e) => e.phase === 'healed')).toHaveLength(0);
     // Un-guarded, this second produced 60 writes. The guard allows the
-    // pre-latch ramp plus ~4 probes (one per 250ms).
+    // pre-latch ramp plus ~4 retries (one per 250ms).
     expect(h.writes.length).toBeLessThan(20);
     expect(h.writes.length).toBeGreaterThan(5);
   });
@@ -1450,7 +1450,7 @@ describe('write-refusal guard', () => {
   it('heals as a bounded glide, never a teleport, and reports the bookend', () => {
     const h = makeHarness({ refuse: true });
     startWedgedChase(h, 900);
-    for (let i = 0; i < 40; i++) frame(); // latched + a few probes
+    for (let i = 0; i < 40; i++) frame(); // latched + a few retries
     expect(h.getScrollTop()).toBe(0);
 
     h.setRefuseWrites(false);
@@ -1468,17 +1468,17 @@ describe('write-refusal guard', () => {
     expect(h.refusalEvents.filter((e) => e.phase === 'latched')).toHaveLength(1);
   });
 
-  it('probe cadence honors the interval while wedged', () => {
+  it('retry cadence honors the interval while wedged', () => {
     const h = makeHarness({ refuse: true });
     startWedgedChase(h, 900);
     for (let i = 0; i < 30; i++) frame(); // reach the latch
     const writesAtLatch = h.writes.length;
-    // 60 more frames = ~1000ms → at most ⌈1000 / interval⌉ + 1 probes.
+    // 60 more frames = ~1000ms → at most ⌈1000 / interval⌉ + 1 retries.
     for (let i = 0; i < 60; i++) frame();
-    const probes = h.writes.length - writesAtLatch;
-    const maxProbes = Math.ceil(1000 / SPRING_WRITE_REFUSAL_PROBE_INTERVAL_MS) + 1;
-    expect(probes).toBeLessThanOrEqual(maxProbes);
-    expect(probes).toBeGreaterThan(0);
+    const retries = h.writes.length - writesAtLatch;
+    const maxRetries = Math.ceil(1000 / SPRING_WRITE_REFUSAL_RETRY_INTERVAL_MS) + 1;
+    expect(retries).toBeLessThanOrEqual(maxRetries);
+    expect(retries).toBeGreaterThan(0);
   });
 
   it('latch survives a caught-up excursion and heals instantly on the next chase', () => {
@@ -1490,18 +1490,18 @@ describe('write-refusal guard', () => {
     // Content collapses onto the wedged position: the caught-up branch
     // runs (sentinel keeps the spring alive; liveContentActive true).
     h.setTarget(0);
-    for (let i = 0; i < 25; i++) frame(); // > probe interval of idle
+    for (let i = 0; i < 25; i++) frame(); // > retry interval of idle
 
     // Element heals while idle; content grows again.
     h.setRefuseWrites(false);
     h.setTarget(300);
     h.spring.markTargetChanged();
-    // The gate consumes probe slots even during the caught-up excursion,
-    // so the heal probe lands within one probe interval of the new
+    // The gate consumes retry slots even during the caught-up excursion,
+    // so the heal retry lands within one retry interval of the new
     // chase — 20 frames (~333ms) guarantees one.
     for (let i = 0; i < 20; i++) frame();
 
-    // The probe landed and the chase resumed — no re-latch, no
+    // The retry landed and the chase resumed — no re-latch, no
     // duplicate 'latched' report, no waiting out refusal counting.
     expect(h.getScrollTop()).toBeGreaterThan(0);
     expect(h.refusalEvents.filter((e) => e.phase === 'latched')).toHaveLength(1);
@@ -1571,14 +1571,14 @@ describe('write-refusal guard', () => {
     expect(h.spring.refusalLatched()).toBe(true);
 
     // Target collapses to a sliver above the wedged position: every
-    // probe write from here requests < 1.5px of motion (inconclusive).
+    // retry write from here requests < 1.5px of motion (inconclusive).
     h.setTarget(h.getScrollTop() + 1.2);
     h.spring.markTargetChanged();
-    for (let i = 0; i < 120; i++) frame(); // 2s of sliver probes
+    for (let i = 0; i < 120; i++) frame(); // 2s of sliver retries
 
     expect(h.refusalEvents.filter((e) => e.phase === 'healed')).toHaveLength(0);
     expect(h.spring.refusalLatched()).toBe(true);
-    // And the backoff held: probe cadence, not display rate.
+    // And the backoff held: retry cadence, not display rate.
     expect(h.refusalEvents.filter((e) => e.phase === 'latched')).toHaveLength(1);
   });
 
@@ -1636,23 +1636,23 @@ describe('write-refusal guard', () => {
     // clears five refusals.
     for (let i = 0; i < 50; i++) frame(6.06);
     expect(h.refusalEvents.filter((e) => e.phase === 'latched')).toHaveLength(1);
-    // Probe cadence is on the ms clock: a further second of 165Hz
-    // frames buys the same ≤5 probes a 60Hz second would.
+    // Retry cadence is on the ms clock: a further second of 165Hz
+    // frames buys the same ≤5 retries a 60Hz second would.
     const writesAtLatch = h.writes.length;
     for (let i = 0; i < 165; i++) frame(6.06);
-    const probes = h.writes.length - writesAtLatch;
-    expect(probes).toBeLessThanOrEqual(
-      Math.ceil(1000 / SPRING_WRITE_REFUSAL_PROBE_INTERVAL_MS) + 1,
+    const retries = h.writes.length - writesAtLatch;
+    expect(retries).toBeLessThanOrEqual(
+      Math.ceil(1000 / SPRING_WRITE_REFUSAL_RETRY_INTERVAL_MS) + 1,
     );
   });
 
-  it('a long wedge stays latched once and bounded: 600 frames, one latch, probe-rate writes', () => {
+  it('a long wedge stays latched once and bounded: 600 frames, one latch, retry-rate writes', () => {
     const h = makeHarness({ refuse: true, clientHeight: 288 });
     startWedgedChase(h, 900);
     for (let i = 0; i < 600; i++) frame(); // 10s wedged
     expect(h.refusalEvents.filter((e) => e.phase === 'latched')).toHaveLength(1);
     expect(h.refusalEvents.filter((e) => e.phase === 'healed')).toHaveLength(0);
-    // Pre-latch ramp (5) + ~40 probes over 10s — nowhere near the 600
+    // Pre-latch ramp (5) + ~40 retries over 10s — nowhere near the 600
     // writes the incident's busy-loop produced.
     expect(h.writes.length).toBeLessThan(60);
   });

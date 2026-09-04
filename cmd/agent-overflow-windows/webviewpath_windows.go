@@ -19,11 +19,11 @@ import (
 // shared default profile.
 func prepareWebviewStorage(mode string) error {
 	profile := webviewDataDir(mode)
-	forensics := renderForensicsDir(mode)
-	if strings.TrimSpace(profile) == "" || strings.TrimSpace(forensics) == "" {
-		return errors.New("AppData did not resolve to private WebView2 profile and forensics directories")
+	diagnostics := renderDiagnosticsDir(mode)
+	if strings.TrimSpace(profile) == "" || strings.TrimSpace(diagnostics) == "" {
+		return errors.New("AppData did not resolve to private WebView2 profile and diagnostics directories")
 	}
-	for _, path := range []string{profile, forensics} {
+	for _, path := range []string{profile, diagnostics} {
 		if err := validateWindowsStoragePath(path); err != nil {
 			return err
 		}

@@ -180,7 +180,7 @@
     text: string;
     result: EncodedLine[] | null;
   } | undefined;
-  let codeForensics: {
+  let codeDiagnostics: {
     readonly tokenText: string;
     readonly renderedText: string;
     readonly renderedLines: string;
@@ -426,18 +426,18 @@
     // the final seed after the last delta — and must re-run the match
     // below. Loopback clients never receive seeds, so this stays 0.
     liveCodeSeedGeneration();
-    if (streamdown.diagnostics && codeRoot && !codeForensics) {
-      const root = codeRoot as HTMLElement & { __aoCodeForensics?: unknown };
-      codeForensics = {
+    if (streamdown.diagnostics && codeRoot && !codeDiagnostics) {
+      const root = codeRoot as HTMLElement & { __aoCodeDiagnostics?: unknown };
+      codeDiagnostics = {
         get tokenText() { return token.text; },
         get renderedText() { return renderedText; },
         get renderedLines() { return lines.join('\n'); },
         get spansFor() { return spansFor; },
         get spansForLang() { return spansForLang; },
       };
-      Object.defineProperty(root, '__aoCodeForensics', {
+      Object.defineProperty(root, '__aoCodeDiagnostics', {
         configurable: true,
-        value: codeForensics,
+        value: codeDiagnostics,
       });
     }
     untrack(() => {
@@ -519,11 +519,11 @@
     destroyed = true;
     pendingAdoption = undefined;
     clearCompletedCodeBlockRenderer(completedRendererOwner);
-    const root = codeRoot as (HTMLElement & { __aoCodeForensics?: unknown }) | undefined;
-    if (root && root.__aoCodeForensics === codeForensics) {
-      delete root.__aoCodeForensics;
+    const root = codeRoot as (HTMLElement & { __aoCodeDiagnostics?: unknown }) | undefined;
+    if (root && root.__aoCodeDiagnostics === codeDiagnostics) {
+      delete root.__aoCodeDiagnostics;
     }
-    codeForensics = undefined;
+    codeDiagnostics = undefined;
     if (timer !== null) {
       clearTimeout(timer);
       timer = null;

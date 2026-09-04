@@ -1517,7 +1517,7 @@ describe('createUseStickToBottomController', () => {
       expect(controller.escapedFromLock).toBe(true);
     });
 
-    it('releases the scroll pause after the immediate disclosure flush, before slow payload work settles', async () => {
+    it('releases the scroll pause after the immediate disclosure flush, before slow content work settles', async () => {
       const anchor = document.createElement('button');
       contentEl.appendChild(anchor);
       let anchorTop = 200;
@@ -1532,7 +1532,7 @@ describe('createUseStickToBottomController', () => {
         y: anchorTop,
         toJSON: () => ({}),
       } as DOMRect));
-      let resolvePayloadWork: (() => void) | undefined;
+      let resolveContentWork: (() => void) | undefined;
 
       const ro = getRO();
       const preserve = controller.preserveScrollAnchor(anchor, () => {
@@ -1541,7 +1541,7 @@ describe('createUseStickToBottomController', () => {
         anchorTop = 260;
         ro.fire(contentEl, 1000);
         return new Promise<void>((resolve) => {
-          resolvePayloadWork = resolve;
+          resolveContentWork = resolve;
         });
       });
       await Promise.resolve();
@@ -1550,7 +1550,7 @@ describe('createUseStickToBottomController', () => {
       expect(geom.scrollTop).toBe(600);
       expect(controller.isSticky).toBe(true);
 
-      resolvePayloadWork?.();
+      resolveContentWork?.();
       await preserve;
     });
   });
@@ -2405,7 +2405,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       await waitMs(150);
 
       // The reader wheels up and away; no program is running, so a
-      // pre-hardening yield would have placed the bottom over them.
+      // earlier yield would have placed the bottom over them.
       fireWheel(scrollEl, -100);
       geom.scrollTop = 200;
       fireScroll(scrollEl);
@@ -6855,7 +6855,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(geom.scrollTop - 440).toBeGreaterThan(0);
       expect(geom.scrollTop - 440).toBeLessThan(50);
 
-      // MessageTimeline's structural-signature nudge runs after
+      // MessageTimeline's structural-change nudge runs after
       // tick+rAF. It must not bypass the contentRO overshoot policy
       // and instantly clamp the same small overshoot.
       controller.observe('live-content');
@@ -6986,7 +6986,7 @@ describe('createUseStickToBottomController — external content-geometry source'
       // again, which is how a populated first mount ended up at
       // scrollTop=0 claiming the bottom. The source must subscribe after
       // attach (TimelineVirtualizerHandle.subscribeContentGeometry), so
-      // reaching this at all is a contract breach, not a race to
+      // reaching this at all is a contract violation, not a race to
       // tolerate: loud here (dev/test), reported-and-dropped in
       // production, where a throw would abort the caller's update batch.
       controller.detach();
@@ -7365,7 +7365,7 @@ describe('createUseStickToBottomController — external content-geometry source'
       expect(geom.scrollTop).toBe(400);
     });
 
-    it('a padding-only composer resize cannot poison the next content target', () => {
+    it('a padding-only composer resize cannot corrupt the next content target', () => {
       deliverWithViewport(800, 400);
 
       // In production the composer becomes 102px taller. Its
@@ -7602,10 +7602,10 @@ describe('createUseStickToBottomController — two instances', () => {
   });
 });
 
-describe('createUseStickToBottomController — write-refusal forensics wiring', () => {
+describe('createUseStickToBottomController — write-refusal diagnostics wiring', () => {
   // Controller-level pin for the spring's write-refusal guard
   // (spring.ts, bug-report-20260818T003129Z): the controller's
-  // reportWriteRefusal dep must attach element forensics (computed
+  // reportWriteRefusal dep must attach element diagnostics (computed
   // overflow, connectedness, surface id) to the trace record — those
   // are exactly the discriminating facts the original capture lacked —
   // and the heal must arrive as bounded per-frame motion, never a
@@ -7669,7 +7669,7 @@ describe('createUseStickToBottomController — write-refusal forensics wiring', 
       .filter((d) => d.phase === phase);
   }
 
-  it('latch carries element forensics; heal glides bounded per-frame motion', async () => {
+  it('latch carries element diagnostics; heal glides bounded per-frame motion', async () => {
     controller.observe('live-content'); // starts the chase toward 900
 
     for (let i = 0; i < 30; i++) await nextFrame();
@@ -7678,7 +7678,7 @@ describe('createUseStickToBottomController — write-refusal forensics wiring', 
     expect(latched).toHaveLength(1);
     expect(latched[0].surface).toBe('wedged-clip');
     expect(latched[0].connected).toBe(true);
-    // The forensic reads must come from a live getComputedStyle, not
+    // The diagnostic reads must come from a live getComputedStyle, not
     // the catch fallback — 'unreadable' here means the capture is dead
     // exactly when the wedge recurs.
     expect(latched[0].overflowY).not.toBe('unreadable');
@@ -7766,7 +7766,7 @@ describe('createUseStickToBottomController — write-refusal forensics wiring', 
       expect(records.filter((r) => r.message.includes(HEALED_MARK))).toHaveLength(1);
 
       // Past the cooldown, a new episode files again — with the SAME
-      // constant message (the dedupe signature).
+      // constant message (the dedupe key).
       await nextFrameAfter(10_001);
       await wedgeEpisode();
       records = await diagnostics.all();

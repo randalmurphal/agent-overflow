@@ -220,8 +220,8 @@ func (p *Parser) parseUserReplay(threadID string, raw map[string]json.RawMessage
 		// Replay every `<task-notification>` in the body, not just the
 		// first. The coalesced multi-notification flush is confirmed on
 		// the claude-tui /v1/messages wire (sibling completions during a
-		// TaskOutput(block=true) wait, spike/claude-mitm/
-		// probe_taskoutput_siblings.py); this headless echo is fed from
+		// TaskOutput(block=true) wait, the CLI capture
+		// spike, taskoutput_siblings); this headless echo is fed from
 		// the same enqueuePendingNotification source, so we extract all
 		// defensively even though a headless multi-block bundle has not
 		// been captured directly. A non-routable block (empty <task-id>)
@@ -493,7 +493,7 @@ func (f TaskNotificationFields) Routable() bool { return f.TaskID != "" }
 // "[SYSTEM NOTIFICATION - NOT USER INPUT]" + `<task-notification>` per
 // completed task into a SINGLE message — the TaskOutput-waited task AND
 // any sibling that finished during the wait (confirmed on 2.1.170:
-// spike/claude-mitm/probe_taskoutput_siblings.py). Extracting only the
+// the CLI capture spike taskoutput_siblings). Extracting only the
 // first would silently drop the rest, stranding those launches as
 // "running" forever. Each returned element carries the parsed fields;
 // callers skip the non-routable ones (fields.Routable() == false, i.e. an

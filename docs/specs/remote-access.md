@@ -3432,10 +3432,10 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
      read each — with an AST cross-check that fails on a moved symbol,
      an unclassified entry, or a deleted gate, rather than a duplicate
      of the 360-method / 72-channel tables that would only ever drift
-     from them. Open repo-hygiene item the sweep surfaced:
-     `spike/claude-mitm` is checked in with two live `net.Listen`
-     calls against spike-policy step 5; it sits outside the gate's
-     package roots.
+     from them. Repo-hygiene item the sweep surfaced: a checked-in CLI
+     capture spike carried two live `net.Listen` calls against spike-policy
+     step 5, outside the gate's package roots. RESOLVED 2026-09-04 — the
+     spike was removed from the repo.
    - **Doc drift inside the classification table.** LANDED 2026-08-31
      (0114caed): `LocalOnlyCategory` is a closed typed set (ten at
      landing; wave 5c added `CategoryDeviceAccess` as the eleventh),

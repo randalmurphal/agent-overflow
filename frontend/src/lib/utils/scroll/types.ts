@@ -418,7 +418,7 @@ export interface UseStickToBottomController {
    * effect ordered AFTER `attach`, because a sample delivered while the
    * controller is detached is lost and the source's dedupe never
    * re-offers it. Delivering while detached is therefore a contract
-   * breach: it throws in dev/test and reports + drops in production.
+   * violation: it throws in dev/test and reports + drops in production.
    * The virtualizer deliberately has no fire-and-forget geometry prop —
    * that wiring is what silently lost the pre-attach sample.
    */

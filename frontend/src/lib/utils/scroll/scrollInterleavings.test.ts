@@ -497,7 +497,7 @@ describe('scroll interleavings — ops × states frame invariants', () => {
   // Seeded op-SEQUENCE fuzz: the enumerated cases cover one op from
   // each state, but the incident cluster was op-adjacent-to-op
   // (collapse release racing an append). Deterministic seeds — a
-  // failure names the seed and replays exactly. Escape intent is
+  // failure names the seed and re-runs exactly. Escape intent is
   // simulated alongside (user-escape sets it, a consent-armed
   // restore-snap clears it; claims stay production-gated so an escaped
   // sequence keeps its escape) and verified against the controller at

@@ -56,7 +56,7 @@ func buildLaunchOptions(cfg Config, systemPromptPath, gatewayURL, hookURL, hookT
 		// nothing to reconstruct and neither AO nor the TUI itself shows any
 		// thinking. The flag is global and the interactive TUI honors it on the
 		// wire: LIVE-confirmed on 2.1.170 in
-		// spike/claude-mitm/probe_thinking_title.py — the request carried
+		// the CLI capture spike thinking_title — the request carried
 		// thinking.display:"summarized" and the response streamed thinking_delta
 		// text (124 chars on a math turn) where the omitted control run streamed
 		// none. Mirrors the headless path (provider/claude/session.go) and is a

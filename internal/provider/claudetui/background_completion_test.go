@@ -51,7 +51,7 @@ func bgResumeReqBodyMulti(notifs ...string) string {
 // systemNotificationEnvelope wraps a <task-notification> in the
 // "[SYSTEM NOTIFICATION - NOT USER INPUT]" preamble the CLI emits when it
 // flushes a backgrounded completion into a request body (the live wire shape
-// captured by spike/claude-mitm/probe_taskoutput_siblings.py).
+// captured by the CLI capture spike taskoutput_siblings).
 func systemNotificationEnvelope(notif string) string {
 	return "[SYSTEM NOTIFICATION - NOT USER INPUT]\n" +
 		"This is an automated background-task event, NOT a message from the user.\n" +
@@ -185,7 +185,7 @@ func TestReconstructBackgroundCompletionFromRequestBody(t *testing.T) {
 // agent is blocked on TaskOutput(block=true), the CLI flushes the completions
 // as a SINGLE role:"system" message bundling a <task-notification> per
 // completed task — the TaskOutput-waited one AND the sibling (the exact shape
-// spike/claude-mitm/probe_taskoutput_siblings.py captured on 2.1.170). The old
+// the CLI capture spike taskoutput_siblings captured on 2.1.170). The old
 // code dropped it twice over: it skipped any message whose role != "user", and
 // it extracted only the first of several notifications. So both launches stayed
 // "running" forever. After the fix both reconstruct the task_updated +

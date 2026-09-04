@@ -1460,13 +1460,13 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 	// session's WebView2 environment truncates it — see rotateChromeDebugLog.
 	rotateChromeDebugLog(webviewDataDir(mode))
 
-	forensicsDir := renderForensicsDir(mode)
-	if forensicsDir == "" {
-		log.Printf("webview2: render-hang forensics disabled: %%APPDATA%% is unresolvable")
+	diagnosticsDir := renderDiagnosticsDir(mode)
+	if diagnosticsDir == "" {
+		log.Printf("webview2: render-hang diagnostics disabled: %%APPDATA%% is unresolvable")
 	} else {
 		// One startup line so launcher.log always names the evidence
 		// path — a hang report's first grep is this, then the dir.
-		log.Printf("webview2: render-hang forensics dir: %s", forensicsDir)
+		log.Printf("webview2: render-hang diagnostics dir: %s", diagnosticsDir)
 	}
 
 	app := application.New(application.Options{
@@ -1486,7 +1486,7 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 		Assets: application.AssetOptions{
 			Handler: pickerAssetHandler(distros),
 		},
-		Windows: webviewBrowserOptions(mode, webviewDataDir(mode), forensicsDir),
+		Windows: webviewBrowserOptions(mode, webviewDataDir(mode), diagnosticsDir),
 		// Cancel app shutdown until the user explicitly closes the
 		// window. Without this, a transient WSL hiccup during launch
 		// would crash us silently.
@@ -1853,7 +1853,7 @@ func browserArgs(mode string) []string {
 // scroller became a content-sized composited layer: renderer cc/tile_memory
 // measured 165.5MB versus an 89.9MB same-day baseline. Chromium defaults now
 // own both text antialiasing and scroller placement; neither half belongs here.
-func webviewBrowserOptions(mode, userDataDir, forensicsDir string) application.WindowsOptions {
+func webviewBrowserOptions(mode, userDataDir, diagnosticsDir string) application.WindowsOptions {
 	return application.WindowsOptions{
 		AdditionalBrowserArgs: browserArgs(mode),
 		DisabledFeatures:      browserDisabledFeatures(),
@@ -1863,7 +1863,8 @@ func webviewBrowserOptions(mode, userDataDir, forensicsDir string) application.W
 		// Empty (unresolvable %APPDATA%) intentionally takes the Wails default.
 		WebviewUserDataPath: userDataDir,
 		// Renderer minidumps and breadcrumbs. Empty disables capture.
-		RenderForensicsDir: forensicsDir,
+		// Field name is the wails fork's, not ours — do not rename it.
+		RenderForensicsDir: diagnosticsDir,
 	}
 }
 
@@ -1958,7 +1959,7 @@ func webviewDataDir(mode string) string {
 	return filepath.Join(dir, appidentity.WebviewProfileDir(mode))
 }
 
-// renderForensicsDir is where the wails fork's render watchdog drops a
+// renderDiagnosticsDir is where the wails fork's render watchdog drops a
 // renderer minidump + breadcrumb the moment it declares a hang — BEFORE
 // recovery reaps the wedged process tree, which is the only instant the
 // evidence exists (incident 2026-08-18: third renderer-hang episode with
@@ -1968,12 +1969,12 @@ func webviewDataDir(mode string) string {
 // dumps, so it never needs tending. Empty (unresolvable %APPDATA%)
 // disables capture rather than failing the launch, matching
 // webviewDataDir.
-func renderForensicsDir(mode string) string {
+func renderDiagnosticsDir(mode string) string {
 	dir, ok := wsldistro.WSLConfigDir()
 	if !ok {
 		return ""
 	}
-	return filepath.Join(dir, appidentity.RenderForensicsDir(mode))
+	return filepath.Join(dir, appidentity.RenderDiagnosticsDir(mode))
 }
 
 // run drives the Wails app loop. Errors are logged but don't take

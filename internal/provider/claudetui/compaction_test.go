@@ -29,7 +29,7 @@ func newParserBackedRec(t *testing.T) (*reconstructor, *[]provider.ProviderEvent
 func jsonStr(s string) string { return string(mustMarshal(s)) }
 
 // summarizerSSE is the compaction summarizer's response shape confirmed on
-// 2.1.170 (spike/claude-mitm): one thinking block then one text block (the
+// 2.1.170 (CLI capture spike): one thinking block then one text block (the
 // summary), ending end_turn. text empty omits the text block (a thinking-only
 // partial). thinking empty omits the thinking block.
 func summarizerSSE(thinking, text string) []string {

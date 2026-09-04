@@ -13,9 +13,10 @@ The stream-json shapes this package reconstructs are in
 `internal/provider/claude/AGENTS.md` and
 [`claude-wire.md`](../../../docs/references/claude-wire.md).
 
-**This is binary behavior, not a contract.** Every signal here was probed
-against a pinned `claude` build. Re-probe on version bump with
-`spike/claude-mitm/`, and never guess a shape from this repo.
+**This is binary behavior, not a contract.** Every signal here was captured
+against a pinned `claude` build. Re-verify on version bump with an out-of-repo
+capture harness (see [spike-policy.md](../../../docs/references/spike-policy.md)),
+and never guess a shape from this repo.
 
 ## Reconstruct, do not reimplement
 
@@ -251,5 +252,5 @@ the package. Only triage persists and only `app.go` and transport emit.
   the same commit as any envelope-shape change.
 - `session_test.go` covers the serialized feed-parser-emit wiring,
   identity capture, teardown idempotency, send validation, and exit meta.
-- PTY write framing and launch are validated against the real binary in
-  `spike/claude-mitm/`, not in Go tests.
+- PTY write framing and launch are validated against the real binary
+  out of repo, not in Go tests.

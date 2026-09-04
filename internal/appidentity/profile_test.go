@@ -69,7 +69,7 @@ func TestIsolatedIdentitiesAreDistinct(t *testing.T) {
 	for _, mode := range modes {
 		record("singleInstanceID", mode, SingleInstanceID("wsl", mode))
 		record("webviewProfileDir", mode, WebviewProfileDir(mode))
-		record("renderForensicsDir", mode, RenderForensicsDir(mode))
+		record("renderDiagnosticsDir", mode, RenderDiagnosticsDir(mode))
 		record("browserProfilesDir", mode, BrowserProfilesDir(mode))
 		record("appTitle", mode, AppTitle(mode))
 	}

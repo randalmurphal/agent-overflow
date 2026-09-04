@@ -166,7 +166,7 @@ func (h *hookRelay) dispatch(w http.ResponseWriter, r *http.Request, p hookPaylo
 		// the summarizer, which the gateway then routes to the capture path
 		// instead of rendering as a turn. PreCompact alone is not proof a
 		// compaction committed (it fires even on a rejected /compact with too few
-		// messages — spike/claude-mitm Part A), so it only ARMS; PostCompact is
+		// messages — the CLI capture spike, Part A), so it only ARMS; PostCompact is
 		// the success signal. Re-arming discards any aborted prior attempt.
 		if h.compaction.arm != nil {
 			h.compaction.arm()

@@ -49,7 +49,7 @@ type oneshotSpec struct {
 	// Env is the per-provider pin map merged over the inherited
 	// environment. CODEX_HOME is always unset — AO owns Codex's home.
 	Env map[string]string
-	// ClientName is the `clientInfo.name` sent at initialize. Forensics
+	// ClientName is the `clientInfo.name` sent at initialize. Diagnostics
 	// only; the app-server does not branch on it.
 	ClientName string
 	// Experimental opts the connection into `capabilities.experimentalApi`.

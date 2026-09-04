@@ -47,7 +47,7 @@ func TestReconstructThinkingDeltaEmitsThinking(t *testing.T) {
 }
 
 // TestReconstructOmittedThinkingBlockKeepsTextIntact is a regression guard built
-// from a turn captured live on 2.1.170 (spike/claude-mitm/probe_thinking_title.py
+// from a turn captured live on 2.1.170 (the CLI capture spike thinking_title
 // with AO_NO_THINK_DISPLAY=1): in omitted mode the wire emits an EMPTY,
 // signature-only thinking block at index 0, then the real text at block index 1.
 // This proves that empty block does NOT corrupt the following text — the text

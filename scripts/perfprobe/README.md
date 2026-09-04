@@ -200,7 +200,7 @@ and compares every completed top-level fence with its rendered `<code>` text.
 It takes no screenshots and retains only bounded failure snippets. Run the two
 together with `markdownwatch` in the background and `checkerboard` as the sole
 trace owner; do not use `markdownwatch` for allocation or memory numbers because
-its source and `textContent` reads intentionally add forensic work.
+its source and `textContent` reads intentionally add diagnostic work.
 `markdownstate` is a read-only point sample of each visible assistant row's
 canonical source, parser source, committed root, and volatile root. Use it
 immediately before a long-turn settle to distinguish retained volatile DOM from

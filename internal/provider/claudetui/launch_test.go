@@ -24,7 +24,7 @@ func hasArgPair(args []string, flag, value string) bool {
 // defaults thinking.display to `omitted` and the wire carries an empty
 // signature-only thinking block (no thinking_delta) — the reconstruction then
 // has nothing to surface, and neither AO nor the TUI shows any thinking. The flag
-// is LIVE-confirmed against 2.1.170 in spike/claude-mitm/probe_thinking_title.py.
+// is LIVE-confirmed against 2.1.170 in the CLI capture spike thinking_title.
 func TestBuildLaunchOptionsEnablesThinkingDisplay(t *testing.T) {
 	cfg := Config{Binary: "claude", WorkDir: t.TempDir(), HookCmd: "/tmp/ao-exe"}
 	opts, err := buildLaunchOptions(cfg, "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")

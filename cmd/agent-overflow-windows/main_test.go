@@ -263,7 +263,7 @@ func TestBrowserFeatures(t *testing.T) {
 
 func TestWebviewBrowserOptionsLeaveTextAndScrollerCompositingAtChromiumDefaults(t *testing.T) {
 	for _, mode := range []string{appidentity.ModeProd, appidentity.ModeDev, appidentity.ModeHarness, appidentity.ModeSoak, appidentity.ModePerf} {
-		opts := webviewBrowserOptions(mode, "profile", "forensics")
+		opts := webviewBrowserOptions(mode, "profile", "diagnostics")
 		if len(opts.EnabledFeatures) != 0 {
 			t.Errorf("%s EnabledFeatures = %v, want none", mode, opts.EnabledFeatures)
 		}

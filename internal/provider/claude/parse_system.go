@@ -100,7 +100,7 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 		// share: `attempt` (1-indexed), `max_retries`, and an `error`
 		// string. Triage uses these to render the timeline retry row
 		// (hiding attempts < 4, mirroring Claude Code's TUI). The raw
-		// `data` is preserved under `wire` for forensics.
+		// `data` is preserved under `wire` for diagnostics.
 		retryPayload := apiRetryPayload(raw)
 		retryMeta := buildClaudeAPIRetryMeta(retryPayload)
 		return []provider.ProviderEvent{{

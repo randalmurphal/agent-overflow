@@ -927,7 +927,7 @@ func TestCountUnpushedCommitsSeparatesBranchNameFromPath(t *testing.T) {
 	repo, _ := repoWithOrigin(t)
 	core := NewCore()
 
-	const branch = "spike/claude-mitm"
+	const branch = "spike/tui-capture"
 	testutil.RunGit(t, repo, "checkout", "-b", branch)
 
 	collidingPath := filepath.Join(repo, filepath.FromSlash(branch))

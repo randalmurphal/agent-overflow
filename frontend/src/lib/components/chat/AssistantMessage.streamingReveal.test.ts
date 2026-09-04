@@ -82,18 +82,18 @@ describe('assistant streaming reveal integration', () => {
     const view = render(TimelineLeaf, { props: { pane, item } });
     await tick();
     const body = view.getByTestId('assistant-message-body') as HTMLElement & {
-      __aoMarkdownForensics?: unknown;
+      __aoMarkdownDiagnostics?: unknown;
     };
-    expect(body.__aoMarkdownForensics).toBeUndefined();
+    expect(body.__aoMarkdownDiagnostics).toBeUndefined();
   });
 
-  it('exposes source-owning Markdown forensics only in a harness session', async () => {
+  it('exposes source-owning Markdown diagnostics only in a harness session', async () => {
     setHarnessSessionFromBootstrap(true);
     const clock = new FakeSmoothingClock();
     __setSmoothingClockForTest(clock);
     const item = makeItem({
-      id: 'forensic-streaming-answer',
-      threadId: 'forensic-streaming-thread',
+      id: 'diagnostic-streaming-answer',
+      threadId: 'diagnostic-streaming-thread',
       kind: 'assistant_text',
       role: 'assistant',
       status: 'streaming',
@@ -103,7 +103,7 @@ describe('assistant streaming reveal integration', () => {
     const pane = await buildPane(
       makeThread({ id: item.threadId }),
       [item],
-      'forensic-streaming-pane',
+      'diagnostic-streaming-pane',
     );
     const view = render(TimelineLeaf, { props: { pane, item } });
     await tick();
@@ -127,7 +127,7 @@ describe('assistant streaming reveal integration', () => {
     await appendAndDrain('paint directly ', 3);
 
     const body = view.getByTestId('assistant-message-body') as HTMLElement & {
-      __aoMarkdownForensics?: {
+      __aoMarkdownDiagnostics?: {
         itemId: string;
         canonicalSource: string;
         parserSource: string;
@@ -135,16 +135,16 @@ describe('assistant streaming reveal integration', () => {
         streaming: boolean;
       };
     };
-    const forensics = body.__aoMarkdownForensics;
-    expect(forensics).toBeDefined();
-    expect(forensics?.itemId).toBe(item.id);
-    expect(forensics?.canonicalSource).toBe('first words paint directly ');
-    expect(forensics?.parserSource).toBe('first words ');
-    expect(forensics?.renderedSource).toBe('first words ');
-    expect(forensics?.streaming).toBe(true);
-    expect(Object.keys(body)).not.toContain('__aoMarkdownForensics');
+    const diagnostics = body.__aoMarkdownDiagnostics;
+    expect(diagnostics).toBeDefined();
+    expect(diagnostics?.itemId).toBe(item.id);
+    expect(diagnostics?.canonicalSource).toBe('first words paint directly ');
+    expect(diagnostics?.parserSource).toBe('first words ');
+    expect(diagnostics?.renderedSource).toBe('first words ');
+    expect(diagnostics?.streaming).toBe(true);
+    expect(Object.keys(body)).not.toContain('__aoMarkdownDiagnostics');
     const streamdown = body.querySelector<HTMLElement & {
-      __aoStreamdownForensics?: {
+      __aoStreamdownDiagnostics?: {
         readonly content: string;
         readonly lastPath: string;
         readonly incrementalLexMetrics: {
@@ -153,13 +153,13 @@ describe('assistant streaming reveal integration', () => {
         };
       };
     }>('.md-volatile');
-    expect(streamdown?.__aoStreamdownForensics?.content).toBe('first words ');
-    expect(streamdown?.__aoStreamdownForensics?.lastPath).not.toBe('none');
-    expect(streamdown?.__aoStreamdownForensics?.incrementalLexMetrics.calls)
+    expect(streamdown?.__aoStreamdownDiagnostics?.content).toBe('first words ');
+    expect(streamdown?.__aoStreamdownDiagnostics?.lastPath).not.toBe('none');
+    expect(streamdown?.__aoStreamdownDiagnostics?.incrementalLexMetrics.calls)
       .toBeGreaterThan(0);
-    expect(streamdown?.__aoStreamdownForensics?.incrementalLexMetrics.byPath.full.calls)
+    expect(streamdown?.__aoStreamdownDiagnostics?.incrementalLexMetrics.byPath.full.calls)
       .toBeGreaterThan(0);
-    expect(Object.keys(streamdown ?? {})).not.toContain('__aoStreamdownForensics');
+    expect(Object.keys(streamdown ?? {})).not.toContain('__aoStreamdownDiagnostics');
   });
 
   it('restores a remounted representation while another view keeps streaming', async () => {

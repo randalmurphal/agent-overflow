@@ -358,9 +358,9 @@
 	onMount(() => {
 		if (!diagnostics || !element) return;
 		const root = element as HTMLElement & {
-			__aoStreamdownForensics?: unknown;
+			__aoStreamdownDiagnostics?: unknown;
 		};
-		const forensics = {
+		const snapshot = {
 			get content() { return content; },
 			get blocks() { return blocksCache.blocks; },
 			get raws() { return blocksCache.raws; },
@@ -371,13 +371,13 @@
 			get documentPublications() { return documentPublications; },
 			get incrementalLexMetrics() { return incrementalLexMetrics; },
 		};
-		Object.defineProperty(root, '__aoStreamdownForensics', {
+		Object.defineProperty(root, '__aoStreamdownDiagnostics', {
 			configurable: true,
-			value: forensics,
+			value: snapshot,
 		});
 		return () => {
-			if (root.__aoStreamdownForensics === forensics) {
-				delete root.__aoStreamdownForensics;
+			if (root.__aoStreamdownDiagnostics === snapshot) {
+				delete root.__aoStreamdownDiagnostics;
 			}
 		};
 	});

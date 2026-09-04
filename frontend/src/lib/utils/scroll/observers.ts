@@ -85,7 +85,7 @@ const PINNED_REMEASURE_SETTLE_WINDOW_MS = 250;
 // deliberately generous, because the cost of it running long is an
 // instant (correct-position) pin where a glide was tolerable, while the
 // cost of it running short is the boot-time animated crawl this exists
-// to kill.
+// to remove.
 const COLD_LOAD_SETTLE_MAX_MS = 8000;
 
 // ===== Warm-up (quiescence) gate =====
@@ -222,7 +222,7 @@ export interface ContentObserver {
   /** External-source entry: one engine-sourced content-geometry sample
    * (TimelineVirtualizer post-flush) into the same pipeline an RO
    * delivery takes. Requires the option AND an attached scroller —
-   * both breaches are loud (see deliverSample). */
+   * both violations are loud (see deliverSample). */
   deliverSample(sample: ContentGeometrySample): void;
   /** Reset the warm-up gate: sync-pin mode until quiet/failsafe fires again. */
   beginWarmup(): void;
@@ -237,7 +237,7 @@ export interface ContentObserver {
    * budget.
    */
   sampleResizeCorrelation(): boolean;
-  /** Raw resizeDifference read for trace payloads only. */
+  /** Raw resizeDifference read for trace data only. */
   resizeDifferenceNow(): number;
   /**
    * Open the pinned-remeasure settle window: the controller just wrote a
@@ -533,7 +533,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
     // two unknowns: unmeasured rows still correcting, and a late async-
     // typesetting wave. Settle evidence answers the first directly (every
     // mounted row measured, all within WARMUP_SETTLE_EPSILON_PX of their
-    // estimates — the priors-hit revisit signature); the consumer's
+    // estimates — the priors-hit revisit pattern); the consumer's
     // typesetting signal answers the second. With both in hand there is
     // nothing left to wait for — reveal now instead of ~QUIET_MS later
     // (the zero-delta revisit never lowers lastContentHeightDelta, so the
@@ -743,7 +743,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
     }));
 
     // Apply the decision. Order preserved from the legacy inline
-    // logic: intent flip first (the write's trace payload reads it),
+    // logic: intent flip first (the write's trace data reads it),
     // then the single write, then spring bookkeeping.
     if (decision.setIsAtBottom) deps.setIsAtBottom(true);
     if (decision.oscillationRecovery && decision.write) {

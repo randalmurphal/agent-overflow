@@ -223,7 +223,7 @@ const ThreadWriterConflictMessage = "This Codex thread is open in another Codex 
 // The original RPCError stays reachable through Unwrap for logs.
 type ThreadWriterConflictError struct {
 	// Wire is the app-server's own message, reachable through errors.As for
-	// forensics. It names the thread id, which the user-facing text
+	// diagnostics. It names the thread id, which the user-facing text
 	// deliberately does not — that asymmetry IS the field's purpose, so a
 	// diagnosis can identify the locked thread without the toast doing so.
 	// Nothing logs it today; it is the one piece of the refusal the

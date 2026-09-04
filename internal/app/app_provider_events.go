@@ -282,7 +282,7 @@ func decrementActiveTurnsClamped(turns *atomic.Int32) {
 // EventInit Meta and pushes each mcp_servers entry into the
 // mcpstatus cache. Source is stamped as live-session so the UI can
 // disclose freshness; the raw provider status string is preserved
-// for forensics.
+// for diagnostics.
 //
 // Silently no-ops on decode failure or empty list — init is also
 // emitted by Codex (via its own session.go) and other future
@@ -328,7 +328,7 @@ func (a *App) ingestClaudeInitMCPStatus(meta json.RawMessage) {
 	// ephemeral fetch, and every Put here is a live-session Put with a
 	// non-empty Error, which stores verbatim. The `type` category rides
 	// Raw because upstream declares it an open set — recording the value
-	// keeps forensics honest without teaching the projector an enum that
+	// keeps diagnostics honest without teaching the projector an enum that
 	// will grow.
 	for _, e := range info.MCPServerErrors {
 		if e.Name == "" {

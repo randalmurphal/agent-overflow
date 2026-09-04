@@ -56,7 +56,7 @@ const SIXTY_FPS_INTERVAL_MS = 1000 / 60;
 // post-stall catch-up BRISK, tuned when a stall meant something rare —
 // a tab returning from background, one pathological frame.
 //
-// That premise was wrong for WebKit. The 2026-08-05 boundary probe
+// That premise was wrong for WebKit. The 2026-08-05 boundary measurement
 // measured rAF gaps of 25–129ms and 6–7 stall ticks per chase on Linux
 // WebKit, against zero on Chromium: there, stalls are ROUTINE. At three
 // steps the resume tick writes up to ~81px in one go (3 × the 27px
@@ -237,7 +237,7 @@ const SPRING_DECEL_ENVELOPE_MIN_PX_PER_FRAME = 1.6;
 // BUILD, as a growth factor per 60Hz frame. The decel envelope above
 // is a PERMIT that is largest exactly when a glide begins (remaining
 // peaks at onset), so without a build limit every quantum starts at
-// its peak speed and only decelerates — a hard attack per line wrap,
+// its peak speed and only decelerates — a hard onset per line wrap,
 // and a glide that finishes early then parks dead until the next
 // quantum (the stop-start sawtooth of line-after-line streaming;
 // 2026-08-04 feedback). The slew turns onsets into a ramp: each step,
@@ -260,7 +260,7 @@ const SPRING_DECEL_ENVELOPE_MIN_PX_PER_FRAME = 1.6;
 // Geometric rather than additive because speed-change perception is
 // relative (Weber's law): ×1.10/frame reads as the same "push" at
 // 1.5 px/frame as at 20, which lets ONE constant give line quanta a
-// soft ~100ms attack AND big backlogs a brisk floor→cap spool
+// soft ~100ms onset AND big backlogs a brisk floor→cap spool
 // (ln 27 / ln 1.10 ≈ 35 frames). An additive rate tuned soft enough
 // for lines made large catch-ups crawl (~1.7s to cap). Shipped at
 // 1.12; softened to 1.10 on 2026-08-04 feel-tuning feedback.
@@ -288,7 +288,7 @@ const SPRING_ACCEL_SLEW_BASE_PX_PER_FRAME = 1;
 // grid is the engine's to choose: desktop Chromium rounds to whole CSS
 // pixels at every DPR (scrollTopQuantization.browser.test.ts pins 1,
 // 1.25, 1.5 and 2), the Android WebView to whole DEVICE pixels (the
-// 2026-09-04 Pixel 9a probe: 1/2.625 CSS px steps, readbacks at 1/32
+// 2026-09-04 Pixel 9a measurement: 1/2.625 CSS px steps, readbacks at 1/32
 // px precision). A model that integrates fractional displacement and
 // lets the engine round it therefore paints an ALTERNATING step
 // pattern whenever its per-frame rate is not a whole number of grid
@@ -405,7 +405,7 @@ export function quantizedFloorRung(
 // bug-report-20260818T003129Z: an ActivityRun clip spent 227 seconds
 // refusing every scrollTop write — real scrollHeight/clientHeight, all
 // writes read back 0 — while its content streamed 410→1228px. The only
-// browser state that reproduces that signature is the element not being
+// browser state that reproduces that pattern is the element not being
 // a scroll container (overflow computed to clip/visible); nothing in
 // this codebase sets that, so the trigger sits below our floor
 // (renderer state, likely WebView2-specific). Two defects were ours
@@ -415,7 +415,7 @@ export function quantizedFloorRung(
 //     wrote the FULL target ('spring.overshoot') — 37,565 failed writes
 //     at display rate, and the first accepted write after the element
 //     healed was a 940px instant teleport.
-//   - All of it was silent: no diagnostic, and the 165Hz trace flood
+//   - All of it was silent: no diagnostic, and the 165Hz trace burst
 //     evicted its own onset evidence from the bookmark ring.
 // The guard classifies every main tick write THREE ways, same-tick
 // synchronous (write + readback in one call sequence, so a user wheel
@@ -440,16 +440,16 @@ export function quantizedFloorRung(
 //
 // After SPRING_WRITE_REFUSAL_LATCH_TICKS consecutive refusals the
 // guard latches. A latched chase keeps its rAF loop but gates the
-// WHOLE tick body — geometry reads included — behind the probe
+// WHOLE tick body — geometry reads included — behind the retry
 // interval: skipped ticks pay only the bail checks and a parked-style
 // velocity decay toward the slew ramp base (the incident's real cost
 // was 227s × 165Hz of forced layout, not just the writes; and the
 // decay means a heal after a long wedge ramps up like every other
 // onset instead of launching at cruise — the slew doctrine). One tick
-// per SPRING_WRITE_REFUSAL_PROBE_INTERVAL_MS runs in full — the probe
-// — and consumes the probe slot at the gate regardless of how its
-// write classifies, so even an inconclusive probe backs off. Arrival /
-// caught-up transitions and flag flips are honored within one probe
+// per SPRING_WRITE_REFUSAL_RETRY_INTERVAL_MS runs in full — the retry
+// — and consumes the retry slot at the gate regardless of how its
+// write classifies, so even an inconclusive retry backs off. Arrival /
+// caught-up transitions and flag flips are honored within one retry
 // interval while latched; nothing visible can move on a wedged
 // element in that window, so the deferral costs nothing.
 // `springActive` deliberately stays true for the whole latch: the
@@ -457,15 +457,15 @@ export function quantizedFloorRung(
 // what lets the heal arrive as the chase's own bounded glide.
 //
 // Transitions are reported through deps.reportWriteRefusal — 'latched'
-// (the controller attaches DOM forensics: computed overflow and
+// (the controller attaches DOM diagnostics: computed overflow and
 // scroll-behavior, connectedness; if the wedge ever recurs, that
 // record IS the root-cause capture), 'healed' (the bookend), and
 // 'abandoned' (cancel() ended the chase while still latched — a wedge
 // that never heals must not end silently). The latch survives a
 // caught-up excursion (target collapsing onto the wedged position)
 // uncleared: a stale latch costs nothing — the first chase tick after
-// it probes immediately (the probe stamp is long stale) and a MOVED
-// probe unlatches on the spot — while clearing it would re-earn five
+// it retries immediately (the retry stamp is long stale) and a MOVED
+// retry unlatches on the spot — while clearing it would re-earn five
 // refusals per excursion. cancel() resets the guard with the rest of
 // the kinematic state: a fresh chase starts with fresh evidence.
 //
@@ -481,7 +481,7 @@ export function quantizedFloorRung(
 // to bound.
 const SPRING_WRITE_REFUSAL_MIN_MOTION_PX = 1.5;
 export const SPRING_WRITE_REFUSAL_LATCH_TICKS = 5;
-export const SPRING_WRITE_REFUSAL_PROBE_INTERVAL_MS = 250;
+export const SPRING_WRITE_REFUSAL_RETRY_INTERVAL_MS = 250;
 
 // How long a structural-append mark (markStructuralAppend, the
 // controller's markStructuralContentPending) counts as evidence that
@@ -539,9 +539,9 @@ interface ChaseTelemetry {
   selectionPausedTicks: number;
 }
 
-// Payload for deps.reportWriteRefusal — the write-refusal guard's
+// Data for deps.reportWriteRefusal — the write-refusal guard's
 // episodic transitions. Kinematic facts only; the controller owns the
-// DOM forensics (computed overflow, connectedness, surface id) because
+// DOM diagnostics (computed overflow, connectedness, surface id) because
 // they are element concerns, not spring concerns.
 export interface SpringWriteRefusalEvent {
   /**
@@ -670,10 +670,10 @@ export interface SpringChaseDeps {
    */
   scrollTopUnexplained(): boolean;
   /**
-   * Write-refusal guard escalation (see the guard's constant block).
+   * Write-refusal guard promotion (see the guard's constant block).
    * Called exactly once per latch and once per heal — episodic by
    * construction, never per-tick. The controller attaches DOM
-   * forensics and files the frontend-errors diagnostic; a silent
+   * diagnostics and files the frontend-errors diagnostic; a silent
    * implementation would recreate the incident this guard exists to
    * make loud, so the dep is required, not optional.
    */
@@ -694,7 +694,7 @@ export interface SpringChase {
   gateOpen(): boolean;
   /** True while a chase or its sentinel is alive (`springActive` in resolver terms). */
   isActive(): boolean;
-  /** Current spring run token for trace payloads; 0 = no spring in flight. */
+  /** Current spring run token for trace data; 0 = no spring in flight. */
   token(): number;
   /**
    * The model's velocity after the last tick, in CSS px per 60Hz frame.
@@ -835,12 +835,12 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
   let sentinelClampWitnessed = false;
   // ===== Write-refusal guard state (see the guard's constant block) =====
   // Consecutive refused writes; a MOVED write resets it (inconclusive
-  // sub-threshold writes touch nothing). Latch + probe timestamps are
+  // sub-threshold writes touch nothing). Latch + retry timestamps are
   // on the rAF clock (`now`).
   let consecutiveRefusedWrites = 0;
   let writeRefusalLatched = false;
   let refusalLatchedAt = 0;
-  let lastRefusalProbeAt = 0;
+  let lastRefusalRetryAt = 0;
 
   function witnessClampIfUnexplained(): boolean {
     if (sentinelEntryTarget < 0) return false;
@@ -1011,7 +1011,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
     consecutiveRefusedWrites = 0;
     writeRefusalLatched = false;
     refusalLatchedAt = 0;
-    lastRefusalProbeAt = 0;
+    lastRefusalRetryAt = 0;
     lastChaseTarget = -1;
     endChaseTelemetry();
   }
@@ -1117,9 +1117,9 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       const previousTickAt = lastTickAt;
       const rawDtFrames =
         previousTickAt === null ? 1 : (now - previousTickAt) / SIXTY_FPS_INTERVAL_MS;
-      // Sanitized elapsed time in 60Hz frames: a negative gap (clock
+      // Clamped elapsed time in 60Hz frames: a negative gap (clock
       // skew) degrades to zero motion, a non-finite timestamp to one
-      // frame — a NaN here would otherwise poison velocity through the
+      // frame — a NaN here would otherwise corrupt velocity through the
       // parked decay and ride through every sign-conditioned clamp
       // into writeScrollTop.
       const dtFrames = Number.isFinite(rawDtFrames) ? Math.max(rawDtFrames, 0) : 1;
@@ -1160,20 +1160,20 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
 
       // Wedged-element backoff: while the write-refusal latch is set,
       // the WHOLE tick body below — including the geometry reads, each
-      // a forced layout — runs only on probe-cadence ticks. The
+      // a forced layout — runs only on retry-cadence ticks. The
       // incident's real cost was 227s of 165Hz forced layout, not just
       // the writes, so a skipped tick pays only the bail checks above
       // plus a parked-style velocity decay toward the slew ramp base
       // (mirrors the caught-up branch's parked decay; a heal after a
       // long wedge then ramps up like any other onset instead of
       // launching at carried cruise). Arrival / caught-up transitions
-      // are deferred at most one probe interval — nothing visible can
-      // move on a wedged element in that window. The probe slot is
-      // consumed HERE, unconditionally: even a probe whose write
+      // are deferred at most one retry interval — nothing visible can
+      // move on a wedged element in that window. The retry slot is
+      // consumed HERE, unconditionally: even a retry whose write
       // classifies inconclusive (sub-threshold) backs off, so the
       // latch can never re-enter a display-rate loop.
       if (writeRefusalLatched) {
-        if (now - lastRefusalProbeAt < SPRING_WRITE_REFUSAL_PROBE_INTERVAL_MS) {
+        if (now - lastRefusalRetryAt < SPRING_WRITE_REFUSAL_RETRY_INTERVAL_MS) {
           const speed = Math.abs(velocity);
           if (speed > slewRampBase) {
             velocity =
@@ -1187,13 +1187,13 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
           springFrameHandle = requestFrame(tick);
           return;
         }
-        lastRefusalProbeAt = now;
+        lastRefusalRetryAt = now;
       }
 
       // External-geometry surfaces publish their exact bottom target with
       // every virtualizer sample, so ordinary chase frames read that cache.
       // A sentinel needs a real layout flush before comparing the provenance
-      // ledger for browser-clamp evidence. A write-refusal probe also takes
+      // ledger for browser-clamp evidence. A write-refusal retry also takes
       // the real path because it is diagnosing an element outside its normal
       // scrolling state. (`current` is re-read after a catch-up jump below.)
       const forceGeometryRead = sentinelEntryTarget >= 0 || writeRefusalLatched;
@@ -1404,7 +1404,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
               // sits within a fraction of a percent of the rate for
               // frames at a time, and a hold keyed on the instantaneous
               // comparison interleaved two cadences (the 2026-09-04
-              // 240Hz probe). Reversals still decelerate through zero.
+              // 240Hz measurement). Reversals still decelerate through zero.
               if (velocity * stepDiff <= 0) {
                 floorHolding = false;
               } else if (Math.abs(velocity) >= floorRate) {
@@ -1456,7 +1456,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
             // by the TICK's own displacement, never a carried total, so a
             // residue that accrued below one device pixel cannot surface
             // as a double step the moment the rate crosses one (the
-            // `0 2 0 2` onset of the 2026-09-04 120Hz probe).
+            // `0 2 0 2` onset of the 2026-09-04 120Hz measurement).
             const tickDevicePx = tickDisplacement * dpr;
             const magnitude = Math.abs(tickDevicePx);
             const direction = Math.sign(tickDevicePx);
@@ -1575,7 +1575,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
                   });
                   writeRefusalLatched = false;
                   refusalLatchedAt = 0;
-                  lastRefusalProbeAt = 0;
+                  lastRefusalRetryAt = 0;
                 }
                 consecutiveRefusedWrites = 0;
                 // The model's residue was settled above, per band. The
@@ -1604,9 +1604,9 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
                 // element's true one, so the next write stays within one
                 // velocity-capped step of it and a heal can only ever be
                 // a bounded glide, never a teleport. Velocity is kept:
-                // it carries the ramped probe speed and seeds the heal
-                // glide's cruise. Probe pacing is NOT stamped here — the
-                // gate above the geometry reads owns the probe slot.
+                // it carries the ramped retry speed and seeds the heal
+                // glide's cruise. Retry pacing is NOT stamped here — the
+                // gate above the geometry reads owns the retry slot.
                 accumulated = 0;
                 retarget.breakMotion();
                 consecutiveRefusedWrites += 1;
@@ -1617,7 +1617,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
                 ) {
                   writeRefusalLatched = true;
                   refusalLatchedAt = now;
-                  lastRefusalProbeAt = now;
+                  lastRefusalRetryAt = now;
                   deps.reportWriteRefusal({
                     phase: 'latched',
                     consecutiveRefusals: consecutiveRefusedWrites,

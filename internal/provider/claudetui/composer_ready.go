@@ -30,7 +30,7 @@ import (
 // idle clock can read false-idle while claude is still painting, and a worktree
 // switch's cross-cwd resume reshapes the boot stream. The composer's bottom
 // status bar rendering is instead a DETERMINISTIC "composer mounted, stdin
-// draining" signal: in spike/claude-mitm/probe_marker_discriminate.py it
+// draining" signal: in the CLI capture spike marker_discriminate it
 // submitted 5/5 at ~0.64s on a cold boot, where send-immediately (0/5) and the
 // bracketed-paste-enable escape (0/4, fires before stdin drains) both swallowed,
 // and the old timing gate only reached ready at ~1.31s. It is also
@@ -39,7 +39,7 @@ import (
 // a multi-line paste to a "[Pasted text]" chip.
 //
 // Binary behavior: the marker strings are claude TUI chrome and must be
-// re-probed on a version bump (spike/claude-mitm/). The bounded timeout is the
+// re-probed on a version bump (the CLI capture spike). The bounded timeout is the
 // safety net if they ever drift — the send proceeds anyway (a re-sendable miss
 // beats a hang), exactly as the old timing gate's timeout did.
 
@@ -73,7 +73,7 @@ const (
 // the bounded timeout (the send still proceeds, just later) rather than riding
 // on the surviving phrase — but that drift is a known re-probe event, not a
 // silent runtime miss. A match means claude is parked reading input. Re-probe on
-// version bump (spike/claude-mitm/).
+// version bump (the CLI capture spike).
 var composerBarMarkers = [][]byte{
 	[]byte("shift+tabtocycle"),
 	[]byte("bypasspermissionson"),
@@ -155,7 +155,7 @@ func (s *Session) awaitComposerReady(ctx context.Context) error {
 // written in: ANSI/OSC escapes stripped, only printable non-space ASCII kept,
 // lowercased. The TUI lays out the status bar with cursor-movement escapes and
 // padding, so its words are not contiguous in the raw stream; this normalization
-// (mirroring spike/claude-mitm/aoprobe.py's _norm) lets a plain substring match
+// (mirroring the CLI capture spike helper's _norm) lets a plain substring match
 // find a stable bar marker. High/multibyte bytes (e.g. the bar's glyphs) drop
 // out, which is fine — the markers are pure ASCII.
 func normalizeForMarker(raw []byte) []byte {

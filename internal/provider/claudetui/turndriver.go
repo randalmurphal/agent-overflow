@@ -84,7 +84,7 @@ type reconstructor struct {
 	// is provably the only classAgent POST between PreCompact and PostCompact
 	// (compactConversation makes no other model call; aux/suggestion calls are
 	// filtered by classifyRequest) — confirmed from source and against 2.1.170
-	// (spike/claude-mitm). Guarded by the session's recMu.
+	// (CLI capture spike). Guarded by the session's recMu.
 	compacting bool
 	// pendingCompaction holds the captured summarizer thinking (+ summary
 	// fallback) until the PostCompact hook finalizes it into the enriched
@@ -334,7 +334,7 @@ func (r *reconstructor) emitBackgroundCompletions(messages []json.RawMessage) {
 // byte-probe skips the common no-notification message without a parse.
 //
 // Two wire facts drive the role + multi-extract handling (both confirmed on
-// 2.1.170, spike/claude-mitm/probe_taskoutput_siblings.py):
+// 2.1.170, the CLI capture spike taskoutput_siblings):
 //
 //   - When a sibling backgrounded command finishes while the agent is blocked
 //     on TaskOutput(block=true), the CLI flushes the completions as a SINGLE
@@ -376,7 +376,7 @@ func eachTaskNotification(messages []json.RawMessage, fn func(fields claude.Task
 // loop's resume that drains its <task-notification>, so routing on the header
 // misroutes that observation as a subagent continuation — dropping the completion
 // (emitBackgroundCompletions only runs off the main path) and nesting the main
-// response under the Agent card (spike/claude-mitm 2026-06-13: the second of two
+// response under the Agent card (the CLI capture spike, 2026-06-13: the second of two
 // backgrounded subagents never surfaced).
 //
 // The deterministic tell is structural, not prose: a backgrounded subagent's

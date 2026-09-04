@@ -136,7 +136,7 @@ func allServerTools(tools []toolDef) bool {
 // "[SUGGESTION MODE: Suggest what the user might naturally type next into Claude
 // Code.]"); matching the bracket prefix survives wording tweaks to the rest of
 // the directive. Confirmed in the 2.1.170 binary and live on the wire
-// (spike/claude-mitm). It is the ONLY bracketed-MODE marker in the binary.
+// (CLI capture spike). It is the ONLY bracketed-MODE marker in the binary.
 const suggestionMarker = "[SUGGESTION MODE:"
 
 // isSuggestionRequest reports whether a /v1/messages body is a suggestion-mode
@@ -221,7 +221,7 @@ func firstUserText(messages []json.RawMessage) string {
 // subagent's is the X-Claude-Code-Agent-Id HTTP header (gateway.go) — that also
 // yields the agent id needed for correlation. This body-side mirror exists only
 // for the credential-free debug classify log, which never sees headers. Both are
-// present together on 2.1.170 (spike/claude-mitm).
+// present together on 2.1.170 (CLI capture spike).
 const subagentSystemMarker = "cc_is_subagent=true"
 
 // isSubagentSystem reports whether a request body's system prompt marks it as a

@@ -108,10 +108,10 @@ export interface ScrollIntentDeps {
   setIsAtBottom(next: boolean): void;
   escaped(): boolean;
   setEscaped(next: boolean): void;
-  /** Trace-payload reads only. */
+  /** Trace-data reads only. */
   isNearBottom(): boolean;
   pauseDepth(): number;
-  /** Feeds the down-scroll re-stick condition (and trace payloads). */
+  /** Feeds the down-scroll re-stick condition (and trace data). */
   distanceFromBottom(): number;
   /** Behavioral refresh of the geometric near-bottom flag; returns the distance. */
   refreshIsNearBottom(): number;
@@ -123,7 +123,7 @@ export interface ScrollIntentDeps {
    * budget). Returns the correlation flag and consumes one budget unit.
    */
   sampleResizeCorrelation(): boolean;
-  /** Raw resizeDifference read for trace payloads only. */
+  /** Raw resizeDifference read for trace data only. */
   resizeDifferenceNow(): number;
   /**
    * A scroll event classified as USER-driven landed at `top`: untagged

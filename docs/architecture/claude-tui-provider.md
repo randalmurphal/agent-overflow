@@ -8,12 +8,12 @@ UI, and any new feature that lands in the TUI before (or without ever) reaching
 the `--output-format stream-json` surface.
 
 > **Status: shipped.** `internal/provider/claudetui` is built; read this as the
-> current-reality reference for it. It is grounded in the
-> `spike/claude-mitm/` investigation (see that directory's `README.md` and
-> `HOOKS_COVERAGE_MAP.md`). Spike code is throwaway. We port the *learnings*,
-> not the Python. Items marked **[validate-at-build]** are confirmed in
-> principle but must be re-probed against the installed binary before the code
-> that depends on them ships.
+> current-reality reference for it. It is grounded in an out-of-repo CLI
+> capture spike (kept out of this repo per
+> [spike-policy.md](../references/spike-policy.md)). Spike code is throwaway.
+> We port the *learnings*, not the Python. Items marked
+> **[validate-at-build]** are confirmed in principle but must be re-verified
+> against the installed binary before the code that depends on them ships.
 
 ## Scope
 
@@ -569,10 +569,11 @@ login; sensitive-path and other one-off dialogs (a sensitive-path edit raises a
 native numbered dialog even when `PreToolUse` allows, so relay the human's choice
 as a PTY digit, never auto-confirm).
 
-## Build-time probe list
+## Build-time validation list
 
-Re-probe against the installed binary (current 2.1.170; pin and re-probe on
-bump). Use the spike harness in `spike/claude-mitm/`.
+Re-verify against the installed binary (current 2.1.170; pin and re-verify on
+bump) with an out-of-repo capture harness, per
+[spike-policy.md](../references/spike-policy.md).
 
 1. **Interrupt classification on 2.1.170 (TUI path).** Confirm the synthetic
    `[Request interrupted by user for tool use]` marker (mid-tool) and the
@@ -615,9 +616,6 @@ bump). Use the spike harness in `spike/claude-mitm/`.
 
 ## References
 
-- [`spike/claude-mitm/README.md`](../../spike/claude-mitm/README.md) and
-  [`HOOKS_COVERAGE_MAP.md`](../../spike/claude-mitm/HOOKS_COVERAGE_MAP.md): the
-  investigation and the full per-signal coverage map (wire / hook / transcript).
 - [`providers.md`](providers.md): the existing two-provider process model.
 - [`how-to.md#add-a-new-provider-adapter`](how-to.md#add-a-new-provider-adapter): the
   new-provider playbook this follows.

@@ -35,7 +35,7 @@ const (
 	// inside this window merges into the first's chunk buffer — the two payloads
 	// concatenate, so an image PATH fuses with the text and neither parses as
 	// intended. Source is 2.1.88; cross-checked against the installed 2.1.170 in
-	// spike/claude-mitm/probe_hook_attach.py.
+	// the CLI capture spike hook_attach.
 	claudePasteCompletionWindow = 100 * time.Millisecond
 	// pasteSettle is the gap Send leaves between two CONSECUTIVE bracketed pastes
 	// (the image paste and the text paste of one send), sized above the completion
@@ -52,12 +52,12 @@ const (
 	// composerClearKeystrokes times before pasting to empty any prompt the TUI
 	// restored to the composer on a prior think-only Esc-revert (the TUI's native
 	// revert puts the just-sent prompt back; LIVE in
-	// spike/claude-mitm/probe_hook_escrevert.py). Without this, a re-send after a
+	// the CLI capture spike hook_escrevert). Without this, a re-send after a
 	// revert FUSES the restored leftover with the new paste. Ctrl-U clears one
 	// composer line, a multi-line paste collapses to a single placeholder chip, so
 	// the composer is never more than a few lines and 16 covers it with margin;
 	// excess Ctrl-U on an already-empty composer is a no-op (LIVE-characterized in
-	// spike/claude-mitm/probe_composer_clear.py on 2.1.170), so it's harmless in
+	// the CLI capture spike composer_clear on 2.1.170), so it's harmless in
 	// the common already-empty case.
 	composerClearKey        = "\x15"
 	composerClearKeystrokes = 16
@@ -66,7 +66,7 @@ const (
 // Send delivers a user turn by pasting the content into the TUI composer and
 // pressing Enter. Image attachments are pasted as their absolute on-disk file
 // PATHS: the real TUI's paste handler reads each path into an image content
-// block (Strategy A, LIVE in spike/claude-mitm/probe_hook_attach.py), so an
+// block (Strategy A, LIVE in the CLI capture spike hook_attach), so an
 // image send needs no stdin image protocol the interactive provider lacks. The
 // app layer resolves each attachment to a Path for this provider — see
 // resolveSendMessageAttachments.

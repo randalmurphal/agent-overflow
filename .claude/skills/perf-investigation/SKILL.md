@@ -15,7 +15,7 @@ User-set and standing. They decide what counts as a fix.
 - Never trade performance for memory. Making the app do less visible work (mount fewer panes, slow a ticker, drop an animation) was rejected; make the unit cheaper instead.
 - The user's running app is read-only. Dumps, profiles and snapshots are fine (`churn` forces a GC and `heapsnapshot` pauses the renderer for a moment; mention it when the user is mid-work). Injecting CSS, sending wheel or key events, anything the user can see, needs their OK first or runs on a harness/soak instance.
 - `make dev-wsl` does not hot-reload frontend edits. Every fix report says "needs a restart", and verification happens after the restart by re-running the probe that found the item.
-- Harness first (user ruling 2026-08-26): the user's live activity is never the capture instrument. Reproduce and A/B on a harness/clone/soak instance; the live app supplies only what no rig can — per-stall verdicts on their machine (always-on ui-trace forensics) and final confirmation after a restart. If a symptom cannot be reproduced on a rig, that is a harness feature gap to raise, not a reason to wait on the user.
+- Harness first (user ruling 2026-08-26): the user's live activity is never the capture instrument. Reproduce and A/B on a harness/clone/soak instance; the live app supplies only what no rig can — per-stall verdicts on their machine (always-on ui-trace diagnostics) and final confirmation after a restart. If a symptom cannot be reproduced on a rig, that is a harness feature gap to raise, not a reason to wait on the user.
 
 ## Environment
 

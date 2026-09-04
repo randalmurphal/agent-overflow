@@ -122,9 +122,9 @@ const STICK_TO_BOTTOM_OFFSET_PX = 70;
 // sampling) live in scroll/chokepoint.ts.
 
 // Frontend-errors rate limit for the spring's write-refusal guard
-// escalation: the first latch per window files a persisted diagnostic
+// promotion: the first latch per window files a persisted diagnostic
 // (plus that latch's matching bookend); later episodes inside the
-// window still trace. Per controller, deliberately — the forensic
+// window still trace. Per controller, deliberately — the diagnostic
 // question is "which SURFACE is wedged", and a second controller's
 // first latch is new evidence, not a duplicate.
 const WRITE_REFUSAL_DIAGNOSTIC_COOLDOWN_MS = 10_000;
@@ -224,7 +224,7 @@ export function createUseStickToBottomController(
   // virtualizer sample publishes `height - viewportHeight` as the second.
   // Ordinary spring frames can then advance using scrollTop readback plus the
   // published target without re-reading scrollHeight/clientHeight at display
-  // rate. Sentinel clamp detection and write-refusal probes force the real
+  // rate. Sentinel clamp detection and write-refusal retries force the real
   // target read. A viewport change or width reflow still takes the read path
   // once so a browser clamp that raced the delivery cannot leave cached
   // scrollTop stale. RO-sourced pipelines such as ChannelView have no
@@ -382,15 +382,15 @@ export function createUseStickToBottomController(
     return options.liveContentActive?.() === true;
   }
 
-  // Write-refusal escalation (spring.ts, "Write-refusal guard"). The
+  // Write-refusal promotion (spring.ts, "Write-refusal guard"). The
   // spring reports the kinematic facts; this handler owns the element
-  // forensics — computed overflow and connectedness are exactly the
+  // diagnostics — computed overflow and connectedness are exactly the
   // discriminating facts bug-report-20260818T003129Z could not answer,
   // so a recurrence of the wedge becomes its own root-cause capture.
   // The dev trace records every transition; the frontend-errors
   // diagnostic (which persists in production) is rate-limited per
   // controller so a hypothetical accept/refuse flapping element cannot
-  // flood the error log — episodes inside the cooldown still trace.
+  // overwhelm the error log — episodes inside the cooldown still trace.
   let lastRefusalDiagnosticAt = -Infinity;
   let refusalLatchDiagnosed = false;
   function reportWriteRefusal(event: SpringWriteRefusalEvent): void {
@@ -407,7 +407,7 @@ export function createUseStickToBottomController(
         : refusalLatchDiagnosed;
     const traceEnabled = isUiRenderTraceEnabled();
     if (!traceEnabled && !wantDiagnostic) return;
-    // DOM forensics (computed style is a forced style recompute) only
+    // DOM diagnostics (computed style is a forced style recompute) only
     // when something below will actually record them.
     const surface = el ? (el.dataset.testid || el.id || 'unknown') : 'detached';
     let overflowY = '';
@@ -445,7 +445,7 @@ export function createUseStickToBottomController(
     }));
     if (!wantDiagnostic) return;
     // reportFrontendDiagnostic contract: the message is CONSTANT (it is
-    // the dedupe signature) and every variable rides in `detail`, paired
+    // the dedupe key) and every variable rides in `detail`, paired
     // with a console.warn carrying the same facts — a non-loopback
     // session cannot persist the record, so the console line is then the
     // only surviving evidence (utils/frontendErrorCapture.ts).
@@ -461,7 +461,7 @@ export function createUseStickToBottomController(
       refusalLatchDiagnosed = true;
       message =
         'scroll: element is refusing scrollTop writes — spring re-anchored and backed off '
-        + 'to probe cadence (utils/scroll/spring.ts write-refusal guard)';
+        + 'to retry cadence (utils/scroll/spring.ts write-refusal guard)';
     } else if (event.phase === 'healed') {
       refusalLatchDiagnosed = false;
       message =
@@ -854,7 +854,7 @@ export function createUseStickToBottomController(
   // "glide starts, then snaps to the bottom" defect. The gap it fired
   // in is structural: liveness (500ms) and the structural one-shot
   // (250ms) are short clocks that mid-chase retargets deliberately do
-  // not refresh, so a glide extended by async row settling (payload
+  // not refresh, so a glide extended by async row settling (content
   // previews, highlight spans) outlives both while still animating,
   // and a composer-rail resize in that window used to stomp it. Not
   // writing IS handling the observation — the tick re-reads

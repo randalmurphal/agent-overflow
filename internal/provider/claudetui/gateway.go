@@ -62,7 +62,7 @@ type agentTurnDriver interface {
 // /v1/messages requests; it is absent on main-agent requests. It both partitions
 // subagent turns from the main loop and keys the correlation that nests a
 // subagent's several requests under one Agent card. Confirmed on 2.1.170
-// (spike/claude-mitm). NEVER logged — see debuglog.go's body-only discipline.
+// (CLI capture spike). NEVER logged — see debuglog.go's body-only discipline.
 const agentIDHeader = "X-Claude-Code-Agent-Id"
 
 // defaultUpstream is the Anthropic API base the gateway forwards to when no

@@ -139,7 +139,7 @@ type MCPServerStatus struct {
 // MCPServerInfo is the identity block an MCP server returns from a
 // successful `initialize`, as `mcpServerStatus/list` echoes it back.
 // Only presence is load-bearing (see MCPStatusFromList); the decoded
-// fields are for forensics. The wire's remaining per-server payload —
+// fields are for diagnostics. The wire's remaining per-server payload —
 // command, args, env, headers — is deliberately NOT decoded anywhere in
 // this package: it can hold live tokens and these shapes feed
 // wire-facing status rows (see mcpstatus.ServerStatus's own rationale).

@@ -285,7 +285,7 @@ type ProviderEvent struct {
 	Raw             json.RawMessage  `json:"-"`
 	TurnComplete    TurnCompleteMeta `json:"-"`
 	// Failure is the provider adapter's normalized error disposition. Raw wire
-	// fields remain in Meta/Raw for rendering and forensics; control-flow
+	// fields remain in Meta/Raw for rendering and diagnostics; control-flow
 	// consumers must use this typed value rather than decoding provider JSON.
 	Failure *FailureMeta `json:"-"`
 }

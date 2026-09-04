@@ -28,7 +28,7 @@
   import { hasScope } from '../../transport/scopes';
   import { isHarnessSession } from '../../transport/harnessMode';
 
-  type AssistantMarkdownForensics = {
+  type AssistantMarkdownDiagnostics = {
     readonly itemId: string;
     readonly canonicalSource: string;
     readonly parserSource: string;
@@ -36,8 +36,8 @@
     readonly streaming: boolean;
   };
 
-  type ForensicAssistantBody = HTMLElement & {
-    __aoMarkdownForensics?: AssistantMarkdownForensics;
+  type DiagnosticAssistantBody = HTMLElement & {
+    __aoMarkdownDiagnostics?: AssistantMarkdownDiagnostics;
   };
 
   let { pane, item }: { pane?: PaneSession & RevealRead & RowUiRegistry & ScrollHost; item: Item } = $props();
@@ -213,21 +213,21 @@
   // install no property and allocate no object.
   $effect(() => {
     if (!isHarnessSession()) return;
-    const root = bodyRoot as ForensicAssistantBody;
-    const forensics: AssistantMarkdownForensics = {
+    const root = bodyRoot as DiagnosticAssistantBody;
+    const diagnostics: AssistantMarkdownDiagnostics = {
       get itemId() { return item.id; },
       get canonicalSource() { return item.summary; },
       get parserSource() { return parserSource; },
       get renderedSource() { return markdownSource; },
       get streaming() { return streaming; },
     };
-    Object.defineProperty(root, '__aoMarkdownForensics', {
+    Object.defineProperty(root, '__aoMarkdownDiagnostics', {
       configurable: true,
-      value: forensics,
+      value: diagnostics,
     });
     return () => {
-      if (root.__aoMarkdownForensics === forensics) {
-        delete root.__aoMarkdownForensics;
+      if (root.__aoMarkdownDiagnostics === diagnostics) {
+        delete root.__aoMarkdownDiagnostics;
       }
     };
   });

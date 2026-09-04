@@ -119,7 +119,7 @@ func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (c
 		// The interactive TUI reverts the just-sent prompt natively when it
 		// receives the Esc: the Esc aborts the in-flight /v1/messages and the
 		// dropped turn does not re-enter the next request (LIVE-confirmed in
-		// spike/claude-mitm/probe_hook_escrevert.py + probe_hook_revertcontext.py).
+		// the CLI capture spike hook_escrevert + hook_revertcontext).
 		// InterruptAndRevertIfClean already delivered that Esc via the provider
 		// Interrupt above, so — unlike headless Claude — AO must NOT stop the
 		// session (it stays live for the next turn) or rewrite a session file (the

@@ -287,7 +287,7 @@ GUI-subsystem exe. Everything below is under `%APPDATA%\agent-overflow\`.
 WebView2 storage paths are pinned via `WebviewUserDataPath`
 (`webviewDataDir`): the default derives from the exe name, and dev exes are
 timestamp-named, so every run would mint a throwaway profile.
-`prepareWebviewStorage` creates the profile and forensics directories before
+`prepareWebviewStorage` creates the profile and diagnostics directories before
 Wails boots, refusing symlinked or reparse-point components (a junction is a
 reparse point even when `os.Lstat` does not call it one, so both checks run).
 

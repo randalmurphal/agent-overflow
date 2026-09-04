@@ -335,7 +335,7 @@ Four facts, ranked once, in the registry
    keeps the strict withheld-aware definition. Widening IT is what flapped.
    Since 2026-08-19 the scroll controller and the auto-collapse gate key on
    tail-ness too (`node.atTail`, stamped beside `live`); what remains on the
-   strict field is the row's `data-live` attribute, the forensic seam that
+   strict field is the row's `data-live` attribute, the diagnostic seam that
    proves the withheld window exists.
 3. **The recorded hold.** A run that opened as the newest keeps rendering
    open after prose displaces it, until the timeline's auto-collapse gate

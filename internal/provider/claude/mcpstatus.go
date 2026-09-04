@@ -146,7 +146,7 @@ func parseMCPList(out string, now time.Time) []mcpstatus.ServerStatus {
 //   - "disabled"     → StatusDisabled
 //
 // Any other value → StatusUnknown. The caller should preserve the
-// original string in ServerStatus.Raw so forensics survive.
+// original string in ServerStatus.Raw so diagnostics survive.
 func MCPStatusFromRaw(raw string) mcpstatus.Status {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "connected":

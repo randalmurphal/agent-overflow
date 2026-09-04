@@ -205,7 +205,7 @@ The rules that bite here:
   `node.collapsed` is the whole answer. A `!collapsed || live` predicate
   at a consumer made the reader's collapse of the live run inert.
   Behavioral consumers key on the stamped `node.atTail`, never `live`,
-  which survives only as the row's `data-live` forensic seam.
+  which survives only as the row's `data-live` diagnostic seam.
 - Auto-collapse happens off-screen and instantly. The fold animation was
   built and rejected, so do not bring back a softer in-view collapse. The
   gate is a `timelineQuietWork.ts` pass and must never run while

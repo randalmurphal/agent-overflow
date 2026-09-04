@@ -24,7 +24,7 @@ from a dev build is that profile, never `dev`.
   developer's own state, which is what the axis exists to prevent.
 - Per-instance names derive from the folded mode and nothing else:
   `SingleInstanceID`, `AppTitle`, `WebviewProfileDir`,
-  `RenderForensicsDir`, `BrowserProfilesDir`, `DevToolsPort`.
+  `RenderDiagnosticsDir`, `BrowserProfilesDir`, `DevToolsPort`.
   `BrowserProfilesDir` names the embedded browser pane's SECOND WebView2
   environment, and splitting it per mode is not just hygiene: a WebView2
   user-data folder belongs to one browser process, so a shared folder

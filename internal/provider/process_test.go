@@ -716,11 +716,11 @@ func TestCloseEscalatesToSignal(t *testing.T) {
 		t.Fatal("Done channel should be closed after Close")
 	}
 
-	// Forensic exit details (signal name, exit code) must remain
+	// Diagnostic exit details (signal name, exit code) must remain
 	// accessible on Err() — Close swallows the exit for return-value
 	// semantics, not for diagnostics.
 	if p.Err() == nil {
-		t.Fatal("Err() should still surface the signal-terminated exit for forensics")
+		t.Fatal("Err() should still surface the signal-terminated exit for diagnostics")
 	}
 }
 
@@ -752,7 +752,7 @@ func TestCloseSwallowsExitCodeOnIntentionalShutdown(t *testing.T) {
 	// The exit error must remain available for callers that want it
 	// (session-died banner, exit-meta marshaller).
 	if p.Err() == nil {
-		t.Fatal("Err() should still surface the non-zero exit for forensics")
+		t.Fatal("Err() should still surface the non-zero exit for diagnostics")
 	}
 }
 
