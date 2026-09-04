@@ -2407,11 +2407,13 @@ text above was deviated from:
   session slot and endpoint, poll activation, detach socket then
   credential then address), which Settings → Systems renders under the
   shell.
-- *Not done on this box, by ruling*: every on-device check waits for
-  the Mac at the end of the campaign: the first emulator run, a
-  physical phone, xterm's hidden-input attributes and thumb sizing, the
-  visual-viewport height above the keyboard, and the biometric prompt
-  itself.
+- *Not done on this box, by ruling*: every on-device check waited for
+  the Mac at the end of the campaign. Since landed there: the first
+  emulator run (2026-09-03), the physical-phone pass with the real push
+  (2026-09-04), and the credential prompt answered by the owner's own
+  hand. Still unexercised by any automated case: xterm's hidden-input
+  attributes and thumb sizing, and the visual-viewport height above the
+  keyboard.
 
 **6g-a LANDED (2026-09-01).** Bundle sync, the backend as the phone's
 update server (6e375500, b07099f2, e417f01d, 8f1bfd66, 3224aab1, and
@@ -3645,8 +3647,9 @@ tests per row, and the compact Playwright project driving a real
 held touch through CDP. Residuals, recorded and left: header `xs`
 buttons stay 24px (the WCAG AA minimum, not the 44px Android target);
 the terminal tab strip is unchanged; the Android WebView's own
-long-press behaviour (whether it raises `contextmenu`, and when) is
-unverified until the on-device pass. The manifest declares
+long-press behaviour (whether it raises `contextmenu`, and when)
+remains unexercised even after the device passes (2026-09-03 emulator,
+2026-09-04 phone) — the smoke drives taps, never a held press. The manifest declares
 VIBRATE so the 10ms tick on a handled hold is real on the device.
 
 **Polish pass, convergence residue LANDED (2026-09-03, wave R3).** The
