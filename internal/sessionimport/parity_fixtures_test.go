@@ -87,6 +87,26 @@ func claudeParityEvents(threadID, workspace string) []provider.ProviderEvent {
 			Timestamp: at(7),
 		},
 		{
+			// A refused SendMessage: the wire says is_error:false, the ack
+			// says success:false. Both writers must read the ack
+			// (triage/sendmessage_ack.go).
+			Kind:      provider.EventToolStart,
+			ThreadID:  threadID,
+			ItemID:    "toolu_send_1",
+			ItemType:  "SendMessage",
+			Meta:      json.RawMessage(`{"toolName":"SendMessage","input":{"to":"A","message":"status?"}}`),
+			Timestamp: at(7),
+		},
+		{
+			Kind:      provider.EventToolComplete,
+			ThreadID:  threadID,
+			ItemID:    "toolu_send_1",
+			ItemType:  "SendMessage",
+			Content:   "No agent named \"A\".",
+			Meta:      json.RawMessage(`{"is_error":false,"tool_use_result":{"success":false,"message":"No agent named \"A\".","display":"No agent named \"A\" in this session."}}`),
+			Timestamp: at(7),
+		},
+		{
 			Kind:      provider.EventCompactBoundary,
 			ThreadID:  threadID,
 			ItemID:    "compaction-1",

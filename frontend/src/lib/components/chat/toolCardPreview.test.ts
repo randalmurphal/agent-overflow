@@ -450,3 +450,27 @@ describe('decodeToolCardPreview', () => {
     expect(decoded.path).toBeUndefined();
   });
 });
+
+describe('SendMessage preview', () => {
+  it('names the recipient launch by its description when triage resolved one', () => {
+    const item = makeItem({
+      toolName: 'SendMessage',
+      meta: JSON.stringify({
+        input: { to: 'ab487a02304913d06', message: 'status?' },
+        recipient_task_id: 'ab487a02304913d06',
+        recipient_description: 'Frontend transitive suppression fix',
+      }),
+    });
+    expect(toolCardInputPreview(item, null, JSON.parse(item.meta!))).toBe(
+      'To Frontend transitive suppression fix',
+    );
+  });
+
+  it('falls back to the recipient as typed when nothing was resolved', () => {
+    const item = makeItem({
+      toolName: 'SendMessage',
+      meta: JSON.stringify({ input: { to: 'reviewer', message: 'status?' } }),
+    });
+    expect(toolCardInputPreview(item, null, JSON.parse(item.meta!))).toBe('To reviewer');
+  });
+});

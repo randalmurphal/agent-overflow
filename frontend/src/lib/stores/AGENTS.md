@@ -226,10 +226,13 @@ stops waking readers.
   as a row change. Threads that went with a deleted project arrive as their own
   `thread:updated` `deleted` frames, so the project handler never touches panes.
 - `draft:updated` carries no row at all — the thread, the write's timestamp,
-  and the identity of the screen that wrote it. The draft TEXT never rides the
-  channel: `GetDraft` is gated on `threads:operate` because a composer holds
-  in-progress user work, and a push carrying that text would be the one path
-  around that gate.
+  and the identity of the screen that wrote it. A send consuming the row is
+  attributed to its sender like a save, so the sender's own composer, already
+  cleared, does not re-read the row it just consumed; a saga or queue
+  dispatch consuming one carries no identity and every screen re-reads. The
+  draft TEXT never rides the channel: `GetDraft` is gated on
+  `threads:operate` because a composer holds in-progress user work, and a
+  push carrying that text would be the one path around that gate.
   The handler (`eventsDraftRows.ts`) re-reads instead, and drops the frame in
   three cases, each of which is a real bug if you remove it. (1) The frame's
   `connectionId` is this page load's — its own echo, and re-reading on it

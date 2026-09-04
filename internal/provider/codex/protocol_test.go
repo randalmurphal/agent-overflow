@@ -2454,3 +2454,118 @@ func TestThreadIDPassthrough(t *testing.T) {
 		t.Errorf("threadID: got %q, want %q", events[0].ThreadID, "my-thread-123")
 	}
 }
+
+// TestItemCompletedReasoningFinalText pins the shape of a completed
+// `reasoning` item and the exact bytes the settle carries.
+//
+// The v2 wire is
+// `ThreadItem::Reasoning { id, summary: Vec<String>, content: Vec<String> }`
+// (rust-v0.150.1 codex-rs/app-server-protocol/src/protocol/v2/item.rs:268)
+// — an array of PLAIN STRINGS, one per summary part. Reading it as a
+// `{text}`-object array (or bailing on the first key present even when
+// its array is empty) yields "" with ContentPresent true, which triage
+// treats as an authoritative final text and writes over the streamed
+// row: summary and payload both blanked.
+//
+// The joins have to reproduce the delta stream byte for byte, because
+// the frontend keeps its live rendered tail only when the settle summary
+// equals the received text (threadRevealRouting.ts#summaryRepresentsReceived).
+// Summary parts are separated by an `item/reasoning/summaryPartAdded`
+// break ("\n\n"); raw content parts have no break notification at all.
+func TestItemCompletedReasoningFinalText(t *testing.T) {
+	cases := []struct {
+		name    string
+		item    string
+		want    string
+		present bool
+	}{
+		{
+			name:    "summary string array joins on the section break",
+			item:    `{"id":"r-1","type":"reasoning","summary":["a","b"],"content":[]}`,
+			want:    "a\n\nb",
+			present: true,
+		},
+		{
+			name:    "single summary part carries no break",
+			item:    `{"id":"r-1","type":"reasoning","summary":["only"],"content":[]}`,
+			want:    "only",
+			present: true,
+		},
+		{
+			name:    "empty summary falls through to raw content",
+			item:    `{"id":"r-1","type":"reasoning","summary":[],"content":["raw"]}`,
+			want:    "raw",
+			present: true,
+		},
+		{
+			name:    "raw content parts concatenate with no separator",
+			item:    `{"id":"r-1","type":"reasoning","summary":[],"content":["raw ","tail"]}`,
+			want:    "raw tail",
+			present: true,
+		},
+		{
+			name:    "text-object array still flattens",
+			item:    `{"id":"r-1","type":"reasoning","summary":[{"type":"summary_text","text":"a"},{"type":"summary_text","text":"b"}]}`,
+			want:    "a\n\nb",
+			present: true,
+		},
+		{
+			name:    "plain string field still flattens",
+			item:    `{"id":"r-1","type":"reasoning","summary":"a\n\nb"}`,
+			want:    "a\n\nb",
+			present: true,
+		},
+		{
+			name:    "both channels empty is an authoritative empty",
+			item:    `{"id":"r-1","type":"reasoning","summary":[],"content":[]}`,
+			want:    "",
+			present: true,
+		},
+		{
+			name:    "neither channel present carries no verdict",
+			item:    `{"id":"r-1","type":"reasoning"}`,
+			want:    "",
+			present: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			params := json.RawMessage(`{"turnId":"turn-1","item":` + tc.item + `}`)
+			events := ClassifyNotification(testThread, "item/completed", params)
+			if len(events) != 1 {
+				t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+			}
+			if events[0].Kind != provider.EventContentBlockStop {
+				t.Fatalf("kind = %q, want content block stop", events[0].Kind)
+			}
+			if events[0].Content != tc.want {
+				t.Fatalf("content = %q, want %q", events[0].Content, tc.want)
+			}
+			if events[0].ContentPresent != tc.present {
+				t.Fatalf("contentPresent = %v, want %v", events[0].ContentPresent, tc.present)
+			}
+		})
+	}
+}
+
+// TestClassifyReasoningSummaryPartAddedSkipsTheFirstPart is the other
+// half of the byte-identity contract. Codex emits
+// `item/reasoning/summaryPartAdded` for EVERY summary part, index 0
+// included (codex-rs/core/src/session/turn.rs:2672 forwards it with no
+// guard; codex-rs/codex-api/src/sse/responses.rs:490 forwards every
+// `response.reasoning_summary_part.added`), so emitting the break
+// unconditionally opened every Codex thinking row with a blank
+// paragraph. A missing / unreadable index is treated as 0.
+func TestClassifyReasoningSummaryPartAddedSkipsTheFirstPart(t *testing.T) {
+	silent := []string{
+		`{"itemId":"i1","summaryIndex":0}`,
+		`{"itemId":"i1"}`,
+		`{"itemId":"i1","summaryIndex":"nope"}`,
+	}
+	for _, params := range silent {
+		events := ClassifyNotification(testThread, "item/reasoning/summaryPartAdded", json.RawMessage(params))
+		if len(events) != 0 {
+			t.Fatalf("params %s: expected no break event, got %d: %+v", params, len(events), events)
+		}
+	}
+}

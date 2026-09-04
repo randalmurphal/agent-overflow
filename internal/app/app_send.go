@@ -16,7 +16,6 @@ import (
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
-	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
 	"agent-overflow/internal/workflow/engine"
@@ -269,8 +268,9 @@ type sendMessagePrepared struct {
 // ctx bounds the per-thread action lock wait and, downstream, a lazy start's
 // join on an in-flight start — the two waits that have performed no side
 // effects when they are abandoned. It never reaches the provider write: a
-// cancelled send would be indistinguishable from a delivered one. Interactive
-// callers pass context.Background() and behave exactly as before.
+// cancelled send would be indistinguishable from a delivered one. The wire
+// entry passes context.WithoutCancel(ctx) so the caller's client identity
+// still reaches the draft delete; in-process callers pass context.Background().
 func (a *App) sendMessageWithOptions(
 	ctx context.Context, threadID string, content string, opts sendMessageOptions,
 ) (store.Item, error) {
@@ -505,7 +505,11 @@ func (a *App) sendMessageLocked(
 	}
 	userMsgKept = true
 	if !opts.PreserveDraft {
-		if draftErr := a.removeThreadDraft(transport.ClientIdentity{}, threadID); draftErr != nil {
+		// Attributed to the screen that sent: it has already cleared its
+		// composer, and an anonymous frame would make it re-read the row it
+		// just consumed. A saga or queue dispatch reaching here carries no
+		// identity, and every screen re-reads, as before.
+		if draftErr := a.removeThreadDraft(clientOf(ctx), threadID); draftErr != nil {
 			log.Printf("send message: delete draft for thread %s: %v", threadID, draftErr)
 		}
 	}

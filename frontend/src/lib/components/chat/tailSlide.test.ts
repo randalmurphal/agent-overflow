@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { slideDecision, transformTranslateY, type SlideObservation } from './tailSlide';
+import {
+  SLIDE_DRAIN_PER_FRAME,
+  SLIDE_MAX_WINDOWS,
+  SLIDE_MIN_STEP_PX,
+  slideDecision,
+  stepSlide,
+  transformTranslateY,
+  type SlideObservation,
+} from './tailSlide';
 
 // The line-slide guard matrix. Geometry mirrors the real clamp: a 19.5px
 // line height (text-[0.75rem] + leading-relaxed) and a 58.5px 3-line box.
@@ -31,12 +39,20 @@ describe('slideDecision', () => {
     if (d.kind === 'slide') expect(d.startPx).toBeCloseTo(10 + LH);
   });
 
-  it('caps a compounded start at one full window', () => {
-    const d = slideDecision(obs(5), obs(7), BOX - 5);
+  it('caps a compounded start at SLIDE_MAX_WINDOWS windows', () => {
+    const d = slideDecision(obs(5), obs(9), 2 * BOX - 5);
     expect(d.kind).toBe('slide');
-    // true continuity would be (BOX - 5) + 2·LH — past the window, where the
-    // inversion would start on content that was never visible.
-    if (d.kind === 'slide') expect(d.startPx).toBeCloseTo(BOX);
+    // true continuity would be (2·BOX - 5) + 4·LH — past the cap, where the
+    // rate is unreadable regardless and the excess snaps.
+    if (d.kind === 'slide') expect(d.startPx).toBeCloseTo(SLIDE_MAX_WINDOWS * BOX);
+  });
+
+  it('lets a second window of catch-up compound past one window', () => {
+    // Two lines landing in one frame onto a slide already two lines deep:
+    // one window would pin here and teleport the excess.
+    const d = slideDecision(obs(5), obs(7), 2 * LH);
+    expect(d.kind).toBe('slide');
+    if (d.kind === 'slide') expect(d.startPx).toBeCloseTo(4 * LH);
   });
 
   it('clears on a width change (re-wrap: a translate cannot represent it)', () => {
@@ -61,12 +77,21 @@ describe('slideDecision', () => {
     expect(d.kind).toBe('clear');
   });
 
-  it('clears when the box grows AND overflows in one frame (regime crossing)', () => {
-    // A 2-under-clamp tail takes a 3-line burst: the box grows to max-h and
-    // the clip engages together. The growth is the scroll spring's motion —
-    // a slide on top would double-ease the same pixels.
+  it('slides by the overflow when the box grows AND overflows in one frame (regime crossing)', () => {
+    // A 2-line tail takes a 3-line burst (a paragraph break plus the next
+    // word in one reveal tick): the box grows to max-h and the clip engages
+    // together. The growth is the scroll spring's motion, but the two lines
+    // that overflowed re-packed upward instantly — that part slides.
     const prev = obs(2, { outerH: 2 * LH });
     const d = slideDecision(prev, obs(5), 0);
+    expect(d.kind).toBe('slide');
+    if (d.kind === 'slide') expect(d.startPx).toBeCloseTo(2 * LH);
+  });
+
+  it('clears when the box shrinks, whatever the clip did', () => {
+    // The expanded flip collapsing back, or the clamp re-engaging on a
+    // replacement: the lines re-derive, nothing to invert.
+    const d = slideDecision(obs(5, { outerH: 5 * LH }), obs(6), 0);
     expect(d.kind).toBe('clear');
   });
 
@@ -81,9 +106,12 @@ describe('slideDecision', () => {
     expect(slideDecision(obs(5), obs(5), 0)).toEqual({ kind: 'none', memory: obs(5) });
   });
 
-  it('clears on a whole-window discontinuity (no visible line survives)', () => {
+  it('tickers through a whole-window discontinuity', () => {
+    // No visible line survives a 3-line advance, but a slide through it
+    // reads as a fast ticker where a snap reads as a glitch.
     const d = slideDecision(obs(5), obs(8), 0);
-    expect(d.kind).toBe('clear');
+    expect(d.kind).toBe('slide');
+    if (d.kind === 'slide') expect(d.startPx).toBeCloseTo(BOX);
   });
 
   it('animates while the clip is under one window', () => {
@@ -104,6 +132,38 @@ describe('slideDecision', () => {
   it('growth regime (box under max-h) never slides — clip stays zero', () => {
     const d = slideDecision(obs(1, { outerH: LH }), obs(2, { outerH: 2 * LH }), 0);
     expect(d.kind).toBe('clear'); // outer changed — and clip is 0 on both sides anyway
+  });
+});
+
+describe('stepSlide', () => {
+  const FRAME = 1000 / 60;
+
+  it('drains a fixed fraction of the pending offset per frame', () => {
+    expect(stepSlide(BOX, FRAME)).toBeCloseTo(BOX * (1 - SLIDE_DRAIN_PER_FRAME), 3);
+  });
+
+  it('is frame-rate independent: one 33ms frame equals two 16.7ms frames', () => {
+    const two = stepSlide(stepSlide(BOX, FRAME), FRAME);
+    expect(stepSlide(BOX, 2 * FRAME)).toBeCloseTo(two, 3);
+  });
+
+  it('never drains slower than the minimum step, and lands on exactly zero', () => {
+    expect(stepSlide(2, FRAME)).toBeCloseTo(2 - SLIDE_MIN_STEP_PX, 3);
+    let offset = BOX;
+    let frames = 0;
+    while (offset > 0 && frames < 200) {
+      offset = stepSlide(offset, FRAME);
+      frames += 1;
+    }
+    expect(offset).toBe(0);
+    // Ease-out with the old 140ms transition's feel: gone well within a third of a second.
+    expect(frames).toBeLessThan(20);
+  });
+
+  it('treats a non-positive offset or dt as at rest', () => {
+    expect(stepSlide(0, FRAME)).toBe(0);
+    expect(stepSlide(-4, FRAME)).toBe(0);
+    expect(stepSlide(BOX, 0)).toBe(BOX);
   });
 });
 

@@ -2485,9 +2485,9 @@ describe('<Composer>', () => {
 
     await fireEvent.input(textarea, { target: { value: 'queue then restore' } });
     await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
-    await tick();
-
-    expect(draft.content).toBe('restored after session death');
+    // The send quiesces in-flight draft saves before RegisterQueueItem, so
+    // the restore lands a few microtasks after Enter, not on the next tick.
+    await waitFor(() => expect(draft.content).toBe('restored after session death'));
   });
 
   it('enqueues mid-turn when the Send button is clicked', async () => {
@@ -2508,6 +2508,91 @@ describe('<Composer>', () => {
 
     expect(send).not.toHaveBeenCalled();
     expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['queue via click']);
+  });
+
+  // The backend runs a connection's RPCs concurrently, so a debounced
+  // SaveDraft still on the wire can be served AFTER the send's delete of
+  // the same row — and the text the user just sent comes back on the next
+  // thread open. Both send paths quiesce the draft's saves first.
+  it('holds the send until an in-flight SaveDraft settles', async () => {
+    const pane = await buildPane();
+    const draft = await buildDraft();
+    const save = deferred<void>();
+    const saveMock = setBindingMock('SaveDraft', () => save.promise);
+    const send = setBindingMock('SendMessageWithOptions', async () =>
+      makeTestThread({ runtimeMode: 'full-access' }));
+
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+
+    await fireEvent.input(textarea, { target: { value: 'do not resurrect me' } });
+    // buildDraft debounces at 0ms, so the save is on the wire — and stuck
+    // there — one macrotask after the keystroke.
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+
+    await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(send).not.toHaveBeenCalled();
+
+    save.resolve();
+
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(send).toHaveBeenCalledWith('thread-1', 'do not resurrect me', sentWith({
+      attachmentIds: [],
+    }));
+  });
+
+  it('holds the mid-turn enqueue until an in-flight SaveDraft settles, composer already clear', async () => {
+    const pane = await buildPane();
+    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
+    const draft = await buildDraft();
+    const save = deferred<void>();
+    const saveMock = setBindingMock('SaveDraft', () => save.promise);
+    const register = setBindingMock('RegisterQueueItem', async (
+      threadId: string,
+      message: string,
+    ) => {
+      const wire = {
+        id: 'q-quiesce',
+        threadId,
+        message,
+        attachmentIds: [],
+        sourceProposedPlan: null,
+        revisionSourceProposedPlan: null,
+        enqueuedAt: 1,
+      };
+      replaceQueueForThread(threadId, [{ ...wire } as never]);
+      return wire;
+    });
+
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+
+    await fireEvent.input(textarea, { target: { value: 'queue me once' } });
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+
+    await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(register).not.toHaveBeenCalled();
+    // The local clear is synchronous and runs BEFORE the wait, so a second
+    // Enter during it finds an empty composer instead of queueing the text
+    // twice — the user never sees the pause.
+    expect(draft.content).toBe('');
+    expect((getByLabelText('Message Input') as HTMLTextAreaElement).value).toBe('');
+
+    save.resolve();
+
+    await waitFor(() => expect(register).toHaveBeenCalledTimes(1));
+    // The wire options are a generated `SendMessageOptions` instance here,
+    // so this names the fields the wait is about rather than the shape.
+    expect(register).toHaveBeenCalledWith('thread-1', 'queue me once', expect.objectContaining({
+      attachmentIds: [],
+      sendId: expect.any(String),
+    }));
+    expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['queue me once']);
   });
 
   it('captures attachments + plan-revision metadata on the queued item', async () => {

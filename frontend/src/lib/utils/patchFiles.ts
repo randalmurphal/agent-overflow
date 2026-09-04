@@ -63,7 +63,9 @@ export interface PatchFile {
   newSideTotal?: number;
   /** Skip hunk-gap rows entirely. Set by the review pane for edits-
    * scope files whose expansion was refused (the workspace drifted from
-   * the historical patch, so there is no source to expand from). */
+   * the historical patch, so there is no source to expand from), and by
+   * the parser on a type change (both sides are whole, nothing is
+   * hidden between the hunks). */
   suppressGaps?: boolean;
 }
 
@@ -95,7 +97,12 @@ function parsePatch(patch: string, includeLines: boolean): PatchFile[] {
 
   function finish() {
     if (current && current.path) {
-      files.push(current);
+      const previous = files[files.length - 1];
+      if (previous && isTypeChangePair(previous, current)) {
+        files[files.length - 1] = mergeTypeChangeSections(previous, current);
+      } else {
+        files.push(current);
+      }
     }
     current = null;
   }
@@ -149,6 +156,39 @@ function parsePatch(patch: string, includeLines: boolean): PatchFile[] {
   }
   finish();
   return files;
+}
+
+/**
+ * A type change (regular file ↔ symlink) is ONE file to git's status
+ * output but TWO adjacent `diff --git` sections of the same path in its
+ * patch output: the old form deleted, then the new form created. Every
+ * path-keyed consumer (the review tree, collapse and comment maps, the
+ * chat tool-call file stack) would see a duplicate key, so the parser
+ * folds the pair back into the single file it describes. The
+ * deliberate multi-section shape — a whole-turn edits concatenation —
+ * is a modified section followed by another and never matches this.
+ */
+function isTypeChangePair(previous: PatchFile, next: PatchFile): boolean {
+  return previous.path === next.path && previous.kind === 'deleted' && next.kind === 'added';
+}
+
+function mergeTypeChangeSections(deleted: PatchFile, added: PatchFile): PatchFile {
+  // The created section's header block (diff --git, new file mode,
+  // index, ---, +++) is dropped: meta rows never render, and one file
+  // carries one preamble. Its hunk starts at the first `@@`.
+  const firstHunk = added.lines.findIndex((line) => line.content.startsWith('@@'));
+  const addedHunk = firstHunk === -1 ? [] : added.lines.slice(firstHunk);
+  return {
+    ...deleted,
+    kind: 'modified',
+    additions: deleted.additions + added.additions,
+    deletions: deleted.deletions + added.deletions,
+    lines: [...deleted.lines, ...addedHunk],
+    // The deletion hunk lands on new line 0 and the creation hunk on
+    // new line 1, which the gap builder would read as one hidden line
+    // between them. Nothing is hidden: both sides are present whole.
+    suppressGaps: true,
+  };
 }
 
 /**
@@ -488,27 +528,31 @@ export function __parsePatchCacheStatsForTest(): { entries: number; chars: numbe
 export function extractPatchFile(patch: string, filePath: string): string | null {
   if (!patch.trim() || !filePath) return null;
 
+  const blocks: string[] = [];
   let currentBlock: string[] = [];
-
-  function flush(): string | null {
-    if (currentBlock.length === 0) return null;
-    const block = currentBlock.join('\n');
-    const file = parsePatchFiles(block)[0];
-    if (file?.path === filePath) return block;
-    return null;
-  }
-
   for (const line of patch.split('\n')) {
     if (line.startsWith('diff --git ')) {
-      const match = flush();
-      if (match !== null) return match;
+      if (currentBlock.length > 0) blocks.push(currentBlock.join('\n'));
       currentBlock = [line];
       continue;
     }
     if (currentBlock.length > 0) currentBlock.push(line);
   }
+  if (currentBlock.length > 0) blocks.push(currentBlock.join('\n'));
 
-  return flush();
+  for (let index = 0; index < blocks.length; index += 1) {
+    const block = blocks[index];
+    if (parsePatchFiles(block)[0]?.path !== filePath) continue;
+    // A type change is two adjacent sections that parse to ONE file
+    // (see isTypeChangePair); the file's patch is both of them.
+    const next = blocks[index + 1];
+    if (next !== undefined) {
+      const pair = `${block}\n${next}`;
+      if (parsePatchFiles(pair).length === 1) return pair;
+    }
+    return block;
+  }
+  return null;
 }
 
 // Identity-keyed memo: the review surface derives display rows for
@@ -757,6 +801,13 @@ export function formatHunkHeader(
 
 function isPatchMetaLine(line: string): boolean {
   return line.startsWith('@@')
+    // `\ No newline at end of file`: git's annotation on the line
+    // above, never a line of either side. Read as context it took a
+    // number on both sides and shifted every row after it by one —
+    // a comment anchored on the last line of a file with no trailing
+    // newline landed one line off (`internal/highlight/patch.go` has
+    // always skipped it; this is the frontend's matching rule).
+    || line.startsWith('\\')
     || line.startsWith('diff ')
     || line.startsWith('---')
     || line.startsWith('+++')

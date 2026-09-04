@@ -131,39 +131,94 @@ func extractCodexUserMessageText(item map[string]json.RawMessage) string {
 	return string(builder)
 }
 
+// extractCodexReasoningText flattens a COMPLETED `reasoning` item into
+// its final thinking text, plus whether the wire actually carried one.
+//
+// The wire shape is
+// `ThreadItem::Reasoning { id, summary: Vec<String>, content: Vec<String> }`
+// (rust-v0.150.1 codex-rs/app-server-protocol/src/protocol/v2/item.rs:268),
+// built from `ReasoningItem { summary_text, raw_content }`
+// (codex-rs/protocol/src/items.rs:168): `summary` is the model's
+// summarized reasoning, one element per summary PART, and `content` the
+// raw chain-of-thought, one element per content INDEX. A given model
+// emits one channel or the other, so this prefers the first NON-EMPTY of
+// the two rather than the first key present — `summary: []` beside a
+// populated `content` (raw reasoning enabled) is a real shape, and
+// answering "" there settles the row blank over text the deltas already
+// rendered.
+//
+// The separators mirror the delta stream BYTE FOR BYTE, which is what
+// lets the frontend keep its live rendered tail on settle instead of
+// snapping and re-wrapping the row
+// (frontend/src/lib/stores/threadRevealRouting.ts#summaryRepresentsReceived):
+//
+//   - summary parts join with "\n\n", because Codex sends an
+//     `item/reasoning/summaryPartAdded` BETWEEN consecutive parts and
+//     `classifyItemNotification` turns each into a "\n\n" thinking delta.
+//   - content parts join with "", because raw reasoning has no
+//     section-break notification at all: `AgentReasoningSectionBreak` is
+//     produced only from the two summary paths
+//     (codex-rs/core/src/session/turn.rs:2672 and :2707) and
+//     `ReasoningRawContentDelta` maps to `item/reasoning/textDelta`
+//     carrying only a `content_index`
+//     (codex-rs/app-server-protocol/src/protocol/event_mapping.rs:387).
 func extractCodexReasoningText(item map[string]json.RawMessage) (string, bool) {
 	if item == nil {
 		return "", false
 	}
-	for _, key := range []string{"summary", "content"} {
-		raw, ok := item[key]
+	fields := [...]struct {
+		key       string
+		separator string
+	}{{key: "summary", separator: "\n\n"}, {key: "content", separator: ""}}
+	present := false
+	for _, field := range fields {
+		raw, ok := item[field.key]
 		if !ok {
 			continue
 		}
-		return extractCodexTextField(raw), true
+		present = true
+		if text := strings.Join(codexTextParts(raw), field.separator); text != "" {
+			return text, true
+		}
 	}
-	return "", false
+	return "", present
 }
 
-func extractCodexTextField(raw json.RawMessage) string {
+// codexTextParts flattens one of Codex's text-carrying JSON fields into
+// its parts, keeping element boundaries so the caller picks the
+// separator. Three shapes are accepted, all observed on this wire:
+//
+//   - a plain JSON string                  -> one part
+//   - an array of plain strings            -> one part per element
+//   - an array of {"text": "..."} objects  -> one part per element
+//
+// The middle one is what a v2 `reasoning` item actually carries
+// (`Vec<String>`, item.rs:268). The string and block forms are kept
+// because they cost nothing and the same field spelling appears in
+// looser envelopes (rollout records, replayed history).
+func codexTextParts(raw json.RawMessage) []string {
 	if len(raw) == 0 {
-		return ""
+		return nil
 	}
 	var asString string
 	if json.Unmarshal(raw, &asString) == nil {
-		return asString
+		return []string{asString}
+	}
+	var asStrings []string
+	if json.Unmarshal(raw, &asStrings) == nil {
+		return asStrings
 	}
 	var blocks []map[string]json.RawMessage
 	if json.Unmarshal(raw, &blocks) != nil {
-		return ""
+		return nil
 	}
-	var builder []byte
+	parts := make([]string, 0, len(blocks))
 	for _, block := range blocks {
 		if text := readRawString(block, "text"); text != "" {
-			builder = append(builder, text...)
+			parts = append(parts, text)
 		}
 	}
-	return string(builder)
+	return parts
 }
 
 func extractCodexPlanMarkdown(data json.RawMessage) string {

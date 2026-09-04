@@ -668,4 +668,103 @@ describe('composerDraft store', () => {
     await store.setThread('thread-other');
     expect(store.sourceProposedPlan).toBeNull();
   });
+
+  // quiesceSaves is what the send paths call before the row is deleted. The
+  // backend runs a connection's RPCs concurrently, so a SaveDraft still on
+  // the wire can land AFTER the send's delete and resurrect the text the
+  // user just sent — a composer that will not clear.
+  it('quiesceSaves cancels a queued debounced save so it never reaches the backend', async () => {
+    const saveMock = setBindingMock('SaveDraft', async () => {});
+    // Own thread id: stores built by earlier cases in this file are never
+    // torn down, and one of them can still land a debounced save on
+    // 'thread-1' inside the wait below.
+    const savesHere = () => saveMock.mock.calls.filter((call) => call[0] === 'thread-quiesce');
+    const store = createComposerDraftStore({ debounceMs: 20 });
+    await store.setThread('thread-quiesce');
+
+    store.setContent('typed then sent');
+    await store.quiesceSaves();
+
+    expect(savesHere()).toEqual([]);
+    // Past the debounce window: the timer was cancelled, not merely
+    // outrun, so nothing lands after the caller's clear either.
+    await new Promise((r) => setTimeout(r, 40));
+    expect(savesHere()).toEqual([]);
+  });
+
+  it('quiesceSaves waits for a SaveDraft already on the wire', async () => {
+    let resolveSave: (() => void) | undefined;
+    let resolveSaveStarted: (() => void) | undefined;
+    const saveStarted = new Promise<void>((resolve) => {
+      resolveSaveStarted = resolve;
+    });
+    const blockingSave = new Promise<void>((resolve) => {
+      resolveSave = resolve;
+    });
+    setBindingMock('SaveDraft', () => {
+      resolveSaveStarted?.();
+      return blockingSave;
+    });
+
+    const store = createComposerDraftStore({ debounceMs: 0 });
+    await store.setThread('thread-1');
+    store.setContent('in flight');
+    const flushing = store.flush();
+    await saveStarted;
+
+    const quiesced = store.quiesceSaves().then(() => 'done');
+    await expect(Promise.race([
+      quiesced,
+      new Promise<'waiting'>((resolve) => setTimeout(() => resolve('waiting'), 0)),
+    ])).resolves.toBe('waiting');
+
+    resolveSave?.();
+    await flushing;
+    await expect(quiesced).resolves.toBe('done');
+  });
+
+  it('quiesceSaves resolves at once with no thread, and for a local store', async () => {
+    // A store with nothing to save has nothing to wait for. The local case
+    // is the sharper one: it shares its thread with the real composer, so a
+    // save IS in flight for that id — and it belongs to a row this store
+    // does not own and must not block on.
+    let resolveSave: (() => void) | undefined;
+    let resolveSaveStarted: (() => void) | undefined;
+    const saveStarted = new Promise<void>((resolve) => {
+      resolveSaveStarted = resolve;
+    });
+    setBindingMock('SaveDraft', () => {
+      resolveSaveStarted?.();
+      return new Promise<void>((resolve) => {
+        resolveSave = resolve;
+      });
+    });
+
+    const unpointed = createComposerDraftStore({ debounceMs: 0 });
+    await expect(Promise.race([
+      unpointed.quiesceSaves().then(() => 'quiesced'),
+      new Promise<'slow'>((resolve) => setTimeout(() => resolve('slow'), 0)),
+    ])).resolves.toBe('quiesced');
+
+    const backend = createComposerDraftStore({ debounceMs: 0 });
+    await backend.setThread('thread-1');
+    backend.setContent('the real composer, mid-save');
+    const flushing = backend.flush();
+    await saveStarted;
+
+    const local = createComposerDraftStore({ debounceMs: 0, persistence: 'none' });
+    local.seedLocalSnapshot('thread-1', {
+      content: 'an edit copy',
+      attachments: [],
+      terminalChips: [],
+      sourceProposedPlan: null,
+    });
+    await expect(Promise.race([
+      local.quiesceSaves().then(() => 'quiesced'),
+      new Promise<'slow'>((resolve) => setTimeout(() => resolve('slow'), 0)),
+    ])).resolves.toBe('quiesced');
+
+    resolveSave?.();
+    await flushing;
+  });
 });

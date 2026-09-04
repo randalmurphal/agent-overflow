@@ -43,9 +43,10 @@ import (
 // thread that never had one are the same state, and the composer renders both
 // as empty. A discriminator would be a field with nothing to decide.
 //
-// DeviceID and ConnectionID name the screen that wrote it, and are empty when
-// the backend wrote it itself — a saga restoring a draft, a queue dispatch
-// consuming one. ConnectionID is the echo-suppression key, because it is
+// DeviceID and ConnectionID name the screen that wrote it — a save, a clear,
+// or the send that consumed the row — and are empty when the backend wrote it
+// itself: a saga restoring a draft, a queue dispatch consuming one.
+// ConnectionID is the echo-suppression key, because it is
 // unique per page load; DeviceID is the durable one, carried for a future
 // "edited on <device>" affordance and deliberately NOT used for suppression
 // (two tabs of one browser share it, and each would then sit on the other's

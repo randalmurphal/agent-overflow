@@ -227,7 +227,15 @@ claim here.
   flag `ClassifyNotification` drops; that flag is what drives both the
   drift log and the opt-out derivation.
 - `protocol_item.go` — `item/*` lifecycle, tool completion, item type
-  normalization, and tool-result content extraction.
+  normalization, and tool-result content extraction. Also the reasoning
+  channels, where one rule is not obvious from the code:
+  `item/reasoning/summaryPartAdded` is a break BETWEEN summary parts,
+  and codex emits it for every part including the FIRST, so the `> 0`
+  guard on `summaryIndex` is what keeps every Codex thinking row from
+  opening with a blank paragraph. Whatever the deltas produce, the
+  completed item's own join has to reproduce byte for byte — see
+  `protocol_json.go` and
+  [`codex-wire.md` §Reasoning](../../../docs/references/codex-wire.md#reasoning-the-delta-stream-and-the-completed-item-must-agree).
 - `protocol_turn.go` / `protocol_thread.go` — turn lifecycle,
   thread/account/model notifications, and token usage normalization.
 - `usage_accounting.go` — per-turn token accounting derived from the
@@ -247,7 +255,16 @@ claim here.
   the same field the Claude adapter fills; app-servers predating the
   field omit the key and it reads as zero.
 - `protocol_json.go` — JSON navigation, compact/pretty JSON, retry-count,
-  and flexible wire-shape helpers.
+  and flexible wire-shape helpers. **A "flexible" helper is not a licence
+  to guess a shape.** `extractCodexReasoningText` read a completed
+  `reasoning` item as a `{text}`-object array when the v2 wire has been
+  `summary: Vec<String>` / `content: Vec<String>` all along
+  (`v2/item.rs:268`), and because the miss returned `("", present)`
+  triage took the empty string as the AUTHORITATIVE final text and wiped
+  the row it had just streamed. Two rules came out of it: read the shape
+  off the v2 Rust source before adding a decode branch, and prefer the
+  first NON-EMPTY field rather than the first field PRESENT, since an
+  empty array is a real value beside a populated sibling.
 - `protocol_rate_limits.go` — rate-limit event normalizer.
 - `approval.go` — sandbox approval-method translation into the shared
   `ApprovalRequest` Kind. MCP elicitation lands here too as

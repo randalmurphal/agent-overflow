@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 )
 
@@ -1365,5 +1367,108 @@ func TestThinkingPayloadsWithSameTurnCoordinatesAreThreadIsolated(t *testing.T) 
 	}
 	if string(dataA) != "reasoning authored by A" || string(dataB) != "reasoning authored by B" {
 		t.Fatalf("thinking payloads crossed threads: A=%q B=%q", dataA, dataB)
+	}
+}
+
+// TestCodexThinkingSettleKeepsTheSectionBreaks drives the real Codex
+// notification sequence for a two-part reasoning summary end to end:
+// summary deltas, the `item/reasoning/summaryPartAdded` break between
+// the parts, and the completed item whose `summary: ["hello","world"]`
+// is the authoritative final text.
+//
+// Both halves of that text have to agree BYTE FOR BYTE. The stored row
+// and its payload are what a reload renders, and the emitted settle
+// patch is what the LIVE row is reconciled against — the frontend keeps
+// its rendered tail only while the settle summary equals the received
+// text (frontend/src/lib/stores/threadRevealRouting.ts
+// #summaryRepresentsReceived), so a settle that disagrees snaps the row
+// and visibly re-wraps it.
+//
+// Two regressions live here. Reading the wire's `summary` as anything
+// but an array of plain strings makes the completed item answer "" with
+// ContentPresent true, and the settle then blanks summary AND payload
+// over text the deltas already rendered. Emitting the section break for
+// summary part 0 opens the row with a blank paragraph the completed
+// item's own join does not have.
+func TestCodexThinkingSettleKeepsTheSectionBreaks(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	const want = "hello\n\nworld"
+	// Exactly what codex sends: a partAdded before EVERY part, index 0
+	// included (codex-rs/core/src/session/turn.rs:2672).
+	notifications := []struct {
+		method string
+		params string
+	}{
+		{"item/reasoning/summaryPartAdded", `{"turnId":"turn-1","itemId":"reason-a","summaryIndex":0}`},
+		{"item/reasoning/summaryTextDelta", `{"turnId":"turn-1","itemId":"reason-a","delta":"hello","summaryIndex":0}`},
+		{"item/reasoning/summaryPartAdded", `{"turnId":"turn-1","itemId":"reason-a","summaryIndex":1}`},
+		{"item/reasoning/summaryTextDelta", `{"turnId":"turn-1","itemId":"reason-a","delta":"world","summaryIndex":1}`},
+	}
+	for _, n := range notifications {
+		for _, event := range codex.ClassifyNotification("t1", n.method, json.RawMessage(n.params)) {
+			if err := router.Handle(event); err != nil {
+				t.Fatalf("handle %s: %v", n.method, err)
+			}
+		}
+	}
+	if err := router.Wait(context.Background()); err != nil {
+		t.Fatalf("wait flush (pre-settle): %v", err)
+	}
+	streaming := firstItemByKind(t, st, "t1", "thinking")
+	if streaming.Summary != want {
+		t.Fatalf("streamed summary = %q, want %q (a break before part 0 opens the row blank)", streaming.Summary, want)
+	}
+	emissions.reset()
+
+	completed := `{"turnId":"turn-1","item":{"id":"reason-a","type":"reasoning","summary":["hello","world"],"content":[]}}`
+	settleEvents := codex.ClassifyNotification("t1", "item/completed", json.RawMessage(completed))
+	if len(settleEvents) != 1 {
+		t.Fatalf("item/completed produced %d events, want 1: %+v", len(settleEvents), settleEvents)
+	}
+	if err := router.Handle(settleEvents[0]); err != nil {
+		t.Fatalf("handle item/completed: %v", err)
+	}
+	router.WaitForPendingSettles()
+	if err := router.Wait(context.Background()); err != nil {
+		t.Fatalf("wait flush (post-settle): %v", err)
+	}
+
+	settled := firstItemByKind(t, st, "t1", "thinking")
+	if settled.Status != statusCompleted {
+		t.Fatalf("status after settle = %q, want %q", settled.Status, statusCompleted)
+	}
+	if settled.Summary != want {
+		t.Fatalf("stored summary = %q, want %q", settled.Summary, want)
+	}
+	if settled.PayloadID == "" {
+		t.Fatalf("thinking row has no payload id; nothing to reload from")
+	}
+	payload, err := st.GetPayloadData("t1", settled.PayloadID)
+	if err != nil {
+		t.Fatalf("read payload %s: %v", settled.PayloadID, err)
+	}
+	if string(payload) != want {
+		t.Fatalf("stored payload = %q, want %q", string(payload), want)
+	}
+
+	var patched *string
+	for _, e := range emissions.snapshot() {
+		if e.eventName != eventchan.ProviderItemEvent.String() {
+			continue
+		}
+		event, ok := e.data.(ItemStreamEvent)
+		if !ok || event.ItemID != settled.ID || event.Patch == nil || event.Patch.Summary == nil {
+			continue
+		}
+		patched = event.Patch.Summary
+	}
+	if patched == nil {
+		t.Fatalf("no settle patch carrying a summary was emitted on %s: %+v",
+			eventchan.ProviderItemEvent, emissions.snapshot())
+	}
+	if *patched != want {
+		t.Fatalf("emitted settle summary = %q, want the delta concatenation %q", *patched, want)
 	}
 }

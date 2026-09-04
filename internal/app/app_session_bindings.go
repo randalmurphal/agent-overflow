@@ -75,10 +75,13 @@ func (a *App) SendMessageWithOptions(ctx context.Context, threadID string, conte
 	if err := a.requireAutonomyForThread(ctx, threadID, opts.RuntimeMode); err != nil {
 		return store.Thread{}, err
 	}
-	// The send itself runs on Background, NOT on ctx. ctx belongs to the
+	// The send runs on ctx's VALUES and not its cancel. ctx belongs to the
 	// caller's connection, and a client that drops mid-send must not cancel
-	// a turn the provider has already been told about.
-	if _, err := a.sendMessageWithOptions(context.Background(), threadID, content, sendMessageOptions{
+	// a turn the provider has already been told about; but the connection's
+	// client identity has to reach the draft delete inside, or the sending
+	// screen's own draft:updated frame comes back anonymous and it re-reads
+	// a row it just consumed.
+	if _, err := a.sendMessageWithOptions(context.WithoutCancel(ctx), threadID, content, sendMessageOptions{
 		AttachmentIDs:                opts.AttachmentIDs,
 		RuntimeMode:                  opts.RuntimeMode,
 		SourceProposedPlan:           opts.SourceProposedPlan,

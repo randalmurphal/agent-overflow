@@ -186,6 +186,8 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
         snapshot.terminalChips,
         snapshot.sourceProposedPlan,
       );
+      // Tracked with no await between the timer firing and here: quiesceSaves
+      // cancels the timer and then joins this set, so a save is always in one.
       trackActiveDraftSave(id, savePromise);
       await savePromise;
       clearLocalSnapshotIfCurrent(id, snapshot);
@@ -434,6 +436,21 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     prepareForExternalDraftReplace,
     flush,
     flushPending,
+
+    /**
+     * Leave no save in flight before a send consumes the row. The backend
+     * runs a connection's RPCs concurrently, so a debounced SaveDraft still
+     * on the wire can land AFTER the send's delete and resurrect the draft
+     * the user just sent. The pending timer is cancelled (nothing new can
+     * start before the caller's synchronous clear) and the saves already
+     * issued are awaited; resolves immediately when there are none.
+     */
+    async quiesceSaves(): Promise<void> {
+      const id = threadId;
+      if (!id || !persists) return;
+      clearDebounce();
+      await waitForActiveDraftSaves(id);
+    },
 
     /**
      * Read a thread's persisted draft as a snapshot, normalized exactly

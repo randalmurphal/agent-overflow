@@ -1038,3 +1038,80 @@ func TestBuildKeepsCodexLaunchFlagOnBareCompletion(t *testing.T) {
 		t.Fatalf("codex launch = status %q background=%v, want the flag kept and the row running", item.Status, item.IsBackground)
 	}
 }
+
+// A Claude SendMessage row's verdict is the ack, not the wire flag, and
+// the recipient is resolved against the launches in the same batch —
+// the importer's half of triage/sendmessage_ack.go.
+func TestBuildReadsTheSendMessageAckAndStampsTheRecipient(t *testing.T) {
+	st := newTestStore(t)
+	thread := seedThread(t, st, testThreadID, "claude", t.TempDir())
+
+	batch, _, err := NewWriter(st, thread).Build([]importir.Event{
+		{ProviderEvent: provider.ProviderEvent{
+			Kind: provider.EventToolStart, ThreadID: testThreadID,
+			ItemID: "toolu_agent", ItemType: "Agent",
+			Meta:      json.RawMessage(`{"toolName":"Agent","subagent_launch":true,"task_id":"ab487a02304913d06","input":{"description":"Frontend fix","subagent_type":"general-purpose","prompt":"Fix it."}}`),
+			Timestamp: at(1),
+		}, SourceUUID: "uuid-1"},
+		{ProviderEvent: provider.ProviderEvent{
+			Kind: provider.EventToolStart, ThreadID: testThreadID,
+			ItemID: "toolu_send_ok", ItemType: "SendMessage",
+			Meta:      json.RawMessage(`{"toolName":"SendMessage","input":{"to":"ab487a02304913d06","message":"status?"}}`),
+			Timestamp: at(2),
+		}, SourceUUID: "uuid-2"},
+		{ProviderEvent: provider.ProviderEvent{
+			Kind: provider.EventToolComplete, ThreadID: testThreadID,
+			ItemID: "toolu_send_ok", ItemType: "SendMessage", Content: "ack",
+			Meta:      json.RawMessage(`{"is_error":false,"tool_use_result":{"success":true,"message":"Message queued for delivery to ab487a02304913d06 at its next tool round.","pin":{"id":"ab487a02304913d06","name":"Frontend fix","ref":"ab487a02304913d06"}}}`),
+			Timestamp: at(3),
+		}, SourceUUID: "uuid-3"},
+		{ProviderEvent: provider.ProviderEvent{
+			Kind: provider.EventToolStart, ThreadID: testThreadID,
+			ItemID: "toolu_send_refused", ItemType: "SendMessage",
+			Meta:      json.RawMessage(`{"toolName":"SendMessage","input":{"to":"A","message":"status?"}}`),
+			Timestamp: at(4),
+		}, SourceUUID: "uuid-4"},
+		{ProviderEvent: provider.ProviderEvent{
+			Kind: provider.EventToolComplete, ThreadID: testThreadID,
+			ItemID: "toolu_send_refused", ItemType: "SendMessage", Content: "ack",
+			Meta:      json.RawMessage(`{"is_error":false,"tool_use_result":{"success":false,"message":"No agent named \"A\".","display":"No agent named \"A\" in this session."}}`),
+			Timestamp: at(5),
+		}, SourceUUID: "uuid-5"},
+	})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	rows := map[string]store.Item{}
+	for _, r := range batch.Rows {
+		rows[r.Item.ID] = r.Item
+	}
+
+	queued := rows["toolu_send_ok"]
+	if queued.Status != statusCompleted {
+		t.Fatalf("queued send status = %q, want completed", queued.Status)
+	}
+	if got := metaKey(t, queued.Meta, "recipient_description"); got != "Frontend fix" {
+		t.Errorf("queued send recipient_description = %q, want the launch's description", got)
+	}
+	if got := metaKey(t, queued.Meta, "send_reply"); got != "Message queued for delivery to ab487a02304913d06 at its next tool round." {
+		t.Errorf("queued send send_reply = %q", got)
+	}
+
+	refused := rows["toolu_send_refused"]
+	if refused.Status != "errored" {
+		t.Fatalf("refused send status = %q, want errored (the ack's verdict, not the wire's is_error:false)", refused.Status)
+	}
+	if got := metaKey(t, refused.Meta, "send_reply"); got != `No agent named "A" in this session.` {
+		t.Errorf("refused send send_reply = %q, want the display text", got)
+	}
+	if got := metaKey(t, refused.Meta, "recipient_description"); got != "" {
+		t.Errorf("refused send recipient_description = %q, want none", got)
+	}
+	var refusedMeta map[string]any
+	if err := json.Unmarshal([]byte(refused.Meta), &refusedMeta); err != nil {
+		t.Fatalf("decode meta: %v", err)
+	}
+	if refusedMeta["is_error"] != true {
+		t.Errorf("refused send meta.is_error = %v, want true", refusedMeta["is_error"])
+	}
+}

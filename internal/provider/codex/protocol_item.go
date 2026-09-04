@@ -186,10 +186,12 @@ func classifyItemNotification(threadID, method string, params json.RawMessage, n
 	//
 	// A given model emits ONE of these, never both, so routing both to
 	// `EventThinking` produces correct UX: whichever channel is active
-	// accumulates into the turn's thinking row. We intentionally ignore
-	// `contentIndex` / `summaryIndex` — multi-section reasoning is
-	// concatenated into the single row (`summaryPartAdded` below
-	// injects a paragraph break so sections stay readable).
+	// accumulates into the turn's thinking row. The DELTAS intentionally
+	// ignore `contentIndex` / `summaryIndex` — multi-section reasoning is
+	// concatenated into the single row, with `summaryPartAdded` below
+	// injecting a paragraph break BETWEEN summary sections so they stay
+	// readable. That notification does read its `summaryIndex`; see the
+	// case for why.
 	case "item/reasoning/textDelta", "item/reasoning/summaryTextDelta":
 		fields := decodeTopLevel(params)
 		delta := readRawString(fields, "delta")
@@ -211,12 +213,35 @@ func classifyItemNotification(threadID, method string, params json.RawMessage, n
 			Timestamp: now,
 		}}, true
 
-	// Boundary marker between consecutive reasoning-summary sections.
+	// Boundary marker BETWEEN consecutive reasoning-summary sections.
 	// Emit a paragraph-break delta so the thinking row reads as
 	// separate thoughts rather than one run-on blob — triage appends
 	// this onto the same streaming item like any other thinking delta.
+	//
+	// Codex sends this notification for EVERY summary part, the first
+	// one included: the streaming path forwards
+	// `ResponseEvent::ReasoningSummaryPartAdded` with no index guard
+	// (rust-v0.150.1 codex-rs/core/src/session/turn.rs:2672) and the SSE
+	// mapping forwards every `response.reasoning_summary_part.added`
+	// (codex-rs/codex-api/src/sse/responses.rs:490). So the break is
+	// ours to place, and emitting it unconditionally opened every Codex
+	// thinking row with a blank paragraph. Upstream's own
+	// sequential-cutoff path guards with the same `> 0` test
+	// (turn.rs:2707).
+	//
+	// `summaryIndex` is a required i64 on the notification
+	// (`ReasoningSummaryPartAddedNotification`,
+	// codex-rs/app-server-protocol/src/protocol/v2/item.rs:1434), so it
+	// is always readable in practice; a missing or unparseable one is
+	// treated as 0 and emits nothing. That direction is the safe one —
+	// a dropped break is invisible, a spurious leading one is not — and
+	// it also means the completed item's `summary` join in
+	// `extractCodexReasoningText` still matches the delta stream.
 	case "item/reasoning/summaryPartAdded":
 		fields := decodeTopLevel(params)
+		if index, ok := readRawInt(fields, "summaryIndex"); !ok || index <= 0 {
+			return nil, true
+		}
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventThinking,
 			ThreadID:  threadID,

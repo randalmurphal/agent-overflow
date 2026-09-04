@@ -567,6 +567,11 @@
       draft.clearLocalAfterQueue();
       resetTextareaHeight();
       surface?.recreateInput();
+      // RegisterQueueItem deletes the draft row; a save still in flight
+      // would land after it and bring the text back. Awaited AFTER the
+      // local clear, which is synchronous, so a second Enter during the
+      // wait finds an empty composer instead of queueing the text twice.
+      await draft.quiesceSaves();
 
       try {
         // Same builder as the direct-send path, so a queued message and a
@@ -602,6 +607,10 @@
     if (!threadId) return;
     sending = true;
     pane.setSendInFlight(true);
+    // SendMessage deletes the draft row; a save still in flight would land
+    // after it and bring the text back. `sending` is already set, so a
+    // second Enter during this wait is refused by canSend.
+    await draft.quiesceSaves();
     // Capture the pre-send draft contents bound to THIS thread. If the user
     // switches threads before SendMessage resolves and the send rejects, we
     // must not bleed the snapshot into the new pane's local composer.

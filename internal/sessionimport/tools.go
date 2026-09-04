@@ -124,6 +124,10 @@ func (b *builder) toolComplete(evt importir.Event) error {
 		return fmt.Errorf("tool completion %s targets a %s row", itemID, r.item.Kind)
 	}
 	meta := triage.DecodeToolCompleteMetaObject(metaObject)
+	// A Claude SendMessage row's verdict is the ack, not the wire flag
+	// (triage/sendmessage_ack.go). Read it BEFORE status, summary and the
+	// payload header derive from meta, as the live path does.
+	sendPatch := triage.ApplySendMessageAck(r.item.ToolName, metaObject, &meta)
 	b.closeStreams(r.item.TurnIndex, r.item.ParentID)
 
 	// Rich result payload first, so the completion's summary derivation
@@ -189,6 +193,12 @@ func (b *builder) toolComplete(evt importir.Event) error {
 	}
 	r.item.Meta = triage.MergeStoredToolCallMetaObject(
 		r.item.Meta, evt.ItemType, r.item.ToolName, metaObject, writerControlMetaKeys[:]...)
+	if len(sendPatch) > 0 {
+		// After the wire merge, so the ack's verdict is what the stored
+		// meta says (the wire's own `is_error:false` would otherwise win).
+		b.stampSendMessageRecipient(r, sendPatch)
+		r.item.Meta = triage.MergeStoredToolCallMetaObject(r.item.Meta, evt.ItemType, r.item.ToolName, sendPatch)
+	}
 	r.item.UpdatedAt = now
 	b.shapeToolMeta(r, now)
 
@@ -493,4 +503,25 @@ func cloneWithIsBackgroundFalse(metaObject map[string]json.RawMessage) map[strin
 	}
 	out["is_background"] = json.RawMessage("false")
 	return out
+}
+
+// stampSendMessageRecipient is the importer's half of the live
+// Router.stampSendMessageRecipient: the recipient launch is in this batch
+// rather than in the store, so it is the earliest row built so far that
+// carries the task id — the same first binding the store query's
+// `ORDER BY created_at` answers. A miss (a peer session, a name, a launch
+// outside the imported range) leaves the patch as it was and the row
+// shows the recipient as typed.
+func (b *builder) stampSendMessageRecipient(r *row, patch map[string]json.RawMessage) {
+	taskID := triage.SendMessageRecipientTaskID(patch, r.item.Meta)
+	if taskID == "" {
+		return
+	}
+	for _, candidate := range b.rows {
+		if candidate == r || triage.TaskIDFromItemMeta(candidate.item.Meta) != taskID {
+			continue
+		}
+		triage.StampSendMessageRecipient(patch, taskID, candidate.item.Meta)
+		return
+	}
 }

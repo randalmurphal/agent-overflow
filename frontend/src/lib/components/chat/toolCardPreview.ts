@@ -475,12 +475,18 @@ function skillPreviewFromMeta(itemMeta: Record<string, unknown> | null): string 
  * the reader opens the card, but who it went to is not recoverable from
  * anywhere else.
  *
- * The CLI accepts `to` / `message` and echoes back its own canonical
- * `recipient` / `content` alongside them (2.1.237, observed on the wire),
- * so both spellings are read. Falls back to the empty string, which lets
- * the caller use the ordinary summary path.
+ * When the recipient was an agent of this thread, triage resolved the
+ * ack's pin to that agent's launch and stamped `recipient_description`
+ * (the name the tray and the agents panel use), which wins over the raw
+ * id the model typed. Otherwise the CLI accepts `to` / `message` and
+ * echoes back its own canonical `recipient` / `content` alongside them
+ * (2.1.237, observed on the wire), so both spellings are read. Falls back
+ * to the empty string, which lets the caller use the ordinary summary
+ * path.
  */
 function sendMessagePreview(itemMeta: Record<string, unknown> | null): string {
+  const description = itemMeta?.recipient_description;
+  if (typeof description === 'string' && description.trim()) return `To ${description.trim()}`;
   const input = itemMeta?.input;
   if (!input || typeof input !== 'object' || Array.isArray(input)) return '';
   const fields = input as Record<string, unknown>;

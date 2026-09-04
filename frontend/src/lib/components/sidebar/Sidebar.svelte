@@ -19,6 +19,7 @@
   import SidebarToggleButton from './SidebarToggleButton.svelte';
   import SidebarSearch from './SidebarSearch.svelte';
   import ProjectsSection from './ProjectsSection.svelte';
+  import RenderBoundary from '../shared/RenderBoundary.svelte';
   import UsageFooter from './UsageFooter.svelte';
   import SystemStatsFooter from './SystemStatsFooter.svelte';
   import WorkflowsFooter from './WorkflowsFooter.svelte';
@@ -111,7 +112,11 @@
         <SidebarToggleButton />
       {/if}
     </div>
-    <ProjectsSection {pane} />
+    <!-- The thread list is the sidebar's one deep tree; a render throw in
+         it reports and retries here instead of freezing the page. -->
+    <RenderBoundary label="The thread list" testId="sidebar-render-error">
+      <ProjectsSection {pane} />
+    </RenderBoundary>
     <UsageFooter />
     <SystemStatsFooter />
     <WorkflowsFooter />

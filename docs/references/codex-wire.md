@@ -128,7 +128,8 @@ Authoritative method list from
 | `item/started` | Tool/item lifecycle. `classifyItemNotification` → `EventToolStart` (or drop). |
 | `item/completed` | Tool/item lifecycle. `classifyItemCompleted` → `EventToolComplete` (or drop). |
 | `item/agentMessage/delta` | Streaming assistant text. |
-| `item/reasoning/textDelta`, `.../summaryTextDelta`, `.../summaryPartAdded` | Streaming reasoning. |
+| `item/reasoning/textDelta`, `.../summaryTextDelta` | Streaming reasoning (raw and summarized; a model emits one channel, never both). Both become `EventThinking` deltas. |
+| `item/reasoning/summaryPartAdded` | Section boundary between reasoning-summary parts. Emitted by codex for EVERY part; AO turns it into a `"\n\n"` thinking delta only when `summaryIndex > 0`. See §Reasoning. |
 | `item/plan/delta` | Buffered by `appendPlanDelta`; surfaces on the completed plan item, never on the delta. Consumed INLINE, not by a classifier. |
 | `item/commandExecution/outputDelta` | Streaming command output. |
 | `item/commandExecution/terminalInteraction` | The wire-typed background-terminal signal (waited / interacted marker rows). See §Background terminals and invariant 25. |
@@ -371,15 +372,83 @@ Every `ThreadItem` subtype has its own shape
 
 ### Dropped `item/*` events (intentional)
 
-`protocol.go:227-232` drops these explicitly:
-- `item/commandExecution/terminalInteraction`
+`protocol_item.go`'s `classifyItemNotification` claims and drops these
+explicitly (claimed, so they are never opted out at `initialize`):
+
 - `item/mcpToolCall/progress`
 - `item/autoApprovalReview/started` and `/completed`
-- `item/reasoning/summaryPartAdded`
+- `item/fileChange/outputDelta`, `item/fileChange/patchUpdated`
 
 They're progress/transient signals that would bloat the item
 timeline. Card-level updates come through `item/started` +
 `item/completed` upserts.
+
+`item/commandExecution/terminalInteraction` is NOT dropped — it is the
+wire-typed background-terminal signal and becomes an
+`EventTerminalInteraction` (§Background terminals). Neither is
+`item/reasoning/summaryPartAdded`; see below.
+
+### Reasoning: the delta stream and the completed item must agree
+
+Reasoning arrives on one of two mutually exclusive delta channels and
+settles on one `item/completed`. All three have to produce the SAME
+bytes: the frontend keeps the row it already rendered only while the
+settle text equals the received text
+(`frontend/src/lib/stores/threadRevealRouting.ts`
+`summaryRepresentsReceived`), and any difference snaps the row to the
+authoritative text and visibly re-wraps it.
+
+**`item/reasoning/summaryPartAdded` is a BREAK BETWEEN parts, and AO
+places it.** Codex emits the notification for EVERY summary part, the
+first one included — the streaming path forwards
+`ResponseEvent::ReasoningSummaryPartAdded` with no index guard
+(`codex-rs/core/src/session/turn.rs:2672`) and the SSE mapping forwards
+every `response.reasoning_summary_part.added`
+(`codex-rs/codex-api/src/sse/responses.rs:490`). So the rule is AO's:
+emit a `"\n\n"` thinking delta only when `summaryIndex > 0`, which is
+what upstream's own sequential-cutoff path does (`turn.rs:2707`,
+`if summary_index > 0`). Emitting it unconditionally opened every Codex
+thinking row with a blank paragraph. `summaryIndex` is a required `i64`
+on `ReasoningSummaryPartAddedNotification`
+(`codex-rs/app-server-protocol/src/protocol/v2/item.rs:1434`); a missing
+or unreadable one is treated as 0 and emits nothing, because a dropped
+break is invisible where a spurious leading one is not.
+
+There is NO section-break notification for RAW reasoning.
+`AgentReasoningSectionBreak` is produced only from the two summary paths
+above, and `ReasoningRawContentDelta` maps to `item/reasoning/textDelta`
+carrying only a `content_index`
+(`codex-rs/app-server-protocol/src/protocol/event_mapping.rs:387`).
+
+**The completed `reasoning` item's text fields are arrays of PLAIN
+STRINGS**, not `{text}` objects:
+
+```rust
+// codex-rs/app-server-protocol/src/protocol/v2/item.rs:268 (rust-v0.150.1)
+Reasoning {
+    id: String,
+    #[serde(default)] summary: Vec<String>,
+    #[serde(default)] content: Vec<String>,
+}
+```
+
+so the wire is `"summary": ["part one", "part two"]`. It is built from
+`ReasoningItem { summary_text, raw_content }`
+(`codex-rs/protocol/src/items.rs:168`): one `summary` element per
+summary PART, one `content` element per content INDEX. AO takes the
+first NON-EMPTY of `summary` then `content` — a model emits one channel
+or the other, and `summary: []` beside a populated `content` (raw
+reasoning) is a real shape, so bailing on the first key PRESENT answers
+`""` with content-present true and blanks the row. Summary parts join
+with `"\n\n"` (the break above); content parts join with `""` (no
+break exists). `extractCodexReasoningText` owns both rules.
+
+The ROLLOUT file's `response_item/reasoning` is a different shape and
+keeps its own reader: there `summary` / `content` are arrays of tagged
+objects, `ReasoningItemReasoningSummary::SummaryText { text }` and
+`ReasoningItemContent::{ReasoningText,Text} { text }`
+(`codex-rs/protocol/src/models.rs:1909`), handled by
+`rollout/dispatch.go#reasoningText`.
 
 ### `userMessage` is promoted, not dropped
 

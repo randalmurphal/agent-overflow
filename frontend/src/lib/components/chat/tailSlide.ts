@@ -1,4 +1,4 @@
-// Pure decision core for TailClampedText's line-slide FLIP.
+// Pure decision + motion core for TailClampedText's line-slide.
 //
 // The collapsed clamp has two motion regimes. While the text is under
 // TAIL_CLAMP_LINES the BOX grows a line at a time and the enclosing
@@ -7,9 +7,18 @@
 // zero-duration teleport of every visible line
 // (bug-report-20260806T011635Z: at a burst-fed drain's ceiling rate
 // those re-packs cluster and read as the think block snapping). The
-// component turns each re-pack into motion: FLIP on the inner wrapper —
-// invert the jump with a transform in the same frame the layout moved,
-// then transition back to zero.
+// component turns each re-pack into motion: it inverts the jump with a
+// translateY on the inner wrapper in the same frame the layout moved,
+// then drains that offset back to zero over the following frames.
+//
+// The drain is a TRACKER, not a fixed-duration transition: every frame
+// it takes a fixed fraction of whatever offset is pending
+// (`stepSlide`), so lines arriving faster than one transition could
+// absorb them accumulate offset and the text tickers faster instead of
+// the offset saturating. The previous fixed 140ms per-line FLIP hit
+// its one-window cap under short-line text (lists, code-ish reasoning,
+// short sentences with paragraph breaks) and every further line then
+// teleported (bug-report-20260904T184019Z).
 //
 // This module owns WHICH observations animate. Only append-driven clip
 // advances slide; everything else recalibrates and snaps exactly as the
@@ -19,21 +28,54 @@
 //     baseline to diff against;
 //   - a width reflow — line boundaries re-derive, a translate can't
 //     represent a re-wrap;
-//   - an outer-box height change — the expanded flip, the clamp first
-//     engaging, or a burst that grows the box AND overflows it in one
-//     frame (the box growth is already the scroll spring's motion;
-//     stacking a slide on top would double-ease the same pixels);
-//   - a clip advance of a full window or more — no visible line
-//     survives, so there is no continuity to animate;
+//   - an outer-box height change with no clip advance — the expanded
+//     flip, a collapse, the clamp first engaging; a box that GROWS and
+//     overflows in the same frame (a paragraph break plus the next word
+//     landing in one reveal tick while the block is still short) slides
+//     by the overflow only: the growth is the scroll spring's motion, but
+//     the re-pack of the overflowed lines is a separate instant jump
+//     nothing else animates;
 //   - unusable geometry (hidden ancestor) — recalibrate so re-showing
 //     doesn't misread the reappearance as an append.
 //
-// Kept pure (no DOM) so the guard matrix is unit-testable in the
-// default vitest project; the component supplies real geometry and
-// applies the styles.
+// A clip advance of a full window or more slides through it (up to
+// SLIDE_MAX_WINDOWS): no previously visible line survives, but a ticker
+// through the new lines still reads as motion where a snap reads as a
+// glitch.
+//
+// Kept pure (no DOM) so the guard matrix and the drain curve are
+// unit-testable in the default vitest project; the component supplies
+// real geometry and applies the styles.
 
-/** Duration of the line-slide transition. */
-export const SLIDE_MS = 140;
+/**
+ * Fraction of the pending offset drained per 60Hz frame: an ease-out
+ * whose speed is proportional to the lag. 35% is the old transition's
+ * feel on a single line (~7px in the first frame of a 19.5px advance)
+ * and, at a full-window offset, drains one line per frame — more than
+ * the reveal smoother's ceiling (MAX_ADAPTIVE_CHARS_PER_SEC, ~5 chars a
+ * frame) can land on any line longer than five characters, so the
+ * offset settles below the cap instead of pinning on it.
+ */
+export const SLIDE_DRAIN_PER_FRAME = 0.35;
+
+/**
+ * The pending offset is capped at this many clamp windows. Past one
+ * window the inversion starts on content that was never visible, but a
+ * burst that lands two lines in one frame (a paragraph break plus the
+ * next words at catch-up rate) would otherwise pin the offset at the cap
+ * and teleport the excess every frame; a second window of catch-up
+ * tickers through it instead. Beyond two windows per frame the rate is
+ * unreadable regardless and the excess snaps.
+ */
+export const SLIDE_MAX_WINDOWS = 2;
+
+/**
+ * Minimum drain per 60Hz frame, so the exponential tail lands on zero
+ * instead of asymptoting through sub-pixel translates for many frames.
+ */
+export const SLIDE_MIN_STEP_PX = 1;
+
+const FRAME_MS = 1000 / 60;
 
 /**
  * Sub-pixel slack for geometry comparisons. Fractional client rects can
@@ -54,36 +96,48 @@ export type SlideObservation = {
 };
 
 export type SlideDecision =
-  /** Update the baseline; leave any in-flight slide running. */
+  /** Update the baseline; leave any in-flight slide draining. */
   | { kind: 'none'; memory: SlideObservation | null }
   /** Discontinuity: update the baseline AND drop any in-flight slide. */
   | { kind: 'clear'; memory: SlideObservation | null }
-  /** Append-driven line advance: invert from `startPx` and release. */
+  /** Append-driven line advance: set the pending offset to `startPx`. */
   | { kind: 'slide'; memory: SlideObservation; startPx: number };
 
 const clipOf = (o: SlideObservation): number => Math.max(0, o.innerH - o.outerH);
 
 /**
  * Classify one ResizeObserver delivery. `prev` is the last stored
- * baseline (null = recalibrate), `currentTy` the wrapper's in-flight
- * translateY — the live interpolated value, which is why the caller
- * reads it from computed style rather than remembering a target.
+ * baseline (null = recalibrate), `currentOffset` the offset still
+ * pending from earlier advances — a new advance compounds onto it,
+ * capped at SLIDE_MAX_WINDOWS clamp windows.
  */
 export function slideDecision(
   prev: SlideObservation | null,
   next: SlideObservation,
-  currentTy: number,
+  currentOffset: number,
 ): SlideDecision {
   if (next.outerH < 1 || next.innerH < 1) return { kind: 'clear', memory: null };
   if (!prev) return { kind: 'none', memory: next };
   if (Math.abs(next.innerW - prev.innerW) > EPS) return { kind: 'clear', memory: next };
-  if (Math.abs(next.outerH - prev.outerH) > EPS) return { kind: 'clear', memory: next };
   const delta = clipOf(next) - clipOf(prev);
+  if (Math.abs(next.outerH - prev.outerH) > EPS && (next.outerH < prev.outerH || delta <= EPS)) {
+    return { kind: 'clear', memory: next };
+  }
   if (delta <= EPS) return { kind: 'none', memory: next };
-  if (delta >= next.outerH - EPS) return { kind: 'clear', memory: next };
-  // Compound onto an in-flight slide, capped at one full window — past
-  // that the inversion would start on content that was never visible.
-  return { kind: 'slide', memory: next, startPx: Math.min(currentTy + delta, next.outerH) };
+  return { kind: 'slide', memory: next, startPx: Math.min(currentOffset + delta, SLIDE_MAX_WINDOWS * next.outerH) };
+}
+
+/**
+ * One drain step of the pending offset after `dtMs` of wall time. Frame
+ * independent: a 33ms frame drains what two 16.7ms frames would, so a
+ * dropped frame never shows as a slower ticker.
+ */
+export function stepSlide(offset: number, dtMs: number): number {
+  if (offset <= 0) return 0;
+  const frames = Math.max(0, dtMs) / FRAME_MS;
+  const drained = offset * (1 - Math.pow(1 - SLIDE_DRAIN_PER_FRAME, frames));
+  const next = offset - Math.max(drained, SLIDE_MIN_STEP_PX * frames);
+  return next > EPS ? next : 0;
 }
 
 /**

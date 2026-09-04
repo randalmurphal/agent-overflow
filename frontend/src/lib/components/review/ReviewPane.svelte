@@ -36,6 +36,7 @@
   } from '../../utils/reviewComments';
   import { fileExtensionLabel } from '../../utils/reviewTree';
   import Icon from '../primitives/Icon.svelte';
+  import RenderBoundary from '../shared/RenderBoundary.svelte';
 
   interface Props {
     ctx: PanelContext;
@@ -510,6 +511,11 @@
   {#if !review}
     <div class="p-3 text-sm text-fg-muted">No thread selected.</div>
   {:else}
+    <!-- A render throw below this point (a keyed-each collision, a row
+         model that cannot build) used to abort the flush mid-branch and
+         leave whatever DOM the previous branch had — "Loading…" with a
+         fully loaded store and nothing on screen to say why. -->
+    <RenderBoundary label="The review pane" testId="review-render-error">
     {#if review.error}
       <div class="border-b border-error/30 bg-error/10 px-3 py-2 text-xs text-error" data-testid="review-error">
         {review.error}
@@ -775,5 +781,6 @@
         {/if}
       </section>
     {/if}
+    </RenderBoundary>
   {/if}
 </section>

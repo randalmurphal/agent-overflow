@@ -1,5 +1,5 @@
 diff --git a/src/internal/client/dom/blocks/boundary.js b/src/internal/client/dom/blocks/boundary.js
-index fd6bbdf..20feb00 100644
+index fd6bbdf5b40214d6499fea1a3791578d5aa412e8..20feb00fd39449fed33bfc49392193bbed112182 100644
 --- a/src/internal/client/dom/blocks/boundary.js
 +++ b/src/internal/client/dom/blocks/boundary.js
 @@ -7,6 +7,7 @@ import {
@@ -55,7 +55,7 @@ index fd6bbdf..20feb00 100644
  
  		if (hydrating) {
 diff --git a/src/internal/client/dom/blocks/branches.js b/src/internal/client/dom/blocks/branches.js
-index 141b914..dd3e4a2 100644
+index 141b914537e3e9a463061a34eab08cba85bff86e..dd3e4a22147ceacaa1b3708052c4f811b464fa84 100644
 --- a/src/internal/client/dom/blocks/branches.js
 +++ b/src/internal/client/dom/blocks/branches.js
 @@ -3,6 +3,7 @@ import { Batch, current_batch } from '../../reactivity/batch.js';
@@ -209,7 +209,7 @@ index 141b914..dd3e4a2 100644
  	};
  
 diff --git a/src/internal/client/dom/blocks/each.js b/src/internal/client/dom/blocks/each.js
-index 9a2504f..1eaf4c8 100644
+index 9a2504f8875ab2101e5c1cbd28d6565dc8dc9833..be8c16319d433b0e2d0a3156168a28d8bbba05c2 100644
 --- a/src/internal/client/dom/blocks/each.js
 +++ b/src/internal/client/dom/blocks/each.js
 @@ -29,6 +29,7 @@ import {
@@ -259,7 +259,135 @@ index 9a2504f..1eaf4c8 100644
  	}
  }
  
-@@ -650,6 +664,15 @@ function reconcile(state, array, anchor, flags, get_key) {
+@@ -219,6 +233,29 @@ export function each(node, flags, get_collection, get_key, render_fn, fallback_f
+ 	/** @type {V[]} */
+ 	var array;
+ 
++	// PATCH(agent-overflow each-key-repair): a duplicate key is repaired to a
++	// unique one and reported, never thrown. Pristine svelte throws
++	// `each_key_duplicate` from inside the update flush, and a throw there
++	// aborts the whole batch: every region the traversal had not reached keeps
++	// its stale DOM (production incidents 2026-08-29 and 2026-09-04). The
++	// repaired key is stable across runs for string and number keys
++	// (`key\u0000#n` for the n-th repeat, so the row keeps its identity);
++	// any other key type gets a fresh symbol per run, which remounts that
++	// row but never freezes the page. Reported once per block instance,
++	// through `reportError` so it lands where an uncaught throw would.
++	/** @type {Map<number, any> | null} index → repaired key, for the latest run */
++	var repaired_keys = null;
++	var reported_duplicate = false;
++
++	/**
++	 * @param {V} value
++	 * @param {number} index
++	 */
++	function resolved_key(value, index) {
++		if (repaired_keys !== null && repaired_keys.has(index)) return repaired_keys.get(index);
++		return get_key(value, index);
++	}
++
+ 	/** @type {Map<Batch, Set<any>>} */
+ 	var pending = new Map();
+ 
+@@ -235,7 +272,7 @@ export function each(node, flags, get_collection, get_key, render_fn, fallback_f
+ 		state.pending.delete(batch);
+ 
+ 		state.fallback = fallback;
+-		reconcile(state, array, anchor, flags, get_key);
++		reconcile(state, array, anchor, flags, resolved_key);
+ 
+ 		if (fallback !== null) {
+ 			if (array.length === 0) {
+@@ -284,6 +321,7 @@ export function each(node, flags, get_collection, get_key, render_fn, fallback_f
+ 		}
+ 
+ 		var keys = new Set();
++		repaired_keys = null;
+ 		var batch = /** @type {Batch} */ (current_batch);
+ 		var defer = should_defer_append();
+ 
+@@ -311,6 +349,17 @@ export function each(node, flags, get_collection, get_key, render_fn, fallback_f
+ 				}
+ 			}
+ 
++			if (keys.has(key)) {
++				// PATCH(agent-overflow each-key-repair)
++				var duplicate = key;
++				key = repair_duplicate_key(key, keys);
++				(repaired_keys ??= new Map()).set(index, key);
++				if (!reported_duplicate) {
++					reported_duplicate = true;
++					report_duplicate_key(duplicate, index);
++				}
++			}
++
+ 			var item = first_run ? null : items.get(key);
+ 
+ 			if (item) {
+@@ -352,14 +401,8 @@ export function each(node, flags, get_collection, get_key, render_fn, fallback_f
+ 			}
+ 		}
+ 
+-		if (length > keys.size) {
+-			if (DEV) {
+-				validate_each_keys(array, get_key);
+-			} else {
+-				// in prod, the additional information isn't printed, so don't bother computing it
+-				e.each_key_duplicate('', '', '');
+-			}
+-		}
++		// PATCH(agent-overflow each-key-repair): `length > keys.size` cannot hold
++		// any more — every repeat was repaired above — so the throw is gone.
+ 
+ 		// remove excess nodes
+ 		if (hydrating && length > 0) {
+@@ -407,6 +450,45 @@ export function each(node, flags, get_collection, get_key, render_fn, fallback_f
+ 	}
+ }
+ 
++// PATCH(agent-overflow each-key-repair)
++/**
++ * A unique stand-in for a key already in `keys`. Stable for string and
++ * number keys: the n-th repeat of `k` is always `k\u0000#n`.
++ * @param {any} key
++ * @param {Set<any>} keys
++ */
++function repair_duplicate_key(key, keys) {
++	if (typeof key === 'string' || typeof key === 'number') {
++		var n = 2;
++		var candidate;
++		do {
++			candidate = key + '\u0000#' + n++;
++		} while (keys.has(candidate));
++		return candidate;
++	}
++	return Symbol('each_key_duplicate');
++}
++
++// PATCH(agent-overflow each-key-repair)
++/**
++ * Surface a repaired duplicate where an uncaught throw would have landed
++ * (the window `error` event), without aborting the flush that found it.
++ * @param {any} key
++ * @param {number} index
++ */
++function report_duplicate_key(key, index) {
++	var error = new Error(
++		`each_key_duplicate\nKeyed each block has duplicate key \`${String(key)}\` at index ${index}; ` +
++			'repaired to a unique key instead of aborting the update flush\nhttps://svelte.dev/e/each_key_duplicate'
++	);
++	error.name = 'Svelte error';
++	if (typeof reportError === 'function') {
++		reportError(error);
++	} else {
++		console.error(error);
++	}
++}
++
+ /**
+  * Skip past any non-branch effects (which could be created with `createSubscriber`, for example) to find the next branch effect
+  * @param {Effect | null} effect
+@@ -650,6 +732,15 @@ function reconcile(state, array, anchor, flags, get_key) {
  	if (is_animated) {
  		queue_micro_task(() => {
  			if (to_animate === undefined) return;
@@ -275,8 +403,39 @@ index 9a2504f..1eaf4c8 100644
  			for (effect of to_animate) {
  				effect.nodes?.a?.apply();
  			}
+@@ -747,30 +838,3 @@ function link(state, prev, next) {
+ 		next.prev = prev;
+ 	}
+ }
+-
+-/**
+- * @param {Array<any>} array
+- * @param {(item: any, index: number) => string} key_fn
+- * @returns {void}
+- */
+-function validate_each_keys(array, key_fn) {
+-	const keys = new Map();
+-	const length = array.length;
+-
+-	for (let i = 0; i < length; i++) {
+-		const key = key_fn(array[i], i);
+-
+-		if (keys.has(key)) {
+-			const a = String(keys.get(key));
+-			const b = String(i);
+-
+-			/** @type {string | null} */
+-			let k = String(key);
+-			if (k.startsWith('[object ')) k = null;
+-
+-			e.each_key_duplicate(a, b, k);
+-		}
+-
+-		keys.set(key, i);
+-	}
+-}
 diff --git a/src/internal/client/dom/elements/attributes.js b/src/internal/client/dom/elements/attributes.js
-index 0fe1b8b..0f6fd49 100644
+index 0fe1b8b2d3f9d176a9ecd55ae761b62788c9fcf7..0f6fd49a583afe8589b6fea10dca71814b09fe37 100644
 --- a/src/internal/client/dom/elements/attributes.js
 +++ b/src/internal/client/dom/elements/attributes.js
 @@ -25,7 +25,13 @@ import { clsx } from '../../../shared/attributes.js';
@@ -337,7 +496,7 @@ index 0fe1b8b..0f6fd49 100644
  
  			prev = current;
 diff --git a/src/internal/client/dom/elements/transitions.js b/src/internal/client/dom/elements/transitions.js
-index 67b1778..4d4865b 100644
+index 67b177841ade6faf0675c855b1ce7c2ae599472f..4d4865b3dd18b2c1fa2b3f643fb383c1d0b82330 100644
 --- a/src/internal/client/dom/elements/transitions.js
 +++ b/src/internal/client/dom/elements/transitions.js
 @@ -102,11 +102,22 @@ export function animation(element, get_fn, get_params) {
@@ -367,7 +526,7 @@ index 67b1778..4d4865b 100644
  				from.left !== to.left ||
  				from.right !== to.right ||
 diff --git a/src/internal/client/dom/task.js b/src/internal/client/dom/task.js
-index 8c51361..8c593df 100644
+index 8c513614672b07a41e4626dc041f8d216345e014..8c593df62edc70e76c065a3e30a2e2d6e31633e1 100644
 --- a/src/internal/client/dom/task.js
 +++ b/src/internal/client/dom/task.js
 @@ -1,13 +1,20 @@
@@ -430,7 +589,7 @@ index 8c51361..8c593df 100644
  	}
  }
 diff --git a/src/internal/client/error-handling.js b/src/internal/client/error-handling.js
-index a46281d..ff4da7c 100644
+index a46281d36c3d283e38e2ebfd37e5a1fe9b190b6a..ff4da7c3cef451db69db8cd0fc06c3d02c414bea 100644
 --- a/src/internal/client/error-handling.js
 +++ b/src/internal/client/error-handling.js
 @@ -50,10 +50,16 @@ export function handle_error(error) {
@@ -462,7 +621,7 @@ index a46281d..ff4da7c 100644
  			}
 diff --git a/src/internal/client/flush-caps.js b/src/internal/client/flush-caps.js
 new file mode 100644
-index 0000000..95f077b
+index 0000000000000000000000000000000000000000..592603b2779681f27aef7003ce6600115fc02987
 --- /dev/null
 +++ b/src/internal/client/flush-caps.js
 @@ -0,0 +1,63 @@
@@ -530,7 +689,7 @@ index 0000000..95f077b
 +	throw error;
 +}
 diff --git a/src/internal/client/reactivity/batch.js b/src/internal/client/reactivity/batch.js
-index 8251f79..794a023 100644
+index 8251f7929844cf66a09fae3db2140172274e2c31..794a0230ff874fc97c16db0da5abc142e54698f5 100644
 --- a/src/internal/client/reactivity/batch.js
 +++ b/src/internal/client/reactivity/batch.js
 @@ -30,7 +30,8 @@ import {
@@ -589,7 +748,7 @@ index 8251f79..794a023 100644
  }
  
 diff --git a/src/internal/client/reactivity/deriveds.js b/src/internal/client/reactivity/deriveds.js
-index 6b48bc8..323a31a 100644
+index 6b48bc8a2320b895773eb0d222eb7bed92a5e0e9..323a31ac973e85fc06db8c4208a32e90834433a1 100644
 --- a/src/internal/client/reactivity/deriveds.js
 +++ b/src/internal/client/reactivity/deriveds.js
 @@ -37,6 +37,7 @@ import {
@@ -625,7 +784,7 @@ index 6b48bc8..323a31a 100644
  	}
  }
 diff --git a/src/internal/client/reactivity/effects.js b/src/internal/client/reactivity/effects.js
-index e69a639..a9263bd 100644
+index e69a639a94b2378b849842ccc26f3cb91e58aae2..a9263bd667c76318f5257eeae2c70e218c33df8f 100644
 --- a/src/internal/client/reactivity/effects.js
 +++ b/src/internal/client/reactivity/effects.js
 @@ -42,7 +42,12 @@ import * as e from '../errors.js';
@@ -908,7 +1067,7 @@ index e69a639..a9263bd 100644
  	effect.f ^= DESTROYING;
  	effect.f |= DESTROYED;
 diff --git a/src/internal/client/runtime.js b/src/internal/client/runtime.js
-index a881403..1a84153 100644
+index a881403f580929b64f6eb9cafdb324d5ae1d3d1e..1a841530980a0310c877f01ef24482e32336bc7f 100644
 --- a/src/internal/client/runtime.js
 +++ b/src/internal/client/runtime.js
 @@ -732,7 +732,18 @@ function reconnect(derived) {

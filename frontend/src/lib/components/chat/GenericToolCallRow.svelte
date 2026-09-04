@@ -126,8 +126,20 @@
   );
 
   let indicatorState = $derived(indicatorStateForItem(effectiveStatusItem, { meta: statusMeta }));
+  // Claude's SendMessage ack, stamped by triage as `send_reply`: the one
+  // line the CLI's own TUI prints under the call ("Message queued for
+  // …", "No agent named …"). Red as the row error when the CLI refused
+  // the send, muted under the header otherwise.
+  let sendReply = $derived.by(() => {
+    if (item.toolName !== 'SendMessage') return '';
+    const reply = itemMeta?.send_reply;
+    return typeof reply === 'string' ? reply.trim() : '';
+  });
   let rowError = $derived(
-    rowErrorWithFallback(effectiveStatusItem, { meta: statusMeta, fallback: 'Tool call failed' }),
+    rowErrorWithFallback(effectiveStatusItem, {
+      meta: statusMeta,
+      fallback: sendReply || 'Tool call failed',
+    }),
   );
   const ticker = createRunningElapsed(
     () => isRunning && durationLabel === '' && !isBackgroundedLaunch,
@@ -263,6 +275,11 @@ let hasExpandableBody = $derived(
     <div class="ml-[5.25rem] px-3 pb-1">
       <RowError tone={rowError.tone} msg={rowError.msg} />
     </div>
+  {:else if sendReply}
+    <div
+      class="ml-[5.25rem] px-3 pb-1 text-[0.75rem] text-fg-muted/75 break-words"
+      data-testid="tool-call-card-reply"
+    >{sendReply}</div>
   {/if}
 
   {#if hasExpandableBody && expansion.expanded}
