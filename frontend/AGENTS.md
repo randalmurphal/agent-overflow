@@ -404,6 +404,11 @@ every lap. The leaks the 2026-08 perf session found by hand all lived in
 the SECOND lap — a re-register that duplicated a sink, a toggle that kept
 a stale checkpoint, a cache that carried the previous mode.
 
+A timer that hands work to rAF owns BOTH handles. Cancel both on
+supersession and detach, and invalidate already-dispatched callbacks by
+generation. The scroll observer's resize-clear used to outlive detach
+and erase a new attachment's identical stamp (`scroll/observers.test.ts`).
+
 A deterministic CPU sweep gets a contention-sized budget, never the
 5s default. Vitest fans files across one fork per core, so a sweep's
 wall time scales with whatever else the gate is running — three

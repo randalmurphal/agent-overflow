@@ -268,6 +268,8 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
   let coldLoadSettleUntil = 0;
   let resizeDifference = 0;
   let resizeClearTimer: ReturnType<typeof setTimeout> | null = null;
+  let resizeClearFrame: number | null = null;
+  let resizeClearGeneration = 0;
   let resizeCorrelatedUntaggedScrollBudget = 0;
 
   let quietTimer: ReturnType<typeof setTimeout> | null = null;
@@ -293,10 +295,22 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
   // after the write, but only if no newer stamp replaced the sentinel in
   // the meantime. The delay lets the scroll event fired by the paired
   // layout change observe resizeDifference !== 0 and classify as layout.
+  function cancelResizeDifferenceClear(): void {
+    resizeClearGeneration += 1;
+    if (resizeClearTimer !== null) clearTimeout(resizeClearTimer);
+    if (resizeClearFrame !== null) cancelAnimationFrame(resizeClearFrame);
+    resizeClearTimer = null;
+    resizeClearFrame = null;
+  }
+
   function scheduleResizeDifferenceClear(sentinel: number): void {
-    if (resizeClearTimer) clearTimeout(resizeClearTimer);
+    cancelResizeDifferenceClear();
+    const generation = resizeClearGeneration;
     resizeClearTimer = setTimeout(() => {
-      requestAnimationFrame(() => {
+      resizeClearTimer = null;
+      resizeClearFrame = requestAnimationFrame(() => {
+        if (generation !== resizeClearGeneration) return;
+        resizeClearFrame = null;
         if (resizeDifference === sentinel) {
           resizeDifference = 0;
           resizeCorrelatedUntaggedScrollBudget = 0;
@@ -833,10 +847,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
   function detach(): void {
     contentRO?.disconnect();
     contentRO = undefined;
-    if (resizeClearTimer) {
-      clearTimeout(resizeClearTimer);
-      resizeClearTimer = null;
-    }
+    cancelResizeDifferenceClear();
     clearWarmupTimers();
     deps.setWarm(false);
     deps.setWarmReason(null);
