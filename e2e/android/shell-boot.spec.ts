@@ -73,6 +73,7 @@
 // fixture chain, torn down in the reverse order they were built.
 
 import { execFile } from 'node:child_process';
+import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
@@ -82,10 +83,18 @@ import {
   expect,
   test as base,
   type AndroidDevice,
+  type Locator,
   type Page,
 } from '@playwright/test';
 
 import { launchHarness, type HarnessApp } from '../src/harness.js';
+import {
+  RESULT_LINE,
+  emit,
+  seedAgentThread,
+  startMock,
+  textLines,
+} from '../tests/agent-visibility-helpers.js';
 
 const run = promisify(execFile);
 
@@ -119,6 +128,58 @@ const EXTRA_ID = 'dev.agentoverflow.app.push.ID';
  * app lock here, and typing it is answering the real prompt.
  */
 const LOCK_PIN = '1234';
+
+/**
+ * A real phone instead of the emulator. The credential prompt there is the
+ * OWNER'S own lockscreen, and typing `LOCK_PIN` at it would be a wrong-PIN
+ * attempt against a real credential — Android escalates repeated wrong
+ * attempts into a lockout, so the suite must never type at a prompt it did
+ * not provision. With `AO_ANDROID_HUMAN_LOCK=1` the run waits for the owner
+ * to answer each prompt themselves (PIN or biometric), which is also the
+ * one way the biometric fallback path ever gets exercised: an emulator has
+ * no finger. `scripts/android-smoke.sh` skips its PIN provisioning under
+ * the same variable.
+ */
+const HUMAN_LOCK = process.env.AO_ANDROID_HUMAN_LOCK === '1';
+
+/**
+ * A real phone can be asleep behind its owner's keyguard, and an activity
+ * started there renders frozen: DOM assertions still answer over CDP, but
+ * nothing is clickable, because actionability waits on animation frames a
+ * dozing display never produces (learned on the first Pixel run, where
+ * every case stalled at its first click). So each case first wakes the
+ * device and waits for the owner to unlock it — the one thing only they
+ * can do. `KEYCODE_WAKEUP` is a no-op on a device that is already awake.
+ */
+async function awaitOwnerUnlock(device: AndroidDevice): Promise<void> {
+  await device.shell('input keyevent KEYCODE_WAKEUP');
+  await expect
+    .poll(
+      async () => {
+        const dump = (await device.shell('dumpsys activity activities')).toString();
+        return /mKeyguardShowing=false/.test(dump);
+      },
+      {
+        message: 'the owner must unlock the phone before the suite can drive it',
+        intervals: [1_000],
+        timeout: 180_000,
+      },
+    )
+    .toBe(true);
+}
+
+/**
+ * Answer the platform credential prompt: typed on the emulator whose PIN
+ * the smoke script set, answered by the owner's own hand on a real phone.
+ * The generous human timeout is prompt-to-fingers latency, not machinery.
+ */
+async function passCredentialPrompt(device: AndroidDevice, lock: Locator): Promise<void> {
+  if (!HUMAN_LOCK) {
+    await device.shell(`input text ${LOCK_PIN}`);
+    await device.shell('input keyevent 66');
+  }
+  await expect(lock).toBeHidden({ timeout: HUMAN_LOCK ? 120_000 : 30_000 });
+}
 
 /** Long enough for a cold WebView on an emulator, short enough to fail. */
 const WEBVIEW_MS = 120_000;
@@ -322,6 +383,7 @@ const test = base.extend<ShellFixtures>({
   // after the clear, because the prompt it would otherwise raise is a
   // dialog no assertion here is about.
   page: async ({ device }, use) => {
+    if (HUMAN_LOCK) await awaitOwnerUnlock(device);
     await device.shell(`pm clear ${SHELL_PACKAGE}`);
     await device.shell(`pm grant ${SHELL_PACKAGE} android.permission.POST_NOTIFICATIONS`);
     await device.shell(`am start -n ${SHELL_ACTIVITY}`);
@@ -396,9 +458,7 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
       { message: "the platform's own credential prompt must take focus off the app" },
     )
     .toBe(true);
-  await device.shell(`input text ${LOCK_PIN}`);
-  await device.shell('input keyevent 66');
-  await expect(lock).toBeHidden();
+  await passCredentialPrompt(device, lock);
 
   // --- 4. The app is behind it, warm, with the seeded row --------------
   const row = page.getByTestId('thread-row').filter({ hasText: 'Shell boot thread' });
@@ -741,13 +801,104 @@ test('a notification tap opens its thread after the lock is answered', async ({
       { message: "the platform's own credential prompt must take focus off the app" },
     )
     .toBe(true);
-  await device.shell(`input text ${LOCK_PIN}`);
-  await device.shell('input keyevent 66');
-  await expect(lock).toBeHidden();
+  await passCredentialPrompt(device, lock);
 
   // And it lands on the thread the extras named, rather than on the list.
   await expect(tapped.locator('html')).toHaveAttribute('data-compact-screen', 'thread', {
     timeout: PAIRED_MOUNT_MS,
   });
   await expect(tapped.getByTestId('chat-header-title')).toHaveText('Tapped thread');
+});
+
+// ---------------------------------------------------------------------
+// The last hop: a real message through Google, by hand.
+// ---------------------------------------------------------------------
+//
+// Everything up to Google is machine-testable and tested: what the
+// backend composes (`tests/push.spec.ts`, against the harness recorder),
+// what the tray does with a message (`TrayNotifierTest`), and what a tap
+// does (the case above, extras delivered with `am start`). What none of
+// them can prove is that a REAL Firebase project accepts the credential,
+// that Google delivers the data message, and that `PushService` on a real
+// phone renders it into the tray. That needs an APK built with
+// `google-services.json` (mobile/AGENTS.md § google-services.json) and
+// the matching service-account key — machine-specific facts, so this case
+// skips itself unless `AO_ANDROID_PUSH_CREDENTIAL` names the key file.
+// It is a manual gate in the same sense as `make provider-smoke`: run it
+// when the Firebase project or the push path changes.
+//
+// The app is backgrounded with HOME, not force-stopped: Android bars a
+// force-stopped app from receiving FCM until the user relaunches it, so
+// a force-stop here would be testing Google's refusal, not our delivery.
+test('a real push crosses Google and lands in the tray', async ({ device, harness, page }) => {
+  const credentialPath = process.env.AO_ANDROID_PUSH_CREDENTIAL ?? '';
+  test.skip(
+    credentialPath === '',
+    'needs AO_ANDROID_PUSH_CREDENTIAL (a Firebase service-account key) and an APK built with google-services.json',
+  );
+  const credentialJSON = fs.readFileSync(credentialPath, 'utf8');
+  await harness.rpc('SetPushSenderCredential', credentialJSON);
+
+  // A thread on the mock provider, ready to complete a turn on demand —
+  // the same staging `tests/push.spec.ts` uses against the recorder.
+  await harness.rpc('HarnessSetScenario', {
+    scenario: {
+      version: 1,
+      name: 'real-push',
+      provider: 'claude',
+      turns: [
+        { label: 'turn-1', steps: [emit([...textLines('msg-1', 'Answer 1.'), RESULT_LINE])] },
+      ],
+      afterTurns: 'silent',
+    },
+  });
+  const threadId = await seedAgentThread(harness, 'shell-push-real', 'Real push thread');
+  await startMock(harness, threadId);
+
+  // Paired through the shell's own screen, so the phone's REAL FCM token
+  // is what registers: `PushPlugin.getToken()` only answers on a build
+  // whose FirebaseApp initialised.
+  const invite = await harness.rpc<PairingInvite>('MintDevicePairing', 'phone', 'full');
+  await page.goto(SHELL_ORIGIN + '/' + fragmentOf(invite));
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Pair this device' })).toBeVisible();
+  await page.getByLabel('Device name').fill('Real push phone');
+  await page.getByRole('button', { name: 'Pair' }).click();
+  const shown = page.getByLabel('Verification number');
+  await expect(shown).toBeVisible();
+  await confirmOnHost(harness, ((await shown.textContent()) ?? '').trim());
+  const lock = page.getByTestId('app-lock');
+  await expect(lock).toBeVisible({ timeout: PAIRED_MOUNT_MS });
+  await passCredentialPrompt(device, lock);
+
+  // The registration is the boot's to make; the backend's status line is
+  // where it lands, and where "my phone stopped buzzing" gets answered.
+  await expect
+    .poll(
+      async () =>
+        ((await harness.rpc('GetPushSenderStatus')) as { registeredDevices: number })
+          .registeredDevices,
+      { message: 'the shell must register its FCM token after pairing', timeout: 60_000 },
+    )
+    .toBeGreaterThan(0);
+
+  // Background the app, complete a turn, and the wake must cross Google.
+  await device.shell('input keyevent KEYCODE_HOME');
+  await harness.rpc('SendMessage', threadId, 'real push question', null);
+  await expect
+    .poll(
+      async () => (await device.shell('dumpsys notification --noredact')).toString(),
+      {
+        message: 'the tray must show the pushed notification, tagged with its thread',
+        intervals: [2_000],
+        timeout: 90_000,
+      },
+    )
+    .toContain(`thread:${threadId}`);
+
+  // The phrase is one of `notify.KindPhrase`'s six, never thread content:
+  // §9's redaction rule, observed on the far side of Google.
+  const dump = (await device.shell('dumpsys notification --noredact')).toString();
+  expect(dump).toContain('Turn complete');
+  expect(dump).not.toContain('Real push thread');
 });

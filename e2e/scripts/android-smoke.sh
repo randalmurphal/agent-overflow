@@ -91,9 +91,20 @@ echo "==> installing"
 
 # The credential the app lock falls back to. Cleared on every exit path,
 # including a failed run, so the emulator is left as it was found.
-echo "==> setting the device PIN"
-"$adb" -s "$serial" shell locksettings set-pin "$pin"
-trap '"$adb" -s "$serial" shell locksettings clear --old "$pin" >/dev/null 2>&1 || true' EXIT
+#
+# Unless the device is a REAL phone: it already has its owner's own
+# credential, `locksettings set-pin` over one is refused without the old
+# credential, and typing `1234` at the owner's real prompt would be
+# wrong-PIN attempts Android escalates into a lockout. Under
+# AO_ANDROID_HUMAN_LOCK=1 provisioning is skipped and the spec waits for
+# the owner to answer each prompt themselves.
+if [[ "${AO_ANDROID_HUMAN_LOCK:-}" == "1" ]]; then
+  echo "==> AO_ANDROID_HUMAN_LOCK=1 — the owner answers the lock prompts"
+else
+  echo "==> setting the device PIN"
+  "$adb" -s "$serial" shell locksettings set-pin "$pin"
+  trap '"$adb" -s "$serial" shell locksettings clear --old "$pin" >/dev/null 2>&1 || true' EXIT
+fi
 
 # The launcher rather than a bare `pnpm exec playwright test`, for two
 # reasons that are the same two every other suite here has: it typechecks

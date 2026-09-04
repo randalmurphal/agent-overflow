@@ -144,6 +144,25 @@ and the pairing. It runs through
 `bin/ao-harness-e2e --config=playwright.android.config.ts`, which is what
 typechecks the tree and what lets `launchHarness` spawn at all.
 
+**A real phone** runs the same suite with `AO_ANDROID_HUMAN_LOCK=1`
+(wireless adb included: pair and connect in developer options, then run —
+the script takes the first attached device). The script skips PIN
+provisioning — the owner's credential is already on the device, and
+typing `1234` at their real prompt would be wrong-PIN attempts Android
+escalates into a lockout — and the spec instead waits up to two minutes
+for the owner to answer each credential prompt by hand. That hand is the
+point: it is the only way the biometric fallback
+(`allowDeviceCredential: true` with a real finger enrolled) ever gets
+exercised, since an emulator has none.
+
+The spec's last case is the push last hop — a real message through the
+owner's Firebase project, Google, and the phone's tray. It skips itself
+unless `AO_ANDROID_PUSH_CREDENTIAL` names a service-account key file and
+the APK was built with `google-services.json` in place (mobile/AGENTS.md
+§ google-services.json), making it a manual gate in the same sense as
+`make provider-smoke`: run it when the Firebase project or the push path
+changes. First real delivery 2026-09-04, Pixel 9a over wireless adb.
+
 Two platform facts the spec has to answer for, both learned on that
 run: the platform's credential prompt is an activity of its own, so it
 is answered by typing at the FOCUSED window (`input text`, then Enter),

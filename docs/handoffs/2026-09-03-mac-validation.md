@@ -237,8 +237,24 @@ Done and green:
 
 Left for the owner (need a second device or hands on the phone):
 
-- **Android on a real Pixel 9 over wireless adb** — sideload, lock, back,
-  bundle staging, push. Only the emulator half is machine-testable here;
-  push's last hop needs `google-services.json` and a real Firebase project.
 - **Cross-device convergence** — read markers, approvals, quiet-when, and
   `sendId` echo-suppression observed live between the owner's two devices.
+
+## 8. The real-phone pass (2026-09-04)
+
+The Android leg closed the next morning, on the owner's Pixel 9a over
+wireless adb with the owner answering their own lock prompts. All four
+smoke cases green on the FCM-enabled APK: boot/pair/unlock/navigate,
+bundle staging (a genuine swap — the installed APK's bundle differed from
+the backend's), the notification-tap route, and the push last hop — a
+real message through the owner's Firebase project and Google into the
+tray, redaction rule observed on the far side.
+
+Two additions made it repeatable rather than a one-off:
+`AO_ANDROID_HUMAN_LOCK=1` (the suite waits for the owner instead of
+typing the emulator PIN at a real lockscreen, and wakes/waits for the
+keyguard — a dozing phone renders frozen frames, so every click stalls
+"waiting for stable") and the self-skipping real-push case behind
+`AO_ANDROID_PUSH_CREDENTIAL` (a manual gate in the `provider-smoke`
+sense). `google-services.json` sits gitignored at
+`mobile/android/app/`; the service-account key stays outside the repo.

@@ -434,7 +434,10 @@ nobody compiles.
 last hop.** Everything up to it — what the backend composes, who it is
 sent to, what the tray does with each message — is covered by
 `internal/push`, `internal/app`, the Playwright spec, and
-`TrayNotifierTest`.
+`TrayNotifierTest`. The hop itself has a manual case:
+`e2e/android/shell-boot.spec.ts`'s real-push test, self-skipped unless
+`AO_ANDROID_PUSH_CREDENTIAL` names the service-account key (first real
+delivery 2026-09-04, Pixel 9a).
 
 ## Backup and device transfer are off
 
