@@ -129,6 +129,12 @@ External repos and tools we track, and how to use them. Under
 | [`ao-cli.md`](references/ao-cli.md) | The `ao` scoped-token CLI: command tree and `--json` result shapes. |
 | [`fixtures/`](references/fixtures/) | Recorded provider wire captures backing `claude-wire.md` and the parser replay tests. |
 
+## Handoffs
+
+[`handoffs/`](handoffs/) holds dated briefs written for an agent on
+another machine (what to validate there, what is already decided).
+Transient: delete a brief once its work has landed.
+
 ## Glossary
 
 [`GLOSSARY.md`](GLOSSARY.md) holds coined vocabulary and the terms that
