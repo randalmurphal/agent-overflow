@@ -1,6 +1,12 @@
 import '@testing-library/jest-dom/vitest';
 import './helpers/firstDivergence';
-import { afterEach, beforeEach } from 'vitest';
+import { afterEach, beforeEach, vi } from 'vitest';
+
+// happy-dom stores scrollTop verbatim and has no layout engine. The browser
+// suites exercise real calibration; unit controllers use a whole-CSS-pixel engine.
+vi.mock('../lib/utils/scroll/grid', () => ({
+  documentScrollGrid: () => ({ quantum: 1, writeOffset: 0, readbackError: 0 }),
+}));
 import { cleanup } from '@testing-library/svelte';
 import { resetWailsMocks } from './mocks/wailsio-runtime';
 import { resetBindingMocks } from './mocks/bindings-app';

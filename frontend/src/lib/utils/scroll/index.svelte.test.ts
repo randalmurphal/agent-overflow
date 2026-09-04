@@ -130,6 +130,32 @@ describe('createUseStickToBottomController', () => {
     return ro;
   }
 
+  it('RO-sourced spring ticks reuse their target and authoritative write readback', async () => {
+    getRO().fire(contentEl, 800);
+    controller.skipWarmup();
+    controller.markStructuralContentPending();
+    geom.scrollHeight = 1600;
+    geom.contentHeight = 1400;
+    getRO().fire(contentEl, 1400);
+    const height = vi.spyOn(scrollEl, 'scrollHeight', 'get');
+    const top = vi.spyOn(scrollEl, 'scrollTop', 'get');
+    const writes = vi.spyOn(scrollEl, 'scrollTop', 'set');
+    for (let i = 0; i < 6; i++) await nextFrame();
+    expect(writes).toHaveBeenCalledTimes(6);
+    expect(height).toHaveBeenCalledTimes(6);
+    expect(top).toHaveBeenCalledTimes(12); // pre-tick current + post-write readback
+    expect(geom.scrollTop).toBeGreaterThan(400);
+    expect(geom.scrollTop).toBeLessThan(1000);
+    // A viewport change still refreshes real geometry on the next tick.
+    geom.clientHeight = 700;
+    await nextFrame();
+    expect(geom.scrollTop).toBeLessThanOrEqual(900);
+    controller.setEscapedFromLock(true);
+    fireScroll(scrollEl);
+    await nextTimer();
+    expect(controller.isAtBottom).toBe(false);
+  });
+
   describe('initial state', () => {
     it('starts isSticky=true and isAtBottom=true', () => {
       // distance = 1000 - 400 - 600 = 0, ≤ 70 → near-bottom true.
@@ -7408,7 +7434,7 @@ describe('createUseStickToBottomController — external content-geometry source'
       expect(geom.scrollTop).toBe(400);
     });
 
-    it.each([60, 120, 165, 240])('viewport deliveries preserve a send glide at %sHz, even after its append window expires', async (hz) => {
+    it.each([30, 60, 120, 165, 220, 240])('viewport deliveries preserve a send glide at %sHz, even after its append window expires', async (hz) => {
       deliverWithViewport(800, 400);
       controller.skipWarmup();
       controller.markStructuralContentPending();

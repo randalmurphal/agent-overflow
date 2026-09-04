@@ -101,6 +101,7 @@ function formatValue(v: number): string {
 }
 
 const GLOW_CLASSES = ['status-glow-warning', 'status-glow-info'] as const;
+const GLOW_SELECTOR = GLOW_CLASSES.map((name) => `.${name}`).join(',');
 
 /** Consecutive empty ticks before the timer suspends. One second, so a
  * surface that briefly has no indicator does not thrash the timer off
@@ -164,16 +165,34 @@ function arm(): void {
  * without either being inserted or having its class list rewritten, so
  * those two mutations are the complete wake set — the timer resumes in
  * the same microtask checkpoint as the change that needs it, with no
- * visible delay before the first write. The observer disconnects on its
- * first callback, so a busy document costs one callback per suspension,
- * never one per mutation.
+ * visible delay before the first write. Only inspect changed classes and
+ * inserted subtrees: unrelated streaming must not restart eight full-document
+ * scans a second. Disconnect once an actual consumer wakes the timer.
  */
 function armWake(): void {
   if (typeof MutationObserver !== 'function' || document.body === null) {
     arm();
     return;
   }
-  wake = new MutationObserver(syncNow);
+  wake = new MutationObserver((records) => {
+    for (const record of records) {
+      if (record.type === 'attributes') {
+        const target = record.target;
+        if (target instanceof Element && target.isConnected && target.matches(GLOW_SELECTOR)) {
+          syncNow();
+          return;
+        }
+      } else {
+        for (const node of record.addedNodes) {
+          if (node instanceof Element && node.isConnected
+            && (node.matches(GLOW_SELECTOR) || node.querySelector(GLOW_SELECTOR))) {
+            syncNow();
+            return;
+          }
+        }
+      }
+    }
+  });
   wake.observe(document.body, {
     childList: true,
     subtree: true,

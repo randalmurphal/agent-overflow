@@ -72,7 +72,11 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
   - `chokepoint.ts` is the single `writeScrollTop` chokepoint every
     programmatic write routes through, plus its satellites: the
     provenance ledger, arrival-readback acceptance, and spring-tick
-    trace sampling. It records the requested-to-readback quantization
+    trace sampling. Each spring write carries its same-tick bottom target;
+    the post-write near-bottom update uses that target and the authoritative
+    write readback. RO-backed scrollers still refresh geometry each tick,
+    but no longer reread the same range and position after writing.
+    It records the requested-to-readback quantization
     error but does not render a second position. Controller content must
     not carry authored `will-change`, `translate`, or `rotate` state.
     A permanent content layer caused stale WebView2 pixels while state,
@@ -80,7 +84,8 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     promote/demote leases also caused three raster-transition flickers.
     The spring instead authors whole grid pixels in its motion model
     (below). Real-Chromium coverage pins CSS-pixel quantization at DPR
-    1, 1.25, 1.5, and 2 — the premise of the spring's grid witness. It
+    1, 1.25, 1.5, and 2 at default browser zoom. `grid.ts` measures the
+    actual scroll lattice when scale changes; DPR alone is insufficient. It
     also pins constant hairline raster energy while fractional DPR
     turns equal CSS-space steps into alternating device-pixel displacement.
     The soak rig's `make soak-contract` check verifies quantization and
@@ -126,7 +131,7 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     only at cruise (8+ pixels a tick) is the residue carried for an
     exact average rate. The **motion floor** is a rung of that ladder,
     derived per tick from the grid and the measured frame cadence
-    (`quantizedFloorRung`: closest in ratio to 60px/s, never under 45
+    (`cadence.ts#quantizedFloorStep`: closest in ratio to 60px/s, never under 45
     changes a second — 1 CSS px per 60Hz frame at DPR 1 and 2, one per
     two frames at 120Hz DPR 1, one per three at 165Hz DPR 1 (55px/s),
     one device pixel per frame on a 2.625× 120Hz phone), and once a
@@ -134,17 +139,26 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     There is no sub-pixel tail; the landing **cradle** is on the grid
     instead — the last `SPRING_LANDING_CRADLE_EVENTS` (3) pixel events
     run at k, 2k, 3k ticks, the ritardando of the 2026-07-04 feedback
-    made even, and 0 is a flat stop. The grid is witnessed from
-    readback, page-wide (one engine, module state): device pixels until
-    an interior write off the CSS-pixel grid reads back ON it, moved
-    (desktop Chromium rounds) or unmoved (macOS WKWebView floors: the
-    2026-09-04 spike), and a readback off the CSS grid latches the
-    device grid for good. A witness that waited for motion froze every
-    Retina glide above 60Hz on WebKit, where a half-pixel write never
-    moves. The 120Hz phone result is unit-traced only; the Android
-    emulator runs at 60Hz.
-    Carried
-    momentum decays by the slew factor per real elapsed frame while
+    made even, and 0 is a flat stop. `grid.ts` measures both the accepted
+    position increment and the interior write offset on a private scroller,
+    cached per document and invalidated by resize or DPR change. The reader's
+    scroller never moves for calibration. A 2x monitor at 125% browser zoom
+    reports DPR 2.5 but accepts 0.8 CSS px increments, not 0.4; treating every
+    fractional readback as a device grid froze the old spring near arrival.
+    Floor-based engines receive interior writes centered in their accepted
+    interval so floating-point error cannot discard a pixel. Exact target
+    writes remain exact. Scale changes reset the cadence residue and floor
+    latch. The scalar floor calculation allocates nothing per tick; refusal
+    backoff skips grid calibration and the floor calculation too. Browser tests cover
+    real engine scaling, and unit tests cover floor/round engines, limited
+    readback precision, 30–480Hz (including 165, 220, and 240Hz), and scale
+    changes in either direction. The cadence estimator accepts 20–1000Hz
+    samples, rejects suspension gaps, and requires three consistent samples
+    before accepting a large slowdown; one dropped frame cannot select a
+    different motion floor. The old 3–21ms sample window never learned 30Hz
+    or 360/480Hz.
+    Native macOS and Android 120Hz validation remains a device test tier.
+    Carried momentum decays by the slew factor per real elapsed frame while
     parked, so a brief inter-quantum catch-up resumes at speed while a
     longer pause re-enters at the base ramp. Also owns the
     resume snap: after an observed rAF discontinuity (tick gap
@@ -1017,7 +1031,9 @@ is harmless. Each arm also schedules a one-frame-after-flush
 `observe('live-content')` nudge, so growth that never fires a
 content-geometry delta (a thinking row tail-pins its clipped body
 internally while the next top-level row mounts) still gets a bottom
-re-check; a monotonic token cancels superseded nudges and a
+re-check. A burst shares one pending flush and one owned frame/timeout
+pair, with both handles cancelled on replacement, opt-out, or detach. A
+monotonic token rejects already-dispatched stale callbacks and a
 `switchGeneration` capture cancels stale ones across switch/reload/clear.
 
 Restore safety is layered: `armStructuralSpring` itself gates on
@@ -1116,6 +1132,13 @@ All four are stepped, which is a separate rule with its own incident
 presents/sec client that stuttered *other applications*) and its own
 check in the same file, run over `app.css` rather than over this
 directory, because that hazard is document-wide.
+
+The status ring's non-compositable shadow uses `ambientTicker.ts` instead.
+When no glow is present, its wake observer inspects only changed classes and
+inserted subtrees for glow consumers. Unrelated streaming leaves the timer
+suspended; waking on every mutation restarted eight document scans a second
+as long answers grew. A real consumer still receives its first write in the
+same mutation checkpoint, with the existing stepped waveform unchanged.
 
 One in-scroller-adjacent animation is allowlisted rather than removed:
 `MessageTimeline`'s explicit-jump landing flash is an overlay on the
@@ -1573,10 +1596,10 @@ Useful trace records:
   rate for 37k ticks and the first accepted write after the element
   healed teleported the clip 940px. The guard (spring.ts, "Write-refusal
   guard") classifies every write three ways from a same-tick
-  write+readback: MOVED (heals a latch), REFUSED (no motion on a ≥1.5px
-  request, which re-anchors the model to the element's true position, so a
+  write+readback: MOVED (heals a latch), REFUSED (no motion on a whole
+  measured grid step outside the arrival band, which re-anchors the model to the element's true position, so a
   heal can only be a bounded glide, never a teleport), and INCONCLUSIVE
-  (no motion, sub-threshold, evidence of nothing; deliberately does
+  (no motion on a sub-grid landing, evidence of nothing; deliberately does
   NOT heal, so a still-wedged sliver can't silently unlatch). Five
   consecutive refusals latch the whole tick body, forced-layout reads
   included, to ~4Hz samples with a parked-style velocity decay. The

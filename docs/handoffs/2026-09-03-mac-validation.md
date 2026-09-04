@@ -405,3 +405,53 @@ written.
     WKWebView harness window runs rAF only while frontmost. Reveal it
     (`bin/ao-harness rpc HarnessWindowCommand '{"action":"reveal"}'`)
     right before a timing-sensitive send.
+
+### September 4 review follow-up
+
+The historical grid-witness fixes above are superseded by `scroll/grid.ts`
+calibration. Real Chromium tab zoom at 125% on a 2x display accepted 0.8 CSS px
+steps while reporting DPR 2.5; the witness selected 0.4px and stalled. The
+controller now measures quantum and flooring offset on a private scroller,
+refreshes on scale changes, and counts refused whole-grid steps toward backoff.
+The Windows send trace also exposed an instant viewport-only write during an
+active glide; that path now uses the same policy as composer geometry.
+`sendViewport.browser.test.ts` fails with the old handler (401 to 877px snap)
+and passes with the shared policy. Native device validation is still required
+for the macOS and Android display-specific tiers described above.
+
+
+Validation for the review fixes:
+
+- Controller and real-DOM tests cover send/viewport ordering, idle keyboard
+  pinning, escape, pause, reduced motion, scale changes, and the landing cradle.
+  The browser matrix drives 30/60/120/165/220/240Hz timestamps at five scales;
+  these are controlled clocks, not physical high-refresh display measurements.
+- The final six-pane/four-stream, 90-second Windows Chrome run used the real
+  165Hz display (2560x1440, DPR 1; measured median frame interval 6.1ms).
+  It averaged 164.6fps; frame work was 5.0ms p95 and 98.1% fit 6.06ms.
+  The longest frame gap was 42.5ms, so this is not a zero-drop claim.
+  Separate headless Linux Chromium at 60Hz measured 7.0ms p95, with 89.2%
+  fitting 6.06ms and 67.0% fitting 4.17ms. These are different rendering
+  environments, not an A/B comparison or physical 240Hz certification.
+- A UI-driven multiline send in that isolated Windows browser collapsed the
+  composer from 200px to 28px. The sent row traversed 257 distinct sampled
+  positions; the largest forward scroll step was 9px, rather than the old
+  205px viewport-only snap. This geometry-instrumented pass verifies motion,
+  not performance. The developer's running WebView2 app remained read-only.
+- The late profile also identified document-wide ambient-glow scans despite
+  no glow consumers. The wake observer now filters unrelated stream mutations;
+  its regression tests fail the old implementation and preserve immediate
+  nested-insertion/class-change wakeups, removal cleanup, and stop/restart.
+- In an isolated same-document 180-switch retention probe, DOM/listener counts
+  stabilized after warm-up (3,578 nodes / 242 listeners); post-GC JS heap rose
+  from 13.8MB to 16.0MB with tapering increments. This does not establish the
+  cause of the owner's reported build-to-build process-memory increase.
+- Native macOS/Android/WebView2 painting and physical 220/240Hz validation
+  remain unrun here. Linux Playwright WebKit could not launch because host JPEG and
+  GStreamer dependencies are absent. The existing activity-run think-collapse
+  browser case still reports bounded ResizeObserver delivery warnings.
+
+Required Go build/tests and frontend check/build passed; the full frontend unit
+suite passed 11,756 tests (5 existing skips), and the six focused browser files
+passed 68 tests. The isolated harness and all owned harness browsers were
+stopped after validation; no installed developer binary was replaced.

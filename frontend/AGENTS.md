@@ -287,10 +287,17 @@ Print Doctrine, directory rules in
   (frontend-scroll.md § Intent And Programmatic Writes). The run map
   carries the same contract separately
   ([`workflow-run-map.md`](../docs/architecture/workflow-run-map.md) §9).
+- Scroll motion uses the engine's measured write lattice, never DPR or an
+  integer/fractional readback as a proxy. Browser zoom and flooring engines
+  require separate quantum and write-offset calibration. Exercise scale
+  transitions and refused one-grid-pixel writes at high refresh rates.
 - Work is never shed because something is off-view. Prepaint or tile
   shedding, `animation-play-state` pausing, conditional unmounting and
   conditional layer demotion are all banned: the common case is a reader
   bouncing between panes. Make the always-on unit cheaper instead.
+- A suspended ambient ticker wakes only for mutations that introduce its
+  consumer. Unrelated streamed text or classes must not restart periodic
+  document scans (`ambientTicker.test.ts`).
 
 ## Rendering
 

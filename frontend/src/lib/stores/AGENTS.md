@@ -507,6 +507,11 @@ stops waking readers.
 
 ## The ThreadPane modules
 
+- Structural scroll nudges own one flush/frame/timeout schedule per pane.
+  Coalesce bursts while arming synchronously; replacement, opt-out, and
+  detach cancel both handles. Test stale callbacks after reattachment and
+  hidden-window timeout completion (`threadPaneScrollScheduling.svelte.test.ts`).
+
 `thread.svelte.ts` is the composition root, not a monolith. Each module
 below is constructed ONCE PER PANE inside `createThreadPane`, never shared
 between panes and never keyed independently, so the sole-ownership rule

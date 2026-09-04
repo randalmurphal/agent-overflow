@@ -225,6 +225,50 @@ describe('startAmbientTicker', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it('stays suspended through unrelated streaming mutations and wakes for nested or newly marked glows', async () => {
+    const host = addFixture('<div></div>');
+    start();
+    vi.advanceTimersByTime(AMBIENT_SLOT_MS * 12);
+    const scans = vi.spyOn(document, 'getElementsByClassName');
+    try {
+      for (let batch = 0; batch < 20; batch++) {
+        host.append(document.createTextNode('stream'), document.createElement('p'));
+        host.className = `stream-${batch}`;
+        await Promise.resolve();
+        vi.advanceTimersByTime(AMBIENT_SLOT_MS);
+      }
+      expect(scans).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+
+      const nested = document.createElement('section');
+      nested.innerHTML = '<div><span class="status-glow-info"></span></div>';
+      host.append(nested);
+      await Promise.resolve();
+      const glow = nested.querySelector('span')!;
+      expect(glowVar(glow)).toBe(String(glowTAt(Date.now())));
+      nested.remove();
+      vi.advanceTimersByTime(AMBIENT_SLOT_MS * 12);
+      expect(glowVar(glow)).toBe('');
+      expect(vi.getTimerCount()).toBe(0);
+
+      host.className = 'status-glow-warning';
+      await Promise.resolve();
+      expect(glowVar(host)).toBe(String(glowTAt(Date.now())));
+      expect(vi.getTimerCount()).toBe(1);
+    } finally {
+      scans.mockRestore();
+    }
+  });
+
+  it('does not wake for a glow removed before mutation delivery', async () => {
+    start();
+    vi.advanceTimersByTime(AMBIENT_SLOT_MS * 12);
+    const transient = addFixture('<div class="status-glow-info"></div>');
+    transient.remove();
+    await Promise.resolve();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('sweeps the glow variable from elements that lose their marker class', () => {
     const glow = addFixture('<div class="status-glow-warning"></div>');
     const stop = start();

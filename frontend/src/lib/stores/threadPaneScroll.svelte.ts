@@ -13,7 +13,7 @@
 // timeline data — the item count arrives through a dep, and the live-content
 // stamp stays on the pane because it is read imperatively by the controller.
 
-import { tick } from 'svelte';
+import { tick, untrack } from 'svelte';
 import type { Thread } from '../types/models';
 import {
   threadUsesDiscussionSurface,
@@ -90,36 +90,52 @@ export function createThreadPaneScroll(
   // through it, and every consumer re-reads the slot itself.
   let scrollController: PaneScrollController | null = $state.raw(null);
 
-  // Monotonic token that cancels superseded structural nudges: bumped by
-  // every armStructuralSpring() call so only the latest scheduled nudge
-  // fires. Switch/reload/clear staleness is covered by the
-  // `switchGeneration` capture in the nudge itself, matching the store's
-  // universal post-await staleness idiom.
+  // One flush and one frame/timeout pair per pane. Bursts replace the
+  // pending intent instead of allocating an async chain for every append.
   let structuralNudgeToken = 0;
-
-  // WebKit suspends rAF for hidden/minimized windows while wire batches
-  // keep flushing on timeouts, so a bare rAF await would park one nudge
-  // chain per append-bearing flush until the window is restored. Race a
-  // short timeout against the frame: the nudge is a cheap escape-aware
-  // re-check, so firing it on the timeout path while hidden is harmless,
-  // and each chain's lifetime stays bounded either way.
+  let nudgeController: PaneScrollController | null = null;
+  let nudgeGeneration = 0;
+  let nudgeFlushPending = false;
+  let nudgeFrame: number | null = null;
+  let nudgeTimer: ReturnType<typeof setTimeout> | null = null;
   const HIDDEN_FRAME_FALLBACK_MS = 32;
-  function nextAnimationFrame(): Promise<void> {
-    return new Promise((resolve) => {
-      if (typeof requestAnimationFrame !== 'function') {
-        setTimeout(resolve, 0);
-        return;
-      }
-      let settled = false;
+
+  function cancelNudge(): void {
+    structuralNudgeToken += 1;
+    if (nudgeFrame !== null) cancelAnimationFrame(nudgeFrame);
+    if (nudgeTimer !== null) clearTimeout(nudgeTimer);
+    nudgeFrame = null;
+    nudgeTimer = null;
+    nudgeController = null;
+  }
+
+  function scheduleNudge(controller: PaneScrollController): void {
+    nudgeController = controller;
+    nudgeGeneration = options.getSwitchGeneration();
+    if (nudgeFlushPending) return;
+    nudgeFlushPending = true;
+    void tick().then(() => {
+      nudgeFlushPending = false;
+      const expectedController = nudgeController;
+      if (!expectedController) return;
+      const token = structuralNudgeToken;
+      const generation = nudgeGeneration;
       const settle = (): void => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timeoutHandle);
-        cancelAnimationFrame(rafHandle);
-        resolve();
+        if (token !== structuralNudgeToken) return;
+        cancelNudge();
+        if (generation !== options.getSwitchGeneration()) return;
+        if (scrollController !== expectedController || options.getLoading()) return;
+        if (threadUsesDiscussionSurface(options.getThread())) return;
+        expectedController.observe('live-content');
       };
-      const rafHandle = requestAnimationFrame(settle);
-      const timeoutHandle = setTimeout(settle, HIDDEN_FRAME_FALLBACK_MS);
+      // Hidden WebViews suspend rAF while wire batches keep arriving.
+      // Either boundary releases both handles; teardown cancels them too.
+      if (typeof requestAnimationFrame === 'function') {
+        nudgeFrame = requestAnimationFrame(settle);
+        nudgeTimer = setTimeout(settle, HIDDEN_FRAME_FALLBACK_MS);
+      } else {
+        nudgeTimer = setTimeout(settle, 0);
+      }
     });
   }
 
@@ -162,21 +178,13 @@ export function createThreadPaneScroll(
    *   window on unrelated channel-message growth.
    */
   function armStructuralSpring(): boolean {
+    cancelNudge();
     const controller = scrollController;
     if (!controller) return false;
     if (options.getLoading()) return false;
     if (threadUsesDiscussionSurface(options.getThread())) return false;
     controller.markStructuralContentPending();
-    const token = ++structuralNudgeToken;
-    const generation = options.getSwitchGeneration();
-    void (async () => {
-      await tick();
-      await nextAnimationFrame();
-      if (token !== structuralNudgeToken) return;
-      if (generation !== options.getSwitchGeneration()) return;
-      if (scrollController !== controller) return;
-      controller.observe('live-content');
-    })();
+    scheduleNudge(controller);
     return true;
   }
 
@@ -235,6 +243,7 @@ export function createThreadPaneScroll(
       return scrollController;
     },
     attach(controller: PaneScrollController): void {
+      if (untrack(() => scrollController) !== controller) cancelNudge();
       scrollController = controller;
     },
     detach(controller: PaneScrollController): void {
@@ -243,6 +252,7 @@ export function createThreadPaneScroll(
       // controller during fast thread switches. Depends on the slot being
       // `$state.raw`; see its declaration.
       if (scrollController === controller) {
+        cancelNudge();
         scrollController = null;
       }
     },

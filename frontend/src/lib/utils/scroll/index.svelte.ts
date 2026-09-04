@@ -62,6 +62,7 @@ import { isUiRenderTraceEnabled } from '../uiRenderTrace';
 import { reportFrontendDiagnostic } from '../frontendErrorCapture';
 import { createScrollIntent, isSelectingInside } from './intent';
 import { createContentObserver } from './observers';
+import { documentScrollGrid } from './grid';
 import type { EngineCompensation } from '../virtual/types';
 import {
   ARRIVAL_DISTANCE_PX,
@@ -298,22 +299,21 @@ export function createUseStickToBottomController(
     return dist;
   }
 
-  function refreshIsNearBottomAfterWrite(
-    caller: ScrollWriteCaller,
-    scrollTop: number,
-  ): number {
-    if (
-      options.externalContentGeometry === true
-      && cachedBottomTargetValid
-      && caller.startsWith('spring.')
-    ) {
-      cachedScrollTop = scrollTop;
-      cachedGeometryValid = true;
-      const dist = cachedBottomTarget - scrollTop;
-      setIsNearBottomFromDistance(dist);
-      return dist;
+  function refreshIsNearBottomAfterWrite(scrollTop: number, bottomTarget?: number): number {
+    // The chokepoint already read back the position. Spring writes also
+    // carry their same-tick target; reuse both before notifying consumers.
+    cachedScrollTop = scrollTop;
+    cachedGeometryValid = true;
+    let target = bottomTarget;
+    if (target === undefined) {
+      const height = scrollEl?.scrollHeight ?? 0;
+      const viewport = scrollEl?.clientHeight ?? 0;
+      cachedGeometryFloored = height <= viewport;
+      target = Math.max(0, height - viewport);
     }
-    return refreshIsNearBottom();
+    const dist = target - scrollTop;
+    setIsNearBottomFromDistance(dist);
+    return dist;
   }
 
   /**
@@ -488,7 +488,7 @@ export function createUseStickToBottomController(
     writeScrollTop,
     liveContentActive: liveContentActiveNow,
     prefersReducedMotion: motionReduced,
-    devicePixelRatio: () => window.devicePixelRatio,
+    scrollGrid: () => documentScrollGrid(scrollEl?.ownerDocument ?? document),
     forceNextSpringTickTrace,
     scrollTopUnexplained,
     reportWriteRefusal,

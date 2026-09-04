@@ -45,7 +45,7 @@ export interface WriteChokepointDeps {
   /** ≤1px arrival tolerance over the live scrollTop (controller geometry helper). */
   scrollTopIsAtTarget(target: number): boolean;
   /** Post-write near-bottom refresh — touches the controller's $state flag. */
-  refreshIsNearBottom(caller: ScrollWriteCaller, scrollTop: number): number;
+  refreshIsNearBottom(scrollTop: number, bottomTarget?: number): number;
   /**
    * The intent machine's programmatic-write tag (late-bound: the
    * machine is constructed after the chokepoint; the thunk is only
@@ -62,8 +62,9 @@ export interface WriteChokepointDeps {
 }
 
 export interface WriteChokepoint {
-  /** Write through the chokepoint and return the browser-rounded readback. */
-  writeScrollTop(caller: ScrollWriteCaller, value: number): number | undefined;
+  /** Write and return the browser-rounded readback. A caller that just
+   * sampled the bottom target can pass it to avoid repeating layout reads. */
+  writeScrollTop(caller: ScrollWriteCaller, value: number, bottomTarget?: number): number | undefined;
   /** Ledger check: live scrollTop differs from the last explained position. */
   scrollTopUnexplained(): boolean;
   /** Intent-machine hook: a user-classified scroll event explains its position. */
@@ -114,7 +115,7 @@ export function createWriteChokepoint(deps: WriteChokepointDeps): WriteChokepoin
       return !arrivalReadback.matches(target);
     },
     writeExact(caller: ScrollWriteCaller, target: number): void {
-      writeScrollTop(caller, target);
+      writeScrollTop(caller, target, target);
       arrivalReadback.record(target);
     },
     clear(): void {
@@ -142,7 +143,7 @@ export function createWriteChokepoint(deps: WriteChokepointDeps): WriteChokepoin
   }
 
   // ===== The write =====
-  function writeScrollTop(caller: ScrollWriteCaller, value: number): number | undefined {
+  function writeScrollTop(caller: ScrollWriteCaller, value: number, bottomTarget?: number): number | undefined {
     const scrollEl = deps.getScrollEl();
     if (!scrollEl) return undefined;
     // Hot path: spring follow can call this every frame. The app contract is
@@ -180,8 +181,8 @@ export function createWriteChokepoint(deps: WriteChokepointDeps): WriteChokepoin
     // match sees the same value the scroll event will report.
     const taggedTop = scrollEl.scrollTop;
     lastExplainedScrollTop = taggedTop;
+    deps.refreshIsNearBottom(taggedTop, bottomTarget);
     deps.noteProgrammaticWrite(taggedTop);
-    deps.refreshIsNearBottom(caller, taggedTop);
     if (shouldTrace) {
       trace('scroll.write', () => ({
         caller,
