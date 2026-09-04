@@ -220,6 +220,30 @@ new file mode 100644
     expect(extractPatchFile(typeChangePatch, 'other.ts')).toContain('+b');
   });
 
+  it('treats the no-newline marker as metadata, not a numbered line', () => {
+    const file = parsePatchFiles(`diff --git a/a.ts b/a.ts
+--- a/a.ts
++++ b/a.ts
+@@ -1 +1 @@
+-old
+\\ No newline at end of file
++new
+\\ No newline at end of file
+`)[0]!;
+    expect(file).toMatchObject({ additions: 1, deletions: 1 });
+    expect(file.lines.filter((line) => line.content.startsWith('\\')).map((line) => line.type)).toEqual([
+      'meta',
+      'meta',
+    ]);
+    // Before: the marker took old 2 / new 1 as a context row and `+new`
+    // landed on new line 2.
+    const rows = filePatchDisplayRows(file).filter((row) => !row.gap);
+    expect(rows.map((row) => [row.line.type, row.oldLine, row.newLine])).toEqual([
+      ['del', 1, 0],
+      ['add', 0, 1],
+    ]);
+  });
+
   it('derives old and new line anchors from hunk headers', () => {
     const [file] = parsePatchFiles(`diff --git a/app.ts b/app.ts
 --- a/app.ts

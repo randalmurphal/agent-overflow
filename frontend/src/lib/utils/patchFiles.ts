@@ -801,6 +801,13 @@ export function formatHunkHeader(
 
 function isPatchMetaLine(line: string): boolean {
   return line.startsWith('@@')
+    // `\ No newline at end of file`: git's annotation on the line
+    // above, never a line of either side. Read as context it took a
+    // number on both sides and shifted every row after it by one —
+    // a comment anchored on the last line of a file with no trailing
+    // newline landed one line off (`internal/highlight/patch.go` has
+    // always skipped it; this is the frontend's matching rule).
+    || line.startsWith('\\')
     || line.startsWith('diff ')
     || line.startsWith('---')
     || line.startsWith('+++')

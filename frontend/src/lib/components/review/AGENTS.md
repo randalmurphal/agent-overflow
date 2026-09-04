@@ -265,7 +265,11 @@ read tail-first.
   `extractPatchFile` hands back both sections as that file's patch.
   This repo's own `CLAUDE.md` → `AGENTS.md` symlink convention makes the
   shape routine, in every scope. Only the (deleted, added) pair folds;
-  the edits-scope multi-section shape below never matches it.
+  the edits-scope multi-section shape below never matches it. Same
+  parser, same class: `\ No newline at end of file` is `meta` (git's
+  annotation on the line above), matching `internal/highlight/patch.go`;
+  read as context it numbered itself and shifted every row after it,
+  so a comment on a file's last line anchored one line off.
 - **Edits scope** renders persisted tool-call diff payloads (the
   historical change itself, correct after commits/rebases), never a
   git recomputation. `ListThreadEditDiffs` lists metadata only; the
