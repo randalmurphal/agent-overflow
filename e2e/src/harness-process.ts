@@ -80,6 +80,18 @@ export async function captureProcessIdentity(pid: number | undefined): Promise<P
   throw new Error(`harness watchdog: could not observe exec'd process ${pid}`);
 }
 
+/**
+ * The one spelling of a darwin process's `lstart` birth marker, from its
+ * whitespace-split fields. `ps` pads a single-digit day to width two
+ * (`Thu Sep  3 21:41:58 2026`), so the per-pid capture and the
+ * whitespace-split tree snapshot must meet here rather than compare a raw
+ * string against a rejoined one: that mismatch tripped the watchdog on
+ * every darwin harness launched on the 1st through the 9th of a month.
+ */
+export function darwinBirth(fields: readonly string[]): string {
+  return fields.join(' ');
+}
+
 function sameProcessIdentity(left: ProcessIdentity, right: ProcessIdentity): boolean {
   if (left.pid !== right.pid || left.birth !== right.birth || left.groupId !== right.groupId) {
     return false;
@@ -118,7 +130,12 @@ async function captureProcessIdentityOnce(pid: number): Promise<ProcessIdentity>
     if (!birth.trim() || !executable.trim() || !group.trim()) {
       throw new Error(`harness watchdog: process ${pid} is gone`);
     }
-    return { pid, birth: birth.trim(), executable: executable.trim(), groupId: Number(group.trim()) };
+    return {
+      pid,
+      birth: darwinBirth(birth.trim().split(/\s+/)),
+      executable: executable.trim(),
+      groupId: Number(group.trim()),
+    };
   }
   if (process.platform === 'win32') {
     const script =
@@ -321,7 +338,7 @@ async function processRows(): Promise<ProcessRow[]> {
       const ppid = Number(fields[1]);
       const groupId = Number(fields[2]);
       const rss = Number(fields[3]);
-      const birth = fields.slice(4, 9).join(' ');
+      const birth = darwinBirth(fields.slice(4, 9));
       const executable = fields.slice(9).join(' ');
       return Number.isInteger(pid) && Number.isInteger(ppid) && Number.isInteger(groupId) && Number.isFinite(rss)
         ? [{ pid, ppid, birth, executable, groupId, rssBytes: rss * 1024 }]

@@ -7,6 +7,7 @@ import { launchHarness } from '../src/harness.js';
 import {
   captureProcessGroupMemberProof,
   captureProcessIdentity,
+  processTreeRSS,
   terminateChildTreeAndWaitVerified,
   verifyProcessGroupMemberProof,
 } from '../src/harness-process.js';
@@ -165,4 +166,16 @@ test('reconciles an owned descendant after the bootstrap process exits', async (
   } finally {
     await rm(fake.root, { recursive: true, force: true });
   }
+});
+
+// The per-pid identity and the process-tree snapshot come from two
+// different `ps` invocations on darwin, and the watchdog kills a harness
+// whose birth marker disagrees between them. This runs both against the
+// test's own process, so a parser that spells the marker differently
+// (2026-09-03: `lstart` pads a single-digit day with two spaces, and the
+// tree parser rejoined the split fields with one) fails here instead of
+// killing every backend the suite launches.
+test('the tree snapshot recognises the identity the per-pid capture took', async () => {
+  const identity = await captureProcessIdentity(process.pid);
+  await expect(processTreeRSS(identity)).resolves.toBeGreaterThan(0);
 });
