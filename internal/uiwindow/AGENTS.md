@@ -1,10 +1,11 @@
 # internal/uiwindow/
 
-Wails glue for a live `WebviewWindow`, in two unrelated jobs. Placement: the
+Wails glue for a live `WebviewWindow`, in three unrelated jobs. Placement: the
 GUI-free logic in `internal/windowgeom`, restored into creation options and
 wired to a debounced persistence sink. Credential delivery: handing each
 document the window loads its one-time page ticket, so the URL it navigates to
-carries none (`internal/pagehost`).
+carries none (`internal/pagehost`). Reveal: bringing the window forward
+without changing its size.
 
 ## Layout
 
@@ -29,6 +30,16 @@ carries none (`internal/pagehost`).
   - `Track(window, restored, sink)` registers the move/resize/state events
     onto a `windowgeom.Tracker` and returns a flush func (also wired to
     `WindowClosing`; call it again after the app loop as a backstop).
+- `reveal.go`
+  - `Reveal(window)` brings the window forward without changing its size:
+    `Show`, `UnMinimise` only if minimised, `Focus`. Every "bring the app
+    forward" path (OS notification click, second launch of the binary)
+    goes through it. NEVER `Window.Restore()` for this: Wails defines
+    Restore as "undo minimised / fullscreen / maximised", so revealing a
+    maximized window through it drops the window to its normal size (that
+    was the 2026-09-03 notification-click shrink). `reveal_test.go` fails
+    the build on any zero-arg `.Restore()` call in a file importing the
+    Wails application package.
 - `pageticket.go`
   - `DeliverPageTicket(window, mint)` subscribes to `WindowRuntimeReady` and
     answers each one by minting a ticket and `ExecJS`-ing
@@ -66,6 +77,8 @@ carries none (`internal/pagehost`).
 
 - `main_desktop.go` (native desktop and the `--connect` stub's window,
   `!nogui`).
+- `internal/app/app_notifications_desktop.go` (`!nogui`): `Reveal` on a
+  notification click.
 - `cmd/agent-overflow-windows/main.go` (WSL launcher, `windows`). It gates
   `DeliverPageTicket`'s `mint` on having a backend bootstrap, so the picker,
   loading and error pages — which are not the SPA and never announce — cannot

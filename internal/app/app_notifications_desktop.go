@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"agent-overflow/internal/notify"
+	"agent-overflow/internal/uiwindow"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/services/notifications"
@@ -222,11 +223,7 @@ func (n *desktopNotificationService) handleResponse(result notifications.Notific
 		return
 	}
 	if n.window != nil {
-		if window := n.window(); window != nil {
-			window.Show()
-			window.Restore()
-			window.Focus()
-		}
+		uiwindow.Reveal(n.window())
 	}
 	if err := n.app.activateNotificationTarget(target); err != nil {
 		log.Printf("notifications: ignore invalid activation target: %v", err)

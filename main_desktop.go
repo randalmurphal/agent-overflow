@@ -417,11 +417,7 @@ func desktopSingleInstanceOptions(window func() *application.WebviewWindow) *app
 	return &application.SingleInstanceOptions{
 		UniqueID: appidentity.SingleInstanceID("desktop", nativeSingleInstanceMode()),
 		OnSecondInstanceLaunch: func(_ application.SecondInstanceData) {
-			if w := window(); w != nil {
-				w.Show()
-				w.Restore()
-				w.Focus()
-			}
+			uiwindow.Reveal(window())
 		},
 	}
 }

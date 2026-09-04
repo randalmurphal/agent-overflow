@@ -1671,11 +1671,7 @@ func (a *launcherApp) startNotificationBridge(bs *wsllauncher.Bootstrap, launche
 }
 
 func (a *launcherApp) queueNotificationActivation(target notify.Target) {
-	if window := a.win(); window != nil {
-		window.Show()
-		window.Restore()
-		window.Focus()
-	}
+	uiwindow.Reveal(a.win())
 	a.mu.Lock()
 	dropped, startDrain := a.notificationActivations.Push(target, a.notificationClient != nil)
 	a.mu.Unlock()
@@ -1725,11 +1721,7 @@ func wslSingleInstanceOptions(window func() *application.WebviewWindow) *applica
 	return &application.SingleInstanceOptions{
 		UniqueID: appidentity.SingleInstanceID("wsl", wslSingleInstanceMode()),
 		OnSecondInstanceLaunch: func(_ application.SecondInstanceData) {
-			if w := window(); w != nil {
-				w.Show()
-				w.Restore()
-				w.Focus()
-			}
+			uiwindow.Reveal(window())
 		},
 	}
 }
