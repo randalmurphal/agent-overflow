@@ -45,6 +45,12 @@ func CaptureProcessIdentity(pid int) (ProcessIdentity, error) {
 	if err != nil {
 		return ProcessIdentity{}, fmt.Errorf("read process %d executable: %w", pid, err)
 	}
+	// When the binary is replaced on disk (every `make harness-build`
+	// over a running rig), the kernel appends " (deleted)" to the link
+	// target. That marker is procfs metadata, not part of the path, and
+	// leaving it in made `ao-harness down` refuse the very process it
+	// recorded at spawn. StartTime stays the anti-recycling evidence.
+	exe = strings.TrimSuffix(exe, " (deleted)")
 	procNS, err := os.Readlink(filepath.Join(base, "ns", "pid"))
 	if err != nil {
 		return ProcessIdentity{}, fmt.Errorf("read process %d pid namespace: %w", pid, err)
