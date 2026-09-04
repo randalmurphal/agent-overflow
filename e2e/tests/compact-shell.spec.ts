@@ -259,6 +259,10 @@ test('Settings is stacked screens on compact, with every control in reach', asyn
   const clipped = await page.evaluate(() => {
     const panel = document.querySelector('[id^="settings-panel-"]');
     if (!panel) return ['missing settings panel'];
+    // The page must not scroll sideways either: a long unbreakable token
+    // (a data-dir path in a hint) once forced exactly that.
+    if (panel.scrollWidth > panel.clientWidth + 1)
+      return [`panel scrolls horizontally: ${panel.scrollWidth} > ${panel.clientWidth}`];
     const vw = innerWidth;
     const out: string[] = [];
     for (const el of panel.querySelectorAll<HTMLElement>('button, select, input, textarea, a, [role="button"]')) {

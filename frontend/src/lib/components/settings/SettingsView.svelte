@@ -117,7 +117,11 @@
       id="settings-panel-{activeSection}"
       aria-labelledby="settings-tab-{activeSection}"
     >
-      <div class="mx-auto max-w-3xl">
+      <!-- `overflow-wrap: anywhere` so an unbreakable token (a data-dir
+           path in a hint, above all) wraps instead of forcing the whole
+           panel to scroll sideways at phone width. It only takes effect
+           where a token would otherwise overflow. -->
+      <div class="mx-auto max-w-3xl [overflow-wrap:anywhere]">
         <header
           class="mb-7 flex flex-col gap-1 border-b border-border-subtle pb-5"
           data-testid="settings-page-header"
