@@ -53,6 +53,16 @@ export function noteBundleReady(): void {
  * for the launch: no download is attempted, and the only fix is on the
  * app store side.
  */
+/**
+ * The person has read the sentence. It re-appears next launch if the
+ * staged bundle still has not been adopted, which is the right nag rate:
+ * once per launch, never once per minute. The `staged` latch survives so
+ * a later floor refusal still cannot replace what dismissal cleared.
+ */
+export function dismissBundleNotice(): void {
+  notice = '';
+}
+
 export function noteBundleTooOld(machineName: string): void {
   if (staged) return;
   const machine = clampString(machineName.trim() || 'this backend', MACHINE_NAME_MAX);

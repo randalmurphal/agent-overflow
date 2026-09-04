@@ -59,7 +59,7 @@
   // has a newer app than your phone" is one of those
   // (stores/bundleNotice.svelte.ts). Empty on every other client, which
   // is every client that cannot install a bundle.
-  import { getBundleNotice } from '../../stores/bundleNotice.svelte';
+  import { dismissBundleNotice, getBundleNotice } from '../../stores/bundleNotice.svelte';
 
   // Tick once per second so the countdown stays in sync. We only mount
   // when the banner is visible; on a steady-state connection the
@@ -244,6 +244,14 @@
   // not its backend's (the phone shell) is excluded: a passkey is bound
   // to the backend's domain, and the browser refuses the ceremony from
   // any other origin, so the button could only fail.
+  // The one persistent, healthy-transport thing this strip says. Unlike
+  // every connection state it never resolves on its own — the resolution
+  // is a restart the person chooses — so it is the one message that gets
+  // a dismiss. Without it, on a phone the strip sat over the compact
+  // thread header for the rest of the session, eating its taps (found on
+  // the first real-phone run, 2026-09-04).
+  let dismissable = $derived(snapshot.status === 'connected' && bundleNotice !== '');
+
   let terminal = $derived(isTerminalConnectionStatus(snapshot.status));
   let signInOffered = $derived(terminal && !hasHomeEndpoint() && passkeysUsable());
   // The shell's recovery instead. A browser is one navigation away from a
@@ -293,15 +301,26 @@
      between the header and the timeline, a narrower surface where a stable
      slot is the simpler win.) -->
 {#if visible}
+  <!-- The outer layer is a solid surface: the strip floats over arbitrary
+       content (on compact, over the thread header), and a translucent
+       tint alone rendered as two surfaces z-mixed into an unreadable
+       jumble on a real phone. The tinted look stays; it just gets an
+       opaque ground first. -->
   <div
     transition:fade={{ duration: 150 }}
+    class="absolute inset-x-0 top-0 z-50 bg-surface-1"
+  >
+  <div
     role="alert"
     aria-live="polite"
     data-testid="transport-status-banner"
     data-status={snapshot.status}
-    class="absolute inset-x-0 top-0 z-50 border-b {bannerClasses} px-4 py-1.5 flex items-center gap-2 text-xs"
+    class="border-b {bannerClasses} px-4 py-1.5 flex items-center gap-2 text-xs"
   >
-    <p class="flex-1 line-clamp-1" title={signInError || message}>{signInError || message}</p>
+    <!-- Two lines, not one: on a phone there is no hover to reveal a
+         title tooltip, so a clamped sentence is simply unreadable. Every
+         string this strip shows fits two lines at 360px. -->
+    <p class="flex-1 line-clamp-2" title={signInError || message}>{signInError || message}</p>
     {#if signInOffered}
       <button
         type="button"
@@ -333,5 +352,17 @@
         Retry
       </button>
     {/if}
+    {#if dismissable}
+      <button
+        type="button"
+        onclick={dismissBundleNotice}
+        aria-label="Dismiss"
+        data-testid="transport-status-dismiss"
+        class="text-xs px-1.5 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+      >
+        ✕
+      </button>
+    {/if}
+  </div>
   </div>
 {/if}

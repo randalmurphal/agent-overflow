@@ -68,18 +68,24 @@ describe('<TransportStatusBanner>', () => {
 
   it('renders as an absolute overlay (no layout shift) when disconnected', async () => {
     h.snapshot = { status: 'disconnected', nextAttemptAt: null };
-    const { getByTestId } = render(TransportStatusBanner);
+    const { getByTestId, queryByTestId } = render(TransportStatusBanner);
     await settleBootGrace();
 
     const banner = getByTestId('transport-status-banner');
     // Overlay, not a flow element: absolute + pinned to the top, and NOT a
     // height-reserving slot. This is what keeps the panes from shifting
-    // down when the transport drops.
-    expect(banner.className).toContain('absolute');
-    expect(banner.className).toContain('top-0');
-    expect(banner.className).toContain('inset-x-0');
+    // down when the transport drops. The positioning lives on the wrapper,
+    // whose solid surface keeps the strip legible over whatever it covers.
+    const wrapper = banner.parentElement!;
+    expect(wrapper.className).toContain('absolute');
+    expect(wrapper.className).toContain('top-0');
+    expect(wrapper.className).toContain('inset-x-0');
+    expect(wrapper.className).toContain('bg-surface-1');
     expect(banner.className).not.toContain('min-h-7');
     expect(banner.textContent).toContain('Disconnected from the agent backend.');
+    // Only the bundle notice earns a dismiss; a connection problem is
+    // live state and clears itself (or offers its own recovery buttons).
+    expect(queryByTestId('transport-status-dismiss')).toBeNull();
   });
 
   // A refused credential (backend restarted, tokens are per-launch) is
@@ -258,6 +264,20 @@ describe('<TransportStatusBanner> and the bundle notice', () => {
     // Nothing to retry: the transport is fine, and the swap happens on
     // the next cold start whether or not anybody acknowledges it.
     expect(queryByTestId('transport-status-retry')).toBeNull();
+  });
+
+  it('is dismissible, because it never resolves on its own', async () => {
+    // Every connection state clears itself; a staged bundle waits for a
+    // restart the person chooses. Without a dismiss the strip sat over
+    // the compact thread header for the rest of the session, eating its
+    // taps (first real-phone run, 2026-09-04).
+    noteBundleReady();
+    const { getByTestId, queryByTestId } = render(TransportStatusBanner);
+    await tick();
+
+    await fireEvent.click(getByTestId('transport-status-dismiss'));
+    await tick();
+    expect(queryByTestId('transport-status-banner')).toBeNull();
   });
 
   it('names the machine a phone is too old for', async () => {

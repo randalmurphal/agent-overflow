@@ -1,18 +1,37 @@
 const OVERFLOW_EPSILON_PX = 1;
 
-export function measureComposerToolbarCompact(toolbar: HTMLElement): boolean {
-  const previousCompact = toolbar.dataset.compact;
-  const wasCompact = previousCompact === 'true';
+/**
+ * The toolbar's density ladder; the cheapest sufficient rung wins.
+ *
+ *  - `full`    — every label shown.
+ *  - `compact` — collapsible labels hidden; the icons carry the meaning.
+ *  - `minimal` — the informational meters (rate-limit rings, context
+ *    ring) hidden too. This rung exists for phone widths: even icon-only
+ *    controls plus three meters exceed a 360px viewport, and the
+ *    overflow clipped the one control that must never leave the screen —
+ *    Send (found on the first real-phone run, 2026-09-04). Interactive
+ *    controls always outrank read-only meters.
+ */
+export type ComposerToolbarDensity = 'full' | 'compact' | 'minimal';
+
+export function measureComposerToolbarDensity(toolbar: HTMLElement): ComposerToolbarDensity {
+  const previous = toolbar.dataset.density;
   const availableWidth = toolbar.clientWidth;
-  if (availableWidth <= 0) return wasCompact;
+  if (availableWidth <= 0) {
+    return previous === 'compact' || previous === 'minimal' ? previous : 'full';
+  }
+  const fits = (): boolean => toolbar.scrollWidth <= availableWidth + OVERFLOW_EPSILON_PX;
 
-  // Force full-label mode for the read so a currently compact toolbar can
-  // expand again as soon as the full content fits. Restore the attribute
-  // afterward; Svelte remains the final owner of data-compact.
-  if (wasCompact) toolbar.dataset.compact = 'false';
-  const requiredWidth = toolbar.scrollWidth;
-  const shouldCompact = requiredWidth > availableWidth + OVERFLOW_EPSILON_PX;
-
-  if (wasCompact) toolbar.dataset.compact = previousCompact;
-  return shouldCompact;
+  // Force each rung for its read so a denser toolbar can expand again the
+  // moment the roomier content fits. Restore the attribute afterward;
+  // Svelte remains the final owner of data-density.
+  toolbar.dataset.density = 'full';
+  let result: ComposerToolbarDensity = 'full';
+  if (!fits()) {
+    toolbar.dataset.density = 'compact';
+    result = fits() ? 'compact' : 'minimal';
+  }
+  if (previous === undefined) delete toolbar.dataset.density;
+  else toolbar.dataset.density = previous;
+  return result;
 }

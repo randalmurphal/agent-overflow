@@ -1,8 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
-import { measureComposerToolbarCompact } from './composerToolbarDensity';
+import { measureComposerToolbarDensity } from './composerToolbarDensity';
 
-function elementWithWidths(clientWidth: number, scrollWidth: number): HTMLElement {
+/**
+ * jsdom does no layout, so scrollWidth is scripted per density rung: the
+ * getter reads the attribute the measurer sets, the same coupling the
+ * real CSS provides (a denser rung hides content and shrinks scrollWidth).
+ */
+function elementWithWidths(
+  clientWidth: number,
+  scrollWidthFor: (density: string | undefined) => number,
+): HTMLElement {
   const el = document.createElement('div');
   Object.defineProperty(el, 'clientWidth', {
     configurable: true,
@@ -10,49 +18,56 @@ function elementWithWidths(clientWidth: number, scrollWidth: number): HTMLElemen
   });
   Object.defineProperty(el, 'scrollWidth', {
     configurable: true,
-    get: () => scrollWidth,
+    get: () => scrollWidthFor(el.dataset.density),
   });
   return el;
 }
 
-describe('measureComposerToolbarCompact', () => {
+describe('measureComposerToolbarDensity', () => {
   it('keeps full mode when full toolbar contents fit', () => {
-    const el = elementWithWidths(640, 600);
-    el.dataset.compact = 'true';
+    const el = elementWithWidths(640, () => 600);
+    el.dataset.density = 'compact';
 
-    expect(measureComposerToolbarCompact(el)).toBe(false);
-    expect(el.dataset.compact).toBe('true');
+    expect(measureComposerToolbarDensity(el)).toBe('full');
+    expect(el.dataset.density).toBe('compact');
   });
 
-  it('switches to compact mode when full toolbar contents overflow', () => {
-    const el = elementWithWidths(520, 600);
-    el.dataset.compact = 'false';
+  it('switches to compact when full contents overflow but icons fit', () => {
+    const el = elementWithWidths(520, (density) => (density === 'full' ? 600 : 480));
+    el.dataset.density = 'full';
 
-    expect(measureComposerToolbarCompact(el)).toBe(true);
-    expect(el.dataset.compact).toBe('false');
+    expect(measureComposerToolbarDensity(el)).toBe('compact');
+    expect(el.dataset.density).toBe('full');
+  });
+
+  it('switches to minimal when even the compact rung overflows', () => {
+    const el = elementWithWidths(360, (density) => (density === 'full' ? 600 : 430));
+    el.dataset.density = 'compact';
+
+    expect(measureComposerToolbarDensity(el)).toBe('minimal');
+    expect(el.dataset.density).toBe('compact');
   });
 
   it('preserves the current mode when the toolbar has no measurable width', () => {
-    const el = elementWithWidths(0, 600);
-    el.dataset.compact = 'true';
+    const el = elementWithWidths(0, () => 600);
+    el.dataset.density = 'minimal';
 
-    expect(measureComposerToolbarCompact(el)).toBe(true);
-    expect(el.dataset.compact).toBe('true');
+    expect(measureComposerToolbarDensity(el)).toBe('minimal');
+    expect(el.dataset.density).toBe('minimal');
   });
 
-  it('measures full-label width while the toolbar is currently compact', () => {
-    const el = document.createElement('div');
-    el.dataset.compact = 'true';
-    Object.defineProperty(el, 'clientWidth', {
-      configurable: true,
-      get: () => 520,
-    });
-    Object.defineProperty(el, 'scrollWidth', {
-      configurable: true,
-      get: () => (el.dataset.compact === 'true' ? 320 : 640),
-    });
+  it('expands again as soon as the full content fits the width', () => {
+    const el = elementWithWidths(640, (density) => (density === 'full' ? 620 : 320));
+    el.dataset.density = 'minimal';
 
-    expect(measureComposerToolbarCompact(el)).toBe(true);
-    expect(el.dataset.compact).toBe('true');
+    expect(measureComposerToolbarDensity(el)).toBe('full');
+    expect(el.dataset.density).toBe('minimal');
+  });
+
+  it('leaves the attribute unset when it began unset', () => {
+    const el = elementWithWidths(640, () => 600);
+
+    expect(measureComposerToolbarDensity(el)).toBe('full');
+    expect('density' in el.dataset).toBe(false);
   });
 });

@@ -23,7 +23,10 @@
   import type { SendButtonAction } from './sendButtonTypes';
   import { asProviderID } from '../../../types/providers';
   import { providerSupports } from '../../../providers/catalog';
-  import { measureComposerToolbarCompact } from './composerToolbarDensity';
+  import {
+    measureComposerToolbarDensity,
+    type ComposerToolbarDensity,
+  } from './composerToolbarDensity';
   import { getProviderAccount } from '../../../stores/accountInfo.svelte';
 
   interface Props {
@@ -120,12 +123,12 @@
   // a row.
   let hasComposableSurface = $derived(pane.canCompose);
   let toolbarEl: HTMLDivElement | undefined = $state(undefined);
-  let compactToolbar = $state(true);
+  let toolbarDensity = $state<ComposerToolbarDensity>('compact');
   let measureFrame = 0;
 
   function measureToolbarDensity(): void {
     if (!toolbarEl) return;
-    compactToolbar = measureComposerToolbarCompact(toolbarEl);
+    toolbarDensity = measureComposerToolbarDensity(toolbarEl);
   }
 
   function scheduleToolbarDensityMeasure(): void {
@@ -190,7 +193,7 @@
 <div
   bind:this={toolbarEl}
   class="flex items-center gap-0.5 px-2.5 pb-2 pt-1"
-  data-compact={compactToolbar ? 'true' : 'false'}
+  data-density={toolbarDensity}
   data-composer-toolbar
   data-testid="composer-toolbar"
 >
@@ -210,7 +213,11 @@
   {/if}
   <div class="ml-auto flex items-center gap-1.5">
     {#if showLimitRings}
-      <div class="shrink-0 flex items-center" data-testid="composer-rate-limit-5h">
+      <div
+        class="shrink-0 flex items-center"
+        data-composer-toolbar-meter
+        data-testid="composer-rate-limit-5h"
+      >
         <RateLimitMeter
           windowMins={300}
           provider={providerID ?? undefined}
@@ -219,7 +226,11 @@
           subscriptionType={currentAccountPlan}
         />
       </div>
-      <div class="shrink-0 flex items-center" data-testid="composer-rate-limit-7d">
+      <div
+        class="shrink-0 flex items-center"
+        data-composer-toolbar-meter
+        data-testid="composer-rate-limit-7d"
+      >
         <RateLimitMeter
           windowMins={10080}
           provider={providerID ?? undefined}
@@ -230,7 +241,11 @@
       </div>
     {/if}
     {#if pane.contextWindow}
-      <div class="shrink-0 flex items-center" data-testid="composer-context-meter">
+      <div
+        class="shrink-0 flex items-center"
+        data-composer-toolbar-meter
+        data-testid="composer-context-meter"
+      >
         <ContextWindowMeter data={pane.contextWindow} thread={pane.thread} />
       </div>
     {/if}
@@ -253,7 +268,15 @@
 </div>
 
 <style>
-  :global([data-composer-toolbar][data-compact="true"] [data-composer-toolbar-label="collapsible"]) {
+  :global(
+    [data-composer-toolbar]:not([data-density='full'])
+      [data-composer-toolbar-label='collapsible']
+  ) {
+    display: none;
+  }
+  /* The minimal rung: read-only meters yield so the controls — Send
+     above all — stay on screen at phone widths. */
+  :global([data-composer-toolbar][data-density='minimal'] [data-composer-toolbar-meter]) {
     display: none;
   }
 </style>

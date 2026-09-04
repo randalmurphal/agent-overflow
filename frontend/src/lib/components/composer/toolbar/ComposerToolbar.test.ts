@@ -68,7 +68,14 @@ function renderToolbar(thread: Thread = makeThread()) {
   return render(ComposerToolbar, { props: toolbarProps(pane) });
 }
 
-function installToolbarDimensions(requiredFullWidth: number | (() => number), availableWidth = 520) {
+function installToolbarDimensions(
+  requiredFullWidth: number | (() => number),
+  availableWidth = 520,
+  // jsdom applies no CSS, so the width a denser rung would free is
+  // scripted here: hiding the collapsible labels saves this many pixels,
+  // mirroring the real coupling where data-density changes scrollWidth.
+  compactSavings = 140,
+) {
   const clientSpy = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get')
     .mockImplementation(function clientWidth(this: HTMLElement) {
       return this.dataset.testid === 'composer-toolbar' ? availableWidth : 0;
@@ -78,7 +85,10 @@ function installToolbarDimensions(requiredFullWidth: number | (() => number), av
       const width = typeof requiredFullWidth === 'function'
         ? requiredFullWidth()
         : requiredFullWidth;
-      return this.dataset.testid === 'composer-toolbar' ? width : 0;
+      if (this.dataset.testid !== 'composer-toolbar') return 0;
+      return this.dataset.density === 'full' || this.dataset.density === undefined
+        ? width
+        : width - compactSavings;
     });
 
   return () => {
@@ -119,7 +129,7 @@ describe('<ComposerToolbar>', () => {
     const { getByTestId, getAllByText } = renderToolbar();
 
     await waitFor(() => {
-      expect(getByTestId('composer-toolbar')).toHaveAttribute('data-compact', 'true');
+      expect(getByTestId('composer-toolbar')).toHaveAttribute('data-density', 'compact');
     });
     expect(getAllByText('Plan').some((el) =>
       el.getAttribute('data-composer-toolbar-label') === 'collapsible',
@@ -130,12 +140,21 @@ describe('<ComposerToolbar>', () => {
     expect(collapsiblePlan).toBeTruthy();
   });
 
+  it('drops to the minimal rung when even icon-only contents overflow', async () => {
+    restoreDimensions = installToolbarDimensions(800);
+    const { getByTestId } = renderToolbar();
+
+    await waitFor(() => {
+      expect(getByTestId('composer-toolbar')).toHaveAttribute('data-density', 'minimal');
+    });
+  });
+
   it('keeps full toolbar labels when full contents fit', async () => {
     restoreDimensions = installToolbarDimensions(500);
     const { getByTestId, getAllByText } = renderToolbar();
 
     await waitFor(() => {
-      expect(getByTestId('composer-toolbar')).toHaveAttribute('data-compact', 'false');
+      expect(getByTestId('composer-toolbar')).toHaveAttribute('data-density', 'full');
     });
     const collapsiblePlan = getAllByText('Plan').find((el) =>
       el.getAttribute('data-composer-toolbar-label') === 'collapsible',
@@ -283,17 +302,17 @@ describe('<ComposerToolbar>', () => {
 
       runNextFrame();
       await waitFor(() => {
-        expect(result.getByTestId('composer-toolbar')).toHaveAttribute('data-compact', 'false');
+        expect(result.getByTestId('composer-toolbar')).toHaveAttribute('data-density', 'full');
       });
 
       requiredWidth = 640;
       await result.rerender(toolbarProps(pane, { sendLabel: 'Implement' }));
       for (const callback of callbacks) callback([], {} as ResizeObserver);
 
-      expect(result.getByTestId('composer-toolbar')).toHaveAttribute('data-compact', 'false');
+      expect(result.getByTestId('composer-toolbar')).toHaveAttribute('data-density', 'full');
       runNextFrame();
       await waitFor(() => {
-        expect(result.getByTestId('composer-toolbar')).toHaveAttribute('data-compact', 'true');
+        expect(result.getByTestId('composer-toolbar')).toHaveAttribute('data-density', 'compact');
       });
     } finally {
       globalThis.ResizeObserver = realRO;
