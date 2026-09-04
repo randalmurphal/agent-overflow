@@ -5,16 +5,19 @@
   //
   // A plain left-click prefers the in-app review: when `onOpenReview` is
   // provided and reports it handled the click, the default is prevented and
-  // the companion review pane owns the PR. Everything else — mod+click,
-  // middle-click, or no review target — falls through to the real <a href>,
-  // where the app-wide external-link delegate (utils/externalLinks, installed
-  // once in App.svelte) intercepts the click and routes it through
-  // window.open (remote / --connect) or the OpenExternalURL host binding
-  // (loopback / native, incl. WSL → Windows). safeExternalURL gates
-  // rendering, mirroring the delegate's own scheme/host validation.
+  // the companion review pane owns the PR. Mod+click is this badge's promise
+  // of the FORGE PAGE in the person's real browser, so it is handled HERE
+  // (handleExternalURL) rather than left to the app-wide delegate — that
+  // delegate routes a mod+click into the thread's companion browser, which
+  // for this control took away the only gesture that reached the system
+  // browser. Middle-click and no-review-target still fall through to the
+  // real <a href>, where the delegate opens externally. safeExternalURL
+  // gates rendering, mirroring the delegate's own scheme/host validation.
   import type { GitStatus } from '../../types/git';
   import { forgeLabels } from '../../utils/forgeLabels';
-  import { safeExternalURL } from '../../utils/externalLinks';
+  import { handleExternalURL, safeExternalURL } from '../../utils/externalLinks';
+  import { isModClick } from '../../utils/modClick';
+  import { isMacPlatform } from '../../utils/platform';
 
   interface Props {
     status: GitStatus | null;
@@ -32,12 +35,24 @@
       ? `${labels.noun} ${labels.numberSigil}${status.openPrNumber}`
       : labels.noun,
   );
+  const modLabel = isMacPlatform() ? '⌘' : 'Ctrl';
+  let title = $derived(
+    onOpenReview
+      ? `Open the review pane · ${modLabel}+click opens the ${labels.longSingular.toLowerCase()} in your browser`
+      : `Open ${labels.longSingular} ${label}`,
+  );
 
   function handleClick(event: MouseEvent): void {
     if (event.button !== 0) return;
-    // Any modifier keeps the external-link behavior (mod+click opens the
-    // forge page in the browser).
-    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    if (isModClick(event)) {
+      // Claim the gesture before the app-wide delegate turns it into a
+      // companion-browser page: mod+click here means the system browser.
+      event.preventDefault();
+      if (href) void handleExternalURL(href);
+      return;
+    }
+    // Other modifiers keep the anchor's external-link behavior.
+    if (event.shiftKey || event.altKey) return;
     if (!onOpenReview?.()) return;
     event.preventDefault();
   }
@@ -49,7 +64,7 @@
     target="_blank"
     rel="noopener noreferrer"
     data-testid="chat-header-pr-badge"
-    title={`Open ${labels.longSingular} ${label}`}
+    {title}
     onclick={handleClick}
     class="shrink-0 inline-flex h-6 items-center rounded-[var(--radius-control)]
            px-2 text-[0.6875rem] font-medium tabular-nums text-text-secondary

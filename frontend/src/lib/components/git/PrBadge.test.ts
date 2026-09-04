@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from '@testing-library/svelte';
 import PrBadge from './PrBadge.svelte';
 import type { GitStatus } from '../../types/git';
+import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 
 function status(overrides: Partial<GitStatus> = {}): GitStatus {
   return {
@@ -22,6 +23,18 @@ function status(overrides: Partial<GitStatus> = {}): GitStatus {
 }
 
 describe('<PrBadge>', () => {
+  let originalOpen: typeof window.open;
+
+  beforeEach(() => {
+    resetBindingMocks();
+    originalOpen = window.open;
+    window.open = vi.fn();
+  });
+
+  afterEach(() => {
+    window.open = originalOpen;
+  });
+
   it('renders nothing when there is no open PR url', () => {
     const { queryByTestId } = render(PrBadge, { props: { status: status({ openPrUrl: '' }) } });
     expect(queryByTestId('chat-header-pr-badge')).toBeNull();
@@ -92,8 +105,13 @@ describe('<PrBadge>', () => {
     expect(event.defaultPrevented).toBe(true);
   });
 
-  it('mod+click falls through to the external link', () => {
+  it('mod+click opens the forge page in the system browser, not the companion browser', () => {
+    // The app-wide delegate turns an unclaimed mod+click into a companion
+    // browser page; the badge claims the gesture first so the SYSTEM
+    // browser opens (handleExternalURL directly, default prevented so the
+    // delegate never sees it).
     let opened = 0;
+    const openExternal = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
     const { getByTestId } = render(PrBadge, {
       props: {
         status: status({ forge: 'gitlab', openPrUrl: 'https://gitlab.com/o/r/-/merge_requests/45', openPrNumber: 45 }),
@@ -106,7 +124,24 @@ describe('<PrBadge>', () => {
     const event = new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true });
     getByTestId('chat-header-pr-badge').dispatchEvent(event);
     expect(opened).toBe(0);
-    expect(event.defaultPrevented).toBe(false);
+    expect(event.defaultPrevented).toBe(true);
+    const viaBinding = (openExternal as ReturnType<typeof vi.fn>).mock.calls;
+    const viaWindow = (window.open as ReturnType<typeof vi.fn>).mock.calls;
+    expect([...viaBinding, ...viaWindow].map((call) => call[0])).toEqual([
+      'https://gitlab.com/o/r/-/merge_requests/45',
+    ]);
+  });
+
+  it('hover text explains both gestures when a review target exists', () => {
+    const { getByTestId } = render(PrBadge, {
+      props: {
+        status: status({ forge: 'gitlab', openPrUrl: 'https://gitlab.com/o/r/-/merge_requests/45', openPrNumber: 45 }),
+        onOpenReview: () => true,
+      },
+    });
+    const title = getByTestId('chat-header-pr-badge').getAttribute('title') ?? '';
+    expect(title).toContain('review pane');
+    expect(title).toMatch(/(Ctrl|⌘)\+click opens the merge request in your browser/);
   });
 
   it('falls through to the external link when review reports unhandled', () => {
