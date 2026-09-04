@@ -718,11 +718,16 @@ physics only one of them can use.
 A detaching controller hands off both halves of its follow state, after
 `detach()` so no intent machine mistakes the write for a gesture. A
 controller that was still following writes the clip to its bottom
-(`clip.scrollTop = clip.scrollHeight` through `positionWritten`); in the
-ordinary handoff that write is a no-op (the run is quiet by reveal time),
-and the residual case it exists for, a glide genuinely in flight at reveal,
-lands (instantly) at the bottom the reader was already gliding toward
-instead of parking short and snapping later. A controller that was ESCAPED
+(`clip.scrollTop = clip.scrollHeight` through `positionWritten`), a no-op
+when the clip already rests there. It usually does not at the instant
+tail-ness ends: the gate releases the run's last short rows, the spring
+starts gliding to them, and the closing prose reveals ~200ms later,
+mid-glide — so a controller still following outlives tail-ness until its
+clip rests on the bottom (`holdForGlide`, read from the component's own
+position cache, bounded by a 1.5s deadline and by the clip dying). Tearing
+it down mid-glide handed the remaining distance to that write in one frame:
+13–75px of the whole pane jumping in the bug-report-20260904T184019Z
+reproduction. A controller that was ESCAPED
 states that too (`positionWritten(clip, false)`): the controller sees
 escapes the component never gets a gesture for (selection auto-scroll,
 middle-click autoscroll, a scrollbar drag), and a stale `followingBottom`

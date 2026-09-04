@@ -1,8 +1,22 @@
-// AO-TJUMP probe: per-frame continuity of a streaming thinking tail inside
-// the tail activity run, across paragraph breaks, the block's completion
-// and the rows that follow it. Every frame records where a glyph that
-// ALREADY EXISTED last frame sits now; a single-frame displacement neither
-// a slide nor a spring could produce is a jump.
+// Per-frame continuity of a streaming thinking tail inside the tail activity
+// run: across paragraph breaks, short-line text, the block's completion, and
+// the rows that reveal after it. Every frame records where a glyph that
+// ALREADY EXISTED last frame sits now, plus the clip's and the pane's scroll
+// offsets. Three things may never happen (bug-report-20260904T184019Z):
+//
+//   - a visible glyph moving inside its clip by more than the line-slide
+//     tracker can move it in one frame (a re-pack teleport: the slide
+//     cleared on a box-growth-plus-overflow frame, or saturated under
+//     short lines — tailSlide.ts);
+//   - the run clip or the pane moving in ONE isolated frame (the tail
+//     controller handoff snapping a glide that was still in flight —
+//     ActivityRun.svelte `holdForGlide`);
+//   - a completed block resting with a blank line above or below its text
+//     (the box taller than the text it holds).
+//
+// Scenarios span both clamp regimes (a capped run at its max-height with
+// the inner controller gliding, and a growing run under the cap), long
+// prose and short-line lists, and a slow, a fast, and a bursty wire.
 import { describe, expect, it } from 'vitest';
 import '../../../app.css';
 import { tick } from 'svelte';
@@ -14,12 +28,26 @@ import {
   type QuietBottomOptions,
 } from '../../../test/helpers/timelineBrowserHarness';
 import type { Item } from '../../types/models';
-import type { ThreadPane } from '../../stores/thread.svelte';
+import { stepSlide } from './tailSlide';
+import { TAIL_CLAMP_LINES } from './tailWindow';
 
 setupTimelineHarness();
 
 const QUIET_BOTTOM: QuietBottomOptions = { epsilonPx: 2, stableFrames: 12, frameBudget: 480 };
-const JUMP_PX = 9;
+const LINE_PX = 19.5;
+// Between two samples the slide tracker moves a glyph by exactly one drain
+// step of the offset that was pending at the first sample; anything past
+// that (with slack for a sub-pixel wobble and a couple of ms of clock skew
+// between the sampler and the tracker) is a teleport.
+const GLYPH_SLACK_PX = 3;
+const GLYPH_CLOCK_SKEW_MS = 2;
+const legitGlyphMove = (pendingTy: number, dtMs: number): number =>
+  pendingTy - stepSlide(pendingTy, dtMs + GLYPH_CLOCK_SKEW_MS) + GLYPH_SLACK_PX;
+// A scroll offset that moves once, alone, is a snap: a glide accelerates in
+// over several frames and decelerates out, so its neighbours are never this
+// much smaller.
+const SNAP_MIN_PX = 8;
+const SNAP_ISOLATION = 3;
 
 function tool(id: string, turnIndex: number, itemIndex: number, threadId: string): Item {
   return makeItem({
@@ -81,6 +109,9 @@ const SHORT_THINKS = [
   'Reading the clip writes next:\n- inner\n- outer\n- both',
 ];
 
+const LIST_THINK =
+  'Options:\n- a\n- b\n- c\n- d\n\nok\n\nok\n\nPick one:\n1. x\n2. y\n3. z\n4. w\nDone.';
+
 function seededRandom(seed: number): () => number {
   let s = seed >>> 0;
   return () => {
@@ -113,38 +144,49 @@ function lastGlyphIndex(node: Text): number {
   return i;
 }
 
-function glyphBottom(node: Text, i: number): number | null {
+function firstGlyphIndex(node: Text): number {
+  const text = node.textContent ?? '';
+  let i = 0;
+  while (i < text.length && /\s/.test(text[i]!)) i += 1;
+  return i < text.length ? i : -1;
+}
+
+function glyphRect(node: Text, i: number): DOMRect | null {
   if (i < 0 || i >= (node.textContent?.length ?? 0)) return null;
   const range = document.createRange();
   range.setStart(node, i);
   range.setEnd(node, i + 1);
-  return range.getBoundingClientRect().bottom;
+  return range.getBoundingClientRect();
 }
 
 type Frame = {
   f: number;
   t: number;
   item: string;
+  /** Last glyph's bottom, pane-relative. */
   y: number | null;
   idx: number;
+  /** Where LAST frame's last glyph sits this frame (same index). */
   yPrevIdx: number | null;
+  /** First glyph's top, pane-relative. */
+  y0: number | null;
+  boxTop: number | null;
   boxBottom: number | null;
   boxH: number | null;
   len: number;
   clipTop: number;
-  clipH: number;
   paneTop: number;
-  ty: string;
+  ty: number;
   status: string;
   marks: string[];
 };
 
-function translateY(el: Element | null): string {
-  if (!el) return '-';
+function translateY(el: Element | null): number {
+  if (!el) return 0;
   const tr = getComputedStyle(el).transform;
-  if (tr === 'none') return '0';
+  if (tr === 'none') return 0;
   const parts = tr.slice(tr.indexOf('(') + 1, tr.indexOf(')')).split(',');
-  return Number.parseFloat(parts[5] ?? '0').toFixed(1);
+  return Number.parseFloat(parts[5] ?? '0');
 }
 
 interface Scenario {
@@ -160,13 +202,13 @@ interface Scenario {
 }
 
 async function runScenario(s: Scenario): Promise<Frame[]> {
-  const threadId = `thread-tjump-${s.name}`;
+  const threadId = `thread-tail-continuity-${s.name}`;
   const turn = 3;
   const seed: Item[] = [];
   for (let i = 0; i < s.seedProse; i += 1) seed.push(prose(`p${i}`, 1, i, threadId, true));
   for (let i = 0; i < s.seedTools; i += 1) seed.push(tool(`t${i}`, turn, i, threadId));
   let nextIndex = s.seedTools;
-  const firstThink = `th0`;
+  const firstThink = 'th0';
   seed.push(thinking(firstThink, turn, nextIndex++, threadId));
 
   const { pane, scrollEl, host } = await mountTimeline(threadId, seed, QUIET_BOTTOM);
@@ -188,24 +230,24 @@ async function runScenario(s: Scenario): Promise<Frame[]> {
       const paneRect = scrollEl.getBoundingClientRect();
       const item = pane.items.find((i) => i.id === watched);
       const idx = node ? lastGlyphIndex(node) : -1;
-      const yAbs = node ? glyphBottom(node, idx) : null;
       const prev = frames.length ? frames[frames.length - 1]! : null;
       const prevIdx = prev && prev.item === watched ? prev.idx : -1;
-      const yPrevAbs = node && prevIdx >= 0 ? glyphBottom(node, prevIdx) : null;
-      const r = (v: number | null) => (v === null ? null : Math.round((v - paneRect.top) * 10) / 10);
+      const r = (v: number | null | undefined) =>
+        v === null || v === undefined ? null : Math.round((v - paneRect.top) * 10) / 10;
       const boxRect = body?.getBoundingClientRect() ?? null;
       frames.push({
         f: f++,
         t: Math.round(performance.now() - t0),
         item: watched,
-        y: r(yAbs),
+        y: r(node ? glyphRect(node, idx)?.bottom : null),
         idx,
-        yPrevIdx: r(yPrevAbs),
+        yPrevIdx: r(node && prevIdx >= 0 ? glyphRect(node, prevIdx)?.bottom : null),
+        y0: r(node ? glyphRect(node, firstGlyphIndex(node))?.top : null),
+        boxTop: boxRect ? r(boxRect.top) : null,
         boxBottom: boxRect ? r(boxRect.bottom) : null,
         boxH: boxRect ? Math.round(boxRect.height * 10) / 10 : null,
         len: body?.textContent?.length ?? -1,
-        clipTop: clip ? Math.round(clip.scrollTop * 10) / 10 : -1,
-        clipH: clip ? clip.scrollHeight : -1,
+        clipTop: clip ? Math.round(clip.scrollTop * 10) / 10 : 0,
         paneTop: Math.round(scrollEl.scrollTop * 10) / 10,
         ty: translateY(body?.firstElementChild ?? null),
         status: item?.status ?? '?',
@@ -224,8 +266,7 @@ async function runScenario(s: Scenario): Promise<Frame[]> {
       await tick();
     }
     watched = id;
-    const chunks = chunk(s.thinks[k]!, rnd, s.chunkMin, s.chunkMax);
-    for (const c of chunks) {
+    for (const c of chunk(s.thinks[k]!, rnd, s.chunkMin, s.chunkMax)) {
       pane.applyItemDelta({ threadId, itemId: id, kind: 'thinking', delta: c, updatedAt: 1 });
       await wait(Math.max(4, c.length * msPerChar * (0.5 + rnd())));
     }
@@ -243,58 +284,93 @@ async function runScenario(s: Scenario): Promise<Frame[]> {
     pane.applyProviderItemUpserts([prose('pZ', turn, nextIndex++, threadId)]);
     await tick();
   }
-  await wait(5000);
+  await wait(1500);
   stop = true;
   await sampler;
   return frames;
 }
 
 function fmt(fr: Frame): string {
-  return `f${fr.f} t${fr.t} ${fr.item} y=${fr.y} idx=${fr.idx} yPrev=${fr.yPrevIdx} box=${fr.boxBottom}/${fr.boxH} len=${fr.len} clip=${fr.clipTop}/${fr.clipH} pane=${fr.paneTop} ty=${fr.ty} ${fr.status}${fr.marks.length ? ' MARK ' + fr.marks.join(',') : ''}`;
+  return `f${fr.f} t${fr.t} ${fr.item} y=${fr.y} y0=${fr.y0} idx=${fr.idx} yPrev=${fr.yPrevIdx} box=${fr.boxTop}..${fr.boxBottom}/${fr.boxH} len=${fr.len} clip=${fr.clipTop} pane=${fr.paneTop} ty=${fr.ty.toFixed(1)} ${fr.status}${fr.marks.length ? ' MARK ' + fr.marks.join(',') : ''}`;
 }
 
-function report(name: string, frames: Frame[]): { lines: string[]; jumps: number } {
-  const lines: string[] = [];
-  let jumps = 0;
+type Finding = { at: number; what: string };
+
+function isolatedSnap(deltas: number[], i: number): boolean {
+  const d = Math.abs(deltas[i] ?? 0);
+  if (d < SNAP_MIN_PX) return false;
+  const before = Math.abs(deltas[i - 1] ?? 0);
+  const after = Math.abs(deltas[i + 1] ?? 0);
+  return d > SNAP_ISOLATION * Math.max(before, after);
+}
+
+function analyse(frames: Frame[]): Finding[] {
+  const findings: Finding[] = [];
+  const clipDeltas = frames.map((fr, i) => (i === 0 ? 0 : fr.clipTop - frames[i - 1]!.clipTop));
+  const paneDeltas = frames.map((fr, i) => (i === 0 ? 0 : fr.paneTop - frames[i - 1]!.paneTop));
+  let restFrames = 0;
   for (let i = 1; i < frames.length; i += 1) {
     const a = frames[i - 1]!;
     const b = frames[i]!;
-    if (b.marks.length) lines.push(`AO-TJUMP ${name} ${fmt(b)}`);
-    if (a.item !== b.item || a.y === null || b.yPrevIdx === null) continue;
-    const dy = b.yPrevIdx - a.y;
-    if (Math.abs(dy) > JUMP_PX) {
-      jumps += 1;
-      const dbox = a.boxBottom !== null && b.boxBottom !== null ? b.boxBottom - a.boxBottom : 0;
-      const dboxH = a.boxH !== null && b.boxH !== null ? b.boxH - a.boxH : 0;
-      const dclip = b.clipTop - a.clipTop;
-      const dpane = b.paneTop - a.paneTop;
-      lines.push(
-        `AO-TJUMP ${name} JUMP dy=${dy.toFixed(1)} boxBottom=${dbox.toFixed(1)} boxH=${dboxH.toFixed(1)} clipTop=${dclip.toFixed(1)} paneTop=${dpane.toFixed(1)} ty ${a.ty}->${b.ty} len ${a.len}->${b.len} idx ${a.idx}->${b.idx}`,
-      );
-      for (let k = Math.max(0, i - 2); k <= Math.min(frames.length - 1, i + 1); k += 1) {
-        lines.push(`AO-TJUMP ${name}    ${k === i ? '>>' : '  '} ${fmt(frames[k]!)}`);
+    // 1. A glyph that existed last frame moved inside its clip by more than
+    //    the slide tracker can move it. Clip and pane scrolling move the
+    //    glyph on screen legitimately, so they are factored out.
+    if (a.item === b.item && a.y !== null && b.yPrevIdx !== null) {
+      const dyContent = b.yPrevIdx - a.y + (clipDeltas[i] ?? 0) + (paneDeltas[i] ?? 0);
+      if (Math.abs(dyContent) > legitGlyphMove(a.ty, b.t - a.t)) {
+        findings.push({ at: i, what: `glyph teleport dy=${dyContent.toFixed(1)} (ty ${a.ty.toFixed(1)}->${b.ty.toFixed(1)}, len ${a.len}->${b.len}, box ${a.boxH}->${b.boxH})` });
       }
     }
+    // 2. The clip or the pane moved once, alone: a snap, not a glide.
+    if (isolatedSnap(clipDeltas, i)) findings.push({ at: i, what: `clip snap ${clipDeltas[i]!.toFixed(1)}px` });
+    if (isolatedSnap(paneDeltas, i)) findings.push({ at: i, what: `pane snap ${paneDeltas[i]!.toFixed(1)}px` });
+    // 3. A completed block at rest (no slide pending, geometry unchanged for
+    //    a few frames) never has a blank line above or below its text.
+    const atRest =
+      b.status === 'completed' && b.ty === 0 && a.ty === 0 && b.len === a.len && b.boxH === a.boxH;
+    restFrames = atRest ? restFrames + 1 : 0;
+    if (restFrames >= 3 && b.boxBottom !== null && b.y !== null && b.boxTop !== null && b.y0 !== null && b.boxH !== null) {
+      const below = b.boxBottom - b.y;
+      const above = b.y0 - b.boxTop;
+      const underClamp = b.boxH < TAIL_CLAMP_LINES * LINE_PX - 1;
+      if (below >= LINE_PX) findings.push({ at: i, what: `blank line below the text at rest (gap ${below.toFixed(1)}px, box ${b.boxH})` });
+      if (underClamp && above >= LINE_PX) findings.push({ at: i, what: `blank line above the text at rest (gap ${above.toFixed(1)}px, box ${b.boxH})` });
+      if (b.boxH > TAIL_CLAMP_LINES * LINE_PX + 1) findings.push({ at: i, what: `box taller than the clamp at rest (${b.boxH})` });
+    }
   }
-  lines.push(`AO-TJUMP ${name} frames=${frames.length} jumps=${jumps}`);
-  return { lines, jumps };
+  return findings;
+}
+
+function report(name: string, frames: Frame[], findings: Finding[]): string[] {
+  const lines: string[] = [];
+  for (const fr of frames) if (fr.marks.length) lines.push(`${name} ${fmt(fr)}`);
+  for (const finding of findings) {
+    lines.push(`${name} FINDING ${finding.what}`);
+    for (let k = Math.max(0, finding.at - 2); k <= Math.min(frames.length - 1, finding.at + 1); k += 1) {
+      lines.push(`${name}    ${k === finding.at ? '>>' : '  '} ${fmt(frames[k]!)}`);
+    }
+  }
+  lines.push(`${name} frames=${frames.length} findings=${findings.length}`);
+  return lines;
 }
 
 const SCENARIOS: Scenario[] = [
+  { name: 'capped-lists', seedTools: 12, seedProse: 30, wireCps: 900, chunkMin: 30, chunkMax: 90, seed: 23, thinks: [LIST_THINK, LIST_THINK], withProse: false },
+  { name: 'capped-lists-slow', seedTools: 12, seedProse: 30, wireCps: 200, chunkMin: 3, chunkMax: 12, seed: 29, thinks: [LIST_THINK, LIST_THINK], withProse: false },
   { name: 'capped-longthink', seedTools: 12, seedProse: 30, wireCps: 250, chunkMin: 3, chunkMax: 16, seed: 7, thinks: [LONG_THINK, ...SHORT_THINKS], withProse: true },
   { name: 'capped-shorts', seedTools: 12, seedProse: 30, wireCps: 250, chunkMin: 3, chunkMax: 16, seed: 11, thinks: [...SHORT_THINKS, ...SHORT_THINKS], withProse: true },
   { name: 'growing-longthink', seedTools: 2, seedProse: 30, wireCps: 250, chunkMin: 3, chunkMax: 16, seed: 13, thinks: [LONG_THINK, ...SHORT_THINKS], withProse: true },
-  { name: 'growing-shorts', seedTools: 0, seedProse: 30, wireCps: 250, chunkMin: 3, chunkMax: 16, seed: 17, thinks: [...SHORT_THINKS, ...SHORT_THINKS], withProse: true },
+  { name: 'growing-shorts', seedTools: 0, seedProse: 60, wireCps: 250, chunkMin: 3, chunkMax: 16, seed: 17, thinks: [...SHORT_THINKS, ...SHORT_THINKS], withProse: true },
   { name: 'capped-burst', seedTools: 12, seedProse: 30, wireCps: 900, chunkMin: 40, chunkMax: 160, seed: 19, thinks: [LONG_THINK, ...SHORT_THINKS], withProse: true },
 ];
 
-describe('AO-TJUMP thinking tail continuity', () => {
+describe('streaming thinking tail continuity', () => {
   for (const s of SCENARIOS) {
     it(s.name, async () => {
       const frames = await runScenario(s);
-      const { lines, jumps } = report(s.name, frames);
-      for (const l of lines) console.log(l);
-      expect(jumps).toBe(0);
+      const findings = analyse(frames);
+      for (const line of report(s.name, frames, findings)) console.log(line);
+      expect(findings.map((finding) => finding.what)).toEqual([]);
     }, 120_000);
   }
 });

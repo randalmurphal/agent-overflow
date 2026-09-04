@@ -448,8 +448,9 @@ const TAIL_JUMP_MIN_PX = 2;
 // inside an inner slide wrapper (the line-slide FLIP's transform target), so
 // `body.lastChild` is an element, not the text node. Client rects include
 // that wrapper's in-flight transform, and a re-wrap can land mid-slide (the
-// component snaps NEW slides on a width change but lets an in-flight release
-// finish) — subtract its live translateY so the oracle measures the LAYOUT
+// component clears the slide on a width change, but only when the RO
+// delivers, after this read) — subtract its live translateY so the oracle
+// measures the LAYOUT
 // position and a slide can't read as a stale-pin jump.
 // (Twin of `lastCharRect`/`tailOverflowPx` in tailClampedText.browser.test.ts;
 // intentionally separate — the test keeps sub-pixel precision, this rounds

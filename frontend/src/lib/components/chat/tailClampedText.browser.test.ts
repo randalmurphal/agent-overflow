@@ -314,15 +314,37 @@ describe('TailClampedText line-slide', () => {
     expect(tailOverflowPx(body)).toBeLessThanOrEqual(1);
   });
 
-  it('does not animate a whole-window discontinuity', async () => {
+  it('tickers through a whole-window discontinuity without starting past the cap', async () => {
     const { body, inner, rerender } = await mountCalibrated(FIVE_LINES);
+    const lh = parseFloat(getComputedStyle(body).lineHeight);
 
-    // A ≥3-line append replaces every visible line — no continuity, so the
-    // advance must snap (the chunked-reveal burst shape).
+    // A ≥3-line append replaces every visible line (the chunked-reveal burst
+    // shape). No continuity survives it, but the advance still tickers
+    // through the new lines rather than snapping — never starting past the
+    // catch-up cap.
     const burst = Array.from({ length: 4 }, (_, i) => `burst appended line ${i}`).join('\n');
     await rerender({ text: `${FIVE_LINES}\n${burst}` });
     flushSync();
-    await expectNoSlide(inner);
+    const peak = await slideRanAndSettled(inner);
+    expect(peak).toBeLessThanOrEqual(4 * lh + 1);
+    expect(tailOverflowPx(body)).toBeLessThanOrEqual(1);
+  });
+
+  it('slides the overflow when a short block grows past the clamp in one frame', async () => {
+    // The completion shape of a short think: two lines under the clamp, then
+    // a paragraph break plus the next words land in one reveal tick. The box
+    // grows (the scroll spring's motion) AND two lines overflow — those two
+    // lines used to teleport up; they slide.
+    const two = 'short reasoning line 0\nshort reasoning line 1';
+    const { body, inner, rerender } = await mountCalibrated(two);
+    const lh = parseFloat(getComputedStyle(body).lineHeight);
+    expect(body.getBoundingClientRect().height).toBeCloseTo(2 * lh, 0);
+
+    await rerender({ text: `${two}\n\nshort reasoning line 3\nshort reasoning line 4` });
+    flushSync();
+    const peak = await slideRanAndSettled(inner);
+    expect(peak).toBeLessThanOrEqual(2 * lh + 1);
+    expect(body.getBoundingClientRect().height).toBeCloseTo(3 * lh, 0);
     expect(tailOverflowPx(body)).toBeLessThanOrEqual(1);
   });
 

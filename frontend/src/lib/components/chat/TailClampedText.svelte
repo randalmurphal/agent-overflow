@@ -18,9 +18,9 @@
   // read per delta. Regression: tailClampedText.browser.test.ts.
   //
   // On TOP of that anchor sits one presentational enhancement: the
-  // line-slide FLIP (see the animation section below), which turns the
-  // anchor's instant one-line re-pack at each line boundary into a short
-  // transition. It is decoration over the CSS truth — every guard path
+  // line-slide (see the animation section below), which turns the
+  // anchor's instant one-line re-pack at each line boundary into a
+  // tracked slide. It is decoration over the CSS truth — every guard path
   // falls back to exactly the un-animated anchor, so correctness never
   // depends on it.
   //
@@ -42,12 +42,7 @@
   // window are all dropped (plain `block`; full text flows to full height).
   import { untrack } from 'svelte';
   import { motionReduced } from '../../utils/reducedMotion';
-  import {
-    SLIDE_MS,
-    slideDecision,
-    transformTranslateY,
-    type SlideObservation,
-  } from './tailSlide';
+  import { slideDecision, stepSlide, type SlideObservation } from './tailSlide';
   import {
     TAIL_CLAMP_LINES,
     TAIL_WINDOW_CAP_CHARS,
@@ -89,41 +84,62 @@
   let measureFloor = 0;
 
   // ── Line-slide animation ─────────────────────────────────────────────
-  // FLIP on the inner wrapper: when the flex-end anchor re-packs the
-  // content one line up at a line boundary, invert the jump with a
-  // transform in the same frame the layout moved (ResizeObserver
-  // callbacks run after layout, before paint, so nothing flashes), then
-  // release it to rest — the newest line rises from under the bottom
-  // clip edge, which is exactly what a smooth ticker scroll looks like.
+  // When the flex-end anchor re-packs the content one line up at a line
+  // boundary, invert the jump with a translateY on the inner wrapper in
+  // the same frame the layout moved (ResizeObserver callbacks run after
+  // layout, before paint, so nothing flashes), then drain that offset
+  // back to zero over the next frames — the newest line rises from under
+  // the bottom clip edge, which is exactly what a smooth ticker looks
+  // like.
   //
   // The RO watches the inner wrapper and the clamp box, whose heights
   // only change at line boundaries (and reflows) — zero per-reveal-tick
   // cost, no forced layout reads on the streaming path. WHICH
   // observations animate — and the full recalibrate-and-snap matrix
-  // (mount, width reflow, box-height change incl. the expanded flip,
-  // whole-window discontinuity, hidden ancestor) — is tailSlide.ts's
-  // `slideDecision`, unit-tested there. `slideMemory === null` is the
-  // one reset sentinel: the RO's next delivery recalibrates.
+  // (mount, width reflow, box shrink incl. the expanded flip, hidden
+  // ancestor) — is tailSlide.ts's `slideDecision`, unit-tested there.
+  // `slideMemory === null` is the one reset sentinel: the RO's next
+  // delivery recalibrates.
   //
-  // The motion itself is one fill-none `Element.animate()` from the
-  // inverted offset to rest. Spike-verified (2026-08-06, Playwright
-  // Chromium + WebKit): an animation created inside an RO callback
-  // applies before the first paint after the layout move — same no-flash
-  // guarantee as an inline style write, without its costs: at finish the
-  // effect stops applying on its own (the element carries no inline
-  // residue, ever), and every guard path is a single cancel() instead of
-  // a transition/transform unwind plus rAF bookkeeping. (Transform
-  // transitions and WAAPI both run on the compositor; that is not the
-  // difference. Note the animated inner promotes a layer sized to the
-  // FULL windowed content, and `contain: paint` on the box measurably
-  // does not bound it — tiled rasterization is what keeps the real cost
-  // near the visible tiles.)
+  // The drain is a rAF tracker over the pending offset (`stepSlide`), not
+  // a fixed-duration transition: an offset the reveal keeps topping up
+  // just tickers faster, where a per-line 140ms FLIP saturated at its
+  // one-window cap under short-line text and teleported every further
+  // line (bug-report-20260904T184019Z). The offset is owned here, so a
+  // compounding advance never reads computed style; the loop runs only
+  // while an offset is pending, and at rest the wrapper carries no
+  // inline transform at all.
   let slideMemory: SlideObservation | null = null;
-  let slideAnim: Animation | null = null;
+  let slideOffset = 0;
+  let slideFrame = 0;
+  let slideLastTs = 0;
+
+  function applySlide(inner: HTMLElement): void {
+    inner.style.transform = slideOffset > 0 ? `translateY(${slideOffset}px)` : '';
+  }
 
   function clearSlide(): void {
-    slideAnim?.cancel();
-    slideAnim = null;
+    if (slideFrame !== 0) cancelAnimationFrame(slideFrame);
+    slideFrame = 0;
+    slideOffset = 0;
+    if (innerEl) applySlide(innerEl);
+  }
+
+  function drainSlide(inner: HTMLElement, ts: number): void {
+    slideFrame = 0;
+    slideOffset = stepSlide(slideOffset, ts - slideLastTs);
+    slideLastTs = ts;
+    applySlide(inner);
+    if (slideOffset > 0) slideFrame = requestAnimationFrame((next) => drainSlide(inner, next));
+  }
+
+  function startSlide(inner: HTMLElement, offsetPx: number): void {
+    slideOffset = offsetPx;
+    applySlide(inner);
+    if (slideFrame === 0) {
+      slideLastTs = performance.now();
+      slideFrame = requestAnimationFrame((ts) => drainSlide(inner, ts));
+    }
   }
 
   $effect(() => {
@@ -152,20 +168,10 @@
       const innerSize = sizes.get(inner);
       const outerSize = sizes.get(outer);
       if (!innerSize || !outerSize) return;
-      // The live interpolated translateY — a slide landing mid-slide
-      // compounds from where the text IS, so the start position cannot
-      // come from a remembered target. Resolved from computed style ONLY
-      // while a slide is actually running; at rest the transform is
-      // identically none (fill-none animation) and the style resolve is
-      // skipped on the common line-boundary path.
-      const liveTy =
-        slideAnim && slideAnim.playState === 'running'
-          ? transformTranslateY(getComputedStyle(inner).transform)
-          : 0;
       const decision = slideDecision(
         slideMemory,
         { innerH: innerSize.h, innerW: innerSize.w, outerH: outerSize.h },
-        liveTy,
+        slideOffset,
       );
       slideMemory = decision.memory;
       if (decision.kind === 'clear') {
@@ -175,14 +181,7 @@
       // Gate checked after the baseline update so a low-power toggle
       // mid-stream leaves the geometry bookkeeping calibrated.
       if (decision.kind !== 'slide' || motionReduced()) return;
-      // startPx already carries the in-flight displacement (read above,
-      // before this cancel), so replacing the animation is seamless —
-      // nothing paints between cancel and animate in the same callback.
-      slideAnim?.cancel();
-      slideAnim = inner.animate(
-        [{ transform: `translateY(${decision.startPx}px)` }, { transform: 'translateY(0px)' }],
-        { duration: SLIDE_MS, easing: 'ease-out' },
-      );
+      startSlide(inner, decision.startPx);
     });
     ro.observe(inner);
     ro.observe(outer);

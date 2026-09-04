@@ -1050,9 +1050,10 @@ scroller:
 1. **The scroll controller's glide** (`utils/scroll/`) animates the
    scroll offset only. Rows never move relative to the content; the
    viewport moves over them.
-2. **The streaming line-slide** (`TailClampedText`'s FLIP via
-   `Element.animate()`) is the one in-content animation, on the one region
-   that is genuinely in motion: the line being streamed.
+2. **The streaming line-slide** (`TailClampedText`'s inverted translateY,
+   drained by a rAF tracker — `tailSlide.ts`) is the one in-content
+   animation, on the one region that is genuinely in motion: the line
+   being streamed.
 
 Everything else is still ink. No CSS transitions (the app.css timeline
 kill rule zeroes them, per `components/chat/AGENTS.md` §Row Contract),

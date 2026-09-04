@@ -87,6 +87,14 @@ Every row rendered inside `<TimelineVirtualizer>`:
   `timelineAnimationDirectives.test.ts`,
   `timelineKeyframeAnimations.test.ts`. Why: frontend-scroll.md § The
   Print Doctrine.
+- **The line-slide is a tracker, never a fixed-duration transition.**
+  `TailClampedText`'s per-line inversion drains a fraction of whatever
+  offset is pending each frame (`tailSlide.ts`), so lines arriving faster
+  than one transition could absorb them ticker faster. A 140ms-per-line
+  FLIP saturated at its one-window cap under short-line thinking and
+  teleported every further line (bug-report-20260904T184019Z). Guard:
+  `thinkingTailContinuity.browser.test.ts`, a per-frame sampler over the
+  whole streaming run, completion and handoff included.
 
 The user row's body swap to `UserMessageEditor.svelte` is the one
 deliberate exception to "keep the outer shell stable", scoped to
@@ -236,6 +244,11 @@ The rules that bite here:
   zero width and takes no gutter, or the rows leave the rail. That
   geometry is browser-only (`activityRunClip.browser.test.ts`,
   `activityRunScroll.browser.test.ts`).
+- A run leaving the tail keeps its inner controller until the outer
+  glide has ARRIVED (`holdForGlide`, 1.5s deadline). The handoff writes
+  `clip.scrollTop = scrollHeight` directly, and doing that mid-glide
+  snapped the pane 13–75px on every thinking-to-prose boundary
+  (2026-09-04). Guard: `thinkingTailContinuity.browser.test.ts`.
 
 ## Companion panes
 

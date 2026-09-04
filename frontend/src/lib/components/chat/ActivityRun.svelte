@@ -31,7 +31,7 @@
   // of them can use.
 
   import type { Snippet } from 'svelte';
-  import { tick } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import type {
     PaneSession,
     RevealRead,
@@ -503,6 +503,59 @@
     if (activityRunShouldMountEarlier(metrics, hiddenEarlier)) void mountEarlier();
   }
 
+  // Tail-ness ending while a glide is in flight. The gate releases a run's
+  // last short rows, the controller starts gliding the clip to them, and the
+  // closing prose reveals ~200ms later — mid-glide. Tearing the controller
+  // down there hands the clip to its bottom in ONE frame (13–75px in the
+  // bug-report-20260904T184019Z reproduction: the whole pane jumps). So the
+  // controller outlives tail-ness for exactly as long as its glide has left:
+  // the handoff below runs once the clip rests on its bottom (a no-op write
+  // by then), or at the deadline, or when the clip dies. Arrival is read
+  // from the component's own position cache, which every controller write
+  // refreshes, so the hold costs no DOM reads. A reader who escaped has no
+  // glide to finish and hands off at once, as before.
+  // Declared BEFORE the lifetime effect on purpose: effects run in
+  // declaration order, so the hold is armed before `wantsController` is
+  // re-read — a tail flip the lifetime effect saw first would tear the
+  // controller down before the hold could keep it.
+  const GLIDE_HOLD_MAX_MS = 1500;
+  let holdForGlide = $state(false);
+  let wantsController = $derived(isTail || holdForGlide);
+  let glideHoldFrame = 0;
+
+  function endGlideHold(): void {
+    if (glideHoldFrame !== 0) cancelAnimationFrame(glideHoldFrame);
+    glideHoldFrame = 0;
+    holdForGlide = false;
+  }
+
+  $effect(() => {
+    if (isTail) return;
+    const controller = untrack(() => stick);
+    if (
+      !controller ||
+      controller.escapedFromLock ||
+      !controller.autoScrollInFlight() ||
+      !knownMetrics ||
+      activityRunAtBottom(knownMetrics)
+    ) {
+      return;
+    }
+    holdForGlide = true;
+    const deadline = performance.now() + GLIDE_HOLD_MAX_MS;
+    const check = (): void => {
+      glideHoldFrame = 0;
+      const arrived = !knownMetrics || activityRunAtBottom(knownMetrics);
+      if (arrived || collapsed || performance.now() >= deadline) {
+        holdForGlide = false;
+        return;
+      }
+      glideHoldFrame = requestAnimationFrame(check);
+    };
+    glideHoldFrame = requestAnimationFrame(check);
+    return endGlideHold;
+  });
+
   // Controller lifetime and scroll-position persistence are ONE effect on
   // purpose. The saved snapshot carries the controller's escape flag, so
   // splitting them would make the saved value depend on which teardown
@@ -516,7 +569,7 @@
     const content = contentEl;
     if (!clip) return;
 
-    const controller = isTail && content ? createStick() : null;
+    const controller = wantsController && content ? createStick() : null;
     stick = controller;
     if (controller && content) controller.attach(clip, content);
 
