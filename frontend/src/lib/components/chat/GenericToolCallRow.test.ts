@@ -682,3 +682,58 @@ describe('<GenericToolCallRow> browser tools on another machine', () => {
     expect(getByTestId('tool-call-card-status-slot')).toBeTruthy();
   });
 });
+
+describe('<GenericToolCallRow> SendMessage ack line', () => {
+  beforeEach(() => {
+    resetBindingMocks();
+    setBindingMock('GetPayloadPreview', vi.fn(async () => ({ data: '', size: 0, isComplete: true })));
+  });
+
+  it('shows the CLI reply as the row error when the send was refused', () => {
+    const item = makeItem({
+      kind: 'tool_call',
+      toolName: 'SendMessage',
+      status: 'errored',
+      summary: 'SendMessage: A (error)',
+      meta: JSON.stringify({
+        input: { to: 'A', message: 'status?' },
+        is_error: true,
+        send_reply: 'No agent named "A" in this session.',
+      }),
+    });
+    const { getByTestId, queryByTestId } = render(GenericToolCallRow, { props: { item } });
+    expect(getByTestId('row-error-msg').textContent).toBe('No agent named "A" in this session.');
+    expect(queryByTestId('tool-call-card-reply')).toBeNull();
+  });
+
+  it('shows the CLI reply as a muted line under a delivered send', () => {
+    const item = makeItem({
+      kind: 'tool_call',
+      toolName: 'SendMessage',
+      status: 'completed',
+      summary: 'SendMessage: ab487a02304913d06',
+      meta: JSON.stringify({
+        input: { to: 'ab487a02304913d06', message: 'status?' },
+        send_reply: 'Message queued for delivery to ab487a02304913d06 at its next tool round.',
+        recipient_description: 'Frontend fix',
+      }),
+    });
+    const { getByTestId, queryByTestId } = render(GenericToolCallRow, { props: { item } });
+    expect(getByTestId('tool-call-card-reply').textContent).toBe(
+      'Message queued for delivery to ab487a02304913d06 at its next tool round.',
+    );
+    expect(queryByTestId('row-error')).toBeNull();
+  });
+
+  it('renders no reply line for a non-SendMessage row that happens to carry one', () => {
+    const item = makeItem({
+      kind: 'tool_call',
+      toolName: 'Bash',
+      status: 'completed',
+      summary: 'Bash: ls',
+      meta: JSON.stringify({ input: { command: 'ls' }, send_reply: 'stray' }),
+    });
+    const { queryByTestId } = render(GenericToolCallRow, { props: { item } });
+    expect(queryByTestId('tool-call-card-reply')).toBeNull();
+  });
+});

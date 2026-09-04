@@ -27,8 +27,9 @@ import (
 // the split wait_agent completion, proposed plans) unguarded:
 //
 //   - `claude` — an implied turn: no wire turn id, streaming text and
-//     thinking deltas, an Edit and a Bash, a compaction boundary, an
-//     api_error.
+//     thinking deltas, an Edit and a Bash, a refused SendMessage (the
+//     verdict lives in the ack, not the wire flag), a compaction
+//     boundary, an api_error.
 //   - `codex` — an explicit turn that NAMES itself (`turn-1`), whole
 //     content blocks arriving as EventContentBlockStop rather than
 //     deltas, a shell tool, a proposed plan, and a wait_agent whose
@@ -170,6 +171,7 @@ func claudeParityCase() parityCase {
 			{"text:1:0", "assistant_text", "assistant_text", ""},
 			{"toolu_edit_1", "tool_call", "tool_result", "tool_call_input"},
 			{"toolu_bash_1", "tool_call", "command_output", ""},
+			{"toolu_send_1", "tool_call", "tool_call_result", ""},
 			{"compact:1:provider:compaction-1", "compaction", "compaction", ""},
 			{"error:1:0", "api_error", "", ""},
 		},

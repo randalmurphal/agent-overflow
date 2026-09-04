@@ -23,6 +23,13 @@ behavior. These back parser replay tests and the reference docs in
   fields (prompts, SendMessage `input.message`/`input.content`)
   truncated to placeholders; every other key/value byte-identical to
   the capture.
+- `send_message_ack_20260904.ndjson`: two `SendMessage` round-trips on
+  2.1.257, a refusal (`to: "A"`, no such agent) and a queued send to a
+  live agent by id. Proves the `tool_result` block is `is_error:false`
+  either way and the verdict is `tool_use_result.success`, with
+  `display` (the TUI's line) beside `message` and `pin{id,name,ref}`
+  naming the resolved agent (claude-wire.md §"`SendMessage` ack").
+  Backs `sendmessage_ack_test.go` and triage's `ApplySendMessageAck`.
 - `ndjson_outlives.log`: backgrounded Bash outliving its launching turn
   (the wire `result` envelope arrives BEFORE the task's `task_updated`)
 - `ndjson_outlives_turn2.log`: follow-up turn on the same session

@@ -54,6 +54,19 @@ the file list. A `Handle` case in `router.go` makes a handler reachable.
   the read is gated on `exit_code != 0 || is_error`; before that gate a
   dev server's startup banner was persisted as the `errorMessage` of
   every row that exited 0 (found by the wave-9 preview e2e, 2026-09-02).
+- **A Claude `SendMessage` row's verdict is the ack, not the wire
+  flag.** The CLI answers a refused send with an ordinary
+  `is_error:false` tool_result whose `tool_use_result.success` is
+  false, so `ApplySendMessageAck` (`sendmessage_ack.go`) runs BEFORE
+  status, summary and the payload header derive from meta, and its
+  patch merges AFTER the wire meta so the stored `is_error` is the
+  ack's. It persists the CLI's own reply line (`send_reply`) and the
+  recipient launch's description (`recipient_description`, resolved
+  through `FindOriginalAgentLaunchByTaskID` here and through the batch
+  in the importer), the two things the card shows. Queued is
+  delivered: the agent picks a queued message up as a hidden
+  system-reminder attachment nothing on the wire reports, so there is
+  no third state to track (claude-wire.md §"`SendMessage` ack").
 
 ## Subagent scope stays subagent scope
 

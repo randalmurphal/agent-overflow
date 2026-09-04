@@ -469,6 +469,22 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 		launch.Meta = mergeItemMetaJSON(launch.Meta, []byte(`{"is_background":false}`))
 	}
 
+	// Claude's SendMessage answers a refused send with a normal result:
+	// the verdict is in the ack, not in the wire's is_error flag
+	// (sendmessage_ack.go). Read it BEFORE status, summary and payload
+	// header derive from meta, and stamp the recipient's name so the row
+	// can show who the message went to without the launch row in view.
+	var sendPatch map[string]json.RawMessage
+	if launch.ToolName == "SendMessage" && !codexThread {
+		var completion map[string]json.RawMessage
+		if err := json.Unmarshal(evt.Meta, &completion); err != nil {
+			log.Printf("triage: decode SendMessage completion meta on %s/%s: %v", evt.ThreadID, itemID, err)
+		}
+		if sendPatch = ApplySendMessageAck(launch.ToolName, completion, &meta); sendPatch != nil {
+			r.stampSendMessageRecipient(evt.ThreadID, launch, sendPatch)
+		}
+	}
+
 	status := CompletionStatus(meta)
 	launch.Status = status
 	launch.Summary = BuildCompletionSummary(CompletionBaseSummary(launch, meta, evt.ItemType), meta)
@@ -476,6 +492,11 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 		launch.ToolName = strings.TrimSpace(meta.ToolName)
 	}
 	launch.Meta = MergeStoredToolCallMeta(launch.Meta, evt.ItemType, launch.ToolName, evt.Meta)
+	if len(sendPatch) > 0 {
+		// After the wire merge, so the ack's verdict is what the stored
+		// meta says (the wire's own `is_error:false` would otherwise win).
+		launch.Meta = MergeStoredToolCallMetaObject(launch.Meta, evt.ItemType, launch.ToolName, sendPatch)
+	}
 	launch.UpdatedAt = now
 	// Re-shape the merged meta so a completion event whose meta still
 	// carries heavy input bytes (Codex curated input) doesn't re-bloat
@@ -1522,16 +1543,7 @@ func (r *Router) resumeCarrierIdentity(threadID string, launch store.Item) (stri
 	patch := map[string]string{}
 	if found {
 		origMeta := DecodeToolStartMeta(json.RawMessage(original.Meta))
-		var origInput struct {
-			Model        string `json:"model"`
-			SubagentType string `json:"subagent_type"`
-			Description  string `json:"description"`
-		}
-		if len(origMeta.Input) > 0 {
-			// Undecodable input degrades to no patch fields, like
-			// DecodeToolStartMeta's own garbage rule.
-			_ = json.Unmarshal(origMeta.Input, &origInput)
-		}
+		origInput := launchInputIdentity(original.Meta)
 		// subagent_model: the Subn stamp from the child's own assistant
 		// envelopes (which stay parented to the ORIGINAL launch across
 		// resume rounds, claude-wire.md §E6) is authoritative; the
@@ -1560,6 +1572,26 @@ func (r *Router) resumeCarrierIdentity(threadID string, launch store.Item) (stri
 		return summary, nil
 	}
 	return summary, encoded
+}
+
+// launchIdentity is the model-chosen identity an Agent launch carries in
+// its `input` (Claude's Agent/Task tool): what the tray, the agents
+// panel and the resume carrier call the agent.
+type launchIdentity struct {
+	Model        string `json:"model"`
+	SubagentType string `json:"subagent_type"`
+	Description  string `json:"description"`
+}
+
+// launchInputIdentity reads launchIdentity off a persisted launch row's
+// meta. Undecodable or absent input degrades to the zero value, like
+// DecodeToolStartMeta's own garbage rule.
+func launchInputIdentity(metaJSON string) launchIdentity {
+	var identity launchIdentity
+	if input := DecodeToolStartMeta(json.RawMessage(metaJSON)).Input; len(input) > 0 {
+		_ = json.Unmarshal(input, &identity)
+	}
+	return identity
 }
 
 // buildBackgroundTerminalSummary produces the sibling row's summary.

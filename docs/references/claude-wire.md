@@ -1347,6 +1347,45 @@ provenance is positively known. The wrapper stays in
 path deliberately branches on it BEFORE the wrapper suppression: the
 peer's text is real conversation content.
 
+### `SendMessage` ack (verified 2.1.257)
+
+The `tool_result` block for a `SendMessage` is **never `is_error`**, and
+its text is the CLI's `message`. The verdict is in the sibling
+`tool_use_result`:
+
+```json
+{"success": false,
+ "message": "No agent named \"A\".",
+ "display": "No agent named \"A\" in this session. Use the agent's id, or /agents to list them."}
+{"success": true,
+ "message": "Message queued for delivery to ab487a02304913d06 at its next tool round.",
+ "pin": {"id": "ab487a02304913d06", "name": "Frontend transitive suppression fix", "ref": "ab487a02304913d06"}}
+```
+
+- `success` is the only verdict. A refused send (no such agent, an
+  ambiguous name, an agent the user stopped, no socket for a peer)
+  arrives as an ordinary `is_error:false` result with `success:false`.
+- `display`, when present, is the line the CLI's own TUI prints under
+  the call; `message` is the terse form. `display` wins for rendering.
+- `pin.id` names the agent the recipient RESOLVED to. It is present for
+  a live agent of this session (queued for its next tool round) and
+  for the resume forms; a peer session or the main agent carries no
+  pin. `resumedAgentId` is the §E6 resume's spelling of the same id.
+- **Queued IS delivered.** A queued message is handed to the agent as a
+  hidden `agent_pending_messages` system-reminder attachment at its next
+  tool round: it appears on no stdout envelope and in no sidechain
+  transcript, so there is no pickup receipt to wait for. AO does not
+  invent one.
+
+**AO handling.** `claude.DecodeSendMessageAck` reads the three fields;
+`triage.ApplySendMessageAck` (live completion and session import alike)
+flips the row to errored on `success:false`, persists the reply line as
+`meta.send_reply`, and resolves `pin.id` (or `input.to` when no pin)
+against this thread's launches to stamp `meta.recipient_description`,
+so the card reads "To <agent's description>" plus the CLI's own line,
+red when refused. Fixture:
+[`send_message_ack_20260904.ndjson`](fixtures/claude/send_message_ack_20260904.ndjson).
+
 
 ---
 
@@ -2249,9 +2288,13 @@ What a client CAN do is relay through the model, verified end to end:
 2. Send the main agent a user message asking it to
    `SendMessage(to: <agentId>, message: ...)`. The tool answers
    `Message queued for delivery to <agentId> at its next tool round.`
-3. The agent receives it as `The coordinator sent a message while you
-   were working: <text>` before its next tool call and can act on it
-   (the spike agent quoted it back verbatim in its final summary).
+   (ack shape: §"`SendMessage` ack").
+3. The agent receives it before its next tool call as a hidden
+   `agent_pending_messages` system-reminder attachment and can act on
+   it (the spike agent quoted it back verbatim in its final summary).
+   The delivery is on no stdout envelope and in no sidechain transcript
+   (verified 2.1.257 against a live capture), so nothing observable
+   marks the pickup: queued is the last thing the wire says.
 
 Costs one short main turn per steer, and the steer lands only if the
 agent makes at least one more tool call. A mid-flight `background_tasks`
