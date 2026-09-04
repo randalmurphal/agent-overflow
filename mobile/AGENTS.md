@@ -60,26 +60,27 @@ with the defaults below and can be overridden by exporting them:
 | `JAVA_HOME` | `~/.jdks/temurin-21` | JDK 21 |
 | `ANDROID_HOME` | `~/Android/Sdk` | `platform-tools`, `platforms;android-36`, `build-tools;36.0.0` |
 
-**`AO_SHELL=1` is what makes a build a shell build.** The Capacitor
-packages are dependencies of THIS package, never of `frontend/`, so the
-desktop bundle cannot carry them; `frontend/vite.config.ts` aliases their
-specifiers at `mobile/node_modules` when `AO_SHELL=1` and at a
-null-exporting stub (`frontend/src/lib/native/capacitorAbsent.ts`)
-otherwise. `build-apk.sh` is the only thing that sets it. The same
-mapping is repeated in `frontend/vitest.config.ts` and
-`frontend/tsconfig.json` so the type check and the unit tests resolve the
-same names; adding a plugin means adding it in all four places.
-
-Four specifiers are aliased today: the three published plugins
+**One bundle.** There is no shell flavour of the SPA. The APK syncs
+the ordinary `frontend` build, and that same build is what the backend
+embeds and serves to a paired phone (`internal/bundle`), so the native
+seams have to be IN it: the Capacitor packages the seams import
 (`@capacitor/app`, `@capacitor/barcode-scanner`,
-`@aparajita/capacitor-biometric-auth`) and `@capacitor/core` — the bridge
-itself, needed because the `Bundle` plugin has no npm package at all and
-is reached with `registerPlugin('Bundle')` (§ The bundle plugin).
+`@aparajita/capacitor-biometric-auth`, and `@capacitor/core` for the
+`registerPlugin('Bundle')` / `registerPlugin('Push')` plugins that have
+no npm package) are dependencies of `frontend/` as well as of this
+package, pinned to the same versions. The seams issue those imports
+only behind `isNativeShell()`, and each is a dynamic `import()`, so on
+the desktop they are chunks nobody fetches. The first device run
+(2026-09-03) is what retired the earlier `AO_SHELL=1` alias-to-a-stub
+arrangement: the phone downloaded the backend's bundle, found every
+seam stubbed, could not confirm the launch healthy, and rolled back.
 
-A side effect worth knowing: `make apk` leaves `frontend/dist` holding a
-SHELL bundle. Anything that serves `dist` afterwards (`make e2e`,
-`make build`) rebuilds it, but a hand-run of a Go binary that embeds it
-will not.
+Adding a plugin means adding it to both `package.json` files at one
+version; `cap sync` reads this package's list to wire the native side.
+
+`make apk` rebuilds `frontend/dist` on its way, exactly as `make build`
+and the harness targets do; it is the same bundle, so nothing that
+embeds `dist` afterwards is affected.
 
 `minSdkVersion` is 26, not the Capacitor template's 24, because the
 barcode scanner's native library declares 26 and the manifest merge
@@ -375,6 +376,17 @@ DENIED permission is remembered for the launch and asked again on the
 next cold start: no prompt storm, no permanent refusal, and restarting
 the app is a thing people already do.
 
+**Registration starts when the lock first passes, not at boot.** Its
+first act is the `POST_NOTIFICATIONS` prompt, and a platform prompt
+raised while the lock's own credential prompt is up is two system
+dialogs on one screen: whatever the person types goes to the one on
+top. That is how every unlock in the emulator smoke failed on the first
+device run (2026-09-03), and it is the general rule, not a push one —
+anything that raises a platform dialog on boot waits for the gate
+(`boot.ts`, `onceUnlocked`). The presenter and the tap route raise
+nothing and start at once. The smoke pre-grants the permission with
+`pm grant`, so its runs never see the dialog at all.
+
 Withdrawing is the asymmetric half. `unregisterPushFrom` is installed as
 a step in `transport/detachSteps.ts` rather than watched for here,
 because it is an RPC over the very socket being taken away: a phone that
@@ -492,7 +504,15 @@ and the resume handler running. What resume decides is only whether to
 PROMPT, and a prompt that was owed when the app paused (a cold start
 still waiting, a dismissed prompt) is still owed when it comes back,
 however short the trip: the cover and the debt are two facts, and
-`lock.ts` keeps them apart. There is deliberately NO `FLAG_SECURE`:
+`lock.ts` keeps them apart. The prompt itself is an ACTIVITY of its own,
+so it pauses this app on the way up and resumes it on the way down, and
+on Android that resume lands after the answer: `lock.ts` marks the
+pause a prompt caused and lets the matching resume through untouched.
+Read as a trip, that resume raised a second prompt after a passed one
+(the success had cleared the pause timestamp, so it looked like a cold
+start) and re-raised a dismissed one on the spot, with no way out of it
+short of killing the app (2026-09-03, the first device run). There is
+deliberately NO `FLAG_SECURE`:
 the 2026-09-03 ruling is bank-app behaviour, a timed re-lock and
 nothing more, and a person may screenshot or record their own
 threads. The task switcher shows the cover, which is the lock screen,
@@ -518,8 +538,9 @@ arrives, that a notification tap's extras cold-launch onto the right
 thread — needs an emulator: `make e2e-android`, which exits clean when
 there is none. It drives the shell's own WebView through Playwright's
 Android API rather than a Chromium of its own; `e2e/AGENTS.md` §
-The emulator smoke owns the details, including the fact that it was
-written against those docs and has NOT been run on a device yet.
+The emulator smoke owns the details. Its first device run was the Mac
+pass (2026-09-03, an arm64 android-36 emulator): five shell defects the
+unit suites could not reach, all fixed in that pass, and green since.
 
 ## Deferred
 

@@ -192,6 +192,50 @@ describe('installAppLock', () => {
     lock.dispose();
   });
 
+  // The prompt is an activity of its own: it pauses this app on the way
+  // up and resumes it on the way down, after the answer. That resume is
+  // not a trip, however the window is set.
+  it('does not prompt again on the resume its own prompt produces', async () => {
+    let pass: () => void = () => {};
+    plugins.authenticate.mockImplementation(
+      () => new Promise<undefined>((resolve) => { pass = () => resolve(undefined); }),
+    );
+    const lock = await installAppLock({ backgroundWindowMs: 0 });
+    await Promise.resolve();
+    fire('pause'); // the prompt's activity came up
+    pass();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(lock.locked()).toBe(false);
+
+    fire('resume'); // and closed
+
+    expect(lock.locked()).toBe(false);
+    expect(plugins.authenticate).toHaveBeenCalledTimes(1);
+    lock.dispose();
+  });
+
+  it('leaves a dismissed prompt down until the button raises it', async () => {
+    let dismiss: () => void = () => {};
+    plugins.authenticate.mockImplementation(
+      () => new Promise<undefined>((_, reject) => { dismiss = () => reject(new Error('dismissed')); }),
+    );
+    const lock = await installAppLock({ backgroundWindowMs: 60_000 });
+    await Promise.resolve();
+    fire('pause');
+    dismiss();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    fire('resume');
+
+    expect(lock.locked()).toBe(true);
+    expect(plugins.authenticate).toHaveBeenCalledTimes(1);
+    void lock.unlock();
+    expect(plugins.authenticate).toHaveBeenCalledTimes(2);
+    lock.dispose();
+  });
+
   it('listens to nothing off the shell', async () => {
     plugins.nativeShell = false;
     const lock = await installAppLock();

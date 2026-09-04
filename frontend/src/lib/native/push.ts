@@ -41,10 +41,12 @@ let removeListeners: (() => Promise<void>)[] = [];
  * Ask for the permission, get the token, and register it with every
  * attached backend — then keep doing that as backends come and go.
  *
- * Answers a teardown. Called from `native/boot.ts` beside the bundle
- * sync, and like it: never awaited, never on anything's critical path. A
- * phone that never gets here is a phone that is not woken, which is the
- * pre-push behaviour and not a failure.
+ * Answers a teardown. Called from `native/boot.ts` once the app lock has
+ * first passed — the first thing this does is raise a platform prompt,
+ * and two platform prompts on one screen is the failure `boot.ts` names
+ * — and never awaited, never on anything's critical path. A phone that
+ * never gets here is a phone that is not woken, which is the pre-push
+ * behaviour and not a failure.
  */
 export async function startPushRegistration(): Promise<() => void> {
   if (!isNativeShell()) return () => {};

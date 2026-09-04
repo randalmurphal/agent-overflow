@@ -2376,9 +2376,12 @@ text above was deviated from:
 - *Android shell* (eebe2d5a; Capacitor 8 in 3a415165): `mobile/` is a
   Capacitor project whose `webDir` is `frontend/dist`, so the phone runs
   the desktop's bundle under the compact layout. Plugins (`app`,
-  `barcode-scanner`, `biometric-auth`) are dependencies of `mobile/`
-  only; `AO_SHELL=1` aliases their specifiers there and every other
-  build resolves a null stub, so the desktop bundle cannot carry them.
+  `barcode-scanner`, `biometric-auth`, `core`) are dependencies of
+  `frontend/` as well as `mobile/`, imported dynamically behind
+  `isNativeShell()`, so the one bundle carries its native seams
+  wherever it is served from (the Mac pass, 2026-09-03, retired the
+  `AO_SHELL=1` stub alias: a phone adopting the backend's bundle found
+  every seam stubbed and rolled back).
   Seams in `frontend/src/lib/native/`: lifecycle (pause/resume to
   `setClientLease`, hardware back to the list screen or Escape through
   the keybinding path), lock (biometric on cold start and on resume,
@@ -2396,8 +2399,10 @@ text above was deviated from:
   Android API, with the harness backend reached through `adb reverse`
   at the device's loopback (the emulator's `10.0.2.2` alias is mixed
   content under the `https://` origin and is refused before any policy
-  is read). It exits clean without a device and has NOT yet run on one;
-  its first run is the Mac pass. A phone lists, pairs and detaches a
+  is read). It exits clean without a device; its first run on one was
+  the Mac pass (2026-09-03, an arm64 android-36 emulator), which found
+  five shell defects the unit suites could not reach — listed in the
+  spec's header — and now passes. A phone lists, pairs and detaches a
   second machine through `backendAttach.ts` (redeem into one more
   session slot and endpoint, poll activation, detach socket then
   credential then address), which Settings → Systems renders under the

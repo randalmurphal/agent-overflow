@@ -148,6 +148,25 @@ export interface PushNotificationPlugin {
   ): Promise<{ remove: () => Promise<void> }>;
 }
 
+/**
+ * Hide `then` from a Capacitor plugin proxy.
+ *
+ * `registerPlugin` answers EVERY property read with a method wrapper, so
+ * the proxy is a thenable whose `then` rejects with `"App.then()" is not
+ * implemented`. Resolving a promise with it — which is what every
+ * `async` accessor below does by returning it — makes the promise
+ * machinery call that `then` with its own resolvers, and the outer
+ * promise then never settles: `await appPlugin()` hung forever and took
+ * the lifecycle, the lock prompt and the bundle health check with it
+ * (first device run, 2026-09-03). Nothing else about the proxy changes;
+ * every other read forwards to it.
+ */
+export function unthenable<T extends object>(plugin: T): T {
+  return new Proxy(plugin, {
+    get: (target, prop) => (prop === 'then' ? undefined : Reflect.get(target, prop, target)),
+  });
+}
+
 async function loadModule<T>(load: () => Promise<T>): Promise<T | null> {
   if (!isNativeShell()) return null;
   try {
@@ -160,17 +179,20 @@ async function loadModule<T>(load: () => Promise<T>): Promise<T | null> {
 
 export async function appPlugin(): Promise<AppPlugin | null> {
   const mod = await loadModule(() => import('@capacitor/app'));
-  return (mod?.App as AppPlugin | null) ?? null;
+  const plugin = (mod?.App as AppPlugin | null) ?? null;
+  return plugin && unthenable(plugin);
 }
 
 export async function biometricPlugin(): Promise<BiometricPlugin | null> {
   const mod = await loadModule(() => import('@aparajita/capacitor-biometric-auth'));
-  return (mod?.BiometricAuth as BiometricPlugin | null) ?? null;
+  const plugin = (mod?.BiometricAuth as BiometricPlugin | null) ?? null;
+  return plugin && unthenable(plugin);
 }
 
 export async function scannerPlugin(): Promise<ScannerPlugin | null> {
   const mod = await loadModule(() => import('@capacitor/barcode-scanner'));
-  return (mod?.CapacitorBarcodeScanner as ScannerPlugin | null) ?? null;
+  const plugin = (mod?.CapacitorBarcodeScanner as ScannerPlugin | null) ?? null;
+  return plugin && unthenable(plugin);
 }
 
 /**
@@ -191,7 +213,7 @@ export async function bundlePlugin(): Promise<BundleSyncPlugin | null> {
     | undefined;
   if (typeof register !== 'function') return null;
   try {
-    return register('Bundle');
+    return unthenable(register('Bundle'));
   } catch (err) {
     console.warn('native: the bundle plugin did not register', err);
     return null;
@@ -215,7 +237,7 @@ export async function pushPlugin(): Promise<PushNotificationPlugin | null> {
     | undefined;
   if (typeof register !== 'function') return null;
   try {
-    return register('Push');
+    return unthenable(register('Push'));
   } catch (err) {
     console.warn('native: the push plugin did not register', err);
     return null;

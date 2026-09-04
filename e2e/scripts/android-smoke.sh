@@ -18,23 +18,22 @@
 #
 # WHAT THIS SCRIPT OWNS, and why each step is here rather than in the spec:
 #
-#   - The APK install, and `pm clear` after it. Every run must start from
-#     a phone that has never paired: the shell persists its backend
-#     endpoint and its session in the WebView's localStorage, and the
-#     harness backend is on a fresh ephemeral port each run, so a kept
-#     store would boot the app "paired" at a port that is gone.
+#   - The APK install.
 #   - The device PIN. The emulator has no biometric, and `native/lock.ts`
 #     passes `allowDeviceCredential: true` so the platform falls back to
 #     the credential the phone is unlocked with — so a device with NO
 #     credential has no prompt for the spec to answer. Set before the run
 #     and cleared after, including on failure.
-#   - Launching the activity. The spec attaches to a WebView that is
-#     already open; it does not start the app.
 #
-# What the spec owns is everything that depends on a port that does not
-# exist yet: the harness backend, the `adb reverse` forward that lets the
-# device reach it, and the pairing. `android/shell-boot.spec.ts` argues
-# the reverse forward in place.
+# What the spec owns is everything per CASE and everything that depends
+# on a port that does not exist yet: `pm clear` and the launch (its
+# `page` fixture, so every case starts from a phone that has never
+# paired — the shell persists its backend endpoint and its session in
+# the WebView's localStorage, and the harness backend is on a fresh
+# ephemeral port each run), the notification permission grant, the
+# harness backend, the `adb reverse` forward that lets the device reach
+# it, and the pairing. `android/shell-boot.spec.ts` argues the reverse
+# forward in place.
 set -euo pipefail
 
 : "${ANDROID_HOME:=$HOME/Android/Sdk}"
@@ -54,12 +53,19 @@ fi
 # on the app.
 devices="$("$adb" devices | tail -n +2 | awk '$2 == "device" { print $1 }')"
 if [[ -z "$devices" ]]; then
-  cat <<'MSG'
+  # The system image must match the host: the emulator runs an arm64
+  # guest on Apple Silicon and an x86_64 one everywhere else, and the
+  # other one either fails to install or boots at a crawl.
+  case "$(uname -m)" in
+    arm64 | aarch64) abi=arm64-v8a ;;
+    *) abi=x86_64 ;;
+  esac
+  cat <<MSG
 No Android device or emulator is attached, so the shell smoke is skipped.
 
 To run it:
-  $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "system-images;android-36;google_apis;x86_64"
-  $ANDROID_HOME/cmdline-tools/latest/bin/avdmanager create avd -n ao -k "system-images;android-36;google_apis;x86_64"
+  $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "system-images;android-36;google_apis;$abi"
+  $ANDROID_HOME/cmdline-tools/latest/bin/avdmanager create avd -n ao -k "system-images;android-36;google_apis;$abi"
   $ANDROID_HOME/emulator/emulator -avd ao &
   make apk && make e2e-android
 MSG
@@ -79,19 +85,15 @@ fi
 echo "==> installing"
 "$adb" -s "$serial" install -r "$apk"
 
-# A phone that has never paired. See the header: the endpoint and session
-# this app stores outlive the backend they name.
-echo "==> clearing app data"
-"$adb" -s "$serial" shell pm clear "$pkg"
+# The app's data, the notification permission and the launch itself are
+# the spec's `page` fixture's to do, before EVERY case: a phone that has
+# never paired is each case's starting point, not the run's.
 
 # The credential the app lock falls back to. Cleared on every exit path,
 # including a failed run, so the emulator is left as it was found.
 echo "==> setting the device PIN"
 "$adb" -s "$serial" shell locksettings set-pin "$pin"
 trap '"$adb" -s "$serial" shell locksettings clear --old "$pin" >/dev/null 2>&1 || true' EXIT
-
-echo "==> launching the shell"
-"$adb" -s "$serial" shell am start -n "$pkg/.MainActivity"
 
 # The launcher rather than a bare `pnpm exec playwright test`, for two
 # reasons that are the same two every other suite here has: it typechecks

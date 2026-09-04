@@ -118,21 +118,34 @@ the shell's own WebView, reached through Playwright's Android API
 spec written for it is nonsense under `desktop` or `compact` and vice
 versa. Everything after that fixture is the ordinary Page API.
 
-**It has NOT been run yet.** It was written from the Playwright Android
+**First run 2026-09-03**, on a Mac against an arm64 android-36 emulator
+(no biometric, a device PIN). It was written from the Playwright Android
 docs and this app's own contracts on a box with no emulator, and the
-first real execution is the Mac pass. Do not read a green
-`make e2e-android` on a laptop as evidence: it exits 0 when no device is
-attached, on purpose.
+first run found five shell defects the unit suites could not reach (the
+spec's header lists them) plus two stale premises of its own. Do not
+read a green `make e2e-android` on a laptop as evidence: it exits 0
+when no device is attached, on purpose.
 
-`scripts/android-smoke.sh` owns what a port cannot be known for: it
-installs the APK `make apk` built, `pm clear`s it (the shell persists its
-endpoint and session in the WebView's localStorage, and each run's
-harness is on a fresh port), sets a device PIN, launches the activity,
-and clears the PIN on every exit path. The SPEC owns everything
-downstream of the port: `launchHarness`, the `adb reverse` forward that
-lets the device reach it, and the pairing. It runs through
+`scripts/android-smoke.sh` owns what is per RUN: it installs the APK
+`make apk` built, sets a device PIN, and clears the PIN on every exit
+path. The SPEC owns everything per case and everything downstream of
+the port: its `page` fixture `pm clear`s the app, re-grants the
+notification permission and relaunches the activity before EVERY case
+(the shell persists its endpoint and session in the WebView's
+localStorage, each run's harness is on a fresh port, and a case that
+failed with the credential prompt up would otherwise leave the WebView
+paused, timers and all, for the next one), and the cases own
+`launchHarness`, the `adb reverse` forward that lets the device reach it,
+and the pairing. It runs through
 `bin/ao-harness-e2e --config=playwright.android.config.ts`, which is what
 typechecks the tree and what lets `launchHarness` spawn at all.
+
+Two platform facts the spec has to answer for, both learned on that
+run: the platform's credential prompt is an activity of its own, so it
+is answered by typing at the FOCUSED window (`input text`, then Enter),
+not at the page; and a hardware back press with the soft keyboard up
+closes the keyboard and reaches nothing else, so `pressBack` closes the
+keyboard first, by the same key.
 
 **The backend is reached at `127.0.0.1` over `adb reverse`, not at
 `10.0.2.2`.** Two independent walls make the emulator's host alias

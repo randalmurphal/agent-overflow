@@ -21,6 +21,18 @@ importers:
 
   .:
     dependencies:
+      '@aparajita/capacitor-biometric-auth':
+        specifier: 10.0.0
+        version: 10.0.0
+      '@capacitor/app':
+        specifier: 8.1.1
+        version: 8.1.1(@capacitor/core@8.5.1)
+      '@capacitor/barcode-scanner':
+        specifier: 3.1.1
+        version: 3.1.1(@capacitor/core@8.5.1)
+      '@capacitor/core':
+        specifier: 8.5.1
+        version: 8.5.1
       '@fontsource/geist-mono':
         specifier: 5.3.0
         version: 5.3.0
@@ -127,6 +139,10 @@ packages:
   '@antfu/install-pkg@1.1.0':
     resolution: {integrity: sha512-MGQsmw10ZyI+EJo45CdSER4zEb+p31LpDAFp2Z3gkSd1yqVZGi0Ebx++YTEMonJy4oChEMLsxZ64j8FH6sSqtQ==}
 
+  '@aparajita/capacitor-biometric-auth@10.0.0':
+    resolution: {integrity: sha512-azjWaRucB8x1/gSzSTp/NxelaOZyg+m765gSzjwUkSQgg30RrZPmPq6pyLeeXVSZNDY3Rxf5Hj8obgZaXirCFQ==}
+    engines: {node: '>=20.0.0'}
+
   '@babel/code-frame@7.29.0':
     resolution: {integrity: sha512-9NhCeYjq9+3uxgdtp20LSiJXJvN0FeCtNGpJxuMFZ1Kv3cWUNb6DOhJwUvcVCzKGR66cw4njwM6hrJLqgOwbcw==}
     engines: {node: '>=6.9.0'}
@@ -144,6 +160,29 @@ packages:
 
   '@braintree/sanitize-url@7.1.2':
     resolution: {integrity: sha512-jigsZK+sMF/cuiB7sERuo9V7N9jx+dhmHHnQyDSVdpZwVutaBu7WvNYqMDLSgFgfB30n452TP3vjDAvFC973mA==}
+
+  '@capacitor/android@8.5.1':
+    resolution: {integrity: sha512-o8fUIPDSEASeXHHrDz26WU7OlyiRb+QqtI9KFdnLS1jUL77o5iGrvegibaZX8rWpiCyDJ6jlUhhhHlfeq3ou9A==}
+    peerDependencies:
+      '@capacitor/core': ^8.5.0
+
+  '@capacitor/app@8.1.1':
+    resolution: {integrity: sha512-xM2ZTX5jK60tFtmjsmJv+Cdj1Qsb6NcavkqmdEnCPQBeya9oKhamZJxYOnQNj1ZvcJM7sWfG6BEtSLx42pisbA==}
+    peerDependencies:
+      '@capacitor/core': '>=8.0.0'
+
+  '@capacitor/barcode-scanner@3.1.1':
+    resolution: {integrity: sha512-IftToRn2YTirzw2K8nkp+p7Mcq41vwcZyqcSYLUeyMbznJS2IbEj1snbRIcTXa+iSuAU6zKY7tNXzwDqyzcx+Q==}
+    peerDependencies:
+      '@capacitor/core': '>=8.0.0'
+
+  '@capacitor/core@8.5.1':
+    resolution: {integrity: sha512-IOQ7ynG1qgrJ/RLuCO3WgyRGmkmmG/cdStRR4ftU2dWEN1FdtLrnI/XpZmZuUsOEHEnzBRJY/PmRH8eTLiXfhA==}
+
+  '@capacitor/ios@8.5.1':
+    resolution: {integrity: sha512-0EVqwCYf3RUp2JAjUGZ04xmG6dSpIsPmPacI9zKxn6mu9RSiHhmFF230ghe00HrkyB6ig6SfNdoADvVODxYhlQ==}
+    peerDependencies:
+      '@capacitor/core': ^8.5.0
 
   '@chevrotain/types@11.1.2':
     resolution: {integrity: sha512-U+HFai5+zmJCkK86QsaJtoITlboZHBqrVketcO2ROv865xfCMSFpELQoz1GkX5GzME8pTa+3kbKrZHQtI0gdbw==}
@@ -951,6 +990,9 @@ packages:
     resolution: {integrity: sha512-XSt8tMzbW9ymE7687xztkO1ckR7qJNQ3LywY9vlYGhGi3zXrGBHuUo2Cl1ztZaICW+1eAGdkLbj6iwVqDT33kg==}
     engines: {node: '>=20.0.0'}
 
+  html5-qrcode@2.3.8:
+    resolution: {integrity: sha512-jsr4vafJhwoLVEDW3n1KvPnCCXWaQfRng0/EEYk1vNcQGcG/htAdhJX0be8YyqMoSz7+hZvOZSTAepsabiuhiQ==}
+
   iconv-lite@0.6.3:
     resolution: {integrity: sha512-4fCk79wshMdzMp2rH06qWrJE4iolqLhCUH+OiuIgU++RB0+94NlDL81atO7GX55uUKueo0txHNtvEyI6D7WdMw==}
     engines: {node: '>=0.10.0'}
@@ -1343,6 +1385,9 @@ packages:
     resolution: {integrity: sha512-q5W7tVM71e2xjHZTlgfTDoPF/SmqKG5hddq9SzR49CH2hayqRKJtQ4mtRlSxKaJlR/+9rEM+mnBHf7I2/BQcpQ==}
     engines: {node: '>=6.10'}
 
+  tslib@2.8.1:
+    resolution: {integrity: sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==}
+
   typescript@6.0.2:
     resolution: {integrity: sha512-bGdAIrZ0wiGDo5l8c++HWtbaNCWTS4UTv7RaTH/ThVIgjkveJt83m74bBHMJkuCbslY8ixgLBVZJIOiQlQTjfQ==}
     engines: {node: '>=14.17'}
@@ -1486,6 +1531,13 @@ snapshots:
       package-manager-detector: 1.6.0
       tinyexec: 1.1.2
 
+  '@aparajita/capacitor-biometric-auth@10.0.0':
+    dependencies:
+      '@capacitor/android': 8.5.1(@capacitor/core@8.5.1)
+      '@capacitor/app': 8.1.1(@capacitor/core@8.5.1)
+      '@capacitor/core': 8.5.1
+      '@capacitor/ios': 8.5.1(@capacitor/core@8.5.1)
+
   '@babel/code-frame@7.29.0':
     dependencies:
       '@babel/helper-validator-identifier': 7.28.5
@@ -1499,6 +1551,27 @@ snapshots:
   '@blazediff/core@1.9.1': {}
 
   '@braintree/sanitize-url@7.1.2': {}
+
+  '@capacitor/android@8.5.1(@capacitor/core@8.5.1)':
+    dependencies:
+      '@capacitor/core': 8.5.1
+
+  '@capacitor/app@8.1.1(@capacitor/core@8.5.1)':
+    dependencies:
+      '@capacitor/core': 8.5.1
+
+  '@capacitor/barcode-scanner@3.1.1(@capacitor/core@8.5.1)':
+    dependencies:
+      '@capacitor/core': 8.5.1
+      html5-qrcode: 2.3.8
+
+  '@capacitor/core@8.5.1':
+    dependencies:
+      tslib: 2.8.1
+
+  '@capacitor/ios@8.5.1(@capacitor/core@8.5.1)':
+    dependencies:
+      '@capacitor/core': 8.5.1
 
   '@chevrotain/types@11.1.2': {}
 
@@ -2273,6 +2346,8 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
+  html5-qrcode@2.3.8: {}
+
   iconv-lite@0.6.3:
     dependencies:
       safer-buffer: 2.1.2
@@ -2629,6 +2704,8 @@ snapshots:
   totalist@3.0.1: {}
 
   ts-dedent@2.2.0: {}
+
+  tslib@2.8.1: {}
 
   typescript@6.0.2: {}
 

@@ -6,11 +6,10 @@
 # SPA step would package the bundle from whenever it was last built and
 # say nothing about it.
 #
-# AO_SHELL=1 is what makes the SPA build a SHELL build: it points
-# `frontend/vite.config.ts`'s Capacitor aliases at the real packages under
-# `mobile/node_modules` instead of at the local stub. This script is the
-# only thing that sets it, which is what keeps `make build` and every gate
-# producing the ordinary desktop bundle.
+# The SPA it syncs is the ordinary `frontend` build, the same bundle the
+# backend embeds and serves to a paired phone: there is no shell flavour,
+# because a phone that adopts the backend's bundle has to find the native
+# seams in it (mobile/AGENTS.md § One bundle).
 #
 # JAVA_HOME and ANDROID_HOME must be exported by the caller or discovered
 # below. Neither is on PATH on the development box, so this script says so
@@ -39,8 +38,8 @@ fi
 # never committed.
 printf 'sdk.dir=%s\n' "$ANDROID_HOME" > "$mobile/android/local.properties"
 
-echo "==> building the SPA (shell aliases on)"
-AO_SHELL=1 pnpm --dir "$repo/frontend" run build
+echo "==> building the SPA"
+pnpm --dir "$repo/frontend" run build
 
 echo "==> cap sync android"
 (cd "$mobile" && pnpm exec cap sync android)

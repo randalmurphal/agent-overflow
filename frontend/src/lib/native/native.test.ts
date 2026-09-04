@@ -14,7 +14,7 @@ import { installNativeLifecycle } from './lifecycle';
 import { DEFAULT_LOCK_WINDOW_MS, installAppLock, lockWindowMs, shouldLock } from './lock';
 import { captureImage, pickFile } from './pickers';
 import { isNativeShell, nativePlatform } from './platform';
-import { appPlugin, biometricPlugin, bundlePlugin, scannerPlugin } from './plugins';
+import { appPlugin, biometricPlugin, bundlePlugin, scannerPlugin, unthenable } from './plugins';
 import {
   confirmLaunchHealthy,
   reportBundleHealthy,
@@ -22,7 +22,7 @@ import {
   stopBundleSync,
 } from './bundleSync';
 import { scanPairingQr } from './qr';
-import { adoptPairingEndpoint, prepareNativeShell } from './boot';
+import { adoptPairingEndpoint, onceUnlocked, prepareNativeShell } from './boot';
 import { __resetHomeEndpointForTest, homeEndpoint } from '../transport/homeEndpoint';
 
 describe('the web fallbacks', () => {
@@ -171,5 +171,62 @@ describe('adoptPairingEndpoint', () => {
   it('answers a sentence for a payload that names nowhere, and sets nothing', () => {
     expect(adoptPairingEndpoint({ ...payload, endpoint: 'nowhere' })).toMatch(/Ask for a new one/);
     expect(homeEndpoint()).toBe('');
+  });
+});
+
+
+describe('a plugin proxy handed out by an accessor', () => {
+  // Capacitor's registerPlugin proxy answers every property with a method
+  // wrapper, `then` included, and that wrapper rejects. A promise resolved
+  // with the bare proxy calls that `then` and never settles.
+  const capacitorLike = () =>
+    new Proxy(
+      {},
+      {
+        get: (_target, prop) => (..._args: unknown[]) => {
+          const rejected = Promise.reject(
+            new Error(`"App.${String(prop)}()" is not implemented on android`),
+          );
+          // The promise machinery calls `then` on the bare proxy and drops
+          // what it returns, so the rejection is otherwise unobserved.
+          rejected.catch(() => {});
+          return rejected;
+        },
+      },
+    ) as { addListener(): Promise<unknown> };
+
+  it('is not a thenable once shielded, so an async accessor can return it', async () => {
+    const shielded = await (async () => unthenable(capacitorLike()))();
+    expect(typeof shielded.addListener).toBe('function');
+    await expect(shielded.addListener()).rejects.toThrow('addListener()');
+  });
+
+  it('would hang unshielded', async () => {
+    const settled = await Promise.race([
+      (async () => capacitorLike())().then(() => 'settled', () => 'settled'),
+      new Promise<string>((resolve) => setTimeout(() => resolve('hung'), 50)),
+    ]);
+    expect(settled).toBe('hung');
+  });
+});
+
+describe('onceUnlocked', () => {
+  it('starts on the first open and never again, whatever the lock does after', () => {
+    const start = vi.fn();
+    const gate = onceUnlocked(start);
+    gate(true);
+    expect(start).not.toHaveBeenCalled();
+    gate(false);
+    expect(start).toHaveBeenCalledTimes(1);
+    // A cover on a trip to another app, and the return from it.
+    gate(true);
+    gate(false);
+    expect(start).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts at once for a lock that is already open', () => {
+    const start = vi.fn();
+    onceUnlocked(start)(false);
+    expect(start).toHaveBeenCalledTimes(1);
   });
 });

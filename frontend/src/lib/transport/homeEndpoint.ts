@@ -34,6 +34,7 @@
 // of this directory keeps about credential modes: the default changing
 // under us would be a silent break in exactly one boot.
 
+import { isNativeShell } from '../native/platform';
 import { HOME_BACKEND, type BackendKey } from './backendKey';
 
 /** localStorage key holding every backend's endpoint, home under `''`. */
@@ -320,6 +321,19 @@ try {
   if (typeof declared === 'string' && declared !== '') setHomeEndpoint(declared);
 } catch (err) {
   console.warn('transport: ignoring an unusable __aoHomeEndpoint', err);
+}
+
+// A paired shell reads its home from storage HERE, at module init, and not
+// only in `native/boot.ts`. Stores subscribe to the transport while their
+// modules evaluate, before `main.ts` gets to prepare the shell, and the
+// first bootstrap fetch had already gone to the shell's own origin — which
+// serves no manifest, answers 404, and latched the client into its
+// credential-refused terminal state for the rest of the launch (first
+// device run, 2026-09-03). A browser never takes this path: its page is
+// served by its backend, and the stored home would only re-spell the
+// origin it is already on.
+if (endpoint === '' && isNativeShell()) {
+  endpoint = readEndpointMap()[HOME_BACKEND] ?? '';
 }
 
 /** Test seam: forget the endpoint this module read or was told. */

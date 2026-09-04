@@ -112,7 +112,6 @@ export async function installNativeShell(
   // presents nothing and follows nothing, and one whose build carries no
   // push configuration still does everything else (§ Push in
   // mobile/AGENTS.md).
-  void push.startPushRegistration();
   void presenter.startPushPresenter();
   void push.watchPushTaps((target) => {
     void routeNotificationTap(target);
@@ -123,9 +122,41 @@ export async function installNativeShell(
   onBeforeBackendDetach((backend) => {
     void push.unregisterPushFrom(backend);
   });
+  // Registration waits for the GATE. Its first act is the platform's
+  // notification-permission prompt, and a prompt raised while the lock's
+  // own prompt is up is two system dialogs on one screen: the credential
+  // the person types lands on whichever is on top (2026-09-03, the
+  // emulator smoke, where every unlock failed that way). Nothing else
+  // here raises a dialog, so nothing else waits.
+  const startPush = onceUnlocked(() => void push.startPushRegistration());
   // The lock is handed back rather than kept here: the caller owns the
   // screen the gate is in front of, so it owns the retry button too.
-  return await installAppLock({ onChange: onLockChange });
+  const lock = await installAppLock({
+    onChange: (locked) => {
+      onLockChange(locked);
+      startPush(locked);
+    },
+  });
+  // A lock that never publishes (an APK without the biometric plugin) is
+  // permanently open, and nothing waits on a gate that is not there.
+  startPush(lock.locked());
+  return lock;
+}
+
+/**
+ * Run `start` once, the first time the lock reports open.
+ *
+ * The lock publishes every change, so a cover going up and down on a
+ * trip to another app would otherwise start the work again; the
+ * pause-and-resume the credential prompt itself causes is one such trip.
+ */
+export function onceUnlocked(start: () => void): (locked: boolean) => void {
+  let started = false;
+  return (locked) => {
+    if (locked || started) return;
+    started = true;
+    start();
+  };
 }
 
 /**

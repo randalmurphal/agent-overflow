@@ -13,50 +13,10 @@ import { bundleIdPlugin } from "./scripts/bundleId";
 // localhost WS server.
 const transportShim = resolve(import.meta.dirname, "src/lib/transport/runtime.ts");
 
-// The Capacitor packages the phone shell uses are dependencies of
-// `mobile/`, not of this package: the desktop app must not carry them,
-// and `pnpm install` here must not fetch an Android toolchain's worth of
-// JS to build a webview bundle. But `src/lib/native/plugins.ts` names
-// those specifiers in a dynamic `import()`, and a specifier a bundler
-// cannot resolve is a build error rather than a runtime null.
-//
-// So they are ALIASED, and the alias is what decides which build this is.
-// `AO_SHELL=1` -- set by `mobile/scripts/build-apk.sh` and by nothing
-// else -- points them at the real packages under `mobile/node_modules`;
-// every other build points them at a local stub whose exports are all
-// null. The alias is the mechanism rather than `optionalDependencies` or
-// an `import.meta.glob` because it is DECIDABLE: exactly one resolution
-// happens, it happens at config time, and nothing about it depends on
-// whether an install step in another directory succeeded.
-//
-// Nothing in the stub is ever called. `plugins.ts` asks `isNativeShell()`
-// before it issues the import, and that is false in every build the stub
-// is part of.
-const shellBuild = process.env.AO_SHELL === "1";
-const mobileModules = resolve(import.meta.dirname, "..", "mobile", "node_modules");
-const capacitorAbsent = resolve(import.meta.dirname, "src/lib/native/capacitorAbsent.ts");
-const CAPACITOR_PLUGINS = [
-  "@capacitor/app",
-  "@capacitor/barcode-scanner",
-  "@aparajita/capacitor-biometric-auth",
-  // The bridge itself, for the ONE plugin that is not a published
-  // package: `Bundle` is Java in `mobile/android/`, so the JS side of it
-  // is `registerPlugin('Bundle')` rather than an import of somebody's
-  // npm module (`src/lib/native/plugins.ts`).
-  "@capacitor/core",
-] as const;
-const capacitorAlias = Object.fromEntries(
-  CAPACITOR_PLUGINS.map((name) => [
-    name,
-    shellBuild ? resolve(mobileModules, name) : capacitorAbsent,
-  ]),
-);
-
 export default defineConfig({
   resolve: {
     alias: {
       "@wailsio/runtime": transportShim,
-      ...capacitorAlias,
     },
   },
 

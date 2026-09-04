@@ -132,6 +132,16 @@ export async function installAppLock(options: AppLockOptions = {}): Promise<AppL
   // fallback is another activity), and that resume must not stack a
   // second prompt on the one it interrupted.
   let prompting: Promise<boolean> | null = null;
+  // Whether the pause most recently seen was the PROMPT'S OWN. The
+  // platform draws the prompt in an activity of its own, so this app is
+  // paused while it is up and resumed when it closes — and on Android
+  // that resume lands AFTER the answer. It is not a trip, and reading it
+  // as one did two things (2026-09-03, the emulator smoke): a passed
+  // prompt was followed by a second one, because the success had cleared
+  // `lastPausedAt` and the resume then read as a cold start; and a
+  // dismissed prompt was raised again on the spot, with no way out of it
+  // short of killing the app.
+  let pausedForPrompt = false;
   const publish = (): void => options.onChange?.(covered);
 
   const prompt = async (): Promise<boolean> => {
@@ -175,7 +185,8 @@ export async function installAppLock(options: AppLockOptions = {}): Promise<AppL
   const handles = app
     ? await Promise.all([
         app.addListener('pause', () => {
-          lastPausedAt = Date.now();
+          if (prompting !== null) pausedForPrompt = true;
+          else lastPausedAt = Date.now();
           // Covered on the way OUT, not on the way back in. A cover that
           // waited for resume left the app's own pixels on screen for the
           // whole time it was away: in the task switcher's thumbnail, and
@@ -185,6 +196,13 @@ export async function installAppLock(options: AppLockOptions = {}): Promise<AppL
           cover();
         }),
         app.addListener('resume', () => {
+          // The prompt closing. Its answer decided the state, or is about
+          // to; there is no decision to make here, and a dismissed prompt
+          // waits for the button rather than coming straight back.
+          if (pausedForPrompt) {
+            pausedForPrompt = false;
+            return;
+          }
           // A prompt owed before the trip is owed after it, however short
           // the trip was. `unlock` joins a prompt still up rather than
           // raising a second one.

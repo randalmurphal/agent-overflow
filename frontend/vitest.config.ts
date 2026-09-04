@@ -27,18 +27,6 @@ const happyDomResolve = {
     // `import 'katex/dist/katex.min.css'`, which would crash component tests
     // with "Unknown file extension '.css'". Stub it explicitly.
     { find: 'katex/dist/katex.min.css', replacement: resolve(import.meta.dirname, 'src/test/mocks/empty-css.ts') },
-    // The Capacitor plugins live in mobile/, not here, and the seams in
-    // `src/lib/native/` name them in a dynamic import (vite.config.ts
-    // argues the alias). A suite runs with no native bridge in the page,
-    // so those imports are never issued -- but the specifier still has to
-    // resolve for the module to load at all, and it resolves to the same
-    // stub the desktop build uses.
-    { find: '@capacitor/app', replacement: resolve(import.meta.dirname, 'src/lib/native/capacitorAbsent.ts') },
-    { find: '@capacitor/barcode-scanner', replacement: resolve(import.meta.dirname, 'src/lib/native/capacitorAbsent.ts') },
-    { find: '@aparajita/capacitor-biometric-auth', replacement: resolve(import.meta.dirname, 'src/lib/native/capacitorAbsent.ts') },
-    // The bridge, for the in-app `Bundle` plugin, which has no npm
-    // package at all: same stub, same reason.
-    { find: '@capacitor/core', replacement: resolve(import.meta.dirname, 'src/lib/native/capacitorAbsent.ts') },
   ],
 };
 

@@ -2,13 +2,18 @@
 // origin, redeems a pairing link, passes the platform's own lock, opens a
 // thread, and answers the hardware back button.
 //
-// WRITTEN AGAINST THE PLAYWRIGHT ANDROID API, NOT YET RUN. There is no
-// emulator on the box this was authored on, so every line below is
-// written from `_android` / `AndroidDevice` / `AndroidWebView` as the
-// current docs describe them and from the app's own contracts. The first
-// real execution is the Mac pass. Do not read a green `make e2e-android`
-// on a laptop with no device as evidence for any of it: the script exits
-// 0 when nothing is attached, on purpose.
+// FIRST RUN 2026-09-03, on a Mac against an arm64 android-36 emulator
+// (Pixel-class AVD, no biometric, a device PIN). It was written earlier
+// from the Playwright Android docs and the app's own contracts on a box
+// with no emulator, and the first run paid for that: it found three shell
+// defects the unit suites could not (a Capacitor plugin proxy that is a
+// thenable, the home endpoint read after the transport had already
+// dialled the shell's own origin, and the backend's bundle carrying
+// stubbed native seams), and then two more in the lock (a permission
+// prompt raised on top of the credential prompt, and the prompt's own
+// resume re-locking the app). Do not read a green `make e2e-android` on
+// a laptop with no device as evidence for any of it: the script exits 0
+// when nothing is attached, on purpose.
 //
 // WHAT ONLY THIS CAN ANSWER. `compact-shell-origin.spec.ts` proves the
 // cross-origin transport in a real browser against the real Go server,
@@ -119,6 +124,12 @@ const LOCK_PIN = '1234';
 const WEBVIEW_MS = 120_000;
 /** The pairing screen probes every 3s and awaits a bounded redial after. */
 const PAIRED_MOUNT_MS = 60_000;
+/**
+ * How long the shell's own bundle sync gets to download the harness's
+ * bundle and stage it: a few MB over `adb reverse`, then the archive
+ * crossing the Capacitor bridge as base64, then the unzip-and-verify.
+ */
+const BUNDLE_SYNC_MS = 90_000;
 
 // ---------------------------------------------------------------------
 // Wire shapes, mirroring internal/app/app_access_types.go.
@@ -147,6 +158,31 @@ interface SeedResult {
 function adbPath(): string {
   const home = process.env.ANDROID_HOME ?? path.join(os.homedir(), 'Android', 'Sdk');
   return path.join(home, 'platform-tools', 'adb');
+}
+
+/** Whether the soft keyboard is on screen, as `dumpsys` reports it. */
+async function keyboardShown(device: AndroidDevice): Promise<boolean> {
+  const dump = (await device.shell('dumpsys input_method')).toString();
+  return /mInputShown=true/.test(dump);
+}
+
+/**
+ * The hardware back button, pressed for the APP.
+ *
+ * Opening a thread focuses the composer, and a focused field raises the
+ * soft keyboard; a back press with the keyboard up closes the keyboard
+ * and reaches nothing else, which is what every phone does. So the
+ * keyboard is closed first, by the same key, and the press an assertion
+ * is about is the one after it.
+ */
+async function pressBack(device: AndroidDevice): Promise<void> {
+  if (await keyboardShown(device)) {
+    await device.shell('input keyevent 4');
+    await expect
+      .poll(() => keyboardShown(device), { message: 'the first back press must close the keyboard' })
+      .toBe(false);
+  }
+  await device.shell('input keyevent 4');
 }
 
 /** The `#pair=` fragment off a minted link, which is all a device needs. */
@@ -277,7 +313,18 @@ const test = base.extend<ShellFixtures>({
   // after this line is the same API every other spec in this repo uses,
   // which is the point: the app under test is the app that ships, in the
   // container that ships it.
+  //
+  // Every case starts from a phone that has never paired, on a process
+  // that just started: the data is cleared and the app relaunched HERE,
+  // so a case that failed with the credential prompt still up (which
+  // pauses the WebView, and its timers with it) cannot strand the next
+  // one at "Waiting for confirmation". The permission is granted again
+  // after the clear, because the prompt it would otherwise raise is a
+  // dialog no assertion here is about.
   page: async ({ device }, use) => {
+    await device.shell(`pm clear ${SHELL_PACKAGE}`);
+    await device.shell(`pm grant ${SHELL_PACKAGE} android.permission.POST_NOTIFICATIONS`);
+    await device.shell(`am start -n ${SHELL_ACTIVITY}`);
     const webView = await device.webView({ pkg: SHELL_PACKAGE }, { timeout: WEBVIEW_MS });
     await use(await webView.page());
   },
@@ -368,7 +415,7 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
   // event, which `native/lifecycle.ts` turns into `showCompactList` — and
   // that path exists ONLY on a device, which is the whole reason this
   // file is not a `compact-*.spec.ts`.
-  await device.shell('input keyevent 4');
+  await pressBack(device);
   await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'list');
 
   // --- 7. The Capacitor bridge is really in the page -------------------
@@ -398,9 +445,11 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
 // the 30-second watchdog rolls it back.
 //
 // The bundle staged here is the HARNESS BACKEND'S. It is a different
-// build from the APK's (the APK is built with `AO_SHELL=1` and the
-// harness binary is not), so this is a genuine swap onto a bundle this
-// phone did not ship with, which is the case that has to work.
+// build from the APK's (the harness build carries the UI trace and
+// oracle flags the APK build does not, so its content id differs), and
+// the test checks that difference rather than assuming it, so this is a
+// genuine swap onto a bundle this phone did not ship with, which is the
+// case that has to work.
 test('the shell stages a bundle, boots on it, and refuses a damaged one', async ({
   device,
   harness,
@@ -438,9 +487,9 @@ test('the shell stages a bundle, boots on it, and refuses a damaged one', async 
   await confirmOnHost(harness, ((await shown.textContent()) ?? '').trim());
   await expect(page.getByTestId('app-lock')).toBeVisible({ timeout: PAIRED_MOUNT_MS });
 
-  // The bytes are fetched from HERE with a second, wire-paired device, so
-  // what is under test is the plugin rather than the shell's own
-  // download timing. `stage` does not care who fetched them.
+  // The bytes are ALSO fetched from here, with a second, wire-paired
+  // device: the refusals below need an archive and a manifest the test
+  // can damage, and `stage` does not care who fetched them.
   const deviceKey = 'e2e-emulator-bundle-reader';
   const credential = await pairOverWire(
     harness,
@@ -498,10 +547,25 @@ test('the shell stages a bundle, boots on it, and refuses a damaged one', async 
       return await plugins!.Bundle!.state();
     });
 
-  // Nothing staged yet, and the APK's own assets are what is running.
+  // --- The shell's own sync stages it first ----------------------------
+  // The app paired, its backend's hello named a bundle that is not the
+  // APK's, and `native/bundleSync.ts` downloaded it over the paired
+  // session and staged it — behind the lock, without being asked. Waiting
+  // for that proves the download path end to end, and it is what makes
+  // the state below deterministic: the refusals run against a store that
+  // has settled rather than racing the sync.
+  expect(
+    await page.evaluate(async () => (await fetch('/bundle-id.txt')).text()),
+    'the APK must ship a different bundle than the harness serves, or the swap proves nothing',
+  ).not.toBe(manifest.id);
+  await expect
+    .poll(async () => (await readState()).next, {
+      message: 'the shell must stage the bundle its backend serves',
+      timeout: BUNDLE_SYNC_MS,
+    })
+    .toBe(manifest.id);
   const before = await readState();
   expect(before.current, 'a phone that has never updated runs its own assets').toBe('');
-  expect(before.next).toBe('');
   expect(before.versionCode, 'the plugin must be able to say what this APK is').toBeGreaterThan(0);
 
   // --- A damaged archive is refused ------------------------------------
@@ -511,7 +575,7 @@ test('the shell stages a bundle, boots on it, and refuses a damaged one', async 
   const truncated = archive.subarray(0, Math.floor(archive.length / 2));
   expect(await stage(manifest.id, manifest, truncated.toString('base64')))
     .not.toBe('');
-  expect((await readState()).next, 'a refused stage must leave the state alone').toBe('');
+  expect((await readState()).next, 'a refused stage must leave the state alone').toBe(manifest.id);
 
   // --- An intact archive with a lying manifest is refused --------------
   // The other half of the verification, and the one that matters: the
@@ -524,9 +588,12 @@ test('the shell stages a bundle, boots on it, and refuses a damaged one', async 
   };
   expect(await stage(manifest.id, lying, archive.toString('base64')))
     .toContain(manifest.files[0].path);
-  expect((await readState()).next).toBe('');
+  expect((await readState()).next).toBe(manifest.id);
 
-  // --- The real one is staged ------------------------------------------
+  // --- The real one is accepted from here too --------------------------
+  // The same id the sync staged, staged again from the page: `stage`
+  // replaces the directory and re-records `next`, so what is on disk is
+  // what THIS call verified.
   expect(await stage(manifest.id, manifest, archive.toString('base64'))).toBe('');
   const staged = await readState();
   expect(staged.next, 'a verified bundle waits for the next cold start').toBe(manifest.id);
