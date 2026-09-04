@@ -29,7 +29,12 @@ kill path here.
   PID alone. `Reserve` refuses a supplied birth id that disagrees with
   the live process.
 - **Pruning is by verified death, not by TTL.** A probe error preserves
-  the lease (an unknown owner is not a dead one). A live owner whose
+  the lease (an unknown owner is not a dead one) — but know what counts
+  as an answer: on Darwin a missing pid answers the `kern.proc.pid`
+  sysctl with ZERO bytes, surfacing as `EIO` from `SysctlKinfoProc`,
+  and that (like `ESRCH`) is "dead", not a probe error. Reading it as an
+  error kept every crashed instance's lease until TTL and blocked
+  `ao-harness up` for a day (fixed 2026-09-04, regression-tested). A live owner whose
   birth marker still matches is kept past its TTL. A dead owner, or a
   reused PID, is dropped even before TTL expiry, which is what lets a
   crashed detached `up` return its capacity.

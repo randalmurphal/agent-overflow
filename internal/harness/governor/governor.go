@@ -89,8 +89,9 @@ func New(opts Options) (*Manager, error) {
 	return &Manager{dir: filepath.Clean(dir), defaultCeiling: defaultCeiling, floor: floor, ttl: ttl, clock: clock, memory: mem, processes: proc}, nil
 }
 
-// Reserve atomically adds a capacity claim after pruning only expired leases
-// whose recorded owner is verified dead. The available-memory sample is taken
+// Reserve atomically adds a capacity claim after pruning leases whose
+// recorded owner is verified dead (expiry is not required: a dead owner's
+// claim holds no memory whatever its clock says). The available-memory sample is taken
 // while the OS lock is held, so concurrent worktrees cannot pass the same
 // capacity check.
 func (m *Manager) Reserve(req Request) (Lease, error) {

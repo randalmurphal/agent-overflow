@@ -19,7 +19,14 @@ func (darwinProcesses) State(pid int) (ProcessState, error) {
 	}
 	proc, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
 	if err != nil {
-		if err == unix.ESRCH {
+		// A pid that no longer exists answers ESRCH on some releases and,
+		// in practice on current macOS, EIO: the sysctl itself succeeds
+		// with ZERO bytes for a missing pid and SysctlKinfoProc reports
+		// that short answer as EIO. Both mean "no such process". Reading
+		// the second as a probe failure preserved every dead owner's
+		// lease until TTL, which blocked `ao-harness up` for a day after
+		// any instance died without releasing (observed 2026-09-04).
+		if err == unix.ESRCH || err == unix.EIO {
 			return ProcessState{}, nil
 		}
 		return ProcessState{}, fmt.Errorf("harness governor: identify process %d: %w", pid, err)
