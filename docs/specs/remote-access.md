@@ -3748,9 +3748,9 @@ at either durable endpoint (the dispatcher's persisted row, a
 session-death restore into the draft), kept across a requeue, dropped
 with the queue on Stop and on the Codex rollback purge, and every row
 still present at boot is restored into the composer draft and never
-re-dispatched. Residuals, recorded and left: `make apk` is not runnable
-on the WSL box (no JDK), so the manifest and rules file are reviewed by
-eye until the Mac pass; an idle-reaper close of a thread whose queue
+re-dispatched. Residuals, recorded and left: `make apk` was not runnable
+on the WSL box (no JDK), so the manifest and rules file were reviewed by
+eye until the Mac pass ran the build and the emulator smoke (2026-09-03); an idle-reaper close of a thread whose queue
 held a requeued-after-failure message drops it, as it did before the
 row existed (the row now goes with it rather than resurrecting at boot);
 `triage.clearFlushQueueLocked` has no callers and is left for a triage
