@@ -482,7 +482,7 @@ never resolves a Capacitor module at runtime:
 |---|---|
 | `native/platform.ts` | `isNativeShell()`, off `window.Capacitor` |
 | `native/plugins.ts` | the guarded dynamic imports, and nothing else |
-| `native/lifecycle.ts` | pause/resume to `setClientLease`, hardware back to the compact list |
+| `native/lifecycle.ts` | pause/resume to `setClientLease`, hardware back as one stack (`answerBackPress`: Escape, terminal drawer, on-screen companion, list, exit) |
 | `native/lock.ts` | the app-lock gate: covers on PAUSE, prompts on cold start and on a resume past the window |
 | `native/qr.ts` | `scanPairingQr()` |
 | `native/pickers.ts` | a documented stub |
@@ -525,7 +525,9 @@ Read `frontend/src/lib/native/lifecycle.ts`'s header before touching the
 lifecycle: the pause signal is the ONLY visibility signal this client
 sends and it is not `document.visibilityState`, and the back button
 closes an overlay by dispatching Escape through the keybinding path
-rather than by holding a registry of overlays.
+rather than by holding a registry of overlays — then, in order, closes
+the terminal drawer, closes the companion on screen and reveals its
+thread, returns to the list, and only from the list leaves the app.
 
 ## Verifying without a device
 
