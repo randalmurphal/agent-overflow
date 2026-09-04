@@ -200,3 +200,45 @@ Fix one only if it bites on the device, and say so in the commit.
   `e2e/AGENTS.md`, `mobile/AGENTS.md`, `docs/specs/embedded-browser.md`
   §10 and `docs/specs/remote-access.md` §16 become false the moment you
   run them: update them.
+
+
+## 7. Outcome — the Mac pass (2026-09-03)
+
+Run on the owner's Mac against the isolated harness/serve instances, never
+the live app. Everything the WSL box could not exercise is now exercised;
+the legs still open are the two that need a second physical device or the
+owner present, called out below.
+
+Done and green:
+
+- **Native macOS app.** CSP clean in the webview console, page-ticket
+  cookie round-trips, and the `uiwindow.Reveal` maximize-stays-maximized
+  fix confirmed (deminiaturize, no `Restore()`).
+- **Embedded browser pane (WKWebView).** Compiled and driven for the
+  first time on the real engine; the fix-up pass the spec predicted
+  found four engine-side gaps, all fixed (`docs/specs/embedded-browser.md`
+  §6 records them). Live checklist scripted on the isolated instance.
+- **Android.** `make apk` builds (JDK 21 / SDK 36), the JVM unit suites
+  pass, and `make e2e-android` drives the shell inside an arm64
+  android-36 emulator — five shell defects the unit suites could not
+  reach, all fixed. First device run for both.
+- **Tailnet, serve mode, launchd service verb.** Enabled on an isolated
+  instance, signed in over the owner's real tailnet, identity survives
+  restart, disable keeps the state dir and Forget deletes it; the
+  `service install|status|uninstall` round-trip works on an isolated
+  data dir; desktop and phone both attach.
+- **Gates.** `make go-build`, `make go-test` (173 ok), `make e2e`
+  (193 passed), and `make verify` all green. `make e2e` had three
+  macOS-only failures on arrival, all pre-existing and none in campaign
+  code, fixed at the root in `194612b9` (chat-profile leak across the
+  harness reset; a provider-signin assertion racing the claude keychain
+  probe hold; the awaitNoPages teardown budget). `make provider-smoke`
+  spends real tokens and was left for the owner.
+
+Left for the owner (need a second device or hands on the phone):
+
+- **Android on a real Pixel 9 over wireless adb** — sideload, lock, back,
+  bundle staging, push. Only the emulator half is machine-testable here;
+  push's last hop needs `google-services.json` and a real Firebase project.
+- **Cross-device convergence** — read markers, approvals, quiet-when, and
+  `sendId` echo-suppression observed live between the owner's two devices.
