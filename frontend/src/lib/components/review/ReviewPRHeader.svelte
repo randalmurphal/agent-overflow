@@ -170,7 +170,10 @@
       {/snippet}
       <!-- Capped at roughly half the pane so the diff below stays in
            reach; the section scrolls internally past that. -->
-      <div class="max-h-[45vh] overflow-y-auto">
+      <!-- Capped low enough that the diff stays usable below it on a
+           laptop screen; the section scrolls internally instead. The vh
+           leg only bites on very short viewports. -->
+      <div class="max-h-[min(35vh,20rem)] overflow-y-auto">
         <ReviewConversation {review} reviews={detail.latestReviews} {canSendToAgent} />
       </div>
     </ReviewCollapsibleSection>
