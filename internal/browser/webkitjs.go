@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -150,6 +151,38 @@ func webkitExpressionBody(expression string) string {
 	return "return (" + expression + ");"
 }
 
+// webkitStatementBody is the fallback for an expression that is really a
+// STATEMENT LIST (`const n = 1 + 1; n * 2`), which CDP's Runtime.evaluate
+// accepts and `return (...)` cannot parse. eval keeps CDP's completion-value
+// semantics — the last statement's value comes back — at the price that a
+// page whose CSP forbids 'unsafe-eval' refuses it, and then that refusal is
+// the answer. A top-level await only ever works in the expression form,
+// which is why that form is tried first.
+func webkitStatementBody(expression string) string {
+	return "return eval(" + jsonString(expression) + ");"
+}
+
+// webkitEvaluate runs one tool expression through a page's body evaluator:
+// the expression body first, and the statement body only when the expression
+// body failed to PARSE. Any other exception is the page's own answer and is
+// never retried. Both WebKit engines share this because both hand the body
+// to the same JavaScriptCore.
+func webkitEvaluate(ctx context.Context, eval func(context.Context, string) (json.RawMessage, error), expression string) (json.RawMessage, error) {
+	raw, err := eval(ctx, webkitExpressionBody(expression))
+	if err == nil || !webkitSyntaxError(err) {
+		return raw, err
+	}
+	return eval(ctx, webkitStatementBody(expression))
+}
+
+// webkitSyntaxError recognizes JavaScriptCore's parse failure by the error
+// NAME both engines surface verbatim: the GTK glue reports the JSC message and
+// the WKWebView glue reads WKJavaScriptExceptionMessage, and each spells a
+// parse failure "SyntaxError: ...".
+func webkitSyntaxError(err error) bool {
+	return strings.Contains(err.Error(), "SyntaxError")
+}
+
 // webkitSelectorClickScript is the `browser_click` tool's selector path.
 func webkitSelectorClickScript(selector string) string {
 	return fmt.Sprintf(`%sconst el=aoElement([],%s);return (%s).call(el);`, webkitElementJS, jsonString(selector), webkitClickFunction(1, "", nil))
@@ -213,7 +246,7 @@ func webkitPointerScript(opts PointerOptions) (string, error) {
 		return "", err
 	}
 	base := map[string]any{
-		"bubbles": true, "cancelable": true, "button": button, "buttons": 1 << button,
+		"bubbles": true, "cancelable": true, "button": button, "buttons": webkitButtonsMask(button),
 		"altKey": webkitHasModifier(opts.Modifiers, "alt"), "ctrlKey": webkitHasModifier(opts.Modifiers, "control"),
 		"metaKey": webkitHasModifier(opts.Modifiers, "meta"), "shiftKey": webkitHasModifier(opts.Modifiers, "shift"),
 	}
@@ -225,7 +258,12 @@ func webkitPointerScript(opts PointerOptions) (string, error) {
 		if action == "double_click" {
 			count = 2
 		}
-		return fmt.Sprintf(`%sconst init={...%s,clientX:%f,clientY:%f};const el=at(%f,%f);for(let i=1;i<=%d;i++){el.dispatchEvent(new MouseEvent("mousedown",{...init,detail:i}));el.dispatchEvent(new MouseEvent("mouseup",{...init,detail:i}));el.dispatchEvent(new MouseEvent("click",{...init,detail:i}))}if(%d===2)el.dispatchEvent(new MouseEvent("dblclick",{...init,detail:2}));return true;`,
+		// Chrome's Input domain gets the DOM's button semantics for free; an
+		// untrusted MouseEvent sequence has to spell them out: only the
+		// primary button `click`s, every other button `auxclick`s, and the
+		// secondary button raises `contextmenu` — the event a site's custom
+		// menu listens for (verified missing on WKWebView 2026-09-03).
+		return fmt.Sprintf(`%sconst init={...%s,clientX:%f,clientY:%f};const el=at(%f,%f);const primary=init.button===0;for(let i=1;i<=%d;i++){el.dispatchEvent(new MouseEvent("mousedown",{...init,detail:i}));el.dispatchEvent(new MouseEvent("mouseup",{...init,detail:i}));el.dispatchEvent(new MouseEvent(primary?"click":"auxclick",{...init,detail:i}))}if(init.button===2)el.dispatchEvent(new MouseEvent("contextmenu",{...init,detail:1}));if(%d===2&&primary)el.dispatchEvent(new MouseEvent("dblclick",{...init,detail:2}));return true;`,
 			pick, string(encodedBase), opts.X, opts.Y, opts.X, opts.Y, count, count), nil
 	case "move":
 		return fmt.Sprintf(`%sconst el=at(%f,%f);el.dispatchEvent(new MouseEvent("mousemove",{...%s,buttons:0,clientX:%f,clientY:%f}));return true;`,
@@ -276,6 +314,26 @@ func webkitConsoleCaptureScript(handler string) string {
 for(const level of ["log","info","warning","warn","error","debug","trace"]){const original=console[level];if(typeof original!=="function")continue;console[level]=function(...args){send(level,args);return original.apply(this,args)}}
 addEventListener("error",e=>send("error",[e.message||String(e.error||"error")]));
 addEventListener("unhandledrejection",e=>send("error",["Unhandled promise rejection: "+String(e.reason)]));})();`, handler, maxConsoleMessageBytes)
+}
+
+// webkitButtonsMask is MouseEvent.buttons for one pressed button. The
+// bitmask does not follow MouseEvent.button's order: primary is 1, secondary
+// (button 2) is 2, auxiliary (button 1) is 4, then back and forward.
+func webkitButtonsMask(button int) int {
+	switch button {
+	case 0:
+		return 1
+	case 1:
+		return 4
+	case 2:
+		return 2
+	case 3:
+		return 8
+	case 4:
+		return 16
+	default:
+		return 0
+	}
 }
 
 func webkitMouseButton(raw string) int {

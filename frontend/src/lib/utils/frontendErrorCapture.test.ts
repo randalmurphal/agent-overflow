@@ -30,6 +30,16 @@ function dispatchRejection(reason: unknown): void {
   window.dispatchEvent(event);
 }
 
+function dispatchCspViolation(fields: Record<string, unknown>): void {
+  // happy-dom lacks a SecurityPolicyViolationEvent constructor; a plain Event
+  // with the report fields grafted on matches the listener's runtime contract.
+  const event = new Event('securitypolicyviolation');
+  for (const [key, value] of Object.entries(fields)) {
+    Object.defineProperty(event, key, { value });
+  }
+  document.dispatchEvent(event);
+}
+
 function reportedLines(call = 0): string[] {
   return (getBindingMock('ReportFrontendErrorBatch')?.mock.calls[call]?.[0] ?? []) as string[];
 }
@@ -102,6 +112,30 @@ describe('frontendErrorCapture', () => {
       kind: 'unhandledrejection',
       message: '{"code":"ECONN"}',
     });
+  });
+
+  it('persists Content-Security-Policy refusals with the directive and the blocked load', async () => {
+    setBindingMock('ReportFrontendErrorBatch', async () => '/tmp/frontend-errors.jsonl');
+    installFrontendErrorCapture();
+
+    dispatchCspViolation({
+      effectiveDirective: 'img-src',
+      violatedDirective: 'img-src',
+      blockedURI: 'https://cdn.example/pic.png?t=secret-token',
+      sourceFile: 'https://127.0.0.1:1/app.js',
+      lineNumber: 3,
+      columnNumber: 9,
+    });
+    dispatchCspViolation({ effectiveDirective: 'script-src', violatedDirective: 'script-src', blockedURI: '' });
+    await flushFrontendErrors();
+
+    const lines = reportedLines();
+    expect(lines).toHaveLength(2);
+    const first = JSON.parse(lines[0]);
+    expect(first).toMatchObject({ kind: 'csp', source: 'https://127.0.0.1:1/app.js', line: 3, col: 9 });
+    expect(first.message).toContain('img-src refused https://cdn.example/pic.png');
+    expect(first.message).not.toContain('secret-token');
+    expect(JSON.parse(lines[1]).message).toBe('script-src refused (inline)');
   });
 
   it('caps repeated signatures and samples the overflow', async () => {

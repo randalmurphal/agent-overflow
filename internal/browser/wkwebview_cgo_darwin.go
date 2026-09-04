@@ -164,7 +164,7 @@ func aoWKVSnapshotDone(callID C.uint64_t, pixels unsafe.Pointer, width, height, 
 }
 
 //export aoWKVAllow
-func aoWKVAllow(pageID C.uint64_t, decision unsafe.Pointer, uri *C.char) {
+func aoWKVAllow(pageID C.uint64_t, decision unsafe.Pointer, uri *C.char, download C.int) {
 	target := wkTakeString(uri)
 	page := wkLookupPage(uint64(pageID))
 	// Answered OFF the main thread: navigation authority is the Manager's, and
@@ -172,13 +172,18 @@ func aoWKVAllow(pageID C.uint64_t, decision unsafe.Pointer, uri *C.char) {
 	// how the whole window freezes behind one browser operation. The delegate
 	// deferred the decision with a copied block held for exactly this.
 	go func() {
-		allow := C.int(0)
+		verdict := C.int(C.AO_POLICY_CANCEL)
 		if page != nil && (page.hooks.Allow == nil || page.hooks.Allow(target)) {
-			allow = 1
+			// The Manager's authority is over the URL; whether an allowed URL
+			// navigates or downloads is what the anchor asked for.
+			verdict = C.AO_POLICY_ALLOW
+			if download != 0 {
+				verdict = C.AO_POLICY_DOWNLOAD
+			}
 		}
 		// A loop that is gone takes the page with it, so an unanswered decision
 		// dies with the process rather than blocking anything.
-		wkDo(func() { C.ao_wkv_policy_finish(decision, allow) })
+		wkDo(func() { C.ao_wkv_policy_finish(decision, verdict) })
 	}()
 }
 

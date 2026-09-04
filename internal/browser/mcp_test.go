@@ -233,6 +233,33 @@ func TestReadOnlyExpressionLeavesNonFunctionsAlone(t *testing.T) {
 	}
 }
 
+// An immediately-invoked function is already a VALUE: the head before its
+// arrow is `(()` or `((x)`, an unclosed group, not a parameter list. Wrapping
+// it in another call made "2 is not a function" out of `(()=>2)()` on every
+// engine (live, 2026-09-03).
+func TestReadOnlyExpressionLeavesInvokedFunctionsAlone(t *testing.T) {
+	for _, expression := range []string{
+		"(()=>2)()",
+		"((x)=>x)(5)",
+		"(async () => { return 1 })()",
+		"(a)(b => b)",
+	} {
+		if got := readOnlyExpression(expression, nil); got != expression {
+			t.Errorf("readOnlyExpression(%q)=%q, want it untouched", expression, got)
+		}
+	}
+	for expression, want := range map[string]string{
+		"(x, y) => x":          "((x, y) => x)()",
+		"async (x) => x":       "(async (x) => x)()",
+		"() => document.title": "(() => document.title)()",
+		"x => x":               "(x => x)()",
+	} {
+		if got := readOnlyExpression(expression, nil); got != want {
+			t.Errorf("readOnlyExpression(%q)=%q, want %q", expression, got, want)
+		}
+	}
+}
+
 func registerTestThread(t *testing.T, server *MCPServer) string {
 	t.Helper()
 	config, err := server.RegisterThread(Access{ThreadID: "thread", Workspace: "/repo", ProjectRoot: "/project"})

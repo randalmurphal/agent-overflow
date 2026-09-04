@@ -5,8 +5,11 @@ validation, caps, and rotation machinery:
 
 - the dev-only render trace (`ui-render.jsonl`) behind the frontend's
   debug console, for after-the-fact inspection of visual glitches;
-- the always-on frontend runtime-error log (`frontend-errors.jsonl`)
-  fed by the global `error` / `unhandledrejection` handlers, so render
+- the always-on frontend runtime-error log (`frontend-errors.jsonl`),
+  fed by the global `error` / `unhandledrejection` handlers plus the
+  document's `securitypolicyviolation` handler (`kind: "csp"` — a
+  refused load is silent everywhere but a devtools console, and only
+  Playwright's Chromium is watched by a fixture), so render
   exceptions are diagnosable without devtools open (a silent render
   throw also permanently leaks Svelte deriveds — see
   `ReportFrontendErrorBatch` in `app_observability.go`).

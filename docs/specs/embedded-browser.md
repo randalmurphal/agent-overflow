@@ -288,7 +288,7 @@ mechanism:
 | snapshot / dom / locator | as today (CDP) | shared JS expressions |
 | click / type / press / pointer / scroll | CDP Input (trusted) | JS-driven default (untrusted); XTest escalation for the visible pane; parity note |
 | screenshot | CDP capture | engine snapshot API |
-| wait / history / evaluate / evaluate_readonly | as today | JS + load-event delegates; readonly is best-effort |
+| wait / history / evaluate / evaluate_readonly | as today | JS + load-event delegates; readonly is best-effort; a statement list retries through `eval` (a page CSP without `'unsafe-eval'` refuses it) |
 | clipboard (isolated per tab) | AO-managed, engine-agnostic | same |
 | console_logs | CDP Runtime/Log | injected capture |
 | downloads | CDP Browser.download events → AO artifact dirs | WebKitDownload delegate → same dirs |
@@ -394,14 +394,36 @@ every other windowless deployment.
   no automated suite that spawns an engine, and windowless selection
   must keep answering `unavailableEngine`
   (`internal/browser/manager_test.go`).
-- macOS: written to the driver contract; compile+run verification on
-  the user's Mac (this machine cannot build darwin cgo). Expect a
-  fix-up pass there — disclosed upfront.
+- macOS: compiled, run and driven on the user's Mac 2026-09-03 through
+  the real-engine gate (`AO_HARNESS_REAL_BROWSER=1 make harness-window`,
+  tools called over the MCP endpoint off the mock provider's argv). The
+  fix-up pass found four engine-side gaps, all fixed in shared or glue
+  code: a right-click never raised `contextmenu`, an anchor `download`
+  navigated instead of downloading, a statement list failed to parse
+  and every script failure read "A JavaScript exception occurred"
+  (`internal/browser/AGENTS.md` § WebKit sections carry each lesson).
+  Plus one engine-agnostic one: `browser_evaluate_readonly` wrapped an
+  IIFE in a second call.
 - Live verification checklist (user, per platform — run it in the real
   app, or on the isolated instance the gate above opens): audio/video,
   site context menu on a custom-menu test page, file upload, download,
   dialogs, clipboard both directions, show-in-folder reveal, devtools,
   HiDPI crispness, overlay clip behavior, workspace login isolation.
+  macOS 2026-09-03, scripted on the isolated instance: audio and a
+  canvas-stream video play; a right-click raises the page's custom
+  menu; downloads land in the artifact dir by response type and by
+  anchor attribute; hidden-page dialogs dismiss (alert void, confirm
+  false, prompt null); `browser_clipboard` is the AO-managed tab
+  clipboard while a page's `navigator.clipboard.writeText` reaches the
+  OS pasteboard under WebKit's own rules (and `readText` is refused
+  without a real gesture); devtools answer the explained refusal;
+  dpr 2 with a crisp native pane; two workspaces see separate storage
+  and cookies and a thread cannot address another thread's page; a
+  bound chord typed into the page view opens the SPA's palette. Left
+  for a person at the machine, because a native sheet cannot be
+  scripted without Accessibility trust: the presented-page NSAlert
+  sheets, the NSOpenPanel upload, show-in-folder, and eyeballing the
+  overlay clip.
 
 ## 11. Delegation plan
 

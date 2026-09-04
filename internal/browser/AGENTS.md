@@ -329,6 +329,21 @@ completion callbacks, the window surgery). Everything else is ordinary Go.
   page and capped well below the Manager's bundle cap because they cross as
   base64, and the streamed companion pane cannot run here at all — it speaks
   CDP directly and is replaced by the presented native view (spec §7/§9).
+- The untrusted tier spells out what a trusted event gets for free. A
+  `browser_pointer` right-click dispatches `contextmenu` (a site's custom menu
+  listens for nothing else) and `auxclick` in place of `click`, and
+  `MouseEvent.buttons` is the DOM bitmask (`webkitButtonsMask`: secondary is 2,
+  auxiliary 4), not `1 << button`. Found live on the WKWebView engine
+  (2026-09-03): a right-click reached the page as a left-click with the wrong
+  mask and no menu.
+- Evaluate is an EXPRESSION first and a statement list second
+  (`webkitEvaluate`): `return (expr);` cannot parse `const n = 1; n * 2`, which
+  CDP's Runtime.evaluate accepts, so a parse failure retries once as
+  `return eval("...")` — completion-value semantics kept, a page CSP without
+  `'unsafe-eval'` refuses it and that refusal is the answer, and a top-level
+  `await` works only in the expression form. The retry keys on the
+  `SyntaxError` name, which is why both glues must surface the page's own
+  exception text.
 
 ## The WKWebView engine (macOS)
 
@@ -363,6 +378,17 @@ builder for macOS.
   the very view a failed lookup would like to destroy, so that close goes to a
   goroutine and lands on a LATER main-thread turn. Both traps caught the
   WebKitGTK engine too and are fixed there in the same shape.
+- A script failure is reported as the page's own `Name: message`
+  (`WKJavaScriptExceptionMessage` in the error's userInfo), never
+  `localizedDescription`, which is the same sentence for every throw. The GTK
+  glue's `error->message` already carries the JSC text; the two must agree
+  because `webkitEvaluate`'s statement retry reads the name.
+- `decidePolicyForNavigationAction:` forwards `shouldPerformDownload`
+  (an anchor's `download` attribute) alongside the deferred decision, and an
+  allowed one is answered `AO_POLICY_DOWNLOAD` → `WKNavigationActionPolicyDownload`.
+  Allow is not enough: WebKit navigates to the href instead and no WKDownload
+  is ever created (live, 2026-09-03). The Manager's authority stays over the
+  URL; download-vs-navigate is what the page asked for.
 - Hidden pages are IN THE WINDOW, parked in a 1x1 layer-masked `NSView` at
   their own slot, added BELOW the SPA webview. An unparented WKWebView is the
   trap: WebKit only guarantees layout and snapshots for a view inside a window.

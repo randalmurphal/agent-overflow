@@ -1,7 +1,9 @@
 package browser
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"image"
 	"strings"
 	"testing"
@@ -116,6 +118,67 @@ func TestWebKitPointerValidatesItsArguments(t *testing.T) {
 		if !strings.Contains(drag, want) {
 			t.Fatalf("drag missing %s", want)
 		}
+	}
+}
+
+// Chrome's Input domain gives a right-click its DOM consequences; the
+// untrusted sequence has to spell them out, and a site's custom menu listens
+// for exactly one of them.
+func TestWebKitPointerSpellsOutButtonSemantics(t *testing.T) {
+	right, err := webkitPointerScript(PointerOptions{Action: "click", Button: "right", X: 10, Y: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"contextmenu"`, `"auxclick"`, `"button":2`, `"buttons":2`} {
+		if !strings.Contains(right, want) {
+			t.Fatalf("right click missing %s: %s", want, right)
+		}
+	}
+	middle, err := webkitPointerScript(PointerOptions{Action: "click", Button: "middle", X: 10, Y: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(middle, `"buttons":4`) {
+		t.Fatalf("middle click must set the auxiliary buttons bit: %s", middle)
+	}
+	left, err := webkitPointerScript(PointerOptions{Action: "double_click", X: 10, Y: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(left, `"buttons":1`) || !strings.Contains(left, `"dblclick"`) {
+		t.Fatalf("primary double click: %s", left)
+	}
+}
+
+// A statement list is what CDP's Runtime.evaluate accepts and `return (...)`
+// cannot parse, so the expression body is tried first and the eval body only
+// on a parse failure. A page exception that is not a parse failure is the
+// answer, never a retry.
+func TestWebKitEvaluateFallsBackToStatementsOnlyOnSyntaxErrors(t *testing.T) {
+	var bodies []string
+	eval := func(_ context.Context, body string) (json.RawMessage, error) {
+		bodies = append(bodies, body)
+		if strings.HasPrefix(body, "return (") {
+			return nil, errors.New("SyntaxError: Unexpected token ';'")
+		}
+		return json.RawMessage("4"), nil
+	}
+	raw, err := webkitEvaluate(context.Background(), eval, "const n = 1 + 1; n * 2")
+	if err != nil || string(raw) != "4" {
+		t.Fatalf("raw=%s err=%v", raw, err)
+	}
+	if len(bodies) != 2 || bodies[0] != "return (const n = 1 + 1; n * 2);" || bodies[1] != `return eval("const n = 1 + 1; n * 2");` {
+		t.Fatalf("bodies=%q", bodies)
+	}
+
+	bodies = nil
+	pageError := errors.New("TypeError: x is not a function")
+	_, err = webkitEvaluate(context.Background(), func(context.Context, string) (json.RawMessage, error) {
+		bodies = append(bodies, "")
+		return nil, pageError
+	}, "x()")
+	if err != pageError || len(bodies) != 1 {
+		t.Fatalf("a page exception must not be retried: err=%v calls=%d", err, len(bodies))
 	}
 }
 

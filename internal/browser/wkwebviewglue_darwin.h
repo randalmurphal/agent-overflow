@@ -149,7 +149,13 @@ void ao_wkv_view_snapshot(void *view, uint64_t call_id);
 
 // ao_wkv_policy_finish answers a navigation decision aoWKVAllow deferred, and
 // releases the copied decision block. Exactly one call per deferred decision.
-void ao_wkv_policy_finish(void *decision, int allow);
+// The verdict is AO_POLICY_CANCEL, AO_POLICY_ALLOW, or AO_POLICY_DOWNLOAD —
+// the last only for a decision aoWKVAllow received with download set (an
+// anchor's `download` attribute), which WebKit then turns into a WKDownload.
+#define AO_POLICY_CANCEL 0
+#define AO_POLICY_ALLOW 1
+#define AO_POLICY_DOWNLOAD 2
+void ao_wkv_policy_finish(void *decision, int verdict);
 
 // ao_wkv_view_press_key makes the view first responder and sends one key-down
 // through its window's own event path, so a chord is gated exactly as a real

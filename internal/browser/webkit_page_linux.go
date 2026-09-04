@@ -273,15 +273,22 @@ func (p *webkitPage) Snapshot(ctx context.Context) (Snapshot, error) {
 }
 
 func (p *webkitPage) Evaluate(ctx context.Context, expression string) (any, error) {
+	raw, err := webkitEvaluate(ctx, p.evalBody, expression)
+	if err != nil {
+		return nil, fmt.Errorf("browser: evaluate: %w", err)
+	}
+	if len(raw) == 0 {
+		return nil, nil
+	}
 	var value any
-	if err := p.evalInto(ctx, webkitExpressionBody(expression), &value); err != nil {
+	if err := json.Unmarshal(raw, &value); err != nil {
 		return nil, fmt.Errorf("browser: evaluate: %w", err)
 	}
 	return value, nil
 }
 
 func (p *webkitPage) EvaluateReadOnly(ctx context.Context, expression string) (json.RawMessage, error) {
-	raw, err := p.evalBody(ctx, webkitExpressionBody(expression))
+	raw, err := webkitEvaluate(ctx, p.evalBody, expression)
 	if err != nil {
 		return nil, fmt.Errorf("browser: read-only evaluate: %w", err)
 	}

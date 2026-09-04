@@ -476,8 +476,8 @@ func looksLikeJSFunction(expression string) bool {
 	}
 	head := strings.TrimSpace(trimmed[:arrow])
 	head = strings.TrimSpace(strings.TrimPrefix(head, "async "))
-	if strings.HasPrefix(head, "(") && strings.HasSuffix(head, ")") {
-		return true
+	if strings.HasPrefix(head, "(") {
+		return parenthesizedParameterList(head)
 	}
 	if head == "" {
 		return false
@@ -488,6 +488,31 @@ func looksLikeJSFunction(expression string) bool {
 		}
 	}
 	return true
+}
+
+// parenthesizedParameterList answers whether the text before an arrow is ONE
+// parenthesized group — `(x, y)` — rather than the opening of a call whose
+// `=>` belongs to a nested function. `(()` from `(()=>2)()` and `((x)` from
+// `((x)=>x)(5)` are the heads of IIFEs: wrapping those in another call turns
+// their RESULT into the callee ("2 is not a function", seen live on
+// 2026-09-03), and the caller already asked for the value.
+func parenthesizedParameterList(head string) bool {
+	if !strings.HasSuffix(head, ")") {
+		return false
+	}
+	depth := 0
+	for i := 0; i < len(head); i++ {
+		switch head[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 && i != len(head)-1 {
+				return false
+			}
+		}
+	}
+	return depth == 0
 }
 
 func hasJSFunctionPrefix(expression, keyword string) bool {

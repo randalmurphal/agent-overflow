@@ -6,7 +6,8 @@ import { redactDiagnosticText } from './diagnosticRedaction';
 
 /*
  * Always-on global error capture. Window `error` and `unhandledrejection`
- * events are serialized to JSONL and appended (batched) to
+ * events, and the document's `securitypolicyviolation` events, are
+ * serialized to JSONL and appended (batched) to
  * <configDir>/ui-trace/frontend-errors.jsonl via ReportFrontendErrorBatch.
  *
  * Why this exists: a render-path exception in Svelte aborts the updating
@@ -21,7 +22,7 @@ import { redactDiagnosticText } from './diagnosticRedaction';
 
 interface CapturedErrorRecord {
   at: number;
-  kind: 'error' | 'unhandledrejection' | 'diagnostic';
+  kind: 'error' | 'unhandledrejection' | 'csp' | 'diagnostic';
   message: string;
   stack: string;
   /** script URL for `error` events; empty for rejections. */
@@ -115,6 +116,29 @@ export function installFrontendErrorCapture(): void {
       });
     } catch (err) {
       console.warn('[frontendErrorCapture] failed to record rejection', err);
+    }
+  }, { signal });
+
+  // A Content-Security-Policy refusal is silent on every screen but the
+  // devtools console: the image is missing, the script is inert. The e2e
+  // fixture sees these only under Playwright's Chromium; in a native webview,
+  // the phone shell and a --connect window this log is the one place a
+  // refused load surfaces (spec §14). The event is document-level, unlike
+  // the two above.
+  document.addEventListener('securitypolicyviolation', (event: SecurityPolicyViolationEvent) => {
+    try {
+      capture({
+        kind: 'csp',
+        message: `${event.effectiveDirective || event.violatedDirective} refused ${redact(
+          truncate(event.blockedURI || '(inline)', MAX_SOURCE_CHARS),
+        )}`,
+        stack: '',
+        source: redact(truncate(event.sourceFile ?? '', MAX_SOURCE_CHARS)),
+        line: event.lineNumber ?? 0,
+        col: event.columnNumber ?? 0,
+      });
+    } catch (err) {
+      console.warn('[frontendErrorCapture] failed to record CSP violation', err);
     }
   }, { signal });
 

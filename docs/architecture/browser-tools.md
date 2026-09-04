@@ -137,7 +137,7 @@ it without relying on an optional skill.
 | `browser_wait` | Wait for duration, locator state, URL glob, commit, DOMContentLoaded, load, or 500 ms network idle. |
 | `browser_history` | Back, forward, reload, or stop. |
 | `browser_evaluate_readonly` | Evaluate bounded inspection JavaScript; directly awaitable reads and `Promise.resolve(read)` are supported. A CDP-backed engine rejects a possible side effect in the engine itself; an engine that cannot says so in the tool result rather than differing silently. |
-| `browser_evaluate` | Existing explicit mutation-capable JavaScript escape hatch; bounded and serialized. |
+| `browser_evaluate` | Existing explicit mutation-capable JavaScript escape hatch; bounded and serialized. An expression or a statement list, on every engine: the WebKit engines retry a statement list through `eval`, which a page CSP without `'unsafe-eval'` refuses (then the refusal is the result), and a top-level `await` works only as an expression. |
 | `browser_clipboard` | Read/write a bounded tab-local MIME clipboard. Paste/copy chords bridge this clipboard without touching the OS clipboard. |
 | `browser_console_logs` | Read the bounded tab console/runtime ring by level and substring. |
 | `browser_downloads` | List or wait for browser downloads and return their AO-owned local paths. |

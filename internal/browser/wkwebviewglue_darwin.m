@@ -13,7 +13,7 @@
 extern void aoWKVEvalDone(uint64_t call_id, char *json, char *err);
 extern void aoWKVSnapshotDone(uint64_t call_id, void *pixels, int width, int height,
                               int stride, char *err);
-extern void aoWKVAllow(uint64_t page_id, void *decision, char *uri);
+extern void aoWKVAllow(uint64_t page_id, void *decision, char *uri, int download);
 extern void aoWKVConsole(uint64_t page_id, char *payload);
 extern void aoWKVPageInfo(uint64_t page_id, char *uri, char *title);
 extern void aoWKVPageClosed(uint64_t page_id);
@@ -590,8 +590,16 @@ static void ao_attach_download(WKWebView *view, WKDownload *download) {
   // Manager's, and asking it takes Manager locks. Blocking the main thread on a
   // Go lock is how the whole UI freezes behind one browser operation, so the
   // handler block is copied and finished from a goroutine.
+  // An anchor with a `download` attribute is a download REQUEST, not a
+  // navigation: WebKit only turns it into a WKDownload when the answer is
+  // WKNavigationActionPolicyDownload, so the flag rides along with the
+  // deferred decision and the Go side answers 2 for an allowed download.
+  int download = 0;
+  if (@available(macOS 11.3, *)) {
+    download = [navigationAction shouldPerformDownload] ? 1 : 0;
+  }
   void (^held)(WKNavigationActionPolicy) = Block_copy(decisionHandler);
-  aoWKVAllow(ao_view_page_id(webView), (void *)held, ao_dup([url absoluteString]));
+  aoWKVAllow(ao_view_page_id(webView), (void *)held, ao_dup([url absoluteString]), download);
 }
 
 - (void)webView:(WKWebView *)webView
@@ -846,13 +854,23 @@ static void ao_attach_download(WKWebView *view, WKDownload *download) {
 
 @end
 
-void ao_wkv_policy_finish(void *decision, int allow) {
+void ao_wkv_policy_finish(void *decision, int verdict) {
   @autoreleasepool {
     if (decision == NULL) {
       return;
     }
     void (^held)(WKNavigationActionPolicy) = (void (^)(WKNavigationActionPolicy))decision;
-    held(allow ? WKNavigationActionPolicyAllow : WKNavigationActionPolicyCancel);
+    WKNavigationActionPolicy policy = WKNavigationActionPolicyCancel;
+    if (verdict == AO_POLICY_ALLOW) {
+      policy = WKNavigationActionPolicyAllow;
+    } else if (verdict == AO_POLICY_DOWNLOAD) {
+      if (@available(macOS 11.3, *)) {
+        policy = WKNavigationActionPolicyDownload;
+      } else {
+        policy = WKNavigationActionPolicyAllow;
+      }
+    }
+    held(policy);
     Block_release(held);
   }
 }
@@ -1195,7 +1213,18 @@ void ao_wkv_view_eval(void *view, const char *body, uint64_t call_id) {
                               inContentWorld:[WKContentWorld pageWorld]
                            completionHandler:^(id result, NSError *error) {
                              if (error != nil) {
-                               aoWKVEvalDone(call_id, NULL, ao_dup([error localizedDescription]));
+                               // localizedDescription is the same sentence for
+                               // every throw ("A JavaScript exception occurred");
+                               // the page's own "Name: message" rides userInfo,
+                               // and it is what the caller — and the Go side's
+                               // SyntaxError retry — needs to see.
+                               NSString *message = [[error userInfo]
+                                   objectForKey:@"WKJavaScriptExceptionMessage"];
+                               if (![message isKindOfClass:[NSString class]] ||
+                                   [message length] == 0) {
+                                 message = [error localizedDescription];
+                               }
+                               aoWKVEvalDone(call_id, NULL, ao_dup(message));
                                return;
                              }
                              if (result == nil) {
