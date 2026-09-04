@@ -7361,6 +7361,27 @@ describe('createUseStickToBottomController — external content-geometry source'
       expect(geom.scrollTop).toBe(540);
     });
 
+    it('a viewport that shrinks under a pinned reader re-pins to the new bottom', () => {
+      deliverWithViewport(800, 400);
+      expect(geom.scrollTop).toBe(400);
+      // The soft keyboard takes 300px of the layout viewport: the padding
+      // box shrinks, scrollHeight is unchanged, and the browser leaves
+      // scrollTop where it was — so the last 300px of the tail sits
+      // under the new bottom edge (the phone composer, 2026-09-04).
+      geom.clientHeight = 300;
+      deliverWithViewport(800, 100);
+      expect(geom.scrollTop).toBe(700);
+      expect(controller.isAtBottom).toBe(true);
+    });
+
+    it('a viewport that shrinks under an escaped reader leaves the reader alone', () => {
+      deliverWithViewport(800, 400);
+      controller.setEscapedFromLock(true);
+      geom.clientHeight = 300;
+      deliverWithViewport(800, 100);
+      expect(geom.scrollTop).toBe(400);
+    });
+
     it('keeps sample geometry current across escaped grow, shrink, and repeated resize transitions', () => {
       deliverWithViewport(800, 400);
       controller.setEscapedFromLock(true);

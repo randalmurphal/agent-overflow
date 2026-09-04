@@ -4,8 +4,11 @@
 // list is the root screen, opening a thread swaps to the thread screen
 // without unmounting either, the header's back button returns, Return
 // is a newline, a menu opens as a bottom sheet, a long press or the row's
-// own menu button opens a row menu without opening the thread, and the
-// header carries the command palette.
+// own menu button opens a row menu without opening the thread, the chat
+// header rolls its actions into one sheet, the composer's densest rung
+// keeps the meters and rolls the pickers into one sheet, and a viewport
+// that shrinks under a pinned reader (the soft keyboard) keeps the tail
+// on screen.
 import type { Locator, Page } from '@playwright/test';
 import { test, expect, type SeedResult } from './fixtures.js';
 
@@ -24,6 +27,13 @@ test.beforeEach(async ({ harness }) => {
             title: 'Second task',
             turns: [{ userText: 'two', items: [{ kind: 'assistant_text', summary: 'two done' }] }],
           },
+          {
+            title: 'Long task',
+            turns: Array.from({ length: 30 }, (_, i) => ({
+              userText: `question ${i + 1}`,
+              items: [{ kind: 'assistant_text', summary: `answer ${i + 1}, at some length so the thread outgrows a phone screen many times over.` }],
+            })),
+          },
         ],
       },
     ],
@@ -35,7 +45,7 @@ test('the viewport picks compact and the list is the root screen', async ({ harn
   await expect(page.locator('html')).toHaveClass(/layout-compact/);
   await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'list');
   await expect(page.getByTestId('sidebar')).toBeVisible();
-  await expect(page.getByTestId('thread-row')).toHaveCount(2);
+  await expect(page.getByTestId('thread-row')).toHaveCount(3);
   // The pane strip is mounted but not showing: visibility, not display.
   const host = page.getByTestId('pane-host');
   await expect(host).toBeAttached();
@@ -221,11 +231,80 @@ test('the project header carries its menu, with New Terminal inside', async ({ h
   await expect(sheet.getByRole('menuitem', { name: 'Rename Project' })).toBeVisible();
 });
 
-test('the chat header opens the command palette', async ({ harness, page }) => {
+// The desktop header's row of icon buttons does not fit beside a title on
+// a phone, and the first real-phone session (2026-09-04) found it there
+// with the title clipped, an open-in-editor button the device cannot
+// act on, and a command-palette button standing in for chords the phone
+// does not have. Compact rolls the actions into one sheet.
+test('the chat header rolls its actions into one sheet', async ({ harness, page }) => {
   await harness.open(page);
   await page.getByTestId('thread-row').filter({ hasText: 'First task' }).click();
-  await page.getByTestId('palette-open').tap();
-  await expect(page.getByTestId('command-palette-input')).toBeVisible();
+  await expect(page.getByTestId('palette-open')).toHaveCount(0);
+  await expect(page.getByTestId('terminal-toggle')).toHaveCount(0);
+  await expect(page.getByTestId('chat-header-open-editor')).toHaveCount(0);
+  // The title gets the width the cluster used to take.
+  const title = page.getByTestId('chat-header-title');
+  const clipped = await title.evaluate((el) => el.scrollWidth > el.clientWidth + 1);
+  expect(clipped, 'the title must not be clipped beside one button').toBe(false);
+
+  await page.getByTestId('chat-header-more').tap();
+  const sheet = page.locator('[data-popover-sheet]');
+  await expect(sheet.getByRole('menu', { name: 'Thread actions' })).toBeVisible();
+  await sheet.getByRole('menuitem', { name: /Review changes/ }).tap();
+  await expect(sheet).toHaveCount(0);
+  await expect(page.locator('section[data-pane-kind="review"]')).toBeVisible();
+});
+
+// Below the width where even icon-only pickers plus the meters fit, the
+// pickers fold into one roll-up and the meters stay (owner ruling,
+// 2026-09-04: the usage and context readings are what a phone user
+// glances at). Each roll-up row opens the picker the chord would.
+test('the composer\'s densest rung rolls the pickers into one sheet and keeps the meters', async ({
+  harness,
+  page,
+}) => {
+  await page.setViewportSize({ width: 300, height: 720 });
+  await harness.open(page);
+  await page.getByTestId('thread-row').filter({ hasText: 'First task' }).click();
+  const toolbar = page.getByTestId('composer-toolbar');
+  await expect(toolbar).toHaveAttribute('data-density', 'minimal');
+  await expect(page.getByTestId('composer-model-menu-trigger')).toBeHidden();
+  await expect(toolbar.locator('[data-composer-toolbar-meter]').first()).toBeVisible();
+  await expect
+    .poll(() => toolbar.evaluate((el) => el.scrollWidth - el.clientWidth))
+    .toBeLessThanOrEqual(1);
+
+  await page.getByTestId('composer-pickers-rollup').tap();
+  const sheet = page.locator('[data-popover-sheet]');
+  await sheet.getByRole('menuitem', { name: 'Model…' }).tap();
+  // The row opened the picker itself: its (hidden) trigger reports open
+  // and a sheet with the picker's menu is up.
+  await expect(page.getByTestId('composer-model-menu-trigger')).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.locator('[data-popover-sheet]').getByRole('menu')).toBeVisible();
+});
+
+// The soft keyboard shrinks the layout viewport (index.html asks for that
+// with `interactive-widget=resizes-content`). The browser keeps scrollTop
+// where it was, so without a re-pin the last message slides under the
+// composer — what the first real-phone session saw when the composer
+// took focus. A viewport resize is the same geometry change, and it is
+// what a browser test can produce.
+test('a viewport that shrinks under a pinned reader keeps the tail on screen', async ({
+  harness,
+  page,
+}) => {
+  await harness.open(page);
+  await page.getByTestId('thread-row').filter({ hasText: 'Long task' }).click();
+  const scroller = page.locator('.pane-scroll-surface').first();
+  const gap = () => scroller.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop);
+  await expect.poll(gap, { message: 'the opened thread rests at its bottom' }).toBeLessThanOrEqual(1);
+  const before = await scroller.evaluate((el) => el.clientHeight);
+
+  await page.setViewportSize({ width: 412, height: 500 });
+  await expect.poll(() => scroller.evaluate((el) => el.clientHeight)).toBeLessThan(before);
+  await expect
+    .poll(gap, { message: 'the tail must follow the viewport\'s new bottom edge' })
+    .toBeLessThanOrEqual(1);
 });
 
 // The desktop Settings spread (rail beside panel) crammed both columns

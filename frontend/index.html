@@ -2,7 +2,12 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- interactive-widget: a phone browser's soft keyboard shrinks the
+         LAYOUT viewport (the default shrinks only the visual one and
+         leaves the composer under the keyboard). The Android shell's
+         WebView resizes the same way, so both clients hand the scroll
+         controller the same viewport change. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>Agent Overflow</title>
   </head>

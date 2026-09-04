@@ -606,7 +606,29 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
       // now so the next stable read-free delivery cannot inherit a browser
       // clamp from the old viewport. The target itself is carried by the
       // next sample and needs no mutable offset to rebase.
-      if (viewportChanged) deps.refreshIsNearBottom();
+      if (viewportChanged) {
+        deps.refreshIsNearBottom();
+        // A viewport that SHRANK under a pinned reader leaves scrollTop
+        // where it was and the bottom target further down, so the tail
+        // slides out under the new edge: the soft keyboard on a phone
+        // cut the last message off (2026-09-04), and a window resize on
+        // the desktop is the same shape. Pinned means follow the bottom,
+        // so re-pin instantly, under the same gate every other external
+        // geometry change uses (escaped or paused readers are left
+        // alone). Growth needs nothing: the browser clamps scrollTop to
+        // the smaller range itself.
+        const target = deps.targetScrollTop();
+        if (
+          scrollEl.scrollTop < target
+          && deps.isAtBottom()
+          && !deps.escaped()
+          && deps.pauseDepth() === 0
+        ) {
+          resizeDifference = 1;
+          scheduleResizeDifferenceClear(1);
+          deps.writeScrollTop('contentRO.viewportShrink', target);
+        }
+      }
       if (widthChanged && isUiRenderTraceEnabled()) trace('scroll.contentRO.widthReflow', () => ({
         prevWidth: prevWidth === undefined ? null : roundCssPx(prevWidth),
         nextWidth: roundCssPx(nextWidth),

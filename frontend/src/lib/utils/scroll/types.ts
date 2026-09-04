@@ -58,6 +58,7 @@ export const SCROLL_WRITE_CALLER_PHYSICS: Record<
   'program' | 'placement'
 > = {
   'contentRO.firstFire': 'placement',
+  'contentRO.viewportShrink': 'placement',
   'contentRO.overshoot': 'placement',
   'contentRO.positiveDelta': 'placement',
   'contentRO.negativeDelta': 'placement',

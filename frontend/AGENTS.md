@@ -169,8 +169,36 @@ What compact changes, and where:
   36px (`compact:h-9`) and `compact:select-none`, and nothing drags:
   `ThreadRow`, the project header and the pane title all set `draggable`
   false there, because Android starts a drag on a held draggable and that
-  fights the long press. The chat header carries a command-palette button
-  (`palette-open`), the phone's stand-in for the `palette.open` chord.
+  fights the long press.
+- **The chat header is a title and one button.** The desktop's action
+  cluster (review, PR, terminal, runs, take control, browser, editor,
+  git split button) rolls into a sheet behind `chat-header-more`
+  (`ChatHeaderActions`), so the title keeps its width. No command
+  palette button: the phone has no chords for one to stand in for. The
+  git split button's popover and dialogs stay mounted outside the sheet
+  (`GitActionsControl`'s `trigger={false}` + `openMenu`).
+- **The composer's `minimal` rung keeps the meters.** Below the width
+  where even icon-only pickers fit beside the rate-limit and context
+  meters, the picker cluster folds into `composer-pickers-rollup`
+  (`ComposerPickersRollup`), whose rows open the same registry handles
+  the chords do; the pickers stay mounted under it. The meters are what
+  a phone reader glances at (owner ruling, 2026-09-04), so they never
+  yield. `composerToolbarDensity.ts` documents the ladder.
+- **The hardware back is one stack** (`native/lifecycle.ts`
+  `answerBackPress`): an open sheet or overlay (a synthetic Escape,
+  which also steps Settings' page back to its rail through
+  `escapeSettingsOverlay`), then a terminal drawer over the chat, then
+  the companion on screen (closed, its thread revealed), then the thread
+  screen back to the list, then the app exits. A focused terminal's
+  Escape is dispatched at the pane, not at xterm, which would type ESC
+  into the shell.
+- **Keyboard chrome is shown while a modifier is held.** The sidebar
+  search's chord pill uses `subscribeJumpHints` / `getJumpHintsVisible`
+  exactly as the thread rows' jump numbers do, so a phone — which never
+  holds one — never sees it.
+- **A paired session is never `host`**, even on a loopback peer
+  (`transport/scopes.ts`): a phone over `adb reverse` or a tunnel is
+  still a phone, and the editor-open surfaces stay off it.
 
 Host-only surfaces already hide by scope, so compact adds no second set
 of gates. Do not fork a component for the phone; add a `compact:` class

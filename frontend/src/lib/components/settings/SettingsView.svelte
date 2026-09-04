@@ -14,6 +14,11 @@
   import X from '@lucide/svelte/icons/x';
   import Icon from '../primitives/Icon.svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
+  import {
+    hideSettingsRail,
+    isSettingsRailOpen,
+    showSettingsRail,
+  } from '../../stores/settingsOverlay.svelte';
   import MicroLabel from '../primitives/MicroLabel.svelte';
   import SettingsRail from './SettingsRail.svelte';
   import { SETTINGS_PAGES } from './pages';
@@ -48,22 +53,20 @@
   let activeSection: SettingsSection = $state(DEFAULT_SETTINGS_SECTION);
 
   // Compact renders Settings as stacked screens, not the desktop two-pane
-  // spread (docs/specs/remote-access.md § The phone client): the rail is a
-  // full-width screen and picking a section drills into the page, with a
-  // back affordance in the page header. Desktop ignores `railOpen` — both
-  // columns stay visible. A deep link to a specific section lands on that
-  // page directly.
-  let railOpen = $state(true);
+  // spread: the rail is a full-width screen and picking a section drills
+  // into the page, with a back affordance in the page header. Which screen
+  // is showing is the overlay store's (`isSettingsRailOpen`), so Esc and
+  // the phone's back button step back to the rail before they close.
   let compact = $derived(isCompactLayout());
+  let railOpen = $derived(isSettingsRailOpen());
 
   $effect(() => {
     activeSection = initialSection;
-    railOpen = initialSection === DEFAULT_SETTINGS_SECTION;
   });
 
   function openSection(section: SettingsSection): void {
     activeSection = section;
-    railOpen = false;
+    hideSettingsRail();
   }
 
   let page = $derived(settingsSectionDef(activeSection));
@@ -128,7 +131,7 @@
         >
           {#if compact}
             <button
-              onclick={() => (railOpen = true)}
+              onclick={showSettingsRail}
               data-testid="settings-page-back"
               class="-ml-1.5 mb-1 flex h-9 items-center gap-1 self-start rounded-[var(--radius-field)] pr-2 text-[0.8125rem] text-fg-muted active:bg-surface-2/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
             >

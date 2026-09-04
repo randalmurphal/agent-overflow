@@ -162,6 +162,11 @@ test.describe.serial('off-host live thread state', () => {
     // composer exists would assert nothing.
     await expect(phone.getByLabel('Message Input')).toBeEnabled();
     await expect(phone.getByTestId('send-queue-preview')).toHaveCount(0);
+    // A paired device is never `host`, whatever address it arrived from:
+    // open-in-editor names an editor on the host's screen, which this
+    // device has no use for (the owner's phone over `adb reverse` — a
+    // loopback peer — was offered it, 2026-09-04).
+    await expect(phone.getByTestId('chat-header-open-editor')).toHaveCount(0);
 
     // The host queues a message the way its own composer does. Nothing is
     // sent to this page and nothing on it is clicked from here on, so the

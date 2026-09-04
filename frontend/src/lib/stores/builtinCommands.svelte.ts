@@ -92,7 +92,7 @@ import {
   isWorkflowsOverlayOpen,
 } from './workflowsOverlay.svelte';
 import {
-  closeSettingsOverlay,
+  escapeSettingsOverlay,
   isSettingsOpen,
   openSettingsOverlay,
 } from './settingsOverlay.svelte';
@@ -803,9 +803,10 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     // Settings is mostly text fields, and App.svelte only dispatches
     // editable-target chords for editableReachable commands — without this,
     // Esc would be inert from inside every input on the surface. The store's
-    // closer blurs before unmounting so the field still commits.
+    // closer blurs before unmounting so the field still commits. On the
+    // compact page screen the answer is the rail, one step back.
     editableReachable: true,
-    run: () => closeSettingsOverlay(),
+    run: () => escapeSettingsOverlay(),
   });
 
   registerCommand({

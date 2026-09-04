@@ -14,14 +14,24 @@
   import ChevronsDownUp from '@lucide/svelte/icons/chevrons-down-up';
   import ChevronsUpDown from '@lucide/svelte/icons/chevrons-up-down';
   import Globe from '@lucide/svelte/icons/globe';
-  import Command from '@lucide/svelte/icons/command';
+  import Ellipsis from '@lucide/svelte/icons/ellipsis';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getProject, getProjectLabelText } from '../../stores/projects.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { chordHintForCommand, chordHintSuffix } from '../../stores/keybindings.svelte';
   import { runTerminalToggle } from '../terminal/terminalToggle';
-  import { openPalette } from '../../stores/palette.svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
+  import { hasScope } from '../../transport/scopes';
+  import { openInEditor } from '../../stores/openInEditor';
+  import { errString } from '../../utils/errors';
+  import { forgeLabels } from '../../utils/forgeLabels';
+  import { handleExternalURL, safeExternalURL } from '../../utils/externalLinks';
+  import { restorePickerFocus } from '../panes/paneComposerFocus';
+  import type { PopoverCloseReason } from '../../utils/popoverOwnership';
+  import Popover from '../primitives/Popover.svelte';
+  import Menu from '../primitives/Menu.svelte';
+  import MenuItem from '../primitives/MenuItem.svelte';
+  import MenuDivider from '../primitives/MenuDivider.svelte';
   import { openTerminalThread } from '../../stores/threadCreation.svelte';
   import { openReviewCompanion, reviewSubjectForPane } from '../../stores/reviewPane.svelte';
   import { attachGitStatus } from '../../stores/gitStatusStore.svelte';
@@ -183,6 +193,47 @@
     if (!subject) return;
     void openReviewCompanion(pane.paneId, subject, { scope: 'workspace' });
   }
+
+  // Compact rolls the whole cluster into one sheet so the title keeps the
+  // header's width. Every row is the same handler the desktop control
+  // runs; the rows only exist where the control would. The git rows are
+  // GitActionsControl's own menu, opened from here (`openMenu`) so its
+  // dialogs live outside this sheet and survive its close.
+  let showMore = $state(false);
+  let moreTriggerEl: HTMLElement | undefined = $state(undefined);
+  let gitControl: GitActionsControl | undefined = $state(undefined);
+  let onHost = $derived(hasScope('host'));
+  let gitStatus = $derived(pane.gitStatus.status);
+  let gitAvailable = $derived(
+    hasWorkspace && (pane.gitStatus.statusError !== null || (gitStatus?.isRepo ?? false)),
+  );
+  let prHref = $derived(safeExternalURL(gitStatus?.openPrUrl));
+  let prLabel = $derived.by(() => {
+    const labels = forgeLabels(gitStatus?.forge);
+    return gitStatus?.openPrNumber
+      ? `${labels.noun} ${labels.numberSigil}${gitStatus.openPrNumber}`
+      : labels.noun;
+  });
+  let diffSuffix = $derived(`+${gitStatus?.insertions ?? 0} −${gitStatus?.deletions ?? 0}`);
+
+  function closeMore(reason?: PopoverCloseReason): void {
+    showMore = false;
+    restorePickerFocus(reason, { triggerEl: moreTriggerEl });
+  }
+
+  function pick(action: () => void): void {
+    showMore = false;
+    action();
+  }
+
+  async function openProjectInEditor(): Promise<void> {
+    if (!projectBadge) return;
+    try {
+      await openInEditor(projectBadge.path, 0, 0, '', '');
+    } catch (err) {
+      addToast('error', errString(err));
+    }
+  }
 </script>
 
 <!-- Right cluster: wraps, doesn't disappear, at narrow widths. Visible on
@@ -190,6 +241,74 @@
      "no thread at all" panes, and the subcomponents self-gate on
      `pane.workspace` (git and review) or `pane.threadId` (the pieces whose
      subject genuinely is a persisted row). -->
+{#if compact}
+  <div class="ml-auto flex items-center shrink-0" bind:this={moreTriggerEl}>
+    <Button
+      variant="secondary"
+      size="xs"
+      pressed={showMore}
+      ariaLabel="Thread actions"
+      title="Thread actions"
+      onclick={() => (showMore = !showMore)}
+      testId="chat-header-more"
+      class="shrink-0 w-6 px-0"
+    >
+      {#snippet children()}
+        <Icon icon={Ellipsis} size={12} strokeWidth={2} class="opacity-90" />
+      {/snippet}
+    </Button>
+  </div>
+  <Popover anchor={moreTriggerEl} open={showMore} onClose={closeMore} placement="bottom-end" role="none">
+    {#snippet children()}
+      <Menu ariaLabel="Thread actions" onClose={closeMore}>
+        {#if hasWorkspace}
+          <MenuItem
+            label="Review changes"
+            suffix={diffSuffix}
+            checked={pane.showReviewPane}
+            onSelect={() => pick(toggleWorkspaceReview)}
+          />
+        {/if}
+        {#if prHref}
+          <MenuItem
+            label={prLabel}
+            onSelect={() => pick(() => {
+              if (!openPrReview() && prHref) void handleExternalURL(prHref);
+            })}
+          />
+        {/if}
+        <MenuItem
+          label="Terminal"
+          checked={pane.showTerminal}
+          onSelect={() => pick(() => runTerminalToggle(pane))}
+        />
+        <MenuItem label={runsToggleLabel} onSelect={() => pick(toggleAllRuns)} />
+        {#if isClaudeTui}
+          <MenuItem
+            label="Take control"
+            checked={takeControlOpen}
+            onSelect={() => pick(() => void ensureThreadThenToggle(() => toggleCompanion(pane.paneId, 'take-control')))}
+          />
+        {/if}
+        {#if browserState}
+          <MenuItem
+            label="Browser"
+            checked={browserVisible}
+            onSelect={() => pick(() => void toggleBrowserCompanion())}
+          />
+        {/if}
+        {#if projectBadge && onHost}
+          <MenuItem label="Open in editor" onSelect={() => pick(() => void openProjectInEditor())} />
+        {/if}
+        {#if gitAvailable}
+          <MenuDivider />
+          <MenuItem label="Git actions…" onSelect={() => pick(() => gitControl?.openMenu())} />
+        {/if}
+      </Menu>
+    {/snippet}
+  </Popover>
+  <GitActionsControl {pane} trigger={false} bind:this={gitControl} />
+{:else}
 <div class="ml-auto flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
   <PrBadge status={pane.gitStatus.status} onOpenReview={openPrReview} />
   {#if hasWorkspace}
@@ -302,22 +421,5 @@
     {/snippet}
   </Button>
 
-  {#if compact}
-    <!-- The palette is a keyboard chord on the desktop (palette.open). The
-         phone has no chord, so the header carries the one button that
-         reaches every command. -->
-    <Button
-      variant="secondary"
-      size="xs"
-      ariaLabel="Commands"
-      title="Command palette"
-      onclick={() => openPalette(pane.paneId)}
-      testId="palette-open"
-      class="shrink-0 w-6 px-0"
-    >
-      {#snippet children()}
-        <Icon icon={Command} size={12} strokeWidth={2} class="opacity-90" />
-      {/snippet}
-    </Button>
-  {/if}
 </div>
+{/if}

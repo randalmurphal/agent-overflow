@@ -5,12 +5,14 @@ const OVERFLOW_EPSILON_PX = 1;
  *
  *  - `full`    — every label shown.
  *  - `compact` — collapsible labels hidden; the icons carry the meaning.
- *  - `minimal` — the informational meters (rate-limit rings, context
- *    ring) hidden too. This rung exists for phone widths: even icon-only
- *    controls plus three meters exceed a 360px viewport, and the
- *    overflow clipped the one control that must never leave the screen —
- *    Send (found on the first real-phone run, 2026-09-04). Interactive
- *    controls always outrank read-only meters.
+ *  - `minimal` — the picker cluster (model, effort, mode, access, MCP,
+ *    plan) folds into one roll-up trigger whose sheet opens each picker.
+ *    This rung exists for phone widths: even icon-only controls plus
+ *    three meters exceed a 360px viewport, and the overflow clipped the
+ *    one control that must never leave the screen — Send (found on the
+ *    first real-phone run, 2026-09-04). The meters stay: they are what
+ *    a phone user glances at, and the pickers are one tap further away
+ *    rather than gone (owner ruling, the same day).
  */
 export type ComposerToolbarDensity = 'full' | 'compact' | 'minimal';
 

@@ -11,12 +11,8 @@
 
   import Bot from '@lucide/svelte/icons/bot';
   import type { ThreadPane } from '../../../stores/thread.svelte';
-  import type { Thread } from '../../../types/models';
-  import { UpdateThreadMode } from '../../../stores/bindings';
-  import { syncThread } from '../../../stores/panes.svelte';
-  import { addToast } from '../../../stores/toast.svelte';
-  import { cycleMode, type CycleMode } from '../../../utils/modeCycle';
-  import { errString } from '../../../utils/errors';
+  import type { CycleMode } from '../../../utils/modeCycle';
+  import { currentAgentMode, cycleAgentMode } from './agentModeCycle';
   import Icon from '../../primitives/Icon.svelte';
   import { chordHintForCommand, chordHintSuffix } from '../../../stores/keybindings.svelte';
 
@@ -30,9 +26,7 @@
 
   // Normalize the thread's current mode for display. A thread with no mode
   // value (back-compat with older rows) is presented as chat.
-  let currentMode = $derived<CycleMode>(
-    (pane.thread?.mode as CycleMode | undefined) ?? 'chat',
-  );
+  let currentMode = $derived<CycleMode>(currentAgentMode(pane));
 
   const MODE_LABELS: Record<CycleMode, string> = {
     chat: 'Build',
@@ -45,20 +39,9 @@
 
   async function handleClick(): Promise<void> {
     if (applying || !pane.thread) return;
-    const next = cycleMode(currentMode);
-    if (pane.hasDraftPlaceholder) {
-      pane.setDraftPlaceholderMode(next);
-      return;
-    }
     applying = true;
     try {
-      const threadId = pane.threadId;
-      if (!threadId) return;
-      const updated = (await UpdateThreadMode(threadId, next)) as Thread;
-      syncThread(updated);
-    } catch (err) {
-      console.error('agent mode toggle: UpdateThreadMode failed', err);
-      addToast('error', `Failed to switch mode: ${errString(err)}`);
+      await cycleAgentMode(pane);
     } finally {
       applying = false;
     }

@@ -4,8 +4,12 @@
   // isn't the active focus. The shortcut pill on the right is a live hint —
   // it reads the configured chord for `sidebar.focus-search` so user
   // rebinds in Settings flow through without a reload, and the pill
-  // disappears entirely when that command is unbound.
+  // disappears entirely when that command is unbound. It shows only
+  // while the platform modifier is held, the way the thread rows' jump
+  // pills do: a chord standing in the field at rest is chrome, and on a
+  // phone it names a key that does not exist.
 
+  import { onDestroy } from 'svelte';
   import Search from '@lucide/svelte/icons/search';
   import X from '@lucide/svelte/icons/x';
   import {
@@ -13,8 +17,11 @@
     setThreadFilterQuery,
   } from '../../stores/threadFilter.svelte';
   import { chordHintForCommand } from '../../stores/keybindings.svelte';
+  import { getJumpHintsVisible, subscribeJumpHints } from '../../stores/keyboardModifiers.svelte';
   import Icon from '../primitives/Icon.svelte';
   import Kbd from '../primitives/Kbd.svelte';
+
+  onDestroy(subscribeJumpHints());
 
   interface Props {
     /** Receives a focus callback the palette / keybindings can call. */
@@ -74,7 +81,7 @@
       >
         <Icon icon={X} size={12} strokeWidth={2.5} class="opacity-90" />
       </button>
-    {:else if searchShortcut}
+    {:else if searchShortcut && getJumpHintsVisible()}
       <span
         class="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none select-none"
         aria-hidden="true"

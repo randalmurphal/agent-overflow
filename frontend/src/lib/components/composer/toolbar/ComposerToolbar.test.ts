@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, waitFor } from '@testing-library/svelte';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 
 import ComposerToolbar from './ComposerToolbar.svelte';
 import { createThreadPane, type ThreadPane } from '../../../stores/thread.svelte';
@@ -146,6 +146,34 @@ describe('<ComposerToolbar>', () => {
 
     await waitFor(() => {
       expect(getByTestId('composer-toolbar')).toHaveAttribute('data-density', 'minimal');
+    });
+  });
+
+  it('the minimal rung keeps the meters and rolls the pickers into one sheet', async () => {
+    // The meters are what a phone user glances at; the pickers are one tap
+    // further away, not gone. Both are mounted at every rung (the rung is
+    // CSS), so the assertion is that the roll-up exists and that its row
+    // opens the picker the chord would — through the same registry handle.
+    restoreDimensions = installToolbarDimensions(800);
+    // The suite's synchronous rAF stub is for the density measurement; an
+    // open Popover re-requests a frame per frame to follow its anchor,
+    // which a synchronous stub turns into unbounded recursion.
+    vi.mocked(window.requestAnimationFrame).mockImplementation((callback) => {
+      setTimeout(() => callback(performance.now()), 0);
+      return 0;
+    });
+    const { container, getByTestId, getByRole } = renderToolbar();
+    await waitFor(() => {
+      expect(getByTestId('composer-toolbar')).toHaveAttribute('data-density', 'minimal');
+    });
+    expect(container.querySelectorAll('[data-composer-toolbar-meter]').length).toBeGreaterThan(0);
+    const modelTrigger = getByTestId('composer-model-menu-trigger');
+    expect(modelTrigger).toHaveAttribute('aria-expanded', 'false');
+
+    await fireEvent.click(getByTestId('composer-pickers-rollup'));
+    await fireEvent.click(getByRole('menuitem', { name: 'Model…' }));
+    await waitFor(() => {
+      expect(modelTrigger).toHaveAttribute('aria-expanded', 'true');
     });
   });
 

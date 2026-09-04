@@ -7,7 +7,6 @@ import { setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import { resetEditorsForTest } from '../../stores/editors.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
-import { closePalette, getPaletteTargetPaneId, isPaletteOpen } from '../../stores/palette.svelte';
 import type { GitStatus } from '../../types/git';
 import type { Project, Thread } from '../../types/models';
 import { createThreadPane } from '../../stores/thread.svelte';
@@ -402,9 +401,10 @@ describe('<ChatHeaderActions> subscription effect', () => {
   });
 });
 
-describe('<ChatHeaderActions> compact palette button', () => {
-  // The palette is a keyboard chord on the desktop; the phone has no chord,
-  // so the header carries the one button that reaches every command.
+describe('<ChatHeaderActions> compact header sheet', () => {
+  // The desktop cluster is a row of icon buttons that does not fit a phone
+  // header; compact rolls the same actions into one sheet. No command
+  // palette button: the phone has no chords for it to stand in for.
   beforeEach(async () => {
     resetPanesForTest();
     resetEditorsForTest();
@@ -413,27 +413,41 @@ describe('<ChatHeaderActions> compact palette button', () => {
     setBindingMock('ListAvailableEditors', async () => []);
     setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
     await loadSettings();
-    closePalette();
   });
 
   afterEach(() => {
     setCompactLayoutForTest(false);
-    closePalette();
   });
 
-  it('is absent on the desktop and opens the palette for this pane under compact', async () => {
+  it('is absent on the desktop, and under compact replaces the cluster', async () => {
     installSubscribeMock(status({}));
     const pane = await buildPane();
     const desktop = render(ChatHeaderActions, { props: { pane } });
     await flush();
-    expect(desktop.queryByTestId('palette-open')).toBeNull();
+    expect(desktop.queryByTestId('chat-header-more')).toBeNull();
+    expect(desktop.getByTestId('terminal-toggle')).toBeInTheDocument();
     desktop.unmount();
 
     setCompactLayoutForTest(true);
+    const { getByTestId, queryByTestId } = render(ChatHeaderActions, { props: { pane } });
+    await flush();
+    expect(getByTestId('chat-header-more')).toBeInTheDocument();
+    expect(queryByTestId('terminal-toggle')).toBeNull();
+    expect(queryByTestId('activity-runs-toggle')).toBeNull();
+    expect(queryByTestId('palette-open')).toBeNull();
+  });
+
+  it('runs the picked action: Terminal opens the drawer', async () => {
+    installSubscribeMock(status({}));
+    const pane = await buildPane();
+    setCompactLayoutForTest(true);
     const { getByTestId } = render(ChatHeaderActions, { props: { pane } });
     await flush();
-    await fireEvent.click(getByTestId('palette-open'));
-    expect(isPaletteOpen()).toBe(true);
-    expect(getPaletteTargetPaneId()).toBe(pane.paneId);
+    await fireEvent.click(getByTestId('chat-header-more'));
+    await flush();
+    const terminal = within(document.body).getByRole('menuitem', { name: /Terminal/ });
+    await fireEvent.click(terminal);
+    await flush();
+    expect(pane.showTerminal).toBe(true);
   });
 });

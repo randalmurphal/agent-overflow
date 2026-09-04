@@ -17,6 +17,7 @@
   import AccessToggle from './AccessToggle.svelte';
   import McpServersTrigger from './McpServersTrigger.svelte';
   import PlanSidebarToggleButton from './PlanSidebarToggleButton.svelte';
+  import ComposerPickersRollup from './ComposerPickersRollup.svelte';
   import SendButton from './SendButton.svelte';
   import ContextWindowMeter from '../../chat/ContextWindowMeter.svelte';
   import RateLimitMeter from '../../chat/RateLimitMeter.svelte';
@@ -198,18 +199,35 @@
   data-testid="composer-toolbar"
 >
   {#if hasComposableSurface}
-    <ModelProviderMenu {pane} />
-    <EffortMenu {pane} />
-    {#if !isDiscussionThread && supportsPlanMode}
-      <AgentModeToggle {pane} />
-    {/if}
-    {#if supportsRuntimeModes}
-      <AccessToggle {pane} />
-    {/if}
-    {#if supportsMcp}
-      <McpServersTrigger {pane} />
-    {/if}
-    <PlanSidebarToggleButton {pane} {hasCurrentPlan} />
+    <!-- One real box around the pickers (not display:contents): it is the
+         child the density observer watches, so any picker's width move
+         still re-measures, and it is what the minimal rung hides as a
+         unit. The pickers stay mounted under the roll-up, keeping their
+         registry handles, so a roll-up row opens the same sheet a chord
+         would. -->
+    <div class="flex items-center gap-0.5 min-w-0" data-composer-toolbar-pickers>
+      <ModelProviderMenu {pane} />
+      <EffortMenu {pane} />
+      {#if !isDiscussionThread && supportsPlanMode}
+        <AgentModeToggle {pane} />
+      {/if}
+      {#if supportsRuntimeModes}
+        <AccessToggle {pane} />
+      {/if}
+      {#if supportsMcp}
+        <McpServersTrigger {pane} />
+      {/if}
+      <PlanSidebarToggleButton {pane} {hasCurrentPlan} />
+    </div>
+    <div class="flex items-center" data-composer-toolbar-rollup>
+      <ComposerPickersRollup
+        {pane}
+        showMode={!isDiscussionThread && supportsPlanMode}
+        showAccess={supportsRuntimeModes}
+        showMcp={supportsMcp}
+        showPlan={hasCurrentPlan}
+      />
+    </div>
   {/if}
   <div class="ml-auto flex items-center gap-1.5">
     {#if showLimitRings}
@@ -274,9 +292,13 @@
   ) {
     display: none;
   }
-  /* The minimal rung: read-only meters yield so the controls — Send
-     above all — stay on screen at phone widths. */
-  :global([data-composer-toolbar][data-density='minimal'] [data-composer-toolbar-meter]) {
+  /* The minimal rung: the picker cluster folds into one roll-up trigger
+     so Send and the meters stay on screen at phone widths. The roll-up
+     exists only there; everywhere else the pickers are the controls. */
+  :global([data-composer-toolbar][data-density='minimal'] [data-composer-toolbar-pickers]) {
+    display: none;
+  }
+  :global([data-composer-toolbar]:not([data-density='minimal']) [data-composer-toolbar-rollup]) {
     display: none;
   }
 </style>

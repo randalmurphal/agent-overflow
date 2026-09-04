@@ -258,3 +258,38 @@ keyguard — a dozing phone renders frozen frames, so every click stalls
 `AO_ANDROID_PUSH_CREDENTIAL` (a manual gate in the `provider-smoke`
 sense). `google-services.json` sits gitignored at
 `mobile/android/app/`; the service-account key stays outside the repo.
+
+## 9. The phone-UX batch (2026-09-04)
+
+The owner's first hands-on pass with the paired phone produced seven
+findings, each fixed at the root and each with a test:
+
+- **Banner clamp**: `TransportStatusBanner` wraps as far as it needs
+  to; a phone has no hover to reveal a clamped sentence.
+- **Editor-open on the phone**: the surface was already `host`-gated;
+  the phone counted as host because `adb reverse` makes it a loopback
+  peer. `transport/scopes.ts` now answers `host` false for every paired
+  session (spec § Principal tiers), server presence untouched.
+- **Header**: the desktop cluster (and the command-palette button) is
+  one sheet behind `chat-header-more` on compact; the title gets the
+  width. `GitActionsControl` gained `trigger={false}` + `openMenu()` so
+  its popover and dialogs stay mounted outside the sheet.
+- **Composer meters**: the `minimal` rung keeps the meters and folds
+  the pickers into `ComposerPickersRollup`; the mode row shares
+  `agentModeCycle.ts` with the toolbar button.
+- **Back stack**: `native/lifecycle.ts#answerBackPress` — Escape
+  (Settings page → rail through `escapeSettingsOverlay`), terminal
+  drawer, on-screen companion (closed, thread revealed), list, exit.
+  Focused-terminal Escape goes to the pane, never into xterm.
+- **Sidebar chord pill**: shown only while a modifier is held, the
+  jump-hint door.
+- **Keyboard cut-off**: `index.html` asks for
+  `interactive-widget=resizes-content`, and the scroll observers re-pin
+  a pinned reader when the viewport shrinks (`contentRO.viewportShrink`).
+
+The scroll spring's absence on the phone was not reproduced on a
+device in this pass; the hypothesis is the WebView honouring Android's
+"remove animations" / battery-saver `prefers-reduced-motion`, which the
+controller already respects. Check `matchMedia('(prefers-reduced-motion:
+reduce)')` on the device before touching the spring.
+

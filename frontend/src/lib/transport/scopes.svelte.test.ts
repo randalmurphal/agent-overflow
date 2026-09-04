@@ -140,15 +140,27 @@ describe('scopes', () => {
   it('answers `host` from presence, never from the grant set', async () => {
     // `host` is a method property rather than a grant — no session holds
     // it, and internal/transport/authorize.go authorizes it from "is the
-    // caller on this machine". A paired session on the owner's own machine
-    // therefore still opens an editor.
+    // caller on this machine". The local page is that caller.
     setPageGrantsFromBootstrap(false);
-    await pairWith(['threads:read']);
     expect(hasScope('host')).toBe(true);
     expect(grantedScopes().scopes.has('host' as never)).toBe(false);
 
     setPageGrantsFromBootstrap(true);
     expect(hasScope('host')).toBe(false);
+  });
+
+  it('denies `host` to a paired session even on loopback', async () => {
+    // A paired device that reaches its backend through a loopback forward
+    // (adb reverse, an SSH tunnel) is still a device sitting at another
+    // machine: the editor `host` would open is not in front of it. The
+    // tier table gives owner devices everything except `host`, so the UI
+    // answers the table rather than the peer address — the phone over
+    // `adb reverse` showed "Open in editor" until it did (2026-09-04).
+    setPageGrantsFromBootstrap(false);
+    await pairWith(['threads:read']);
+    expect(grantedScopes().source).toBe('paired-session');
+    expect(hasScope('host')).toBe(false);
+    expect(hasScope('threads:read')).toBe(true);
   });
 
   it('reads an empty published grant set as "granted nothing"', async () => {

@@ -42,7 +42,11 @@
   } from './gitActions';
   import type { WorkspaceRef } from '../../types/git';
 
-  let { pane }: { pane: ThreadPane } = $props();
+  // `trigger` false renders no split button: the compact chat header
+  // rolls every action into one sheet and opens this menu from a row in
+  // it through `openMenu`, so the dialogs and the popover stay mounted
+  // here, outside that sheet, and survive its close.
+  let { pane, trigger = true }: { pane: ThreadPane; trigger?: boolean } = $props();
 
   // Removing this thread's own worktree reattaches it to the project root —
   // the same self-move the EnvPicker blocks while the thread is busy. Gate
@@ -163,6 +167,11 @@
     restorePickerFocus(reason, { triggerEl: menuTriggerEl });
   }
 
+  /** Open the actions menu from outside (the compact header's sheet). */
+  export function openMenu(): void {
+    showDropdown = true;
+  }
+
   function handleCommitClose() {
     showCommit = false;
     void pane.gitStatus.refreshNow();
@@ -181,6 +190,7 @@
   </Button>
 {:else if workspace !== null && status && status.isRepo}
   {@const ws = workspace}
+  {#if trigger}
   <div class="flex">
     <button
       onclick={() => void executePrimary(ws)}
@@ -201,6 +211,7 @@
       <Icon icon={ChevronDown} size={12} strokeWidth={2} class="opacity-80" />
     </button>
   </div>
+  {/if}
 
   {@const menuStatus = status}
   <Popover

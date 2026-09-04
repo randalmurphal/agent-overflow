@@ -14,6 +14,7 @@ import {
   closeWorkflowsOverlay,
   setWorkflowsOverlayExclusion,
 } from './workflowsOverlay.svelte';
+import { isCompactLayout } from './layoutMode.svelte';
 import {
   DEFAULT_SETTINGS_SECTION,
   type SettingsSection,
@@ -21,6 +22,13 @@ import {
 
 let open = $state(false);
 let section = $state<SettingsSection>(DEFAULT_SETTINGS_SECTION);
+// Compact renders Settings as stacked screens (docs/specs/remote-access.md
+// § The phone client): the rail is one screen, a section's page is the
+// next, and "back" from the page is the rail. Which of the two is showing
+// lives here rather than in the view so the `settings.close` command — the
+// path Esc and the phone's hardware back both take — can answer rail-first.
+// Desktop ignores it: both columns stay visible.
+let railOpen = $state(true);
 
 export function isSettingsOpen(): boolean {
   return open;
@@ -28,6 +36,18 @@ export function isSettingsOpen(): boolean {
 
 export function getSettingsSection(): SettingsSection {
   return section;
+}
+
+export function isSettingsRailOpen(): boolean {
+  return railOpen;
+}
+
+export function showSettingsRail(): void {
+  railOpen = true;
+}
+
+export function hideSettingsRail(): void {
+  railOpen = false;
 }
 
 /**
@@ -41,6 +61,8 @@ export function openSettingsOverlay(nextSection: SettingsSection = section): voi
   // of that store's `open` (armed at the bottom of this module).
   closeWorkflowsOverlay();
   section = nextSection;
+  // A deep link to a specific section lands on that page directly.
+  railOpen = nextSection === DEFAULT_SETTINGS_SECTION;
   open = true;
 }
 
@@ -62,6 +84,21 @@ export function closeSettingsOverlay(): void {
   open = false;
 }
 
+/**
+ * The Esc / hardware-back answer: on the compact page screen it is one step
+ * back to the rail, everywhere else it is the close above.
+ */
+export function escapeSettingsOverlay(): void {
+  if (!open) return;
+  if (isCompactLayout() && !railOpen) {
+    const active = document.activeElement;
+    if (active instanceof HTMLElement) active.blur();
+    railOpen = true;
+    return;
+  }
+  closeSettingsOverlay();
+}
+
 // Arm the mutual exclusion at module init. Importing this module is what wires
 // it, so no registration order — and no test's reset — can leave the workflows
 // overlay able to open on top of settings. The import direction is one-way
@@ -71,4 +108,5 @@ setWorkflowsOverlayExclusion(closeSettingsOverlay);
 export function resetSettingsOverlayForTest(): void {
   open = false;
   section = DEFAULT_SETTINGS_SECTION;
+  railOpen = true;
 }

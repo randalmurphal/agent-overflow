@@ -2325,9 +2325,15 @@ text above was deviated from:
   stay MOUNTED and swap `visibility` plus `inert`, so a trip back to the
   list keeps the timeline's observers and scroll position. `revealPane`
   flips to the thread screen; the chat header grows a back button and
-  loses the pane close control. Panes are one screen wide with no
-  dividers, so companions still open and the reveal glide is the screen
-  switch. Popovers are bottom sheets by default (`Popover`'s `sheet`
+  loses the pane close control, and rolls its action cluster into one
+  sheet (`chat-header-more`) so the title keeps its width — no
+  command-palette button, since the phone has no chords for one to
+  stand in for (first real-phone pass, 2026-09-04). Panes are one
+  screen wide with no dividers, so companions still open and the reveal
+  glide is the screen switch; the hardware back closes the companion
+  on screen and reveals its thread before it goes to the list. The
+  composer's densest rung folds the pickers into a roll-up and keeps
+  the rate-limit and context meters (owner ruling, same day). Popovers are bottom sheets by default (`Popover`'s `sheet`
   prop; the composer's completion lists opt out), overlays fill the
   screen, Return inserts a newline (`enterSends`), the nav rail and its
   gutter are gone. Deviation from the design text above: the terminal is
@@ -2383,8 +2389,9 @@ text above was deviated from:
   `AO_SHELL=1` stub alias: a phone adopting the backend's bundle found
   every seam stubbed and rolled back).
   Seams in `frontend/src/lib/native/`: lifecycle (pause/resume to
-  `setClientLease`, hardware back to the list screen or Escape through
-  the keybinding path), lock (biometric on cold start and on resume,
+  `setClientLease`, hardware back as one stack — Escape through the
+  keybinding path, the terminal drawer, the companion on screen, the
+  list screen, exit), lock (biometric on cold start and on resume,
   the app root marked `inert` underneath), QR scan, a documented picker
   stub, and `boot.ts` whose `adoptPairingEndpoint` is the one place
   both pairing doors point the shell at a backend. Deviations from the
@@ -3641,8 +3648,9 @@ same handler; `ContextMenu` renders as a bottom sheet there, matching
 `Popover`; rows are 36px and `select-none`; nothing is draggable
 under compact (rows, project headers, pane title); the project
 header keeps only `+`, its menu gaining New Thread and New Terminal
-(scope-gated); the chat header gains a palette button. Desktop pixels
-are unchanged. Verified by the detector's unit suite, component
+(scope-gated); the chat header's action cluster becomes one sheet (the
+palette button it briefly carried is gone: no chords on a phone).
+Desktop pixels are unchanged. Verified by the detector's unit suite, component
 tests per row, and the compact Playwright project driving a real
 held touch through CDP. Residuals, recorded and left: header `xs`
 buttons stay 24px (the WCAG AA minimum, not the 44px Android target);

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import SidebarSearch from '../SidebarSearch.svelte';
@@ -11,6 +11,7 @@ import {
   setKeybindingsForTest,
   UNBOUND_CHORD,
 } from '../../../stores/keybindings.svelte';
+import { resetKeyboardModifiersForTest } from '../../../stores/keyboardModifiers.svelte';
 
 const FOCUS_SEARCH_ROW = {
   key: 'mod+/',
@@ -19,46 +20,76 @@ const FOCUS_SEARCH_ROW = {
   defaultKey: 'mod+/',
 };
 
+/** Hold the modifier past the jump-hint delay, the way the thread rows'
+ * jump pills are revealed: the chord pill shares that door. */
+async function holdModifier(): Promise<void> {
+  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Control', bubbles: true }));
+  vi.advanceTimersByTime(101);
+  await tick();
+}
+
 describe('<SidebarSearch>', () => {
   beforeEach(() => {
+    vi.useFakeTimers();
+    resetKeyboardModifiersForTest();
     setThreadFilterQuery('');
     resetKeybindingsStore();
     setKeybindingsForTest([FOCUS_SEARCH_ROW]);
   });
 
-  it('renders the search input with a keybind affordance when empty', () => {
+  afterEach(() => {
+    resetKeyboardModifiersForTest();
+    vi.useRealTimers();
+  });
+
+  it('renders the search input with no keybind affordance at rest', () => {
+    // A chord pill at rest is chrome the phone can never act on and the
+    // desktop already knows; it appears while the modifier is held, the
+    // same moment the thread rows show their jump numbers.
     const { getByTestId, queryByTestId } = render(SidebarSearch, {
       props: {},
     });
     expect(getByTestId('sidebar-thread-search')).toBeInTheDocument();
-    expect(getByTestId('sidebar-thread-search-kbd')).toBeInTheDocument();
+    expect(queryByTestId('sidebar-thread-search-kbd')).toBeNull();
     expect(queryByTestId('sidebar-thread-search-clear')).toBeNull();
   });
 
-  it('keybind affordance reflects the configured sidebar.focus-search chord', () => {
+  it('shows the keybind affordance while the modifier is held, and drops it on release', async () => {
+    const { queryByTestId } = render(SidebarSearch, { props: {} });
+    await holdModifier();
+    expect(queryByTestId('sidebar-thread-search-kbd')).toBeInTheDocument();
+    window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Control', bubbles: true }));
+    await tick();
+    expect(queryByTestId('sidebar-thread-search-kbd')).toBeNull();
+  });
+
+  it('keybind affordance reflects the configured sidebar.focus-search chord', async () => {
     // Regression guard for the hardcoded-chord bug: the pill must read the
     // live binding. Whether the displayed text is `Ctrl+/` or `⌘/` depends
     // on platform, but `/` is invariant — and the broken state (a hardcoded
     // chord) would render whatever was hardcoded instead.
     setKeybindingsForTest([{ ...FOCUS_SEARCH_ROW, key: 'mod+/' }]);
     const { getByTestId } = render(SidebarSearch, { props: {} });
+    await holdModifier();
     const text = getByTestId('sidebar-thread-search-kbd').textContent ?? '';
     expect(text).toContain('/');
     expect(text).not.toContain('K');
   });
 
-  it('re-reads the chord after a rebind', () => {
+  it('re-reads the chord after a rebind', async () => {
     setKeybindingsForTest([{ ...FOCUS_SEARCH_ROW, key: 'mod+shift+j' }]);
     const { getByTestId } = render(SidebarSearch, { props: {} });
+    await holdModifier();
     expect(getByTestId('sidebar-thread-search-kbd').textContent ?? '').toContain('J');
   });
 
-  it('drops the affordance entirely when sidebar.focus-search is unbound', () => {
+  it('drops the affordance entirely when sidebar.focus-search is unbound', async () => {
     // The hint promises a keystroke. With the command cleared there is no
     // keystroke to promise, and the old `?? 'mod+/'` fallback would have
     // shown the very chord the user removed.
     setKeybindingsForTest([{ ...FOCUS_SEARCH_ROW, key: UNBOUND_CHORD }]);
     const { queryByTestId } = render(SidebarSearch, { props: {} });
+    await holdModifier();
     expect(queryByTestId('sidebar-thread-search-kbd')).toBeNull();
   });
 
@@ -66,6 +97,7 @@ describe('<SidebarSearch>', () => {
     const { getByTestId, queryByTestId } = render(SidebarSearch, {
       props: {},
     });
+    await holdModifier();
     const input = getByTestId('sidebar-thread-search') as HTMLInputElement;
     await fireEvent.input(input, { target: { value: 'search text' } });
     await tick();

@@ -280,6 +280,16 @@ function readSnapshot(backendId: BackendKey, caller: string): ScopeSnapshot {
 // `onHost` is the home backend's alone (see the module header): a remote
 // backend's session is by definition not on this machine, so its arm is
 // the paired-session one or nothing.
+//
+// A PAIRED session is never on the host either, whatever the peer address
+// says. The spec's tier table gives owner devices every scope except
+// `host` (docs/specs/remote-access.md § Principal tiers), and a device that
+// reaches its backend over a loopback forward — `adb reverse`, an SSH
+// tunnel — is still a device: the editor it would open, the directory it
+// would browse, live on a machine it is not sitting at. The server keeps
+// judging presence from the peer (a loopback caller is trusted as the
+// host), so this is the UI declining to offer what the device has no use
+// for, not a second authorization rule.
 function resolve(backend: BackendKey): void {
   const home = backend === HOME_BACKEND;
   const paired = pairedSessionScopes(backend);
@@ -293,7 +303,7 @@ function resolve(backend: BackendKey): void {
     for (const name of paired) {
       if (isScope(name)) known.add(name);
     }
-    next = { source: 'paired-session', everyScope: false, scopes: known, onHost };
+    next = { source: 'paired-session', everyScope: false, scopes: known, onHost: false };
   } else if (onHost) {
     next = { source: 'local-page', everyScope: true, scopes: NO_SCOPES, onHost: true };
   } else {

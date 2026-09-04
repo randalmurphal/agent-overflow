@@ -317,10 +317,12 @@
     data-status={snapshot.status}
     class="border-b {bannerClasses} px-4 py-1.5 flex items-center gap-2 text-xs"
   >
-    <!-- Two lines, not one: on a phone there is no hover to reveal a
-         title tooltip, so a clamped sentence is simply unreadable. Every
-         string this strip shows fits two lines at 360px. -->
-    <p class="flex-1 line-clamp-2" title={signInError || message}>{signInError || message}</p>
+    <!-- Wraps as far as it needs to: on a phone there is no hover to
+         reveal a title tooltip, so a clamped sentence is simply
+         unreadable (the two-line clamp still cut the bundle notice on a
+         real phone, 2026-09-04). A backend's hostname can be one
+         unbreakable token, hence the wrap anywhere. -->
+    <p class="flex-1 min-w-0 [overflow-wrap:anywhere]">{signInError || message}</p>
     {#if signInOffered}
       <button
         type="button"
