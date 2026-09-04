@@ -23,6 +23,13 @@ one.
   render: the Files/Comments tab, and the extension filter's "Apply filter
   to diff" (it derives the `diffFiles` subset and maps top-file highlight
   indexes back to the full list). The text search stays rail-only.
+  Everything under its toolbar sits in a `<svelte:boundary>`: a render
+  throw (a keyed-each collision, a row model that cannot build) renders
+  the failure in place with a Retry, and is recorded through
+  `reportFrontendDiagnostic` because the boundary keeps it from
+  `window.onerror`. Without it the flush aborted mid-branch and the pane
+  kept the previous branch's DOM — "Loading…" over a fully loaded store,
+  the only trace in `frontend-errors.jsonl` (MR !309, 2026-09-04).
 - `reviewScroll.ts` is the pane's only scrollTop writer, with
   per-(thread, scope, geometry) position memory. The conflict view passes
   `scope:conflicts` so its position does not clobber the diff's. It
@@ -247,6 +254,18 @@ read tail-first.
   module-level `visibilitychange` listener owns the flip, one call per
   PR, not per pane.
 
+- **One PatchFile per path is the parser's job for a type change.** git
+  reports a regular-file ↔ symlink flip as ONE `T` status but emits it
+  as TWO adjacent same-path `diff --git` sections (old form deleted,
+  new form created), and every path-keyed consumer — the file tree,
+  collapse/comment maps, `reviewRows`' header keys, chat's
+  `ToolCallCard` file stack — dies on the duplicate key. `parsePatch`
+  folds that pair into one `modified` file (one preamble, both hunks,
+  `suppressGaps` because nothing is hidden between them), and
+  `extractPatchFile` hands back both sections as that file's patch.
+  This repo's own `CLAUDE.md` → `AGENTS.md` symlink convention makes the
+  shape routine, in every scope. Only the (deleted, added) pair folds;
+  the edits-scope multi-section shape below never matches it.
 - **Edits scope** renders persisted tool-call diff payloads (the
   historical change itself, correct after commits/rebases), never a
   git recomputation. `ListThreadEditDiffs` lists metadata only; the

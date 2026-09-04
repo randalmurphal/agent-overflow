@@ -137,6 +137,89 @@ diff --git a/notes.txt b/notes.txt
     ]);
   });
 
+  // git emits a file→symlink (or symlink→file) type change as two
+  // adjacent same-path sections: the old form deleted, the new form
+  // created. MR !309 (apps/demo/CLAUDE.md → symlink) crashed the review
+  // pane's path-keyed file tree on the duplicate (2026-09-04).
+  const typeChangePatch = `diff --git a/apps/demo/CLAUDE.md b/apps/demo/CLAUDE.md
+deleted file mode 100644
+index 596b365..0000000
+--- a/apps/demo/CLAUDE.md
++++ /dev/null
+@@ -1,2 +0,0 @@
+-# Demo
+-Old guide.
+diff --git a/apps/demo/CLAUDE.md b/apps/demo/CLAUDE.md
+new file mode 120000
+index 0000000..47dc3e3
+--- /dev/null
++++ b/apps/demo/CLAUDE.md
+@@ -0,0 +1 @@
++AGENTS.md
+diff --git a/other.ts b/other.ts
+--- a/other.ts
++++ b/other.ts
+@@ -1 +1 @@
+-a
++b
+`;
+
+  it('folds a type change (file ↔ symlink) into one modified file', () => {
+    const files = parsePatchFiles(typeChangePatch);
+    expect(files.map((file) => file.path)).toEqual(['apps/demo/CLAUDE.md', 'other.ts']);
+    const merged = files[0]!;
+    expect(merged).toMatchObject({ kind: 'modified', additions: 1, deletions: 2, suppressGaps: true });
+    // One preamble (the deletion's), both hunks, the creation's header
+    // block dropped.
+    expect(merged.lines.filter((line) => line.content.startsWith('diff --git'))).toHaveLength(1);
+    expect(merged.lines.filter((line) => line.content.startsWith('@@')).map((line) => line.content)).toEqual([
+      '@@ -1,2 +0,0 @@',
+      '@@ -0,0 +1 @@',
+    ]);
+    // Old content numbers on the old side, the symlink target on the
+    // new side, and no synthetic gap row between the two hunks.
+    const rows = filePatchDisplayRows(merged);
+    expect(rows.some((row) => row.gap)).toBe(false);
+    expect(rows.map((row) => [row.side, row.oldLine, row.newLine])).toEqual([
+      ['old', 1, 0],
+      ['old', 2, 0],
+      ['new', 0, 1],
+    ]);
+    expect(parsePatchFileSummaries(typeChangePatch)).toMatchObject([
+      { path: 'apps/demo/CLAUDE.md', kind: 'modified', additions: 1, deletions: 2, lines: [] },
+      { path: 'other.ts', kind: 'modified' },
+    ]);
+  });
+
+  it('does not fold a deletion followed by an unrelated re-creation of another path', () => {
+    const files = parsePatchFiles(`diff --git a/a.ts b/a.ts
+deleted file mode 100644
+--- a/a.ts
++++ /dev/null
+@@ -1 +0,0 @@
+-a
+diff --git a/b.ts b/b.ts
+new file mode 100644
+--- /dev/null
++++ b/b.ts
+@@ -0,0 +1 @@
++b
+`);
+    expect(files.map((file) => [file.path, file.kind])).toEqual([
+      ['a.ts', 'deleted'],
+      ['b.ts', 'added'],
+    ]);
+  });
+
+  it('extracts both sections of a type change as that file’s patch', () => {
+    const extracted = extractPatchFile(typeChangePatch, 'apps/demo/CLAUDE.md');
+    expect(extracted).not.toBeNull();
+    expect(extracted!.match(/^diff --git /gm)).toHaveLength(2);
+    expect(extracted).toContain('+AGENTS.md');
+    expect(extracted).not.toContain('other.ts');
+    expect(extractPatchFile(typeChangePatch, 'other.ts')).toContain('+b');
+  });
+
   it('derives old and new line anchors from hunk headers', () => {
     const [file] = parsePatchFiles(`diff --git a/app.ts b/app.ts
 --- a/app.ts

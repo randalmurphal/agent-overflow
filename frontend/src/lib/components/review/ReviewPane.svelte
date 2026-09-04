@@ -35,7 +35,22 @@
     commentTally,
   } from '../../utils/reviewComments';
   import { fileExtensionLabel } from '../../utils/reviewTree';
+  import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
   import Icon from '../primitives/Icon.svelte';
+
+  function renderFailureMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+  }
+
+  // The boundary swallows the throw before window.onerror sees it, so
+  // the record that used to land in frontend-errors.jsonl is written
+  // here instead — the failure is visible on screen AND on disk.
+  function reportRenderFailure(error: unknown): void {
+    reportFrontendDiagnostic(
+      `review pane failed to render: ${renderFailureMessage(error)}`,
+      error instanceof Error ? (error.stack ?? '') : '',
+    );
+  }
 
   interface Props {
     ctx: PanelContext;
@@ -510,6 +525,14 @@
   {#if !review}
     <div class="p-3 text-sm text-fg-muted">No thread selected.</div>
   {:else}
+    <!-- A render throw below this point (a keyed-each collision, a row
+         model that cannot build) used to abort the flush mid-branch and
+         leave whatever DOM the previous branch had — "Loading…" with a
+         fully loaded store and nothing on screen to say why. Errors are
+         user-facing state: the failure renders in place, with the
+         message, and is recorded where window.onerror would have put
+         it had the boundary not caught it. -->
+    <svelte:boundary onerror={reportRenderFailure}>
     {#if review.error}
       <div class="border-b border-error/30 bg-error/10 px-3 py-2 text-xs text-error" data-testid="review-error">
         {review.error}
@@ -775,5 +798,25 @@
         {/if}
       </section>
     {/if}
+    {#snippet failed(error, reset)}
+      <div
+        class="flex flex-col gap-2 border-b border-error/30 bg-error/10 px-3 py-2 text-xs text-error"
+        role="alert"
+        data-testid="review-render-error"
+      >
+        <div>The review pane failed to render: {renderFailureMessage(error)}</div>
+        <div>
+          <button
+            type="button"
+            class="rounded border border-error/45 px-2 py-1 text-[0.6875rem] font-medium hover:bg-error/10"
+            data-testid="review-render-error-retry"
+            onclick={reset}
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    {/snippet}
+    </svelte:boundary>
   {/if}
 </section>
