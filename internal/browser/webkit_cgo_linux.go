@@ -477,10 +477,11 @@ func webkitIsLoading(view unsafe.Pointer) bool {
 	return loading
 }
 
-// webkitEvaluate runs one async-function body in the page and returns its JSON
+// gtkEvaluate runs one async-function body in the page and returns its JSON
 // result. An undefined result is an empty answer, matching what CDP reports
-// for a void expression.
-func webkitEvaluate(ctx context.Context, view unsafe.Pointer, body string) (string, error) {
+// for a void expression. (The shared syntax-fallback wrapper is
+// webkitEvaluate in webkitjs.go, same layering as darwin's wkEvaluate.)
+func gtkEvaluate(ctx context.Context, view unsafe.Pointer, body string) (string, error) {
 	if !gtkAlive() {
 		return "", errGTKUnavailable
 	}

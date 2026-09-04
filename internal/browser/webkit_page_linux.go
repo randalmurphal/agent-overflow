@@ -147,7 +147,7 @@ func (p *webkitPage) bind(ctx context.Context) (context.Context, context.CancelF
 func (p *webkitPage) evalBody(ctx context.Context, body string) (json.RawMessage, error) {
 	opCtx, cancel := p.bind(ctx)
 	defer cancel()
-	raw, err := webkitEvaluate(opCtx, p.view, body)
+	raw, err := gtkEvaluate(opCtx, p.view, body)
 	if err != nil {
 		return nil, err
 	}
