@@ -459,9 +459,10 @@ func (h *Harness) seedItem(threadID string, turnIndex, itemIndex int, at int64, 
 // project is deleted through the production cascade (which reaps
 // checkpoints, drafts, attachments, and per-thread in-memory state),
 // generated seed workspaces are removed so the same names re-seed
-// cleanly, and harness-owned control state (scenario rules, an active
-// replay, an in-flight recording, mock registrations) is dropped — the
-// per-test isolation
+// cleanly, the app-wide "last used" chat profile that seeds a fresh
+// draft's provider is cleared, and harness-owned control state (scenario
+// rules, an active replay, an in-flight recording, mock registrations)
+// is dropped — the per-test isolation
 // contract covers everything a previous test could have set, not just
 // DB rows. Recorded bundles survive: they are captured artifacts, not
 // test state. The caller reloads the page afterwards; DB-derived
@@ -567,6 +568,16 @@ func (h *Harness) HarnessReset() (err error) {
 	// defaults.
 	if err := h.config.Host.ClearUIState(); err != nil {
 		return fmt.Errorf("clear persisted ui state: %w", err)
+	}
+	// The app-wide "last used" chat profile (chat_model_profiles) is the seed
+	// a fresh "+ New" draft resolves its provider/model from when nothing else
+	// pins them (seedChatModelProfile → LatestChatModelProfile). It is app-wide,
+	// not project-scoped, so the project cascade above leaves it in place —
+	// which let one test's codex thread set the default a later test's draft
+	// then rendered against the wrong scenario. Reset owns per-test isolation,
+	// so it clears it; the registry fallback is the blank-slate default.
+	if err := database.ClearChatModelProfiles(); err != nil {
+		return fmt.Errorf("clear chat model profiles: %w", err)
 	}
 	// The session-import scan is a cached projection OF the rows just
 	// deleted: its dedup subtracts sessions AO already has, so a scan taken

@@ -176,7 +176,7 @@ test.describe.serial('provider sign-in from a paired device', () => {
     // is not on the backend's machine. That is the branch under test: a
     // browser method here would have opened a link on a screen nobody is
     // looking at.
-    await expect(flow).toHaveAttribute('data-method', 'remote');
+    await expect(flow).toHaveAttribute('data-method', 'remote', { timeout: SIGNIN_STEP_MS });
     await expect(flow).toHaveAttribute('data-phase', 'awaiting_code', {
       timeout: SIGNIN_STEP_MS,
     });
@@ -217,7 +217,7 @@ test.describe.serial('provider sign-in from a paired device', () => {
 
     const flow = phone.getByTestId('provider-login-flow-claude');
     await expect(flow).toBeVisible({ timeout: SIGNIN_STEP_MS });
-    await expect(flow).toHaveAttribute('data-method', 'remote');
+    await expect(flow).toHaveAttribute('data-method', 'remote', { timeout: SIGNIN_STEP_MS });
     await expect(flow).toHaveAttribute('data-phase', 'awaiting_code', {
       timeout: SIGNIN_STEP_MS,
     });

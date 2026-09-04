@@ -43,7 +43,8 @@ stateful composition with the production app through `Host`.
   immediately through `Host.PublishStoreIdentity` before replay starts.
 - Reset order is load-bearing: stop harness emitters, pause/cancel/sync workflow
   startup, stop sessions, settle turns, clear mocks, delete workflow records,
-  delete projects, invalidate import projection, drop the push ledger,
+  delete projects, clear the app-wide chat-profile seed, invalidate import
+  projection, drop the push ledger,
   remove harness-owned files, then clear workflow pause via the deferred
   resume closure.
 

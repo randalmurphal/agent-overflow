@@ -22,8 +22,12 @@ directory.
   no page (`harness.awaitNoPages()`): the previous test's page leaves the
   registry when its WebSocket is torn down, which Playwright does not
   order before the next test's fixtures, and a ui query naming no page
-  refuses two. A page still there after five seconds fails the test as
-  a leaked context.
+  refuses two. The wait returns the instant the count reaches zero
+  (~1.5-2s in the common case: Chromium context teardown, not a backend
+  cost), so its ceiling is generous — 15s, because a heavy test that
+  navigated one page several times was measured clearing at ~5.6s on
+  macOS. A page still there at the ceiling fails the test as a leaked
+  context.
 - **A spec that asserts a MAPPED notification must not have a page open.**
   Since wave R5 the SPA states a screen presence on its socket, and the
   backend's default `notifyQuietWhen: "focused"` holds back a notification

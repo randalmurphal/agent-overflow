@@ -225,6 +225,19 @@ func (s *Store) LatestChatModelProfileForProvider(providerName string) (ChatMode
 	return scanChatModelProfile(row)
 }
 
+// ClearChatModelProfiles removes every remembered chat-bar profile. The
+// newest surviving row is the app-wide seed for the next "+ New" draft
+// (LatestChatModelProfile), so this is how the harness reset stops one
+// test's last-used provider from leaking into the next test's draft
+// default. Production never calls it: a user's remembered profiles are
+// theirs to keep.
+func (s *Store) ClearChatModelProfiles() error {
+	if _, err := s.db.Exec(`DELETE FROM chat_model_profiles`); err != nil {
+		return fmt.Errorf("store: clear chat model profiles: %w", err)
+	}
+	return nil
+}
+
 func scanChatModelProfile(scanner interface{ Scan(...any) error }) (ChatModelProfile, error) {
 	var profile ChatModelProfile
 	var fastMode int

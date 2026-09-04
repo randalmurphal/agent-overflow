@@ -154,15 +154,27 @@ export class HarnessApp {
    * closing page beside the new one and refuse the ambiguity. Fails
    * naming the count when a page outlives the wait, since that is a
    * leaked context rather than a slow close.
+   *
+   * The budget is a CEILING, not a wait: this returns the instant the
+   * count reaches zero (~1.5-2s in the common case, which is how long
+   * Chromium takes to tear a context down and the backend to notice the
+   * closed socket), so a generous ceiling costs a passing run nothing. It
+   * is 15s rather than 5s because that teardown is a Playwright/Chromium
+   * cost, not a backend one, and on macOS a heavy test that navigated the
+   * same page several times (harness.spec's reset test opens then reloads
+   * twice, so three sockets close at once) was measured clearing at ~5.6s
+   * — past the old 5s ceiling, which turned a slow-but-healthy teardown
+   * into a flake. A genuinely leaked context never reaches zero and still
+   * fails here, only later.
    */
-  async awaitNoPages(timeoutMs = 5_000): Promise<void> {
+  async awaitNoPages(timeoutMs = 15_000): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
       const info = await this.rpc<{ frontendPages?: unknown[] }>('HarnessInfo');
       const count = info.frontendPages?.length ?? 0;
       if (count === 0) return;
       if (Date.now() >= deadline) {
-        throw new Error(` frontend page(s) still registered after ms`);
+        throw new Error(`${count} frontend page(s) still registered after ${timeoutMs}ms`);
       }
       await new Promise((resolve) => setTimeout(resolve, 25));
     }

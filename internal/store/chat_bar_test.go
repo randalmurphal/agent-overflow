@@ -162,6 +162,35 @@ func TestChatModelProfileLatestAndProviderLookup(t *testing.T) {
 	}
 }
 
+func TestClearChatModelProfiles(t *testing.T) {
+	s := newTestStore(t)
+
+	for _, profile := range []ChatModelProfile{
+		{Provider: "claude", Model: "claude-sonnet-4-6", ReasoningEffort: "medium", ContextWindow: 200000, RuntimeMode: "approval-required", UpdatedAt: 100},
+		{Provider: "codex", Model: "gpt-5.5", ReasoningEffort: "xhigh", ContextWindow: 1000000, RuntimeMode: "full-access", UpdatedAt: 200},
+	} {
+		if err := s.UpsertChatModelProfile(profile); err != nil {
+			t.Fatalf("UpsertChatModelProfile(%s/%s): %v", profile.Provider, profile.Model, err)
+		}
+	}
+
+	if err := s.ClearChatModelProfiles(); err != nil {
+		t.Fatalf("ClearChatModelProfiles: %v", err)
+	}
+
+	// With every row gone, the app-wide seed lookup reports no rows — which is
+	// what sends a fresh "+ New" draft to the registry fallback default instead
+	// of a previous session's remembered provider.
+	if _, err := s.LatestChatModelProfile(); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("LatestChatModelProfile after clear: err = %v, want sql.ErrNoRows", err)
+	}
+
+	// Idempotent: clearing an already-empty table is not an error.
+	if err := s.ClearChatModelProfiles(); err != nil {
+		t.Fatalf("ClearChatModelProfiles (empty): %v", err)
+	}
+}
+
 func TestChatModelProfileValidation(t *testing.T) {
 	s := newTestStore(t)
 
