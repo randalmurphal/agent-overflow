@@ -1544,6 +1544,18 @@ pane between chat and discussion mode never reads a stale latch.
 
 ## Diagnostics
 
+The spring's real-DOM regression tier includes
+`sendViewport.browser.test.ts` (composer/viewport resize during send),
+`grid.browser.test.ts` (engine scaling), and `springGrid.browser.test.ts`
+(motion under controlled refresh clocks). Pair those with a native visible
+send that collapses a multiline composer, plus zoom/display-scale changes,
+reduced motion, idle keyboard pinning and user escape during the glide.
+Validate physical macOS/Android and high-refresh displays separately; browser
+clock injection cannot certify their paint or presentation behavior. Check
+the device's `prefers-reduced-motion` setting when a glide is absent.
+For active-load measurement, follow
+[the harness measurement guidance](agent-harness.md#choosing-a-performance-measurement).
+
 Scroll bugs are usually second-order interactions between controller
 flags, row measurement, and browser layout. Reproduce with
 `make dev DEBUG=1`, then inspect `window.__agentOverflowUiTrace.dump()` or

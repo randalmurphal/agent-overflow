@@ -243,6 +243,8 @@ useful exactly as long as they are true. Four rules keep them true.
   from then on. Delete a doc nothing cites (the spec-graduation rule
   in `docs/README.md`, generalized to the whole tree); git history
   keeps it. Guides earn their load by staying short enough to read.
+  Handoffs are transient: when their work ends, promote any remaining
+  useful guidance to its owning document and delete the handoff.
 - **Keep the indexes in step.** Adding, renaming, or deleting a doc
   updates its `docs/README.md` row in the same commit. A new package
   updates the `internal/AGENTS.md` table and ships the `CLAUDE.md`

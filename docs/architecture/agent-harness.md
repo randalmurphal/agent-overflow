@@ -989,6 +989,30 @@ its four turns cleanly. The mock's own
 triage, persist and render, so it would time a shorter pipeline than the
 one under test.
 
+#### Choosing a performance measurement
+
+Use `mixed-turn` for thinking/tool/diff/text transitions and pauses,
+`giant-turn` for item churn, `subagent-fanout` for nested cards, and
+`active-multi-pane` for sustained concurrent rendering. A Markdown-only
+workload does not establish the other surfaces' performance. Confirm visible
+progress and successful reveal drain before interpreting timing.
+
+Keep clean frame, clean memory, trace, and allocation captures separate.
+`--leg clean-memory` disables frontend meters; pair it with the native process
+sampler described in [perfprobe](../../scripts/perfprobe/README.md). Report
+process private bytes separately from JS heap and allocation throughput.
+Exclude incomplete process censuses. A trace hitting the safety ceiling is
+an invalid clean-memory measurement, not evidence that normal streaming uses
+that much memory; shorten the capture or reduce instrumentation.
+
+For sustained workloads, distinguish the source-active interval from final
+interrupt/drain work. Preserve the full completion check while reporting which
+interval contains the expensive frames. Frame budgets are 33.33/16.67 ms at
+30/60 Hz and 6.06/4.55/4.17 ms at 165/220/240 Hz. Main-thread work fitting a
+budget does not prove on-time presentation: inspect actual frame intervals,
+native scheduling and rendering too. Simulated refresh clocks establish
+controller behavior, not physical display performance.
+
 #### The window ends at drain-empty, not at turn completion
 
 Turn completion is where the WIRE stops. What a reader watches is the

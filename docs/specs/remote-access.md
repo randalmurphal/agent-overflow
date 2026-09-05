@@ -3698,6 +3698,12 @@ at shutdown. Residuals, recorded and left: the edit-and-resend
 retiered key that was never set anywhere costs one store read per
 bucket per process until its new home holds a row.
 
+The physical two-device convergence check remains separate from these fixes
+and the Android shell smoke: observe read/mark-unread, approval dismissal,
+`notifyQuietWhen`, and a send interrupted by socket loss on a desktop and
+phone attached to the same backend. The Android shell smoke does not
+establish that coverage.
+
 **Polish pass, notification preferences LANDED (2026-09-03, wave R5).**
 Under the B3 ruling (every kind its own toggle, plus quiet-while-focused
 and quiet-while-the-thread-is-on-screen), §9's preference gate grew
