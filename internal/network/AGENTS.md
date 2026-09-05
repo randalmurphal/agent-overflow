@@ -98,6 +98,15 @@ the tailnet's own admin panel and CLI say, so a person comparing the two
 screens is comparing the same words, and a state we have not seen before
 still renders as itself instead of collapsing into "unknown".
 
+## Pairing chooses the reachable listener
+
+`PairingURL` prefers the live tailnet, then the canonical domain, LAN,
+and loopback. It returns the certificate pin with the URL: tailnet and
+canonical HTTPS use WebPKI, and only the main address uses its self-signed
+pin. Never copy that pin onto a tailnet invitation. Mint only the ticket
+being returned; unused fallback tickets evict links still being scanned.
+`TestPairingURLUsesReachableListenerAndMatchingTrust` enforces both rules.
+
 ## Two records, and what the second leaves out
 
 `Settings` is read by two kinds of caller and only one of them is at the

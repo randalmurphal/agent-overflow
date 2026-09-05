@@ -66,7 +66,7 @@
   } as const;
 
   let overview = $state<AccessOverview | null>(null);
-  let bindAll = $state(false);
+  let remoteReachable = $state(true);
   let pairOpen = $state(false);
   let auditOpen = $state(false);
   // Two-step revoke: first click arms, second click within the window
@@ -89,16 +89,26 @@
     } catch (err) {
       addToast('error', `Failed to load devices: ${errString(err)}`);
     }
-    // `host`, not `access:admin`: the bind preference is a fact about the
-    // machine, so this one is refused even for a full-access device that
-    // may do everything else on this screen.
-    if (!hasScope('host')) return;
+    await loadReachability();
+  }
+
+  async function loadReachability(): Promise<void> {
     try {
-      bindAll = (await GetNetworkSettings()).bindAll;
+      const network = await GetNetworkSettings();
+      remoteReachable = network.bindAll || (network.tailnet?.running && !!network.tailnet.dnsName);
     } catch {
-      // The pairing modal's loopback note degrades to absent; the list
-      // above it already told the person what failed if the overview did.
+      // Unknown reachability must not instruct the owner to change a
+      // working network configuration. Minting reports its own failures.
+      remoteReachable = true;
     }
+  }
+
+  function openPairing(): void {
+    // Tailnet may have joined since this section mounted beside Network.
+    // Open immediately and withhold a stale warning while refreshing.
+    remoteReachable = true;
+    pairOpen = true;
+    void loadReachability();
   }
 
   function armOrRun(id: string, run: () => Promise<void>): void {
@@ -263,7 +273,7 @@
           : 'Each paired device holds its own credential for this backend. Revoking one signs that device out everywhere without touching the others.'}
     />
     {#if !unavailable}
-      <Button variant="primary" size="sm" class="shrink-0 whitespace-nowrap" onclick={() => (pairOpen = true)}>
+      <Button variant="primary" size="sm" class="shrink-0 whitespace-nowrap" onclick={openPairing}>
         Pair a device
       </Button>
     {/if}
@@ -502,5 +512,5 @@
 </section>
 
 {#if !unavailable}
-  <PairDeviceModal open={pairOpen} {bindAll} onClose={() => (pairOpen = false)} onChanged={() => void load()} />
+  <PairDeviceModal open={pairOpen} {remoteReachable} onClose={() => (pairOpen = false)} onChanged={() => void load()} />
 {/if}

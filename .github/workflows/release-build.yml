@@ -75,6 +75,7 @@ jobs:
           name: linux-wsl-raw
           path: |
             dist/release/${{ env.VERSION }}/agent-overflow-linux-amd64
+            dist/release/${{ env.VERSION }}/agent-overflow-headless-linux-amd64
             dist/release/${{ env.VERSION }}/agent-overflow-wsl-amd64.exe
           if-no-files-found: error
 
@@ -150,6 +151,61 @@ jobs:
           path: dist/release/${{ env.VERSION }}/agent-overflow-darwin-arm64.zip
           if-no-files-found: error
 
+  android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Install tools and dependencies
+        run: |
+          corepack enable
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+          pnpm --dir frontend install --frozen-lockfile
+          pnpm --dir mobile install --frozen-lockfile
+      - name: Check version
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          version="$(node -p "require('./frontend/package.json').version")"
+          expected="${REQUESTED_VERSION#v}"
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then expected="${GITHUB_REF_NAME#v}"; fi
+          if [[ -n "$expected" && "$version" != "$expected" ]]; then
+            echo "Sync release metadata before building Android." >&2
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - name: Build signed APK
+        env:
+          AO_ANDROID_KEYSTORE_BASE64: ${{ secrets.AO_ANDROID_KEYSTORE_BASE64 }}
+          AO_ANDROID_KEYSTORE: ${{ runner.temp }}/agent-overflow-release.jks
+          AO_ANDROID_STORE_PASSWORD: ${{ secrets.AO_ANDROID_STORE_PASSWORD }}
+          AO_ANDROID_KEY_ALIAS: ${{ secrets.AO_ANDROID_KEY_ALIAS }}
+          AO_ANDROID_KEY_PASSWORD: ${{ secrets.AO_ANDROID_KEY_PASSWORD }}
+          AO_ANDROID_GOOGLE_SERVICES_BASE64: ${{ secrets.AO_ANDROID_GOOGLE_SERVICES_BASE64 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$AO_ANDROID_KEYSTORE_BASE64" || { echo "Configure Android release signing secrets first." >&2; exit 1; }
+          trap 'rm -f "$AO_ANDROID_KEYSTORE" mobile/android/app/google-services.json' EXIT
+          printf '%s' "$AO_ANDROID_KEYSTORE_BASE64" | base64 --decode > "$AO_ANDROID_KEYSTORE"
+          if [[ -n "$AO_ANDROID_GOOGLE_SERVICES_BASE64" ]]; then
+            printf '%s' "$AO_ANDROID_GOOGLE_SERVICES_BASE64" | base64 --decode > mobile/android/app/google-services.json
+          fi
+          mobile/scripts/build-apk.sh release
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-raw
+          path: dist/release/${{ env.VERSION }}/agent-overflow-android.apk
+          if-no-files-found: error
+
   package:
     name: Package release assets
     runs-on: ubuntu-latest
@@ -158,6 +214,7 @@ jobs:
     needs:
       - linux-wsl
       - macos
+      - android
 
     steps:
       - uses: actions/checkout@v6
@@ -193,6 +250,12 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: macos-raw
+          path: dist/release/${{ env.VERSION }}
+
+      - name: Download Android APK
+        uses: actions/download-artifact@v8
+        with:
+          name: android-raw
           path: dist/release/${{ env.VERSION }}
 
       - name: Package install assets

@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+ROOT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT HUP INT TERM
 
@@ -44,6 +44,23 @@ assert_fails() {
 		exit 1
 	fi
 }
+
+# These are synthetic amd64 Linux/WSL artifacts. Simulate their target
+# architecture so the packaging test runs on an Apple Silicon build host too;
+# the installer's real architecture check must remain enabled in production.
+real_uname=$(command -v uname)
+mkdir -p "$TMP_DIR/tools"
+cat > "$TMP_DIR/tools/uname" <<'EOF'
+#!/usr/bin/env sh
+if [ "${1:-}" = -m ]; then
+  echo x86_64
+else
+  exec "$AO_TEST_REAL_UNAME" "$@"
+fi
+EOF
+chmod +x "$TMP_DIR/tools/uname"
+export AO_TEST_REAL_UNAME="$real_uname"
+export PATH="$TMP_DIR/tools:$PATH"
 
 release_dir=$TMP_DIR/release
 make_fake_release "$release_dir"

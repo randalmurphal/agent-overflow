@@ -1,4 +1,4 @@
-.PHONY: help ao-harness-docs methodgen install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-macos go-build go-test test-race provider-smoke-compile provider-smoke import-corpus-smoke mockprovider harness-build harness harness-window soak-window e2e apk e2e-android
+.PHONY: help ao-harness-docs methodgen install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-macos go-build go-test test-race provider-smoke-compile provider-smoke import-corpus-smoke mockprovider harness-build harness harness-window soak-window e2e apk apk-release e2e-android
 
 # Print the supported build, test, harness, and smoke targets. Keep this
 # short enough to use from an unfamiliar checkout. `make e2e` is the
@@ -9,6 +9,7 @@ help:
 	@printf '%s\n' \
 		'Build:   make build | make check | make verify' \
 		'Tests:   make test | make test-race' \
+		'Android: make apk | make apk-release | make e2e-android' \
 		'Harness: make harness | make harness-window | make harness-wsl' \
 		'Long-run: make soak | make soak-window | make soak-check' \
 		'Perf:    make perf-wsl | make soak-contract' \
@@ -527,12 +528,12 @@ e2e: harness-build
 	cd e2e && pnpm install --frozen-lockfile
 	bin/ao-harness-e2e
 
-# The Android shell (mobile/). Builds the SPA with the shell aliases on,
+# The Android shell (mobile/). Builds the ordinary production SPA,
 # syncs it into the native project, and assembles the debug APK. See
 # mobile/AGENTS.md for the toolchain this needs and what is deferred.
-apk:
+apk apk-release:
 	cd mobile && pnpm install --frozen-lockfile
-	mobile/scripts/build-apk.sh
+	mobile/scripts/build-apk.sh $(if $(filter apk-release,$@),release,debug)
 
 # The compact Playwright project driven inside a running emulator's
 # WebView, which is the only place the native seams are real. It is
@@ -540,6 +541,9 @@ apk:
 # to start one and exits clean, because the seams' web fallbacks are
 # already covered by `make test` and an unrunnable check that fails is a
 # check people learn to skip.
+# The update smoke must receive bytes different from the APK's ordinary
+# bundle, even when both were built from this exact checkout.
+e2e-android: UI_TRACE=1
 e2e-android: harness-build
 	cd e2e && pnpm install --frozen-lockfile
 	e2e/scripts/android-smoke.sh

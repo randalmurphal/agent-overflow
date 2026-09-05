@@ -2263,3 +2263,22 @@ func TestBootstrapOmitsAnUnknownBackendName(t *testing.T) {
 		t.Fatalf("manifest names an unset backendName: %s", body)
 	}
 }
+
+func TestRebind_RapidLANTogglesReleaseRetiredListeners(t *testing.T) {
+	f := newServerFixture(t)
+	conn := f.dial(t)
+	_, port, err := net.SplitHostPort(f.srv.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 25 {
+		for _, host := range []string{"0.0.0.0", "127.0.0.1"} {
+			if err := f.srv.Rebind(net.JoinHostPort(host, port), nil); err != nil {
+				t.Fatalf("toggle to %s: %v", host, err)
+			}
+		}
+	}
+	if response := f.rpc(t, conn, 0, "Greet", "still connected"); response.Error != nil {
+		t.Fatalf("existing WebSocket was lost across LAN toggles: %+v", response.Error)
+	}
+}

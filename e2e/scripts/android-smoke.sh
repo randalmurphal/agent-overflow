@@ -39,7 +39,6 @@ set -euo pipefail
 : "${ANDROID_HOME:=$HOME/Android/Sdk}"
 export ANDROID_HOME
 adb="$ANDROID_HOME/platform-tools/adb"
-pkg="dev.agentoverflow.app"
 pin="1234"
 
 if [[ ! -x "$adb" ]]; then
@@ -72,7 +71,25 @@ MSG
   exit 0
 fi
 
-serial="$(echo "$devices" | head -n1)"
+serial="${AO_ANDROID_SERIAL:-}"
+if [[ -n "$serial" ]]; then
+  if ! echo "$devices" | awk -v wanted="$serial" '$0 == wanted { found=1 } END { exit !found }'; then
+    echo "AO_ANDROID_SERIAL does not name an attached, ready device" >&2
+    exit 1
+  fi
+else
+  # Never select a personal phone implicitly: each case clears app data.
+  emulators="$(echo "$devices" | awk '/^emulator-/')"
+  if [[ -z "$emulators" || "$(echo "$emulators" | wc -l | tr -d ' ')" != 1 ]]; then
+    echo "Select one test device with AO_ANDROID_SERIAL; real phones also require AO_ANDROID_HUMAN_LOCK=1. The smoke clears Agent Overflow app data." >&2
+    exit 1
+  fi
+  serial="$emulators"
+fi
+if [[ "$("$adb" -s "$serial" shell getprop ro.kernel.qemu | tr -d '\r')" != 1 && "${AO_ANDROID_HUMAN_LOCK:-}" != 1 ]]; then
+  echo "A real phone requires AO_ANDROID_HUMAN_LOCK=1; the smoke clears Agent Overflow app data and waits for you to unlock it." >&2
+  exit 1
+fi
 echo "==> device $serial"
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -101,6 +118,9 @@ echo "==> installing"
 if [[ "${AO_ANDROID_HUMAN_LOCK:-}" == "1" ]]; then
   echo "==> AO_ANDROID_HUMAN_LOCK=1 — the owner answers the lock prompts"
 else
+  # Native input selectors need Playwright's small Android driver. Cached
+  # after the first install; no download on hosts where the suite skips.
+  (cd "$repo/e2e" && pnpm exec playwright install android)
   echo "==> setting the device PIN"
   "$adb" -s "$serial" shell locksettings set-pin "$pin"
   trap '"$adb" -s "$serial" shell locksettings clear --old "$pin" >/dev/null 2>&1 || true' EXIT
@@ -117,4 +137,4 @@ fi
 # `launchHarness`, which refuses to spawn a backend outside it.
 echo "==> the shell smoke, in the emulator's WebView"
 cd "$repo"
-AO_ANDROID_SERIAL="$serial" bin/ao-harness-e2e --config=playwright.android.config.ts
+AO_ANDROID_SERIAL="$serial" bin/ao-harness-e2e --config=playwright.android.config.ts "$@"

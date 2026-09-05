@@ -65,7 +65,7 @@ func TestProbeClaudeRateLimits_EmitsOnSuccess(t *testing.T) {
 		t.Fatalf("write creds: %v", err)
 	}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newUsageTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Anthropic-Ratelimit-Unified-5h-Utilization", "0.19")
 		w.Header().Set("Anthropic-Ratelimit-Unified-5h-Reset", "1778479200")
 		w.Header().Set("Anthropic-Ratelimit-Unified-7d-Utilization", "0.45")
@@ -199,7 +199,7 @@ func TestProbeClaudeRateLimits_RespectsShuttingDownGate(t *testing.T) {
 	app.shuttingDown.Store(true)
 
 	hits := atomic.Int32{}
-	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	srv := newUsageTestServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		hits.Add(1)
 	}))
 	defer srv.Close()
@@ -249,7 +249,7 @@ func TestProbeClaudeRateLimits_StopsWhenExternalAccountIdentityFails(t *testing.
 	}
 
 	var hits atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := newUsageTestServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -264,6 +264,15 @@ func TestProbeClaudeRateLimits_StopsWhenExternalAccountIdentityFails(t *testing.
 	if hits.Load() != 0 {
 		t.Fatalf("usage endpoint hits = %d, want 0 after identity failure", hits.Load())
 	}
+}
+
+// Discovery tools may probe any open loopback port. Only the usage route
+// belongs to these fixtures; an unrelated GET / must not consume a response,
+// trip a request counter, or fail an authorization assertion.
+func newUsageTestServer(handler http.Handler) *httptest.Server {
+	mux := http.NewServeMux()
+	mux.Handle("GET /api/oauth/usage", handler)
+	return httptest.NewServer(mux)
 }
 
 // redirectRoundTripper rewrites every outbound request to point at the

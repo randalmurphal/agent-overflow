@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the debug APK: the SPA, the Capacitor sync, and Gradle.
+# Build a debug or signed release APK from the ordinary production SPA.
 #
 # Three steps and they are strictly ordered. `cap sync` copies whatever is
 # in `frontend/dist` into the Android assets, so a build that skipped the
@@ -19,6 +19,25 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mobile="$(dirname "$here")"
 repo="$(dirname "$mobile")"
+
+variant="${1:-debug}"
+case "$variant" in
+  debug) task=Debug ;;
+  release)
+    task=Release
+    for name in AO_ANDROID_KEYSTORE AO_ANDROID_STORE_PASSWORD AO_ANDROID_KEY_ALIAS AO_ANDROID_KEY_PASSWORD; do
+      if [[ -z "${!name:-}" ]]; then
+        echo "release signing needs $name; see docs/architecture/remote-access-setup.md" >&2
+        exit 1
+      fi
+    done
+    if [[ ! -f "$AO_ANDROID_KEYSTORE" || "$AO_ANDROID_KEYSTORE" != /* ]]; then
+      echo "AO_ANDROID_KEYSTORE must name an existing absolute keystore path" >&2
+      exit 1
+    fi
+    ;;
+  *) echo "Usage: $0 [debug|release]" >&2; exit 2 ;;
+esac
 
 : "${JAVA_HOME:=$HOME/.jdks/temurin-21}"
 : "${ANDROID_HOME:=$HOME/Android/Sdk}"
@@ -44,20 +63,26 @@ pnpm --dir "$repo/frontend" run build
 echo "==> cap sync android"
 (cd "$mobile" && pnpm exec cap sync android)
 
-echo "==> testDebugUnitTest"
+echo "==> test${task}UnitTest and assemble${task}"
 # The JVM half of the native code, run BEFORE the APK is assembled so a
 # broken bundle store cannot be packaged. `BundleStore` deliberately takes
 # a directory and no Android type precisely so the update mechanic — state
 # transitions, unzip, verification, rollback — is provable here rather than
 # on an emulator (mobile/AGENTS.md § The bundle plugin).
-(cd "$mobile/android" && ./gradlew --no-daemon testDebugUnitTest)
+(cd "$mobile/android" && ./gradlew --no-daemon "test${task}UnitTest" "assemble${task}")
 
-echo "==> assembleDebug"
-(cd "$mobile/android" && ./gradlew --no-daemon assembleDebug)
-
-apk="$mobile/android/app/build/outputs/apk/debug/app-debug.apk"
+apk="$mobile/android/app/build/outputs/apk/$variant/app-$variant.apk"
 if [[ ! -f "$apk" ]]; then
   echo "gradle reported success but no APK is at $apk" >&2
   exit 1
 fi
 echo "==> $apk ($(du -h "$apk" | cut -f1))"
+
+if [[ "$variant" == release ]]; then
+  "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify "$apk"
+  version="$(node -p "require(process.argv[1]).version" "$repo/frontend/package.json")"
+  out="$repo/dist/release/$version"
+  mkdir -p "$out"
+  cp "$apk" "$out/agent-overflow-android.apk"
+  echo "==> $out/agent-overflow-android.apk"
+fi

@@ -305,4 +305,19 @@ describe('<DevicesSection>', () => {
     await findByText(/managed from the backend machine/);
     expect(queryByRole('button', { name: 'Pair a device' })).toBeNull();
   });
+
+  it('refreshes reachability when a tailnet joins after the section mounted', async () => {
+    setBindingMock('GetAccessOverview', async () => overview());
+    let running = false;
+    const network = setBindingMock('GetNetworkSettings', async () => ({
+      bindAll: false, tailnet: { running, dnsName: 'ao.test.ts.net', https: true },
+    }));
+    const { findByRole, queryByText } = render(DevicesSection);
+    await waitFor(() => expect(network).toHaveBeenCalled());
+    running = true;
+    await fireEvent.click(await findByRole('button', { name: /Pair a device/i }));
+    await findByRole('button', { name: /Phone or tablet/ });
+    await waitFor(() => expect(network).toHaveBeenCalledTimes(2));
+    expect(queryByText(/currently reaches this computer only/)).toBeNull();
+  });
 });

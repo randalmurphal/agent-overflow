@@ -109,6 +109,20 @@ describe('<NetworkSection>', () => {
     resetToLocalPage();
   });
 
+  it('refreshes the tailnet certificate status after returning from its admin panel', async () => {
+    let https = false;
+    setBindingMock('GetNetworkSettings', async () => networkSettings({
+      tailnetEnabled: true,
+      tailnet: tailnetStatus({ running: true, state: 'Running', dnsName: 'ao.test.ts.net', https }),
+    }));
+    const { findByTestId } = render(NetworkSection);
+    const status = await findByTestId('network-tailnet-status');
+    await waitFor(() => expect(status.textContent).toContain('turn HTTPS on'));
+    https = true;
+    window.dispatchEvent(new Event('focus'));
+    await waitFor(() => expect(status.textContent).toContain('over HTTPS'));
+  });
+
   it('renders the toggle in the loaded state', async () => {
     setBindingMock('GetNetworkSettings', async () => networkSettings({ bindAll: false }));
     const { findByRole, findByLabelText } = render(NetworkSection);

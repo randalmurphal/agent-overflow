@@ -483,3 +483,48 @@ func TestFromServerWithoutAServerIsTheRedactedRecord(t *testing.T) {
 		t.Fatalf("nil-server record\n got %+v\nwant %+v", got, want)
 	}
 }
+
+func TestPairingURLUsesReachableListenerAndMatchingTrust(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		tailnet TailnetStatus
+		domain  bool
+		prefix  string
+		pinned  bool
+	}{
+		{"loopback", TailnetStatus{}, false, "http://127.0.0.1:", true},
+		{"tailnet HTTPS without LAN", TailnetStatus{Running: true, DNSName: "ao.test.ts.net", HTTPS: true}, false, "https://ao.test.ts.net/?", false},
+		{"tailnet plaintext never promotes to main TLS", TailnetStatus{Running: true, DNSName: "ao.test.ts.net"}, false, "http://ao.test.ts.net:", false},
+		{"offline tailnet falls back", TailnetStatus{DNSName: "ao.test.ts.net", HTTPS: true}, false, "http://127.0.0.1:", true},
+		{"canonical domain uses WebPKI", TailnetStatus{}, true, "https://backend.example:", false},
+		{"tailnet wins over canonical domain", TailnetStatus{Running: true, DNSName: "ao.test.ts.net", HTTPS: true}, true, "https://ao.test.ts.net/?", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := shareURLServer(t)
+			settings := Settings{Tailnet: tc.tailnet, TLS: TLSStatus{SelfSignedFingerprint: "sha256:pin"}}
+			if tc.domain {
+				settings.CanonicalDomain = "backend.example"
+				srv.Certificates().SetDomain(settings.CanonicalDomain, &tls.Certificate{})
+			}
+			// Sixteen links fit in the book. Minting an unused fallback URL
+			// on each call would evict the first link before it was scanned.
+			first := ""
+			for range 16 {
+				link, pin := PairingURL(srv, settings)
+				if !strings.HasPrefix(link, tc.prefix) || (pin != "") != tc.pinned {
+					t.Fatalf("PairingURL = %q, pin %q; want %q, pinned %v", link, pin, tc.prefix, tc.pinned)
+				}
+				_, ticket, found := strings.Cut(link, "?t=")
+				if !found || ticket == "" {
+					t.Fatal("missing page ticket")
+				}
+				if first == "" {
+					first = ticket
+				}
+			}
+			if !ticketOutstanding(t, srv, first) {
+				t.Fatal("pairing evicted a link by minting unused tickets")
+			}
+		})
+	}
+}

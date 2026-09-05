@@ -87,6 +87,20 @@ barcode scanner's native library declares 26 and the manifest merge
 across that gap fails the build outright. `android/variables.gradle`
 argues it in place.
 
+## Release APKs
+
+`make apk-release` uses the same build script with the release variant:
+JVM tests, assembly, then signature verification. It requires a persistent
+keystore through environment variables and never falls back to debug signing.
+Operator instructions and CI secret names live in
+[remote-access-setup.md](../docs/architecture/remote-access-setup.md).
+`mobile/shell-build.txt` is the monotonically increasing APK version code;
+increase it for each distributed APK. `versionName` reads the frontend package
+version, so release metadata has one source. Bundle compatibility still uses
+`internal/bundle.MinShellBuild`; raise that only when the bundle requires a
+new native capability. `TestAndroidShellBuildMeetsBundleFloor` refuses an
+APK build number below that floor.
+
 ## Cleartext, and why only the debug build has any
 
 The release APK declares no network security config, so it keeps the
@@ -119,6 +133,12 @@ the door the tailnet-TLS ruling closes — so it stays off, and the reverse
 forward is what makes the test address a trustworthy one.
 
 ## The bundle plugin
+
+The composer attachment button offers Photos (`image/*`) and Files (any type)
+through the WebView's file input and Capacitor's native chooser. Both upload
+through the shared composer path; no camera/media-library permission is needed
+for selecting files. The emulator smoke opens and cancels both native pickers,
+then verifies Back during a live turn navigates without interrupting it.
 
 The APK ships with the SPA it was built with and runs it until the
 backend it paired with says it has a newer one. `BundlePlugin` (local to
@@ -420,8 +440,7 @@ matching service-account key goes into Settings → Notifications → Phone
 push on the owner's backend.
 
 `app/build.gradle` applies the google-services plugin only when the file
-exists, so **an APK builds and its JVM tests pass without it** — which is
-this development box's state, and the state `make apk` is verified in.
+exists, so **an APK builds and its JVM tests pass without it** — and tests must keep covering that configuration as well.
 The `firebase-messaging` dependency itself is UNCONDITIONAL, and that was
 checked rather than assumed: the library needs the plugin to INITIALISE,
 not to compile. Without the file there is simply no default
@@ -524,8 +543,9 @@ because the cover is painted before the OS takes the thumbnail.
 Read `frontend/src/lib/native/lifecycle.ts`'s header before touching the
 lifecycle: the pause signal is the ONLY visibility signal this client
 sends and it is not `document.visibilityState`, and the back button
-closes an overlay by dispatching Escape through the keybinding path
-rather than by holding a registry of overlays — then, in order, closes
+closes an overlay by dispatching a marked surface-dismissal Escape through
+the keybinding path. That event only runs dismissal commands; a physical
+Escape keeps its keyboard binding, including turn interruption. Back then closes
 the terminal drawer, closes the companion on screen and reveals its
 thread, returns to the list, and only from the list leaves the app.
 
@@ -551,14 +571,9 @@ unit suites could not reach, all fixed in that pass, and green since.
 
 Named here so nobody reads their absence as an oversight:
 
-- **A keystore-bound signing key.** Debug signing only. The paired
-  session over TLS is the trust root for this wave
-  (`docs/specs/remote-access.md`, "The phone client"), and release
-  signing is a distribution question that starts when there is a
-  distribution.
-- **`pickers.ts` answers `null`.** No native file or photo picker. The
-  composer's own file input works in the WebView; the seam exists so the
-  day a picker is wanted there is one place for it.
+- **`pickers.ts` answers `null`.** Dedicated camera and share-target plugins
+  remain deferred. The composer's Photos and Files choices already open
+  Android's native chooser through the WebView file input.
 - **iOS.** Only `npx cap add android` was run. The seams are written
   against Capacitor rather than against Android, so an iOS target is
   another platform folder and a signing story, not a second frontend.

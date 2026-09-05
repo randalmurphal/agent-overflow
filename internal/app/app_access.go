@@ -159,7 +159,7 @@ func (a *App) MintDevicePairing(deviceClass, access string) (PairingInvite, erro
 		return PairingInvite{}, err
 	}
 
-	pageURL, endpoint, err := a.pairingPageURL()
+	pageURL, endpoint, fingerprint, err := a.pairingPageURL()
 	if err != nil {
 		return PairingInvite{}, err
 	}
@@ -186,12 +186,9 @@ func (a *App) MintDevicePairing(deviceClass, access string) (PairingInvite, erro
 		// size"). The narrowing is real now that the per-RPC gate enforces
 		// what each scope permits.
 		Scopes: grants,
-		// What a client that owns its own TLS configuration pins for this
-		// backend (§7, "Domainless TLS for Go-native clients"). Empty when
-		// the boot resolved no certificate, which is the trust-on-first-use
-		// path the spec already describes for the typed-code case and what
-		// every link carried before this existed.
-		CertFingerprint: a.certFingerprint,
+		// Only the main listener's self-signed path carries a pin.
+		// Tailnet and canonical HTTPS certificates use WebPKI instead.
+		CertFingerprint: fingerprint,
 	})
 	if err != nil {
 		return PairingInvite{}, err
@@ -603,36 +600,28 @@ func pairingDeadline(link store.PairingLink) int64 {
 // pairingPageURL assembles the page URL a pairing link points at, and the
 // bare origin the payload names as its redemption endpoint.
 //
-// Host rule: the canonical domain when a certificate for it is loaded,
-// the LAN share URL when the listener is bound wide, the loopback URL
-// otherwise — network.FromServer is the same primitive
-// GetNetworkSettings answers with, so the address on a pairing link and
-// the address in the share panel can never disagree. Both carry a freshly
-// minted one-time page ticket, which is what lets a device holding no
-// credential load the page at all.
+// Prefer the live tailnet, then the canonical domain with a loaded certificate,
+// LAN, and loopback. network.PairingURL keeps the address and certificate
+// trust root together; a tailnet certificate must never carry the main
+// listener's self-signed pin.
 //
 // No `cid` parameter, deliberately: that is the local install's durable
 // UI-state identity, and stamping it on a link for somebody else's phone
 // would point that phone at this machine's bucket.
-func (a *App) pairingPageURL() (pageURL, endpoint string, err error) {
+func (a *App) pairingPageURL() (pageURL, endpoint, fingerprint string, err error) {
 	srv := a.transportServer.Load()
 	if srv == nil {
-		return "", "", fmt.Errorf("access: transport server unavailable")
+		return "", "", "", fmt.Errorf("access: transport server unavailable")
 	}
-	// The FULL variant deliberately, on a call a remote admin device can
-	// make: minting a link IS handing out an address plus its one-time
-	// page ticket, so withholding the URL here would withhold the answer.
-	// What the redacted variant protects — this launch's token — never
-	// enters a pairing payload.
-	settings := network.FromServer(srv, a.persistedNetworkSettings())
-	if settings.URL == "" {
-		return "", "", fmt.Errorf("access: the transport has no page URL to pair against yet")
+	pageURL, fingerprint = network.PairingURL(srv, a.persistedNetworkSettings())
+	if pageURL == "" {
+		return "", "", "", fmt.Errorf("access: the transport has no page URL to pair against yet")
 	}
-	parsed, err := url.Parse(settings.URL)
+	parsed, err := url.Parse(pageURL)
 	if err != nil {
-		return "", "", fmt.Errorf("access: parse the page URL: %w", err)
+		return "", "", "", fmt.Errorf("access: parse the page URL: %w", err)
 	}
-	return settings.URL, parsed.Scheme + "://" + parsed.Host, nil
+	return pageURL, parsed.Scheme + "://" + parsed.Host, fingerprint, nil
 }
 
 // backendDisplayName is the name a pairing device shows while it decides

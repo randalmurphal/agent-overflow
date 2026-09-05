@@ -233,6 +233,29 @@ func tailnetURL(srv *transport.Server, s TailnetStatus) string {
 	return ""
 }
 
+// PairingURL chooses the reachable pairing address and its TLS trust root.
+// Prefer the tailnet when it is up; its listeners never serve the main
+// listener's self-signed certificate. A canonical HTTPS domain likewise
+// uses WebPKI, so only the main listener's address carries a certificate pin.
+// Mint only the URL being returned: unused tickets evict shared links.
+func PairingURL(srv *transport.Server, s Settings) (pageURL, fingerprint string) {
+	if srv == nil {
+		return "", ""
+	}
+	if pageURL = tailnetURL(srv, s.Tailnet); pageURL != "" {
+		return pageURL, ""
+	}
+	lanIP := ""
+	if s.BindAll {
+		lanIP = DiscoverLocalLANIP()
+	}
+	pageURL = AppURLWithLAN(srv, s, lanIP)
+	if strings.HasPrefix(pageURL, "https://") {
+		return pageURL, ""
+	}
+	return pageURL, s.TLS.SelfSignedFingerprint
+}
+
 // BindHost returns the bind interface for the given LAN toggle.
 // Loopback (127.0.0.1) keeps the server local; 0.0.0.0 listens on
 // every interface so any LAN-reachable IP routes to it.
@@ -336,7 +359,6 @@ func OriginPatterns(bindAll bool, lanIP, canonicalDomain string, port int) []str
 // panel therefore hands out a URL that opens one browser session — a
 // second device needs the panel read again.
 func AppURLWithLAN(srv *transport.Server, s Settings, lanIP string) string {
-	loopbackURL := srv.AppURL()
 	if s.CanonicalDomain != "" && srv.ServesDomain(s.CanonicalDomain) {
 		if url, ok := ticketedURL(srv, "https", authorityFor(srv, s.CanonicalDomain, "443")); ok {
 			return url
@@ -347,16 +369,16 @@ func AppURLWithLAN(srv *transport.Server, s Settings, lanIP string) string {
 		// — surface the loopback URL so the user at least gets
 		// something they can paste into a local browser, and the UI can
 		// hint that LAN discovery failed via the BindAll=true flag.
-		return loopbackURL
+		return srv.AppURL()
 	}
 	_, port, err := net.SplitHostPort(srv.Addr())
 	if err != nil {
-		return loopbackURL
+		return srv.AppURL()
 	}
 	if url, ok := ticketedURL(srv, "http", net.JoinHostPort(lanIP, port)); ok {
 		return url
 	}
-	return loopbackURL
+	return srv.AppURL()
 }
 
 // authorityFor spells host[:port] for a URL, dropping the port when it

@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -74,7 +73,7 @@ func writeClaudeRefreshMockBinaryReporting(
 // how the usage endpoint reports a token the provider has since rotated.
 func expiringUsageClient(t *testing.T, wantBearer string) *http.Client {
 	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newUsageTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+wantBearer {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
@@ -325,7 +324,7 @@ func usageClientWritingCredential(
 ) *http.Client {
 	t.Helper()
 	var once sync.Once
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newUsageTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+wantBearer {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
@@ -445,7 +444,7 @@ func (rt tripwireRoundTripper) RoundTrip(*http.Request) (*http.Response, error) 
 // rateLimitedUsageClient answers every request with 429 + Retry-After.
 func rateLimitedUsageClient(t *testing.T, retryAfter string) *http.Client {
 	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newUsageTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", retryAfter)
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
@@ -470,7 +469,7 @@ func rotatedThrottledUsageClient(
 	retryAfter string,
 ) *http.Client {
 	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newUsageTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Header.Get("Authorization") {
 		case "Bearer " + staleBearer:
 			w.WriteHeader(http.StatusUnauthorized)

@@ -120,6 +120,7 @@ type tailnetState struct {
 // to record itself, and both fields are guarded by App.tailnet.mu, so
 // recording a failure and recording a handle are one order rather than two.
 type tailnetSlot struct {
+	port int // immutable: the port this listener actually bound
 	// aux is the handle, nil until ServeAuxiliary has returned and nil again
 	// once this slot is done.
 	aux *transport.AuxListener
@@ -297,6 +298,9 @@ func (a *App) attachTailnetListeners(node *tailnet.Node) error {
 		return fmt.Errorf("the transport server is not running, so there is nothing to serve on the tailnet")
 	}
 
+	port := portFromAddr(srv.Addr())
+	a.retireTailnetListeners(port, len(status.CertDomains) > 0)
+
 	a.tailnet.mu.Lock()
 	havePlain := a.tailnet.plain.live()
 	haveSecure := a.tailnet.secure.live()
@@ -307,7 +311,7 @@ func (a *App) attachTailnetListeners(node *tailnet.Node) error {
 		// are userspace, so there is no conflict and no privilege
 		// question — and one port across every way in keeps the cookie
 		// name, the origin derivation and the share URL uniform.
-		ln, err := node.Listen(portFromAddr(srv.Addr()))
+		ln, err := node.Listen(port)
 		if err != nil {
 			return err
 		}
@@ -348,6 +352,25 @@ func (a *App) attachTailnetListeners(node *tailnet.Node) error {
 	return nil
 }
 
+// Retire only listeners whose configuration changed. In particular, a
+// main-port edit must move the plain tailnet listener too, without dropping
+// the phone's independent HTTPS connection on 443.
+func (a *App) retireTailnetListeners(port int, https bool) {
+	a.tailnet.mu.Lock()
+	plain, secure := a.tailnet.plain, a.tailnet.secure
+	a.tailnet.mu.Unlock()
+	if plain != nil && plain.port != port {
+		if aux, _ := a.releaseTailnetSlot(plain); aux != nil {
+			closeAuxListener(aux)
+		}
+	}
+	if secure != nil && !https {
+		if aux, _ := a.releaseTailnetSlot(secure); aux != nil {
+			closeAuxListener(aux)
+		}
+	}
+}
+
 // attachAuxListener serves one listener and answers the slot that names it.
 //
 // The slot exists before the serve does, so the accept loop's report always
@@ -356,7 +379,7 @@ func (a *App) attachTailnetListeners(node *tailnet.Node) error {
 // backs off and tries again, rather than recording a listener that has
 // already stopped.
 func (a *App) attachAuxListener(srv *transport.Server, ln net.Listener) (*tailnetSlot, error) {
-	slot := &tailnetSlot{}
+	slot := &tailnetSlot{port: portFromAddr(ln.Addr().String())}
 	aux, err := srv.ServeAuxiliary(ln, func(cause error) { a.tailnetListenerFailed(slot, cause) })
 	if err != nil {
 		_ = ln.Close()
@@ -552,7 +575,7 @@ func (a *App) tailnetStatus() network.TailnetStatus {
 	node := a.tailnet.node
 	dir := a.tailnet.dir
 	status := network.TailnetStatus{
-		HTTPS:     a.tailnet.secure != nil,
+		HTTPS:     a.tailnet.secure.live(),
 		LastError: a.tailnet.lastErr,
 	}
 	a.tailnet.mu.Unlock()

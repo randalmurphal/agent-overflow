@@ -9,11 +9,11 @@ const INVITE = {
   expiresAtMs: Date.now() + 300_000,
 };
 
-function renderModal(props: Partial<{ bindAll: boolean; onClose: () => void; onChanged: () => void }> = {}) {
+function renderModal(props: Partial<{ remoteReachable: boolean; onClose: () => void; onChanged: () => void }> = {}) {
   return render(PairDeviceModal, {
     props: {
       open: true,
-      bindAll: true,
+      remoteReachable: true,
       onClose: () => {},
       onChanged: () => {},
       ...props,
@@ -69,8 +69,8 @@ describe('<PairDeviceModal>', () => {
   });
 
   it('shows the loopback note when the server only listens on this machine', async () => {
-    const { findByText } = renderModal({ bindAll: false });
-    await findByText(/listening on loopback only/);
+    const { findByText } = renderModal({ remoteReachable: false });
+    await findByText(/currently reaches this computer only/);
   });
 
   it('moves to the number comparison once the device redeems, and allows it', async () => {

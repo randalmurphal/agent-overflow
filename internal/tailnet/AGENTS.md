@@ -67,10 +67,10 @@ already done.
   and RE-SUBSCRIBES if the bus ends while the node is alive. The
   alternative is a status frozen at whatever it last saw with nothing
   saying so.
-- The identity fields (MagicDNS name, tailnet addresses, certificate
-  names) are re-read on a STATE change rather than per notification: they
-  move when the node joins, and a read per heartbeat would be a local API
-  round trip for an unchanged answer.
+- The identity fields (MagicDNS name, addresses, certificate names) are
+  re-read on State snapshots and SelfChange, never heartbeats. Toggling
+  HTTPS in the admin panel leaves State at Running; the regression is
+  covered by `TestCertificateDomainsRefreshWhileRunning`.
 - `Events()` is a coalesced depth-1 wake-up channel, closed by `Close`.
   A reader always reads the whole current status, so two changes that
   arrive before it looks are one thing to look at.
@@ -94,6 +94,10 @@ environment is refused if it carries `TS_CONTROL_URL`, `TS_AUTHKEY`,
 loopback before a node is pointed at it. A test that silently registered
 a device on the developer's own tailnet would leave a machine in their
 admin panel and a node key on their disk.
+
+The rig refuses root-path probes before delegating to `testcontrol`, which
+panics on unknown routes. Local dev-server discovery can probe any listener;
+an unrelated `GET /` must not crash the test process.
 
 **`tailscale.com/tstest/integration` is TEST-ONLY.** It must never appear
 in a production file here; `go list -deps ./...` over the non-test build

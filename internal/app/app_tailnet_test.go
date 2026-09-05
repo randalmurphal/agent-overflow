@@ -286,3 +286,21 @@ func TestOneTailnetListenerFailingLeavesTheOtherAttached(t *testing.T) {
 		t.Error("a released slot is still named by the state")
 	}
 }
+
+func TestTailnetRetiresOnlyListenersWhoseConfigurationChanged(t *testing.T) {
+	app, _ := newTailnetTestApp(t)
+	plain, secure := &tailnetSlot{port: 34115}, &tailnetSlot{port: 443}
+	app.tailnet.plain, app.tailnet.secure = plain, secure
+	app.retireTailnetListeners(34115, true)
+	if app.tailnet.plain != plain || app.tailnet.secure != secure {
+		t.Fatal("unchanged listeners were retired")
+	}
+	app.retireTailnetListeners(34116, true)
+	if app.tailnet.plain != nil || !plain.failed || app.tailnet.secure != secure {
+		t.Fatal("port change must retire plain only")
+	}
+	app.retireTailnetListeners(34116, false)
+	if app.tailnet.secure != nil || !secure.failed {
+		t.Fatal("withdrawn HTTPS remained advertised")
+	}
+}

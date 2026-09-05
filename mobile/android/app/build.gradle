@@ -1,5 +1,11 @@
 apply plugin: 'com.android.application'
 
+// The SPA version is shared with the desktop; the shell build increases
+// whenever a new APK is distributed, independently of bundle-only updates.
+def appVersion = new groovy.json.JsonSlurper().parse(file('../../../frontend/package.json')).version
+def shellBuild = file('../../shell-build.txt').text.trim().toInteger()
+def releaseStore = System.getenv('AO_ANDROID_KEYSTORE')
+
 android {
     namespace = "dev.agentoverflow.app"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -7,8 +13,8 @@ android {
         applicationId "dev.agentoverflow.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode shellBuild
+        versionName appVersion
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -16,8 +22,19 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        if (releaseStore) {
+            release {
+                storeFile file(releaseStore)
+                storePassword System.getenv('AO_ANDROID_STORE_PASSWORD')
+                keyAlias System.getenv('AO_ANDROID_KEY_ALIAS')
+                keyPassword System.getenv('AO_ANDROID_KEY_PASSWORD')
+            }
+        }
+    }
     buildTypes {
         release {
+            if (releaseStore) signingConfig signingConfigs.release
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }

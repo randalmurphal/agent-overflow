@@ -3,6 +3,7 @@ package tailnet
 import (
 	"context"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -102,7 +103,12 @@ func startControl(t *testing.T) (string, *testcontrol.Server) {
 		MagicDNSDomain: "test-tailnet.ts.net",
 		Logf:           logf,
 	}
-	control.HTTPTestServer = httptest.NewUnstartedServer(control)
+	// A local port-discovery probe is not a control request. testcontrol
+	// deliberately panics on unknown routes, so keep GET / outside it.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/{$}", http.NotFound)
+	mux.Handle("/", control)
+	control.HTTPTestServer = httptest.NewUnstartedServer(mux)
 	control.HTTPTestServer.Start()
 	t.Cleanup(control.HTTPTestServer.Close)
 

@@ -17,8 +17,9 @@ Every other client of this backend is SERVED the bundle it then runs, so
 its web code and its wire cannot skew. The APK is the one client that
 carries a bundle of its own, frozen at whenever its store build was cut.
 The ruling is that the paired backend is its update server: no update
-SaaS, no release signing, no second distribution channel. The paired
-session over pinned TLS is the integrity boundary, and each file is
+SaaS, no separate web-bundle release signature, no second distribution
+channel. APK signing is independent of this web update path. The paired
+session over authenticated HTTPS is the integrity boundary, and each file is
 checked against the manifest served on that same session, so a bundle is
 exactly as trusted as the backend it came from — which is the trust the
 device already extended by pairing.

@@ -134,6 +134,17 @@ func (s *Server) Rebind(addr string, opts *RebindOptions) error {
 	// no window where new accepts have nowhere to go.
 	s.serve(newSrv, listener)
 
+	// Release the old bind before returning. On Darwin the new wildcard
+	// listener can overlap the old loopback listener; leaving the latter
+	// to asynchronous Shutdown makes a quick toggle back collide with a
+	// retired listener that bindRebindListener cannot see. Accepted HTTP
+	// requests and hijacked WebSockets survive closing the listener.
+	if currentListener != nil {
+		if err := currentListener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			log.Printf("transport: rebind: close retired listener: %v", err)
+		}
+	}
+
 	// Force-close any evicted entry from the cap pop. Done on a fresh
 	// goroutine because Close() can block on hijacked WS sockets and we
 	// don't want to extend Rebind's wall-clock for a slow shutdown.

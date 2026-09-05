@@ -2161,8 +2161,9 @@ sensitive than anything else on it). Voice input is wanted. The phone is
 for the owner and a few friends, each running their OWN backend on their
 OWN tailnet; Tailscale is the remote path. No tablet layout now, but
 nothing may make one hard later. No panes: single-thread navigation.
-Release signing is CUT (the paired session over TLS is the trust root;
-distribution-grade signing returns as its own addition if that day comes).
+Android APK distribution now uses a persistent signing key (2026-09-04);
+see `docs/architecture/remote-access-setup.md`. The paired session over TLS
+remains the web-bundle trust root.
 
 **Shape.** One Capacitor project, `mobile/`, wrapping the SAME built SPA
 (`frontend/dist` is the web dir; nothing is forked). Android is the
@@ -2392,16 +2393,19 @@ text above was deviated from:
   `AO_SHELL=1` stub alias: a phone adopting the backend's bundle found
   every seam stubbed and rolled back).
   Seams in `frontend/src/lib/native/`: lifecycle (pause/resume to
-  `setClientLease`, hardware back as one stack — Escape through the
-  keybinding path, the terminal drawer, the companion on screen, the
+  `setClientLease`, hardware back as one stack — a marked dismissal Escape
+  that cannot invoke turn interruption, the terminal drawer, the companion on screen, the
   list screen, exit), lock (biometric on cold start and on resume,
   the app root marked `inert` underneath), QR scan, a documented picker
   stub, and `boot.ts` whose `adoptPairingEndpoint` is the one place
   both pairing doors point the shell at a backend. Deviations from the
   text above: `minSdkVersion` 26 (the scanner's native library declares
-  it); dictation is the keyboard's, as ruled; no signing key (debug
-  signing until there is a distribution); pickers answer `null`; iOS
-  not added. An `http://` pairing link fails at the fetch on a device
+  it); dictation is the keyboard's, as ruled; dedicated picker plugins
+  answer `null` while the composer's Photos and Files choices use the
+  WebView's native chooser; iOS is not added. Signed distribution now uses
+  `make apk-release` and a persistent keystore (see
+  [remote-access-setup.md](../architecture/remote-access-setup.md)).
+  An `http://` pairing link fails at the fetch on a device
   by design, the debug build alone permits cleartext to `127.0.0.1`
   for the emulator smoke.
 - *Emulator smoke + phone machine list* (17d7a2f5, 44e29850):

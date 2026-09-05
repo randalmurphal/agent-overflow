@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 
 	"agent-overflow/internal/provider"
@@ -250,7 +249,7 @@ func TestInactiveUsageRefreshesAreSerialized(t *testing.T) {
 		once sync.Once
 		hits atomic.Int32
 	)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := newUsageTestServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
 		once.Do(func() { close(started) })
 		<-release
@@ -342,7 +341,7 @@ func blockingUsageClient(
 ) *http.Client {
 	t.Helper()
 	var once sync.Once
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := newUsageTestServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		once.Do(func() { close(started) })
 		<-release
 		w.Header().Set("Anthropic-Ratelimit-Unified-5h-Utilization", "0.1")

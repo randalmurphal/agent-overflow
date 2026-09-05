@@ -53,6 +53,11 @@ The complete mocked-provider isolation set belongs in `ConfigureIsolation`.
 Tests must never spawn real Claude/Codex binaries or touch real provider homes;
 use the existing guarded fixtures and mock scripts.
 
+Usage HTTP fixtures use `newUsageTestServer`, which exposes only the actual
+usage route. Local port discovery can probe test listeners too; unrelated
+root requests must not enter mock handlers, alter counters, or fail credential
+assertions.
+
 ## The session core meets the wire here
 
 `app_identity.go` is where `internal/identity` and `internal/transport`
@@ -187,8 +192,8 @@ that happened may CARRY BACK, from the same per-call proof.
   process beats a per-method judgement about whether some other check happened
   to cover it — and `SetNetworkSettings` is why: it is step-up reachable from a
   paired device, and its RETURN carried the launch token there until this
-  existed. Two callers deliberately keep the full builder and say so at their
-  call sites (`pairingPageURL`, `ServeEndpoints`).
+  existed. `ServeEndpoints` deliberately keeps the full builder; pairing uses
+  `network.PairingURL` to mint only the invitation being returned.
 - **The withholding itself lives in `internal/network`**, not here, and it
   works by never minting rather than by blanking — see that package's guide.
 
@@ -959,3 +964,11 @@ composition.
 `newTestApp` (the rollback fixture) builds NO triage router. A test that
 exercises a triage-guarded app path must call `app.ensureTriageRouter()`
 first, or the guard answers "no router" and the path silently short-circuits.
+
+## Tailnet listener reconciliation
+
+Pairing uses `network.PairingURL` so the QR endpoint and certificate trust
+match the listener being reached. A main-port change retires only the plain
+tailnet listener; the phone's HTTPS listener stays on 443. Withdrawing
+certificate domains retires HTTPS. See
+`TestTailnetRetiresOnlyListenersWhoseConfigurationChanged`.

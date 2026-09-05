@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"tailscale.com/ipn"
+	"tailscale.com/tailcfg"
 )
 
 // TestConstructingANodeOpensNothing pins the opt-in property the spec
@@ -190,5 +191,29 @@ func TestTurningTheNodeOffAndOnAgainKeepsItsIdentity(t *testing.T) {
 	}
 	if rejoined.AuthURL != "" {
 		t.Errorf("the node asked for approval again after a restart: %q", rejoined.AuthURL)
+	}
+}
+
+// Enabling HTTPS in the admin panel does not restart the node. State-only
+// watchers left the phone on a cleartext endpoint until the app restarted.
+func TestCertificateDomainsRefreshWhileRunning(t *testing.T) {
+	requireBringUpCapableHost(t)
+	ctx := testContext(t)
+	controlURL, control := startControl(t)
+	node := startTestNode(t, controlURL, "dns-change")
+	awaitRunning(t, node)
+	status, err := node.lc.StatusWithoutPeers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, domains := range [][]string{{"updated.test-tailnet.ts.net"}, {}} {
+		if !control.AddRawMapResponse(status.Self.PublicKey, &tailcfg.MapResponse{
+			DNSConfig: &tailcfg.DNSConfig{Proxied: true, CertDomains: domains},
+		}) {
+			t.Fatal("could not update the test node's DNS configuration")
+		}
+		awaitStatus(t, node, "updated certificate domains", func(s Status) bool {
+			return s.Running() && strings.Join(s.CertDomains, ",") == strings.Join(domains, ",")
+		})
 	}
 }

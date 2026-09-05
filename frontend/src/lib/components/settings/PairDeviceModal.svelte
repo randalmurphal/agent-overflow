@@ -34,16 +34,15 @@
 
   interface Props {
     open: boolean;
-    /** True when the transport listens beyond loopback; off means the
-     * minted URL only resolves on this machine. */
-    bindAll: boolean;
+    /** True when LAN or tailnet access is reachable. */
+    remoteReachable: boolean;
     onClose: () => void;
     /** Fired on every state change another surface may care about:
      * mint, confirm, cancel. DevicesSection reloads its overview on it. */
     onChanged: () => void;
   }
 
-  let { open, bindAll, onClose, onChanged }: Props = $props();
+  let { open, remoteReachable, onClose, onChanged }: Props = $props();
 
   type Stage =
     | { at: 'choose' }
@@ -239,11 +238,10 @@
         can revoke on its own later. The link works once and only after you
         confirm a matching number on both screens.
       </p>
-      {#if !bindAll}
+      {#if !remoteReachable}
         <SettingsCallout tone="warn">
-          The server is listening on loopback only, so this link resolves on
-          this machine alone. Turn on "Allow remote access" under Network
-          Binding first for another device to reach it.
+          This link currently reaches this computer only. Enable Tailnet in
+          Settings → Remote access before pairing a phone.
         </SettingsCallout>
       {/if}
       <div class="flex items-center justify-between gap-3">

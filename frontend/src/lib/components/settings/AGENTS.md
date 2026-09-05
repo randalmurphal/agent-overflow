@@ -74,3 +74,10 @@ environment, accounts, context window, system prompt, tools, and the
 Claude-only session sections). `ClaudeSettings` / `CodexSettings` are the
 two instantiations. Every section renders regardless of the Enabled
 toggle; there is no "enable it first" gate.
+
+## Device pairing
+
+The reachability warning considers both LAN binding and a running tailnet;
+`GetNetworkSettings` is readable with `access:admin`, including on paired
+phones. Unknown reachability must not recommend changing a working network.
+`DevicesSection.test.ts` covers a tailnet-only host.

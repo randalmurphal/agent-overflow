@@ -37,12 +37,15 @@ click delegate (`utils/externalLinks.ts`) returns *without*
 `preventDefault` when `safeExternalURL` yields null, so a non-`http(s)`
 anchor performs its default navigation — unreachable from markdown now,
 still app-wide policy for every other anchor. The second one is closed:
-as of 2026-08-31 (24486360) no credential is readable by script.
+as of 2026-08-31 (24486360) the same-origin bootstrap credential is
+no longer readable by script.
 `sessionStorage['ao:bootstrap-token']` and `window.__AO_BOOTSTRAP__` are
 gone with every reader of either; the page holds an HttpOnly cookie its
 one-time `?t=` ticket bought at the first `/bootstrap.json`, and the WS
 upgrade authenticates via that cookie behind an Origin check that runs
 first and is load-bearing on loopback too.
+The Android shell's cross-origin paired session is separate: its web
+code holds that credential and the device key signs each presentation.
 
 The rest of the render pipeline audited clean and should not be
 re-litigated: raw HTML disabled (`renderHtml={false}`), non-`http(s)`
@@ -180,8 +183,8 @@ tamper-proof.
 | 12 | A peer backend performs bulk retrieval across every enrolled thread | Sensitive content classes withheld or redacted by default with explicit opt-in; peer reads rate-limited and audited per peer; enrollment documented as one-way disclosure. |
 | 13 | A client claims scopes it was not granted | The client capability object is UI-only; the server re-checks every RPC against the authenticated session. |
 | 14 | On-machine records are altered to hide activity | Audit is an `O_APPEND` hash-chained file with no wire mutation path, mirrored off-machine. Evident, not prevented. See the section above. |
-| 15 | A revoked or lost device still holds its synced replica | Revocation cuts access, not past disclosure. The phone replica is encrypted at rest with a key in native secure storage; browser replicas are not, and whatever a device already synced must be assumed readable to whoever controls that device. |
-| 16 | A backend under someone else's control serves a modified phone bundle | The shell verifies every bundle against the release signing key baked into the shell; backends can only relay genuine signed releases. One such backend cannot reach the phone's device keys or its other backends' credentials through an update. Dev-bundle trust is an explicit per-device opt-in. |
+| 15 | A revoked or lost device still holds its synced replica | Revocation cuts access, not past disclosure. The current shell's biometric gate protects opening the UI; native key storage and app-level replica encryption remain deferred. Assume synced content is readable to whoever controls the device. See `mobile/AGENTS.md` § Deferred. |
+| 16 | A paired backend serves a modified phone bundle | The backend is trusted to supply executable web code. HTTPS and per-file hashes protect transport and integrity; there is no independent web-bundle release signature. APK signing protects native installation/update continuity, not these web updates. Pair only backends trusted with the shell's other credentials too. See `remote-access.md` §9, Bundle sync. |
 | 17 | A page loaded in the in-app browser addresses the app's own loopback ports | Reaching a port is not reaching content: `/bootstrap.json` needs the server token, the managed Chrome runs an ephemeral profile that cannot read the webview's storage, and no route serves agent-authored bytes at the SPA origin. Navigation itself stays unrestricted, because a browser that refuses addresses is not a browser. |
 | 18 | A local process or a web page reads or guesses an auxiliary listener's path credential | The listener re-checks that the peer is loopback, requires `application/json` so a cross-origin POST must preflight, and rejects any `Origin`. Holding the URL is not sufficient by itself. Same-user local software remains inside the trust boundary by construction (see the section above). |
 

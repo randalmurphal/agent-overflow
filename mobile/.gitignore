@@ -9,6 +9,7 @@ node_modules/
 android/build/
 android/app/build/
 android/.gradle/
+android/.kotlin/
 android/captures/
 android/.idea/
 android/local.properties
@@ -18,9 +19,6 @@ android/local.properties
 # tree's history twice.
 android/app/src/main/assets/public/
 
-# Signing material. Release signing is CUT for this wave (the paired
-# session over TLS is the trust root, docs/specs/remote-access.md § "The
-# phone client"), so nothing here should exist yet — the rule is written
-# down before there is something to catch.
+# Signing keys stay outside source control.
 *.keystore
 *.jks

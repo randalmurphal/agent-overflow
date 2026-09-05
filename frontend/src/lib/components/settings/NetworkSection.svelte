@@ -60,13 +60,17 @@
   const TLS_POLL_MS = 3000;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
 
+  let loading = false;
   async function load(): Promise<void> {
-    if (noAdmin) return;
+    if (noAdmin || loading) return;
+    loading = true;
     try {
       const result = await GetNetworkSettings();
       settings = result;
     } catch (err) {
       addToast('error', `Failed to load network settings: ${errString(err)}`);
+    } finally {
+      loading = false;
     }
   }
 
@@ -261,7 +265,12 @@
 
   $effect(() => {
     void load();
+    // The owner can enable HTTPS or rename the node in Tailscale's
+    // browser window without changing this node's Running state.
+    const refocus = () => { if (!saving) void load(); };
+    window.addEventListener('focus', refocus);
     return () => {
+      window.removeEventListener('focus', refocus);
       if (copyTimeout) clearTimeout(copyTimeout);
     };
   });

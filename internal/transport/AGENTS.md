@@ -76,6 +76,15 @@ cookie names and the origin allow-list all derive from.
   handshakes until one arrives, because certificates arrive and renew while the
   process runs.
 
+## Rebinding
+
+`Rebind` closes the retired listener before returning, while its accepted
+HTTP requests drain asynchronously and hijacked WebSockets continue. Darwin
+allows a wildcard bind over loopback; leaving that old loopback listener
+open until a background Shutdown makes an immediate toggle back fail with
+address-in-use. `TestRebind_RapidLANTogglesReleaseRetiredListeners` covers
+repeated toggles with an existing WebSocket.
+
 ## Auxiliary listeners
 
 `auxlistener.go` serves a listener the CALLER acquired, with this server's

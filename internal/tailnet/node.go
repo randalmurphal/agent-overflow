@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -432,10 +433,8 @@ func (n *Node) apply(ctx context.Context, lc *local.Client, notify ipn.Notify) {
 		n.status.AuthURL = *notify.BrowseToURL
 		changed = true
 	}
-	stateMoved := false
 	if notify.State != nil && n.status.State != notify.State.String() {
 		n.status.State = notify.State.String()
-		stateMoved = true
 		changed = true
 		if *notify.State == ipn.Running {
 			// The link is spent. Leaving it published would offer the
@@ -445,8 +444,11 @@ func (n *Node) apply(ctx context.Context, lc *local.Client, notify ipn.Notify) {
 	}
 	n.mu.Unlock()
 
-	if stateMoved {
-		n.refreshIdentity(ctx, lc)
+	// DNS/certificate changes arrive as SelfChange while State stays
+	// Running (verified against tsnet v1.102.3 with a local control plane).
+	// Re-read on subscription snapshots too, even if State did not move.
+	if notify.State != nil || notify.SelfChange != nil {
+		changed = n.refreshIdentity(ctx, lc) || changed
 	}
 	if changed {
 		n.signal()
@@ -455,13 +457,15 @@ func (n *Node) apply(ctx context.Context, lc *local.Client, notify ipn.Notify) {
 
 // refreshIdentity re-reads the facts that only a full status carries:
 // the MagicDNS name, the tailnet addresses, and the names a certificate
-// could be obtained for. Read on a state change rather than per
-// notification — the values move when the node joins, and a poll per
-// heartbeat would be one local API round trip for an unchanged answer.
-func (n *Node) refreshIdentity(ctx context.Context, lc *local.Client) {
+// could be obtained for. Read on state/self changes, never heartbeats.
+func (n *Node) refreshIdentity(ctx context.Context, lc *local.Client) bool {
 	status, err := lc.StatusWithoutPeers(ctx)
-	if err != nil || status == nil {
-		return
+	if err != nil {
+		n.recordError(fmt.Sprintf("read the node's network identity: %v", err))
+		return false
+	}
+	if status == nil {
+		return false
 	}
 	name := ""
 	var ips []string
@@ -474,10 +478,13 @@ func (n *Node) refreshIdentity(ctx context.Context, lc *local.Client) {
 	domains := append([]string(nil), status.CertDomains...)
 
 	n.mu.Lock()
+	changed := n.status.DNSName != name || !slices.Equal(n.status.IPs, ips) || !slices.Equal(n.status.CertDomains, domains)
 	n.status.DNSName = name
 	n.status.IPs = ips
 	n.status.CertDomains = domains
 	n.mu.Unlock()
+	n.clearError()
+	return changed
 }
 
 func (n *Node) recordError(message string) {

@@ -5,14 +5,18 @@ Built on Go 1.26, Wails v3, and Svelte 5. Inspired by t3-code.
 
 ## For friends helping test
 
-This is a direct test release. There is no auto-update or code signing,
-so Gatekeeper / SmartScreen will warn on first launch. Install from the
+This is a direct test release. Desktop artifacts are not publisher-signed,
+so Gatekeeper / SmartScreen may warn on first launch. Install from the
 artifact bundle with `install.sh`; build from source only if you're
 developing the app.
 
 When something breaks, runtime logs and the SQLite DB live in your
 platform's config directory (see *Files & locations* below). Zip the
 `logs/` folder and send it with what you were doing.
+
+For an Android phone connecting to your Mac, follow the
+[remote access setup guide](docs/architecture/remote-access-setup.md). It covers
+Tailscale, installing the APK, pairing, production-build testing, and updates.
 
 ## Files & locations
 
