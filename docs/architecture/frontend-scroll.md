@@ -699,6 +699,12 @@ and window `blur` clear it synchronously; `pointermove` resyncs. Touch is
 excluded (a finger is a scroll or a tap). The real-browser proof that a
 drag swallows the release lives in
 `scroll/selectionTracking.browser.test.ts`.
+Paused frames still advance the spring's clock without advancing its motion.
+Releasing selection must not integrate the pause or classify it as a browser
+stall (`spring.test.ts`). Escape remains a synchronous controller fact;
+reactive consumers subscribe through its revision. Svelte teardown can read
+previous rune values, so persisting an escape from a reactive boolean alone
+loses same-batch input (`intentSnapshot.svelte.test.ts`).
 
 Programmatic scrolls go through the controller:
 
@@ -1317,6 +1323,12 @@ side ([`activity-runs.md`](activity-runs.md) has the rest):
   `overflow-y: auto` with a restored `scrollTop`; a controller per run in the
   buffer would be a spring, an observer set, and intent listeners each for
   physics one of them can use.
+- A displaced run retains its controller until its inner chase finishes or
+  the reader escapes. Selection pauses carry no retirement deadline, and
+  later prose cannot keep the old run's arrival sentinel alive. Teardown
+  transfers current follow intent without writing a new position. Tail
+  return reuses the controller; collapse/unmount disposes it. Regression:
+  `activityRunTailHandoff.browser.test.ts`.
 - **The clip's outer height changes only on explicit events** (growth toward
   the cap, item expansion, a collapse toggle), never from inner streaming.
   That is what keeps the outer engine quiet, and it keeps `rowDelta === 0` for
@@ -1719,19 +1731,3 @@ output bodies. Focus can jump to `<body>` when the windowing unmounts the
 focused row. Syntax highlighting is backend span metadata
 (`internal/highlight`); the frontend renders spans over text it already
 holds.
-
-## Open Defects
-
-- **Run-to-prose transition jumps about half the spring instead of
-  gliding**, on some turns, when something is still animating inside the
-  activity run. Leading suspect: `ActivityRun.svelte`'s controller teardown
-  handover, which writes `clip.scrollTop = clip.scrollHeight` (an instant
-  snap) when tail-ness ends with the inner glide mid-flight; the comment in
-  the file names the case. Mid-glide APPEND bursts are proven clean
-  (`activityRunBurstMotion.browser.test.ts`), so the suspect space is the
-  teardown only. Sampler: `scripts/perfprobe/jumpwatch.mjs` samples pane
-  scrollers and run clips per frame and flags scrollTop steps beside clip
-  teardown frames; a first capture saw 44 teardowns all with zero bottom
-  gap, so the mid-flight case needs a longer watch synced to turn ends.
-  Next: red browser test for the mid-flight handover, then a fix that lets
-  the glide finish or transfers the remaining distance (never a snap).

@@ -1429,6 +1429,24 @@ describe('quantized motion floor', () => {
 });
 
 describe('chase telemetry', () => {
+  it('selection time is not a stalled frame or a backlog snap on release', () => {
+    const h = makeHarness({ clientHeight: 100, quantize: true });
+    h.setTarget(600);
+    h.spring.markTargetChanged();
+    h.spring.start();
+    for (let i = 0; i < 4; i++) frame();
+    const parked = h.getScrollTop();
+    h.setSelectionActive(true);
+    for (let i = 0; i < 120; i++) frame();
+    expect(h.getScrollTop()).toBe(parked);
+    h.setSelectionActive(false);
+    frame();
+    expect(h.writes.some(({ caller }) => caller === 'spring.catchupSnap')).toBe(false);
+    expect(h.getScrollTop() - parked).toBeLessThan(20);
+    expect(h.getScrollTop()).toBeGreaterThan(parked);
+    h.spring.cancel();
+  });
+
   it('a selection pause is counted and marked, and a chase that only paused still reports', () => {
     setUiRenderTraceEnabled(true);
     clearUiRenderTrace();

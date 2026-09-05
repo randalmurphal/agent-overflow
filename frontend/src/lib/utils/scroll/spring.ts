@@ -1022,6 +1022,9 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
         return;
       }
       if (deps.selectionActive()) {
+        // Frames still arrive during selection. Keep the clock current so
+        // release cannot integrate the pause or misclassify it as a stall.
+        lastTickAt = now;
         // Selection drag should never fight the user. Re-rAF without
         // advancing scrollTop; `accumulated` stays intact so the resumed
         // chase remains continuous. Counted and traced on entry: this is

@@ -244,11 +244,10 @@ The rules that bite here:
   zero width and takes no gutter, or the rows leave the rail. That
   geometry is browser-only (`activityRunClip.browser.test.ts`,
   `activityRunScroll.browser.test.ts`).
-- A run leaving the tail keeps its inner controller until the outer
-  glide has ARRIVED (`holdForGlide`, 1.5s deadline). The handoff writes
-  `clip.scrollTop = scrollHeight` directly, and doing that mid-glide
-  snapped the pane 13–75px on every thinking-to-prose boundary
-  (2026-09-04). Guard: `thinkingTailContinuity.browser.test.ts`.
+- A run leaving the tail retains its controller until the INNER chase ends
+  or the reader escapes. No deadline and no teardown scroll write: selection
+  can legitimately pause a chase. Test retirement, tail return, escape and
+  collapse transitions in `activityRunTailHandoff.browser.test.ts`.
 
 ## Companion panes
 

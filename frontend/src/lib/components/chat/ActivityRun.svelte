@@ -126,8 +126,8 @@
   // exactly when it moves and never on the passes where it has not.
   let mountedFrom = $derived(run.mountedFrom);
 
-  // Built only for the tail run, and only while it holds the revealed tail —
-  // a run that a later node displaces has no use for a spring, and a
+  // Built only for the tail run, with retirement after its final chase —
+  // a settled run that a later node displaces has no use for a spring, and a
   // controller per run in the buffer would be a spring, an observer set, and
   // intent listeners each for physics only one of them can use.
   //
@@ -140,8 +140,8 @@
   // remaining distance in one frame on the next delta — the in-run jump the
   // scrollbar witnessed (2026-08-19; its thumb shows on exactly the writes
   // the departed controller can no longer claim). Tail-ness ends when the
-  // reader can SEE the displacing node, by which point the run's content is
-  // quiet and the spring idle, so the handoff moves nothing.
+  // reader can SEE the displacing node. Any remaining inner chase finishes
+  // before ownership passes to the historical geometry handler.
   //
   // Same factory, spring constants, and scrollTop-only motion as the main pane,
   // so a streaming run feels identical to a streaming thread. It NEVER
@@ -166,7 +166,7 @@
   function createStick(): UseStickToBottomController {
     return createUseStickToBottomController({
       liveContentActive: () =>
-        isLiveContentActive(
+        isTail && isLiveContentActive(
           performance.now(),
           pane.lastLiveContentAt,
           LIVE_CONTENT_ACTIVE_HOLD_MS,
@@ -503,57 +503,32 @@
     if (activityRunShouldMountEarlier(metrics, hiddenEarlier)) void mountEarlier();
   }
 
-  // Tail-ness ending while a glide is in flight. The gate releases a run's
-  // last short rows, the controller starts gliding the clip to them, and the
-  // closing prose reveals ~200ms later — mid-glide. Tearing the controller
-  // down there hands the clip to its bottom in ONE frame (13–75px in the
-  // bug-report-20260904T184019Z reproduction: the whole pane jumps). So the
-  // controller outlives tail-ness for exactly as long as its glide has left:
-  // the handoff below runs once the clip rests on its bottom (a no-op write
-  // by then), or at the deadline, or when the clip dies. Arrival is read
-  // from the component's own position cache, which every controller write
-  // refreshes, so the hold costs no DOM reads. A reader who escaped has no
-  // glide to finish and hands off at once, as before.
-  // Declared BEFORE the lifetime effect on purpose: effects run in
-  // declaration order, so the hold is armed before `wantsController` is
-  // re-read — a tail flip the lifetime effect saw first would tear the
-  // controller down before the hold could keep it.
-  const GLIDE_HOLD_MAX_MS = 1500;
+  // Retirement follows the actual chase, including selection pauses. A
+  // deadline can expire while a reader is selecting and snap the remaining
+  // distance. Run this effect before the lifetime effect so tail loss keeps
+  // the existing controller until arrival or cancellation, without reattach.
   let holdForGlide = $state(false);
   let wantsController = $derived(isTail || holdForGlide);
-  let glideHoldFrame = 0;
-
-  function endGlideHold(): void {
-    if (glideHoldFrame !== 0) cancelAnimationFrame(glideHoldFrame);
-    glideHoldFrame = 0;
-    holdForGlide = false;
-  }
 
   $effect(() => {
     if (isTail) return;
     const controller = untrack(() => stick);
-    if (
-      !controller ||
-      controller.escapedFromLock ||
-      !controller.autoScrollInFlight() ||
-      !knownMetrics ||
-      activityRunAtBottom(knownMetrics)
-    ) {
-      return;
-    }
+    if (!controller || controller.escapedFromLock || !controller.autoScrollInFlight()) return;
     holdForGlide = true;
-    const deadline = performance.now() + GLIDE_HOLD_MAX_MS;
+    let frame = 0;
     const check = (): void => {
-      glideHoldFrame = 0;
-      const arrived = !knownMetrics || activityRunAtBottom(knownMetrics);
-      if (arrived || collapsed || performance.now() >= deadline) {
+      frame = 0;
+      if (controller.escapedFromLock || !controller.autoScrollInFlight()) {
         holdForGlide = false;
         return;
       }
-      glideHoldFrame = requestAnimationFrame(check);
+      frame = requestAnimationFrame(check);
     };
-    glideHoldFrame = requestAnimationFrame(check);
-    return endGlideHold;
+    frame = requestAnimationFrame(check);
+    return () => {
+      cancelAnimationFrame(frame);
+      holdForGlide = false;
+    };
   });
 
   // Controller lifetime and scroll-position persistence are ONE effect on
@@ -615,43 +590,11 @@
       // drag) — so a run without one falls back to the component's own
       // record.
       const escaped = controller ? controller.escapedFromLock : !followingBottom;
-      // Detach FIRST, so the handover write below runs with no intent
-      // machine listening — an untagged `scrollTop` write under a live
-      // controller reads as a reader gesture and escapes bottom-follow.
       controller?.detach();
-      // Position handover, tail run only. A controller that was still
-      // following dies with whatever glide it had in flight canceled, and
-      // the gap it leaves would otherwise ride along silently until the
-      // next content delta snapped it closed in one frame. On the ordinary
-      // handoff the displacing node is already revealed, content quiet,
-      // spring idle — a no-op write; the residual case this exists for is
-      // a glide genuinely in flight at reveal, which lands (instantly) at
-      // the bottom the reader was already gliding toward. Skipped when the
-      // clip itself is dying (collapse drops it via the `{#if}`; a destroy
-      // pass may have unhooked it) — a reflow forced on a dying element
-      // buys nothing.
-      //
-      // BOTH branches state the follow through `positionWritten`: an
-      // escape only the controller knew about must land in
-      // `followingBottom` before the geometry processor takes over, or the
-      // processor pins a reader who had left the bottom. The
-      // owner-driven scrollbar classification would hide the thumb while
-      // it happened.
-      if (controller && !collapsed && clip.isConnected) {
-        if (!escaped) {
-          // One read pair on a rare path (tail displacement), and the write's
-          // own value states the fade — no re-read behind it.
-          const bottom = clip.scrollHeight;
-          clip.scrollTop = bottom;
-          if (knownMetrics) {
-            knownMetrics.scrollHeight = bottom;
-            knownMetrics.clientHeight = clip.clientHeight;
-          }
-          positionWritten(clip, true, bottom);
-        } else {
-          positionWritten(clip, false);
-        }
-      }
+      // The retiring chase already owns the final position. Transfer its
+      // intent, including an escape known only to the controller, without
+      // authoring another scroll on detach or component destruction.
+      followingBottom = !escaped;
       // Same laid-out-and-scrollable refusal as `saveInnerScroll`: on a
       // windowing eviction this teardown can run against a clip whose content
       // is already gone, and `clip.scrollTop` reads 0 there — archiving that

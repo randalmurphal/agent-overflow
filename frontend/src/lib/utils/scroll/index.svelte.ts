@@ -148,7 +148,11 @@ export function createUseStickToBottomController(
   // `isAtBottom` getter returns false while escaped even inside this
   // visual band so the ScrollToBottomButton reflects user intent.
   let isNearBottomState = $state(true);
-  let escapedFromLockState = $state(false);
+  // Intent is current even inside a Svelte effect teardown, where rune
+  // reads can expose the previous batch's value. Keep the imperative fact
+  // here and use a revision only to notify reactive consumers of its change.
+  let escapedFromLockState = false;
+  let escapeRevision = $state(0);
   let pauseDepth = $state(0);
 
   // ===== Internal bookkeeping (non-reactive) =====
@@ -548,6 +552,7 @@ export function createUseStickToBottomController(
     escaped: () => escapedFromLockState,
     setEscaped: (next) => {
       escapedFromLockState = next;
+      escapeRevision += 1;
     },
     isNearBottom: () => isNearBottomState,
     pauseDepth: () => pauseDepth,
@@ -1133,17 +1138,21 @@ export function createUseStickToBottomController(
 
   return {
     get isSticky() {
+      escapeRevision;
       return isAtBottomState && !escapedFromLockState && pauseDepth === 0;
     },
     get isAtBottom() {
+      escapeRevision;
       return !escapedFromLockState && (isAtBottomState || isNearBottomState);
     },
     get escapedFromLock() {
+      escapeRevision;
       return escapedFromLockState;
     },
     // Scroll-event ATTRIBUTION, not follow gating — see the interface doc
     // for why this must not fold in pauseDepth the way isSticky does.
     get positionOwnerDriven() {
+      escapeRevision;
       return !escapedFromLockState;
     },
     get isWarm() {

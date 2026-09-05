@@ -15,8 +15,8 @@
 //  1. The controller lives while the run holds the REVEALED tail (`atTail`),
 //     so closing prose arriving on the wire no longer kills a glide the
 //     reader is watching.
-//  2. A detaching controller that was still following hands its position
-//     off at the bottom, so no cancelled-glide gap survives the handoff.
+//  2. Retirement waits for the chase to finish, including selection pauses,
+//     and transfers intent without writing a new position during teardown.
 //  3. The overlay scrollbar treats the settle observer's bottom-hold as
 //     owner-driven: only positions the READER produced show the thumb.
 //
@@ -144,6 +144,102 @@ async function burstGrowth(
 }
 
 describe('tail handoff', () => {
+  it.each(['release', 'tail-return', 'escape', 'collapse'] as const)(
+    'a paused retirement preserves motion and handles %s', async (finish) => {
+    const threadId = 'thread-handoff-selection';
+    const seed: Item[] = [prose('p0', 0, threadId)];
+    for (let i = 0; i < 12; i++) seed.push(tool(`t${i}`, i + 1, threadId));
+    seed.push(thinking('th0', 20, threadId, 'streaming'));
+    const { pane, host } = await mountTimeline(threadId, seed, QUIET_BOTTOM);
+    const clip = clipOf(host);
+    await burstGrowth(pane, threadId, 21, 4);
+    await waitFor(() => clipGap(clip) > 40, 'an unfinished inner glide');
+
+    const selected = clip.querySelector('[data-item-id]');
+    if (!selected) throw new Error('no selectable activity row');
+    const selection = window.getSelection();
+    if (!selection) throw new Error('no browser selection');
+    const range = document.createRange();
+    range.selectNodeContents(selected);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    selected.dispatchEvent(new PointerEvent('pointerdown', {
+      button: 0, buttons: 1, pointerType: 'mouse', bubbles: true,
+    }));
+    try {
+      await raf();
+      const parked = clip.scrollTop;
+      const gap = clipGap(clip);
+      pane.applyProviderItemUpserts([prose('p1', 100, threadId)]);
+      await tick();
+      expect(clip.dataset.scrollOwner).toBe('controller');
+      // Exceed the former hold deadline only in the straight-release case.
+      if (finish === 'release') await new Promise((resolve) => setTimeout(resolve, 1750));
+      await raf();
+      expect(clip.scrollTop, 'handoff must not move a selecting reader').toBe(parked);
+      expect(clip.dataset.scrollOwner, 'the paused glide still owns its position').toBe('controller');
+
+      if (finish === 'tail-return') {
+        pane.removeItemById('p1', threadId);
+        await tick();
+        await raf();
+        expect(clip.dataset.scrollOwner).toBe('controller');
+        expect(clip.scrollTop).toBe(parked);
+        pane.applyProviderItemUpserts([prose('p1', 100, threadId)]);
+        await tick();
+        await raf();
+        expect(clip.dataset.scrollOwner).toBe('controller');
+        expect(clip.scrollTop).toBe(parked);
+      } else if (finish === 'escape') {
+        clip.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true }));
+        clip.scrollTop = parked - 20;
+        const escaped = clip.scrollTop;
+        await waitFor(() => clip.dataset.scrollOwner === 'settle', 'retirement after user escape');
+        await burstGrowth(pane, threadId, 30, 2);
+        for (let i = 0; i < 5; i++) await raf();
+        expect(clip.scrollTop, 'settled geometry must preserve escaped intent').toBe(escaped);
+        return;
+      } else if (finish === 'collapse') {
+        const runId = clip.closest<HTMLElement>('[data-run-id]')?.dataset.runId;
+        if (!runId) throw new Error('no run identity');
+        pane.activityRuns.setCollapsed(runId, true);
+        await tick();
+        await raf();
+        expect(clip.isConnected).toBe(false);
+        pane.activityRuns.setCollapsed(runId, false);
+        await tick();
+        const reopened = clipOf(host);
+        await waitFor(() => clipGap(reopened) <= DRIFT_PX, 'collapsed retirement remount');
+        expect(reopened).not.toBe(clip);
+        expect(reopened.dataset.scrollOwner).toBe('settle');
+        return;
+      }
+
+      selected.dispatchEvent(new PointerEvent('pointerup', {
+        button: 0, buttons: 0, pointerType: 'mouse', bubbles: true,
+      }));
+      selection.removeAllRanges();
+      let previous = parked;
+      let largestStep = 0;
+      let movingFrames = 0;
+      for (let frame = 0; frame < 360; frame++) {
+        await raf();
+        const step = clip.scrollTop - previous;
+        if (step > 0) movingFrames++;
+        largestStep = Math.max(largestStep, step);
+        previous = clip.scrollTop;
+        if (clip.dataset.scrollOwner === 'settle') break;
+      }
+      expect(movingFrames, 'release resumes motion over multiple frames').toBeGreaterThan(3);
+      expect(largestStep, 'release must not land the entire remaining glide').toBeLessThan(gap / 2);
+      expect(clipGap(clip)).toBeLessThanOrEqual(DRIFT_PX);
+      expect(clip.dataset.scrollOwner).toBe('settle');
+    } finally {
+      document.dispatchEvent(new PointerEvent('pointerup', { buttons: 0, pointerType: 'mouse' }));
+      selection.removeAllRanges();
+    }
+  }, 20_000);
+
   it('closing prose behind the reveal gate neither kills the controller nor strands the glide nor flashes the scrollbar', async () => {
     const threadId = 'thread-handoff-a';
     const seed: Item[] = [prose('p0', 0, threadId)];

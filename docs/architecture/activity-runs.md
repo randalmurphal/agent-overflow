@@ -701,11 +701,11 @@ cancelled its glide in place, and the settle observer then snapped the whole
 remaining distance in one frame on the next delta (the 2026-08-19 in-run
 jump; the overlay scrollbar flashing on those unclaimed writes was the
 witness). Tail-ness ends when the reader can SEE the displacing node, by
-which point the run is quiet and the spring idle. The same widening the
-collapse resolution took for the same race, one day earlier.
+which point any remaining inner chase retires as described below. The same
+widening the collapse resolution took for the same race, one day earlier.
 
 Prose REVEALED after a run still closes it: the next activity row starts a
-new run, so a run with anything visible below it can never grow again. Since
+new run; existing members may still receive late output or enrichment. Since
 a settled turn usually ends `[…, activity_run, assistant_text]`, scanning
 backward past revealed prose would hand nearly every thread's last run a
 controller it can never use. Same factory, spring constants, motion floor,
@@ -715,28 +715,22 @@ restored `scrollTop`: they never chase, so a controller each would be a
 spring, an observer set, and intent listeners per run in the buffer for
 physics only one of them can use.
 
-A detaching controller hands off both halves of its follow state, after
-`detach()` so no intent machine mistakes the write for a gesture. A
-controller that was still following writes the clip to its bottom
-(`clip.scrollTop = clip.scrollHeight` through `positionWritten`), a no-op
-when the clip already rests there. It usually does not at the instant
-tail-ness ends: the gate releases the run's last short rows, the spring
-starts gliding to them, and the closing prose reveals ~200ms later,
-mid-glide — so a controller still following outlives tail-ness until its
-clip rests on the bottom (`holdForGlide`, read from the component's own
-position cache, bounded by a 1.5s deadline and by the clip dying). Tearing
-it down mid-glide handed the remaining distance to that write in one frame:
-13–75px of the whole pane jumping in the bug-report-20260904T184019Z
-reproduction. A controller that was ESCAPED
-states that too (`positionWritten(clip, false)`): the controller sees
-escapes the component never gets a gesture for (selection auto-scroll,
-middle-click autoscroll, a scrollbar drag), and a stale `followingBottom`
-would let the settle observer pin the escaped reader back to the bottom.
-The saved snapshot takes the same fact (`escaped` from the controller when
-one existed, `!followingBottom` otherwise). Skipped when the clip is dying
-(collapse, destroy). The clip carries
-`data-scroll-owner="controller" | "settle"` so a trace or screenshot names
-which half owns the position.
+A displaced run retains its controller while the inner chase is in flight.
+`holdForGlide` follows actual completion or user escape, not a position epsilon
+or deadline: a selection drag may pause the chase for any duration. Tail
+return cancels retirement without reattaching; collapse/unmount disposes the
+controller. Once displaced, unrelated prose cannot prolong its arrival
+sentinel through the pane's live-content timestamp.
+
+Teardown transfers current follow intent and persists the position without
+writing `scrollTop`. The former 1.5-second deadline could move a selecting
+reader directly to the bottom; a teardown write is no longer part of the
+handover. The controller sees escapes the component may not (selection
+auto-scroll, middle-click autoscroll, a scrollbar drag), so its current escape
+state remains authoritative. Svelte's previous-value teardown reads must not
+turn that state back into bottom-follow. Guards:
+`activityRunTailHandoff.browser.test.ts` and `intentSnapshot.svelte.test.ts`.
+The clip carries `data-scroll-owner="controller" | "settle"` for diagnostics.
 
 - It leaves `externalContentGeometry` unset. There is no virtualizer inside a
   run, so the controller's own contentEl ResizeObserver is the right geometry
