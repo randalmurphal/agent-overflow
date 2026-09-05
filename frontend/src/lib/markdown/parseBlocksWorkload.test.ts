@@ -122,7 +122,7 @@ describe('parseBlocks active-pane workload', () => {
       const { prefix, tail } = splitter.split(source, append);
 
       if (prefix && prefix !== previousPrefix) {
-        parseObserved(prefix, prefixCache, metrics);
+        parseObserved(prefix, prefixCache, metrics, splitter.prefixAppend);
         updateParseBlockStringMaterialization(prefixCache, true);
       }
       previousPrefix = prefix;

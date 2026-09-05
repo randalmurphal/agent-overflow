@@ -7,7 +7,8 @@
  * The cache is opaque to callers: one per Streamdown instance, passed on
  * every call. `parseBlocks.ts` is its only writer.
  */
-import { materializeString, matchesProvenAppend } from './provenAppend';
+import { ParseBlockSource } from './parseBlockSource';
+import { materializeString } from './provenAppend';
 import type { ProvenAppend } from './provenAppend';
 import { isKeptType } from './lexer';
 import type { Extension } from './lexer';
@@ -21,6 +22,7 @@ import {
 import type { BlockToken } from './geometry';
 export const createParseBlocksCache = (observeLex?: ParseBlocksLexObserver): ParseBlocksCache => ({
     content: '',
+    source: new ParseBlockSource(),
     extKey: null,
     raws: [],
     keep: [],
@@ -144,24 +146,9 @@ export const trailingBlockMayMergeBackward = (cache: ParseBlocksCache): boolean 
         // and expose the rest of that same source line as another block. A later
         // pipe merges both. Any kept token beginning mid-line therefore keeps
         // its predecessor live until a newline seals the split.
-        return start > 0 && cache.content[start - 1] !== '\n' && cache.content[start - 1] !== '\r';
+        return start > 0 && cache.source.charAt(start - 1) !== '\n' && cache.source.charAt(start - 1) !== '\r';
     }
     return false;
-};
-export const appendDeltaOf = (markdown: string, cache: ParseBlocksCache, provenAppend: ProvenAppend | undefined): string | null => {
-    if (cache.content.length === 0 || markdown.length <= cache.content.length)
-        return null;
-    if (provenAppend !== undefined) {
-        // Proofs are minted only by createProvenAppend, which constructs next
-        // from previous + delta. Identity against both cache generations makes
-        // stale or misrouted lineage fall back without rescanning the prefix.
-        if (!matchesProvenAppend(provenAppend, cache.content, markdown))
-            return null;
-        return provenAppend.delta;
-    }
-    return markdown.startsWith(cache.content)
-        ? markdown.slice(cache.content.length)
-        : null;
 };
 // Maintain the trailing-block descent record after a parse pass. `tokens`
 // covers the document from `tokensOffset` (byte) / `rawIndex` (raws slot)
@@ -241,8 +228,8 @@ export const updateTrailingBlockRecord = (
             }
         }
         const startsOnLine = blockStart === 0 ||
-            cache.content[blockStart - 1] === '\n' ||
-            cache.content[blockStart - 1] === '\r';
+            cache.source.charAt(blockStart - 1) === '\n' ||
+            cache.source.charAt(blockStart - 1) === '\r';
         if (token.type === 'paragraph' &&
             bias === 0 &&
             startsOnLine &&
@@ -269,7 +256,7 @@ export const updateTrailingBlockRecord = (
             bias === 0 &&
             startsOnLine) {
             const sourceEnd = blockStart + token.raw.length - 1;
-            const sourceEndChar = cache.content[sourceEnd];
+            const sourceEndChar = cache.source.charAt(sourceEnd);
             const normalized = token.raw.endsWith('\n') &&
                 (sourceEndChar === ' ' || sourceEndChar === '\t') &&
                 !/[\r\n]/.test(token.raw.slice(0, -1));
@@ -299,6 +286,8 @@ export type ParseBlocksLexObserver = (path: ParseBlocksLexPath, inputLength: num
  */
 export type ParseBlocksCache = {
     content: string;
+    /** exact source suffix, independent of normalized token raws */
+    source: ParseBlockSource;
     /** block-level custom extensions used to build the cached block boundaries */
     extKey: Extension[] | null;
     /** every block token's raw (including space/footnote tokens) in document order */

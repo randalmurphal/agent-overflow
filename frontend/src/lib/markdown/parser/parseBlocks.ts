@@ -28,7 +28,6 @@ import {
 } from './geometry';
 import type { BlockToken } from './geometry';
 import {
-    appendDeltaOf,
     appendParseBlockRaw,
     replaceParseBlockRaw,
     trailingBlockMayMergeBackward,
@@ -78,6 +77,37 @@ export const parseBlocks = (
     cache?: ParseBlocksCache,
     provenAppend?: ProvenAppend
 ): string[] => {
+    const blocks = parseBlocksCached(markdown, extensions, cache, provenAppend);
+    if (cache) {
+        // Appending inside an established block cannot advance its source
+        // boundary. In particular, never inspect a growing fence per reveal.
+        switch (cache.lastPath) {
+            case 'unchanged':
+            case 'paragraph-append':
+            case 'line-block-append':
+            case 'list-line-append':
+            case 'table-line-append':
+            case 'fence-append':
+                return blocks;
+        }
+        if (cache.content.length === 0) {
+            cache.source.reset('');
+        } else if (cache.blockRawIndexes.length > 0) {
+            // Backward-merging markers need two rendered blocks plus the byte
+            // preceding them. All intervening omitted source stays exact too.
+            const slack = trailingBlockMayMergeBackward(cache) ? 2 : 1;
+            const rawIndex = cache.blockRawIndexes[Math.max(0, cache.blockRawIndexes.length - slack)];
+            cache.source.retainFrom(Math.max(0, cache.rawStarts[rawIndex] - 1));
+        }
+    }
+    return blocks;
+};
+const parseBlocksCached = (
+    markdown: string,
+    extensions: Extension[] = [],
+    cache?: ParseBlocksCache,
+    provenAppend?: ProvenAppend
+): string[] => {
     if (cache) {
         cache.lastBlockAppend = undefined;
         cache.lastPath = 'none';
@@ -97,8 +127,9 @@ export const parseBlocks = (
         return cache.blocks;
     }
     const appendDelta = cache && cache.extKey === extKey
-        ? appendDeltaOf(markdown, cache, provenAppend)
+        ? cache.source.update(markdown, provenAppend)
         : null;
+    if (cache && cache.extKey !== extKey) cache.source.reset(markdown);
     if (cache && appendDelta !== null) {
         // Trailing-block descent: when the last rendered block is a list or a
         // table, the block-level tail re-lex below still costs the WHOLE
@@ -115,7 +146,7 @@ export const parseBlocks = (
             const priorRaw = cache.raws[t.rawIndex];
             if ((t.kind === 'paragraph' || t.kind === 'line-block') &&
                 blockStart === t.blockStart &&
-                (blockStart === 0 || markdown[blockStart - 1] === '\n' || markdown[blockStart - 1] === '\r') &&
+                (blockStart === 0 || cache.source.charAt(blockStart - 1) === '\n' || cache.source.charAt(blockStart - 1) === '\r') &&
                 !/[\r\n]$/.test(priorRaw) &&
                 !/[\r\n]/.test(appendDelta) &&
                 !extensions.some(({ level, applyInBlockParsing }) => level === 'block' && applyInBlockParsing)) {
@@ -141,7 +172,7 @@ export const parseBlocks = (
             }
             if (t.kind === 'list-line' &&
                 blockStart === t.blockStart &&
-                (blockStart === 0 || markdown[blockStart - 1] === '\n' || markdown[blockStart - 1] === '\r') &&
+                (blockStart === 0 || cache.source.charAt(blockStart - 1) === '\n' || cache.source.charAt(blockStart - 1) === '\r') &&
                 !/[\r\n]/.test(appendDelta) &&
                 !extensions.some(({ level, applyInBlockParsing }) => level === 'block' && applyInBlockParsing)) {
                 let trailingWhitespace = 0;
@@ -151,7 +182,7 @@ export const parseBlocks = (
                     trailingWhitespace++;
                 }
                 const priorSourceWhitespace = t.normalized
-                    ? cache.content[blockStart + priorRaw.length - 1]
+                    ? cache.source.charAt(blockStart + priorRaw.length - 1)
                     : '';
                 const combinedTrailingWhitespace = trailingWhitespace === appendDelta.length
                     ? trailingWhitespace + (t.normalized ? 1 : 0)
@@ -199,7 +230,7 @@ export const parseBlocks = (
             else if (t.kind === 'list') {
                 const sliceStart = t.blockStart + t.sealedLen;
                 if (blockStart === t.blockStart && sliceStart < markdown.length) {
-                    const sliceTokens = blockTokensOf(markdown.slice(sliceStart), extensions, cache, 'list-descent');
+                    const sliceTokens = blockTokensOf(cache.source.slice(sliceStart), extensions, cache, 'list-descent');
                     const first = sliceTokens[0];
                     let sliceLength = 0;
                     for (const token of sliceTokens)
@@ -217,7 +248,7 @@ export const parseBlocks = (
                         // are 1:1, so every offset in the record stays valid.
                         rawStart = appendParseBlockRaw(
                             cache,
-                            markdown.slice(t.blockStart, sliceStart) + first.raw,
+                            cache.source.slice(t.blockStart, sliceStart) + first.raw,
                             true,
                             rawStart
                         );
@@ -252,8 +283,8 @@ export const parseBlocks = (
                 // grammar consumes body lines independently of one another,
                 // so replaying the identical header bytes makes the mini's
                 // boundary decisions exactly the full parse's.
-                const prefix = markdown.slice(t.blockStart, t.blockStart + t.prefixLen);
-                const volatileSrc = markdown.slice(t.lastRowStart);
+                const prefix = cache.source.slice(t.blockStart, t.blockStart + t.prefixLen);
+                const volatileSrc = cache.source.slice(t.lastRowStart);
                 const miniTokens = blockTokensOf(prefix + volatileSrc, extensions, cache, 'table-descent');
                 const mini = miniTokens[0];
                 if (miniTokens.length === 1 &&
@@ -262,7 +293,7 @@ export const parseBlocks = (
                     truncateParseBlocksCache(cache, t.rawIndex);
                     // Sealed source bytes + the mini token's own tail raw, for
                     // the same byte-fidelity reason as the list branch.
-                    const raw = markdown.slice(t.blockStart, t.lastRowStart) + mini.raw.slice(t.prefixLen);
+                    const raw = cache.source.slice(t.blockStart, t.lastRowStart) + mini.raw.slice(t.prefixLen);
                     appendParseBlockRaw(cache, raw, true, t.blockStart);
                     cache.content = markdown;
                     const nextLastRow = lastLineStartOf(raw);
@@ -297,7 +328,7 @@ export const parseBlocks = (
         const offset = cut < cache.rawStarts.length
             ? cache.rawStarts[cut]
             : cache.content.length;
-        const tailTokens = blockTokensOf(markdown.slice(offset), extensions, cache, 'append-tail');
+        const tailTokens = blockTokensOf(cache.source.slice(offset), extensions, cache, 'append-tail');
         let tailLength = 0;
         for (const token of tailTokens)
             tailLength += token.raw.length;
@@ -338,6 +369,7 @@ export const parseBlocks = (
         }
     }
     // Full parse (first call, non-append update, or contiguity fallback).
+    cache?.source.reset(markdown);
     const tokens = blockTokensOf(markdown, extensions, cache, 'full');
     if (cache) {
         truncateParseBlocksCache(cache, 0);

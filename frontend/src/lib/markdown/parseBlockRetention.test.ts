@@ -46,6 +46,7 @@ const {
 for (let index = 0; index < 4; index++) globalThis.gc();
 const before = process.memoryUsage().heapUsed;
 const cache = createParseBlocksCache();
+if (process.env.AO_FULL_PARSE_WINDOW === '1') cache.source.retainFrom = () => {};
 let source = '';
 for (let index = 0; index < 800; index++) {
   const marker = index === 0 ? 'AO_PARSE_BLOCK_RETENTION ' : '';
@@ -66,7 +67,7 @@ for (let index = 0; index < 4; index++) globalThis.gc();
 process.stdout.write(String(process.memoryUsage().heapUsed - before));
 `;
 
-function retainedHeapBytes(detach: boolean, chainedSource = false): number {
+function retainedHeapBytes(detach: boolean, chainedSource = false, fullWindow = false): number {
   const output = execFileSync(
     process.execPath,
     ['--expose-gc', '--input-type=module', '--eval', workload],
@@ -76,6 +77,7 @@ function retainedHeapBytes(detach: boolean, chainedSource = false): number {
         ...process.env,
         AO_DETACH_PARSE_BLOCKS: detach ? '1' : '0',
         AO_CHAIN_PARSE_SOURCE: chainedSource ? '1' : '0',
+        AO_FULL_PARSE_WINDOW: fullWindow ? '1' : '0',
       },
     },
   );
@@ -88,15 +90,18 @@ function retainedHeapBytes(detach: boolean, chainedSource = false): number {
 
 describe('parse block backing retention', () => {
   it('does not retain one full parser checkpoint per completed block', () => {
-    const retained = retainedHeapBytes(false);
+    const retained = retainedHeapBytes(false, false, true);
     const detached = retainedHeapBytes(true);
 
-    // On V8, marked's block raws are SlicedStrings backed by the full input.
+    // Disable source-window trimming in the negative control: marked then
+    // returns SlicedStrings backed by the full input, as before windowing.
     // The control retains about 35 MB for this 73 KB document. Detaching the
     // raws keeps only the final source and the 800 small block strings.
     expect(retained).toBeGreaterThan(20 * 1024 * 1024);
     expect(detached).toBeLessThan(3 * 1024 * 1024);
     expect(detached).toBeLessThan(retained / 8);
+    // Bounded source windows also protect callers that do not materialize raws.
+    expect(retainedHeapBytes(false)).toBeLessThan(3 * 1024 * 1024);
   });
 
   it('keeps completed blocks detached when the parser source is an append rope', () => {

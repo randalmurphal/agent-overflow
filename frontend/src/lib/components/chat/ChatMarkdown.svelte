@@ -271,7 +271,7 @@
 
   const splitDerived = $derived.by(() => {
     if (!streaming) {
-      return { prefix: processedSource, tail: '', tailAppend: undefined };
+      return { prefix: processedSource, tail: '', prefixAppend: undefined, tailAppend: undefined };
     }
     const split = boundarySplitter.split(
       processedSource,
@@ -279,6 +279,7 @@
     );
     return {
       ...split,
+      prefixAppend: boundarySplitter.prefixAppend,
       tailAppend: boundarySplitter.tailAppend,
     };
   });
@@ -422,7 +423,7 @@
       splitDerived.prefix,
       false,
       'md-committed',
-      undefined,
+      splitDerived.prefixAppend,
       true,
       !showVolatileTail,
     )}

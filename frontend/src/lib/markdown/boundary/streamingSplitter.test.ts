@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { splitAtBoundary, type BoundarySplit } from './split';
 import { StreamingBoundarySplitter } from './streamingSplitter';
 import { BoundaryDetector } from './BoundaryDetector';
-import { createProvenAppend } from '../index';
+import { createProvenAppend, matchesProvenAppend } from '../index';
 import { expectedStreamingFenceTexts } from '../../../test/helpers/streamingFenceOracle';
 
 function expectFenceCompletePrefix(split: BoundarySplit): void {
@@ -11,6 +11,31 @@ function expectFenceCompletePrefix(split: BoundarySplit): void {
     `committed prefix ends inside a fence: ${JSON.stringify(split.prefix.slice(-160))}`,
   ).toBe(false);
 }
+
+it('publishes committed lineage only for the current append and clears it across resets', () => {
+  const splitter = new StreamingBoundarySplitter();
+  let source = 'First paragraph.\n\nSecond paragraph.\n\nTail';
+  let split = splitter.split(source);
+  expect(matchesProvenAppend(splitter.prefixAppend, '', split.prefix)).toBe(true);
+  splitter.split(source);
+  expect(splitter.prefixAppend).toBeUndefined();
+
+  const tailOnly = createProvenAppend(source, ' grows');
+  split = splitter.split(tailOnly.next, tailOnly);
+  expect(splitter.prefixAppend).toBeUndefined();
+  const previousPrefix = split.prefix;
+  const commit = createProvenAppend(tailOnly.next, '.\n\nNext paragraph.\n\nNew tail');
+  split = splitter.split(commit.next, commit);
+  expect(matchesProvenAppend(splitter.prefixAppend, previousPrefix, split.prefix)).toBe(true);
+
+  source = commit.next.replace('First', 'Other');
+  splitter.split(source);
+  expect(splitter.prefixAppend).toBeUndefined();
+  splitter.split('');
+  expect(splitter.prefixAppend).toBeUndefined();
+  split = splitter.split('Restarted paragraph.\n\nAnother paragraph.\n\nTail');
+  expect(matchesProvenAppend(splitter.prefixAppend, '', split.prefix)).toBe(true);
+});
 
 // Reference = the OLD ChatMarkdown behaviour: pure `splitAtBoundary`
 // fed the running high-water prefix length, with the shrink/empty

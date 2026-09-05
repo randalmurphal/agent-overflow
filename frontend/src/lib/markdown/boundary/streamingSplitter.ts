@@ -51,6 +51,8 @@ import {
 } from '../index';
 
 export class StreamingBoundarySplitter {
+  /** Proven append applied to the committed prefix by the latest split. */
+  prefixAppend: ProvenAppend | undefined = undefined;
   /** Proven append applied to the volatile tail by the latest split. */
   tailAppend: ProvenAppend | undefined = undefined;
   private detector = new BoundaryDetector();
@@ -87,6 +89,7 @@ export class StreamingBoundarySplitter {
    */
   split(text: string, append?: ProvenAppend): BoundarySplit {
     this.tailAppend = undefined;
+    this.prefixAppend = undefined;
     if (text.length === 0) {
       this.reset();
       return { prefix: '', tail: '' };
@@ -204,7 +207,8 @@ export class StreamingBoundarySplitter {
         if (committedAdvance > this.cachedTail.length) {
           throw new Error('streaming boundary cache advanced past its tail');
         }
-        this.cachedPrefix += this.cachedTail.slice(0, committedAdvance);
+        this.prefixAppend = createProvenAppend(this.cachedPrefix, this.cachedTail.slice(0, committedAdvance));
+        this.cachedPrefix = this.prefixAppend.next;
         this.cachedTail = this.cachedTail.slice(committedAdvance);
       }
       if (committedAdvance === 0 && appendedText.length > 0) {
@@ -231,6 +235,7 @@ export class StreamingBoundarySplitter {
     this.cachedPrefix = '';
     this.cachedTail = '';
     this.tailAppend = undefined;
+    this.prefixAppend = undefined;
   }
 }
 

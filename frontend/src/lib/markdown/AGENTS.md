@@ -61,6 +61,7 @@ parser/
                       openFenceInfo, sealedLengthOf, tableAppendInfo,
                       tableTailUnsafe, paragraphAppendSafe
   parseBlocks.ts      parseBlocks, initialBlockToken, blockTokensOf
+  parseBlockSource.ts         exact live source window with canonical fallback
   parseBlocks.cache.ts        the raw/block arrays, the materialization
                               pass, updateTrailingBlockRecord
   incrementalLex.ts           incrementalLex + the open-fence fast path
@@ -200,6 +201,14 @@ marker: `<code>.textContent` owns the source.
   volatile renderer must NOT (its final block is replaced on every
   append, so copying a growing block per reveal is O(n²)). Tripwire:
   `parseBlockRetention.test.ts`, a whole-heap delta in a subprocess.
+- **Committed appends carry their proof too.** The boundary splitter publishes
+  `prefixAppend` as well as `tailAppend`. `parseBlockSource.ts` slices exact
+  live source bytes rather than the growing document or normalized token raws.
+  Reclassification into omitted HTML/definitions can move that window backward;
+  those reads use the canonical source. Established one-line/fence appends do
+  not inspect or trim the window. `parseBlocksSourceWork.test.ts` rejects
+  whole-document prefix checks/slices, and the differential corpus checks
+  backward boundary moves against a fresh parse.
 - **Any prefix inspection of the streaming source flattens it.** That is
   what `ProvenAppend` exists to avoid; a new fast path takes the proof,
   never `startsWith` / `slice` on the full input.
