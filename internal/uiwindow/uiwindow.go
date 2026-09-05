@@ -139,7 +139,7 @@ func prepareOptions(opts *application.WebviewWindowOptions, saved windowgeom.Geo
 func RestoreAndTrack(app *application.App, base application.WebviewWindowOptions, saved windowgeom.Geometry, sink func(windowgeom.Geometry)) (*application.WebviewWindow, func()) {
 	restored, act := prepareOptions(&base, saved, screenRects(app.Screen.GetAll()))
 
-	window := app.Window.NewWithOptions(base)
+	window := New(app, base)
 
 	// Maximize/fullscreen the now-live window. It currently sits at the normal
 	// rect we positioned it on, so it lands on the correct monitor; then reveal

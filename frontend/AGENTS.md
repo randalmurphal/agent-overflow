@@ -50,6 +50,18 @@ known failure class here, so extend the existing one instead.
 - Split a `.svelte` file once it passes roughly 300 lines and a clear
   component boundary exists. Derive in `<script>`, render in the template.
 
+## Clipboard diagnostics
+
+Plain-text clipboard and copy-button failures must reach `utils/clipboard.ts#reportCopyFailure`,
+whose diagnostic sink is installed by `frontendErrorCapture`. A caught error
+sent only to `console.error` disappears in production, where the inspector is
+disabled (macOS copy-button report, 2026-09-04). Keep the diagnostic message
+constant, put error details in the detail field, and never log the copied
+payload. Plain-text writes capture focus and user activation before awaiting
+the write so the failure log distinguishes initial state from rejection state.
+Copy buttons also forward their click event to the writer: trust and event age
+help distinguish synthetic or delayed dispatch from a platform gesture failure.
+
 ## State ownership
 
 State is keyed by its ENTITY, never by its consumer. Before adding

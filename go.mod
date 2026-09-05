@@ -292,7 +292,8 @@ require (
 
 tool github.com/wailsapp/wails/v3/cmd/wails3
 
-// Fork pin: branch ao-beta-memory-trim, nine patch groups on top of the
+// Fork pin: branch fix/ao-window-event-forwarding (based on
+// ao-beta-memory-trim), ten patch groups on top of the
 // upstream v3.0.0-beta.4 tag. Only ONE replace is needed now: upstream
 // folded the separate wails/webview2 module into v3/internal/webview2
 // (#5711, alpha2.114), so the second pin that used to carry the suspend
@@ -356,8 +357,14 @@ tool github.com/wailsapp/wails/v3/cmd/wails3
 //     screen cache. This prevents title-bar growth on every restore and 2x
 //     display records that break maximize placement.
 //
+// 10. DisableWindowEventForwarding (0c73296a4): app-shell windows retain
+//     native Go callbacks but skip unused window-event JavaScript. On
+//     macOS, evaluateJavaScript between mousedown and click clears WebKit
+//     transient activation and makes clipboard writes fail. All shell
+//     creation goes through internal/uiwindow.New. Upstream-PR candidate.
+//
 // Dropped at the beta.4 rebase — both landed upstream: the mixed-DPI
 // monitor-scale-detection re-enable (#5732 -> PR #5734) and the host
 // rasterization-scale stand-down (PR #5761, which generalised it to
 // visual hosting). Do not re-add them.
-replace github.com/wailsapp/wails/v3 => github.com/randalmurphal/wails/v3 v3.0.0-beta.4.0.20260901164027-dae7e8f7452d
+replace github.com/wailsapp/wails/v3 => github.com/randalmurphal/wails/v3 v3.0.0-beta.4.0.20260905043122-0c73296a403c

@@ -3,6 +3,7 @@ import { isMethodUnavailableError } from '../stores/transportStatus.svelte';
 import { wsClient } from '../transport/wsClient';
 import { UI_TRACE_MAX_LINE_BYTES } from './uiTraceLimits';
 import { redactDiagnosticText } from './diagnosticRedaction';
+import { setClipboardDiagnosticsSink } from './clipboard';
 
 /*
  * Always-on global error capture. Window `error` and `unhandledrejection`
@@ -82,6 +83,7 @@ export function installFrontendErrorCapture(): void {
   // Injected here rather than imported by the transport so wsClient
   // stays free of stores/bindings dependencies.
   wsClient.setDiagnosticsSink(reportFrontendDiagnostic);
+  setClipboardDiagnosticsSink(reportFrontendDiagnostic);
 
   window.addEventListener('error', (event: ErrorEvent) => {
     // Synthetic or resource-flavored `error` events can arrive with no
@@ -362,6 +364,7 @@ function isMethodUnavailable(err: unknown): boolean {
 /** Test hook: detach listeners and reset module state between cases. */
 export function resetFrontendErrorCaptureForTest(): void {
   wsClient.setDiagnosticsSink(null);
+  setClipboardDiagnosticsSink(null);
   signatureCounts.clear();
   pendingLines.length = 0;
   if (flushTimer !== null && typeof window !== 'undefined') {

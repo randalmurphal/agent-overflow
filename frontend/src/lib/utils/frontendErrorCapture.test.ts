@@ -6,6 +6,7 @@ import {
   resetFrontendErrorCaptureForTest,
 } from './frontendErrorCapture';
 import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
+import { copyToClipboard, reportCopyFailure } from './clipboard';
 
 function dispatchError(message: string, options: { error?: unknown; filename?: string } = {}): void {
   window.dispatchEvent(
@@ -48,6 +49,61 @@ describe('frontendErrorCapture', () => {
   afterEach(() => {
     resetFrontendErrorCaptureForTest();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('persists caught clipboard failures with write-time state and no copied text', async () => {
+    setBindingMock('ReportFrontendErrorBatch', async () => '/tmp/frontend-errors.jsonl');
+    installFrontendErrorCapture();
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const focus = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+    const activation = { isActive: true };
+    const event = new MouseEvent('click', { detail: 1 });
+    Object.defineProperty(event, 'isTrusted', { value: true });
+    const clock = vi.spyOn(performance, 'now').mockReturnValue(event.timeStamp + 12);
+    vi.stubGlobal('isSecureContext', true);
+    vi.stubGlobal('navigator', {
+      userActivation: activation,
+      clipboard: {
+        writeText: async () => {
+          focus.mockReturnValue(false);
+          activation.isActive = false;
+          clock.mockReturnValue(event.timeStamp + 200);
+          throw new DOMException('Write was refused', 'NotAllowedError');
+        },
+      },
+    });
+
+    expect(await copyToClipboard('private clipboard payload', event)).toBe(false);
+    await flushFrontendErrors();
+
+    const lines = reportedLines();
+    expect(lines).toHaveLength(1);
+    const record = JSON.parse(lines[0]);
+    expect(record).toMatchObject({ kind: 'diagnostic', message: 'Clipboard write failed:' });
+    expect(record.stack).toContain('NotAllowedError');
+    expect(record.stack).toContain('"focusedAtWrite":true');
+    expect(record.stack).toContain('"activeAtWrite":true');
+    expect(record.stack).toContain('"eventTrusted":true');
+    expect(record.stack).toContain('"eventType":"click"');
+    expect(record.stack).toContain('"eventDetail":1');
+    expect(record.stack).toContain('"eventAgeAtWrite":12');
+    expect(record.stack).toContain('"focusedAtFailure":false');
+    expect(record.stack).toContain('"activeAtFailure":false');
+    expect(lines.join('')).not.toContain('private clipboard payload');
+  });
+
+  it('persists structural copy-button failures through the same diagnostic path', async () => {
+    setBindingMock('ReportFrontendErrorBatch', async () => '/tmp/frontend-errors.jsonl');
+    installFrontendErrorCapture();
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    reportCopyFailure('[static-code-copy] handler failed', new Error('code host is incomplete'));
+    await flushFrontendErrors();
+
+    const record = JSON.parse(reportedLines()[0]);
+    expect(record.message).toBe('[static-code-copy] handler failed');
+    expect(record.stack).toContain('code host is incomplete');
   });
 
   it('persists window error events with message, stack, and location', async () => {

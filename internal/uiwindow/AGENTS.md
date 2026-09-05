@@ -9,6 +9,16 @@ without changing its size.
 
 ## Layout
 
+- `new.go`
+  - `New(app, options)` is the creation boundary for every app-shell window,
+    including `--connect` and the Windows launcher through `RestoreAndTrack`.
+    It disables Wails' automatic window-event JavaScript forwarding. Those
+    events have no consumer in our HTTP/WS frontend, and WebKit clears
+    transient user activation after native JavaScript evaluation: an update
+    event between mousedown and click broke code-block Copy on macOS
+    (2026-09-04). Go hooks/listeners and explicit page-ticket `ExecJS` remain
+    active. Create shell windows here, never directly with `NewWithOptions`.
+
 - `uiwindow.go`
   - `RestoreAndTrack(app, baseOpts, saved, sink)` creates the app window with
     `saved` restored, reveals it (already maximized/fullscreen when that's the

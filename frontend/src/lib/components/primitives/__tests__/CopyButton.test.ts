@@ -163,7 +163,7 @@ describe('<CopyButton>', () => {
       });
       const button = getByRole('button');
       await fireEvent.click(button);
-      await waitFor(() => expect(write).toHaveBeenCalledWith('md **body**'));
+      await waitFor(() => expect(write).toHaveBeenCalledWith('md **body**', expect.any(MouseEvent)));
       expect(writeText).not.toHaveBeenCalled();
       await waitFor(() => expect(button.getAttribute('aria-label')).toBe('Copied'));
     });

@@ -87,7 +87,7 @@ func runClient(rawURL string) {
 	// RPC against a remote backend instead.
 	app := application.New(desktopApplicationOptions(title))
 
-	window := app.Window.NewWithOptions(application.WebviewWindowOptions{
+	window := uiwindow.New(app, application.WebviewWindowOptions{
 		Title:            title,
 		Width:            1280,
 		Height:           800,

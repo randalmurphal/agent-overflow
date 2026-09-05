@@ -21,12 +21,12 @@
   import Check from '@lucide/svelte/icons/check';
   import Icon from './Icon.svelte';
   import IconButton from './IconButton.svelte';
-  import { copyToClipboard } from '../../utils/clipboard';
+  import { copyToClipboard, reportCopyFailure } from '../../utils/clipboard';
 
   interface Props {
     text: string | (() => string | Promise<string>);
     /** Clipboard writer. Defaults to a plain-text write. */
-    write?: (value: string) => Promise<boolean>;
+    write?: (value: string, event?: MouseEvent) => Promise<boolean>;
     label?: string;
     copiedLabel?: string;
     size?: 'sm' | 'md';
@@ -55,16 +55,17 @@
     if (timer) clearTimeout(timer);
   });
 
-  async function handleCopy(): Promise<void> {
+  async function handleCopy(event: MouseEvent): Promise<void> {
     try {
       const value = typeof text === 'function' ? await text() : text;
       if (!value) return;
-      const ok = await write(value);
+      const ok = await write(value, event);
       if (!ok) {
         onError?.();
         return;
       }
-    } catch {
+    } catch (error) {
+      reportCopyFailure('Copy button failed:', error);
       onError?.();
       return;
     }
@@ -82,7 +83,7 @@
   {size}
   {variant}
   {disabled}
-  onClick={() => void handleCopy()}
+  onClick={(event) => void handleCopy(event)}
 >
   {#snippet children()}
     <Icon icon={copied ? Check : Copy} size={iconSize} />

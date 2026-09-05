@@ -43,7 +43,7 @@ fidelity on mac/linux is explicitly out of scope (user-accepted); the
 "open in system Chrome" escape hatch covers engine-specific testing.
 
 Wails integration goes through the pinned fork
-(`github.com/randalmurphal/wails/v3`, branch `ao-beta-memory-trim`),
+(`github.com/randalmurphal/wails/v3`; revision and patch inventory in `go.mod`),
 which already carries AO-specific window/webview APIs
 (`SuspendWebview`, `CallDevToolsProtocolMethod`). New fork surface:
 expose the native window handle / add a child-browser-view API per

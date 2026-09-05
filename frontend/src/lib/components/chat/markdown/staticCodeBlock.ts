@@ -1,6 +1,6 @@
 import type { Tokens } from '../../../markdown';
 import { addToast } from '../../../stores/toast.svelte';
-import { copyToClipboard } from '../../../utils/clipboard';
+import { copyToClipboard, reportCopyFailure } from '../../../utils/clipboard';
 import { maskSpriteRef } from '../../../utils/maskSprite';
 import { spanSegments, type EncodedLine } from '../../../utils/syntaxSpans';
 import { getCachedBlockSpans } from './codeSpanCache';
@@ -214,7 +214,7 @@ let copyDelegateInstalled = false;
 const copyResetTimers = new WeakMap<HTMLButtonElement, ReturnType<typeof setTimeout>>();
 
 function reportStaticCodeCopyFailure(error: unknown): void {
-  console.error('[static-code-copy] handler failed', error);
+  reportCopyFailure('[static-code-copy] handler failed', error);
   addToast('error', 'Failed to copy');
 }
 
@@ -246,7 +246,7 @@ async function handleStaticCodeCopy(event: MouseEvent): Promise<void> {
   const host = button.closest<HTMLElement>('.streamdown-code-host');
   const code = host?.querySelector('pre > code');
   if (!host || !code) {
-    console.error('[static-code-copy] code host is incomplete');
+    reportCopyFailure('[static-code-copy] handler failed', new Error('code host is incomplete'));
     addToast('error', 'Failed to copy');
     return;
   }
@@ -256,7 +256,7 @@ async function handleStaticCodeCopy(event: MouseEvent): Promise<void> {
   // enter the transient "Copied" state.
   if (!text) return;
 
-  const ok = await copyToClipboard(text);
+  const ok = await copyToClipboard(text, event);
   if (!ok) {
     addToast('error', 'Failed to copy');
     return;

@@ -18,13 +18,14 @@ var goSourceRoots = []string{".", "cmd", "internal"}
 
 const wailsApplicationImport = `"github.com/wailsapp/wails/v3/pkg/application"`
 
-// TestNoWindowRestoreOutsideReveal keeps every reveal path on Reveal. Wails'
+// TestWindowCallsUseUIWindowBoundary keeps every reveal path on Reveal. Wails'
 // Window.Restore un-maximises a maximized window (that is its documented job),
 // which is how clicking an OS notification used to shrink a maximized app
 // window to its normal size. No file that imports the Wails application
 // package may call `.Restore()` with no arguments; Reveal is the one way to
-// bring a window forward.
-func TestNoWindowRestoreOutsideReveal(t *testing.T) {
+// bring a window forward. Creation likewise goes through New, which prevents
+// unused window-event JavaScript from clearing clipboard user activation.
+func TestWindowCallsUseUIWindowBoundary(t *testing.T) {
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)
@@ -60,14 +61,20 @@ func TestNoWindowRestoreOutsideReveal(t *testing.T) {
 			}
 			ast.Inspect(file, func(n ast.Node) bool {
 				call, ok := n.(*ast.CallExpr)
-				if !ok || len(call.Args) != 0 {
+				if !ok {
 					return true
 				}
 				sel, ok := call.Fun.(*ast.SelectorExpr)
-				if !ok || sel.Sel.Name != "Restore" {
+				if !ok {
 					return true
 				}
 				rel, _ := filepath.Rel(root, path)
+				badRestore := sel.Sel.Name == "Restore" && len(call.Args) == 0
+				owner, _ := sel.X.(*ast.SelectorExpr)
+				badCreation := sel.Sel.Name == "NewWithOptions" && owner != nil && owner.Sel.Name == "Window" && filepath.ToSlash(rel) != "internal/uiwindow/new.go"
+				if !badRestore && !badCreation {
+					return true
+				}
 				pos := fset.Position(call.Pos())
 				offenders = append(offenders, fmt.Sprintf("%s:%d:%d", rel, pos.Line, pos.Column))
 				return true
@@ -79,6 +86,6 @@ func TestNoWindowRestoreOutsideReveal(t *testing.T) {
 		}
 	}
 	if len(offenders) > 0 {
-		t.Fatalf("Window.Restore() un-maximises a maximized window; reveal through uiwindow.Reveal instead:\n  %s", strings.Join(offenders, "\n  "))
+		t.Fatalf("Shell windows must be created through uiwindow.New and revealed through uiwindow.Reveal:\n  %s", strings.Join(offenders, "\n  "))
 	}
 }

@@ -33,7 +33,7 @@ function setup() {
   const cleanup = installTimelineReconnect({
     pane: { threadId: 'thread', snapSmoothersToReceived: snap } as unknown as ThreadPane,
     stick: { beginReconnectRecovery } as unknown as UseStickToBottomController,
-    getList: () => ({ revalidate }) as TimelineVirtualizerHandle,
+    getList: () => ({ revalidate }) as unknown as TimelineVirtualizerHandle,
   });
   cleanups.push(cleanup);
   return { frames, recovery, beginReconnectRecovery, snap, revalidate, cleanup };
