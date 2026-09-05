@@ -361,10 +361,11 @@ launch-wsl:
 	$(MAKE) build-wsl WSL_VERSION=$$DEV_VERSION WSL_FORCE_RELINK=1 UI_TRACE=$(UI_TRACE) UI_ORACLES=$(UI_ORACLES) WSL_BUILD_MODE=$(LAUNCH_WSL_BUILD_MODE); \
 	if [ -n "$(LAUNCH_PROFILE)" ]; then \
 		$(MAKE) mockprovider; \
-		mkdir -p "$$HOME/.local/bin"; \
-		cp bin/ao-mockprovider "$$HOME/.local/bin/ao-mockprovider.tmp.$$$$"; \
-		mv -f "$$HOME/.local/bin/ao-mockprovider.tmp.$$$$" "$$HOME/.local/bin/ao-mockprovider"; \
-		echo "Installed mock provider at $$HOME/.local/bin/ao-mockprovider (all isolated profiles resolve it beside the backend binary)"; \
+		PROFILE_BIN="$$HOME/.local/share/agent-overflow/$(LAUNCH_PROFILE)/bin"; \
+		mkdir -p "$$PROFILE_BIN"; \
+		cp bin/ao-mockprovider "$$PROFILE_BIN/ao-mockprovider.tmp.$$$$"; \
+		mv -f "$$PROFILE_BIN/ao-mockprovider.tmp.$$$$" "$$PROFILE_BIN/ao-mockprovider"; \
+		echo "Installed mock provider at $$PROFILE_BIN/ao-mockprovider"; \
 	fi; \
 	WIN_LAD=$$(/mnt/c/Windows/System32/cmd.exe /c 'echo %LOCALAPPDATA%' 2>/dev/null | tr -d '\r\n'); \
 	if [ -z "$$WIN_LAD" ]; then \
@@ -374,7 +375,7 @@ launch-wsl:
 	WIN_DEV_DIR_LINUX=$$(wslpath -u "$$WIN_LAD")/agent-overflow/dev; \
 	WIN_DEV_EXE_LINUX="$$WIN_DEV_DIR_LINUX/agent-overflow-$$DEV_VERSION.exe"; \
 	mkdir -p "$$WIN_DEV_DIR_LINUX"; \
-	find "$$WIN_DEV_DIR_LINUX" -maxdepth 1 -name 'agent-overflow-*.exe' ! -name "agent-overflow-$$DEV_VERSION.exe" -delete 2>/dev/null || true; \
+	find "$$WIN_DEV_DIR_LINUX" -maxdepth 1 -name "agent-overflow-$$PROFILE_TAG-*.exe" ! -name "agent-overflow-$$DEV_VERSION.exe" -delete 2>/dev/null || true; \
 	cp bin/agent-overflow.exe "$$WIN_DEV_EXE_LINUX"; \
 	PROFILE_ARGS=""; \
 	if [ -n "$(LAUNCH_PROFILE)" ]; then \

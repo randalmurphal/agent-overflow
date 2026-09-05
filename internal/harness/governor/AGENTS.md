@@ -56,6 +56,14 @@ kill path here.
   helper churn as a safety failure and tear down a healthy instance
   (incident 2026-08-30).
 
+Windows parent IDs outlive their parent process. Tree sampling uses one
+`SystemProcessInformation` snapshot with creation times and working sets:
+a child older than its alleged parent belongs to an earlier PID generation.
+Do not open a handle to every candidate: protected system processes can have
+a stale parent ID matching an owned helper and refuse even limited queries.
+The snapshot buffer is reused across samples. Regression:
+`process_windows_test.go` (also run as a real Windows test binary).
+
 ## Defaults and callers
 
 `DefaultCeilingBytes` is 2 GiB (sized when the app could still spawn a managed

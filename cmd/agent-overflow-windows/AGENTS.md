@@ -83,7 +83,7 @@ cost every boot ~250 ms of sleep after the backend was already ready.
 
 ## Payload path: recorded, not re-resolved
 
-`ensurePayloadInstalled` returns the path wsl.json recorded
+For the normal dev/prod installation, `ensurePayloadInstalled` returns the path wsl.json recorded
 (`InstalledBinPath`, written with `InstalledVer` after a successful boot)
 whenever version and distro match, and spawns no wsl.exe at all on that
 path. Resolving `$HOME` through wsl.exe costs ~440 ms per boot and only
@@ -92,6 +92,13 @@ warm boot trusts without asking WSL, so `launchAndShow` treats
 `errLaunchFailed` on a recorded path as "maybe stale": it re-resolves once,
 reinstalls at the fresh path if it differs, and retries. A path that
 resolves the same is a real launch failure.
+
+Isolated profiles never read that install record or replace its binary.
+`appidentity.WSLBinaryDir` puts their backend and mock provider together at
+`~/.local/share/agent-overflow/<profile>/bin/`; `launch-wsl` stages the mock
+there, and launcher cleanup matches only that profile's exe names. Test
+profile transitions with an otherwise matching dev install record: data,
+browser profiles, and CDP isolation do not imply executable isolation.
 
 ## Presenting a bridged notification
 

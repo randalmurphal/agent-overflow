@@ -328,10 +328,12 @@ number Task-Manager-style questions are actually about.
 
 **Bench workloads** are ordinary scenario-library entries plus seed
 specs, named `bench-*`: `bench-burst-stream` (delta flood at
-chunk-stress pacing), `bench-giant-turn` (one turn, thousands of items),
+chunk-stress pacing), `bench-giant-turn` (one turn, 225 items), `bench-mixed-turn`
+(thinking, tool output, an inline diff, and rich text at varied cadences),
 `bench-active-stream` (paced rich Markdown plus a normal tool pause),
-`bench-many-threads` (wide sidebar + switch storm driven via RPC),
-`bench-subagent-fanout` (the soak shape, bounded). `ao-harness bench`
+`bench-subagent-fanout` (the soak shape, bounded). The `many-threads`
+workload seeds a wide sidebar and drives a switch storm via RPC, without a
+provider scenario. `ao-harness bench`
 boots-or-attaches, seeds, arms meters, runs the workload to its
 completion signal, and writes `<dataDir>/bench/<workload>-<ts>.json` +
 a terminal summary. `--baseline` compares against a checked-in or local

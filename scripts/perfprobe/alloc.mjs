@@ -13,21 +13,37 @@ import { createFrameResolver } from './lib/sourcemap.mjs';
 import { writeFileSync } from 'node:fs';
 
 const SECS = +(process.argv[2] || 60);
-// Under heavy churn (tens of MB/min) the default 16KB interval makes the
-// stopSampling response frame big enough that WebView2's CDP socket drops
-// the connection mid-reply. Raise via AO_ALLOC_INTERVAL for those runs.
-const INTERVAL = +(process.env.AO_ALLOC_INTERVAL || 16384);
-const c = await connectPage();
-await c.send('HeapProfiler.enable');
-await c.send('HeapProfiler.startSampling', { samplingInterval: INTERVAL, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
-await sleep(SECS * 1000);
-const { profile } = await c.send('HeapProfiler.stopSampling');
-c.close();
-
-// The wrapper runs online probes with cwd = the out dir, so a bare
-// relative write lands beside every other saved artifact.
+// A 64KB sample interval lost the stopSampling response on a three-minute
+// four-pane run. Start coarse for low-overhead hotspot discovery; use
+// AO_ALLOC_INTERVAL for finer, shorter captures after locating a hot path.
+const INTERVAL = +(process.env.AO_ALLOC_INTERVAL || 1048576);
+if (!Number.isFinite(SECS) || SECS <= 0) throw new Error('alloc: seconds must be positive and finite');
+if (!Number.isSafeInteger(INTERVAL) || INTERVAL <= 0) throw new Error('alloc: AO_ALLOC_INTERVAL must be a positive safe integer');
 const savedAt = `alloc-${Date.now()}.heapprofile`;
-try { writeFileSync(savedAt, JSON.stringify(profile)); } catch { /* out dir gone — print-only */ }
+const metadataPath = `${savedAt}.json`;
+const metadata = { seconds: SECS, samplingIntervalBytes: INTERVAL, startedAt: new Date().toISOString(), status: 'running' };
+writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
+let c;
+let profile;
+try {
+  c = await connectPage();
+  await c.send('HeapProfiler.enable');
+  await c.send('HeapProfiler.startSampling', { samplingInterval: INTERVAL, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
+  await sleep(SECS * 1000);
+  ({ profile } = await c.send('HeapProfiler.stopSampling'));
+  writeFileSync(savedAt, JSON.stringify(profile));
+  writeFileSync(metadataPath, JSON.stringify({ ...metadata, status: 'succeeded' }, null, 2));
+} catch (error) {
+  try {
+    writeFileSync(metadataPath, JSON.stringify({ ...metadata, status: 'failed', error: String(error) }, null, 2));
+  } catch (writeError) {
+    throw new AggregateError([error, writeError], 'alloc: capture failed and failure metadata could not be saved');
+  }
+  throw error;
+} finally {
+  c?.close();
+  await sleep(50);
+}
 
 // One resolver over every bundle URL in the profile.
 const urls = [];
@@ -76,7 +92,7 @@ const selfBy = new Map();
 })(rootChildren);
 
 const mb = (b) => (b / 1048576).toFixed(1) + 'MB';
-console.log(`sampled allocation total over ${SECS}s: ${mb(total)}   (raw profile: ${savedAt})`);
+console.log(`estimated allocation total over ${SECS}s: ${mb(total)}   (sample interval: ${INTERVAL} bytes; raw profile: ${savedAt})`);
 console.log('\nTOP SELF (leaf allocation sites):');
 for (const [k, v] of [...selfBy.entries()].sort((a, b) => b[1] - a[1]).slice(0, 25)) console.log(`  ${mb(v).padStart(8)}  ${k}`);
 

@@ -12,11 +12,13 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
+	"agent-overflow/internal/appidentity"
 	"agent-overflow/internal/wsldistro"
 	"agent-overflow/internal/wsllauncher"
 )
@@ -43,13 +45,19 @@ func (a *launcherApp) ensurePayloadInstalled(ctx context.Context, distro string)
 	defer logBootPhase("launcher.payload.total", started)
 
 	phaseStarted := time.Now()
-	cfg, _ := loadConfig()
-	if cfg == nil {
-		cfg = &wsldistro.Config{}
+	cfg := &wsldistro.Config{}
+	if activeProfile == "" {
+		loaded, loadErr := loadConfig()
+		if loadErr != nil {
+			log.Printf("launcher: cannot read payload installation record; resolving and installing afresh: %v", loadErr)
+		}
+		if loaded != nil {
+			cfg = loaded
+		}
 	}
 	logBootPhase("launcher.payload.load_config", phaseStarted)
-	installed := cfg.InstalledVer == payloadVersion && cfg.InstalledDistro == distro
-	if path := cachedPayloadPath(cfg, distro, payloadVersion); path != "" {
+	installed := activeProfile == "" && cfg.InstalledVer == payloadVersion && cfg.InstalledDistro == distro
+	if path := cachedPayloadPath(cfg, distro, payloadVersion, launcherRuntimeMode()); path != "" {
 		// The common warm-restart case: nothing to install and the path is
 		// on record, so no wsl.exe process is spawned at all here.
 		log.Printf("boot: phase=launcher.payload.install skipped=true version=%q distro=%q path=recorded", payloadVersion, distro)
@@ -77,7 +85,12 @@ func (a *launcherApp) ensurePayloadInstalled(ctx context.Context, distro string)
 // cachedPayloadPath returns the install path wsl.json recorded, when that
 // record is for exactly this payload version and distro. Anything else is
 // "" and the caller resolves the path through WSL.
-func cachedPayloadPath(cfg *wsldistro.Config, distro, version string) string {
+func cachedPayloadPath(cfg *wsldistro.Config, distro, version, mode string) string {
+	// Only the normal installation owns wsl.json's record. A matching
+	// version must never let an isolated profile execute its recorded path.
+	if appidentity.WSLBinaryDir(mode) != appidentity.WSLBinaryDir(appidentity.ModeProd) {
+		return ""
+	}
 	if cfg == nil || cfg.InstalledVer != version || cfg.InstalledDistro != distro {
 		return ""
 	}
@@ -141,7 +154,10 @@ func wslHomePath(ctx context.Context, distro string) (string, error) {
 	if out == "" {
 		return "", fmt.Errorf("resolve WSL HOME in %q: wsl.exe returned empty stdout", distro)
 	}
-	return out + "/.local/bin/agent-overflow", nil
+	if !path.IsAbs(out) {
+		return "", fmt.Errorf("resolve WSL HOME in %q: expected absolute Linux path, got %q", distro, out)
+	}
+	return path.Join(out, appidentity.WSLBinaryDir(launcherRuntimeMode()), "agent-overflow"), nil
 }
 
 // runWSLOutput is a thin wsl.exe -d <distro> --exec <cmd> wrapper that

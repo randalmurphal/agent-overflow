@@ -73,7 +73,7 @@ func harnessCapabilityWorkloadNames() []string {
 	// Keep this list next to the frontend protocol catalog, not in the CLI.
 	// The server package cannot import cmd/ao-harness without creating a cycle.
 	return []string{
-		"active-multi-pane", "burst-stream", "giant-turn", "many-threads",
+		"active-multi-pane", "burst-stream", "giant-turn", "many-threads", "mixed-turn",
 		"multi-pane-stream", "subagent-fanout",
 	}
 }

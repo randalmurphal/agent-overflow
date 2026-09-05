@@ -95,6 +95,25 @@ func TestIsolatedIdentitiesAreDistinct(t *testing.T) {
 	}
 }
 
+func TestWSLBinaryDir(t *testing.T) {
+	for mode, want := range map[string]string{
+		ModeDev: ".local/bin", ModeProd: ".local/bin",
+		ModeHarness: ".local/share/agent-overflow/harness/bin",
+		ModeSoak:    ".local/share/agent-overflow/soak/bin",
+		ModePerf:    ".local/share/agent-overflow/perf/bin",
+	} {
+		if got := WSLBinaryDir(mode); got != want {
+			t.Errorf("mode %s: got %q, want %q", mode, got, want)
+		}
+	}
+	defer func() {
+		if recover() == nil {
+			t.Error("unknown mode must not resolve to the developer installation")
+		}
+	}()
+	WSLBinaryDir("unknown")
+}
+
 func TestDevToolsPortsDoNotCollide(t *testing.T) {
 	if got := DevToolsPort(ModeProd); got != 0 {
 		t.Errorf("prod CDP port = %d, want 0 (the protocol is unauthenticated)", got)

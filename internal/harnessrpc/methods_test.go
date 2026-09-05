@@ -130,7 +130,7 @@ func TestHarnessCapabilitiesCatalogIsVersionedAndDefensive(t *testing.T) {
 			t.Errorf("queries omit %q: %v", name, caps.Queries)
 		}
 	}
-	for _, name := range []string{"burst-stream", "active-multi-pane", "many-threads"} {
+	for _, name := range []string{"burst-stream", "active-multi-pane", "many-threads", "mixed-turn"} {
 		if !slices.Contains(caps.Workloads, name) {
 			t.Errorf("workloads omit %q: %v", name, caps.Workloads)
 		}

@@ -33,7 +33,8 @@ Two callers:
   `write(2)` as soon as the OS buffer fills.
 - `launcher_windows.go` is the real implementation: `wsl.exe -l -v` exec,
   spawn with `CREATE_SUSPENDED` + Job Object adoption, payload install
-  via `cp /mnt/c/<host-temp> ~/.local/bin/agent-overflow`.
+  via the `/mnt/c` automount and an atomic rename to the launcher's
+  profile-specific destination (`appidentity.WSLBinaryDir`).
 - `launcher_other.go` is the non-Windows implementation. `Launch` /
   `InstallPayload` return "not supported on Windows" (these only run
   from the host-side launcher binary). `ListDistros` is a real

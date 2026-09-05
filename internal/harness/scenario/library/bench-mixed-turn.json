@@ -1,0 +1,345 @@
+{
+  "version": 1,
+  "name": "bench-mixed-turn",
+  "description": "Finite mixed streaming workload: paced and bursty thinking-to-text handoff, Read output, ANSI Bash output, a two-hunk Edit with a persisted inline diff, and rich prose/code. Alternating 20/120/240ms chunk spacing plus tool pauses exercises active transitions and natural completion without interruption. Run with ao-harness bench mixed-turn.",
+  "provider": "claude",
+  "turns": [
+    {
+      "label": "mixed-active-turn",
+      "steps": [
+        {
+          "emit": {
+            "delayBetweenMs": 0,
+            "lines": [
+              "{\"type\":\"stream_event\",\"event\":\"message_start\",\"data\":{\"type\":\"message_start\",\"message\":{\"id\":\"msg-mixed-plan-${TURN}\",\"role\":\"assistant\"}}}"
+            ]
+          }
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 0,
+            "lines": [
+              "{\"type\":\"stream_event\",\"event\":\"content_block_start\",\"data\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}}"
+            ]
+          }
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 20,
+            "lines": [
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"I will check the request default\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"s, read the implementation, and \"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"run the focused tests before edi\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"ting. The timeout needs to remai\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"n responsive while retries prese\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"rve their existing behavior. I w\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"ill check the request defaults, \"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"read the implementation, and run\"}}}"
+            ]
+          }
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 120,
+            "lines": [
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\" the focused tests before editin\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"g. The timeout needs to remain r\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"esponsive while retries preserve\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\" their existing behavior. I will\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\" check the request defaults, rea\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"d the implementation, and run th\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"e focused tests before editing. \"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"The timeout needs to remain resp\"}}}"
+            ]
+          }
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 240,
+            "lines": [
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"onsive while retries preserve th\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"eir existing behavior. I will ch\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"eck the request defaults, read t\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"he implementation, and run the f\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"ocused tests before editing. The\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\" timeout needs to remain respons\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"ive while retries preserve their\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\" existing behavior. I will check\"}}}"
+            ]
+          }
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 20,
+            "lines": [
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\" the request defaults, read the \"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"implementation, and run the focu\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"sed tests before editing. The ti\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"meout needs to remain responsive\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\" while retries preserve their ex\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"isting behavior. I will check th\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"e request defaults, read the imp\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"lementation, and run the focused\"}}}"
+            ]
+          }
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 120,
+            "lines": [
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\" tests before editing. The timeo\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"ut needs to remain responsive wh\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"ile retries preserve their exist\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"ing behavior. \"}}}"
+            ]
+          }
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 0,
+            "lines": [
+              "{\"type\":\"stream_event\",\"event\":\"content_block_stop\",\"data\":{\"type\":\"content_block_stop\",\"index\":0}}"
+            ]
+          }
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 0,
+            "lines": [
+              "{\"type\":\"stream_event\",\"event\":\"content_block_start\",\"data\":{\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}"
+            ]
+          }
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 20,
+            "lines": [
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"I am checking the configuration \"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"and its callers. The tool result\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"s below will show the source and\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\" test output before the edit.\\n\"}}}"
+            ]
+          }
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 0,
+            "lines": [
+              "{\"type\":\"stream_event\",\"event\":\"content_block_stop\",\"data\":{\"type\":\"content_block_stop\",\"index\":1}}"
+            ]
+          }
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 0,
+            "lines": [
+              "{\"type\":\"stream_event\",\"event\":\"message_stop\",\"data\":{\"type\":\"message_stop\"}}",
+              "{\"type\":\"assistant\",\"message\":{\"id\":\"msg-mixed-plan-${TURN}\",\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"I will check the request defaults, read the implementation, and run the focused tests before editing. The timeout needs to remain responsive while retries preserve their existing behavior. I will check the request defaults, read the implementation, and run the focused tests before editing. The timeout needs to remain responsive while retries preserve their existing behavior. I will check the request defaults, read the implementation, and run the focused tests before editing. The timeout needs to remain responsive while retries preserve their existing behavior. I will check the request defaults, read the implementation, and run the focused tests before editing. The timeout needs to remain responsive while retries preserve their existing behavior. I will check the request defaults, read the implementation, and run the focused tests before editing. The timeout needs to remain responsive while retries preserve their existing behavior. I will check the request defaults, read the implementation, and run the focused tests before editing. The timeout needs to remain responsive while retries preserve their existing behavior. \"},{\"type\":\"text\",\"text\":\"I am checking the configuration and its callers. The tool results below will show the source and test output before the edit.\\n\"}]}}"
+            ]
+          }
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 0,
+            "lines": [
+              "{\"type\":\"assistant\",\"message\":{\"id\":\"msg-tu-mixed-Read-${TURN}\",\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"tu-mixed-Read-${TURN}\",\"name\":\"Read\",\"input\":{\"file_path\":\"${CWD}/src/settings.ts\"}}]}}"
+            ]
+          }
+        },
+        {
+          "delayMs": 750
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 0,
+            "lines": [
+              "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"tu-mixed-Read-${TURN}\",\"content\":\"export const config = { retries: 3, timeout: 1000, verbose: false };\\n// Request option 0: keep the supported default.\\n// Request option 1: keep the supported default.\\n// Request option 2: keep the supported default.\\n// Request option 3: keep the supported default.\\n// Request option 4: keep the supported default.\\n// Request option 5: keep the supported default.\\n// Request option 6: keep the supported default.\\n// Request option 7: keep the supported default.\\n// Request option 8: keep the supported default.\\n// Request option 9: keep the supported default.\\n// Request option 10: keep the supported default.\\n// Request option 11: keep the supported default.\\n// Request option 12: keep the supported default.\\n// Request option 13: keep the supported default.\\n// Request option 14: keep the supported default.\\n// Request option 15: keep the supported default.\\n// Request option 16: keep the supported default.\\n// Request option 17: keep the supported default.\\n// Request option 18: keep the supported default.\\n// Request option 19: keep the supported default.\\n// Request option 20: keep the supported default.\\n// Request option 21: keep the supported default.\\n// Request option 22: keep the supported default.\\n// Request option 23: keep the supported default.\\n// Request option 24: keep the supported default.\\n// Request option 25: keep the supported default.\\n// Request option 26: keep the supported default.\\n// Request option 27: keep the supported default.\\n// Request option 28: keep the supported default.\\n// Request option 29: keep the supported default.\\n// Request option 30: keep the supported default.\\n// Request option 31: keep the supported default.\\n// Request option 32: keep the supported default.\\n// Request option 33: keep the supported default.\\n// Request option 34: keep the supported default.\\n// Request option 35: keep the supported default.\\n// Request option 36: keep the supported default.\\n// Request option 37: keep the supported default.\\n// Request option 38: keep the supported default.\\n// Request option 39: keep the supported default.\\n// Request option 40: keep the supported default.\\n// Request option 41: keep the supported default.\\n// Request option 42: keep the supported default.\\n// Request option 43: keep the supported default.\\n// Request option 44: keep the supported default.\\n// Request option 45: keep the supported default.\\n// Request option 46: keep the supported default.\\n// Request option 47: keep the supported default.\\n// Request option 48: keep the supported default.\\n// Request option 49: keep the supported default.\\n// Request option 50: keep the supported default.\\n// Request option 51: keep the supported default.\\n// Request option 52: keep the supported default.\\n// Request option 53: keep the supported default.\\n// Request option 54: keep the supported default.\\n// Request option 55: keep the supported default.\\n// Request option 56: keep the supported default.\\n// Request option 57: keep the supported default.\\n// Request option 58: keep the supported default.\\n// Request option 59: keep the supported default.\\n// Request option 60: keep the supported default.\\n// Request option 61: keep the supported default.\\n// Request option 62: keep the supported default.\\n// Request option 63: keep the supported default.\\n// Request option 64: keep the supported default.\\n// Request option 65: keep the supported default.\\n// Request option 66: keep the supported default.\\n// Request option 67: keep the supported default.\\n// Request option 68: keep the supported default.\\n// Request option 69: keep the supported default.\\n// Request option 70: keep the supported default.\\n// Request option 71: keep the supported default.\\n// Request option 72: keep the supported default.\\n// Request option 73: keep the supported default.\\n// Request option 74: keep the supported default.\\n// Request option 75: keep the supported default.\\n// Request option 76: keep the supported default.\\n// Request option 77: keep the supported default.\\n// Request option 78: keep the supported default.\\n// Request option 79: keep the supported default.\\n\"}]}}"
+            ]
+          }
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 0,
+            "lines": [
+              "{\"type\":\"assistant\",\"message\":{\"id\":\"msg-tu-mixed-Bash-${TURN}\",\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"tu-mixed-Bash-${TURN}\",\"name\":\"Bash\",\"input\":{\"command\":\"pnpm test settings\",\"description\":\"Check request settings\"}}]}}"
+            ]
+          }
+        },
+        {
+          "delayMs": 750
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 0,
+            "lines": [
+              "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"tu-mixed-Bash-${TURN}\",\"content\":\"\\u001b[32mPASS\\u001b[0m settings case 000 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 001 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 002 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 003 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 004 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 005 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 006 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 007 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 008 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 009 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 010 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 011 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 012 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 013 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 014 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 015 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 016 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 017 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 018 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 019 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 020 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 021 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 022 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 023 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 024 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 025 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 026 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 027 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 028 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 029 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 030 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 031 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 032 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 033 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 034 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 035 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 036 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 037 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 038 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 039 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 040 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 041 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 042 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 043 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 044 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 045 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 046 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 047 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 048 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 049 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 050 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 051 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 052 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 053 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 054 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 055 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 056 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 057 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 058 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 059 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 060 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 061 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 062 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 063 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 064 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 065 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 066 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 067 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 068 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 069 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 070 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 071 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 072 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 073 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 074 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 075 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 076 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 077 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 078 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 079 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 080 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 081 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 082 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 083 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 084 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 085 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 086 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 087 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 088 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 089 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 090 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 091 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 092 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 093 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 094 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 095 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 096 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 097 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 098 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 099 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 100 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 101 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 102 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 103 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 104 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 105 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 106 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 107 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 108 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 109 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 110 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 111 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 112 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 113 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 114 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 115 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 116 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 117 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 118 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 119 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 120 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 121 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 122 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 123 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 124 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 125 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 126 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 127 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 128 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 129 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 130 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 131 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 132 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 133 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 134 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 135 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 136 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 137 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 138 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 139 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 140 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 141 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 142 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 143 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 144 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 145 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 146 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 147 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 148 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 149 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 150 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 151 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 152 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 153 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 154 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 155 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 156 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 157 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 158 \\u2014 request options preserve expected behavior\\n\\u001b[32mPASS\\u001b[0m settings case 159 \\u2014 request options preserve expected behavior\\n\"}]}}"
+            ]
+          }
+        },
+        {
+          "emit": {
+            "lines": [
+              "{\"type\":\"assistant\",\"message\":{\"id\":\"msg-edit-${TURN}\",\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"tu-edit-${TURN}\",\"name\":\"Edit\",\"input\":{\"file_path\":\"${CWD}/src/settings.ts\",\"old_string\":\"export const config = {\\n  retries: 3,\\n  timeout: 1000,\\n  verbose: false,\\n};\",\"new_string\":\"export const config = {\\n  retries: 5,\\n  timeout: 250,\\n  verbose: true,\\n  label: \\\"turn ${TURN}\\\",\\n};\"}}]}}"
+            ]
+          }
+        },
+        {
+          "writeFile": {
+            "path": "src/settings.ts",
+            "content": "export const config = {\n  retries: 5,\n  timeout: 250,\n  verbose: true,\n  label: \"turn ${TURN}\",\n};\n\n// Applied on every request path.\nconst KNOWN_KEYS = [\"retries\", \"timeout\", \"verbose\"];\n\nexport function pick(input) {\n  return Object.entries(input).filter(([key]) => KNOWN_KEYS.includes(key));\n}\n\nexport function apply(input) {\n  if (!input) return config;\n  return { ...config, ...pick(input) };\n}\n"
+          }
+        },
+        {
+          "emit": {
+            "lines": [
+              "{\"type\":\"user\",\"tool_use_result\":{\"filePath\":\"${CWD}/src/settings.ts\",\"oldString\":\"export const config = {\\n  retries: 3,\\n  timeout: 1000,\\n  verbose: false,\\n};\",\"newString\":\"export const config = {\\n  retries: 5,\\n  timeout: 250,\\n  verbose: true,\\n  label: \\\"turn ${TURN}\\\",\\n};\",\"originalFile\":\"export const config = {\\n  retries: 3,\\n  timeout: 1000,\\n  verbose: false,\\n};\\n\\n// Applied on every request path.\\nconst KNOWN_KEYS = [\\\"retries\\\", \\\"timeout\\\", \\\"verbose\\\"];\\n\\nexport function pick(input) {\\n  return Object.entries(input).filter(([key]) => KNOWN_KEYS.includes(key));\\n}\\n\\nexport function apply(input) {\\n  return { ...config, ...input };\\n}\\n\",\"userModified\":false,\"replaceAll\":false,\"structuredPatch\":[{\"oldStart\":1,\"oldLines\":7,\"newStart\":1,\"newLines\":8,\"lines\":[\" export const config = {\",\"-  retries: 3,\",\"-  timeout: 1000,\",\"-  verbose: false,\",\"+  retries: 5,\",\"+  timeout: 250,\",\"+  verbose: true,\",\"+  label: \\\"turn ${TURN}\\\",\",\" };\",\" \",\" // Applied on every request path.\"]},{\"oldStart\":12,\"oldLines\":5,\"newStart\":13,\"newLines\":6,\"lines\":[\" }\",\" \",\" export function apply(input) {\",\"-  return { ...config, ...input };\",\"+  if (!input) return config;\",\"+  return { ...config, ...pick(input) };\",\" }\"]}]},\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"tu-edit-${TURN}\",\"content\":\"The file ${CWD}/src/settings.ts has been updated successfully.\"}]}}"
+            ]
+          }
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 0,
+            "lines": [
+              "{\"type\":\"stream_event\",\"event\":\"message_start\",\"data\":{\"type\":\"message_start\",\"message\":{\"id\":\"msg-mixed-done-${TURN}\",\"role\":\"assistant\"}}}"
+            ]
+          }
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 0,
+            "lines": [
+              "{\"type\":\"stream_event\",\"event\":\"content_block_start\",\"data\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}"
+            ]
+          }
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 20,
+            "lines": [
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"### Request defaults\\n\\nThe revise\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"d settings preserve **retry beha\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"vior** while shortening the time\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"out. The caller filters unsuppor\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ted keys before applying overrid\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"es.\\n\\n```ts\\nconst options = apply\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"({ retries: 5, timeout: 250 });\\n\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"```\\n\\n- Keep supported defaults.\\n\"}}}"
+            ]
+          }
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 120,
+            "lines": [
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"- Check the request boundary.\\n- \"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Preserve caller overrides.\\n\\n### \"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Request defaults\\n\\nThe revised se\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ttings preserve **retry behavior\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"** while shortening the timeout.\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" The caller filters unsupported \"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"keys before applying overrides.\\n\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"\\n```ts\\nconst options = apply({ r\"}}}"
+            ]
+          }
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 240,
+            "lines": [
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"etries: 5, timeout: 250 });\\n```\\n\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"\\n- Keep supported defaults.\\n- Ch\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"eck the request boundary.\\n- Pres\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"erve caller overrides.\\n\\n### Requ\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"est defaults\\n\\nThe revised settin\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"gs preserve **retry behavior** w\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hile shortening the timeout. The\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" caller filters unsupported keys\"}}}"
+            ]
+          }
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 20,
+            "lines": [
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" before applying overrides.\\n\\n```\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ts\\nconst options = apply({ retri\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"es: 5, timeout: 250 });\\n```\\n\\n- K\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"eep supported defaults.\\n- Check \"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"the request boundary.\\n- Preserve\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" caller overrides.\\n\\n### Request \"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"defaults\\n\\nThe revised settings p\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"reserve **retry behavior** while\"}}}"
+            ]
+          }
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 120,
+            "lines": [
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" shortening the timeout. The cal\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ler filters unsupported keys bef\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ore applying overrides.\\n\\n```ts\\nc\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"onst options = apply({ retries: \"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"5, timeout: 250 });\\n```\\n\\n- Keep \"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"supported defaults.\\n- Check the \"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"request boundary.\\n- Preserve cal\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ler overrides.\\n\\n### Request defa\"}}}"
+            ]
+          }
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 240,
+            "lines": [
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ults\\n\\nThe revised settings prese\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"rve **retry behavior** while sho\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"rtening the timeout. The caller \"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"filters unsupported keys before \"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"applying overrides.\\n\\n```ts\\nconst\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" options = apply({ retries: 5, t\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"imeout: 250 });\\n```\\n\\n- Keep supp\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"orted defaults.\\n- Check the requ\"}}}"
+            ]
+          }
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 20,
+            "lines": [
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"est boundary.\\n- Preserve caller \"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"overrides.\\n\\nThe focused checks p\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"assed and the two-hunk edit is r\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"eady for review.\\n\"}}}"
+            ]
+          }
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 0,
+            "lines": [
+              "{\"type\":\"stream_event\",\"event\":\"content_block_stop\",\"data\":{\"type\":\"content_block_stop\",\"index\":0}}"
+            ]
+          }
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 0,
+            "lines": [
+              "{\"type\":\"stream_event\",\"event\":\"message_stop\",\"data\":{\"type\":\"message_stop\"}}",
+              "{\"type\":\"assistant\",\"message\":{\"id\":\"msg-mixed-done-${TURN}\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"### Request defaults\\n\\nThe revised settings preserve **retry behavior** while shortening the timeout. The caller filters unsupported keys before applying overrides.\\n\\n```ts\\nconst options = apply({ retries: 5, timeout: 250 });\\n```\\n\\n- Keep supported defaults.\\n- Check the request boundary.\\n- Preserve caller overrides.\\n\\n### Request defaults\\n\\nThe revised settings preserve **retry behavior** while shortening the timeout. The caller filters unsupported keys before applying overrides.\\n\\n```ts\\nconst options = apply({ retries: 5, timeout: 250 });\\n```\\n\\n- Keep supported defaults.\\n- Check the request boundary.\\n- Preserve caller overrides.\\n\\n### Request defaults\\n\\nThe revised settings preserve **retry behavior** while shortening the timeout. The caller filters unsupported keys before applying overrides.\\n\\n```ts\\nconst options = apply({ retries: 5, timeout: 250 });\\n```\\n\\n- Keep supported defaults.\\n- Check the request boundary.\\n- Preserve caller overrides.\\n\\n### Request defaults\\n\\nThe revised settings preserve **retry behavior** while shortening the timeout. The caller filters unsupported keys before applying overrides.\\n\\n```ts\\nconst options = apply({ retries: 5, timeout: 250 });\\n```\\n\\n- Keep supported defaults.\\n- Check the request boundary.\\n- Preserve caller overrides.\\n\\n### Request defaults\\n\\nThe revised settings preserve **retry behavior** while shortening the timeout. The caller filters unsupported keys before applying overrides.\\n\\n```ts\\nconst options = apply({ retries: 5, timeout: 250 });\\n```\\n\\n- Keep supported defaults.\\n- Check the request boundary.\\n- Preserve caller overrides.\\n\\nThe focused checks passed and the two-hunk edit is ready for review.\\n\"}]}}"
+            ]
+          }
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 0,
+            "lines": [
+              "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "afterTurns": "repeatLast"
+}

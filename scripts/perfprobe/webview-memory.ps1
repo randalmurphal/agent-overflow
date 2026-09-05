@@ -2,7 +2,7 @@ param(
   [Parameter(Mandatory = $true)]
   [string] $PidTypesJson,
   [Parameter(Mandatory = $true)]
-  [string] $ManifestPath,
+  [string] $IdentityJson,
   [Parameter(Mandatory = $true)]
   [int] $ExpectedBrowserPid,
   [Parameter(Mandatory = $true)]
@@ -22,21 +22,16 @@ if ($EveryMs -lt 1000 -or $EveryMs % 1000 -ne 0) {
   throw "EveryMs must be a whole number of seconds and at least 1000, got $EveryMs"
 }
 
-if (-not [System.IO.File]::Exists($ManifestPath)) { throw "Instance manifest does not exist: $ManifestPath" }
-$manifest = Get-Content -Raw -LiteralPath $ManifestPath | ConvertFrom-Json
-if ($null -eq $manifest.instanceId -or [string]::IsNullOrWhiteSpace([string] $manifest.instanceId)) {
-  throw 'Instance manifest has no instanceId'
+# The JS owner resolves all accepted manifest shapes once, before crossing
+# into PowerShell. This boundary takes one complete normalized identity.
+$identity = ConvertFrom-Json -InputObject $IdentityJson
+foreach ($field in @('instanceId', 'targetId', 'pageMarker', 'origin')) {
+  if ([string]::IsNullOrWhiteSpace([string] $identity.$field)) {
+    throw "Sampler identity has no $field"
+  }
 }
-$manifestTarget = if ($null -ne $manifest.target) { $manifest.target } else { $manifest.page }
-$manifestTargetId = if ($null -ne $manifest.targetId) { $manifest.targetId } else { $manifestTarget.id }
-$manifestMarker = if ($null -ne $manifest.pageMarker) { $manifest.pageMarker } else { $manifestTarget.pageMarker }
-if ([string]::IsNullOrWhiteSpace([string] $manifestTargetId)) { throw 'Instance manifest has no targetId' }
-if ([string]::IsNullOrWhiteSpace([string] $manifestMarker)) { throw 'Instance manifest has no page marker' }
-if ([string]::IsNullOrWhiteSpace([string] $manifest.origin) -and [string]::IsNullOrWhiteSpace([string] $manifestTarget.origin)) {
-  throw 'Instance manifest has no exact page origin'
-}
-if ($null -ne $manifest.browserPid -and [int] $manifest.browserPid -ne $ExpectedBrowserPid) {
-  throw "Instance manifest browser PID $($manifest.browserPid) does not match $ExpectedBrowserPid"
+if ([int] $identity.browserPid -ne $ExpectedBrowserPid) {
+  throw "Sampler identity browser PID $($identity.browserPid) does not match $ExpectedBrowserPid"
 }
 
 $entries = @()
@@ -120,13 +115,6 @@ function Get-ProfileProcesses {
 }
 
 function Get-ProcessType([object] $process) {
-  $processId = [int] $process.ProcessId
-  if ($typesByProcessId.ContainsKey($processId)) {
-    return [string] $typesByProcessId[$processId]
-  }
-  if ($process.CommandLine -match '(?:^|\s)--type=crashpad-handler(?:\s|$)') {
-    return 'crashpad-handler'
-  }
   $typeMatch = [regex]::Match(
     [string] $process.CommandLine,
     '(?:^|\s)--type=([^\s]+)',
@@ -136,6 +124,7 @@ function Get-ProcessType([object] $process) {
     switch ($typeMatch.Groups[1].Value.ToLowerInvariant()) {
       'renderer' { return 'renderer' }
       'gpu-process' { return 'GPU' }
+      'crashpad-handler' { return 'crashpad-handler' }
       default { return 'utility' }
     }
   }
@@ -285,7 +274,6 @@ try {
       $type = Get-ProcessType $process
       $currentTypesByProcessId[$processId] = $type
       $currentProcessesById[$processId] = $process
-      $typesByProcessId[$processId] = $type
     }
     if (-not $currentTypesByProcessId.ContainsKey($browserProcessId)) {
       throw "CDP browser PID $browserProcessId disappeared during sampling"

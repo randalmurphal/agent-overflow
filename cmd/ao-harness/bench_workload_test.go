@@ -30,7 +30,7 @@ func TestBenchWorkloadTableIsComplete(t *testing.T) {
 			t.Errorf("workload %q drives nothing", workload.Name)
 		}
 	}
-	for _, want := range []string{"burst-stream", "giant-turn", "subagent-fanout", "many-threads", "multi-pane-stream", "active-multi-pane"} {
+	for _, want := range []string{"burst-stream", "mixed-turn", "giant-turn", "subagent-fanout", "many-threads", "multi-pane-stream", "active-multi-pane"} {
 		if !names[want] {
 			t.Errorf("workload %q is missing from the table", want)
 		}

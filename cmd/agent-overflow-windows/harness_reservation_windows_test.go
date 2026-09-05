@@ -7,15 +7,24 @@ import (
 	"sync"
 	"testing"
 
+	"agent-overflow/internal/appidentity"
 	"agent-overflow/internal/harness/governor"
 )
 
 func TestWSLHomeFromBinaryRequiresCanonicalPayloadPath(t *testing.T) {
-	if got, ok := wslHomeFromBinary("/home/dev/.local/bin/agent-overflow"); !ok || got != "/home/dev" {
-		t.Fatalf("home = %q, ok=%v", got, ok)
-	}
-	if _, ok := wslHomeFromBinary("/home/dev/bin/agent-overflow"); ok {
-		t.Fatal("non-canonical payload path accepted")
+	for _, mode := range []string{"dev", "prod", "harness", "soak", "perf"} {
+		bin := "/home/dev/" + appidentity.WSLBinaryDir(mode) + "/agent-overflow"
+		if got, ok := wslHomeFromBinary(bin, mode); !ok || got != "/home/dev" {
+			t.Fatalf("%s: home = %q, ok=%v", mode, got, ok)
+		}
+		if _, ok := wslHomeFromBinary("/home/dev/bin/agent-overflow", mode); ok {
+			t.Fatal("non-canonical payload path accepted")
+		}
+		if mode != "dev" && mode != "prod" {
+			if _, ok := wslHomeFromBinary("/home/dev/.local/bin/agent-overflow", mode); ok {
+				t.Fatalf("%s accepted developer payload path", mode)
+			}
+		}
 	}
 }
 

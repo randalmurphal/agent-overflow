@@ -47,6 +47,18 @@ Env:
   Every online probe requires it. Direct script execution uses the same check.
 - `AO_PERFPROBE_LEASE`: optional lease directory override. The manifest's
   `leasePath` wins when present.
+- `AO_ALLOC_INTERVAL`: allocation sampling interval in bytes, default 1 MiB.
+  Start coarse for sustained-load hotspot discovery; use a smaller interval
+  for short focused captures. A three-minute four-pane capture at 64 KiB
+  lost its oversized `stopSampling` reply. `alloc` records interval, duration
+  and success/failure beside the raw profile, and fails if artifacts cannot
+  be written. These are sampling estimates, not exact allocation counts;
+  keep profiler runs separate from clean frame and memory measurements.
+
+`frames` records frame, JS and layout attribution by default. Use
+`--invalidations` only for short captures that need individual style
+invalidation causes; full invalidation and detailed GC tracing exhausted
+the native harness ceiling during a 75-second four-pane capture.
 
 ### Prepare a probe manifest
 
@@ -99,6 +111,9 @@ export AO_CDP_PORT="$CDP_PORT" AO_PERFPROBE_MANIFEST="$MANIFEST_WIN"
 scripts/perfprobe/probe webviewmem --for 60 --every-ms 1000
 rm -f "$MANIFEST_WSL"
 ```
+
+The Windows memory sampler receives the normalized identity from the JS
+owner, so the documented nested target shape works through both runtimes.
 
 The manifest records no token. Keep it under the selected isolated root, do
 not reuse it after the page or backend restarts, and remove it when the probe

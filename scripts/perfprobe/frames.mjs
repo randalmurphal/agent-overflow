@@ -1,11 +1,12 @@
 // devtools.timeline trace of the renderer: where frame time goes, style recalcs, forced layouts.
-// usage: probe frames [seconds=20] [label]  |  probe frames --file <wsl path to a saved trace.json>
+// usage: probe frames [seconds=20] [label] [--invalidations]  |  probe frames --file <wsl path to a saved trace.json>
 // offline-with --file
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { pad, ms, fail } from './lib/format.mjs';
 import { createFrameResolver } from './lib/sourcemap.mjs';
 
-const args = process.argv.slice(2);
+const invalidations = process.argv.includes('--invalidations');
+const args = process.argv.slice(2).filter((arg) => arg !== '--invalidations');
 const fileIdx = args.indexOf('--file');
 let data, LABEL, SECS = 0;
 
@@ -17,18 +18,25 @@ if (fileIdx >= 0) {
 } else {
   const { connectBrowser, readStream, sleep } = await import('./lib/cdp.mjs');
   SECS = +(args[0] || 20);
+  if (!Number.isFinite(SECS) || SECS <= 0) fail('frames: seconds must be positive and finite');
   LABEL = args[1] || 'run';
   const OUT = process.env.AO_PERFPROBE_OUT || '.';
   mkdirSync(OUT, { recursive: true });
   const b = await connectBrowser();
-  const cats = ['devtools.timeline', 'disabled-by-default-devtools.timeline', 'disabled-by-default-devtools.timeline.frame', 'disabled-by-default-devtools.timeline.invalidationTracking', 'disabled-by-default-devtools.timeline.stack', 'blink.user_timing', 'v8.execute', 'disabled-by-default-v8.gc'];
-  await b.send('Tracing.start', { traceConfig: { includedCategories: cats, excludedCategories: ['*'] }, transferMode: 'ReturnAsStream' });
-  await sleep(SECS * 1000);
-  const done = b.waitFor('Tracing.tracingComplete');
-  await b.send('Tracing.end');
-  const complete = await done;
-  data = await readStream(b, complete.stream);
-  b.close();
+  const cats = ['devtools.timeline', 'disabled-by-default-devtools.timeline', 'disabled-by-default-devtools.timeline.frame', 'disabled-by-default-devtools.timeline.stack', 'blink.user_timing', 'v8'];
+  // Full invalidation/GC detail exhausted the native harness's 2 GiB boundary
+  // on a sustained four-pane run. Start with frame/JS/layout attribution.
+  if (invalidations) cats.push('disabled-by-default-devtools.timeline.invalidationTracking');
+  try {
+    await b.send('Tracing.start', { traceConfig: { includedCategories: cats, excludedCategories: ['*'] }, transferMode: 'ReturnAsStream' });
+    await sleep(SECS * 1000);
+    const done = b.waitFor('Tracing.tracingComplete');
+    await b.send('Tracing.end');
+    const complete = await done;
+    data = await readStream(b, complete.stream);
+  } finally {
+    b.close();
+  }
   const out = `${OUT}\\trace-${LABEL}.json`;
   writeFileSync(out, data);
   console.log(`raw trace saved as ${out}`);
@@ -81,7 +89,8 @@ const perSec = new Map();
 for (const e of main) if (e.name === 'RunTask') { const s = Math.floor((e.ts - t0) / 1e6); perSec.set(s, (perSec.get(s) || 0) + e.dur); }
 const secs = [...perSec.entries()].sort((a, b) => b[1] - a[1]);
 console.log(`-- main-thread busy: mean ${ms(sum([...perSec.values()]) / Math.max(1, SECS))}ms/s; busiest ${secs.slice(0, 4).map(([s, us]) => `t+${s}s=${ms(us)}`).join('  ')}`);
-const frames = main.filter((e) => e.name === 'BeginMainThreadFrame').length;
+// Chromium emits this marker as an instant event, outside the X-event list.
+const frames = evs.filter((e) => e.pid === pid && e.tid === tid && e.name === 'BeginMainThreadFrame').length;
 console.log(`-- main-thread frames: ${frames} (${(frames / SECS).toFixed(1)}/s)`);
 
 const recalcs = main.filter((e) => e.name === 'UpdateLayoutTree' && e.args?.elementCount);
@@ -135,7 +144,7 @@ for (const e of evs) {
   t.us += e.dur; t.n++; t.top.set(e.name, (t.top.get(e.name) || 0) + e.dur);
   byThread.set(k, t);
 }
-console.log('-- threads by X-event time');
+console.log('-- threads by inclusive X-event duration (nested/waiting intervals, not CPU utilization)');
 for (const [k, t] of [...byThread.entries()].sort((a, b) => b[1].us - a[1].us).slice(0, 12)) {
   const tt = [...t.top.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([n, us]) => `${n}=${(us / 1000).toFixed(0)}ms`).join(' ');
   console.log(`  ${pad((t.us / 1000).toFixed(0), 7)}ms ${pad(t.n, 7)}x  ${threadNames.get(k) || k}  [${tt}]`);

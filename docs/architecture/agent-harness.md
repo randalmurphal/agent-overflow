@@ -25,6 +25,12 @@ runs. It owns `~/.agent-overflow-perf`, its own WebView2 profile, and CDP
 9226, so reset/reload/interrupt cannot land on the harness or soak by
 profile collision. See [soak-rig.md](soak-rig.md).
 
+Native isolated launches also isolate their executables: the backend and
+mock provider live at `~/.local/share/agent-overflow/<profile>/bin/`.
+They never reuse the normal launcher's cached installation path or replace
+`~/.local/bin/agent-overflow`. The staging recipe cleans up only exe names
+belonging to the profile being launched.
+
 ## Boot
 
 ```
@@ -491,17 +497,17 @@ file and answers with a plain-string `tool_result`, so triage extracts
 no diff and the card renders a disabled header — the shape most tools
 actually produce. `file-edit-diff` answers with the real Edit
 `tool_use_result` (`filePath` + a two-hunk `structuredPatch`), which is
-the only library script that makes triage persist an inline diff
-PAYLOAD, so it is the one that exercises diff rows, expand-to-load, and
-the `collapseDiffPreviews` default. Its claim is pinned by
+also used in `bench-mixed-turn`. Both persist an inline diff payload and
+exercise diff rows, expand-to-load, and the `collapseDiffPreviews` default.
+Their payload claim is pinned by
 `internal/triage/scenario_file_edit_diff_test.go`, which drives the
 scenario's own lines through the real parser and Router.
 
-Bench scripts (`bench-burst-stream`, `bench-active-stream`, `bench-giant-turn`,
-`bench-subagent-fanout`) are the load workloads, and their one shared
-difference from the soak scripts is that they TERMINATE: each ends with a
-`result` envelope so a bench can wait on turn completion instead of a
-wall clock. See the bench section below.
+Bench scripts (`bench-burst-stream`, `bench-active-stream`, `bench-mixed-turn`, `bench-giant-turn`,
+`bench-subagent-fanout`) are the load workloads. Finite scripts end with a
+`result` envelope; `bench-active-stream` runs until the benchmark interrupts
+it after the requested duration and verifies the reveal drain. This gives
+every bench an explicit completion boundary. See the bench section below.
 
 Usage-limit scripts, one per provider: `usage-limit-claude` (a
 `rate_limit_event` with `status: "rejected"` plus an `assistant` envelope
@@ -968,8 +974,10 @@ actually happened.
 
 `ao-harness bench <workload>` is a soak that ENDS: it seeds its own
 fixture, arms the perf meters, drives a scripted load, and writes
-`<dataDir>/bench/<workload>-<timestamp>.json`. Six workloads:
-`burst-stream` (chunked text-delta flood), `giant-turn` (225 items in one
+`<dataDir>/bench/<workload>-<timestamp>.json`. Seven workloads:
+`burst-stream` (chunked text-delta flood), `mixed-turn` (thinking, Read/Bash
+output, an actual inline diff and rich text at varied cadences, with natural
+completion), `giant-turn` (225 items in one
 turn), `subagent-fanout` (three bounded async subagents),
 `multi-pane-stream` (three panes each flooding at once),
 `active-multi-pane` (six panes mounted, four streaming paced rich Markdown),

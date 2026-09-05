@@ -1020,7 +1020,7 @@ func TestCachedPayloadPathRequiresAnExactVersionAndDistroMatch(t *testing.T) {
 		InstalledVer: "v1", InstalledDistro: "Ubuntu",
 		InstalledBinPath: "/home/alice/.local/bin/agent-overflow",
 	}
-	if got := cachedPayloadPath(recorded, "Ubuntu", "v1"); got != recorded.InstalledBinPath {
+	if got := cachedPayloadPath(recorded, "Ubuntu", "v1", "dev"); got != recorded.InstalledBinPath {
 		t.Fatalf("matching record: got %q, want the recorded path", got)
 	}
 	for name, cfg := range map[string]*wsldistro.Config{
@@ -1030,8 +1030,18 @@ func TestCachedPayloadPathRequiresAnExactVersionAndDistroMatch(t *testing.T) {
 		"no path recorded": {InstalledVer: "v1", InstalledDistro: "Ubuntu"},
 		"whitespace path":  {InstalledVer: "v1", InstalledDistro: "Ubuntu", InstalledBinPath: "  "},
 	} {
-		if got := cachedPayloadPath(cfg, "Ubuntu", "v1"); got != "" {
+		if got := cachedPayloadPath(cfg, "Ubuntu", "v1", "prod"); got != "" {
 			t.Errorf("%s: got %q, want no cached path", name, got)
+		}
+	}
+	for _, mode := range []string{"harness", "soak", "perf", "dev", "perf", "prod"} {
+		got := cachedPayloadPath(recorded, "Ubuntu", "v1", mode)
+		want := ""
+		if mode == "dev" || mode == "prod" {
+			want = recorded.InstalledBinPath
+		}
+		if got != want {
+			t.Fatalf("mode %s reused wrong installation: got %q, want %q", mode, got, want)
 		}
 	}
 }

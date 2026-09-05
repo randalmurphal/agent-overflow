@@ -103,6 +103,13 @@ func benchWorkloads() []benchWorkload {
 			drive:    driveOneTurn,
 		},
 		{
+			Name:     "mixed-turn",
+			Scenario: "bench-mixed-turn",
+			Summary:  "thinking, Read/Bash output, inline diff and rich text at varied cadences, completing naturally",
+			seed:     seedSingleThread,
+			drive:    driveOneTurn,
+		},
+		{
 			Name:     "giant-turn",
 			Scenario: "bench-giant-turn",
 			Summary:  "one turn producing 225 items (tool pairs plus text blocks)",

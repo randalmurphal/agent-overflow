@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"agent-overflow/internal/appidentity"
 	"agent-overflow/internal/harness/governor"
 	"agent-overflow/internal/harness/instanceinfo"
 	"agent-overflow/internal/wsllauncher"
@@ -169,7 +170,7 @@ func writeWSLContainmentEvidence(ctx context.Context, distro, binPath string, bs
 	if activeProfile == "" || bs == nil || bs.PID <= 0 {
 		return fmt.Errorf("WSL containment evidence needs an isolated backend pid")
 	}
-	home, ok := wslHomeFromBinary(binPath)
+	home, ok := wslHomeFromBinary(binPath, launcherRuntimeMode())
 	if !ok {
 		return fmt.Errorf("derive WSL home from backend path %q", binPath)
 	}
@@ -232,8 +233,8 @@ func writeWSLContainmentEvidence(ctx context.Context, distro, binPath string, bs
 	return nil
 }
 
-func wslHomeFromBinary(binPath string) (string, bool) {
-	const suffix = "/.local/bin/agent-overflow"
+func wslHomeFromBinary(binPath, mode string) (string, bool) {
+	suffix := "/" + appidentity.WSLBinaryDir(mode) + "/agent-overflow"
 	if !strings.HasSuffix(binPath, suffix) {
 		return "", false
 	}

@@ -11,19 +11,16 @@ import (
 	"agent-overflow/internal/provider/claude"
 )
 
-// TestFileEditDiffScenarioPersistsAnInlineDiffPayload pins the one claim
-// the `file-edit-diff` library scenario makes that no other scenario
-// does: its tool_result carries a real structuredPatch, so the app
-// persists a tool_result payload with an EXACT inline diff and the diff
-// card renders body rows. `file-edit` emits a plain-string tool_result,
-// which extracts to nothing — the card renders a disabled header — so
-// without this scenario there is no harness/e2e coverage of diff
-// rendering, expand-to-load, or the collapseDiffPreviews default.
-//
-// The test drives the scenario's own wire lines through the real Claude
-// parser and the real Router, the same path a live harness session
-// runs. Stripping the structuredPatch back to a plain string fails it.
+// Both fixtures must persist the real two-hunk inline diff through Claude's
+// parser and the Router. A plain-string tool result would leave a disabled
+// diff header instead of exercising body rendering and lazy payload loading.
 func TestFileEditDiffScenarioPersistsAnInlineDiffPayload(t *testing.T) {
+	for _, name := range []string{"file-edit-diff", "bench-mixed-turn"} {
+		t.Run(name, func(t *testing.T) { testScenarioInlineDiff(t, name) })
+	}
+}
+
+func testScenarioInlineDiff(t *testing.T, name string) {
 	const threadID = "t1"
 	// createTestThread pins the thread workspace at /tmp, and the mock
 	// runs with the workspace as its cwd, so ${CWD} must bind to the
@@ -34,7 +31,7 @@ func TestFileEditDiffScenarioPersistsAnInlineDiffPayload(t *testing.T) {
 		"CWD":        "/tmp",
 	}
 
-	_, s, err := scenario.LoadLibrary("file-edit-diff")
+	_, s, err := scenario.LoadLibrary(name)
 	if err != nil {
 		t.Fatalf("LoadLibrary: %v", err)
 	}

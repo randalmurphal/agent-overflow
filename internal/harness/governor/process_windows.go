@@ -5,14 +5,18 @@ package governor
 import (
 	"fmt"
 	"strconv"
+	"sync"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
-type windowsProcesses struct{}
+type windowsProcesses struct {
+	mu     sync.Mutex
+	buffer []byte
+}
 
-func (windowsProcesses) State(pid int) (ProcessState, error) {
+func (*windowsProcesses) State(pid int) (ProcessState, error) {
 	if pid <= 0 {
 		return ProcessState{}, nil
 	}
@@ -28,48 +32,97 @@ func (windowsProcesses) State(pid int) (ProcessState, error) {
 	if err := windows.GetProcessTimes(h, &created, &exited, &kernel, &user); err != nil {
 		return ProcessState{}, fmt.Errorf("harness governor: process %d creation time: %w", pid, err)
 	}
+	if exited.HighDateTime != 0 || exited.LowDateTime != 0 {
+		return ProcessState{}, nil
+	}
 	return ProcessState{Alive: true, BirthID: strconv.FormatInt(created.Nanoseconds(), 10)}, nil
 }
 
-type windowsProcessRow struct{ parent uint32 }
+type windowsProcessRow struct {
+	parent uint32
+	birth  int64
+	rss    uint64
+}
 
-func (windowsProcesses) RSS(pid int) (uint64, error) {
-	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+func (p *windowsProcesses) RSS(pid int) (uint64, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	rows, err := p.snapshot()
 	if err != nil {
-		return 0, fmt.Errorf("harness governor: process snapshot: %w", err)
+		return 0, err
 	}
-	defer windows.CloseHandle(snapshot)
-	rows := make(map[uint32]windowsProcessRow)
-	entry := windows.ProcessEntry32{Size: uint32(unsafe.Sizeof(windows.ProcessEntry32{}))}
-	if err := windows.Process32First(snapshot, &entry); err != nil {
-		return 0, fmt.Errorf("harness governor: process snapshot first: %w", err)
+	return windowsTreeRSS(uint32(pid), rows)
+}
+
+// One snapshot gives parent identity and memory without opening protected
+// system processes. Reuse its buffer across watchdog samples.
+func (p *windowsProcesses) snapshot() (map[uint32]windowsProcessRow, error) {
+	if len(p.buffer) == 0 {
+		p.buffer = make([]byte, 256*1024)
 	}
-	for {
-		rows[entry.ProcessID] = windowsProcessRow{parent: entry.ParentProcessID}
-		if err := windows.Process32Next(snapshot, &entry); err != nil {
-			if err == windows.ERROR_NO_MORE_FILES {
-				break
+	for attempt := 0; attempt < 5; attempt++ {
+		var required uint32
+		err := windows.NtQuerySystemInformation(windows.SystemProcessInformation, unsafe.Pointer(&p.buffer[0]), uint32(len(p.buffer)), &required)
+		if err == nil {
+			if required > uint32(len(p.buffer)) {
+				return nil, fmt.Errorf("harness governor: process snapshot exceeds its buffer")
 			}
-			return 0, fmt.Errorf("harness governor: process snapshot next: %w", err)
+			return decodeWindowsProcessRows(p.buffer[:required])
 		}
+		if err != windows.STATUS_INFO_LENGTH_MISMATCH {
+			return nil, fmt.Errorf("harness governor: process snapshot: %w", err)
+		}
+		size := max(uint64(len(p.buffer))*2, uint64(required)+uint64(required)/4)
+		if size > 64*1024*1024 {
+			return nil, fmt.Errorf("harness governor: process snapshot requires %d bytes", size)
+		}
+		p.buffer = make([]byte, int(size))
 	}
-	root := uint32(pid)
+	return nil, fmt.Errorf("harness governor: process snapshot kept growing during five attempts")
+}
+
+func decodeWindowsProcessRows(data []byte) (map[uint32]windowsProcessRow, error) {
+	rows := make(map[uint32]windowsProcessRow)
+	const size = int(unsafe.Sizeof(windows.SYSTEM_PROCESS_INFORMATION{}))
+	for offset := 0; ; {
+		if len(data)-offset < size {
+			return nil, fmt.Errorf("harness governor: truncated process snapshot at %d", offset)
+		}
+		entry := (*windows.SYSTEM_PROCESS_INFORMATION)(unsafe.Pointer(&data[offset]))
+		rows[uint32(entry.UniqueProcessID)] = windowsProcessRow{
+			parent: uint32(entry.InheritedFromUniqueProcessID),
+			birth:  entry.CreateTime,
+			rss:    uint64(entry.WorkingSetSize),
+		}
+		if entry.NextEntryOffset == 0 {
+			return rows, nil
+		}
+		step := uint64(entry.NextEntryOffset)
+		if step < uint64(size) || step > uint64(len(data)-offset) || step%uint64(unsafe.Alignof(*entry)) != 0 {
+			return nil, fmt.Errorf("harness governor: invalid process snapshot offset %d at %d", step, offset)
+		}
+		offset += int(step)
+	}
+}
+
+// Parent PIDs outlive their process. Follow an edge only when that parent
+// was born no later than the child; both identities come from one snapshot.
+func windowsTreeRSS(root uint32, rows map[uint32]windowsProcessRow) (uint64, error) {
 	if _, ok := rows[root]; !ok {
-		return 0, fmt.Errorf("harness governor: process %d disappeared during tree sample", pid)
+		return 0, fmt.Errorf("harness governor: process %d disappeared during tree sample", root)
 	}
-	var total uint64
+	children := make(map[uint32][]uint32)
+	for child, row := range rows {
+		children[row.parent] = append(children[row.parent], child)
+	}
 	queue := []uint32{root}
 	seen := map[uint32]bool{root: true}
-	for len(queue) > 0 {
-		current := queue[0]
-		queue = queue[1:]
-		rss, err := windowsProcessRSS(current)
-		if err != nil {
-			return 0, err
-		}
-		total += rss
-		for child, row := range rows {
-			if row.parent == current && !seen[child] {
+	var total uint64
+	for i := 0; i < len(queue); i++ {
+		current := rows[queue[i]]
+		total += current.rss
+		for _, child := range children[queue[i]] {
+			if !seen[child] && rows[child].birth >= current.birth {
 				seen[child] = true
 				queue = append(queue, child)
 			}
@@ -78,47 +131,5 @@ func (windowsProcesses) RSS(pid int) (uint64, error) {
 	return total, nil
 }
 
-type processMemoryCounters struct {
-	CB                         uint32
-	PageFaultCount             uint32
-	PeakWorkingSetSize         uintptr
-	WorkingSetSize             uintptr
-	QuotaPeakPagedPoolUsage    uintptr
-	QuotaPagedPoolUsage        uintptr
-	QuotaPeakNonPagedPoolUsage uintptr
-	QuotaNonPagedPoolUsage     uintptr
-	PagefileUsage              uintptr
-	PeakPagefileUsage          uintptr
-}
-
-var procGetProcessMemoryInfo = windows.NewLazySystemDLL("psapi.dll").NewProc("GetProcessMemoryInfo")
-
-func windowsProcessRSS(pid uint32) (uint64, error) {
-	h, err := windows.OpenProcess(windows.PROCESS_QUERY_INFORMATION|windows.PROCESS_VM_READ, false, pid)
-	if err != nil {
-		// A tree member that exited between the Toolhelp snapshot and this
-		// open holds no memory and is not a monitor failure. WebView2
-		// recycles helper processes constantly, so the gap is routine;
-		// OpenProcess reports the vanished pid as ERROR_INVALID_PARAMETER
-		// (the same contract State handles above). Erroring here tore down
-		// a healthy harness instance on 2026-08-30: the reservation layer
-		// treats a monitor error as a safety failure and quits. The Linux
-		// and Darwin samplers skip vanished members for the same reason.
-		// Owner death is still caught — the monitor rechecks the owner's
-		// identity around every RSS sample.
-		if err == windows.ERROR_INVALID_PARAMETER {
-			return 0, nil
-		}
-		return 0, fmt.Errorf("harness governor: open process %d memory: %w", pid, err)
-	}
-	defer windows.CloseHandle(h)
-	counters := processMemoryCounters{CB: uint32(unsafe.Sizeof(processMemoryCounters{}))}
-	r, _, callErr := procGetProcessMemoryInfo.Call(uintptr(h), uintptr(unsafe.Pointer(&counters)), uintptr(unsafe.Sizeof(counters)))
-	if r == 0 {
-		return 0, fmt.Errorf("harness governor: GetProcessMemoryInfo(%d): %w", pid, callErr)
-	}
-	return uint64(counters.WorkingSetSize), nil
-}
-
-func defaultProcesses() ProcessReader           { return windowsProcesses{} }
-func defaultProcessMemory() ProcessMemoryReader { return windowsProcesses{} }
+func defaultProcesses() ProcessReader           { return &windowsProcesses{} }
+func defaultProcessMemory() ProcessMemoryReader { return &windowsProcesses{} }

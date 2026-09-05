@@ -89,6 +89,20 @@ func isolatedMode(mode string) bool {
 	return mode == ModeHarness || mode == ModeSoak || mode == ModePerf
 }
 
+// WSLBinaryDir is relative to the Linux user's home, even when called on
+// Windows. Isolated launchers and their mock providers never replace the
+// installed developer backend or another profile's next provider process.
+func WSLBinaryDir(mode string) string {
+	switch mode {
+	case ModeDev, ModeProd:
+		return ".local/bin"
+	case ModeHarness, ModeSoak, ModePerf:
+		return path.Join(".local/share/agent-overflow", mode, "bin")
+	default:
+		panic(fmt.Sprintf("unknown launcher mode %q", mode))
+	}
+}
+
 // StateFileName suffixes a launcher-owned state file name for the given
 // mode. Only the isolated profile modes get their own file: dev and prod
 // deliberately share `launcher.log` / `window.json` (a developer expects

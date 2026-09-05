@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { connectBrowser, loadInstanceManifest, PORT, sleep } from './lib/cdp.mjs';
 import { acquireProbeLease } from './lib/lease.mjs';
+import { samplerIdentity } from './lib/webviewmem.mjs';
 
 const args = process.argv.slice(2);
 const valueOptions = new Set([
@@ -79,6 +80,7 @@ for (const required of ['browser', 'GPU', 'renderer']) {
   }
 }
 
+const browserPid = Number(tracked.find(({ type }) => type.toLowerCase() === 'browser').id);
 const script = path.join(path.dirname(fileURLToPath(import.meta.url)), 'webview-memory.ps1');
 const powershell = path.join(
   process.env.SystemRoot || 'C:\\Windows',
@@ -93,7 +95,7 @@ const childArgs = [
   '-ExecutionPolicy', 'Bypass',
   '-File', script,
   '-PidTypesJson', JSON.stringify(tracked),
-  '-ExpectedBrowserPid', String(tracked.find(({ type }) => type.toLowerCase() === 'browser').id),
+  '-ExpectedBrowserPid', String(browserPid),
   '-Out', out,
   '-Seconds', String(Math.ceil(seconds)),
   '-EveryMs', String(Math.round(everyMs)),
@@ -104,9 +106,9 @@ if (requiredBrowserArg) {
 }
 if (append) childArgs.push('-Append');
 
-const releaseLease = acquireProbeLease(loadInstanceManifest(), 'webviewmem', 'counter');
 const manifest = loadInstanceManifest();
-childArgs.push('-ManifestPath', manifest.manifestPath);
+childArgs.push('-IdentityJson', JSON.stringify(samplerIdentity(manifest, browserPid)));
+const releaseLease = acquireProbeLease(manifest, 'webviewmem', 'counter');
 let exitCode;
 try {
   exitCode = await new Promise((resolve, reject) => {

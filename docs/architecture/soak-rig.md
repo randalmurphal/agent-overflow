@@ -122,10 +122,13 @@ parameterised by `LAUNCH_PROFILE`): cross-compile the Linux backend and
 the Windows `.exe`, stage the exe to a versioned `%LOCALAPPDATA%` path,
 launch it through Windows. The soak leg adds two things:
 
-1. `make mockprovider`, then `cp bin/ao-mockprovider ~/.local/bin/`.
-   The WSL payload installs the backend at `~/.local/bin/agent-overflow`
+1. `make mockprovider`, then stage it at
+   `~/.local/share/agent-overflow/soak/bin/ao-mockprovider`.
+   The WSL payload installs the backend beside it as `agent-overflow`
    and `resolveMockProvider` looks *beside the running executable*
-   (`main_harness.go:318`), so that is where the mock has to be.
+   (`main_harness.go`), so that is where the mock has to be. The harness
+   and perf profiles use their own corresponding directories; none
+   replaces the installed developer binary at `~/.local/bin/agent-overflow`.
 2. `--profile soak` on the launcher's argv, which becomes
    `--soak --autopilot --launcher-pid <pid>` on the WSL backend's argv
    (`profileBackendArgs`, `cmd/agent-overflow-windows/main.go`). These
