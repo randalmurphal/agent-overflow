@@ -23,6 +23,19 @@
 // the exact-arrival write suppression in the controller.
 export const ARRIVAL_DISTANCE_PX = 1;
 
+/** Recovery is the only growth boundary allowed to skip a large glide.
+ * Compare content growth, not viewport shrinkage (e.g. the keyboard). */
+export function resolveReconnectCatchup(input: {
+  eligible: boolean;
+  growth: number;
+  distance: number;
+  viewport: number;
+  reducedMotion: boolean;
+}): 'none' | 'snap' | 'glide' {
+  if (!input.eligible || input.viewport <= 0 || input.growth <= 0 || input.distance <= ARRIVAL_DISTANCE_PX) return 'none';
+  return input.growth > input.viewport || input.reducedMotion ? 'snap' : 'glide';
+}
+
 // Auto-follow re-stick band: a DOWN-direction scroll that lands within
 // this many pixels of the bottom flips the user back to sticky, and the
 // same tolerance decides "the DOM is already pinned" for the engine

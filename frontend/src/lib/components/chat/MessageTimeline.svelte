@@ -5,6 +5,7 @@
     ThreadPane,
   } from '../../stores/thread.svelte';
   import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';
+  import { installTimelineReconnect } from './timelineReconnect';
   import { createContentGeometryNotifier } from '../../utils/scroll/contentGeometryNotifier';
   import { getSettings } from '../../stores/settings.svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
@@ -296,6 +297,11 @@
     // offset its compensations are computed from never trails a glide
     // by a frame (see VirtualEngine.noteScrollOffset).
     onScrollTopWritten: (top) => listRef?.noteScrollTopWritten(top),
+  });
+
+  $effect(() => {
+    pane.threadId;
+    return installTimelineReconnect({ pane, stick, getList: () => listRef });
   });
 
   function markMarkdownSettled(): void {

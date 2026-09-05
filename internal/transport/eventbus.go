@@ -403,6 +403,19 @@ func encodeEventFrame(evt Event) ([]byte, error) {
 // invoke Replay(lastSeqByChannel) which returns a slice of missed
 // events plus gap markers.
 func (b *EventBus) Subscribe() *Subscriber {
+	s, _ := b.subscribe(false)
+	return s
+}
+
+// SubscribeWithReplayBaseline captures the channel heads at the same instant
+// delivery begins. Zero is meaningful: a channel's first event may occur
+// while the client is disconnected. Reading heads after subscribing would
+// let the baseline skip buffered events; reading before would leave a gap.
+func (b *EventBus) SubscribeWithReplayBaseline() (*Subscriber, map[string]uint64) {
+	return b.subscribe(true)
+}
+
+func (b *EventBus) subscribe(captureBaseline bool) (*Subscriber, map[string]uint64) {
 	s := &Subscriber{
 		ch:     make(chan Event, b.subBuf),
 		done:   make(chan struct{}),
@@ -412,13 +425,25 @@ func (b *EventBus) Subscribe() *Subscriber {
 	if b.closed.Load() {
 		b.mu.Unlock()
 		s.close()
-		return s
+		return s, nil
+	}
+	var baseline map[string]uint64
+	if captureBaseline {
+		baseline = make(map[string]uint64, len(channelPolicies))
+		for _, policy := range channelPolicies {
+			channel := string(policy.Channel)
+			var seq uint64
+			if r := b.rings[channel]; r != nil {
+				seq = r.seq
+			}
+			baseline[channel] = seq
+		}
 	}
 	b.subs[s] = struct{}{}
 	b.subList = append(b.subList, s)
 	s.bus = b
 	b.mu.Unlock()
-	return s
+	return s, baseline
 }
 
 // SubscriberCount returns the current number of registered subscribers.

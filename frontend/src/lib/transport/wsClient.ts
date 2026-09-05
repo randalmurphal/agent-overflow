@@ -866,6 +866,8 @@ export class WSClient {
   private readonly subscribers = new Map<string, Set<EventHandler>>();
   private readonly statusHandlers = new Set<StatusHandler>();
   private readonly helloHandlers = new Set<HelloHandler>();
+  private readonly replayHandlers = new Set<(phase: 'start' | 'complete' | 'cancel') => void>();
+  private recoveringReplay = false;
   // The most recent hello. Survives a disconnect on purpose: the same
   // backend is what the ladder is trying to reach, so clearing it would
   // make every capability read flap to "unsupported" for the length of
@@ -1228,6 +1230,21 @@ export class WSClient {
     };
   }
 
+  /** Reconnect replay boundaries, excluding the initial connection. */
+  onReplay(handler: (phase: 'start' | 'complete' | 'cancel') => void): () => void {
+    this.replayHandlers.add(handler);
+    return () => { this.replayHandlers.delete(handler); };
+  }
+
+  private publishReplay(phase: 'start' | 'complete' | 'cancel'): void {
+    if (phase !== 'start' && !this.recoveringReplay) return;
+    this.recoveringReplay = phase === 'start';
+    for (const handler of this.replayHandlers) {
+      try { handler(phase); }
+      catch (err) { console.warn('wsClient: replay handler threw', err); }
+    }
+  }
+
   /** What the backend said about itself in its hello frame, or null if
    *  none has arrived (including against a backend too old to send one). */
   getHello(): TransportHello | null {
@@ -1397,6 +1414,7 @@ export class WSClient {
   // it set would hand every later ensureConnected a promise for a socket
   // that is gone.
   private detachSocket(): void {
+    this.publishReplay('cancel');
     const ws = this.ws;
     if (ws === null) return;
     this.ws = null;
@@ -1504,6 +1522,7 @@ export class WSClient {
   // and subscribes reject / no-op. Used by tests; the production
   // singleton is never closed during normal operation.
   close(): void {
+    this.publishReplay('cancel');
     this.closed = true;
     this.detachLifecycleListeners?.();
     this.stopStaleWatchdog();
@@ -1912,6 +1931,7 @@ export class WSClient {
     // seq jump the replay answer may legitimately produce on this
     // channel isn't mistaken for a mid-connection drop (see ChannelCursor).
     this.connectionEpoch += 1;
+    if (this.connectionEpoch > 1) this.publishReplay('start');
     // NOT a backoff reset: reaching OPEN only proves the handshake
     // succeeded, and an accept-then-close server would pin the ladder
     // at its floor. handleSocketClose resets it once the connection
@@ -2087,6 +2107,7 @@ export class WSClient {
       }));
       return;
     }
+    this.publishReplay('cancel');
     this.stopStaleWatchdog();
     this.serverSendsHeartbeats = false;
     // Backoff reset on STABILITY, not on open: a connection that
@@ -2591,6 +2612,7 @@ export class WSClient {
       this.notificationReplayBuffer = [];
       this.notificationReplayPending = false;
       for (const event of buffered) this.handleEventEntry(event);
+      this.publishReplay('complete');
       return;
     }
     // A frame type this build has never heard of. Expected, not
@@ -2650,6 +2672,25 @@ export class WSClient {
   // look like a backend with no capabilities at all. Unknown FIELDS are
   // ignored for free: nothing here enumerates the object.
   private applyHello(frame: ServerHelloFrame): void {
+    // Seed quiet channels too: receiving turn_started does not imply this
+    // client has ever seen turn_completed. Its first completion can land
+    // during an outage. Never advance an existing cursor from a new hello,
+    // which would suppress the very events reconnect is replaying.
+    const baseline = frame.replayBaseline;
+    if (baseline && typeof baseline === 'object' && !Array.isArray(baseline)) {
+      let examined = 0;
+      for (const channel in baseline) {
+        if (++examined > MAX_TRACKED_REPLAY_CHANNELS) break;
+        if (!Object.hasOwn(baseline, channel)
+          || channel === NOTIFICATION_ACTIVATED_CHANNEL
+          || this.lastSeqByChannel.has(channel)
+          || this.lastSeqByChannel.size >= MAX_TRACKED_REPLAY_CHANNELS) continue;
+        const seq = baseline[channel];
+        if (channel.length > 0 && Number.isSafeInteger(seq) && seq >= 0) {
+          this.recordChannelSeq(channel, seq);
+        }
+      }
+    }
     const capabilities = Array.isArray(frame.capabilities)
       ? frame.capabilities.filter((c): c is string => typeof c === 'string')
       : [];

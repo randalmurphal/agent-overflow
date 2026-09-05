@@ -30,7 +30,8 @@ export type ScrollWriteCaller =
   | 'forceStick'
   | 'preserveScrollAnchor'
   | 'pauseAutoScroll.release'
-  | 'requestBottom';
+  | 'requestBottom'
+  | 'reconnect.catchup';
 
 /**
  * Physics class of every write caller:
@@ -78,6 +79,7 @@ export const SCROLL_WRITE_CALLER_PHYSICS: Record<
   preserveScrollAnchor: 'placement',
   'pauseAutoScroll.release': 'placement',
   requestBottom: 'placement',
+  'reconnect.catchup': 'placement',
 };
 
 /**
@@ -116,6 +118,11 @@ export interface RequestBottomOptions {
    * spring-cancel half of a `'claim'` still happens first.
    */
   write?: () => void;
+}
+
+export interface ReconnectScrollRecovery {
+  finish(): void;
+  cancel(): void;
 }
 
 /**
@@ -267,6 +274,8 @@ export interface UseStickToBottomController {
    * the release that ends the pause performs the real re-pin.)
    */
   requestBottom(opts: RequestBottomOptions): void;
+  /** Hold bottom-follow across replay; finish after recovered layout commits. */
+  beginReconnectRecovery(): ReconnectScrollRecovery;
 
   /** Bind the controller to its scroll container and measured content element. */
   attach(scrollEl: HTMLElement, contentEl: HTMLElement): void;

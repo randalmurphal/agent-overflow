@@ -425,8 +425,17 @@ needs no "have I been told yet" branch on every other frame. Racing it
 against the pump would make that guarantee probabilistic.
 
 It carries `protocolVersion`, `capabilities`, `backendId`,
-`backendName`, `serverTimeMs`, and the three bundle fields
+`backendName`, `serverTimeMs`, `replayBaseline`, and the three bundle fields
 (`bundleId`, `bundleVersion`, `minShellBuild`).
+
+`replayBaseline` captures every registered channel's head (including zero)
+atomically with subscribing to live delivery, filtered by the same audience
+and scope gates as events. Clients seed only missing cursors; a reconnect's
+hello must never advance existing cursors past events missed during the
+outage. Tracking only previously received channels loses a channel's first
+event during disconnect — notably `turn_completed`, leaving a finished turn
+looking active. Baselines describe the subscription boundary, not historical
+delivery; `notification:activated` retains its separate cold-launch replay.
 
 - **Nothing gates on the version.** Features negotiate through capability
   flags: a client asks "does this backend have X" and degrades on the

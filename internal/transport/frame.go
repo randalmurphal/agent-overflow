@@ -149,6 +149,10 @@ const CapabilityBrowser = "browser"
 // future-dialect fixture in the TS suite.
 type helloFrame struct {
 	Type string `json:"type"`
+	// ReplayBaseline names every visible registered channel, including heads
+	// at zero, at this connection's subscription boundary. Clients seed only
+	// missing cursors: an existing cursor still names an outage to recover.
+	ReplayBaseline map[string]uint64 `json:"replayBaseline,omitempty"`
 	// ProtocolVersion states the dialect; see the constant.
 	ProtocolVersion int `json:"protocolVersion"`
 	// Capabilities is always present, never null: an empty JSON array

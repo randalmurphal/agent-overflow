@@ -269,7 +269,7 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 	}
 	ws.SetReadLimit(settings.readLimit)
 
-	sub := bus.Subscribe()
+	sub, replayBaseline := bus.SubscribeWithReplayBaseline()
 	// Arm enqueue-time origin filtering before the pump starts:
 	// channels this origin can never see must not consume the
 	// subscriber's buffer slots during bursts (they'd force drops of
@@ -362,7 +362,15 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 	// A failed write means the peer is already gone. Nothing to recover:
 	// return and let the deferred teardown run, rather than serving a
 	// connection whose first frame never arrived.
-	if err := h.writeHello(connCtx, settings.hello); err != nil {
+	// Sequence metadata has the same audience and grant boundary as events.
+	for channel := range replayBaseline {
+		if !h.eventVisible(channel) {
+			delete(replayBaseline, channel)
+		}
+	}
+	hello := settings.hello
+	hello.ReplayBaseline = replayBaseline
+	if err := h.writeHello(connCtx, hello); err != nil {
 		log.Printf("transport: ws %s hello write failed: %s", profile.remoteAddr, closeReason(err))
 		return
 	}

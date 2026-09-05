@@ -137,6 +137,8 @@ export interface ScrollIntentDeps {
    * requires.
    */
   noteUserScroll(top: number): void;
+  /** Accepted outer-scroll intent, before the browser moves. */
+  onScrollInput?(): void;
 }
 
 export interface ScrollIntent {
@@ -270,6 +272,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
   }
 
   function recordRecentDownIntent(source: 'wheel' | 'key' | 'touch'): void {
+    deps.onScrollInput?.();
     if (!deps.escaped()) return;
     clearProgrammaticScrollState();
     restoreSnapArmed = false;
@@ -424,6 +427,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
   function escapeFromUserInput(source: 'wheel' | 'key' | 'touch' | 'pointer'): void {
     const scrollEl = deps.getScrollEl();
     if (!scrollEl) return;
+    deps.onScrollInput?.();
     clearProgrammaticScrollState();
     if (source !== 'pointer') clearScrollbarDragSession();
     if (!deps.escaped() && isUiRenderTraceEnabled()) {

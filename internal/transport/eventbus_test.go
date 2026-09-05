@@ -11,6 +11,59 @@ import (
 	"agent-overflow/internal/eventchan"
 )
 
+func TestEventBus_ReplayBaselineCoversQuietChannelsAtSubscription(t *testing.T) {
+	bus := NewEventBus(0)
+	defer bus.Close()
+	started := string(eventchan.ProviderTurnStarted)
+	completed := string(eventchan.ProviderTurnCompleted)
+	bus.Emit(eventchan.ProviderTurnStarted, "before attach")
+	sub, baseline := bus.SubscribeWithReplayBaseline()
+	defer sub.Close()
+	if seq, ok := baseline[completed]; !ok || seq != 0 {
+		t.Fatalf("quiet completion baseline = %d, present %v", seq, ok)
+	}
+	if baseline[started] != 1 {
+		t.Fatalf("started baseline = %d, want 1", baseline[started])
+	}
+	if len(baseline) > MaxReplayChannels {
+		t.Fatalf("registered channels exceed the replay request limit: %d", len(baseline))
+	}
+	bus.Emit(eventchan.ProviderTurnCompleted, "finished during outage")
+	replay := bus.Replay(baseline)
+	if len(replay) != 1 || replay[0].Channel != completed || replay[0].Seq != 1 || replay[0].Gap {
+		t.Fatalf("first completion must replay, pre-attach activity must not: %+v", replay)
+	}
+}
+
+func TestEventBus_ReplayBaselineAndLiveDeliveryHaveOneBoundary(t *testing.T) {
+	bus := NewEventBus(0)
+	defer bus.Close()
+	const channel = eventchan.ProviderTurnCompleted
+	for range 100 {
+		start := make(chan struct{})
+		done := make(chan Event, 1)
+		go func() {
+			<-start
+			event, _ := bus.Emit(channel, nil)
+			done <- event
+		}()
+		close(start)
+		sub, baseline := bus.SubscribeWithReplayBaseline()
+		emitted := <-done
+		select {
+		case delivered := <-sub.Events():
+			if delivered.Seq != baseline[string(channel)]+1 {
+				t.Fatalf("baseline skipped live delivery: baseline %v, event %+v", baseline, delivered)
+			}
+		default:
+			if baseline[string(channel)] != emitted.Seq {
+				t.Fatalf("event absent from both baseline and delivery: baseline %v, event %+v", baseline, emitted)
+			}
+		}
+		sub.Close()
+	}
+}
+
 func TestEventBus_EmitAssignsSeq(t *testing.T) {
 	bus := NewEventBus(0)
 	defer bus.Close()

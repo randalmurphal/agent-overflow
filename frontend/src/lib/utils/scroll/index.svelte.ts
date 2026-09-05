@@ -69,6 +69,7 @@ import {
   AUTO_FOLLOW_BOTTOM_EPSILON_PX,
   SPRING_OVERSHOOT_INSTANT_SNAP_THRESHOLD_PX,
   resolveEngineCompensation,
+  resolveReconnectCatchup,
   withinArrivalBand,
   type EngineCompensationObservation,
   type ResolverState,
@@ -79,6 +80,7 @@ import { nowMs } from './time';
 import { trace } from './trace';
 import type {
   RequestBottomOptions,
+  ReconnectScrollRecovery,
   ScrollObservationKind,
   ScrollWriteCaller,
   UseStickToBottomController,
@@ -154,6 +156,7 @@ export function createUseStickToBottomController(
   let escapedFromLockState = false;
   let escapeRevision = $state(0);
   let pauseDepth = $state(0);
+  let scrollInputRevision = 0;
 
   // ===== Internal bookkeeping (non-reactive) =====
   // Intent state (down-intent windows, drag sessions, the programmatic
@@ -561,7 +564,11 @@ export function createUseStickToBottomController(
     spring,
     sampleResizeCorrelation: observers.sampleResizeCorrelation,
     resizeDifferenceNow: observers.resizeDifferenceNow,
-    noteUserScroll: chokepoint.noteUserScroll,
+    noteUserScroll: (top) => {
+      scrollInputRevision += 1;
+      chokepoint.noteUserScroll(top);
+    },
+    onScrollInput: () => { scrollInputRevision += 1; },
   });
 
   // Snapshot of the flags the pure delivery resolver decides over.
@@ -993,7 +1000,7 @@ export function createUseStickToBottomController(
     }
   }
 
-  function pauseAutoScroll(): () => void {
+  function pauseAutoScroll(repin = true): () => void {
     pauseDepth += 1;
     if (isUiRenderTraceEnabled()) trace('scroll.pause.acquire', () => ({
       pauseDepth,
@@ -1005,7 +1012,7 @@ export function createUseStickToBottomController(
       if (released) return;
       released = true;
       pauseDepth = Math.max(0, pauseDepth - 1);
-      const willRepin = pauseDepth === 0
+      const willRepin = repin && pauseDepth === 0
         && !escapedFromLockState
         && isAtBottomState;
       if (isUiRenderTraceEnabled()) trace('scroll.pause.release', () => ({
@@ -1037,6 +1044,54 @@ export function createUseStickToBottomController(
         // engaged spring own the toggle's height delta instead).
         requestBottom({ takeover: 'yield', caller: 'pauseAutoScroll.release' });
       }
+    };
+  }
+
+  function beginReconnectRecovery(): ReconnectScrollRecovery {
+    const surface = scrollEl;
+    const content = contentEl;
+    const followed = isAtBottomState && !escapedFromLockState && pauseDepth === 0;
+    const inputRevision = scrollInputRevision;
+    const initialEscapeRevision = escapeRevision;
+    const before = content?.getBoundingClientRect();
+    const release = followed ? pauseAutoScroll(false) : () => {};
+    if (followed) spring.cancel();
+    let done = false;
+    return {
+      cancel() {
+        if (done) return;
+        done = true;
+        release();
+      },
+      finish() {
+        if (done) return;
+        done = true;
+        release();
+        if (!surface || !content || surface !== scrollEl || content !== contentEl || !before) return;
+        const after = content.getBoundingClientRect();
+        const style = getComputedStyle(surface);
+        const viewport = surface.clientHeight
+          - (Number.parseFloat(style.paddingTop) || 0)
+          - (Number.parseFloat(style.paddingBottom) || 0);
+        const target = targetScrollTop();
+        const decision = resolveReconnectCatchup({
+          eligible: followed && isAtBottomState && !escapedFromLockState && pauseDepth === 0
+            && scrollInputRevision === inputRevision && escapeRevision === initialEscapeRevision
+            && Math.abs(after.width - before.width) <= 1,
+          growth: after.height - before.height,
+          distance: target - surface.scrollTop,
+          viewport,
+          reducedMotion: motionReduced(),
+        });
+        if (decision === 'none') return;
+        spring.clearStopRequest();
+        if (decision === 'snap') {
+          spring.cancel();
+          writeScrollTop('reconnect.catchup', target, target);
+        } else {
+          spring.start();
+        }
+      },
     };
   }
 
@@ -1170,6 +1225,7 @@ export function createUseStickToBottomController(
     detach,
     forceStick,
     requestBottom,
+    beginReconnectRecovery,
     markAtBottom,
     setEscapedFromLock: intent.setEscapedFromLock,
     armWarmup: observers.beginWarmup,

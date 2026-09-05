@@ -44,6 +44,8 @@ import {
 import { dropAllThreadHistoryStamps } from './threadHistoryStamps';
 import { threadItemCache } from './threadItemCache';
 import type { ThreadPaneIngest } from './threadPaneRoles';
+import { holdBackendRecovery } from './transportRecovery';
+import { threadMachine } from './attachedBackends.svelte';
 
 // The registry hands out whole ThreadPanes; this module narrows them to
 // the ingest surface at the one acquisition point, so a new pane member
@@ -153,7 +155,7 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
       // way the usage branch below does.
       for (const pane of ingestPanes()) {
         if (!pane.threadId) continue;
-        void pane.refreshFromBackend();
+        holdBackendRecovery(threadMachine(pane.threadId, pane.thread?.projectId), pane.refreshFromBackend());
       }
       return;
     }
@@ -284,7 +286,7 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
       dropStampsAfterGap();
       for (const pane of ingestPanes()) {
         if (!pane.threadId) continue;
-        void pane.refreshFromBackend();
+        holdBackendRecovery(threadMachine(pane.threadId, pane.thread?.projectId), pane.refreshFromBackend());
       }
       return;
     }
@@ -394,7 +396,7 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
         const channelId = pane.thread?.discussionId;
         if (!channelId || seenChannelIds.has(channelId)) continue;
         seenChannelIds.add(channelId);
-        void fetchDiscussionChannelSnapshot(channelId).then(({ state, messages }) => {
+        const refresh = fetchDiscussionChannelSnapshot(channelId).then(({ state, messages }) => {
           for (const p of ingestPanes()) {
             if (p.thread?.discussionId !== channelId) continue;
             p.applyChannelState(state);
@@ -403,6 +405,7 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
         }).catch((err: unknown) => {
           console.warn(`events: refresh discussion channel ${channelId} after transport gap: ${err}`);
         });
+        if (pane.threadId) holdBackendRecovery(threadMachine(pane.threadId, pane.thread?.projectId), refresh);
       }
       return;
     }
@@ -417,7 +420,7 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
       refreshSidebarProjections();
       for (const pane of ingestPanes()) {
         if (!pane.threadId) continue;
-        void pane.refreshFromBackend();
+        holdBackendRecovery(threadMachine(pane.threadId, pane.thread?.projectId), pane.refreshFromBackend());
       }
   }
 }

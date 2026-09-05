@@ -161,7 +161,7 @@ export interface ThreadStreamingReveal {
   disposeSmootherFor(itemId: string): void;
   disposeSmoothersForItems(items: readonly { id: string }[]): void;
   disposeAll(): void;
-  /** visibilitychange snap (body of pane's snapSmoothersToReceived, incl. its recomputeReveal). */
+  /** Resume/reconnect catch-up (pane's snapSmoothersToReceived, incl. its recomputeReveal). */
   snapAllToReceived(): void;
   /**
    * Full revealed text for a reasoning-tail row, or null. Live while the
@@ -445,6 +445,8 @@ export function createThreadStreamingReveal(
    * reveal gate reintroduced the lag, so this restores the prior behavior on
    * resume without giving up the live-streaming animation.
    *
+   * Completed reconnect recovery uses this same drain after replay and gap
+   * snapshots land, so scroll measurement includes the full recovered text.
    * Snapping catches the visible text up to the wire in one frame. Still-
    * streaming rows resume live animation from there (snap leaves the smoother
    * usable); terminal rows dispose through the same onReveal cleanup any

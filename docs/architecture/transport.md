@@ -122,6 +122,14 @@ history from SQLite, so when a reconnecting client asks for something the ring
 no longer holds, the honest answer is "re-fetch through the list endpoints".
 That answer is `gap:true` on the next frame for that channel.
 
+The first hello carries `replayBaseline`: the heads of all registered channels
+visible to this connection, captured atomically with its live subscription.
+Zero heads include channels that have never emitted. The client seeds only
+missing cursors, so a channel's first event during an outage is replayable
+without fetching historical activity from before attachment. Existing cursors
+survive reconnect hello unchanged. The local `notification:activated` channel
+keeps its separate cold-launch checkpoint instead of adopting this baseline.
+
 ### A cursor can fall outside the ring at either end
 
 - **Below the oldest retained seq.** Eviction lost what the client wanted. The

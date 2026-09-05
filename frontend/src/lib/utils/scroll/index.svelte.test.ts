@@ -124,6 +124,61 @@ describe('createUseStickToBottomController', () => {
     vi.restoreAllMocks();
   });
 
+  describe('reconnect recovery', () => {
+    beforeEach(() => {
+      vi.spyOn(contentEl, 'getBoundingClientRect').mockImplementation(() => ({
+        height: geom.contentHeight, width: 400,
+      } as DOMRect));
+      controller.skipWarmup();
+    });
+
+    it('accumulates small batches into one large catch-up snap', () => {
+      const recovery = controller.beginReconnectRecovery();
+      for (let i = 0; i < 3; i++) {
+        geom.contentHeight += 250;
+        geom.scrollHeight += 250;
+        controller.observe('live-content');
+        expect(geom.scrollTop).toBe(400);
+      }
+      recovery.finish();
+      expect(geom.scrollTop).toBe(1150);
+      expect(controller.isAtBottom).toBe(true);
+    });
+
+    it('glides through a small catch-up instead of snapping', async () => {
+      const recovery = controller.beginReconnectRecovery();
+      geom.contentHeight += 100;
+      geom.scrollHeight += 100;
+      recovery.finish();
+      expect(geom.scrollTop).toBe(400);
+      expect(controller.autoScrollInFlight()).toBe(true);
+      await nextFrame();
+      await nextFrame();
+      expect(geom.scrollTop).toBeGreaterThan(400);
+      expect(geom.scrollTop).toBeLessThan(500);
+    });
+
+    it.each(['reading', 'up', 'down', 'cancel'] as const)('preserves user position: %s', (action) => {
+      if (action === 'reading') controller.setEscapedFromLock(true);
+      const recovery = controller.beginReconnectRecovery();
+      if (action === 'up' || action === 'down') {
+        scrollEl.dispatchEvent(new WheelEvent('wheel', { deltaY: action === 'up' ? -100 : 100 }));
+      }
+      if (action === 'cancel') recovery.cancel();
+      geom.contentHeight += 1200;
+      geom.scrollHeight += 1200;
+      recovery.finish();
+      expect(geom.scrollTop).toBe(400);
+    });
+
+    it('does not mistake a keyboard resize for recovered content', () => {
+      const recovery = controller.beginReconnectRecovery();
+      geom.clientHeight = 100;
+      recovery.finish();
+      expect(geom.scrollTop).toBe(400);
+    });
+  });
+
   function getRO(): MockResizeObserver {
     const ro = MockResizeObserver.instances.at(-1);
     if (!ro) throw new Error('no ResizeObserver was created');

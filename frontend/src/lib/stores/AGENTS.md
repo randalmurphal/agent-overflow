@@ -94,6 +94,10 @@ stops waking readers.
   generics and teardown order, and fans each channel out to the
   `events*.ts` module that owns the reaction. Add a channel there, put the
   reaction in a domain module, and never subscribe from a component.
+  `transportRecovery.ts` owns the reconnect lifecycle boundary beside the
+  connection-status mirror. Gap handlers register their snapshot promises
+  with `holdBackendRecovery`; completion is per backend and waits for those
+  reads. It retains promises only during recovery, never event payloads.
 - `watchedThreads.ts` decides which threads the backend keeps pushing the
   entity-filtered channels for (`transport/entityFilteredChannels.ts`). It is
   a leaf that unions REGISTERED SOURCES rather than importing the stores it

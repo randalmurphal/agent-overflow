@@ -154,6 +154,18 @@ func TestScopedConnectionReceivesOnlyGrantedChannels(t *testing.T) {
 		}
 	})
 	conn := f.dial(t)
+	var hello helloFrame
+	if err := json.Unmarshal(readFirstFrame(t, conn), &hello); err != nil {
+		t.Fatal(err)
+	}
+	if seq, ok := hello.ReplayBaseline[string(eventchan.ProviderTurnCompleted)]; !ok || seq != 0 {
+		t.Fatalf("hello must baseline the unseen, granted completion channel: %+v", hello.ReplayBaseline)
+	}
+	for _, channel := range []eventchan.Channel{eventchan.TerminalOutput, eventchan.ProviderAccount, eventchan.GitStatus} {
+		if _, ok := hello.ReplayBaseline[string(channel)]; ok {
+			t.Errorf("hello leaked sequence metadata outside session grants: %s", channel)
+		}
+	}
 
 	// The dial returns on the 101; the connection's subscriber attaches a
 	// moment later. Emitting into that window delivers to nobody — a live

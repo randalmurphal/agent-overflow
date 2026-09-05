@@ -59,6 +59,23 @@ remote browser alike. Protocol and authz rules:
   code that issues RPCs or subscribes resolves a transport instead of
   importing this singleton.
 
+  **Quiet channels need replay cursors too.** The server hello's
+  `replayBaseline` seeds missing channel cursors at the subscription boundary,
+  including zero for channels never emitted. Otherwise a phone disconnected
+  during its first turn cannot replay its first `turn_completed` and remains
+  visibly working after the response arrives. Never advance existing cursors
+  from a reconnect hello: those still name the missed interval. Validate and
+  cap the baseline like event cursors. `notification:activated` is excluded
+  because its cold-launch replay deliberately reaches before subscription.
+
+  **Replay has a presentation boundary.** `onReplay` reports start on a
+  reconnect (never the first connection), complete after `replay-complete`,
+  and cancel on socket loss or close. It carries no payloads and changes no
+  cursor rules. `stores/transportRecovery.ts` extends completion through
+  pending gap snapshot reads per backend; timelines consume that boundary
+  to catch up once, rather than treating each replay batch as live scrolling.
+  Disconnect must also cancel presentation waiting on snapshots or layout.
+
   **Every transport failure rejects as `DisconnectedError`, and the cause
   travels in `message`.** The close code, the peer's close reason, and any
   preceding socket error are rendered into the message text as well as

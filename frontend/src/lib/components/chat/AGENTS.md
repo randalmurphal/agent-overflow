@@ -49,6 +49,15 @@ engaged, the one deliberate divergence from "a send never yanks a
 scrolled-up reader", because the height the reader was parked at measured
 rows the revert destroyed. Failure branches leave the scroll untouched.
 
+`timelineReconnect.ts` brackets backend recovery for chat and discussion.
+The wire replay-complete marker waits for gap-triggered snapshot reads in
+`stores/transportRecovery.ts`; connection-open alone is not caught up.
+Recovered text drains to received state once, then the scroll controller
+measures the combined content growth. Over one content viewport snaps only
+for an unchanged bottom-follow intent; smaller growth glides. Reader input,
+thread switches, backend detach, or another disconnect invalidate the pending
+placement. Keep normal live growth out of this recovery-only policy.
+
 ## Row contract
 
 Expanded command rows show the complete command before output, including

@@ -8,6 +8,7 @@
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';
+  import { installTimelineReconnect } from '../chat/timelineReconnect';
   import { createContentGeometryNotifier } from '../../utils/scroll/contentGeometryNotifier';
   import { isLiveContentActive, LIVE_CONTENT_ACTIVE_HOLD_MS } from '../../utils/liveContentActivity';
   import { relativeTime } from '../../utils/format';
@@ -59,6 +60,12 @@
   const stick = createUseStickToBottomController({
     liveContentActive: channelLiveContentActive,
     onContentGeometryProcessed: scrollbarGeometry.notify,
+  });
+
+  $effect(() => {
+    pane.threadId;
+    channelId;
+    return installTimelineReconnect({ pane, stick });
   });
 
   let messages = $derived(pane.channelMessages);

@@ -169,6 +169,16 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     old clamp left is exactly the workspace-return animation the user
     ruled out (2026-08-22). Distance alone never snaps; growth arriving
     after the snap ramps up as a cold onset.
+    Network catch-up has a separate, explicit boundary: the transport's
+    replay completion plus any gap-triggered snapshot reads. The mounted
+    timeline's `timelineReconnect.ts` holds existing bottom-follow through
+    recovery, snaps received text out of the reveal queue, then releases
+    after the layout flush. `beginReconnectRecovery` compares accumulated
+    content growth with the content-box viewport: more than one viewport
+    places the bottom (`reconnect.catchup`), smaller growth starts a glide.
+    Keyboard height changes are not content growth. Existing reader escape,
+    any new outer-scroll input, width reflow, or a cancelled recovery prevents
+    that placement. The same controller contract serves discussion timelines.
     Every pane spring schedules through `utils/animationFrameBatcher.ts`, the
     app-wide native-rAF coordinator also used by streaming reveal and nav-rail
     sync. Spring callbacks use `before-dom-update`; reveal and rail callbacks

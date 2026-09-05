@@ -1353,7 +1353,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
 
     // Snap every behind smoother straight to its full received text on
-    // visibilitychange → visible. See threadStreamingReveal.svelte.ts
+    // visibilitychange → visible or completed reconnect recovery. See threadStreamingReveal.svelte.ts
     // `snapAllToReceived` for the full rationale.
     snapSmoothersToReceived(): void {
       streamingReveal.snapAllToReceived();

@@ -66,6 +66,8 @@ export interface ServerPingFrame {
 // capabilities" and degrades rather than guessing.
 export interface ServerHelloFrame {
   type: 'hello';
+  /** Channel heads when this socket subscribed, including never-emitted channels. */
+  replayBaseline?: Record<string, number>;
   protocolVersion: number;
   capabilities: string[];
   backendId?: string;
