@@ -93,6 +93,18 @@ describe('<CommandOutput>', () => {
     expect(pre.innerHTML).not.toContain('\u001b[');
   });
 
+  it('expands the complete multiline command even before output exists', async () => {
+    const command = 'git status --short\nprintf "%s\\n" "a long argument that must remain readable"';
+    const preview = setBindingMock('GetPayloadPreview', async () => { throw new Error('no payload'); });
+    const { getByTestId } = render(CommandOutput, { props: {
+      item: makeItem({ kind: 'tool_call', status: 'running' }),
+      meta: commandMeta({ command }),
+    } });
+    await fireEvent.click(getByTestId('command-output-toggle'));
+    expect(getByTestId('command-output-full-command').textContent).toBe(command);
+    expect(preview).not.toHaveBeenCalled();
+  });
+
   it('escapes raw HTML payloads so script tags never become live nodes', async () => {
     setBindingMock('GetPayloadPreview', async () => ({
       data: '<script>alert(1)</script>',

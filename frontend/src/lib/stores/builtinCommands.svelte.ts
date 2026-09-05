@@ -234,6 +234,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
 
   registerCommand({
     id: 'palette.close',
+    dismissesSurface: true,
     label: 'Command Palette: Close',
     icon: '✕',
     when: 'paletteOpen',
@@ -254,6 +255,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
 
   registerCommand({
     id: 'help.keybindings.close',
+    dismissesSurface: true,
     label: 'Help: Close Keyboard Shortcuts',
     when: 'cheatSheetOpen',
     run: () => closeCheatSheet(),
@@ -742,6 +744,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
 
   registerCommand({
     id: 'search.messages.close',
+    dismissesSurface: true,
     label: 'Search: Close Messages',
     when: 'messageSearchOpen',
     run: () => closeMessageSearch(),
@@ -760,6 +763,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
 
   registerCommand({
     id: 'thread.search.close',
+    dismissesSurface: true,
     label: 'Thread: Close Picker',
     when: 'threadPickerOpen',
     run: () => closeThreadPicker(),
@@ -797,6 +801,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
 
   registerCommand({
     id: 'settings.close',
+    dismissesSurface: true,
     label: 'Settings: Close',
     icon: '✕',
     when: 'settingsOpen',

@@ -1,7 +1,7 @@
 // Integration tests covering the command palette + keybindings + sidebar
 // thread navigation working together through the full App mount.
 
-import { describe, expect, it, beforeAll, beforeEach } from 'vitest';
+import { describe, expect, it, beforeAll, beforeEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import App from '../../App.svelte';
 import type { Thread } from '../../lib/types/models';
@@ -17,6 +17,9 @@ import {
   seedSidebarProject,
 } from './_helpers';
 import { setPaneLayoutItemsForTest } from '../../lib/stores/paneLayout.svelte';
+import { answerBackPress } from '../../lib/native/lifecycle';
+import { registerCommand } from '../../lib/stores/commandRegistry.svelte';
+import { getCompactScreen, setCompactLayoutForTest, showCompactThread } from '../../lib/stores/layoutMode.svelte';
 
 beforeAll(installAnimateShim);
 
@@ -54,6 +57,29 @@ async function waitForThreadStore(count: number): Promise<void> {
 describe('App integration — keybindings + palette', () => {
   beforeEach(() => {
     resetAppState();
+  });
+
+  it('Android Back navigates from a focused composer without executing its Escape shortcut', async () => {
+    const thread = makeThread({ title: 'Keep this turn running' });
+    const rendered = await mountBareApp([thread]);
+    await fireEvent.click(rendered.getAllByText(thread.title)[0]);
+    await flush(15);
+    const interrupt = vi.fn();
+    registerCommand({ id: 'thread.interrupt', label: 'Interrupt', editableReachable: true, run: interrupt });
+    await loadKeybindingsFromMock([{ key: 'escape', command: 'thread.interrupt' }]);
+    setCompactLayoutForTest(true);
+    showCompactThread();
+    try {
+      rendered.getByLabelText('Message Input').focus();
+      expect(answerBackPress()).toBe(true);
+      expect(interrupt).not.toHaveBeenCalled();
+      expect(getCompactScreen()).toBe('list');
+      // Physical Escape keeps its configured keyboard meaning.
+      await fireEvent.keyDown(window, { key: 'Escape' });
+      expect(interrupt).toHaveBeenCalledOnce();
+    } finally {
+      setCompactLayoutForTest(false);
+    }
   });
 
   it('Cmd+K opens the palette and focuses the list (mod+/ toggles to the input)', async () => {

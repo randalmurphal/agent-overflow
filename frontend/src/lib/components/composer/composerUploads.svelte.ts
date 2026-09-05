@@ -82,6 +82,7 @@ export interface ComposerUploadsOptions {
 export interface ComposerUploadsHandle {
   readonly dragActive: boolean;
   readonly uploading: boolean;
+  uploadFiles(files: FileList | File[], insertion?: UploadInsertionPoint | null): Promise<void>;
   handleDragEnter(event: DragEvent): void;
   handleDragLeave(event: DragEvent): void;
   handleDragOver(event: DragEvent): void;
@@ -216,6 +217,7 @@ export function createComposerUploads(opts: ComposerUploadsOptions): ComposerUpl
   return {
     get dragActive() { return dragDepth > 0; },
     get uploading() { return activeUploadBatches > 0; },
+    uploadFiles: (files, insertion = null) => uploadFiles(files, insertion),
 
     handleDragEnter(event: DragEvent): void {
       if (!hasFilePayload(event)) return;

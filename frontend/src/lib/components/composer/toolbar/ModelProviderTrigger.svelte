@@ -35,6 +35,7 @@
   aria-expanded={open}
   title={`Model: ${modelLabel}${pickerChordSuffix}`}
   data-provider={provider}
+  data-composer-toolbar-model
   data-testid="composer-model-menu-trigger"
   class={composerTriggerClasses}
 >

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
@@ -13,6 +13,9 @@ import {
 } from '../../stores/worktreeIntent.svelte';
 import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
+
+afterEach(() => setCompactLayoutForTest(false));
 
 describe('<ComposerWorkspaceStrip>', () => {
   beforeEach(() => {
@@ -29,6 +32,18 @@ describe('<ComposerWorkspaceStrip>', () => {
     expect(getByTestId('composer-workspace-strip')).toBeInTheDocument();
     expect(getByTestId('env-picker-trigger')).toBeInTheDocument();
     expect(getByTestId('branch-picker-trigger')).toBeInTheDocument();
+  });
+
+  it('combines the compact workspace controls and opens the existing branch picker', async () => {
+    setCompactLayoutForTest(true);
+    const pane = await buildPane(makeThread({ branch: 'feature/mobile' }));
+    const { getByTestId, queryByTestId, getByRole, findByRole } = render(ComposerWorkspaceStrip, { props: { pane } });
+    expect(queryByTestId('env-picker-trigger')).toBeNull();
+    expect(queryByTestId('branch-picker-trigger')).toBeNull();
+    expect(getByTestId('workspace-picker-trigger')).toHaveTextContent('feature/mobile');
+    await fireEvent.click(getByTestId('workspace-picker-trigger'));
+    await fireEvent.click(getByRole('menuitem', { name: /Branch/ }));
+    expect(await findByRole('menu', { name: 'Branches' })).toBeInTheDocument();
   });
 
   it('renders env and branch pickers in DOM order', async () => {
@@ -77,7 +92,8 @@ describe('<ComposerWorkspaceStrip>', () => {
     }
   });
 
-  it('renders the "+ new branch" toggle when intent flips to "new-worktree" and the input only after entering creating-branch mode', async () => {
+  it.each([false, true])('keeps staged worktree naming available (compact=%s)', async (compact) => {
+    setCompactLayoutForTest(compact);
     // Two-step disclosure: picking "New worktree" surfaces the toggle
     // adjacent to the BranchPicker so the user can opt into creating a
     // new branch; entering creating-branch mode (via the toggle, or
@@ -97,6 +113,7 @@ describe('<ComposerWorkspaceStrip>', () => {
     enterCreateBranchMode(thread, { workspaceDirty: false, currentBranch: 'main' });
     await tick();
     expect(await findByTestId('worktree-branch-name-input')).toBeInTheDocument();
+    expect(queryByTestId('composer-workspace-strip')?.contains(await findByTestId('worktree-branch-name-input'))).toBe(!compact);
     expect(await findByTestId('cancel-new-branch-button')).toBeInTheDocument();
     expect(queryByTestId('new-branch-toggle')).toBeNull();
   });

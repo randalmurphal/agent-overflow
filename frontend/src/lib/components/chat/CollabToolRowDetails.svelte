@@ -43,7 +43,7 @@
   <div class="ml-5 mt-0.5 truncate text-[0.6875rem] text-fg-subtle">└ {promptPreview}</div>
 {/if}
 {#if rowError}
-  <div class="ml-[5.25rem] px-3 pb-1">
+  <div class="ml-[5.25rem] compact:ml-5 px-3 pb-1">
     <RowError tone={rowError.tone} msg={rowError.msg} />
   </div>
 {/if}

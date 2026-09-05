@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { documentHidden } from './lib/utils/pageVisibility';
+  import { isSurfaceDismissalEvent } from './lib/utils/surfaceDismissal';
   import { ensureMainPane, getFocusedPaneOrNull, getPane, iterPanes, openThreadFromNavigation, resetPaneRegistry } from './lib/stores/panes.svelte';
   import { setupEventListeners } from './lib/stores/events';
   import { OPEN_SHIP_CHANGES_EVENT } from './lib/stores/eventNames';
@@ -211,6 +212,11 @@
     // is `editableReachable` and guarded only by `when: '!terminalFocus'`, would
     // close the pane instead of passing ctrl-w through as the shell's werase.
     const ctx = makeAppCommandContext(currentContextPane());
+
+    if (isSurfaceDismissalEvent(ev)) {
+      if (dispatchKey(ev, ctx)) ev.preventDefault();
+      return;
+    }
 
     // Editable target: a keybinding in EDITABLE_REACHABLE_COMMANDS wins
     // ahead of the word-op fallback. This is what lets configured editable

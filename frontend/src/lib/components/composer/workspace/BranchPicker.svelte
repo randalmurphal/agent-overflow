@@ -64,9 +64,11 @@
 
   interface Props {
     pane: ThreadPane;
+    anchor?: HTMLElement;
+    hideTrigger?: boolean;
   }
 
-  let { pane }: Props = $props();
+  let { pane, anchor, hideTrigger = false }: Props = $props();
 
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
   let open = $state(false);
@@ -109,6 +111,10 @@
     }
     return currentBranch || 'No branch';
   });
+  export function label(): string { return triggerLabel; }
+  export function openPicker(): void {
+    if (!open && pane.thread && !applying) void handleTrigger();
+  }
   let pickerChordSuffix = $derived(chordHintSuffix('composer.picker.branch'));
 
   // Display order: default branch pinned first, then the user's recent
@@ -300,17 +306,14 @@
   function closeMenu(reason?: PopoverCloseReason): void {
     open = false;
     query = '';
-    restorePickerFocus(reason, { paneId: pane.paneId, triggerEl });
+    restorePickerFocus(reason, { paneId: pane.paneId, triggerEl: anchor ?? triggerEl });
   }
 
   $effect(() => {
     return registerComposerPicker(pane.paneId, 'branch', {
       isOpen: () => open,
       open: () => {
-        if (open || !pane.thread) return;
-        // Reuse handleTrigger so the open path runs the same fetch
-        // pipeline as a mouse click on the trigger button.
-        void handleTrigger();
+        openPicker();
       },
       close: () => {
         if (!open) return;
@@ -491,6 +494,7 @@
   <Icon icon={RefreshCw} size={12} strokeWidth={2} />
 {/snippet}
 
+{#if !hideTrigger}
 <button
   bind:this={triggerEl}
   type="button"
@@ -506,9 +510,10 @@
   <span class="truncate max-w-[160px] text-fg">{triggerLabel}</span>
   <Icon icon={ChevronDown} size={12} strokeWidth={2} class="opacity-60" />
 </button>
+{/if}
 
 <Popover
-  anchor={triggerEl}
+  anchor={anchor ?? triggerEl}
   {open}
   onClose={closeMenu}
   placement="top-end"

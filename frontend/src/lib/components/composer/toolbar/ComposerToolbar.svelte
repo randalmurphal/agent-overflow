@@ -228,7 +228,7 @@
       {/if}
       <PlanSidebarToggleButton {pane} {hasCurrentPlan} />
     </div>
-    <div class="flex items-center" data-composer-toolbar-rollup>
+    <div class="flex shrink-0 items-center" data-composer-toolbar-rollup>
       <ComposerPickersRollup
         {pane}
         showMode={!isDiscussionThread && supportsPlanMode}
@@ -238,7 +238,7 @@
       />
     </div>
   {/if}
-  <div class="ml-auto flex items-center gap-1.5">
+  <div class="ml-auto flex shrink-0 items-center gap-1.5">
     {#if showLimitRings}
       <div
         class="shrink-0 flex items-center"
@@ -295,6 +295,12 @@
 </div>
 
 <style>
+  /* Reserve readable model text while measuring the expanded pickers.
+     Only after they roll up may the model ellipsize into the remaining
+     space. Otherwise flex shrink hides overflow by erasing the label. */
+  :global([data-composer-toolbar]:not([data-density='minimal']) [data-composer-toolbar-model]) {
+    flex-shrink: 0;
+  }
   :global(
     [data-composer-toolbar]:not([data-density='full'])
       [data-composer-toolbar-label='collapsible']

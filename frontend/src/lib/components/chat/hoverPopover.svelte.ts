@@ -12,6 +12,7 @@ export interface HoverPopover {
   /** Reactive open state; assign false to close immediately. */
   show: boolean;
   open(): void;
+  pointerDown(event: PointerEvent): void;
   scheduleClose(): void;
 }
 
@@ -22,6 +23,7 @@ export interface HoverPopover {
 export function useHoverPopover(onOpen?: () => void): HoverPopover {
   let show = $state(false);
   let closeTimer: number | null = null;
+  let pinned = false;
 
   onDestroy(() => {
     if (closeTimer !== null) window.clearTimeout(closeTimer);
@@ -33,6 +35,12 @@ export function useHoverPopover(onOpen?: () => void): HoverPopover {
     },
     set show(value: boolean) {
       show = value;
+      if (!value) pinned = false;
+    },
+    pointerDown(event: PointerEvent): void {
+      // Touch/pen synthesize hover and blur as the sheet covers the trigger.
+      // Keep a tapped meter open until its Popover receives an actual dismiss.
+      pinned = event.pointerType === 'touch' || event.pointerType === 'pen';
     },
     open(): void {
       if (closeTimer !== null) {
@@ -43,6 +51,7 @@ export function useHoverPopover(onOpen?: () => void): HoverPopover {
       show = true;
     },
     scheduleClose(): void {
+      if (pinned) return;
       if (closeTimer !== null) window.clearTimeout(closeTimer);
       closeTimer = window.setTimeout(() => {
         show = false;

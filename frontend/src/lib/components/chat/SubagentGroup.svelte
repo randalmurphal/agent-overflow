@@ -596,17 +596,17 @@
     </TranscriptDisclosureHeader>
 
     {#if rowError}
-      <div class="ml-[5.25rem] px-3 pb-1" data-testid="subagent-group-error">
+      <div class="ml-[5.25rem] compact:ml-5 px-3 pb-1" data-testid="subagent-group-error">
         <RowError tone={rowError.tone} msg={rowError.msg} />
       </div>
     {/if}
     {#if backgroundError}
-      <div class="ml-[5.25rem] px-3 pb-1" data-testid="subagent-group-background-error">
+      <div class="ml-[5.25rem] compact:ml-5 px-3 pb-1" data-testid="subagent-group-background-error">
         <RowError tone="error" msg={backgroundError} />
       </div>
     {/if}
     {#if outputBackfillError}
-      <div class="ml-[5.25rem] px-3 pb-1" data-testid="subagent-group-output-error">
+      <div class="ml-[5.25rem] compact:ml-5 px-3 pb-1" data-testid="subagent-group-output-error">
         <RowError tone="error" msg={outputBackfillError} />
       </div>
     {/if}

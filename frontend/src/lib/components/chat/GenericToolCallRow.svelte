@@ -272,7 +272,7 @@ let hasExpandableBody = $derived(
   </TranscriptDisclosureHeader>
 
   {#if rowError}
-    <div class="ml-[5.25rem] px-3 pb-1">
+    <div class="ml-[5.25rem] compact:ml-5 px-3 pb-1">
       <RowError tone={rowError.tone} msg={rowError.msg} />
     </div>
   {:else if sendReply}

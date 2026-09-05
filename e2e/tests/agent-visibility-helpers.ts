@@ -268,6 +268,12 @@ export function permissionDeniedLine(
 
 export const RESULT_LINE = j({ type: 'result', subtype: 'success', is_error: false });
 
+export function claudeUsageResult(inputTokens: number, outputTokens: number): string {
+  return j({ type: 'result', subtype: 'success', is_error: false,
+    usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+  });
+}
+
 // ---------------------------------------------------------------------
 // Scenario / thread setup
 // ---------------------------------------------------------------------

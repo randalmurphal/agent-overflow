@@ -834,7 +834,7 @@
     }
   }
 
-  function blockPromptAttachment(event: DragEvent | ClipboardEvent, notify = true): boolean {
+  function blockPromptAttachment(event: Event, notify = true): boolean {
     if (!hasInteractivePrompt) return false;
     event.preventDefault();
     if (notify) {
@@ -851,7 +851,7 @@
   // path into the real TUI composer — so this only guards a future opt-out.
   let supportsAttachments = $derived(providerSupports(pane.thread?.provider, 'attachments'));
 
-  function blockAttachment(event: DragEvent | ClipboardEvent, notify = true): boolean {
+  function blockAttachment(event: Event, notify = true): boolean {
     // Uploading rides `attachments:write`, and a paste or a drop is not a
     // control anybody chose to press — so this refuses without a toast.
     // Nothing was offered, so nothing failed.

@@ -58,6 +58,7 @@ export function registerWorkflowCommands(): void {
 
   registerCommand({
     id: 'workflows.escape',
+    dismissesSurface: true,
     label: 'Workflows: Escape',
     description: 'Disarm a confirmation, close a dialog, go back, then close the overlay — in that order.',
     when: 'workflowsOverlayOpen',

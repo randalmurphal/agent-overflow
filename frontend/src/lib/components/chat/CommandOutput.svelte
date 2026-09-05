@@ -112,9 +112,6 @@
   // One derived id for both halves of the disclosure (utils/chatDomIds.ts):
   // the header's `controls` and the body's `id` must be one string.
   let outputDomId = $derived(chatRowDomId(pane, 'cmd-output', payloadId || item.id));
-  let hasBody = $derived(
-    hasPayload || deferredOutputState === 'loading' || deferredOutputState === 'error',
-  );
   // Two deriveds, not one: `effectiveDisplayItem` is a fresh object on
   // every streamed upsert, so a single derived re-ran the shell-word
   // split on every chunk of output (7MB/min of strings in the 2026-08-23
@@ -123,6 +120,9 @@
   // distinct command.
   let commandText = $derived(commandTextForItem(effectiveDisplayItem, meta));
   let displayCommand = $derived(stripShellWrapper(commandText));
+  let hasBody = $derived(
+    !!displayCommand || hasPayload || deferredOutputState === 'loading' || deferredOutputState === 'error',
+  );
   let isBackgroundedLaunch = $derived(
     effectiveStatusItem.kind === 'tool_call' && effectiveStatusItem.isBackground === true,
   );
@@ -363,12 +363,12 @@
   </TranscriptDisclosureHeader>
 
   {#if commandError}
-    <div class="ml-[5.25rem] px-3 pb-1" data-testid="command-output-error">
+    <div class="ml-[5.25rem] compact:ml-5 px-3 pb-1" data-testid="command-output-error">
       <RowError tone={commandError.tone} code={commandError.code} msg={commandError.msg} />
     </div>
   {/if}
   {#if backgroundError}
-    <div class="ml-[5.25rem] px-3 pb-1" data-testid="command-output-background-error">
+    <div class="ml-[5.25rem] compact:ml-5 px-3 pb-1" data-testid="command-output-background-error">
       <RowError tone="error" msg={backgroundError} />
     </div>
   {/if}
@@ -382,6 +382,9 @@
   {#if hasBody && expansion.expanded}
     <div id={outputDomId} class="ml-5 border-l border-border-subtle bg-surface-0/35">
       <div class="max-h-96 overflow-auto px-3 py-2" use:nestedScroll>
+        {#if displayCommand}
+          <code class="mb-2 block whitespace-pre-wrap break-words border-b border-border-subtle pb-2 font-mono text-[0.6875rem] leading-relaxed text-fg" data-testid="command-output-full-command">{displayCommand}</code>
+        {/if}
         {#if hasPayload && expansion.loading}
           <p class="text-[0.6875rem] text-fg-subtle" role="status" aria-live="polite">Loading output…</p>
         {:else if hasPayload && expansion.error}

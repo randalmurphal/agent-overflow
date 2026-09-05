@@ -53,6 +53,20 @@ describe('<RateLimitMeter>', () => {
     expect(button.textContent?.trim()).toBe('5h');
   });
 
+  it.each([300, 10080])('keeps a tapped %i-minute meter open through synthetic mouseleave and blur', async (windowMins) => {
+    const { getByRole, queryByRole } = render(RateLimitMeter, { props: { windowMins, provider: 'claude' } });
+    const trigger = getByRole('button');
+    await fireEvent.pointerDown(trigger, { pointerType: 'touch' });
+    await fireEvent.mouseEnter(trigger);
+    await fireEvent.click(trigger);
+    await fireEvent.mouseLeave(trigger);
+    await fireEvent.blur(trigger);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(queryByRole('tooltip')).not.toBeNull();
+    await fireEvent.mouseDown(document.body);
+    expect(queryByRole('tooltip')).toBeNull();
+  });
+
   it('derives the 7-day label and header from windowMins=10080', () => {
     const { getByLabelText } = render(RateLimitMeter, {
       props: { windowMins: 10080, provider: 'claude' as const },

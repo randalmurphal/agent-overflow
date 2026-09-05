@@ -34,6 +34,20 @@ import {
 import { PANE_NAV_COMMAND_IDS, TERMINAL_ESCAPE_COMMAND_IDS } from './paneNavCommands';
 import { getToasts, removeToast } from './toast.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
+import { createSurfaceDismissalEvent } from '../utils/surfaceDismissal';
+
+it('Back dismisses only enabled surfaces, independently of remapped Escape shortcuts', () => {
+  clearCommandRegistry();
+  const interrupt = vi.fn();
+  const dismiss = vi.fn();
+  registerCommand({ id: 'interrupt', label: 'Interrupt', run: interrupt });
+  registerCommand({ id: 'close', label: 'Close', dismissesSurface: true, when: 'paletteOpen', run: dismiss });
+  setKeybindingsForTest([{ key: 'escape', command: 'interrupt' }]);
+  expect(dispatchKey(createSurfaceDismissalEvent(), baseCtx())).toBe(false);
+  expect(dispatchKey(createSurfaceDismissalEvent(), baseCtx({ paletteOpen: true }))).toBe(true);
+  expect(dismiss).toHaveBeenCalledOnce();
+  expect(interrupt).not.toHaveBeenCalled();
+});
 
 type TestKeyMods = {
   code?: string;

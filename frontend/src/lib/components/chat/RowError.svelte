@@ -47,7 +47,7 @@
 </script>
 
 <div
-  class="flex items-baseline gap-1.5 text-[0.75rem] {className}"
+  class="flex min-w-0 items-baseline gap-1.5 text-[0.6875rem] leading-snug {className}"
   data-testid="row-error"
   data-tone={tone}
   role="status"

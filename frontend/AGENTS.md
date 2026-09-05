@@ -193,6 +193,17 @@ What compact changes, and where:
   width let the pickers paint over the meters while the toolbar's
   `scrollWidth` still read as fitting, so the ladder never reached the
   rung it was built for (first phone session, 2026-09-04).
+  The model trigger must also resist shrinking until the other pickers
+  roll up; only the minimal rung may ellipsize its label. Otherwise a
+  shrinkable model silently loses all its text while the toolbar still
+  measures as fitting. The meters, Send, and roll-up never shrink.
+  `compact-model-label.spec.ts` checks actual label width for both providers
+  across phone sizes and a resize back from desktop, not just a visible button.
+- **The workspace footer stays on one line.** Compact uses one workspace
+  trigger for branch/worktree, with the branch name shown once and the checkout
+  kind indicated by its icon. Its sheet hands off to the existing pickers and
+  contains new-branch naming. Project/workspace labels may ellipsize; tokens
+  and cost stay together and visible. Desktop retains the separate controls.
 - **The hardware back is one stack** (`native/lifecycle.ts`
   `answerBackPress`): an open sheet or overlay (a synthetic Escape,
   which also steps Settings' page back to its rail through
@@ -201,6 +212,10 @@ What compact changes, and where:
   screen back to the list, then the app exits. A focused terminal's
   Escape is dispatched at the pane, not at xterm, which would type ESC
   into the shell.
+  The event is marked as surface dismissal. Global dispatch may run only an
+  enabled command with `dismissesSurface`, independently of its keyboard
+  binding; ordinary shortcuts must never run from Android Back. Unmarked
+  Escape retains its keyboard meaning, including interrupting a turn.
 - **Keyboard chrome is shown while a modifier is held.** The sidebar
   search's chord pill uses `subscribeJumpHints` / `getJumpHintsVisible`
   exactly as the thread rows' jump numbers do, so a phone — which never

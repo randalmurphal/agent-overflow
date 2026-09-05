@@ -225,12 +225,12 @@
   </TranscriptDisclosureHeader>
 
   {#if rowError}
-    <div class="ml-[5.25rem] px-3 pb-1">
+    <div class="ml-[5.25rem] compact:ml-5 px-3 pb-1">
       <RowError tone={rowError.tone} msg={rowError.msg} />
     </div>
   {/if}
   {#if deferredOutputError}
-    <div class="ml-[5.25rem] px-3 pb-1" data-testid="agent-row-output-error">
+    <div class="ml-[5.25rem] compact:ml-5 px-3 pb-1" data-testid="agent-row-output-error">
       <RowError tone="error" msg={deferredOutputError} />
     </div>
   {/if}

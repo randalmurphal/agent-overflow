@@ -13,7 +13,8 @@
 
 import { addToast } from './toast.svelte';
 import { GetKeybindings, Keybinding, ResetKeybindings, UpdateKeybindings } from './bindings';
-import { isCommandEnabled, runCommand, type CommandContext } from './commandRegistry.svelte';
+import { dismissCommandSurface, isCommandEnabled, runCommand, type CommandContext } from './commandRegistry.svelte';
+import { isSurfaceDismissalEvent } from '../utils/surfaceDismissal';
 import type { Chord, WhenNode } from './keybindingParser';
 import {
   chordMatches,
@@ -421,6 +422,7 @@ export function dispatchKey(
   ctx: CommandContext,
   options: { isMac?: boolean } = {},
 ): boolean {
+  if (isSurfaceDismissalEvent(event)) return dismissCommandSurface(ctx);
   if (isKeybindingCaptureTarget(event.target)) return false;
   const isMac = options.isMac ?? isMacPlatform();
 

@@ -130,6 +130,11 @@ spec's header lists them) plus two stale premises of its own. Do not
 read a green `make e2e-android` on a laptop as evidence: it exits 0
 when no device is attached, on purpose.
 
+`make e2e-android` enables UI trace in its backend build so its bundle
+differs from the APK even on the same checkout. The update case trims
+`bundle-id.txt` before checking that prerequisite; its trailing newline
+must never make identical bundles look different.
+
 `scripts/android-smoke.sh` owns what is per RUN: it installs the APK
 `make apk` built, sets a device PIN, and clears the PIN on every exit
 path. The SPEC owns everything per case and everything downstream of
@@ -145,8 +150,12 @@ and the pairing. It runs through
 typechecks the tree and what lets `launchHarness` spawn at all.
 
 **A real phone** runs the same suite with `AO_ANDROID_HUMAN_LOCK=1`
-(wireless adb included: pair and connect in developer options, then run —
-the script takes the first attached device). The script skips PIN
+(wireless adb included: pair and connect in developer options, then name
+its serial with `AO_ANDROID_SERIAL`). The smoke clears the app data; use it
+only on a test installation. Without a serial, the runner selects only a
+single emulator and refuses an ambiguous device list. A real phone without
+`AO_ANDROID_HUMAN_LOCK=1` is refused before installation or PIN changes.
+`TestAndroidSmokeSelectsOnlyAnExplicitPhone` checks selection with a fake adb. The script skips PIN
 provisioning — the owner's credential is already on the device, and
 typing `1234` at their real prompt would be wrong-PIN attempts Android
 escalates into a lockout — and the spec instead waits up to two minutes
@@ -165,10 +174,17 @@ changes. First real delivery 2026-09-04, Pixel 9a over wireless adb.
 
 Two platform facts the spec has to answer for, both learned on that
 run: the platform's credential prompt is an activity of its own, so it
-is answered by typing at the FOCUSED window (`input text`, then Enter),
+is answered through the focused native PIN field, then Enter,
 not at the page; and a hardware back press with the soft keyboard up
 closes the keyboard and reaches nothing else, so `pressBack` closes the
 keyboard first, by the same key.
+
+The first case also opens and cancels the composer's Photos and Files
+choosers, then presses Back during a gated mock turn and verifies that the
+list opens while the provider keeps running. Keep this native check beside
+the browser regressions (`compact-composer-polish.spec.ts` and
+`compact-reconnect-turn-completion.spec.ts`): a browser cannot prove that
+the platform picker or Android Back reaches the right app path.
 
 **The backend is reached at `127.0.0.1` over `adb reverse`, not at
 `10.0.2.2`.** Two independent walls make the emulator's host alias

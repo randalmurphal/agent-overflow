@@ -69,7 +69,7 @@ interface MountOptions {
   disabled?: boolean;
   showDraftRows?: boolean;
   editsDraft?: boolean;
-  blockAttachment?: (event: DragEvent | ClipboardEvent, notify: boolean) => boolean;
+  blockAttachment?: (event: Event, notify: boolean) => boolean;
   shouldDeleteAttachmentRecord?: (id: string) => boolean;
   onKeydown?: (event: KeyboardEvent) => boolean;
 }
@@ -322,6 +322,29 @@ describe('<ComposerInputSurface>', () => {
 
     await waitFor(() => expect(upload).toHaveBeenCalled());
     await waitFor(() => expect(draft.attachments.map((a) => a.id)).toEqual(['att-pasted']));
+  });
+
+  it('uploads picker selections through the draft upload path', async () => {
+    const upload = mockAttachmentUpload(async () => makeAttachment('att-picked'));
+    const { getByTestId, getByLabelText, draft } = await mountSurface();
+    await fireEvent.click(getByTestId('composer-attach'));
+    const input = getByLabelText('Choose attachments') as HTMLInputElement;
+    Object.defineProperty(input, 'files', { value: [new File(['x'], 'picked.png', { type: 'image/png' })] });
+    await fireEvent.change(input);
+    await waitFor(() => expect(upload).toHaveBeenCalled());
+    await waitFor(() => expect(draft.attachments.map((a) => a.id)).toEqual(['att-picked']));
+  });
+
+  it('discards a picker selection returned after switching threads', async () => {
+    const upload = mockAttachmentUpload(async () => makeAttachment('att-wrong-thread'));
+    const { getByTestId, getByLabelText, pane } = await mountSurface();
+    await fireEvent.click(getByTestId('composer-attach'));
+    const input = getByLabelText('Choose attachments') as HTMLInputElement;
+    pane.clear();
+    Object.defineProperty(input, 'files', { value: [new File(['x'], 'picked.png', { type: 'image/png' })] });
+    await fireEvent.change(input);
+    await tick();
+    expect(upload).not.toHaveBeenCalled();
   });
 
   it('refuses every attachment path the host blocks', async () => {

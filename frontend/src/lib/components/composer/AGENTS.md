@@ -50,8 +50,18 @@ more: an unrecognised one is a `file`. The caps differ (10 MiB image,
   skips the kind entirely rather than logging a guaranteed failure per
   file per mount.
 
-Paste stays image-only (`extractClipboardImages`); drag and drop takes
-anything.
+Paste stays image-only (`extractClipboardImages`); drag/drop and the attachment
+picker take any file. `AttachmentPicker` exposes Files and Photos on Android;
+the shared input surface owns the file inputs and calls the same `uploadFiles`
+path as drop/paste. Capture the pane generation when opening the system picker
+and discard a selection returned after a thread switch. Keep scope/provider/
+prompt gates on both opening and accepting a selection.
+
+On compact layouts the workspace strip combines branch and worktree into one
+trigger, preserving tokens/cost on the same row. Both underlying pickers stay
+mounted and use that visible anchor, so keyboard commands and popup handoffs
+share their existing fetch, focus and mutation paths. New-branch naming opens
+inside the workspace sheet; it must not widen or wrap the footer.
 
 An upload whose composer moved threads mid-flight DELETES its record.
 The bytes finished landing on a thread nobody is looking at any more, and

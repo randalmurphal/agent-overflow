@@ -71,6 +71,8 @@
   class={METER_BUTTON_CLASS}
   aria-label={ariaLabel}
   onmouseenter={popover.open}
+  onpointerdown={popover.pointerDown}
+  onclick={popover.open}
   onmouseleave={popover.scheduleClose}
   onfocus={popover.open}
   onblur={popover.scheduleClose}

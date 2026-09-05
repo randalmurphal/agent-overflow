@@ -90,10 +90,13 @@ import {
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import {
   RESULT_LINE,
+  advance,
+  claudeScenario,
   emit,
   seedAgentThread,
   startMock,
   textLines,
+  waitForGate,
 } from '../tests/agent-visibility-helpers.js';
 
 const run = promisify(execFile);
@@ -175,7 +178,10 @@ async function awaitOwnerUnlock(device: AndroidDevice): Promise<void> {
  */
 async function passCredentialPrompt(device: AndroidDevice, lock: Locator): Promise<void> {
   if (!HUMAN_LOCK) {
-    await device.shell(`input text ${LOCK_PIN}`);
+    // Window focus arrives before the native PIN field is ready on a
+    // cold launch. Fill that field through Android's UI selector so no
+    // prefix of the PIN is lost during the credential animation.
+    await device.fill({ res: 'com.android.systemui:id/lockPassword', focused: true }, LOCK_PIN);
     await device.shell('input keyevent 66');
   }
   await expect(lock).toBeHidden({ timeout: HUMAN_LOCK ? 120_000 : 30_000 });
@@ -407,6 +413,7 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
             // A thread with a real turn: a draft row is hidden from the
             // sidebar, so a seed without one would assert on nothing.
             title: 'Shell boot thread',
+            provider: 'claude',
             turns: [{ userText: 'hello', items: [{ kind: 'assistant_text', summary: 'hi' }] }],
           },
         ],
@@ -470,6 +477,33 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
   await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'thread');
   await expect(page.getByTestId('chat-header-title')).toHaveText('Shell boot thread');
 
+  // Both attachment choices must open Android's picker, not a web-only UI.
+  for (const choice of ['Photos', 'Files']) {
+    await page.getByTestId('composer-attach').click();
+    await page.getByRole('menuitem', { name: choice, exact: true }).click();
+    await expect.poll(async () => {
+      const focus = await focusedWindow(device);
+      return focus !== '' && !focus.includes(SHELL_PACKAGE);
+    }, { message: `${choice} must open the platform file picker` }).toBe(true);
+    await pressBack(device);
+    await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'thread');
+  }
+
+  // Back during a live turn must navigate, never execute Escape's interrupt.
+  const threadId = seed.projects[0].threadIds[0];
+  await harness.rpc('HarnessSetScenario', {
+    scenario: claudeScenario('back-keeps-working', [
+      emit(textLines('msg-working', 'Keep working while I navigate.')),
+      { waitSignal: { name: 'finish-after-back' } },
+      emit([RESULT_LINE]),
+    ]),
+  });
+  const mockId = await startMock(harness, threadId);
+  await harness.rpc('SendMessage', threadId, 'keep working', null);
+  await waitForGate(harness, 'finish-after-back');
+  await expect(page.getByRole('button', { name: 'Interrupt current turn', exact: true })).toBeVisible();
+  await page.getByLabel('Message Input').focus();
+
   // --- 6. The hardware back button reaches showCompactList -------------
   // KEYCODE_BACK. It arrives as the Capacitor App plugin's `backButton`
   // event, which `native/lifecycle.ts` turns into `showCompactList` — and
@@ -477,6 +511,9 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
   // file is not a `compact-*.spec.ts`.
   await pressBack(device);
   await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'list');
+  expect((await harness.rpc<{ activeTurn?: unknown }>('GetThreadLiveState', threadId)).activeTurn).toBeTruthy();
+  await advance(harness, mockId, 'finish-after-back');
+  await harness.waitForEvent('provider:turn_completed');
 
   // --- 7. The Capacitor bridge is really in the page -------------------
   // `isNativeShell()` branches every seam in `frontend/src/lib/native/` on
@@ -505,8 +542,8 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
 // the 30-second watchdog rolls it back.
 //
 // The bundle staged here is the HARNESS BACKEND'S. It is a different
-// build from the APK's (the harness build carries the UI trace and
-// oracle flags the APK build does not, so its content id differs), and
+// build from the APK's (`make e2e-android` enables UI trace, which the
+// ordinary APK build does not, so its content id differs), and
 // the test checks that difference rather than assuming it, so this is a
 // genuine swap onto a bundle this phone did not ship with, which is the
 // case that has to work.
@@ -615,7 +652,7 @@ test('the shell stages a bundle, boots on it, and refuses a damaged one', async 
   // the state below deterministic: the refusals run against a store that
   // has settled rather than racing the sync.
   expect(
-    await page.evaluate(async () => (await fetch('/bundle-id.txt')).text()),
+    await page.evaluate(async () => (await (await fetch('/bundle-id.txt')).text()).trim()),
     'the APK must ship a different bundle than the harness serves, or the swap proves nothing',
   ).not.toBe(manifest.id);
   await expect

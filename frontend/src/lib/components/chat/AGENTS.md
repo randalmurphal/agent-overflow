@@ -51,6 +51,13 @@ rows the revert destroyed. Failure branches leave the scroll untouched.
 
 ## Row contract
 
+Expanded command rows show the complete command before output, including
+commands whose output has not arrived. The same disclosure and scroll-anchor
+path owns both. Compact headers use narrower status/duration/label slots and
+gaps; errors use the expanded body's small gutter so short messages do not
+wrap into tall columns. Meter popovers share touch/pen pinning: synthetic
+mouseleave or blur after a tap must not dismiss them; outside click/Back does.
+
 Every row rendered inside `<TimelineVirtualizer>`:
 
 - Lives inside a `[data-row-index]` wrapper. Only `TimelineLeaf` emits

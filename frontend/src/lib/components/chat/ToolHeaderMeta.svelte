@@ -47,13 +47,13 @@
   );
 </script>
 
-<span class="flex shrink-0 items-center gap-2 {className}">
+<span class="flex shrink-0 items-center gap-2 compact:gap-1 {className}" data-tool-header-meta>
   {#if actions}
     {@render actions()}
   {/if}
 
   <span
-    class="inline-flex min-w-5 shrink-0 items-center justify-center"
+    class="inline-flex min-w-5 compact:min-w-3 shrink-0 items-center justify-center"
     data-testid={statusSlotTestId}
   >
     {#if status}
@@ -63,7 +63,7 @@
 
   {#if duration}
     <span
-      class="shrink-0 inline-block min-w-[3rem] text-right tabular-nums text-[0.625rem] text-fg-hint opacity-70 transition-opacity group-hover/tool:opacity-100"
+      class="shrink-0 inline-block min-w-[3rem] compact:min-w-[2rem] text-right tabular-nums text-[0.625rem] text-fg-hint opacity-70 transition-opacity group-hover/tool:opacity-100"
       data-testid={duration.testId}
     >
       {duration.label}

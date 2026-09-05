@@ -59,6 +59,8 @@
   interface Props {
     pane: ThreadPane;
     workspaceLock: WorkspaceChangeLockState;
+    anchor?: HTMLElement;
+    hideTrigger?: boolean;
   }
 
   interface ConfirmState {
@@ -71,7 +73,7 @@
     error: string | null;
   }
 
-  let { pane, workspaceLock }: Props = $props();
+  let { pane, workspaceLock, anchor, hideTrigger = false }: Props = $props();
 
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
   let open = $state(false);
@@ -125,6 +127,13 @@
     // scheduler's opening request, in the effect below.
     loading = true;
   }
+
+  export function openPicker(): void {
+    if (!open && pane.thread && !applying) handleTrigger();
+  }
+
+  export function label(): string { return triggerLabel; }
+  export function atBase(): boolean { return isAtProjectRoot && !stagingNewWorktree; }
 
   // Every refresh — the open's own load, the event-driven re-checks, and the
   // one after a removal — goes through this, so only one list call is ever in
@@ -186,7 +195,7 @@
   function closeMenu(reason?: PopoverCloseReason): void {
     open = false;
     confirm = null;
-    restorePickerFocus(reason, { triggerEl });
+    restorePickerFocus(reason, { triggerEl: anchor ?? triggerEl });
   }
 
   async function selectPath(path: string): Promise<void> {
@@ -363,6 +372,7 @@
   }
 </script>
 
+{#if !hideTrigger}
 <button
   bind:this={triggerEl}
   type="button"
@@ -378,9 +388,10 @@
   <span class="truncate max-w-[160px] text-fg">{triggerLabel}</span>
   <Icon icon={ChevronDown} size={12} strokeWidth={2} class="opacity-60" />
 </button>
+{/if}
 
 <Popover
-  anchor={triggerEl}
+  anchor={anchor ?? triggerEl}
   {open}
   onClose={closeMenu}
   placement="top-start"

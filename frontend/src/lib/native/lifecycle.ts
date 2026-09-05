@@ -26,7 +26,7 @@
 // already closes on Escape through the keybinding path, and there are
 // enough of them that a registry here would be a second list to keep in
 // sync — one that is wrong the first time somebody adds a sheet. So the
-// button synthesises the key the platform's own keyboard would have sent,
+// button sends a marked surface-dismissal Escape, not a keyboard shortcut,
 // and whether anything consumed it is read off `defaultPrevented`, which
 // is the same answer the browser gives any other key handler. The one
 // target it avoids is a focused terminal: xterm turns Escape into an ESC
@@ -41,11 +41,13 @@ import { setClientLease } from '../transport/lease';
 import { runTerminalToggle } from '../components/terminal/terminalToggle';
 import { appPlugin } from './plugins';
 import { isNativeShell } from './platform';
+import { createSurfaceDismissalEvent } from '../utils/surfaceDismissal';
 
 /**
  * Ask the page to close whatever is on top, and report whether anything
  * did. A synthetic Escape at the active element, so it walks exactly the
- * path a real key press walks.
+ * component dismissal path a real key press walks. Global dispatch admits
+ * only surface dismissal commands; Back must never become Interrupt Turn.
  */
 function dismissTopSurface(): boolean {
   if (typeof document === 'undefined') return false;
@@ -54,12 +56,7 @@ function dismissTopSurface(): boolean {
     ? (active.closest('[data-pane-id]') ?? document.body)
     : (active ?? document.body);
   if (!target) return false;
-  const event = new KeyboardEvent('keydown', {
-    key: 'Escape',
-    code: 'Escape',
-    bubbles: true,
-    cancelable: true,
-  });
+  const event = createSurfaceDismissalEvent();
   target.dispatchEvent(event);
   return event.defaultPrevented;
 }

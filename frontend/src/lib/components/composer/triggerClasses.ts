@@ -5,7 +5,7 @@
 // tweak only has to land in one file to stay consistent across all
 // three triggers.
 export const composerTriggerClasses = [
-  'inline-flex items-center gap-1.5 rounded-[var(--radius-field)]',
+  'inline-flex min-w-0 items-center gap-1.5 rounded-[var(--radius-field)]',
   'px-1.5 py-1 text-[0.6875rem] text-fg-muted',
   'transition-colors cursor-pointer',
   'hover:text-fg hover:bg-surface-2/30',

@@ -50,7 +50,7 @@
 
 <div
   class={[
-    'flex w-full items-center gap-2 text-left',
+    'flex w-full items-center gap-2 compact:gap-1 text-left',
     className,
   ].join(' ')}
   data-testid={headerTestId}
@@ -58,7 +58,7 @@
   <button
     type="button"
     class={[
-      'flex min-w-0 items-center gap-2 bg-transparent p-0 text-left',
+      'flex min-w-0 items-center gap-2 compact:gap-1 bg-transparent p-0 text-left',
       'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
       expandable ? 'cursor-pointer' : 'cursor-default',
       interactiveBody ? 'shrink-0' : 'flex-1',
@@ -92,7 +92,7 @@
       <span class="flex size-3.5 shrink-0 items-center justify-center" data-testid="{testId}-icon-slot">
         {#if icon}{@render icon()}{/if}
       </span>
-      <span class="w-12 shrink-0 truncate text-[0.6875rem] text-fg-hint" data-testid="{testId}-label-slot">
+      <span class="w-12 compact:w-9 shrink-0 truncate text-[0.6875rem] text-fg-hint" data-testid="{testId}-label-slot">
         {#if label}{@render label()}{/if}
       </span>
       {#if !interactiveBody}

@@ -90,12 +90,12 @@ export interface ComposerInputSurfaceProps {
    */
   attachmentCache?: AttachmentPreviewCache;
   /**
-   * Host veto for the four attachment add-paths (paste + three drag
-   * events). Return true to refuse the event; the host owns the reason it
+   * Host veto for attachment selection, paste and drag events.
+   * Return true to refuse the event; the host owns the reason it
    * shows. `notify` is false for the passive drag events, which must not
    * toast on every mouse move.
    */
-  blockAttachment?: (event: DragEvent | ClipboardEvent, notify: boolean) => boolean;
+  blockAttachment?: (event: Event, notify: boolean) => boolean;
   /**
    * Whether removing an attachment also deletes its backing record.
    * Default true. A surface editing a message it did not upload for must

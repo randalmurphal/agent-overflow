@@ -125,6 +125,8 @@ export interface Command {
    * editable text inputs swallow chords that don't opt in.
    */
   editableReachable?: boolean;
+  /** Dismisses an open surface on Back, independently of keyboard bindings. */
+  dismissesSurface?: boolean;
   /** Runs the command. Receives the live context at invocation time. */
   run: (ctx: CommandContext) => void | Promise<void>;
 }
@@ -191,4 +193,11 @@ export function runCommand(id: string, ctx: CommandContext): boolean {
 
 export function clearCommandRegistry(): void {
   commands.clear();
+}
+
+export function dismissCommandSurface(ctx: CommandContext): boolean {
+  for (const command of commands.values()) {
+    if (command.dismissesSurface && runCommand(command.id, ctx)) return true;
+  }
+  return false;
 }

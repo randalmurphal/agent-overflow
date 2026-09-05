@@ -8,6 +8,9 @@
   import { flushSync, onDestroy } from 'svelte';
   import { paneWorkspacePath } from '../../stores/thread.svelte';
   import ComposerAttachmentRow from './ComposerAttachmentRow.svelte';
+  import AttachmentPicker from './AttachmentPicker.svelte';
+  import { hasScope } from '../../transport/scopes';
+  import { providerSupports } from '../../providers/catalog';
   import ComposerCommandHighlight from './ComposerCommandHighlight.svelte';
   import ComposerMentionPopover from './ComposerMentionPopover.svelte';
   import ComposerSlashPopover from './ComposerSlashPopover.svelte';
@@ -16,7 +19,7 @@
   import { createComposerImagePlaceholders } from './composerImagePlaceholders';
   import { createComposerMentions } from './composerMentions.svelte';
   import { createComposerSlash } from './composerSlash.svelte';
-  import { createComposerUploads } from './composerUploads.svelte';
+  import { createComposerUploads, type UploadInsertionPoint } from './composerUploads.svelte';
   import { slashCommandMatches } from './slashCommands';
   import type {
     ComposerInputSelection,
@@ -44,6 +47,9 @@
   }: ComposerInputSurfaceProps = $props();
 
   let textarea: HTMLTextAreaElement | undefined = $state(undefined);
+  let fileInput: HTMLInputElement | undefined = $state();
+  let pickerGeneration = -1;
+  let pickerInsertion: UploadInsertionPoint | null = null;
   let lastAutosizedTextarea: HTMLTextAreaElement | undefined;
   let lastAutosizedValue = '';
   // Bumped by recreateInput() to swap the <textarea> element itself (the
@@ -187,8 +193,24 @@
     selectionCollapsed = textarea.selectionStart === textarea.selectionEnd;
   }
 
-  function refuseAttachment(event: DragEvent | ClipboardEvent, notify = true): boolean {
+  function refuseAttachment(event: Event, notify = true): boolean {
     return blockAttachment?.(event, notify) ?? false;
+  }
+
+  function chooseAttachments(accept: string): void {
+    if (!fileInput || disabled || refuseAttachment(new Event('pick'))) return;
+    pickerGeneration = pane.switchGeneration;
+    pickerInsertion = imagePlaceholders.currentUploadInsertion();
+    fileInput.accept = accept;
+    fileInput.value = '';
+    fileInput.click();
+  }
+
+  function attachSelectedFiles(event: Event): void {
+    const files = Array.from(fileInput?.files ?? []);
+    if (fileInput) fileInput.value = '';
+    if (pickerGeneration !== pane.switchGeneration || disabled || refuseAttachment(event)) return;
+    void uploads.uploadFiles(files, pickerInsertion);
   }
 
   function handlePaste(event: ClipboardEvent): void {
@@ -348,8 +370,8 @@
   visible={showDraftRows}
 />
 
-<div class="px-4 pt-3 pb-2">
-  <div class="relative">
+<div class="flex items-end gap-1 px-4 pt-3 pb-2">
+  <div class="relative min-w-0 flex-1">
     <ComposerMentionPopover
       anchor={textarea}
       open={mentions.mentionTrigger !== null}
@@ -404,7 +426,10 @@
       {textarea}
     />
   </div>
-
+  {#if showDraftRows && editsDraft && hasScope('attachments:write') && providerSupports(pane.thread?.provider, 'attachments')}
+    <AttachmentPicker {disabled} onChoose={chooseAttachments} />
+    <input bind:this={fileInput} type="file" multiple hidden aria-label="Choose attachments" onchange={attachSelectedFiles} />
+  {/if}
 </div>
 
 {#if showDraftRows && slash.commandError}
