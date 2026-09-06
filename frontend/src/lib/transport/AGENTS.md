@@ -792,7 +792,18 @@ remote browser alike. Protocol and authz rules:
   point of scanning it. New phone pairings use the computer UUID as their
   credential/endpoint slot, including the first pairing. `pairingBackendKey`
   repairs an already-known computer in its existing slot, preserving legacy
-  HOME pairings. Validating a new invitation must never repoint HOME. The
+  HOME pairings. It also reads the saved pairing's computer ID before bootstrap,
+  so an offline invitation cannot create a second slot for the same computer.
+  Native boot prefers a complete UUID pairing over a proven duplicate HOME
+  pairing, keeping the dormant HOME credentials/endpoints/trust until explicit
+  removal. An endpoint left by failed redemption cannot supersede a valid
+  legacy pairing. Old HOME sessions without an ID converge when authenticated
+  bootstrap identifies them, before catalog reads can claim two owners.
+  Removing the canonical computer also retires its proven dormant duplicate.
+  This is native pairing repair, not permission to merge different computer
+  identities or weaken conversation ownership conflicts. `native/computerCatalogBoot.test.ts`
+  exercises actual boot, catalog ownership and draft routing together.
+  Validating a new invitation must never repoint HOME. The
   phone's "Pair again" opens Remote access → Connections, where another invitation repairs its
   own connection without discarding other computers or frontend preferences.
   Passkeys remain limited to their own browser origin.

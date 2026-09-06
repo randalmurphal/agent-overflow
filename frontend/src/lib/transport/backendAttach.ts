@@ -33,9 +33,10 @@ import { networkFetch } from './networkFetch';
 // minutes and a row that vanished on a re-render.
 
 import { HOME_BACKEND, type BackendKey } from './backendKey';
-import { attachedBackends, backendById, detachBackend, syncAttachedBackends } from './backends';
+import { attachedBackends, backendById, detachBackend, duplicateLegacyHomeBackend, syncAttachedBackends } from './backends';
 import {
   clearPairedSession,
+  pairedComputerId,
   parsePairingFragment,
   probeActivation,
   redeemPairing,
@@ -83,7 +84,10 @@ export function pairingBackendKey(payload: PairingPayload): BackendKey {
   if (!payload.backendId || payload.backendId.includes(' ')) {
     throw new Error('That pairing link does not name a machine this app can attach.');
   }
-  return attachedBackends().find((entry) => entry.backendId === payload.backendId)?.id ?? payload.backendId;
+  if (duplicateLegacyHomeBackend() === payload.backendId) return payload.backendId;
+  return attachedBackends().find((entry) => entry.backendId === payload.backendId)?.id
+    ?? Object.keys(storedBackendEndpoints()).find((key) => pairedComputerId(key) === payload.backendId)
+    ?? payload.backendId;
 }
 
 /**
@@ -188,6 +192,9 @@ export async function awaitAttachedActivation(
  */
 export function detachAttachedBackend(id: BackendKey): void {
   if (id === HOME_BACKEND && !isNativeShell()) return;
+  // Forgetting the canonical computer also retires its dormant old slot;
+  // otherwise the next launch would resurrect the removed connection.
+  if (id !== HOME_BACKEND && duplicateLegacyHomeBackend() === id) detachAttachedBackend(HOME_BACKEND);
   runBeforeBackendDetach(id);
   forgetPendingAttachment(id);
   detachBackend(id);

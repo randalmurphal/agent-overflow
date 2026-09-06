@@ -410,6 +410,15 @@ export function pairedSessionId(backend: BackendKey = HOME_BACKEND): string | nu
   return readStoredSession(backend)?.sessionId ?? null;
 }
 
+/** Pairing-time computer identity, available before bootstrap and offline.
+ * This is a connection hint, never a live identity or authorization grant. */
+export function pairedComputerId(backend: BackendKey = HOME_BACKEND): string | null {
+  const session = readStoredSession(backend);
+  if (!session?.sessionId || !session.credential) return null;
+  const id = session.backendId;
+  return typeof id === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(id) ? id : null;
+}
+
 /**
  * The grant set the stored paired session holds, or null when this
  * browser holds no paired session — or holds one from a backend too old

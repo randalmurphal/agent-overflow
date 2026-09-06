@@ -24,9 +24,10 @@ import {
   __setHomeClientForTest,
   attachedBackends,
   backendById,
+  duplicateLegacyHomeBackend,
   type BackendDescriptor,
 } from './backends';
-import { clearPairedSession, hasPairedSession } from './deviceSession';
+import { clearPairedSession, hasPairedSession, pairedComputerId } from './deviceSession';
 import { __resetDetachStepsForTest, onBeforeBackendDetach } from './detachSteps';
 import {
   __resetHomeEndpointForTest,
@@ -53,13 +54,13 @@ const ENDPOINT = 'https://laptop.example:8123';
  * one. Hand-written rather than redeemed because what is under test is
  * what removal takes away, not how it arrived.
  */
-function storeSessionFor(backend: string): void {
+function storeSessionFor(backend: string, backendId?: string): void {
   // `deviceSession.sessionStoreKey`: home under the bare key, every other
   // backend suffixed by its registry id.
   const key = backend === '' ? 'agent-overflow:deviceSession' : `agent-overflow:deviceSession:${backend}`;
   localStorage.setItem(
     key,
-    JSON.stringify({ sessionId: 's-1', credential: 'c-1', expiresAtMs: Date.now() + 60_000 }),
+    JSON.stringify({ sessionId: 's-1', credential: 'c-1', backendId, expiresAtMs: Date.now() + 60_000 }),
   );
 }
 
@@ -160,6 +161,62 @@ describe('backendAttach', () => {
       const payload = { v: 1 as const, token: 'invite', endpoint: ENDPOINT, backendId: 'first-computer' };
       expect(pairingBackendKey(payload)).toBe('');
       expect(pairingBackendKey({ ...payload, backendId: 'another-computer' })).toBe('another-computer');
+    });
+
+    it('repairs the saved legacy pairing before bootstrap has ever named it', () => {
+      storeBackendEndpoint('', ENDPOINT);
+      storeSessionFor('', 'offline-computer');
+      expect(pairedComputerId()).toBe('offline-computer');
+      expect(pairingBackendKey({ v: 1, token: 'invite', endpoint: ENDPOINT, backendId: 'offline-computer' })).toBe('');
+      expect(pairingBackendKey({ v: 1, token: 'invite', endpoint: ENDPOINT, backendId: 'another-computer' })).toBe('another-computer');
+    });
+
+    it('requires matching full pairing identity to suppress a native legacy duplicate', () => {
+      const capacitor = Object.getOwnPropertyDescriptor(window, 'Capacitor');
+      Object.defineProperty(window, 'Capacitor', { configurable: true, value: { isNativePlatform: () => true } });
+      try {
+        storeBackendEndpoint('', ENDPOINT);
+        storeSessionFor('', 'mac');
+        storeBackendEndpoint('mac', 'https://192.168.1.55:60522');
+        expect(duplicateLegacyHomeBackend()).toBeNull();
+        storeSessionFor('mac', 'different-computer');
+        expect(duplicateLegacyHomeBackend()).toBeNull();
+        storeSessionFor('mac', 'mac');
+        expect(duplicateLegacyHomeBackend()).toBe('mac');
+        expect(pairingBackendKey({ v: 1, token: 'invite', endpoint: ENDPOINT, backendId: 'mac' })).toBe('mac');
+        // Endpoint/ID text alone is not a complete pairing.
+        localStorage.setItem('agent-overflow:deviceSession:mac', JSON.stringify({ backendId: 'mac', sessionId: '', credential: '' }));
+        expect(duplicateLegacyHomeBackend()).toBeNull();
+      } finally {
+        if (capacitor) Object.defineProperty(window, 'Capacitor', capacitor);
+        else Reflect.deleteProperty(window, 'Capacitor');
+      }
+    });
+
+    it('forgetting a canonical phone computer also removes only its dormant duplicate', () => {
+      const capacitor = Object.getOwnPropertyDescriptor(window, 'Capacitor');
+      Object.defineProperty(window, 'Capacitor', { configurable: true, value: { isNativePlatform: () => true } });
+      try {
+        storeBackendEndpoint('', ENDPOINT);
+        storeSessionFor('', 'mac');
+        storeBackendEndpoint('mac', 'https://192.168.1.55:60522');
+        storeSessionFor('mac', 'mac');
+        storeBackendEndpoint('other', 'https://other.example');
+        storeSessionFor('other', 'other');
+        stageMachine({ id: 'mac', backendId: 'mac' });
+        localStorage.setItem('agent-overflow:frontend:example', 'retained');
+        detachAttachedBackend('mac');
+        expect(hasPairedSession('')).toBe(false);
+        expect(hasPairedSession('mac')).toBe(false);
+        expect(storedBackendEndpoint('')).toBe('');
+        expect(storedBackendEndpoint('mac')).toBe('');
+        expect(hasPairedSession('other')).toBe(true);
+        expect(storedBackendEndpoint('other')).toBe('https://other.example');
+        expect(localStorage.getItem('agent-overflow:frontend:example')).toBe('retained');
+      } finally {
+        if (capacitor) Object.defineProperty(window, 'Capacitor', capacitor);
+        else Reflect.deleteProperty(window, 'Capacitor');
+      }
     });
 
     it('repairs a legacy phone slot at its newly invited address before redeeming', async () => {

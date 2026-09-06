@@ -625,7 +625,7 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
   await passCredentialPrompt(device, lock);
   await expect(row).toBeVisible({ timeout: PAIRED_MOUNT_MS });
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('tab', { name: 'Computers', exact: true }).click();
+  await page.getByRole('tab', { name: 'Connections', exact: true }).click();
   const computer = page.getByTestId('attached-machine');
   await computer.getByRole('button', { name: 'Change address' }).click();
   await computer.getByLabel('New computer address').fill(repairedOrigin);
@@ -678,6 +678,28 @@ test('new pairings preserve a legacy first computer and removing it preserves th
     }
     const firstId = await pair(harness);
     await expect(page.getByTestId('thread-row').filter({ hasText: 'First computer thread' })).toBeVisible();
+    // An older install can retain both legacy HOME and UUID slots for this
+    // same computer. The real native boot must expose one catalog owner,
+    // including when restoring a draft through the thread-scoped RPC.
+    const [firstThread] = await harness.rpc<Array<{ id: string }>>('ListThreads');
+    const draftText = 'Draft survives duplicate connection repair';
+    await harness.rpc('SaveDraft', firstThread.id, draftText, [], [], null);
+    await page.evaluate((id) => {
+      localStorage.setItem('agent-overflow:deviceSession', localStorage.getItem(`agent-overflow:deviceSession:${id}`)!);
+      const endpoints = JSON.parse(localStorage.getItem('agent-overflow:backendEndpoints')!);
+      endpoints[''] = endpoints[id];
+      localStorage.setItem('agent-overflow:backendEndpoints', JSON.stringify(endpoints));
+    }, firstId);
+    await page.reload();
+    const restoredLock = page.getByTestId('app-lock');
+    await expect(restoredLock).toBeVisible({ timeout: PAIRED_MOUNT_MS });
+    await passCredentialPrompt(device, restoredLock);
+    const restoredThread = page.getByTestId('thread-row').filter({ hasText: 'First computer thread' });
+    await expect(restoredThread).toHaveCount(1);
+    await restoredThread.click();
+    await expect(page.locator('textarea')).toHaveValue(draftText);
+    await expect(page.getByText(/Two computers claim this conversation/)).toHaveCount(0);
+    await page.getByTestId('compact-back').click();
     await settings('Typography');
     const font = page.getByTestId('settings-font-size');
     await font.fill('17');
@@ -705,12 +727,12 @@ test('new pairings preserve a legacy first computer and removing it preserves th
     } catch (error) {
       // Addresses and UI state only: never attach paired credentials.
       console.info('Paired computer addresses:', await page.evaluate(() => localStorage.getItem('agent-overflow:backendEndpoints')));
-      await settings('Computers');
+      await settings('Connections');
       await test.info().attach('computers-state', { body: await page.locator('body').ariaSnapshot(), contentType: 'text/plain' });
       throw error;
     }
     await harness.stop();
-    await settings('Computers');
+    await settings('Connections');
     const first = page.getByTestId('home-computer');
     await first.getByRole('button', { name: 'Remove', exact: true }).click();
     await first.getByRole('button', { name: 'Confirm remove', exact: true }).click();

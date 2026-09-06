@@ -2,6 +2,7 @@ import { rememberedIdentity, forgetRememberedIdentity } from './rememberedIdenti
 import { isNativeShell } from '../native/platform';
 import { isFrontendOnly } from './runMode';
 import { storedBackendEndpoint } from './homeEndpoint';
+import { pairedComputerId } from './deviceSession';
 // The backends this client is attached to, one `TransportHandle` each.
 //
 // Phase 7 of the remote-access spec (§10, "One seam, two realizations")
@@ -270,7 +271,7 @@ function makeEntry(
       return handle;
     },
     get backendId(): string {
-      return getBackendIdentity(id).backendId || pairedBackendId || rememberedIdentity(id)?.backendId || '';
+      return getBackendIdentity(id).backendId || pairedBackendId || pairedComputerId(id) || rememberedIdentity(id)?.backendId || '';
     },
     get generation(): string {
       return getBackendIdentity(id).generation;
@@ -295,14 +296,26 @@ function makeEntry(
 // singleton. Nothing is CALLED on the client here: construction must not
 // open a socket, because the boot sequence decides when that happens.
 const homeEntry = makeEntry(HOME_BACKEND, true, wsClient, '');
-if (!isNativeShell() || storedBackendEndpoint() !== '') {
+if (!isNativeShell() || (storedBackendEndpoint() !== '' && duplicateLegacyHomeBackend() === null)) {
   entries.push(homeEntry);
   byId.set(HOME_BACKEND, homeEntry);
+}
+
+/** A newer UUID pairing supersedes only a proven duplicate legacy phone
+ * slot. Leave its credentials/endpoints untouched until explicit removal. */
+export function duplicateLegacyHomeBackend(): BackendKey | null {
+  if (!isNativeShell() || !storedBackendEndpoint()) return null;
+  const id = pairedComputerId() || getBackendIdentity().backendId || rememberedIdentity(HOME_BACKEND)?.backendId;
+  return id && storedBackendEndpoint(id) && pairedComputerId(id) === id ? id : null;
 }
 
 /** Restore the legacy phone slot after pairing, before the app mounts. New
  * phone pairings use computer IDs; an absent legacy slot is not a computer. */
 export function restoreHomeBackend(): void {
+  if (duplicateLegacyHomeBackend() !== null) {
+    detachBackend(HOME_BACKEND);
+    return;
+  }
   if (byId.has(HOME_BACKEND)) return;
   entries.unshift(homeEntry);
   byId.set(HOME_BACKEND, homeEntry);
@@ -322,6 +335,17 @@ export function restoreHomeBackend(): void {
 // fact about a connection, and the registry is a fact about the app.
 onBackendIdentity((identity, backendKey) => {
   if (identity.backendId === '') return;
+  // Very old HOME sessions learn their computer ID only from bootstrap.
+  // Retire that duplicate before its ready promise can issue catalog reads.
+  if (duplicateLegacyHomeBackend() !== null && byId.has(HOME_BACKEND)) {
+    detachBackend(HOME_BACKEND);
+  } else if (backendKey === HOME_BACKEND && isNativeShell()
+    && entries.some((entry) => !entry.home && entry.id === identity.backendId)
+    && pairedComputerId(identity.backendId) !== identity.backendId) {
+    // A legacy session with no saved ID can discover an incomplete duplicate
+    // only now. Reconcile before choosing which entry owns the UUID alias.
+    syncAttachedBackends();
+  }
   const entry = byId.get(backendKey);
   if (entry === undefined) return;
   const existing = byId.get(identity.backendId);

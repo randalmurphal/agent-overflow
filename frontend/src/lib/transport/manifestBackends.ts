@@ -19,6 +19,8 @@
 import type { Bootstrap } from './bootstrap';
 import type { BackendDescriptor } from './backends';
 import { endpointHost, storedBackendEndpoints } from './homeEndpoint';
+import { hasPairedSession, pairedComputerId } from './deviceSession';
+import { rememberedIdentity } from './rememberedIdentity';
 
 let descriptors: readonly BackendDescriptor[] = [];
 const listeners = new Set<() => void>();
@@ -206,8 +208,14 @@ export function descriptorForAttachedId(
  */
 export function storedBackendDescriptors(): BackendDescriptor[] {
   const out: BackendDescriptor[] = [];
-  for (const [id, endpoint] of Object.entries(storedBackendEndpoints())) {
+  const endpoints = storedBackendEndpoints();
+  const homeId = endpoints[''] && hasPairedSession('')
+    ? pairedComputerId('') || rememberedIdentity('')?.backendId : undefined;
+  for (const [id, endpoint] of Object.entries(endpoints)) {
     if (id === '') continue;
+    // A failed redemption can leave an endpoint without a credential. It
+    // must not create a second catalog owner beside its valid legacy slot.
+    if (id === homeId && pairedComputerId(id) !== id) continue;
     out.push(descriptorForAttachedId(id, endpointHost(endpoint), endpoint));
   }
   return out;

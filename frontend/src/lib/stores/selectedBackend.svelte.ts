@@ -44,9 +44,9 @@ let selected = $state<BackendKey>(initial);
 
 /** Boot only: a frontend without a local computer starts on its first saved one.
  * Explicit launch and remembered choices survive outages and removal. */
-export function initializeSelectedBackend(computers: readonly { id: BackendKey }[]): void {
+export function initializeSelectedBackend(computers: readonly { id: BackendKey }[], preferred?: BackendKey): void {
   if (selected === HOME_BACKEND && !computers.some((computer) => computer.id === HOME_BACKEND)) {
-    selected = computers[0]?.id ?? HOME_BACKEND;
+    selected = computers.find((computer) => computer.id === preferred)?.id ?? computers[0]?.id ?? HOME_BACKEND;
   }
 }
 // The focused thread pane's thread, supplied by stores/panes.svelte.

@@ -35,11 +35,16 @@ grow a second way to address a backend.
 
 Phone pairings are independent computer slots. New pairings, including the
 first, use the computer UUID; an existing empty-key HOME pairing stays in its
-legacy slot until explicitly removed. Native boot needs any saved computer,
+legacy slot unless a complete saved UUID pairing proves it is the same computer.
+Then only the UUID connection is active; the old slot's credentials and trust
+remain dormant until that computer is explicitly forgotten. Incomplete duplicate
+pairings never displace HOME, and delayed legacy identity discovery converges
+before catalog reads. Native boot needs any saved computer,
 not HOME. Pairing another computer cannot replace HOME's endpoint or credential,
 and removing HOME preserves the other pairings and frontend preferences. The
-Android smoke exercises the legacy slot alongside a new pairing, removes the
-first host while offline, and verifies a usable reload through the second host.
+Android smoke restores a saved draft with duplicate legacy/UUID slots, then
+exercises a legacy slot alongside a different computer, removes the first host
+while offline, and verifies a usable reload through the second host.
 Native prompt tests wait for the credential window before using Android input
 selectors; the WebView lock overlay appears before that system window does.
 The notification cold-start case fetches the named thread if initial catalog

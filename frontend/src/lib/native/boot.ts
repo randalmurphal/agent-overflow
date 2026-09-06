@@ -15,7 +15,7 @@ import { pairingEndpoint } from './networkTrust';
 
 import { applyNotificationActivated } from '../stores/eventsNotification';
 import { parseNotificationTarget } from '../stores/notificationActivationQueue';
-import { attachedBackends, restoreHomeBackend, setBackendSource, syncAttachedBackends } from '../transport/backends';
+import { attachedBackends, duplicateLegacyHomeBackend, onBackendsChanged, restoreHomeBackend, setBackendSource, syncAttachedBackends } from '../transport/backends';
 import { initializeSelectedBackend } from '../stores/selectedBackend.svelte';
 import { onBeforeBackendDetach } from '../transport/detachSteps';
 import type { PairingPayload } from '../transport/deviceSession';
@@ -30,6 +30,19 @@ export interface ShellBoot {
   /** True when at least one computer is saved on this frontend. */
   paired: boolean;
 }
+
+function initializeComputerSelection(): void {
+  const computers = attachedBackends();
+  const canonical = duplicateLegacyHomeBackend();
+  // Source sync attaches entries one by one. Do not temporarily choose a
+  // different computer just because its descriptor precedes the repaired one.
+  if (canonical && !computers.some((computer) => computer.id === canonical)) return;
+  initializeSelectedBackend(computers, canonical ?? undefined);
+}
+
+// A pre-identity legacy slot may converge only after bootstrap. Update an
+// unresolved HOME choice then; explicit computer selections stay untouched.
+onBackendsChanged(() => { if (isNativeShell()) initializeComputerSelection(); });
 
 /**
  * Address the backends this device has paired with, and answer what
@@ -55,7 +68,7 @@ export function prepareNativeShell(): ShellBoot {
   }
   syncAttachedBackends();
   const computers = attachedBackends();
-  initializeSelectedBackend(computers);
+  initializeComputerSelection();
   return { shell: true, paired: computers.length > 0 };
 }
 
