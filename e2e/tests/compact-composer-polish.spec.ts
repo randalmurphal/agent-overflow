@@ -1,5 +1,5 @@
 // Phone gestures and geometry over the production SPA: a meter stays open,
-// workspace/cost fit one row, a picked file lands in the draft, and an
+// workspace/cost fit without horizontal overflow, a picked file lands in the draft, and an
 // expanded Bash row exposes the full command before its output.
 import { test, expect } from './fixtures.js';
 import {

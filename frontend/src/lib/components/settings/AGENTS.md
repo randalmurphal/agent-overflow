@@ -12,7 +12,8 @@ Three files describe a control, and a test ties them together.
   renders its own title. In-page sub-sections use `SettingsHeader` with a
   sentence-case title, and a page that is a run of sections wraps them in
   `.settings-sections` (app.css), which rules and spaces between siblings;
-  no section carries its own top margin or border.
+  no section carries its own top margin or border. Remote access uses
+  separate bordered cards for pairing and each network instead of a text wall.
 - `pages.ts` maps each page id to its component; the record is total over
   `SettingsSection`, so a page without a component does not compile.
 - `fields.ts` is the search index. Every `SettingsField` takes a required
@@ -70,7 +71,7 @@ provider with no page rather than guessing.
 ## Provider pages
 
 `ProviderSettingsPage.svelte` renders one provider's whole page (setup,
-environment, accounts, context window, system prompt, tools, and the
+environment, context window, system prompt, tools, and the
 Claude-only session sections). `ClaudeSettings` / `CodexSettings` are the
 two instantiations. Every section renders regardless of the Enabled
 toggle; there is no "enable it first" gate.
@@ -87,11 +88,18 @@ when enabled, and sends the explicit choice without changing host settings.
 Older hosts retain their automatic mint RPC. Never label an automatically
 selected tailnet URL as a LAN invitation.
 
-Access & sharing puts LAN and Tailscale controls first, followed by Devices
-and optional agent access. Domain, ports and certificate setup stay under
-Advanced network settings. Help text names its destination without assuming
-that it is above or below the control. Computers groups existing connections
-before its add form, so managing a machine does not require scanning past setup.
+Remote access has four visible navigation pages: Connections, Pairing & network,
+Accounts, and Agent access. Accounts owns both providers' sign-in controls;
+provider configuration pages keep model and runtime settings. Account-switcher
+management links open Accounts on the captured computer.
+
+Pairing & network puts pairing first, followed by LAN and Tailscale cards.
+Ports, domains and certificates stay under Advanced network settings; passkeys
+and individual connection sessions are collapsed separately. Connections groups
+existing computers before setup and exposes hostname-based labels and an explicit
+nickname editor. Nicknames belong to this frontend, use stable backend identity,
+and never rename the host or alter its connection address. Save/Cancel is explicit.
+Setup help includes the destination page and headless service commands.
 
 An offline saved connection exposes `ComputerAddress`. Its repair belongs to
 the frontend's pairing, not settings on the selected computer. Go's host-only

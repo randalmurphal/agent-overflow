@@ -26,6 +26,8 @@
     onPaneDragStart?: (event: DragEvent) => void;
     /** Extra classes for the title button (e.g. an attention glow). */
     glowClass?: string;
+    /** Allow the complete title to wrap in compact chat headers. */
+    wrap?: boolean;
     titleTestId?: string;
     inputTestId?: string;
   }
@@ -34,6 +36,7 @@
     pane,
     onPaneDragStart,
     glowClass = '',
+    wrap = false,
     titleTestId = 'pane-title',
     inputTestId = 'pane-title-input',
   }: Props = $props();
@@ -148,7 +151,8 @@
       data-focused={isFocusedPane}
       title={`${pane.thread.title} (right-click to rename)`}
       class={[
-        'text-sm font-medium truncate min-w-0 text-left bg-transparent border-none px-1.5 py-0.5 rounded-[var(--radius-field)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
+        'text-sm font-medium min-w-0 text-left bg-transparent border-none px-1.5 py-0.5 rounded-[var(--radius-field)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
+        wrap ? 'flex-1 whitespace-normal [overflow-wrap:anywhere]' : 'truncate',
         onPaneDragStart ? 'cursor-grab active:cursor-grabbing' : 'cursor-default',
         isFocusedPane
           ? 'bg-accent/15 text-fg ring-1 ring-accent/40'

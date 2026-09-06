@@ -134,7 +134,7 @@ What compact changes, and where:
 
 - **Two screens, both mounted.** The sidebar is the root screen and the
   pane strip is the thread screen (`compact-screen-list` /
-  `compact-screen-thread`); the inactive one is `visibility: hidden` and
+  `compact-screen-thread`); the inactive one is `visibility: hidden`, `opacity: 0`, and
   `inert`, never unmounted, so a trip back to the list keeps the
   timeline's observers and scroll position. `revealPane` flips to the
   thread screen because every "show me this pane" path already passes
@@ -147,7 +147,9 @@ What compact changes, and where:
   that on a real phone (2026-09-04). A style that means "not hidden"
   must clear the property (`undefined` / `''`), never set `visible`;
   the compact back-navigation spec fails on any element that still
-  computes visible inside the hidden screen.
+  computes visible inside the hidden screen. Screen-level opacity additionally
+  suppresses the entire inactive subtree, including composited descendants,
+  without zeroing layout or resetting timeline observers.
 - **Settings is stacked screens** (`SettingsView`): the rail is a
   full-width screen, picking a section drills into the page, and the
   page header's back button returns — the desktop two-pane spread
@@ -184,17 +186,11 @@ What compact changes, and where:
   `ThreadRow`, the project header and the pane title all set `draggable`
   false there, because Android starts a drag on a held draggable and that
   fights the long press.
-- **The chat header is a title and one button.** The desktop's action
-  cluster (review, PR, terminal, runs, take control, browser, editor,
-  git split button) rolls into a menu behind `chat-header-more`
-  (`ChatHeaderActions`), so the title keeps its width. That menu is
-  the one compact popover that is NOT a bottom sheet (`sheet={false}`,
-  `bottom-end`): a control at the top of the screen answers where the
-  finger is, and the bottom is where the composer's sheets rise from
-  (owner ruling, 2026-09-04). No command palette button: the phone has
-  no chords for one to stand in for. The git split button's popover and
-  dialogs stay mounted outside the menu (`GitActionsControl`'s
-  `trigger={false}` + `openMenu`).
+- **The compact chat header gives the title its own row.** The full title
+  wraps, including unbroken names. A second action row keeps the workspace
+  diff counts visible beside the actions menu; title regeneration remains
+  available. Other desktop actions share the menu's existing handlers.
+  The actions popover stays anchored at the header (`sheet={false}`).
 - **The composer's `minimal` rung keeps the model and the meters.**
   Below the width where even icon-only pickers fit beside the
   rate-limit and context meters, every picker but the model folds into
@@ -213,11 +209,11 @@ What compact changes, and where:
   measures as fitting. The meters, Send, and roll-up never shrink.
   `compact-model-label.spec.ts` checks actual label width for both providers
   across phone sizes and a resize back from desktop, not just a visible button.
-- **The workspace footer stays on one line.** Compact uses one workspace
-  trigger for branch/worktree, with the branch name shown once and the checkout
-  kind indicated by its icon. Its sheet hands off to the existing pickers and
-  contains new-branch naming. Project/workspace labels may ellipsize; tokens
-  and cost stay together and visible. Desktop retains the separate controls.
+- **The compact workspace footer has two logical rows.** Machine/project
+  occupy the first and the combined branch/worktree trigger the second.
+  Labels may wrap within their row; usage stays vertically centered at the
+  right. Desktop retains its horizontal strip. Existing workspace pickers
+  remain mounted behind the combined trigger.
 - **The hardware back is one stack** (`native/lifecycle.ts`
   `answerBackPress`): an open sheet or overlay (a synthetic Escape,
   which also steps Settings' page back to its rail through

@@ -61,7 +61,7 @@ describe('<AccountSwitcher> — visibility', () => {
     expect(getByTestId('account-switcher-row-claude-b').getAttribute('data-active')).toBe('false');
   });
 
-  it('offers a route into provider settings when nothing is saved', async () => {
+  it('opens the Accounts page when nothing is saved', async () => {
     setBindingMock('ListProviderAccounts', async () => []);
     resetSettingsOverlayForTest();
     const onClose = vi.fn();
@@ -72,7 +72,7 @@ describe('<AccountSwitcher> — visibility', () => {
 
     expect(onClose).toHaveBeenCalled();
     expect(isSettingsOpen()).toBe(true);
-    expect(getSettingsSection()).toBe('claude');
+    expect(getSettingsSection()).toBe('accounts');
   });
 });
 

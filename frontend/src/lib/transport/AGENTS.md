@@ -793,7 +793,7 @@ remote browser alike. Protocol and authz rules:
   credential/endpoint slot, including the first pairing. `pairingBackendKey`
   repairs an already-known computer in its existing slot, preserving legacy
   HOME pairings. Validating a new invitation must never repoint HOME. The
-  phone's "Pair again" opens Computers, where another invitation repairs its
+  phone's "Pair again" opens Remote access → Connections, where another invitation repairs its
   own connection without discarding other computers or frontend preferences.
   Passkeys remain limited to their own browser origin.
 - `backendAttach.ts` is how a client with no local process attaches,

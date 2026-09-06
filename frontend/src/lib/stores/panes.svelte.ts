@@ -750,7 +750,7 @@ export function syncThread(thread: Thread): void {
 // that leaf would close the `panes → thread → gitStatusStore → transport`
 // ring, and the failure mode would be an init order that decides whether
 // routing works.
-setFocusedThreadResolver(() => getFocusedPaneOrNull()?.threadId ?? null);
+setFocusedThreadResolver(() => getFocusedPaneOrNull()?.thread ?? null);
 // The second half of the same question: which PANE's staged machine the
 // `selected` route should prefer when the focused pane holds a draft that
 // has no indexed thread yet. A resolver rather than a write on every focus

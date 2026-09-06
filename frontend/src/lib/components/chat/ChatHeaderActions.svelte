@@ -195,8 +195,8 @@
     void openReviewCompanion(pane.paneId, subject, { scope: 'workspace' });
   }
 
-  // Compact rolls the whole cluster into one menu so the title keeps the
-  // header's width. It drops from the button it was tapped on, not as a
+  // Compact keeps the diff badge visible and rolls other actions into a menu.
+  // It drops from the button it was tapped on, not as a
   // bottom sheet: a header control's menu belongs where the finger is
   // (owner ruling, 2026-09-04), and the bottom of the screen is where
   // the composer's own sheets rise from. Every row is the same handler
@@ -247,7 +247,11 @@
      `pane.workspace` (git and review) or `pane.threadId` (the pieces whose
      subject genuinely is a persisted row). -->
 {#if compact}
-  <div class="ml-auto flex items-center shrink-0" bind:this={moreTriggerEl}>
+  <div class="ml-auto flex items-center gap-2 shrink-0">
+    {#if hasWorkspace}
+      <WorkspaceDiffBadge status={pane.gitStatus.status} pressed={pane.showReviewPane} chord={null} onActivate={toggleWorkspaceReview} />
+    {/if}
+    <div bind:this={moreTriggerEl}>
     <Button
       variant="secondary"
       size="xs"
@@ -262,6 +266,7 @@
         <Icon icon={Ellipsis} size={12} strokeWidth={2} class="opacity-90" />
       {/snippet}
     </Button>
+    </div>
   </div>
   <Popover
     anchor={moreTriggerEl}

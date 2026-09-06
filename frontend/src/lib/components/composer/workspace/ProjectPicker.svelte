@@ -124,6 +124,7 @@
     disabled={isLocked || switching}
     aria-haspopup={isLocked ? undefined : 'menu'}
     aria-expanded={isLocked ? undefined : open}
+    data-workspace-location
     data-testid="project-picker-trigger"
     data-locked={isLocked || undefined}
     class={[

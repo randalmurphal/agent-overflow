@@ -10,7 +10,7 @@
   // usage chip is pinned to the right as the opposing "what has this
   // cost" element.
   //
-  // Two hosts, one row: the main composer mounts it live, and the agent
+  // Two hosts, one strip: the main composer mounts it live, and the agent
   // pane's read-only shell mounts it with `readonly` — the same chips
   // with the same values (a subagent runs in the same thread, so mode,
   // project, env and branch are literally this pane's facts), rendered
@@ -88,7 +88,8 @@
     data-testid="composer-workspace-strip"
     inert={readonly || undefined}
   >
-    <div class="flex min-w-0 flex-1 items-center gap-2 compact:gap-1">
+    <div class="flex min-w-0 flex-1 items-center gap-2 compact:flex-wrap compact:gap-1">
+    <div class="workspace-project contents compact:flex min-w-0 items-center gap-2 compact:w-full compact:gap-1">
     {#if hasMultipleBackends()}
       <!--
         Machine leads the cluster because it is the outermost "where":
@@ -99,11 +100,12 @@
       <MachinePicker {pane} />
     {/if}
     <ProjectPicker {pane} />
+    </div>
     {#if isCompactLayout()}
       <button
         bind:this={workspaceTrigger}
         type="button"
-        class="{composerTriggerClasses} max-w-[12rem]"
+        class="{composerTriggerClasses} w-full text-left"
         aria-label={`Workspace: ${workspaceLabel}, branch: ${branchLabel}`}
         title={`${workspaceLabel} · ${branchLabel}`}
         aria-haspopup="menu"
@@ -112,7 +114,7 @@
         onclick={() => (open = !open)}
       >
         <Icon icon={atBase ? Folder : FolderGit2} size={12} class="shrink-0 opacity-70" />
-        <span class="min-w-0 truncate text-fg">{branchLabel}</span>
+        <span class="min-w-0 text-fg [overflow-wrap:anywhere]">{branchLabel}{#if !atBase && workspaceLabel !== branchLabel}<span class="text-fg-muted"> · {workspaceLabel}</span>{/if}</span>
         <Icon icon={ChevronDown} size={12} class="shrink-0 opacity-60" />
       </button>
     {/if}
@@ -146,3 +148,14 @@
     </Menu>
   </Popover>
 {/if}
+
+<style>
+  :global(.layout-compact) .workspace-project :global([data-workspace-location]) { flex: 1 1 0; }
+  :global(.layout-compact) .workspace-project :global([data-workspace-location] > span:not(.lucide-icon)) {
+    max-width: none;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    text-align: left;
+  }
+  :global(.layout-compact) .workspace-project :global(.lucide-icon) { flex-shrink: 0; }
+</style>

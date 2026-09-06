@@ -68,8 +68,8 @@ function mount(overrides: Partial<NetworkSettings> = {}, busy = false) {
 describe('<NetworkTailnetEditor>', () => {
   it('starts off, with nothing to save and nothing to forget', () => {
     const { getByTestId, queryByTestId } = mount();
-    expect(getByTestId('network-tailnet-status').textContent).toContain('off');
-    expect((getByTestId('network-tailnet-save') as HTMLButtonElement).disabled).toBe(true);
+    expect(getByTestId('network-tailnet-status').textContent).toContain('Off');
+    expect(queryByTestId('network-tailnet-save')).toBeNull();
     expect(queryByTestId('network-tailnet-forget')).toBeNull();
     expect(queryByTestId('network-tailnet-auth')).toBeNull();
   });
@@ -91,7 +91,7 @@ describe('<NetworkTailnetEditor>', () => {
   });
 
   it('reverts an edit back to what the backend stored', async () => {
-    const { getByTestId } = mount();
+    const { getByTestId, queryByTestId } = mount();
     const field = getByTestId('network-tailnet-control-url') as HTMLInputElement;
 
     await fireEvent.input(field, { target: { value: 'https://typo.example' } });
@@ -99,7 +99,7 @@ describe('<NetworkTailnetEditor>', () => {
 
     await fireEvent.click(getByTestId('network-tailnet-revert'));
     expect(field.value).toBe('');
-    expect((getByTestId('network-tailnet-save') as HTMLButtonElement).disabled).toBe(true);
+    expect(queryByTestId('network-tailnet-save')).toBeNull();
   });
 
   it('offers the sign-in link while the node waits for approval', () => {
@@ -189,7 +189,7 @@ describe('<NetworkTailnetEditor>', () => {
 
   it('says the identity is kept while the feature is off', () => {
     const { getByTestId } = mount({ tailnet: tailnet({ hasState: true }) });
-    expect(getByTestId('network-tailnet-status').textContent).toContain('same device');
+    expect(getByTestId('network-tailnet-status').textContent).toContain('identity is kept');
   });
 
   it('disables every control while a save is in flight', () => {

@@ -74,8 +74,8 @@
   let statusLine = $derived.by(() => {
     if (!enabled) {
       return tailnet.hasState
-        ? 'Tailnet access is off. This backend keeps its place in your tailnet, so turning it back on reuses the same device.'
-        : 'Tailnet access is off.';
+        ? 'Off. Your saved Tailscale identity is kept for next time.'
+        : 'Off.';
     }
     if (tailnet.authUrl) {
       return 'Waiting for you to approve this machine.';
@@ -147,13 +147,7 @@
 </script>
 
 <section data-testid="network-tailnet-editor">
-  <SettingsHeader title="Tailnet">
-    {#snippet details()}
-      Join this backend to your tailnet and it becomes one of your own devices,
-      reachable from anywhere you are signed in. Nothing is opened to the public
-      internet and no tunnel is involved.
-    {/snippet}
-  </SettingsHeader>
+  <SettingsHeader title="Tailscale" description="Reach this computer away from home. Join the app to your tailnet, and use Tailscale on your phone or other device." />
 
   <div class="flex flex-col gap-1">
     <SettingsField
@@ -195,7 +189,8 @@
     </details>
   </div>
 
-  <div class="mt-3 flex items-center gap-2">
+  {#if dirty || (!enabled && tailnet.hasState)}
+  <div class="mt-3 flex flex-wrap items-center gap-2">
     <button
       type="button"
       data-testid="network-tailnet-save"
@@ -226,6 +221,8 @@
       </button>
     {/if}
   </div>
+
+  {/if}
 
   <p class="mt-3 text-[0.71875rem] leading-snug text-fg-muted" data-testid="network-tailnet-status">
     {statusLine}

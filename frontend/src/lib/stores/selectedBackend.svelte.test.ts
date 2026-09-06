@@ -40,3 +40,20 @@ it('keeps a local execution home and can open a frontend with no computers', asy
   selection.initializeSelectedBackend([{ id: 'gpu' }, { id: '' }]);
   expect(selection.selectedBackend()).toBe('');
 });
+
+it('uses a new draft’s project owner before a stale offline selection or pane override', async () => {
+  const selection = await import('./selectedBackend.svelte');
+  const index = await import('../transport/entityIndex');
+  index.noteProject('mac-project', 'mac');
+  selection.setSelectedBackend('offline-gpu');
+  selection.setPaneBackend('pane', 'offline-gpu');
+  selection.setActiveBackendPaneResolver(() => 'pane');
+  selection.setFocusedThreadResolver(() => ({ id: 'draft:mac-project', projectId: 'mac-project' }));
+  expect(selection.selectedBackend()).toBe('mac');
+  // A moved real conversation’s indexed owner still outranks its project.
+  index.noteThread('real-thread', 'gpu');
+  selection.setFocusedThreadResolver(() => ({ id: 'real-thread', projectId: 'mac-project' }));
+  expect(selection.selectedBackend()).toBe('gpu');
+  selection.setFocusedThreadResolver(() => null);
+  expect(selection.selectedBackend()).toBe('offline-gpu');
+});

@@ -58,10 +58,12 @@ and discard a selection returned after a thread switch. Keep scope/provider/
 prompt gates on both opening and accepting a selection.
 
 On compact layouts the workspace strip combines branch and worktree into one
-trigger, preserving tokens/cost on the same row. Both underlying pickers stay
+trigger on a second logical row beneath machine/project. Tokens/cost stay
+vertically centered on the right, and long location labels wrap within their
+allocated width rather than clipping. Both underlying pickers stay
 mounted and use that visible anchor, so keyboard commands and popup handoffs
 share their existing fetch, focus and mutation paths. New-branch naming opens
-inside the workspace sheet; it must not widen or wrap the footer.
+inside the workspace sheet; it must not widen the footer.
 
 An upload whose composer moved threads mid-flight DELETES its record.
 The bytes finished landing on a thread nobody is looking at any more, and
@@ -152,12 +154,15 @@ machine, project, checkout, branch. `MachinePicker.svelte` leads it and
 mounts only while `hasMultipleBackends()`, so a single-backend app has no
 trace of it. The picker's label is the machine that owns the pane's
 project; choosing another machine flips the draft to the SAME repository
-there when the sidebar entry spans it (`projectSiblingOn`), else to that
-machine's first project. It stages the pane's backend BEFORE the flip
-because the flip's own RPCs take the `selected` route. The project picker
+there when the sidebar entry spans it (`projectSiblingOn`), otherwise asks
+for that repository's checkout. Defaults and creation target that project
+explicitly; successful switching remembers the frontend's choice. The project picker
 beside it lists merged ENTRIES, one per repository, so a repo on two
-machines is one project choice and one machine choice. An unreachable machine stays listed, dimmed and
-disabled — never a silent failover. The same answer drives the composer's
+machines is one project choice and one machine choice. Unreachable and view-only
+machines stay listed, dimmed and disabled with their reason. The selection
+handler rechecks reachability and `threads:operate`; browser-tool availability
+does not belong in this execution-host choice. Never silently fail over.
+The same reachability answer drives the composer's
 disabled reason (`unreachableTarget` in `composerInputState.ts`) and the
 dimmed sidebar row, all from `stores/attachedBackends.svelte.ts`.
 

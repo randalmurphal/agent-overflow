@@ -32,7 +32,6 @@
   import ClaudeDisabledToolsEditor from './ClaudeDisabledToolsEditor.svelte';
   import ClaudeSessionAxesEditor from './ClaudeSessionAxesEditor.svelte';
   import CodexDisabledToolsEditor from './CodexDisabledToolsEditor.svelte';
-  import ProviderAccountsSettings from './ProviderAccountsSettings.svelte';
   import ProviderContextSettings from './ProviderContextSettings.svelte';
   import ProviderCustomEnvSection from './ProviderCustomEnvSection.svelte';
   import ProviderModelChips from './ProviderModelChips.svelte';
@@ -221,10 +220,6 @@
   <section>
     <SettingsHeader title="Environment" />
     <ProviderCustomEnvSection provider={definition} />
-  </section>
-
-  <section>
-    <ProviderAccountsSettings {provider} />
   </section>
 
   <section>

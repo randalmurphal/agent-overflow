@@ -7,8 +7,8 @@ workspace through the separate conversation-transfer protocol.
 
 ## Setup
 
-Connect both computers in Computers. In Settings, select the originating
-computer, open Remote access, and use **Agent access to other computers**.
+Connect both computers in Settings → Remote access → Connections. Open
+Remote access → Agent access and select the originating computer.
 Choose the destination and enable access. The frontend mints a destination
 invitation, enrolls the originating computer, compares both verification
 numbers and the destination identity, then confirms and enables commands.
@@ -18,7 +18,7 @@ phone to both computers does not silently give either computer the phone's key.
 This is an ordinary full device pairing between computers you control. The
 agent toggle separately controls whether new peer commands can start. Disabling
 it leaves the pairing intact and allows status/cancel for previously accepted
-jobs. Revoke the originating device in the destination's Devices list to end
+jobs. Revoke the originating device in the destination's Paired devices list to end
 its device access. Confirmation and enrollment retain the usual step-up checks.
 
 Enabling verifies the destination's connection and command permission first.

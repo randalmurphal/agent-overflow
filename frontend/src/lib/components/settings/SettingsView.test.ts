@@ -49,20 +49,22 @@ describe('settings section map', () => {
       'App',
       'Agents',
       'Workspace',
+      'Remote access',
       'Data',
     ]);
     expect(SETTINGS_SECTION_GROUPS.map((g) => g.sections.map((s) => s.id))).toEqual([
       ['theme', 'typography', 'chat', 'spinner'],
       ['threads', 'performance', 'keybindings', 'notifications', 'updates'],
       ['claude', 'codex', 'commit-messages', 'browser', 'discussions'],
-      ['projects', 'git', 'editor', 'systems'],
+      ['projects', 'git', 'editor'],
+      ['systems', 'remote', 'accounts', 'agent-access'],
       ['observability', 'storage'],
     ]);
   });
 
   it('derives the keyboard-nav order from the same grouped list', () => {
-    expect(SETTINGS_SECTION_IDS).toHaveLength(SETTINGS_SECTIONS.length - 1);
-    expect(new Set(SETTINGS_SECTION_IDS)).toEqual(new Set(SETTINGS_SECTIONS.filter((s) => s.id !== 'remote').map((s) => s.id)));
+    expect(SETTINGS_SECTION_IDS).toHaveLength(SETTINGS_SECTIONS.length);
+    expect(new Set(SETTINGS_SECTION_IDS)).toEqual(new Set(SETTINGS_SECTIONS.map((s) => s.id)));
   });
 
   it('gives every page a one-line description for the page header', () => {

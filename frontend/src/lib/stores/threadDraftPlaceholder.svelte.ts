@@ -20,6 +20,9 @@ import type { Project, Thread } from '../types/models';
 import type { ContextWindow } from '../types/events';
 import { asProviderID } from '../types/providers';
 import { CreateThread } from './bindings';
+import { withBackendTarget } from '../transport/backends';
+import { projectBackend } from '../transport/entityIndex';
+import { HOME_BACKEND } from '../transport/backendKey';
 import { prependThread, removeThread } from './threads.svelte';
 import {
   clearWorktreeIntent,
@@ -217,7 +220,8 @@ export function createThreadDraftPlaceholder(
     const placeholder = draftPlaceholder;
     if (!placeholder) return options.getThread();
     const current = options.getThread();
-    const created = (await CreateThread({
+    const backend = projectBackend(placeholder.projectId) ?? HOME_BACKEND;
+    const created = (await withBackendTarget(backend, () => CreateThread({
       projectId: placeholder.projectId,
       provider: current?.provider,
       model: current?.model,
@@ -229,7 +233,7 @@ export function createThreadDraftPlaceholder(
       worktreePath: current?.worktreePath,
       workspaceOverride: current?.workspacePath,
       branch: current?.branch,
-    })) as Thread;
+    }))) as Thread;
     return created;
   }
 

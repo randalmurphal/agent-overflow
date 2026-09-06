@@ -1,4 +1,6 @@
 import type { ThreadPane } from '../stores/thread.svelte';
+import { withBackendTarget } from '../transport/backends';
+import { threadMachine } from '../stores/attachedBackends.svelte';
 import {
   CreateThread,
   DeleteThread,
@@ -108,6 +110,8 @@ export async function implementProposedPlanInNewThread(
     addToast('error', `${failureLabel}: missing plan payload reference`);
     return false;
   }
+  const projectId = sourceThread.projectId;
+  const backend = threadMachine(sourceThread.id, projectId);
   try {
     const planContent = await GetPayloadData(pane.threadId, source.payloadId);
     const planMarkdown = planContent.data ?? '';
@@ -119,8 +123,8 @@ export async function implementProposedPlanInNewThread(
     const draftContent = buildPlanImplementationPrompt(planMarkdown);
     const sourceIntent = worktreeIntentForThread(sourceThread);
 
-    let created = (await CreateThread({
-      projectId: sourceThread.projectId,
+    let created = (await withBackendTarget(backend, () => CreateThread({
+      projectId,
       provider: sourceThread.provider,
       model: sourceThread.model,
       mode: 'chat',
@@ -134,7 +138,7 @@ export async function implementProposedPlanInNewThread(
       workspaceOverride: sourceThread.workspacePath,
       worktreePath: sourceThread.worktreePath ?? '',
       branch: sourceThread.branch ?? '',
-    })) as Thread;
+    }))) as Thread;
 
     try {
       // The child owns every mutation from the start. This preserves LOCAL

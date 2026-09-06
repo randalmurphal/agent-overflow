@@ -9,7 +9,8 @@
 //
 // So the answer is the machine the person is LOOKING AT, in this order:
 //
-//  1. The focused thread pane's thread. A path-argument call issued while
+//  1. The focused thread pane's thread, or its project's owner for an
+//     unmaterialized draft. A path-argument call issued while
 //     a thread is on screen is about THAT thread's checkout — routing it
 //     anywhere else would ask one machine about another's directory, and
 //     the answer would be plausible rather than empty. This is why the
@@ -31,7 +32,8 @@
 // general selection; a focused conversation's actual owner always wins.
 //
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
-import { threadBackend } from '../transport/entityIndex';
+import { projectBackend, threadBackend } from '../transport/entityIndex';
+import type { Thread } from '../types/models';
 import { initialComputer } from '../transport/runMode';
 import { readFrontendValue, writeFrontendValue } from './frontendStorage';
 
@@ -47,17 +49,17 @@ export function initializeSelectedBackend(computers: readonly { id: BackendKey }
     selected = computers[0]?.id ?? HOME_BACKEND;
   }
 }
-// The focused thread pane's thread id, supplied by stores/panes.svelte.
+// The focused thread pane's thread, supplied by stores/panes.svelte.
 // A function rather than an import, because `panes → thread →
 // gitStatusStore → transport` already exists and importing panes from a
 // transport-adjacent leaf would close that ring. The pane module arms this
 // when IT loads, the same shape as `setGitStatusPaneBridge`, so there is
 // no registration order to get right.
-let focusedThreadId: (() => string | null) | null = null;
+let focusedThread: (() => Pick<Thread, 'id' | 'projectId'> | null) | null = null;
 
 /** Arm the focused-pane resolver. Called once, by stores/panes.svelte. */
-export function setFocusedThreadResolver(resolve: () => string | null): void {
-  focusedThreadId = resolve;
+export function setFocusedThreadResolver(resolve: () => Pick<Thread, 'id' | 'projectId'> | null): void {
+  focusedThread = resolve;
 }
 // Per-pane overrides: a draft placeholder staging a thread on another
 // machine. Keyed by pane id, dropped when the pane closes
@@ -71,7 +73,7 @@ const byPane = new Map<string, BackendKey>();
 // change, and nobody ever did: `activePane` stayed null for the life of
 // the app, so every `setPaneBackend` write was dead and the project
 // picker's machine choice reached routing through nothing at all. A pull
-// cannot be forgotten, which is the same argument `focusedThreadId` above
+// cannot be forgotten, which is the same argument `focusedThread` above
 // makes and the same shape `setGitStatusPaneBridge` uses.
 let activePaneId: (() => string | null) | null = null;
 
@@ -82,9 +84,11 @@ let activePaneId: (() => string | null) | null = null;
  * same answer routing uses.
  */
 export function selectedBackend(): BackendKey {
-  const threadId = focusedThreadId?.() ?? null;
-  if (threadId !== null && threadId !== '') {
-    const owner = threadBackend(threadId);
+  const thread = focusedThread?.() ?? null;
+  if (thread) {
+    // A placeholder has no indexed thread yet, but its project already
+    // identifies the execution host. Never let an old selection win it.
+    const owner = threadBackend(thread.id) ?? (thread.projectId ? projectBackend(thread.projectId) : undefined);
     if (owner !== undefined) return owner;
   }
   const paneId = activePaneId?.() ?? null;

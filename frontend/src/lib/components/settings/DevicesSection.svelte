@@ -262,12 +262,12 @@
 </script>
 
 <section data-testid={unavailable ? 'devices-section-unavailable' : undefined}>
-  <div class="flex items-start justify-between gap-4">
+  <div class="flex flex-wrap items-start justify-between gap-3">
     <SettingsHeader
-      title="Devices"
+      title="Paired devices"
       description={ungranted
           ? 'This connection cannot manage device access. Connect with full access to pair or revoke devices.'
-          : 'Each paired device holds its own credential for this backend. Revoking one signs that device out everywhere without touching the others.'}
+          : 'Pair a phone or desktop using a QR code or link. Confirm the matching number to allow access.'}
     />
     {#if !unavailable}
       <Button variant="primary" size="sm" class="shrink-0 whitespace-nowrap" onclick={openPairing}>
@@ -341,7 +341,7 @@
               </p>
               <p class="text-[0.6875rem] text-fg-hint">
                 {#if local}
-                  The app's own window — its credential renews with the app.
+                  Local app
                 {:else}
                   {deviceMeta(device)}
                 {/if}
@@ -359,7 +359,8 @@
             {/if}
           </div>
           {#if !local && (device.sessions?.length ?? 0) > 0}
-            <ul class="mt-2 flex flex-col gap-1 border-t border-border-subtle/60 pt-2">
+            <details class="mt-2 border-t border-border-subtle/60 pt-2"><summary class="cursor-pointer text-xs text-fg-muted">Connection sessions ({device.sessions?.length})</summary>
+            <ul class="mt-2 flex flex-col gap-1">
               {#each device.sessions ?? [] as session (session.id)}
                 <li class="flex items-center justify-between gap-3 pl-[1.875rem]">
                   <span class="text-[0.6875rem] text-fg-muted">
@@ -383,13 +384,14 @@
                 </li>
               {/each}
             </ul>
+            </details>
           {/if}
         </div>
       {/each}
 
       {#if pairedCount === 0 && pending.length === 0}
         <p class="px-0.5 text-[0.71875rem] text-fg-muted">
-          No other device holds a credential for this backend.
+          No devices paired yet. Enable LAN or Tailscale, then choose Pair a device.
         </p>
       {/if}
 
@@ -476,7 +478,10 @@
          `access:admin` like every RPC on this screen, and mounting it
          only here is what keeps that a structural fact rather than a
          second copy of the check. -->
-    <PasskeysBlock />
+    <details class="mt-4 rounded-lg border border-border-subtle p-3">
+      <summary class="cursor-pointer text-sm font-medium text-fg">Security &amp; passkeys</summary>
+      <div class="mt-3"><PasskeysBlock /></div>
+    </details>
 
     {#if audit.length > 0}
       <div class="mt-3">

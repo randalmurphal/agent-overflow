@@ -99,7 +99,7 @@
   data-settings-field={providerFieldId(provider, 'accounts')}
   data-settings-label="Accounts"
 >
-  <SettingsHeader title="Accounts" description="Saved native logins and their last-known limits.">
+  <SettingsHeader title={providerLabel}>
     {#snippet badge()}
       <button
         type="button"
@@ -107,7 +107,7 @@
         disabled={credentialOpInFlight}
         onclick={() => void startProviderLogin(provider, backend)}
       >
-        {actions.loggingIn ? 'Signing in…' : 'Log in to another account'}
+        {actions.loggingIn ? 'Signing in…' : 'Sign in'}
       </button>
     {/snippet}
   </SettingsHeader>

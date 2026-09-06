@@ -156,8 +156,7 @@ describe('<NetworkSection>', () => {
       resetBindingMocks();
       setBindingMock('GetNetworkSettings', async () => networkSettings({ bindAll }));
       const { findByText, unmount } = render(NetworkSection);
-      await findByText(/one-time ticket that only loads the page/i);
-      await findByText(/still has to pair/i);
+      await findByText(/New devices still need pairing approval/i);
       unmount();
     }
   });
@@ -235,7 +234,7 @@ describe('<NetworkSection>', () => {
 
     const { findByRole, findByText, findByLabelText } = render(NetworkSection);
     await findByLabelText('Application URL');
-    await findByText(/Let paired devices reach this computer over your LAN/i);
+    await findByText(/Use the same Wi-Fi or wired network/i);
     expect(await findByRole('switch', { name: 'Toggle remote access' })).toBeTruthy();
     expect(getMock).toHaveBeenCalled();
   });
@@ -451,8 +450,9 @@ describe('<NetworkSection>', () => {
     );
 
     const { findByText, queryByTestId, findByLabelText } = render(NetworkSection);
-    await findByLabelText('Application URL');
-    await findByText(/opens it over HTTPS with no warning/i);
+    const url = await findByLabelText('Application URL') as HTMLInputElement;
+    expect(url.value).toBe('https://ao.example.com/?t=test-token');
+    await findByText(/New devices still need pairing approval/i);
     expect(queryByTestId('insecure-url-warning')).toBeNull();
   });
 

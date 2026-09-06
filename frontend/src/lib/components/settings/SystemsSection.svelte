@@ -1,8 +1,8 @@
 <script lang="ts">
-  // Settings → Systems: the other machines this installation is attached
+  // Settings → Remote access → Connections: the other machines this installation is attached
   // to. Adding one is the same profile pairing `agent-overflow --connect`
   // performs, driven from here instead of a terminal; the pairing link
-  // comes from the OTHER machine's Settings → Remote access → Devices.
+  // comes from the OTHER machine's Settings → Remote access → Pairing & network.
   //
   // Host-only on the DESKTOP by nature: those profiles live in this
   // machine's own directory, so a `--connect` window sees why rather than
@@ -24,10 +24,12 @@
   // composer's machine picker dims on.
 
   import ComputerActions from './ComputerActions.svelte';
+  import ComputerNickname from './ComputerNickname.svelte';
+  import { openSettingsOverlay } from '../../stores/settingsOverlay.svelte';
   import SSHConnectModal from './SSHConnectModal.svelte';
   import { HOME_BACKEND } from '../../transport/backendKey';
   import { selectedBackend, setSelectedBackend } from '../../stores/selectedBackend.svelte';
-  import { backendDisplayName } from '../../stores/attachedBackends.svelte';
+  import { attachedBackendEntry, backendDisplayName } from '../../stores/attachedBackends.svelte';
   import { onMount } from 'svelte';
   import MonitorIcon from '@lucide/svelte/icons/monitor';
   import Button from '../primitives/Button.svelte';
@@ -57,7 +59,6 @@
     getSystems,
     loadSystems,
     removeSystem,
-    renameSystem,
     systemLabel,
     systemsLoaded,
   } from '../../stores/systems.svelte';
@@ -90,8 +91,6 @@
   let adding = $state(false);
   let acting = $state(false);
   let armedRemove: string | null = $state(null);
-  let renaming: string | null = $state(null);
-  let renameValue = $state('');
 
   onMount(() => {
     if (hostList) void loadSystems().catch((err) => addToast('error', errString(err)));
@@ -194,23 +193,9 @@
     if (id === HOME_BACKEND || getAttachedBackends().length === 0) location.reload();
   }
 
-  function startRename(id: string, current: string): void {
-    renaming = id;
-    renameValue = current;
-  }
-
-  async function commitRename(id: string): Promise<void> {
-    const next = renameValue.trim();
-    renaming = null;
-    if (!next) return;
-    acting = true;
-    try {
-      await renameSystem(id, next);
-    } catch (err) {
-      addToast('error', errString(err));
-    } finally {
-      acting = false;
-    }
+  function displayName(id: string, fallback: string): string {
+    const entry = attachedBackendEntry(id);
+    return entry ? backendDisplayName(entry) : fallback;
   }
 
   function statusText(id: string, lastReachedMs: number | undefined): string {
@@ -240,6 +225,7 @@
         {/if}
       </div>
       <p class="text-xs text-fg-muted">{backendReachable(HOME_BACKEND) ? 'Connected' : 'Offline'}{hostList ? ' · This computer' : ''}</p>
+      <ComputerNickname backend={HOME_BACKEND} />
       <ComputerActions backend={HOME_BACKEND} />
     </div>
   {/if}
@@ -270,10 +256,6 @@
       {/each}
 
       {#each machines as machine (machine.id)}
-        <!-- The shell's row. No Rename: a nickname on the desktop is a
-             field of the PROFILE the local process holds, and this client
-             holds no profile — what it has is the machine's own name and
-             the address it was paired at. -->
         <div
           class="rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-3 py-2.5"
           data-testid="attached-machine"
@@ -281,9 +263,9 @@
           <div class="flex items-center gap-3">
             <span class="text-fg-hint"><Icon icon={MonitorIcon} size={18} strokeWidth={1.75} /></span>
             <div class="flex min-w-0 flex-1 flex-col gap-0.5">
-              <p class="truncate text-[0.75rem] font-medium text-fg">{machine.name}</p>
+              <p class="truncate text-[0.75rem] font-medium text-fg">{displayName(machine.id, machine.name)}</p>
               <p class="truncate text-[0.6875rem] text-fg-hint">
-                {machine.host} · {backendReachable(machine.id) ? 'Connected' : 'Unreachable'}
+                {backendReachable(machine.id) ? 'Connected' : 'Offline'}
               </p>
             </div>
             <Button
@@ -294,6 +276,7 @@
               {armedRemove === machine.id ? 'Confirm remove' : 'Remove'}
             </Button>
           </div>
+          <ComputerNickname backend={machine.id} />
           <ComputerActions backend={machine.id} />
         </div>
       {/each}
@@ -306,33 +289,11 @@
           <div class="flex items-center gap-3">
             <span class="text-fg-hint"><Icon icon={MonitorIcon} size={18} strokeWidth={1.75} /></span>
             <div class="flex min-w-0 flex-1 flex-col gap-0.5">
-              {#if renaming === system.id}
-                <input
-                  type="text"
-                  class="{INPUT_CLASS} w-full"
-                  aria-label="System name"
-                  bind:value={renameValue}
-                  onblur={() => void commitRename(system.id)}
-                  onkeydown={(e) => {
-                    if (e.key === 'Enter') { e.preventDefault(); void commitRename(system.id); }
-                    if (e.key === 'Escape') { e.preventDefault(); renaming = null; }
-                  }}
-                />
-              {:else}
-                <p class="truncate text-[0.75rem] font-medium text-fg">{systemLabel(system)}</p>
-              {/if}
+              <p class="truncate text-[0.75rem] font-medium text-fg">{displayName(system.id, systemLabel(system))}</p>
               <p class="truncate text-[0.6875rem] text-fg-hint">
-                {system.endpoint} · {statusText(system.id, system.lastReachedMs)}
+                {statusText(system.id, system.lastReachedMs)}
               </p>
             </div>
-            <Button
-              variant="ghost"
-              size="xs"
-              disabled={acting || renaming === system.id}
-              onclick={() => startRename(system.id, systemLabel(system))}
-            >
-              Rename
-            </Button>
             <Button
               variant={armedRemove === system.id ? 'danger' : 'danger-ghost'}
               size="xs"
@@ -342,6 +303,7 @@
               {armedRemove === system.id ? 'Confirm remove' : 'Remove'}
             </Button>
           </div>
+          <ComputerNickname backend={system.id} />
           <ComputerActions backend={system.id} />
         </div>
       {/each}
@@ -353,12 +315,16 @@
       {/if}
     </div>
   {/if}
-  <div class="mt-5">
-    <SettingsHeader title="Connect another computer" description="Paste an invitation from that computer, or scan its QR code." />
+  <div class="mt-4 rounded-xl border border-border-subtle bg-surface-0 p-4">
+    <SettingsHeader title="Pair another device" description="Choose the computer, enable a network, then pair your device." />
+    <Button variant="secondary" size="sm" onclick={() => openSettingsOverlay('remote', selectedBackend())}>Pair a device</Button>
+  </div>
+  <div class="mt-5 rounded-xl border border-border-subtle bg-surface-0 p-4">
+    <SettingsHeader title="Connect another computer" description="On that computer, open Remote access → Pairing & network and choose Pair a device. Paste its link here or scan the QR code." />
 
     {#if canAdd}
       <form
-        class="mt-3 flex items-center gap-2"
+        class="mt-3 flex flex-wrap items-center gap-2"
         onsubmit={(e) => {
           e.preventDefault();
           void submitLink();
@@ -366,7 +332,7 @@
       >
         <input
           type="text"
-          class="{INPUT_CLASS} min-w-0 flex-1"
+          class="{INPUT_CLASS} min-w-0 flex-1 compact:basis-full"
           placeholder="Pairing link"
           aria-label="Pairing link"
           bind:value={link}
@@ -395,6 +361,13 @@
     {:else}
       <p class="text-xs text-fg-muted">Open the desktop app to add another computer to this window.</p>
     {/if}
+    <details class="mt-3 text-xs text-fg-muted">
+      <summary class="cursor-pointer py-2 font-medium text-fg">Set up a headless computer</summary>
+      <p class="mt-2">Install Agent Overflow on that computer, then run:</p>
+      <pre class="mt-2 overflow-x-auto rounded-lg bg-surface-1 p-3 text-xs"><code>agent-overflow service install
+agent-overflow pair --lan</code></pre>
+      <p class="mt-2">Open the printed link on your phone or paste it here. Confirm the matching number in the terminal. The service stays running after you disconnect SSH.</p>
+    </details>
   </div>
 </section>
 

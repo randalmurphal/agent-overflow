@@ -1,3 +1,4 @@
+import { seedSettingsPages } from '../../../test/helpers/settingsPages';
 // The search index is checked against the pages it describes: every page is
 // mounted with the shipped-default settings, and the anchors it renders are
 // compared with the entries `fields.ts` registers for it. Both directions
@@ -8,96 +9,12 @@
 
 import { describe, expect, it, beforeEach } from 'vitest';
 import { render } from '@testing-library/svelte';
-import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
-import { resetKeybindingsStore } from '../../stores/keybindings.svelte';
-import { setBindingMock } from '../../../test/mocks/bindings-app';
-import { makeSettings } from '../../../test/helpers/settings';
 import { PROVIDER_SETTINGS_ORDER } from '../../providers/catalog';
 import { SETTINGS_FIELDS, SETTINGS_PROVIDERS } from './fields';
 import { SETTINGS_PAGES } from './pages';
 import { SETTINGS_SECTIONS } from './sections';
 
-async function seed(): Promise<void> {
-  const settings = makeSettings();
-  setBindingMock('GetSettings', async () => settings);
-  setBindingMock('UpdateSettings', async () => settings);
-  setBindingMock('Version', async () => '0.0.1');
-  setBindingMock('GetProviderStatuses', async () => []);
-  setBindingMock('GetModelsForProvider', async () => []);
-  setBindingMock('ListProviderAccounts', async () => []);
-  setBindingMock('ListDiscussions', async () => []);
-  setBindingMock('GetKeybindings', async () => ({ bindings: [] }));
-  setBindingMock('ListThreads', async () => []);
-  setBindingMock('ListArchivedThreads', async () => []);
-  setBindingMock('GetThemeFiles', async () => ({
-    dir: '/tmp/themes',
-    themes: [],
-    appearance: { mode: 'system', uiTheme: 'default', codeTheme: 'github' },
-  }));
-  setBindingMock('ListProjects', async () => [{ project: { id: 'settings-project', name: 'repo', path: '/repo', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 0 }]);
-  setBindingMock('GetProjectWorktreeSetup', async () => ({ copy: [], run: [], timeout: '' }));
-  setBindingMock('ListAvailableEditors', async () => []);
-  setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
-  setBindingMock('GetSpinnerFiles', async () => ({ dir: '/tmp/spinners', sprites: [], warnings: [] }));
-  // The notifications page reads the phone-push status on mount.
-  setBindingMock('GetPushSenderStatus', async () => ({
-    configured: false,
-    projectId: '',
-    clientEmail: '',
-    lastError: '',
-    registeredDevices: 0,
-  }));
-  // Remote access: the whole persisted record plus the two derived
-  // status blocks, because the page reads `tls.renewing` and
-  // `tailnet.running` to decide whether to poll (network.Settings).
-  setBindingMock('GetNetworkSettings', async () => ({
-    bindAll: false,
-    listenPort: 0,
-    canonicalDomain: '',
-    acmeDnsHook: [],
-    externalCertFile: '',
-    externalKeyFile: '',
-    tailnetEnabled: false,
-    tailnetControlUrl: '',
-    tls: {
-      serving: 'self-signed',
-      notAfter: 0,
-      renewing: false,
-      lastError: '',
-      selfSignedFingerprint: '',
-    },
-    tailnet: {
-      running: false,
-      state: '',
-      authUrl: '',
-      dnsName: '',
-      ips: [],
-      url: '',
-      https: false,
-      hasState: false,
-      lastError: '',
-    },
-    url: 'http://127.0.0.1:1/?t=t',
-    token: 't',
-    insecure: false,
-  }));
-  setBindingMock('GetAccessOverview', async () => ({
-    devices: [],
-    pendingPairings: [],
-    audit: [],
-  }));
-  setBindingMock('ListPasskeys', async () => []);
-  setBindingMock('GetDevServers', async () => ({ previewHost: '', servers: [] }));
-  setBindingMock('IsWSL', async () => false);
-  setBindingMock('ListWSLDistros', async () => []);
-  setBindingMock('GetWSLDistroPreference', async () => '');
-  setBindingMock('ListBackends', async () => []);
-  resetKeybindingsStore();
-  await loadSettings();
-}
 
-// Pages load through async RPCs; a few macrotask turns lets every mount-time
-// fetch in the seed resolve before the DOM is read.
 async function settle(): Promise<void> {
   for (let i = 0; i < 5; i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -121,7 +38,7 @@ describe('settings field index', () => {
 
 describe('every page renders exactly its registered fields', () => {
   beforeEach(async () => {
-    await seed();
+    await seedSettingsPages();
   });
 
   for (const section of SETTINGS_SECTIONS) {

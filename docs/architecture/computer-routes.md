@@ -90,7 +90,7 @@ origin. Do not weaken CSP, put credentials in navigation URLs, or confuse a page
 navigation with native/desktop route selection. Browser access keeps its existing
 same-origin behavior; the installed clients provide independent route selection.
 
-The Computers surface represents one computer. Its connection details can show
+Each row in Remote access → Connections represents one computer. Its connection details can show
 the address in use and allow a verified address repair. Choosing a conversation
 or execution host remains separate from choosing a network route.
 

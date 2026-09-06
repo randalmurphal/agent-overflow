@@ -18,6 +18,8 @@ import { type Project } from '../types/models';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { buildPane, makeThread } from '../../test/helpers/chat';
 import { installThreadPaneTestEnv } from '../../test/helpers/threadPane';
+import { noteProject, forgetProject } from '../transport/entityIndex';
+import { takePinnedBackend } from '../transport/backends';
 import {
   getExistingThreadTerminalState,
   getThreadTerminalState,
@@ -25,6 +27,22 @@ import {
 
 describe('threadDraftPlaceholder', () => {
   beforeEach(installThreadPaneTestEnv);
+
+  it('materializes on its project’s computer even when another pane has focus', async () => {
+    const pane = createThreadPane();
+    const project: Project = { id: 'remote-project', path: '/remote/repo', name: 'Repo', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false };
+    noteProject(project.id, 'remote-mac');
+    try {
+      pane.startDraftPlaceholder(project, 'chat');
+      let target: string | null | undefined;
+      setBindingMock('CreateThread', async () => {
+        target = takePinnedBackend();
+        return makeThread({ id: 'created-remote', projectId: project.id, projectPath: project.path, workspacePath: project.path, isDraft: true });
+      });
+      expect(await pane.ensureMaterializedThread()).toBe('created-remote');
+      expect(target).toBe('remote-mac');
+    } finally { pane.clear(); forgetProject(project.id); }
+  });
 
   it('drops stale placeholder worktree intent when "+ New" replaces an unsent draft', () => {
     // Repeated "+ New" without typing would otherwise leak worktree

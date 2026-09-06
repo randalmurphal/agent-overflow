@@ -280,7 +280,7 @@
       {#if !remoteReachable}
         <SettingsCallout tone="warn">
           This link currently reaches this computer only. Enable local network access or Tailscale
-          in Computers → Access & sharing before pairing a phone.
+          in Remote access → Pairing & network before pairing a phone.
         </SettingsCallout>
       {/if}
       {#if explicitNetworks}
@@ -302,7 +302,7 @@
             After pairing, it can use either available network.
           </p>
         {:else if remoteReachable}
-          <SettingsCallout tone="warn">Enable local network access or Tailscale in Computers → Access &amp; sharing before pairing.</SettingsCallout>
+          <SettingsCallout tone="warn">Enable local network access or Tailscale in Remote access → Pairing &amp; network before pairing.</SettingsCallout>
         {/if}
       {/if}
       <div class="flex items-center justify-between gap-3">

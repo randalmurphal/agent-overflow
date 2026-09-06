@@ -19,7 +19,7 @@
 import { getProviderDefinition } from '../../providers/catalog';
 import type { ProviderID } from '../../types/providers';
 
-export const SETTINGS_GROUPS = ['Appearance', 'App', 'Agents', 'Workspace', 'Data'] as const;
+export const SETTINGS_GROUPS = ['Appearance', 'App', 'Agents', 'Workspace', 'Remote access', 'Data'] as const;
 
 export type SettingsGroup = (typeof SETTINGS_GROUPS)[number];
 
@@ -136,19 +136,30 @@ export const SETTINGS_SECTIONS = [
     description: 'Which editor opens when you click a file path in the chat.',
   },
   {
-    id: 'remote',
-    label: 'Access & sharing',
-    navigation: false,
-    group: 'Workspace',
+    id: 'systems',
+    label: 'Connections',
+    group: 'Remote access',
     description:
-      "Connections and devices allowed to access this computer.",
+      "Computers you can work on from this app.",
   },
   {
-    id: 'systems',
-    label: 'Computers',
-    group: 'Workspace',
+    id: 'remote',
+    label: 'Pairing & network',
+    group: 'Remote access',
     description:
-      "Your connected computers, accounts, projects and remote access.",
+      "Pair a phone or desktop and choose how it reaches this computer.",
+  },
+  {
+    id: 'accounts',
+    label: 'Accounts',
+    group: 'Remote access',
+    description: 'Sign in or switch agent accounts on the selected computer.',
+  },
+  {
+    id: 'agent-access',
+    label: 'Agent access',
+    group: 'Remote access',
+    description: 'Allow agents to run commands on your other computers.',
   },
   {
     id: 'observability',
@@ -215,6 +226,6 @@ export function providerSettingsSection(provider: ProviderID): 'claude' | 'codex
 /** Pages that configure execution on a computer, rather than this frontend. */
 export function settingsUsesComputer(section: SettingsSection): boolean {
   return ['performance', 'notifications', 'claude', 'codex', 'commit-messages',
-    'browser', 'discussions', 'projects', 'git', 'editor', 'remote',
+    'browser', 'discussions', 'projects', 'git', 'editor', 'remote', 'accounts', 'agent-access',
     'observability', 'storage'].includes(section);
 }

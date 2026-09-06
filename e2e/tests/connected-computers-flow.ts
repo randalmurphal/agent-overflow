@@ -55,7 +55,7 @@ export function connectedComputersFlow(): void {
       await expect(second.getByRole('button', { name: 'Settings', exact: true })).toBeVisible();
       const initialFont = await second.evaluate(() => getComputedStyle(document.documentElement).fontSize);
 
-      await settingsPage(page, 'Computers');
+      await settingsPage(page, 'Connections');
       pairing = await headlessPairing(remote);
       const invite = pairing.invite;
       await page.getByRole('textbox', { name: 'Pairing link' }).fill(invite.url);
@@ -74,7 +74,7 @@ export function connectedComputersFlow(): void {
       // Backend pairing alone does not allow model commands. Toggle the real
       // originating host's opt-in, then exercise the CLI with the credential
       // injected into its mocked provider session (never the page's token).
-      await page.getByTestId('home-computer').getByRole('button', { name: 'Access & sharing' }).click();
+      await settingsPage(page, 'Agent access');
       const agentAccess = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Agent access to other computers', exact: true }) });
       await expect(agentAccess.getByRole('button', { name: 'Enable', exact: true })).toBeVisible();
       await agentAccess.getByRole('button', { name: 'Enable', exact: true }).click();
@@ -153,7 +153,7 @@ export function connectedComputersFlow(): void {
       const network = await remote.rpc<Record<string, unknown>>('GetNetworkSettings');
       await remote.rpc('SetNetworkSettings', { ...network, listenPort: port });
       await page.reload();
-      await settingsPage(page, 'Computers');
+      await settingsPage(page, 'Connections');
       await expect(computerRow).toContainText('Unreachable');
       await computerRow.getByRole('button', { name: 'Change address' }).click();
       await computerRow.getByLabel('New computer address').fill(`127.0.0.1:${port}`);

@@ -1,7 +1,6 @@
 <script lang="ts">
   import type { BackendKey } from '../../transport/backendKey';
   import { hasScope } from '../../transport/scopes';
-  import { openSettingsOverlay } from '../../stores/settingsOverlay.svelte';
   import Button from '../primitives/Button.svelte';
   import { HOME_BACKEND } from '../../transport/backendKey';
   import { backendReachable } from '../../stores/attachedBackends.svelte';
@@ -30,11 +29,6 @@
   {#if backend !== HOME_BACKEND && hasScope('host') && !backendReachable(backend) && profile}
     <Button variant="primary" size="xs" disabled={starting} onclick={() => void start()}>{starting ? 'Starting…' : 'Start over SSH'}</Button>
   {/if}
-  <Button variant="secondary" size="xs" onclick={() => openSettingsOverlay('claude', backend)}>Accounts &amp; agents</Button>
-  {#if hasScope('access:admin', backend)}
-    <Button variant="secondary" size="xs" onclick={() => openSettingsOverlay('remote', backend)}>Access &amp; sharing</Button>
-  {/if}
-  <Button variant="ghost" size="xs" onclick={() => openSettingsOverlay('projects', backend)}>Projects</Button>
   {#if !backendReachable(backend) && (isNativeShell() || (backend !== HOME_BACKEND && hasScope('host')))}
     <ComputerAddress {backend} />
   {/if}

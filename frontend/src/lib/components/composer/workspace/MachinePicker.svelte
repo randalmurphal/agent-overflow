@@ -22,7 +22,6 @@
     getAttachedBackends,
     threadMachine,
   } from '../../../stores/attachedBackends.svelte';
-  import { backendHasBrowser } from '../../../utils/browserTools';
   import { HOME_BACKEND, type BackendKey } from '../../../transport/backendKey';
   import { rememberProjectTarget } from '../../../stores/projectTargets';
   import AddProjectModal from '../../sidebar/AddProjectModal.svelte';
@@ -73,6 +72,7 @@
 
   async function selectMachine(key: BackendKey): Promise<void> {
     if (!selectable || switching) return;
+    if (!backendReachable(key) || !hasScope('threads:operate', key)) return;
     const thread = pane.thread;
     if (!thread) return;
     if (key === activeKey) {
@@ -135,6 +135,7 @@
     disabled={!selectable || switching}
     aria-haspopup={selectable ? 'menu' : undefined}
     aria-expanded={selectable ? open : undefined}
+    data-workspace-location
     data-testid="machine-picker-trigger"
     data-locked={!selectable || undefined}
     class={[
@@ -160,25 +161,19 @@
       role="none"
     >
       <Menu ariaLabel="Machine" onClose={closeMenu}>
-        <!--
-          A machine with no browser tools is still a machine you can send
-          work to, so it stays selectable and only says so. Unreachable is
-          the louder of the two and wins the one description line: a machine
-          this client cannot talk to has no browser here either way.
-        -->
         {#each backends as entry (entry.id)}
           {@const reachable = backendReachable(entry.id)}
-          {@const noBrowser = !backendHasBrowser(entry.id)}
+          {@const viewOnly = !hasScope('threads:operate', entry.id)}
           {@const transferUnavailable = isLocked && entry.id !== activeKey && (!supportsConversationTransfer(entry.id) || !hasScope('threads:operate', entry.id))}
           <MenuItem
             label={backendDisplayName(entry)}
-            description={!reachable ? 'Unreachable' : transferUnavailable ? 'Update or access required' : isLocked && entry.id !== activeKey ? 'Move or copy conversation…' : noBrowser ? 'No browser' : undefined}
+            description={!reachable ? 'Unreachable' : viewOnly ? 'View only' : transferUnavailable ? 'Update required' : isLocked && entry.id !== activeKey ? 'Move or copy conversation…' : undefined}
             checked={entry.id === activeKey}
-            disabled={!reachable || transferUnavailable}
+            disabled={!reachable || viewOnly || transferUnavailable}
             title={!reachable
               ? 'This machine cannot be reached right now'
-              : noBrowser
-                ? 'An agent on this machine cannot open a browser'
+              : viewOnly
+                ? 'This connection can view threads but cannot create or move them'
                 : undefined}
             onSelect={() => void selectMachine(entry.id)}
           />

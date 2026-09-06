@@ -608,7 +608,7 @@ name rather than by looking for "linux" somewhere in one
 
 ## Connecting and starting over SSH
 
-On a desktop, Computers → Connect over SSH uses an existing SSH host alias or
+On a desktop, Remote access → Connections → Connect over SSH uses an existing SSH host alias or
 `user@hostname`. SSH keys/agent and known-host verification work as they do in
 OpenSSH; there is no password storage in AO. If this is the first SSH connection
 to that host, establish it once in a terminal and verify its host key. An

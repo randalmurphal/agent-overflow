@@ -59,7 +59,7 @@ function conversationTransferForProvider(provider: 'claude' | 'codex'): void {
       await writeFile(join(original.projects[0].path, 'untracked.txt'), 'Unsaved workspace change');
       await source.open(page);
       await page.getByRole('button', { name: 'Settings', exact: true }).click();
-      await page.getByRole('tab', { name: 'Computers', exact: true }).click();
+      await page.getByRole('tab', { name: 'Connections', exact: true }).click();
       pairing = await headlessPairing(destination);
       await page.getByRole('textbox', { name: 'Pairing link' }).fill(pairing.invite.url);
       await page.getByRole('button', { name: 'Connect', exact: true }).click();

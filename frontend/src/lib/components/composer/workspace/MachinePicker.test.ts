@@ -14,6 +14,7 @@ import { __resetSelectedBackendForTest, selectedBackend } from '../../../stores/
 import { __resetEntityIndexForTest, noteProject } from '../../../transport/entityIndex';
 import { __resetBackendIdentityForTest, setBackendIdentityFromBootstrap } from '../../../transport/backendIdentity';
 import { HOME_BACKEND } from '../../../transport/backendKey';
+import { grantBackendScopes, revokeBackendScopes } from '../../../../test/helpers/scopes';
 import {
   REMOTE_BACKEND_UUID,
   resetStagedBackends,
@@ -66,7 +67,7 @@ async function seedProjects(projects: Project[]): Promise<void> {
 }
 
 describe('<MachinePicker>', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetBindingMocks();
     resetPanesForTest();
     resetProjectsForTest();
@@ -75,9 +76,11 @@ describe('<MachinePicker>', () => {
     __resetSelectedBackendForTest();
     __resetBackendIdentityForTest();
     setBackendIdentityFromBootstrap(HOME_UUID, 1, 'Desk');
+    await grantBackendScopes('laptop', ['threads:read', 'threads:operate', 'settings:read']);
   });
 
   afterEach(() => {
+    revokeBackendScopes('laptop');
     resetStagedBackends();
     __resetEntityIndexForTest();
     __resetSelectedBackendForTest();
@@ -111,9 +114,6 @@ describe('<MachinePicker>', () => {
     expect(laptop.textContent ?? '').not.toMatch(/\u2713/);
     expect(laptop).toHaveAttribute('aria-disabled', 'true');
     expect(laptop.textContent ?? '').toMatch(/Unreachable/);
-    // Unreachable is the louder of the two and owns the one description
-    // line: a machine this client cannot talk to has no browser here either
-    // way, so saying both would be saying one thing twice.
     expect(laptop.textContent ?? '').not.toMatch(/No browser/);
   });
 
@@ -170,12 +170,8 @@ describe('<MachinePicker>', () => {
     expect(selectedBackend()).toBe(HOME_BACKEND);
   });
 
-  // A machine that cannot run a headless browser is still a machine you can
-  // send work to, so it stays selectable and only says so. Absence of the
-  // capability is the answer: a backend too old to advertise anything reads
-  // as having no browser rather than as unknown.
-  describe('browser capability', () => {
-    it('marks a reachable machine with no browser tools, without disabling it', async () => {
+  describe('execution access', () => {
+    it('keeps a reachable execution host selectable without unrelated browser details', async () => {
       stageBackend();
       await seedProjects([makeProject()]);
       const pane = buildPlaceholderPane();
@@ -183,11 +179,30 @@ describe('<MachinePicker>', () => {
 
       await fireEvent.click(getByTestId('machine-picker-trigger'));
       const laptop = await findByRole('menuitem', { name: /Laptop/ });
-      expect(laptop.textContent ?? '').toMatch(/No browser/);
+      expect(laptop.textContent ?? '').not.toMatch(/No browser/);
       expect(laptop).not.toHaveAttribute('aria-disabled', 'true');
-      expect(laptop.getAttribute('title')).toBe(
-        'An agent on this machine cannot open a browser',
-      );
+      expect(laptop.getAttribute('title')).toBeNull();
+    });
+
+    it('explains read-only access and prevents creating a thread on that host', async () => {
+      stageBackend();
+      await grantBackendScopes('laptop', ['threads:read', 'settings:read']);
+      await seedProjects([makeProject()]);
+      const pane = buildPlaceholderPane();
+      const defaults = setBindingMock('GetThreadDefaults', async () => ({}));
+      const { getByTestId, findByRole, queryByRole } = render(MachinePicker, { props: { pane } });
+      await fireEvent.click(getByTestId('machine-picker-trigger'));
+      const laptop = await findByRole('menuitem', { name: /Laptop/ });
+      expect(laptop).toHaveAttribute('aria-disabled', 'true');
+      expect(laptop.textContent).toContain('View only');
+      await fireEvent.click(laptop);
+      expect(defaults).not.toHaveBeenCalled();
+      expect(queryByRole('dialog', { name: 'Add Project' })).toBeNull();
+      expect(pane.thread?.projectId).toBe('project-1');
+      // A grant arriving while the picker is open enables the same row.
+      await grantBackendScopes('laptop', ['threads:read', 'threads:operate']);
+      await waitFor(() => expect(laptop).not.toHaveAttribute('aria-disabled', 'true'));
+      expect(laptop.textContent).not.toContain('View only');
     });
 
     it('says nothing about a machine that has them', async () => {

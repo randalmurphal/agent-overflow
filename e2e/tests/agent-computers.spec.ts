@@ -24,9 +24,9 @@ test('enables agent access from home to an attached computer and back again', as
     } finally { pairing.close(); }
     await home.open(page);
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
-    await page.getByRole('tab', { name: 'Computers', exact: true }).click();
+    await page.getByRole('tab', { name: 'Connections', exact: true }).click();
     await expect(page.getByTestId('attached-system')).toContainText('GPU computer');
-    await page.getByTestId('home-computer').getByRole('button', { name: 'Access & sharing', exact: true }).click();
+    await page.getByRole('tab', { name: 'Agent access', exact: true }).click();
     const peers = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Agent access to other computers', exact: true }) });
     await expect(peers).toHaveCount(1);
     await peers.getByRole('button', { name: 'Enable', exact: true }).click();

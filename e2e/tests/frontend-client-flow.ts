@@ -23,7 +23,7 @@ export function frontendClientFlow(): void {
       await expect(page.getByTestId('settings-theme-mode')).toHaveValue('dark');
       const allSettings = page.getByRole('button', { name: 'All settings', exact: true });
       if (await allSettings.isVisible()) await allSettings.click();
-      await page.getByRole('tab', { name: 'Computers', exact: true }).click();
+      await page.getByRole('tab', { name: 'Connections', exact: true }).click();
       await expect(page.getByTestId('attached-system')).toHaveCount(0);
       await expect(page.getByRole('textbox', { name: 'Pairing link' })).toBeVisible();
       await expect(page.getByTestId('transport-status-banner')).toHaveCount(0);
@@ -87,7 +87,7 @@ export function frontendClientFlow(): void {
         await expect(page.getByTestId('settings-theme-mode')).toHaveValue('dark');
         const allSettings = page.getByRole('button', { name: 'All settings', exact: true });
         if (await allSettings.isVisible()) await allSettings.click();
-        await page.getByRole('tab', { name: 'Computers', exact: true }).click();
+        await page.getByRole('tab', { name: 'Connections', exact: true }).click();
         const removed = page.getByTestId('attached-system').filter({ hasText: 'First computer' });
         await expect(removed).toBeVisible();
         await removed.getByRole('button', { name: 'Remove', exact: true }).click();

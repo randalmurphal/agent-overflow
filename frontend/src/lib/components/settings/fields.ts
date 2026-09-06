@@ -22,6 +22,7 @@
 // is computed from state.
 
 import type { SettingsSection } from './sections';
+import { providerLabel } from '../../stores/providerAccountLabels';
 
 export interface SettingsFieldDef {
   readonly id: string;
@@ -537,9 +538,9 @@ const STATIC_FIELDS = [
   {
     id: 'remote.allow-remote-access',
     section: 'remote',
-    heading: 'Network binding',
-    label: 'Allow remote access',
-    hint: 'Accept connections from paired devices on your network. Manage their access in Devices.',
+    heading: 'Local network',
+    label: 'Allow LAN connections',
+    hint: 'Allow paired devices on your Wi-Fi or wired network.',
     keywords: ['lan', 'bind', 'listen', 'phone', 'tablet', 'network'],
     conditional: true,
   },
@@ -607,7 +608,7 @@ const STATIC_FIELDS = [
   {
     id: 'remote.tailnet',
     section: 'remote',
-    heading: 'Tailnet',
+    heading: 'Tailscale',
     label: 'Join my tailnet',
     hint: 'The first time you turn this on, you approve this machine in your browser.',
     keywords: ['tailscale', 'headscale', 'vpn', 'wireguard', 'magicdns'],
@@ -616,7 +617,7 @@ const STATIC_FIELDS = [
   {
     id: 'remote.tailnet-control-url',
     section: 'remote',
-    heading: 'Tailnet',
+    heading: 'Tailscale',
     label: 'Coordination server',
     hint: 'Leave blank for Tailscale. Set it only if you run your own coordination server.',
     keywords: ['headscale', 'tailscale', 'control url', 'self-hosted'],
@@ -779,8 +780,8 @@ export const SETTINGS_FIELDS: readonly SettingsFieldDef[] = [
   ...SETTINGS_PROVIDERS.flatMap((provider) => [
     ...PROVIDER_FIELDS.map((f) => ({
       id: providerFieldId(provider, f.slug),
-      section: provider,
-      heading: f.heading,
+      section: f.slug === 'accounts' ? 'accounts' as const : provider,
+      heading: f.slug === 'accounts' ? providerLabel(provider) : f.heading,
       label: f.label,
       hint: 'hint' in f ? f.hint : undefined,
       keywords: [...f.keywords, PROVIDER_LABELS[provider]],

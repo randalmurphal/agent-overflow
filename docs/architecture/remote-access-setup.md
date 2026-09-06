@@ -15,7 +15,7 @@ to the same tailnet. A private LAN connection can work without Tailscale.
    enable MagicDNS and HTTPS certificates. HTTPS is required for the Android
    shell. Tailscale's confirmation explains that certificate names appear in
    public certificate-transparency logs; the app itself stays tailnet-only.
-3. In Agent Overflow → Settings → Computers → Access & sharing → Tailnet, enable the node
+3. In Agent Overflow → Settings → Remote access → Pairing & network → Tailscale, enable the node
    and save. Leave the coordination-server field empty for ordinary Tailscale.
    Open the sign-in link shown there and approve the node on your tailnet.
 4. Wait for `Running` and the `https://agent-overflow.…ts.net/` address.
@@ -40,7 +40,7 @@ and [HTTPS setup](https://tailscale.com/docs/how-to/set-up-https-certificates).
 2. Connect through the same LAN or the host's tailnet. Set up a phone
    screen lock: Agent Overflow uses Android's biometric/device-credential
    prompt when it opens.
-3. On the Mac, open Settings → Computers → Access & sharing → Devices → Pair a device.
+3. On the Mac, open Settings → Remote access → Pairing & network → Paired devices → Pair a device.
    Choose **Local network** for a phone on the same LAN with Tailscale off, or
    **Tailscale** when the phone is connected to the tailnet, then **Phone or tablet**. Choose Full access to drive agents and answer approvals.
 4. Open Agent Overflow on the Pixel and use its **in-app QR scanner** to
@@ -86,7 +86,7 @@ refresh window. This is an inactivity limit, not monthly re-pairing.
 
 ## LAN access and changed addresses
 
-Enable LAN access on the host's Access & sharing page, then pair through its invitation.
+Enable LAN access on the host's Remote access → Pairing & network page, then pair through its invitation.
 Use an APK with the native Network plugin: the invitation carries the private
 certificate fingerprint, so Android verifies the host without installing a
 system-wide CA. An older APK can continue using its public HTTPS tailnet route.
@@ -97,7 +97,7 @@ Switching routes preserves the pairing, conversations and frontend preferences.
 It does not replay a failed command or upload automatically.
 
 If the host changes IP or port and every saved route is unreachable, open
-Settings → Computers → the offline computer → Change address. Enter its new
+Settings → Remote access → Connections → the offline computer → Change address. Enter its new
 HTTPS address and choose Verify & reconnect. This reuses the saved pairing's
 trust. A replacement certificate or an unfamiliar public hostname may require
 a new pairing link. A healthy saved route can advertise updated addresses and
@@ -200,7 +200,7 @@ the device checks above. A green local suite alone does not prove those paths.
 ## Headless computers
 
 On a desktop client, `agent-overflow --frontend` opens your saved computers
-without starting a local execution host. Add a computer in Settings → Computers,
+without starting a local execution host. Add a computer in Settings → Remote access → Connections,
 or use `agent-overflow --connect '<invitation>'` for terminal pairing. Subsequent
 frontend launches and updates work even when the originally paired host is off.
 

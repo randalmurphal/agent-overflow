@@ -348,7 +348,8 @@ stops waking readers.
   unchanged.
 - `selectedBackend.svelte.ts` is the only thing the `selected` route
   consults, and it answers the machine the person is LOOKING AT: the
-  focused thread pane's thread, else the draft's chosen backend, else home.
+  focused thread pane's thread (or its project's owner before a draft
+  materializes), else the pane's chosen backend, else the frontend's choice.
   The focused-thread leg is load-bearing rather than a nicety — several
   `selected` methods take a workspace PATH (`UpdateThreadBranch`,
   `GetWorkspaceActivity`, `GetLocalImageData`, `StartTerminal`), and a path
@@ -827,6 +828,20 @@ Computer profiles: list responses are invalidated by local rename/removal. A
 late attachment event with no pending row refreshes the authoritative profile
 set before adding a transport entry. `computerSSH.svelte.ts` holds bounded local
 SSH aliases/paths only; removal forgets them, and credentials stay in OpenSSH.
+
+Computer labels use `backendDisplayName`: this frontend's UUID-keyed nickname,
+the existing desktop profile name, then live/remembered hostname before an
+address fallback. Phone descriptors rebuilt from endpoint hosts are not names.
+Resolve labels once per connection/identity/preference change rather than
+reading persistent endpoints for every sidebar row. Nicknames remain local,
+bounded to 128 computers, editable offline and synchronized across frontend
+windows; they never rename the host or key a route.
+
+New-thread creation captures the project/source computer before dispatch;
+materializing an unfocused placeholder or awaiting a plan payload must not use
+whichever computer became selected meanwhile. Placeholder project ownership
+also drives the connection banner so an unrelated offline selection cannot
+make a reachable draft appear disconnected.
 
 `conversationTransfers` keeps bounded status rows per computer and one frontend
 form. It persists no transfer authority. Status reads retain intervening events;

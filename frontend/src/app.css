@@ -17,6 +17,9 @@
 .layout-compact[data-compact-screen="thread"] .compact-screen-list,
 .layout-compact[data-compact-screen="list"] .compact-screen-thread {
   visibility: hidden;
+  /* Visibility is inherited and descendants can override it. Opacity applies
+     to the whole screen, including animated/composited descendants. */
+  opacity: 0;
   pointer-events: none;
 }
 

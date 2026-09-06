@@ -7,6 +7,13 @@ function keys(query: string): string[] {
 }
 
 describe('searchSettings', () => {
+  it('distinguishes provider accounts on the shared Accounts page', () => {
+    const accounts = searchSettings('accounts').filter((hit) => hit.kind === 'field' && hit.page.id === 'accounts');
+    expect(accounts).toHaveLength(2);
+    expect(new Set(accounts.map((hit) => hit.kind === 'field' && hit.field.heading)).size).toBe(2);
+    expect(keys('codex accounts')).toContain('codex.accounts');
+  });
+
   it('returns nothing for an empty or whitespace query', () => {
     expect(searchSettings('')).toEqual([]);
     expect(searchSettings('   ')).toEqual([]);

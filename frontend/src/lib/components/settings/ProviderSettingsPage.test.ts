@@ -1,3 +1,4 @@
+import AccountsSettings from './AccountsSettings.svelte';
 // The shared provider page, driven through the two pages that mount it, so
 // what is asserted is what the settings router actually renders.
 import { describe, expect, it, beforeEach } from "vitest";
@@ -262,7 +263,7 @@ describe("provider page — provider accounts", () => {
       },
     }]);
 
-    const { findByTestId, findByText } = render(CodexSettings);
+    const { findByTestId, findByText } = render(AccountsSettings);
     expect(await findByTestId("provider-account-codex-secondary")).toBeTruthy();
     expect(await findByText("second@example.com")).toBeTruthy();
     expect(await findByText("GPT-5.3-Codex-Spark · 5h")).toBeTruthy();
@@ -283,7 +284,7 @@ describe("provider page — provider accounts", () => {
       throw new Error("credential file is unavailable");
     });
 
-    const { findByRole } = render(ClaudeSettings);
+    const { findByRole } = render(AccountsSettings);
     await fireEvent.click(await findByRole("button", { name: "Switch to second@example.com" }));
 
     expect(
@@ -316,7 +317,7 @@ describe("provider page — provider accounts", () => {
       accounts = [{ ...accounts[1], active: true }];
     });
 
-    const { findByRole, findByText } = render(ClaudeSettings);
+    const { findByRole, findByText } = render(AccountsSettings);
     await fireEvent.click(await findByRole("button", { name: "Remove active@example.com" }));
     expect(await findByText(/next saved Claude account will become active/i)).toBeTruthy();
     await fireEvent.click(await findByRole("button", { name: "Remove" }));
@@ -345,7 +346,7 @@ describe("provider page — provider accounts", () => {
       accounts = [];
     });
 
-    const { findByRole, findByText } = render(CodexSettings);
+    const { findByRole, findByText } = render(AccountsSettings);
     await fireEvent.click(await findByRole("button", { name: "Remove only@example.com" }));
     expect(await findByText(/sign out of Codex/i)).toBeTruthy();
     await fireEvent.click(await findByRole("button", { name: "Remove" }));

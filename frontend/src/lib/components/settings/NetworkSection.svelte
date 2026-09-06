@@ -242,27 +242,7 @@
   // the backend's decision (network.AppURLWithLAN), and describing it
   // from a second set of inputs is how the sentence and the field
   // disagree.
-  let shareURLDescription = $derived.by(() => {
-    const ticket =
-      ' Each copy carries a one-time ticket that only loads the page: the device still has to pair.';
-    const url = settings?.url ?? '';
-    if (url.startsWith('https://')) {
-      return (
-        'Copy this URL into a browser on another device. It uses the domain you configured, so the browser opens it over HTTPS with no warning.' +
-        ticket
-      );
-    }
-    if (settings?.bindAll) {
-      return (
-        "Copy this URL into a browser on another device to open Agent Overflow remotely. With LAN binding on, the URL points at this machine's private IP." +
-        ticket
-      );
-    }
-    return (
-      'Copy this URL into a browser on another device. While the server is on loopback, only this machine resolves the URL.' +
-      ticket
-    );
-  });
+  const shareURLDescription = 'Open this address in a browser. New devices still need pairing approval.';
 
   $effect(() => {
     void load();
@@ -287,17 +267,17 @@
 </script>
 
 <div
-  class="settings-sections"
+  class="flex flex-col gap-4"
   data-testid={noAdmin ? 'network-section-local-only' : undefined}
 >
-  <section>
-    <SettingsHeader title="Local network" description={noAdmin ? 'This connection cannot change network access.' : 'Let paired devices reach this computer over your LAN.'} />
+  <section class="rounded-xl border border-border-subtle bg-surface-0 p-4">
+    <SettingsHeader title="Local network" description={noAdmin ? 'This connection cannot change network access.' : 'Use the same Wi-Fi or wired network. Tailscale is optional at home.'} />
     {#if !noAdmin}
       <div class="flex flex-col gap-1">
         <SettingsField
           id="remote.allow-remote-access"
-          label="Allow remote access"
-          hint="Accept connections from paired devices on your network. Manage their access in Devices."
+          label="Allow LAN connections"
+          hint="Allow paired devices on your Wi-Fi or wired network."
           align="start"
         >
           <ToggleSwitch
@@ -313,12 +293,14 @@
   </section>
 
   {#if !noAdmin && settings}
+    <div class="rounded-xl border border-border-subtle bg-surface-0 p-4">
     <NetworkTailnetEditor
       {settings}
       busy={saving}
       onsave={saveTailnet}
       onforget={forgetTailnetNode}
     />
+    </div>
 
     <details class="rounded-[var(--radius-field)] border border-border-subtle p-3">
       <summary class="cursor-pointer text-sm font-medium text-fg">Advanced network settings</summary>

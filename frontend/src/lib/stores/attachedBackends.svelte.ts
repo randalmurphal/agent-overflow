@@ -17,12 +17,33 @@ import {
   type BackendEntry,
 } from '../transport/backends';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
-import { getBackendIdentity } from '../transport/backendIdentity';
+import { getBackendIdentity, onBackendIdentity } from '../transport/backendIdentity';
+import { rememberedIdentity } from '../transport/rememberedIdentity';
+import { endpointHost, storedBackendEndpoint } from '../transport/homeEndpoint';
 import { projectBackend, threadBackend } from '../transport/entityIndex';
 import { hasScope } from '../transport/scopes';
 import { getTransportStatusFor } from './transportStatus.svelte';
+import { onFrontendValueChanged, readFrontendValue, writeFrontendValue } from './frontendStorage';
+
+const NICKNAMES_KEY = 'computer-nicknames';
+const MAX_NICKNAMES = 128;
+function readNicknames(): ReadonlyMap<string, string> {
+  const raw = readFrontendValue(NICKNAMES_KEY);
+  if (!Array.isArray(raw)) return new Map();
+  return new Map(raw.slice(-MAX_NICKNAMES).filter((row): row is [string, string] =>
+    Array.isArray(row) && row.length === 2 && typeof row[0] === 'string' && row[0].length > 0 && row[0].length <= 128
+    && typeof row[1] === 'string' && row[1].trim().length > 0 && row[1].length <= 80));
+}
+let nicknames = $state.raw(readNicknames());
+onFrontendValueChanged(NICKNAMES_KEY, () => { nicknames = readNicknames(); });
+let identityRevision = $state(0);
+onBackendIdentity(() => { identityRevision++; });
 
 let list = $state.raw<readonly BackendEntry[]>(registryBackends().slice());
+let displayNames = $derived.by(() => {
+  void identityRevision;
+  return new Map(list.map((entry) => [entry.id, resolveDisplayName(entry)]));
+});
 
 onBackendsChanged(() => {
   // A fresh array so the signal moves; the ENTRIES are the registry's own
@@ -57,14 +78,51 @@ export function attachedBackendEntry(key: BackendKey): BackendEntry | undefined 
 }
 
 /**
- * What a person calls this machine. Home's name arrives on its own hello
- * (`backendName`), an attached one's on the descriptor pairing wrote; a
- * backend that published neither is named by its id rather than by a
- * guess, and home falls back to the one thing that is always true of it.
+ * This frontend's nickname for a stable computer identity, if one is saved.
  */
+export function backendNickname(key: BackendKey): string {
+  void identityRevision;
+  const id = attachedBackendEntry(key)?.backendId;
+  return id ? nicknames.get(id) ?? '' : '';
+}
+
+/** Nicknames belong to this frontend and the stable computer UUID, never an
+ * address or the HOME slot. Clearing restores the advertised name. */
+export function setBackendNickname(key: BackendKey, value: string): boolean {
+  const id = attachedBackendEntry(key)?.backendId;
+  if (!id) throw new Error('Connect to this computer once before naming it.');
+  const nickname = value.trim();
+  if (nickname.length > 80) throw new Error('Use a nickname of 80 characters or fewer.');
+  const next = new Map(nicknames);
+  next.delete(id);
+  if (nickname) next.set(id, nickname);
+  while (next.size > MAX_NICKNAMES) next.delete(next.keys().next().value!);
+  if (!writeFrontendValue(NICKNAMES_KEY, [...next])) return false;
+  nicknames = next;
+  return true;
+}
+
+function resolveDisplayName(entry: BackendEntry): string {
+  const nickname = backendNickname(entry.id);
+  if (nickname) return nickname;
+  const name = list.find((current) => current.id === entry.id)?.name || entry.name;
+  const endpoint = storedBackendEndpoint(entry.id);
+  // Phone descriptors are rebuilt from endpoints at boot. That address is
+  // a fallback, not a nickname that overrides the host's actual identity.
+  if (name && (!endpoint || name !== endpointHost(endpoint))) return name;
+  return getBackendIdentity(entry.id).name || rememberedIdentity(entry.id)?.name
+    || name || (entry.home ? 'This machine' : entry.id);
+}
+
+/** Resolve once per connection/identity/nickname change, not per sidebar row. */
 export function backendDisplayName(entry: BackendEntry): string {
-  if (entry.home) return getBackendIdentity().name || 'This machine';
-  return list.find((current) => current.id === entry.id)?.name || entry.name || entry.id;
+  return displayNames.get(entry.id) || entry.name || (entry.home ? 'This machine' : entry.id);
+}
+
+/** Test seam: clear both in-memory and persisted frontend nicknames. */
+export function __resetBackendNicknamesForTest(): void {
+  writeFrontendValue(NICKNAMES_KEY, []);
+  nicknames = new Map();
 }
 
 /** Whether this backend's socket is open and serving. */

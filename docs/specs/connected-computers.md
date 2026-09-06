@@ -22,7 +22,7 @@ authority to execute there.
 
 ## Minimal UI
 
-- Computers is the connection destination. Add by invitation/QR or desktop SSH
+- Remote access → Connections is the connection destination. Add by invitation/QR or desktop SSH
   setup. Each named computer exposes status, configuration, access, and updates.
   Ports, certificate files, and troubleshooting belong in expanded details.
 - Settings distinguish **This device** from **Computer: <name>**. Frontend
@@ -132,7 +132,7 @@ Core workflows are implemented and have local acceptance coverage with isolated
 computers and mocked providers. Platform release acceptance remains separate.
 
 - [x] Frontend preference persistence and per-host settings/accounts/usage.
-- [x] Computers UI, host labels, and remembered project targets.
+- [x] Connections UI, host labels, and remembered project targets.
 - [x] LAN trust/routes and simple headless/SSH onboarding.
 - [x] Provider-native conversation move/copy and optional peer tools.
 - [ ] Mixed-version gates, remote update coverage, previews, and failure testing.

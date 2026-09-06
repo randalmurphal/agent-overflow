@@ -1318,10 +1318,9 @@ held" replaces the inline `metaKey || ctrlKey` sites.
 `ao-browser-tools` server rendered on a page that is not the thread's
 machine (or holds no `host`) carries an indicator in its header
 actions: "Browsing on <machine>. The page is only visible there."
-The machine chip in the sidebar and the composer's machine picker note
-"No browser on this machine" when that backend's hello does not
-advertise the `browser` capability, which a backend advertises when its
-engine is available.
+The sidebar machine chip may explain when browser tools are unavailable.
+The composer's machine picker describes execution reachability/access only;
+a backend without browser tools is still a valid thread destination.
 
 **Headless Chromium engine (serve mode).** `docs/specs/embedded-browser.md`
 §9 said a windowless deployment gets no engine; that sentence is
@@ -2717,8 +2716,10 @@ section offers a machine choice only where the setting is per backend.
 
 **Machine name.** The hello frame carries `backendName` (the backend's
 display name, defaulting to its hostname, which the access overview
-already reads); the client keeps the pairing-time name as an editable
-nickname.
+already reads). Display uses this frontend's optional UUID-keyed nickname,
+then the advertised/remembered name; an endpoint is only the fallback before
+a name is known. Existing desktop profile nicknames remain readable. Editing
+a nickname never changes the computer's hostname or another frontend's label.
 
 **Project identity = repo.** Projects gain `remoteURL` and
 `rootCommit`; the sidebar merges entries across backends that match

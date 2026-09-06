@@ -24,6 +24,8 @@ import GitSettings from './GitSettings.svelte';
 import EditorSection from './EditorSection.svelte';
 import RemoteAccessSettings from './RemoteAccessSettings.svelte';
 import SystemsSection from './SystemsSection.svelte';
+import AccountsSettings from './AccountsSettings.svelte';
+import AgentAccessSettings from './AgentAccessSettings.svelte';
 import ObservabilitySettings from './ObservabilitySettings.svelte';
 import StorageSettings from './StorageSettings.svelte';
 
@@ -47,6 +49,8 @@ export const SETTINGS_PAGES: Record<SettingsSection, Component> = {
   editor: EditorSection,
   remote: RemoteAccessSettings,
   systems: SystemsSection,
+  accounts: AccountsSettings,
+  'agent-access': AgentAccessSettings,
   observability: ObservabilitySettings,
   storage: StorageSettings,
 };

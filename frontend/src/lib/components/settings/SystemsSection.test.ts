@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import { within } from '@testing-library/svelte';
 import SystemsSection from './SystemsSection.svelte';
+import { backendNickname, __resetBackendNicknamesForTest } from '../../stores/attachedBackends.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { resetRunMode, setRunMode } from '../../../test/runMode';
 import { pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
@@ -29,6 +30,7 @@ const LAPTOP = {
 describe('<SystemsSection>', () => {
   beforeEach(() => {
     resetBindingMocks();
+    __resetBackendNicknamesForTest();
     resetRunMode();
     __resetSystemsForTest();
     resetStagedBackends();
@@ -85,16 +87,30 @@ describe('<SystemsSection>', () => {
     await waitFor(() => expect(queryByTestId('attached-system')).toBeNull());
   });
 
-  it('renames inline on Enter', async () => {
+  it('saves a frontend nickname without renaming the host profile', async () => {
+    stageBackend();
     setBindingMock('ListBackends', async () => [LAPTOP]);
     const rename = setBindingMock('RenameBackend', async () => {});
-    const { findByText, getByLabelText, findByTestId } = render(SystemsSection);
-    await fireEvent.click(await findByText('Rename'));
-    const input = getByLabelText('System name') as HTMLInputElement;
-    await fireEvent.input(input, { target: { value: 'Work laptop' } });
-    await fireEvent.keyDown(input, { key: 'Enter' });
-    await waitFor(() => expect(rename).toHaveBeenCalledWith('laptop', 'Work laptop'));
+    const { findByTestId } = render(SystemsSection);
+    const row = within(await findByTestId('attached-system'));
+    await fireEvent.click(row.getByText('Nickname'));
+    await fireEvent.input(row.getByLabelText('Nickname'), { target: { value: 'Work laptop' } });
+    await fireEvent.submit(row.getByLabelText('Nickname').closest('form')!);
+    await waitFor(() => expect(backendNickname('laptop')).toBe('Work laptop'));
+    expect(rename).not.toHaveBeenCalled();
     expect((await findByTestId('attached-system')).textContent).toMatch(/Work laptop/);
+    await fireEvent.click(row.getByText('Nickname'));
+    await fireEvent.input(row.getByLabelText('Nickname'), { target: { value: 'Discarded' } });
+    await fireEvent.click(row.getByText('Cancel'));
+    expect(backendNickname('laptop')).toBe('Work laptop');
+    await fireEvent.click(row.getByText('Nickname'));
+    await fireEvent.keyDown(row.getByLabelText('Nickname'), { key: 'Escape' });
+    expect(row.queryByLabelText('Nickname')).toBeNull();
+    await fireEvent.click(row.getByText('Nickname'));
+    await fireEvent.input(row.getByLabelText('Nickname'), { target: { value: '' } });
+    await fireEvent.submit(row.getByLabelText('Nickname').closest('form')!);
+    await waitFor(() => expect(backendNickname('laptop')).toBe(''));
+
   });
 
   it('explains rather than loading in a --connect window', async () => {
@@ -138,8 +154,8 @@ describe('<SystemsSection>', () => {
 
       const row = await findByTestId('attached-machine');
       expect(row.textContent).toMatch(/Laptop/);
-      expect(row.textContent).toMatch(/laptop\.example:8123/);
-      expect(row.textContent).toMatch(/Unreachable/);
+      expect(row.textContent).not.toMatch(/laptop\.example:8123/);
+      expect(row.textContent).toMatch(/Offline/);
       staged.setStatus('connected');
       await waitFor(() =>
         expect(getByTestId('attached-machine').textContent).toMatch(/Connected/),
