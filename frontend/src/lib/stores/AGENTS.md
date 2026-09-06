@@ -642,8 +642,9 @@ Replacement callers use `withReconciledItems(incoming, commit)`: preparation,
 installation and post-commit work share an operation that always finalizes the
 gate. Preparation and manual gate recomputation are not public pane APIs.
 Field patches likewise commit their final row inside the reveal owner before
-gate derivation. Keep these boundaries synchronous and preserve direct text
-appends; do not add another reactive timeline watcher or copy received text
+gate derivation. That owner also handles missing-row disposal and the shared
+terminal cleanup for absent or content-consistent summaries. Keep these
+boundaries synchronous and preserve direct text appends; do not add another reactive timeline watcher or copy received text
 into a parallel item model.
 
 `threadRevealSchedules.test.ts` varies chunking, input gaps, batch boundaries,

@@ -334,13 +334,6 @@ export function createThreadItemStreamApply(
     if (!evt.itemId) return;
     const thread = options.getThread();
     if (thread && evt.threadId !== thread.id) return;
-    const index = itemIndexById.get(evt.itemId);
-    if (index === undefined) {
-      // Patch arrived for a row we no longer track (race after
-      // removal). Make sure any orphaned smoother is cleaned up.
-      streamingReveal.disposeSmootherFor(evt.itemId);
-      return;
-    }
     const next = streamingReveal.applyPatch(evt.itemId, evt.patch);
     if (!next) return;
     // Streaming children settle through THIS path, not upserts —

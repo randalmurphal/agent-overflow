@@ -327,90 +327,37 @@ export function createRevealRouting(options: RevealRoutingOptions): RevealRoutin
 
   function applyPatchState(itemId: string, patch: ItemPatchEvent['patch']): void {
     const smoothing = itemSmoothers.get(itemId);
-    const nextStatus = patch.status;
-    // `errored`, `killed`, and `declined` all represent terminal
-    // states where the user has either explicitly stopped the
-    // stream or the provider failed it. In all three, we want the
-    // already-streamed text to be fully visible before the patch's
-    // summary (which may include an "[interrupted] " prefix or
-    // similar) takes over — so snap synchronously and dispose.
-    // Cancel / interrupt / error: synchronously reveal everything in
-    // the smoother before applying the patch, then dispose. The
-    // patch's own summary (e.g. "[interrupted] …") then lands as
-    // the final visible text without being overwritten by a trailing
-    // rAF tick.
-    if (smoothing && isSnapStatus(nextStatus)) {
+    if (!smoothing) return;
+    if (isSnapStatus(patch.status)) {
+      // Interrupt/error reveals pending text before the authoritative patch
+      // takes ownership, including patches that omit their summary.
       registry.snapAndDisposeSmoother(itemId, smoothing);
-    } else if (smoothing && patch.summary !== undefined) {
-      // Status flipping to completed (or any non-snap patch) may
-      // carry a final summary. If it extends what the smoother has
-      // already received, push the suffix as a delta so the smoother
-      // finishes the reveal naturally. If it doesn't extend (an
-      // overwrite or a backwards correction), snap and dispose so
-      // the patch's summary wins cleanly.
+      return;
+    }
+    if (patch.summary !== undefined) {
       const received = smoothing.smoother.getReceived();
-      const patchSummary = patch.summary;
-      // Reasoning-tail rows (thinking + compaction_reasoning) persist —
-      // and settle with — the tail-trimmed preview, not the full text
-      // (triage's thinkingSummaryPreview; both sides trim to the last
-      // THINKING_TAIL_RUNES code points with no marker, so the strings
-      // are byte-identical). A settle patch whose summary equals the
-      // trimmed received text is a re-assert of what the smoother
-      // already has, NOT an overwrite; treating it as a mismatch would
-      // snap+dispose mid-drain and dump the unrevealed backlog
-      // wholesale (the Codex thinking completion shape, and the
-      // completion patch from persistCompletedBlockEmitStreaming).
-      const item = options.getItemById(itemId);
-      const relation = classifyRevealText(item?.kind, patchSummary, received);
-      if (relation === 'same') {
-        if (
-          nextStatus !== undefined &&
-          nextStatus !== 'streaming' &&
-          smoothing.smoother.isCaughtUp()
-        ) {
-          // Terminal status AND nothing left to reveal. No further rAF
-          // tick will fire, so the onReveal auto-cleanup can't dispose
-          // — do it here or the smoother leaks until the next thread
-          // switch. This is the completion shape wherever
-          // content-block-stop carries ContentPresent=true (Codex
-          // always; Claude recovered blocks): the settle re-asserts
-          // the summary the smoother already received — content-
-          // consistent by the equality check above, so the live tail
-          // is retained. The bare-status branch below only covers the
-          // case where that equal summary is OMITTED from the patch. A
-          // not-yet-caught-up smoother keeps draining and disposes via
-          // onReveal once it catches up (applyItemPatch skips the
-          // direct summary write while it lives).
-          registry.settleSmootherRetainingTail(itemId);
-        }
-      } else {
-        if (relation === 'extension') {
-          if (patch.updatedAt !== undefined) smoothing.setLatestUpdatedAt(patch.updatedAt);
-          smoothing.smoother.appendDelta(patchSummary.slice(received.length));
-        } else {
-          // Unlike a snapshot, a field patch is an authoritative correction,
-          // including one that intentionally shortens the previous text.
-          registry.snapAndDisposeSmoother(itemId, smoothing);
-        }
+      const relation = classifyRevealText(
+        options.getItemById(itemId)?.kind, patch.summary, received,
+      );
+      if (relation === 'extension') {
+        if (patch.updatedAt !== undefined) smoothing.setLatestUpdatedAt(patch.updatedAt);
+        smoothing.smoother.appendDelta(patch.summary.slice(received.length));
+        return;
       }
-    } else if (
-      smoothing &&
-      nextStatus !== undefined &&
-      nextStatus !== 'streaming' &&
-      smoothing.smoother.isCaughtUp()
-    ) {
-      // Bare status patch transitioning out of streaming with no
-      // summary (e.g. `{status: 'completed', updatedAt: T}`). The
-      // `onReveal` auto-cleanup only fires on a subsequent rAF tick;
-      // if the smoother is already caught up, no further ticks will
-      // arrive and the `itemSmoothers` entry would leak until the next
-      // thread switch. The row's summary was last written by onReveal
-      // as the trimmed view of the revealed text — content-consistent,
-      // so the live tail is retained. Non-caught-up smoothers keep
-      // streaming text and dispose via `onReveal` once they catch up.
+      if (relation !== 'same') {
+        // Field patches are authoritative corrections, including shortened
+        // text. Snapshot reconciliation deliberately has different authority.
+        registry.snapAndDisposeSmoother(itemId, smoothing);
+        return;
+      }
+    }
+    // A bare status and a content-consistent summary (including a trimmed
+    // reasoning preview) settle identically. If already caught up, no further
+    // frame will dispose the smoother; otherwise onReveal owns final cleanup.
+    if (patch.status !== undefined && patch.status !== 'streaming' &&
+      smoothing.smoother.isCaughtUp()) {
       registry.settleSmootherRetainingTail(itemId);
     }
-
   }
 
   /** Own the entire patch: reconcile text, commit lifecycle, then derive the gate. */
