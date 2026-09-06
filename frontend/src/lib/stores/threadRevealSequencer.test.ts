@@ -252,50 +252,6 @@ describe('threadRevealGate', () => {
       }
     });
 
-    it.each(['assistant_text', 'thinking'] as const)(
-      'never retracts a released row when earlier %s resumes, but still gates new rows',
-      async (kind) => {
-        const clock = new FakeSmoothingClock();
-        __setSmoothingClockForTest(clock);
-        try {
-          const pane = await buildPane(makeThread({ id: 't' }));
-          pane.upsertItem({ ...streamingThinking('text', 0, 't'), kind });
-          const append = () => pane.applyItemDelta({
-            threadId: 't', itemId: 'text', kind, delta: 'word '.repeat(40), updatedAt: 2,
-          });
-          const command = (id: string, itemIndex: number) => makeItem({
-            id, itemIndex, turnIndex: 0, threadId: 't', kind: 'tool_call',
-            toolName: 'Bash', status: 'running', summary: 'Bash: git status',
-          });
-          append();
-          pane.upsertItem(command('released', 1));
-          expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
-          for (let i = 0; i < 300 && pane.revealBoundary !== null; i++) clock.tickFrame(16);
-          expect(pane.revealBoundary).toBeNull();
-
-          append();
-          pane.upsertItem(command('withheld', 2));
-          expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 1 });
-          // Removing the released row also retires its visibility floor.
-          pane.removeItemById('released', 't');
-          pane.upsertItem(command('replacement', 1));
-          expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
-          for (let i = 0; i < 300 && pane.revealBoundary !== null; i++) clock.tickFrame(16);
-          expect(pane.revealBoundary).toBeNull();
-
-          // A fresh thread reuses positions, never the previous visibility.
-          await pane.switchThread(makeThread({ id: 'other' }));
-          pane.upsertItem({ ...streamingThinking('new-text', 0, 'other'), kind });
-          pane.applyItemDelta({ threadId: 'other', itemId: 'new-text', kind,
-            delta: 'word '.repeat(40), updatedAt: 2 });
-          pane.upsertItem({ ...command('new-command', 1), threadId: 'other' });
-          expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
-        } finally {
-          __setSmoothingClockForTest(undefined);
-        }
-      },
-    );
-
     it('a waiting successor does not speed the frontier up', async () => {
       // The successor-waiting fast-drain is gone: a queued row changes
       // WHAT renders (it is withheld), never how fast the frontier

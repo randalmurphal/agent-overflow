@@ -693,16 +693,14 @@ that is the reveal-queue doctrine, and the header comment on
 `recomputeReveal` (`threadRevealGate.svelte.ts`) records why each attempt
 was rejected.
 
-**Released rows never retract for more text.** A smoother catching up is
-not proof the provider has finished that item. If earlier prose resumes
-after a command was released, the reveal gate must retain that command's
-visibility; hiding/releasing it per burst oscillates timeline height under
-bottom-follow (Windows Codex report, 2026-09-06). The gate retains one
-released item identity/position, retires it on removal or thread clear, and
-still withholds new successors. It never skips or accelerates text.
-`threadRevealSequencer.test.ts` covers ordering/removal/switching;
-`resumedProse.browser.test.ts` exercises the real compact command row,
-completion, and bottom-follow across repeated prose bursts.
+Reveal-order regressions must exercise `eventsItemStream` as well as direct
+pane mutations. Its batcher preserves per-item order, but may reorder
+independent rows within one synchronous flush. An intermediate gate state is
+not evidence that a row was painted: retaining it as an "already visible"
+floor can release a completed command ahead of earlier prose's visual drain.
+`commandCompletionReveal.browser.test.ts` checks the actual prose DOM through
+normal completion, upsert completion, background siblings and batched status
+changes. Provider completion never substitutes for visual-reveal completion.
 
 State ownership taxonomy and the entity-keying doctrine:
 [`frontend/AGENTS.md`](../../../AGENTS.md).
