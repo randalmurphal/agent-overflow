@@ -21,6 +21,7 @@
 
 import type { Item } from '../types/models';
 import type { ItemPatchEvent } from '../types/events';
+import { classifyRevealText } from './threadRevealText';
 import type { RevealBoundary } from '../utils/subagentGrouping';
 import { isSmoothLiveContentKind, isReasoningTailKind } from './threadPaneShared';
 import {
@@ -31,10 +32,8 @@ import type { ProvenAppend } from '../markdown';
 import { createRevealGate } from './threadRevealGate.svelte';
 import { createRevealRouting } from './threadRevealRouting';
 import {
-  absorbReceivedSuffix,
   createRevealSmootherRegistry,
   isSnapStatus,
-  summaryRepresentsReceived,
   throwCollectedErrors,
 } from './threadRevealSmoothers';
 
@@ -130,11 +129,9 @@ export interface ThreadStreamingReveal {
     delta: string,
     updatedAt: number,
   ): void;
-  /** applyItemPatch's smoother decision tree (snap statuses, extend-vs-overwrite,
-   *  caught-up terminal dispose, bare-status dispose) followed by an UNCONDITIONAL
-   *  recomputeReveal — even when no smoother exists for the id. */
-  applyPatch(itemId: string, patch: ItemPatchEvent['patch']): void;
-  /** True while a smoother owns the row's summary writes (pane's `stillSmoothing` check). */
+  /** Reconcile text and commit the row before deriving the gate, including on failure. */
+  applyPatch(itemId: string, patch: ItemPatchEvent['patch']): Item | null;
+  /** True while a smoother owns the row's displayed text. */
   isSmoothing(itemId: string): boolean;
   /** Bumped whenever pane-wide disposal clears every mounted DOM sink. */
   readonly assistantRevealRegistrationGeneration: number;
@@ -155,9 +152,10 @@ export interface ThreadStreamingReveal {
    * snapshot may contain more of a streaming item than the readable reveal has
    * reached. Keep the visible summary at the smoother cursor and absorb any
    * new suffix into the smoother before the replacement becomes observable.
+   * The required commit callback installs the result; gate synchronization
+   * belongs to this operation and runs even if preparation or commit throws.
    */
-  prepareItemReplacements(incoming: readonly Item[]): Item[];
-  recomputeReveal(): void;
+  withReconciledItems<T>(incoming: readonly Item[], commit: (items: Item[]) => T): T;
   disposeSmootherFor(itemId: string): void;
   disposeSmoothersForItems(items: readonly { id: string }[]): void;
   disposeAll(): void;
@@ -318,58 +316,18 @@ export function createThreadStreamingReveal(
     }
 
     const received = entry.smoother.getReceived();
-    const incomingSummary = incoming.summary;
-    let belongsToCurrentStream = summaryRepresentsReceived(
-      incoming.kind,
-      incomingSummary,
-      received,
-    ) || absorbReceivedSuffix(
-      entry,
-      incomingSummary,
-      received,
-      incoming.updatedAt,
-    );
-    // True when the incoming summary is BEHIND the cursor rather than a
-    // re-assert of it: the row must keep its own visible text on the way
-    // out, whatever happens to the smoother.
-    let trailsTheCursor = false;
-    if (
-      !belongsToCurrentStream &&
-      incomingSummary.length < received.length &&
-      (received.startsWith(incomingSummary) ||
-        (isReasoningTailKind(incoming.kind) && received.includes(incomingSummary)))
-    ) {
-      // A summary that is a strict prefix of `received` belongs to the
-      // current stream WHATEVER the row's status. Two producers make it:
-      // SQLite/replica snapshots trailing the wire-visible delta stream,
-      // and the drain's own partial row re-entering through a wholesale
-      // commit (fold eviction, prune, reconcile pass the KEPT rows back
-      // through here). The second one is terminal during the post-settle
-      // drain — the completion patch flips status while the smoother
-      // still owns the summary — and disposing there stranded the row at
-      // the partial reveal forever, because the patch's summary write was
-      // already skipped in favor of the smoother (incident 2026-08-29:
-      // final assistant text froze at ~130 of 1021 chars whenever a
-      // subagent child settled inside the drain window).
-      //
-      // Reasoning-tail rows publish the last THINKING_TAIL_RUNES of the
-      // cursor, so past that length the same two producers hand back a
-      // summary that is an INTERIOR slice of `received`, never a prefix.
-      // Read as divergent, it disposed the smoother mid-drain and dropped
-      // the unrevealed backlog: the next wire delta re-seeded from the
-      // trimmed summary and the live tail carried a permanent hole until
-      // a reload (2026-09-01: "Now I'm working" + "ining the user's.").
-      // Containment is exact here for the same reason textOverlap.ts
-      // relies on it — a false match needs the reasoning to repeat a
-      // 400-rune passage verbatim.
-      belongsToCurrentStream = true;
-      trailsTheCursor = true;
-    }
-
-    if (!belongsToCurrentStream) {
+    const relation = classifyRevealText(incoming.kind, incoming.summary, received);
+    if (relation === 'replacement') {
       registry.disposeSmootherState(incoming.id);
       return incoming;
     }
+    if (relation === 'extension') {
+      entry.setLatestUpdatedAt(incoming.updatedAt);
+      entry.smoother.appendDelta(incoming.summary.slice(received.length));
+    }
+    // A snapshot may be a prefix, or a reasoning preview from inside received
+    // text. Preserve the displayed cursor even if that snapshot is terminal.
+    const trailsTheCursor = relation === 'trailing';
 
     entry.setLatestUpdatedAt(Math.max(incoming.updatedAt, current.updatedAt));
     // A terminal echo is authoritative about lifecycle, but not a reason to
@@ -414,20 +372,16 @@ export function createThreadStreamingReveal(
         errors.push(error);
       }
     }
-    // Preparation mutates smoother ownership before the caller installs the
-    // incoming window. A sink-reset failure can therefore abort the commit
-    // after its smoother was already removed. Re-derive against the still-
-    // current window before the error escapes so the old row is never left
-    // behind a boundary whose owner no longer exists.
-    if (errors.length > 0) {
-      try {
-        gate.recomputeReveal();
-      } catch (error) {
-        errors.push(error);
-      }
-    }
     throwCollectedErrors(errors, 'streaming reveal item replacement preparation failed');
     return prepared ?? incoming as Item[];
+  }
+
+  function withReconciledItems<T>(incoming: readonly Item[], commit: (items: Item[]) => T): T {
+    let result!: T;
+    gate.mutateSmoothersAndRecompute('timeline item reconciliation', () => {
+      result = commit(prepareItemReplacements(incoming));
+    });
+    return result;
   }
 
   /**
@@ -538,8 +492,7 @@ export function createThreadStreamingReveal(
     assistantParserSource,
     assistantSourceAppend,
     reconcileItemWrite,
-    prepareItemReplacements,
-    recomputeReveal: gate.recomputeReveal,
+    withReconciledItems,
     disposeSmootherFor: gate.disposeSmootherFor,
     disposeSmoothersForItems: gate.disposeSmoothersForItems,
     disposeAll,

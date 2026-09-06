@@ -7,7 +7,6 @@ import type {
 import {
   type ApplyItemUpsertsToWindowResult,
   applyItemUpsertsToWindow,
-  itemsAreEqual,
 } from './threadItems';
 import type { ThreadTimelineWindow } from './threadTimelineWindow.svelte';
 import type { ThreadSubagentMemory } from './threadSubagentMemory';
@@ -163,18 +162,18 @@ export function createThreadItemStreamApply(
     }
 
     const thread = options.getThread();
-    incoming = streamingReveal.prepareItemReplacements(incoming);
-    const next = applyItemUpsertsToWindow({
-      current: options.getItems(),
-      incoming,
-      itemIndexById,
-      currentThreadId: thread?.id ?? null,
-      oldestLoadedCursor: timelineWindow.oldestLoadedCursor,
-      newestLoadedCursor: timelineWindow.newestLoadedCursor,
-      oldestLoadedTurnIndex: timelineWindow.oldestLoadedTurnIndex,
-      newestLoadedTurnIndex: timelineWindow.newestLoadedTurnIndex,
-      hasMoreHistory: timelineWindow.hasMoreHistory,
-      hasMoreNewer: timelineWindow.hasMoreNewer,
+    return streamingReveal.withReconciledItems(incoming, (incoming) => {
+      const next = applyItemUpsertsToWindow({
+        current: options.getItems(),
+        incoming,
+        itemIndexById,
+        currentThreadId: thread?.id ?? null,
+        oldestLoadedCursor: timelineWindow.oldestLoadedCursor,
+        newestLoadedCursor: timelineWindow.newestLoadedCursor,
+        oldestLoadedTurnIndex: timelineWindow.oldestLoadedTurnIndex,
+        newestLoadedTurnIndex: timelineWindow.newestLoadedTurnIndex,
+        hasMoreHistory: timelineWindow.hasMoreHistory,
+        hasMoreNewer: timelineWindow.hasMoreNewer,
     });
     if (!next) return null;
     // Admission is decided inside the merge itself (see
@@ -202,6 +201,7 @@ export function createThreadItemStreamApply(
     }
     options.commitUpsertResult(next, finishCommittedUpsert);
     return next;
+    });
   }
 
   function applyProviderItemUpserts(
@@ -341,52 +341,8 @@ export function createThreadItemStreamApply(
       streamingReveal.disposeSmootherFor(evt.itemId);
       return;
     }
-    const current = options.getItems()[index];
-    // Smoother decision tree (snap statuses, extend-vs-overwrite,
-    // caught-up terminal dispose, bare-status dispose) plus the
-    // UNCONDITIONAL recompute that follows it — see
-    // threadStreamingReveal.svelte.ts `applyPatch`. Snap/dispose there
-    // may have cleared the frontier (interrupt, error, completion);
-    // the recompute drops the gate and reveals any withheld tail rows
-    // before the early `itemsAreEqual` return below.
-    streamingReveal.applyPatch(evt.itemId, evt.patch);
-
-    // Spread from items[index], NOT the pre-snap `current` capture: a
-    // snap above rewrote items[index].summary to the full revealed text
-    // via onReveal. Spreading `current` would discard that write, so a
-    // terminal patch that OMITS a summary (a kill/error that doesn't
-    // re-send text) would silently revert to the partial pre-snap
-    // summary and lose the already-streamed tail. With items[index] the
-    // snap's full text is the base; a present patch summary still
-    // overrides it below.
-    const next = { ...options.getItems()[index] };
-    if (evt.patch.status !== undefined) next.status = evt.patch.status;
-    if (evt.patch.summary !== undefined) {
-      // If a smoother is still active for this item AND the patch
-      // summary was absorbed as a smoother delta above (extends
-      // received), let the smoother own the visible summary write.
-      // Otherwise (no smoother, snapped, or overwrite path), apply
-      // the patch summary directly. After-snap, items[index].summary
-      // already contains the full revealed text; the patch summary
-      // then replaces it with the final wire shape (e.g. interrupted
-      // prefix).
-      const stillSmoothing = streamingReveal.isSmoothing(evt.itemId);
-      if (!stillSmoothing) {
-        next.summary = evt.patch.summary;
-        // Final/overwrite summary written directly (no smoother to own
-        // the reveal) — genuine content landing at the bottom. Stamp so
-        // a turn that completes mid-stream still spring-lands its tail.
-        // Meta-only / status-only patches never reach here (gated on
-        // `evt.patch.summary !== undefined` above), so they stay instant.
-        options.stampLiveContent();
-      }
-    }
-    if (evt.patch.meta !== undefined) next.meta = evt.patch.meta;
-    if (evt.patch.decision !== undefined) next.decision = evt.patch.decision;
-    if (evt.patch.updatedAt !== undefined)
-      next.updatedAt = evt.patch.updatedAt;
-    if (itemsAreEqual(current, next)) return;
-    options.writeItemAt(index, next);
+    const next = streamingReveal.applyPatch(evt.itemId, evt.patch);
+    if (!next) return;
     // Streaming children settle through THIS path, not upserts —
     // triage's doSettleStreamingText/Thinking emit field patches.
     // Without this hook, settled text rows under collapsed cards

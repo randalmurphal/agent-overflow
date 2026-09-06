@@ -626,7 +626,10 @@ same way. `threadStreamingReveal.svelte.ts` keeps the CHOKEPOINT
 away from either; `threadRevealSmoothers.ts` owns the smoother map and
 retained tails, `threadRevealGate.svelte.ts` owns `revealBoundary` and
 `recomputeReveal`, and `threadRevealRouting.ts` owns direct-vs-parser
-routing. Suites are named after the module: `threadItemWindow`,
+routing and complete field-patch commits. `threadRevealText.ts` classifies
+incoming text as same, extending, trailing or replacement; snapshots preserve
+a trailing cursor, while field patches may authoritatively shorten text.
+Suites are named after the module: `threadItemWindow`,
 `threadItemStreamApply`, `threadTimelineWindow`, `threadSwitchLoad`,
 `threadSubagentFold`, `threadDraftPlaceholder`, `threadPaneScroll`,
 `threadPaneTurns`, `threadPaneCompanions`, `threadPaneErrors`,
@@ -634,6 +637,30 @@ routing. Suites are named after the module: `threadItemWindow`,
 `threadRevealSequencer` — plus `thread.svelte.test.ts` for the
 composition root itself. Shared fixtures and the binding-mock environment
 are `test/helpers/threadPane.ts` (`installThreadPaneTestEnv`).
+
+Replacement callers use `withReconciledItems(incoming, commit)`: preparation,
+installation and post-commit work share an operation that always finalizes the
+gate. Preparation and manual gate recomputation are not public pane APIs.
+Field patches likewise commit their final row inside the reveal owner before
+gate derivation. Keep these boundaries synchronous and preserve direct text
+appends; do not add another reactive timeline watcher or copy received text
+into a parallel item model.
+
+`threadRevealSchedules.test.ts` varies chunking, input gaps, batch boundaries,
+stale snapshots, terminal patches/upserts and immediate/resume reveal. It
+checks continuity, eventual release, stable structural revisions during
+animation and cancellation on clear. Browser tests additionally check actual
+mounts and direct-render fallback/selection; final-state assertions alone
+cannot prove these contracts.
+
+`eventsItemStream` budgets both event count and string code units. Large
+accepted events progress alone; pressure flushes older events before accepting
+more, without dropping or truncating text. Processed queue slots release their
+payload references immediately. These are application queue/work budgets,
+not a bound on browser WebSocket buffers or the duration of one oversized
+mutation. `eventsItemStreamBudget.test.ts` checks small-burst batching,
+oversized progress, pressure and reset behavior. Flush finalization schedules
+any untouched queue tail even when a row mutation or subscriber throws.
 
 ## The reveal invariant
 

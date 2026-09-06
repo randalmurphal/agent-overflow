@@ -31,7 +31,23 @@ const itemUpsertSubscribers: Set<(item: Item) => void> = new Set();
 const ITEM_EVENT_FLUSH_MAX_DELAY_MS = 50;
 const ITEM_EVENT_FLUSH_MAX_EVENTS = 500;
 const ITEM_EVENT_QUEUE_FORCE_FLUSH_EVENTS = 2_000;
-let itemEventQueue: ItemStreamEvent[] = [];
+// Code-unit budgets supplement event counts: one event can contain far more
+// text than hundreds of ordinary deltas. A single oversized event progresses
+// alone; accepted events are never truncated or dropped.
+const ITEM_EVENT_FLUSH_MAX_CHARS = 256 * 1024;
+const ITEM_EVENT_QUEUE_FORCE_FLUSH_CHARS = 2 * 1024 * 1024;
+let itemEventQueue: (ItemStreamEvent | undefined)[] = [];
+let itemEventQueueChars = 0;
+
+function itemEventChars(evt: ItemStreamEvent): number {
+  const fields = evt.action === 'upsert' ? evt.item : evt.action === 'patch' ? evt.patch : evt;
+  let chars = 0;
+  for (const key in fields) {
+    const value = (fields as unknown as Record<string, unknown>)[key];
+    if (typeof value === 'string') chars += value.length;
+  }
+  return chars;
+}
 let itemEventQueueStart = 0;
 let itemEventFlushFrame: number | null = null;
 let itemEventFlushTimeout: number | null = null;
@@ -72,6 +88,7 @@ export function resetItemEventQueue(): void {
   cancelItemEventFlushSchedule();
   itemEventQueue = [];
   itemEventQueueStart = 0;
+  itemEventQueueChars = 0;
 }
 
 function isValidItemForThread(item: Item | null | undefined, threadId: string): item is Item {
@@ -286,10 +303,14 @@ export function applyItemStreamEvent(evt: ItemStreamEvent): void {
   } else {
     return;
   }
-  if (itemEventQueue.length - itemEventQueueStart >= ITEM_EVENT_QUEUE_FORCE_FLUSH_EVENTS) {
+  const chars = itemEventChars(evt);
+  while (itemEventQueueStart < itemEventQueue.length &&
+    (itemEventQueue.length - itemEventQueueStart >= ITEM_EVENT_QUEUE_FORCE_FLUSH_EVENTS ||
+      itemEventQueueChars + chars > ITEM_EVENT_QUEUE_FORCE_FLUSH_CHARS)) {
     flushItemEventQueue();
   }
   itemEventQueue.push(evt);
+  itemEventQueueChars += chars;
   scheduleItemEventFlush();
 }
 
@@ -301,11 +322,20 @@ export function flushItemEventQueue(): void {
     return;
   }
 
-  const itemEventQueueEnd = Math.min(
-    itemEventQueueStart + ITEM_EVENT_FLUSH_MAX_EVENTS,
-    itemEventQueue.length,
-  );
-  const events = itemEventQueue.slice(itemEventQueueStart, itemEventQueueEnd);
+  const events: ItemStreamEvent[] = [];
+  let chars = 0;
+  let itemEventQueueEnd = itemEventQueueStart;
+  while (itemEventQueueEnd < itemEventQueue.length && events.length < ITEM_EVENT_FLUSH_MAX_EVENTS) {
+    const evt = itemEventQueue[itemEventQueueEnd]!;
+    const size = itemEventChars(evt);
+    if (events.length > 0 && chars + size > ITEM_EVENT_FLUSH_MAX_CHARS) break;
+    events.push(evt);
+    chars += size;
+    // Retire processed payload references immediately, even while a small
+    // unprocessed tail keeps the backing queue array alive.
+    itemEventQueue[itemEventQueueEnd++] = undefined;
+  }
+  itemEventQueueChars -= chars;
   if (itemEventQueueEnd >= itemEventQueue.length) {
     itemEventQueue = [];
     itemEventQueueStart = 0;
@@ -380,70 +410,73 @@ export function flushItemEventQueue(): void {
   // items-array swap -> one structural re-derive, instead of
   // fragmenting into per-transition micro-batches that each paid an
   // O(window) array copy and a full timeline regroup.
-  for (const evt of events) {
-    if (!evt || !evt.threadId) continue;
-    if (evt.action === 'upsert') {
-      if (!isValidItemForThread(evt.item, evt.threadId)) continue;
-      const itemKey = itemConflictKey(evt.threadId, evt.item.id);
-      // A queued delta for this row must land before the upsert
-      // replaces the row's summary wholesale.
-      if (pendingDeltaItemKeys.has(itemKey)) flushPendingDeltas();
-      pendingUpserts.push(evt.item);
-      pendingUpsertItemKeys.add(itemKey);
-      continue;
-    }
-    if (evt.action === 'meta') {
-      // Re-validated meta blob (e.g. live path-link allowlist for an
-      // in-flight assistant_text row). Pending deltas for the same row
-      // must apply FIRST so the new meta lands against text the user
-      // has already seen; a pending upsert for the same row must apply
-      // too so the row exists by the time we set its meta.
-      const itemKey = itemConflictKey(evt.threadId, evt.itemId);
-      if (pendingDeltaItemKeys.has(itemKey)) flushPendingDeltas();
-      if (pendingUpsertItemKeys.has(itemKey)) flushPendingUpserts();
-      for (const pane of ingestPanes()) {
-        if (pane.threadId !== evt.threadId) continue;
-        pane.applyItemMeta(evt);
+  try {
+    for (const evt of events) {
+      if (!evt || !evt.threadId) continue;
+      if (evt.action === 'upsert') {
+        if (!isValidItemForThread(evt.item, evt.threadId)) continue;
+        const itemKey = itemConflictKey(evt.threadId, evt.item.id);
+        // A queued delta for this row must land before the upsert
+        // replaces the row's summary wholesale.
+        if (pendingDeltaItemKeys.has(itemKey)) flushPendingDeltas();
+        pendingUpserts.push(evt.item);
+        pendingUpsertItemKeys.add(itemKey);
+        continue;
       }
-      continue;
-    }
-    if (evt.action === 'patch') {
-      const itemKey = itemConflictKey(evt.threadId, evt.itemId);
-      if (pendingDeltaItemKeys.has(itemKey)) flushPendingDeltas();
-      if (pendingUpsertItemKeys.has(itemKey)) flushPendingUpserts();
-      for (const pane of ingestPanes()) {
-        if (pane.threadId !== evt.threadId) continue;
-        pane.applyItemPatch(evt);
+      if (evt.action === 'meta') {
+        // Re-validated meta blob (e.g. live path-link allowlist for an
+        // in-flight assistant_text row). Pending deltas for the same row
+        // must apply FIRST so the new meta lands against text the user
+        // has already seen; a pending upsert for the same row must apply
+        // too so the row exists by the time we set its meta.
+        const itemKey = itemConflictKey(evt.threadId, evt.itemId);
+        if (pendingDeltaItemKeys.has(itemKey)) flushPendingDeltas();
+        if (pendingUpsertItemKeys.has(itemKey)) flushPendingUpserts();
+        for (const pane of ingestPanes()) {
+          if (pane.threadId !== evt.threadId) continue;
+          pane.applyItemMeta(evt);
+        }
+        continue;
       }
-      continue;
-    }
-    if (evt.action !== 'delta') continue;
+      if (evt.action === 'patch') {
+        const itemKey = itemConflictKey(evt.threadId, evt.itemId);
+        if (pendingDeltaItemKeys.has(itemKey)) flushPendingDeltas();
+        if (pendingUpsertItemKeys.has(itemKey)) flushPendingUpserts();
+        for (const pane of ingestPanes()) {
+          if (pane.threadId !== evt.threadId) continue;
+          pane.applyItemPatch(evt);
+        }
+        continue;
+      }
+      if (evt.action !== 'delta') continue;
 
-    // A pending upsert for this row carries the full summary; the
-    // delta extends it, so the upsert must land first.
-    if (pendingUpsertItemKeys.has(itemConflictKey(evt.threadId, evt.itemId))) {
-      flushPendingUpserts();
+      // A pending upsert for this row carries the full summary; the
+      // delta extends it, so the upsert must land first.
+      if (pendingUpsertItemKeys.has(itemConflictKey(evt.threadId, evt.itemId))) {
+        flushPendingUpserts();
+      }
+      queueDelta(evt);
     }
-    queueDelta(evt);
-  }
 
-  // Tail order is safe: no item can be pending in BOTH buffers here.
-  // Queuing a delta flushes that row's pending upsert first, and
-  // buffering an upsert flushes that row's pending delta first (the
-  // per-item conflict checks above), so the two pending sets are always
-  // disjoint per item by the time we reach the tail. Draining deltas
-  // then upserts therefore can't reorder any single row's events.
-  flushPendingDeltas();
-  flushPendingUpserts();
-  // Sidebar activity is bumped only at meaningful interaction
-  // boundaries, and none of them is here any more: the reader's own
-  // message arrives as a thread:updated `updatedAt` patch, and turn
-  // completion / approval / user-input creation each ride their own
-  // wildcard channel. Streaming deltas and assistant / tool / thinking
-  // upserts never advanced the timestamp — that used to make the
-  // sidebar reshuffle every chunk — so this channel now bumps nothing.
-  notifyItemUpserts(notifiedUpserts);
-  if (itemEventQueueStart < itemEventQueue.length) {
-    scheduleItemEventFlush();
+    // Tail order is safe: no item can be pending in BOTH buffers here.
+    // Queuing a delta flushes that row's pending upsert first, and
+    // buffering an upsert flushes that row's pending delta first (the
+    // per-item conflict checks above), so the two pending sets are always
+    // disjoint per item by the time we reach the tail. Draining deltas
+    // then upserts therefore can't reorder any single row's events.
+    flushPendingDeltas();
+    flushPendingUpserts();
+    // Sidebar activity is bumped only at meaningful interaction
+    // boundaries, and none of them is here any more: the reader's own
+    // message arrives as a thread:updated `updatedAt` patch, and turn
+    // completion / approval / user-input creation each ride their own
+    // wildcard channel. Streaming deltas and assistant / tool / thinking
+    // upserts never advanced the timestamp — that used to make the
+    // sidebar reshuffle every chunk — so this channel now bumps nothing.
+    notifyItemUpserts(notifiedUpserts);
+  } finally {
+    // One failed mutation/subscriber must not strand the untouched queue tail
+    // after this flush cancelled both of its wakeups. The error still surfaces.
+    if (itemEventQueueStart < itemEventQueue.length) scheduleItemEventFlush();
   }
 }

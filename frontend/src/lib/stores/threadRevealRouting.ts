@@ -17,6 +17,8 @@
 
 import type { Item, ItemKind } from '../types/models';
 import type { ItemPatchEvent } from '../types/events';
+import { itemsAreEqual } from './threadItems';
+import { classifyRevealText } from './threadRevealText';
 import { PerItemSmoother } from '../markdown/smoothing/PerItemSmoother';
 import {
   THINKING_TAIL_RUNES,
@@ -33,9 +35,7 @@ import {
 import type { ProvenAppend } from '../markdown';
 import type { RevealGate } from './threadRevealGate.svelte';
 import {
-  absorbReceivedSuffix,
   isSnapStatus,
-  summaryRepresentsReceived,
   throwCollectedErrors,
   type ItemSmoothing,
   type RevealSmootherRegistry,
@@ -78,7 +78,7 @@ export interface RevealRouting {
     delta: string,
     updatedAt: number,
   ): void;
-  applyPatch(itemId: string, patch: ItemPatchEvent['patch']): void;
+  applyPatch(itemId: string, patch: ItemPatchEvent['patch']): Item | null;
 }
 
 export function createRevealRouting(options: RevealRoutingOptions): RevealRouting {
@@ -361,7 +361,8 @@ export function createRevealRouting(options: RevealRoutingOptions): RevealRoutin
       // wholesale (the Codex thinking completion shape, and the
       // completion patch from persistCompletedBlockEmitStreaming).
       const item = options.getItemById(itemId);
-      if (summaryRepresentsReceived(item?.kind, patchSummary, received)) {
+      const relation = classifyRevealText(item?.kind, patchSummary, received);
+      if (relation === 'same') {
         if (
           nextStatus !== undefined &&
           nextStatus !== 'streaming' &&
@@ -383,13 +384,14 @@ export function createRevealRouting(options: RevealRoutingOptions): RevealRoutin
           registry.settleSmootherRetainingTail(itemId);
         }
       } else {
-        const absorbed = absorbReceivedSuffix(
-          smoothing,
-          patchSummary,
-          received,
-          patch.updatedAt,
-        );
-        if (!absorbed) registry.snapAndDisposeSmoother(itemId, smoothing);
+        if (relation === 'extension') {
+          if (patch.updatedAt !== undefined) smoothing.setLatestUpdatedAt(patch.updatedAt);
+          smoothing.smoother.appendDelta(patchSummary.slice(received.length));
+        } else {
+          // Unlike a snapshot, a field patch is an authoritative correction,
+          // including one that intentionally shortens the previous text.
+          registry.snapAndDisposeSmoother(itemId, smoothing);
+        }
       }
     } else if (
       smoothing &&
@@ -411,17 +413,35 @@ export function createRevealRouting(options: RevealRoutingOptions): RevealRoutin
 
   }
 
-  /** applyItemPatch's smoother decision tree followed by an UNCONDITIONAL
-   *  recomputeReveal — even when no smoother exists for the id. */
-  function applyPatch(itemId: string, patch: ItemPatchEvent['patch']): void {
-    // Snap/dispose above may clear the frontier (interrupt, error,
-    // completion). Derive the gate even when sink cleanup reports an error so
-    // a failed reset cannot leave successor rows withheld indefinitely. This
-    // still runs before applyItemPatch's early `itemsAreEqual` return.
-    gate.mutateSmoothersAndRecompute(
-      `streaming reveal patch for ${itemId}`,
-      () => applyPatchState(itemId, patch),
-    );
+  /** Own the entire patch: reconcile text, commit lifecycle, then derive the gate. */
+  function applyPatch(itemId: string, patch: ItemPatchEvent['patch']): Item | null {
+    let committed: Item | null = null;
+    gate.mutateSmoothersAndRecompute(`streaming reveal patch for ${itemId}`, () => {
+      const index = options.getItemIndex(itemId);
+      if (index === undefined) {
+        registry.disposeSmootherState(itemId);
+        return;
+      }
+      const current = options.getItems()[index];
+      applyPatchState(itemId, patch);
+      // Snap may have published text synchronously. Always read its result;
+      // spreading the pre-snap row would silently restore the shorter text.
+      const next = { ...options.getItems()[index] };
+      if (patch.status !== undefined) next.status = patch.status;
+      if (patch.summary !== undefined) next.summary = patch.summary;
+      if (patch.meta !== undefined) next.meta = patch.meta;
+      if (patch.decision !== undefined) next.decision = patch.decision;
+      if (patch.updatedAt !== undefined) next.updatedAt = patch.updatedAt;
+      if (itemSmoothers.has(itemId)) {
+        next.summary = options.getItems()[index].summary;
+      } else if (patch.summary !== undefined) {
+        options.stampLiveContent();
+      }
+      if (itemsAreEqual(current, next)) return;
+      options.setItemAt(index, next);
+      committed = next;
+    });
+    return committed;
   }
 
   return {

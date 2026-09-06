@@ -153,12 +153,12 @@ describe('reveal invariant at the reconciliation chokepoint', () => {
     reveal.appendStreamingDelta(item.id, SNAPSHOT_26, SUFFIX_20, 2);
     drainTo(clock, () => getItems()[0].summary, CURSOR_46.length);
 
-    const [prepared] = reveal.prepareItemReplacements([{
+    const [prepared] = reveal.withReconciledItems([{
       ...getItems()[0],
       status: 'completed',
       summary: SNAPSHOT_26,
       updatedAt: 3,
-    }]);
+    }], (items) => items);
 
     expect(prepared.status).toBe('completed');
     expect(prepared.summary).toBe(CURSOR_46);
@@ -181,12 +181,12 @@ describe('reveal invariant at the reconciliation chokepoint', () => {
     drainTo(clock, () => getItems()[0].summary, CURSOR_46.length);
     expect(getItems()[0].summary.length).toBeLessThan(full.length);
 
-    const [prepared] = reveal.prepareItemReplacements([{
+    const [prepared] = reveal.withReconciledItems([{
       ...getItems()[0],
       status: 'completed',
       summary: SNAPSHOT_26,
       updatedAt: 3,
-    }]);
+    }], (items) => items);
     expect(prepared.summary).toBe(CURSOR_46);
     commit(prepared);
     expect(reveal.smootherCount()).toBe(1);
@@ -213,12 +213,12 @@ describe('reveal invariant at the reconciliation chokepoint', () => {
     drainTo(clock, () => getItems()[0].summary, CURSOR_46.length);
 
     const corrected = '[interrupted] the model rewrote this answer entirely.';
-    const [prepared] = reveal.prepareItemReplacements([{
+    const [prepared] = reveal.withReconciledItems([{
       ...getItems()[0],
       status: 'completed',
       summary: corrected,
       updatedAt: 3,
-    }]);
+    }], (items) => items);
 
     expect(prepared.summary).toBe(corrected);
     expect(reveal.smootherCount()).toBe(0);

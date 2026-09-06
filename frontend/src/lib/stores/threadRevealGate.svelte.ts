@@ -62,12 +62,10 @@ export function createRevealGate(options: RevealGateOptions): RevealGate {
   // parallel subagent branches are never serialized behind one another.
   let revealBoundary: RevealBoundary | null = $state(null);
 
-  // Reveal-gate invariant: the pane's two item-window commit chokepoints
-  // recompute after their full transaction, so a caller cannot publish a new
-  // window while this boundary still describes the old one. Single-row wire
-  // paths recompute inside their streaming-reveal operations. Thread switch
-  // and clear dispose every outgoing smoother before installing an unrelated
-  // window. There is no parallel reactive watcher over the timeline.
+  // Replacement reconciliation encloses its required commit callback and
+  // finalizes this gate even on failure. Field patches commit lifecycle and
+  // text before finalization too. Thread switch and clear dispose the outgoing
+  // smoothers. There is no parallel reactive watcher over the timeline.
 
   // Two reveal boundaries are equal when both are null or share a position.
   // Mirrors the `sameActiveTurn` / `sameRhsPanel` equality helpers; the
@@ -149,12 +147,9 @@ export function createRevealGate(options: RevealGateOptions): RevealGate {
    * visibility state or frame timers are needed. Subagent children are excluded
    * so a streaming child never gates a sibling branch or a top-level row.
    *
-   * INVARIANT: every path that mutates `items` or a smoother's liveness must
-   * call this. There is deliberately NO reactive `$effect` watching `items`
-   * (frontend/AGENTS.md forbids a parallel watcher over the timeline), so the
-   * gate is kept in sync by explicit calls from `applyItemDelta`,
-   * `applyItemPatch`, `upsertItemsBatch`, `onReveal` (on catch-up), and the
-   * item-removal paths; `disposeAll` clears the boundary directly.
+   * This derivation stays private to the reveal modules. Mutation entry
+   * points own its scheduling, including failed commits and disposal; callers
+   * cannot prepare a replacement and forget the matching finalization.
    *
    * Reentrancy: defensive guard against any synchronous `onReveal` fired
    * from within a pass calling back into this function (historically the

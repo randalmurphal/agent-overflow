@@ -48,7 +48,7 @@ function sink(
   };
 }
 
-function makeReveal(initialItems: Item[]) {
+function makeReveal(initialItems: Item[], onArm: () => void = () => {}) {
   let items = initialItems;
   let nextItemWriteFailure: unknown;
   let itemWriteCount = 0;
@@ -90,7 +90,7 @@ function makeReveal(initialItems: Item[]) {
       current.updatedAt = Math.max(current.updatedAt, updatedAt);
     },
     stampLiveContent: () => {},
-    armStructuralSpring: () => {},
+    armStructuralSpring: onArm,
     appendLivePayloadDeltaForItem: () => {},
   });
   return {
@@ -184,12 +184,12 @@ describe('thread streaming reveal cleanup', () => {
     expect(revealedAtCompletion.length).toBeGreaterThan(0);
     expect(revealedAtCompletion.length).toBeLessThan(received.length);
 
-    const [prepared] = reveal.prepareItemReplacements([{
+    const [prepared] = reveal.withReconciledItems([{
       ...getItems()[0],
       status: 'completed',
       summary: received,
       updatedAt: 3,
-    }]);
+    }], (items) => items);
 
     expect(prepared.status).toBe('completed');
     expect(prepared.summary).toBe(revealedAtCompletion);
@@ -226,13 +226,13 @@ describe('thread streaming reveal cleanup', () => {
       summary: `${received}— stopped`,
       updatedAt: 3,
     };
-    const [prepared] = reveal.prepareItemReplacements([incoming]);
+    const [prepared] = reveal.withReconciledItems([incoming], (items) => {
+      getItems()[0] = items[0];
+      return items;
+    });
 
     expect(prepared).toBe(incoming);
     expect(reveal.smootherCount()).toBe(0);
-    // Successful preparation is only half of the pane's window transaction.
-    getItems()[0] = prepared;
-    reveal.recomputeReveal();
     expect(reveal.revealBoundary).toBeNull();
   });
 
@@ -383,6 +383,40 @@ describe('thread streaming reveal cleanup', () => {
     expect(reveal.revealBoundary).toBeNull();
   });
 
+  it('commits terminal lifecycle before announcing successor release', () => {
+    const clock = new FakeSmoothingClock();
+    __setSmoothingClockForTest(clock);
+    const item = makeItem({ id: 'text', status: 'streaming', summary: '' });
+    const command = makeItem({ id: 'command', itemIndex: 1, kind: 'tool_call' });
+    let statusAtRelease: Item['status'] | undefined;
+    const { reveal, getItems } = makeReveal([item, command], () => {
+      statusAtRelease = getItems()[0].status;
+    });
+    reveal.appendStreamingDelta(item.id, '', 'hello ', 1);
+    for (let frame = 0; frame < 60; frame++) clock.tick(16);
+    expect(reveal.revealBoundary).not.toBeNull();
+    expect(statusAtRelease).toBeUndefined();
+
+    reveal.applyPatch(item.id, { status: 'completed', updatedAt: 2 });
+
+    expect(getItems()[0].status).toBe('completed');
+    expect(statusAtRelease).toBe('completed');
+    expect(reveal.revealBoundary).toBeNull();
+  });
+
+  it('finalizes ownership when a reconciled replacement cannot commit', () => {
+    __setSmoothingClockForTest(new FakeSmoothingClock());
+    const item = makeItem({ id: 'text', status: 'streaming', summary: '' });
+    const { reveal } = makeReveal([item]);
+    reveal.appendStreamingDelta(item.id, '', 'pending words ', 1);
+    expect(reveal.revealBoundary).not.toBeNull();
+    expect(() => reveal.withReconciledItems([{ ...item, status: 'killed' }], () => {
+      throw new Error('commit refused');
+    })).toThrow('commit refused');
+    expect(reveal.smootherCount()).toBe(0);
+    expect(reveal.revealBoundary).toBeNull();
+  });
+
   it('drops the gate when patch disposal reports an error', () => {
     __setSmoothingClockForTest(new FakeSmoothingClock());
     const item = makeItem({ id: 'text', status: 'streaming', summary: '' });
@@ -477,12 +511,11 @@ describe('thread streaming reveal cleanup', () => {
       status: 'completed' as const,
       summary: `rewritten ${current.id}`,
     }));
-    expect(() => reveal.prepareItemReplacements(terminalItems)).toThrow(
+    expect(() => reveal.withReconciledItems(terminalItems, (items) => items)).toThrow(
       /smoother disposal failed/,
     );
     expect(secondReset).toHaveBeenCalledOnce();
     expect(reveal.smootherCount()).toBe(0);
-    reveal.recomputeReveal();
     expect(reveal.revealBoundary).toBeNull();
   });
 
@@ -582,7 +615,7 @@ describe('reasoning-tail rows through the wholesale-commit chokepoint', () => {
     __setSmoothingClockForTest(clock);
     const { item, reveal, getItems, received, row, revealed } = drainPast400Runes(clock);
 
-    const [prepared] = reveal.prepareItemReplacements([row]);
+    const [prepared] = reveal.withReconciledItems([row], (items) => items);
     expect(prepared.summary).toBe(row.summary);
     expect(reveal.smootherCount()).toBe(1);
     expect(reveal.liveThinkingTailFor(item.id)).toBe(revealed);
@@ -599,11 +632,11 @@ describe('reasoning-tail rows through the wholesale-commit chokepoint', () => {
     // SQLite persisted the wire up to 100 chars short of what the frontend
     // received; its summary is the last 400 runes of that prefix.
     const persisted = received.slice(0, received.length - 100);
-    const [prepared] = reveal.prepareItemReplacements([{
+    const [prepared] = reveal.withReconciledItems([{
       ...row,
       summary: persisted.slice(persisted.length - 400),
       updatedAt: 3,
-    }]);
+    }], (items) => items);
     expect(prepared.summary).toBe(row.summary);
     expect(reveal.smootherCount()).toBe(1);
     expect(reveal.liveThinkingTailFor(item.id)).toBe(revealed);
@@ -617,12 +650,12 @@ describe('reasoning-tail rows through the wholesale-commit chokepoint', () => {
     __setSmoothingClockForTest(clock);
     const { item, reveal, getItems, received, row } = drainPast400Runes(clock);
 
-    const [prepared] = reveal.prepareItemReplacements([{
+    const [prepared] = reveal.withReconciledItems([{
       ...row,
       status: 'completed',
       summary: received.slice(received.length - 400),
       updatedAt: 3,
-    }]);
+    }], (items) => items);
     expect(prepared.status).toBe('completed');
     expect(prepared.summary).toBe(row.summary);
     expect(reveal.smootherCount()).toBe(1);

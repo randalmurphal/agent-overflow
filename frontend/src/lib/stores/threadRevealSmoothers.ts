@@ -15,12 +15,11 @@
 // It also never routes a delta: `threadRevealRouting.ts` owns the
 // direct-vs-authoritative decision and calls back in for the resources.
 
-import type { Item, ItemKind } from '../types/models';
+import type { Item } from '../types/models';
 import { SvelteMap } from 'svelte/reactivity';
 import type { PerItemSmoother } from '../markdown/smoothing/PerItemSmoother';
 import {
   THINKING_TAIL_RUNES,
-  isReasoningTailKind,
   trimToTailRunes,
 } from './threadPaneShared';
 import {
@@ -42,42 +41,6 @@ export interface ItemSmoothing {
 /** Statuses whose patch is the documented authoritative-summary handover. */
 export function isSnapStatus(status: Item['status'] | undefined): boolean {
   return status === 'errored' || status === 'killed' || status === 'declined';
-}
-
-/**
- * Whether `summary` is the row's published view of `received`. Reasoning-tail
- * rows publish a tail-TRIMMED view, so equality alone would read a settle
- * re-assert as an overwrite and dump the unrevealed backlog wholesale.
- */
-export function summaryRepresentsReceived(
-  kind: ItemKind | string | undefined,
-  summary: string,
-  received: string,
-): boolean {
-  return summary === received ||
-    (kind !== undefined &&
-      isReasoningTailKind(kind) &&
-      summary === trimToTailRunes(received, THINKING_TAIL_RUNES));
-}
-
-/**
- * Push the part of `summary` past `received` into the smoother as a delta,
- * so an extending authoritative summary finishes the reveal naturally
- * instead of snapping. Returns false when `summary` does not extend
- * `received` — the caller then takes its own authoritative path.
- */
-export function absorbReceivedSuffix(
-  entry: ItemSmoothing,
-  summary: string,
-  received: string,
-  updatedAt: number | undefined,
-): boolean {
-  if (summary.length <= received.length || !summary.startsWith(received)) {
-    return false;
-  }
-  if (updatedAt !== undefined) entry.setLatestUpdatedAt(updatedAt);
-  entry.smoother.appendDelta(summary.slice(received.length));
-  return true;
 }
 
 /** Preserve a lone original error for callers that match its diagnostic. */

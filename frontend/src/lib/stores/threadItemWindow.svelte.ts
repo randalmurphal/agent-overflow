@@ -279,9 +279,8 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
   /**
    * Complete an item-window commit before control returns to its caller.
    * `afterCommit` owns domain work that must see the newly installed window;
-   * the reveal gate is always derived after that work, including when it
-   * throws. This keeps gate synchronization inside the mutation API instead
-   * of depending on every caller to remember a paired second call.
+   * the enclosing withReconciledItems operation derives the reveal gate after
+   * this finalizer, including when preparation or post-commit work throws.
    */
   function finalizeItemsCommit<T>(
     context: string,
@@ -297,11 +296,6 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
       } catch (error) {
         (errors ??= []).push(error);
       }
-    }
-    try {
-      options.streamingReveal().recomputeReveal();
-    } catch (error) {
-      (errors ??= []).push(error);
     }
     if (errors) {
       throw new AggregateError(errors, `${context} finalization failed`);
@@ -341,66 +335,67 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
     droppedItems: readonly Item[],
     commitOptions: TimelineItemsCommitOptions = {},
   ): boolean {
-    nextItems = options.streamingReveal().prepareItemReplacements(nextItems);
-    const previous = items;
-    reconcileItemReplacements(previous, nextItems);
-    items = nextItems;
-    const errors: unknown[] = [];
-    if (commitOptions.recordLiveReplacement) {
+    return options.streamingReveal().withReconciledItems(nextItems, (nextItems) => {
+      const previous = items;
+      reconcileItemReplacements(previous, nextItems);
+      items = nextItems;
+      const errors: unknown[] = [];
+      if (commitOptions.recordLiveReplacement) {
+        try {
+          options.switchLoad().noteItemWindowReplacement(previous, nextItems);
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      // Indexes first: the box sync drops a previous row only when
+      // `itemIndexById` no longer knows it.
+      rebuildItemIndexes(items);
+      syncItemBoxes(previous, items);
+      // Fold↔items chokepoint: folds are only meaningful while their
+      // anchor row is loaded — once an anchor leaves the window, the
+      // next load of its region decorates from SQLite. Every wholesale
+      // window replacement (prune, reconcile, revert, cache install,
+      // eviction) flows through here, so one sweep after the index
+      // rebuild keeps the registry consistent everywhere. The upsert
+      // fast path bypasses this function but never drops existing rows.
+      // Eviction callers record their folds BEFORE replacing, with the
+      // anchors still loaded, so those folds are retained.
       try {
-        options.switchLoad().noteItemWindowReplacement(previous, nextItems);
+        options.subagentMemory().retainFoldAnchors();
       } catch (error) {
         errors.push(error);
       }
-    }
-    // Indexes first: the box sync drops a previous row only when
-    // `itemIndexById` no longer knows it.
-    rebuildItemIndexes(items);
-    syncItemBoxes(previous, items);
-    // Fold↔items chokepoint: folds are only meaningful while their
-    // anchor row is loaded — once an anchor leaves the window, the
-    // next load of its region decorates from SQLite. Every wholesale
-    // window replacement (prune, reconcile, revert, cache install,
-    // eviction) flows through here, so one sweep after the index
-    // rebuild keeps the registry consistent everywhere. The upsert
-    // fast path bypasses this function but never drops existing rows.
-    // Eviction callers record their folds BEFORE replacing, with the
-    // anchors still loaded, so those folds are retained.
-    try {
-      options.subagentMemory().retainFoldAnchors();
-    } catch (error) {
-      errors.push(error);
-    }
-    try {
-      disposeDroppedItemState(droppedItems, commitOptions.exhaustedScope);
-    } catch (error) {
-      errors.push(error);
-    }
-    timelineRevision++;
-    // Unconditional: a wholesale replacement can drop an active row, land
-    // one, or re-link a payload, and proving otherwise would cost the very
-    // walk the revision exists to remove. These paths are rare (prune,
-    // reconcile, revert, cache install, eviction) — one extra prune pass
-    // is cheaper than the proof.
-    rowUiRetentionRevision += 1;
-    // Same reasoning, the other consumer: the per-item revision the
-    // activity-run headers key on is fed by `writeItemAt`, which a
-    // wholesale replacement does not go through. A replace can change
-    // every summary-relevant field on rows whose run membership is
-    // untouched (the cache paint reconciled by `SyncThreadWindow`), and
-    // that is invisible to both of the header's per-run signals.
-    try {
-      options.activityRuns().noteWholesaleReplace();
-    } catch (error) {
-      errors.push(error);
-    }
-    finalizeItemsCommit(
-      'timeline window replacement',
-      commitOptions.afterCommit,
-      undefined,
-      errors,
-    );
-    return true;
+      try {
+        disposeDroppedItemState(droppedItems, commitOptions.exhaustedScope);
+      } catch (error) {
+        errors.push(error);
+      }
+      timelineRevision++;
+      // Unconditional: a wholesale replacement can drop an active row, land
+      // one, or re-link a payload, and proving otherwise would cost the very
+      // walk the revision exists to remove. These paths are rare (prune,
+      // reconcile, revert, cache install, eviction) — one extra prune pass
+      // is cheaper than the proof.
+      rowUiRetentionRevision += 1;
+      // Same reasoning, the other consumer: the per-item revision the
+      // activity-run headers key on is fed by `writeItemAt`, which a
+      // wholesale replacement does not go through. A replace can change
+      // every summary-relevant field on rows whose run membership is
+      // untouched (the cache paint reconciled by `SyncThreadWindow`), and
+      // that is invisible to both of the header's per-run signals.
+      try {
+        options.activityRuns().noteWholesaleReplace();
+      } catch (error) {
+        errors.push(error);
+      }
+      finalizeItemsCommit(
+        'timeline window replacement',
+        commitOptions.afterCommit,
+        undefined,
+        errors,
+      );
+      return true;
+    });
   }
 
   function replaceTimelineItems(
@@ -409,11 +404,11 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
   ): boolean {
     if (items === nextItems) {
       if (commitOptions.afterCommit) {
-        finalizeItemsCommit(
+        options.streamingReveal().withReconciledItems([], () => finalizeItemsCommit(
           'timeline window replacement',
           commitOptions.afterCommit,
           undefined,
-        );
+        ));
       }
       return false;
     }
@@ -441,11 +436,11 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
   ): boolean {
     if (items === nextItems) {
       if (commitOptions.afterCommit) {
-        finalizeItemsCommit(
+        options.streamingReveal().withReconciledItems([], () => finalizeItemsCommit(
           'timeline window installation',
           commitOptions.afterCommit,
           undefined,
-        );
+        ));
       }
       return false;
     }
