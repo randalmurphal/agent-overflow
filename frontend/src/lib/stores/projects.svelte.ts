@@ -1,3 +1,4 @@
+import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { invalidateReplicaCatalog } from '../replica/session';
 import { computerCatalogWriter } from './computerCatalogWriter';
 import { computerCatalog, readComputerRows, retainUnavailableComputerRows } from './computerRows';
@@ -195,6 +196,7 @@ export async function refreshProjects(): Promise<void> {
     projects = retainUnavailableComputerRows(projects, result, (row) => projectBackend(row.project.id));
     loaded = true;
   } catch (err) {
+    if (isPassiveConnectionFailure(err)) return;
     console.error('Failed to load projects:', err);
     addToast('error', 'Failed to load projects');
   }

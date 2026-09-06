@@ -1,3 +1,4 @@
+import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { threadHasScope } from '../transport/entityScopes';
 import { threadBackend } from '../transport/entityIndex';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
@@ -1127,10 +1128,11 @@ export function createThreadSwitchLoad(
       }
     } catch (err) {
       if (gen !== options.getSwitchGeneration()) return;
-      console.error('Failed to sync thread window:', err);
-      if (paintSource !== 'none') {
+      failedHistoryLoad = { threadId, generation: gen, anchorItemId: sliceAnchorId };
+      if (!isPassiveConnectionFailure(err)) console.error('Failed to sync thread window:', err);
+      if (paintSource !== 'none' || options.getItems().length > 0) {
         // A painted window is what the pane had a moment ago and is
-        // strictly better than blanking it; the next open re-converges.
+        // strictly better than blanking it; reconnect retries this sync.
         return;
       }
       try {
@@ -1139,19 +1141,14 @@ export function createThreadSwitchLoad(
             runWindowCommitEffects('failed thread window reset', [
               () => options.timelineWindow.resetAfterLoadError(),
               () => {
-                failedHistoryLoad = {
-                  threadId,
-                  generation: gen,
-                  anchorItemId: sliceAnchorId,
-                };
-              },
-              () =>
+                if (isPassiveConnectionFailure(err)) return;
                 options.setPaneError(
                   isTemporarilyUnavailableError(err)
                     ? 'Thread history took too long to load.'
                     : `Failed to load thread items: ${errString(err)}`,
                   'history-load',
-                ),
+                );
+              },
             ]);
           },
         });
@@ -1219,6 +1216,7 @@ export function createThreadSwitchLoad(
           );
         }
       } catch (err) {
+        if (isPassiveConnectionFailure(err)) return;
         console.error('Failed to notify backend of thread switch:', err);
         addToast('warning', 'Backend was not notified of thread switch');
       }

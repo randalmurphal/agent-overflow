@@ -1,3 +1,4 @@
+import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { reconcileThreadRows } from './eventsThreadRows';
 import { computerCatalogWriter } from './computerCatalogWriter';
 import { computerCatalog, readComputerRows, retainUnavailableComputerRows } from './computerRows';
@@ -96,6 +97,7 @@ export async function refreshThreads(): Promise<void> {
   try {
     await loadThreads();
   } catch (err) {
+    if (isPassiveConnectionFailure(err)) return;
     console.error('Failed to load threads:', err);
     addToast('error', 'Failed to load threads');
   }

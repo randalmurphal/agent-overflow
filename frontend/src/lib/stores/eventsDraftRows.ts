@@ -1,3 +1,5 @@
+import { threadBackend } from '../transport/entityIndex';
+import type { BackendKey } from '../transport/backendKey';
 // Draft event domain: converging the composer across attached clients on
 // `draft:updated`. Fan-in target of events.ts's setupEventListeners.
 //
@@ -71,5 +73,15 @@ export function applyDraftUpdated(evt: DraftUpdatedEvent | undefined): void {
     const draft = getComposerDraftForPane(pane.paneId);
     if (!draft) continue;
     void draft.reloadFromBackend(evt.threadId);
+  }
+}
+
+/** A reconnect can follow a failed initial draft read with no missed event.
+ * Re-read visible drafts, retaining local edits by the same rule as an event. */
+export function resyncDraftsForBackend(backend: BackendKey): void {
+  for (const pane of ingestPanes()) {
+    if (!pane.threadId || threadBackend(pane.threadId) !== backend || hasRememberedDraftSnapshot(pane.threadId)) continue;
+    const draft = getComposerDraftForPane(pane.paneId);
+    if (draft) void draft.reloadFromBackend(pane.threadId);
   }
 }

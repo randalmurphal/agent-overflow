@@ -1,3 +1,4 @@
+import { DisconnectedError } from '../transport/wsClient';
 import { advanceCatalogRevision, catalogRevision } from './computerCatalogRevision';
 // A failed list read is not an empty computer. Read each computer's share
 // independently and retain only that computer's cached rows on failure.
@@ -69,7 +70,7 @@ export async function readComputerRows<T>(
       // rejecting its first non-home read would leave boot/notification
       // hydration incomplete even after the sidebar later reconnects.
       const initialDial = !target.client.getHello?.();
-      if (!initialDial && target.status.status !== 'connected') throw new Error('Computer is offline.');
+      if (!initialDial && target.status.status !== 'connected') throw new DisconnectedError('Computer is offline.');
       const rows = await readBeforeDeadline(withBackendTarget(target.id, read), 2500, (late) => {
         const apply = cache?.applyLate ?? applyLate;
         if (!apply || !stillCurrent()) return;

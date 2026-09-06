@@ -2,7 +2,8 @@
 // and — more importantly — which ones must not.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { applyDraftUpdated } from './eventsDraftRows';
+import { noteThread } from '../transport/entityIndex';
+import { applyDraftUpdated, resyncDraftsForBackend } from './eventsDraftRows';
 import {
   registerComposerDraft,
   resetComposerDraftRegistryForTest,
@@ -42,6 +43,19 @@ describe('applyDraftUpdated', () => {
     resetPanesForTest();
     resetComposerDraftRegistryForTest();
     resetComposerDraftSnapshotStateForTest();
+  });
+
+  it('recovers only the reconnecting computer drafts, retaining local edits', async () => {
+    const first = await paneWithDraft('thread-a', 'first');
+    const second = await paneWithDraft('thread-b', 'second');
+    noteThread('thread-a', '');
+    noteThread('thread-b', 'gpu');
+    resyncDraftsForBackend('');
+    expect(first.reloadFromBackend).toHaveBeenCalledWith('thread-a');
+    expect(second.reloadFromBackend).not.toHaveBeenCalled();
+    rememberDraftSnapshot('thread-b', { content: 'unsaved work', attachments: [], terminalChips: [], sourceProposedPlan: null });
+    resyncDraftsForBackend('gpu');
+    expect(second.reloadFromBackend).not.toHaveBeenCalled();
   });
 
   it('re-reads the row when another client wrote the draft', async () => {

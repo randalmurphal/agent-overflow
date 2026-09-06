@@ -1,3 +1,4 @@
+import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { threadHasScope } from '../transport/entityScopes';
 import type { Attachment } from '../types/attachment';
 import type { Draft, TerminalChip } from '../types/draft';
@@ -230,6 +231,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
       }
       applySnapshot(loaded);
     } catch (err) {
+      if (isPassiveConnectionFailure(err)) return;
       if (threadId === id && switchGeneration === expectedGeneration) {
         // The composer renders empty over a row that still exists — say
         // so, or a draft the user KNOWS they left here reads as lost.

@@ -1,3 +1,4 @@
+import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 // Keybindings store: loads bindings from the backend, parses them, dispatches
 // matching chords to the command registry via runCommand().
 //
@@ -320,6 +321,7 @@ async function readKeybindings(announce: boolean): Promise<void> {
       );
     }
   } catch (err) {
+    if (isPassiveConnectionFailure(err)) return;
     console.error('Failed to load keybindings:', err);
     if (announce) addToast('error', 'Failed to load keybindings');
     rules = [];

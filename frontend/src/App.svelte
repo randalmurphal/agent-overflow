@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onBackendStatusChange } from './lib/stores/transportStatus.svelte';
+  import { isPassiveConnectionFailure } from './lib/transport/passiveReadFailure';
   import { onMount, onDestroy } from 'svelte';
   import { documentHidden } from './lib/utils/pageVisibility';
   import { isSurfaceDismissalEvent } from './lib/utils/surfaceDismissal';
@@ -432,7 +434,13 @@
     // the race deadline keeps a hung backend from holding boot hostage
     // (past it, the first rows fall back to the RPC path).
     const highlightTablesWarm = warmHighlightTables();
-    void (async () => {
+    let restoringLayout = false;
+    let retryLayout = false;
+    let layoutSettled = false;
+    async function restoreStartupLayout(): Promise<void> {
+      if (disposed || layoutSettled) return;
+      if (restoringLayout) { retryLayout = true; return; }
+      restoringLayout = true;
       try {
         const threads = await loadThreads();
         if (disposed) return;
@@ -456,8 +464,11 @@
           highlightTablesWarm,
           new Promise((resolve) => setTimeout(resolve, 1500)),
         ]);
+        layoutSettled = true;
       } catch (err) {
         if (disposed) return;
+        if (isPassiveConnectionFailure(err)) return;
+        layoutSettled = true;
         console.error('Failed to restore pane layout:', err);
         if (paneLayoutMutationRevision() === restoreRevision) {
           setPaneLayoutItems([]);
@@ -466,14 +477,25 @@
         addToast('error', userFacingError(err, 'Failed to restore pane layout.'));
       } finally {
         if (disposed) return;
-        // Layout restoration has settled even if its initial catalog read
-        // was superseded by a reconnect. Notification resolution can fetch
-        // its specific thread; it must not wait forever on that old read.
+        // Release the startup screen even when offline. Saved-pane restore
+        // can retry on connection; notification resolution independently
+        // fetches its thread and must not wait forever on this initial read.
         paneLayoutRestored = true;
         appReady = true;
         void markNotificationHydrated();
+        restoringLayout = false;
+        const retry = retryLayout;
+        retryLayout = false;
+        if (retry && !layoutSettled) void restoreStartupLayout();
       }
-    })();
+    }
+    // A cold offline catalog is unknown, not proof that saved panes vanished.
+    // Retry restore when a computer returns; the original mutation revision
+    // prevents delayed startup from replacing panes the user has since opened.
+    const cancelLayoutRetry = onBackendStatusChange((_, status) => {
+      if (status.status === 'connected') void restoreStartupLayout();
+    });
+    void restoreStartupLayout();
     // Footer attention badge (§6/§7): authoritative on app open, so a missed
     // or dismissed OS notification never loses a parked run. Summaries only.
     void hydrateWorkflowAttention();
@@ -552,6 +574,7 @@
 
     return () => {
       disposed = true;
+      cancelLayoutRetry();
       stopIdleMemoryTrim();
       stopAmbientTicker();
       flushPaneLayout();

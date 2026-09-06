@@ -1,3 +1,4 @@
+import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 // Saved provider logins and pending sign-in flows belong to one computer.
 // The picker and Settings share these operations; every awaited RPC captures
 // that computer, so navigation cannot redirect a credential mutation.
@@ -217,7 +218,8 @@ export class ComputerAccounts {
       this.accounts = listed ?? [];
       this.projectListing(this.accounts);
     } catch (error) {
-      if (this.disposed) return;
+      if (this.disposed || generation !== this.loadGeneration) return;
+      if (isPassiveConnectionFailure(error)) return;
       console.error('Failed to load provider accounts:', error);
       addToast('error', 'Failed to load provider accounts.');
     } finally {

@@ -1,3 +1,4 @@
+import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 // Each computer owns a settings snapshot and save queue. This frontend owns
 // its presentation preferences, overlaid on every computer's projection.
 import { FRONTEND_DEVICE_SETTINGS_KEYS } from '../generated/settingsDefaults';
@@ -106,6 +107,7 @@ async function readSettings(backend: BackendKey, migrate: boolean): Promise<bool
     return true;
   } catch (err) {
     if (expected !== generation || backendById(backend) !== target) return false;
+    if (isPassiveConnectionFailure(err)) return false;
     console.error('Failed to load computer settings:', err);
     if (migrate) addToast('error', 'Failed to load settings');
     return false;

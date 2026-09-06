@@ -835,3 +835,27 @@ offline boot's initial read may have failed.
 Workflow item/soft-stop events supersede outstanding run-list snapshots. Apply
 the known fields immediately and coalesce a fresh list read for the fields the
 event cannot carry. A delayed response must not undo a newer live transition.
+
+### Offline startup reads
+
+Automatic catalog/settings/keybinding/account/draft reads and restored-thread
+focus bookkeeping use `isPassiveConnectionFailure`
+for typed disconnects, pairing/auth failures already owned by the connection
+banner, and the bounded startup read deadline. These are connection state,
+not a toast per loader. Keep actual RPC/file/scope errors visible, and never
+apply this suppression to writes or explicit user actions. Do not classify by
+message text or hide all errors merely because another computer is offline.
+
+An unknown cold catalog still rejects; it is never a successful empty list.
+App startup retains the saved pane layout and retries restoration on connection,
+with its original mutation revision so a late restore cannot replace user edits.
+Keybinding reads retain their last good rules during an outage, and HOME's
+connection hydration reloads them after recovery. Visible draft reads also
+recover on their own computer's connection, retaining locally edited snapshots. `passiveStartupReads.test.ts`
+and the desktop/compact offline-startup flows cover these boundaries.
+
+A failed initial history sync remains retryable even if a cache painted first.
+Computer hydration retries only failed visible history reads on that computer's
+connection; it does not reload every healthy pane. Preserve any painted/live
+items on a failed retry. The connection banner owns offline failures, while
+actual history errors retain the pane's Retry affordance.

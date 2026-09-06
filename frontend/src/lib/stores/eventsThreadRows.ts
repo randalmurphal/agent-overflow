@@ -1,3 +1,4 @@
+import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 // Thread-row projection domain: syncing cached Thread rows (sidebar list +
 // per-pane copies) against wire updates — read markers, latest-turn
 // completion timestamps, activity bumps, durable proposed-plan /
@@ -168,6 +169,7 @@ async function resyncThreadRows(): Promise<void> {
   try {
     rows = await readThreadRows();
   } catch (err) {
+    if (isPassiveConnectionFailure(err)) return;
     console.error('Failed to resync threads after transport gap:', err);
     addToast('error', 'Failed to load threads');
     return;

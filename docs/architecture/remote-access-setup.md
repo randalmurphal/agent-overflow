@@ -49,7 +49,10 @@ and [HTTPS setup](https://tailscale.com/docs/how-to/set-up-https-certificates).
 5. Test opening a thread, sending a message, answering an approval, and
    opening the terminal. Then background/resume the phone, briefly disconnect
    and reconnect Tailscale, and test over cellular with Wi-Fi off. Reconnection
-   should recover automatically; offline content is read-only.
+   should recover automatically; offline content is read-only. Opening offline
+   should show the connection banner without a burst of load-error toasts.
+   Reconnecting restores saved panes and refreshes settings and keybindings;
+   an unavailable computer must not clear their last good state.
 
 The network choice controls the invitation's initial connection, not a separate
 pairing identity. After connecting, the device learns the host's other enabled

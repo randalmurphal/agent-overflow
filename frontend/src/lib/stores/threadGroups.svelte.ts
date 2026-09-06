@@ -1,3 +1,4 @@
+import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { invalidateReplicaCatalog } from '../replica/session';
 import { computerCatalogWriter } from './computerCatalogWriter';
 import { computerCatalog, readComputerRows, retainUnavailableComputerRows } from './computerRows';
@@ -108,6 +109,7 @@ export async function refreshThreadGroups(): Promise<void> {
   try {
     await loadThreadGroups();
   } catch (err) {
+    if (isPassiveConnectionFailure(err)) return;
     console.error('Failed to load thread groups:', err);
     addToast('error', 'Failed to load thread groups');
   }
