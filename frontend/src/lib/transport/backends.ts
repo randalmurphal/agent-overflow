@@ -77,6 +77,8 @@ export interface BackendDescriptor {
   backendId: string;
   /** Display name — the backend's `backendName`, or the pairing nickname. */
   name: string;
+  /** Explicit desktop profile override; absent on legacy combined-name manifests. */
+  nickname?: string;
   /** Where this client's socket goes. Same-origin under the desktop
    *  proxy, an absolute `wss://` on a phone. */
   wsUrl: string;
@@ -97,6 +99,7 @@ export interface BackendEntry {
   /** Display name, as the descriptor supplied it. Empty for home, whose
    *  name is the hello frame's `backendName` and belongs to the UI wave. */
   readonly name: string;
+  readonly nickname?: string;
   /** Stable computer identity, available from pairing even while offline. */
   readonly backendId: string;
   readonly generation: string;
@@ -262,6 +265,7 @@ function makeEntry(
     id,
     home,
     name,
+    get nickname(): string | undefined { return entry.descriptor?.nickname; },
     get client(): WSClient {
       return home ? homeClient : client;
     },
@@ -425,8 +429,9 @@ export function attachBackend(descriptor: BackendDescriptor): BackendEntry {
   if (descriptor.id === HOME_BACKEND) return homeEntry;
   const held = byId.get(descriptor.id);
   if (held !== undefined) {
+    const nicknameChanged = held.nickname !== descriptor.nickname;
     held.descriptor = descriptor;
-    if (held.name !== descriptor.name) {
+    if (held.name !== descriptor.name || nicknameChanged) {
       held.name = descriptor.name;
       notifyBackendsChanged();
     }
@@ -942,6 +947,7 @@ export function __attachBackendForTest(
   client: WSClient,
 ): BackendEntry {
   const entry = makeEntry(descriptor.id, false, client, descriptor.name, descriptor.backendId);
+  entry.descriptor = descriptor;
   entries.push(entry);
   if (computers !== entries) computers.push(entry);
   byId.set(descriptor.id, entry);

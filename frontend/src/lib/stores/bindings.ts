@@ -11,6 +11,9 @@
 // singleton, so a second attached backend is a change to that resolution
 // and not to this file (docs/specs/remote-access.md §10).
 export {
+  GetDeviceName,
+  SetDeviceName,
+  UpdateClientDeviceName,
 	ListAgentComputers,
 	SetAgentComputerEnabled,
 	PairAgentComputer,

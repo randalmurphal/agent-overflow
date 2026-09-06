@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"agent-overflow/internal/appidentity"
 	"agent-overflow/internal/appupdate"
 	"agent-overflow/internal/assetwatch"
 	"agent-overflow/internal/attachedbackends"
@@ -70,6 +71,8 @@ const updateRestartWatchdogDelay = 25 * time.Second
 // !nogui build tag so the WSL payload can compile without libwebkit2gtk
 // and other GTK runtime dependencies pulled in by Wails' cgo bindings.
 type App struct {
+	deviceName        *appidentity.DeviceName
+	deviceNameWatcher *assetwatch.DeviceNameWatcher
 	// version is the build-stamped release supplied by the executable shell.
 	// Keeping it on the service makes the integration package importable while
 	// the root main package remains the ldflags target.

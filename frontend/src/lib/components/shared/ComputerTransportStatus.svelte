@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { suggestDeviceLabel } from '../../utils/deviceLabel';
+  import { clientDeviceName } from '../../stores/clientDeviceName.svelte';
   // Overlay banner pinned to the top of the app shell that surfaces the
   // wsClient's current connection state. Hidden on the happy path
   // ('connected') so it reserves no space above the chat header; only
@@ -290,7 +290,7 @@
     signingIn = true;
     signInError = '';
     try {
-      await signInWithPasskey(suggestDeviceLabel());
+      await signInWithPasskey(clientDeviceName());
       // Awaited, for the reason main.ts awaits it after pairing: the app
       // is already mounted here, and its stores re-acquire on the
       // reconnect this settles.

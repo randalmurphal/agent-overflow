@@ -127,6 +127,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetCommitDiff", ID: 3399370629, Scope: "files:read", Route: "workspace"},                                 // main.App.GetCommitDiff
 	{Name: "GetContextSettings", ID: 3416004963, Scope: "settings:read", Route: "home"},                              // main.App.GetContextSettings
 	{Name: "GetDevServers", ID: 139818238, Scope: "preview:open", Route: "selected"},                                 // main.App.GetDevServers
+	{Name: "GetDeviceName", ID: 1370118726, Scope: "session", Route: "home"},                                         // main.App.GetDeviceName
 	{Name: "GetDiffContextLines", ID: 1590634674, Scope: "files:read", Route: "workspace"},                           // main.App.GetDiffContextLines
 	{Name: "GetDiscussion", ID: 1924583939, Scope: "threads:read", Route: "selected"},                                // main.App.GetDiscussion
 	{Name: "GetDraft", ID: 875977146, Scope: "threads:operate", Route: "thread"},                                     // main.App.GetDraft
@@ -331,6 +332,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SetAgentComputerEnabled", ID: 1204782690, Scope: "terminal:operate", Route: "selected"},                  // main.App.SetAgentComputerEnabled
 	{Name: "SetAppearance", ID: 3167202905, Scope: "host", Route: "home"},                                            // main.App.SetAppearance
 	{Name: "SetChatBarFavorite", ID: 2813580982, Scope: "settings:write", Route: "home"},                             // main.App.SetChatBarFavorite
+	{Name: "SetDeviceName", ID: 2755315818, Scope: "access:admin", Route: "home"},                                    // main.App.SetDeviceName
 	{Name: "SetEditorSettings", ID: 3655340267, Scope: "settings:write", Route: "selected"},                          // main.App.SetEditorSettings
 	{Name: "SetNetworkSettings", ID: 3915514446, Scope: "settings:write", Route: "home", StepUp: true},               // main.App.SetNetworkSettings
 	{Name: "SetPRThreadResolved", ID: 2594833485, Scope: "git:operate", Route: "selected"},                           // main.App.SetPRThreadResolved
@@ -374,6 +376,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "UnpinThreadGroup", ID: 48743460, Scope: "threads:operate", Route: "home"},                                // main.App.UnpinThreadGroup
 	{Name: "UnregisterPushToken", ID: 3065043012, Scope: "session", Route: "home"},                                   // main.App.UnregisterPushToken
 	{Name: "UnsubscribePRUpdates", ID: 2888550814, Scope: "git:operate", Route: "home"},                              // main.App.UnsubscribePRUpdates
+	{Name: "UpdateClientDeviceName", ID: 3406073706, Scope: "session", Route: "home"},                                // main.App.UpdateClientDeviceName
 	{Name: "UpdateContextSettingsProfile", ID: 1472386383, Scope: "settings:write", Route: "home"},                   // main.App.UpdateContextSettingsProfile
 	{Name: "UpdateDiffReviewComment", ID: 2452201652, Scope: "threads:operate", Route: "thread"},                     // main.App.UpdateDiffReviewComment
 	{Name: "UpdateDiscussion", ID: 1706395020, Scope: "threads:operate", Route: "selected"},                          // main.App.UpdateDiscussion

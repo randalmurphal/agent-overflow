@@ -708,6 +708,7 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	a.startWorkflowDefinitionsWatcher(dbDir)
 	a.initThemeDirectory()
 	a.initSpinnerDirectory()
+	a.startDeviceNameWatcher()
 	return nil
 }
 

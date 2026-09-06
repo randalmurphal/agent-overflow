@@ -1287,6 +1287,13 @@ export function GetDevServers(): $CancellablePromise<devscan$0.DevServerList> {
 }
 
 /**
+ * GetDeviceName returns this installation's advertised name.
+ */
+export function GetDeviceName(): $CancellablePromise<string> {
+    return $Call.ByID(1370118726);
+}
+
+/**
  * GetDiffContextLines returns new-side source lines for review-diff
  * hunk-gap expansion in the LIVE scopes — workspace, branch, commit and pr —
  * whose new side is content the referenced checkout already holds. The edits
@@ -4050,6 +4057,13 @@ export function SetChatBarFavorite(fav: store$0.ChatBarFavorite, starred: boolea
 }
 
 /**
+ * SetDeviceName changes display metadata without changing identity or access.
+ */
+export function SetDeviceName(name: string): $CancellablePromise<void> {
+    return $Call.ByID(2755315818, name);
+}
+
+/**
  * SetEditorSettings persists the user's editor preference. The value
  * is validated against the live catalog at open time, not here, so a
  * preference that becomes invalid (editor uninstalled) silently falls
@@ -4715,6 +4729,14 @@ export function UnregisterPushToken(): $CancellablePromise<void> {
 
 export function UnsubscribePRUpdates(subscriptionID: string): $CancellablePromise<void> {
     return $Call.ByID(2888550814, subscriptionID);
+}
+
+/**
+ * UpdateClientDeviceName publishes the name of the paired installation making
+ * this call. It cannot rename another device or change its access.
+ */
+export function UpdateClientDeviceName(name: string, platform: string): $CancellablePromise<void> {
+    return $Call.ByID(3406073706, name, platform);
 }
 
 export function UpdateContextSettingsProfile(update: app$0.ContextSettingsUpdate): $CancellablePromise<app$0.ContextSettingsProfile> {

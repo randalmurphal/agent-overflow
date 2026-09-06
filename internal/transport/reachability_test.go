@@ -290,8 +290,10 @@ func TestSessionFloorMethodsAreTheSpecSet(t *testing.T) {
 		// reaches the CALLING session's own device row and no other, because
 		// the device is derived from the session rather than named by a
 		// parameter. A session granted nothing still owns its own phone.
-		"RegisterPushToken":   "writes the calling session's own device registration and no other",
-		"UnregisterPushToken": "deletes the calling session's own device registration and no other",
+		"RegisterPushToken":      "writes the calling session's own device registration and no other",
+		"UnregisterPushToken":    "deletes the calling session's own device registration and no other",
+		"GetDeviceName":          "reads display metadata already advertised in bootstrap and hello",
+		"UpdateClientDeviceName": "changes only the calling session's device label and platform, never its identity or grants",
 	}
 	got := map[string]bool{}
 	for _, method := range GeneratedMethods {

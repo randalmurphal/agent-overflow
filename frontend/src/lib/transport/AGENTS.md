@@ -818,13 +818,17 @@ remote browser alike. Protocol and authz rules:
   refused (it becomes a storage key and a `/ws/backend/<id>` path
   segment), and the endpoint is stored BEFORE the redemption so the
   `/auth/pair` POST is already addressed at the machine being paired with.
-  Its device label describes the CONNECTING frontend (`suggestDeviceLabel`),
+  Its device label describes the CONNECTING frontend (`clientDeviceName`),
   never the destination's `backendName`; that name belongs only to the saved
   computer connection. Pairing and passkey sign-in share `devicePlatform` so
   Android introduces itself as Android rather than the WebView's raw Linux
   platform. These fields are presentation, never authorization. Existing
-  device metadata is refreshed by re-pairing; do not infer that a
-  legacy Linux row was Android or overwrite an owner-chosen label by guessing.
+  device metadata is refreshed by re-pairing or session-scoped name publication;
+  do not infer that a legacy Linux row was Android or overwrite an owner-chosen
+  label by guessing. `stores/deviceNames.ts` publishes explicitly saved client names
+  on rename and reconnect only to JS-held pairings. Go-carried peers publish
+  their installation's name through their own credential owner. Unsupported
+  hosts keep working and the settings field explains the pending update.
   `awaitAttachedActivation` then polls that slot's `probeActivation` until
   the owner confirms on the other machine, and publishes the new
   descriptor through `syncAttachedBackends()`.

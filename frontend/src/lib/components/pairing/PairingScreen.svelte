@@ -16,7 +16,7 @@
   import { presentAuthReason } from '../../transport/authReason';
   import { PasskeyAbandonedError, passkeysUsable } from '../../transport/passkey';
   import { userFacingError } from '../../utils/userFacingError';
-  import { suggestDeviceLabel } from '../../utils/deviceLabel';
+  import { clientDeviceName, saveClientDeviceName } from '../../stores/clientDeviceName.svelte';
   import { HOME_BACKEND, type BackendKey } from '../../transport/backendKey';
   import { networkFetch } from '../../transport/networkFetch';
   import {
@@ -65,7 +65,7 @@
         }
       : { at: 'intro' },
   );
-  let label = $state(suggestDeviceLabel());
+  let label = $state(clientDeviceName());
   let probeTimer: ReturnType<typeof setTimeout> | null = null;
 
   const backendName = $derived(
@@ -88,7 +88,8 @@
     }
     stage = { at: 'redeeming' };
     try {
-      const outcome = await redeemPairing(payload, label.trim() || suggestDeviceLabel(), networkFetch, backend);
+      saveClientDeviceName(label);
+      const outcome = await redeemPairing(payload, clientDeviceName(), networkFetch, backend);
       stage = { at: 'waiting', verificationNumber: outcome.verificationNumber };
       scheduleProbe(Date.now() + PROBE_DEADLINE_MS);
     } catch (err) {
@@ -122,7 +123,8 @@
     if (stage.at !== 'intro') return;
     stage = { at: 'redeeming' };
     try {
-      await signInWithPasskey(label.trim() || suggestDeviceLabel());
+      saveClientDeviceName(label);
+      await signInWithPasskey(clientDeviceName());
       signedInWithPasskey = true;
       stage = { at: 'ready' };
       setTimeout(onDone, 700);

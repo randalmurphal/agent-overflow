@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/url"
 
-	"agent-overflow/internal/appidentity"
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/network"
 	"agent-overflow/internal/slicesx"
@@ -215,7 +214,7 @@ func (a *App) mintDevicePairing(deviceClass, access, networkChoice string) (Pair
 	payload, err := identity.PairingPayload{
 		Version:     identity.PairingPayloadVersion,
 		BackendID:   backendID,
-		BackendName: backendDisplayName(),
+		BackendName: a.backendDisplayName(),
 		Endpoint:    endpoint,
 		Token:       link.Token,
 		// Read back off the minted row rather than from the field above,
@@ -650,12 +649,11 @@ func (a *App) pairingPageURL(networkChoice string) (pageURL, endpoint, fingerpri
 	return pageURL, parsed.Scheme + "://" + parsed.Host, fingerprint, nil
 }
 
-// backendDisplayName is the name a pairing device shows while it decides
-// whether to trust this offer.
-//
-// `appidentity.HostDisplayName` and not a local os.Hostname call, because
-// the hello frame publishes the same string as `backendName` and the two
-// name the same machine from opposite ends of one pairing: the device
-// shows it while deciding, and the page labels the backend with it
-// afterwards. Two readers would be two answers to one question.
-func backendDisplayName() string { return appidentity.HostDisplayName() }
+// backendDisplayName is display metadata shared by pairing, hello and push.
+func (a *App) backendDisplayName() string {
+	name, err := a.GetDeviceName()
+	if err != nil {
+		log.Printf("device name: %v", err)
+	}
+	return name
+}

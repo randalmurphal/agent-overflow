@@ -739,7 +739,10 @@ export async function putReplicaCatalog<K extends CatalogKind>(backend: BackendK
  * reconnect refetch) re-points the database, and a generation change
  * clears it before any read can serve a row from the previous one.
  */
-onBackendIdentity((identity, backend) => {
+onBackendIdentity((identity, backend, change) => {
+  // A presentation event cannot invalidate in-flight history writes or turn
+  // an offline cache into a live attestation. Bootstrap retains its own path.
+  if (change === 'name') return;
   void initReplica(identity, backend);
 });
 

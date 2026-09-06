@@ -945,6 +945,20 @@ var channelPolicies = []ChannelPolicy{
 		Why:       "Invalidates the selected computer's agent-peer configuration, matching ListAgentComputers. No peer identities or credentials ride the event. One latest dirty signal suffices because clients read the whole configuration.",
 	},
 	{
+		Channel:   eventchan.AccessDevicesChanged,
+		Audience:  AudienceAny,
+		Retention: RetentionLatestOnly,
+		Scope:     ScopeAccessAdmin,
+		Why:       "Paired device display metadata changed; administrators reload their device list.",
+	},
+	{
+		Channel:   eventchan.BackendNameChanged,
+		Audience:  AudienceAny,
+		Retention: RetentionLatestOnly,
+		Scope:     ScopeSession,
+		Why:       "Display name changed; clients replace the advertised label without changing identity or trust.",
+	},
+	{
 		Channel:   eventchan.BackendSetChanged,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,

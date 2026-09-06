@@ -82,6 +82,14 @@ toggle; there is no "enable it first" gate.
 
 ## Device pairing
 
+`DeviceNameField` is shared by Connections (this installation's own name) and
+Pairing & network (the captured settings computer, editable remotely). Phone
+names persist in frontend storage; desktop names persist in the Go installation
+identity shared with frontend-only mode. Nicknames remain frontend-local
+overrides. Live updates refresh pristine fields, never overwrite an unsaved
+edit. `access:devices-changed` refreshes only the matching visible device list;
+name publication cannot choose a target device ID or alter pairing trust.
+
 The reachability warning considers both LAN binding and a running tailnet;
 `GetNetworkSettings` is readable with `access:admin`, including on paired
 phones. Unknown reachability must not recommend changing a working network.

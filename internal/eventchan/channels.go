@@ -182,6 +182,8 @@ const (
 // rather than a second meaning on backend:attach: one says how a pairing
 // ceremony ended, the other says the list changed.
 const (
+	AccessDevicesChanged  Channel = "access:devices-changed"
+	BackendNameChanged    Channel = "backend:name-changed"
 	BackendAttach         Channel = "backend:attach"
 	BackendSetChanged     Channel = "backend:set-changed"
 	AgentComputersChanged Channel = "agent-computers:changed"

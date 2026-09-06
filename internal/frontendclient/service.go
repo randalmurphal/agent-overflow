@@ -36,6 +36,7 @@ type service struct {
 	updater      *appupdate.Service
 	errors       *uitrace.Tracer
 	ssh          *sshsetup.Manager
+	nameWatch    *assetwatch.DeviceNameWatcher
 	themeWatch   *assetwatch.ThemeWatcher
 	spinnerWatch *assetwatch.SpinnerWatcher
 	mu           sync.Mutex
@@ -79,6 +80,20 @@ func newService(ctx context.Context, cancel context.CancelFunc, cfg Config, comp
 	if err != nil {
 		log.Printf("frontend client: spinner watcher: %v", err)
 	}
+	s.nameWatch, err = assetwatch.NewDeviceNameWatcher(cfg.DeviceName.Path(), func() {
+		name, err := s.GetDeviceName()
+		if err != nil {
+			log.Printf("device name: %v", err)
+			return
+		}
+		s.deviceNameChanged(name)
+	})
+	if err != nil {
+		log.Printf("device name watcher: %v", err)
+	}
+	computers.SetNameSyncChanged(func(id string) {
+		s.emit(eventchan.BackendSetChanged, map[string]string{"action": "device-name-sync", "id": id})
+	})
 	if cfg.ConfigureUpdater != nil {
 		cfg.ConfigureUpdater(s.updater)
 	}
@@ -101,6 +116,7 @@ func (s *service) close() {
 	s.mu.Unlock()
 	s.ssh.Close()
 	s.jobs.Wait()
+	_ = s.nameWatch.Close()
 	_ = s.themeWatch.Close()
 	_ = s.spinnerWatch.Close()
 	s.bus.Close()
@@ -231,3 +247,23 @@ func (s *service) ReportFrontendErrorBatch(lines []string) (string, error) {
 	return s.errors.Append(lines)
 }
 func (s *service) OpenExternalURL(rawURL string) error { return externalurl.Open(s.ctx, rawURL) }
+
+func (s *service) GetDeviceName() (string, error) { return s.cfg.DeviceName.Get() }
+func (s *service) SetDeviceName(name string) error {
+	if err := s.cfg.DeviceName.Set(name); err != nil {
+		return err
+	}
+	current, err := s.cfg.DeviceName.Get()
+	if err != nil {
+		return err
+	}
+	if s.nameWatch == nil {
+		s.deviceNameChanged(current)
+	}
+	return nil
+}
+
+func (s *service) deviceNameChanged(name string) {
+	s.computers.SyncDeviceName()
+	s.emit(eventchan.BackendNameChanged, map[string]string{"name": name})
+}

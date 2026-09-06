@@ -27,17 +27,11 @@ export interface BackendIdentity {
   backendId: string;
   generation: string;
   /**
-   * What a person calls this machine — its hostname, the same string the
-   * pairing payload showed (docs/specs/remote-access.md §10, "Machine
-   * name"). DISPLAY ONLY: nothing is keyed on it, two backends may
-   * legitimately answer the same one, and `backendId` stays the
-   * identity. Empty means the backend published none, and a surface
-   * renders the id or "unknown machine" rather than guessing.
-   *
-   * Deliberately alongside the replica fields rather than in a store of
-   * its own: it arrives on the same manifest, on the same schedule, and
-   * a second subscription would be a second moment for the two to
-   * disagree about which backend is being described.
+   * The installation's editable display name, defaulting to its hostname.
+   * Nothing is keyed on it: duplicate names are allowed, and backendId
+   * remains the identity. Empty means the backend published none.
+   * Bootstrap/hello carry the initial name; name-only events update it
+   * without changing the replica's identity or generation.
    */
   name: string;
 }
@@ -48,7 +42,8 @@ export const UNKNOWN_BACKEND_IDENTITY: BackendIdentity = {
   name: '',
 };
 
-type IdentityListener = (identity: BackendIdentity, backendId: BackendKey) => void;
+export type BackendIdentityChange = 'identity' | 'name';
+type IdentityListener = (identity: BackendIdentity, backendId: BackendKey, change: BackendIdentityChange) => void;
 
 // Per-backend identity. Home has an entry from module load so a reader
 // before the first manifest gets the same "unknown" answer it always did.
@@ -73,15 +68,25 @@ export function getBackendIdentity(backendId: BackendKey = HOME_BACKEND): Backen
  */
 export function onBackendIdentity(listener: IdentityListener): () => void {
   listeners.add(listener);
-  for (const [backendId, identity] of identities) listener(identity, backendId);
+  for (const [backendId, identity] of identities) listener(identity, backendId, 'identity');
   return () => {
     listeners.delete(listener);
   };
 }
 
-function publish(backendId: BackendKey, next: BackendIdentity): void {
+function publish(backendId: BackendKey, next: BackendIdentity, change: BackendIdentityChange = 'identity'): void {
   identities.set(backendId, next);
-  for (const listener of listeners) listener(next, backendId);
+  for (const listener of listeners) listener(next, backendId, change);
+}
+
+/** An authenticated name update changes presentation without changing history identity. */
+export function observeBackendName(name: unknown, backend: BackendKey): void {
+  if (typeof name !== 'string' || !name.trim() || Array.from(name).length > 80) return;
+  const current = getBackendIdentity(backend);
+  if (!current.backendId || current.name === name) return;
+  const next = { ...current, name };
+  if (next.generation) rememberIdentity(backend, next);
+  publish(backend, next, 'name');
 }
 
 /**
@@ -149,7 +154,7 @@ export function forgetBackendIdentity(backend: BackendKey): void {
   if (backend === HOME_BACKEND) return;
   if (!identities.has(backend)) return;
   identities.delete(backend);
-  for (const listener of listeners) listener(UNKNOWN_BACKEND_IDENTITY, backend);
+  for (const listener of listeners) listener(UNKNOWN_BACKEND_IDENTITY, backend, 'identity');
 }
 
 /**

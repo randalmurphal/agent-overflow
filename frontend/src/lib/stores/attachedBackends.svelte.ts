@@ -105,11 +105,13 @@ export function setBackendNickname(key: BackendKey, value: string): boolean {
 function resolveDisplayName(entry: BackendEntry): string {
   const nickname = backendNickname(entry.id);
   if (nickname) return nickname;
-  const name = list.find((current) => current.id === entry.id)?.name || entry.name;
+  const current = list.find((candidate) => candidate.id === entry.id) ?? entry;
+  if (current.nickname) return current.nickname;
+  const name = current.name || entry.name;
   const endpoint = storedBackendEndpoint(entry.id);
-  // Phone descriptors are rebuilt from endpoints at boot. That address is
-  // a fallback, not a nickname that overrides the host's actual identity.
-  if (name && (!endpoint || name !== endpointHost(endpoint))) return name;
+  // Older desktop manifests combined the explicit nickname and advertised
+  // name. Preserve that legacy override, except a phone's address fallback.
+  if (current.nickname === undefined && name && (!endpoint || name !== endpointHost(endpoint))) return name;
   return getBackendIdentity(entry.id).name || rememberedIdentity(entry.id)?.name
     || name || (entry.home ? 'This machine' : entry.id);
 }

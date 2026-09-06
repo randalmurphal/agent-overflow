@@ -1,12 +1,12 @@
 # assetwatch/
 
-Live reload for the flat theme and spinner asset directories.
+Live reload for flat appearance directories and installation-name metadata.
 
 ## Boundary
 
 - `watcher.go` owns the shared fsnotify loop, trailing-edge debounce,
   directory re-arm, and self-write suppression ledger.
-- `theme.go` and `spinner.go` own the concept-specific filename policies and
+- `theme.go`, `spinner.go`, and `devicename.go` own the concept-specific filename policies and
   expose distinct watcher types. The shared core remains private.
 - Event-channel selection, logging a degraded startup, and App lifecycle
   wiring stay in `internal/app`.
@@ -26,3 +26,8 @@ tradeoff unless behavior is being changed deliberately.
 Run `go test ./internal/assetwatch -count=1` after changes. Directory-removal
 re-arm is platform-sensitive and must remain covered by the live fsnotify
 tests.
+
+`DeviceNameWatcher` watches only the installation identity file through the same
+directory core, so atomic replacements by a simultaneously running frontend-only
+process reach host clients too. Its owner closes it before its event bus. It does
+not suppress own writes: that single debounced event also drives peer propagation.

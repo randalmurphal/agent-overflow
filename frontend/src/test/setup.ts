@@ -1,4 +1,5 @@
 import { resetSettingsForTest } from '../lib/stores/settings.svelte';
+import { resetClientDeviceNameForTest } from '../lib/stores/clientDeviceName.svelte';
 import '@testing-library/jest-dom/vitest';
 import './helpers/firstDivergence';
 import { afterEach, beforeEach, vi } from 'vitest';
@@ -306,4 +307,5 @@ afterEach(() => {
     // ignore — tests running without localStorage continue happily.
   }
   resetSettingsForTest();
+  resetClientDeviceNameForTest();
 });

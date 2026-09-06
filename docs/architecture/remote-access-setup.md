@@ -104,6 +104,23 @@ trust. A replacement certificate or an unfamiliar public hostname may require
 a new pairing link. A healthy saved route can advertise updated addresses and
 certificate pins without this manual step.
 
+## Device names
+
+In **Remote access → Connections**, edit **Device name** to choose how this
+installation appears on other devices. A phone saves its name locally, including
+while offline. Connected computers receive changes immediately; offline ones
+receive them on reconnect. Older computers must be updated to accept name changes.
+
+To rename a host from your phone (including a headless host), select that computer
+in settings and open **Remote access → Pairing & network → Device name**.
+Renaming changes no addresses, pairing keys, or permissions. A **Nickname** on a
+connection remains an override visible only on the frontend where you set it.
+Clear the name field and save to use the default again.
+
+An older phone pairing mislabeled with the host's name is corrected when you
+save the phone's Device name. No uninstall or re-pairing is needed. Existing
+labels are not automatically guessed or overwritten on upgrade.
+
 ## Test production builds before a release
 
 For the full installation rehearsal, use the same signed artifacts that will

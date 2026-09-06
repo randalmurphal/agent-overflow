@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	appservice "agent-overflow/internal/app"
+	"agent-overflow/internal/appidentity"
 	"agent-overflow/internal/appupdate"
 	"agent-overflow/internal/clientmode"
 	"agent-overflow/internal/frontendclient"
@@ -44,7 +45,8 @@ func serveClientWindow(cfg clientmode.Config, hooks clientWindowHooks) (clientWi
 	portConfig := transport.Config{}
 	pin := pinTransportPort(&portConfig, dir, 0, resetTransportPortPin)
 	server, err := frontendclient.Serve(frontendclient.Config{
-		Profiles: profiles, ConfigDir: dir, ClientID: appservice.EnsureClientIDIn(dir),
+		DeviceName: appidentity.NewDeviceName(root),
+		Profiles:   profiles, ConfigDir: dir, ClientID: appservice.EnsureClientIDIn(dir),
 		ComputerID: cfg.BackendID, Label: deviceLabel(), Version: version,
 		Assets: cfg.Assets, Port: portConfig.Port, EphemeralPortFallback: portConfig.EphemeralPortFallback,
 		SetWindowBackground: hooks.setBackground, ConfigureUpdater: hooks.configureUpdater,

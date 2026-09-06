@@ -414,6 +414,7 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 	// a real state (a relocation mid-flight, a locked-down profile) and
 	// not a failure to abort on — the four admin methods answer it, the
 	// routes are absent, and the local backend still works.
+	appservice.SetDeviceNameIdentity(appService.App, appidentity.NewDeviceName(bootSettingsDir()))
 	attached := bootAttachedBackends()
 	if attached != nil {
 		appservice.SetAttachedBackends(appService.App, attached)
@@ -445,11 +446,8 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		ComputerRoutes: func() []computerroute.Route {
 			return appservice.ComputerRoutes(appService.App)
 		},
-		// Not late-bound, unlike the identity above: a hostname is
-		// knowable before the store opens, and it is the same string the
-		// pairing payload shows a device deciding whether to trust this
-		// offer (internal/app backendDisplayName).
-		BackendName: appidentity.HostDisplayName(),
+		// Read through the installation name shared by pairing and push.
+		BackendNameGetter: func() string { return appservice.DeviceDisplayName(appService.App) },
 		// The `ao` CLI's scoped-token registry. The App owns it because a
 		// token's lifetime is a provider session's lifetime; the transport
 		// only asks what a presented token is allowed to do.
@@ -1202,7 +1200,7 @@ func deviceProfileDir() (string, error) {
 // publishes as its OWN name — and a machine that will not tell us its name
 // gets a generic label rather than an empty row.
 func deviceLabel() string {
-	if host := appidentity.HostDisplayName(); host != "" {
+	if host, err := appidentity.NewDeviceName(bootSettingsDir()).Get(); err == nil && host != "" {
 		return host
 	}
 	return "Agent Overflow desktop"
@@ -1217,6 +1215,9 @@ func bootAttachedBackends() *attachedbackends.Manager {
 		return nil
 	}
 	manager, err := attachedbackends.New(dir, deviceLabel(), runtime.GOOS)
+	if manager != nil {
+		manager.SetLabelGetter(appidentity.NewDeviceName(bootSettingsDir()).Get)
+	}
 	if err != nil {
 		log.Printf("attached backends: %v", err)
 		return nil

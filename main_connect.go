@@ -11,6 +11,7 @@
 package main
 
 import (
+	"agent-overflow/internal/appidentity"
 	"context"
 	"errors"
 	"fmt"
@@ -97,7 +98,14 @@ func pairAndAttach(ctx context.Context, dir, raw string) (clientmode.Config, err
 	name := backendDisplayName(link.BackendName, link.Endpoint)
 	fmt.Printf("Pairing with %s.\n", backendDisplay(link.BackendName, link.Endpoint))
 
-	client, pairing, err := deviceclient.Pair(ctx, dir, link, deviceLabel(), runtime.GOOS)
+	label, err := appidentity.NewDeviceName(bootSettingsDir()).Get()
+	if err != nil {
+		return clientmode.Config{}, err
+	}
+	if label == "" {
+		label = "Agent Overflow desktop"
+	}
+	client, pairing, err := deviceclient.Pair(ctx, dir, link, label, runtime.GOOS)
 	if err != nil {
 		return clientmode.Config{}, err
 	}

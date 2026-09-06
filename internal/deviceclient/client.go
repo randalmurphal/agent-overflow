@@ -1,6 +1,7 @@
 package deviceclient
 
 import (
+	"agent-overflow/internal/appidentity"
 	"bytes"
 	"context"
 	"crypto/ecdsa"
@@ -644,4 +645,19 @@ func decodeBody(body io.Reader, into any) error {
 		return fmt.Errorf("deviceclient: read the backend's answer: %w", err)
 	}
 	return nil
+}
+
+// SetDeviceLabel records a successful self-name update through the credential owner.
+func (c *Client) SetDeviceLabel(label string) error {
+	normalized, err := appidentity.NormalizeDeviceName(label)
+	if err != nil {
+		return err
+	}
+	if normalized == "" {
+		return errors.New("device label is required")
+	}
+	label = normalized
+	ctx, cancel := context.WithTimeout(context.Background(), profileWriteTimeout)
+	defer cancel()
+	return c.sessionTransaction(ctx, func(path string, latest *Session) error { latest.Label = label; return writeSession(path, *latest) })
 }

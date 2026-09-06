@@ -98,6 +98,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3399370629: 'workspace', // GetCommitDiff
 	3416004963: 'home', // GetContextSettings
 	139818238: 'selected', // GetDevServers
+	1370118726: 'home', // GetDeviceName
 	1590634674: 'workspace', // GetDiffContextLines
 	1924583939: 'selected', // GetDiscussion
 	875977146: 'thread', // GetDraft
@@ -302,6 +303,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1204782690: 'selected', // SetAgentComputerEnabled
 	3167202905: 'home', // SetAppearance
 	2813580982: 'home', // SetChatBarFavorite
+	2755315818: 'home', // SetDeviceName
 	3655340267: 'selected', // SetEditorSettings
 	3915514446: 'home', // SetNetworkSettings
 	2594833485: 'selected', // SetPRThreadResolved
@@ -345,6 +347,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	48743460: 'home', // UnpinThreadGroup
 	3065043012: 'home', // UnregisterPushToken
 	2888550814: 'home', // UnsubscribePRUpdates
+	3406073706: 'home', // UpdateClientDeviceName
 	1472386383: 'home', // UpdateContextSettingsProfile
 	2452201652: 'thread', // UpdateDiffReviewComment
 	1706395020: 'selected', // UpdateDiscussion

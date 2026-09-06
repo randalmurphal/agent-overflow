@@ -69,7 +69,7 @@ func newAttachedFixture(t *testing.T) (*serverFixture, *fakeCarrier) {
 		SessionScopes:     []string{"files:read", "git:operate"},
 	}}
 	set := &fakeAttached{
-		profiles: []AttachedProfile{{ID: "mini", BackendID: "store-uuid-mini", Name: "The Mini"}},
+		profiles: []AttachedProfile{{ID: "mini", BackendID: "store-uuid-mini", Name: "The Mini", Nickname: "The Mini"}},
 		carriers: map[string]*fakeCarrier{"mini": carrier},
 	}
 	f := newServerFixtureWith(t, func(cfg *Config) { cfg.AttachedBackends = set })
@@ -250,7 +250,7 @@ func TestBootstrapNamesTheAttachedBackends(t *testing.T) {
 		t.Fatalf("backends = %+v, want one row", got.Backends)
 	}
 	row := got.Backends[0]
-	if row.ID != "mini" || row.BackendID != "store-uuid-mini" || row.Name != "The Mini" {
+	if row.ID != "mini" || row.BackendID != "store-uuid-mini" || row.Name != "The Mini" || row.Nickname != "The Mini" {
 		t.Errorf("row = %+v, want the attached profile", row)
 	}
 	if row.WSURL != "ws://"+f.srv.Addr()+"/ws/backend/mini" {

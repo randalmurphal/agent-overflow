@@ -3,6 +3,7 @@ import { flushSync } from 'svelte';
 import { stageBackend, resetStagedBackends, REMOTE_BACKEND_UUID } from '../../test/helpers/backends';
 import { attachedBackendEntry, backendDisplayName, backendNickname, setBackendNickname } from './attachedBackends.svelte';
 import { setBackendIdentityFromBootstrap, __resetBackendIdentityForTest } from '../transport/backendIdentity';
+import { readBackendDescriptors } from '../transport/manifestBackends';
 import { storeBackendEndpoint, __resetHomeEndpointForTest } from '../transport/homeEndpoint';
 
 function reloadNames(): void {
@@ -62,6 +63,24 @@ it('preserves existing desktop profile nicknames and rejects overlong local name
   expect(backendDisplayName(attachedBackendEntry('mac')!)).toBe('Legacy nickname');
   expect(() => setBackendNickname('mac', 'x'.repeat(81))).toThrow('80 characters');
   expect(backendNickname('mac')).toBe('');
+});
+
+it('keeps explicit desktop overrides while un-overridden profiles follow host renames', () => {
+  stageBackend({ id: 'mac', name: 'Old host', nickname: '' });
+  stageBackend({ id: 'gpu', name: 'Legacy nickname', nickname: 'Legacy nickname', backendId: 'gpu-id' });
+  setBackendIdentityFromBootstrap(REMOTE_BACKEND_UUID, 'generation', 'New host', 'mac');
+  setBackendIdentityFromBootstrap('gpu-id', 'generation', 'New GPU host', 'gpu');
+  expect(backendDisplayName(attachedBackendEntry('mac')!)).toBe('New host');
+  expect(backendDisplayName(attachedBackendEntry('gpu')!)).toBe('Legacy nickname');
+  setBackendNickname('gpu', 'Frontend override');
+  expect(backendDisplayName(attachedBackendEntry('gpu')!)).toBe('Frontend override');
+});
+
+it('preserves explicit empty nicknames separately from legacy combined manifest names', () => {
+  const raw = { id: 'mac', backendId: REMOTE_BACKEND_UUID, name: 'Mac', wsUrl: '/ws/mac', bootstrapUrl: '/bootstrap/mac' };
+  expect(readBackendDescriptors([raw])[0].nickname).toBeUndefined();
+  expect(readBackendDescriptors([{ ...raw, nickname: '' }])[0].nickname).toBe('');
+  expect(readBackendDescriptors([{ ...raw, nickname: 'Desk' }])[0].nickname).toBe('Desk');
 });
 
 it('names HOME by its actual identity without carrying the nickname to a different host', () => {

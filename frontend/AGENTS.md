@@ -120,6 +120,11 @@ that rehydrates on expansion. See "Live Window Bounds" in
 Two panes on one WORKSPACE are first-class, two panes on one THREAD are a
 bug ([`stores/AGENTS.md`](src/lib/stores/AGENTS.md)).
 
+Backend identity subscriptions distinguish `name` presentation events from
+`identity` attestations. A name event must not reopen IndexedDB, retoken pending
+replica writes, or promote an offline cache to live. Bootstrap remains an
+attestation even when backend ID/generation match an offline cache.
+
 ## Compact is a layout mode, not a second app
 
 `stores/layoutMode.svelte.ts` picks `compact` from the viewport alone

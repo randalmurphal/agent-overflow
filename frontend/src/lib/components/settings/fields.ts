@@ -536,6 +536,20 @@ const STATIC_FIELDS = [
 
   // --- Remote access ------------------------------------------------------
   {
+    id: 'remote.device-name',
+    section: 'remote',
+    label: 'Device name',
+    hint: 'The name this device shares with other computers and phones.',
+    keywords: ['rename', 'hostname', 'identity'],
+  },
+  {
+    id: 'systems.device-name',
+    section: 'systems',
+    label: 'Device name',
+    hint: 'The name this device shares with other computers and phones.',
+    keywords: ['rename', 'hostname', 'phone', 'identity'],
+  },
+  {
     id: 'remote.allow-remote-access',
     section: 'remote',
     heading: 'Local network',

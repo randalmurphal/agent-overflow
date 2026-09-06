@@ -494,21 +494,12 @@ delivery; `notification:activated` retains its separate cold-launch replay.
   conditional set is a second package-level slice
   (`serverCapabilitiesWithBrowser`), so an accept picks one rather than
   allocating, and the frozen prefix's bytes are identical either way.
-- **`backendName` is display, never identity.** It is the host's name
-  (`internal/appidentity.HostDisplayName`, the same string the pairing
-  payload shows a device deciding whether to trust an offer) and it exists
-  so a client attached to several backends can label them
-  (`docs/specs/remote-access.md` §10, "Machine name"). Two backends may
-  legitimately answer the same one, so nothing keys on it and `backendId`
-  stays the identity. `Config.BackendName` is a plain string rather than a
-  getter like `BackendIdentity`: a hostname is knowable at boot and does
-  not arrive with the store. There is deliberately NO setting behind it —
-  the display name IS the hostname, and a nickname is the client's, kept
-  from pairing time. Unset omits the field, which reads as unknown, the
-  same answer a backend too old to send it gives.
-  `/bootstrap.json` carries it too, and the two are not redundant: a page
-  decides what to label a backend before it opens a socket, and the
-  manifest is the only thing a page holding no credential can read.
+- **`backendName` is display, never identity.** `appidentity.DeviceName` owns
+  the editable installation name, defaulting to the hostname. Pairing, push,
+  bootstrap and hello read the same value. `Config.BackendNameGetter` keeps
+  advertisements current; `BackendName` is only its static fallback.
+  `backend:name-changed` updates connected clients. A client-local nickname
+  overrides the advertised name; neither can change backend IDs or trust.
 - `serverTimeMs` is sampled per accept, not cached at boot: the field
   exists so a client can measure its own skew, and a cached value would
   be wrong by the process uptime.
@@ -1946,3 +1937,8 @@ requests without an auth-shaped response; older clients treated HTTP 503 as
 revocation. The gate is supplied by App's existing activation owner. Do not
 replace it with a bootstrap-only check: paired clients can mint tickets and
 rotate credentials without fetching bootstrap first.
+
+Attached profile manifests carry `nickname` separately from their display `name`,
+including an explicit empty string. New clients can follow live host renames
+without discarding a Go profile's local override. Missing `nickname` means an
+older combined-name manifest, whose non-address label remains the legacy override.

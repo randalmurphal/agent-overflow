@@ -25,6 +25,7 @@
 
   import ComputerActions from './ComputerActions.svelte';
   import ComputerNickname from './ComputerNickname.svelte';
+  import DeviceNameField from './DeviceNameField.svelte';
   import { openSettingsOverlay } from '../../stores/settingsOverlay.svelte';
   import SSHConnectModal from './SSHConnectModal.svelte';
   import { HOME_BACKEND } from '../../transport/backendKey';
@@ -214,6 +215,7 @@
 </script>
 
 <section data-testid={unavailable ? 'systems-section-unavailable' : 'systems-section'}>
+  <div class="mb-4"><DeviceNameField /></div>
   {#if home}
     <div data-testid="home-computer" class="rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-3 py-3 mb-4">
       <div class="flex min-w-0 items-center gap-3">
@@ -304,6 +306,9 @@
             </Button>
           </div>
           <ComputerNickname backend={system.id} />
+          {#if system.deviceNameSyncError}
+            <p class="mt-2 text-xs text-fg-muted">Device name update pending: {system.deviceNameSyncError}</p>
+          {/if}
           <ComputerActions backend={system.id} />
         </div>
       {/each}

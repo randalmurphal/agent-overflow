@@ -29,7 +29,7 @@
   import { errString } from '../../utils/errors';
   import { relativeTime } from '../../utils/format';
   import { answerChallenge, PasskeyAbandonedError, passkeysUsable } from '../../transport/passkey';
-  import { suggestDeviceLabel } from '../../utils/deviceLabel';
+  import { clientDeviceName } from '../../stores/clientDeviceName.svelte';
 
   // Whether this backend can register one at all: it needs a canonical
   // domain to be a relying party under, and this page needs a secure
@@ -67,7 +67,7 @@
     if (acting || !usable) return;
     acting = true;
     try {
-      const label = suggestDeviceLabel();
+      const label = clientDeviceName();
       const challenge = await call(() => BeginPasskeyRegistration(label));
       const response = await answerChallenge(
         { ceremonyId: challenge.ceremonyId, options: challenge.options },

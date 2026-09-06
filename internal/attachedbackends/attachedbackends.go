@@ -47,11 +47,12 @@ import (
 type Manager struct {
 	dir string
 
-	// label and platform are what this installation asks to be called in
-	// the far side's device list. Fixed for the process: they describe
-	// this machine, not one pairing.
-	label    string
-	platform string
+	// labelGetter reads this installation's current name; label is the static
+	// fallback for embedders. Platform describes this process, not a pairing.
+	nameSyncChanged func(string)
+	labelGetter     func() (string, error)
+	label           string
+	platform        string
 
 	mu       sync.Mutex
 	carriers map[string]*carrier
@@ -83,6 +84,7 @@ func (m *Manager) Attached() []transport.AttachedProfile {
 			ID:        session.BackendID,
 			BackendID: session.BackendID,
 			Name:      displayName(session),
+			Nickname:  session.Nickname,
 		})
 	}
 	return profiles
@@ -122,6 +124,10 @@ func (m *Manager) carrier(id string) (*carrier, error) {
 	if err != nil {
 		return nil, err
 	}
+	built.labelGetter, built.platform = m.localLabel, m.platform
+	built.nameSyncChanged = func() {
+		m.notifyNameSyncChanged(id)
+	}
 	m.carriers[id] = built
 	return built, nil
 }
@@ -153,7 +159,8 @@ type Attached struct {
 	// attached laptop to answer one page load would make a boot as slow
 	// as the slowest of them, and a page's own socket is the only current
 	// answer anyway.
-	LastReachedMs int64 `json:"lastReachedMs,omitempty"`
+	LastReachedMs       int64  `json:"lastReachedMs,omitempty"`
+	DeviceNameSyncError string `json:"deviceNameSyncError,omitempty"`
 }
 
 // List reads every attached machine.
@@ -174,6 +181,7 @@ func (m *Manager) List() ([]Attached, error) {
 		m.mu.Lock()
 		if held, ok := m.carriers[session.BackendID]; ok {
 			row.LastReachedMs = held.lastReachedMs.Load()
+			row.DeviceNameSyncError = held.nameError()
 		}
 		m.mu.Unlock()
 		out = append(out, row)
@@ -221,7 +229,11 @@ func (m *Manager) Add(ctx context.Context, pairingLink string) (Attachment, erro
 	}
 	delete(m.carriers, link.BackendID)
 	m.mu.Unlock()
-	client, pairing, err := deviceclient.Pair(ctx, m.dir, link, m.label, m.platform)
+	label, err := m.localLabel()
+	if err != nil {
+		return Attachment{}, err
+	}
+	client, pairing, err := deviceclient.Pair(ctx, m.dir, link, label, m.platform)
 	if err != nil {
 		return Attachment{}, err
 	}
@@ -232,6 +244,10 @@ func (m *Manager) Add(ctx context.Context, pairingLink string) (Attachment, erro
 	m.mu.Lock()
 	// A re-pairing with a machine already attached replaces the carrier,
 	// because the session behind the old one was just superseded.
+	built.labelGetter, built.platform = m.localLabel, m.platform
+	built.nameSyncChanged = func() {
+		m.notifyNameSyncChanged(link.BackendID)
+	}
 	m.carriers[link.BackendID] = built
 	m.mu.Unlock()
 	return Attachment{
@@ -311,8 +327,14 @@ func (m *Manager) RepairAddress(ctx context.Context, id, endpoint string) (strin
 
 // carrier is one attached machine's live hop.
 type carrier struct {
-	client *deviceclient.Client
-	proxy  *backendproxy.Carrier
+	labelGetter     func() (string, error)
+	platform        string
+	nameSync        atomic.Bool
+	nameSyncChanged func()
+	nameErrorMu     sync.Mutex
+	nameSyncError   string
+	client          *deviceclient.Client
+	proxy           *backendproxy.Carrier
 
 	// lastReachedMs is when this machine last answered, Unix
 	// milliseconds. One atomic, written where an answer arrives and read
@@ -381,6 +403,7 @@ func (c *carrier) Manifest(ctx context.Context) (transport.AttachedManifest, err
 }
 
 func (c *carrier) CarryUpgrade(w http.ResponseWriter, r *http.Request) {
+	c.syncDeviceName()
 	c.reached()
 	c.proxy.CarryUpgrade(w, r)
 }
@@ -400,4 +423,29 @@ func displayName(session deviceclient.Session) string {
 		return session.BackendName
 	}
 	return session.Endpoint
+}
+
+// SetLabelGetter wires the installation identity before serving requests.
+func (m *Manager) SetLabelGetter(get func() (string, error)) { m.labelGetter = get }
+func (m *Manager) localLabel() (string, error) {
+	if m.labelGetter != nil {
+		return m.labelGetter()
+	}
+	return m.label, nil
+}
+
+// SetNameSyncChanged registers a display-state invalidation before serving.
+func (m *Manager) SetNameSyncChanged(changed func(string)) {
+	m.mu.Lock()
+	m.nameSyncChanged = changed
+	m.mu.Unlock()
+}
+
+func (m *Manager) notifyNameSyncChanged(id string) {
+	m.mu.Lock()
+	changed := m.nameSyncChanged
+	m.mu.Unlock()
+	if changed != nil {
+		changed(id)
+	}
 }

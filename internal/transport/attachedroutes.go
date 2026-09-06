@@ -115,6 +115,8 @@ type AttachedProfile struct {
 	// Name is what to show a person: the owner's nickname when they set
 	// one, else the machine's own name, else its address. Display only.
 	Name string
+	// Nickname separates a local override from the advertised name.
+	Nickname string
 }
 
 // BackendCarrier is one attached machine's hop.
@@ -153,6 +155,7 @@ type AttachedBackendEntry struct {
 	ID        string `json:"id"`
 	BackendID string `json:"backendId,omitempty"`
 	Name      string `json:"name,omitempty"`
+	Nickname  string `json:"nickname"`
 	// WSURL is absolute because a WebSocket needs a scheme, and derived
 	// from the request's Host for the same reason the page's own wsUrl is.
 	WSURL string `json:"wsUrl"`
@@ -183,6 +186,7 @@ func (s *Server) attachedBackendEntries(r *http.Request) []AttachedBackendEntry 
 			ID:           profile.ID,
 			BackendID:    profile.BackendID,
 			Name:         profile.Name,
+			Nickname:     profile.Nickname,
 			WSURL:        wsOrigin + AttachedWSPrefix + profile.ID,
 			BootstrapURL: AttachedBootstrapPrefix + profile.ID + attachedBootstrapSuffix,
 		})

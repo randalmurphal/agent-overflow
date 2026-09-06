@@ -202,6 +202,14 @@ then checks retirement and writes under the same lock as nickname/removal.
 Late success or refusal must neither resurrect a forgotten credential nor
 overwrite/delete its replacement. A rename during renewal keeps the new name.
 
+Installation display names live in `appidentity.DeviceName`, persisted separately
+from host settings so backend and frontend-only modes share one name. Advertise
+through its getter, never capture it at startup. Paired Go carriers synchronize
+their own label on rename/reconnect through authenticated, capability-checked
+RPC and persist the result through `deviceclient.sessionTransaction`; they never
+write a copied session over a refreshed credential. Display names never affect
+keys, stable IDs, grants, or client-local nickname overrides.
+
 ## Adding a package
 
 1. Confirm the responsibility isn't already covered. Extend first.

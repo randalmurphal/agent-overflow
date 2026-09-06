@@ -414,6 +414,7 @@ describe('storedBackendDescriptors', () => {
         id: LAPTOP,
         backendId: LAPTOP,
         name: 'laptop.example:8123',
+        nickname: '',
         wsUrl: 'wss://laptop.example:8123/ws',
         bootstrapUrl: `${ENDPOINT}/bootstrap.json`,
       },

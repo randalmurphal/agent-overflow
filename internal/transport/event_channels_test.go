@@ -99,6 +99,7 @@ var (
 		"webview:trim", // 2026-08-25: replaying a stale trim would GC an active session
 	}
 	frozenLatestOnlyChannels = []string{
+		"backend:name-changed", "access:devices-changed",
 		"agent-computers:changed", // dirty signal; the selected computer's table is re-read
 		// Wave 9: whole-state, replaced in full every scan tick, so a
 		// default ring would hold minutes of superseded lists and replay

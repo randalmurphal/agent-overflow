@@ -55,7 +55,7 @@ export interface BackendAttachEvent {
  * ceremony ending.
  */
 export interface BackendSetChangeEvent {
-  action: 'removed' | 'renamed';
+  action: 'removed' | 'renamed' | 'device-name-sync';
   id: string;
   nickname?: string;
 }
@@ -107,7 +107,7 @@ export function loadSystems(): Promise<void> {
         systems = rows;
         break;
       }
-      for (const system of systems) publishAttachedBackend(descriptorForAttachedId(system.id, systemLabel(system)));
+      for (const system of systems) publishAttachedBackend(descriptorForAttachedId(system.id, systemLabel(system), '', system.nickname ?? ''));
       loaded = true;
     } finally {
       loadInFlight = null;
@@ -173,7 +173,7 @@ function applySystemNickname(id: string, nickname: string): void {
   revision++;
   systems = systems.map((s) => (s.id === id ? { ...s, nickname } : s));
   const system = systems.find((s) => s.id === id);
-  if (system) publishAttachedBackend(descriptorForAttachedId(id, systemLabel(system)));
+  if (system) publishAttachedBackend(descriptorForAttachedId(id, systemLabel(system), '', system.nickname ?? ''));
 }
 
 /**
@@ -200,6 +200,9 @@ export function applyBackendSetChange(
     return;
   }
   if (evt.action === 'renamed') applySystemNickname(evt.id, evt.nickname ?? '');
+  if (evt.action === 'device-name-sync') {
+    void loadSystems().catch((err) => addToast('error', `Could not load device name status: ${errString(err)}`));
+  }
 }
 
 /** The name a person sees for a system: their nickname, else the machine's own. */
@@ -235,7 +238,7 @@ export function applyBackendAttach(
   if (evt.attached) {
     // Another window's result (or a delayed result after removal) is only
     // an invitation to refresh. The current profile set decides membership.
-    if (row) publishAttachedBackend(descriptorForAttachedId(evt.id, name));
+    if (row) publishAttachedBackend(descriptorForAttachedId(evt.id, name, '', ''));
     if (hasScope('host')) void loadSystems().catch((err) => addToast('error', errString(err)));
     return { name, error: '' };
   }

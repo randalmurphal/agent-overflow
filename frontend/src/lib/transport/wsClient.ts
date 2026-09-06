@@ -570,7 +570,7 @@ export interface TransportHello {
   /** Backend identity, or '' when the store had not opened yet. Empty
    *  means unknown and must never be treated as a wildcard. */
   backendId: string;
-  /** The backend's display name — its hostname
+  /** The backend's editable display name (hostname by default)
    *  (docs/specs/remote-access.md §10, "Machine name"). Display only:
    *  nothing is keyed on it, two backends may answer the same one, and
    *  `backendId` stays the identity. '' when the backend published

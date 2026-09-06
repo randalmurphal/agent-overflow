@@ -22,6 +22,7 @@ import { clearThreadItemCacheForTest } from '../lib/stores/threadItemCache';
 import { clearThreadScrollSnapshotsForTest } from '../lib/utils/threadScrollSnapshots';
 import { clearAllThreadSizePriorsForTest } from '../lib/utils/virtual/priors';
 import { resetFrontendPreferencesForTest } from '../lib/stores/frontendPreferences.svelte';
+import { resetClientDeviceNameForTest } from '../lib/stores/clientDeviceName.svelte';
 import { writeFrontendValue } from '../lib/stores/frontendStorage';
 import { __resetSizePriorsStorageForTest } from '../lib/utils/virtual/priorsStorage';
 
@@ -39,6 +40,8 @@ beforeEach(() => {
   // missing preferences and cannot undo a prior fixture's local UI choices.
   writeFrontendValue('preferences', {});
   resetFrontendPreferencesForTest({});
+  writeFrontendValue('device-name', null);
+  resetClientDeviceNameForTest();
   installBrowserTraceSinks();
   // Same pin as setup.ts: with no bootstrap fetch nothing resolves the
   // page's grants, and scopes.ts THROWS in test mode on a pre-resolution

@@ -1,7 +1,8 @@
 <script lang="ts">
   import { untrack } from 'svelte';
+  import { onPairedDeviceNamesChanged } from '../../stores/deviceNames';
   import { settingsComputer } from './settingsComputer';
-  const { call, hasScope } = settingsComputer();
+  const { backend, call, hasScope } = settingsComputer();
 
   // Settings → Remote access → Devices: which devices hold a credential on this
   // backend, the pairing flow that adds one (PairDeviceModal), and the
@@ -245,7 +246,9 @@
 
   $effect(() => {
     if (!unavailable) untrack(() => void load());
+    const stopNames = unavailable ? () => {} : onPairedDeviceNamesChanged(backend, () => { void load(); });
     return () => {
+      stopNames();
       if (armTimer) clearTimeout(armTimer);
     };
   });

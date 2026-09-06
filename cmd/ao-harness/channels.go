@@ -25,6 +25,8 @@ import (
 func eventChannelConstants() []eventchan.Channel {
 	return []eventchan.Channel{
 		eventchan.AgentComputersChanged,
+		eventchan.AccessDevicesChanged,
+		eventchan.BackendNameChanged,
 		eventchan.BackendAttach,
 		eventchan.BackendSetChanged,
 		eventchan.BrowserCompanionState,

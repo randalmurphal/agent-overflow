@@ -171,6 +171,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 	if a.workflowApplication().HasDefinitionsWatcher() {
 		record("close workflow definitions watcher", a.workflowApplication().CloseDefinitionsWatcher())
 	}
+	if a.deviceNameWatcher != nil {
+		record("close device name watcher", a.deviceNameWatcher.Close())
+	}
 	if a.themeWatcher != nil {
 		record("close theme watcher", a.themeWatcher.Close())
 	}

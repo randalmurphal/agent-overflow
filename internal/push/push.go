@@ -142,7 +142,7 @@ const RetractValue = "1"
 // backendID is this backend's identity and is REQUIRED: it is half of the
 // tray tag, and a message without it would post under a tag no retraction
 // from this backend could ever find. backendName is
-// `appidentity.HostDisplayName` at the call site; empty is legal there and
+// the installation's canonical name at the call site; empty is legal there and
 // reads as "this machine did not say", which is better than inventing one.
 func MessageFor(send notify.Send, token, backendID, backendName string) (Message, error) {
 	if err := notify.ValidateSend(send); err != nil {

@@ -12,12 +12,14 @@ import (
 	"runtime"
 	"sync"
 
+	"agent-overflow/internal/appidentity"
 	"agent-overflow/internal/appupdate"
 	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/transport"
 )
 
 type Config struct {
+	DeviceName                                                *appidentity.DeviceName
 	Profiles, ConfigDir, ClientID, ComputerID, Label, Version string
 	Assets                                                    fs.FS
 	Port                                                      int
@@ -37,10 +39,14 @@ func Serve(cfg Config) (*Server, error) {
 	if cfg.Assets == nil || cfg.ConfigDir == "" {
 		return nil, errors.New("frontend client: assets and a local configuration directory are required")
 	}
+	if cfg.DeviceName == nil {
+		cfg.DeviceName = appidentity.NewDeviceName(cfg.ConfigDir)
+	}
 	computers, err := attachedbackends.New(cfg.Profiles, cfg.Label, runtime.GOOS)
 	if err != nil {
 		return nil, err
 	}
+	computers.SetLabelGetter(cfg.DeviceName.Get)
 	bus := transport.NewEventBus(64)
 	ctx, cancel := context.WithCancel(context.Background())
 	services, err := newService(ctx, cancel, cfg, computers, bus)

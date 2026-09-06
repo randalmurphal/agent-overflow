@@ -117,6 +117,8 @@ export interface AttachedBackend {
   backendId?: string;
   /** What to show a person: the owner's nickname, else the machine's name. */
   name?: string;
+  /** Explicit profile override; empty means use the live host name. */
+  nickname?: string;
   /** Absolute, same-origin. A WebSocket needs a scheme. */
   wsUrl: string;
   /** A same-origin path, which is what a fetch takes. */

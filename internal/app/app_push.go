@@ -146,7 +146,7 @@ func (a *App) pushFanout(send notify.Send) {
 	// socket is stamped with (`notificationBackendID`), which is what lets
 	// the phone's two presenters compose one tray tag for one moment.
 	backendID := a.notificationBackendID()
-	name := backendDisplayName()
+	name := a.backendDisplayName()
 	a.push.queue.Go(func() { a.deliverPush(sender, backendID, name, send) })
 }
 

@@ -58,6 +58,10 @@ function dispatch(name: string) {
   };
 }
 
+export const GetDeviceName = dispatch('GetDeviceName');
+export const SetDeviceName = dispatch('SetDeviceName');
+export const UpdateClientDeviceName = dispatch('UpdateClientDeviceName');
+
 // Every binding re-exported from `lib/stores/bindings.ts`.
 // Keep this list in sync with that file.
 export const ArchiveThread = dispatch('ArchiveThread');

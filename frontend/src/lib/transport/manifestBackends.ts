@@ -50,6 +50,7 @@ export function readBackendDescriptors(value: unknown): BackendDescriptor[] {
       id: row.id,
       backendId: typeof row.backendId === 'string' ? row.backendId : '',
       name: typeof row.name === 'string' ? row.name : '',
+      ...(typeof row.nickname === 'string' ? { nickname: row.nickname } : {}),
       wsUrl: row.wsUrl,
       bootstrapUrl: row.bootstrapUrl,
     });
@@ -167,6 +168,7 @@ export function descriptorForAttachedId(
   id: string,
   name: string,
   endpoint = '',
+  nickname?: string,
 ): BackendDescriptor {
   if (endpoint !== '') {
     const base = new URL(endpoint);
@@ -175,6 +177,7 @@ export function descriptorForAttachedId(
       id,
       backendId: id,
       name,
+      nickname: nickname ?? '',
       wsUrl: scheme + base.host + '/ws',
       bootstrapUrl: base.origin + '/bootstrap.json',
     };
@@ -184,6 +187,7 @@ export function descriptorForAttachedId(
     id,
     backendId: '',
     name,
+    ...(nickname !== undefined ? { nickname } : {}),
     wsUrl: scheme + window.location.host + ATTACHED_WS_PREFIX + id,
     bootstrapUrl: ATTACHED_BOOTSTRAP_PREFIX + id + ATTACHED_BOOTSTRAP_SUFFIX,
   };

@@ -3,7 +3,7 @@ import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app
 import { pairViewOnly, resetToLocalPage } from '../../test/helpers/scopes';
 import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
 import { attachedBackends, backendById } from '../transport/backends';
-import { __resetManifestBackendsForTest } from '../transport/manifestBackends';
+import { __resetManifestBackendsForTest, manifestBackendDescriptors } from '../transport/manifestBackends';
 import {
   __resetSystemsForTest,
   addSystem,
@@ -134,8 +134,10 @@ describe('systems store', () => {
   it('renames in place and labels by nickname first', async () => {
     setBindingMock('ListBackends', async () => [LAPTOP]);
     await loadSystems();
+    expect(manifestBackendDescriptors().find((row) => row.id === 'laptop')?.nickname).toBe('');
     const rename = setBindingMock('RenameBackend', async () => {});
     await renameSystem('laptop', 'Work laptop');
+    expect(manifestBackendDescriptors().find((row) => row.id === 'laptop')?.nickname).toBe('Work laptop');
     expect(rename).toHaveBeenCalledWith('laptop', 'Work laptop');
     expect(systemLabel(getSystems()[0])).toBe('Work laptop');
     expect(systemLabel({ id: 'x', name: 'Named', nickname: '' })).toBe('Named');

@@ -12,7 +12,9 @@ import {
   initReplica,
   putReplicaWindow,
   removeReplicaWindow,
+  replicaToken,
 } from './session';
+import { observeBackendName, setBackendIdentityFromBootstrap } from '../transport/backendIdentity';
 import { replicaDatabaseName } from './purge';
 import {
   MAX_ENVELOPE_ITEMS,
@@ -77,6 +79,36 @@ describe('replica session', () => {
     expect(read?.rev).toBe(42);
     expect(read?.epoch).toBe(3);
     expect(read?.items.map((it) => it.id)).toEqual(['i-1']);
+  });
+
+  it('keeps the replica and in-flight writes when only the advertised name changes', async () => {
+    const backendId = freshBackendId();
+    setBackendIdentityFromBootstrap(backendId, 'g1', 'Old name');
+    await putReplicaWindow('t-1', body());
+    const token = replicaToken();
+    const index = __replicaIndexForTest();
+    const writing = putReplicaWindow('t-2', body({ rev: 77 }));
+    observeBackendName('New name', '');
+    expect(replicaToken()).toBe(token);
+    expect(__replicaIndexForTest()).toBe(index);
+    await writing;
+    expect((await getReplicaWindow('t-2'))?.rev).toBe(77);
+  });
+
+  it('keeps name events offline but permits writes after a real bootstrap', async () => {
+    const backendId = freshBackendId();
+    setBackendIdentityFromBootstrap(backendId, 'g1', 'Old name');
+    await putReplicaWindow('t-1', body());
+    await initReplica({ backendId, generation: 'g1', name: 'Old name' }, '', true);
+    const token = replicaToken();
+    observeBackendName('Renamed while offline', '');
+    expect(replicaToken()).toBe(token);
+    await putReplicaWindow('t-1', body({ rev: 99 }));
+    expect((await getReplicaWindow('t-1'))?.rev).toBe(4);
+    setBackendIdentityFromBootstrap(backendId, 'g1', 'Live name');
+    expect(replicaToken()).not.toBe(token);
+    await putReplicaWindow('t-1', body({ rev: 99 }));
+    expect((await getReplicaWindow('t-1'))?.rev).toBe(99);
   });
 
   it('survives a re-open of the same backend and generation', async () => {

@@ -198,19 +198,11 @@ type Config struct {
 	// ComputerRoutes observes the current listeners; never mints page tickets.
 	ComputerRoutes func() []computerroute.Route
 
-	// BackendName is the display name this backend answers to on the
-	// wire: the host's name, published in the hello frame and the
-	// bootstrap manifest so a client attached to several backends can
-	// label them (docs/specs/remote-access.md §10, "Machine name").
-	//
-	// A plain string rather than a getter, unlike BackendIdentity: a
-	// hostname is knowable at boot and does not arrive with the store.
-	// There is deliberately no setting behind it — the display name IS
-	// the hostname, and the client keeps whatever nickname its owner
-	// typed.
-	//
-	// Optional. Empty publishes no name, which a client reads as unknown.
-	BackendName string
+	// BackendNameGetter reads the installation's current display name for hello
+	// and bootstrap. BackendName remains a static fallback for fixtures/embedders.
+	// Neither field is identity or authorization.
+	BackendName       string
+	BackendNameGetter func() string
 
 	// SessionForRequest resolves the durable session a request presents,
 	// if any, and says whether the request may proceed at all.
@@ -1721,7 +1713,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		Harness:           s.cfg.Harness,
 		PageMarker:        s.cfg.PageMarker,
 		BackendID:         backendID,
-		BackendName:       s.cfg.BackendName,
+		BackendName:       s.backendName(),
 		ReplicaGeneration: replicaGeneration,
 		PasskeysAvailable: s.cfg.AuthEndpoints != nil && s.cfg.AuthEndpoints.PasskeysAvailable(),
 		Backends:          attached,
@@ -2090,7 +2082,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			// Config is built.
 			Capabilities: advertisedCapabilities(s.cfg.BrowserAvailable, s.cfg.ThreadTransfers != nil, s.cfg.FilePreviews),
 			BackendID:    backendID,
-			BackendName:  s.cfg.BackendName,
+			BackendName:  s.backendName(),
 			// Sampled per accept: the field's whole purpose is letting a
 			// client measure its own skew against this backend, which a
 			// value cached at boot would silently corrupt by the process
@@ -2105,4 +2097,11 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	// connection; any normal-closure send here is for the other half
 	// of the bidirectional handshake.
 	_ = conn.Close(1000, "")
+}
+
+func (s *Server) backendName() string {
+	if s.cfg.BackendNameGetter != nil {
+		return s.cfg.BackendNameGetter()
+	}
+	return s.cfg.BackendName
 }

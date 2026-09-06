@@ -886,7 +886,12 @@ waves:
   with the per-key tier gate doing all real enforcement: device keys
   pass on session presence, user keys require `settings:write`, host
   keys require step-up. A view-only device changing its own font size
-  is the case the floor exists for.
+  is the case the floor exists for. `GetDeviceName` also sits at this floor:
+  it reads the display name already advertised by bootstrap and hello.
+  `UpdateClientDeviceName` changes only the authenticated caller's own
+  device label/platform, deriving the device ID from its session. It cannot
+  rename another device or change keys/grants. Renaming the host itself
+  uses `SetDeviceName` and requires `access:admin`.
 - **One write path per key, closed as a class**: a settings key with
   a dedicated RPC is refused by the generic patch. `network`,
   `claudeCustomEnv`/`codexCustomEnv`, and `remoteEndpoints` already
@@ -2720,6 +2725,14 @@ already reads). Display uses this frontend's optional UUID-keyed nickname,
 then the advertised/remembered name; an endpoint is only the fallback before
 a name is known. Existing desktop profile nicknames remain readable. Editing
 a nickname never changes the computer's hostname or another frontend's label.
+The installation's **Device name** is separately editable and advertised to
+all peers. Desktop backend and frontend-only modes share `device-name.json`
+under the installation configuration root. Pairing, bootstrap, hello and push
+read this canonical name; `backend:name-changed` refreshes connected views.
+Go carriers publish their own name through the authenticated `device-name.v1`
+self-update RPC on rename and reconnect, preserving local peer nicknames and
+credential rotation. A phone/browser publishes its own frontend-local name;
+it never copies the destination computer's name into its device identity.
 
 **Project identity = repo.** Projects gain `remoteURL` and
 `rootCommit`; the sidebar merges entries across backends that match
