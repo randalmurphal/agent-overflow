@@ -20,6 +20,8 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mobile="$(dirname "$here")"
 repo="$(dirname "$mobile")"
 
+node "$here/generate-icons.mjs" --check
+
 variant="${1:-debug}"
 case "$variant" in
   debug) task=Debug ;;

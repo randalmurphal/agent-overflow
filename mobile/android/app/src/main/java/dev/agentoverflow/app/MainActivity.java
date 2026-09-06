@@ -52,6 +52,7 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        androidx.core.splashscreen.SplashScreen.installSplashScreen(this);
         registerPlugin(BundlePlugin.class);
         registerPlugin(dev.agentoverflow.app.network.NetworkPlugin.class);
         registerPlugin(dev.agentoverflow.app.push.PushPlugin.class);

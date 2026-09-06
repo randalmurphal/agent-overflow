@@ -168,11 +168,41 @@ run `make verify` before cutting a release.
 
 ## Notifications and troubleshooting
 
-Background push additionally requires the APK's Firebase configuration and a
-matching Firebase service-account credential in the Mac's Settings →
-Notifications → Phone push. Allow notifications on the Pixel. These are
-separate from Tailscale and pairing; connecting to threads does not need FCM.
-The service-account key stays on the backend and must never be put in the APK.
+For your own devices, push travels from the running host to Google's Firebase
+Cloud Messaging (FCM), then to Android. The host needs outbound internet access;
+no additional cloud server, public listener, or router forwarding is needed.
+Opening the notified thread still needs a working LAN or tailnet connection.
+Any phone paired to that host can receive its notifications; the sender
+credential belongs on the host, not on each phone.
+
+1. Create a Firebase project and register its Android app with package name
+   `dev.agentoverflow.app`. Download `google-services.json` following
+   [Firebase's Android setup](https://firebase.google.com/docs/android/setup).
+   This is app configuration, not a private sender credential. Put it in
+   `mobile/android/app/google-services.json` for local builds, or store its
+   base64 bytes as `AO_ANDROID_GOOGLE_SERVICES_BASE64` for GitHub builds.
+2. Enable the Firebase Cloud Messaging HTTP v1 API. Create a dedicated service
+   account in that project with the **Firebase Cloud Messaging API Admin** role
+   and generate its JSON key. The host's current sender uses that key to
+   authorize requests; see [FCM authorization](https://firebase.google.com/docs/cloud-messaging/send/v1-api).
+3. On each trusted computer that should send push, save that private JSON key
+   in Settings → Notifications → Phone push. Never put this key in the APK,
+   source control, or another user's backend. The Firebase project must match
+   the one configured in the APK.
+4. Build/install the configured APK, unlock it and allow notifications. Enable
+   the desired notification kinds on the host. Background the phone normally,
+   finish a turn on the host, and verify both delivery and tap-to-thread.
+   Android force-stop is not ordinary backgrounding; do not use it for this
+   delivery check. Phone push status on the host reports sender failures.
+
+This direct sender is intended for computers you trust with your Firebase
+credential. A public APK can carry the app configuration, but its users must
+not receive your private sender key. Push without per-user Firebase setup needs
+an authenticated relay that holds the sender credential and restricts each
+host to its authorized phones; that relay is not implemented. Independently
+managed Firebase projects currently need matching APK builds. Core remote
+access works without FCM or a relay.
+
 See [mobile/AGENTS.md](../../mobile/AGENTS.md#push) for implementation and the
 optional real-push smoke.
 

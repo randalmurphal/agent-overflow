@@ -69,7 +69,7 @@ final class AndroidTray implements TrayNotifier.Tray {
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
         Notification notification = new NotificationCompat.Builder(context, TrayNotifier.CHANNEL_ID)
-                .setSmallIcon(R.mipmap.ic_launcher)
+                .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(presentation.title)
                 .setContentText(presentation.body)
                 .setContentIntent(pending)

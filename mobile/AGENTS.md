@@ -164,6 +164,24 @@ barcode scanner's native library declares 26 and the manifest merge
 across that gap fails the build outright. `android/variables.gradle`
 argues it in place.
 
+## App artwork
+
+The launcher, themed launcher, startup splash and notification small icon use
+`build/appicon.icon/Assets/agent-overflow-mark.svg`; the background comes from
+that icon package's `icon.json`. Run `node mobile/scripts/generate-icons.mjs`
+after artwork edits. APK builds check generated vectors are current. The narrow
+converter accepts this mark's path/circle geometry; extend it explicitly if the
+source changes rather than approximating unsupported SVG features.
+
+Adaptive foreground artwork fits the central 66dp safe region of Android's
+108dp layer. The same transparent vector provides Android 13's monochrome layer.
+Notifications use a separate 24dp transparent vector without launcher padding or
+an opaque background: the system renders its alpha mask. MinSDK 26 permits
+adaptive-only launcher resources; do not restore Capacitor's template bitmaps.
+The AndroidX startup theme shares the AO foreground/background on old and new
+Android versions, and is installed before `BridgeActivity.onCreate`.
+These resources require an APK update, not a downloaded frontend bundle.
+
 ## Release APKs
 
 `make apk-release` uses the same build script with the release variant:
