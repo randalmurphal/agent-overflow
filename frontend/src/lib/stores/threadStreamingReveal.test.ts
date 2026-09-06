@@ -230,6 +230,9 @@ describe('thread streaming reveal cleanup', () => {
 
     expect(prepared).toBe(incoming);
     expect(reveal.smootherCount()).toBe(0);
+    // Successful preparation is only half of the pane's window transaction.
+    getItems()[0] = prepared;
+    reveal.recomputeReveal();
     expect(reveal.revealBoundary).toBeNull();
   });
 
@@ -284,7 +287,7 @@ describe('thread streaming reveal cleanup', () => {
     expect(() => clock.tick(100)).not.toThrow();
 
     expect(getItems()[0].summary).toBe('first second ');
-    expect(reveal.revealBoundary).toBeNull();
+    expect(reveal.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining('fell back after a sink failure'),
       expect.stringContaining('phase=preflight'),
@@ -439,7 +442,8 @@ describe('thread streaming reveal cleanup', () => {
 
     expect(() => reveal.snapAllToReceived()).toThrow(/smoother settle failed/);
     expect(getItems()[1].summary).toBe('second pending ');
-    expect(reveal.revealBoundary).toBeNull();
+    // The failed first sink is retired; the second message is still open.
+    expect(reveal.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 1 });
   });
 
   it('prepares every terminal replacement when one sink reset fails', () => {

@@ -1035,6 +1035,8 @@ describe('<ActivityRun>', () => {
 
         // Drain the gate; the prose reveals and displaces the run ON SCREEN.
         // Only now does the settle half take over.
+        pane.applyItemPatch({ threadId: pane.threadId!, itemId: 'think:0:2', kind: 'thinking',
+          patch: { status: 'completed', updatedAt: 4 } });
         for (let i = 0; i < 200 && pane.revealBoundary !== null; i++) clock.tickFrame(16);
         // A failure below must blame the fix, not an undrained fixture.
         expect(pane.revealBoundary).toBeNull();

@@ -702,6 +702,17 @@ floor can release a completed command ahead of earlier prose's visual drain.
 normal completion, upsert completion, background siblings and batched status
 changes. Provider completion never substitutes for visual-reveal completion.
 
+The converse matters too: **buffer catch-up never substitutes for message
+completion.** An open `streaming` row keeps the gate even with zero backlog;
+only its terminal lifecycle plus a drained smoother releases successors.
+Otherwise a completion row appears during each input gap and disappears on
+the next burst, repeatedly shrinking/growing the bottom-follow target.
+`commandOscillation.browser.test.ts` records this mount/unmount cycle through
+the real event batcher, and proves one release after the message ends.
+Do not replace this rule with a remembered visible position: intermediate
+batch states were never necessarily painted. The rule applies to prose and
+reasoning and is independent of the overall turn's lifecycle.
+
 State ownership taxonomy and the entity-keying doctrine:
 [`frontend/AGENTS.md`](../../../AGENTS.md).
 

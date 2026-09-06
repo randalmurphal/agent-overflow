@@ -1616,6 +1616,8 @@ describe('<MessageTimeline>', () => {
         // row reveals. Loop until the boundary clears rather than a fixed
         // frame count so the assertion proves "the gate dropped",
         // independent of the reveal rate constants.
+        pane.applyItemPatch({ threadId: 'thread-1', itemId: 'think:0:1', kind: 'thinking',
+          patch: { status: 'completed', updatedAt: 4 } });
         for (let i = 0; i < 200 && pane.revealBoundary !== null; i++) clock.tickFrame(16);
         await tick();
 

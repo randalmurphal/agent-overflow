@@ -17,6 +17,14 @@ import { FakeSmoothingClock, installThreadPaneTestEnv } from '../../test/helpers
 describe('threadRevealGate', () => {
   beforeEach(installThreadPaneTestEnv);
 
+  function finishReceivedItems(pane: Awaited<ReturnType<typeof buildPane>>): void {
+    for (const item of pane.items) {
+      if (item.status !== 'streaming') continue;
+      pane.applyItemPatch({ threadId: item.threadId, itemId: item.id, kind: item.kind,
+        patch: { status: 'completed', updatedAt: item.updatedAt + 1 } });
+    }
+  }
+
   describe('reveal sequencer (revealBoundary)', () => {
     function streamingThinking(
       id: string,
@@ -202,10 +210,13 @@ describe('threadRevealGate', () => {
         // Frontier is the only/last node → boundary points at it but the
         // slice helper (covered in subagentGrouping.test.ts) withholds nothing.
         expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
-        // It drains at the ordinary reveal cadence and the gate drops.
+        // Catch-up alone is not completion: leave the gate at this row until
+        // its lifecycle ends, even though there is no queued text left.
         for (let i = 0; i < 200 && pane.revealBoundary !== null; i++) {
           clock.tickFrame(16);
         }
+        expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
+        finishReceivedItems(pane);
         expect(pane.revealBoundary).toBeNull();
       } finally {
         __setSmoothingClockForTest(undefined);
@@ -243,6 +254,7 @@ describe('threadRevealGate', () => {
         expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
         // The thinking row finishes at the ordinary cadence — no rush —
         // and only then does the gate drop.
+        finishReceivedItems(pane);
         for (let i = 0; i < 200 && pane.revealBoundary !== null; i++) {
           clock.tickFrame(16);
         }
@@ -294,6 +306,8 @@ describe('threadRevealGate', () => {
         );
 
         // Both panes share the clock, so one loop drives both.
+        finishReceivedItems(solo);
+        finishReceivedItems(gated);
         let soloFrames = 0;
         let gatedFrames = 0;
         for (let i = 1; i <= 300; i++) {
@@ -351,6 +365,7 @@ describe('threadRevealGate', () => {
 
         // Thinking drains → gate advances to the text row, which now
         // reveals from the start.
+        finishReceivedItems(pane);
         for (
           let i = 0;
           i < 200 && pane.revealBoundary?.itemIndex === 0;
@@ -590,6 +605,7 @@ describe('threadRevealGate', () => {
         // Gate at thinking; text AND tool both withheld.
         expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
         // thinking drains → gate steps to the text row (not straight to null).
+        finishReceivedItems(pane);
         for (let i = 0; i < 200 && pane.revealBoundary?.itemIndex === 0; i++) {
           clock.tickFrame(16);
         }
@@ -642,6 +658,7 @@ describe('threadRevealGate', () => {
         pane.removeItemById('think:0:0', 't');
         // The withheld successor becomes the frontier and resumes from its start.
         expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 1 });
+        finishReceivedItems(pane);
         for (let i = 0; i < 60; i++) clock.tickFrame(16);
         expect(pane.items.find((i) => i.id === 'text:0:1')?.summary).toBe(
           'the answer',
@@ -753,7 +770,8 @@ describe('threadRevealGate', () => {
 
         let revealedLength = 0;
         let frames = 0;
-        // The wire gap: frames tick, nothing new arrives.
+        // The wire has finished; the visual backlog still drains at its cap.
+        finishReceivedItems(pane);
         while (pane.revealBoundary !== null && frames < 3000) {
           clock.tickFrame(16);
           frames++;
@@ -1160,6 +1178,7 @@ describe('threadRevealGate', () => {
 
         const summaryOf = () =>
           pane.items.find((i) => i.id === 'text:0:0')?.summary ?? '';
+        finishReceivedItems(pane);
         let previousLength = summaryOf().length;
         expect(previousLength).toBe(0);
         let frames = 0;

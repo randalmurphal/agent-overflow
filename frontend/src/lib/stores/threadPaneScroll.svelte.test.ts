@@ -344,6 +344,8 @@ describe('threadPaneScroll', () => {
         // Drain the frontier. The boundary drop that RELEASES the tool
         // row mounts it with no wire upsert in that flush, so only the
         // reveal-site arm can make its growth spring-eligible.
+        pane.applyItemPatch({ threadId: thread.id, itemId: 'front', kind: 'assistant_text',
+          patch: { status: 'completed', updatedAt: 3 } });
         for (let frame = 0; frame < 500 && pane.revealBoundary !== null; frame++) {
           clock.tickFrame(16);
         }
@@ -384,6 +386,8 @@ describe('threadPaneScroll', () => {
         // Nothing is waiting behind the frontier: when it drains and the
         // gate drops, no rows mount — arming would open a pointless
         // spring window on whatever grows next.
+        pane.applyItemPatch({ threadId: thread.id, itemId: 'front', kind: 'assistant_text',
+          patch: { status: 'completed', updatedAt: 3 } });
         for (let frame = 0; frame < 500 && pane.revealBoundary !== null; frame++) {
           clock.tickFrame(16);
         }

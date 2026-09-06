@@ -10,7 +10,7 @@
 // routes a delta, or touches the retained reasoning tails —
 // `threadRevealSmoothers.ts` owns those resources and
 // `threadStreamingReveal.svelte.ts` owns the row-text chokepoint. The gate
-// keys purely off smoother liveness plus (turnIndex, itemIndex) order.
+// keys off item lifecycle, smoother backlog and (turnIndex, itemIndex) order.
 
 import type { Item } from '../types/models';
 import type { RevealBoundary } from '../utils/subagentGrouping';
@@ -50,13 +50,13 @@ export function createRevealGate(options: RevealGateOptions): RevealGate {
   const { registry } = options;
   const itemSmoothers = registry.smoothers;
   // Reveal gate. While a turn streams, the timeline reveals one top-level
-  // item at a time: the next row is withheld until the current item's
-  // smoother drains. `revealBoundary` is the position of the item currently
+  // item at a time: the next row is withheld until the current item ends AND
+  // its smoother drains. `revealBoundary` is the position of the item currently
   // being revealed (the "frontier"); MessageTimeline renders nodes up to and
   // including it and withholds anything after via `sliceRevealedNodes`. `null`
   // means no gate — render everything — the steady state outside live
   // streaming. The sequencer (`recomputeReveal`) is the sole writer; it keys
-  // purely off smoother liveness + (turnIndex, itemIndex) order, never off
+  // off that item's lifecycle/backlog + (turnIndex, itemIndex) order, never off
   // `getActiveTurn`, so a between-rounds activeturn flicker can't drop the
   // gate. Subagent children (`parentId` set) never become the frontier, so
   // parallel subagent branches are never serialized behind one another.
@@ -119,7 +119,7 @@ export function createRevealGate(options: RevealGateOptions): RevealGate {
    * Reveal sequencer. Recomputes the reveal frontier from current smoother
    * state and (turnIndex, itemIndex) order, then:
    *   - publishes `revealBoundary` (the frontier's position, or null when no
-   *     top-level smoother is mid-reveal — render everything),
+   *     top-level message is open or draining — render everything),
    *   - pauses smoothers for withheld successors so they animate from their
    *     start when their turn comes rather than snapping in text that streamed
    *     while hidden, and resumes the frontier.
@@ -140,9 +140,14 @@ export function createRevealGate(options: RevealGateOptions): RevealGate {
    * transient condition, not a growing one. Do not "fix" a pileup by
    * skipping, rushing, or popping the frontier.
    *
-   * The frontier is the earliest top-level (`!parentId`) item whose smoother
-   * is still revealing. Subagent children are excluded so a streaming child
-   * never gates a sibling branch or a top-level row.
+   * The frontier is the earliest top-level (`!parentId`) item whose stream
+   * is still open OR whose smoother is still revealing. Catch-up during an
+   * input gap is not message completion: releasing there lets a command row
+   * mount, disappear on the next text burst, then mount again, repeatedly
+   * shrinking/growing the bottom-follow target. The item's terminal patch
+   * is the release condition, together with an empty reveal buffer. No extra
+   * visibility state or frame timers are needed. Subagent children are excluded
+   * so a streaming child never gates a sibling branch or a top-level row.
    *
    * INVARIANT: every path that mutates `items` or a smoother's liveness must
    * call this. There is deliberately NO reactive `$effect` watching `items`
@@ -217,7 +222,8 @@ export function createRevealGate(options: RevealGateOptions): RevealGate {
     for (const [id, entry] of itemSmoothers) {
       const item = options.getItemById(id);
       if (!item || item.parentId) continue;
-      if (entry.smoother.isCaughtUp()) continue;
+      // An empty buffer is only a pause until this specific message ends.
+      if (entry.smoother.isCaughtUp() && item.status !== 'streaming') continue;
       // Earliest position wins (<= 0 ⇒ item is at or before the frontier).
       if (
         frontier === null ||
