@@ -195,8 +195,8 @@ or boot a second real backend against anyone's provider homes.
 children: `make service-artifact-smoke` accepts two supplied production binaries
 or macOS ZIPs, stages them, boots a baseline, commits a trial, and cold-restarts
 the target while retaining backend identity and a SQLite row. It skips without
-both artifact paths. The fixture uses `kerneltest` isolation, an explicit mock
-for the boot-time Claude discovery probe, poisoned other providers, and loopback
+both artifact paths. The fixture uses `kerneltest` isolation, explicit mocks
+for boot-time Claude discovery and Codex catalog probes, poisoned PATH fallbacks, and loopback
 HTTP only. `--data-dir` names the config root; settings, SQLite and the supervisor
 layout belong under its `agent-overflow/` child. The fixture never installs a
 service or replaces the supplied artifacts. This supplements the deterministic

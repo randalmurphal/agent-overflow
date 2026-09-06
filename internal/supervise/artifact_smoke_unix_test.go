@@ -29,7 +29,7 @@ import (
 
 // TestProductionServiceArtifact is an opt-in gate over two actual builds.
 // Ordinary go-test never starts a production app. Both versions run against
-// the same disposable database and an empty home, with poisoned providers.
+// the same disposable database and an empty home, with mocked startup probes.
 func TestProductionServiceArtifact(t *testing.T) {
 	baseline := os.Getenv("AO_SERVICE_SMOKE_BASELINE")
 	candidate := os.Getenv("AO_SERVICE_SMOKE_CANDIDATE")
@@ -66,9 +66,14 @@ func TestProductionServiceArtifact(t *testing.T) {
 		t.Fatal(err)
 	}
 	providerSettings := kerneltest.ProviderBinarySettings(isolation.PoisonedBinary)
-	// Production boot runs a zero-turn Claude discovery probe. Mock that
-	// explicit boundary; every other provider spawn remains poisoned.
+	// Production boot probes Claude discovery and the Codex model catalog.
+	// Mock those explicit boundaries; PATH remains poisoned for lost settings.
 	providerSettings["claudeBinaryPath"] = testutil.WriteMockClaudeInit(t, t.TempDir(), "")
+	providerSettings["codexBinaryPath"] = testutil.WriteMockCodexSession(t, t.TempDir(), map[string]string{
+		"initialize": `{"jsonrpc":"2.0","id":%d,"result":{}}`,
+		"model/list": `{"jsonrpc":"2.0","id":%d,"result":{"data":[]}}`,
+		"":           `{"jsonrpc":"2.0","id":%d,"error":{"code":-32601,"message":"not a startup probe"}}`,
+	})
 	settings, err := json.Marshal(providerSettings)
 	if err != nil {
 		t.Fatal(err)
