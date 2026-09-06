@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"io"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -41,10 +42,8 @@ const tlsRecordTypeHandshake = 0x16
 // the LAN. Off the accept path, a silent connection costs one parked
 // goroutine until its deadline and nothing else.
 type tlsSniffListener struct {
-	// The bound listener. Embedded so Addr and Close reach it directly:
-	// Close is what ends the accept loop below (the pending Accept fails
-	// with net.ErrClosed), which is also what releases any classification
-	// still waiting to deliver.
+	// The bound listener. Close also releases goroutines waiting to
+	// deliver a classified connection or a temporary accept error.
 	net.Listener
 
 	tlsConfig *tls.Config
@@ -61,13 +60,19 @@ type tlsSniffListener struct {
 	// purpose: a connection is either in a caller's hands or still owned
 	// by the goroutine that can close it, never parked in a channel
 	// nobody will drain.
-	ready chan net.Conn
+	ready chan sniffAcceptResult
 
-	// dead is closed when the accept loop ends, after acceptErr is set.
+	// dead is closed on Close or a terminal accept error, after acceptErr is set.
 	// Reading acceptErr is safe only after the close, which is the
 	// happens-before this pair exists for.
 	dead      chan struct{}
 	acceptErr error
+	endOnce   sync.Once
+}
+
+type sniffAcceptResult struct {
+	conn net.Conn
+	err  error
 }
 
 // serverTLSConfig turns the configured certificate source into what an
@@ -115,7 +120,7 @@ func sniffTLS(inner net.Listener, tlsConfig *tls.Config, sniffTimeout time.Durat
 		Listener:     inner,
 		tlsConfig:    tlsConfig,
 		sniffTimeout: sniffTimeout,
-		ready:        make(chan net.Conn),
+		ready:        make(chan sniffAcceptResult),
 		dead:         make(chan struct{}),
 	}
 	go l.acceptLoop()
@@ -123,15 +128,22 @@ func sniffTLS(inner net.Listener, tlsConfig *tls.Config, sniffTimeout time.Durat
 }
 
 // acceptLoop drains the bound listener and hands each connection to its
-// own classification. It ends on the first accept error — which is
-// net.ErrClosed for every ordinary shutdown, and is what Accept then
-// reports to http.Server.Serve.
+// own classification. Temporary errors are delivered once so net/http
+// retains its retry/backoff behavior; caching one would permanently stop
+// accepting while established WebSockets continued to work.
 func (l *tlsSniffListener) acceptLoop() {
 	for {
 		conn, err := l.Listener.Accept()
 		if err != nil {
-			l.acceptErr = err
-			close(l.dead)
+			if temporary, ok := err.(net.Error); ok && temporary.Temporary() {
+				select {
+				case l.ready <- sniffAcceptResult{err: err}:
+					continue
+				case <-l.dead:
+					return
+				}
+			}
+			l.end(err)
 			return
 		}
 		go l.classify(conn)
@@ -140,11 +152,24 @@ func (l *tlsSniffListener) acceptLoop() {
 
 func (l *tlsSniffListener) Accept() (net.Conn, error) {
 	select {
-	case conn := <-l.ready:
-		return conn, nil
+	case result := <-l.ready:
+		return result.conn, result.err
 	case <-l.dead:
 		return nil, l.acceptErr
 	}
+}
+
+func (l *tlsSniffListener) end(err error) {
+	l.endOnce.Do(func() {
+		l.acceptErr = err
+		close(l.dead)
+	})
+}
+
+func (l *tlsSniffListener) Close() error {
+	err := l.Listener.Close()
+	l.end(net.ErrClosed)
+	return err
 }
 
 // classify reads the one byte that decides what this connection is, then
@@ -176,7 +201,7 @@ func (l *tlsSniffListener) classify(conn net.Conn) {
 		classified = tls.Server(peeked, l.tlsConfig)
 	}
 	select {
-	case l.ready <- classified:
+	case l.ready <- sniffAcceptResult{conn: classified}:
 	case <-l.dead:
 		_ = classified.Close()
 	}

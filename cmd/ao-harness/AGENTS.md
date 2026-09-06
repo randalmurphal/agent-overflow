@@ -288,6 +288,10 @@ names both. Only a failed or foreground attach cleans up.
 
 ## Testing
 
+Use raw Go strings for shell fixtures that print JSON; backslashes before
+quotes inside a shell single-quoted format become invalid wire bytes.
+`TestLaunchManagedHarnessBindsFreshRoot` exercises the actual bootstrap parser.
+
 `go test ./cmd/ao-harness/` covers the pure halves and the refusals;
 nothing here boots a backend. The real boot is `make e2e`'s job:
 `e2e/tests/harness-bench.spec.ts` runs `bench burst-stream` as a

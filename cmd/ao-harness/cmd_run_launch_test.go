@@ -18,7 +18,12 @@ func TestLaunchManagedHarnessBindsFreshRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	binary := filepath.Join(t.TempDir(), "fake-backend")
-	script := "#!/bin/sh\nroot=\"\"\nwhile [ $# -gt 0 ]; do if [ \"$1\" = \"--data-dir\" ]; then root=$2; shift 2; else shift; fi; done\nprintf '__AO_HARNESS__: {\\\"url\\\":\\\"http://127.0.0.1:1/\\\",\\\"port\\\":1,\\\"token\\\":\\\"test\\\",\\\"dataRoot\\\":\\\"%s\\\",\\\"dataDir\\\":\\\"%s/agent-overflow\\\",\\\"pid\\\":%d,\\\"version\\\":\\\"test\\\"}\\n' \"$root\" \"$root\" $$\nsleep 30\n"
+	script := `#!/bin/sh
+root=""
+while [ $# -gt 0 ]; do if [ "$1" = "--data-dir" ]; then root=$2; shift 2; else shift; fi; done
+printf '__AO_HARNESS__: {"url":"http://127.0.0.1:1/","port":1,"token":"test","dataRoot":"%s","dataDir":"%s/agent-overflow","pid":%d,"version":"test"}\n' "$root" "$root" $$
+sleep 30
+`
 	if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}

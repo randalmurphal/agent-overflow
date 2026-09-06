@@ -52,6 +52,12 @@ cookie names and the origin allow-list all derive from.
   the first byte of that request. Inline, one peer that connected and said
   nothing would hold up every other client for that window, repeatedly, at no
   cost to itself.
+- **Temporary accept errors are delivered once, never cached as terminal.**
+  `http.Server` owns the retry and backoff. The sniff listener must keep
+  accepting afterwards; otherwise existing WebSockets work while every new
+  HTTP request hangs until restart. Close also releases pending error delivery.
+  `TestTLSSniffRecoversAfterTemporaryAcceptError` covers a live connection
+  surviving the failure alongside a fresh connection recovering.
 - **Which certificate answers is decided per handshake, by SNI**
   (`certsource.go`). `CertificateSource` holds two swappable slots. A
   ClientHello naming the configured canonical domain gets the DOMAIN
