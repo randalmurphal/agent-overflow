@@ -86,6 +86,11 @@ const CapabilityConversationTransfer = "conversation.transfer.v1"
 
 const CapabilityRemoteCommands = "commands.remote.v1"
 
+// CapabilityFilePreview names confined HTML-directory previews through the
+// preview ticket/grant boundary. Only execution hosts with Config.FilePreviews
+// advertise it. Older clients continue using editor links.
+const CapabilityFilePreview = "preview.files.v1"
+
 // advertisedCapabilities answers the set one connection is told about.
 //
 // The list above is still the rule — a capability names a behavior every
@@ -96,17 +101,23 @@ const CapabilityRemoteCommands = "commands.remote.v1"
 // and never from the caller.
 //
 // A nil hook means the same thing false does: no browser tools here.
-func advertisedCapabilities(browserAvailable func() bool, transfers bool) []string {
+func advertisedCapabilities(browserAvailable func() bool, transfers, filePreviews bool) []string {
+	var capabilities []string
 	if browserAvailable != nil && browserAvailable() {
 		if transfers {
-			return serverCapabilitiesWithBrowserAndTransfers
+			capabilities = serverCapabilitiesWithBrowserAndTransfers
+		} else {
+			capabilities = serverCapabilitiesWithBrowser
 		}
-		return serverCapabilitiesWithBrowser
+	} else if transfers {
+		capabilities = serverCapabilitiesWithTransfers
+	} else {
+		capabilities = serverCapabilities
 	}
-	if transfers {
-		return serverCapabilitiesWithTransfers
+	if filePreviews {
+		return append(slices.Clone(capabilities), CapabilityFilePreview)
 	}
-	return serverCapabilities
+	return capabilities
 }
 
 // CapabilityRemoteNotifications says this backend delivers the

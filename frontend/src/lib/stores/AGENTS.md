@@ -488,6 +488,9 @@ stops waking readers.
 - `bindings.ts` re-exports what `wails3 generate bindings -ts` produced.
   Add the new App method by regenerating and re-exporting. Never hand-wrap
   a binding, and never reach for `window.runtime`.
+  `filePreviews.ts` owns generated HTML opens: negotiated capability plus scope,
+  explicit computer target, then a connection-identity recheck before opening
+  the response. Paths never imply HOME and a removed computer cannot fall back.
 - A new entity store registers its RPCs in the architecture test's
   registry, and may import the RPCs it owns and no others.
 - Every item-window RPC states this client's projection preference, and

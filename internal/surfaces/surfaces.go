@@ -372,8 +372,14 @@ var Listeners = []Listener{
 		Binding:    BindLANCapable,
 		Credential: CredTransferTicket,
 		Posture:    PostureProxied,
-		Sites:      []string{"internal/transport/previewlisten.go"},
-		Why: "One TLS listener per port in this machine's PREVIEW SET, " +
+		Sites:      []string{"internal/transport/previewlisten.go", "internal/transport/previewcontent.go"},
+		Why: "The shared preview ticket/grant boundary also serves confined HTML " +
+			"directories (internal/filepreview) on separately allocated ports. " +
+			"Remote content uses the same TLS sources; the on-host file path " +
+			"alone binds literal 127.0.0.1 over HTTP, with a non-Secure cookie. " +
+			"Each directory has a fresh grant book, os.Root containment, no " +
+			"hidden files or directory listings, and no service workers. " +
+			"For dev servers, one TLS listener per port in this machine's PREVIEW SET, " +
 			"each reverse-proxying to the dev server on the same port " +
 			"number of loopback (docs/specs/remote-access.md §7). It is " +
 			"the only listener in this tree that carries somebody else's " +
@@ -392,7 +398,7 @@ var Listeners = []Listener{
 			"cookie and redirects to the same address without it, and " +
 			"every later request re-checks the principal against the live " +
 			"session store — so a revoked device loses its previews on the " +
-			"next request and a restart ends them all. TLS on every path, " +
+			"next request and a restart ends them all. TLS on network paths, " +
 			"because the cookie is Secure and a browser will not store one " +
 			"from a cleartext origin that is not localhost. This row is " +
 			"the LAN leg; the tailnet leg's bind is the node's own " +
@@ -617,7 +623,8 @@ var Routes = []Route{
 		Listener:   "dev-server preview",
 		Credential: CredTransferTicket,
 		Posture:    PostureProxied,
-		Why: "The whole port, forwarded to the dev server on the same port " +
+		Why: "The whole port, served by a confined HTML directory handler or " +
+			"forwarded to the dev server on the same port " +
 			"number of loopback. The ticket buys a per-port cookie on the " +
 			"first hit and the cookie's principal is re-checked on every " +
 			"request after it; a request with neither gets one plain-text " +
@@ -1261,7 +1268,9 @@ var Origins = []Origin{
 		Listener: "dev-server preview",
 		Author:   AuthorAgentOrUser,
 		Posture:  PostureProxied,
-		Why: "Somebody's application, relayed unchanged: a dev server an " +
+		Why: "Somebody's application, either an os.Root-confined generated " +
+			"HTML directory with hidden paths, directory listings and service " +
+			"workers refused, or relayed unchanged: a dev server an " +
 			"agent started, or one the owner named by hand. The bytes are " +
 			"authored by an agent or the person, and unlike the attachment " +
 			"row above they ARE documents and they DO execute — which is " +
@@ -1275,9 +1284,9 @@ var Origins = []Origin{
 			"page cookie is honoured only by routes that also check an " +
 			"exact-port Origin allow-list (pagecookie_contract_test.go " +
 			"enumerates every reader and proves each refuses a request " +
-			"from a preview origin). No security headers are written here " +
-			"and none should be: this process must not invent a policy " +
-			"for an application it did not write.",
+			"from a preview origin). Dev-server headers remain the upstream's; " +
+			"confined file responses use no-store, nosniff and no-referrer " +
+			"without adding a script policy that breaks the generated page.",
 	},
 	{
 		Name:     "upstream relay (claudetui gateway)",

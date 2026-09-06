@@ -83,9 +83,10 @@ func (p *PreviewLANSource) ListenPreview(port int) (net.Listener, error) {
 	return tls.NewListener(ln, p.TLS), nil
 }
 
-// PreviewListenerSource opens the listener for one preview port. Two
-// implementations exist: the tailnet node (internal/app, beside the node
-// it needs) and PreviewLANSource above. They are tried in the order the
+// PreviewListenerSource opens the listener for one preview port. Network
+// sources are the tailnet node (internal/app) and PreviewLANSource above.
+// The private contentLoopbackSource serves on-host file previews only.
+// Network sources are tried in the order the
 // caller lists them, and the first that answers wins — which is what
 // makes the tailnet the preferred address without anything here knowing
 // why it is preferred.
@@ -95,9 +96,8 @@ type PreviewListenerSource interface {
 	// before every bind, because a tailnet node comes and goes.
 	PreviewHost() string
 
-	// ListenPreview opens a TLS listener on port. The listener is TLS
-	// on every path: the preview cookie is `Secure`, and a browser will
-	// not store one from a cleartext origin that is not localhost.
+	// ListenPreview opens a listener on port. Network sources always use TLS.
+	// Only the private, literal-loopback content source serves HTTP.
 	ListenPreview(port int) (net.Listener, error)
 }
 

@@ -21,6 +21,8 @@ import { addToast } from '../stores/toast.svelte';
 import { errString } from './errors';
 import { PATH_LINK_HREF_PREFIX, parsePathLinkHref } from './pathLinkExtension';
 import { hasScope } from '../transport/scopes';
+import { canPreviewFiles, openFilePreview } from '../stores/filePreviews';
+import { isHTMLFile } from './htmlFile';
 
 export {
   ensureMarkdownCopyDelegate,
@@ -58,6 +60,10 @@ function handlePathLinkClick(event: MouseEvent): void {
   // this page is. Keep the document-level boundary safe across that
   // transition even though ChatMarkdown stops emitting new path links.
   const backend = link.closest<HTMLElement>('[data-computer]')?.dataset.computer ?? HOME_BACKEND;
+  if (isHTMLFile(parsed.path) && canPreviewFiles(backend)) {
+    void openFilePreview(backend, parsed.path, parsed.workspacePath).catch(err => addToast('error', errString(err)));
+    return;
+  }
   if (!hasScope('host', backend)) return;
   void invokePathLink(backend, parsed.path, parsed.line, parsed.col, parsed.workspacePath);
 }

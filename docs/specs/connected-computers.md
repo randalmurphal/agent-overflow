@@ -226,5 +226,9 @@ load caught and fixed an existing selection-validator initialization-order bug.
 
 Preview browser grants now survive the app connection disappearing. The full
 desktop/compact gateway flows pass, including disconnection, revocation and
-stopping the share. The latest full Go build and test suite pass. Generated HTML
-preview support remains part of the unchecked preview row.
+stopping the share. Generated HTML previews now run at a separate origin with
+relative assets and the same authorization; desktop and compact browser tests
+exercise real page scripts, CSS, reload, service-worker refusal and revocation.
+See [file-previews.md](../architecture/file-previews.md) for lifetime and browser
+certificate limits. Sharing-policy changes also retire existing network preview
+listeners; rebind alone previously left those independent listeners open.

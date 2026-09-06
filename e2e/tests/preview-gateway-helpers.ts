@@ -340,7 +340,7 @@ interface Opened {
  * `instrument` collects toasts that way. The click counter stays on the
  * page, because it is only ever read within one document.
  */
-async function recordOpens(page: Page): Promise<Opened> {
+export async function recordOpens(page: Page): Promise<Opened> {
   const urls: string[] = [];
   await page.exposeFunction('__aoRecordWindowOpen', (url: string) => {
     urls.push(url);

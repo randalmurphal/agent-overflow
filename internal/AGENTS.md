@@ -22,6 +22,7 @@ the package's whole documentation, so they carry more.
 | `transferclient/` | One-operation handoff client: pinned TLS, bounded replies, identity checks and no redirects or implicit mutation retries. Uses deviceclient's shared TLS transport without owning a device credential. |
 | `threadtransfer/` | Fixed source handoff protocol over the durable journal and transfer client; bounded active coordination, no provider state or general orchestration. App owns snapshot creation and job lifecycle. |
 | `remotejobs/` | Bounded peer-command processes and durable acceptance receipts. Has its own subarea guide. |
+| `filepreview/` | Confined generated HTML and asset serving at independent preview origins, with bounded directory lifetime. Has its own subarea guide. |
 | `rpcclient/` | Small serialized wire RPC client for local owner commands and paired peers. Has its own subarea guide. |
 | `localcontrol/` | Private loopback owner-console discovery, RPC and desktop-page adoption for headless pairing and installed services. Has its own subarea guide. |
 | `sshsetup/` | Bounded OpenSSH onboarding and service-start operations; preserves SSH host-key and credential-agent authority. Has its own subarea guide. |

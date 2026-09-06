@@ -212,6 +212,9 @@ func (a *App) SetNetworkSettings(ctx context.Context, s network.Settings) (netwo
 	// The certificate half runs on its own goroutine. Kicking it here is
 	// what makes "save the domain" and "obtain a certificate for it" one
 	// act from the user's side without making them one call.
+	if prev.BindAll != stored.BindAll || prev.TailnetEnabled != stored.TailnetEnabled || prev.TailnetControlURL != stored.TailnetControlURL {
+		a.resetNetworkPreviews()
+	}
 	a.kickDomainCertificate()
 
 	// The tailnet half is the same arrangement for the same reason: the

@@ -40,6 +40,22 @@ interface FoundLink {
   childTypes: string[];
 }
 
+describe('HTML preview links', () => {
+  it('rewrites HTML on a remote frontend and leaves other local paths inert', () => {
+    const extension = buildPathLinkExtension([{ path: 'report.html' }, { path: 'main.ts' }] as never, '/repo', 'html');
+    const links = findLinks(lex('report.html main.ts [page](docs/one.HTML) [code](src/main.ts)', extension));
+    const previews = links.filter(link => link.href.startsWith(PATH_LINK_HREF_PREFIX));
+    expect(previews.map(link => parsePathLinkHref(link.href)?.path)).toEqual(['report.html', 'docs/one.HTML']);
+    expect(previews.map(link => link.title)).toEqual(['Preview report.html', 'Preview docs/one.HTML']);
+  });
+
+  it('preserves editor labels for source files while offering HTML previews locally', () => {
+    const links = findLinks(lex('[page](index.html) [source](src/main.ts)', buildPathLinkExtension([], '/repo', 'files')));
+    expect(links[0].title).toBe('Preview index.html');
+    expect(links[1].title).toContain('editor');
+  });
+});
+
 function findLinks(tokens: ReturnType<typeof lex>): FoundLink[] {
   const out: FoundLink[] = [];
   const walk = (nodes: unknown[]) => {

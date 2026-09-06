@@ -250,6 +250,7 @@ export {
   AllowPreviewPort,
   DisallowPreviewPort,
   MintPreviewURL,
+  MintFilePreviewURL,
 
   // The other machines this installation drives. Host-scoped: attaching
   // one is something only the person at this keyboard does.

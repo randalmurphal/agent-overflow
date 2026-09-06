@@ -589,6 +589,14 @@ while the feature is enabled and the node is not yet Running.
 
 ## The dev-server list
 
+Generated HTML uses `app_file_preview.go` and `internal/filepreview`, sharing
+transport's preview authorization at separate origins. `MintFilePreviewURL` pins
+to the selected computer and derives locality from the authenticated host proof,
+including paired local browsers. Never take locality from RPC arguments.
+Changing LAN/tailnet sharing calls `resetNetworkPreviews`: closing or rebinding
+the app connection does not close independently opened preview listeners. Local
+file previews survive those policy changes; shutdown closes every manager.
+
 `app_preview.go` is the App's half of the port gateway
 (`docs/specs/remote-access.md` §7). `internal/devscan` knows how to look at
 the machine and nothing else; this file owns the two things around it —

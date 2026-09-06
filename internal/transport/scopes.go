@@ -45,7 +45,8 @@ const (
 	// ScopePreviewOpen covers opening this machine's dev-server previews
 	// from another machine: listing the dev servers discovery found, and
 	// minting the ticketed preview URL for one (the port gateway,
-	// docs/specs/remote-access.md §7).
+	// docs/specs/remote-access.md §7), or opening a confined HTML directory
+	// with the same preview authorization at a separate origin.
 	//
 	// Its own name rather than a reuse of ScopeTerminalOperate, and the
 	// vocabulary is exactly where that distinction has to be expressible:

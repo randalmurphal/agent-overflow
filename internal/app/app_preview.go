@@ -12,6 +12,7 @@ import (
 
 	"agent-overflow/internal/devscan"
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/filepreview"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/transport"
 )
@@ -79,6 +80,7 @@ type previewState struct {
 	// never called Start, which is what makes discovery work on its own
 	// with nothing served behind it.
 	gateway *transport.PreviewGateway
+	files   *filepreview.Manager
 }
 
 // startDevServerPreviews starts the discovery loop. Called from Start;
@@ -430,7 +432,7 @@ func (a *App) previewGateway() *transport.PreviewGateway {
 func (a *App) previewGatewayBuilt() bool {
 	a.preview.mu.Lock()
 	defer a.preview.mu.Unlock()
-	return a.preview.gateway != nil
+	return a.preview.gateway != nil || a.preview.files != nil
 }
 
 // closePreviewGateway retires every preview listener and every grant it
@@ -440,11 +442,32 @@ func (a *App) closePreviewGateway() error {
 	a.preview.mu.Lock()
 	gateway := a.preview.gateway
 	a.preview.gateway = nil
+	files := a.preview.files
+	a.preview.files = nil
 	a.preview.mu.Unlock()
 	if gateway != nil {
 		gateway.Close()
 	}
+	if files != nil {
+		files.Close()
+	}
 	return nil
+}
+
+// resetNetworkPreviews makes a sharing-policy change end the listeners it
+// previously admitted. Disconnecting app sockets alone does not stop a browser
+// preview, and a listener bound to a LAN address survives a main-mux rebind.
+func (a *App) resetNetworkPreviews() {
+	a.preview.mu.Lock()
+	gateway, files := a.preview.gateway, a.preview.files
+	a.preview.gateway = nil
+	a.preview.mu.Unlock()
+	if gateway != nil {
+		gateway.Close()
+	}
+	if files != nil {
+		files.CloseNetwork()
+	}
 }
 
 // previewHost is the authority a preview URL on this machine names, and

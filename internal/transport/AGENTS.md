@@ -205,10 +205,17 @@ credential or scope gate applies to it, because none of those bytes are ours.
   is bounded and evicts its oldest entry to make room, so minting first
   meant a call that was always going to be refused still spent a slot
   and invalidated a ticket another page was about to present.
-- **TLS on every path, no exception.** The cookie is `Secure` and a browser
+- **TLS on every network path.** The cookie is `Secure` and a browser
   will not store one from a cleartext origin that is not localhost. A tailnet
   with HTTPS turned off therefore has no preview address, which the list says
   rather than silently serving something that cannot hold a cookie.
+  `NewContentPreview` is the sole local exception: authenticated on-host HTML
+  previews replace all sources with a literal `127.0.0.1` HTTP listener and use
+  a non-Secure cookie. Remote requests never select that source. Each confined
+  directory has a separate gateway/grant book; `internal/filepreview` owns its
+  handler and lifetime. See `docs/architecture/file-previews.md`.
+  `Config.FilePreviews` advertises `preview.files.v1` only on execution hosts
+  implementing the RPC; a frontend-only controller has no files to preview.
 - **The address is asked per bind, never captured.** Every source answers
   `PreviewHost()` immediately before each bind: a tailnet node comes and goes,
   and `PreviewLANSource.LANIP` is a FUNCTION because LAN access is a setting
@@ -458,7 +465,7 @@ delivery; `notification:activated` retains its separate cold-launch replay.
   means; adding a frame type, field, or channel is additive and does not
   move it. Additive-only is what makes the swap window — an old bundle
   live against a just-updated backend — safe.
-- **Both capability sets are frozen by a test**, and the frozen lists spell
+- **Capability names are frozen by tests**, and the frozen lists spell
   each name as a literal so a rename cannot slip through it. A name is
   stable forever once shipped, because a client on an older bundle may
   still ask about it; retiring one means the backend stops advertising

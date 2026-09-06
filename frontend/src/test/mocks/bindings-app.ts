@@ -325,6 +325,7 @@ export const GetDevServers = dispatch('GetDevServers');
 export const AllowPreviewPort = dispatch('AllowPreviewPort');
 export const DisallowPreviewPort = dispatch('DisallowPreviewPort');
 export const MintPreviewURL = dispatch('MintPreviewURL');
+export const MintFilePreviewURL = dispatch('MintFilePreviewURL');
 export const GetEditorSettings = dispatch('GetEditorSettings');
 export const SetEditorSettings = dispatch('SetEditorSettings');
 export const ListBackends = dispatch('ListBackends');

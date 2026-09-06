@@ -16,6 +16,8 @@ import (
 // The port gateway: one TLS listener per port in this machine's preview
 // set, each reverse-proxying to the dev server on the same port number
 // of loopback (docs/specs/remote-access.md §7).
+// NewContentPreview reuses the ticket/grant boundary for confined HTML files
+// at an independently allocated port; its local-only source needs no TLS.
 //
 // What the dev server on the other end expects of the headers this
 // forwards is recorded, with the version it was verified against, in
@@ -112,6 +114,12 @@ const (
 // It is constructed once and reconciled with SetPorts. The zero value is
 // not usable; NewPreviewGateway builds one.
 type PreviewGateway struct {
+	// content is supplied only by the generated-file preview constructor. Dev
+	// previews proxy their upstream; file previews serve an already-confined root.
+	content http.Handler
+	// scheme names the browser-facing origin. Only the private loopback-only
+	// content constructor may use http; network sources always use TLS.
+	scheme      string
 	sources     []PreviewListenerSource
 	sessionLive func(sessionID string) bool
 	now         func() time.Time
@@ -186,6 +194,10 @@ type PreviewGatewayConfig struct {
 
 // NewPreviewGateway builds a gateway that is serving nothing yet.
 func NewPreviewGateway(cfg PreviewGatewayConfig) *PreviewGateway {
+	return newPreviewGateway(cfg, nil, "https")
+}
+
+func newPreviewGateway(cfg PreviewGatewayConfig, content http.Handler, scheme string) *PreviewGateway {
 	now := cfg.Now
 	if now == nil {
 		now = time.Now
@@ -193,6 +205,8 @@ func NewPreviewGateway(cfg PreviewGatewayConfig) *PreviewGateway {
 	tickets := newTicketBook(previewTicketMax, previewTicketTTL)
 	tickets.now = now
 	g := &PreviewGateway{
+		content:     content,
+		scheme:      scheme,
 		sources:     cfg.Sources,
 		sessionLive: cfg.SessionLive,
 		now:         now,
@@ -303,7 +317,7 @@ func (g *PreviewGateway) MintURL(sessionID string, port int, path string) (strin
 	query := target.Query()
 	query.Set(previewTicketParam, ticket)
 	target.RawQuery = query.Encode()
-	target.Scheme = "https"
+	target.Scheme = g.scheme
 	target.Host = net.JoinHostPort(listener.host, strconv.Itoa(port))
 	return target.String(), nil
 }

@@ -343,6 +343,10 @@ type Config struct {
 	// Nil leaves the route absent; control authorization stays in bound RPCs.
 	ThreadTransfers ThreadTransferEndpoints
 
+	// FilePreviews says the registered App implements confined HTML previews.
+	// Frontend-only controllers must not advertise an execution-host behavior.
+	FilePreviews bool
+
 	// Bundle is the SPA this backend serves, as the two bundle routes and
 	// the hello frame publish it (bundleroutes.go, internal/bundle).
 	//
@@ -2084,7 +2088,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			// Resolved per accept, not at boot: the browser Manager picks
 			// its engine during the App's startup, which runs after this
 			// Config is built.
-			Capabilities: advertisedCapabilities(s.cfg.BrowserAvailable, s.cfg.ThreadTransfers != nil),
+			Capabilities: advertisedCapabilities(s.cfg.BrowserAvailable, s.cfg.ThreadTransfers != nil, s.cfg.FilePreviews),
 			BackendID:    backendID,
 			BackendName:  s.cfg.BackendName,
 			// Sampled per accept: the field's whole purpose is letting a

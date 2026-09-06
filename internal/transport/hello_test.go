@@ -148,6 +148,21 @@ func TestServer_AdvertisedCapabilitiesAreFrozen(t *testing.T) {
 	assertCapabilities(t, serverCapabilitiesWithBrowser, append(append([]string{}, want...), "browser"))
 }
 
+func TestFilePreviewCapabilityRequiresExecutionHostSupport(t *testing.T) {
+	for _, browser := range []bool{false, true} {
+		for _, transfers := range []bool{false, true} {
+			base := advertisedCapabilities(func() bool { return browser }, transfers, false)
+			for _, flag := range base {
+				if flag == CapabilityFilePreview {
+					t.Fatal("frontend controller advertised file previews")
+				}
+			}
+			withFiles := advertisedCapabilities(func() bool { return browser }, transfers, true)
+			assertCapabilities(t, withFiles, append(append([]string{}, base...), "preview.files.v1"))
+		}
+	}
+}
+
 func assertCapabilities(t *testing.T, got, want []string) {
 	t.Helper()
 	if len(got) != len(want) {

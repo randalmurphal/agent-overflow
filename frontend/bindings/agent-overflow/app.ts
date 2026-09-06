@@ -2934,6 +2934,16 @@ export function MintDevicePairing(deviceClass: string, access: string): $Cancell
 }
 
 /**
+ * MintFilePreviewURL opens an HTML file and its directory assets on a separate
+ * origin. The calling frontend explicitly targets the file's owning computer.
+ * The caller's authenticated session determines local versus remote access;
+ * neither a path nor a frontend argument can choose a cleartext network bind.
+ */
+export function MintFilePreviewURL(path: string, workspacePath: string): $CancellablePromise<string> {
+    return $Call.ByID(310779922, path, workspacePath);
+}
+
+/**
  * MintPreviewURL returns the URL that opens a thread's dev server from
  * the device asking. The ticket it carries is single-use, expires in a
  * minute and is bound to (this caller, this port), so the URL is worth

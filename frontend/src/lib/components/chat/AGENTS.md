@@ -321,6 +321,13 @@ with a different trust model: rewritten without render-time validation,
 but ONLY on surfaces that pass a `workspacePath` (never PR or review
 bodies), and gated at click time by `editor.ResolvePath`.
 
+Hosts advertising `preview.files.v1` also turn HTML paths into generated-page
+previews. Local screens retain editor links for other files; remote screens
+linkify HTML only. `stores/filePreviews.ts` checks the owning computer's grant
+and capability, pins the RPC, and rejects stale responses after connection
+replacement. The nonce remains mandatory, and documents open only at the
+independent preview origin (`docs/architecture/file-previews.md`).
+
 A `localhost:<port>` link is rewritten the same way and for a related
 reason: it names a listener on the machine the agent runs on, so read
 anywhere else it points at the reader's own machine. `ChatMarkdown` takes a

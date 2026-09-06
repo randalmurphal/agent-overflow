@@ -488,6 +488,7 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		// session core onto the transport's dumb DTOs.
 		AuthEndpoints:   appservice.AuthEndpoints(appService.App),
 		ThreadTransfers: appservice.ThreadTransferEndpoints(appService.App),
+		FilePreviews:    true,
 		// Attachment bytes, which cross on HTTP rather than inside a WS
 		// frame. Late-bound the same way: the adapter holds the App and
 		// reads its attachment store per call, so the store opening during

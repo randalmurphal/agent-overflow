@@ -35,7 +35,10 @@ const previewUpstreamDialTimeout = 5 * time.Second
 // handler builds the http.Handler for one preview port.
 func (g *PreviewGateway) handler(target PreviewTarget, conns *previewConns) http.Handler {
 	port := target.Port
-	proxy := g.proxy(target)
+	content := g.content
+	if content == nil {
+		content = g.proxy(target)
+	}
 	cookieName := previewCookiePrefix + strconv.Itoa(port)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -60,7 +63,7 @@ func (g *PreviewGateway) handler(target PreviewTarget, conns *previewConns) http
 		// principal each reach a connection nothing else can.
 		release := conns.hold(r, token)
 		defer release()
-		proxy.ServeHTTP(w, r)
+		content.ServeHTTP(w, r)
 	})
 }
 
@@ -114,7 +117,7 @@ func (g *PreviewGateway) exchange(
 		Expires:  expires,
 		MaxAge:   int(previewGrantTTL / time.Second),
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   g.scheme == "https",
 		SameSite: http.SameSiteStrictMode,
 	})
 

@@ -33,6 +33,7 @@
 import type { Token, Tokens, TokensList } from '../markdown';
 import type { PathRef } from '../types/models';
 import { openInEditorLabel } from './editorLinkLabel';
+import { isHTMLFile } from './htmlFile';
 
 // Per-page-load nonce that gates our `agent-overflow:open?…` scheme.
 // Streamdown's `transformUrl` honors a custom-scheme prefix only when
@@ -183,6 +184,7 @@ interface ParsedPathTarget {
 export function buildPathLinkExtension(
   pathRefs: readonly PathRef[],
   workspacePath: string,
+  mode: 'editor' | 'files' | 'html' = 'editor',
 ): PathLinkExtension | undefined {
   // Dedupe by path (multiple refs for the same file may exist when
   // the same file is mentioned with different :line:col suffixes —
@@ -190,7 +192,7 @@ export function buildPathLinkExtension(
   // so a set of paths is the only data we need here).
   const allowed = new Set<string>();
   for (const ref of pathRefs) {
-    if (ref?.path) allowed.add(ref.path);
+    if (ref?.path && (mode !== 'html' || isHTMLFile(ref.path))) allowed.add(ref.path);
   }
 
   // Longest-first ordering ensures `src/lib/foo.ts` matches before the
@@ -257,7 +259,7 @@ export function buildPathLinkExtension(
     type: 'link',
     raw,
     href: buildPathLinkHref(path, line, col, workspacePath),
-    title: openInEditorLabel(path, line, col),
+    title: pathLinkTitle(path, line, col, mode),
     text: inner,
     tokens: [{ type: childKind, raw, text: inner }],
   });
@@ -283,7 +285,7 @@ export function buildPathLinkExtension(
       if (isInsideMarkdownLinkLabel(this)) return undefined;
 
       if (src.startsWith('[') || src.startsWith('![')) {
-        return markdownLocalResourceToken(src, this, parseAllowlistedTarget, workspacePath);
+        return markdownLocalResourceToken(src, this, parseAllowlistedTarget, workspacePath, mode);
       }
       if (!bareRe || !wrappedRe) return undefined;
 
@@ -487,25 +489,30 @@ function markdownLocalResourceToken(
   ctx: unknown,
   parseAllowlistedTarget: (target: string) => ParsedPathTarget | null,
   workspacePath: string,
+  mode: 'editor' | 'files' | 'html',
 ): GenericLinkToken | GenericImageToken | undefined {
   const tokenizerContext = ctx as PathLinkTokenizerContext;
   const token = tokenizerContext.lexer?.tokenizer?.link?.(src);
   if (!token || (token.type !== 'link' && token.type !== 'image')) return undefined;
   const fileTarget = parseLocalFileHref(token.href, workspacePath);
   if (token.type === 'image') {
-    if (!fileTarget) return token as GenericImageToken;
+    if (!fileTarget || mode === 'html') return token as GenericImageToken;
     return {
       ...token,
       href: buildLocalImageHref(fileTarget.path, workspacePath, token.href),
     } as GenericImageToken;
   }
   const parsed = fileTarget ?? parseAllowlistedTarget(token.href) ?? parsePathShapedHref(token.href, workspacePath);
-  if (!parsed) return token;
+  if (!parsed || (mode === 'html' && !isHTMLFile(parsed.path))) return token;
   return {
     ...token,
     href: buildPathLinkHref(parsed.path, parsed.line, parsed.col, workspacePath),
-    title: openInEditorLabel(parsed.path, parsed.line, parsed.col),
+    title: pathLinkTitle(parsed.path, parsed.line, parsed.col, mode),
   };
+}
+
+function pathLinkTitle(path: string, line: number | undefined, col: number | undefined, mode: string): string {
+  return mode !== 'editor' && isHTMLFile(path) ? `Preview ${path}` : openInEditorLabel(path, line, col);
 }
 
 function splitPathSuffix(target: string): ParsedPathTarget {
