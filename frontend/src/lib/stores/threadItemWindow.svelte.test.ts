@@ -185,7 +185,7 @@ describe('threadItemWindow', () => {
     expect(pane.loading).toBe(false);
   });
 
-  it('resets the window and cursor metadata together when a synced page reports a post-commit failure', async () => {
+  it('retains the committed window and cursor metadata when sync bookkeeping fails', async () => {
     const pane = createThreadPane();
     setBindingMock('ListThreadSliceAround', async () => ({
       items: [
@@ -215,15 +215,14 @@ describe('threadItemWindow', () => {
 
     await pane.switchThread(makeThread({ id: 't' }));
 
-    expect(replacements).toBe(3);
-    expect(pane.items).toEqual([]);
-    expect(pane.oldestLoadedTurnIndex).toBeNull();
-    expect(pane.newestLoadedTurnIndex).toBeNull();
-    expect(pane.hasMoreHistory).toBe(false);
+    expect(replacements).toBe(2);
+    expect(pane.items.map((item) => item.id)).toEqual(['loaded-row']);
+    expect(pane.oldestLoadedTurnIndex).toBe(4);
+    expect(pane.newestLoadedTurnIndex).toBe(4);
+    expect(pane.hasMoreHistory).toBe(true);
     expect(pane.hasMoreNewer).toBe(false);
-    expect(pane.paneErrorList.map((error) => error.kind)).toContain(
-      'history-load',
-    );
+    expect(consoleError).toHaveBeenCalled();
+
     consoleError.mockRestore();
   });
 
