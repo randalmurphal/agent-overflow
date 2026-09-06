@@ -124,8 +124,10 @@ export interface EntityStore<T, Ctx = void> {
 export interface EntityStoreConfig<T, Ctx> {
   /** Diagnostics prefix. */
   name: string;
-  /** The computer owning a key; null only for frontend-owned state. */
-  backendForKey: (key: string) => BackendKey | null;
+  /** The computer owning a key; null for frontend-owned state, undefined
+   *  while unknown. An unknown owner's source must use guarded RPC routing;
+   *  it can report ambiguity or discover ownership without assuming HOME. */
+  backendForKey: (key: string) => BackendKey | null | undefined;
   /**
    * Acquire backend resources for key. Called on 0→1 refcount and on
    * invalidate / retry / resetAll. Must deliver observations via the
@@ -283,14 +285,17 @@ export function createEntityStore<T, Ctx = void>(
     if (suspended) return true;
     return untrack(() => {
       const backend = config.backendForKey(entry.key);
-      return backend !== null && getTransportStatusFor(backend).status !== 'connected';
+      return backend !== null && backend !== undefined && getTransportStatusFor(backend).status !== 'connected';
     });
   }
 
   function watchConnections(): void {
     stopWatching ??= onBackendStatusChange((backend) => {
       for (const entry of snapshotEntries()) {
-        if (untrack(() => config.backendForKey(entry.key)) !== backend) continue;
+        const owner = untrack(() => config.backendForKey(entry.key));
+        // An unresolved key may become routable when the computer catalog
+        // changes. Frontend-owned resources (null) never follow these edges.
+        if (owner !== undefined && owner !== backend) continue;
         teardown(entry);
         entry.value = null;
         entry.error = null;

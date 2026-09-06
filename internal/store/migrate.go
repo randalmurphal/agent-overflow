@@ -1605,6 +1605,22 @@ ALTER TABLE projects ADD COLUMN root_commit TEXT NOT NULL DEFAULT '';`,
 		SQL: `ALTER TABLE refresh_secrets ADD COLUMN next_secret_hash BLOB
               CHECK (next_secret_hash IS NULL OR length(next_secret_hash) = 32);`,
 	},
+	{
+		Version: 89,
+		Name:    "send_identity_lookup",
+		// A reconnect can outlive arbitrarily many newer messages. Index
+		// only actual send identities, on both physical timeline arms.
+		SQL: `CREATE INDEX idx_items_send_id
+    ON items(thread_id, json_extract(meta, '$.sendId'))
+ WHERE kind = 'user_text' AND parent_id = '' AND json_valid(meta)
+   AND json_extract(meta, '$.sendId') IS NOT NULL;
+CREATE INDEX idx_import_history_items_send_id
+    ON import_history_items(json_extract(meta, '$.sendId'), chunk_id)
+ WHERE kind = 'user_text' AND parent_id = '' AND json_valid(meta)
+   AND json_extract(meta, '$.sendId') IS NOT NULL;
+CREATE INDEX idx_flush_queue_send_id ON flush_queue_items(thread_id, send_id)
+ WHERE send_id <> '';`,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

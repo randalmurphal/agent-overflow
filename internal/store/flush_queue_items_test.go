@@ -2,8 +2,47 @@ package store
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
+
+func TestFindQueuedSendUsesItsThreadAndSparseIndex(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "queue-a")
+	mustCreateThread(t, s, "queue-b")
+	for _, row := range []FlushQueueItem{
+		{ID: "a", ThreadID: "queue-a", SendID: "same-send", Message: "A", Payload: json.RawMessage(`{"attachmentIds":["image"]}`)},
+		{ID: "b", ThreadID: "queue-b", SendID: "same-send", Message: "B"},
+		{ID: "injector", ThreadID: "queue-a", Message: "No client identity"},
+	} {
+		if err := s.InsertFlushQueueItem(row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	row, found, err := s.FindFlushQueueItemBySendID("queue-a", "same-send")
+	if err != nil || !found || row.ID != "a" || row.Message != "A" || string(row.Payload) != `{"attachmentIds":["image"]}` {
+		t.Fatalf("queued identity: %+v found=%v err=%v", row, found, err)
+	}
+	for _, id := range []string{"", "missing"} {
+		if _, found, err := s.FindFlushQueueItemBySendID("queue-a", id); err != nil || found {
+			t.Fatalf("unexpected match for %q: %v %v", id, found, err)
+		}
+	}
+	if err := s.DeleteFlushQueueItem("a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := s.FindFlushQueueItemBySendID("queue-a", "same-send"); err != nil || found {
+		t.Fatalf("another thread's identity matched: %v %v", found, err)
+	}
+	var plan string
+	var id, parent, unused int
+	if err := s.db.QueryRow("EXPLAIN QUERY PLAN "+findQueuedSendSQL, "queue-a", "same-send").Scan(&id, &parent, &unused, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(plan, "idx_flush_queue_send_id") {
+		t.Fatalf("queued identity lookup did not use its index: %s", plan)
+	}
+}
 
 func TestFlushQueueItemsRoundTripInQueueOrder(t *testing.T) {
 	s := newTestStore(t)

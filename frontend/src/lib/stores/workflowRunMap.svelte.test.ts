@@ -30,6 +30,7 @@ import {
   skeletonPhase,
 } from '../../test/fixtures/runMap';
 import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
+import { __setBackendStatusForTest } from './transportStatus.svelte';
 
 const ROOT = 'root';
 const WAVE_2 = 'wave-2';
@@ -175,6 +176,19 @@ describe('workflowRunMap — attach, source, release', () => {
     const attachment = await attached();
     expect(attachment.current).toBeNull();
     expect(attachment.error).toContain('run map unavailable');
+  });
+
+  it('reports unresolved routing instead of silently waiting for an absent HOME connection', async () => {
+    __setBackendStatusForTest('', { status: 'disconnected', nextAttemptAt: null });
+    setBindingMock('WorkflowGetRunMap', async () => { throw new Error('The computer that owns this item is unknown.'); });
+    try {
+      const attachment = await attached();
+      expect(attachment.error).toContain('computer that owns this item is unknown');
+      expect(getBindingMock('WorkflowGetRunMap')).toHaveBeenCalledWith(ROOT);
+    } finally {
+      __resetWorkflowRunMapStoreForTest();
+      __setBackendStatusForTest('', { status: 'connected', nextAttemptAt: null });
+    }
   });
 });
 

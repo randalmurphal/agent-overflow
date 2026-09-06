@@ -775,12 +775,21 @@ type streamingPathRefsState struct {
 // against the final summary either way (it stays the authoritative
 // full-text scan).
 func (r *Router) enrichStreamingPathRefsAndEmit(item store.Item, updatedAt int64) {
+	r.mu.Lock()
+	st := r.threadStateIfPresent(item.ThreadID)
+	r.mu.Unlock()
+	if st == nil {
+		return
+	}
 	workspacePath := r.workspacePathFor(item.ThreadID)
 	if workspacePath == "" {
 		return
 	}
 	r.mu.Lock()
-	st := r.state(item.ThreadID)
+	if r.threadStateIfPresent(item.ThreadID) != st {
+		r.mu.Unlock()
+		return
+	}
 	state := st.streamingPathRefsLast[item.ID]
 	if state == nil {
 		state = &streamingPathRefsState{scanner: pathlinks.NewStreamScanner(workspacePath)}
@@ -827,7 +836,8 @@ func (r *Router) enrichStreamingPathRefsAndEmit(item store.Item, updatedAt int64
 // goes away from the router's perspective).
 func (r *Router) workspacePathFor(threadID string) string {
 	r.mu.Lock()
-	if st := r.threadStateIfPresent(threadID); st != nil && st.workspacePathSet {
+	st := r.threadStateIfPresent(threadID)
+	if st != nil && st.workspacePathSet {
 		cached := st.workspacePath
 		r.mu.Unlock()
 		return cached
@@ -839,9 +849,12 @@ func (r *Router) workspacePathFor(threadID string) string {
 		return ""
 	}
 	r.mu.Lock()
-	st := r.state(threadID)
-	st.workspacePath = workspacePath
-	st.workspacePathSet = true
+	// A final settle can outlive CleanupThread. Reads never resurrect its
+	// caches, and a lookup begun by an old session cannot seed its replacement.
+	if st != nil && r.threadStateIfPresent(threadID) == st {
+		st.workspacePath = workspacePath
+		st.workspacePathSet = true
+	}
 	r.mu.Unlock()
 	return workspacePath
 }

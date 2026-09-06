@@ -43,6 +43,7 @@ Debian 13+).
 | `make apk` | the Android shell's debug APK from the production SPA; `make apk-release` builds a signed release APK. Needs a JDK 21 and an Android SDK, neither of which is on PATH. See [mobile/AGENTS.md](mobile/AGENTS.md). |
 | `make e2e-android` | the shell smoke, driving the app inside a running emulator's own WebView (Playwright's Android API), where the native seams are real. Its own config, directory and one spec; exercised on Android 36 and a Pixel. Not a blocking gate: with none attached it prints how to start one and exits clean. See [e2e/AGENTS.md](e2e/AGENTS.md) § The emulator smoke. |
 | `make provider-smoke` | manual real-provider gate. **Spends real model tokens**; needs authenticated `claude` + `codex` on PATH. Run before a release and after upgrading either provider CLI. See [providersmoke_test.go](internal/app/providersmoke_test.go). |
+| `make service-artifact-smoke` | manual production-artifact update gate. Set `AO_SERVICE_SMOKE_BASELINE` and `AO_SERVICE_SMOKE_CANDIDATE` to absolute paths of two differently versioned binaries or macOS release ZIPs. Uses disposable state and mocked providers; spends no tokens. See [serve-mode.md](docs/architecture/serve-mode.md#validating-production-artifacts). |
 | `make import-corpus-smoke` | manual session-import gate over a **copy** of your provider homes (`AO_IMPORT_CORPUS_CLAUDE` / `AO_IMPORT_CORPUS_CODEX`; a root overlapping a live home is refused, and there is no fallback). Spends no tokens. Run after provider CLI upgrades and before importer changes. See [importcorpussmoke_test.go](internal/app/importcorpussmoke_test.go). |
 | `AO_HEADLESS_CHROMIUM_SMOKE=1 go test ./internal/browser -run TestHeadlessChromiumReal -count=1` | manual headless-browser gate, and the ONLY test that starts a real browser. Needs a system Chromium (`browserChromiumPath`, or one on PATH); downloads nothing and spends no tokens. It proves this machine's Chromium accepts the exact command line serve mode builds, sandbox included. Run after a Chromium major upgrade and before changing the launch flags. On no automatic target. See [headless_engine_test.go](internal/browser/headless_engine_test.go). |
 
@@ -205,6 +206,12 @@ See [docs/references/spike-policy.md](docs/references/spike-policy.md).
   parser work on either provider.
 
 ## Permanent invariants
+
+- **Instance locks never cross exec.** Backend and harness lifetime locks use
+  atomic close-on-exec on Unix. A provider or orphan-reaper child may outlive
+  its parent; inheriting the lock would prevent the next app version from
+  starting. `TestInstanceLockDoesNotSurviveInAnUnrelatedChild` proves release
+  while a real child remains alive.
 
 - **Updater helpers dispatch before ordinary boot.** `main` calls
   `updater.HandleHelperMode` before CLI/session guards, discovery and provider

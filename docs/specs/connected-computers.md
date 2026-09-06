@@ -128,17 +128,23 @@ and mocked providers. No automated test uses live provider credentials.
 
 ## Delivery status
 
-Implementation in progress. Existing remote-access mechanisms are retained while
-their ownership and lifecycle contracts are brought into line with this design.
+Core workflows are implemented and have local acceptance coverage with isolated
+computers and mocked providers. Platform release acceptance remains separate.
 
-- [ ] Frontend preference persistence and per-host settings/accounts/usage.
-- [ ] Computers UI, host labels, and remembered project targets.
-- [ ] LAN trust/routes and simple headless/SSH onboarding.
-- [ ] Provider-native conversation move/copy and optional peer tools.
+- [x] Frontend preference persistence and per-host settings/accounts/usage.
+- [x] Computers UI, host labels, and remembered project targets.
+- [x] LAN trust/routes and simple headless/SSH onboarding.
+- [x] Provider-native conversation move/copy and optional peer tools.
 - [ ] Mixed-version gates, remote update coverage, previews, and failure testing.
 
 Only check a row after implementation and relevant validation. Record remaining
 physical-device or external-service limitations explicitly at handoff.
+
+The remaining update/release row includes released old/new client fixtures once
+the first connected-computers baseline ships, signed APK acceptance on physical
+LAN/tailnet devices, actual platform service installation, and platform release
+signing/update handoff. Current production-build trial/restart coverage is
+recorded below; it does not substitute for those platform checks.
 
 Peer-command operation and failure semantics are documented in
 [remote-commands.md](../architecture/remote-commands.md). Remote service-update
@@ -232,3 +238,29 @@ exercise real page scripts, CSS, reload, service-worker refusal and revocation.
 See [file-previews.md](../architecture/file-previews.md) for lifetime and browser
 certificate limits. Sharing-policy changes also retire existing network preview
 listeners; rebind alone previously left those independent listeners open.
+
+Lost-send-reply browser tests now cover one and two consecutive disconnects on
+desktop and compact layouts. Retries retain one send identity and create one
+persisted user message and provider turn. Duplicate detection now uses sparse
+indexes over retained history (v89), replacing the 64-message cutoff that could
+lose an accepted send during a longer outage. Workflow resources also distinguish
+unknown ownership from HOME, so standalone frontends can resolve a sole computer
+or display an ambiguity error instead of waiting for a nonexistent connection.
+
+The production-artifact gate now passes from schema v88 to v89 using two actual
+macOS builds, both as executables and as ad-hoc signed application ZIPs. Trial
+commit and a subsequent cold restart retain backend identity, SQLite data and
+database integrity. It exposed an inherited instance-lock descriptor that could
+block restart while a helper survived; Unix locks now use atomic close-on-exec,
+with a real-child regression test. Async final path enrichment also no longer
+recreates a thread's live caches after cleanup.
+
+The signed, non-debuggable Android shell build 3 has passed a fresh Android 36
+Pixel 9 emulator check: paste an invitation, compare and confirm the pairing
+number, unlock with the platform PIN, open the remote project/thread, then
+force-stop and cold-start the APK. Pairing persists and changes made on the host
+while the app is closed appear after unlocking. This uses the real release
+network policy and the app's ordinary private-LAN certificate path, with an
+isolated host and mocked providers. The first-run screen now offers **Use a
+link** alongside scanning. Physical Pixel and real tailnet acceptance remain
+separate from this emulator result.

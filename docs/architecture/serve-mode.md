@@ -632,6 +632,8 @@ supervisor owns this lock through update snapshots, trial boots and rollback.
 Its activate frame explicitly tells the child who holds it; an older supervisor
 omits that additive field, so a new child takes its own lock. A crashed owner
 releases the lock through the OS, without deleting or repairing a PID file.
+The lock is atomically close-on-exec: spawned providers and the orphan-reaper
+sidecar cannot keep it alive after the owning backend or supervisor exits.
 
 A remotely requested update downloads and verifies while the computer remains
 usable. After staging, it waits for turns, queued messages, workflows, remote
@@ -648,3 +650,27 @@ If the supervisor's reply is lost, the backend drains and restarts to check the
 saved outcome. It does not accept another update or new work in that uncertain
 window. This also works with a manually running current supervisor; older
 supervisors rely on the installed launchd/systemd service to restart them.
+
+## Validating production artifacts
+
+On macOS or Linux (including WSL), test two actual builds before shipping an
+update. Supply absolute paths to differently versioned binaries, or the macOS
+release ZIPs:
+
+```sh
+AO_SERVICE_SMOKE_BASELINE=/absolute/path/to/previous-artifact \
+AO_SERVICE_SMOKE_CANDIDATE=/absolute/path/to/candidate-artifact \
+make service-artifact-smoke
+```
+
+This manual gate copies the artifacts, runs preflight and staging, boots a
+baseline against disposable state, commits the candidate's trial, and restarts
+it again. Backend identity and SQLite data must survive. Provider discovery uses
+a mock; provider homes are empty, external HTTP is blocked, and no service is
+installed. Inputs and live installations remain untouched. The regular Go gate
+compiles this test but skips the real boots when its variables are absent.
+
+This verifies the production executable and bundle layout. Download checksum
+failures, interrupted trials and rollback have separate deterministic tests.
+Release signing, platform service-manager integration and physical-device
+acceptance still need their platform release checks.

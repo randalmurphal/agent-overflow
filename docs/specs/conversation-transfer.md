@@ -17,8 +17,9 @@ native graph copies; and ownership epochs in catalogs, search and frontend routi
 prepared installation and the HTTP adapter into production bootstrap. An
 isolated two-host TLS app test covers Copy, Move, frontend disconnect, staged vs
 working bytes, and returning a continued Claude conversation to its retired
-source. Complete mutation fencing and the remaining edge cases
-below are still in progress; this is not yet the complete delivery gate.
+source. User mutation fencing, native-alias checks and workspace cleanup gates
+are implemented; platform/provider release acceptance is tracked in the
+connected-computers matrix.
 
 ## Native history is portable
 
@@ -203,7 +204,9 @@ portability probes are throwaway evidence, not an automatic real-provider test.
 - The shared Move/Copy dialog, computer status/recovery controls and capability
   gating are implemented. Real two-host desktop/compact tests copy a conversation,
   then move the original to that same destination with native/workspace identity
-  checks. Finish the ownership-aware sidebar/pane reconciliation audit.
+  checks. Ownership changes invalidate visible thread resources, workflow maps
+  and review companions; standalone clients retain other hosts when the first
+  host is offline or removed.
 - Lazy/pinned Claude forks materialize independent native sessions during either
   Move or Copy, keeping the parent usable. Pinned prefixes use the existing native
   resume-filter repair and exclude later parent turns; isolated CLI 2.1.261
@@ -213,23 +216,30 @@ portability probes are throwaway evidence, not an automatic real-provider test.
 - Ordinary edits, drafts, uploads, queue admission, comments, terminal creation,
   forks, configuration and deletion now check the shared ownership fence. Pending
   destination offers reserve projects; history restore preserves received owners.
-  Finish the remaining native-alias, scheduled-work and bulk workspace audit.
+  Native-alias send/start regressions cover Claude, Claude TUI and Codex.
+  Workflow execution enters through the same session/send gates. Worktree
+  removal checks every attached conversation and permits retired-cache cleanup
+  only after a confirmed move, without reattaching those retired rows.
 - Unprepared orphan offers can now be discarded on the destination; the source
   observes that durable cancellation before attempting a snapshot. Terminal
   operations remove private archives through restartable host jobs; compact SQL
-  receipts and ownership remain. Finish address roaming,
-  mixed-version/provider-format admission, and updates
-  while transfers are pending. Verify supervisor rollback never rewinds ownership.
+  receipts and ownership remain. Active transfer work holds restart admission;
+  a trial's activation gate parks background recovery and client mutations until
+  commit. History restore refuses pending handoffs and preserves completed
+  ownership, native retirement and recovery records. Released-version/provider
+  acceptance remains part of the connected-computers release gate.
 - Expanded Git blobs and final working deltas are bounded before materialization;
   source conversions travel as bytes, and destination checkout/intent creation
   runs without destination filters. The prepared recipe binds a content and
   semantic-index fingerprint; activation refuses changed files/index flags while
   allowing innocent index stat refreshes, including retries after publication.
 - Native installation only replaces recorded baselines for sessions previously
-  retired by this computer. Test that policy across Codex prefixes/children too.
-- Extend two-host fault coverage and visual/native-shell validation, then finish
-  all connected-computers delivery gates. Provider primitives passing is not a
-  substitute for those end-user checks.
+  retired by this computer. The native identity and retirement checks apply to
+  every member of the transferred graph, including Codex prefixes/children.
+- Two-host desktop/compact flows cover both providers, Move and Copy, attachments,
+  untracked workspace files, and frontend disconnection. Physical-device and
+  real-provider release acceptance are distinct from those mocked-provider
+  browser checks.
 
 Execution ownership uses a stronger SQLite commit policy than the history
 cache: EXTRA/FULL plus fullfsync on the reserved writer connection, restored after

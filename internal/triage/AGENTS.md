@@ -181,6 +181,12 @@ before unregistering their session and clean up via
 epoch. Epoch entries are never deleted, since a reset would let a stale
 captured zero match.
 
+Async final settlement can outlive this cleanup while still persisting history.
+Its read caches must use `threadStateIfPresent`, never create live state. A
+workspace lookup caches its result only if the same captured state entry still
+exists after the database read; it cannot repopulate a stopped or replacement
+session. Final history enrichment remains valid without a live cache.
+
 ## Correlation state is bounded, never derived
 
 Per-thread state correlates adjacent provider events. It is not a cache

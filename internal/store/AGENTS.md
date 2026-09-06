@@ -1335,23 +1335,18 @@ collisions with earlier copies or independently imported history.
 - The FK cascades from `threads`, so deleting a thread takes its queue with
   it and no sweep has to remember the table
   (`TestFlushQueueItemsCascadeOnThreadDelete`).
-- `FindUserTextItemBySendID` (`items_read.go`) is the other half of the same
-  feature and adds no schema: it answers whether one client-minted send id is
-  already on the thread, looking only at the newest N reader-authored
-  `user_text` rows. Bounded, and MATCHED IN SQL — the window renders the
-  physical arms through `timelineArms`, and the id comparison
-  (`json_extract(meta, '$.sendId')`) is applied to the window's output, so the
-  common answer (no repeat, on every send) hydrates and decodes nothing. Not
-  indexed: the id is unique per row and empty on most of them, so an index
-  would cost every send a write to earn a lookup nobody else makes.
-- The lookup wraps its arms as `SELECT id FROM (...) WHERE json_valid(meta)
-  AND json_extract(...) = ?` — one column out, because that is all
-  `queryHydratedTimelineItems` will take, and the ORDER BY / LIMIT stay INSIDE
-  the subquery so the match never searches past the window. `json_valid` is a
-  backstop, not the load-bearing part: both arms already refuse malformed meta
-  at write time through their `json_extract(meta, '$.task_id')` expression
-  indexes, and `TestBothTimelineArmsRefuseMetaTheLookupCouldNotRead` pins that
-  so the guard cannot silently start mattering.
+- `FindUserTextItemBySendID` (`items_read.go`) searches retained history through
+  sparse send-identity indexes on both physical timeline arms (v89). Do not
+  bound correctness by the number of newer messages: another frontend can
+  keep working throughout an outage. The lookup applies the same reader-authored
+  filter and imported-override exclusion, selects one ID, and hydrates at most
+  one row. `sendIdentityQuery` is shared by production and query-plan tests;
+  both `idx_items_send_id` and `idx_import_history_items_send_id` must be used.
+  Keep `json_valid` in the query and index predicates so malformed neighbours
+  cannot break a send. The message remains the idempotency record; there is no
+  duplicate identity table or expiration job.
+  `FindFlushQueueItemBySendID` uses `idx_flush_queue_send_id` for the waiting
+  half, hydrating one matching message instead of the entire prompt queue.
 
 ## Recent schema changes (v83) — derived project identity
 

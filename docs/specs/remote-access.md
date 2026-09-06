@@ -2419,7 +2419,7 @@ text above was deviated from:
   list screen, exit), lock (biometric on cold start and on resume,
   the app root marked `inert` underneath), QR scan, a documented picker
   stub, and `boot.ts` whose `adoptPairingEndpoint` is the one place
-  both pairing doors point the shell at a backend. Deviations from the
+  scanned codes, pasted invitations and pairing hashes point the shell at a backend. Deviations from the
   text above: `minSdkVersion` 26 (the scanner's native library declares
   it); dictation is the keyboard's, as ruled; dedicated picker plugins
   answer `null` while the composer's Photos and Files choices use the
@@ -3774,8 +3774,8 @@ times it arrives: `buildSendOptions` mints a `sendId` per composer send
 backend answers a repeat from the record the first arrival left, the
 `user_text` row's meta or the durable queue row, under the same lock and
 before any side effect. No id table: the message is the record, matched
-in SQL inside a bounded newest-64 window
-(`store.FindUserTextItemBySendID`). `RETRY_ON_TRANSIENT_CLOSE` holds
+through sparse indexes over retained history
+(`store.FindUserTextItemBySendID`, migration v89). `RETRY_ON_TRANSIENT_CLOSE` holds
 exactly those two methods, and a send whose retry ALSO failed asks
 before restoring ("This message may have reached the agent. Put it back
 in the composer?"; "Leave it" discards and reports nothing further) while
@@ -3800,8 +3800,8 @@ eye until the Mac pass ran the build and the emulator smoke (2026-09-03); an idl
 held a requeued-after-failure message drops it, as it did before the
 row existed (the row now goes with it rather than resurrecting at boot);
 `triage.clearFlushQueueLocked` has no callers and is left for a triage
-cleanup; a send id that has scrolled past the 64-row window is not
-found, which is the accepted edge of a bounded check.
+cleanup. The former 64-message duplicate-detection cutoff was removed by v89: a
+retry from an offline frontend remains recognizable after newer messages arrive.
 
 **Quiet-when picker LANDED (2026-09-03).** The R5 pair
 `notifyMuteWhenFocused` / `notifyMuteWhenThreadVisible` ORed, and the

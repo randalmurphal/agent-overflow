@@ -1,7 +1,9 @@
 package store
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -96,15 +98,9 @@ func (s *Store) ListFlushQueueItems(threadID string) ([]FlushQueueItem, error) {
 	defer rows.Close()
 	items := []FlushQueueItem{}
 	for rows.Next() {
-		var item FlushQueueItem
-		var payload []byte
-		if err := rows.Scan(
-			&item.ID, &item.ThreadID, &item.SendID, &item.Message, &payload, &item.EnqueuedAt,
-		); err != nil {
+		item, err := scanFlushQueueItem(rows)
+		if err != nil {
 			return nil, fmt.Errorf("store: scan flush queue item for thread %s: %w", threadID, err)
-		}
-		if len(payload) > 0 {
-			item.Payload = json.RawMessage(payload)
 		}
 		items = append(items, item)
 	}
@@ -112,6 +108,35 @@ func (s *Store) ListFlushQueueItems(threadID string) ([]FlushQueueItem, error) {
 		return nil, fmt.Errorf("store: list flush queue items for thread %s: %w", threadID, err)
 	}
 	return items, nil
+}
+
+const findQueuedSendSQL = `SELECT id, thread_id, send_id, message, payload, enqueued_at
+ FROM flush_queue_items WHERE thread_id = ? AND send_id <> '' AND send_id = ? LIMIT 1`
+
+// FindFlushQueueItemBySendID reads only the matching accepted message. Queues
+// can contain large prompts; a duplicate check must never hydrate all of them.
+func (s *Store) FindFlushQueueItemBySendID(threadID, sendID string) (FlushQueueItem, bool, error) {
+	if sendID == "" {
+		return FlushQueueItem{}, false, nil
+	}
+	item, err := scanFlushQueueItem(s.reader().QueryRow(findQueuedSendSQL, threadID, sendID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return FlushQueueItem{}, false, nil
+	}
+	if err != nil {
+		return FlushQueueItem{}, false, fmt.Errorf("store: find queued send for thread %s: %w", threadID, err)
+	}
+	return item, true, nil
+}
+
+func scanFlushQueueItem(row rowScanner) (FlushQueueItem, error) {
+	var item FlushQueueItem
+	var payload []byte
+	err := row.Scan(&item.ID, &item.ThreadID, &item.SendID, &item.Message, &payload, &item.EnqueuedAt)
+	if len(payload) > 0 {
+		item.Payload = json.RawMessage(payload)
+	}
+	return item, err
 }
 
 // ListThreadsWithFlushQueueItems returns the threads holding at least one

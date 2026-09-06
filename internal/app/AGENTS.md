@@ -876,21 +876,14 @@ a table.
   row whose `send_id` column carries it. `findRecordedSend` looks in both and
   answers the caller from what it finds — the persisted item, or the queue
   row projected back through `flushqueue.ItemFromStore`.
-- **Bounded window, matched in SQL.** `store.FindUserTextItemBySendID(threadID,
-  sendID, 64)` renders the newest window through the timeline arms and applies
-  the id comparison to that window, so at most one row is ever hydrated. This
-  runs on EVERY send and almost always finds nothing; reading 64 rows whole
-  and decoding every meta in Go to reach that answer was the shape it
-  replaced. NOT indexed: the id is unique per row and empty on most of them,
-  so an index would make every send pay a write to earn a lookup nobody else
-  makes, and the window a reconnect retries inside is a handful of messages
-  wide. A send whose id has scrolled out is not found, which is the accepted
-  edge and is pinned by a test rather than left to be discovered.
-  The `json_valid` guard in that predicate is a backstop, not decoration:
-  `json_extract` raises on malformed JSON, and one unreadable row inside the
-  window would fail every send on the thread. Neither arm can hold one today
-  (both refuse it at write time), which is itself pinned — see
-  `internal/store/AGENTS.md` § v85.
+- **Retained history, matched through sparse indexes.**
+  `store.FindUserTextItemBySendID(threadID, sendID)` probes send identities on
+  both physical timeline arms and hydrates at most one row. A disconnected
+  frontend can retry after another frontend added many messages; a newest-N
+  cutoff must never turn that retry into a new send. Migration v89 indexes only
+  top-level user rows carrying an identity, preserving cheap misses without an
+  extra receipt table. Imported overrides and the reader-authored predicate
+  remain part of the lookup. Query-plan tests require both indexes.
 - **The check runs under the lock that serializes the path, before any side
   effect.** In `sendMessageLocked` that is first thing inside the thread
   action lock — before the runtime-mode write, before the session start,

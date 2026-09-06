@@ -247,7 +247,7 @@ const NOTHING_ACQUIRED = (): void => {};
 
 const store = createEntityStore<WorkflowRunMapView, void>({
   name: 'workflowRunMap',
-  backendForKey: (key) => workflowItemBackend(key) ?? '',
+  backendForKey: workflowItemBackend,
   // A view is a whole run tree — thousands of small objects for a long
   // campaign — and NOTHING writes into one: the patcher rebuilds the touched
   // run and reuses every other object, and consumers only ever re-project the

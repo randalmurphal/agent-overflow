@@ -192,6 +192,14 @@ provider-smoke-compile:
 provider-smoke:
 	go test -tags providersmoke -run 'TestProviderSmoke' -v -count=1 -timeout 20m ./internal/app
 
+# Two supplied production artifacts, disposable state, mocked providers.
+.PHONY: service-artifact-smoke
+service-artifact-smoke:
+	@test -n "$(AO_SERVICE_SMOKE_BASELINE)" -a -n "$(AO_SERVICE_SMOKE_CANDIDATE)" || \
+		{ echo 'Set AO_SERVICE_SMOKE_BASELINE and AO_SERVICE_SMOKE_CANDIDATE to absolute artifact paths.'; exit 1; }
+	AO_SERVICE_SMOKE_BASELINE="$(AO_SERVICE_SMOKE_BASELINE)" AO_SERVICE_SMOKE_CANDIDATE="$(AO_SERVICE_SMOKE_CANDIDATE)" \
+		go test ./internal/supervise -run TestProductionServiceArtifact -v -count=1 -timeout 4m
+
 # import-corpus-smoke is the manual session-import gate: it runs the Claude
 # transcript reader, the Codex rollout reader, and the store writer over a COPY
 # of a developer's real provider homes and reports what the corpus contains

@@ -523,10 +523,9 @@ func TestFindRecordedSendMatchesEitherHome(t *testing.T) {
 	}
 }
 
-// The window bounds the lookup, so a send id that has scrolled out of it is
-// not found. That is the accepted edge of a bounded check: the retry window a
-// reconnect produces is a handful of messages wide.
-func TestFindRecordedSendLooksOnlyAtTheRecentWindow(t *testing.T) {
+// A reconnect can outlive many messages from another frontend. Retained
+// message identities must still prevent a second dispatch.
+func TestFindRecordedSendSurvivesNewerMessages(t *testing.T) {
 	app, _ := newAppForFlushQueueRPC(t)
 
 	thread := testThread("durable-window")
@@ -535,7 +534,7 @@ func TestFindRecordedSendLooksOnlyAtTheRecentWindow(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 	now := time.Now().UnixMilli()
-	for i := range recentSendIDWindow + 1 {
+	for i := range 129 {
 		meta := `{"sendId":"send-plain"}`
 		if i == 0 {
 			meta = `{"sendId":"send-oldest"}`
@@ -549,8 +548,8 @@ func TestFindRecordedSendLooksOnlyAtTheRecentWindow(t *testing.T) {
 		}
 	}
 
-	if _, found, err := app.findRecordedSend(thread.ID, "send-oldest"); err != nil || found {
-		t.Fatalf("oldest lookup: found=%v err=%v, want not found past the window", found, err)
+	if _, found, err := app.findRecordedSend(thread.ID, "send-oldest"); err != nil || !found {
+		t.Fatalf("oldest lookup: found=%v err=%v, want the original accepted message", found, err)
 	}
 }
 

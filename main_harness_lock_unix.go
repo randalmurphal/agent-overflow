@@ -9,7 +9,9 @@ import (
 )
 
 func openHarnessLock(path string, mode os.FileMode) (*os.File, error) {
-	fd, err := syscall.Open(path, syscall.O_RDWR|syscall.O_CREAT|syscall.O_NOFOLLOW, uint32(mode.Perm()))
+	// Atomic close-on-exec matters: providers and the orphan-reaper sidecar
+	// can outlive this process. They must never inherit its lifetime lock.
+	fd, err := syscall.Open(path, syscall.O_RDWR|syscall.O_CREAT|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, uint32(mode.Perm()))
 	if err != nil {
 		return nil, err
 	}

@@ -578,10 +578,15 @@ never resolves a Capacitor module at runtime:
 | `native/lock.ts` | the app-lock gate: covers on PAUSE, prompts on cold start and on a resume past the window |
 | `native/qr.ts` | `scanPairingQr()` |
 | `native/pickers.ts` | a documented stub |
-| `native/boot.ts` | what runs before anything mounts; `adoptPairingEndpoint` is the one place both pairing doors (scanned code, `#pair=` hash) point the shell at a backend |
+| `native/boot.ts` | what runs before anything mounts; `adoptPairingEndpoint` is the one place pairing entry (scanned code, pasted invitation, `#pair=` hash) points the shell at a backend |
 | `native/bundleSync.ts` | the one door for downloading a newer bundle from an attached backend, and for reporting this launch healthy (§ The bundle plugin) |
 | `native/push.ts` | permission, token, `RegisterPushToken` on every attached backend, and the tap route; the unregister rides both removal doors through `transport/detachSteps.ts` (§ Push) |
 | `stores/pushPresenter.svelte.ts` | the socket's half of the tray: background-only presentation, ungated retraction, and the tag both paths share (§ Push) |
+
+`FirstRunScreen` offers scanning and **Use a link** for an invitation already
+on the phone or received from a headless computer. Both pass through the same
+payload validation and native endpoint adoption; a bad link stays editable and
+cannot advance to pairing. Neither path asks for or stores SSH credentials.
 
 Two things `main.ts` keeps true for the shell. The `#pair=` hash is
 checked BEFORE the first-run screen for every client, so a shell can be

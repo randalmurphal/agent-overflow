@@ -1219,6 +1219,38 @@ describe('createEntityStore — the rawValue replace contract', () => {
 
 
 describe('entity resources belong to a computer', () => {
+  it('lets guarded routing resolve unknown ownership even without a HOME connection', async () => {
+    const { source, calls } = makeSource();
+    const connected = { status: 'connected', nextAttemptAt: null } as const;
+    const disconnected = { status: 'disconnected', nextAttemptAt: null } as const;
+    __setBackendStatusForTest('', disconnected);
+    let owner: string | undefined;
+    const store = createEntityStore<string, { tag: string }>({
+      name: 'unresolved', backendForKey: () => owner, source,
+    });
+    const hold = store.attach('item', { tag: 'a' });
+    try {
+      expect(calls).toHaveLength(1);
+      calls[0].resolve();
+      await flush();
+      __setBackendStatusForTest('gpu', connected);
+      expect(calls).toHaveLength(2);
+      owner = 'gpu';
+      calls[1].apply('resolved on GPU');
+      calls[1].resolve();
+      await flush();
+      __setBackendStatusForTest('', connected);
+      expect(calls).toHaveLength(2);
+      expect(hold.current).toBe('resolved on GPU');
+      __setBackendStatusForTest('gpu', disconnected);
+      expect(hold.current).toBeNull();
+    } finally {
+      hold.release();
+      __setBackendStatusForTest('', connected);
+      __setBackendStatusForTest('gpu', disconnected);
+    }
+  });
+
   it('suspends only the disconnected owner, rejects its late reply and reacquires on reconnect', async () => {
     const { source, calls, cleanups } = makeSource();
     const connected = { status: 'connected', nextAttemptAt: null } as const;

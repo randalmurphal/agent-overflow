@@ -188,8 +188,19 @@ speaking the real protocol on the real inherited descriptors, answering the real
 preflight. The environment they get is `PATH` plus a `HOME` inside
 `t.TempDir()`, so a child cannot see the developer's real home even by accident.
 
-Nothing here may run a real `systemctl` or `launchctl`, reach the network, or
-boot a second real backend against anyone's provider homes.
+Nothing here may run a real `systemctl` or `launchctl`, reach external services,
+or boot a second real backend against anyone's provider homes.
+
+`artifact_smoke_unix_test.go` is an explicit manual exception to scripted
+children: `make service-artifact-smoke` accepts two supplied production binaries
+or macOS ZIPs, stages them, boots a baseline, commits a trial, and cold-restarts
+the target while retaining backend identity and a SQLite row. It skips without
+both artifact paths. The fixture uses `kerneltest` isolation, an explicit mock
+for the boot-time Claude discovery probe, poisoned other providers, and loopback
+HTTP only. `--data-dir` names the config root; settings, SQLite and the supervisor
+layout belong under its `agent-overflow/` child. The fixture never installs a
+service or replaces the supplied artifacts. This supplements the deterministic
+failure tests; it does not verify release signatures or the download source.
 
 Every sequence is covered and each one earns its keep: the full commit cycle,
 a trial that crashes, a trial that never prepares, a supervisor killed mid-trial

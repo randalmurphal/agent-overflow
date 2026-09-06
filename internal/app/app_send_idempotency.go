@@ -26,15 +26,6 @@ import (
 // message it belongs to does. The meta half is matched with
 // `json_extract` inside the store, not by decoding rows here.
 
-// recentSendIDWindow bounds the lookup: the newest N user messages of the
-// thread. A retry follows its own failed frame by seconds, so anything
-// further back cannot be the frame being retried, and a bounded window is
-// what keeps this off the send path's critical section without an index over
-// a column whose common value is empty. The MATCH inside the window is made
-// in SQL (store.FindUserTextItemBySendID), so the common answer — no repeat —
-// hydrates and decodes nothing.
-const recentSendIDWindow = 64
-
 // recordedSend is where a repeated send id was found. Exactly one half is
 // set: the message is either still waiting on the queue, or it has been
 // dispatched and persisted.
@@ -65,21 +56,19 @@ func (a *App) findRecordedSend(threadID, sendID string) (recordedSend, bool, err
 	if sendID == "" {
 		return recordedSend{}, false, nil
 	}
-	item, found, err := a.store.FindUserTextItemBySendID(threadID, sendID, recentSendIDWindow)
+	item, found, err := a.store.FindUserTextItemBySendID(threadID, sendID)
 	if err != nil {
-		return recordedSend{}, false, fmt.Errorf("recent user messages: %w", err)
+		return recordedSend{}, false, fmt.Errorf("accepted user message: %w", err)
 	}
 	if found {
 		return recordedSend{item: item, dispatched: true}, true, nil
 	}
-	rows, err := a.store.ListFlushQueueItems(threadID)
+	row, found, err := a.store.FindFlushQueueItemBySendID(threadID, sendID)
 	if err != nil {
 		return recordedSend{}, false, fmt.Errorf("queued messages: %w", err)
 	}
-	for _, row := range rows {
-		if row.SendID == sendID {
-			return recordedSend{queued: row}, true, nil
-		}
+	if found {
+		return recordedSend{queued: row}, true, nil
 	}
 	return recordedSend{}, false, nil
 }

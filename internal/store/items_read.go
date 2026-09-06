@@ -163,65 +163,45 @@ func (s *Store) FindOriginalAgentLaunchByTaskID(threadID, taskID, excludeItemID 
 }
 
 // FindUserTextItemBySendID returns the thread's reader-authored `user_text`
-// row carrying the client-minted send id, looking only at the newest `window`
-// rows.
+// row carrying the client-minted send id, anywhere in retained history.
 //
 // The ONE caller is the send-idempotency check: a client re-sends the same
 // frame after a socket died under it, and the backend has to tell "this
 // arrived twice" from "this is a new message". It runs on EVERY send, so the
-// match is made in SQL over one bounded window and at most one row is ever
-// hydrated — the shape this replaced read 64 rows whole and JSON-decoded
-// every one of them to find nothing, which is the answer almost every time.
+// match is made through sparse send-id indexes on both physical timeline arms;
+// at most one row is hydrated. Newer messages cannot age out an accepted send.
 //
-// BOUNDED, NOT INDEXED. A retry follows its own failed frame by seconds, so a
-// row further back than the window cannot be the frame being retried, and an
-// index over a column whose value is unique per row and empty on most of them
-// would cost every send a write to earn a lookup nobody else makes.
-//
-// The window selects through the physical timeline arms and reuses the
-// reader-authored filter, so the newest rows come off idx_items_user_text
-// (v73) instead of sorting the thread's whole row set behind the view. The
-// filter is also the right SET: every AO send is a reader-authored row, and
+// Every AO send is a reader-authored row, and
 // the wire-only injections and subagent child prompts it excludes carry no
 // send id to match.
 //
-// `json_valid` is a BACKSTOP, and it stays. `json_extract` raises on
-// malformed JSON, and one unreadable neighbour inside the window would take
-// down every send on the thread. Today neither arm can hold one — both carry
-// an expression index over `json_extract(meta, '$.task_id')` that refuses the
-// write, and `items` coalesces an empty meta to `{}` — so the guard costs a
-// predicate over at most `window` rows and buys immunity from the day either
-// index is dropped. `TestBothTimelineArmsRefuseMetaTheLookupCouldNotRead`
-// pins that premise so the guard cannot quietly become load-bearing.
+// Keep json_valid alongside the lookup and its partial indexes: malformed
+// neighbouring metadata must never fail every send. Existing task-id indexes
+// currently reject such writes (TestBothTimelineArmsRefuseMetaTheLookupCouldNotRead).
 //
-// An empty send id or a non-positive window is not found, without a query:
+// An empty send id is not found, without a query:
 // every app-internal injector leaves the id unset, and matching those against
 // each other would collapse unrelated messages into one.
-func (s *Store) FindUserTextItemBySendID(threadID, sendID string, window int) (Item, bool, error) {
-	if sendID == "" || window <= 0 {
+func (s *Store) FindUserTextItemBySendID(threadID, sendID string) (Item, bool, error) {
+	if sendID == "" {
 		return Item{}, false, nil
 	}
-	newest, args := timelineArms(threadID, timelineSelection{
-		Columns: func(string) string {
-			return `items.id AS id, items.meta AS meta,
-			        items.turn_index AS turn_index, items.item_index AS item_index`
-		},
-		Where:   readerAuthoredUserTextFilterFor("items."),
-		OrderBy: "turn_index DESC, item_index DESC",
-		Limit:   window,
-	})
-	// The window's ORDER BY and LIMIT stay INSIDE the subquery, against the
-	// columns each arm pre-sorted on; the id match is applied to what comes
-	// out. Filtering before the limit would search the whole thread.
-	item, found, err := queryOneHydratedTimelineItem(
-		s.reader(), threadID,
-		"SELECT id FROM (\n"+newest+"\n)\n WHERE json_valid(meta) AND json_extract(meta, '$.sendId') = ?",
-		append(args, sendID)...,
-	)
+	query, args := sendIdentityQuery(threadID, sendID)
+	item, found, err := queryOneHydratedTimelineItem(s.reader(), threadID, query, args...)
 	if err != nil {
 		return Item{}, false, fmt.Errorf("store: find user text item by send id for thread %s: %w", threadID, err)
 	}
 	return item, found, nil
+}
+
+func sendIdentityQuery(threadID, sendID string) (string, []any) {
+	return timelineIDSelection(threadID, timelineSelection{
+		Where: readerAuthoredUserTextFilterFor("items.") +
+			` AND json_valid(items.meta) AND json_extract(items.meta, '$.sendId') IS NOT NULL
+			  AND json_extract(items.meta, '$.sendId') = ?`,
+		WhereArgs: []any{sendID},
+		Limit:     1,
+	})
 }
 
 // FindProvisionalSubagentPrompt returns the oldest launch-scoped prompt

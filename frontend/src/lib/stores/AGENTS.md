@@ -31,6 +31,14 @@ shrink-only allowlists: a fixed exception must be deleted from the list.
 
 ## Which primitive
 
+Entity resources declare their owning computer through `backendForKey`: a key
+means that computer's connection, `null` means frontend-owned, and `undefined`
+means ownership has not been learned yet. Unknown ownership must reach guarded
+RPC routing so it can resolve a sole computer or show an ambiguity error; never
+substitute HOME, which may not exist in a standalone frontend. Unknown entries
+retry on connection changes until ownership is learned. Once known, only their
+own computer's connection can suspend or restart them.
+
 The deciding question is "is there something to release?".
 
 - `entityStore.svelte.ts` for a key backed by a BACKEND RESOURCE that has

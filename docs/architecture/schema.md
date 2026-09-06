@@ -220,6 +220,18 @@ path cannot be trusted to remember. Full rules and rationale:
   (the `DeleteConversationFromTurn` rollback). None of them touch
   `updated_at`. The migration backfills history in the same version.
 
+### Send identity indexes (v89)
+
+`idx_items_send_id` on `(thread_id, json_extract(meta, '$.sendId'))` and
+`idx_import_history_items_send_id` on `(json_extract(meta, '$.sendId'), chunk_id)`
+cover top-level user rows with valid metadata and a non-null send identity.
+Rows without an identity have no index entry. The lookup spans retained history
+and respects per-thread imported overrides; newer messages cannot erase duplicate
+detection during an outage. No separate receipt table is added. Query-plan tests
+require both sparse indexes and refuse a scan of message history.
+`idx_flush_queue_send_id` indexes `(thread_id, send_id) WHERE send_id <> ''`;
+duplicate checks read one queued message instead of hydrating the full queue.
+
 ## Migration Policy
 
 - Migrations are numbered, forward-only, append-only. Never edit a migration

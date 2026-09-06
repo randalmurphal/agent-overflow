@@ -500,6 +500,20 @@ func TestStreamingTextLiveCacheClearedOnCleanupThread(t *testing.T) {
 	if got := liveCacheSize(router); got != 0 {
 		t.Fatalf("expected CleanupThread to drop streamingPathRefsLast entries; got %d", got)
 	}
+	// Async settlement may finish after cleanup. It can still enrich the
+	// persisted row, but neither the workspace lookup nor the last streaming
+	// observer may recreate live correlation state for a stopped session.
+	late := store.Item{ID: "late-settle", ThreadID: "t1", Summary: "see src/foo.ts"}
+	router.enrichPathRefsFromTexts("t1", &late, late.Summary)
+	if !strings.Contains(late.Meta, "src/foo.ts") {
+		t.Fatalf("final history lost path references: %s", late.Meta)
+	}
+	router.enrichStreamingPathRefsAndEmit(late, now)
+	router.mu.Lock()
+	defer router.mu.Unlock()
+	if router.threadStateIfPresent("t1") != nil {
+		t.Fatal("late path enrichment resurrected a stopped thread's caches")
+	}
 }
 
 // TestStreamingTextSkipsMidStreamEmitWithoutWorkspace mirrors the
