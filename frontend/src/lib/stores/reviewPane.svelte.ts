@@ -542,6 +542,7 @@ function createReviewPaneState(
   // never appears. Cleared with the expansions on every reload.
   const editExpandablePaths = new SvelteSet<string>();
   let loadSeq = 0;
+  let navigationSeq = 0;
   // The shared PR entity this pane is looking at. Null outside pr scope:
   // the PR data survives a scope switch (another pane may still be on it),
   // but a pane that left is not reporting a PR's state as its own.
@@ -864,16 +865,8 @@ function createReviewPaneState(
   }
 
   async function setScope(nextScope: ReviewScope, opts?: { baseBranch?: string }): Promise<void> {
+    const navigation = ++navigationSeq;
     const scopeChanged = nextScope !== scope;
-    if (scopeChanged) {
-      resetConflictView();
-      closeCILogView();
-      // The frozen ordering describes the previous scope's threads.
-      setConversationOpen(false);
-    }
-    if (scope === 'pr' && nextScope !== 'pr') {
-      releasePR();
-    }
     if (nextScope === 'pr') {
       // Resolve before entry so the load below can hold the PR. A null
       // ref still ENTERS the scope: the load surfaces the user-facing
@@ -881,10 +874,21 @@ function createReviewPaneState(
       // badge click can race the git-status fetch by design.
       await ensurePRRef();
     }
-    scope = nextScope;
-    baseBranch = nextScope === 'branch'
+    if (navigation !== navigationSeq || disposed) return;
+    const nextBaseBranch = nextScope === 'branch'
       ? (opts?.baseBranch?.trim() || baseBranch || await defaultBaseBranch(workspace))
       : null;
+    if (navigation !== navigationSeq || disposed) return;
+    if (scopeChanged) {
+      resetConflictView();
+      closeCILogView();
+      // The frozen ordering describes the previous scope's threads.
+      setConversationOpen(false);
+    }
+    if (scope === 'pr' && nextScope !== 'pr') releasePR();
+    if (scopeChanged || nextBaseBranch !== baseBranch) retireDiffSubject();
+    scope = nextScope;
+    baseBranch = nextBaseBranch;
     // Back to "latest" on scope entry — the previous selection belongs
     // to another commit range. A base-branch change within branch scope
     // keeps it; reload's validation drops a selection that left the new
@@ -902,6 +906,8 @@ function createReviewPaneState(
 
   async function selectCommit(sha: string | null): Promise<void> {
     if (sha === selectedCommitSHA) return;
+    navigationSeq++;
+    retireDiffSubject();
     selectedCommitSHA = sha;
     openEditors = [];
     draftBodies.clear();
@@ -931,11 +937,20 @@ function createReviewPaneState(
   async function selectEdit(key: string | null): Promise<void> {
     const next = editSelectionFromKey(key, edits);
     if (editSelectionKey(next) === editSelectionKey(selectedEdit)) return;
+    navigationSeq++;
+    retireDiffSubject();
     selectedEdit = next;
     openEditors = [];
     draftBodies.clear();
     collapseOverrides.clear();
     await reload({ selectionOnly: true });
+  }
+
+  // A new subject cannot reuse the previous patch under its new scope,
+  // anchors or span context. Same-subject refreshes intentionally retain it.
+  function retireDiffSubject(): void {
+    patchText = '';
+    clearContextExpansions();
   }
 
   async function reload(opts?: { selectionOnly?: boolean }): Promise<void> {

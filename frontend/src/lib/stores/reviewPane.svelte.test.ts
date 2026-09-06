@@ -187,6 +187,51 @@ describe('reviewPane store', () => {
     expect(draftAnchorExists(files, draft({ newLine: 99 }))).toBe(false);
   });
 
+  it('keeps the old subject coherent during branch lookup and ignores a superseded lookup', async () => {
+    setBindingMock('GetWorkspaceCurrentDiff', async () => patchFor('workspace.go', 1));
+    const branchDiff = setBindingMock('GetBranchBaseDiff', async () => patchFor('branch.go', 1));
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    let finish!: (branches: unknown[]) => void;
+    setBindingMock('GitListBranches', () => new Promise((resolve) => { finish = resolve; }));
+    const stale = state.setScope('branch');
+    await tick();
+    expect(state.scope).toBe('workspace');
+    expect(state.files.map((f) => f.path)).toEqual(['workspace.go']);
+    await state.setScope('workspace');
+    finish([{ name: 'main', isDefault: true }]);
+    await stale;
+    expect(state.scope).toBe('workspace');
+    expect(state.files.map((f) => f.path)).toEqual(['workspace.go']);
+    expect(branchDiff).not.toHaveBeenCalled();
+  });
+
+  it('retains content during same-subject refresh but retires it before a commit selection', async () => {
+    const patch = patchFor('workspace.go', 1);
+    setBindingMock('GetWorkspaceCurrentDiff', async () => patch);
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    let finish!: (patch: string) => void;
+    setBindingMock('GetWorkspaceCurrentDiff', () => new Promise<string>((resolve) => { finish = resolve; }));
+    const refresh = state.reload();
+    await tick();
+    expect(state.patchText).toBe(patch);
+    finish(patch);
+    await refresh;
+
+    setBindingMock('GetBranchBaseDiff', async () => patch);
+    setBindingMock('ListBranchCommits', async () => [{ sha: 'commit-a', subject: 'change' }]);
+    await state.setScope('branch', { baseBranch: 'main' });
+    setBindingMock('GetCommitDiff', () => new Promise<string>((resolve) => { finish = resolve; }));
+    const selecting = state.selectCommit('commit-a');
+    await tick();
+    expect(state.patchText).toBe('');
+    expect(state.files).toEqual([]);
+    finish(patchFor('commit.go', 1));
+    await selecting;
+    expect(state.files.map((f) => f.path)).toEqual(['commit.go']);
+  });
+
   it('loads the binding for each scope', async () => {
     const workspace = setBindingMock('GetWorkspaceCurrentDiff', async () => 'workspace patch');
     const branch = setBindingMock('GetBranchBaseDiff', async () => 'branch patch');
@@ -2016,6 +2061,49 @@ describe('reviewPane store — edits scope', () => {
     expect(contents).toContain('+new');
     expect(contents).toContain('+later');
     expect(contents.indexOf('+new')).toBeLessThan(contents.indexOf('+later'));
+  });
+
+  it('retires a whole-turn patch before awaiting a selected edit, without disturbing a no-op selection', async () => {
+    installEditMocks();
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    await state.setScope('edits');
+    const patch = state.patchText;
+    await state.selectEdit(state.selectedEditKey);
+    expect(state.patchText).toBe(patch);
+    let finish!: (payload: { data: string }) => void;
+    setBindingMock('GetPayloadData', () => new Promise((resolve) => { finish = resolve; }));
+    const selecting = state.selectEdit('item:tool:1');
+    await tick();
+    expect(state.patchText).toBe('');
+    expect(state.files).toEqual([]);
+    finish({ data: patchFor('selected.go', 1) });
+    await selecting;
+    expect(state.files.map((f) => f.path)).toEqual(['selected.go']);
+  });
+
+  it('retires the old diff before a pending scope switch can reinterpret repeated edit paths', async () => {
+    installEditMocks();
+    setBindingMock('GetTurnEditsDiff', async () => ({ data: `${gappyPatch()}\n${gappyPatch()}` }));
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    await state.setScope('edits');
+    expect(state.files).toHaveLength(1);
+
+    let finish!: (patch: string) => void;
+    setBindingMock('GetWorkspaceCurrentDiff', () => new Promise<string>((resolve) => { finish = resolve; }));
+    const switching = state.setScope('workspace');
+    await tick();
+    try {
+      const rows = buildReviewRows({ files: state.files, viewMode: 'stacked', collapsedPaths: new Set(), drafts: [], openEditors: [] });
+      expect(new Set(rows.rowKeys).size).toBe(rows.rowKeys.length);
+      expect(state.loading).toBe(true);
+      expect(state.files).toEqual([]);
+    } finally {
+      finish(patchFor('workspace.go', 1));
+      await switching;
+    }
+    expect(state.files.map((file) => file.path)).toEqual(['workspace.go']);
   });
 
   it('retires gap arrows up front for edits outside the workspace', async () => {

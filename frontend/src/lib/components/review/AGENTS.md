@@ -19,6 +19,13 @@ and the companion component key both use `companionSubjectKey`, so moving a
 conversation or changing its checkout disposes the previous state even when
 the conversation ID stays the same. Never key either lifetime on thread ID alone.
 
+Scope/base/commit/edit navigation retires the previous patch and context
+expansions before changing their interpretation. Same-subject reloads retain
+the visible patch. In particular, whole-turn edits can repeat a path and need
+merging; reading that old patch under a newly selected workspace scope produces
+duplicate virtual row keys. Async scope preflight keeps the old subject intact
+until ready and cannot override a newer navigation.
+
 ## Ownership
 
 - `ReviewDiffBody.svelte` is the one virtualized surface: a single
