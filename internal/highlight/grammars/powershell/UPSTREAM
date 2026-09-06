@@ -1,0 +1,4 @@
+grammar: https://github.com/airbus-cert/tree-sitter-powershell @ e7bd348c49fdfd5c853a146a670965ba516a6239
+         upstream Go module (MIT, see LICENSE)
+queries: same revision, queries/highlights.scm (MIT, see LICENSE)
+reconciliations: @delimiter renamed @punctuation.delimiter; container captures @array and @assignvalue renamed @none (nested semantic captures remain styled).

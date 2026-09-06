@@ -61,6 +61,22 @@ describe('composerDraft store', () => {
     expect(store.terminalChips.map((c) => c.id)).toEqual(['chip-1']);
   });
 
+  it('does not carry local cleanup ownership into another thread or acquire it from remote refreshes', async () => {
+    const store = createComposerDraftStore();
+    store.adoptThread('local-created');
+    expect(store.ownsEmptyThreadCleanup).toBe(true);
+    await store.setThread('remote-created');
+    expect(store.ownsEmptyThreadCleanup).toBe(false);
+    installMocks({ content: 'written elsewhere', attachmentIds: [], terminalChips: [] });
+    await store.reloadFromBackend();
+    installMocks({ content: '', attachmentIds: [], terminalChips: [] });
+    await store.reloadFromBackend();
+    expect(store.ownsEmptyThreadCleanup).toBe(false);
+    store.setContent('');
+    await store.flush();
+    expect(store.ownsEmptyThreadCleanup).toBe(true);
+  });
+
   it('debounced setContent calls SaveDraft with the latest content', async () => {
     const saveMock = setBindingMock('SaveDraft', async () => {});
     const store = createComposerDraftStore({ debounceMs: 5 });

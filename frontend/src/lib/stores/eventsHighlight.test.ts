@@ -50,6 +50,7 @@ beforeEach(() => {
   resetLiveCodeSeedsForTest();
   resetDiffSpanCacheForTest();
   resetSyntaxClassNamesForTest();
+  setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
   setBindingMock('HighlightClassNames', async () => ['none', 'keyword']);
   // Diff seeds only ingest for threads the client knows (deletion-race
   // guard); the module-level store persists across tests, so sweep it.
@@ -107,6 +108,7 @@ describe('applyHighlightDiffSeed', () => {
   });
 
   it('never rejects, even when the class table fails to load', async () => {
+    setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
     setBindingMock('HighlightClassNames', async () => {
       throw new Error('backend gone');
     });

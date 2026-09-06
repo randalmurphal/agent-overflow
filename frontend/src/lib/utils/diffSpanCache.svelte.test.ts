@@ -52,6 +52,7 @@ const workspaceContext = { scope: 'workspace', commitSHA: '', headSHA: '', works
 
 beforeEach(() => {
   resetDiffSpanCacheForTest();
+  setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
   setBindingMock('HighlightClassNames', async () => ['none', 'keyword']);
 });
 
@@ -553,11 +554,12 @@ describe('requestFileSpans', () => {
     const file = makeFile('src/reloaded.ts', ['const x = 1;']);
     let releaseStale!: () => void;
     const staleGate = new Promise<void>((resolve) => { releaseStale = resolve; });
-    setBindingMock('HighlightPatch', async () => {
+    const staleRPC = setBindingMock('HighlightPatch', async () => {
       await staleGate;
       return plainResult(file);
     });
     const stale = requestFileSpans(file, 'thread-1');
+    await vi.waitFor(() => expect(staleRPC).toHaveBeenCalledOnce());
 
     evictDiffSpansForThread('thread-1');
 
@@ -899,6 +901,7 @@ describe('seedPayloadPatchSpans', () => {
     const file = makeFile('src/evicted.ts', ['const e = 1;']);
     let releaseTable!: () => void;
     const tableGate = new Promise<void>((resolve) => { releaseTable = resolve; });
+    setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
     setBindingMock('HighlightClassNames', async () => {
       await tableGate;
       return ['none', 'keyword'];
@@ -926,6 +929,7 @@ describe('seedPayloadPatchSpans', () => {
     const file = makeFile('src/epoch.ts', ['const p = 1;']);
     let releaseTable!: () => void;
     const tableGate = new Promise<void>((resolve) => { releaseTable = resolve; });
+    setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
     setBindingMock('HighlightClassNames', async () => {
       await tableGate;
       return ['none', 'keyword'];
@@ -956,6 +960,7 @@ describe('seedPayloadPatchSpans', () => {
     const fileB = makeFile('src/reset-fresh.ts', ['const b = 1;']);
     let releaseTable!: () => void;
     const tableGate = new Promise<void>((resolve) => { releaseTable = resolve; });
+    setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
     setBindingMock('HighlightClassNames', async () => {
       await tableGate;
       return ['none', 'keyword'];
@@ -982,6 +987,7 @@ describe('seedPayloadPatchSpans', () => {
     resetSyntaxClassNamesForTest();
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const file = makeFile('src/failed.ts', ['const f = 1;']);
+    setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
     setBindingMock('HighlightClassNames', async () => {
       throw new Error('backend gone');
     });

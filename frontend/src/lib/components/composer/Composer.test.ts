@@ -7,6 +7,7 @@ import {
   resetComposerDraftSnapshotsForTest,
 } from '../../stores/composerDraft.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
+import { applyThreadUpdated } from '../../stores/eventsThreadRows';
 import { buildPane, makeItem, makeThread as makeTestThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { mockAttachmentUpload, mockAttachmentDownload } from '../../../test/mocks/attachmentTransfer';
@@ -42,7 +43,7 @@ import {
   notifyTerminalFocus,
   resetTerminalFocusForTest,
 } from '../terminal/terminalStore.svelte';
-import { focusPane, resetPanesForTest } from '../../stores/panes.svelte';
+import { focusPane, registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
@@ -815,6 +816,7 @@ describe('<Composer>', () => {
 
   it('deletes an emptied materialized draft and returns the pane to a placeholder', async () => {
     const pane = createThreadPane({ paneId: 'placeholder-empty-cleanup' });
+    registerPaneForTest('placeholder-empty-cleanup', pane);
     const project = makeProject({ id: 'project-empty-cleanup' });
     pane.startDraftPlaceholder(project, 'chat');
     const draft = await buildDraft(null);
@@ -828,7 +830,10 @@ describe('<Composer>', () => {
     removeThread(created.id);
     setBindingMock('CreateThread', async () => created);
     const save = setBindingMock('SaveDraft', async () => {});
-    const deleteEmpty = setBindingMock('DeleteEmptyDraftThread', async () => true);
+    const deleteEmpty = setBindingMock('DeleteEmptyDraftThread', async () => {
+      applyThreadUpdated({ action: 'deleted', id: created.id });
+      return true;
+    });
 
     const { getByLabelText } = render(Composer, { props: { pane, draft } });
     const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
@@ -854,6 +859,21 @@ describe('<Composer>', () => {
     });
     expect(pane.thread?.id.startsWith('draft:')).toBe(true);
     expect(getThreadById(created.id)).toBeUndefined();
+  });
+
+  it('never cleans up a passively opened empty draft, but does after a local edit is erased', async () => {
+    const row = makeTestThread({ id: 'remote-initial-draft', isDraft: true, projectId: 'project-1', projectPath: '/repo', workspacePath: '/repo' });
+    const pane = await buildPane(row);
+    const draft = await buildDraft(row.id);
+    const remove = setBindingMock('DeleteEmptyDraftThread', async () => true);
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
+    await tick();
+    await tick();
+    expect(remove).not.toHaveBeenCalled();
+    const input = getByLabelText('Message Input');
+    await fireEvent.input(input, { target: { value: 'my edit' } });
+    await fireEvent.input(input, { target: { value: '' } });
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(row.id));
   });
 
   it('retains an empty draft that owns a worktree', async () => {
@@ -888,7 +908,8 @@ describe('<Composer>', () => {
       branch: 'main',
     });
     const pane = await buildPane(draftThread);
-    const draft = await buildDraft(draftThread.id);
+    const draft = await buildDraft(null);
+    draft.adoptThread(draftThread.id);
     const deleteEmpty = setBindingMock('DeleteEmptyDraftThread', async () => true);
     setThreadEnvMode(pane.thread!, 'new-worktree');
 
@@ -900,8 +921,9 @@ describe('<Composer>', () => {
     await waitFor(() => expect(deleteEmpty).toHaveBeenCalledWith(draftThread.id));
   });
 
-  it('rematerializes and preserves content when typing resumes during empty cleanup', async () => {
+  it.each(['received', 'lost'])('preserves resumed typing after deletion broadcast with %s RPC reply', async (reply) => {
     const pane = createThreadPane({ paneId: 'placeholder-empty-cleanup-race' });
+    registerPaneForTest('placeholder-empty-cleanup-race', pane);
     const project = makeProject({ id: 'project-empty-cleanup-race' });
     pane.startDraftPlaceholder(project, 'chat');
     const draft = await buildDraft(null);
@@ -940,7 +962,9 @@ describe('<Composer>', () => {
     await waitFor(() => expect(deleteEmpty).toHaveBeenCalledWith(first.id));
 
     await fireEvent.input(textarea, { target: { value: 'typed again' } });
-    deleteGate.resolve(true);
+    applyThreadUpdated({ action: 'deleted', id: first.id });
+    if (reply === 'lost') deleteGate.reject(new Error('connection lost'));
+    else deleteGate.resolve(true);
 
     await waitFor(() => expect(create).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(pane.threadId).toBe(replacement.id));

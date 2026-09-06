@@ -1,0 +1,5 @@
+grammar: https://github.com/alemuller/tree-sitter-make @ a4b9187417d6be349ee5fd4b6e77b4172c6827dd
+         vendored src/parser.c and src/tree_sitter/ (MIT, see LICENSE)
+queries: same revision, queries/highlights.scm (MIT, see LICENSE)
+reconciliations: query-only helper @clean renamed @_clean (private capture; no rendered class).
+                Query whitespace normalized; no semantic change.

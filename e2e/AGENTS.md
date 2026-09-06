@@ -148,11 +148,15 @@ differs from the APK even on the same checkout. The update case trims
 must never make identical bundles look different.
 
 The boot case also enables its isolated host's LAN listener, learns the
-advertised route, removes the original `adb reverse`, and reloads with an expired
+advertised route, removes the original `adb reverse`, and cold-relaunches with an expired
 session. It must retain the pairing, renew over LAN, open a socket and upload an
 attachment. This case needs a LAN interface reachable from the emulator; the
 native HTTP bridge bypasses Playwright's request interception, so a browser
 route mock cannot stand in for this check.
+Removing `adb reverse` closes its listener but preserves established TCP
+streams. A WebView reload preserves the native HTTP connection pool too.
+The cold relaunch closes those sockets while retaining the pairing, so the
+test actually loses the old route instead of sometimes renewing through it.
 It then changes the backend's port, repairs the now-offline computer through
 Settings, and verifies that the same pairing and thread are usable afterwards.
 
@@ -199,6 +203,9 @@ is answered through the focused native PIN field, then Enter,
 not at the page; and a hardware back press with the soft keyboard up
 closes the keyboard and reaches nothing else, so `pressBack` closes the
 keyboard first, by the same key.
+That helper is for app navigation only. Cancel a native picker with one
+Back and verify focus returns to the app: the paused composer's stale IME
+state can otherwise make the helper send another Back into the app itself.
 
 The first case also opens and cancels the composer's Photos and Files
 choosers, then presses Back during a gated mock turn and verifies that the

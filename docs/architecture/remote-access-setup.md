@@ -51,8 +51,9 @@ and [HTTPS setup](https://tailscale.com/docs/how-to/set-up-https-certificates).
    and reconnect Tailscale, and test over cellular with Wi-Fi off. Reconnection
    should recover automatically; offline content is read-only. Opening offline
    should show the connection banner without a burst of load-error toasts.
-   Reconnecting restores saved panes and refreshes settings and keybindings;
-   an unavailable computer must not clear their last good state.
+   Reconnecting restores saved panes and refreshes computer settings;
+   an unavailable computer must not clear their last good state. Phone shortcuts
+   load and save on the phone itself, independently of paired computers.
 
 The network choice controls the invitation's initial connection, not a separate
 pairing identity. After connecting, the device learns the host's other enabled

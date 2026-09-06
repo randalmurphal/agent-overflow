@@ -203,6 +203,9 @@ func (a *App) DeleteEmptyDraftThread(threadID string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	if deleted {
+		a.broadcastThreadDeleted(threadID)
+	}
 	return deleted, nil
 }
 

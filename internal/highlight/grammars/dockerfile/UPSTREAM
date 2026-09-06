@@ -1,0 +1,5 @@
+grammar: https://github.com/camdencheek/tree-sitter-dockerfile @ 971acdd908568b4531b0ba28a445bf0bb720aba5
+         vendored src/parser.c and src/tree_sitter/ plus src/scanner.c (MIT, see LICENSE)
+queries: same revision, queries/highlights.scm (MIT, see LICENSE)
+reconciliations: none
+                Query whitespace normalized; no semantic change.

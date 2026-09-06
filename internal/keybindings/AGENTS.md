@@ -6,6 +6,12 @@ frontend reads.
 
 ## Layout
 
+- `gendefaults.go` exports the merged shipped defaults to the SPA with
+  `go generate ./internal/keybindings`; the checked-in parity test rejects drift.
+  Native frontends use these offline, storing only their own chord overrides
+  by stable default ID. They do not import another computer's keybindings file
+  or duplicate the Go legacy-file merge.
+
 - `keybindings.go`: `Keybinding` wire shape, `Defaults`,
   `Service{Get,Update,Reset}` (atomic JSON read/write under a private
   mutex, MaxCount-capped), and the pure `Merge(defaults, user)` used

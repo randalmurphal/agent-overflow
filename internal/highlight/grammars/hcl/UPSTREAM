@@ -1,0 +1,6 @@
+grammar: github.com/tree-sitter-grammars/tree-sitter-hcl v1.2.0 (Go module, Apache-2.0)
+         commit fad991865fee927dd1de5e172fb3f08ac674d914 (see LICENSE-grammar)
+queries: helix-editor/helix @ 14d6bc0febed9c692048271a8ae2362ac969c6e0
+         runtime/queries/hcl/highlights.scm (MPL-2.0, see LICENSE)
+reconciliations: none
+                Query whitespace normalized; no semantic change.

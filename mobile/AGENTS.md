@@ -593,6 +593,7 @@ never resolves a Capacitor module at runtime:
 | `native/qr.ts` | `scanPairingQr()` |
 | `native/pickers.ts` | a documented stub |
 | `native/boot.ts` | what runs before anything mounts; `adoptPairingEndpoint` is the one place pairing entry (scanned code, pasted invitation, `#pair=` hash) points the shell at a backend |
+| `native/keybindings.ts` | frontend-local shortcut persistence, installed before startup reads; generated shipped defaults work without any computer, and stable-ID chord overrides survive removing or switching hosts |
 | `native/bundleSync.ts` | the one door for downloading a newer bundle from an attached backend, and for reporting this launch healthy (§ The bundle plugin) |
 | `native/push.ts` | permission, token, `RegisterPushToken` on every attached backend, and the tap route; the unregister rides both removal doors through `transport/detachSteps.ts` (§ Push) |
 | `stores/pushPresenter.svelte.ts` | the socket's half of the tray: background-only presentation, ungated retraction, and the tag both paths share (§ Push) |

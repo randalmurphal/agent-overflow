@@ -47,9 +47,8 @@ func TestVendoredQueriesCompileAndMapCaptures(t *testing.T) {
 	}
 }
 
-// Every wired-up grammar must have a Lang registry entry, and every
-// non-plaintext Lang the frontend can request degrades gracefully when
-// its grammar isn't wired up yet.
+// Every grammar and non-plaintext Lang must have a matching registry entry;
+// adding a language without wiring its parser must fail CI.
 func TestGrammarRegistryAlignment(t *testing.T) {
 	for _, name := range grammars.Names() {
 		if LangFromName(name) == LangPlaintext {
@@ -60,7 +59,10 @@ func TestGrammarRegistryAlignment(t *testing.T) {
 		if lang == LangPlaintext {
 			continue
 		}
-		// Must not panic or error regardless of grammar availability.
+		if _, ok := grammars.Get(name); !ok {
+			t.Errorf("language %q has no grammar", name)
+			continue
+		}
 		res := Highlight(lang, []byte("sample text\n"))
 		if len(res.Lines) != 2 {
 			t.Errorf("Highlight(%s) returned %d lines, want 2", name, len(res.Lines))

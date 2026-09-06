@@ -912,8 +912,12 @@ message text or hide all errors merely because another computer is offline.
 An unknown cold catalog still rejects; it is never a successful empty list.
 App startup retains the saved pane layout and retries restoration on connection,
 with its original mutation revision so a late restore cannot replace user edits.
-Keybinding reads retain their last good rules during an outage, and HOME's
-connection hydration reloads them after recovery. Visible draft reads also
+Desktop keybinding reads retain their last good rules during an outage, and HOME's
+connection hydration reloads them after recovery. Native boot installs local
+keybinding persistence before loading: phone shortcuts must never require a
+HOME connection or write another computer's config. Shipped defaults are generated
+from Go; the phone persists only chord overrides by stable default ID.
+Visible draft reads also
 recover on their own computer's connection, retaining locally edited snapshots. `passiveStartupReads.test.ts`
 and the desktop/compact offline-startup flows cover these boundaries.
 

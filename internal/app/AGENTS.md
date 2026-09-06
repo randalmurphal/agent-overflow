@@ -933,6 +933,12 @@ live queue and knows nothing about the row; this package owns its whole life.
   itself holds — and deletes the rows only once that write succeeded, so a
   failure means the next boot tries again.
 
+Automatic empty-draft cleanup deletes a thread row just like explicit deletion:
+`DeleteEmptyDraftThread` must broadcast `thread:updated` / `deleted` after a
+successful deletion, and remain silent when durable state prevents cleanup.
+Its RPC reply only updates the initiating composer; other devices need the
+event to evict their sidebar and durable catalog entries.
+
 ## A broadcast about ONE client's attempt names that client
 
 An event channel that is not entity-filtered reaches every client, which is

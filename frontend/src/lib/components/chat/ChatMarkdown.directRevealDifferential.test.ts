@@ -235,6 +235,7 @@ function variableChunks(source: string, seed: number): string[] {
 }
 
 beforeEach(() => {
+  setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
   setBindingMock('HighlightClassNames', async () => []);
   setBindingMock('HighlightCode', async ({ lang }: { lang: string }) => ({
     lang,

@@ -1,0 +1,5 @@
+grammar: github.com/tree-sitter-grammars/tree-sitter-toml v0.7.0 (Go module, MIT)
+         commit 64b56832c2cffe41758f28e05c756a3a98d16f41
+queries: same upstream revision, queries/highlights.scm (MIT, see LICENSE)
+reconciliations: pair's @property capture targets bare_key, not the entire pair,
+                so keys are properties without styling their values as keys.

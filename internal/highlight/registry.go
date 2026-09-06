@@ -31,6 +31,13 @@ const (
 	LangC
 	LangCPP
 	LangJava
+	LangTOML
+	LangINI
+	LangHCL
+	LangDockerfile
+	LangMake
+	LangXML
+	LangPowerShell
 )
 
 // langNames is the canonical wire name per Lang (shiki-compatible so
@@ -56,6 +63,13 @@ var langNames = map[Lang]string{
 	LangC:              "c",
 	LangCPP:            "cpp",
 	LangJava:           "java",
+	LangTOML:           "toml",
+	LangINI:            "ini",
+	LangHCL:            "hcl",
+	LangDockerfile:     "dockerfile",
+	LangMake:           "make",
+	LangXML:            "xml",
+	LangPowerShell:     "powershell",
 }
 
 func (l Lang) String() string {
@@ -108,6 +122,28 @@ var extensionToLang = map[string]Lang{
 	"hpp":      LangCPP,
 	"hh":       LangCPP,
 	"java":     LangJava,
+	"toml":     LangTOML,
+	"ini":      LangINI,
+	"hcl":      LangHCL,
+	"tf":       LangHCL,
+	"tfvars":   LangHCL,
+	"mk":       LangMake,
+	"mak":      LangMake,
+	"xml":      LangXML,
+	"xsd":      LangXML,
+	"xsl":      LangXML,
+	"xslt":     LangXML,
+	"svg":      LangXML,
+	"plist":    LangXML,
+	"props":    LangXML,
+	"targets":  LangXML,
+	"csproj":   LangXML,
+	"fsproj":   LangXML,
+	"vbproj":   LangXML,
+	"resx":     LangXML,
+	"ps1":      LangPowerShell,
+	"psm1":     LangPowerShell,
+	"psd1":     LangPowerShell,
 }
 
 // nameAliases resolves markdown fence info strings beyond the
@@ -133,20 +169,39 @@ var nameAliases = map[string]Lang{
 	"rs":              LangRust,
 	"c++":             LangCPP,
 	"cc":              LangCPP,
+	"terraform":       LangHCL,
+	"tf":              LangHCL,
+	"tfvars":          LangHCL,
+	"makefile":        LangMake,
+	"docker":          LangDockerfile,
+	"containerfile":   LangDockerfile,
+	"pwsh":            LangPowerShell,
+	"ps1":             LangPowerShell,
 	"text":            LangPlaintext,
 	"txt":             LangPlaintext,
 }
 
-// LangFromPath maps a file path to a Lang by extension. Unknown or
-// extension-less paths return LangPlaintext.
+// LangFromPath recognizes conventional filenames, then extensions. Both
+// separator styles are accepted because remote paths can name another OS.
 func LangFromPath(path string) Lang {
-	slash := strings.LastIndexByte(path, '/')
-	filename := path[slash+1:]
+	separator := strings.LastIndexAny(path, `/\`)
+	filename := strings.ToLower(path[separator+1:])
+	if filename == ".editorconfig" || filename == ".gitconfig" {
+		return LangINI
+	}
+	if filename == "makefile" || filename == "gnumakefile" {
+		return LangMake
+	}
+	for _, name := range []string{"dockerfile", "containerfile"} {
+		if filename == name || strings.HasPrefix(filename, name+".") || strings.HasSuffix(filename, "."+name) {
+			return LangDockerfile
+		}
+	}
 	dot := strings.LastIndexByte(filename, '.')
 	if dot < 0 {
 		return LangPlaintext
 	}
-	ext := strings.ToLower(filename[dot+1:])
+	ext := filename[dot+1:]
 	if lang, ok := extensionToLang[ext]; ok {
 		return lang
 	}

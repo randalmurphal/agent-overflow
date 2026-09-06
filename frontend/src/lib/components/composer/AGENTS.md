@@ -25,6 +25,18 @@ never a base64 string in a WebSocket frame. `compressImageToFit` still
 runs first and is unchanged — a re-encode that fits beats a rejection,
 whatever carries the result.
 
+Empty-draft deletion holds `withEmptyDraftCleanup` through the RPC and local
+placeholder restoration. The deletion broadcast evicts every client's row and
+caches, but leaves that initiating pane for the cleanup result to restage;
+closing it on its own echo would discard text typed while deletion was pending.
+Other clients close panes showing the deleted thread normally.
+A received deletion event proves success even if the RPC reply is lost; run
+the same restoration path so newly typed content survives that interruption.
+Cleanup also requires the draft store's local edit/materialization ownership.
+Merely hydrating an empty remote draft never grants it: another screen may have
+listed the row while its first content save is still debounced. Editing and
+then clearing that remote draft locally grants cleanup normally.
+
 ## An attachment is one of two kinds
 
 The server decides it (`attachment.classifyUpload`), the record carries

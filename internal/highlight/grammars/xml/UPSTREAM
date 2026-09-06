@@ -1,0 +1,4 @@
+grammar: https://github.com/tree-sitter-grammars/tree-sitter-xml @ 5000ae8f22d11fbe93939b05c1e37cf21117162d
+         upstream Go module (MIT, see LICENSE)
+queries: same revision, queries/xml/highlights.scm (MIT, see LICENSE)
+reconciliations: CharData @markup renamed @none (ordinary XML text stays unstyled).

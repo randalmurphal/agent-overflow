@@ -41,6 +41,7 @@ beforeEach(() => {
   resetCodeSpanCacheForTest();
   resetLiveCodeSeedsForTest();
   __resetStreamdownCodeHostForTest();
+  setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
   setBindingMock('HighlightClassNames', async () => ['none', 'keyword', 'string']);
 });
 
@@ -112,6 +113,7 @@ describe('<ChatMarkdown> code-block spans', () => {
     const mountedComments = commentCount();
     expect(mountedComments).toBeGreaterThan(2);
 
+    await waitFor(() => expect(resolveHighlight).toBeTypeOf('function'));
     resolveHighlight(keywordSpans());
     await waitFor(() => expect(container.querySelector('.syntax-keyword')).not.toBeNull());
     await waitFor(() => expect(commentCount()).toBeLessThan(mountedComments / 2));
@@ -134,6 +136,7 @@ describe('<ChatMarkdown> code-block spans', () => {
 
     const getSelection = vi.spyOn(document, 'getSelection');
     try {
+      await waitFor(() => expect(resolveHighlight).toBeTypeOf('function'));
       resolveHighlight(keywordSpans());
       await waitFor(() => expect(container.querySelector('.syntax-keyword')).not.toBeNull());
       expect(getSelection).not.toHaveBeenCalled();
@@ -174,6 +177,7 @@ describe('<ChatMarkdown> code-block spans', () => {
     const observer = new MutationObserver(inspect);
     observer.observe(liveRoot, { subtree: true, childList: true });
     try {
+      await waitFor(() => expect(resolveHighlight).toBeTypeOf('function'));
       resolveHighlight(keywordSpans());
       await waitFor(() => {
         expect(liveRoot.isConnected).toBe(false);
@@ -353,6 +357,7 @@ describe('<ChatMarkdown> code-block spans', () => {
     button.focus();
     expect(document.activeElement).toBe(button);
 
+    await waitFor(() => expect(resolveHighlight).toBeTypeOf('function'));
     resolveHighlight(keywordSpans());
     await waitFor(() => expect(container.querySelector('.syntax-keyword')).not.toBeNull());
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -413,6 +418,7 @@ describe('<ChatMarkdown> code-block spans', () => {
     expect(selection.toString()).toBe('route');
 
     try {
+      await waitFor(() => expect(resolveHighlight).toBeTypeOf('function'));
       resolveHighlight(keywordSpans());
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(commentCount()).toBeGreaterThan(mountedComments / 2);

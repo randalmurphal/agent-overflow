@@ -223,6 +223,28 @@ test('the row menu button is the visible way into the same menu', async ({ harne
   await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'list');
 });
 
+test('both New Thread actions reveal the reused composer from the list', async ({ harness, page }) => {
+  await harness.open(page);
+  await page.getByTestId('thread-row').filter({ hasText: 'First task' }).tap();
+  await expect(page.getByTestId('chat-header-title')).toHaveText('First task');
+
+  for (const action of ['plus', 'menu'] as const) {
+    await page.getByTestId('compact-back').tap();
+    await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'list');
+    if (action === 'plus') {
+      await page.getByTestId('project-item-new-thread').tap();
+    } else {
+      await page.getByTestId('project-item-menu').tap();
+      await page.getByRole('menuitem', { name: 'New Thread', exact: true }).tap();
+    }
+    await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'thread');
+    await expect(page.getByLabel('Message Input')).toBeVisible();
+    await expect(page.getByLabel('Message Input')).toHaveValue('');
+    await expect(page.getByTestId('chat-header-title')).toHaveText('New Thread');
+    await expect(page.locator('section[data-pane-id]')).toHaveCount(1);
+  }
+});
+
 test('the project header carries its menu, with New Terminal inside', async ({ harness, page }) => {
   await harness.open(page);
   await page.getByTestId('project-item-menu').first().tap();

@@ -378,6 +378,15 @@ at component init, before the hosts take their first cache reads. A stale
 blob is dropped and recomputed, and the ingest is not memoized, because
 thread switches evict the caches.
 
+`utils/highlightService.ts` owns the raw-text rendering RPC target: prefer a
+connected local host, then the selected/attached computers, including a phone
+with no HOME connection. Schema and class names load as a pair. The page's
+content caches keep one canonical schema; failover, contextual diff results,
+and live seeds must match it before adoption. Metadata is memoized per
+connection hello and replica generation, and compute results are discarded
+across a restart. A transient disconnect leaves plain text without warning
+toasts; failed results are never cached, so later requests can recover.
+
 A raw-JSON assistant message never reaches the prose path.
 `AssistantMessage.svelte` hands `ChatMarkdown` the output of
 `markdown/rawJsonFence.ts`: a pretty-printed json fence whose printer is

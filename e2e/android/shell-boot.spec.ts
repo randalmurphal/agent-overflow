@@ -437,14 +437,19 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
     projects: [
       {
         name: 'shell-boot',
-        repo: { commits: [{ message: 'init', files: { 'README.md': '# Seeded\n' } }] },
+        repo: {
+          commits: [{ message: 'init', files: { 'README.md': '# Seeded\n', 'sample.ts': 'const greeting = "before";\n' } }],
+          dirty: { 'sample.ts': 'const greeting = "after";\n' },
+        },
         threads: [
           {
             // A thread with a real turn: a draft row is hidden from the
             // sidebar, so a seed without one would assert on nothing.
             title: 'Shell boot thread',
             provider: 'claude',
-            turns: [{ userText: 'hello', items: [{ kind: 'assistant_text', summary: 'hi' }] }],
+            turns: [{ userText: 'hello', items: [{ kind: 'assistant_text',
+              summary: 'hi\n\n```sh\necho "hello"\n```\n\n```toml\nname = "hello"\n```',
+            }] }],
           },
         ],
       },
@@ -489,7 +494,7 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
   // The lock screen is mounted BEFORE the app so a phone never flashes a
   // transcript on its way to being locked, so this assertion also proves
   // the gate is in front rather than behind.
-  const lock = page.getByTestId('app-lock');
+  let lock = page.getByTestId('app-lock');
   await expect(lock).toBeVisible({ timeout: PAIRED_MOUNT_MS });
   await expect
     .poll(
@@ -503,7 +508,7 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
   await passCredentialPrompt(device, lock);
 
   // --- 4. The app is behind it, warm, with the seeded row --------------
-  const row = page.getByTestId('thread-row').filter({ hasText: 'Shell boot thread' });
+  let row = page.getByTestId('thread-row').filter({ hasText: 'Shell boot thread' });
   await expect(row).toBeVisible({ timeout: PAIRED_MOUNT_MS });
   await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'list');
 
@@ -548,21 +553,53 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
     held.expiresAtMs = 1;
     localStorage.setItem(key, JSON.stringify(held));
   }, privatePairing.backendId);
-  await page.reload();
+  // Removing an adb reverse listener leaves established TCP streams alive
+  // (verified with an isolated socket exchange). A WebView reload also keeps
+  // the native HTTP client's connection pool. Cold-start to actually remove
+  // the old route, while preserving all pairing and renewal state.
+  await device.shell(`am force-stop ${SHELL_PACKAGE}`);
+  await device.shell(`am start -n ${SHELL_ACTIVITY}`);
+  page = await (await shellWebView(device)).page();
+  lock = page.getByTestId('app-lock');
+  row = page.getByTestId('thread-row').filter({ hasText: 'Shell boot thread' });
   await expect(lock).toBeVisible({ timeout: PAIRED_MOUNT_MS });
   await passCredentialPrompt(device, lock);
   await expect(row).toBeVisible({ timeout: PAIRED_MOUNT_MS });
   await expect.poll(() => page.evaluate(({ id, sessionId }) => {
     const held = JSON.parse(localStorage.getItem(`agent-overflow:deviceSession:${id}`)!);
     const profile = JSON.parse(localStorage.getItem(`agent-overflow:computerRoutes:${id}`) ?? '{}');
-    return held.sessionId === sessionId && held.expiresAtMs > Date.now() && !held.pendingNextSecret
-      && !!profile.lastEndpoint && !profile.lastEndpoint.includes('127.0.0.1');
-  }, { id: privatePairing.backendId, sessionId: oldSession.id }), { message: 'LAN selection and renewal preserve the original pairing' }).toBe(true);
+    return {
+      sessionMatches: held.sessionId === sessionId,
+      renewed: held.expiresAtMs > Date.now(),
+      noPending: !held.pendingNextSecret,
+      lastEndpoint: profile.lastEndpoint ?? '',
+    };
+  }, { id: privatePairing.backendId, sessionId: oldSession.id }), { message: 'LAN selection and renewal preserve the original pairing' }).toMatchObject({
+    sessionMatches: true, renewed: true, noPending: true,
+    lastEndpoint: expect.stringMatching(/^https:\/\/(?!127\.0\.0\.1[:/])/),
+  });
 
   // --- 5. A tap opens the thread ---------------------------------------
   await row.click();
   await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'thread');
   await expect(page.getByTestId('chat-header-title')).toHaveText('Shell boot thread');
+
+  // This shell has only a UUID pairing, no HOME transport. Both reported
+  // languages must receive real spans through the native rendering service.
+  for (const lang of ['sh', 'toml']) {
+    await expect(page.locator(`[data-code-lang="${lang}"] .syntax-string`).first()).toBeAttached();
+  }
+  await expect(page.getByText(/Syntax highlighting unavailable/)).toHaveCount(0);
+
+  // Review highlighting uses the owning workspace for contextual spans,
+  // with the same UUID-only native transport and schema gate.
+  await page.getByTestId('review-toggle').click();
+  const review = page.locator('section[data-pane-kind="review"]');
+  await expect(review).toBeVisible();
+  await expect(review.locator('.syntax-string').first()).toBeAttached();
+  await expect(page.getByText(/Syntax highlighting unavailable/)).toHaveCount(0);
+  await page.getByTestId('review-close').click();
+  await expect(page.getByTestId('chat-header-title')).toBeVisible();
 
   // Both attachment choices must open Android's picker, not a web-only UI.
   for (const choice of ['Photos', 'Files']) {
@@ -572,7 +609,12 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
       const focus = await focusedWindow(device);
       return focus !== '' && !focus.includes(SHELL_PACKAGE);
     }, { message: `${choice} must open the platform file picker` }).toBe(true);
-    await pressBack(device);
+    // Dismiss the picker with one Back. pressBack is for APP navigation:
+    // its keyboard preflight can count the paused composer's stale IME and
+    // send a second Back after the picker has already returned to the app.
+    await device.shell('input keyevent 4');
+    await expect.poll(() => focusedWindow(device), { message: `${choice} cancellation must return to the app` })
+      .toContain(SHELL_PACKAGE);
     await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'thread');
   }
 
@@ -744,6 +786,21 @@ test('new pairings preserve a legacy first computer and removing it preserves th
     expect(await page.evaluate(() => Object.keys(JSON.parse(localStorage.getItem('agent-overflow:backendEndpoints')!)))).toEqual([secondId]);
     expect(await page.evaluate(() => getComputedStyle(document.documentElement).fontSize)).toBe(size);
     await expect(page.getByTestId('transport-status-banner')).toBeHidden();
+    // With the old HOME slot gone, shortcut loading and editing must still
+    // work locally. A new boot cannot depend on the removed computer.
+    await settings('Keybindings');
+    const shortcut = page.getByTestId('keybinding-row-palette.open');
+    await expect(shortcut).toBeVisible();
+    await shortcut.getByRole('button', { name: /^Clear the/ }).click();
+    await expect(shortcut.getByRole('button', { name: 'Unbound', exact: true })).toBeVisible();
+    await page.reload();
+    await expect(lock).toBeVisible({ timeout: PAIRED_MOUNT_MS });
+    await passCredentialPrompt(device, lock);
+    await settings('Keybindings');
+    await expect(shortcut.getByRole('button', { name: 'Unbound', exact: true })).toBeVisible();
+    const hostShortcuts = await second.rpc<{ bindings: Array<{ defaultId: string; key: string }> }>('GetKeybindings');
+    expect(hostShortcuts.bindings.find((row) => row.defaultId === 'palette.open')?.key).toBe('mod+shift+k');
+    await expect(page.getByText('Failed to load keybindings', { exact: true })).toHaveCount(0);
   } finally {
     await run(adbPath(), ['-s', device.serial(), 'reverse', '--remove', `tcp:${port}`]).catch(() => undefined);
     await second.close();

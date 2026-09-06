@@ -95,6 +95,12 @@ and the menu sat there. The project menu anchors to the header LINE
 (`headerEl`), never the project container, whose bottom edge is the last
 thread's.
 
+Both project New Thread actions use `openDraftThreadForProject`, whose pane
+attachment must reveal even an already-mounted pane. In compact mode the
+sidebar and thread stay mounted across Back; treating an existing layout slot
+as a completed navigation silently replaces the hidden composer and leaves the
+user on the list. The compact shell spec exercises both actions after Back.
+
 The project header creates a group two ways, its "New Group…" menu item
 and its folder-plus button, and both call `newThreadGroupInProject`: it
 clears the sidebar search and expands the project BEFORE the create,

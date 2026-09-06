@@ -22,6 +22,7 @@ function result(runs: number[]) {
 
 beforeEach(() => {
   resetCodeSpanCacheForTest();
+  setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
   setBindingMock('HighlightClassNames', async () => ['none', 'keyword']);
 });
 

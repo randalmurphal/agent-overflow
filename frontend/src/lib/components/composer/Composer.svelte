@@ -39,6 +39,7 @@
   import { deriveComposerSendState } from './composerSendState';
   import { dispatchSend } from './composerSend';
   import { runInterruptOrRevert } from '../../stores/revertOnInterrupt.svelte';
+  import { withEmptyDraftCleanup } from '../../stores/emptyDraftCleanup';
   import {
     DeleteEmptyDraftThread,
     GetThreadUserMessageHistory,
@@ -341,6 +342,7 @@
   $effect(() => {
     const threadId = pane.threadId;
     if (!threadId || draft.threadId !== threadId || draft.hydrating) return;
+    if (!draft.ownsEmptyThreadCleanup) return;
     if (pane.hasDraftPlaceholder || emptyDraftCleanupHasActiveWork()) return;
     if (!isDraftThread) return;
     if (!timelineEmpty) return;
@@ -359,8 +361,11 @@
       emptyDraftCleanupKey = threadId;
       void (async () => {
         try {
-          const deleted = await DeleteEmptyDraftThread(threadId);
-          await handleEmptyDraftCleanupResult(threadId, deleted);
+          await withEmptyDraftCleanup(
+            threadId,
+            () => DeleteEmptyDraftThread(threadId),
+            (deleted) => handleEmptyDraftCleanupResult(threadId, deleted),
+          );
         } catch (err) {
           emptyDraftCleanupKey = null;
           pane.setGeneralError(`Failed to clean up empty draft thread: ${errString(err)}`);

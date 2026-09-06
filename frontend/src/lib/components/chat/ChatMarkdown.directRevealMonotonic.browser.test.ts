@@ -52,6 +52,7 @@ function revealUnits(source: string): string[] {
 }
 
 beforeEach(() => {
+  setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
   setBindingMock('HighlightClassNames', async () => []);
   setBindingMock('HighlightCode', async ({ lang }: { lang: string }) => ({
     lang,

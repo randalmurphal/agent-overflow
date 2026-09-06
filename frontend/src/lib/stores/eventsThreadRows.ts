@@ -16,6 +16,7 @@ import { getThreadById, getThreadLiveActivityAt, getThreads, readThreadRows, pre
 import { projectReaderMessageSent, projectThreadError } from './threadStatuses.svelte';
 import type { ThreadPaneIngest } from './threadPaneRoles';
 import { pendingLocalReadMarker } from './threadReadWrites';
+import { deferEmptyDraftDeletion } from './emptyDraftCleanup';
 
 // The registry hands out whole ThreadPanes; this module narrows them to
 // the ingest surface at its two acquisition points, so a new pane member
@@ -402,7 +403,8 @@ export function applyThreadUpdated(evt: ThreadUpdateEvent): void {
       // that no longer exists cannot load, send, or resume.
       if (!evt.id) return;
       removeThread(evt.id);
-      closePanesShowingThread(evt.id);
+      const id = evt.id;
+      if (!deferEmptyDraftDeletion(id, () => closePanesShowingThread(id))) closePanesShowingThread(id);
       return;
     }
     case 'unlisted': {

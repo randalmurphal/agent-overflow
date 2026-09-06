@@ -242,3 +242,39 @@ test('typing materializes a draft row and erasing it takes the row back out', as
   await expect.poll(async () => (await threadRows(harness)).length).toBe(0);
   await expect(errorToasts(page)).toHaveCount(0);
 });
+
+// A second frontend never receives the deleting RPC's reply. It must converge
+// from the broadcast, while the initiating composer keeps its placeholder.
+test('erasing a text draft removes it live from another client and leaves the composer usable', async ({
+  harness, page, browser,
+}) => {
+  await seedProject(harness);
+  await openFreshDraft(harness, page);
+  const observer = await browser.newContext({ viewport: { width: 412, height: 915 }, isMobile: true, hasTouch: true });
+  try {
+    const phone = await observer.newPage();
+    await harness.open(phone);
+    await page.getByLabel('Message Input').fill('shared unsent thought');
+    await expect(page.getByTestId('thread-row')).toHaveCount(1);
+    await expect(phone.getByTestId('thread-row')).toHaveCount(1);
+    const [original] = await threadRows(harness);
+
+    await page.getByLabel('Message Input').fill('');
+    await expect(page.getByTestId('thread-row')).toHaveCount(0);
+    await expect(phone.getByTestId('thread-row')).toHaveCount(0);
+    await expect.poll(async () => (await threadRows(harness)).length).toBe(0);
+    await expect(page.getByLabel('Message Input')).toBeVisible();
+
+    await page.getByLabel('Message Input').fill('a new thought');
+    await expect(page.getByTestId('thread-row')).toHaveCount(1);
+    await expect(phone.getByTestId('thread-row')).toHaveCount(1);
+    const [replacement] = await threadRows(harness);
+    expect(replacement.id).not.toBe(original.id);
+    await phone.getByTestId('thread-row').click();
+    await expect(phone.getByLabel('Message Input')).toHaveValue('a new thought');
+    await expect(errorToasts(page)).toHaveCount(0);
+    await expect(errorToasts(phone)).toHaveCount(0);
+  } finally {
+    await observer.close();
+  }
+});

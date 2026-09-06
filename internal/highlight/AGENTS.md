@@ -126,5 +126,14 @@ recomputes. Rules that live here:
   `grammars/<lang>/` dir (binding + vendored queries + LICENSE +
   UPSTREAM), and golden fixtures. The query-compile harness picks it up
   automatically.
+- Configuration and build formats include TOML, INI, HCL/Terraform,
+  Dockerfile/Containerfile, Make, XML, and PowerShell. Detection owns both
+  extensions and conventional filenames, accepts Windows and Unix separators,
+  and leaves ambiguous `.conf` files plain. INI covers `.gitconfig` and
+  `.editorconfig`; it does not promise every dialect's extensions. JSON-form
+  Terraform (`.tfvars.json`) remains JSON. Pinned grammar/query additions
+  automatically change `SchemaVersion`; never hand-bump it or reuse spans
+  from another schema. Code and contextual-patch fixtures verify multiline
+  state and UTF-8 alignment alongside the shared parser/query/cap gates.
 - New semantic class: append to `classids.go` (never renumber), add the
   `--syntax-*` CSS variable in `frontend/src/app.css` for both themes.

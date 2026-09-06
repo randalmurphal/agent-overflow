@@ -21,6 +21,9 @@ import {
 } from '../utils/diffSpanCache.svelte';
 import { ensureSyntaxClassNames } from '../utils/syntaxSpans';
 import { getThreadById } from './threads.svelte';
+import type { EventOrigin } from '../transport/handle';
+import { assertHighlightSource, requireHighlightSchema } from '../utils/highlightService';
+import { HOME_BACKEND } from '../transport/backendKey';
 
 export type { HighlightSeedEvent };
 
@@ -32,12 +35,14 @@ export interface HighlightDiffSeedEvent {
   files: PatchSpanSeedWire[] | null;
 }
 
-export function applyHighlightSeed(evt: HighlightSeedEvent): void {
+export function applyHighlightSeed(evt: HighlightSeedEvent, origin?: EventOrigin): void {
   if (!evt || typeof evt.lang !== 'string' || !Array.isArray(evt.lineHashes)) return;
   // Never surface spans before the classId → class-name table exists;
   // it loads once per page load, so this await is a no-op after boot.
-  void ensureSyntaxClassNames()
-    .then(() => {
+  void requireHighlightSchema(origin?.backendId ?? HOME_BACKEND)
+    .then(async (source) => {
+      await ensureSyntaxClassNames();
+      assertHighlightSource(source);
       if (evt.final && evt.contentKey) {
         seedFinalBlockSpans(evt.lang, evt.contentKey, evt.lines ?? []);
       }
@@ -48,7 +53,7 @@ export function applyHighlightSeed(evt: HighlightSeedEvent): void {
     });
 }
 
-export function applyHighlightDiffSeed(evt: HighlightDiffSeedEvent): void {
+export function applyHighlightDiffSeed(evt: HighlightDiffSeedEvent, origin?: EventOrigin): void {
   if (!evt || !Array.isArray(evt.files)) return;
   // Only seed threads this client currently knows: thread deletion
   // removes the row from the store in the same pass that evicts the
@@ -63,5 +68,10 @@ export function applyHighlightDiffSeed(evt: HighlightDiffSeedEvent): void {
   // whichever lands first inserts, the other is a no-op or an
   // identical overwrite — colors paint at the earlier of the two.
   // Ingest is best-effort by contract (it never rejects).
-  void seedPayloadPatchSpans(evt.threadId ?? '', evt.files);
+  void requireHighlightSchema(origin?.backendId ?? HOME_BACKEND)
+    .then((source) => {
+      assertHighlightSource(source);
+      if (getThreadById(evt.threadId ?? '')) return seedPayloadPatchSpans(evt.threadId ?? '', evt.files);
+    })
+    .catch((error) => console.warn('events: highlight diff seed ingest failed', error));
 }

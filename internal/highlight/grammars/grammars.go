@@ -5,7 +5,7 @@
 // reconciliations.
 //
 // Grammar C code comes from upstream Go modules where one exists;
-// languages without a Go binding (sql, markdown, diff) vendor their
+// languages without a usable Go binding vendor their
 // generated parser source under their directory with a local cgo
 // binding.
 package grammars
@@ -17,6 +17,10 @@ import (
 	"io/fs"
 	"sync"
 
+	tree_sitter_powershell "github.com/airbus-cert/tree-sitter-powershell/bindings/go"
+	tree_sitter_hcl "github.com/tree-sitter-grammars/tree-sitter-hcl/bindings/go"
+	tree_sitter_toml "github.com/tree-sitter-grammars/tree-sitter-toml/bindings/go"
+	tree_sitter_xml "github.com/tree-sitter-grammars/tree-sitter-xml/bindings/go"
 	tree_sitter_yaml "github.com/tree-sitter-grammars/tree-sitter-yaml/bindings/go"
 	tree_sitter "github.com/tree-sitter/go-tree-sitter"
 	tree_sitter_bash "github.com/tree-sitter/tree-sitter-bash/bindings/go"
@@ -35,6 +39,9 @@ import (
 	tree_sitter_sql "github.com/DerekStride/tree-sitter-sql/bindings/go"
 
 	diff_grammar "agent-overflow/internal/highlight/grammars/diff"
+	dockerfile_grammar "agent-overflow/internal/highlight/grammars/dockerfile"
+	ini_grammar "agent-overflow/internal/highlight/grammars/ini"
+	make_grammar "agent-overflow/internal/highlight/grammars/make"
 	markdown_grammar "agent-overflow/internal/highlight/grammars/markdown"
 	markdowninline_grammar "agent-overflow/internal/highlight/grammars/markdown-inline"
 	svelte_grammar "agent-overflow/internal/highlight/grammars/svelte"
@@ -66,6 +73,13 @@ var specs = map[string]func() *tree_sitter.Language{
 	"javascript": func() *tree_sitter.Language { return tree_sitter.NewLanguage(tree_sitter_javascript.Language()) },
 	"json":       func() *tree_sitter.Language { return tree_sitter.NewLanguage(tree_sitter_json.Language()) },
 	"yaml":       func() *tree_sitter.Language { return tree_sitter.NewLanguage(tree_sitter_yaml.Language()) },
+	"toml":       func() *tree_sitter.Language { return tree_sitter.NewLanguage(tree_sitter_toml.Language()) },
+	"hcl":        func() *tree_sitter.Language { return tree_sitter.NewLanguage(tree_sitter_hcl.Language()) },
+	"ini":        func() *tree_sitter.Language { return tree_sitter.NewLanguage(ini_grammar.Language()) },
+	"dockerfile": func() *tree_sitter.Language { return tree_sitter.NewLanguage(dockerfile_grammar.Language()) },
+	"make":       func() *tree_sitter.Language { return tree_sitter.NewLanguage(make_grammar.Language()) },
+	"xml":        func() *tree_sitter.Language { return tree_sitter.NewLanguage(tree_sitter_xml.LanguageXML()) },
+	"powershell": func() *tree_sitter.Language { return tree_sitter.NewLanguage(tree_sitter_powershell.Language()) },
 	"bash":       func() *tree_sitter.Language { return tree_sitter.NewLanguage(tree_sitter_bash.Language()) },
 	"css":        func() *tree_sitter.Language { return tree_sitter.NewLanguage(tree_sitter_css.Language()) },
 	"html":       func() *tree_sitter.Language { return tree_sitter.NewLanguage(tree_sitter_html.Language()) },

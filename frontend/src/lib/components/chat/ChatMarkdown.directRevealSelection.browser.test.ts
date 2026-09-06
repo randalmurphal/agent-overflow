@@ -40,6 +40,7 @@ function textRangeWidth(root: Element): number {
 }
 
 beforeEach(() => {
+  setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
   setBindingMock('HighlightClassNames', async () => []);
   setBindingMock('HighlightCode', async ({ lang }: { lang: string }) => ({
     lang,

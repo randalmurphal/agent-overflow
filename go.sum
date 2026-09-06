@@ -58,6 +58,8 @@ github.com/ProtonMail/gopenpgp/v2 v2.7.1 h1:Awsg7MPc2gD3I7IFac2qE3Gdls0lZW8SzrFZ
 github.com/ProtonMail/gopenpgp/v2 v2.7.1/go.mod h1:/BU5gfAVwqyd8EfC3Eu7zmuhwYQpKs+cGD8M//iiaxs=
 github.com/adrg/xdg v0.5.3 h1:xRnxJXne7+oWDatRhR1JLnvuccuIeCoBu2rtuLqQB78=
 github.com/adrg/xdg v0.5.3/go.mod h1:nlTsY+NNiCBGCK2tpm09vRqfVzrc2fLmXGpBLF0zlTQ=
+github.com/airbus-cert/tree-sitter-powershell v0.26.6-0.20260710083446-e7bd348c49fd h1:5yS10gDkKs+DjogB4cMbAYgetzNNZYA7OEUJzbMEHII=
+github.com/airbus-cert/tree-sitter-powershell v0.26.6-0.20260710083446-e7bd348c49fd/go.mod h1:ihQKWACaNTUeWCwwoobAeTfW0yzJr+ap/KT03U2TcYk=
 github.com/akutz/memconn v0.1.0 h1:NawI0TORU4hcOMsMr11g7vwlCdkYeLKXBcxWu2W/P8A=
 github.com/akutz/memconn v0.1.0/go.mod h1:Jo8rI7m0NieZyLI5e2CDlRdRqRRB4S7Xp77ukDjH+Fw=
 github.com/alecthomas/assert/v2 v2.11.0 h1:2Q9r3ki8+JYXvGsDyBXwH3LcJ+WK5D0gc5E8vS6K3D0=
@@ -580,6 +582,12 @@ github.com/tklauser/go-sysconf v0.3.16 h1:frioLaCQSsF5Cy1jgRBrzr6t502KIIwQ0MArYI
 github.com/tklauser/go-sysconf v0.3.16/go.mod h1:/qNL9xxDhc7tx3HSRsLWNnuzbVfh3e7gh/BmM179nYI=
 github.com/tklauser/numcpus v0.11.0 h1:nSTwhKH5e1dMNsCdVBukSZrURJRoHbSEQjdEbY+9RXw=
 github.com/tklauser/numcpus v0.11.0/go.mod h1:z+LwcLq54uWZTX0u/bGobaV34u6V7KNlTZejzM6/3MQ=
+github.com/tree-sitter-grammars/tree-sitter-hcl v1.2.0 h1:jl3v597Dii91OHcHAUrTQaSEK7oODNh6yK8z4H5xXFA=
+github.com/tree-sitter-grammars/tree-sitter-hcl v1.2.0/go.mod h1:NzEB+a6rpv14H4tCrCfzhTorCyvYYb3T9+o/e4d0pdU=
+github.com/tree-sitter-grammars/tree-sitter-toml v0.7.0 h1:VQOyz+wSHzNZJ7gUMHAWVEP4Xt/YBZkeL7iurBv/9xc=
+github.com/tree-sitter-grammars/tree-sitter-toml v0.7.0/go.mod h1:hagl3VSOuQdsaDpGY13oGMz2cLK2tUDAf4mNNW2pDBQ=
+github.com/tree-sitter-grammars/tree-sitter-xml v0.7.1-0.20260121091901-5000ae8f22d1 h1:2Ywx8Px4Zs+fojH3JER+zTA3DfI5aIz6cEBgSg3tPJU=
+github.com/tree-sitter-grammars/tree-sitter-xml v0.7.1-0.20260121091901-5000ae8f22d1/go.mod h1:shxC3S8mp1r2gihmQGEGQDfnBIkM4GZ6hXYEcWCw3xE=
 github.com/tree-sitter-grammars/tree-sitter-yaml v0.7.2 h1:Mmr9LYGTdr+8iD3ZEK1+j2FKZtY1Jt3y5Wq9dedgwfs=
 github.com/tree-sitter-grammars/tree-sitter-yaml v0.7.2/go.mod h1:tOZ8GmiIfLySKNOX58+PV2mvjFJdfciksfwotcELKbg=
 github.com/tree-sitter/go-tree-sitter v0.25.0 h1:sx6kcg8raRFCvc9BnXglke6axya12krCJF5xJ2sftRU=

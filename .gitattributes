@@ -1,0 +1,2 @@
+# Generated tree-sitter parse tables; scanners and bindings remain reviewable.
+internal/highlight/grammars/**/parser.c linguist-generated=true

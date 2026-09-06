@@ -28,6 +28,10 @@ import {
   HighlightPatchWithContext,
 } from '../stores/bindings';
 import { addToast } from '../stores/toast.svelte';
+import { withHighlightBackend, withHighlightService } from './highlightService';
+import { projectBackend, threadBackend } from '../transport/entityIndex';
+import { requireEntityBackend } from '../transport/backends';
+import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { expansionPredecessor } from './diffContextExpansion';
 import { contentKey } from './fnv1a';
 import { workspaceKeyForRef } from './workspaceKey';
@@ -288,6 +292,7 @@ function extensionLabel(path: string): string {
 }
 
 function reportSpanFailure(path: string, err: unknown): void {
+  if (isPassiveConnectionFailure(err)) return;
   // Failures degrade to plain text — already what the renderer does
   // when getSpansForLine returns null. Logged for diagnostics, plus a
   // one-shot toast per extension so the user sees a signal rather
@@ -385,16 +390,18 @@ export async function requestFileSpans(
         // Same split as the gap-expansion RPCs: the edits scope's subject
         // is the thread's own history, every other scope's is the
         // checkout. `subject` is exactly the id each one resolves through.
-        result = primed.scope === 'edits'
-          ? await HighlightEditPatchWithContext(subject, req)
-          : await HighlightPatchWithContext(primed.workspace, req);
+        const backend = requireEntityBackend(primed.scope === 'edits'
+          ? threadBackend(subject) : projectBackend(primed.workspace.projectId));
+        result = await withHighlightBackend(backend, () => primed.scope === 'edits'
+          ? HighlightEditPatchWithContext(subject, req)
+          : HighlightPatchWithContext(primed.workspace, req));
       } catch {
         // Priming refused — a session without `files:read`, or a scope failure.
         // Fall through to the wire-safe unprimed request.
       }
     }
     if (!result) {
-      result = await HighlightPatch({ path: file.path, patch });
+      result = await withHighlightService(() => HighlightPatch({ path: file.path, patch }));
     }
     // Never render spans against an empty class-name table: the id →
     // class map loads once per page and this await is free afterwards.

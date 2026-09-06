@@ -4,7 +4,7 @@
 // context. Critical because the original code path was "no thread →
 // toast and bail", which left Ctrl+N inert from a fresh app launch.
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   openDraftThreadForProject,
   resolveDraftTargetProject,
@@ -14,7 +14,9 @@ import {
   addProjectLocal,
   resetProjectsForTest,
 } from './projects.svelte';
-import { resetPaneLayoutForTest } from './paneLayout.svelte';
+import { getPaneLayoutItems, resetPaneLayoutForTest } from './paneLayout.svelte';
+import { getCompactScreen, setCompactLayoutForTest, showCompactList } from './layoutMode.svelte';
+import { focusPane, getFocusedPaneId } from './panes.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import type { ThreadDefaults } from './bindings';
 import type { Project, Thread } from '../types/models';
@@ -130,6 +132,27 @@ describe('openDraftThreadForProject', () => {
   beforeEach(() => {
     resetProjectsForTest();
     resetPaneLayoutForTest();
+  });
+
+  afterEach(() => setCompactLayoutForTest(false));
+
+  it('reveals a reused draft pane every time New Thread is requested from the compact list', async () => {
+    const project = makeProject();
+    addProjectLocal(project);
+    const pane = createThreadPane({ paneId: 'main' });
+    setBindingMock('GetThreadDefaults', async () => makeDefaults());
+    setCompactLayoutForTest(true);
+
+    for (let lap = 0; lap < 3; lap++) {
+      showCompactList();
+      focusPane('other-pane');
+      await expect(openDraftThreadForProject({ projectId: project.id, targetPane: pane })).resolves.toBe(pane);
+
+      expect(getCompactScreen()).toBe('thread');
+      expect(getFocusedPaneId()).toBe(pane.paneId);
+      expect(getPaneLayoutItems().map(item => item.paneId)).toEqual([pane.paneId]);
+      expect(pane.hasDraftPlaceholder).toBe(true);
+    }
   });
 
   it('waits for authoritative composer defaults before opening the placeholder', async () => {

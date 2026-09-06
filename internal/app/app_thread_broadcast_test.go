@@ -73,6 +73,34 @@ func (r *threadBroadcasts) expectSilence(what string) {
 // exercised here for both halves of the contract — the changed row goes out,
 // and repeating the same write says nothing.
 func TestThreadMutationsBroadcastTheChangedRow(t *testing.T) {
+	t.Run("empty draft cleanup announces deletion only after content is cleared", func(t *testing.T) {
+		app := newTestAppWithStore(t)
+		thread := mustCreateBroadcastThread(t, app)
+		if err := app.SaveDraft(t.Context(), thread.ID, "unsent", nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		broadcasts := captureThreadBroadcasts(t, app)
+		deleted, err := app.DeleteEmptyDraftThread(thread.ID)
+		if err != nil || deleted {
+			t.Fatalf("cleanup nonempty draft = %v, %v", deleted, err)
+		}
+		broadcasts.expectSilence("retaining draft content")
+		if err := app.ClearDraft(t.Context(), thread.ID); err != nil {
+			t.Fatal(err)
+		}
+		broadcasts.reset()
+		deleted, err = app.DeleteEmptyDraftThread(thread.ID)
+		if err != nil || !deleted {
+			t.Fatalf("cleanup empty draft = %v, %v", deleted, err)
+		}
+		if len(broadcasts.events) != 1 || broadcasts.events[0].Action != triage.ThreadActionDeleted || broadcasts.events[0].ID != thread.ID || broadcasts.events[0].Thread != nil {
+			t.Fatalf("cleanup broadcast = %+v, want one deletion for %s", broadcasts.events, thread.ID)
+		}
+		broadcasts.reset()
+		_, _ = app.DeleteEmptyDraftThread(thread.ID)
+		broadcasts.expectSilence("repeating empty draft cleanup")
+	})
+
 	t.Run("create is listed", func(t *testing.T) {
 		app := newTestAppWithStore(t)
 		broadcasts := captureThreadBroadcasts(t, app)

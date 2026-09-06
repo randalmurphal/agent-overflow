@@ -13,6 +13,7 @@ import { resetForTest as resetSendQueue } from './sendQueue.svelte';
 import { resetLiveUsageSnapshotsForTest } from './threadContextWindow';
 import { getThreads, getThreadLiveActivityAt, refreshThreads } from './threads.svelte';
 import { claimLocalReadMarker, resetLocalReadMarkersForTest } from './threadReadWrites';
+import { withEmptyDraftCleanup } from './emptyDraftCleanup';
 import { getToasts } from './toast.svelte';
 import { getProjectLiveActivityAt, getProjects, refreshProjects, resetProjectsForTest } from './projects.svelte';
 import {
@@ -1790,6 +1791,29 @@ describe('setupEventListeners', () => {
       emitWailsEvent('thread:updated', { action: 'deleted', id: 'thread-1' });
 
       expect(findPaneShowingThread('thread-1')).toBeNull();
+    });
+
+    it('evicts an empty draft during local cleanup but lets its composer restage, releasing on failure', async () => {
+      const thread = makeThread({ id: 'thread-1', isDraft: true });
+      setBindingMock('ListThreads', async () => [thread]);
+      await refreshThreads();
+      const pane = await buildPane(thread);
+
+      await expect(withEmptyDraftCleanup(thread.id, async () => {
+        emitWailsEvent('thread:updated', { action: 'deleted', id: thread.id });
+        expect(getThreads()).toEqual([]);
+        expect(findPaneShowingThread(thread.id)).toBe(pane);
+        throw new Error('cleanup interrupted');
+      }, async (deleted) => {
+        expect(deleted).toBe(true);
+        throw new Error('restoration failed');
+      })).rejects.toThrow('restoration failed');
+
+      expect(findPaneShowingThread(thread.id)).toBeNull();
+      // The completed claim cannot retain a later pane on the same ID.
+      await buildPane(thread);
+      emitWailsEvent('thread:updated', { action: 'deleted', id: thread.id });
+      expect(findPaneShowingThread(thread.id)).toBeNull();
     });
 
     it('leaves a full row for an unknown thread alone', async () => {

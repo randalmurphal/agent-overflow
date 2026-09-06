@@ -75,6 +75,10 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
   let pendingSaveGeneration = 0;
   let switchGeneration = 0;
   let hasPendingSave: boolean = $state(false);
+  // Cleanup follows this screen's edit or materialization. A newly listed
+  // remote row may still be waiting for its creator's first debounced save;
+  // an empty hydrate is not permission to delete that row.
+  let ownsEmptyThreadCleanup = $state(false);
   // Edge-trigger for the fire-and-forget save paths (debounce, flush,
   // switch-flush): the first failure after a working period toasts, the
   // retries a failing backend provokes every debounce tick do not. Reset
@@ -218,6 +222,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     hydrating = true;
     const cached = peekSnapshot(id);
     if (cached) {
+      ownsEmptyThreadCleanup = true;
       applySnapshot(cached);
       hasPendingSave = true;
     }
@@ -325,6 +330,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
   // Called on every mutation, so it checks `persists` itself rather than
   // building a snapshot per keystroke for `rememberSnapshot` to discard.
   function rememberCurrentDraft(): void {
+    ownsEmptyThreadCleanup = true;
     if (!persists || !threadId) return;
     rememberSnapshot(threadId, buildSnapshot());
   }
@@ -344,6 +350,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
         });
     }
     threadId = id;
+    ownsEmptyThreadCleanup = false;
     content = '';
     attachments = [];
     terminalChips = [];
@@ -363,6 +370,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     pendingSaveGeneration++;
     switchGeneration++;
     threadId = id;
+    ownsEmptyThreadCleanup = true;
     hydrating = false;
     clearOptimisticRestoredDraftMarker();
     rememberSnapshot(id, buildSnapshot());
@@ -425,6 +433,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     get sourceProposedPlan() { return sourceProposedPlan; },
     get hydrating() { return hydrating; },
     get hasPendingSave() { return hasPendingSave; },
+    get ownsEmptyThreadCleanup() { return ownsEmptyThreadCleanup; },
     get hasDraft() {
       return content.trim().length > 0 || attachments.length > 0 || terminalChips.length > 0;
     },

@@ -570,7 +570,10 @@ a vendor patch cannot import app code. Upstream's `color` prop and
 -ts` rather than editing it. `src/lib/generated/` is generated from Go too
 and is equally not hand-edited: `settingsDefaults.ts` comes from
 `internal/settings.DefaultSettings` via `go generate ./internal/settings`,
-and a Go test fails on a stale copy. Backend to frontend flow:
+and a Go test fails on a stale copy. `keybindingDefaults.ts` likewise comes
+from `keybindings.Merge(Defaults, nil)` via `go generate ./internal/keybindings`;
+the native shell reads it without requiring a remote settings service.
+Backend to frontend flow:
 [`data-flow.md`](../docs/architecture/data-flow.md). Extension playbooks:
 [`how-to.md`](../docs/architecture/how-to.md). When Wails or provider
 behavior is unclear, spike outside the repo

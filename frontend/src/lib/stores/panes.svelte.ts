@@ -135,13 +135,12 @@ function resolveNewPaneInsertIndex(insertIndex?: number): number {
 }
 
 /**
- * Ensure the pane is mounted in the layout grid. Idempotent: if the
- * pane is already present, no layout mutation happens. Used by the
+ * Ensure the pane is mounted and revealed. If the pane is already
+ * present, reuse its layout slot but still navigate to it. Used by the
  * draft-placeholder open flow (`openDraftThreadForProject`) so a
  * pane can host the composer before any real thread row exists.
  */
 export function ensurePaneInLayout(paneId: string): void {
-  if (hasLayoutPane(paneId)) return;
   addThreadPaneToLayout(paneId);
   focusedPaneId = paneId;
   revealPane(paneId);

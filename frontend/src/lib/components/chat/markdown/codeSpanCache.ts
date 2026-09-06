@@ -17,6 +17,8 @@ import { addToast } from '../../../stores/toast.svelte';
 import { appendFNV1a32, contentKey, fnv1a32 } from '../../../utils/fnv1a';
 import { ensureSyntaxClassNames, type EncodedLine } from '../../../utils/syntaxSpans';
 import { matchesProvenAppend, type ProvenAppend } from '../../../markdown';
+import { withHighlightService } from '../../../utils/highlightService';
+import { isPassiveConnectionFailure } from '../../../transport/passiveReadFailure';
 
 /** Entry cap. Blocks are small (plain lines carry no runs); 300
  * comfortably covers every visible message's blocks plus the settle
@@ -176,7 +178,7 @@ function requestBlockSpansByKey(
 
   const request = (async (): Promise<EncodedLine[] | null> => {
     try {
-      const result = await HighlightCode({ lang, source });
+      const result = await withHighlightService(() => HighlightCode({ lang, source }));
       // Never resolve spans against an empty class-name table; the
       // id → class map loads once per page load.
       await ensureSyntaxClassNames();
@@ -192,6 +194,7 @@ function requestBlockSpansByKey(
       }
       return spans;
     } catch (err) {
+      if (isPassiveConnectionFailure(err)) return null;
       console.warn(`Code-block highlight failed for lang=${lang}:`, err);
       if (!warnedLanguages.has(lang)) {
         warnedLanguages.add(lang);

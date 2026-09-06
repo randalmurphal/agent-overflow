@@ -29,6 +29,7 @@ function sourceText(root: Element): Text {
 beforeEach(() => {
   resetCodeSpanCacheForTest();
   __resetStreamdownCodeHostForTest();
+  setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
   setBindingMock('HighlightClassNames', async () => ['none', 'keyword']);
 });
 
@@ -57,6 +58,7 @@ describe('completed code-island retirement', () => {
     const liveIconRect = liveIcon.getBoundingClientRect();
 
     try {
+      await waitFor(() => expect(resolveHighlight).toBeTypeOf('function'));
       resolveHighlight(keywordSpans());
       const staticButton = await waitFor(() => {
         const found = view.container.querySelector<HTMLButtonElement>(
@@ -113,6 +115,7 @@ describe('completed code-island retirement', () => {
     expect(selection.toString()).toBe('route');
 
     try {
+      await waitFor(() => expect(resolveHighlight).toBeTypeOf('function'));
       resolveHighlight(keywordSpans());
       await new Promise((resolve) => setTimeout(resolve, 0));
       await new Promise(requestAnimationFrame);
@@ -159,6 +162,7 @@ describe('completed code-island retirement', () => {
     const outside = document.createElement('button');
     document.body.append(outside);
     try {
+      await waitFor(() => expect(resolveHighlight).toBeTypeOf('function'));
       resolveHighlight(keywordSpans());
       await waitFor(() => expect(view.container.querySelector('.syntax-keyword')).not.toBeNull());
       await new Promise(requestAnimationFrame);

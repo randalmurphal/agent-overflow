@@ -23,6 +23,7 @@ import { setHomeEndpoint, storedBackendEndpoint } from '../transport/homeEndpoin
 import { storedBackendDescriptors } from '../transport/manifestBackends';
 import type { AppLock } from './lock';
 import { isNativeShell } from './platform';
+import { installNativeKeybindings } from './keybindings';
 
 export interface ShellBoot {
   /** False in every browser build; nothing below it applies. */
@@ -56,6 +57,7 @@ onBackendsChanged(() => { if (isNativeShell()) initializeComputerSelection(); })
  */
 export function prepareNativeShell(): ShellBoot {
   if (!isNativeShell()) return { shell: false, paired: false };
+  installNativeKeybindings();
 
   // Installed before the endpoint is set, so a manifest that resolves
   // early cannot publish the desktop-shaped list over it.

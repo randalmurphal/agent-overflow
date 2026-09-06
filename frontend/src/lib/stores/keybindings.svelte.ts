@@ -74,6 +74,19 @@ let issues: KeybindingIssue[] = $state([]);
 let loaded = $state(false);
 let loadError: string | null = $state(null);
 
+/** The native shell has no local Go service. Its bootstrap installs
+ * frontend-owned persistence before any loader or settings action runs. */
+export interface KeybindingPersistence {
+  read(): Promise<{ bindings: KeybindingRule[]; loadError?: string }>;
+  write(rules: KeybindingRule[]): Promise<void>;
+  reset(): Promise<void>;
+}
+let localPersistence: KeybindingPersistence | null = null;
+
+export function setKeybindingPersistence(persistence: KeybindingPersistence | null): void {
+  localPersistence = persistence;
+}
+
 function compileEffectiveRules(): void {
   const compiled = compileAll(rules);
   resolved = compiled.resolved;
@@ -305,7 +318,7 @@ export async function resyncKeybindings(): Promise<void> {
 
 async function readKeybindings(announce: boolean): Promise<void> {
   try {
-    const result = await GetKeybindings();
+    const result = await (localPersistence ? localPersistence.read() : GetKeybindings());
     rules = Array.isArray(result?.bindings) ? result.bindings : [];
     // `||`, not `??`: the field is `omitempty` on the wire, so an absent
     // field and an empty string both mean "nothing to report" — and one
@@ -352,6 +365,11 @@ function isNonOverrideRule(rule: KeybindingRule): boolean {
 
 /** Replace the persisted keybinding overrides with the provided effective rules. */
 export async function saveKeybindings(next: KeybindingRule[]): Promise<void> {
+  if (localPersistence) {
+    await localPersistence.write(next);
+    await loadKeybindings();
+    return;
+  }
   // The Wails-generated Keybinding class treats optional `when` as
   // `string | undefined` (required-but-maybe-absent) rather than `?:`, so we
   // normalize through the constructor to satisfy the binding's parameter type.
@@ -370,7 +388,8 @@ export async function saveKeybindings(next: KeybindingRule[]): Promise<void> {
 }
 
 export async function resetKeybindingsToDefaults(): Promise<void> {
-  await ResetKeybindings();
+  if (localPersistence) await localPersistence.reset();
+  else await ResetKeybindings();
   await loadKeybindings();
 }
 
