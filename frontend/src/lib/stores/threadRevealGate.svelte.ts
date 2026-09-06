@@ -61,6 +61,29 @@ export function createRevealGate(options: RevealGateOptions): RevealGate {
   // gate. Subagent children (`parentId` set) never become the frontier, so
   // parallel subagent branches are never serialized behind one another.
   let revealBoundary: RevealBoundary | null = $state(null);
+  // Visibility is monotonic within the installed window. A caught-up row can
+  // receive more text after a successor was released; that must not unmount
+  // the successor on every burst. Keep only its identity/position, not text.
+  let revealedThrough: (RevealBoundary & { id: string }) | null = null;
+
+  function lastTopLevelAtOrBefore(boundary: RevealBoundary | null, strict = false): Item | null {
+    const items = options.getItems();
+    let end = items.length;
+    if (boundary !== null) {
+      let start = 0;
+      while (start < end) {
+        const mid = (start + end) >>> 1;
+        const item = items[mid];
+        const comparison = item.turnIndex - boundary.turnIndex || item.itemIndex - boundary.itemIndex;
+        if (comparison < 0 || (!strict && comparison === 0)) start = mid + 1;
+        else end = mid;
+      }
+    }
+    for (let i = end - 1; i >= 0; i--) {
+      if (!items[i].parentId) return items[i];
+    }
+    return null;
+  }
 
   // Reveal-gate invariant: the pane's two item-window commit chokepoints
   // recompute after their full transaction, so a caller cannot publish a new
@@ -89,8 +112,7 @@ export function createRevealGate(options: RevealGateOptions): RevealGate {
   // streaming row draining, or from a removal that truncated the tail
   // (revert-on-interrupt drops both frontier and withheld successor in
   // one call), where arming would open a phantom spring window over a
-  // SHRINKING timeline. A retreat (a replay delta re-creating a smoother
-  // for an earlier row) only withholds and never releases. Evaluated
+  // SHRINKING timeline. Late text cannot retract released rows. Evaluated
   // against CURRENT items, not previous-pass state, so removal-driven
   // recomputes can't arm off a stale successor observation.
   function boundaryChangeReleasesRows(
@@ -140,9 +162,11 @@ export function createRevealGate(options: RevealGateOptions): RevealGate {
    * transient condition, not a growing one. Do not "fix" a pileup by
    * skipping, rushing, or popping the frontier.
    *
-   * The frontier is the earliest top-level (`!parentId`) item whose smoother
-   * is still revealing. Subagent children are excluded so a streaming child
-   * never gates a sibling branch or a top-level row.
+   * The frontier starts at the earliest top-level (`!parentId`) item whose
+   * smoother is still revealing, clamped to the last already-released row.
+   * Subagent children are excluded so a streaming child never gates a sibling
+   * branch or a top-level row. Resumed earlier text cannot retract rows the
+   * reader has already seen, but still holds NEW successors behind its drain.
    *
    * INVARIANT: every path that mutates `items` or a smoother's liveness must
    * call this. There is deliberately NO reactive `$effect` watching `items`
@@ -227,6 +251,18 @@ export function createRevealGate(options: RevealGateOptions): RevealGate {
       }
     }
 
+    // Clamp only to rows actually released by a previous transaction. Using
+    // the current tail here would also release NEW successors prematurely.
+    // Reverts/removals retire the marker with its item; a replacement at the
+    // same position is new content and must obey sequencing again.
+    const retained = revealedThrough && (
+      options.getItemById(revealedThrough.id)
+      ?? lastTopLevelAtOrBefore(revealedThrough, true)
+    );
+    if (frontier && retained && compareItemsByTimelinePosition(retained, frontier) > 0) {
+      frontier = retained;
+    }
+
     if (frontier) {
       const f = frontier;
       for (const [id, entry] of itemSmoothers) {
@@ -248,6 +284,14 @@ export function createRevealGate(options: RevealGateOptions): RevealGate {
     const next: RevealBoundary | null = frontier
       ? { turnIndex: frontier.turnIndex, itemIndex: frontier.itemIndex }
       : null;
+    const released = frontier ?? lastTopLevelAtOrBefore(null);
+    if (released?.id !== revealedThrough?.id
+      || released?.turnIndex !== revealedThrough?.turnIndex
+      || released?.itemIndex !== revealedThrough?.itemIndex) {
+      revealedThrough = released
+        ? { id: released.id, turnIndex: released.turnIndex, itemIndex: released.itemIndex }
+        : null;
+    }
     const prev = revealBoundary;
     if (!sameBoundary(prev, next)) {
       revealBoundary = next;
@@ -279,6 +323,7 @@ export function createRevealGate(options: RevealGateOptions): RevealGate {
     disposeSmoothersForItems,
     clearBoundary() {
       revealBoundary = null;
+      revealedThrough = null;
     },
   };
 }
