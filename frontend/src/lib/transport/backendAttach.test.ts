@@ -363,6 +363,32 @@ describe('backendAttach', () => {
     });
   });
 
+  it.each([
+    ['Mozilla/5.0 (Linux; Android 16; Pixel 9)', 'Android phone', 'Android'],
+    ['Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', 'Mac browser', 'macOS'],
+    ['Mozilla/5.0 (Windows NT 10.0; Win64; x64)', 'Windows browser', 'Windows'],
+  ])('introduces the connecting device separately from the destination: %s', async (ua, label, platform) => {
+    const userAgent = vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(ua);
+    const rawPlatform = vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Linux aarch64');
+    const payload = { v: 1, backendId: 'destination', backendName: 'Mac.localdomain', endpoint: ENDPOINT, token: 'invitation' };
+    const encoded = btoa(JSON.stringify(payload)).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
+    const fetch = vi.fn(async (_url: string, init: RequestInit) => {
+      expect(JSON.parse(init.body as string)).toMatchObject({ label, platform });
+      return new Response(JSON.stringify({ sessionId: 's', credential: 'c', verificationNumber: '123456' }));
+    });
+    vi.stubGlobal('fetch', fetch);
+    try {
+      const attached = await attachBackendFromLink(`${ENDPOINT}/#pair=${encoded}`);
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(attached.name).toBe('Mac.localdomain');
+      expect(pendingAttachments()).toContainEqual({ ...attached, endpoint: ENDPOINT });
+    } finally {
+      vi.unstubAllGlobals();
+      userAgent.mockRestore();
+      rawPlatform.mockRestore();
+    }
+  });
+
   describe('the pending list', () => {
     it('is what keeps the activation poll alive', async () => {
       // No pending row for this id, so the wait is already over: a

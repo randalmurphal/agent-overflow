@@ -818,6 +818,13 @@ remote browser alike. Protocol and authz rules:
   refused (it becomes a storage key and a `/ws/backend/<id>` path
   segment), and the endpoint is stored BEFORE the redemption so the
   `/auth/pair` POST is already addressed at the machine being paired with.
+  Its device label describes the CONNECTING frontend (`suggestDeviceLabel`),
+  never the destination's `backendName`; that name belongs only to the saved
+  computer connection. Pairing and passkey sign-in share `devicePlatform` so
+  Android introduces itself as Android rather than the WebView's raw Linux
+  platform. These fields are presentation, never authorization. Existing
+  device metadata is refreshed by re-pairing; do not infer that a
+  legacy Linux row was Android or overwrite an owner-chosen label by guessing.
   `awaitAttachedActivation` then polls that slot's `probeActivation` until
   the owner confirms on the other machine, and publishes the new
   descriptor through `syncAttachedBackends()`.

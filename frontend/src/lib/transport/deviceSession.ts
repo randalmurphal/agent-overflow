@@ -2,6 +2,7 @@ import { isAuthReasonCode, presentAuthReason } from './authReason';
 import { certificatePin, pairingEndpoint } from '../native/networkTrust';
 import { isNativeShell } from '../native/platform';
 import { networkFetch } from './networkFetch';
+import { devicePlatform } from '../utils/deviceLabel';
 import { computerSocketRoute, failComputerRoute, fetchComputerRoute, forgetComputerRoutes, learnComputerRoutes, repairComputerAddress, type ComputerRouteContext } from './computerRoutes';
 // The paired-device session client: the browser half of pairing
 // (docs/specs/remote-access.md §4).
@@ -592,7 +593,7 @@ export async function redeemPairing(
       // claim about the same fact.
       keyThumbprint: proof === null ? deviceKeyThumbprint() : '',
       label,
-      platform: navigator.platform || '',
+      platform: devicePlatform(),
     }),
   });
   const body = await readGrant(res);
@@ -670,7 +671,7 @@ export async function signInWithPasskey(
       response: JSON.parse(response) as unknown,
       keyThumbprint: proof === null ? deviceKeyThumbprint() : '',
       label,
-      platform: navigator.platform || '',
+      platform: devicePlatform(),
     }),
   });
   const body = await readGrant(res);

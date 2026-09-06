@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { suggestDeviceLabel } from '../../utils/deviceLabel';
   // Overlay banner pinned to the top of the app shell that surfaces the
   // wsClient's current connection state. Hidden on the happy path
   // ('connected') so it reserves no space above the chat header; only
@@ -289,7 +290,7 @@
     signingIn = true;
     signInError = '';
     try {
-      await signInWithPasskey(navigator.platform || 'Browser');
+      await signInWithPasskey(suggestDeviceLabel());
       // Awaited, for the reason main.ts awaits it after pairing: the app
       // is already mounted here, and its stores re-acquire on the
       // reconnect this settles.

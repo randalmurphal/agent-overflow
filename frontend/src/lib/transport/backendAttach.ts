@@ -1,6 +1,7 @@
 import { pairingEndpoint } from '../native/networkTrust';
 import { isNativeShell } from '../native/platform';
 import { networkFetch } from './networkFetch';
+import { suggestDeviceLabel } from '../utils/deviceLabel';
 // Attaching, listing and detaching a second machine from a client that IS
 // the client.
 //
@@ -113,7 +114,7 @@ export async function attachBackendFromLink(link: string): Promise<AttachedPairi
   const endpoint = pairingEndpoint(payload);
   storeBackendEndpoint(id, endpoint);
   if (id === HOME_BACKEND && isNativeShell()) setHomeEndpoint(endpoint);
-  const outcome = await redeemPairing(payload, name, networkFetch, id);
+  const outcome = await redeemPairing(payload, suggestDeviceLabel(), networkFetch, id);
   setPendingAttachment({
     id,
     name,

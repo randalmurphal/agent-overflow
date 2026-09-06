@@ -1,5 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import { suggestDeviceLabel } from './deviceLabel';
+import { devicePlatform, suggestDeviceLabel } from './deviceLabel';
+
+describe('devicePlatform', () => {
+  it.each([
+    ['Linux; Android 16; Pixel 9', 'Linux aarch64', 'Android'],
+    ['iPhone; CPU iPhone OS 17_0 like Mac OS X', 'iPhone', 'iOS'],
+    ['iPad; CPU OS 17_0 like Mac OS X', 'iPad', 'iPadOS'],
+    ['Macintosh; Intel Mac OS X', 'MacIntel', 'macOS'],
+    ['Windows NT 10.0; Win64', 'Win32', 'Windows'],
+    ['X11; Linux aarch64', 'Linux aarch64', 'Linux'],
+    ['Unknown', 'Other OS', 'Other OS'],
+    ['Unknown', '', ''],
+  ])('describes %s without mistaking the kernel for the OS', (ua, raw, expected) => {
+    expect(devicePlatform(ua, raw)).toBe(expected);
+  });
+});
 
 describe('suggestDeviceLabel', () => {
   it('names the platform the user agent describes', () => {
