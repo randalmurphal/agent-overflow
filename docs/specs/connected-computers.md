@@ -255,6 +255,10 @@ block restart while a helper survived; Unix locks now use atomic close-on-exec,
 with a real-child regression test. Async final path enrichment also no longer
 recreates a thread's live caches after cleanup.
 
+The same artifact gate also passes against the final `make build` macOS bundle,
+including production build tags, bundled resources and ad-hoc signing, packaged
+from a separate checkout without replacing the running desktop host.
+
 The signed, non-debuggable Android shell build 3 has passed a fresh Android 36
 Pixel 9 emulator check: paste an invitation, compare and confirm the pairing
 number, unlock with the platform PIN, open the remote project/thread, then

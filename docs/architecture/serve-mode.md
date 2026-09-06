@@ -670,6 +670,12 @@ a mock; provider homes are empty, external HTTP is blocked, and no service is
 installed. Inputs and live installations remain untouched. The regular Go gate
 compiles this test but skips the real boots when its variables are absent.
 
+The fixture writes settings under `<data-root>/agent-overflow`, because
+`--data-dir` selects the config root. It also poisons provider names on PATH
+and uses an isolated shell for boot-time PATH discovery. Both layers are
+required: a temporary HOME alone cannot isolate macOS Claude credentials,
+whose active Keychain item has a fixed name.
+
 This verifies the production executable and bundle layout. Download checksum
 failures, interrupted trials and rollback have separate deterministic tests.
 Release signing, platform service-manager integration and physical-device
