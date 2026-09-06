@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/zip"
+	"encoding/json"
 	"io"
 	"os"
 	"os/exec"
@@ -16,6 +17,28 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
+
+func TestPackageManagerPinsMatchAcrossBuildRoots(t *testing.T) {
+	var want string
+	for _, path := range []string{"frontend/package.json", "package.json", "mobile/package.json"} {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var pkg struct{ PackageManager string }
+		if err := json.Unmarshal(body, &pkg); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(pkg.PackageManager, "pnpm@") {
+			t.Fatalf("%s must pin pnpm before Corepack dispatches --dir", path)
+		}
+		if want == "" {
+			want = pkg.PackageManager
+		} else if pkg.PackageManager != want {
+			t.Errorf("%s package manager differs from frontend/package.json", path)
+		}
+	}
+}
 
 // Framework symlinks are part of a signed app bundle. Following them while
 // archiving changes the installed bundle even though every binary was signed.

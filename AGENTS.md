@@ -28,6 +28,10 @@ Requires Go 1.26.6+, Node 24+, and pnpm 10+. On Linux, install
 `make install` (the GTK4 / WebKitGTK 6.0 stack ships on Ubuntu 23.04+ /
 Debian 13+).
 
+Keep the `packageManager` pins in the root, frontend and mobile package files
+identical. Corepack chooses pnpm before handling `--dir`; leaving a build root
+unpinned can select a newer incompatible pnpm on a clean runner.
+
 | Target | What it does |
 |---|---|
 | `make install` | `wails3` CLI (via the `go.mod` tool directive) + pnpm deps |
