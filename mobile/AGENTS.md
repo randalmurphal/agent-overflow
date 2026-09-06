@@ -236,7 +236,7 @@ One small JSON document at `filesDir/bundles/state.json`, beside one
 directory per bundle named by its content id:
 
 ```
-{current, next, pendingHealth, lastKnownGood, rolledBack: []}
+{apkBuild, current, next, pendingHealth, lastKnownGood, rolledBack: []}
 ```
 
 Each of the four strings is a bundle id or `""`. **An empty `current`
@@ -263,7 +263,16 @@ immediately loads the WebView from whatever path it holds, so a path
 installed afterwards would mean one launch of the wrong bundle every
 time. `registerPlugin` is before it for the same reason.
 
-The transition, in this order:
+The installed APK's `versionCode` is recorded as `apkBuild`. Before the ordinary
+transition, a different positive build (including legacy state without this
+field) clears only bundle selection and serves the APK's packaged assets.
+Otherwise a downloaded old UI can permanently mask an APK update, even while
+that UI cannot reconnect to obtain newer code (Pixel incident, 2026-09-05).
+Pairing, preferences and WebView storage are outside this reset. The next healthy
+report prunes the retired bundle directories. Every distributed APK increments
+`shell-build.txt`; ordinary cold starts retain subsequent downloaded updates.
+
+Within the same APK, the transition runs in this order:
 
 1. **`pendingHealth` is still set** → the previous launch swapped onto a
    bundle and never reported healthy. `current` becomes `lastKnownGood`,

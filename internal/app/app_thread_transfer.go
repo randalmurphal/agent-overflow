@@ -247,7 +247,7 @@ func (a *App) CreateThreadTransferOffer(ctx context.Context, intent ThreadTransf
 }
 
 func (a *App) makeTransferOffer(row store.ThreadTransfer, grant string) (transferclient.Offer, error) {
-	_, endpoint, fingerprint, err := a.pairingPageURL()
+	_, endpoint, fingerprint, err := a.pairingPageURL("")
 	if err != nil {
 		return transferclient.Offer{}, err
 	}

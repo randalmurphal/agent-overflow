@@ -57,7 +57,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(dev.agentoverflow.app.push.PushPlugin.class);
 
         bundles = new BundleStore(BundlePlugin.rootFor(getFilesDir()));
-        File serving = bundles.onBoot();
+        File serving = bundles.onBoot(BundlePlugin.versionCode(this));
         if (serving != null) {
             bridgeBuilder.setServerPath(
                     new ServerPath(ServerPath.PathType.BASE_PATH, serving.getAbsolutePath()));

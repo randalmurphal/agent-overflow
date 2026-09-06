@@ -1,5 +1,6 @@
 package dev.agentoverflow.app;
 
+import android.content.Context;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.os.Build;
@@ -128,7 +129,7 @@ public class BundlePlugin extends Plugin {
         answer.put("pendingHealth", state.pendingHealth);
         answer.put("lastKnownGood", state.lastKnownGood);
         answer.put("rolledBack", new JSArray(state.rolledBack));
-        answer.put("versionCode", versionCode());
+        answer.put("versionCode", versionCode(getContext()));
         call.resolve(answer);
     }
 
@@ -139,10 +140,10 @@ public class BundlePlugin extends Plugin {
      * what it is does not get a bundle it might not be able to run.
      */
     @SuppressWarnings("deprecation")
-    private long versionCode() {
+    static long versionCode(Context context) {
         try {
-            PackageManager packages = getContext().getPackageManager();
-            PackageInfo info = packages.getPackageInfo(getContext().getPackageName(), 0);
+            PackageManager packages = context.getPackageManager();
+            PackageInfo info = packages.getPackageInfo(context.getPackageName(), 0);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 return info.getLongVersionCode();
             }

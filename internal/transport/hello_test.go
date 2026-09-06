@@ -143,6 +143,7 @@ func TestServer_AdvertisedCapabilitiesAreFrozen(t *testing.T) {
 		"notifications.remote",
 		"passkeys",
 		"commands.remote.v1",
+		"pairing.networks.v1",
 	}
 	assertCapabilities(t, serverCapabilities, want)
 	assertCapabilities(t, serverCapabilitiesWithBrowser, append(append([]string{}, want...), "browser"))

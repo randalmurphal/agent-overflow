@@ -1,6 +1,7 @@
 package app
 
 import (
+	"net"
 	"net/url"
 	"slices"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/identity"
+	"agent-overflow/internal/network"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
 )
@@ -833,5 +835,49 @@ func TestMintDevicePairing_NeedsATransportToPointAt(t *testing.T) {
 	app := identityApp(t)
 	if _, err := app.MintDevicePairing(string(identity.DevicePhone), ""); err == nil {
 		t.Fatal("MintDevicePairing minted a link with no transport running")
+	}
+}
+
+func TestMintDevicePairingOnNetworkKeepsLANTrustInPayloadAndRecord(t *testing.T) {
+	app := accessApp(t)
+	previousInterfaces, previousAddrs := network.Interfaces, network.InterfaceAddrs
+	t.Cleanup(func() { network.Interfaces, network.InterfaceAddrs = previousInterfaces, previousAddrs })
+	network.Interfaces = func() ([]net.Interface, error) {
+		return []net.Interface{{Index: 1, Name: "lan", Flags: net.FlagUp}}, nil
+	}
+	network.InterfaceAddrs = func(net.Interface) ([]net.Addr, error) {
+		return []net.Addr{&net.IPNet{IP: net.ParseIP("192.168.1.20"), Mask: net.CIDRMask(24, 32)}}, nil
+	}
+	if _, err := app.SetNetworkSettings(atTheMachine(), network.Settings{BindAll: true}); err != nil {
+		t.Fatal(err)
+	}
+	const fingerprint = "sha256:0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c5d6e7f8"
+	SetCertFingerprint(app, fingerprint)
+	invite, err := app.MintDevicePairingOnNetwork("phone", "view-only", "lan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, encoded, _ := strings.Cut(invite.URL, pairingFragmentPrefix)
+	payload, err := identity.DecodePairingPayload(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(payload.Endpoint, "http://192.168.1.20:") || payload.CertFingerprint != fingerprint {
+		t.Fatalf("wrong endpoint or certificate: %+v", payload)
+	}
+	link, err := app.store.GetPairingLink(invite.LinkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if link.CertFingerprint != fingerprint {
+		t.Fatal("record lost selected network's certificate")
+	}
+	if !app.currentSettings().Network.BindAll {
+		t.Fatal("pairing modified network settings")
+	}
+	for _, choice := range []string{"", "auto", "tailnet"} {
+		if _, err := app.MintDevicePairingOnNetwork("phone", "full", choice); err == nil {
+			t.Fatalf("accepted unavailable choice %q", choice)
+		}
 	}
 }

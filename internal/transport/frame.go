@@ -69,6 +69,7 @@ var serverCapabilities = []string{
 	CapabilityRemoteNotifications,
 	CapabilityPasskeys,
 	CapabilityRemoteCommands,
+	CapabilityPairingNetworks,
 }
 
 // serverCapabilitiesWithBrowser is that list plus the one flag whose
@@ -85,6 +86,10 @@ var serverCapabilitiesWithBrowserAndTransfers = append(slices.Clone(serverCapabi
 const CapabilityConversationTransfer = "conversation.transfer.v1"
 
 const CapabilityRemoteCommands = "commands.remote.v1"
+
+// CapabilityPairingNetworks allows an invitation to name LAN or Tailscale
+// explicitly, without changing the host's enabled network listeners.
+const CapabilityPairingNetworks = "pairing.networks.v1"
 
 // CapabilityFilePreview names confined HTML-directory previews through the
 // preview ticket/grant boundary. Only execution hosts with Config.FilePreviews

@@ -80,7 +80,12 @@ toggle; there is no "enable it first" gate.
 The reachability warning considers both LAN binding and a running tailnet;
 `GetNetworkSettings` is readable with `access:admin`, including on paired
 phones. Unknown reachability must not recommend changing a working network.
-`DevicesSection.test.ts` covers a tailnet-only host.
+`DevicesSection.test.ts` covers a tailnet-only host. PairDeviceModal reads the
+captured computer's `pairing.networks.v1` capability before offering Local
+network / Tailscale. It loads enabled networks before minting, defaults to LAN
+when enabled, and sends the explicit choice without changing host settings.
+Older hosts retain their automatic mint RPC. Never label an automatically
+selected tailnet URL as a LAN invitation.
 
 Access & sharing puts LAN and Tailscale controls first, followed by Devices
 and optional agent access. Domain, ports and certificate setup stay under

@@ -142,6 +142,24 @@ func (a *App) GetAccessOverview() (AccessOverview, error) {
 //ao:route home
 //ao:stepup
 func (a *App) MintDevicePairing(deviceClass, access string) (PairingInvite, error) {
+	return a.mintDevicePairing(deviceClass, access, "")
+}
+
+// MintDevicePairingOnNetwork creates an invitation for the chosen enabled
+// network without changing sharing settings. The original RPC keeps its
+// automatic choice for older frontends and command-line clients.
+//
+//ao:scope access:admin
+//ao:route home
+//ao:stepup
+func (a *App) MintDevicePairingOnNetwork(deviceClass, access, networkChoice string) (PairingInvite, error) {
+	if networkChoice != "lan" && networkChoice != "tailnet" {
+		return PairingInvite{}, fmt.Errorf("choose Local network or Tailscale for this invitation")
+	}
+	return a.mintDevicePairing(deviceClass, access, networkChoice)
+}
+
+func (a *App) mintDevicePairing(deviceClass, access, networkChoice string) (PairingInvite, error) {
 	state, err := a.accessState()
 	if err != nil {
 		return PairingInvite{}, err
@@ -159,7 +177,7 @@ func (a *App) MintDevicePairing(deviceClass, access string) (PairingInvite, erro
 		return PairingInvite{}, err
 	}
 
-	pageURL, endpoint, fingerprint, err := a.pairingPageURL()
+	pageURL, endpoint, fingerprint, err := a.pairingPageURL(networkChoice)
 	if err != nil {
 		return PairingInvite{}, err
 	}
@@ -600,7 +618,8 @@ func pairingDeadline(link store.PairingLink) int64 {
 // pairingPageURL assembles the page URL a pairing link points at, and the
 // bare origin the payload names as its redemption endpoint.
 //
-// Prefer the live tailnet, then the canonical domain with a loaded certificate,
+// An explicit network choice never falls back. Legacy callers prefer the live
+// tailnet, then the canonical domain with a loaded certificate,
 // LAN, and loopback. network.PairingURL keeps the address and certificate
 // trust root together; a tailnet certificate must never carry the main
 // listener's self-signed pin.
@@ -608,12 +627,19 @@ func pairingDeadline(link store.PairingLink) int64 {
 // No `cid` parameter, deliberately: that is the local install's durable
 // UI-state identity, and stamping it on a link for somebody else's phone
 // would point that phone at this machine's bucket.
-func (a *App) pairingPageURL() (pageURL, endpoint, fingerprint string, err error) {
+func (a *App) pairingPageURL(networkChoice string) (pageURL, endpoint, fingerprint string, err error) {
 	srv := a.transportServer.Load()
 	if srv == nil {
 		return "", "", "", fmt.Errorf("access: transport server unavailable")
 	}
-	pageURL, fingerprint = network.PairingURL(srv, a.persistedNetworkSettings())
+	if networkChoice == "" {
+		pageURL, fingerprint = network.PairingURL(srv, a.persistedNetworkSettings())
+	} else {
+		pageURL, fingerprint, err = network.PairingURLOnNetwork(srv, a.persistedNetworkSettings(), networkChoice)
+		if err != nil {
+			return "", "", "", err
+		}
+	}
 	if pageURL == "" {
 		return "", "", "", fmt.Errorf("access: the transport has no page URL to pair against yet")
 	}

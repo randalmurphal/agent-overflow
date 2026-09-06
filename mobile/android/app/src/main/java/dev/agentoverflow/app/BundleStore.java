@@ -38,7 +38,7 @@ import org.json.JSONObject;
  * <p><b>The layout.</b> {@code filesDir/bundles/} holds one directory per
  * bundle, named by its content id, plus {@code state.json}:
  *
- * <pre>{current, next, pendingHealth, lastKnownGood, rolledBack: []}</pre>
+ * <pre>{apkBuild, current, next, pendingHealth, lastKnownGood, rolledBack: []}</pre>
  *
  * <p>Each of the four strings is a bundle id or {@code ""}. <b>An empty
  * {@code current} means the APK's own assets</b> — the bundle this build
@@ -86,6 +86,7 @@ final class BundleStore {
 
     /** The mutable half of the state file, as one value. */
     static final class State {
+        long apkBuild;
         String current = "";
         String next = "";
         String pendingHealth = "";
@@ -94,6 +95,7 @@ final class BundleStore {
 
         JSONObject toJson() throws JSONException {
             JSONObject json = new JSONObject();
+            json.put("apkBuild", apkBuild);
             json.put("current", current);
             json.put("next", next);
             json.put("pendingHealth", pendingHealth);
@@ -153,6 +155,7 @@ final class BundleStore {
         }
         try {
             JSONObject json = new JSONObject(new String(readAll(file), StandardCharsets.UTF_8));
+            state.apkBuild = json.optLong("apkBuild", 0);
             state.current = json.optString("current", "");
             state.next = json.optString("next", "");
             state.pendingHealth = json.optString("pendingHealth", "");
@@ -219,7 +222,13 @@ final class BundleStore {
      * Apply this launch's transition and answer the directory to serve,
      * or {@code null} for the APK's own assets.
      *
-     * <p>Three cases, in this order, and the order is the whole design:
+     * <p>An APK replacement first resets bundle selection to its packaged
+     * assets. Downloaded code from the previous shell must not mask an
+     * installed update, including when migrating a state with no build stamp.
+     * Only this bundle state changes; pairing and WebView storage stay intact.
+     * An unavailable build number leaves the existing selection alone.
+     *
+     * <p>Within the same APK, three cases apply in order:
      *
      * <ol>
      *   <li><b>{@code pendingHealth} is still set.</b> The previous launch
@@ -241,9 +250,13 @@ final class BundleStore {
      * assets and is cleared, so a bundle lost to a wipe or an interrupted
      * install cannot become a white screen.
      */
-    File onBoot() {
+    File onBoot(long apkBuild) {
         synchronized (LOCK) {
             State state = readLocked();
+            if (apkBuild > 0 && state.apkBuild != apkBuild) {
+                state = new State();
+                state.apkBuild = apkBuild;
+            }
             if (!state.pendingHealth.isEmpty()) {
                 rollbackLocked(state);
             } else if (!state.next.isEmpty()) {

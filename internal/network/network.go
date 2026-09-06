@@ -256,6 +256,45 @@ func PairingURL(srv *transport.Server, s Settings) (pageURL, fingerprint string)
 	return pageURL, s.TLS.SelfSignedFingerprint
 }
 
+// PairingURLOnNetwork never substitutes another network for an explicit choice.
+// LAN uses the main listener's private address and matching certificate pin,
+// independently of any canonical domain or running tailnet.
+func PairingURLOnNetwork(srv *transport.Server, s Settings, choice string) (pageURL, fingerprint string, err error) {
+	if srv == nil {
+		return "", "", fmt.Errorf("the computer's network listener is unavailable")
+	}
+	switch choice {
+	case "lan":
+		if !s.BindAll {
+			return "", "", fmt.Errorf("enable Allow remote access before pairing over the local network")
+		}
+		ip := DiscoverLocalLANIP()
+		if parsed := net.ParseIP(ip); parsed == nil || (!parsed.IsPrivate() && !parsed.IsLinkLocalUnicast()) {
+			return "", "", fmt.Errorf("no local network address is available for pairing")
+		}
+		_, port, err := net.SplitHostPort(srv.Addr())
+		if err != nil || port == "" || port == "0" {
+			return "", "", fmt.Errorf("the local network listener is unavailable")
+		}
+		link, ok := ticketedURL(srv, "http", net.JoinHostPort(ip, port))
+		if !ok {
+			return "", "", fmt.Errorf("could not create a local network pairing link")
+		}
+		return link, s.TLS.SelfSignedFingerprint, nil
+	case "tailnet":
+		if !s.Tailnet.Running || s.Tailnet.DNSName == "" {
+			return "", "", fmt.Errorf("connect this computer to Tailscale before pairing over the tailnet")
+		}
+		link := tailnetURL(srv, s.Tailnet)
+		if link == "" {
+			return "", "", fmt.Errorf("could not create a Tailscale pairing link")
+		}
+		return link, "", nil
+	default:
+		return "", "", fmt.Errorf("unknown pairing network %q", choice)
+	}
+}
+
 // BindHost returns the bind interface for the given LAN toggle.
 // Loopback (127.0.0.1) keeps the server local; 0.0.0.0 listens on
 // every interface so any LAN-reachable IP routes to it.

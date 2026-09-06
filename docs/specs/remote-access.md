@@ -213,7 +213,11 @@ remain a separate, narrower credential class, unchanged.
 ### Pairing (universal; works where passkeys cannot)
 
 1. Owner requests a pairing link from an authenticated admin surface
-   (desktop settings, or CLI on the host).
+   (desktop settings, or CLI on the host). The dialog on hosts advertising
+   `pairing.networks.v1` chooses an enabled Local network or Tailscale route
+   via `MintDevicePairingOnNetwork`; that route's address and trust travel
+   together, with no silent fallback or network-setting mutation. Legacy
+   `MintDevicePairing` retains automatic selection for compatible clients.
 2. The **new device generates a keypair first** and presents its
    thumbprint during redemption. Proof-of-possession is universal, not
    peer-only: an intercepted or photographed link is useless without the
@@ -2472,10 +2476,13 @@ the review fixes that follow them):
   shell reads as "keep running what I have". The owner-tier gate has
   its place reserved in `bundleSessionAdmits` for when tiers exist.
 - *The shell* (`BundleStore`, `BundlePlugin`, `MainActivity`): one
-  state file `{current, next, pendingHealth, lastKnownGood,
+  state file `{apkBuild, current, next, pendingHealth, lastKnownGood,
   rolledBack}` beside one directory per id; the swap is decided before
   `super.onCreate` because the Bridge loads from its builder's path
-  once; a 30 s watchdog rolls back in place when the health flag is
+  once. A changed APK build resets this selection to packaged assets,
+  including legacy state without the build stamp, preserving pairing and
+  frontend data; downloaded updates then resume within that APK. A 30 s
+  watchdog rolls back in place when the health flag is
   still set; staging verifies every entry against the manifest by
   canonical path, digest and size. `BundleStore` takes a directory and
   no Android type, so the whole mechanic is a JVM test that `make apk`

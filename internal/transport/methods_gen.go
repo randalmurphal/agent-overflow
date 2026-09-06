@@ -253,6 +253,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "MintAttachmentDownloadTicket", ID: 3197504008, Scope: "threads:read", Route: "thread"},                   // main.App.MintAttachmentDownloadTicket
 	{Name: "MintAttachmentUploadTicket", ID: 1857144453, Scope: "attachments:write", Route: "thread"},                // main.App.MintAttachmentUploadTicket
 	{Name: "MintDevicePairing", ID: 400809065, Scope: "access:admin", Route: "home", StepUp: true},                   // main.App.MintDevicePairing
+	{Name: "MintDevicePairingOnNetwork", ID: 355445930, Scope: "access:admin", Route: "home", StepUp: true},          // main.App.MintDevicePairingOnNetwork
 	{Name: "MintFilePreviewURL", ID: 310779922, Scope: "preview:open", Route: "selected"},                            // main.App.MintFilePreviewURL
 	{Name: "MintPreviewURL", ID: 1471520668, Scope: "preview:open", Route: "thread"},                                 // main.App.MintPreviewURL
 	{Name: "MoveThreadTerminals", ID: 3013708277, Scope: "terminal:operate", Route: "thread"},                        // main.App.MoveThreadTerminals

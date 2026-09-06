@@ -1,6 +1,6 @@
 <script lang="ts">
   import { settingsComputer } from './settingsComputer';
-  const { call } = settingsComputer();
+  const { call, backend } = settingsComputer();
 
   // The owner's half of device pairing (docs/specs/remote-access.md §4):
   // mint a link, hand it to the new device, and confirm the verification
@@ -24,12 +24,15 @@
   import Check from '@lucide/svelte/icons/check';
   import {
     MintDevicePairing,
+    MintDevicePairingOnNetwork,
+    GetNetworkSettings,
     DevicePairingStatus,
     ConfirmDevicePairing,
     CancelDevicePairing,
     type PairingInvite,
     type PairingStatusView,
   } from '../../stores/bindings';
+  import { getTransportHelloFor } from '../../stores/transportStatus.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import SettingsCallout from './SettingsCallout.svelte';
@@ -67,6 +70,14 @@
   let stage = $state<Stage>({ at: 'choose' });
   let access = $state<Access>('full');
   let minting = $state<'phone' | 'browser' | null>(null);
+  type NetworkChoice = 'lan' | 'tailnet';
+  let networkChoice = $state<NetworkChoice>('lan');
+  let networkOptions = $state<Array<{ value: NetworkChoice; label: string }>>([]);
+  let loadingNetworks = $state(false);
+  let networkError = $state('');
+  let networkGeneration = 0;
+  const explicitNetworks = $derived(getTransportHelloFor(backend)?.capabilities.includes('pairing.networks.v1') ?? false);
+  const cannotMint = $derived(minting !== null || (explicitNetworks && (loadingNetworks || networkOptions.length === 0)));
   let deciding = $state(false);
   let copyState = $state<'idle' | 'copied' | 'failed'>('idle');
   let nowMs = $state(Date.now());
@@ -101,20 +112,44 @@
     minting = null;
     deciding = false;
     copyState = 'idle';
+    networkOptions = [];
+    networkError = '';
+    if (explicitNetworks) void loadNetworks();
+  }
+
+  async function loadNetworks(): Promise<void> {
+    const generation = ++networkGeneration;
+    loadingNetworks = true;
+    networkError = '';
+    try {
+      const settings = await call(() => GetNetworkSettings());
+      if (generation !== networkGeneration) return;
+      const options: typeof networkOptions = [];
+      if (settings.bindAll) options.push({ value: 'lan', label: 'Local network' });
+      if (settings.tailnet?.running && settings.tailnet.dnsName) options.push({ value: 'tailnet', label: 'Tailscale' });
+      networkOptions = options;
+      networkChoice = options[0]?.value ?? 'lan';
+    } catch (err) {
+      if (generation === networkGeneration) networkError = `Could not load networks: ${errString(err)}`;
+    } finally {
+      if (generation === networkGeneration) loadingNetworks = false;
+    }
   }
 
   // Re-arm per open so a reopened modal starts at choose, not wherever
   // the last flow stopped.
   $effect(() => {
     if (open) reset();
-    return stopTimers;
+    return () => { ++networkGeneration; stopTimers(); };
   });
 
   async function mint(deviceClass: 'phone' | 'browser'): Promise<void> {
-    if (minting !== null) return;
+    if (cannotMint) return;
     minting = deviceClass;
     try {
-      const invite = await call(() => MintDevicePairing(deviceClass, access));
+      const invite = await call(() => explicitNetworks
+        ? MintDevicePairingOnNetwork(deviceClass, access, networkChoice)
+        : MintDevicePairing(deviceClass, access));
       stage = { at: 'share', invite };
       nowMs = Date.now();
       startWatching(invite.linkId);
@@ -244,9 +279,31 @@
       </p>
       {#if !remoteReachable}
         <SettingsCallout tone="warn">
-          This link currently reaches this computer only. Enable Tailnet in
-          Settings → Remote access before pairing a phone.
+          This link currently reaches this computer only. Enable local network access or Tailscale
+          in Computers → Access & sharing before pairing a phone.
         </SettingsCallout>
+      {/if}
+      {#if explicitNetworks}
+        {#if loadingNetworks}
+          <p class="text-[0.75rem] text-fg-muted" role="status">Loading networks…</p>
+        {:else if networkError}
+          <SettingsCallout tone="warn">{networkError}</SettingsCallout>
+          <Button size="sm" onclick={() => void loadNetworks()}>Try again</Button>
+        {:else if networkOptions.length > 0}
+          <div class="flex items-center justify-between gap-3">
+            <MicroLabel>Network</MicroLabel>
+            <Segmented options={networkOptions} value={networkChoice}
+              onChange={(next) => (networkChoice = next)} ariaLabel="Network" disabled={minting !== null} />
+          </div>
+          <p class="text-[0.75rem] leading-snug text-fg-muted">
+            {networkChoice === 'lan'
+              ? 'Connect the other device to the same local network. Tailscale can stay off on that device.'
+              : 'Connect the other device to Tailscale before opening this link.'}
+            After pairing, it can use either available network.
+          </p>
+        {:else if remoteReachable}
+          <SettingsCallout tone="warn">Enable local network access or Tailscale in Computers → Access &amp; sharing before pairing.</SettingsCallout>
+        {/if}
       {/if}
       <div class="flex items-center justify-between gap-3">
         <MicroLabel>Access</MicroLabel>
@@ -262,7 +319,7 @@
         <button
           type="button"
           class="flex flex-col items-center gap-2 rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-3 py-4 text-fg-muted transition-colors hover:border-accent/40 hover:text-fg cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-50"
-          disabled={minting !== null}
+          disabled={cannotMint}
           onclick={() => void mint('phone')}
         >
           <Smartphone size={22} strokeWidth={1.75} />
@@ -272,7 +329,7 @@
         <button
           type="button"
           class="flex flex-col items-center gap-2 rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-3 py-4 text-fg-muted transition-colors hover:border-accent/40 hover:text-fg cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-50"
-          disabled={minting !== null}
+          disabled={cannotMint}
           onclick={() => void mint('browser')}
         >
           <Laptop size={22} strokeWidth={1.75} />

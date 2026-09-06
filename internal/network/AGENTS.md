@@ -114,6 +114,12 @@ pin. Never copy that pin onto a tailnet invitation. Mint only the ticket
 being returned; unused fallback tickets evict links still being scanned.
 `TestPairingURLUsesReachableListenerAndMatchingTrust` enforces both rules.
 
+`PairingURLOnNetwork` is the explicit dialog choice, advertised as
+`pairing.networks.v1`. LAN selects a private/link-local main-listener address
+with its pin even when Tailscale or a canonical domain is configured. A CGNAT
+fallback is not LAN. Refuse unavailable choices instead of silently switching
+networks; retain `PairingURL` for older clients and automatic handoff flows.
+
 ## Two records, and what the second leaves out
 
 `Settings` is read by two kinds of caller and only one of them is at the

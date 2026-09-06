@@ -2934,6 +2934,17 @@ export function MintDevicePairing(deviceClass: string, access: string): $Cancell
 }
 
 /**
+ * MintDevicePairingOnNetwork creates an invitation for the chosen enabled
+ * network without changing sharing settings. The original RPC keeps its
+ * automatic choice for older frontends and command-line clients.
+ */
+export function MintDevicePairingOnNetwork(deviceClass: string, access: string, networkChoice: string): $CancellablePromise<app$0.PairingInvite> {
+    return $Call.ByID(355445930, deviceClass, access, networkChoice).then(($result: any) => {
+        return $$createType141($result);
+    });
+}
+
+/**
  * MintFilePreviewURL opens an HTML file and its directory assets on a separate
  * origin. The calling frontend explicitly targets the file's owning computer.
  * The caller's authenticated session determines local versus remote access;

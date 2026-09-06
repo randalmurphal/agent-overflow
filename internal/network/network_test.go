@@ -528,3 +528,62 @@ func TestPairingURLUsesReachableListenerAndMatchingTrust(t *testing.T) {
 		})
 	}
 }
+
+// An explicit LAN invitation must not silently select Tailscale, including
+// when discovery's ordinary fallback finds only a Tailscale CGNAT address.
+func TestPairingURLOnNetwork(t *testing.T) {
+	previousInterfaces, previousAddrs := Interfaces, InterfaceAddrs
+	t.Cleanup(func() { Interfaces, InterfaceAddrs = previousInterfaces, previousAddrs })
+	Interfaces = func() ([]net.Interface, error) {
+		return []net.Interface{{Index: 1, Name: "lan", Flags: net.FlagUp}}, nil
+	}
+	address := "192.168.1.20"
+	InterfaceAddrs = func(net.Interface) ([]net.Addr, error) {
+		return []net.Addr{&net.IPNet{IP: net.ParseIP(address), Mask: net.CIDRMask(24, 32)}}, nil
+	}
+	srv := shareURLServer(t)
+	s := Settings{BindAll: true, CanonicalDomain: "backend.example", TLS: TLSStatus{SelfSignedFingerprint: "sha256:main"},
+		Tailnet: TailnetStatus{Running: true, DNSName: "ao.test.ts.net", HTTPS: true}}
+	srv.Certificates().SetDomain(s.CanonicalDomain, &tls.Certificate{})
+	for _, choice := range []string{"lan", "tailnet"} {
+		t.Run(choice, func(t *testing.T) {
+			first := ""
+			for range 16 {
+				link, pin, err := PairingURLOnNetwork(srv, s, choice)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if choice == "lan" && (!strings.HasPrefix(link, "http://192.168.1.20:") || pin != "sha256:main") {
+					t.Fatalf("LAN invitation selected wrong address/trust: %q, %q", link, pin)
+				}
+				if choice == "tailnet" && (!strings.HasPrefix(link, "https://ao.test.ts.net/?") || pin != "") {
+					t.Fatalf("tailnet invitation selected wrong address/trust: %q, %q", link, pin)
+				}
+				_, ticket, _ := strings.Cut(link, "?t=")
+				if first == "" {
+					first = ticket
+				}
+			}
+			if !ticketOutstanding(t, srv, first) {
+				t.Fatal("minted unused fallback tickets")
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name, choice, address string
+		settings              Settings
+	}{
+		{"disabled LAN", "lan", address, Settings{Tailnet: s.Tailnet}},
+		{"offline tailnet", "tailnet", address, Settings{BindAll: true}},
+		{"CGNAT is not LAN", "lan", "100.77.1.2", s},
+		{"no LAN", "lan", "127.0.0.1", s},
+		{"unknown choice", "auto", address, s},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			address = tc.address
+			if link, pin, err := PairingURLOnNetwork(srv, tc.settings, tc.choice); err == nil || link != "" || pin != "" {
+				t.Fatalf("unavailable choice returned %q, %q, %v", link, pin, err)
+			}
+		})
+	}
+}

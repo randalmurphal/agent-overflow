@@ -190,6 +190,7 @@ export {
   // so a link can only be created from the backend's own screen.
   GetAccessOverview,
   MintDevicePairing,
+  MintDevicePairingOnNetwork,
   DevicePairingStatus,
   ConfirmDevicePairing,
   CancelDevicePairing,

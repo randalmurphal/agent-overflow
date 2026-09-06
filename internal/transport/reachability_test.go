@@ -198,6 +198,7 @@ func TestEveryGeneratedMethodCarriesADeclaredScope(t *testing.T) {
 func TestStepUpMethodsAreTheSpecSet(t *testing.T) {
 	want := map[string]string{
 		"MintDevicePairing":            "minting a pairing link",
+		"MintDevicePairingOnNetwork":   "minting a pairing link on an explicitly selected network",
 		"PairAgentComputer":            "enrolling this computer with another computer for agent commands",
 		"SetNetworkSettings":           "network bind / exposure change",
 		"SetProviderCustomEnvVar":      "provider custom-env write",

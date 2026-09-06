@@ -15,7 +15,7 @@ to the same tailnet. A private LAN connection can work without Tailscale.
    enable MagicDNS and HTTPS certificates. HTTPS is required for the Android
    shell. Tailscale's confirmation explains that certificate names appear in
    public certificate-transparency logs; the app itself stays tailnet-only.
-3. In Agent Overflow → Settings → Access & sharing → Tailnet, enable the node
+3. In Agent Overflow → Settings → Computers → Access & sharing → Tailnet, enable the node
    and save. Leave the coordination-server field empty for ordinary Tailscale.
    Open the sign-in link shown there and approve the node on your tailnet.
 4. Wait for `Running` and the `https://agent-overflow.…ts.net/` address.
@@ -40,8 +40,9 @@ and [HTTPS setup](https://tailscale.com/docs/how-to/set-up-https-certificates).
 2. Connect through the same LAN or the host's tailnet. Set up a phone
    screen lock: Agent Overflow uses Android's biometric/device-credential
    prompt when it opens.
-3. On the Mac, open Settings → Access & sharing → Devices → Pair a device →
-   Phone or tablet. Choose Full access to drive agents and answer approvals.
+3. On the Mac, open Settings → Computers → Access & sharing → Devices → Pair a device.
+   Choose **Local network** for a phone on the same LAN with Tailscale off, or
+   **Tailscale** when the phone is connected to the tailnet, then **Phone or tablet**. Choose Full access to drive agents and answer approvals.
 4. Open Agent Overflow on the Pixel and use its **in-app QR scanner** to
    scan the desktop's code (or paste the pairing link). Verify that both
    screens show the same number, then allow the device on the Mac.
@@ -49,6 +50,13 @@ and [HTTPS setup](https://tailscale.com/docs/how-to/set-up-https-certificates).
    opening the terminal. Then background/resume the phone, briefly disconnect
    and reconnect Tailscale, and test over cellular with Wi-Fi off. Reconnection
    should recover automatically; offline content is read-only.
+
+The network choice controls the invitation's initial connection, not a separate
+pairing identity. After connecting, the device learns the host's other enabled
+routes and verifies them before switching. You do not need separate LAN and
+Tailscale pairings. A Tailscale URL still requires Tailscale to make that first
+connection; it cannot bootstrap an offline phone over LAN. Older hosts choose
+the invitation address automatically; update the host to choose explicitly.
 
 A QR invitation expires and is single-use. Generate a fresh one if pairing did
 not complete. Keep the app installed: uninstalling discards its key, pairing,
@@ -64,6 +72,10 @@ must keep the same signing key and application id across releases. Android's
 [signing](https://developer.android.com/studio/publish/app-signing) and
 [versioning](https://developer.android.com/studio/publish/versioning) rules
 apply even to private sideloaded apps.
+
+Installing a new APK starts with its packaged UI, replacing any previously
+downloaded web bundle while preserving pairing and frontend data. Later web
+updates still apply normally. Reopening the same APK retains those web updates.
 
 Pairing survives backend restarts. The phone renews its short-lived access
 credential automatically; each successful renewal starts a fresh 30-day

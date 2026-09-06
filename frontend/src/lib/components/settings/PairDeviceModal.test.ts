@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
+import { __setTransportHelloForTest } from '../../stores/transportStatus.svelte';
 import PairDeviceModal from './PairDeviceModal.svelte';
 import { setBindingMock, resetBindingMocks } from '../../../test/mocks/bindings-app';
 
@@ -24,10 +25,12 @@ function renderModal(props: Partial<{ remoteReachable: boolean; onClose: () => v
 describe('<PairDeviceModal>', () => {
   beforeEach(() => {
     resetBindingMocks();
+    __setTransportHelloForTest(null);
   });
 
   afterEach(() => {
     resetBindingMocks();
+    __setTransportHelloForTest(null);
     vi.useRealTimers();
   });
 
@@ -142,4 +145,42 @@ describe('<PairDeviceModal>', () => {
     await waitFor(() => expect(canceled).toHaveBeenCalledWith('link-1'));
     await waitFor(() => expect(closed).toBe(true));
   });
+});
+
+afterEach(() => { __setTransportHelloForTest(null); resetBindingMocks(); });
+
+function enableNetworkChoice(): void {
+  __setTransportHelloForTest({
+    backendId: 'mac', backendName: 'Mac', capabilities: ['pairing.networks.v1'], protocolVersion: 1,
+    serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0,
+  });
+}
+
+it.each(['lan', 'tailnet'] as const)('mints the explicitly selected %s route while both networks are enabled', async (network) => {
+  enableNetworkChoice();
+  setBindingMock('GetNetworkSettings', async () => ({ bindAll: true, tailnet: { running: true, dnsName: 'mac.ts.net' } }));
+  const mint = setBindingMock('MintDevicePairingOnNetwork', async () => INVITE);
+  const legacy = setBindingMock('MintDevicePairing', async () => INVITE);
+  const view = renderModal();
+  const lan = await view.findByRole('radio', { name: 'Local network' });
+  expect(lan.getAttribute('aria-checked')).toBe('true');
+  if (network === 'tailnet') await fireEvent.click(await view.findByRole('radio', { name: 'Tailscale' }));
+  await fireEvent.click(await view.findByRole('button', { name: /Phone or tablet/ }));
+  await view.findByLabelText('Pairing link');
+  expect(mint).toHaveBeenCalledWith('phone', 'full', network);
+  expect(legacy).not.toHaveBeenCalled();
+});
+
+it('blocks minting until networks load and lets a failed read be retried', async () => {
+  enableNetworkChoice();
+  const read = setBindingMock('GetNetworkSettings', async () => { throw new Error('offline'); });
+  const view = renderModal();
+  const phone = await view.findByRole('button', { name: /Phone or tablet/ });
+  expect((phone as HTMLButtonElement).disabled).toBe(true);
+  await view.findByText(/Could not load networks: offline/);
+  read.mockResolvedValue({ bindAll: false, tailnet: { running: true, dnsName: 'mac.ts.net' } });
+  await fireEvent.click(await view.findByRole('button', { name: 'Try again' }));
+  await view.findByRole('radio', { name: 'Tailscale' });
+  expect(view.queryByRole('radio', { name: 'Local network' })).toBeNull();
+  expect((phone as HTMLButtonElement).disabled).toBe(false);
 });

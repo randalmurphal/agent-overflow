@@ -101,6 +101,8 @@ public class BundleStoreTest {
     }
 
     private void stageOk(BundleStore store, String id, Map<String, byte[]> files) throws Exception {
+        // Staging runs only after MainActivity has selected this APK's boot.
+        if (store.read().apkBuild == 0) store.onBoot(1);
         store.stage(id, BundleStore.readManifest(manifestFor(files)), archiveFor(files));
     }
 
@@ -243,8 +245,84 @@ public class BundleStoreTest {
     @Test
     public void aFreshInstallServesTheApkAssets() throws Exception {
         BundleStore store = new BundleStore(root());
-        assertNull("no state means the APK's own assets", store.onBoot());
+        assertNull("no state means the APK's own assets", store.onBoot(1));
         assertEquals("", store.read().current);
+        assertEquals(1, store.read().apkBuild);
+    }
+
+    @Test
+    public void anApkUpgradeReplacesCachedAndStagedCodeWithoutTouchingOtherData() throws Exception {
+        BundleStore store = new BundleStore(root());
+        stageOk(store, "old", spa());
+        store.onBoot(1);
+        store.ready();
+        stageOk(store, "waiting", spa());
+        File outsideBundles = new File(temp.getRoot(), "frontend-data");
+        Files.write(outsideBundles.toPath(), "keep".getBytes(StandardCharsets.UTF_8));
+
+        assertNull("the newly installed APK owns the first launch", store.onBoot(2));
+        BundleStore.State upgraded = store.read();
+        assertEquals(2, upgraded.apkBuild);
+        assertEquals("", upgraded.current);
+        assertEquals("", upgraded.next);
+        assertEquals("", upgraded.pendingHealth);
+        assertEquals("", upgraded.lastKnownGood);
+        assertTrue(upgraded.rolledBack.isEmpty());
+        store.ready();
+        assertFalse(store.dir("old").exists());
+        assertFalse(store.dir("waiting").exists());
+        assertEquals("keep", new String(Files.readAllBytes(outsideBundles.toPath()), StandardCharsets.UTF_8));
+
+        stageOk(store, "new", spa());
+        assertEquals(store.dir("new"), store.onBoot(2));
+        store.ready();
+        assertEquals("ordinary restarts retain subsequent web updates",
+                store.dir("new"), store.onBoot(2));
+    }
+
+    @Test
+    public void aLegacyCacheCannotMaskTheFirstApkWithBuildTracking() throws Exception {
+        BundleStore store = new BundleStore(root());
+        stageOk(store, "legacy", spa());
+        store.onBoot(1);
+        store.ready();
+        JSONObject legacy = store.read().toJson();
+        legacy.remove("apkBuild");
+        Files.write(new File(root(), "state.json").toPath(), legacy.toString().getBytes(StandardCharsets.UTF_8));
+
+        assertNull(store.onBoot(4));
+        assertEquals(4, store.read().apkBuild);
+        assertEquals("", store.read().current);
+        assertNull("the migration is durable across a cold restart",
+                new BundleStore(root()).onBoot(4));
+    }
+
+    @Test
+    public void anApkUpgradeCannotRollBackIntoThePreviousShellsCode() throws Exception {
+        BundleStore store = new BundleStore(root());
+        stageOk(store, "good", spa());
+        store.onBoot(1);
+        store.ready();
+        stageOk(store, "unhealthy", spa());
+        store.onBoot(1);
+        assertTrue(store.awaitingHealth());
+
+        assertNull(store.onBoot(2));
+        assertFalse(store.awaitingHealth());
+        assertEquals("", store.read().lastKnownGood);
+        assertTrue(store.read().rolledBack.isEmpty());
+        assertNull(store.onBoot(2));
+    }
+
+    @Test
+    public void anUnavailableApkVersionPreservesTheLastWorkingBundle() throws Exception {
+        BundleStore store = new BundleStore(root());
+        stageOk(store, "good", spa());
+        store.onBoot(1);
+        store.ready();
+
+        assertEquals(store.dir("good"), store.onBoot(0));
+        assertEquals(1, store.read().apkBuild);
     }
 
     @Test
@@ -252,7 +330,7 @@ public class BundleStoreTest {
         BundleStore store = new BundleStore(root());
         stageOk(store, "abc123", spa());
 
-        File serving = store.onBoot();
+        File serving = store.onBoot(1);
         assertNotNull("a staged bundle must be served after a cold start", serving);
         assertEquals(store.dir("abc123"), serving);
 
@@ -266,7 +344,7 @@ public class BundleStoreTest {
     public void aHealthyBootPromotesTheBundleAndReapsTheRest() throws Exception {
         BundleStore store = new BundleStore(root());
         stageOk(store, "one", spa());
-        store.onBoot();
+        store.onBoot(1);
         store.ready();
 
         BundleStore.State first = store.read();
@@ -279,7 +357,7 @@ public class BundleStoreTest {
         Map<String, byte[]> second = spa();
         second.put("assets/app.js", "export const a = 2;\n".getBytes(StandardCharsets.UTF_8));
         stageOk(store, "two", second);
-        store.onBoot();
+        store.onBoot(1);
         assertTrue("the previous good bundle stays until this one proves itself",
                 store.dir("one").isDirectory());
         store.ready();
@@ -298,7 +376,7 @@ public class BundleStoreTest {
         // about.
         BundleStore store = new BundleStore(root());
         stageOk(store, "one", spa());
-        store.onBoot();
+        store.onBoot(1);
         Map<String, byte[]> second = spa();
         second.put("assets/app.js", "export const a = 2;\n".getBytes(StandardCharsets.UTF_8));
         stageOk(store, "two", second);
@@ -308,7 +386,7 @@ public class BundleStoreTest {
         assertEquals("two", state.next);
         assertTrue("a staged bundle waits for the next cold start", store.dir("two").isDirectory());
         assertEquals("the next cold start adopts what the healthy report did not lose",
-                "two", store.onBoot().getName());
+                "two", store.onBoot(1).getName());
         assertEquals("", store.read().next);
     }
 
@@ -316,17 +394,17 @@ public class BundleStoreTest {
     public void aBootThatNeverReportsHealthyRollsBack() throws Exception {
         BundleStore store = new BundleStore(root());
         stageOk(store, "good", spa());
-        store.onBoot();
+        store.onBoot(1);
         store.ready();
 
         Map<String, byte[]> broken = spa();
         broken.put("assets/app.js", "throw new Error('boom')\n".getBytes(StandardCharsets.UTF_8));
         stageOk(store, "bad", broken);
-        assertEquals(store.dir("bad"), store.onBoot());
+        assertEquals(store.dir("bad"), store.onBoot(1));
 
         // The launch dies without ever calling ready(). The NEXT launch
         // is what notices, because pendingHealth survived it.
-        File serving = store.onBoot();
+        File serving = store.onBoot(1);
         assertEquals("the roll back lands on the last known good bundle",
                 store.dir("good"), serving);
 
@@ -342,9 +420,9 @@ public class BundleStoreTest {
     public void aRollbackWithNoKnownGoodLandsOnTheApkAssets() throws Exception {
         BundleStore store = new BundleStore(root());
         stageOk(store, "bad", spa());
-        store.onBoot();
+        store.onBoot(1);
 
-        assertNull("with nothing good behind it, the fallback is the APK", store.onBoot());
+        assertNull("with nothing good behind it, the fallback is the APK", store.onBoot(1));
         BundleStore.State state = store.read();
         assertEquals("", state.current);
         assertTrue(state.rolledBack.contains("bad"));
@@ -354,13 +432,13 @@ public class BundleStoreTest {
     public void theWatchdogRollsBackInPlace() throws Exception {
         BundleStore store = new BundleStore(root());
         stageOk(store, "good", spa());
-        store.onBoot();
+        store.onBoot(1);
         store.ready();
 
         Map<String, byte[]> hangs = spa();
         hangs.put("assets/app.js", "while (true) {}\n".getBytes(StandardCharsets.UTF_8));
         stageOk(store, "hangs", hangs);
-        store.onBoot();
+        store.onBoot(1);
         assertTrue(store.awaitingHealth());
 
         assertEquals("the watchdog falls back without a restart",
@@ -373,19 +451,19 @@ public class BundleStoreTest {
     public void theRolledBackListSurvivesAnOrdinaryBoot() throws Exception {
         BundleStore store = new BundleStore(root());
         stageOk(store, "good", spa());
-        store.onBoot();
+        store.onBoot(1);
         store.ready();
 
         Map<String, byte[]> broken = spa();
         broken.put("index.html", "<!doctype html><title>broken</title>".getBytes(StandardCharsets.UTF_8));
         stageOk(store, "bad", broken);
-        store.onBoot();
-        store.onBoot();
+        store.onBoot(1);
+        store.onBoot(1);
         assertTrue(store.read().rolledBack.contains("bad"));
 
         // An ordinary relaunch on the good bundle must NOT forget it, or
         // the shell would download the same failure again.
-        store.onBoot();
+        store.onBoot(1);
         store.ready();
         assertTrue("only a DIFFERENT id succeeding may clear the list",
                 store.read().rolledBack.contains("bad"));
@@ -394,7 +472,7 @@ public class BundleStoreTest {
         Map<String, byte[]> fresh = spa();
         fresh.put("assets/app.js", "export const a = 3;\n".getBytes(StandardCharsets.UTF_8));
         stageOk(store, "fresh", fresh);
-        store.onBoot();
+        store.onBoot(1);
         store.ready();
         assertTrue("a new bundle that works clears the list",
                 store.read().rolledBack.isEmpty());
@@ -404,11 +482,11 @@ public class BundleStoreTest {
     public void aBundleDirectoryThatVanishedFallsBackToTheAssets() throws Exception {
         BundleStore store = new BundleStore(root());
         stageOk(store, "abc123", spa());
-        store.onBoot();
+        store.onBoot(1);
         store.ready();
         BundleStore.deleteRecursively(store.dir("abc123"));
 
-        assertNull("a missing bundle must not become a white screen", store.onBoot());
+        assertNull("a missing bundle must not become a white screen", store.onBoot(1));
         assertEquals("", store.read().current);
     }
 
@@ -424,6 +502,6 @@ public class BundleStoreTest {
         assertEquals("", state.next);
         List<String> empty = new ArrayList<>();
         assertEquals(empty, state.rolledBack);
-        assertNull(store.onBoot());
+        assertNull(store.onBoot(1));
     }
 }

@@ -267,6 +267,7 @@ export const RenewCanonicalDomainCert = dispatch('RenewCanonicalDomainCert');
 // Device access (Settings → Remote access → Devices).
 export const GetAccessOverview = dispatch('GetAccessOverview');
 export const MintDevicePairing = dispatch('MintDevicePairing');
+export const MintDevicePairingOnNetwork = dispatch('MintDevicePairingOnNetwork');
 export const DevicePairingStatus = dispatch('DevicePairingStatus');
 export const ConfirmDevicePairing = dispatch('ConfirmDevicePairing');
 export const CancelDevicePairing = dispatch('CancelDevicePairing');
