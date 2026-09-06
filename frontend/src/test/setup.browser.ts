@@ -21,6 +21,8 @@ import { resetForTest as resetThreadStatusesForTest } from '../lib/stores/thread
 import { clearThreadItemCacheForTest } from '../lib/stores/threadItemCache';
 import { clearThreadScrollSnapshotsForTest } from '../lib/utils/threadScrollSnapshots';
 import { clearAllThreadSizePriorsForTest } from '../lib/utils/virtual/priors';
+import { resetFrontendPreferencesForTest } from '../lib/stores/frontendPreferences.svelte';
+import { writeFrontendValue } from '../lib/stores/frontendStorage';
 import { __resetSizePriorsStorageForTest } from '../lib/utils/virtual/priorsStorage';
 
 function installBrowserTraceSinks(): void {
@@ -33,6 +35,10 @@ function installBrowserTraceSinks(): void {
 }
 
 beforeEach(() => {
+  // Real browser storage survives between files; backend settings only seed
+  // missing preferences and cannot undo a prior fixture's local UI choices.
+  writeFrontendValue('preferences', {});
+  resetFrontendPreferencesForTest({});
   installBrowserTraceSinks();
   // Same pin as setup.ts: with no bootstrap fetch nothing resolves the
   // page's grants, and scopes.ts THROWS in test mode on a pre-resolution

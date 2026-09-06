@@ -214,6 +214,19 @@ The projection's last pass wraps consecutive activity rows into ONE
 over a height-capped clip that scrolls in place. Architecture, every term
 below, and an implementation map:
 [`activity-runs.md`](../../../../../docs/architecture/activity-runs.md).
+Known validation finding (2026-09-06): `observeActivityRunExpansion` measures
+expanded descendant bodies in ResizeObserver and changes the ancestor clip's
+cap. Chromium reports two deferred-delivery warnings during the real
+`activityRunScroll.browser.test.ts` "re-pins the live run to its bottom after a
+think collapse" case, although its final pin/geometry assertions pass. An
+isolated always-expanded body growing/shrinking reproduces the same class.
+This is unresolved, not harmless noise or a permitted suppression. A toggle-only
+synchronous measurement removes the toggle warnings but misses streamed growth;
+naively moving the cap write to the next frame changes visible timing. Preserve
+current behavior until the geometry ownership/scheduling tradeoff is resolved
+before public release. Reproduce the real transition with
+`pnpm exec vitest run --project browser src/lib/components/chat/activityRunScroll.browser.test.ts -t 're-pins the live run to its bottom'`.
+
 The rules that bite here:
 - Run state goes in `pane.activityRuns` keyed by the registry-assigned
   `runId`, never by a member item id, which changes at both window edges.

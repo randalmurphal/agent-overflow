@@ -431,6 +431,11 @@ observers) and `TimelineVirtualizer.svelte`'s
 `deferNewRowObservationUntilNextFrame` (overscan rows registered next
 frame, outside the painted window).
 
+Browser fixtures reset both stored and in-memory frontend preferences before
+layout. A mocked backend `GetSettings` only seeds missing local preferences;
+it cannot override a prior test's saved collapsed-run or scrollbar choice.
+The shared browser setup owns that reset, not individual geometry fixtures.
+
 A stateful door gets a transition test, not just an on-state assertion.
 `test/helpers/transitions.ts` drives on→off→on, teardown twice, a second
 engagement, and teardown-mid-flight, comparing the state you name after
