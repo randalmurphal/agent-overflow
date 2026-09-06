@@ -1,3 +1,5 @@
+import { createNetworkSocket } from './networkSocket';
+import { networkFetch } from './networkFetch';
 // Long-lived WebSocket client for the Phase B transport. The shim in
 // ./runtime.ts re-exports the @wailsio/runtime surface but routes every
 // call through this client so the same generated bindings and event-store
@@ -368,12 +370,19 @@ export class TransportError extends Error {
   // field is the whole answer, and ./scopeRefusal.ts is the one place it
   // becomes a sentence.
   scope?: string;
-  constructor(code: string, message: string, reason?: string, scope?: string) {
+  transfer?: { operationId: string; backendId: string };
+  constructor(code: string, message: string, reason?: string, scope?: string,
+    transfer?: { operationId: string; backendId: string }) {
     super(message);
     this.name = 'TransportError';
     this.code = code;
     this.reason = reason;
     this.scope = scope;
+    if ((code === 'thread_moved' || code === 'thread_transfer_pending') &&
+      typeof transfer?.operationId === 'string' && transfer.operationId.length <= 128 &&
+      typeof transfer.backendId === 'string' && transfer.backendId.length <= 128) {
+      this.transfer = transfer;
+    }
   }
 }
 
@@ -721,7 +730,7 @@ interface OutageRecord {
 // instance via `createWSClient` if they want a sandboxed one.
 export class WSClient {
   private readonly fetchBootstrap: BootstrapFetcher;
-  private readonly WebSocketCtor: WSConstructor;
+  private readonly createSocket: (url: string) => WSLike;
   private readonly maxFrameBytes: number;
   private readonly probeLoopbackOrigin: () => boolean;
   private readonly retryAllowlist: readonly RetryOnTransientCloseEntry[];
@@ -944,8 +953,9 @@ export class WSClient {
     this.backend = opts.backend ?? HOME_BACKEND;
     // Defer the global WebSocket lookup until first use so tests that
     // never connect don't trip on a missing global.
-    this.WebSocketCtor = opts.WebSocketCtor ??
-      ((globalThis as { WebSocket?: WSConstructor }).WebSocket as WSConstructor);
+    this.createSocket = opts.WebSocketCtor
+      ? (url) => new opts.WebSocketCtor!(url)
+      : (url) => createNetworkSocket(url, this.backend);
     this.maxFrameBytes = opts.maxFrameBytes ?? MAX_FRAME_BYTES;
     this.probeLoopbackOrigin = opts.loopbackOrigin ?? pageServedOverLoopback;
     this.retryAllowlist = opts.retryOnTransientClose ?? RETRY_ON_TRANSIENT_CLOSE;
@@ -1727,6 +1737,9 @@ export class WSClient {
   // OPEN. Multiple concurrent callers share the in-flight promise; the
   // promise is replaced each time the socket transitions back to
   // closed/connecting so reconnect attempts are observable.
+  /** Join the client's existing bootstrap/dial, including its one-use page ticket. */
+  ready(): Promise<void> { return this.ensureConnected(); }
+
   private ensureConnected(): Promise<void> {
     if (this.closed) {
       return Promise.reject(new DisconnectedError('client closed'));
@@ -1774,7 +1787,8 @@ export class WSClient {
       // scheduleReconnect below, which is what reads the latch and
       // declines to queue another attempt.
       if (err instanceof BootstrapRejectedError && this.isRemoteSession()) {
-        this.enterCredentialDead(err);
+        if (err.paired) this.enterPairingRequired();
+        else this.enterCredentialDead(err);
       }
       console.warn('wsClient: bootstrap failed', err);
       // Bootstrap-stage failures count toward the outage's attempt
@@ -1828,7 +1842,7 @@ export class WSClient {
     // ordinary dial.
     let dialTicket: string | null = null;
     if (hasPairedSession(this.backend)) {
-      dialTicket = await mintDialTicket(fetch, this.backend);
+      dialTicket = await mintDialTicket(networkFetch, this.backend);
       if (dialTicket === null && hasPairedSession(this.backend)) {
         // No ticket, session still held: the mint could not prove the
         // stored session right now (endpoint unreachable, or the owner
@@ -1879,7 +1893,7 @@ export class WSClient {
       const attempt: ConnectAttempt = { settled: false, resolve, reject };
       let ws: WSLike;
       try {
-        ws = new this.WebSocketCtor(url);
+        ws = this.createSocket(url);
       } catch (err) {
         this.connectPromise = null;
         // Same wrapping rationale as the bootstrap path: a thrown
@@ -2568,6 +2582,7 @@ export class WSClient {
             clampString(frame.error.message ?? ''),
             frame.error.reason,
             frame.error.scope,
+            frame.error.transfer,
           ),
         );
         return;

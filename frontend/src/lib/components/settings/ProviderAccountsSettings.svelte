@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { settingsComputer } from './settingsComputer';
+  const { backend } = settingsComputer();
   // The Accounts section of a provider's settings page. The account
   // logic itself lives in stores/providerAccounts.svelte.ts — shared with the
   // account-switcher picker, so a switch made in either surface is the same
@@ -38,22 +40,22 @@
   let { provider }: { provider: SettingsProvider } = $props();
 
   let providerLabel = $derived(resolveProviderLabel(provider));
-  let accounts = $derived(getProviderAccountsFor(provider));
-  let loading = $derived(isProviderAccountsLoading());
-  let actions = $derived(getProviderAccountActions(provider));
+  let accounts = $derived(getProviderAccountsFor(provider, backend));
+  let loading = $derived(isProviderAccountsLoading(backend));
+  let actions = $derived(getProviderAccountActions(provider, backend));
   // One answer for "is a credential op running", shared with the store's own
   // refusal, so a disabled button and a rejected call can never disagree.
-  let credentialOpInFlight = $derived(isProviderCredentialOpInFlight(provider));
+  let credentialOpInFlight = $derived(isProviderCredentialOpInFlight(provider, backend));
   let pendingRemoval = $state<ManagedProviderAccount | null>(null);
   // The flow panel renders for a live sign-in AND for one that ended badly,
   // since a failure is what the user has to read before trying again.
-  let login = $derived(getProviderLogin(provider));
+  let login = $derived(getProviderLogin(provider, backend));
   let showLoginFlow = $derived(
-    isProviderLoginActive(provider) || login.phase === 'failed',
+    isProviderLoginActive(provider, backend) || login.phase === 'failed',
   );
 
   onMount(() => {
-    void loadProviderAccounts();
+    void loadProviderAccounts(backend);
   });
 
   function requestRemoval(account: ManagedProviderAccount): void {
@@ -65,7 +67,7 @@
     const account = pendingRemoval;
     if (!account) return;
     pendingRemoval = null;
-    await removeProviderAccount(provider, account);
+    await removeProviderAccount(provider, account, backend);
   }
 
   function removalDescription(account: ManagedProviderAccount): string {
@@ -82,8 +84,8 @@
   // resolves back to this same account by identity (email + organization), so
   // it keeps its usage history rather than becoming a second card.
   function cardAction(account: ManagedProviderAccount): () => void {
-    if (account.needsLogin) return () => void startProviderLogin(provider);
-    return () => void switchProviderAccount(provider, account);
+    if (account.needsLogin) return () => void startProviderLogin(provider, backend);
+    return () => void switchProviderAccount(provider, account, backend);
   }
 </script>
 
@@ -103,7 +105,7 @@
         type="button"
         class={PRIMARY_BUTTON_CLASS}
         disabled={credentialOpInFlight}
-        onclick={() => void startProviderLogin(provider)}
+        onclick={() => void startProviderLogin(provider, backend)}
       >
         {actions.loggingIn ? 'Signing in…' : 'Log in to another account'}
       </button>
@@ -111,7 +113,7 @@
   </SettingsHeader>
 
   {#if showLoginFlow}
-    <ProviderLoginFlow {provider} {login} />
+    <ProviderLoginFlow {backend} {provider} {login} />
   {/if}
 
   {#if loading}
@@ -123,7 +125,7 @@
   {:else}
     <div class="flex flex-col gap-2">
       {#each accounts as account (account.id)}
-        {@const limits = getProviderRateLimits(provider, account.id)}
+        {@const limits = getProviderRateLimits(provider, account.id, backend)}
         {@const orgLabel = providerAccountOrgLabel(account)}
         <div
           class="rounded-[var(--radius-field)] border px-3 py-2.5 {account.needsLogin
@@ -184,7 +186,7 @@
                 type="button"
                 class={GHOST_BUTTON_CLASS}
                 disabled={account.needsLogin || !!actions.refreshingID || credentialOpInFlight}
-                onclick={() => void refreshProviderAccountUsage(provider, account)}
+                onclick={() => void refreshProviderAccountUsage(provider, account, backend)}
                 title={account.needsLogin
                   ? 'Sign in again to refresh usage limits'
                   : 'Refresh usage limits'}

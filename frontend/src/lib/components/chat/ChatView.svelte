@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { threadHasScope } from '../../transport/entityScopes';
   import { onDestroy, onMount, untrack } from 'svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { threadUsesDiscussionSurface } from '../../stores/threadPaneShared';
@@ -20,7 +21,6 @@
   import { getFocusedThreadPaneId, openThreadInPane } from '../../stores/panes.svelte';
   import { expandProject } from '../../stores/sidebar.svelte';
   import { addToast } from '../../stores/toast.svelte';
-  import { hasScope } from '../../transport/scopes';
   import { autoPinNewThread } from '../../stores/threadAutoPin';
   import { getActiveTurn, getThreadStatus, projectThreadViewed } from '../../stores/threadStatuses.svelte';
   import { hydrateWorktreeSetupForThread } from '../../stores/eventsWorktreeSetup';
@@ -205,7 +205,7 @@
     // view-only device does, so a session without that grant would issue
     // one refused RPC per thread open and per settling turn. The local
     // read state below still updates; only the durable stamp is skipped.
-    if (!hasScope('threads:operate')) return;
+    if (!threadHasScope('threads:operate', pane.threadId, pane.thread?.projectId)) return;
     const elapsed = Date.now() - lastReadPersistStartedAt;
     const canPersistNow =
       !readPersistInFlight

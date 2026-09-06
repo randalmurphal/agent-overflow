@@ -66,6 +66,7 @@ func newAttachedFixture(t *testing.T) (*serverFixture, *fakeCarrier) {
 		ReplicaGeneration: "gen-7",
 		BackendName:       "workshop-mini",
 		LaunchID:          "launch-mini",
+		SessionScopes:     []string{"files:read", "git:operate"},
 	}}
 	set := &fakeAttached{
 		profiles: []AttachedProfile{{ID: "mini", BackendID: "store-uuid-mini", Name: "The Mini"}},
@@ -124,6 +125,9 @@ func TestAttachedBootstrapCarriesTheFarSidesIdentity(t *testing.T) {
 	var got Bootstrap
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
 		t.Fatalf("decode: %v", err)
+	}
+	if len(got.SessionScopes) != 2 || got.SessionScopes[1] != "git:operate" {
+		t.Fatalf("carried grants missing: %v", got.SessionScopes)
 	}
 	if got.BackendID != "store-uuid-mini" || got.ReplicaGeneration != "gen-7" {
 		t.Errorf("store identity = %q/%q, want the far side's", got.BackendID, got.ReplicaGeneration)

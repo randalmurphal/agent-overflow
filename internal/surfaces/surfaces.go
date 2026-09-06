@@ -74,6 +74,10 @@ const (
 	// an Authorization header and compared in constant time.
 	CredBearerToken Credential = "bearer token"
 
+	// CredTransferGrant is a durable random bearer bound to one authorized
+	// conversation handoff, never a reusable device credential.
+	CredTransferGrant Credential = "single-operation transfer grant"
+
 	// CredCapabilityHeader is a process-lifetime random token presented
 	// in a purpose-named header rather than Authorization, because the
 	// caller is a provider hook rather than an HTTP client we wrote.
@@ -707,6 +711,19 @@ var Routes = []Route{
 			"only when Config.AuthEndpoints is set.",
 	},
 	{
+		Pattern:    "/auth/token/recover",
+		Listener:   "app transport",
+		Credential: CredRefreshSecret,
+		Posture:    PostureStructured,
+		Why: "Recoverable rotation requires the predecessor, a saved successor " +
+			"and a fresh device proof bound to this path. Identity checks possession " +
+			"before recovering or declaring reuse; one durable transaction changes " +
+			"the refresh generation and rechecks revocation. This separate path " +
+			"prevents an older server from ignoring the successor and spending " +
+			"the predecessor as a legacy renewal. Unsupported or incomplete " +
+			"recovery requests never reach the credential issuer.",
+	},
+	{
 		Pattern:    "/auth/token",
 		Listener:   "app transport",
 		Credential: CredRefreshSecret,
@@ -828,6 +845,18 @@ var Routes = []Route{
 			"sibling has one. Same shape: no credential to check, no work " +
 			"done, 204 with the allow headers for the one admitted origin " +
 			"and the listener's ordinary 404 for anybody else.",
+	},
+	{
+		Pattern:    "/transfers/",
+		Listener:   "app transport",
+		Credential: CredTransferGrant,
+		Posture:    PostureStructured,
+		Why: "Computer-to-computer handoff status, bounded archive chunks, preparation and activation. " +
+			"A live lookup binds the bearer to one operation authorized through bound RPCs; " +
+			"cookies and launch credentials grant nothing. TLS is required off loopback. " +
+			"Activation separately requires the source secret released after durable retirement. " +
+			"No CORS, no credentials in URLs, no arbitrary file paths. A separate per-peer " +
+			"budget bounds authorization work without spending pairing/reconnect budgets.",
 	},
 	{
 		Pattern:    "PUT /attachments/upload",

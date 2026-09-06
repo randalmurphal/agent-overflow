@@ -437,9 +437,12 @@ func TestReadSessionMetaIsBoundedAndIDMatched(t *testing.T) {
 
 func TestSessionIDFromPath(t *testing.T) {
 	cases := map[string]string{
-		"/x/rollout-2026-08-07T15-07-44-" + testSessionID + ".jsonl": testSessionID,
-		"/x/rollout-2026-08-07T15-07-44-not-a-uuid.jsonl":            "",
-		"/x/something-else.jsonl":                                    "",
+		"/x/rollout-2026-08-07T15-07-44-" + testSessionID + ".jsonl":                                          testSessionID,
+		"/x/rollout-2026-09-05T12-30-49-" + testSessionID + "_01a0729f-7b76-7001-af20-70bd4b717aff.jsonl":     testSessionID,
+		"/x/rollout-2026-09-05T12-30-49-" + testSessionID + "_01a0729f-7b76-7001-af20-70bd4b717aff.jsonl.zst": testSessionID,
+		"/x/rollout-2026-09-05T12-30-49-bad_01a0729f-7b76-7001-af20-70bd4b717aff.jsonl":                       "",
+		"/x/rollout-2026-08-07T15-07-44-not-a-uuid.jsonl":                                                     "",
+		"/x/something-else.jsonl": "",
 	}
 	for path, want := range cases {
 		if got := SessionIDFromPath(path); got != want {

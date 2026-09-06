@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { selectedBackend } from '../../stores/selectedBackend.svelte';
   // Section header + project list. Owns the "Add project" modal open state
   // and the sort-direction toggle. Search-driven filtering happens here so
   // the list only sees projects that match the current query (with their
@@ -57,7 +58,7 @@
   let flashProjectId: string | null = $state(null);
 
   // Session import walks the provider homes and writes threads.
-  let importUngranted = $derived(!hasScope('threads:operate'));
+  let importUngranted = $derived(!hasScope('threads:operate', selectedBackend()));
 
   // Normalise the search query once per derivation so every filter path
   // uses the same lowercase form.
@@ -320,7 +321,7 @@
       title={importUngranted ? 'Not granted to this device' : undefined}
       size="sm"
       disabled={importUngranted}
-      onClick={openSessionImport}
+      onClick={() => openSessionImport()}
     >
       {#snippet children()}
         <span data-testid="sidebar-import-sessions-icon" class="flex items-center">

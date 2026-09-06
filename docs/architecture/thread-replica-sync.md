@@ -441,9 +441,10 @@ Port obscurity was never a security control (the page credential and the
 Host/Origin checks are), so pinning it costs nothing. The page cookie's
 name carries the port, so a stable port also means a stable cookie name. Side benefit: webview
 localStorage (the pre-hydration cache in `appStorage`) stops resetting
-every launch. The `--connect` client-mode stub keeps its ephemeral
-port for now; it can adopt the same helper when remote-attach windows
-want durable replicas.
+every launch. Paired `--connect` windows use the same port-pin helper under
+`<configDir>/frontend/`, keeping their own browser preferences and attached-host
+replicas across launches. The legacy launch-token relay retains an ephemeral
+port; temporary token attachment does not create a durable pairing.
 
 - **Database** `ao-replica-<backendId>`, per-backend keying per
   remote-access §10/§12. One object store `threads` keyed by

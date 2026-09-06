@@ -97,8 +97,7 @@ func (m *systemdManager) Uninstall(ctx context.Context) error {
 // a few seconds and an operator who came back to a service that no longer
 // starts at boot would have paid for an update with their uptime.
 func (m *systemdManager) Stop(ctx context.Context) error {
-	_, _, err := m.runner.Run(ctx, "systemctl", "--user", "stop", m.unitName())
-	return err
+	return m.mustRun(ctx, "systemctl", "--user", "stop", m.unitName())
 }
 
 func (m *systemdManager) Start(ctx context.Context) error {

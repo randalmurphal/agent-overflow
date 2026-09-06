@@ -122,6 +122,21 @@ describe('<DirectoryBrowser>', () => {
     expect(browse).toHaveBeenLastCalledWith('/Users');
   });
 
+  it('shows transport errors while typing instead of claiming the directory does not exist', async () => {
+    vi.useFakeTimers();
+    const onSelect = vi.fn();
+    const { getByTestId, queryByTestId } = render(DirectoryBrowser, { props: { onSelect } });
+    await flushMount();
+    setBindingMock('BrowseDirectory', async () => { throw new Error('Computer disconnected'); });
+    await fireEvent.input(getByTestId('directory-browser-path'), { target: { value: '/project' } });
+    await vi.advanceTimersByTimeAsync(120);
+    await tick();
+    expect(getByTestId('directory-browser-error')).toHaveTextContent('Computer disconnected');
+    expect(queryByTestId('directory-browser-no-matches')).toBeNull();
+    expect(onSelect).toHaveBeenLastCalledWith('');
+    vi.useRealTimers();
+  });
+
   it('debounces path-input changes and calls BrowseDirectory once', async () => {
     vi.useFakeTimers();
     const browse = setBindingMock('BrowseDirectory', async () => mkListing());

@@ -46,14 +46,14 @@ afterEach(() => {
 describe('<ComposerMentionPopover>', () => {
   it('renders nothing when closed', () => {
     const { queryByRole } = render(ComposerMentionPopover, {
-      props: { anchor: anchor(), open: false, query: '', results, activeIndex: 0, onSelect: vi.fn() },
+      props: { backend: '', anchor: anchor(), open: false, query: '', results, activeIndex: 0, onSelect: vi.fn() },
     });
     expect(queryByRole('listbox')).toBeNull();
   });
 
   it('shows the results with aria roles', () => {
     const { getAllByRole, getByRole } = render(ComposerMentionPopover, {
-      props: { anchor: anchor(), open: true, query: 'src', results, activeIndex: 0, onSelect: vi.fn() },
+      props: { backend: '', anchor: anchor(), open: true, query: 'src', results, activeIndex: 0, onSelect: vi.fn() },
     });
     expect(getByRole('listbox')).toBeInTheDocument();
     const options = getAllByRole('option');
@@ -65,7 +65,7 @@ describe('<ComposerMentionPopover>', () => {
   it('clicking an option calls onSelect with the file', async () => {
     const onSelect = vi.fn();
     const { getAllByRole } = render(ComposerMentionPopover, {
-      props: { anchor: anchor(), open: true, query: 'src', results, activeIndex: 0, onSelect },
+      props: { backend: '', anchor: anchor(), open: true, query: 'src', results, activeIndex: 0, onSelect },
     });
     await fireEvent.click(getAllByRole('option')[1]);
     expect(onSelect).toHaveBeenCalledWith(results[1]);
@@ -73,14 +73,14 @@ describe('<ComposerMentionPopover>', () => {
 
   it('renders empty state when no results and not loading', () => {
     const { getByText } = render(ComposerMentionPopover, {
-      props: { anchor: anchor(), open: true, query: 'zzz', results: [], activeIndex: 0, onSelect: vi.fn() },
+      props: { backend: '', anchor: anchor(), open: true, query: 'zzz', results: [], activeIndex: 0, onSelect: vi.fn() },
     });
     expect(getByText(/No matches/)).toBeInTheDocument();
   });
 
   it('renders loading state', () => {
     const { getByText } = render(ComposerMentionPopover, {
-      props: {
+      props: { backend: '',
         anchor: anchor(),
         open: true,
         query: 'abc',

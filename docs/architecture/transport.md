@@ -479,11 +479,25 @@ probe that reports booting as unreachable would defeat both consumers.
 
 ### `--connect` carries the socket rather than handing over the credential
 
-The stub (`internal/clientmode`) holds the upstream credential server-side and
-gives its page the same thing a local boot gives it: a ticket on the URL, then a
-cookie for the stub's own origin. Its `/ws` is a `httputil.ReverseProxy` that
-checks origin and credential locally, deletes the local `Cookie` and `Origin`
-headers, and attaches the upstream's own credential for the hop.
+Paired-computer boots use `internal/frontendclient`: the ordinary local
+transport serves a small connection-management receiver and carries every
+execution computer independently. It opens without probing the selected host,
+owns presentation files under `frontend/`, and reuses a persisted local port.
+The page's administrative HOME handle has no execution store or replica UUID.
+Computer catalogs and all-computer calls exclude it. Removing the first host
+leaves the controller and every other connection usable.
+
+`agent-overflow --frontend` opens that same catalog without naming a launch
+computer. It works with an empty catalog and supports `--data-dir` for an
+independent installation. Native frontend updates reuse the desktop updater,
+then reopen this durable mode with the same data root. They never replay an
+invitation or require the initially paired computer to still exist.
+
+The legacy launch-token path uses the single-upstream `internal/clientmode`
+relay. Both paths hold upstream credentials in Go. The native window injects a
+page ticket, exchanged for the local origin's HttpOnly cookie. The shared
+`backendproxy` carrier checks local admission, removes the local cookie and
+origin headers, and supplies the correct upstream credential.
 
 Which credential that is depends on how the stub was started, and it is exactly
 one of two:
@@ -497,7 +511,7 @@ The first is a SAME-HOST attach: a launch credential alone cannot admit an
 off-host upgrade, so a stub across a network has to be the second. The second
 carries nothing on the header arm — only a spent ticket both names a session and
 stands in for the launch credential, and a paired device has no launch
-credential to present — while the stub's `/bootstrap.json` probe, which is an
+credential to present — while an attached computer's bootstrap probe, which is an
 ordinary HTTP request rather than an upgrade, carries `X-AO-Session` plus a proof
 minted for that request.
 

@@ -33,20 +33,8 @@ import type { Page } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
 import { expect, test, type SeedResult } from './fixtures.js';
 
-// A 300x200 truecolour PNG of two flat bands: past the thumbnail cap in
-// both axes, and still 494 bytes because flat bands deflate to nothing.
-const PNG_BASE64 =
-  'iVBORw0KGgoAAAANSUhEUgAAASwAAADICAIAAADdvUsCAAABtUlEQVR42u3TAQkAAAjAMLOYxXCGM5QxRBgsweGRPc' +
-  'ChkABMCCYETAgmBEwIJgRMCCYETAgmBEwIJgRMCCYETAgmBEwIJgRMCCYETAgmBEwIJgRMCCYETAgmBEwIJgRMCCYE' +
-  'TAgmBEwIJgRMCCYETAgmBEwIJgRMCCYETAgmBEwIJgRMCCYETAgmBEwIJgRMCCYETAgmBEwIJgRMCCYETAgmBBOqAC' +
-  'YEEwImBBMCJgQTAiYEEwImBBMCJgQTAiYEEwImBBMCJgQTAiYEEwImBBMCJgQTAiYEEwImBBMCJgQTAiYEEwImhNcT' +
-  'TiVwyIRgQjAhYEIwIWBCMCFgQjAhYEIwIWBCMCFgQjAhYEIwIWBCMCFgQjAhYEIwIWBCMCFgQjAhYEIwIWBCMCFgQj' +
-  'AhYEIwIWBCMCFgQjAhYEIwIWBCMCFgQjAhYEIwIWBCMCFgQjAhYEIwIWBCMCFgQjAhYEIwIWBCMCFgQjAhYEIwIZhQ' +
-  'AjAhmBAwIZgQMCGYEDAhmBAwIZgQMCGYEDAhmBAwIZgQMCGYEDAhmBAwIZgQMCGYEDAhmBAwIZgQMCGYEDAhmBAwIb' +
-  'y2ay5ZumneNVwAAAAASUVORK5CYII=';
-const PNG_BYTES = Buffer.from(PNG_BASE64, 'base64');
-const PNG_WIDTH = 300;
-const PNG_HEIGHT = 200;
+import { PNG_BASE64, PNG_BYTES, PNG_WIDTH, PNG_HEIGHT } from './attachment-fixture.js';
+
 const FILENAME = 'round-trip.png';
 
 interface AttachmentRow {

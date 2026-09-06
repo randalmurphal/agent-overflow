@@ -39,6 +39,7 @@ import (
 // artifact while running as a Linux process.
 type Config struct {
 	CurrentVersion string
+	RelaunchArgs   []string
 	Platform       string
 	Arch           string
 	Repository     string
@@ -65,6 +66,7 @@ func (a *Service) Configure(handle *updater.Updater, config Config) error {
 	}
 	if err := handle.Init(updater.Config{
 		CurrentVersion: source.req.CurrentVersion,
+		RelaunchArgs:   config.RelaunchArgs,
 		Platform:       source.req.Platform,
 		Arch:           source.req.Arch,
 		Providers:      []updater.Provider{source.verified},

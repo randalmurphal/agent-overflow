@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { projectHasScope } from '../../transport/entityScopes';
   // A single project row. Chevron + folder + name + new-thread action on the
   // right for "new thread here". Right-click opens a small context menu
   // (Rename / Archive / Delete) rendered via ProjectContextMenu.
@@ -58,7 +59,6 @@
     getDropTargetProjectId,
     updateDropTarget,
   } from '../../stores/projectDnd.svelte';
-  import { hasScope } from '../../transport/scopes';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
 
   interface Props {
@@ -100,8 +100,8 @@
   // row and go inert rather than disappearing — a project whose row lost
   // half its affordances reads as a broken sidebar, not as a read-only one.
   // The hover-reveal is untouched, so nothing new is visible at rest.
-  let newThreadUngranted = $derived(!hasScope('threads:operate'));
-  let newTerminalUngranted = $derived(!hasScope('terminal:operate'));
+  let newThreadUngranted = $derived(!projectHasScope('threads:operate', project.project.id));
+  let newTerminalUngranted = $derived(!projectHasScope('terminal:operate', project.project.id));
   // Compact: no drag (a phone's long press is the menu, and Android starts a
   // drag on a held draggable), no text selection under a hold, a taller
   // header, and the create controls the hover would have revealed.

@@ -12,6 +12,8 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -51,7 +53,7 @@ type pairedBackend struct {
 // half — a non-loopback peer over pinned TLS, admitted on a ticket and on
 // nothing else — is pinned beside that listener, in
 // internal/transport's TestUpgradeAdmitsAPairedDeviceOffHostOverPinnedTLS.
-func newPairedBackend(t *testing.T) *pairedBackend {
+func newPairedBackend(t *testing.T, configure ...func(*transport.Config)) *pairedBackend {
 	t.Helper()
 	app := identityApp(t)
 	// Every minted payload names the backend, and a link that named none
@@ -90,7 +92,7 @@ func newPairedBackend(t *testing.T) *pairedBackend {
 	bus := transport.NewEventBus(64)
 	app.SetEventBus(bus)
 
-	srv, err := transport.New(transport.Config{
+	cfg := transport.Config{
 		Dispatcher:   dispatcher,
 		EventBus:     bus,
 		Token:        "launch-credential-under-test",
@@ -101,10 +103,15 @@ func newPairedBackend(t *testing.T) *pairedBackend {
 		SessionForRequest: func(r *http.Request) (string, bool) {
 			return SessionForRequest(app, r)
 		},
-		SessionLive:   func(sessionID string) bool { return SessionLive(app, sessionID) },
-		SessionScopes: func(sessionID string) ([]string, string) { return SessionScopes(app, sessionID) },
-		AuthEndpoints: AuthEndpoints(app),
-	})
+		SessionLive:     func(sessionID string) bool { return SessionLive(app, sessionID) },
+		SessionScopes:   func(sessionID string) ([]string, string) { return SessionScopes(app, sessionID) },
+		AuthEndpoints:   AuthEndpoints(app),
+		ThreadTransfers: ThreadTransferEndpoints(app),
+	}
+	for _, apply := range configure {
+		apply(&cfg)
+	}
+	srv, err := transport.New(cfg)
 	if err != nil {
 		t.Fatalf("transport.New: %v", err)
 	}
@@ -388,8 +395,8 @@ func TestRefreshReuseEndsTheSessionOnBothSides(t *testing.T) {
 		t.Fatalf("AwaitActivation: %v", err)
 	}
 
-	// Two clients over the SAME stored session, both holding the secret
-	// one of them is about to spend. That is what a copied profile
+	// Two independently copied profiles, both holding the secret
+	// one of them is about to spend. This differs from processes sharing a profile; a copied profile
 	// directory looks like from the backend's side — and the credential is
 	// aged past its margin so each one rotates before it does anything
 	// else, which is the ordinary path rather than a forced one.
@@ -402,7 +409,18 @@ func TestRefreshReuseEndsTheSessionOnBothSides(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open the original: %v", err)
 	}
-	copied, err := deviceclient.Open(profile, held)
+	copiedProfile := t.TempDir()
+	keyData, err := os.ReadFile(filepath.Join(profile, deviceclient.KeyFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(copiedProfile, deviceclient.KeyFileName), keyData, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := deviceclient.SaveSession(copiedProfile, held); err != nil {
+		t.Fatal(err)
+	}
+	copied, err := deviceclient.Open(copiedProfile, held)
 	if err != nil {
 		t.Fatalf("Open the copy: %v", err)
 	}

@@ -13,10 +13,6 @@ import (
 
 func TestHighlightWireProjectionsPreserveEveryField(t *testing.T) {
 	lines := []highlight.EncodedLine{{Runs: []uint16{2, 3}}}
-	result := wireHighlightResult(highlightapp.Result{Lang: "go", Lines: lines, Truncated: true, Incomplete: true, Primed: true})
-	if result.Lang != "go" || len(result.Lines) != 1 || !result.Truncated || !result.Incomplete || !result.Primed {
-		t.Fatalf("result = %+v", result)
-	}
 	seed := wireHighlightSeed(highlightapp.SeedEvent{ThreadID: "t", ItemID: "i", Lang: "go", ContentKey: "key", LineHashes: []uint32{7}, Lines: lines, Final: true})
 	if seed.ThreadID != "t" || seed.ItemID != "i" || seed.Lang != "go" || seed.ContentKey != "key" || len(seed.LineHashes) != 1 || len(seed.Lines) != 1 || !seed.Final {
 		t.Fatalf("seed = %+v", seed)

@@ -1,3 +1,4 @@
+import { threadHasScope } from '../transport/entityScopes';
 import type { Attachment } from '../types/attachment';
 import type { Draft, TerminalChip } from '../types/draft';
 import type { SourceProposedPlan } from '../types/models';
@@ -20,7 +21,6 @@ import {
   type ComposerDraftSnapshot,
 } from './composerDraftSnapshots';
 import { addToast } from './toast.svelte';
-import { hasScope } from '../transport/scopes';
 import { errString } from '../utils/errors';
 import { ensureImagePlaceholders } from '../utils/imagePlaceholders';
 
@@ -110,8 +110,8 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
   // captured: a pane can be constructed before the bootstrap manifest
   // resolves, and a captured `false` would leave the owner's own
   // composer silently not saving.
-  function draftRowsReachable(): boolean {
-    return persists && hasScope('threads:operate');
+  function draftRowsReachable(id = threadId): boolean {
+    return persists && threadHasScope('threads:operate', id);
   }
 
   function rememberSnapshot(id: string, snapshot: ComposerDraftSnapshot): void {
@@ -136,7 +136,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
    * thread open, so it is logged rather than swallowed.
    */
   function clearPersistedDraft(id: string): void {
-    if (!draftRowsReachable()) return;
+    if (!draftRowsReachable(id)) return;
     void ClearDraft(id).catch((err) => {
       console.error(`Failed to clear the persisted draft for thread ${id}:`, err);
     });
@@ -177,7 +177,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
   }
 
   async function saveSnapshot(id: string, snapshot: ComposerDraftSnapshot): Promise<void> {
-    if (!draftRowsReachable()) return;
+    if (!draftRowsReachable(id)) return;
     try {
       const savePromise = SaveDraft(
         id,
@@ -213,7 +213,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
   }
 
   async function hydrate(id: string, expectedGeneration: number): Promise<void> {
-    if (!draftRowsReachable()) return;
+    if (!draftRowsReachable(id)) return;
     hydrating = true;
     const cached = peekSnapshot(id);
     if (cached) {

@@ -1,3 +1,4 @@
+import { takePinnedBackend } from '../../../transport/backends';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 
@@ -18,7 +19,6 @@ import {
   resetStagedBackends,
   stageBackend,
 } from '../../../../test/helpers/backends';
-import { getToasts } from '../../../stores/toast.svelte';
 
 const HOME_UUID = '11111111-2222-4333-8444-555555555555';
 
@@ -57,7 +57,11 @@ function buildPlaceholderPane(project = makeProject()) {
 }
 
 async function seedProjects(projects: Project[]): Promise<void> {
-  setBindingMock('ListProjects', async () => projects.map((project) => ({ project, threadCount: 0 })));
+  setBindingMock('ListProjects', async () => {
+    const backend = takePinnedBackend();
+    return projects.filter((_project, index) => backend === 'laptop' ? index > 0 : index === 0)
+      .map((project) => ({ project, threadCount: 0 }));
+  });
   await refreshProjects();
 }
 
@@ -113,27 +117,19 @@ describe('<MachinePicker>', () => {
     expect(laptop.textContent ?? '').not.toMatch(/No browser/);
   });
 
-  it('flips the draft onto the chosen machine’s first project and stages the route', async () => {
+  it('asks for the checkout rather than choosing an unrelated project', async () => {
     stageBackend();
-    const remoteProject = makeProject({ id: 'project-2', path: '/home/me/app', name: 'App' });
+    const remoteProject = makeProject({ id: 'project-2', path: '/home/me/other', name: 'Other' });
     await seedProjects([makeProject(), remoteProject]);
     noteProject('project-2', 'laptop');
     const pane = buildPlaceholderPane();
-    // The flip re-stages the placeholder on the far project; its defaults
-    // read is the first RPC that has to reach the chosen machine.
-    const defaults = setBindingMock('GetThreadDefaults', async () => ({ provider: 'claude', model: 'm' }));
-
+    const defaults = setBindingMock('GetThreadDefaults', async () => ({}));
     const { getByTestId, findByRole } = render(MachinePicker, { props: { pane } });
     await fireEvent.click(getByTestId('machine-picker-trigger'));
     await fireEvent.click(await findByRole('menuitem', { name: /Laptop/ }));
-
-    await waitFor(() => {
-      expect(defaults).toHaveBeenCalledTimes(1);
-      expect(pane.thread?.projectId).toBe('project-2');
-      expect(getByTestId('machine-picker-trigger').textContent ?? '').toMatch(/Laptop/);
-    });
-    expect(pane.hasDraftPlaceholder).toBe(true);
-    expect(selectedBackend()).toBe('laptop');
+    expect(await findByRole('dialog', { name: 'Add Project' })).toBeInTheDocument();
+    expect(defaults).not.toHaveBeenCalled();
+    expect(selectedBackend()).toBe(HOME_BACKEND);
   });
 
   it('flips to the SAME repository on the chosen machine when the entry spans it', async () => {
@@ -158,7 +154,7 @@ describe('<MachinePicker>', () => {
     });
   });
 
-  it('says so, and moves nothing, when the chosen machine has no project yet', async () => {
+  it('opens the folder picker when the chosen machine has no project yet', async () => {
     stageBackend();
     await seedProjects([makeProject()]);
     const pane = buildPlaceholderPane();
@@ -168,9 +164,7 @@ describe('<MachinePicker>', () => {
     await fireEvent.click(getByTestId('machine-picker-trigger'));
     await fireEvent.click(await findByRole('menuitem', { name: /Laptop/ }));
 
-    await waitFor(() => {
-      expect(getToasts().some((t) => /no projects yet/.test(t.message))).toBe(true);
-    });
+    expect(await findByRole('dialog', { name: 'Add Project' })).toBeInTheDocument();
     expect(defaults).not.toHaveBeenCalled();
     expect(pane.hasDraftPlaceholder).toBe(true);
     expect(selectedBackend()).toBe(HOME_BACKEND);

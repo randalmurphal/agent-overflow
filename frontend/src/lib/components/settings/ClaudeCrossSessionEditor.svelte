@@ -12,7 +12,8 @@
   // Headless `claude` only — claude-tui is excluded on the backend, and the
   // caller renders this under the Claude heading alone.
 
-  import { getSettings, updateSettingsPatch } from '../../stores/settings.svelte';
+  import { settingsComputer } from './settingsComputer';
+  const { getSettings, updateSettingsPatch } = settingsComputer();
   import {
     CLAUDE_CROSS_SESSION_INBOUND_OPTIONS,
     crossSessionPatch,

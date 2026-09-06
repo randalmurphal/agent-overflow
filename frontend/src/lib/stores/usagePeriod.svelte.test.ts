@@ -70,9 +70,7 @@ describe('usage period store', () => {
 
       const updateMock = setBindingMock('UpdateSettings', async () => null);
       syncUsagePeriodFromSettings();
-      expect(updateMock).toHaveBeenCalledWith(
-        expect.objectContaining({ usagePeriod: 'week' }),
-      );
+      expect(updateMock).not.toHaveBeenCalled();
       expect(getUsagePeriod()).toBe('week');
     });
   });

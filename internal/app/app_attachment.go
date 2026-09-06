@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -151,6 +152,11 @@ func (a *App) DeleteAttachment(threadID, attachmentID string) error {
 	if a.attachments == nil {
 		return fmt.Errorf("attachment store not initialized")
 	}
+	unlock, err := a.threadApplication().LockMutable(context.Background(), threadID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	return a.attachments.Delete(threadID, attachmentID)
 }
 
@@ -250,5 +256,10 @@ func (a *App) storeAttachment(threadID, filename, mimeType string, size int64, b
 	if a.attachments == nil {
 		return store.Attachment{}, fmt.Errorf("attachment store not initialized")
 	}
+	unlock, err := a.threadApplication().LockMutable(context.Background(), threadID)
+	if err != nil {
+		return store.Attachment{}, err
+	}
+	defer unlock()
 	return a.attachments.Upload(threadID, filename, mimeType, size, body, time.Now().UnixMilli())
 }

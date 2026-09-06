@@ -1,4 +1,5 @@
 import type { Thread } from '../types/models';
+import { threadMachine } from './attachedBackends.svelte';
 import { getSettings } from './settings.svelte';
 import { generateWorktreeBranchName } from '../utils/worktreeBranchName';
 
@@ -78,7 +79,7 @@ export function seedDefaultWorktreeIntentForDraft(thread: Thread): void {
   intents = new Map(intents).set(thread.id, {
     mode: 'new-worktree',
     creatingBranch: true,
-    newBranchName: generateWorktreeBranchName(getSettings().worktreeBranchPrefix),
+    newBranchName: generateWorktreeBranchName(getSettings(threadMachine(thread.id, thread.projectId)).worktreeBranchPrefix),
     newBranchBase: thread.branch ?? '',
     attachBranch: '',
   });
@@ -118,7 +119,7 @@ export function enterCreateBranchMode(
   // user to type.
   const seedName =
     current.mode === 'new-worktree'
-      ? generateWorktreeBranchName(getSettings().worktreeBranchPrefix)
+      ? generateWorktreeBranchName(getSettings(threadMachine(thread.id, thread.projectId)).worktreeBranchPrefix)
       : '';
   intents = new Map(intents).set(thread.id, {
     ...current,

@@ -239,6 +239,10 @@ func (s *Store) ListImportedSessionRefs() (map[ProviderSessionRef]string, error)
 		     UNION ALL
 		     SELECT provider, source_session_id, thread_id FROM thread_import_state
 		      WHERE source_session_id <> ''
+		     UNION ALL
+		     SELECT r.provider, r.session_ref, t.target_thread_id
+		       FROM thread_transfer_sessions r JOIN thread_transfers t ON t.id = r.transfer_id
+		      WHERE t.phase <> 'canceled'
 		 )
 		 ORDER BY provider, ref, thread_id`,
 	)

@@ -68,6 +68,7 @@ const ProtocolVersion = 1
 var serverCapabilities = []string{
 	CapabilityRemoteNotifications,
 	CapabilityPasskeys,
+	CapabilityRemoteCommands,
 }
 
 // serverCapabilitiesWithBrowser is that list plus the one flag whose
@@ -75,6 +76,15 @@ var serverCapabilities = []string{
 // accept PICKS a slice instead of allocating one, and appended at the end
 // so the frozen prefix's bytes are byte-identical either way.
 var serverCapabilitiesWithBrowser = append(slices.Clone(serverCapabilities), CapabilityBrowser)
+
+var serverCapabilitiesWithTransfers = append(slices.Clone(serverCapabilities), CapabilityConversationTransfer)
+var serverCapabilitiesWithBrowserAndTransfers = append(slices.Clone(serverCapabilitiesWithBrowser), CapabilityConversationTransfer)
+
+// CapabilityConversationTransfer names the complete v1 offer/upload/ownership
+// wire contract. Only listeners with an app handoff adapter advertise it.
+const CapabilityConversationTransfer = "conversation.transfer.v1"
+
+const CapabilityRemoteCommands = "commands.remote.v1"
 
 // advertisedCapabilities answers the set one connection is told about.
 //
@@ -86,9 +96,15 @@ var serverCapabilitiesWithBrowser = append(slices.Clone(serverCapabilities), Cap
 // and never from the caller.
 //
 // A nil hook means the same thing false does: no browser tools here.
-func advertisedCapabilities(browserAvailable func() bool) []string {
+func advertisedCapabilities(browserAvailable func() bool, transfers bool) []string {
 	if browserAvailable != nil && browserAvailable() {
+		if transfers {
+			return serverCapabilitiesWithBrowserAndTransfers
+		}
 		return serverCapabilitiesWithBrowser
+	}
+	if transfers {
+		return serverCapabilitiesWithTransfers
 	}
 	return serverCapabilities
 }
@@ -396,6 +412,14 @@ type FrameError struct {
 	// explain a disabled surface rather than showing a dead control
 	// (docs/specs/remote-access.md §5 "Frontend capability model").
 	Scope string `json:"scope,omitempty"`
+	// Transfer locates recoverable ownership state without parsing prose.
+	// Present only for thread_moved / thread_transfer_pending.
+	Transfer *TransferRef `json:"transfer,omitempty"`
+}
+
+type TransferRef struct {
+	OperationID string `json:"operationId"`
+	BackendID   string `json:"backendId"`
 }
 
 // Error codes returned on rpc responses. Stable strings so the frontend
@@ -424,10 +448,13 @@ type FrameError struct {
 // scope_required and step_up_required (docs/specs/remote-access.md §5).
 const (
 	ErrCodeMethodNotFound         = "method_not_found"
+	ErrCodeNotFound               = "not_found" // The method exists; its requested row does not.
 	ErrCodeBadParams              = "bad_params"
 	ErrCodeMethodError            = "method_error"
 	ErrCodeTemporarilyUnavailable = "temporarily_unavailable"
 	ErrCodeAlreadyHandled         = "already_handled"
+	ErrCodeThreadMoved            = "thread_moved"
+	ErrCodeThreadTransferPending  = "thread_transfer_pending"
 	ErrCodeInternal               = "internal"
 	ErrCodeShuttingDown           = "shutting_down"
 	ErrCodeAuthFailed             = "auth_failed"

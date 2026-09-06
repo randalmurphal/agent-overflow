@@ -221,6 +221,16 @@ func (s *Service) launchWorktreeSetup(target worktreeSetupTarget, requireRecipe 
 	case worktreePath == "":
 		return fmt.Errorf("worktree setup: %s has no worktree", target.describe())
 	}
+	endWork, err := s.beginWork(s.context())
+	if err != nil {
+		return err
+	}
+	transferred := false
+	defer func() {
+		if !transferred {
+			endWork()
+		}
+	}()
 
 	config, _, err := s.store.ProjectWorktreeSetup(projectID)
 	if err != nil {
@@ -292,8 +302,10 @@ func (s *Service) launchWorktreeSetup(target worktreeSetupTarget, requireRecipe 
 
 	s.setThreadWorktreeSetupState(target.threadID, store.WorktreeSetupStateRunning)
 
+	transferred = true
 	go func() {
 		defer s.wg.Done()
+		defer endWork()
 		defer cancel()
 		observer := newWorktreeSetupObserver(s, run)
 		// The observer owns every emission for this run, including the

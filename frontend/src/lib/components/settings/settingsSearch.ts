@@ -116,6 +116,11 @@ const FLASH_CLASS = 'settings-field-flash';
 export function revealSettingsField(root: ParentNode, fieldId: string): boolean {
   const el = root.querySelector<HTMLElement>(`[data-settings-field="${fieldId}"]`);
   if (!el) return false;
+  // A search result can live inside collapsed advanced settings. Open its
+  // ancestors before measuring or the requested field stays invisible.
+  for (let parent = el.parentElement; parent; parent = parent.parentElement) {
+    if (parent instanceof HTMLDetailsElement) parent.open = true;
+  }
   el.scrollIntoView({ block: 'center' });
   // Re-triggering on an element already mid-flash restarts the animation:
   // removing the class, forcing a style flush, then re-adding it.

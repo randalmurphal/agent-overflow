@@ -150,9 +150,8 @@ describe('the unified sidebar list', () => {
     const rows = (await Call.ByID(LIST_THREADS)) as Array<{ id: string }>;
     expect(rows.map((r) => r.id)).toEqual(['thread-home']);
     expect(homeClient.callByID).toHaveBeenCalledTimes(1);
-    // The single-backend fast path skips the route table entirely, so the
-    // index stays empty and every lookup answers home — byte-for-byte the
-    // behaviour before the registry existed.
-    expect(threadBackend('thread-home')).toBeUndefined();
+    // Ownership is learned before a second computer is attached, so the
+    // same row remains routable without another catalog fetch.
+    expect(threadBackend('thread-home')).toBe('');
   });
 });

@@ -34,6 +34,7 @@ import (
 	"agent-overflow/internal/provideraccountapp"
 	"agent-overflow/internal/providerdiscoveryapp"
 	"agent-overflow/internal/providerlifecycleapp"
+	"agent-overflow/internal/remotejobs"
 	"agent-overflow/internal/sessionruntime"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/spinner"
@@ -151,8 +152,12 @@ type App struct {
 	// profile directory to keep pairings in — a test fixture, and the
 	// harness — and every attached-backend method is a plain refusal
 	// then, never a panic.
-	backends  *attachedbackends.Manager
-	terminals *terminal.Manager
+	backends    *attachedbackends.Manager
+	sshSetup    appSSHSetup
+	transfers   appThreadTransfers
+	terminals   *terminal.Manager
+	remoteJobs  *remotejobs.Manager
+	remotePeers appRemotePeers
 	// providerTerminals is the per-connection take-control bookkeeping for
 	// claude-tui PTYs: which caller armed which attachment, so a dead socket
 	// releases exactly its own claim and its input lease. Zero value ready.
@@ -524,6 +529,7 @@ type App struct {
 	// else, which is what makes "this install has no supervisor" an answer
 	// rather than a nil dereference. See app_service_update.go.
 	serviceUpdate serviceUpdateState
+	workAdmission workAdmission
 	// credentialHomeOverride, when non-empty, replaces os.UserHomeDir()
 	// as the home that provideraccounts.Credentials operates under —
 	// slot storage, canonical credential, ephemeral probe homes, and the

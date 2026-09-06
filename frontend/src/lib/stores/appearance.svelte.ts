@@ -1,5 +1,7 @@
-// The appearance selection and the theme files behind it — app-scoped
-// state, RPC-loaded and push-fed.
+// The frontend's appearance selection and the theme files behind it.
+// appearanceFiles.ts owns residency: a local desktop/controller watches its
+// editable directory; a browser/phone owns an IndexedDB copy that survives
+// computer removal. Explicit imports replace files, never preferences.
 //
 // ENTITY. "Appearance" is one app-global value (the mode plus one theme id
 // per axis) over one directory of files, so this is a plain module store in
@@ -23,9 +25,9 @@
 //                   not on the host (`hasScope('host')`)? Both writes are
 //                   host-scoped: the file is the desktop's own.
 //
-// A session with reads but no writes takes the FILES off the wire and keeps
-// `localStorage` as the sole source of its selection. Nothing clears
-// `writesRefused`: a refusal is structural, not transient.
+// A remote frontend keeps localStorage as the sole source of its selection.
+// Its library migrates once from the legacy first host, then updates only by
+// explicit import. Nothing clears writesRefused: a refusal is structural.
 //
 // LOCALSTORAGE IS THIS CLIENT'S DURABLE COPY of the selection, written on
 // every change even where the RPCs work — it is what a browser session
@@ -55,7 +57,9 @@ import {
 } from '../theme/themeParse';
 import { hasScope } from '../transport/scopes';
 import { errString } from '../utils/errors';
-import { SetAppearance, SetWindowBackgroundColor, ThemeAppearance, GetThemeFiles } from './bindings';
+import { SetAppearance, SetWindowBackgroundColor, ThemeAppearance } from './bindings';
+import { readAppearanceFiles, usesFrontendAssetLibrary } from './appearanceFiles';
+import { onFrontendAssetsChanged } from './frontendAssets';
 import type { ThemeFiles } from './bindings';
 import { isMethodUnavailableError, onTransportStatusChange } from './transportStatus.svelte';
 import { wailsEventOn } from './wailsEvents';
@@ -96,6 +100,12 @@ const DEFAULT_SELECTION: AppearanceSelection = {
 
 /** This client's durable copy of the selection. */
 const STORAGE_KEY = 'agent-overflow:appearance';
+
+// Must initialize before readLocalSelection runs at module evaluation. A
+// temporal-dead-zone error inside that guarded read silently discards a valid
+// saved selection. The host file happened to mask that bug on desktop.
+const ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const HEX_PATTERN = /^#[0-9a-fA-F]{6}$/;
 
 // ---------------------------------------------------------------------------
 // State
@@ -210,15 +220,6 @@ function writesBlocked(): boolean {
 function isMode(value: unknown): value is AppearanceMode {
   return value === 'system' || value === 'light' || value === 'dark';
 }
-
-/**
- * Theme-id shape, mirroring `internal/theme`'s idPattern. Applied to values
- * coming back out of localStorage as well as off the wire: a hand-edited
- * origin store must not be able to put something un-CSS-safe into a
- * selection the applier will look up.
- */
-const ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
-const HEX_PATTERN = /^#[0-9a-fA-F]{6}$/;
 
 function normalizeSelection(raw: Partial<Record<keyof AppearanceSelection, unknown>>): AppearanceSelection {
   const mode = isMode(raw.mode) ? raw.mode : DEFAULT_SELECTION.mode;
@@ -385,7 +386,7 @@ export async function loadAppearance(): Promise<void> {
   const generation = (loadGeneration += 1);
   const writesAtIssue = writeGeneration;
   try {
-    const files = await GetThemeFiles();
+    const files = await readAppearanceFiles();
     if (generation !== loadGeneration) return;
     // The FILES always land; the SELECTION only when this answer is still the
     // newest word on it — not when the session cannot persist a selection at
@@ -415,7 +416,10 @@ export async function loadAppearance(): Promise<void> {
  */
 export function installAppearanceEvents(): () => void {
   const stopWatcher = wailsEventOn('theme:changed', () => {
-    void loadAppearance();
+    if (!usesFrontendAssetLibrary()) void loadAppearance();
+  });
+  const stopLocal = onFrontendAssetsChanged((kind) => {
+    if (kind === 'themes' && usesFrontendAssetLibrary()) void loadAppearance();
   });
   let wasDown = false;
   const stopEdge = onTransportStatusChange((snapshot) => {
@@ -429,6 +433,7 @@ export function installAppearanceEvents(): () => void {
   });
   return () => {
     stopWatcher();
+    stopLocal();
     stopEdge();
   };
 }

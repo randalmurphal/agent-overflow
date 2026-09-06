@@ -49,9 +49,9 @@
   const activeExtensions = new SvelteSet<string>();
   let extensionsFilterDiff = $state(false);
   // Captured at init, NOT $derived: the subject is fixed for this instance
-  // (CompanionPane keys the panel body on `${thread.id}:${kind}`, so a
-  // thread change — including a draft placeholder materializing into a real
-  // row — remounts it), and reviewStateForPane is side-effectful: its
+  // (CompanionPane keys the body on conversation, ownership epoch and checkout,
+  // so a move, workspace change or draft materialization remounts it), and
+  // reviewStateForPane is side-effectful: its
   // subject-mismatch branch disposes the replaced state, which writes
   // $state and is therefore illegal inside a derived
   // (state_unsafe_mutation). As a derived, a source-pane thread switch
@@ -62,7 +62,7 @@
   // svelte-ignore state_referenced_locally
   const review = subject ? reviewStateForPane(ctx.paneId, subject) : null;
   // The diff body identifies itself by `review.identity` — the subject's
-  // row id, synthetic on a draft placeholder. It is a plain string on the
+  // conversation, owner epoch and checkout. It is a plain string on the
   // state, available in exactly the branches that render a body, so scroll
   // memory and span-cache ownership are per-review rather than collapsing
   // every placeholder onto one shared bucket.

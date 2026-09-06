@@ -1,3 +1,4 @@
+import { threadHasScope } from '../transport/entityScopes';
 import type { Item, Thread } from '../types/models';
 import type {
   PendingInteractiveRequests,
@@ -5,7 +6,6 @@ import type {
 } from '../types/events';
 import type { ThreadLiveState } from '../../../bindings/agent-overflow/internal/app/models';
 import { GetThreadLiveState, ListPendingInteractiveRequests } from './bindings';
-import { hasScope } from '../transport/scopes';
 import type { LiveStateHydrationGuard } from './threadPaneShared';
 import {
   finishThreadLiveStateHydration,
@@ -223,7 +223,7 @@ export function createThreadLiveStateHydration(
     // Only the SNAPSHOT is lost. The channels that keep an open thread
     // current are threads:read and reach a view-only session normally,
     // so a thread opened mid-turn still fills in as the turn streams.
-    if (hasScope('threads:operate')) {
+    if (threadHasScope('threads:operate', threadID)) {
       try {
         snapshot = (await GetThreadLiveState(threadID)) as ThreadLiveState;
       } catch (err) {
@@ -234,7 +234,7 @@ export function createThreadLiveStateHydration(
     }
     // Degraded leg: pending approvals/questions block the user, so they
     // get their own fetch when the full snapshot did not land.
-    if (snapshot === null && hasScope('approvals:respond')) {
+    if (snapshot === null && threadHasScope('approvals:respond', threadID)) {
       try {
         fallbackInteractive = (await ListPendingInteractiveRequests(
           threadID,

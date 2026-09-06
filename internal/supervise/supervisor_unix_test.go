@@ -244,9 +244,14 @@ func (r *rig) run(config Config) (stop func(), done <-chan error) {
 // stops it and returns its result.
 func (r *rig) runUntil(config Config, want string, count int) error {
 	r.t.Helper()
+	return r.runUntilCondition(config, func() { r.waitForLog(want, count) })
+}
+
+func (r *rig) runUntilCondition(config Config, ready func()) error {
+	r.t.Helper()
 	stop, done := r.run(config)
 	defer stop()
-	r.waitForLog(want, count)
+	ready()
 	stop()
 	select {
 	case err := <-done:
@@ -724,6 +729,41 @@ exit 7`)
 		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("Run did not return when its child exited")
+	}
+}
+
+func TestSupervisorRestartsAnUnconfirmedUpdateWithoutAServiceManager(t *testing.T) {
+	rig := newRig(t)
+	rig.stage("1.0.0", fmt.Sprintf(`if [ ! -f "$OBS/recovered" ]; then
+touch "$OBS/recovered"
+exit %d
+fi
+note 'recovered'
+serve_until_stopped`, RestartForUpdateExitCode))
+	rig.adopt("1.0.0")
+	if err := rig.runUntil(rig.config(), "recovered", 1); err != nil {
+		t.Fatal(err)
+	}
+	if got := countLines(rig.lines("log"), "hello 1.0.0"); got != 2 {
+		t.Fatalf("boots: %d", got)
+	}
+}
+
+func TestSupervisorContinuesAcceptedUpdateWhenChildExitsBeforeGrace(t *testing.T) {
+	rig := newRig(t)
+	rig.stage("1.0.0", fmt.Sprintf(`printf '{"type":"request-update","targetVersion":"2.0.0"}\n' >&4
+IFS= read -r ANSWER <&3
+exit %d`, RestartForUpdateExitCode))
+	rig.stage("2.0.0", behaviorPrepare)
+	rig.adopt("1.0.0")
+	writeDatabase(t, rig.dataDir, "before")
+	config := rig.config()
+	config.ResponseGrace = time.Minute
+	if err := rig.runUntil(config, "committed 2.0.0", 1); err != nil {
+		t.Fatal(err)
+	}
+	if state := rig.state(); state.Update == nil || state.Update.State != UpdateCommitted {
+		t.Fatalf("update: %+v", state)
 	}
 }
 

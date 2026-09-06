@@ -1,3 +1,4 @@
+import { __setBackendStatusForTest } from './transportStatus.svelte';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { flushSync } from 'svelte';
 import { createEntityStore, DEFAULT_RETRY } from './entityStore.svelte';
@@ -62,7 +63,7 @@ describe('createEntityStore — refcounted lifecycle', () => {
 
   it('sources once for the first attacher and shares it with the second', async () => {
     const { source, calls } = makeSource();
-    const store = createEntityStore<string, { tag: string }>({ name: 'test', source });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'test', source });
 
     const a = store.attach('k', { tag: 'a' });
     const b = store.attach('k', { tag: 'b' });
@@ -81,7 +82,7 @@ describe('createEntityStore — refcounted lifecycle', () => {
 
   it('a second attach while source() is in flight does not double-source', async () => {
     const { source, calls } = makeSource();
-    const store = createEntityStore<string, { tag: string }>({ name: 'test', source });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'test', source });
 
     store.attach('k', { tag: 'a' });
     await flush();
@@ -95,7 +96,7 @@ describe('createEntityStore — refcounted lifecycle', () => {
 
   it('tears down on the LAST release, not the first', async () => {
     const { source, calls, cleanups } = makeSource();
-    const store = createEntityStore<string, { tag: string }>({ name: 'test', source });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'test', source });
 
     const a = store.attach('k', { tag: 'a' });
     const b = store.attach('k', { tag: 'b' });
@@ -116,7 +117,7 @@ describe('createEntityStore — refcounted lifecycle', () => {
 
   it('re-attaching after a full release sources again', async () => {
     const { source, calls } = makeSource();
-    const store = createEntityStore<string, { tag: string }>({ name: 'test', source });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'test', source });
 
     const a = store.attach('k', { tag: 'a' });
     await flush();
@@ -143,7 +144,7 @@ describe('createEntityStore — refcounted lifecycle', () => {
   // shared-by-key teardown takes the live subscription down with it.
   it('a late first run cleans up only itself, leaving the re-attached run intact', async () => {
     const { source, calls } = makeSource();
-    const store = createEntityStore<string, { tag: string }>({ name: 'test', source });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'test', source });
 
     const a = store.attach('k', { tag: 'a' });
     await flush();
@@ -178,7 +179,7 @@ describe('createEntityStore — refcounted lifecycle', () => {
 
   it('release() is idempotent — a double release cannot drop a sibling reference', async () => {
     const { source, calls, cleanups } = makeSource();
-    const store = createEntityStore<string, { tag: string }>({ name: 'test', source });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'test', source });
 
     const a = store.attach('k', { tag: 'a' });
     const b = store.attach('k', { tag: 'b' });
@@ -198,7 +199,7 @@ describe('createEntityStore — refcounted lifecycle', () => {
 
   it('a source completing after teardown runs its own cleanup and applies nothing', async () => {
     const { source, calls } = makeSource();
-    const store = createEntityStore<string, { tag: string }>({ name: 'test', source });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'test', source });
 
     const a = store.attach('k', { tag: 'a' });
     await flush();
@@ -229,6 +230,7 @@ describe('createEntityStore — apply chokepoint', () => {
     const { source, calls } = makeSource();
     const seen: Array<[string, string, string | null]> = [];
     const store = createEntityStore<string, { tag: string }>({
+      backendForKey: () => '',
       name: 'test',
       source,
       onApply: (key, value, prev) => seen.push([key, value, prev]),
@@ -250,7 +252,7 @@ describe('createEntityStore — apply chokepoint', () => {
   it('apply on a key nobody holds is a no-op, not a resurrection', async () => {
     const { source } = makeSource();
     const onApply = vi.fn();
-    const store = createEntityStore<string, { tag: string }>({ name: 'test', source, onApply });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'test', source, onApply });
 
     store.apply('ghost', 'v1');
     expect(store.peek('ghost')).toBeNull();
@@ -260,7 +262,7 @@ describe('createEntityStore — apply chokepoint', () => {
 
   it('applyError records the message and apply clears it', async () => {
     const { source, calls } = makeSource();
-    const store = createEntityStore<string, { tag: string }>({ name: 'test', source });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'test', source });
 
     const a = store.attach('k', { tag: 'a' });
     await flush();
@@ -277,7 +279,7 @@ describe('createEntityStore — apply chokepoint', () => {
 
   it('a source error lands in `error` AND console.error', async () => {
     const { source, calls } = makeSource();
-    const store = createEntityStore<string, { tag: string }>({ name: 'test', source });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'test', source });
 
     const a = store.attach('k', { tag: 'a' });
     await flush();
@@ -290,7 +292,7 @@ describe('createEntityStore — apply chokepoint', () => {
 
   it('getCtx() returns a live attacher ctx, and survives the original attacher leaving', async () => {
     const { source, calls } = makeSource();
-    const store = createEntityStore<string, { tag: string }>({ name: 'test', source });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'test', source });
 
     const a = store.attach('k', { tag: 'a' });
     const b = store.attach('k', { tag: 'b' });
@@ -318,6 +320,7 @@ describe('createEntityStore — retry', () => {
   it('retries on a doubling backoff while attached', async () => {
     const { source, calls } = makeSource();
     const store = createEntityStore<string, { tag: string }>({
+      backendForKey: () => '',
       name: 'test',
       source,
     });
@@ -346,7 +349,7 @@ describe('createEntityStore — retry', () => {
   // backend, not to keep a freshly opened pane blank for half a minute.
   it('an attach onto a key in backoff resets the curve and sources now', async () => {
     const { source, calls } = makeSource();
-    const store = createEntityStore<string, { tag: string }>({ name: 'test', source });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'test', source });
 
     const a = store.attach('k', { tag: 'a' });
     await flush();
@@ -375,6 +378,7 @@ describe('createEntityStore — retry', () => {
   it('does not retry after the last release', async () => {
     const { source, calls } = makeSource();
     const store = createEntityStore<string, { tag: string }>({
+      backendForKey: () => '',
       name: 'test',
       source,
     });
@@ -392,6 +396,7 @@ describe('createEntityStore — retry', () => {
   it('a pending retry is cancelled by release', async () => {
     const { source, calls } = makeSource();
     const store = createEntityStore<string, { tag: string }>({
+      backendForKey: () => '',
       name: 'test',
       source,
     });
@@ -409,6 +414,7 @@ describe('createEntityStore — retry', () => {
   it('resetAll during a pending retry re-sources immediately and drops the stale timer', async () => {
     const { source, calls } = makeSource();
     const store = createEntityStore<string, { tag: string }>({
+      backendForKey: () => '',
       name: 'test',
       source,
     });
@@ -432,7 +438,7 @@ describe('createEntityStore — retry', () => {
   // the same recovery — or every such store hand-rolls one.
   it('fail() from a live run schedules the same backed-off re-source', async () => {
     const { source, calls, cleanups } = makeSource();
-    const store = createEntityStore<string, { tag: string }>({ name: 'test', source });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'test', source });
 
     store.attach('k', { tag: 'a' });
     await flush();
@@ -453,7 +459,7 @@ describe('createEntityStore — retry', () => {
 
   it('repeated fail()s inside one window are ONE failure, not a curve reset', async () => {
     const { source, calls } = makeSource();
-    const store = createEntityStore<string, { tag: string }>({ name: 'test', source });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'test', source });
 
     store.attach('k', { tag: 'a' });
     await flush();
@@ -482,7 +488,7 @@ describe('createEntityStore — retry', () => {
 
   it('an apply() cancels the pending retry and puts the curve back at the bottom', async () => {
     const { source, calls } = makeSource();
-    const store = createEntityStore<string, { tag: string }>({ name: 'test', source });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'test', source });
 
     store.attach('k', { tag: 'a' });
     await flush();
@@ -516,7 +522,7 @@ describe('createEntityStore — retry', () => {
   // armed — the key stayed errored for as long as anybody held it.
   it('an attach onto a key that failed AFTER acquiring re-sources it', async () => {
     const { source, calls, cleanups } = makeSource();
-    const store = createEntityStore<string, { tag: string }>({ name: 'test', source });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'test', source });
 
     const a = store.attach('k', { tag: 'a' });
     await flush();
@@ -549,7 +555,7 @@ describe('createEntityStore — retry', () => {
   // with, dropping the pushes that arrive in the gap.
   it('an apply through the public chokepoint cancels a retry that would re-acquire', async () => {
     const { source, calls, cleanups } = makeSource();
-    const store = createEntityStore<string, { tag: string }>({ name: 'test', source });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'test', source });
 
     store.attach('k', { tag: 'a' });
     await flush();
@@ -574,7 +580,7 @@ describe('createEntityStore — retry', () => {
   // re-attach, so nothing re-arms it.
   it('an apply keeps the retry when the source never acquired anything', async () => {
     const { source, calls } = makeSource();
-    const store = createEntityStore<string, { tag: string }>({ name: 'test', source });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'test', source });
 
     store.attach('k', { tag: 'a' });
     await flush();
@@ -604,7 +610,7 @@ describe('createEntityStore — retry', () => {
   // error and the curve alone.
   it('a preserveError apply keeps the error and the armed retry', async () => {
     const { source, calls } = makeSource();
-    const store = createEntityStore<string, { tag: string }>({ name: 'test', source });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'test', source });
 
     store.attach('k', { tag: 'a' });
     await flush();
@@ -623,7 +629,7 @@ describe('createEntityStore — retry', () => {
 
   it('does not retry a fail() from a superseded run', async () => {
     const { source, calls } = makeSource();
-    const store = createEntityStore<string, { tag: string }>({ name: 'test', source });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'test', source });
 
     const handle = store.attach('k', { tag: 'a' });
     await flush();
@@ -651,7 +657,7 @@ describe('createEntityStore — invalidate / resetAll / suspend', () => {
 
   it('invalidate re-sources a live key and cleans up the previous acquire', async () => {
     const { source, calls, cleanups } = makeSource();
-    const store = createEntityStore<string, { tag: string }>({ name: 'test', source });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'test', source });
 
     const a = store.attach('k', { tag: 'a' });
     await flush();
@@ -675,7 +681,7 @@ describe('createEntityStore — invalidate / resetAll / suspend', () => {
 
   it('invalidate during an in-flight source discards the first acquire, not the second', async () => {
     const { source, calls } = makeSource();
-    const store = createEntityStore<string, { tag: string }>({ name: 'test', source });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'test', source });
 
     const a = store.attach('k', { tag: 'a' });
     await flush();
@@ -701,7 +707,7 @@ describe('createEntityStore — invalidate / resetAll / suspend', () => {
 
   it('aborts a superseded run so its remaining work never starts', async () => {
     const { source, calls } = makeSource();
-    const store = createEntityStore<string, { tag: string }>({ name: 'test', source });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'test', source });
 
     const a = store.attach('k', { tag: 'a' });
     await flush();
@@ -723,7 +729,7 @@ describe('createEntityStore — invalidate / resetAll / suspend', () => {
 
   it('aborts the in-flight run on suspend, and the fresh one survives resetAll', async () => {
     const { source, calls } = makeSource();
-    const store = createEntityStore<string, { tag: string }>({ name: 'test', source });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'test', source });
 
     store.attach('k', { tag: 'a' });
     await flush();
@@ -742,7 +748,7 @@ describe('createEntityStore — invalidate / resetAll / suspend', () => {
   // the resource they are nominally attached to was never released.
   it('a cleanup failure on a LIVE key surfaces as the entity error', async () => {
     const { source, calls } = makeSource();
-    const store = createEntityStore<string, { tag: string }>({ name: 'test', source });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'test', source });
 
     const a = store.attach('k', { tag: 'a' });
     await flush();
@@ -767,7 +773,7 @@ describe('createEntityStore — invalidate / resetAll / suspend', () => {
 
   it('a cleanup failure on the way OUT stays console-only — no reader is left', async () => {
     const { source, calls } = makeSource();
-    const store = createEntityStore<string, { tag: string }>({ name: 'test', source });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'test', source });
 
     const a = store.attach('k', { tag: 'a' });
     await flush();
@@ -785,7 +791,7 @@ describe('createEntityStore — invalidate / resetAll / suspend', () => {
 
   it('invalidate is a no-op for a key nobody holds', async () => {
     const { source, calls } = makeSource();
-    const store = createEntityStore<string, { tag: string }>({ name: 'test', source });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'test', source });
     store.invalidate('ghost');
     await flush();
     expect(calls).toHaveLength(0);
@@ -798,7 +804,7 @@ describe('createEntityStore — invalidate / resetAll / suspend', () => {
   // correct.
   it('invalidateAll re-sources every held key while keeping their values', async () => {
     const { source, calls, cleanups } = makeSource();
-    const store = createEntityStore<string, { tag: string }>({ name: 'test', source });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'test', source });
 
     const a = store.attach('a', { tag: 'a' });
     const b = store.attach('b', { tag: 'b' });
@@ -828,7 +834,7 @@ describe('createEntityStore — invalidate / resetAll / suspend', () => {
 
   it('invalidateAll no-ops while suspended — the resetAll that lifts it re-sources', async () => {
     const { source, calls } = makeSource();
-    const store = createEntityStore<string, { tag: string }>({ name: 'test', source });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'test', source });
 
     const a = store.attach('a', { tag: 'a' });
     await flush();
@@ -850,7 +856,7 @@ describe('createEntityStore — invalidate / resetAll / suspend', () => {
 
   it('resetAll clears values and re-sources every held key', async () => {
     const { source, calls, cleanups } = makeSource();
-    const store = createEntityStore<string, { tag: string }>({ name: 'test', source });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'test', source });
 
     const a = store.attach('a', { tag: 'a' });
     const b = store.attach('b', { tag: 'b' });
@@ -873,6 +879,7 @@ describe('createEntityStore — invalidate / resetAll / suspend', () => {
   it('suspend releases resources, keeps references, and refuses to source until resetAll', async () => {
     const { source, calls, cleanups } = makeSource();
     const store = createEntityStore<string, { tag: string }>({
+      backendForKey: () => '',
       name: 'test',
       source,
     });
@@ -907,7 +914,7 @@ describe('createEntityStore — invalidate / resetAll / suspend', () => {
 
   it('suspend drops keys nobody holds', async () => {
     const { source, calls } = makeSource();
-    const store = createEntityStore<string, { tag: string }>({ name: 'test', source });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'test', source });
 
     const a = store.attach('k', { tag: 'a' });
     await flush();
@@ -934,6 +941,7 @@ describe('createEntityStore — onDrop', () => {
     const { source, calls } = makeSource();
     const dropped: string[] = [];
     const store = createEntityStore<string, { tag: string }>({
+      backendForKey: () => '',
       name: 'test',
       source,
       onDrop: (key) => dropped.push(key),
@@ -961,6 +969,7 @@ describe('createEntityStore — onDrop', () => {
     const { source, calls } = makeSource();
     const dropped: string[] = [];
     const store = createEntityStore<string, { tag: string }>({
+      backendForKey: () => '',
       name: 'test',
       source,
       onDrop: (key) => dropped.push(key),
@@ -998,7 +1007,7 @@ describe('createEntityStore — snapshot', () => {
 
   it('reads the value without subscribing the caller to the key', async () => {
     const { source, calls } = makeSource();
-    const store = createEntityStore<string, { tag: string }>({ name: 'test', source });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'test', source });
 
     const a = store.attach('k', { tag: 'a' });
     await flush();
@@ -1049,7 +1058,7 @@ describe('createEntityStore — reactivity boundary', () => {
     // flush with effect_update_depth_exceeded. Nothing about the failure
     // points at the store, so it is asserted here.
     const { source, calls } = makeSource();
-    const store = createEntityStore<string, { tag: string }>({ name: 'test', source });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'test', source });
 
     let runs = 0;
     let releases = 0;
@@ -1077,7 +1086,7 @@ describe('createEntityStore — reactivity boundary', () => {
 
   it('a peek that found nothing re-runs once the key is attached', async () => {
     const { source, calls } = makeSource();
-    const store = createEntityStore<string, { tag: string }>({ name: 'test', source });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'test', source });
 
     const seen: Array<string | null> = [];
     const cleanup = $effect.root(() => {
@@ -1124,6 +1133,7 @@ describe('createEntityStore — the rawValue replace contract', () => {
   function rawStore() {
     const { source, calls } = makeSource<{ n: number }>();
     const store = createEntityStore<{ n: number }, { tag: string }>({
+      backendForKey: () => '',
       name: 'raw', rawValue: true, source,
     });
     return { store, calls };
@@ -1192,7 +1202,7 @@ describe('createEntityStore — the rawValue replace contract', () => {
   it('does not fire for a store that did not opt into rawValue', async () => {
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { source, calls } = makeSource();
-    const store = createEntityStore<string, { tag: string }>({ name: 'proxied', source });
+    const store = createEntityStore<string, { tag: string }>({ backendForKey: () => '', name: 'proxied', source });
     const a = store.attach('k', { tag: 'a' });
     await flush();
 
@@ -1204,5 +1214,63 @@ describe('createEntityStore — the rawValue replace contract', () => {
     expect(errors).not.toHaveBeenCalled();
     a.release();
     errors.mockRestore();
+  });
+});
+
+
+describe('entity resources belong to a computer', () => {
+  it('suspends only the disconnected owner, rejects its late reply and reacquires on reconnect', async () => {
+    const { source, calls, cleanups } = makeSource();
+    const connected = { status: 'connected', nextAttemptAt: null } as const;
+    const disconnected = { status: 'disconnected', nextAttemptAt: null } as const;
+    __setBackendStatusForTest('workhorse', connected);
+    __setBackendStatusForTest('gpu', connected);
+    const store = createEntityStore<string, { tag: string }>({
+      name: 'computers', backendForKey: (key) => key, source,
+    });
+    const workhorse = store.attach('workhorse', { tag: 'a' });
+    const gpu = store.attach('gpu', { tag: 'b' });
+    calls[0].apply('workhorse state');
+    calls[0].resolve();
+    calls[1].apply('old gpu state');
+    await flush();
+    __setBackendStatusForTest('gpu', disconnected);
+    expect(calls[1].signal.aborted).toBe(true);
+    calls[1].apply('late gpu state');
+    calls[1].resolve();
+    await flush();
+    expect(gpu.current).toBeNull();
+    expect(workhorse.current).toBe('workhorse state');
+    expect(cleanups).toEqual(['gpu']);
+    store.invalidateAll();
+    await flush();
+    expect(calls.map((call) => call.key)).toEqual(['workhorse', 'gpu', 'workhorse']);
+    __setBackendStatusForTest('gpu', connected);
+    expect(calls.at(-1)?.key).toBe('gpu');
+    calls.at(-1)!.apply('new gpu state');
+    calls.at(-1)!.resolve();
+    calls[2].resolve();
+    await flush();
+    expect(gpu.current).toBe('new gpu state');
+    workhorse.release(); gpu.release();
+    __setBackendStatusForTest('gpu', disconnected);
+    __setBackendStatusForTest('workhorse', disconnected);
+  });
+
+  it('holds an initially offline owner without RPC or retries until it connects', async () => {
+    const { source, calls } = makeSource();
+    const store = createEntityStore<string, { tag: string }>({
+      name: 'offline', backendForKey: () => 'initially-offline', source,
+    });
+    const hold = store.attach('workspace', { tag: 'a' });
+    store.invalidate('workspace');
+    await flush();
+    expect(calls).toHaveLength(0);
+    __setBackendStatusForTest('initially-offline', { status: 'connected', nextAttemptAt: null });
+    expect(calls).toHaveLength(1);
+    calls[0].resolve();
+    await flush();
+    hold.release();
+    __setBackendStatusForTest('initially-offline', { status: 'disconnected', nextAttemptAt: null });
   });
 });

@@ -2,6 +2,8 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import {
   runMode,
   isClientMode,
+  isFrontendOnly,
+  initialComputer,
   __resetRunModeForTest,
 } from './runMode';
 
@@ -32,6 +34,17 @@ describe('runMode', () => {
     setPageMode('client');
     expect(runMode()).toBe('client');
     expect(isClientMode()).toBe(true);
+  });
+
+  it('identifies a frontend controller separately from a legacy relay', () => {
+    setPageMode('frontend&computer=paired-machine');
+    expect(runMode()).toBe('frontend');
+    expect(isClientMode()).toBe(true);
+    expect(isFrontendOnly()).toBe(true);
+    expect(initialComputer()).toBe('paired-machine');
+    setPageMode('client&computer=ignored');
+    expect(isFrontendOnly()).toBe(false);
+    expect(initialComputer()).toBe('');
   });
 
   it('returns "headless" for mode=headless', () => {

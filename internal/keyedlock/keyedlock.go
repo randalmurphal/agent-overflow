@@ -8,7 +8,7 @@ import (
 )
 
 // Registry hands out one lock per string key and reclaims it once
-// nothing references it. Three independent users exist: per-thread action
+// nothing references it. Users include per-thread action
 // serialization (`App.threadLocks`), per-thread session-config apply
 // serialization (`App.configApplyLocks`), and per-item workflow workspace
 // provisioning (`workflowhost.Runner.workspaceLocks`).

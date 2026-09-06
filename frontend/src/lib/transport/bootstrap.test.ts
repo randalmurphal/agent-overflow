@@ -135,6 +135,12 @@ describe('validateWsUrl', () => {
     expect(() => validateWsUrl(SAME_ORIGIN_WS)).not.toThrow();
   });
 
+  it('refuses URL credentials and fragments before opening a socket', () => {
+    for (const value of [`ws://user:secret@${window.location.host}/ws`, `${SAME_ORIGIN_WS}#fragment`]) {
+      expect(() => validateWsUrl(value)).toThrow('cannot contain credentials or a fragment');
+    }
+  });
+
   // There is no exemption left to get wrong. Every manifest the SPA can
   // receive is served by the page's own origin — including the
   // `--connect` stub's, which carries the socket to the remote backend

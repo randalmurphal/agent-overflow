@@ -391,3 +391,9 @@ this package:
 ## References
 
 - Upstream SDK: `@anthropic-ai/claude-agent-sdk`.
+
+App-owned additional instructions use a separate private temp file and
+`--append-system-prompt-file`. Never fold them into SystemPrompt: that would
+replace the provider default when no override was selected. Both files are
+removed on close and every failed spawn. Appending/removing feature guidance
+uses the existing deferred configuration restart boundary.

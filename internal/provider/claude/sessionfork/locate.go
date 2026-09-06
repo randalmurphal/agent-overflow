@@ -256,6 +256,26 @@ func WorkspaceProjectDir(projectsDir, workspacePath string) (string, error) {
 	return filepath.Join(projectsDir, slug), nil
 }
 
+// PlannedWorkspaceProjectDir also accepts a NEW workspace whose parent already
+// exists. A transfer must know the final slug while its worktree is still inert
+// under another name. Never encode a lexical /tmp or symlink-parent spelling:
+// Claude will canonicalize that parent when it resumes after publication.
+func PlannedWorkspaceProjectDir(projectsDir, workspacePath string) (string, error) {
+	if _, err := os.Lstat(workspacePath); err == nil {
+		return WorkspaceProjectDir(projectsDir, workspacePath)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	if !filepath.IsAbs(workspacePath) {
+		return "", fmt.Errorf("sessionfork: workspace must be absolute")
+	}
+	canonical, err := filepath.EvalSymlinks(filepath.Dir(filepath.Clean(workspacePath)))
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(projectsDir, claudeProjectDirName(filepath.Join(canonical, filepath.Base(workspacePath)))), nil
+}
+
 func fileExists(p string) bool {
 	st, err := os.Stat(p)
 	return err == nil && !st.IsDir() && st.Size() > 0

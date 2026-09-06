@@ -130,7 +130,7 @@ interface RunDocument {
 async function sessionEnv(harness: HarnessApp, threadId: string): Promise<Record<string, string>> {
   const env = await harness.rpc<Record<string, string>>('HarnessSessionEnv', threadId);
   if (!env.AO_ENDPOINT || !env.AO_TOKEN) {
-    throw new Error(`thread ${threadId} has no scoped credential: ${JSON.stringify(env)}`);
+    throw new Error(`thread ${threadId} has no scoped credential`);
   }
   return env;
 }

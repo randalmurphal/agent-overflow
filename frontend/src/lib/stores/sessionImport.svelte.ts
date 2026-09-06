@@ -1,3 +1,6 @@
+import { selectedBackend } from './selectedBackend.svelte';
+import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
+import { onBackendDetached, withBackendTarget } from '../transport/backends';
 // Session-import state: the catalog of provider sessions Agent Overflow
 // doesn't know about yet, the modal's filters and selection, and the folded
 // progress of an in-flight import run. Single owner — the modal, its
@@ -112,7 +115,14 @@ export interface ImportRunState {
   connectionLost: boolean;
 }
 
-const IMPORT_UNGRANTED_MESSAGE = 'Importing provider sessions is only available on the local app.';
+const IMPORT_UNGRANTED_MESSAGE = 'This device is not allowed to import sessions on this computer.';
+
+let computer = $state<BackendKey>(HOME_BACKEND);
+let generation = 0;
+export function getSessionImportBackend(): BackendKey { return computer; }
+onBackendDetached(({ backendId }) => {
+  if (computer === backendId) resetSessionImport();
+});
 
 let open = $state(false);
 let status = $state<SessionImportStatus>('idle');
@@ -240,7 +250,9 @@ export function getFailedImportIds(): string[] {
 
 // --- surface ---------------------------------------------------------------
 
-export function openSessionImport(): void {
+export function openSessionImport(backend: BackendKey = selectedBackend()): void {
+  if (starting || run?.active) { open = true; return; }
+  if (computer !== backend) { resetSessionImport(); computer = backend; }
   open = true;
 }
 
@@ -251,7 +263,7 @@ export function openSessionImport(): void {
  * reopen doesn't re-scan from scratch.
  */
 export function closeSessionImport(): void {
-  if (run?.active) return;
+  if (starting || run?.active) return;
   open = false;
   run = null;
   if (selected.size > 0) selected = new Set();
@@ -265,7 +277,7 @@ export function closeSessionImport(): void {
  * modal's load-on-open effect cheap.
  */
 export function loadImportCatalog(force = false): Promise<void> {
-  if (!hasScope('threads:operate')) {
+  if (!hasScope('threads:operate', computer)) {
     providers = [];
     rows = [];
     pruneSelectionAndFilters();
@@ -286,14 +298,18 @@ export function loadImportCatalog(force = false): Promise<void> {
 }
 
 async function runScan(force: boolean): Promise<void> {
+  const revision = generation;
+  const backend = computer;
   try {
-    const result = await ListImportableSessions({ forceRefresh: force });
+    const result = await withBackendTarget(backend, () => ListImportableSessions({ forceRefresh: force }));
+    if (revision !== generation) return;
     providers = result?.providers ?? [];
     rows = result?.rows ?? [];
     pruneSelectionAndFilters();
     catalogStale = false;
     status = 'ready';
   } catch (err) {
+    if (revision !== generation) return;
     // A failed scan leaves no rows: showing the previous catalog behind an
     // error would invite importing against a stale view of the provider home.
     providers = [];
@@ -428,7 +444,7 @@ export function setSelection(ids: Iterable<string>): void {
  */
 export async function startImport(ids: readonly string[]): Promise<void> {
   if (starting || run?.active) return;
-  if (!hasScope('threads:operate')) {
+  if (!hasScope('threads:operate', computer)) {
     catalogError = IMPORT_UNGRANTED_MESSAGE;
     return;
   }
@@ -436,9 +452,12 @@ export async function startImport(ids: readonly string[]): Promise<void> {
   if (unique.length === 0) return;
 
   starting = true;
+  const revision = generation;
+  const backend = computer;
   catalogError = '';
   try {
-    const handle = await ImportSessions({ ids: unique });
+    const handle = await withBackendTarget(backend, () => ImportSessions({ ids: unique }));
+    if (revision !== generation) return;
     run = {
       importId: handle.importId,
       // The backend owns the total (a run can expand a row into branches);
@@ -454,10 +473,11 @@ export async function startImport(ids: readonly string[]): Promise<void> {
       connectionLost: false,
     };
   } catch (err) {
+    if (revision !== generation) return;
     run = null;
     catalogError = userFacingError(err);
   } finally {
-    starting = false;
+    if (revision === generation) starting = false;
   }
 }
 
@@ -472,7 +492,7 @@ export async function stopImport(): Promise<void> {
   if (!current || !current.active || current.stopRequested) return;
   current.stopRequested = true;
   try {
-    await CancelSessionImport(current.importId);
+    await withBackendTarget(computer, () => CancelSessionImport(current.importId));
   } catch (err) {
     // The run may have finished between the click and the call; if it is
     // still going the user can ask again, so the flag has to come back off.
@@ -497,7 +517,8 @@ export async function stopImport(): Promise<void> {
  * would leave the modal stuck on the last pre-gap count while rows kept
  * landing, and would discard the very frame that finishes the run.
  */
-export function applyImportProgress(evt: SessionImportProgressEvent): void {
+export function applyImportProgress(evt: SessionImportProgressEvent, backend: BackendKey = HOME_BACKEND): void {
+  if (backend !== computer) return;
   const current = run;
   if (!current || !evt) return;
   if (evt.importId !== current.importId) return;
@@ -609,7 +630,8 @@ function completionMessage(imported: number, threads: number, skipped: number): 
  * stays open either way, because what landed is now partly unknown and
  * closing on that would look like success.
  */
-export function markImportConnectionLost(): void {
+export function markImportConnectionLost(backend: BackendKey = HOME_BACKEND): void {
+  if (backend !== computer) return;
   const current = run;
   if (!current || !current.active) return;
   current.active = false;
@@ -626,8 +648,9 @@ export function markImportConnectionLost(): void {
   refreshSidebarProjections();
 }
 
-/** Test-only fixture isolation. */
-export function resetSessionImportForTest(): void {
+function resetSessionImport(): void {
+  generation += 1;
+  computer = HOME_BACKEND;
   open = false;
   status = 'idle';
   catalogError = '';
@@ -643,3 +666,6 @@ export function resetSessionImportForTest(): void {
   starting = false;
   catalogStale = false;
 }
+
+/** Test-only fixture isolation. */
+export function resetSessionImportForTest(): void { resetSessionImport(); }

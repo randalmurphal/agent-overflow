@@ -113,6 +113,7 @@ func TestRemoveForgetsTheSessionAndKeepsTheDeviceKey(t *testing.T) {
 	if manager.Carrier("aaa") == nil {
 		t.Fatal("no carrier for a stored profile")
 	}
+	old := manager.carriers["aaa"].client
 	if err := manager.Remove("aaa"); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
@@ -121,6 +122,9 @@ func TestRemoveForgetsTheSessionAndKeepsTheDeviceKey(t *testing.T) {
 	}
 	if manager.Carrier("aaa") != nil {
 		t.Error("a removed backend still has a carrier")
+	}
+	if old.Session().Credential != "" {
+		t.Error("removed carrier still authorizes requests")
 	}
 	if _, err := deviceclient.DeviceKey(dir); err != nil {
 		t.Errorf("the device key did not survive the removal: %v", err)

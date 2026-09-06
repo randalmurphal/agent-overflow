@@ -125,3 +125,20 @@ func TestSuperviseSnapshotsTheDatabaseFilesThisPackageOpens(t *testing.T) {
 		}
 	}
 }
+
+func TestClientAdmissionFollowsTrialCommit(t *testing.T) {
+	app := &App{}
+	if err := WaitForActivation(app, context.Background()); err != nil {
+		t.Fatal("ordinary boot refused clients", err)
+	}
+	ParkUnattendedWork(app)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := WaitForActivation(app, ctx); err != context.Canceled {
+		t.Fatal("trial admitted clients", err)
+	}
+	ActivateUnattendedWork(app, ServiceUpdateOutcome{})
+	if err := WaitForActivation(app, context.Background()); err != nil {
+		t.Fatal("committed trial refused clients", err)
+	}
+}

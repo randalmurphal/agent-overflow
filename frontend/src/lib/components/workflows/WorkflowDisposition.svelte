@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { workflowItemHasScope } from '../../transport/entityScopes';
   // The disposition block on a terminal run (UI-SPEC §4.3 "done", §4.7). A
   // manual disposition renders as a receipt; an auto-merge project's receipt
   // also carries the policy that decided it and the one-line undo.
@@ -14,7 +15,6 @@
   import { openWorkflowThread } from '../../stores/workflowThreads';
   import { addToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
-  import { hasScope } from '../../transport/scopes';
 
   interface Props {
     item: WorkItem;
@@ -23,7 +23,7 @@
   let { item, disposition }: Props = $props();
 
   // Every control here drives the workflow engine, which is `threads:autonomy`.
-  let ungranted = $derived(!hasScope('threads:autonomy'));
+  let ungranted = $derived(!workflowItemHasScope('threads:autonomy', item.id));
   let base = $derived(disposition.base || item.baseBranch || 'base');
   let mode = $derived(disposition.mode === 'ff' ? 'fast-forward' : disposition.mode === 'merge' ? 'merge commit' : 'merged');
   let headline = $derived(

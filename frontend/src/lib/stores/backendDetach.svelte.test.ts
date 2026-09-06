@@ -3,7 +3,8 @@
 // point is that a single detach reaches all of them; a per-store test
 // would pass while the wiring between them was never installed.
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { deferred } from '../../test/helpers/providerAccounts';
 
 import {
   __attachBackendForTest,
@@ -19,6 +20,9 @@ import {
   threadBackend,
 } from '../transport/entityIndex';
 import { getThreads, prependThread, removeThread } from './threads.svelte';
+import { catalogRevision } from './computerCatalogRevision';
+import { setupEventListeners } from './events';
+import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
 import { addProjectLocal, getProjects, resetProjectsForTest } from './projects.svelte';
 import {
   getThreadGroups,
@@ -67,6 +71,7 @@ function fakeClient(): unknown {
     onStatusChange: () => () => undefined,
     getHello: () => null,
     onHelloChange: () => () => undefined,
+    onReplay: () => () => undefined,
     close: () => undefined,
   };
 }
@@ -134,6 +139,56 @@ beforeEach(() => {
 });
 
 describe('a backend detaching', () => {
+  it('invalidates the former computer’s catalog when ownership changes', () => {
+    attachLaptop();
+    noteThread('moved', LAPTOP, 0);
+    prependThread(makeThread('moved'));
+    const revision = catalogRevision(LAPTOP, 'threads');
+    noteThread('moved', '', 1);
+    expect(catalogRevision(LAPTOP, 'threads')).toBeGreaterThan(revision);
+  });
+
+  it('invalidates the remote catalog before forgetting a deleted thread’s owner', () => {
+    attachLaptop();
+    noteThread('deleted', LAPTOP, 0);
+    prependThread(makeThread('deleted'));
+    const revision = catalogRevision(LAPTOP, 'threads');
+    const stop = setupEventListeners();
+    try {
+      emitWailsEvent('thread:updated', { action: 'deleted', id: 'deleted' }, descriptor().backendId);
+      expect(getThreads()).toEqual([]);
+      expect(catalogRevision(LAPTOP, 'threads')).toBeGreaterThan(revision);
+      expect(threadBackend('deleted')).toBeUndefined();
+    } finally { stop(); }
+  });
+
+  it('rebinds a mounted moved thread and ignores a former owner’s delayed row', async () => {
+    attachLaptop();
+    const original = makeThread('moving', { ownershipEpoch: 0 });
+    noteThread(original.id, '', 0);
+    prependThread(original);
+    const pane = createPane('moving-pane');
+    mockThreadSwitch(original);
+    await pane.switchThread(original);
+    const first = deferred<Thread>();
+    const second = deferred<Thread>();
+    let reads = 0;
+    setBindingMock('GetThread', () => ++reads === 1 ? first.promise : second.promise);
+    const before = pane.switchGeneration;
+    noteThread(original.id, LAPTOP, 1);
+    expect(pane.switchGeneration).toBeGreaterThan(before);
+    noteThread(original.id, '', 2);
+    const returned = makeThread(original.id, { ownershipEpoch: 2, workspacePath: '/home/returned' });
+    second.resolve(returned);
+    await vi.waitFor(() => expect(pane.thread?.workspacePath).toBe('/home/returned'));
+    first.resolve(makeThread(original.id, { ownershipEpoch: 1, workspacePath: '/remote/old' }));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(pane.thread?.ownershipEpoch).toBe(2);
+    expect(pane.thread?.workspacePath).toBe('/home/returned');
+    expect(getAllPanes().get('moving-pane')).toBe(pane);
+  });
+
   it('drops its threads, projects and groups from the row stores', () => {
     attachLaptop();
     prependThread(makeThread('t-laptop'));
@@ -246,7 +301,7 @@ describe('the selected route reads the focused pane live', () => {
     expect(selectedBackend()).toBe('');
   });
 
-  it('answers home once the staged backend has detached', () => {
+  it('keeps the absent target so dispatch refuses rather than using home', () => {
     attachLaptop();
     createPane('left');
     setPaneBackend('left', LAPTOP);
@@ -254,6 +309,6 @@ describe('the selected route reads the focused pane live', () => {
     expect(selectedBackend()).toBe(LAPTOP);
 
     detachBackend(LAPTOP);
-    expect(selectedBackend()).toBe('');
+    expect(selectedBackend()).toBe(LAPTOP);
   });
 });

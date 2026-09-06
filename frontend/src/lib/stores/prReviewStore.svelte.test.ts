@@ -1,3 +1,6 @@
+import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
+import { takePinnedBackend } from '../transport/backends';
+import { composeWorkspaceKey } from '../utils/workspaceKey';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { tick } from 'svelte';
 import {
@@ -1407,4 +1410,39 @@ describe('prReviewStore — resolve overrides', () => {
     a.release();
     await flush();
   });
+});
+
+
+it('isolates one PR’s subscriptions, pushes and CI by computer even when subscription IDs collide', async () => {
+  const remote = stageBackend();
+  const issued: string[] = [];
+  const released: string[] = [];
+  setBindingMock('SubscribePRUpdates', async () => {
+    const backend = takePinnedBackend()!;
+    issued.push(backend);
+    return { id: 'same-subscription-id', prKey: KEY, detail: detailStub(), threads: [], headSHA: backend || 'home' };
+  });
+  setBindingMock('UnsubscribePRUpdates', async () => { released.push(takePinnedBackend()!); });
+  setBindingMock('GetPRCIJobs', async () => ({ status: takePinnedBackend() || 'home', stages: [] }));
+  const homeKey = composeWorkspaceKey('', KEY);
+  const remoteKey = composeWorkspaceKey('laptop', KEY);
+  const home = attachPR(homeKey, { ref: REF });
+  const laptop = attachPR(remoteKey, { ref: REF });
+  try {
+    await Promise.all([home.ready(), laptop.ready()]);
+    expect(issued).toEqual(['', 'laptop']);
+    applyPRUpdatedEvent({ prKey: KEY, headSHA: 'remote-push', detail: detailStub() }, 'laptop');
+    expect(home.snapshot?.headSHA).toBe('home');
+    expect(laptop.snapshot?.headSHA).toBe('remote-push');
+    await Promise.all([loadPRCIJobs(homeKey, REF), loadPRCIJobs(remoteKey, REF)]);
+    expect(peekPRCI(homeKey).pipeline?.status).toBe('home');
+    expect(peekPRCI(remoteKey).pipeline?.status).toBe('laptop');
+    remote.setStatus('disconnected');
+    expect(home.snapshot?.headSHA).toBe('home');
+    expect(laptop.snapshot).toBeNull();
+    expect(released).toEqual(['laptop']);
+    remote.setStatus('connected');
+    await laptop.ready();
+    expect(issued).toEqual(['', 'laptop', 'laptop']);
+  } finally { home.release(); laptop.release(); resetStagedBackends(); }
 });

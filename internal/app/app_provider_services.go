@@ -50,6 +50,12 @@ func (a *App) providerDiscoveryService() *providerdiscoveryapp.Service {
 			},
 			EmitStatus:     a.emitProviderStatus,
 			EmitRateLimits: a.emitRateLimitsSnapshot,
+			CheckClaudeTransferAccount: func(ctx context.Context, binary string) error {
+				return a.ensureProviderAccountManager().CheckClaudeTransferAccount(ctx, binary)
+			},
+			CheckCodexTransferAccount: func(ctx context.Context, binary string) error {
+				return a.ensureProviderAccountManager().CheckCodexTransferAccount(ctx, binary)
+			},
 		}, caches)
 	})
 	return a.providerDiscovery

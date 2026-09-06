@@ -1,9 +1,11 @@
+import { stageBackend, resetStagedBackends, REMOTE_BACKEND_UUID } from '../../test/helpers/backends';
+import { setCarriedSessionScopes } from '../transport/scopes';
+import { takePinnedBackend } from '../transport/backends';
 import { afterEach, describe, expect, it } from 'vitest';
 import { tick } from 'svelte';
 import {
   attachMcpServers,
   isMcpServersLoading,
-  MCP_CODEX_KEY,
   mcpRowsSourceThreadId,
   mcpServersKeys,
   mcpTargetFor,
@@ -23,6 +25,8 @@ import type { EntityAttachment } from './entityStore.svelte';
 import { applyTransportGap } from './eventsTransportGap';
 import { getToasts, removeToast } from './toast.svelte';
 
+const MCP_CODEX_KEY = ' codex';
+
 function row(over: Partial<ThreadMCPServer>): ThreadMCPServer {
   return new ThreadMCPServer({
     provider: 'claude',
@@ -41,13 +45,14 @@ async function flush(n = 6): Promise<void> {
 const held: Array<EntityAttachment<ThreadMCPServer[]>> = [];
 
 function target(provider: string, threadId: string, workspacePath: string): MCPTarget {
-  const resolved = mcpTargetFor(provider, threadId, workspacePath);
+  const resolved = mcpTargetFor(provider, threadId, workspacePath, '');
   if (!resolved) throw new Error('expected a target');
   return resolved;
 }
 
 function attach(t: MCPTarget): EntityAttachment<ThreadMCPServer[]> {
   const handle = attachMcpServers(t.key, {
+    backend: t.backend,
     provider: t.provider,
     threadId: t.threadId,
     workspacePath: t.workspacePath,
@@ -58,6 +63,7 @@ function attach(t: MCPTarget): EntityAttachment<ThreadMCPServer[]> {
 
 afterEach(() => {
   for (const handle of held.splice(0)) handle.release();
+  resetStagedBackends();
 });
 
 describe('needsEphemeralRefresh', () => {
@@ -89,30 +95,30 @@ describe('mcpTargetFor — entity keys', () => {
   it('keys Claude by WORKSPACE — membership is walked from the cwd out', () => {
     // Two worktrees of one project can legitimately carry different
     // `.mcp.json` files, so neither listing is a stale view of the other.
-    const rootThread = mcpTargetFor('claude', 't1', '/repo');
-    const worktreeThread = mcpTargetFor('claude', 't2', '/repo/.wt/a');
-    expect(rootThread?.key).toBe('claude:/repo');
-    expect(worktreeThread?.key).toBe('claude:/repo/.wt/a');
+    const rootThread = mcpTargetFor('claude', 't1', '/repo', '');
+    const worktreeThread = mcpTargetFor('claude', 't2', '/repo/.wt/a', '');
+    expect(rootThread?.key).toBe(' claude:/repo');
+    expect(worktreeThread?.key).toBe(' claude:/repo/.wt/a');
   });
 
   it('keys Codex app-globally — its enabled flag is global', () => {
-    expect(mcpTargetFor('codex', 't1', '/a')?.key).toBe(MCP_CODEX_KEY);
-    expect(mcpTargetFor('codex', 't2', '/b')?.key).toBe(MCP_CODEX_KEY);
+    expect(mcpTargetFor('codex', 't1', '/a', '')?.key).toBe(MCP_CODEX_KEY);
+    expect(mcpTargetFor('codex', 't2', '/b', '')?.key).toBe(MCP_CODEX_KEY);
   });
 
   it('has no Claude target without a workspace to walk from', () => {
-    expect(mcpTargetFor('claude', 't1', '')).toBeNull();
-    expect(mcpTargetFor('claude', 't1', '  ')).toBeNull();
+    expect(mcpTargetFor('claude', 't1', '', '')).toBeNull();
+    expect(mcpTargetFor('claude', 't1', '  ', '')).toBeNull();
   });
 
   it('has no target for a provider AO does not route MCP for', () => {
-    expect(mcpTargetFor('claude-tui', 't1', '/repo')).toBeNull();
-    expect(mcpTargetFor('', 't1', '/repo')).toBeNull();
+    expect(mcpTargetFor('claude-tui', 't1', '/repo', '')).toBeNull();
+    expect(mcpTargetFor('', 't1', '/repo', '')).toBeNull();
   });
 
   it('lists from the thread when there is one and from the workspace otherwise', () => {
-    expect(mcpTargetFor('claude', 't1', '/repo')?.threadId).toBe('t1');
-    expect(mcpTargetFor('claude', '', '/repo')?.threadId).toBe('');
+    expect(mcpTargetFor('claude', 't1', '/repo', '')?.threadId).toBe('t1');
+    expect(mcpTargetFor('claude', '', '/repo', '')?.threadId).toBe('');
   });
 });
 
@@ -124,7 +130,7 @@ describe('mcpServers store — one listing per entity', () => {
     await flush();
 
     expect(list).toHaveBeenCalledTimes(1);
-    expect(mcpServersKeys()).toEqual(['claude:/repo']);
+    expect(mcpServersKeys()).toEqual([' claude:/repo']);
     expect(first.current).toBe(second.current);
   });
 
@@ -135,7 +141,7 @@ describe('mcpServers store — one listing per entity', () => {
     await flush();
 
     expect(list).toHaveBeenCalledTimes(2);
-    expect(mcpServersKeys().sort()).toEqual(['claude:/repo', 'claude:/repo/.wt/a']);
+    expect(mcpServersKeys().sort()).toEqual([' claude:/repo', ' claude:/repo/.wt/a']);
   });
 
   it('shares ONE listing between Codex threads in different workspaces', async () => {
@@ -154,10 +160,10 @@ describe('mcpServers store — one listing per entity', () => {
     await flush();
 
     expect(holder.current?.[0]?.source).toBe('session');
-    expect(mcpRowsSourceThreadId('claude:/repo')).toBe('t1');
+    expect(mcpRowsSourceThreadId(' claude:/repo')).toBe('t1');
     // A pane on the same workspace whose own thread is t2 must not read this
     // as "my session answered".
-    expect(mcpRowsSourceThreadId('claude:/repo')).not.toBe('t2');
+    expect(mcpRowsSourceThreadId(' claude:/repo')).not.toBe('t2');
   });
 
   it('reports an empty source thread for a workspace-sourced listing', async () => {
@@ -165,7 +171,7 @@ describe('mcpServers store — one listing per entity', () => {
     attach(target('claude', '', '/repo'));
     await flush();
 
-    expect(mcpRowsSourceThreadId('claude:/repo')).toBe('');
+    expect(mcpRowsSourceThreadId(' claude:/repo')).toBe('');
   });
 
   it('lists a draft placeholder from its workspace, not from a thread', async () => {
@@ -187,10 +193,10 @@ describe('mcpServers store — one listing per entity', () => {
 
     first.release();
     expect(mcpServersKeys()).toEqual([]);
-    expect(peekMcpServers('claude:/repo')).toEqual([]);
+    expect(peekMcpServers(' claude:/repo')).toEqual([]);
     // The source-thread record leaves with the entry, or the next holder
     // would inherit a claim on a session that is no longer listed.
-    expect(mcpRowsSourceThreadId('claude:/repo')).toBe('');
+    expect(mcpRowsSourceThreadId(' claude:/repo')).toBe('');
 
     attach(target('claude', 't1', '/repo'));
     await flush();
@@ -205,11 +211,11 @@ describe('mcpServers store — one listing per entity', () => {
     );
     attach(target('claude', 't1', '/repo'));
     await flush();
-    expect(isMcpServersLoading('claude:/repo')).toBe(true);
+    expect(isMcpServersLoading(' claude:/repo')).toBe(true);
 
     settle([row({ name: 'a' })]);
     await flush();
-    expect(isMcpServersLoading('claude:/repo')).toBe(false);
+    expect(isMcpServersLoading(' claude:/repo')).toBe(false);
   });
 });
 
@@ -345,7 +351,7 @@ describe('mcpServers store — mcp:status routing', () => {
     await flush();
 
     expect(calls).toBe(2);
-    expect(peekMcpServers('claude:/repo')[0]?.status).toBe('connected');
+    expect(peekMcpServers(' claude:/repo')[0]?.status).toBe('connected');
   });
 
   it('ignores an invalidation for a server no held entity carries', async () => {
@@ -382,8 +388,8 @@ describe('mcpServers store — mcp:status routing', () => {
     await flush();
 
     expect(calls).toBe(2);
-    expect(peekMcpServers('claude:/repo')[0]?.status).toBe('connected');
-    expect(peekMcpServers('claude:/other')[0]?.status).toBe('connected');
+    expect(peekMcpServers(' claude:/repo')[0]?.status).toBe('connected');
+    expect(peekMcpServers(' claude:/other')[0]?.status).toBe('connected');
   });
 
   it('does not fold an ephemeral probe onto a session row', async () => {
@@ -520,14 +526,14 @@ describe('mcpServers store — failures', () => {
     await flush();
 
     expect(handle.error).toContain('boom');
-    expect(peekMcpServersError('claude:/repo')).toContain('boom');
+    expect(peekMcpServersError(' claude:/repo')).toContain('boom');
 
     broken = false;
-    refreshMcpServers('claude:/repo');
+    refreshMcpServers(' claude:/repo');
     await flush();
 
     expect(handle.error).toBeNull();
-    expect(peekMcpServers('claude:/repo')).toHaveLength(1);
+    expect(peekMcpServers(' claude:/repo')).toHaveLength(1);
   });
 });
 
@@ -545,7 +551,7 @@ describe('mcpServers store — transport gap', () => {
     const second = attach(target('claude', 't2', '/other'));
     await flush();
     expect(list).toHaveBeenCalledTimes(2);
-    expect(mcpServersKeys().sort()).toEqual(['claude:/other', 'claude:/repo']);
+    expect(mcpServersKeys().sort()).toEqual([' claude:/other', ' claude:/repo']);
 
     // Gate the re-list so the assertions below run while the fresh rows are
     // in flight — the window a blanking recovery would render as an empty
@@ -582,4 +588,34 @@ describe('mcpServers store — transport gap', () => {
     await flush();
     expect(list).toHaveBeenCalledTimes(1);
   });
+});
+
+
+it('keeps identically named MCP servers and their connection lifecycles on their own computers', async () => {
+  const remote = stageBackend();
+  setCarriedSessionScopes('laptop', ['settings:write']);
+  const listed: string[] = [];
+  setBindingMock('ListWorkspaceMcpServers', async () => {
+    const backend = takePinnedBackend()!;
+    listed.push(backend);
+    return [row({ provider: 'codex', status: 'connected', error: backend })];
+  });
+  const homeTarget = mcpTargetFor('codex', '', '/same/path', '')!;
+  const remoteTarget = mcpTargetFor('codex', '', '/same/path', 'laptop')!;
+  const home = attach(homeTarget);
+  const laptop = attach(remoteTarget);
+  await flush();
+  expect(listed).toEqual(['', 'laptop']);
+  emitWailsEvent('mcp:status', { provider: 'codex', name: 'srv', status: 'failed', error: 'GPU offline' }, REMOTE_BACKEND_UUID);
+  expect(laptop.current?.[0].status).toBe('failed');
+  expect(home.current?.[0].status).toBe('connected');
+  emitWailsEvent('mcp:status', { provider: 'codex', name: 'srv', status: 'unknown' }, REMOTE_BACKEND_UUID);
+  await flush();
+  expect(listed).toEqual(['', 'laptop', 'laptop']);
+  remote.setStatus('disconnected');
+  expect(laptop.current).toBeNull();
+  expect(home.current?.[0].status).toBe('connected');
+  remote.setStatus('connected');
+  await flush();
+  expect(listed).toEqual(['', 'laptop', 'laptop', 'laptop']);
 });

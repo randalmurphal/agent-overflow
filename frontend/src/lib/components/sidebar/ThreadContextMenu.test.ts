@@ -10,7 +10,7 @@ import { setPageGrantsFromBootstrap } from '../../transport/scopes';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { clearThreadSelection, setThreadSelection } from '../../stores/threadFilter.svelte';
-import { loadSettings } from '../../stores/settings.svelte';
+import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { replaceAllThreads } from '../../stores/threads.svelte';
 import {
   consumePendingGroupRename,

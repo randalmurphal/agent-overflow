@@ -282,6 +282,9 @@ func ApplyUpdate(d Deps, update Update) (ApplyResult, error) {
 	if d.Store == nil {
 		return ApplyResult{}, fmt.Errorf("sessionimport: update apply has no store")
 	}
+	if err := d.Store.CheckThreadExecutionAccess(update.thread); err != nil {
+		return ApplyResult{}, err
+	}
 	if !update.Appliable() {
 		detail := update.Detail
 		if detail == "" {

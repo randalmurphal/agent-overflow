@@ -23,17 +23,16 @@
 // the handle, and dispatches — the generated bindings above it are
 // untouched and unregenerated.
 //
-// Two rules hold the fallback honest. An unknown method id, an
-// unresolvable entity and a `selected` backend that has detached ALL
-// resolve home, because a single-backend app must behave exactly as it did
-// and a throw here would be a blank screen for a table that is merely
-// incomplete. And the fallback is announced once per method id in dev, so
-// a route that is genuinely missing is visible to whoever added the
-// method rather than silently correct on the only machine they test on.
+// Unknown entity ownership uses the sole attached computer, or refuses.
+// An explicit or selected computer never falls back: removal rejects the
+// call, including a late response, so another machine cannot inherit it.
 
 import { resolveTransport, type EventOrigin } from './handle';
 import {
   attachedBackendCount,
+  requireEntityBackend,
+  backendById,
+  backendKeyForOrigin,
   callEveryBackend,
   homeBackend,
   subscribeEveryBackend,
@@ -41,14 +40,18 @@ import {
 } from './backends';
 import { HOME_BACKEND, type BackendKey } from './backendKey';
 import {
+  captureThreadMetadataRead,
+  type ThreadMetadataRead,
   noteFamilyRowsFromCall,
   noteRowsFromCall,
   projectBackend,
-  threadBackend,
+  resolveThreadBackend,
+  currentThreadEvent,
 } from './entityIndex';
 import { METHOD_ROUTES, type MethodRoute } from './methodRoutes';
-import { familyBackend } from './methodFamilies';
+import { familyBackend, ROUTE_BY_ID_FAMILY } from './methodFamilies';
 import { selectedBackend } from '../stores/selectedBackend.svelte';
+import { isFrontendOnly } from './runMode';
 
 // CancellablePromise is the wrapper Wails-generated bindings always
 // return. The real runtime ships a complex implementation (see
@@ -184,15 +187,11 @@ function warnOnceForMethod(methodId: number, why: string): void {
  * beyond the two Map lookups the entity index costs.
  */
 function resolveRoute(methodId: number, args: unknown[]): BackendKey | null {
-  // The ID-FAMILY table first. 49 methods are keyed by an id that is
-  // neither a thread nor a project — a workflow item, an automation, a
-  // terminal, a subscription — and the generated table parks all of them
-  // on `home` because it has no vocabulary to infer them. Home is the
-  // right fallback but the wrong answer once one of them lives on a second
-  // machine, so an id the index KNOWS wins over the parked route; an id it
-  // does not know falls through and lands where it always did.
+  // Structured IDs and non-thread families override the generator's route.
+  // An entity with no known owner is unambiguous only on one computer.
   const owned = familyBackend(methodId, args);
   if (owned !== undefined) return owned;
+  if (ROUTE_BY_ID_FAMILY[methodId] !== undefined) return requireEntityBackend(undefined);
   const route: MethodRoute | undefined = METHOD_ROUTES[methodId];
   if (route === undefined) {
     warnOnceForMethod(methodId, 'has no route');
@@ -201,13 +200,13 @@ function resolveRoute(methodId: number, args: unknown[]): BackendKey | null {
   switch (route) {
     case 'thread': {
       const id = args[0];
-      const owner = typeof id === 'string' ? threadBackend(id) : undefined;
-      return owner ?? HOME_BACKEND;
+      const owner = typeof id === 'string' ? resolveThreadBackend(id) : undefined;
+      return requireEntityBackend(owner);
     }
     case 'project': {
       const id = args[0];
       const owner = typeof id === 'string' ? projectBackend(id) : undefined;
-      return owner ?? HOME_BACKEND;
+      return id === '' ? HOME_BACKEND : requireEntityBackend(owner);
     }
     case 'workspace': {
       // A WorkspaceRef: the project id inside it names the machine. The
@@ -216,7 +215,7 @@ function resolveRoute(methodId: number, args: unknown[]): BackendKey | null {
       const ref = args[0];
       const id = ref !== null && typeof ref === 'object' ? (ref as { projectId?: unknown }).projectId : undefined;
       const owner = typeof id === 'string' ? projectBackend(id) : undefined;
-      return owner ?? HOME_BACKEND;
+      return id === '' ? HOME_BACKEND : requireEntityBackend(owner);
     }
     case 'selected':
       return selectedBackend();
@@ -236,48 +235,41 @@ export const Call = {
     // Drained FIRST, before anything can await: a pinned target is armed
     // for one synchronous dispatch and must not survive into the next.
     const pinned = takePinnedBackend();
-    // The single-backend fast path, and the reason a client with one
-    // connection pays nothing for the registry: there is no route to
-    // resolve when there is only one place a call can go.
-    if (attachedBackendCount() === 1) {
-      return wrap(homeBackend().handle.callByID(methodId, args));
-    }
-    // A pinned call is still a call that can MINT an id (a git-status
-    // subscribe is pinned by its own store), and an id nobody indexed
-    // routes home on the next call about it. So the pinned path indexes
-    // its answer exactly as the routed path below does: the pin names the
-    // machine, which is the fact the index wants.
-    if (pinned !== null) {
-      return wrap(
-        resolveTransport(pinned)
-          .callByID(methodId, args)
-          .then((result) => {
-            noteFamilyRowsFromCall(methodId, result, pinned);
-            return result;
-          }),
-      );
-    }
-    const target = resolveRoute(methodId, args);
-    if (target === null) {
-      return wrap(
-        callEveryBackend(methodId, args, (result, backendId) => {
-          noteRowsFromCall(methodId, result, backendId);
-        }),
-      );
-    }
-    // Ids a routed call ANSWERS with are indexed too: a workflow item, a
-    // terminal and a subscription are only ever learned from the call that
-    // listed or minted them, and the next call about one has to know which
-    // machine that was. Only on the multi-backend path — the fast path
-    // above returns before any of this exists.
-    return wrap(
-      resolveTransport(target)
-        .callByID(methodId, args)
-        .then((result) => {
-          noteFamilyRowsFromCall(methodId, result, target);
+    let verify: ThreadMetadataRead | undefined;
+    try {
+      const target = pinned ?? resolveRoute(methodId, args);
+      // Keep the ordinary single-computer path cheap, but never bypass an
+      // explicit target just because that computer was removed meanwhile.
+      if (!isFrontendOnly() && attachedBackendCount() === 1 && backendById(HOME_BACKEND) && (target === null || target === HOME_BACKEND)) {
+        verify = captureThreadMetadataRead(methodId, HOME_BACKEND);
+        const call = homeBackend().handle.callByID(methodId, args);
+        return wrap(call.then((result) => {
+          verify?.verify(result);
+          noteRowsFromCall(methodId, result, HOME_BACKEND);
           return result;
-        }),
-    );
+        }).finally(() => verify?.release()));
+      }
+      if (target === null) {
+        return wrap(callEveryBackend(methodId, args, (result, backendId) => {
+          noteRowsFromCall(methodId, result, backendId);
+        }));
+      }
+      const entry = backendById(target);
+      const transport = resolveTransport(target);
+      verify = captureThreadMetadataRead(methodId, target);
+      return wrap(transport.callByID(methodId, args).then((result) => {
+        if (backendById(target) !== entry) throw removedDuringCall();
+        verify?.verify(result);
+        // A pinned ALL call still teaches us who owns its project/thread
+        // rows; the caller deliberately requested one computer's share.
+        if (pinned !== null) noteRowsFromCall(methodId, result, target);
+        else noteFamilyRowsFromCall(methodId, result, target);
+        return result;
+      }).finally(() => verify?.release()));
+    } catch (error) {
+      verify?.release();
+      return wrap(Promise.reject(error));
+    }
   },
   // ByName has no id to look up, so it takes the route every unclassified
   // call takes: the page's own backend. A PINNED target still wins, and
@@ -292,9 +284,19 @@ export const Call = {
   // stopgap a hand-declared wrapper uses until its method is generated.
   ByName(method: string, ...args: unknown[]): CancellablePromise<unknown> {
     const pinned = takePinnedBackend();
-    return wrap(resolveTransport(pinned ?? undefined).callByName(method, args));
+    const target = pinned ?? HOME_BACKEND;
+    const entry = backendById(target);
+    try { return wrap(resolveTransport(target).callByName(method, args).then((result) => {
+      if (backendById(target) !== entry) throw removedDuringCall();
+      return result;
+    })); }
+    catch (error) { return wrap(Promise.reject(error)); }
   },
 };
+
+function removedDuringCall(): Error {
+  return new Error('The computer was removed while waiting for its reply. Check its state before retrying.');
+}
 
 // Create.* are identity-like factories the binding generator emits.
 // The real Wails runtime uses these to build typed payload converters
@@ -368,6 +370,11 @@ export const Events = {
     handler: (ev: { name: string; data: unknown; origin?: EventOrigin }) => void,
   ): () => void {
     return subscribeEveryBackend(name, (data, transport) => {
+      // threadId is the shared routing field on thread-scoped runtime events.
+      // Row ownership events use id/thread.id and are admitted separately so a
+      // newer owner can introduce itself before its runtime events arrive.
+      const threadId = (data as { threadId?: unknown } | null)?.threadId;
+      if (typeof threadId === 'string' && !currentThreadEvent(threadId, backendKeyForOrigin(transport.origin.backendId))) return;
       handler({ name, data, origin: transport.origin });
     });
   },

@@ -13,12 +13,15 @@
 // Behaviour is unchanged vs. the inline version. The module returns the
 // reactive state via getters plus the mutation helpers the UI binds to.
 
-import { BrowseDirectory } from '../../stores/bindings';
+import { browseComputerDirectory } from '../../stores/computerProjects';
+import { selectedBackend } from '../../stores/selectedBackend.svelte';
+import type { BackendKey } from '../../transport/backendKey';
 import type { DirectoryEntry, DirectoryListing } from '../../types/models';
 
 export interface DirectoryBrowserOptions {
   /** Starting path to browse on mount. */
   initialPath: string;
+  backend?: BackendKey;
   /** Fires every time the module commits to a committed (or blank) path. */
   onSelect?: (path: string) => void;
 }
@@ -64,6 +67,7 @@ function extractErrorMessage(err: unknown): string {
 }
 
 export function createDirectoryBrowser(opts: DirectoryBrowserOptions): DirectoryBrowserHandle {
+  const backend = opts.backend ?? selectedBackend();
   let listing: DirectoryListing | null = $state(null);
   let highlight = $state(0);
   let pathText = $state(opts.initialPath);
@@ -77,13 +81,14 @@ export function createDirectoryBrowser(opts: DirectoryBrowserOptions): Directory
   async function browse(path: string, fromTyping = false): Promise<void> {
     const token = ++browseToken;
     loading = true;
+    opts.onSelect?.('');
     if (!fromTyping) {
       // Only explicit nav (drill-in, goToParent, Enter, mount) clears a
       // prior error. Typing mustn't flicker the banner between keystrokes.
       error = null;
     }
     try {
-      const result = (await BrowseDirectory(path)) as DirectoryListing;
+      const result = (await browseComputerDirectory(backend, path)) as DirectoryListing;
       if (token !== browseToken) return;
 
       if (!result.exists) {
@@ -107,10 +112,6 @@ export function createDirectoryBrowser(opts: DirectoryBrowserOptions): Directory
       opts.onSelect?.(result.path);
     } catch (err) {
       if (token !== browseToken) return;
-      if (fromTyping) {
-        await handleNonExistentBrowse(path, token, fromTyping);
-        return;
-      }
       error = extractErrorMessage(err);
       listing = null;
       noMatches = false;
@@ -150,26 +151,21 @@ export function createDirectoryBrowser(opts: DirectoryBrowserOptions): Directory
     path: string,
     token: number,
   ): Promise<DirectoryListing | null> {
-    const trimmed = path.replace(/\/+$/, '');
-    const lastSep = trimmed.lastIndexOf('/');
+    const trimmed = path.replace(/[\\/]+$/, '');
+    const lastSep = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
     if (lastSep < 0) return null;
-    const parent = trimmed.slice(0, lastSep) || '/';
+    const separator = trimmed[lastSep];
+    let parent = trimmed.slice(0, lastSep) || separator;
+    if (/^[A-Za-z]:$/.test(parent)) parent += separator;
     const prefix = trimmed.slice(lastSep + 1);
     if (!prefix) return null;
-    try {
-      const parentListing = (await BrowseDirectory(parent)) as DirectoryListing;
-      if (token !== browseToken) return null;
-      if (!parentListing.exists) return null;
-      const prefixLower = prefix.toLowerCase();
-      return {
-        ...parentListing,
-        entries: parentListing.entries.filter((e) =>
-          e.name.toLowerCase().startsWith(prefixLower),
-        ),
-      };
-    } catch {
-      return null;
-    }
+    const parentListing = (await browseComputerDirectory(backend, parent)) as DirectoryListing;
+    if (token !== browseToken || !parentListing.exists) return null;
+    const prefixLower = prefix.toLowerCase();
+    return {
+      ...parentListing,
+      entries: parentListing.entries.filter((e) => e.name.toLowerCase().startsWith(prefixLower)),
+    };
   }
 
   async function drillInto(entry: DirectoryEntry): Promise<void> {
@@ -203,6 +199,7 @@ export function createDirectoryBrowser(opts: DirectoryBrowserOptions): Directory
     },
 
     destroy(): void {
+      ++browseToken;
       if (debounceHandle) clearTimeout(debounceHandle);
     },
 
@@ -212,6 +209,8 @@ export function createDirectoryBrowser(opts: DirectoryBrowserOptions): Directory
 
     handlePathInput(value: string): void {
       pathText = value;
+      ++browseToken;
+      opts.onSelect?.('');
       if (debounceHandle) clearTimeout(debounceHandle);
       debounceHandle = setTimeout(() => {
         debounceHandle = null;

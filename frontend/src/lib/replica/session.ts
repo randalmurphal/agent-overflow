@@ -42,7 +42,11 @@
 //    commit rejects without saying whether it landed.
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
-import { noteThread } from '../transport/entityIndex';
+import { noteThread, threadBackend } from '../transport/entityIndex';
+import { attachedBackends } from '../transport/backends';
+import { rememberedIdentity, forgetRememberedIdentity } from '../transport/rememberedIdentity';
+import { currentCatalogStamp, invalidateCatalogStamp, observeCatalogStamp, resetCatalogStampsForTest } from './catalogStamp';
+import { catalogKey, makeCatalogRecord, readCatalogRecord, type CatalogKind, type CatalogRows } from './catalog';
 import {
   UNKNOWN_BACKEND_IDENTITY,
   onBackendIdentity,
@@ -96,6 +100,8 @@ interface ReplicaSession {
    *  Unique across backends, so it names a session on its own. */
   token: number;
   identity: BackendIdentity;
+  offline: boolean;
+  blocked: boolean;
   db: IDBDatabase | null;
   /**
    * This page's view of the stored accounting record. A mirror, not the
@@ -141,6 +147,8 @@ function sessionFor(backend: BackendKey): ReplicaSession {
       backend,
       token: mintToken(),
       identity: UNKNOWN_BACKEND_IDENTITY,
+      offline: false,
+      blocked: false,
       db: null,
       index: [],
       indexDirty: false,
@@ -239,6 +247,7 @@ function detachSession(held: ReplicaSession): void {
   closeSession(held);
   retoken(held);
   held.identity = UNKNOWN_BACKEND_IDENTITY;
+  held.blocked = true;
 }
 
 /**
@@ -254,6 +263,9 @@ function detachSession(held: ReplicaSession): void {
  */
 function attachedBackendIds(): Set<string> {
   const ids = new Set<string>();
+  for (const entry of attachedBackends()) {
+    if (!sessions.get(entry.id)?.blocked && entry.backendId) ids.add(entry.backendId);
+  }
   for (const held of sessions.values()) {
     if (held.identity.backendId !== '') ids.add(held.identity.backendId);
   }
@@ -282,11 +294,14 @@ function openDatabaseNames(): string[] {
 export function initReplica(
   identity: BackendIdentity,
   backend: BackendKey = HOME_BACKEND,
+  offline = false,
 ): Promise<void> {
   const session = sessionFor(backend);
   closeSession(session);
   retoken(session);
   session.identity = identity;
+  session.offline = offline;
+  session.blocked = false;
   const token = session.token;
   if (disabled || !identity.backendId || !identity.generation || !indexedDbAvailable()) {
     return Promise.resolve();
@@ -303,6 +318,9 @@ export function initReplica(
       return;
     }
     if (!metaMatches(meta, identity.generation)) {
+      // An offline hint can only read an existing matching cache. It must
+      // never erase or stamp a database on behalf of an unavailable host.
+      if (offline) { db.close(); return; }
       // Generation re-mint or a schema bump. Never migrated: the rows
       // describe a history this build cannot vouch for.
       await clearStores(db);
@@ -345,7 +363,7 @@ export function initReplica(
   })().then(
     () => {
       noteSuccess();
-      scheduleUnclaimedSweep(token);
+      if (!offline) scheduleUnclaimedSweep(token);
     },
     (err: unknown) => {
       if (session.token === token) closeSession(session);
@@ -562,7 +580,12 @@ function adoptMergedIndex(merged: ReplicaIndexEntry[], token: number): void {
  * nothing below this line takes a backend argument.
  */
 export function replicaToken(backend: BackendKey = HOME_BACKEND): number {
-  return sessionFor(backend).token;
+  const session = sessionFor(backend);
+  if (!session.blocked && !session.identity.backendId) {
+    const cached = rememberedIdentity(backend);
+    if (cached) void initReplica(cached, backend, true);
+  }
+  return session.token;
 }
 
 /**
@@ -572,7 +595,7 @@ export function replicaToken(backend: BackendKey = HOME_BACKEND): number {
  */
 export async function getReplicaWindow(
   threadId: string,
-  token: number = replicaToken(),
+  token: number = replicaToken(threadBackend(threadId) ?? HOME_BACKEND),
 ): Promise<ReplicaBody | null> {
   try {
     const db = await activeDb(token);
@@ -608,8 +631,9 @@ export async function getReplicaWindow(
 export async function putReplicaWindow(
   threadId: string,
   body: ReplicaBody,
-  token: number = replicaToken(),
+  token: number = replicaToken(threadBackend(threadId) ?? HOME_BACKEND),
 ): Promise<void> {
+  if (sessionOf(token)?.offline) return;
   try {
     const db = await activeDb(token);
     if (!db) return;
@@ -638,7 +662,7 @@ export async function putReplicaWindow(
 /** Drop one thread's window — deletion, revert, `gone`, schema drift. */
 export async function removeReplicaWindow(
   threadId: string,
-  token: number = replicaToken(),
+  token: number = replicaToken(threadBackend(threadId) ?? HOME_BACKEND),
 ): Promise<void> {
   try {
     const db = await activeDb(token);
@@ -662,6 +686,51 @@ export async function removeReplicaWindow(
     if (session !== null) session.indexDirty = true;
     noteFailure('remove', err);
   }
+}
+
+/** A failed stamp read disables caching, never a live computer read. */
+export function replicaCatalogStamp(backend: BackendKey, kind: CatalogKind): string | null {
+  if (disabled) return null;
+  try { return currentCatalogStamp(backend, kind); }
+  catch (error) { noteFailure('read catalog stamp', error); return null; }
+}
+
+/** Synchronous fence before an asynchronous metadata rewrite. */
+export function invalidateReplicaCatalog(backend: BackendKey, kind: CatalogKind): void {
+  try { invalidateCatalogStamp(backend, kind); }
+  catch (error) { noteFailure('invalidate catalog', error); disabled = true; }
+}
+
+/** Sidebar caches use exactly the same connection and cancellation token as history. */
+export async function getReplicaCatalog<K extends CatalogKind>(backend: BackendKey, kind: K): Promise<CatalogRows[K][] | null> {
+  const token = replicaToken(backend);
+  const stamp = replicaCatalogStamp(backend, kind);
+  if (!stamp) return null;
+  try {
+    const db = await activeDb(token);
+    if (!db) return null;
+    const raw = await readRecord<unknown>(db, META_STORE, catalogKey(kind));
+    const session = sessionOf(token);
+    if (!session) return null;
+    if (currentCatalogStamp(backend, kind) !== stamp) return null;
+    const rows = readCatalogRecord(raw, session.identity.generation, kind, stamp);
+    if (rows) observeCatalogStamp(backend, kind, stamp);
+    noteSuccess();
+    return rows;
+  } catch (error) { noteFailure('read catalog', error); return null; }
+}
+
+export async function putReplicaCatalog<K extends CatalogKind>(backend: BackendKey, kind: K, rows: readonly CatalogRows[K][], stamp: string | null, token = replicaToken(backend)): Promise<void> {
+  if (!stamp) return;
+  try {
+    const db = await activeDb(token);
+    const session = sessionOf(token);
+    if (!db || !session || session.offline || currentCatalogStamp(backend, kind) !== stamp) return;
+    observeCatalogStamp(backend, kind, stamp);
+    const record = makeCatalogRecord(session.identity.generation, kind, rows, stamp);
+    await writeRecord(db, META_STORE, catalogKey(kind), record);
+    noteSuccess();
+  } catch (error) { noteFailure('write catalog', error); }
 }
 
 /**
@@ -689,11 +758,15 @@ onBackendIdentity((identity, backend) => {
 function purgeForScope(scope: PurgeScope): Promise<unknown> {
   if (scope === null) return purgeReplicaDatabases(new Set());
   const survivors = new Set<string>();
+  for (const entry of attachedBackends()) {
+    if (entry.id !== scope && !sessions.get(entry.id)?.blocked && entry.backendId) survivors.add(entry.backendId);
+  }
   for (const [backend, held] of sessions) {
     if (backend === scope) continue;
     if (held.identity.backendId !== '') survivors.add(held.identity.backendId);
   }
-  const goingId = sessions.get(scope)?.identity.backendId ?? '';
+  const goingId = sessions.get(scope)?.identity.backendId || rememberedIdentity(scope)?.backendId || '';
+  sessionFor(scope).blocked = true;
   // Nothing nameable is going, and an empty survivor set would then read
   // as "drop everything". That is sign-out's instruction, not this one.
   if (goingId === '' || survivors.has(goingId)) return Promise.resolve(null);
@@ -704,15 +777,22 @@ function purgeForScope(scope: PurgeScope): Promise<unknown> {
 // contains a rejection either way) but because the step's contract is
 // `void | Promise<void>` and this one answers a value nobody reads.
 onPurgeClientState(async (scope) => {
-  await purgeForScope(scope);
+  const purge = purgeForScope(scope);
+  if (scope === null) {
+    for (const entry of attachedBackends()) forgetRememberedIdentity(entry.id);
+  } else forgetRememberedIdentity(scope);
+  await purge;
 });
 
 /** Test-only: forget every session and re-enable after a failure latch. */
 export function __resetReplicaForTest(): void {
+  resetCatalogStampsForTest();
   for (const held of sessions.values()) {
     closeSession(held);
     retoken(held);
     held.identity = UNKNOWN_BACKEND_IDENTITY;
+    held.blocked = false;
+    held.offline = false;
   }
   for (const [backend, held] of [...sessions]) {
     if (backend === HOME_BACKEND) continue;

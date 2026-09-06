@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { projectHasScope } from '../../transport/entityScopes';
   // Gate / done evidence: the changed-file list, expanding hunks in place, and
   // the hand-off to the real ReviewPane (UI-SPEC §4.3, §4.7). There is no
   // parallel diff renderer here — the file list reuses WorkflowDiff, and
@@ -15,7 +16,6 @@
   import type { WorkspaceRef } from '../../types/git';
   import { addToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
-  import { hasScope } from '../../transport/scopes';
   import { openWorkflowFullReview } from '../../stores/workflowThreads';
 
   interface Props {
@@ -33,7 +33,7 @@
 
   // Both controls read workspace content — the branch-base diff, and the
   // review companion opened over it.
-  let ungranted = $derived(!hasScope('files:read'));
+  let ungranted = $derived(!projectHasScope('files:read', workspace?.projectId));
   let patch = $state('');
   let files = $state<PatchFile[]>([]);
   let loading = $state(false);

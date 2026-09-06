@@ -1,11 +1,14 @@
 # internal/clientmode/
 
-`agent-overflow --connect` remote-client mode. The desktop binary skips
+The legacy `agent-overflow --connect ws://…?token=…` relay. The desktop binary skips
 booting a local transport and points its Wails webview at a remote-hosted
 backend, reached through this stub. What the operator typed decides which
 credential the stub carries — a `ws://…?token=` endpoint on the same
 machine, or a pairing link / paired backend across a network, resolved
-before `Serve` by `main_connect.go`.
+before `Serve` by `main_connect.go`. Paired-computer desktop boots now use
+[`internal/frontendclient`](../frontendclient/AGENTS.md): a local controller with
+independent computer connections. This package's paired carrier remains useful
+to its wire tests and callers that explicitly need a single upstream relay.
 
 ## Layout
 

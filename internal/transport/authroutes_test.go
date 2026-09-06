@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -202,13 +203,16 @@ func TestRenewalTakesTheKeyFromTheHeaderOnly(t *testing.T) {
 	auth := &stubAuth{renewGood: true, grant: TokenGrant{SessionID: "sess-1", Credential: "ao1.next"}}
 	f := newServerFixtureWith(t, func(cfg *Config) { cfg.AuthEndpoints = auth })
 
-	body := map[string]string{"refreshSecret": "secret-1", "keyThumbprint": "thumb-from-the-body"}
+	body := map[string]string{"refreshSecret": "secret-1", "nextRefreshSecret": "proposed-successor", "keyThumbprint": "thumb-from-the-body"}
 	resp := postJSON(t, f.srv.Addr(), AuthTokenPath, body,
 		map[string]string{DeviceKeyHeader: "thumb-from-the-header"})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 	req := auth.lastRenewal(t)
+	if req.NextRefreshSecret != "proposed-successor" {
+		t.Fatal("renewal lost its successor")
+	}
 	if req.RefreshSecret != "secret-1" {
 		t.Fatalf("refresh secret = %q", req.RefreshSecret)
 	}
@@ -731,4 +735,50 @@ func TestBootstrapPublishesPasskeyAvailability(t *testing.T) {
 			t.Fatal("a backend with no session core advertised passkeys")
 		}
 	})
+}
+
+type recoveryAuthEndpoints struct{ *stubAuth }
+
+func (*recoveryAuthEndpoints) SupportsRefreshRecovery() bool { return true }
+
+func TestRecoverableTokenRouteRequiresCapabilityAndSuccessor(t *testing.T) {
+	for _, capable := range []bool{false, true} {
+		t.Run(fmt.Sprint(capable), func(t *testing.T) {
+			stub := &stubAuth{renewGood: true, grant: TokenGrant{SessionID: "session", Credential: "credential"}}
+			f := newServerFixtureWith(t, func(cfg *Config) {
+				if capable {
+					cfg.AuthEndpoints = &recoveryAuthEndpoints{stub}
+				} else {
+					cfg.AuthEndpoints = stub
+				}
+			})
+			resp := postJSON(t, f.srv.Addr(), AuthTokenRecoverPath, map[string]string{"refreshSecret": "old"}, nil)
+			defer resp.Body.Close()
+			want := http.StatusNotFound
+			if capable {
+				want = http.StatusBadRequest
+			}
+			if resp.StatusCode != want {
+				t.Fatalf("status=%d want=%d", resp.StatusCode, want)
+			}
+			stub.mu.Lock()
+			called := len(stub.renewals) != 0
+			stub.mu.Unlock()
+			if called {
+				t.Fatal("invalid recovery reached identity")
+			}
+			if !capable {
+				return
+			}
+			resp2 := postJSON(t, f.srv.Addr(), AuthTokenRecoverPath, map[string]string{"refreshSecret": "old", "nextRefreshSecret": "next"}, nil)
+			defer resp2.Body.Close()
+			if resp2.StatusCode != 200 || resp2.Header.Get(RefreshRecoveryHeader) != "1" {
+				t.Fatal("recoverable route did not advertise support")
+			}
+			req := stub.lastRenewal(t)
+			if req.Path != AuthTokenRecoverPath || req.NextRefreshSecret != "next" {
+				t.Fatal("recovery path lost proof binding or successor")
+			}
+		})
+	}
 }

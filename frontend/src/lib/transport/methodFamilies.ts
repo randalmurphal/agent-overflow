@@ -1,52 +1,22 @@
-// Which ID FAMILY a method's first argument names, for the 49 bound
-// methods keyed by an id that is neither a thread nor a project AND
-// carries it as argument 0.
-//
-// The count is asserted by `methodFamilies.test.ts` rather than left as
-// prose: the table is hand-kept, so the one thing a reader cannot check by
-// eye is whether it is still complete, and a number nobody verifies drifts.
-//
-// `methodRoutes.ts` parks all of them on `home` — the generator infers
-// `thread` and `project` from a first parameter it can recognise, and it
-// cannot invent a family it has no vocabulary for. Home is the right
-// FALLBACK (it is where they have always gone, and it is the only answer
-// on a single-backend client) but it is the wrong answer once a workflow
-// item, a terminal or a subscription lives on a second machine: the call
-// would be refused, or worse, answered by the wrong machine's row of the
-// same shape.
-//
-// So route resolution consults THIS table first, resolves the id through
-// `entityIndex.ts`, and only falls through to the generated route when the
-// index has never seen it. Hand-kept on purpose: a family is a fact about
-// what an argument MEANS, which no signature scan can recover — `itemID`
-// and `automationID` are both `string`. `methodFamilies.test.ts` pins every
-// id here against the generated table, so a renamed method fails loudly
-// rather than quietly reverting to home.
-//
-// Device, passkey and backend-profile admin families are deliberately
-// absent: those are administration OF this client's own attachments and
-// belong to the page's own backend for good.
-//
-// **Known gap, stated so nobody reads its absence as coverage.** A handful
-// of `WorkflowAgent*` methods carry their item id INSIDE a struct argument
-// (`WorkflowAgentGuideRunInput.ItemID` and friends), so `args[0]` is an
-// object and the lookup below cannot see it. They stay parked on home,
-// which is right for every client that has one backend and wrong for an
-// agent run that lives on a second machine. Nothing in the SPA calls them
-// today; closing it means teaching this table to read a named field, not
-// adding a second table.
+// Routing for entity IDs the generated signature table cannot infer.
+// A method declares its family and, for an input object, the exact field.
+// Unknown ownership is refused with multiple computers; it never redirects
+// an item operation to the first paired host. Tests pin these method IDs
+// against the generated table and exercise nested input routing.
 
 import type { BackendKey } from './backendKey';
 import {
   automationBackend,
+  projectBackend,
   subscriptionBackend,
   terminalBackend,
-  threadBackend,
+  resolveThreadBackend,
   threadGroupBackend,
   workflowItemBackend,
 } from './entityIndex';
 
 export type IdFamily =
+  | 'project'
   | 'workflowItem'
   | 'workflowAutomation'
   | 'terminal'
@@ -55,12 +25,19 @@ export type IdFamily =
   // project and so to one machine; learned from ListThreadGroups and the
   // `thread-group:updated` frames.
   | 'threadGroup'
-  // A LIST of thread ids — argument 0 is `threadIDs`. Every id in it lives
-  // on one machine (a group gathers threads of one project), so the first
-  // one names the backend for all of them.
+  // A LIST of thread ids — argument 0 is `threadIDs`. Recheck every owner:
+  // a conversation can move after a sidebar selection was constructed.
   | 'threadList';
 
-export const ROUTE_BY_ID_FAMILY: Readonly<Record<number, IdFamily>> = {
+export const ROUTE_BY_ID_FAMILY: Readonly<Record<number, IdFamily | { family: IdFamily; field: string }>> = {
+  4000394635: { family: 'workflowItem', field: 'itemId' }, // WorkflowAgentAddMemory
+  4273669366: { family: 'workflowItem', field: 'itemId' }, // WorkflowAgentAmendSeeds
+  76499272: { family: 'workflowItem', field: 'itemId' }, // WorkflowAgentGuideRun
+  1146143060: { family: 'workflowItem', field: 'itemId' }, // WorkflowAgentInspectRun
+  1978122086: { family: 'workflowItem', field: 'itemId' }, // WorkflowAgentListMemory
+  3748461612: { family: 'workflowItem', field: 'itemId' }, // WorkflowAgentRunNarrative
+  2308429865: { family: 'workflowItem', field: 'itemId' }, // WorkflowAgentWatchRun
+  3011758347: { family: 'project', field: 'projectId' }, // WorkflowCreateAutomation
   // Workflow ITEM ids — argument 0 is `itemID`. An item belongs to the
   // project it was started in, and therefore to that project's machine.
   49502656: 'workflowItem', // WorkflowAgentRunStatus
@@ -121,30 +98,48 @@ export const ROUTE_BY_ID_FAMILY: Readonly<Record<number, IdFamily>> = {
   4104302889: 'threadGroup', // DeleteThreadGroup
   4218979176: 'threadGroup', // SetThreadGroupPinGroup
 
-  // A batch of thread ids; every row of one write lives on one backend, so
-  // the first id names it.
+  // A batch of thread ids; the atomic write must belong to one backend.
   2514763466: 'threadList', // SetThreadGroup
 };
 
 const RESOLVERS: Readonly<Record<IdFamily, (id: string) => BackendKey | undefined>> = {
   workflowItem: workflowItemBackend,
+  project: projectBackend,
   workflowAutomation: automationBackend,
   terminal: terminalBackend,
   subscription: subscriptionBackend,
   threadGroup: threadGroupBackend,
-  threadList: threadBackend,
+  threadList: resolveThreadBackend,
 };
 
 /**
  * The backend a family-keyed call belongs to, or `undefined` when this
  * method names no family or the index has never seen that id. The caller
- * falls through to the generated route table, which parks these on home.
+ * distinguishes those cases: unknown family IDs require a sole computer.
  */
 export function familyBackend(methodId: number, args: readonly unknown[]): BackendKey | undefined {
-  const family = ROUTE_BY_ID_FAMILY[methodId];
-  if (family === undefined) return undefined;
-  // A thread list is resolved through its first id; the rest are one id.
-  const id = family === 'threadList' && Array.isArray(args[0]) ? args[0][0] : args[0];
+  const spec = ROUTE_BY_ID_FAMILY[methodId];
+  if (spec === undefined) return undefined;
+  const family = typeof spec === 'string' ? spec : spec.family;
+  if (family === 'threadList' && Array.isArray(args[0])) {
+    let backend: BackendKey | undefined;
+    let unknown = false;
+    for (const id of args[0]) {
+      const owner = typeof id === 'string' && id !== '' ? resolveThreadBackend(id) : undefined;
+      if (owner === undefined) unknown = true;
+      else if (backend === undefined) backend = owner;
+      else if (backend !== owner) throw new Error('Select conversations on the same computer to group them.');
+    }
+    if (backend !== undefined && unknown) throw new Error('A selected conversation is no longer available. Refresh the selection before grouping it.');
+    const groupOwner = typeof args[1] === 'string' ? threadGroupBackend(args[1]) : undefined;
+    if (backend !== undefined && groupOwner !== undefined && groupOwner !== backend) {
+      throw new Error('The group and its conversations must be on the same computer.');
+    }
+    return backend;
+  }
+  const argument = args[0];
+  const id = typeof spec === 'string' ? argument
+    : argument && typeof argument === 'object' ? (argument as Record<string, unknown>)[spec.field] : undefined;
   if (typeof id !== 'string' || id === '') return undefined;
   return RESOLVERS[family](id);
 }

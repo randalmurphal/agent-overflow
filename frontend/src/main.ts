@@ -4,6 +4,10 @@ import { appTitleForEnv } from './appTitle';
 import { installBrowserHistoryGuard } from './lib/utils/browserHistoryGuard';
 import { installFrontendErrorCapture } from './lib/utils/frontendErrorCapture';
 import { installStepUpProof } from './lib/transport/stepUp';
+import { isFrontendOnly } from './lib/transport/runMode';
+import { attachedBackends, homeBackend, syncAttachedBackends } from './lib/transport/backends';
+import { initializeSelectedBackend } from './lib/stores/selectedBackend.svelte';
+import { loadSystems } from './lib/stores/systems.svelte';
 import {
   adoptPairingEndpoint,
   installNativeShell,
@@ -111,6 +115,23 @@ async function mountApp(): Promise<void> {
     await mountUnderLock(target);
     return;
   }
+  if (isFrontendOnly()) {
+    // Read the LOCAL profile catalog before mount loaders resolve the explicit
+    // --connect computer. This starts its independent dials without waiting
+    // for any computer to answer; an offline host never delays the window.
+    // Enter through the existing RPC client so concurrent startup consumers
+    // share its one bootstrap exchange and cannot spend the page ticket twice.
+    try {
+      await homeBackend().client.ready();
+      await loadSystems();
+      syncAttachedBackends();
+      initializeSelectedBackend(attachedBackends());
+    } catch (error) {
+      // Still mount the connection banner and its retry action if the local
+      // controller failed. A failed boot must never strand an empty window.
+      console.error('Frontend connection setup failed:', error);
+    }
+  }
   mount(App, { target });
 }
 
@@ -134,12 +155,23 @@ async function mountPairing(
   const { default: PairingScreen } = await import(
     './lib/components/pairing/PairingScreen.svelte'
   );
+  let backend = '';
+  if (shell && payload) {
+    try {
+      const { pairingBackendKey } = await import('./lib/transport/backendAttach');
+      backend = pairingBackendKey(payload);
+    } catch (error) {
+      payload = null;
+      parseError = error instanceof Error ? error.message : String(error);
+    }
+  }
   let screen: ReturnType<typeof mount> | null = null;
   screen = mount(PairingScreen, {
     target,
     props: {
       payload,
       parseError,
+      backend,
       onDone: () => {
         history.replaceState(null, '', location.pathname + location.search);
         void (async () => {
@@ -147,8 +179,16 @@ async function mountPairing(
           // credential existed; the app must attach under the session
           // that was just confirmed. Module cache, not a new chunk —
           // App's static graph already carries the client.
-          const { wsClient } = await import('./lib/transport/wsClient');
-          await wsClient.redialAfterPairing();
+          if (shell) {
+            prepareNativeShell();
+            const { backendById } = await import('./lib/transport/backends');
+            const { setSelectedBackend } = await import('./lib/stores/selectedBackend.svelte');
+            setSelectedBackend(backend);
+            await backendById(backend)?.client.redialAfterPairing();
+          } else {
+            const { wsClient } = await import('./lib/transport/wsClient');
+            await wsClient.redialAfterPairing();
+          }
           if (screen) await unmount(screen);
           if (shell) {
             await mountUnderLock(target);

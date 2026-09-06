@@ -11,8 +11,8 @@
 //
 // All four are `host`-scoped and `home`-routed (internal/app/app_backends.go):
 // they act on THIS machine's profile directory, never on an attached one.
-// A `--connect` window and every paired device are told so rather than
-// shown a control that cannot work, and the passive list load asks
+// A standalone frontend owns these operations locally. A legacy relay or
+// paired browser cannot administer its upstream profiles; the passive load asks
 // `hasScope('host')` before it fires (stores/AGENTS.md, the passive-load
 // rule).
 //
@@ -34,6 +34,8 @@ import { hasScope } from '../transport/scopes';
 import { detachBackend } from '../transport/backends';
 import { purgeClientState } from '../transport/clientPurge';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
+import { addToast } from './toast.svelte';
+import { errString } from '../utils/errors';
 import {
   descriptorForAttachedId,
   publishAttachedBackend,
@@ -70,6 +72,7 @@ let systems = $state.raw<readonly AttachedBackend[]>([]);
 let loaded = $state(false);
 let pending = $state.raw<readonly PendingAttachment[]>([]);
 let loadInFlight: Promise<void> | null = null;
+let revision = 0;
 
 /** Every attached machine, as the last load answered. */
 export function getSystems(): readonly AttachedBackend[] {
@@ -95,7 +98,16 @@ export function loadSystems(): Promise<void> {
   if (loadInFlight) return loadInFlight;
   loadInFlight = (async () => {
     try {
-      systems = await ListBackends();
+      // A response started before a removal/rename cannot bring its old
+      // profile back. Re-read the authoritative set when a mutation raced it.
+      for (;;) {
+        const before = revision;
+        const rows = await ListBackends();
+        if (before !== revision) continue;
+        systems = rows;
+        break;
+      }
+      for (const system of systems) publishAttachedBackend(descriptorForAttachedId(system.id, systemLabel(system)));
       loaded = true;
     } finally {
       loadInFlight = null;
@@ -110,6 +122,7 @@ export function loadSystems(): Promise<void> {
  */
 export async function addSystem(pairingLink: string): Promise<PendingAttachment> {
   const attachment = await AddBackend(pairingLink);
+  revision++;
   const row: PendingAttachment = {
     id: attachment.id,
     name: attachment.name,
@@ -136,6 +149,7 @@ export async function removeSystem(id: string): Promise<void> {
  * `purgeClientState` is a deletion of state that is by then gone.
  */
 function forgetSystem(id: string): void {
+  revision++;
   systems = systems.filter((s) => s.id !== id);
   pending = pending.filter((p) => p.id !== id);
   // Both: the manifest list forgets it so the next sync does not re-open
@@ -156,7 +170,10 @@ export async function renameSystem(id: string, nickname: string): Promise<void> 
 }
 
 function applySystemNickname(id: string, nickname: string): void {
+  revision++;
   systems = systems.map((s) => (s.id === id ? { ...s, nickname } : s));
+  const system = systems.find((s) => s.id === id);
+  if (system) publishAttachedBackend(descriptorForAttachedId(id, systemLabel(system)));
 }
 
 /**
@@ -216,8 +233,10 @@ export function applyBackendAttach(
   pending = pending.filter((p) => p.id !== evt.id);
   const name = row?.name ?? evt.id;
   if (evt.attached) {
-    publishAttachedBackend(descriptorForAttachedId(evt.id, name));
-    if (hasScope('host')) void loadSystems();
+    // Another window's result (or a delayed result after removal) is only
+    // an invitation to refresh. The current profile set decides membership.
+    if (row) publishAttachedBackend(descriptorForAttachedId(evt.id, name));
+    if (hasScope('host')) void loadSystems().catch((err) => addToast('error', errString(err)));
     return { name, error: '' };
   }
   return { name, error: evt.error || 'the pairing was not confirmed' };
@@ -225,6 +244,7 @@ export function applyBackendAttach(
 
 /** Test seam. */
 export function __resetSystemsForTest(): void {
+  revision++;
   systems = [];
   loaded = false;
   pending = [];

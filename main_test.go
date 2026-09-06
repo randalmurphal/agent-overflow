@@ -124,6 +124,9 @@ func TestParseFlagsConnectAndPrintURLFDRejected(t *testing.T) {
 }
 
 func TestShouldSyncShellEnv(t *testing.T) {
+	if shouldSyncShellEnv(cliFlags{frontend: true}) {
+		t.Fatal("frontend mode should skip shellenv sync")
+	}
 	if shouldSyncShellEnv(cliFlags{connect: "ws://host:1234?token=t"}) {
 		t.Fatal("connect mode should skip shellenv sync")
 	}

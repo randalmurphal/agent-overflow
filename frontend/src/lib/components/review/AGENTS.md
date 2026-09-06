@@ -14,6 +14,11 @@ scope persistence. A `ReviewSubject` (`stores/reviewPane.svelte.ts`)
 carries both, and `reviewSubjectForPane` is the only thing that builds
 one.
 
+Review state captures its backend and checkout for its lifetime. Its identity
+and the companion component key both use `companionSubjectKey`, so moving a
+conversation or changing its checkout disposes the previous state even when
+the conversation ID stays the same. Never key either lifetime on thread ID alone.
+
 ## Ownership
 
 - `ReviewDiffBody.svelte` is the one virtualized surface: a single

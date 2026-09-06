@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { getSettings, updateSetting } from '../../stores/settings.svelte';
+  import { settingsComputer } from './settingsComputer';
+  const { getSettings, updateSetting } = settingsComputer();
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import SettingsField from './SettingsField.svelte';
   import SettingsHeader from './SettingsHeader.svelte';

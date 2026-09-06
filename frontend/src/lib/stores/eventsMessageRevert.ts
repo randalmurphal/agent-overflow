@@ -11,7 +11,7 @@ import { threadItemCache } from './threadItemCache';
 import { removeReplicaWindow } from '../replica';
 import { compositeKey } from '../utils/compositeKey';
 import { getConnectionId } from '../transport/clientIdentity';
-import { onBackendIdentity } from '../transport/backendIdentity';
+import { onThreadHistoryInvalidated } from './threadIdentityInvalidation';
 import type { ThreadPaneIngest } from './threadPaneRoles';
 
 // The registry hands out whole ThreadPanes; this module narrows them to
@@ -78,9 +78,9 @@ const pendingResendReverts = new Map<string, string>();
 // of letting it clear a newer send that reused the reverted turn number.
 const appliedRevertRevByThread = new Map<string, number>();
 
-onBackendIdentity(() => {
-  pendingResendReverts.clear();
-  appliedRevertRevByThread.clear();
+onThreadHistoryInvalidated((owns) => {
+  for (const [key, id] of pendingResendReverts) if (owns(id)) pendingResendReverts.delete(key);
+  for (const id of appliedRevertRevByThread.keys()) if (owns(id)) appliedRevertRevByThread.delete(id);
 });
 
 function revertRevision(payload: UserMessageRevertedEvent): number | null {

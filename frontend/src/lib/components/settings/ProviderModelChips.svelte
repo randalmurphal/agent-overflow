@@ -4,7 +4,8 @@
   // capability/cost lookups keep the full catalog). The last visible
   // model can't be hidden so pickers never go empty.
 
-  import { getSettings, updateSettingsPatch } from '../../stores/settings.svelte';
+  import { settingsComputer } from './settingsComputer';
+  const { getSettings, updateSettingsPatch } = settingsComputer();
   import { addToast } from '../../stores/toast.svelte';
   import { hiddenModelSlugs, hiddenModelsSettingsKey } from '../../utils/hiddenModels';
   import { displayModelLabel } from '../../utils/modelLabels';

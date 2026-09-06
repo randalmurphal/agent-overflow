@@ -451,6 +451,9 @@ func (a *App) ensureWorkspaceChangeAllowed(action, workspace string) error {
 // output. Deliberately NOT the directory question: moving an idle thread out
 // of a checkout a sibling is working in touches only the idle thread's row.
 func (a *App) ensureThreadChangeAllowed(threadID string) error {
+	if err := a.threadApplication().CheckMutable(threadID); err != nil {
+		return err
+	}
 	reason, err := a.threadActivityBlockReason(threadID)
 	if err != nil {
 		return err

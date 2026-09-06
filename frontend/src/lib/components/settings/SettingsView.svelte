@@ -9,13 +9,15 @@
   // in the DOM) and then a frame later (layout has settled), scoped to the
   // panel so it can only ever match the page that is actually mounted.
 
-  import { tick } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import ChevronLeft from '@lucide/svelte/icons/chevron-left';
   import X from '@lucide/svelte/icons/x';
   import Icon from '../primitives/Icon.svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import {
     hideSettingsRail,
+    getSettingsComputer,
+    setSettingsComputer,
     isSettingsRailOpen,
     showSettingsRail,
   } from '../../stores/settingsOverlay.svelte';
@@ -25,11 +27,21 @@
   import {
     DEFAULT_SETTINGS_SECTION,
     settingsSectionDef,
+    settingsUsesComputer,
     type SettingsSection,
   } from './sections';
   import { revealSettingsField, type SettingsSearchHit } from './settingsSearch';
   import { SECTION_PROSE_CLASS } from './styles';
   import { Version } from '../../stores/bindings';
+  import ComputerSelect from '../primitives/ComputerSelect.svelte';
+  import ComputerSettingsPage from './ComputerSettingsPage.svelte';
+  import { selectedBackend } from '../../stores/selectedBackend.svelte';
+  import { hasMultipleBackends, attachedBackendEntry, backendDisplayName } from '../../stores/attachedBackends.svelte';
+  let computer = $state(untrack(() => getSettingsComputer() ?? selectedBackend()));
+  $effect(() => {
+    const target = getSettingsComputer();
+    if (target !== null) computer = target;
+  });
 
   let appVersion = $state('');
   $effect(() => {
@@ -51,6 +63,7 @@
   } = $props();
 
   let activeSection: SettingsSection = $state(DEFAULT_SETTINGS_SECTION);
+  let needsComputer = $derived(settingsUsesComputer(activeSection));
 
   // Compact renders Settings as stacked screens, not the desktop two-pane
   // spread: the rail is a full-width screen and picking a section drills
@@ -141,8 +154,20 @@
           {/if}
           <h3 class="text-[1.125rem] font-semibold tracking-tight text-fg">{page.label}</h3>
           <p class={SECTION_PROSE_CLASS}>{page.description}</p>
+          {#if needsComputer && hasMultipleBackends()}
+            <div class="mt-3 max-w-sm">
+              <ComputerSelect value={computer} onchange={setSettingsComputer} />
+            </div>
+          {:else if needsComputer}
+            {@const owner = attachedBackendEntry(computer)}
+            <p class="mt-2 text-xs text-fg-subtle">Computer: {owner ? backendDisplayName(owner) : 'Unavailable'}</p>
+          {:else if activeSection !== 'systems' && activeSection !== 'updates'}
+            <p class="mt-2 text-xs text-fg-subtle">Saved on this device.</p>
+          {/if}
         </header>
-        <Page />
+        {#key `${computer}:${activeSection}`}
+          <ComputerSettingsPage backend={computer} {Page} {needsComputer} hasDeviceControls={activeSection === 'performance' || activeSection === 'notifications'} />
+        {/key}
       </div>
     </div>
   </div>

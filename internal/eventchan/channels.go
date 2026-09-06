@@ -182,8 +182,12 @@ const (
 // rather than a second meaning on backend:attach: one says how a pairing
 // ceremony ended, the other says the list changed.
 const (
-	BackendAttach     Channel = "backend:attach"
-	BackendSetChanged Channel = "backend:set-changed"
+	BackendAttach         Channel = "backend:attach"
+	BackendSetChanged     Channel = "backend:set-changed"
+	AgentComputersChanged Channel = "agent-computers:changed"
+	// ThreadTransfer carries bounded public operation status; never grants,
+	// activation secrets or private installation recipes.
+	ThreadTransfer Channel = "thread:transfer"
 )
 
 // review:* — a payload-less-per-set refetch nudge for the inline review

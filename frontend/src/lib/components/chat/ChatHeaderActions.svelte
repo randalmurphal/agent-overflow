@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { threadMachine } from '../../stores/attachedBackends.svelte';
   // Right-aligned action cluster for the chat header. Split out of
   // ChatHeader.svelte (which kept it under the file-size budget and gave the
   // shared git-status subscription a single home).
@@ -206,7 +207,7 @@
   let showMore = $state(false);
   let moreTriggerEl: HTMLElement | undefined = $state(undefined);
   let gitControl: GitActionsControl | undefined = $state(undefined);
-  let onHost = $derived(hasScope('host'));
+  let onHost = $derived(hasScope('host', threadMachine(pane.threadId ?? '', pane.thread?.projectId)));
   let gitStatus = $derived(pane.gitStatus.status);
   let gitAvailable = $derived(
     hasWorkspace && (pane.gitStatus.statusError !== null || (gitStatus?.isRepo ?? false)),
@@ -233,7 +234,7 @@
   async function openProjectInEditor(): Promise<void> {
     if (!projectBadge) return;
     try {
-      await openInEditor(projectBadge.path, 0, 0, '', '');
+      await openInEditor(threadMachine(pane.threadId ?? '', pane.thread?.projectId), projectBadge.path, 0, 0, '', '');
     } catch (err) {
       addToast('error', errString(err));
     }
@@ -357,7 +358,7 @@
   </Button>
 
   {#if projectBadge}
-    <OpenInEditorControl path={projectBadge.path} name={projectBadge.name} />
+    <OpenInEditorControl backend={threadMachine(pane.threadId ?? '', pane.thread?.projectId)} path={projectBadge.path} name={projectBadge.name} />
   {/if}
 
   <GitActionsControl {pane} />

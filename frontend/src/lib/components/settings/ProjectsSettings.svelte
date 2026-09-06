@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { settingsComputer } from './settingsComputer';
+  const { backend, hasScope } = settingsComputer();
   // Per-project settings. Today that is one thing — the worktree setup recipe
   // — so the section is a project picker over a single editor rather than a
   // nested tab set.
@@ -10,12 +12,14 @@
 
   import { onMount } from 'svelte';
   import { getProjectLabelText, getProjects, isLoaded, refreshProjects } from '../../stores/projects.svelte';
-  import { hasScope } from '../../transport/scopes';
+
   import SettingsField from './SettingsField.svelte';
   import WorktreeSetupEditor from './WorktreeSetupEditor.svelte';
   import { SELECT_CLASS } from './styles';
 
-  let projects = $derived(getProjects());
+  import { HOME_BACKEND } from '../../transport/backendKey';
+  import { projectBackend } from '../../transport/entityIndex';
+  let projects = $derived(getProjects().filter((row) => (projectBackend(row.project.id) ?? HOME_BACKEND) === backend));
   let loaded = $derived(isLoaded());
   // The editable half is the worktree setup command, which runs in a PTY.
   let ungranted = $derived(!hasScope('terminal:operate'));
@@ -41,7 +45,7 @@
 <div class="settings-sections">
   {#if ungranted}
     <p class="text-[0.75rem] text-fg-muted" data-testid="settings-projects-local-only">
-      Project configuration is local only. Open Agent Overflow on the host machine to edit it.
+      This connection does not have permission to configure projects on this computer.
     </p>
   {:else if loaded && projects.length === 0}
     <p class="text-[0.75rem] text-fg-muted" data-testid="settings-projects-empty">

@@ -51,6 +51,8 @@ fix; `NetworkServiceInProcess2` rejected.
 
 ## Sidebar, threads, drafts
 
+- Multi-computer ownership and UI follow [Connected computers](specs/connected-computers.md): frontend-local preferences, selectable host configuration, portable conversations, optional peer tools, and machine names in the existing metadata row. No additional sidebar attention feed or artifact dashboard.
+
 - Message nav rail: one position claim at all times (one current tick, the
   dot only when no user message is visible, and the dot does not track the
   fisheye); ticks never compress (8px), overflow is a clipped sliding

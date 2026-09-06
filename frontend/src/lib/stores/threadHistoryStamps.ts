@@ -40,7 +40,7 @@
 // is copied into L1 snapshots (so a restored window knows its stamp's
 // grade) and it is what lets a page-less `fresh` echo confirm a painted
 // window, or refuse to.
-import { onBackendIdentity } from '../transport/backendIdentity';
+import { onThreadHistoryInvalidated } from './threadIdentityInvalidation';
 
 export interface ThreadHistoryStamp {
   epoch: number;
@@ -112,8 +112,8 @@ export function dropAllThreadHistoryStamps(): void {
 // A generation re-mint means the backend's counters no longer continue
 // the sequence these stamps were read from, so every one of them is a
 // claim about a history that no longer exists.
-onBackendIdentity(() => {
-  dropAllThreadHistoryStamps();
+onThreadHistoryInvalidated((owns) => {
+  for (const id of stamps.keys()) if (owns(id)) stamps.delete(id);
 });
 
 export function __resetThreadHistoryStampsForTest(): void {

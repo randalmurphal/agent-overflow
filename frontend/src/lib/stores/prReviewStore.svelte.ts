@@ -28,8 +28,11 @@ import {
   SubscribePRUpdates,
   UnsubscribePRUpdates,
 } from './bindings';
+import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
+import { withBackendTarget } from '../transport/backends';
+import { composeWorkspaceKey, workspaceKeyBackend, workspaceKeyPath } from '../utils/workspaceKey';
 import { createEntityStore } from './entityStore.svelte';
-import { isTransportClassError, onTransportStatusChange } from './transportStatus.svelte';
+import { isTransportClassError, onBackendStatusChange } from './transportStatus.svelte';
 import { __resetPRCIForTest, dropPRCI, hasPRCI, loadPRCIJobs } from './prReviewCI.svelte';
 import {
   __resetPRConflictsForTest,
@@ -194,8 +197,10 @@ function bufferPRUpdateFrame(wireKey: string, event: PRUpdatedEvent): void {
 
 const store = createEntityStore<PRSnapshot, PRCtx>({
   name: 'prReview',
+  backendForKey: workspaceKeyBackend,
   source: async ({ key, getCtx, apply, signal }) => {
     const ref = getCtx().ref;
+    const backend = workspaceKeyBackend(key);
     const owner: AliasOwner = Symbol(key);
     // The join window opens before the RPC leaves and closes only once this
     // run has installed its alias and folded the result in — every frame in
@@ -204,7 +209,7 @@ const store = createEntityStore<PRSnapshot, PRCtx>({
     try {
       let result;
       try {
-        result = await SubscribePRUpdates(prReferenceWire(ref));
+        result = await withBackendTarget(backend, () => SubscribePRUpdates(prReferenceWire(ref)));
       } catch (err) {
         // The waiter is a pane's PR load: it must fail with the reason
         // rather than hang until the retry curve happens to succeed. Only
@@ -215,12 +220,12 @@ const store = createEntityStore<PRSnapshot, PRCtx>({
         throw err;
       }
       const id = String(result.id);
-      const wireKey = String(result.prKey || key);
+      const wireKey = composeWorkspaceKey(backend, String(result.prKey || workspaceKeyPath(key)));
       const cleanup = async (): Promise<void> => {
         removeAlias(wireKey, key, owner);
         if (subscriptionIdByKey.get(key) === id) subscriptionIdByKey.delete(key);
         try {
-          await UnsubscribePRUpdates(id);
+          await withBackendTarget(backend, () => UnsubscribePRUpdates(id));
         } catch (err) {
           // A dead wire needs no unsubscribe: the backend releases every
           // subscription a connection held when it drops. Anything else is
@@ -241,7 +246,7 @@ const store = createEntityStore<PRSnapshot, PRCtx>({
       appliedSeqByKey.set(key, Number(result.seq ?? 0));
       // A load can finish while the window sits minimized; the fresh pump
       // must start paused like every other live one.
-      if (documentHidden()) setPumpActive(id, false);
+      if (documentHidden()) setPumpActive(backend, id, false);
       const snapshot: PRSnapshot = {
         detail: (result.detail ?? null) as PRDetail | null,
         threads: (result.threads ?? []) as ReviewThread[],
@@ -413,13 +418,16 @@ function rejectReady(key: string, err: unknown): void {
 // where the connection banner is already saying what happened. Fail them
 // with that reason; a reconnect re-sources every held key, and the reload
 // that follows parks on a fresh deferred the new source settles.
-onTransportStatusChange((status) => {
+onBackendStatusChange((backend, status) => {
   if (status.status === 'connected') return;
   // Sequences are the dead connection's, and the resubscribe that follows a
   // reconnect starts a fresh pump: a buffered frame outranking its result
   // would replay a snapshot from a world that is gone.
-  bufferedFrameByWireKey.clear();
+  for (const key of bufferedFrameByWireKey.keys()) {
+    if (workspaceKeyBackend(key) === backend) bufferedFrameByWireKey.delete(key);
+  }
   for (const key of [...readyByKey.keys()]) {
+    if (workspaceKeyBackend(key) !== backend) continue;
     rejectReady(key, new Error('Disconnected from the backend.'));
   }
 });
@@ -442,25 +450,28 @@ interface PumpVote {
 }
 const pumpVotes = new Map<string, PumpVote>();
 
-function setPumpActive(id: string, active: boolean): void {
-  let vote = pumpVotes.get(id);
+function setPumpActive(backend: BackendKey, id: string, active: boolean): void {
+  const key = composeWorkspaceKey(backend, id);
+  let vote = pumpVotes.get(key);
   if (!vote) {
     vote = { sending: false, pending: null };
-    pumpVotes.set(id, vote);
+    pumpVotes.set(key, vote);
   }
   vote.pending = active;
   if (vote.sending) return;
-  void drainPumpVotes(id, vote);
+  void drainPumpVotes(key, vote);
 }
 
-async function drainPumpVotes(id: string, vote: PumpVote): Promise<void> {
+async function drainPumpVotes(key: string, vote: PumpVote): Promise<void> {
+  const id = workspaceKeyPath(key);
+  const backend = workspaceKeyBackend(key);
   vote.sending = true;
   try {
     while (vote.pending !== null) {
       const active = vote.pending;
       vote.pending = null;
       try {
-        await SetPRUpdatesActive(id, active);
+        await withBackendTarget(backend, () => SetPRUpdatesActive(id, active));
       } catch (err) {
         // Not user-surfaced: a failed pause keeps the status quo (the pump
         // just keeps polling), and a failed resume implies a dying transport
@@ -473,7 +484,7 @@ async function drainPumpVotes(id: string, vote: PumpVote): Promise<void> {
     // Nothing arrived while the last send was in flight, so this
     // subscription owes no vote — drop the bookkeeping rather than keep an
     // entry per subscription the app ever made.
-    if (vote.pending === null && pumpVotes.get(id) === vote) pumpVotes.delete(id);
+    if (vote.pending === null && pumpVotes.get(key) === vote) pumpVotes.delete(key);
   }
 }
 
@@ -484,7 +495,7 @@ async function drainPumpVotes(id: string, vote: PumpVote): Promise<void> {
  */
 export function handlePRVisibilityChange(): void {
   const active = !documentHidden();
-  for (const id of subscriptionIdByKey.values()) setPumpActive(id, active);
+  for (const [key, id] of subscriptionIdByKey) setPumpActive(workspaceKeyBackend(key), id, active);
 }
 
 if (typeof document !== 'undefined') {
@@ -501,9 +512,9 @@ if (typeof document !== 'undefined') {
  * it; applying to a key nobody holds is a no-op, so a late frame for a
  * closed pane resurrects nothing.
  */
-export function applyPRUpdatedEvent(event: PRUpdatedEvent): void {
-  const wireKey = event.prKey;
-  if (!wireKey) return;
+export function applyPRUpdatedEvent(event: PRUpdatedEvent, backend: BackendKey = HOME_BACKEND): void {
+  if (!event.prKey) return;
+  const wireKey = composeWorkspaceKey(backend, event.prKey);
   if (joinsInFlight > 0) bufferPRUpdateFrame(wireKey, event);
   const keys = localKeysByWireKey.get(wireKey);
   if (!keys) return;
@@ -645,8 +656,8 @@ export function prReviewKeys(): string[] {
  * keys are bounded by the open review panes, and re-sourcing keeps each key's
  * last snapshot, so nothing flickers while the fresh one loads.
  */
-export function resyncPRReviewAfterGap(): void {
-  store.invalidateAll();
+export function resyncPRReviewAfterGap(backend: BackendKey = HOME_BACKEND): void {
+  for (const key of store.keys()) if (workspaceKeyBackend(key) === backend) store.invalidate(key);
 }
 
 // ---------------------------------------------------------------------------

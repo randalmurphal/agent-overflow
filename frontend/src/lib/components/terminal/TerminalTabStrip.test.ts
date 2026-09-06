@@ -43,7 +43,7 @@ afterEach(() => cleanup());
 describe('TerminalTabStrip refresh affordance', () => {
   it('renders the refresh button and invokes onRefresh on click when a terminal is open', async () => {
     const onRefresh = vi.fn();
-    const { getByTestId } = render(TerminalTabStrip, {
+    const { getByTestId } = render(TerminalTabStrip, { backend: '',
       handle: handleWithTabs('t1'),
       onOpen: noop,
       onClose: noop,
@@ -56,7 +56,7 @@ describe('TerminalTabStrip refresh affordance', () => {
   });
 
   it('hides the refresh button when there are no tabs to refresh', () => {
-    const { queryByTestId } = render(TerminalTabStrip, {
+    const { queryByTestId } = render(TerminalTabStrip, { backend: '',
       handle: handleWithTabs(),
       onOpen: noop,
       onClose: noop,
@@ -68,7 +68,7 @@ describe('TerminalTabStrip refresh affordance', () => {
   });
 
   it('hides the refresh button when the host does not wire onRefresh', () => {
-    const { queryByTestId } = render(TerminalTabStrip, {
+    const { queryByTestId } = render(TerminalTabStrip, { backend: '',
       handle: handleWithTabs('t1'),
       onOpen: noop,
       onClose: noop,
@@ -102,7 +102,7 @@ describe('TerminalTabStrip close affordances', () => {
   it('closes a tab on middle click without selecting it', () => {
     const onClose = vi.fn();
     const onSelect = vi.fn();
-    const { getByTestId } = render(TerminalTabStrip, {
+    const { getByTestId } = render(TerminalTabStrip, { backend: '',
       handle: handleWithTabs('t1', 't2'),
       onOpen: noop,
       onClose,
@@ -117,7 +117,7 @@ describe('TerminalTabStrip close affordances', () => {
 
   it('ignores auxclick from other non-primary buttons', () => {
     const onClose = vi.fn();
-    const { getByTestId } = render(TerminalTabStrip, {
+    const { getByTestId } = render(TerminalTabStrip, { backend: '',
       handle: handleWithTabs('t1'),
       onOpen: noop,
       onClose,
@@ -133,7 +133,7 @@ describe('TerminalTabStrip close affordances', () => {
 
   it('suppresses the native menu and closes only the clicked tab from Close', async () => {
     const onClose = vi.fn();
-    const { getByTestId, baseElement } = render(TerminalTabStrip, {
+    const { getByTestId, baseElement } = render(TerminalTabStrip, { backend: '',
       handle: handleWithTabs('t1', 't2', 't3'),
       onOpen: noop,
       onClose,
@@ -152,7 +152,7 @@ describe('TerminalTabStrip close affordances', () => {
 
   it('closes every other tab from Close Others', async () => {
     const onClose = vi.fn();
-    const { getByTestId, baseElement } = render(TerminalTabStrip, {
+    const { getByTestId, baseElement } = render(TerminalTabStrip, { backend: '',
       handle: handleWithTabs('t1', 't2', 't3'),
       onOpen: noop,
       onClose,
@@ -167,7 +167,7 @@ describe('TerminalTabStrip close affordances', () => {
 
   it('closes only the tabs after the target from Close to the Right', async () => {
     const onClose = vi.fn();
-    const { getByTestId, baseElement } = render(TerminalTabStrip, {
+    const { getByTestId, baseElement } = render(TerminalTabStrip, { backend: '',
       handle: handleWithTabs('t1', 't2', 't3'),
       onOpen: noop,
       onClose,
@@ -182,7 +182,7 @@ describe('TerminalTabStrip close affordances', () => {
 
   it('closes all tabs from Close All, whichever tab was right-clicked', async () => {
     const onClose = vi.fn();
-    const { getByTestId, baseElement } = render(TerminalTabStrip, {
+    const { getByTestId, baseElement } = render(TerminalTabStrip, { backend: '',
       handle: handleWithTabs('t1', 't2', 't3'),
       onOpen: noop,
       onClose,
@@ -196,7 +196,7 @@ describe('TerminalTabStrip close affordances', () => {
   });
 
   it('disables the rows that would close nothing', async () => {
-    const { getByTestId, baseElement } = render(TerminalTabStrip, {
+    const { getByTestId, baseElement } = render(TerminalTabStrip, { backend: '',
       handle: handleWithTabs('t1'),
       onOpen: noop,
       onClose: noop,
@@ -213,7 +213,7 @@ describe('TerminalTabStrip close affordances', () => {
 
   it('drops the menu when its tab disappears from under it', async () => {
     const handle = handleWithTabs('t1', 't2');
-    const { getByTestId, baseElement } = render(TerminalTabStrip, {
+    const { getByTestId, baseElement } = render(TerminalTabStrip, { backend: '',
       handle,
       onOpen: noop,
       onClose: noop,
@@ -230,7 +230,7 @@ describe('TerminalTabStrip close affordances', () => {
   });
 
   it('dismisses the menu on Escape', async () => {
-    const { getByTestId, baseElement } = render(TerminalTabStrip, {
+    const { getByTestId, baseElement } = render(TerminalTabStrip, { backend: '',
       handle: handleWithTabs('t1'),
       onOpen: noop,
       onClose: noop,

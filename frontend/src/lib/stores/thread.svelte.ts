@@ -39,6 +39,7 @@ import type {
 } from '../types/events';
 import type { ChannelMessage, ChannelStatePayload } from '../types/discussion';
 import { getThreadById } from './threads.svelte';
+import { GetThread } from './bindings';
 import { refreshWatchedThreads } from './watchedThreads';
 import { leaseDuringSettle } from '../utils/scrollLeaseDuringTransition';
 import { createGitStatusView, type GitStatusView } from './gitStatusStore.svelte';
@@ -1032,6 +1033,31 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      */
     refreshFromBackend(): Promise<void> {
       return switchLoad.refreshFromBackend();
+    },
+
+    /** Rebind a mounted conversation without discarding its local composer. */
+    async refreshOwnership(): Promise<void> {
+      const id = thread?.id;
+      if (!id) return;
+      // Invalidate old RPC completions synchronously at the ownership edge,
+      // before an awaited catalog can finish publishing its new row.
+      const generation = ++switchGeneration;
+      switchLoad.resetPipeline();
+      pendingInteractiveState.clear();
+      updateEffectiveModel('');
+      effectiveModelBackendRevision = 0;
+      updateProviderSessionAccount(null);
+      try {
+        const next = await GetThread(id) as Thread;
+        if (switchGeneration !== generation || thread?.id !== id) return;
+        assignThread(next);
+        contextWindow = seedContextWindow(next);
+        await switchLoad.refreshFromBackend();
+      } catch (err) {
+        if (switchGeneration === generation && thread?.id === id) {
+          paneErrors.set(`Could not load this conversation from its new computer: ${String(err)}`);
+        }
+      }
     },
 
     retryHistoryLoad(): Promise<void> {

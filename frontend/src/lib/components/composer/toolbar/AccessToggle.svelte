@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { threadMachine } from '../../../stores/attachedBackends.svelte';
   // Runtime/access mode selector. Placeholder changes update new-thread
   // defaults; materialized threads persist the selected runtime mode directly.
 
@@ -37,6 +38,7 @@
   }
 
   let { pane }: Props = $props();
+  let backend = $derived(threadMachine(pane.threadId ?? '', pane.thread?.projectId));
 
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
   let open = $state(false);
@@ -110,7 +112,7 @@
   // like supported: mis-disabling a working mode is the worse failure.
   let autoModeUnsupported = $derived.by(() => {
     if (!activeProvider || !activeModel) return false;
-    const info = getProviderModels(activeProvider).find(
+    const info = getProviderModels(activeProvider, backend).find(
       (candidate) => candidate.slug === activeModel,
     );
     return info?.supportsAutoMode === false;
@@ -132,7 +134,7 @@
   function warmModelCapabilities(): void {
     const provider = activeProvider;
     if (!provider || !activeModel) return;
-    ensureProviderModels(provider).catch((err: unknown) => {
+    ensureProviderModels(provider, backend).catch((err: unknown) => {
       console.error('GetModelsForProvider failed:', err);
     });
   }

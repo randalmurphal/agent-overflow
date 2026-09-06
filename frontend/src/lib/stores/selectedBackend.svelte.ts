@@ -18,7 +18,8 @@
 //     thread's calls must not follow it.
 //  2. Otherwise the draft's chosen backend — a placeholder pane staging a
 //     thread on another machine, else the app-wide choice.
-//  3. Otherwise home.
+//  3. Otherwise this frontend's remembered choice, initially home or the first
+//     saved computer on a frontend without a local execution host.
 //
 // The writers are the composer's workspace strip pickers:
 // `MachinePicker.svelte` (which machine) and `ProjectPicker.svelte` (a
@@ -26,17 +27,26 @@
 // the PANE's choice; the machine picker also moves the app-wide one. On a
 // single-backend page nothing writes here and the answer is always home.
 //
-// The primitive is the single current choice plus the per-pane override a
-// draft placeholder carries, because those are what routing needs. A
-// per-project memory ("sticky last-used per project", §10) only has
-// something to remember once a project spans machines, which is wave 7d's
-// merged entry; it belongs with the picker when that lands.
+// Per-repository choices belong to projectTargets.ts. This leaf remembers the
+// general selection; a focused conversation's actual owner always wins.
 //
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
-import { backendById } from '../transport/backends';
 import { threadBackend } from '../transport/entityIndex';
+import { initialComputer } from '../transport/runMode';
+import { readFrontendValue, writeFrontendValue } from './frontendStorage';
 
-let selected = $state<BackendKey>(HOME_BACKEND);
+const STORAGE_KEY = 'selected-computer';
+const remembered = readFrontendValue(STORAGE_KEY);
+const initial = initialComputer() || (typeof remembered === 'string' && remembered.length <= 128 ? remembered : HOME_BACKEND);
+let selected = $state<BackendKey>(initial);
+
+/** Boot only: a frontend without a local computer starts on its first saved one.
+ * Explicit launch and remembered choices survive outages and removal. */
+export function initializeSelectedBackend(computers: readonly { id: BackendKey }[]): void {
+  if (selected === HOME_BACKEND && !computers.some((computer) => computer.id === HOME_BACKEND)) {
+    selected = computers[0]?.id ?? HOME_BACKEND;
+  }
+}
 // The focused thread pane's thread id, supplied by stores/panes.svelte.
 // A function rather than an import, because `panes → thread →
 // gitStatusStore → transport` already exists and importing panes from a
@@ -75,25 +85,21 @@ export function selectedBackend(): BackendKey {
   const threadId = focusedThreadId?.() ?? null;
   if (threadId !== null && threadId !== '') {
     const owner = threadBackend(threadId);
-    if (owner !== undefined) return live(owner);
+    if (owner !== undefined) return owner;
   }
   const paneId = activePaneId?.() ?? null;
   const override = paneId === null ? undefined : byPane.get(paneId);
-  return live(override ?? selected);
+  return override ?? selected;
 }
 
-// A backend that has since detached answers HOME rather than a dead
-// handle: an unreachable target must fail visibly at the picker (spec §10,
-// "never silent failover"), and a route resolution is not where that
-// decision gets made.
-function live(choice: BackendKey): BackendKey {
-  if (choice === HOME_BACKEND) return HOME_BACKEND;
-  return backendById(choice) === undefined ? HOME_BACKEND : choice;
-}
+// A remembered but removed computer stays the routing target until the user
+// chooses another. Dispatch rejects an absent target; falling back to HOME
+// could execute a perfectly valid command against the wrong filesystem.
 
 /** Set the app-wide choice. The picker's write. */
 export function setSelectedBackend(backendId: BackendKey): void {
   selected = backendId;
+  writeFrontendValue(STORAGE_KEY, backendId);
 }
 
 /** Stage a pane's own choice — a draft placeholder's machine. */

@@ -101,6 +101,15 @@ func SyncDir(dir string) error {
 	return nil
 }
 
+// SyncRootDir is SyncDir through an already confined root. The caller keeps
+// the root open; no absolute pathname is reopened outside its boundary.
+func SyncRootDir(root *os.Root, dir string) error {
+	if root == nil || dir == "" {
+		return errors.New("atomicfile: missing confined directory")
+	}
+	return syncRootDir(root, dir)
+}
+
 // ReadJSON reads path and unmarshals it into v. found is false (with a nil
 // error) when the file does not exist — the common "no state saved yet" case —
 // so callers can distinguish "absent" from "corrupt" cleanly.

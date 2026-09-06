@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import DiscussionStartFlow from './DiscussionStartFlow.svelte';
-import { loadSettings } from '../../stores/settings.svelte';
+import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import type { Thread } from '../../types/models';
 import type { DiscussionDefinition } from '../../types/discussion';
 import { setBindingMock } from '../../../test/mocks/bindings-app';

@@ -19,6 +19,7 @@ var (
 	credentials = map[Credential]bool{
 		CredPageSession:      true,
 		CredBearerToken:      true,
+		CredTransferGrant:    true,
 		CredCapabilityHeader: true,
 		CredUnguessablePath:  true,
 		CredPeerLocality:     true,

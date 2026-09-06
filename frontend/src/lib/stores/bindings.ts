@@ -11,12 +11,24 @@
 // singleton, so a second attached backend is a change to that resolution
 // and not to this file (docs/specs/remote-access.md §10).
 export {
+	ListAgentComputers,
+	SetAgentComputerEnabled,
+	PairAgentComputer,
   // Thread management
   ArchiveThread,
   UnarchiveThread,
   DeleteThread,
   ForkThread,
   ForkThreadFromMessage,
+  BeginThreadTransfer,
+  GetThreadTransferDestinationProject,
+  BindThreadTransferDestination,
+  CreateThreadTransferOffer,
+  GetThreadTransfers,
+  GetThreadTransferIntent,
+  RetryThreadTransfer,
+  CancelThreadTransfer,
+  DiscardUnpreparedThreadTransfer,
   RevertConversationAndResendMessage,
   GetThread,
   ListArchivedThreads,
@@ -245,6 +257,12 @@ export {
   AddBackend,
   RemoveBackend,
   RenameBackend,
+  RepairBackendAddress,
+  StartSSHConnection,
+  GetSSHConnection,
+  ConfirmSSHConnection,
+  CancelSSHConnection,
+  StartSSHComputer,
 
   // Provider detection
   GetProviderStatuses,
@@ -493,6 +511,7 @@ export {
   GetServiceUpdateStatus,
   ListServiceReleases,
   RequestServiceUpdate,
+  CancelServiceUpdate,
 
   // Workflows
   WorkflowAnswerQuestion,

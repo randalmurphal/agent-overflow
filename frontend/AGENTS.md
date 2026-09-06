@@ -67,8 +67,9 @@ help distinguish synthetic or delayed dispatch from a platform gesture failure.
 State is keyed by its ENTITY, never by its consumer. Before adding
 `$state`, name the entity the value describes:
 
-- **app**: settings, provider accounts, chat-bar favorites, Codex MCP
-  rows (that backend flag is global).
+- **frontend**: appearance and interaction preferences.
+- **computer**: backend settings, provider accounts, and Codex MCP rows
+  (that provider flag is global on one computer).
 - **project**: new-thread defaults.
 - **workspace**, meaning the worktree cwd: git status, branch, dirty bit,
   the open-PR reference, the Claude MCP listing (walked from the cwd out,
@@ -86,7 +87,8 @@ State is keyed by its ENTITY, never by its consumer. Before adding
   that builds one: never assemble the object literal at a call site. A
   null `pane.workspace` (a terminal-only thread names no project) means
   the control DOES NOT RENDER — never renders and swallows the click.
-- **PR**: detail, review threads, live head SHA, CI pipeline, conflicts.
+- **PR on a computer**: detail, review threads, live head SHA, CI pipeline,
+  conflicts. Forge credentials and subscription IDs belong to that computer.
 - **thread**: items, streaming, approvals.
 - **pane**: view concerns only, including the head a loaded diff was
   computed AT. Staleness derives from that against the store's live head,
@@ -379,7 +381,9 @@ CLIENT MACHINE, so a write-blocked session keeps its own locally (§9.6).
   the guarded value went null but before the branch tears down, and
   TypeScript's narrowing hides it. Guard:
   `nullableGuardTotality.test.ts`, a SOURCE rule because no component
-  test can stage the class.
+  test can stage the class. Its dependency scan reads expression syntax:
+  quoted status text such as "Themes copied." is not a `copied` dereference,
+  while template interpolations still carry their actual reactive reads.
 - Conditional feature surfaces mount lazily and never take a static
   import from eager code: `{#await import(...)}` at replace-surface
   branches, `primitives/LazyOverlay.svelte` for modals and drawers with

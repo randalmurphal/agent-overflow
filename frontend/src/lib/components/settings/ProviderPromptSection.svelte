@@ -12,7 +12,8 @@
   // drop what was just typed), and every other control commits immediately.
 
   import { tick } from 'svelte';
-  import { getSettings, updateSettingsPatch } from '../../stores/settings.svelte';
+  import { settingsComputer } from './settingsComputer';
+  const { getSettings, updateSettingsPatch, backend } = settingsComputer();
   import {
     ensureProviderModels,
     getProviderModels,
@@ -56,7 +57,7 @@
       shadowed: shadowedModels(entries, index),
     })),
   );
-  let models = $derived(getProviderModels(provider.id));
+  let models = $derived(getProviderModels(provider.id, backend));
   let catalogError = $state<string | null>(null);
 
   // The catalog is a cached store read; ensure() is a no-op once loaded, so
@@ -66,7 +67,7 @@
   $effect(() => {
     const id = provider.id;
     let cancelled = false;
-    ensureProviderModels(id)
+    ensureProviderModels(id, backend)
       .then(() => {
         if (!cancelled) catalogError = null;
       })

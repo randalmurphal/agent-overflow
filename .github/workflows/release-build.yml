@@ -142,7 +142,7 @@ jobs:
         run: |
           VERSION="$VERSION" wails3 task darwin:package
           mkdir -p "dist/release/$VERSION"
-          ( cd bin && zip -qr "../dist/release/$VERSION/agent-overflow-darwin-arm64.zip" "agent-overflow.app" )
+          ( cd bin && zip -qry "../dist/release/$VERSION/agent-overflow-darwin-arm64.zip" "agent-overflow.app" )
 
       - name: Upload raw macOS artifact
         uses: actions/upload-artifact@v7

@@ -209,7 +209,7 @@ describe('empty and error states', () => {
     const { getByTestId } = render(SessionImportModal);
     await settle();
 
-    expect(getByTestId('session-import-error').textContent).toContain('only available on the local app');
+    expect(getByTestId('session-import-error').textContent).toContain('not allowed to import sessions on this computer');
     expect(getByTestId('session-import-confirm')).toBeDisabled();
   });
 });

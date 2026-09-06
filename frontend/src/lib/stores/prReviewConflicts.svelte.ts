@@ -1,3 +1,5 @@
+import { withBackendTarget } from '../transport/backends';
+import { workspaceKeyBackend } from '../utils/workspaceKey';
 // Merge-conflict state, keyed by PR.
 //
 // The merged tree and every conflicted file's content belong to the pull
@@ -178,12 +180,12 @@ async function loadPRConflicts(
   entry.contentByPath.clear();
   entry.inFlight.clear();
   try {
-    const result = await GetPRMergeConflicts(
+    const result = await withBackendTarget(workspaceKeyBackend(key), () => GetPRMergeConflicts(
       workspace,
       prReferenceWire(ref),
       detail.baseRefName,
       detail.headRefName,
-    );
+    ));
     if (seq !== entry.seq) return;
     entry.state = {
       treeOID: String(result.treeOID ?? ''),
@@ -231,7 +233,7 @@ export async function ensurePRConflictFile(key: string, path: string): Promise<v
   const workspace = entry.workspace;
   const load = (async () => {
     try {
-      const content = await GetMergeConflictFile(workspace, treeOID, path);
+      const content = await withBackendTarget(workspaceKeyBackend(key), () => GetMergeConflictFile(workspace, treeOID, path));
       if (seq !== entry.seq) return;
       entry.contentByPath.set(path, String(content ?? ''));
       // Only THIS path's failure is resolved. The reads run in parallel, so

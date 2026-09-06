@@ -15,7 +15,8 @@ import {
   setBindingMock,
 } from '../../../test/mocks/bindings-app';
 import { buildPane, makeItem } from '../../../test/helpers/chat';
-import { loadSettings, resetSettingsForTest } from '../../stores/settings.svelte';
+import { resetSettingsForTest } from '../../stores/settings.svelte';
+import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { makeSettings } from '../../../test/helpers/settings';
 import type { ToolResultMeta } from '../../types/models';
 import {

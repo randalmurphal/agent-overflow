@@ -2,7 +2,10 @@
   // Settings → Performance: how much work rendering a turn is allowed to do,
   // and whether keep-awake also holds the display on.
 
-  import { getSettings, updateSetting } from '../../stores/settings.svelte';
+  import { settingsComputer } from './settingsComputer';
+  const { backend, getSettings, updateSetting } = settingsComputer();
+  import { hasComputerSettings } from '../../stores/settings.svelte';
+  import { backendReachable } from '../../stores/attachedBackends.svelte';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import SettingsField from './SettingsField.svelte';
 
@@ -43,6 +46,7 @@
       >
         <ToggleSwitch
           checked={settings.keepAwakeScreen}
+          disabled={!hasComputerSettings(backend) || !backendReachable(backend)}
           ariaLabel="Toggle Keep-Awake Screen"
           onToggle={(value) => updateSetting('keepAwakeScreen', value)}
         />

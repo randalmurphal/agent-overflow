@@ -31,6 +31,9 @@ type ProbeRequest struct {
 	Unauthenticated func(provider.AccountInfo) bool
 	EmitUnauth      func()
 	AfterAdopt      func(provideraccounts.Account)
+	// Validate runs on a fresh identity/credential pair under the reconcile
+	// lock. Admission checks must never be satisfied by a display cache hit.
+	Validate func(provider.AccountInfo, *provideraccounts.CredentialSnapshot) error
 }
 
 // runAccountProbe is the shared cache-aware probe orchestrator behind
@@ -41,9 +44,16 @@ type ProbeRequest struct {
 // for providers (Claude) where an empty AccountInfo is an unambiguous
 // "not logged in" signal.
 func (m *Manager) RunAccountProbe(r ProbeRequest) (provider.AccountInfo, error) {
-	if cached, hit := r.Cache.Get(r.Key); hit {
-		m.emitUnauthenticatedIfNoLogin(r, cached)
-		return cached, nil
+	endWork, err := m.beginWork(m.context())
+	if err != nil {
+		return provider.AccountInfo{}, err
+	}
+	defer endWork()
+	if r.Validate == nil && r.Cache != nil {
+		if cached, hit := r.Cache.Get(r.Key); hit {
+			m.emitUnauthenticatedIfNoLogin(r, cached)
+			return cached, nil
+		}
 	}
 
 	reconcileMu := m.reconcileMutex(r.ProviderName)
@@ -53,6 +63,12 @@ func (m *Manager) RunAccountProbe(r ProbeRequest) (provider.AccountInfo, error) 
 		reconcileMu.Unlock()
 		return provider.AccountInfo{}, err
 	}
+	if r.Validate != nil {
+		if err := r.Validate(info, credential); err != nil {
+			reconcileMu.Unlock()
+			return provider.AccountInfo{}, err
+		}
+	}
 
 	m.emitUnauthenticatedIfNoLogin(r, info)
 	account, _, err := m.adoptCurrentProviderAccount(r.ProviderName, info, credential)
@@ -61,7 +77,9 @@ func (m *Manager) RunAccountProbe(r ProbeRequest) (provider.AccountInfo, error) 
 		return provider.AccountInfo{}, err
 	}
 	reconcileMu.Unlock()
-	r.Cache.Set(r.Key, info)
+	if r.Cache != nil {
+		r.Cache.Set(r.Key, info)
+	}
 	m.emitProviderAccountIfCurrent(r.ProviderName, account, info)
 	if r.AfterAdopt != nil {
 		r.AfterAdopt(account)

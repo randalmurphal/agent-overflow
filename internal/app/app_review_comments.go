@@ -70,6 +70,11 @@ func (a *App) ListProposedPlanComments(threadID, planItemID string) ([]store.Pro
 
 //ao:scope threads:operate
 func (a *App) CreateProposedPlanComment(threadID string, input store.ProposedPlanCommentInput) (store.ProposedPlanComment, error) {
+	unlock, err := a.threadApplication().LockMutable(context.Background(), threadID)
+	if err != nil {
+		return store.ProposedPlanComment{}, err
+	}
+	defer unlock()
 	item, err := a.validateProposedPlanItem(threadID, input.PlanItemID)
 	if err != nil {
 		return store.ProposedPlanComment{}, err
@@ -105,6 +110,11 @@ func (a *App) CreateProposedPlanComment(threadID string, input store.ProposedPla
 
 //ao:scope threads:operate
 func (a *App) UpdateProposedPlanComment(threadID, commentID string, input store.ProposedPlanCommentUpdate) (store.ProposedPlanComment, error) {
+	unlock, err := a.threadApplication().LockMutable(context.Background(), threadID)
+	if err != nil {
+		return store.ProposedPlanComment{}, err
+	}
+	defer unlock()
 	updated, err := a.store.UpdateProposedPlanComment(threadID, commentID, input, time.Now().UnixMilli())
 	if err != nil {
 		return store.ProposedPlanComment{}, fmt.Errorf("update proposed plan comment: %w", err)
@@ -118,6 +128,11 @@ func (a *App) UpdateProposedPlanComment(threadID, commentID string, input store.
 
 //ao:scope threads:operate
 func (a *App) DeleteProposedPlanComment(threadID, commentID string) error {
+	unlock, err := a.threadApplication().LockMutable(context.Background(), threadID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	comment, err := a.store.GetProposedPlanComment(threadID, commentID)
 	if err != nil {
 		return fmt.Errorf("delete proposed plan comment: %w", err)
@@ -241,6 +256,11 @@ func (a *App) ListDiffReviewComments(threadID, scope, sourceKey string) ([]store
 
 //ao:scope threads:operate
 func (a *App) CreateDiffReviewComment(threadID string, input store.DiffReviewCommentInput) (store.DiffReviewComment, error) {
+	unlock, err := a.threadApplication().LockMutable(context.Background(), threadID)
+	if err != nil {
+		return store.DiffReviewComment{}, err
+	}
+	defer unlock()
 	now := time.Now().UnixMilli()
 	comment := store.DiffReviewComment{
 		ID:           uuid.NewString(),
@@ -267,6 +287,11 @@ func (a *App) CreateDiffReviewComment(threadID string, input store.DiffReviewCom
 
 //ao:scope threads:operate
 func (a *App) UpdateDiffReviewComment(threadID, commentID string, input store.DiffReviewCommentUpdate) (store.DiffReviewComment, error) {
+	unlock, err := a.threadApplication().LockMutable(context.Background(), threadID)
+	if err != nil {
+		return store.DiffReviewComment{}, err
+	}
+	defer unlock()
 	updated, err := a.store.UpdateDiffReviewComment(threadID, commentID, input, time.Now().UnixMilli())
 	if err != nil {
 		return store.DiffReviewComment{}, fmt.Errorf("update diff review comment: %w", err)
@@ -277,6 +302,11 @@ func (a *App) UpdateDiffReviewComment(threadID, commentID string, input store.Di
 
 //ao:scope threads:operate
 func (a *App) DeleteDiffReviewComment(threadID, commentID string) error {
+	unlock, err := a.threadApplication().LockMutable(context.Background(), threadID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	// Read the row before it moves: a delete names only the comment, and the
 	// set a receiver has to re-read is identified by scope + source key.
 	comment, err := a.store.GetDiffReviewComment(threadID, commentID)

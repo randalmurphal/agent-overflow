@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import { fetchAttachmentBytes, uploadAttachmentBytes } from './attachmentTransfer';
-import { __resetHomeEndpointForTest, setHomeEndpoint } from './homeEndpoint';
+import { __resetHomeEndpointForTest, setHomeEndpoint, storeBackendEndpoint } from './homeEndpoint';
+
+import { noteThread } from './entityIndex';
+import { takePinnedBackend } from './backends';
 
 // These tests drive the module against a fetch of their own rather than
 // through test/mocks/attachmentTransfer.ts, because what is under test IS
@@ -215,5 +218,42 @@ describe('under a shell origin', () => {
     }
 
     expect(seen[0]).toBe(`${ENDPOINT}/attachments/thr-1/att-1?ticket=xyz`);
+  });
+});
+
+
+describe('a thread on another computer', () => {
+  afterEach(() => __resetHomeEndpointForTest());
+
+  it.each([false, true])('keeps both uploads and downloads on that computer (phone: %s)', async (phone) => {
+    noteThread('remote-thread', 'gpu');
+    if (phone) {
+      setHomeEndpoint('https://mac.test');
+      storeBackendEndpoint('gpu', 'https://gpu.test');
+    }
+    setBindingMock('MintAttachmentUploadTicket', async () => {
+      expect(takePinnedBackend()).toBe('gpu');
+      // Changing ownership while the mint is pending must not redirect its bytes.
+      noteThread('remote-thread', '');
+      return '/attachments/upload?ticket=upload';
+    });
+    answerWith(() => new Response('{}'));
+    await uploadAttachmentBytes('remote-thread', new File([PNG], 'a.png'));
+    expect(requests[0]!.url).toBe(phone
+      ? 'https://gpu.test/attachments/upload?ticket=upload'
+      : 'http://page.test/backend/gpu/attachments/upload?ticket=upload');
+    expect(requests[0]!.credentials).toBe(phone ? 'omit' : 'same-origin');
+
+    noteThread('remote-thread', 'gpu');
+    setBindingMock('MintAttachmentDownloadTicket', () => {
+      expect(takePinnedBackend()).toBe('gpu');
+      return '/attachments/remote-thread/image?ticket=download';
+    });
+    answerWith(() => new Response(PNG));
+    const image = await fetchAttachmentBytes('remote-thread', 'image');
+    expect(new Uint8Array(await image.arrayBuffer())).toEqual(PNG);
+    expect(requests[1]!.url).toBe(phone
+      ? 'https://gpu.test/attachments/remote-thread/image?ticket=download'
+      : 'http://page.test/backend/gpu/attachments/remote-thread/image?ticket=download');
   });
 });

@@ -237,6 +237,13 @@ func (c *Carrier) FetchBootstrap(ctx context.Context) (int, []byte, error) {
 	if err != nil {
 		return resp.StatusCode, nil, err
 	}
+	if observer, ok := c.cfg.Paired.(interface {
+		ObserveBootstrap(context.Context, []byte) error
+	}); ok && resp.StatusCode == http.StatusOK {
+		if err := observer.ObserveBootstrap(ctx, body); err != nil {
+			return 0, nil, err
+		}
+	}
 	return resp.StatusCode, body, nil
 }
 

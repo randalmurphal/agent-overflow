@@ -141,6 +141,14 @@ the stdout row, so compacted state is deliberately kept there.
 
 ## Fork destinations and relocation
 
+- `TransferFiles` collects a closed session's transcript and its complete opaque
+  sidecar subtree under an injected projects root. The archive mechanism lives
+  in `internal/transferfiles`; ownership and installation live in the app.
+  Unsupported links are errors, never silent partial exports. The original slug
+  travels with the snapshot and destination relocation uses the same encoder
+  as local workspace changes. Cross-host native resume/fork was verified with
+  CLI 2.1.261 against a local mock on 2026-09-05; see conversation-transfer.md.
+
 - `WriteForkFileThroughUUID` takes a `ForkCut` STRUCT, and it is the one
   entry point whose destination is not the source's own directory
   (session import cuts an abandoned branch for a thread whose workspace
@@ -192,3 +200,27 @@ the stdout row, so compacted state is deliberately kept there.
   `message.content` shape.
 - Do NOT call `io.ReadAll` on a session JSONL. Real sessions are
   multi-MB. Every reader here streams under a 16 MB line ceiling.
+
+## Cross-computer independent copies
+
+`CopyTransferFiles` writes a NEW operation scratch directory and assigns an
+operation-stable root session ID. Full-history copies preserve message UUIDs
+and child agent IDs; the latter are scoped inside the root session directory.
+Copy the whole collected sidecar subtree and relocate it together with the root
+into the destination workspace slug. Rewrite only top-level `sessionId` fields,
+not history text, parent message chains or opaque sidecars. JSONL is compact:
+the installed CLI's cross-directory discovery refused a pretty-printed native
+header in isolated tests. Native homes are always injected.
+
+`CopyTransferFilesAt` also materializes a pending fork's pinned prefix. The app
+resolves the cursor through `claude.ResolveForkResumeCursor` before passing it;
+copy stops at that exact record, refuses a missing cursor, and preserves message
+UUIDs. Even a Move of a pending fork receives a new native root: the borrowed
+parent transcript is not its execution identity and must never be retired.
+An isolated CLI 2.1.261 resume on 2026-09-05 confirmed the copied prefix kept the
+saved context, excluded later parent turns and resumed with the new identity.
+
+`PlannedWorkspaceProjectDir` computes the same native slug before a NEW transfer
+worktree is published. Its parent must exist and is canonicalized; encoding a
+lexical symlink or `/tmp` path would install a transcript under a slug the CLI
+will not use. Existing workspace lookup still uses `WorkspaceProjectDir`.

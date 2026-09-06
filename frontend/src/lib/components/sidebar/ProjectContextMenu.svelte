@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { projectHasScope } from '../../transport/entityScopes';
+  import { projectBackend, HOME_BACKEND } from '../../transport/entityIndex';
   // Popover-anchored Rename / Archive / Delete menu for a project row.
   // Extracted from ProjectItem.svelte so that file stays close to the
   // <= 250-line target. The confirm dialogs for Archive / Delete live
@@ -47,10 +49,10 @@
   let { project, anchor, open, onClose, onRename, onNewThread, onNewTerminal }: Props = $props();
   let compact = $derived(isCompactLayout());
   // The same gates the header's own controls use: visible, inert, and saying why.
-  let newThreadUngranted = $derived(!hasScope('threads:operate'));
-  let newTerminalUngranted = $derived(!hasScope('terminal:operate'));
+  let newThreadUngranted = $derived(!projectHasScope('threads:operate', project.project.id));
+  let newTerminalUngranted = $derived(!projectHasScope('terminal:operate', project.project.id));
   // The one gated entry here opens an editor on the host desktop.
-  let noHost = $derived(!hasScope('host'));
+  let noHost = $derived(!hasScope('host', projectBackend(project.project.id) ?? HOME_BACKEND));
 
   // Disambiguated label (parent-dir prefix when another project shares the
   // name) so confirm/toast copy names the right copy. Falls back to the raw
@@ -87,7 +89,7 @@
     try {
       // Project path is already absolute; workspacePath is unused.
       // Empty editorID → the user's default editor.
-      await openInEditor(project.project.path, 0, 0, '', '');
+      await openInEditor(projectBackend(project.project.id) ?? HOME_BACKEND, project.project.path, 0, 0, '', '');
     } catch (err) {
       addToast('error', userFacingError(err));
     }

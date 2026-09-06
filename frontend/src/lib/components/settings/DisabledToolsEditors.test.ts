@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import ClaudeDisabledToolsEditor from './ClaudeDisabledToolsEditor.svelte';
 import CodexDisabledToolsEditor from './CodexDisabledToolsEditor.svelte';
-import { loadSettings } from '../../stores/settings.svelte';
+import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
 import { makeSettings } from '../../../test/helpers/settings';
 import { getProviderDefinition } from '../../providers/catalog';

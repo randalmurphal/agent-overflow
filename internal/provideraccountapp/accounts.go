@@ -128,6 +128,11 @@ func (m *Manager) SwitchProviderAccount(providerName, accountID string) (Managed
 	if m.store == nil || m.credentials == nil {
 		return ManagedAccount{}, errors.New("provider account storage is unavailable")
 	}
+	endWork, err := m.beginWork(m.context())
+	if err != nil {
+		return ManagedAccount{}, err
+	}
+	defer endWork()
 	reconcileMu := m.reconcileMutex(providerName)
 	reconcileMu.Lock()
 	reconcileLocked := true

@@ -14,8 +14,9 @@ framework-independent updater library, but it must not import
 - `Service` owns all updater mutexes, timers, provider handles, pending/staged
   releases, and WSL install state. Do not split that live state back across
   `internal/app.App` fields.
-- `internal/app.App` retains the five Wails/transport binding methods and DTOs.
-  Their names, signatures, declaring type, and JSON fields are wire contracts.
+- `internal/app.App` retains the five Wails/transport binding methods. Shared
+  wire DTOs live here, with App aliases; the independent desktop frontend uses
+  the same service and shapes. Names, method IDs and JSON fields remain stable.
 - The application-shell boot adapters resolve link-stamped globals, environment-derived WSL
   paths, process shutdown, notifications, and Wails application events. Pass
   only narrow callbacks or explicit configuration into this package.
@@ -25,6 +26,10 @@ framework-independent updater library, but it must not import
   backend lifecycle policy belongs here.
 - Update lifecycle events must flow through `eventchan`; do not add a direct
   transport or Wails application dependency.
+- `Config.RelaunchArgs` is forwarded to the shared updater unchanged. Nil
+  preserves launch arguments; a non-nil slice replaces them. A paired frontend
+  normalizes consumed invitations to `--frontend`. The executable dispatches
+  `updater.HandleHelperMode` before CLI/session guards and normal boot.
 
 ## `ReleaseSource` is the chain without a handle
 
@@ -51,6 +56,10 @@ Things to keep true when editing here:
   through a `sha256` beside `dst` and refuses a mismatch. Removing that
   comparison would leave the whole path unverified while still reading as if it
   were checked.
+- **Downloads are bounded before writing.** `verifiedProvider.Download` caps
+  reported and streamed artifact bytes at 2 GiB for both desktop and supervised
+  updates. Missing or dishonest lengths cannot fill the disk until a timeout.
+  Extraction has its own file-count and expanded-size limits.
 - **The caller owns `dst`.** A failed `Fetch` may already have written part of
   an artifact; discarding it is the caller's job (`internal/app`'s flow
   downloads into a temp file it removes on every exit path).

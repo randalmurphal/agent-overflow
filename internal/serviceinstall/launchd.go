@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 type launchdManager struct {
@@ -131,8 +132,45 @@ func (m *launchdManager) Uninstall(ctx context.Context) error {
 // SIGTERM the backend handles cleanly leaves it stopped, which is what this
 // asks for. Not mustRun: an agent that is not running is the state wanted.
 func (m *launchdManager) Stop(ctx context.Context) error {
-	_, _, err := m.runner.Run(ctx, "launchctl", "kill", "SIGTERM", m.target())
-	return err
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	output, code, err := m.runner.Run(ctx, "launchctl", "kill", "SIGTERM", m.target())
+	if err != nil {
+		return err
+	}
+	// kill acknowledges a signal, not process exit. Never stage an update
+	// while the old supervisor can still read its selection file.
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		state, statusCode, err := m.runner.Run(ctx, "launchctl", "print", m.target())
+		if err != nil {
+			return err
+		}
+		if statusCode != 0 {
+			if code != 0 {
+				return fmt.Errorf("serviceinstall: launchctl stop: %s", output)
+			}
+			return nil
+		}
+		active := launchdState(state) == "running"
+		for line := range strings.SplitSeq(state, "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "pid = ") {
+				active = true
+			}
+		}
+		if !active {
+			return nil
+		}
+		if code != 0 {
+			return fmt.Errorf("serviceinstall: launchctl stop: %s", output)
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("serviceinstall: waiting for the backend to stop: %w", ctx.Err())
+		case <-ticker.C:
+		}
+	}
 }
 
 func (m *launchdManager) Start(ctx context.Context) error {

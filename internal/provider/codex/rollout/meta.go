@@ -134,27 +134,40 @@ func ReadSessionMeta(path, sessionID string) (SessionMeta, error) {
 	return SessionMeta{}, fmt.Errorf("rollout: %s: %w", path, ErrSessionMetaNotFound)
 }
 
-// SessionIDFromPath extracts the session uuid a rollout file name ends with
-// (`rollout-<timestamp>-<uuid>.jsonl`). It returns "" when the name does not
-// have that shape rather than guessing, because the id it produces is the
-// authority for which session_meta line is accepted.
+// SessionIDFromPath returns the native conversation identity. Current reverted
+// rollouts are named rollout-<timestamp>-<thread>_<rollout>.jsonl; the final ID
+// names a history segment, not the session_meta this reader must select.
 func SessionIDFromPath(path string) string {
-	base := filepath.Base(path)
-	base = strings.TrimSuffix(base, ".jsonl")
-	if !strings.HasPrefix(base, "rollout-") {
-		return ""
+	session, _ := rolloutFileIDs(path)
+	return session
+}
+
+// rolloutFileIDs keeps execution and immutable-history identities distinct.
+// Single-ID legacy files use the same coordinate for both.
+func rolloutFileIDs(path string) (session, rollout string) {
+	base := strings.TrimSuffix(strings.TrimSuffix(filepath.Base(path), ".zst"), ".jsonl")
+	if !strings.HasPrefix(base, "rollout-") || len(base) < 37 {
+		return "", ""
 	}
-	// A uuid is 36 characters with four '-' separators; the timestamp
-	// prefix also uses '-', so anchor on the length of the tail.
-	const uuidLen = 36
-	if len(base) < uuidLen+1 {
-		return ""
+	tail := base[len(base)-36:]
+	if !looksLikeUUID(tail) {
+		return "", ""
 	}
-	candidate := base[len(base)-uuidLen:]
-	if base[len(base)-uuidLen-1] != '-' || !looksLikeUUID(candidate) {
-		return ""
+	switch base[len(base)-37] {
+	case '-':
+		return tail, tail
+	case '_':
+		prefix := base[:len(base)-37]
+		if len(prefix) < 37 || prefix[len(prefix)-37] != '-' {
+			return "", ""
+		}
+		native := prefix[len(prefix)-36:]
+		if !looksLikeUUID(native) {
+			return "", ""
+		}
+		return native, tail
 	}
-	return candidate
+	return "", ""
 }
 
 func looksLikeUUID(s string) bool {

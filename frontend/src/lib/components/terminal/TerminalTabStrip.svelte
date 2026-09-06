@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { BackendKey } from '../../transport/backendKey';
   import type { ThreadTerminalStateHandle } from './terminalStore.svelte';
   import EditorLink from '../common/EditorLink.svelte';
   import ContextMenu from '../primitives/ContextMenu.svelte';
@@ -6,6 +7,7 @@
   import MenuDivider from '../primitives/MenuDivider.svelte';
 
   interface Props {
+    backend: BackendKey;
     handle: ThreadTerminalStateHandle;
     onOpen: () => void;
     onClose: (terminalID: string) => void;
@@ -23,7 +25,7 @@
     workspacePath?: string;
   }
 
-  let { handle, onOpen, onClose, onSelect, onRefresh, onCollapse, workspacePath }: Props =
+  let { backend, handle, onOpen, onClose, onSelect, onRefresh, onCollapse, workspacePath }: Props =
     $props();
 
   function labelFor(shell: string): string {
@@ -181,7 +183,7 @@
          affordance correct after the user `cd`s — we point at the
          original workspace root, not a derived current directory. -->
     <div class="mr-1" data-testid="terminal-open-in-editor">
-      <EditorLink
+      <EditorLink {backend}
         path={workspacePath}
         asIcon
         ariaLabel="Open Workspace in Editor"

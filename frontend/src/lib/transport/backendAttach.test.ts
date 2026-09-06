@@ -12,13 +12,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   __resetPendingAttachmentsForTest,
   attachedMachines,
+  attachBackendFromLink,
   awaitAttachedActivation,
   detachAttachedBackend,
+  pairingBackendKey,
   pendingAttachments,
 } from './backendAttach';
 import {
   __attachBackendForTest,
   __resetBackendsForTest,
+  __setHomeClientForTest,
   attachedBackends,
   backendById,
   type BackendDescriptor,
@@ -28,10 +31,19 @@ import { __resetDetachStepsForTest, onBeforeBackendDetach } from './detachSteps'
 import {
   __resetHomeEndpointForTest,
   forgetBackendEndpoint,
+  homeEndpoint,
+  setHomeEndpoint,
   storeBackendEndpoint,
   storedBackendEndpoint,
 } from './homeEndpoint';
 import { storedBackendDescriptors } from './manifestBackends';
+import { prepareNativeShell } from '../native/boot';
+import { selectedBackend } from '../stores/selectedBackend.svelte';
+import { onPurgeClientState } from './clientPurge';
+import { wsClient } from './wsClient';
+import { Call } from './runtime';
+import { resolveTransport } from './handle';
+import { setBackendIdentityFromBootstrap } from './backendIdentity';
 
 const LAPTOP = 'laptop';
 const ENDPOINT = 'https://laptop.example:8123';
@@ -110,6 +122,72 @@ describe('backendAttach', () => {
   });
 
   describe('detachAttachedBackend', () => {
+    it('removes a phone’s original computer and boots and routes through the remaining one', async () => {
+      const capacitor = Object.getOwnPropertyDescriptor(window, 'Capacitor');
+      Object.defineProperty(window, 'Capacitor', { configurable: true, value: { isNativePlatform: () => true } });
+      const purged: (string | null)[] = [];
+      const stopPurge = onPurgeClientState((scope) => { purged.push(scope); });
+      try {
+        storeBackendEndpoint('', 'https://first.example');
+        storeSessionFor('');
+        storeBackendEndpoint(LAPTOP, ENDPOINT);
+        storeSessionFor(LAPTOP);
+        stageMachine();
+        const remaining = backendById(LAPTOP)!;
+        __setHomeClientForTest(remaining.client);
+        const credential = localStorage.getItem(`agent-overflow:deviceSession:${LAPTOP}`);
+        detachAttachedBackend('');
+        expect(purged).toEqual(['']);
+        expect(hasPairedSession()).toBe(false);
+        expect(localStorage.getItem(`agent-overflow:deviceSession:${LAPTOP}`)).toBe(credential);
+        expect(storedBackendEndpoint('')).toBe('');
+        expect(() => resolveTransport('')).toThrow('no longer connected');
+        expect(prepareNativeShell()).toEqual({ shell: true, paired: true });
+        expect(attachedBackends().map((entry) => entry.id)).toEqual([LAPTOP]);
+        expect(selectedBackend()).toBe(LAPTOP);
+        await Call.ByID(1090132042); // ListThreads, ALL even with one non-home computer.
+        expect(remaining.client.callByID).toHaveBeenCalledWith(1090132042, []);
+      } finally {
+        stopPurge();
+        if (capacitor) Object.defineProperty(window, 'Capacitor', capacitor);
+        else Reflect.deleteProperty(window, 'Capacitor');
+        __setHomeClientForTest(wsClient);
+      }
+    });
+
+    it('repairs a legacy first pairing in place while giving a new computer its own slot', () => {
+      setBackendIdentityFromBootstrap('first-computer', 'generation', 'First');
+      const payload = { v: 1 as const, token: 'invite', endpoint: ENDPOINT, backendId: 'first-computer' };
+      expect(pairingBackendKey(payload)).toBe('');
+      expect(pairingBackendKey({ ...payload, backendId: 'another-computer' })).toBe('another-computer');
+    });
+
+    it('repairs a legacy phone slot at its newly invited address before redeeming', async () => {
+      const capacitor = Object.getOwnPropertyDescriptor(window, 'Capacitor');
+      Object.defineProperty(window, 'Capacitor', { configurable: true, value: { isNativePlatform: () => true } });
+      setBackendIdentityFromBootstrap('first-computer', 'generation', 'First');
+      setHomeEndpoint('https://old.example');
+      storeBackendEndpoint('', 'https://old.example');
+      storeBackendEndpoint('other', 'https://other.example');
+      const payload = { v: 1, backendId: 'first-computer', endpoint: ENDPOINT, token: 'invitation' };
+      const encoded = btoa(JSON.stringify(payload)).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
+      const fetch = vi.fn(async (url: string) => {
+        expect(url).toBe(`${ENDPOINT}/auth/pair`);
+        return new Response(JSON.stringify({ sessionId: 's', credential: 'c', expiresAtMs: Date.now() + 60000, verificationNumber: '123456' }));
+      });
+      vi.stubGlobal('fetch', fetch);
+      try {
+        expect((await attachBackendFromLink(`${ENDPOINT}/#pair=${encoded}`)).id).toBe('');
+        expect(homeEndpoint()).toBe(ENDPOINT);
+        expect(storedBackendEndpoint('')).toBe(ENDPOINT);
+        expect(storedBackendEndpoint('other')).toBe('https://other.example');
+      } finally {
+        vi.unstubAllGlobals();
+        if (capacitor) Object.defineProperty(window, 'Capacitor', capacitor);
+        else Reflect.deleteProperty(window, 'Capacitor');
+      }
+    });
+
     it('takes the socket, then the credential, then the address', () => {
       storeBackendEndpoint(LAPTOP, ENDPOINT);
       storeSessionFor(LAPTOP);
@@ -251,7 +329,7 @@ describe('storedBackendDescriptors', () => {
     expect(storedBackendDescriptors()).toEqual([
       {
         id: LAPTOP,
-        backendId: '',
+        backendId: LAPTOP,
         name: 'laptop.example:8123',
         wsUrl: 'wss://laptop.example:8123/ws',
         bootstrapUrl: `${ENDPOINT}/bootstrap.json`,

@@ -1,3 +1,8 @@
+import { threadMachine } from './attachedBackends.svelte';
+import { companionSubjectKey } from './companionSubject';
+import { withBackendTarget } from '../transport/backends';
+import { composeWorkspaceKey } from '../utils/workspaceKey';
+import { threadHasScope } from '../transport/entityScopes';
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import {
   GetDiffContextLines,
@@ -62,7 +67,6 @@ import {
   type EditSelection,
 } from './reviewPaneLoad';
 import { persistScope, readPersistedScope } from './reviewPaneScope';
-import { hasScope } from '../transport/scopes';
 import { getSettings } from './settings.svelte';
 import { getActiveTurn } from './threadStatuses.svelte';
 import type { BranchCommit, WorkspaceRef } from '../types/git';
@@ -121,7 +125,7 @@ export type ConversationFeedItem =
 
 export interface ReviewPaneState {
   /** Subject this state was created for — the registry's staleness check.
-   *  A thread row id, or a draft placeholder's synthetic id. */
+   *  Conversation/draft identity, ownership epoch and checkout. */
   readonly identity: string;
   readonly scope: ReviewScope;
   readonly baseBranch: string | null;
@@ -345,7 +349,7 @@ export function reviewSubjectForPane(pane: {
   const thread = pane.thread;
   if (!thread) return null;
   return {
-    identity: thread.id,
+    identity: companionSubjectKey(pane),
     threadId: pane.threadId,
     workspace: pane.workspace ?? NO_WORKSPACE_REF,
     thread,
@@ -413,6 +417,8 @@ function createReviewPaneState(
   deferInitialLoad: boolean,
 ): ReviewPaneState {
   const { identity, threadId, workspace } = subject;
+  const backend = threadMachine(threadId ?? '', workspace.projectId);
+  function computerPRKey(ref: PRRef): string { return composeWorkspaceKey(backend, prKey(ref)); }
   const initialThread = subject.thread;
   // Scope persistence is keyed on a real row; a draft placeholder has no
   // history to restore and nothing to write back.
@@ -539,7 +545,7 @@ function createReviewPaneState(
   // The shared PR entity this pane is looking at. Null outside pr scope:
   // the PR data survives a scope switch (another pane may still be on it),
   // but a pane that left is not reporting a PR's state as its own.
-  const prEntityKey = $derived(scope === 'pr' && prRef ? prKey(prRef) : null);
+  const prEntityKey = $derived(scope === 'pr' && prRef ? computerPRKey(prRef) : null);
   const prSnapshot = $derived<PRSnapshot | null>(peekPRSnapshot(prEntityKey));
   // A failed poll/refresh is user-facing state, not a log line — and it is
   // deliberately NOT `error` (which owns the diff): the rendered diff is
@@ -810,8 +816,8 @@ function createReviewPaneState(
     // spend one refusal per pane before anybody touched anything. The
     // no-attachment answer already exists for the disposed case, and the
     // pane renders its empty state from it.
-    if (!hasScope('git:operate')) return null;
-    const key = prKey(ref);
+    if (!threadHasScope('git:operate', subject.threadId, subject.workspace.projectId)) return null;
+    const key = computerPRKey(ref);
     if (prAttachment?.key === key) return prAttachment;
     releasePR();
     prAttachment = attachPR(key, { ref });
@@ -977,7 +983,7 @@ function createReviewPaneState(
       if (scope === 'pr' && prRef) {
         awaitingPRRef = false;
         loadingPRRef = prRef;
-        loadingPRKey = prKey(loadingPRRef);
+        loadingPRKey = computerPRKey(loadingPRRef);
         const hold = holdPR(loadingPRRef);
         snapshot = hold ? await hold.ready() : null;
         if (seq !== loadSeq || disposed) return;
@@ -1357,11 +1363,11 @@ function createReviewPaneState(
     sendingComments = true;
     submitError = null;
     try {
-      const result = (await SubmitPRReview(prReferenceWire(prRef), {
+      const result = (await withBackendTarget(backend, () => SubmitPRReview(prReferenceWire(prRef), {
         verdict,
         body: summaryBody.trim(),
         comments: submitDrafts.map(reviewLineCommentForDraft).filter((comment) => comment !== null),
-      })) as SubmitPRReviewResult;
+      }))) as SubmitPRReviewResult;
       let sent = submitDrafts;
       if (result.partialFailurePath) {
         // The review (with every line comment) posted; file-level comments
@@ -1381,7 +1387,7 @@ function createReviewPaneState(
       await refreshDiffReviewComments(commentThreadId(), scope, sourceKey);
       // Through the store: the posted review is now part of the PR, so
       // every pane looking at it shows the new threads.
-      applyPRThreads(prKey(prRef), ((await ListPRReviewThreads(prReferenceWire(prRef))) ?? []) as ReviewThread[]);
+      applyPRThreads(computerPRKey(prRef), ((await withBackendTarget(backend, () => ListPRReviewThreads(prReferenceWire(prRef)))) ?? []) as ReviewThread[]);
       if (!result.partialFailure) {
         summaryBody = '';
         submitError = null;
@@ -1403,13 +1409,13 @@ function createReviewPaneState(
   // and on none whose diff doesn't. The diff never swaps mid-read.
   async function refreshPRThreads(): Promise<void> {
     if (scope !== 'pr' || !prRef || refreshingPRData) return;
-    const key = prKey(prRef);
+    const key = computerPRKey(prRef);
     refreshingPRData = true;
     try {
       const pr = prReferenceWire(prRef);
       const [detail, threads] = await Promise.all([
-        GetPRDetail(pr) as Promise<PRDetail>,
-        ListPRReviewThreads(pr) as Promise<ReviewThread[] | null>,
+        withBackendTarget(backend, () => GetPRDetail(pr)) as Promise<PRDetail>,
+        withBackendTarget(backend, () => ListPRReviewThreads(pr)) as Promise<ReviewThread[] | null>,
       ]);
       if (disposed || scope !== 'pr') return;
       applyPRSnapshot(key, {
@@ -1438,9 +1444,9 @@ function createReviewPaneState(
     sendingReplyIds.add(thread.id);
     replyErrors.delete(thread.id);
     try {
-      await ReplyToPRThread(prReferenceWire(prRef), thread.id, first.databaseID, body);
+      await withBackendTarget(backend, () => ReplyToPRThread(prReferenceWire(prRef), thread.id, first.databaseID, body));
       replyBodies.delete(thread.id);
-      applyPRThreads(prKey(prRef), ((await ListPRReviewThreads(prReferenceWire(prRef))) ?? []) as ReviewThread[]);
+      applyPRThreads(computerPRKey(prRef), ((await withBackendTarget(backend, () => ListPRReviewThreads(prReferenceWire(prRef)))) ?? []) as ReviewThread[]);
     } catch (err) {
       const message = userFacingError(err);
       replyErrors.set(thread.id, message);
@@ -1477,7 +1483,7 @@ function createReviewPaneState(
     // and the override outranks in-flight poll snapshots until one agrees.
     setPRThreadResolveOverride(key, thread.id, resolved);
     try {
-      await SetPRThreadResolved(prReferenceWire(prRef), thread.id, resolved);
+      await withBackendTarget(backend, () => SetPRThreadResolved(prReferenceWire(prRef), thread.id, resolved));
     } catch (err) {
       clearPRThreadResolveOverride(key, thread.id);
       resolveErrors.set(thread.id, userFacingError(err));
@@ -1649,11 +1655,13 @@ function createReviewPaneState(
 
   async function fetchCILog(job: CIJob): Promise<void> {
     if (!prRef || !job.id) return;
+    const jobId = job.id;
+    const ref = prReferenceWire(prRef);
     const seq = ++ciLogSeq;
     ciLogLoading = true;
     ciLogError = null;
     try {
-      const result = (await GetPRCIJobLog(prReferenceWire(prRef), job.id)) as CIJobLogResult;
+      const result = (await withBackendTarget(backend, () => GetPRCIJobLog(ref, jobId))) as CIJobLogResult;
       if (seq !== ciLogSeq || disposed) return;
       ciLog = result;
     } catch (err) {
@@ -1677,8 +1685,10 @@ function createReviewPaneState(
   async function saveCILog(): Promise<string | null> {
     const view = ciLogView;
     if (!prRef || !view?.job.id) return null;
+    const jobId = view.job.id;
+    const ref = prReferenceWire(prRef);
     try {
-      const path = String(await SavePRCIJobLog(prReferenceWire(prRef), view.job.id, view.job.name));
+      const path = String(await withBackendTarget(backend, () => SavePRCIJobLog(ref, jobId, view.job.name)));
       if (ciLogView === view) ciLogSavedPath = path;
       return path;
     } catch (err) {

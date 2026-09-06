@@ -1,3 +1,8 @@
+import { isAuthReasonCode, presentAuthReason } from './authReason';
+import { certificatePin, pairingEndpoint } from '../native/networkTrust';
+import { isNativeShell } from '../native/platform';
+import { networkFetch } from './networkFetch';
+import { computerSocketRoute, failComputerRoute, fetchComputerRoute, forgetComputerRoutes, learnComputerRoutes, repairComputerAddress, type ComputerRouteContext } from './computerRoutes';
 // The paired-device session client: the browser half of pairing
 // (docs/specs/remote-access.md §4).
 //
@@ -45,13 +50,9 @@
 // refuses the downgrade); it clears the stored session so the page asks to
 // pair rather than retrying something that can never succeed.
 //
-// Refresh discipline (internal/identity/refresh.go): a refresh secret is
-// single-use, and presenting a spent one reads as reuse evidence that
-// revokes the whole session. So renewal here is single-flight, stores
-// the response before anything may use it, and NEVER retries a request
-// whose response it did not read — a lost response means the old secret
-// is already spent, the next presentation would end the session, and the
-// honest recovery is to let that happen and pair again.
+// Renewal saves a client-chosen successor before sending, then compares the
+// saved generation again before applying a response. Lost replies are retryable
+// on supporting hosts. See docs/architecture/session-renewal.md.
 
 import { runBeforeBackendDetach } from './detachSteps';
 import { purgeClientState } from './clientPurge';
@@ -73,6 +74,8 @@ import { renewalLeaseKey, withRenewalLease } from './renewalLease';
 // backend decides what they mean.
 const AUTH_PAIR_PATH = '/auth/pair';
 const AUTH_TOKEN_PATH = '/auth/token';
+const AUTH_TOKEN_RECOVER_PATH = '/auth/token/recover';
+const REFRESH_RECOVERY_HEADER = 'X-AO-Refresh-Recovery';
 const AUTH_TICKET_PATH = '/auth/ticket';
 const AUTH_PASSKEY_BEGIN_PATH = '/auth/passkey/begin';
 const AUTH_PASSKEY_FINISH_PATH = '/auth/passkey/finish';
@@ -123,6 +126,9 @@ const PAIRING_PAYLOAD_VERSION = 1;
 // One credential pair as /auth/pair and /auth/token grant it
 // (transport.TokenGrant).
 interface StoredSession {
+  backendId?: string;
+  refreshRecovery?: boolean;
+  pendingNextSecret?: string;
   sessionId: string;
   credential: string;
   expiresAtMs: number;
@@ -289,13 +295,14 @@ export function acceptPairingEndpoint(
   origin: string,
   backend: BackendKey = HOME_BACKEND,
 ): boolean {
-  if (!hasHomeEndpoint()) return endpointMatchesOrigin(payload, origin);
+  if (!isNativeShell() && !hasHomeEndpoint()) return endpointMatchesOrigin(payload, origin);
   try {
     // Stored first, so a credential can never outlive the knowledge of
     // where to present it; the live endpoint follows for home, which is
     // the slot this launch is already addressing.
-    storeBackendEndpoint(backend, payload.endpoint);
-    if (backend === HOME_BACKEND) setHomeEndpoint(payload.endpoint);
+    const endpoint = pairingEndpoint(payload);
+    storeBackendEndpoint(backend, endpoint);
+    if (backend === HOME_BACKEND) setHomeEndpoint(endpoint);
   } catch {
     // A payload whose endpoint is not an absolute http(s) origin names
     // nowhere to present a credential. Refused as the damaged link it is.
@@ -375,6 +382,7 @@ export async function pairedSessionHeaders(
   const held = readStoredSession(backend);
   if (!held) return {};
   const keyHeader = await deviceKeyHeader(held, method, path);
+  if (!sameRenewal(held, readStoredSession(backend))) return {};
   if (!keyHeader) {
     clearPairedSession(backend);
     return {};
@@ -391,7 +399,7 @@ export async function pairedSessionHeaders(
  * as it does for the ticket mint.
  */
 export function renewPairedSession(
-  fetcher: typeof fetch = fetch,
+  fetcher: typeof fetch = networkFetch,
   backend: BackendKey = HOME_BACKEND,
 ): Promise<boolean> {
   return renewSession(fetcher, backend);
@@ -423,7 +431,60 @@ export function pairedSessionScopes(
 
 /** Drop the stored session. The device key survives — it names the device, not the session. */
 export function clearPairedSession(backend: BackendKey = HOME_BACKEND): void {
+  forgetComputerRoutes(backend);
   storeSession(null, backend);
+}
+
+function pairedRouteContext(backend: BackendKey): ComputerRouteContext | null {
+  if (!isNativeShell()) return null;
+  const held = readStoredSession(backend);
+  const backendId = held?.backendId || backend;
+  if (!held || !backendId) return null;
+  const endpoint = new URL(backendUrl('/', backend), globalThis.location?.href).origin;
+  const pin = certificatePin(endpoint) || undefined;
+  return { backend, sessionId: held.sessionId, backendId, primary: { endpoint, certFingerprint: pin }, current: () => {
+    try {
+      return readStoredSession(backend)?.sessionId === held.sessionId
+        && new URL(backendUrl('/', backend), globalThis.location?.href).origin === endpoint
+        && (certificatePin(endpoint) || undefined) === pin;
+    } catch { return false; }
+  } };
+}
+
+/** Only paired traffic can select another verified route. Pairing and passkey
+ * sign-in keep their explicitly chosen origin and their existing fetch path. */
+export function fetchPairedComputer(backend: BackendKey, fetcher: typeof fetch, input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const context = pairedRouteContext(backend);
+  if (!context) return fetcher(input, init);
+  const credential = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined)).get(SESSION_CREDENTIAL_HEADER);
+  context.beforeRequest = () => {
+    if (!context.current() || (credential && readStoredSession(backend)?.credential !== credential)) throw new Error('Computer session changed. Reconnect to continue.');
+  };
+  return fetchComputerRoute(context, fetcher, input, init);
+}
+
+export async function observePairedComputerBootstrap(backend: BackendKey, backendId: unknown, routes: unknown): Promise<void> {
+  if (!isNativeShell() || typeof backendId !== 'string' || !backendId) return;
+  const held = readStoredSession(backend);
+  if (!held) return;
+  if ((held.backendId && held.backendId !== backendId) || (backend !== HOME_BACKEND && backend !== backendId)) throw new Error('This address belongs to a different computer.');
+  // Older first-phone slots did not record backendId. An authenticated
+  // manifest at their original paired origin supplies it before route use.
+  if (!held.backendId) storeSession({ ...held, backendId }, backend);
+  const context = pairedRouteContext(backend);
+  if (context) await learnComputerRoutes(context, routes);
+}
+
+export function pairedComputerSocketRoute(backend: BackendKey, url: string): { url: string; pin?: string; failed(): void } | null {
+  const context = pairedRouteContext(backend);
+  const route = context && computerSocketRoute(context, url);
+  return route && context ? { ...route, failed: () => failComputerRoute(context, route.url) } : null;
+}
+
+export function repairPairedComputerAddress(backend: BackendKey, endpoint: string): Promise<string> {
+  const context = pairedRouteContext(backend);
+  if (!context) return Promise.reject(new Error('This computer needs a new pairing link before its address can be changed.'));
+  return repairComputerAddress(context, endpoint);
 }
 
 /**
@@ -445,13 +506,9 @@ export function unpairHome(): void {
   runBeforeBackendDetach(HOME_BACKEND);
   clearPairedSession(HOME_BACKEND);
   forgetBackendEndpoint(HOME_BACKEND);
-  // Sign-out, so EVERY backend's replica and ui_state bucket go, not just
-  // home's: the next boot is a first run, and what this device already
-  // synced must not be readable by whoever opens the page after it. Spec
-  // §9 names this the purge primitive's caller. Last of the four, because
-  // the three above are what stop new data arriving and this is what
-  // removes what already did.
-  purgeClientState(null);
+  // A pairing belongs to one computer. Removing the first computer must
+  // preserve every other credential, replica, and this frontend's settings.
+  purgeClientState(HOME_BACKEND);
 }
 
 interface GrantBody {
@@ -498,7 +555,7 @@ export interface RedemptionOutcome {
 export async function redeemPairing(
   payload: PairingPayload,
   label: string,
-  fetcher: typeof fetch = fetch,
+  fetcher: typeof fetch = networkFetch,
   backend: BackendKey = HOME_BACKEND,
 ): Promise<RedemptionOutcome> {
   // The one moment a device chooses its kind, and it chooses by what it
@@ -516,7 +573,7 @@ export async function redeemPairing(
   if (proof !== null) headers[DEVICE_KEY_HEADER] = proof;
   const res = await fetcher(authUrl(AUTH_PAIR_PATH, backend), {
     method: 'POST',
-    credentials: authCredentials(backend),
+    redirect: 'error', credentials: authCredentials(backend),
     headers,
     body: JSON.stringify({
       token: payload.token,
@@ -534,6 +591,8 @@ export async function redeemPairing(
     throw new PairingRefusedError(res.status, body.reason ?? '');
   }
   storeSession({
+    backendId: payload.backendId,
+    refreshRecovery: res.headers.get(REFRESH_RECOVERY_HEADER) === '1',
     sessionId: body.sessionId,
     credential: body.credential,
     expiresAtMs: body.expiresAtMs ?? 0,
@@ -570,11 +629,11 @@ export async function redeemPairing(
  */
 export async function signInWithPasskey(
   label: string,
-  fetcher: typeof fetch = fetch,
+  fetcher: typeof fetch = networkFetch,
 ): Promise<void> {
   const begun = await fetcher(authUrl(AUTH_PASSKEY_BEGIN_PATH), {
     method: 'POST',
-    credentials: homeCredentials(),
+    redirect: 'error', credentials: homeCredentials(),
   });
   const challenge = (await begun.json().catch(() => ({}))) as
     | (PasskeyChallenge & { reason?: string })
@@ -592,7 +651,7 @@ export async function signInWithPasskey(
   if (proof !== null) headers[DEVICE_KEY_HEADER] = proof;
   const res = await fetcher(authUrl(AUTH_PASSKEY_FINISH_PATH), {
     method: 'POST',
-    credentials: homeCredentials(),
+    redirect: 'error', credentials: homeCredentials(),
     headers,
     body: JSON.stringify({
       ceremonyId: challenge.ceremonyId,
@@ -610,6 +669,7 @@ export async function signInWithPasskey(
     throw new PairingRefusedError(res.status, body.reason ?? '');
   }
   storeSession({
+    refreshRecovery: res.headers.get(REFRESH_RECOVERY_HEADER) === '1',
     sessionId: body.sessionId,
     credential: body.credential,
     expiresAtMs: body.expiresAtMs ?? 0,
@@ -636,6 +696,7 @@ async function ticketHeaders(
   backend: BackendKey,
 ): Promise<Record<string, string> | null> {
   const keyHeader = await deviceKeyHeader(held, 'POST', AUTH_TICKET_PATH);
+  if (!sameRenewal(held, readStoredSession(backend))) return null;
   if (!keyHeader) {
     clearPairedSession(backend);
     return null;
@@ -682,69 +743,75 @@ function renewSession(fetcher: typeof fetch, backend: BackendKey): Promise<boole
     // guards, and the rotated pair is already in storage by now: every
     // context of this origin shares it, so there is nothing left to do and
     // this caller's answer is the other one's success.
-    const held = readStoredSession(backend);
+    let held = readStoredSession(backend);
     if (!held?.refreshSecret) return false;
     if (before?.refreshSecret && refreshedSince(before, held)) return true;
-    const keyHeader = await deviceKeyHeader(held, 'POST', AUTH_TOKEN_PATH);
+    const currentResult = (): boolean => {
+      const now = readStoredSession(backend);
+      return !!now && refreshedSince(held!, now);
+    };
+    const owns = (): boolean => lease.held() && sameRenewal(held!, readStoredSession(backend));
+    let supported = held.refreshRecovery;
+    if (typeof supported !== 'boolean') {
+      try {
+        // GET cannot spend a secret on this POST-only route. Its existing
+        // shell CORS also works on older hosts, whose health route has none.
+        const response = await fetchPairedComputer(backend, fetcher, authUrl(AUTH_TOKEN_PATH, backend), { redirect: 'error', credentials: authCredentials(backend) });
+        if (response.status !== 405) return false;
+        supported = response.headers.get(REFRESH_RECOVERY_HEADER) === '1';
+      } catch { return false; }
+    }
+    if (!owns()) return currentResult();
+    if (held.pendingNextSecret && !supported) return false;
+    const path = supported ? AUTH_TOKEN_RECOVER_PATH : AUTH_TOKEN_PATH;
+    const keyHeader = await deviceKeyHeader(held, 'POST', path);
+    if (!owns()) return currentResult();
     if (!keyHeader) {
-      // A key-bound session whose key is gone. Renewal is the one exchange
-      // that could END the session by being retried, so this must not
-      // reach the wire: clear it here and let the page ask to pair.
       clearPairedSession(backend);
       return false;
     }
-    if (!lease.held()) {
-      // Another context claimed the lease while this one was minting its
-      // proof. Not ours to spend: answer from storage instead, which is
-      // where the winner's rotation lands.
-      const now = readStoredSession(backend);
-      return !!now && refreshedSince(held, now);
+    if (supported && !held.pendingNextSecret) {
+      const bytes = crypto.getRandomValues(new Uint8Array(32));
+      const next = btoa(String.fromCharCode(...bytes)).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
+      const pending = { ...readStoredSession(backend)!, refreshRecovery: true, pendingNextSecret: next };
+      storeSession(pending, backend);
+      // localStorage can refuse writes. Never spend the old secret unless its
+      // recovery state is actually durable and still belongs to this lease.
+      if (!lease.held() || !sameRenewal(pending, readStoredSession(backend))) return false;
+      held = pending;
     }
     let res: Response;
     try {
-      res = await fetcher(authUrl(AUTH_TOKEN_PATH, backend), {
+      res = await fetchPairedComputer(backend, fetcher, authUrl(path, backend), {
         method: 'POST',
-        credentials: authCredentials(backend),
+        redirect: 'error', credentials: authCredentials(backend),
         headers: { 'Content-Type': 'application/json', ...keyHeader },
-        body: JSON.stringify({ refreshSecret: held.refreshSecret }),
+        body: JSON.stringify({ refreshSecret: held.refreshSecret, ...(held.pendingNextSecret ? { nextRefreshSecret: held.pendingNextSecret } : {}) }),
       });
-    } catch {
-      return false;
-    }
+    } catch { return currentResult(); }
     const body = await readGrant(res);
+    if (!owns()) return currentResult();
     if (!res.ok || !body.sessionId || !body.credential) {
-      // Clear only on a REFUSAL of this credential (401 carries the
-      // reason), and not while the owner simply has not confirmed the
-      // pairing yet — that session is real and becomes admitted the
-      // moment they do. A 429 or a 5xx says nothing about the
-      // credential and clears nothing.
-      if (res.status === 401 && body.reason !== 'pending_confirmation') {
+      if (res.status === 401 && isAuthReasonCode(body.reason) && body.reason !== 'refresh_superseded' && !presentAuthReason(body.reason).retryable) {
         clearPairedSession(backend);
-        // The session family has ended and no retry brings it back, so
-        // this is a revocation from where the client sits. What that
-        // backend already synced to this device goes with the credential.
         purgeClientState(backend);
       }
       return false;
     }
-    storeSession({
-      sessionId: body.sessionId,
+    if (body.sessionId !== held.sessionId || (held.pendingNextSecret && body.refreshSecret !== held.pendingNextSecret)) return false;
+    const updated = {
+      ...readStoredSession(backend)!,
       credential: body.credential,
       expiresAtMs: body.expiresAtMs ?? 0,
       refreshSecret: body.refreshSecret,
       refreshExpiresAtMs: body.refreshExpiresAtMs,
-      label: held.label,
-      // Rotation never changes how this device proves possession — the
-      // device row decides that and nothing rotates it — so the kind is
-      // carried forward rather than re-derived.
-      proofKind: held.proofKind,
-      // A rotation that did not publish grants keeps the ones the
-      // redemption did. Grants are immutable for a session's lifetime,
-      // so the carried copy is still true, and dropping it would turn a
-      // renewal into a downgrade of what this page offers.
+      refreshRecovery: supported || res.headers.get(REFRESH_RECOVERY_HEADER) === '1',
+      pendingNextSecret: undefined,
       scopes: grantedScopesFrom(body) ?? held.scopes,
-    }, backend);
-    return true;
+    };
+    storeSession(updated, backend);
+    const saved = readStoredSession(backend);
+    return sameRenewal(updated, saved) && saved?.credential === updated.credential;
   }).finally(() => {
     renewalInFlight.delete(backend);
   });
@@ -763,6 +830,19 @@ function renewSession(fetcher: typeof fetch, backend: BackendKey): Promise<boole
  * present, since that is what turns "somebody else already renewed" into
  * "renewal succeeded" when nothing happened.
  */
+function sameRenewal(before: StoredSession, now: StoredSession | null): boolean {
+  return !!now && now.sessionId === before.sessionId && now.refreshSecret === before.refreshSecret && now.pendingNextSecret === before.pendingNextSecret;
+}
+
+// Learning a new host capability must not replace changes made during fetch.
+function rememberRefreshRecovery(res: Response, observed: StoredSession, backend: BackendKey): void {
+  if (res.headers.get(REFRESH_RECOVERY_HEADER) !== '1') return;
+  const current = readStoredSession(backend);
+  if (current && sameRenewal(observed, current) && current.refreshRecovery !== true) {
+    storeSession({ ...current, refreshRecovery: true }, backend);
+  }
+}
+
 function refreshedSince(before: StoredSession, now: StoredSession): boolean {
   return now.refreshSecret !== before.refreshSecret || now.expiresAtMs > before.expiresAtMs;
 }
@@ -782,7 +862,7 @@ function refreshedSince(before: StoredSession, now: StoredSession): boolean {
  * not admitted yet.
  */
 export function mintDialTicket(
-  fetcher: typeof fetch = fetch,
+  fetcher: typeof fetch = networkFetch,
   backend: BackendKey = HOME_BACKEND,
 ): Promise<string | null> {
   const inFlight = ticketInFlight.get(backend);
@@ -799,14 +879,15 @@ export function mintDialTicket(
     try {
       const headers = await ticketHeaders(held, backend);
       if (!headers) return null;
-      res = await fetcher(authUrl(AUTH_TICKET_PATH, backend), {
+      res = await fetchPairedComputer(backend, fetcher, authUrl(AUTH_TICKET_PATH, backend), {
         method: 'POST',
-        credentials: authCredentials(backend),
+        redirect: 'error', credentials: authCredentials(backend),
         headers,
       });
     } catch {
       return null;
     }
+    rememberRefreshRecovery(res, held, backend);
     if (!res.ok) {
       // 404 covers both "not admitted yet" (awaiting confirmation) and
       // "not admitted any more" (expired between renewals, revoked). One
@@ -821,11 +902,12 @@ export function mintDialTicket(
           // re-sending it would be refused as a replay.
           const headers = await ticketHeaders(renewed, backend);
           if (!headers) return null;
-          const retry = await fetcher(authUrl(AUTH_TICKET_PATH, backend), {
+          const retry = await fetchPairedComputer(backend, fetcher, authUrl(AUTH_TICKET_PATH, backend), {
             method: 'POST',
-            credentials: authCredentials(backend),
+            redirect: 'error', credentials: authCredentials(backend),
             headers,
           });
+          rememberRefreshRecovery(retry, renewed, backend);
           if (retry.ok) {
             const grant = (await retry.json()) as { ticket?: string };
             return grant.ticket ?? null;
@@ -852,7 +934,7 @@ export function mintDialTicket(
  * caller owns the deadline, this owns one probe.
  */
 export async function probeActivation(
-  fetcher: typeof fetch = fetch,
+  fetcher: typeof fetch = networkFetch,
   backend: BackendKey = HOME_BACKEND,
 ): Promise<boolean> {
   const held = readStoredSession(backend);
@@ -861,9 +943,9 @@ export async function probeActivation(
   try {
     const headers = await ticketHeaders(held, backend);
     if (!headers) return false;
-    res = await fetcher(authUrl(AUTH_TICKET_PATH, backend), {
+    res = await fetchPairedComputer(backend, fetcher, authUrl(AUTH_TICKET_PATH, backend), {
       method: 'POST',
-      credentials: authCredentials(backend),
+      redirect: 'error', credentials: authCredentials(backend),
       headers,
     });
   } catch {

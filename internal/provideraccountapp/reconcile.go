@@ -31,6 +31,11 @@ func (m *Manager) reconcileExternalProviderAccount(providerName string) error {
 	if providerName != string(provider.Claude) && providerName != string(provider.Codex) {
 		return nil
 	}
+	endWork, err := m.beginWork(m.context())
+	if err != nil {
+		return err
+	}
+	defer endWork()
 	reconcileMu := m.reconcileMutex(providerName)
 	reconcileMu.Lock()
 	defer reconcileMu.Unlock()

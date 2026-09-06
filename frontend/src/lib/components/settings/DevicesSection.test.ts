@@ -299,11 +299,12 @@ describe('<DevicesSection>', () => {
     await waitFor(() => expect(forget).toHaveBeenCalledWith('dev-phone'));
   });
 
-  it('renders a pointer instead of controls in client mode', async () => {
+  it('allows an authorized connected window to manage the selected computer', async () => {
     setRunMode('client');
-    const { findByText, queryByRole } = render(DevicesSection);
-    await findByText(/managed from the backend machine/);
-    expect(queryByRole('button', { name: 'Pair a device' })).toBeNull();
+    const read = setBindingMock('GetAccessOverview', async () => overview());
+    const { findByRole } = render(DevicesSection);
+    expect(await findByRole('button', { name: 'Pair a device' })).toBeVisible();
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(1));
   });
 
   it('refreshes reachability when a tailnet joins after the section mounted', async () => {

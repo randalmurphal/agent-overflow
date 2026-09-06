@@ -6,6 +6,7 @@
   } from '../../stores/companionPanes.svelte';
   import { makePanelContext } from '../../stores/panelContext.svelte';
   import { getPane } from '../../stores/panes.svelte';
+  import { companionSubjectKey } from '../../stores/companionSubject';
 
   // take-control is a companion in the registry but not a panel body — it
   // renders its own surface (TakeControlPane) through PaneHost's dedicated
@@ -46,7 +47,7 @@
     sourcePane ? makePanelContext(sourcePane, () => closeCompanion(paneId)) : null,
   );
   let panelKey = $derived(
-    sourcePane?.thread && panelContext ? `${sourcePane.thread.id}:${kind}` : '',
+    sourcePane?.thread && panelContext ? `${companionSubjectKey(sourcePane)}:${kind}` : '',
   );
 </script>
 

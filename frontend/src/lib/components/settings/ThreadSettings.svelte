@@ -2,7 +2,8 @@
   // Settings → Threads: what a new thread starts as, and which destructive
   // sidebar actions stop for a confirmation first.
 
-  import { getSettings, updateSetting } from '../../stores/settings.svelte';
+  import { settingsComputer } from './settingsComputer';
+  const { getSettings, updateSetting } = settingsComputer();
   import type { ThreadEnvMode } from '../../types/settings';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import SettingsField from './SettingsField.svelte';

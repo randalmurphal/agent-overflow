@@ -31,14 +31,16 @@ func TestMain(m *testing.M) { os.Exit(storetest.Run(m)) }
 // not serve.
 func TestWireConstantsMatchTheTransport(t *testing.T) {
 	for name, pair := range map[string][2]string{
-		"pair route":        {authPairPath, transport.AuthPairPath},
-		"token route":       {authTokenPath, transport.AuthTokenPath},
-		"ticket route":      {authTicketPath, transport.AuthTicketPath},
-		"bootstrap route":   {bootstrapPath, transport.BootstrapPath},
-		"upgrade route":     {wsPath, transport.WSPath},
-		"session header":    {SessionCredentialHeader, transport.SessionCredentialHeader},
-		"device key header": {DeviceKeyHeader, transport.DeviceKeyHeader},
-		"ticket parameter":  {WSTicketParam, transport.WSTicketParam},
+		"pair route":              {authPairPath, transport.AuthPairPath},
+		"recoverable token route": {authTokenRecoverPath, transport.AuthTokenRecoverPath},
+		"token route":             {authTokenPath, transport.AuthTokenPath},
+		"ticket route":            {authTicketPath, transport.AuthTicketPath},
+		"bootstrap route":         {bootstrapPath, transport.BootstrapPath},
+		"upgrade route":           {wsPath, transport.WSPath},
+		"refresh recovery header": {RefreshRecoveryHeader, transport.RefreshRecoveryHeader},
+		"session header":          {SessionCredentialHeader, transport.SessionCredentialHeader},
+		"device key header":       {DeviceKeyHeader, transport.DeviceKeyHeader},
+		"ticket parameter":        {WSTicketParam, transport.WSTicketParam},
 	} {
 		if pair[0] != pair[1] {
 			t.Errorf("%s: this package says %q, the transport says %q", name, pair[0], pair[1])

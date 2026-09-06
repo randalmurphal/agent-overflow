@@ -70,6 +70,7 @@ const (
 //
 //wails:ignore
 func (a *App) Shutdown(ctx context.Context) error {
+	a.workAdmission.stopWaiting()
 	// Step 0 (pre-shutdown): drain the transport server while every
 	// subsystem is still alive. Without this, a webview WS client that
 	// fires an RPC during the window between the App's subsystem-close
@@ -98,6 +99,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 		// harness + Wails both calling us) stays a no-op.
 		return nil
 	}
+
+	a.withdrawLocalControl()
+	a.sshSetup.close()
 
 	var errs []error
 	record := func(step string, err error) {
@@ -156,6 +160,7 @@ func (a *App) Shutdown(ctx context.Context) error {
 		}
 		return nil
 	}())
+	a.transfers.close()
 	// The preview listeners come down with the app context, and for the
 	// same reason: they are network-facing, and every request they carry
 	// is proxied into a dev server owned by a session the steps below are
@@ -320,6 +325,11 @@ func (a *App) Shutdown(ctx context.Context) error {
 	if a.terminals != nil {
 		record("close terminal sessions", a.terminals.Shutdown())
 	}
+	if a.remoteJobs != nil {
+		a.remoteJobs.Close()
+		record("close remote commands", nil)
+	}
+	a.remotePeers.wg.Wait()
 
 	a.browser.applyWG.Wait()
 	if a.browser.manager != nil {

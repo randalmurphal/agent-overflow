@@ -50,6 +50,7 @@ func (r *Router) handleUserText(evt provider.ProviderEvent) error {
 	if evt.ThreadID == "" {
 		return nil
 	}
+	defer r.beginPendingEcho(evt.ThreadID)()
 	// ONE decode for the whole classification chain below. Five separate
 	// readers each unmarshalling the same envelope is four wasted passes per
 	// top-level echo, on the provider read loop.
@@ -1091,4 +1092,24 @@ func injectedContextSummary(content string) string {
 		return "Injected provider context"
 	}
 	return "Injected provider context: " + preview
+}
+
+// Keep admission visible while the echo moves from the pending queue to its
+// logical turn. Provider versions may acknowledge before or after system/init.
+// This is one claim per echoed message, never per streamed token.
+func (r *Router) beginPendingEcho(threadID string) func() {
+	r.mu.Lock()
+	st := r.threadStateIfPresent(threadID)
+	if st == nil || len(st.pendingSends) == 0 {
+		r.mu.Unlock()
+		return func() {}
+	}
+	identity := r.identity(threadID)
+	identity.pendingEchoes++
+	r.mu.Unlock()
+	return func() {
+		r.mu.Lock()
+		identity.pendingEchoes--
+		r.mu.Unlock()
+	}
 }

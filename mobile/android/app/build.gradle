@@ -62,6 +62,9 @@ dependencies {
     // to be in. Making the dependency itself conditional would mean two
     // source sets, one of which nobody compiles.
     implementation "com.google.firebase:firebase-messaging:$firebaseMessagingVersion"
+    implementation "com.squareup.okhttp3:okhttp:$okhttpVersion"
+    testImplementation "com.squareup.okhttp3:mockwebserver3:$okhttpVersion"
+    testImplementation "com.squareup.okhttp3:okhttp-tls:$okhttpVersion"
     testImplementation "junit:junit:$junitVersion"
     // The bundle state file is JSON, and `org.json` on the unit-test
     // classpath is android.jar's STUB, whose every method throws. The

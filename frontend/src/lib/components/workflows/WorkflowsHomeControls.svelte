@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { withBackendTarget } from '../../transport/backends';
+  import { getAttachedBackends, backendDisplayName } from '../../stores/attachedBackends.svelte';
   // Home header controls (UI-SPEC §3.1). Pause-all is the one global kill
   // switch — not a queue: no ordering, no counts. The project filter is view
   // state, and intake is the one entry point: D32 removed the studio-thread and
@@ -13,7 +15,7 @@
   import { userFacingError } from '../../utils/userFacingError';
   import { getProjectLabelText, getProjects } from '../../stores/projects.svelte';
   import { hasScope } from '../../transport/scopes';
-  import { isWorkflowEnginePaused } from '../../stores/workflowRuns.svelte';
+  import { isWorkflowEnginePaused, resyncWorkflowEngineState } from '../../stores/workflowRuns.svelte';
   import {
     getWorkflowProjectFilter,
     setWorkflowProjectFilter,
@@ -21,7 +23,9 @@
   } from '../../stores/workflowsOverlay.svelte';
 
   // Every control here drives the workflow engine, which is `threads:autonomy`.
-  let ungranted = $derived(!hasScope('threads:autonomy'));
+  let computers = $derived(getAttachedBackends());
+  let ungranted = $derived(!computers.some((entry) => hasScope('threads:autonomy', entry.id)));
+  let pauseUngrant = $derived(computers.length === 0 || computers.some((entry) => !hasScope('threads:autonomy', entry.id)));
   let paused = $derived(isWorkflowEnginePaused());
   let projects = $derived(getProjects());
   let filter = $derived(getWorkflowProjectFilter());
@@ -30,12 +34,19 @@
   const ungrantedTitle = $derived(ungranted ? 'Not granted to this device' : undefined);
 
   async function togglePause(): Promise<void> {
-    if (ungranted || pausing) return;
+    if (pauseUngrant || pausing) return;
     pausing = true;
     const next = !paused;
+    const targets = computers.map((entry) => ({ id: entry.id, name: backendDisplayName(entry) }));
     try {
-      await WorkflowSetGlobalPause(next);
-      addToast('info', next ? 'Paused — no new phases start; in-flight turns finish' : 'Resumed — phases start again');
+      const results = await Promise.allSettled(targets.map(async ({ id }) => {
+        await withBackendTarget(id, () => WorkflowSetGlobalPause(next));
+        await resyncWorkflowEngineState(id);
+      }));
+      const failed = results.flatMap((result, index) => result.status === 'rejected'
+        ? [`${targets[index].name}: ${userFacingError(result.reason, 'Could not change pause state.')}`] : []);
+      if (failed.length) addToast('error', failed.join('\n'));
+      else addToast('info', next ? 'Paused — no new phases start; in-flight turns finish' : 'Resumed — phases start again');
     } catch (err) {
       addToast('error', userFacingError(err, 'Could not change the global pause.'));
     } finally {
@@ -48,8 +59,8 @@
   <button
     class="rounded-md border border-border-subtle px-2 py-1 text-xs text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
     onclick={togglePause}
-    disabled={ungranted || pausing}
-    title={ungrantedTitle ?? 'Pause stops new phase starts everywhere; in-flight turns finish'}
+    disabled={pauseUngrant || pausing}
+    title={pauseUngrant ? 'Workflow control is required on every computer to pause all' : 'Pause stops new phase starts on every connected computer; in-flight turns finish'}
     data-testid="workflows-pause-all"
     aria-pressed={paused}
   >{paused ? '▶ Resume all' : '❚❚ Pause all'}</button>

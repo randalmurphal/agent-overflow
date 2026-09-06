@@ -69,11 +69,12 @@ async function openShipChangesDrawer(rendered: DrawerRendered) {
   // caret toggle to open the menu, then the Ship Changes item. Post-Popover
   // migration the dropdown renders as a portaled menu so we look up the
   // menuitem by role rather than by its old hand-rolled testid.
-  const menuTrigger = rendered.container.querySelector(
+  await waitFor(() => expect(rendered.container.querySelector(
     'button[aria-label="More git actions"]',
-  ) as HTMLButtonElement | null;
-  expect(menuTrigger).not.toBeNull();
-  await fireEvent.click(menuTrigger!);
+  )).not.toBeNull(), { timeout: 5000 });
+  await fireEvent.click(rendered.container.querySelector<HTMLButtonElement>(
+    'button[aria-label="More git actions"]',
+  )!);
   await flush();
   const shipItem = await rendered.findByRole('menuitem', { name: /Ship Changes/i });
   await fireEvent.click(shipItem);

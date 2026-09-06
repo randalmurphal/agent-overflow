@@ -40,6 +40,8 @@ export const AUTH_REASON_CODES = [
   'passkey_unavailable',
   'passkey_challenge_unknown',
   'passkey_refused',
+  'temporarily_unavailable',
+  'refresh_superseded',
 ] as const;
 
 export type AuthReasonCode = (typeof AUTH_REASON_CODES)[number];
@@ -60,6 +62,16 @@ export interface AuthReasonPresentation {
 }
 
 const PRESENTATIONS: Record<AuthReasonCode, AuthReasonPresentation> = {
+  temporarily_unavailable: {
+    title: 'This computer could not renew your sign-in yet.',
+    hint: 'Try reconnecting. Your pairing has been kept.',
+    retryable: true,
+  },
+  refresh_superseded: {
+    title: 'This sign-in has already been renewed.',
+    hint: 'Reconnect to use the latest sign-in saved on this device.',
+    retryable: false,
+  },
   // Nothing was presented. Almost always a client that has not paired yet,
   // or one whose stored credential was cleared with the browser's data.
   missing_proof: {

@@ -53,6 +53,11 @@ func (a *App) SaveDraft(ctx context.Context, threadID string, content string, at
 	if a.store == nil {
 		return fmt.Errorf("draft store not initialized")
 	}
+	unlock, err := a.threadApplication().LockMutable(ctx, threadID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	attachmentsJSON, err := json.Marshal(slicesx.OrEmpty(attachmentIDs))
 	if err != nil {
 		return fmt.Errorf("save draft: encode attachment ids: %w", err)
@@ -130,6 +135,11 @@ func (a *App) ClearDraft(ctx context.Context, threadID string) error {
 	if a.store == nil {
 		return fmt.Errorf("draft store not initialized")
 	}
+	unlock, err := a.threadApplication().LockMutable(ctx, threadID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	return a.removeThreadDraft(clientOf(ctx), threadID)
 }
 
@@ -144,6 +154,9 @@ func (a *App) DeleteEmptyDraftThread(threadID string) (bool, error) {
 	}
 	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()
+	if err := a.threadApplication().CheckMutable(threadID); err != nil {
+		return false, err
+	}
 	if a.hasActiveSession(threadID) {
 		return false, nil
 	}

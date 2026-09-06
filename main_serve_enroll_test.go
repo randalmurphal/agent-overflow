@@ -123,7 +123,7 @@ func TestServeEnrollmentUnderAServiceManagerNamesTheRemedy(t *testing.T) {
 	if strings.Count(text, "\n") != 1 {
 		t.Fatalf("wrote %d lines, want exactly one:\n%s", strings.Count(text, "\n"), text)
 	}
-	if !strings.Contains(text, "agent-overflow serve") {
+	if !strings.Contains(text, "agent-overflow pair --lan") {
 		t.Fatalf("the notice does not name the remedy:\n%s", text)
 	}
 }

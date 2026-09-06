@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { threadHasScope } from '../../transport/entityScopes';
   // The thread title's regenerate affordance: a refresh glyph beside the
   // title that re-titles the thread from its conversation so far. Sits in
   // ChatHeader only — the terminal pane header shares the title handle but a
@@ -20,13 +21,12 @@
     regenerateThreadTitle,
     titleGenerationPending,
   } from '../../stores/threadTitleGeneration.svelte';
-  import { hasScope } from '../../transport/scopes';
 
   let { pane }: { pane: PaneSession } = $props();
 
   let pending = $derived(pane.threadId ? titleGenerationPending(pane.threadId) : false);
   // Regenerating a title runs a provider turn and writes the thread.
-  let ungranted = $derived(!hasScope('threads:operate'));
+  let ungranted = $derived(!threadHasScope('threads:operate', pane.threadId, pane.thread?.projectId));
 </script>
 
 {#if pane.thread}

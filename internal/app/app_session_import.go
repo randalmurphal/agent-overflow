@@ -362,6 +362,7 @@ func (a *App) sessionImporter() *sessionimport.Manager {
 
 func (a *App) newSessionImportManager(config sessionimport.ManagerConfig) *sessionimport.Manager {
 	config.Context = a.lifeCtx
+	config.BeginWork = a.workAdmission.begin
 	config.ResolveDeps = a.sessionImportDeps
 	config.ValidateStart = func() error {
 		if a.store == nil {

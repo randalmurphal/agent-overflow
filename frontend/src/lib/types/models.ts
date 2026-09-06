@@ -9,6 +9,8 @@ export type RuntimeMode =
   | "full-access";
 
 export interface Thread {
+  /** Monotonic move ownership; absent on older hosts means zero. */
+  ownershipEpoch?: number;
   id: string;
   title: string;
   provider: ProviderID;

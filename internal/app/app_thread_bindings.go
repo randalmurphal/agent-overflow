@@ -109,6 +109,11 @@ type ThreadTitleGenerationEvent struct {
 //ao:scope threads:operate
 //ao:route selected
 func (a *App) CreateThread(ctx context.Context, opts CreateThreadOptions) (store.Thread, error) {
+	endWork, admitErr := a.workAdmission.begin(ctx)
+	if admitErr != nil {
+		return store.Thread{}, admitErr
+	}
+	defer endWork()
 	settingsBucket, settingsClass := a.callerSettingsScreen(ctx)
 	thread, err := a.threadApplication().Create(threadapp.CreateOptions{
 		ProjectID:                  opts.ProjectID,
@@ -237,6 +242,11 @@ func (a *App) GetThread(id string) (store.Thread, error) { return a.threadApplic
 //ao:scope threads:operate
 //ao:route thread
 func (a *App) RenameThread(id string, title string) error {
+	unlock, err := a.threadApplication().LockMutable(context.Background(), id)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if err := a.threadApplication().Rename(id, title); err != nil {
 		return err
 	}
@@ -266,6 +276,11 @@ func (a *App) RenameThread(id string, title string) error {
 //ao:scope threads:operate
 //ao:route thread
 func (a *App) MarkThreadRead(id string) error {
+	unlock, err := a.threadApplication().LockMutable(context.Background(), id)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), markThreadReadTimeout)
 	defer cancel()
 	row, changed, err := a.threadApplication().MarkRead(ctx, id)
@@ -283,6 +298,11 @@ func (a *App) MarkThreadRead(id string) error {
 //ao:scope threads:operate
 //ao:route thread
 func (a *App) MarkThreadUnread(id string) error {
+	unlock, err := a.threadApplication().LockMutable(context.Background(), id)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	row, changed, err := a.threadApplication().MarkUnread(id)
 	if err != nil {
 		return err
@@ -297,6 +317,11 @@ func (a *App) MarkThreadUnread(id string) error {
 //ao:scope threads:operate
 //ao:route thread
 func (a *App) PinThread(id string) (store.Thread, error) {
+	unlock, err := a.threadApplication().LockMutable(context.Background(), id)
+	if err != nil {
+		return store.Thread{}, err
+	}
+	defer unlock()
 	row, changed, err := a.threadApplication().Pin(id)
 	if err != nil {
 		return store.Thread{}, err
@@ -311,6 +336,11 @@ func (a *App) PinThread(id string) (store.Thread, error) {
 //ao:scope threads:operate
 //ao:route thread
 func (a *App) SetThreadPinGroup(id string, group int) (store.Thread, error) {
+	unlock, err := a.threadApplication().LockMutable(context.Background(), id)
+	if err != nil {
+		return store.Thread{}, err
+	}
+	defer unlock()
 	row, changed, err := a.threadApplication().SetPinGroup(id, group)
 	if err != nil {
 		return store.Thread{}, err
@@ -324,6 +354,11 @@ func (a *App) SetThreadPinGroup(id string, group int) (store.Thread, error) {
 //ao:scope threads:operate
 //ao:route thread
 func (a *App) UnpinThread(id string) (store.Thread, error) {
+	unlock, err := a.threadApplication().LockMutable(context.Background(), id)
+	if err != nil {
+		return store.Thread{}, err
+	}
+	defer unlock()
 	row, changed, err := a.threadApplication().Unpin(id)
 	if err != nil {
 		return store.Thread{}, err
@@ -347,6 +382,11 @@ func (a *App) UnpinThread(id string) (store.Thread, error) {
 //ao:scope threads:operate
 //ao:route thread
 func (a *App) UpdateThreadProvider(id, providerName string) (store.Thread, error) {
+	unlock, err := a.threadApplication().LockMutable(context.Background(), id)
+	if err != nil {
+		return store.Thread{}, err
+	}
+	defer unlock()
 	update, err := a.threadApplication().UpdateProvider(id, providerName)
 	if err != nil {
 		return store.Thread{}, err
@@ -360,6 +400,11 @@ func (a *App) UpdateThreadProvider(id, providerName string) (store.Thread, error
 //
 //ao:scope threads:operate
 func (a *App) UpdateThreadModel(threadID string, model string) (store.Thread, error) {
+	unlock, err := a.threadApplication().LockMutable(context.Background(), threadID)
+	if err != nil {
+		return store.Thread{}, err
+	}
+	defer unlock()
 	update, err := a.threadApplication().UpdateModel(threadID, model)
 	if err != nil {
 		return store.Thread{}, err
@@ -374,6 +419,11 @@ func (a *App) UpdateThreadModel(threadID string, model string) (store.Thread, er
 //
 //ao:scope threads:operate
 func (a *App) UpdateThreadModelSelection(threadID string, providerName string, model string) (store.Thread, error) {
+	unlock, err := a.threadApplication().LockMutable(context.Background(), threadID)
+	if err != nil {
+		return store.Thread{}, err
+	}
+	defer unlock()
 	update, err := a.threadApplication().UpdateModelSelection(threadID, providerName, model)
 	if err != nil {
 		return store.Thread{}, err
@@ -388,6 +438,11 @@ func (a *App) UpdateThreadModelSelection(threadID string, providerName string, m
 //ao:scope threads:operate
 //ao:route thread
 func (a *App) UpdateThreadReasoningEffort(id, effort string) (store.Thread, error) {
+	unlock, err := a.threadApplication().LockMutable(context.Background(), id)
+	if err != nil {
+		return store.Thread{}, err
+	}
+	defer unlock()
 	_, changed, err := a.threadApplication().UpdateReasoningEffort(id, effort)
 	if err != nil {
 		return store.Thread{}, err
@@ -412,6 +467,11 @@ func (a *App) UpdateThreadReasoningEffort(id, effort string) (store.Thread, erro
 //ao:scope threads:operate
 //ao:route thread
 func (a *App) UpdateThreadFastMode(id string, on bool) (store.Thread, error) {
+	unlock, err := a.threadApplication().LockMutable(context.Background(), id)
+	if err != nil {
+		return store.Thread{}, err
+	}
+	defer unlock()
 	_, changed, err := a.threadApplication().UpdateFastMode(id, on)
 	if err != nil {
 		return store.Thread{}, err
@@ -480,6 +540,11 @@ func (a *App) UpdateThreadBranch(workspacePath, branch string) ([]store.Thread, 
 func (a *App) DeleteThread(id string) error {
 	unlock := a.threadLocks().Lock(id)
 	defer unlock()
+	// A stale thread action must discover its new owner. Only host-local
+	// project/retention cleanup may discard a confirmed move's old cache.
+	if err := a.threadApplication().CheckMutable(id); err != nil {
+		return err
+	}
 	return a.deleteThreadTreeLocked(id)
 }
 
@@ -556,6 +621,11 @@ func (a *App) UpdateThreadWorkspace(id, path string) (store.Thread, error) {
 //
 //ao:scope threads:autonomy
 func (a *App) UpdateThreadMode(threadID string, mode string) (store.Thread, error) {
+	unlock, err := a.threadApplication().LockMutable(context.Background(), threadID)
+	if err != nil {
+		return store.Thread{}, err
+	}
+	defer unlock()
 	update, err := a.threadApplication().UpdateMode(threadID, mode)
 	if err != nil {
 		return store.Thread{}, err

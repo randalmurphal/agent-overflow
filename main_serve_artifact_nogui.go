@@ -19,9 +19,8 @@ import "runtime"
 // WebKit that a server has no libraries for, and the failure would arrive as a
 // trial that will not start rather than as a wrong choice anyone could see.
 //
-// The reasoning for the empty answers is on the `!nogui` half, which is where
-// darwin and windows are decided; this build only ever runs on linux, so it
-// states the same rule and reaches the same place.
+// No standalone nogui release is published for macOS or Windows. A Mac
+// serve host installs the ordinary app bundle; Windows uses its WSL launcher.
 func serviceArtifactPlatform() string {
 	if runtime.GOOS != "linux" {
 		return ""

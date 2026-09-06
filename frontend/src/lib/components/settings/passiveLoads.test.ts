@@ -177,9 +177,9 @@ describe('settings sections issue no passive RPC they were not granted', () => {
       render(DevicesSection);
       await waitFor(() => expect(bindings.overview).toHaveBeenCalled());
       await waitFor(() => expect(bindings.passkeys).toHaveBeenCalled());
-      // …and still does not reach for the section beside it, which holds
-      // the same grant and loads itself.
-      expect(bindings.network).not.toHaveBeenCalled();
+      // Pairing checks whether LAN or tailnet is reachable before warning
+      // the owner; this read uses the same admin grant as the device list.
+      expect(bindings.network).toHaveBeenCalledTimes(1);
     });
 
     it('does not ask a view-only device’s session for it', async () => {

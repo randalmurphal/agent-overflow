@@ -56,21 +56,21 @@ address on the command line is an override on purpose.
 Agent Overflow is serving on 0.0.0.0:7777
   Open:    https://ao.example.com/
   Tailnet: https://host.tail1234.ts.net/
-  Token:   <this launch's token>
+  Pair a device: agent-overflow pair (add --lan to enable LAN access)
 ```
 
 The bound address is always printed. The rest appears only when it is a
 fact — the URL comes from the same formatter Settings → Remote access reads, so
-the two cannot disagree. A cleartext LAN URL prints a warning naming the
-remedy, because that URL carries the token in the open.
+the two cannot disagree. Addresses in service logs carry no credentials or page tickets. Cleartext
+browser access names the HTTPS/tailnet remedy.
 
 The tailnet line is usually absent at this moment even when the node is
 enabled: bring-up is asynchronous and a first sign-in is interactive.
 Settings → Remote access is where you watch that finish.
 
-The token is the launch credential. It is what a same-host
-`agent-overflow --connect` uses to attach. A device on another machine
-pairs instead and never sees it.
+The launch credential stays in the private local rendezvous file. Running the
+desktop app on the same computer opens a window on the existing service; closing
+that window leaves the service running. A device elsewhere pairs instead.
 
 **It keeps credentials in files, not a keychain.** See below.
 
@@ -135,17 +135,25 @@ so there is nobody to compare a number with. In that case serve does not
 mint a link at all. It logs one line:
 
 > No device is paired with this backend, and nothing here can confirm a new
-> one: stop the service and run `agent-overflow serve` from a terminal once
-> to pair your first device.
+> one: run `agent-overflow pair --lan` from a terminal to pair a device while
+> the service keeps running.
 
-Do that once, then start the service. After the first device exists, every
-later device is paired from Settings → Access on the device you already
-have, and the console never says anything again.
+`agent-overflow pair` connects to an already running backend using its private
+local rendezvous. It prints a one-time invitation and asks for the six-digit
+number after redemption. Compare both screens before entering it. `--lan`
+enables LAN access and preserves existing tailnet/TLS settings; omit it when
+the configured tailnet route is already available. This works for the first
+or any later device, including over SSH, without opening a desktop window or
+restarting the service. Closing this console cancels an unfinished invitation
+and leaves the backend running. `--json` carries the same ceremony as bounded
+setup records for a desktop SSH client; confirmation remains on stdin.
 
 ## Running it as a service
 
 ```
 agent-overflow service install [--listen <host:port>] [--binary <path>]
+agent-overflow service start
+agent-overflow service stop
 agent-overflow service update [--binary <path>]
 agent-overflow service uninstall
 agent-overflow service status
@@ -162,9 +170,18 @@ in a shell conditional. `uninstall` stops the service and deletes the unit and
 NOTHING else — the config root, the history and the paired devices are all
 still there, and installing again picks them back up.
 
-**Pair your first device before installing.** A service manager gives the
-backend no terminal, and the console enrollment above needs one. Run
-`agent-overflow serve` by hand, pair, Ctrl-C, then install.
+For persistent hosting, install once and pair while it runs:
+
+```sh
+agent-overflow service install
+agent-overflow pair --lan
+```
+
+For an occasional computer, `agent-overflow service start` starts the installed
+backend without opening a window; `service stop` leaves the unit and data in
+place. Services start again at the next login. On macOS, stopping waits for the
+supervisor PID to disappear before an update can stage a replacement. Platform
+login/logout limits are described below.
 
 | Platform | What gets installed |
 |---|---|
@@ -318,8 +335,8 @@ time on a single goroutine, so no two can overlap:
    which is why it sits between the stop and the start rather than anywhere
    more convenient.
 4. **Trial.** The target starts, told over the channel that it is a trial. It
-   boots fully — migrations, transport bind, ready — and **answers RPCs**, but
-   every subsystem that could take an action of its own waits at one gate.
+   boots fully — migrations, transport bind, ready — and answers read-only
+   health probes. Client requests and unattended actions wait at one gate.
 5. **Prepared.** The trial says it got there. The supervisor writes the commit
    durably *first*, then deletes the snapshot, then tells the trial — which
    opens its gate and starts behaving like an ordinary backend.
@@ -331,8 +348,10 @@ The trial's parked set is the second half of the rollback boundary. A restored
 database undoes everything **inside** it, and nothing outside: a `git fetch`,
 a refreshed provider credential, an ACME order, a retention sweep that deleted
 attachment files, a workflow turn that spent real tokens. So none of those runs
-until commit. Serving RPCs while parked is correct — that is what "prepared"
-means.
+until commit. Client requests wait too: a refreshed phone credential or an
+accepted command cannot escape a database snapshot that might be restored.
+Health probes remain available. A request whose client disconnects while
+waiting is abandoned, so a canceled connection does not perform a late write.
 
 ### What you see when one rolls back
 
@@ -368,6 +387,8 @@ would return to — after each commit.
 ### Updating locally
 
 ```
+agent-overflow service start
+agent-overflow service stop
 agent-overflow service update [--binary <path>]
 ```
 
@@ -413,17 +434,23 @@ The update carries an id, so what it shows after the restart is the outcome of
 **your** update — committed, rolled back, or failed with the reason — rather
 than "the backend restarted".
 
+While this host advertises cancellation, **Cancel update** stops preparation.
+A canceled download or preflight cannot later request a restart. After the
+supervisor handoff starts, the update must finish its trial or rollback;
+cancellation is no longer offered. Closing the phone or changing networks does
+not cancel an update. Older hosts without this capability show their existing
+progress controls.
+
 Two things it needs, and both are stated rather than assumed:
 
 - **A step-up proof.** Installing different code on a machine is in the same
   set as minting a pairing link or changing the listener's binding: you are
   either at the machine, or you satisfy a passkey challenge from the device
   you are holding.
-- **A release artifact this host can install as one file.** The Linux binaries
-  qualify (the headless one takes `agent-overflow-headless-linux-amd64` and the
-  ordinary one takes `agent-overflow-linux-amd64`). macOS does not: its release
-  artifact is an app-bundle zip, which the supervisor stages nothing of, so a
-  macOS serve host says so on the screen and is updated locally.
+- **A release artifact this host can install.** Linux hosts use their matching
+  headless or ordinary executable. macOS hosts use the complete app-bundle ZIP,
+  with resources and internal framework links preserved. The staged entry point
+  also works with older supervisors; the usual trial and rollback still apply.
 
 ## Bind and port
 
@@ -578,3 +605,46 @@ and restarting it. That is also why a desktop install can never be
 handed the headless artifact by accident: release assets are matched by exact
 name rather than by looking for "linux" somewhere in one
 (`internal/appupdate/assetmatch.go`).
+
+## Connecting and starting over SSH
+
+On a desktop, Computers → Connect over SSH uses an existing SSH host alias or
+`user@hostname`. SSH keys/agent and known-host verification work as they do in
+OpenSSH; there is no password storage in AO. If this is the first SSH connection
+to that host, establish it once in a terminal and verify its host key. An
+unknown or changed key is refused, with the SSH error shown in the dialog.
+
+Install AO on the remote computer first. For persistent hosting, run
+`agent-overflow service install`; use `agent-overflow serve` for a manual host.
+The dialog can start an already installed service and optionally enable LAN
+access. If the executable is not on the remote noninteractive PATH, enter its
+absolute path under Startup & network. The backend runs on macOS, Linux or WSL.
+
+The dialog compares both sides of the pairing number before confirmation and
+remembers the SSH alias and executable on this desktop. An offline computer
+then offers Start over SSH, which starts its service using the existing pairing.
+Closing the console does not stop the service. If the whole machine is powered
+off, it must be powered on before SSH can reach it. Phones connect directly to
+paired hosts and do not use the desktop's SSH credentials.
+
+Every backend takes an OS-held `backend.lock` before opening its data. A current
+supervisor owns this lock through update snapshots, trial boots and rollback.
+Its activate frame explicitly tells the child who holds it; an older supervisor
+omits that additive field, so a new child takes its own lock. A crashed owner
+releases the lock through the OS, without deleting or repairing a PID file.
+
+A remotely requested update downloads and verifies while the computer remains
+usable. After staging, it waits for turns, queued messages, workflows, remote
+commands, active transfer operations, and background work to finish. Close open
+terminals when the update asks: their shells may still own running programs.
+Sign-in sessions, credential refreshes, worktree setup and session imports also
+finish before restart. Finish or cancel a pending sign-in to release its wait.
+The update card names what it is waiting for and offers **Cancel update** until
+the supervisor handoff begins. The wait has no fixed deadline. Canceling keeps
+the current version running; an accepted restart fences new work until the next
+backend is ready. Parked conversation transfers resume from their journal.
+
+If the supervisor's reply is lost, the backend drains and restarts to check the
+saved outcome. It does not accept another update or new work in that uncertain
+window. This also works with a manually running current supervisor; older
+supervisors rely on the installed launchd/systemd service to restart them.

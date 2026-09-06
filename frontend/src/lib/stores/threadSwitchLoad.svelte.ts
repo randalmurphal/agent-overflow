@@ -1,3 +1,6 @@
+import { threadHasScope } from '../transport/entityScopes';
+import { threadBackend } from '../transport/entityIndex';
+import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import type { Item, Thread } from '../types/models';
 import type {
   ContextWindow,
@@ -16,7 +19,6 @@ import {
   type SyncThreadWindowResult,
 } from './bindings';
 import { addToast } from './toast.svelte';
-import { hasScope } from '../transport/scopes';
 import { errString } from '../utils/errors';
 import {
   createRefreshScheduler,
@@ -52,7 +54,6 @@ import {
   getReplicaWindow,
   putReplicaWindow,
   removeReplicaWindow,
-  replicaToken,
   type ReplicaBody,
 } from '../replica';
 import {
@@ -368,7 +369,7 @@ export function createThreadSwitchLoad(
    * rows into the new replica.
    */
   let windowAttestation:
-    | { epoch: number; rev: number; generation: string }
+    | { epoch: number; rev: number; generation: string; backend: BackendKey }
     | null = null;
   /**
    * Pending debounced replica write-back for the OPEN thread. The
@@ -439,10 +440,12 @@ export function createThreadSwitchLoad(
    * attestation describes them, so it must not outrun them.
    */
   function attestCurrentWindow(epoch: number, rev: number): void {
+    const backend = threadBackend(options.getThread()?.id ?? '') ?? HOME_BACKEND;
     windowAttestation = {
+      backend,
       epoch,
       rev,
-      generation: getBackendIdentity().generation,
+      generation: getBackendIdentity(backend).generation,
     };
   }
 
@@ -505,7 +508,8 @@ export function createThreadSwitchLoad(
     // A generation re-mint invalidated every stamp read from the old
     // lineage, including this one; the rows it names belong to a history
     // the backend no longer has.
-    if (attestation.generation !== getBackendIdentity().generation) return;
+    const backend = threadBackend(threadId) ?? HOME_BACKEND;
+    if (attestation.backend !== backend || attestation.generation !== getBackendIdentity(backend).generation) return;
     // Unlike L1, the replica cannot hold rows without a stamp — the
     // envelope IS the pairing. A window with an unconfirmed row in it
     // has nothing to pair, so it simply is not written; the previous
@@ -1030,7 +1034,7 @@ export function createThreadSwitchLoad(
 
     try {
       if (!cached) {
-        const body = await getReplicaWindow(threadId, replicaToken());
+        const body = await getReplicaWindow(threadId);
         if (gen !== options.getSwitchGeneration()) return;
         if (body) {
           paintReplicaWindow(body, threadId);
@@ -1061,7 +1065,8 @@ export function createThreadSwitchLoad(
       // painted rows. The global observation still has to happen — it
       // is what wipes the replica, the stamp registry and L1 — but the
       // decision this leg makes is per-leg.
-      const believed = getBackendIdentity();
+      const backend = threadBackend(threadId) ?? HOME_BACKEND;
+      const believed = getBackendIdentity(backend);
       let sentStamp = haveStamp;
       let response = await ask(sentStamp);
       if (gen !== options.getSwitchGeneration()) return;
@@ -1074,7 +1079,7 @@ export function createThreadSwitchLoad(
       // dead lineage, so a page-less answer — even `fresh`, ESPECIALLY
       // `fresh`, which can be a coincidental counter match across
       // lineages — cannot be trusted and is re-asked stampless.
-      const observed = observeBackendGeneration(response.generation);
+      const observed = observeBackendGeneration(response.generation, backend);
       const lineageChanged =
         observed ||
         (believed.backendId !== '' &&
@@ -1196,7 +1201,7 @@ export function createThreadSwitchLoad(
     // day, so issuing them anyway would put a refusal — and, for the
     // first, a toast — on every open. The row the pane already holds
     // from the thread list is what SwitchThread would have returned.
-    const mayOperate = hasScope('threads:operate');
+    const mayOperate = threadHasScope('threads:operate', newThread.id, newThread.projectId);
     const switchPromise = (async () => {
       if (!mayOperate) return;
       try {

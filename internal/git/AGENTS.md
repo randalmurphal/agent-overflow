@@ -50,6 +50,58 @@ status, diff, branches, commits, worktrees, and PR/MR creation.
   Origin only, `--quiet`, never `--prune` and never extra tags: a timer
   must not move or delete refs the user can see. The same rule binds the
   seed fetch. It reads `origin/<base>` as a start point and moves no ref.
+- `transfer_objects.go`: portable stage-zero index records and bounded object
+  packs for computer handoff. Source export never changes refs, commits, the
+  index or checkout. Include staged blobs as well as HEAD history; excluding
+  known destination commits avoids repacking shared history. Gitlinks are
+  another repository's commit IDs, never blob inputs. Validate modes, full
+  object IDs, portable paths and path collisions before index writes. Imported
+  packs enter the destination object store; restored indexes belong to locked,
+  registered preparation worktrees, whose HEAD/index retain those objects.
+  Activation owns publication. Working files and intent-to-add flags are separate snapshot
+  data, not inferred from the saved stage-zero entries.
+  Large packs use `commandSpec.input/output` through the same runner, with an
+  explicit byte cap and app-lifetime timeout. A destination write/cap failure
+  cancels the child; stderr retains its ordinary small diagnostic cap. Never
+  collect a pack into `commandResult.stdout` or raise stderr's cap to pack size.
+- `transfer_workspace.go` captures working deltas plus intent-to-add,
+  skip-worktree and assume-unchanged flags. Hidden working edits count too.
+  Build the archive, then verify the captured Git/file identities before sealing;
+  provider idleness alone cannot stop an external editor. Symlinks travel as
+  link text, never dereferenced bytes. Reserved Git metadata paths and final
+  file/link prefix collisions are refused before materialization.
+  `PrepareTransferWorktree` creates a NEW, locked, registered worktree under an
+  operation-specific hidden staging name. It preserves staged bytes independently
+  of working bytes, including deleted intent entries and file/directory replacements.
+  Optional branches are new reservations, never resets of existing branches.
+  Preflight expanded blob sizes counts each index path (reused blobs count each
+  time) and the final working deltas before writing checkout files. Raw
+  `cat-file --batch` output streams through one bounded header/file/link decoder;
+  never use checkout filters here. Source attribute/line-ending conversions are
+  compared with raw blob hashes and carried as working bytes even when Git's
+  clean comparison reports no changes. Attribute triples stream without retaining
+  repeated paths. Intent-to-add uses Git's own LOCAL index writer in an isolated
+  temporary repository/worktree, because even `git add -N` runs clean/encoding
+  filters on placeholders. No source binary index is portable input.
+  Preparation retries discard only the locked, marked worktree for that exact
+  operation. A sibling `.cleanup.json` marker survives removal of the worktree
+  until its reserved branch has also been compare-and-deleted. Never infer
+  cleanup ownership from the directory name alone, and never remove a published
+  checkout as preparation cleanup.
+  Its private marker binds every publication coordinate. `PublishTransferWorktree`
+  also verifies the durable recipe's working-content/semantic-index fingerprint.
+  Preparation hashes and flushes in one bounded walk; activation rechecks bytes,
+  paths, modes, symlinks, staged object identities and index flags. Index stat
+  caches are excluded so an ordinary status refresh cannot invalidate a transfer.
+  The initial marker is never rewritten with a partial content baseline: cleanup
+  matches coordinates, while the returned activation recipe owns the fingerprint.
+  `PublishTransferWorktree`
+  uses the platform's atomic no-replace rename, then repairs Git back-references;
+  a restart after rename retries against that exact marker. Never substitute a
+  stat-then-rename or `--shared` clone: those respectively permit replacement
+  races and losing staged-only blobs to ordinary Git garbage collection.
+  Ignored files stay local; submodules and unborn repositories currently give
+  specific preflight refusals for workspace transfer.
 - `actions.go`: staging, commits, push/pull, branch create/checkout/
   rename. Worktree CRUD (`CreateWorktree*`, `RemoveWorktree*`,
   `ListWorktrees`) lives in `core.go` next to the `Worktree` struct

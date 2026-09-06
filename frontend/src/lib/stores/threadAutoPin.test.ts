@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import { makeSettings } from '../../test/helpers/settings';
-import { loadSettings } from './settings.svelte';
+import { loadSettingsFixture as loadSettings } from '../../test/helpers/settingsFixture';
 import { autoPinNewThread, shouldAutoPinFirstSend } from './threadAutoPin';
 import { getToasts, removeToast } from './toast.svelte';
 import type { Thread } from '../types/models';

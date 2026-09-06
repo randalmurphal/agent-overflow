@@ -64,6 +64,7 @@ describe('presentAuthReason', () => {
     'outside_time_window',
     'pending_confirmation',
     'proof_replayed',
+    'temporarily_unavailable',
   ]);
 
   it('marks the credential refusals as not retryable', () => {

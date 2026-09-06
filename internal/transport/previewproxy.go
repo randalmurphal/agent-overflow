@@ -70,6 +70,18 @@ func (g *PreviewGateway) handler(target PreviewTarget, conns *previewConns) http
 func (g *PreviewGateway) exchange(
 	w http.ResponseWriter, r *http.Request, ticket string, port int, cookieName string,
 ) bool {
+	g.mu.Lock()
+	if g.closed {
+		g.mu.Unlock()
+		return false
+	}
+	g.exchanges++
+	g.mu.Unlock()
+	defer func() {
+		g.mu.Lock()
+		g.exchanges--
+		g.mu.Unlock()
+	}()
 	subject, ok := g.tickets.consume(ticket)
 	if !ok {
 		return false

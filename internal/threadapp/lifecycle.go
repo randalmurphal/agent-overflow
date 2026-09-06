@@ -30,7 +30,7 @@ func (s *Service) Get(threadID string) (store.Thread, error) {
 	if err != nil {
 		return store.Thread{}, err
 	}
-	return database.GetThread(threadID)
+	return database.GetOwnedThread(threadID)
 }
 
 // Archive, Unarchive, MarkRead, MarkUnread, Pin, SetPinGroup and Unpin all

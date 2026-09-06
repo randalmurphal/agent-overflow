@@ -53,6 +53,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         registerPlugin(BundlePlugin.class);
+        registerPlugin(dev.agentoverflow.app.network.NetworkPlugin.class);
         registerPlugin(dev.agentoverflow.app.push.PushPlugin.class);
 
         bundles = new BundleStore(BundlePlugin.rootFor(getFilesDir()));

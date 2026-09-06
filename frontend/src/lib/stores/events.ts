@@ -1,3 +1,5 @@
+import { invalidateClaudeProbeCommands } from './providerCommands.svelte';
+import { installComputerHydration } from './computerHydration';
 // Composition root for backend event wiring. `setupEventListeners()` is the
 // single place that subscribes to every Wails channel and fans events out
 // into the domain modules that actually own the reaction:
@@ -53,7 +55,7 @@ import type { UserMessageRevertedEvent } from '../types/messageRevert';
 import { setSystemStats } from './systemStats.svelte';
 import { applyThreadGroupUpdated } from './threadGroups.svelte';
 import { transportGapChannel } from '../transport/wsClient';
-import { backendKeyForOrigin } from '../transport/backends';
+import { attachedBackends, backendKeyForOrigin } from '../transport/backends';
 import {
   forgetProject,
   forgetThread,
@@ -77,7 +79,6 @@ import {
   type BackendAttachEvent,
   type BackendSetChangeEvent,
 } from './systems.svelte';
-import { applyChatBarFavorites } from './chatBarFavorites.svelte';
 import { applyNewThreadDefaults, type NewThreadDefaultsChangedEvent } from './newThreadDefaults';
 import { applyDiscussionDefinitionsChanged } from './discussionDefinitions.svelte';
 import { applyProviderAccountsChanged } from './providerAccounts.svelte';
@@ -203,6 +204,7 @@ import type { BrowserCompanionEvent } from './bindings';
  */
 export function setupEventListeners(): () => void {
   resetItemEventQueue();
+  const cancelComputerHydration = installComputerHydration();
 
   const cancelBrowserCompanionState = wailsEventOn<BrowserCompanionEvent>(
     'browser:companion-state',
@@ -220,11 +222,11 @@ export function setupEventListeners(): () => void {
   );
   const cancelUserInput = wailsEventOn<UserInputEvent>('provider:user_input', applyUserInputEvent);
 
-  const cancelUsage = wailsEventOn<UsageEvent>('provider:usage', applyUsageEvent);
+  const cancelUsage = wailsEventOn<UsageEvent>('provider:usage', (evt, origin) => applyUsageEvent(evt, backendKeyForOrigin(origin.backendId)));
   // Startup probes can finish before a first websocket connection has any
   // provider:usage sequence to replay. Install the live listener first, then
   // hydrate the backend's retained last-known account snapshots.
-  void hydrateRateLimitsSnapshots().catch((error) => {
+  if (attachedBackends().some((entry) => entry.home)) void hydrateRateLimitsSnapshots().catch((error) => {
     console.warn('events: hydrate rate-limit snapshots failed', error);
   });
   const cancelModelFallback = wailsEventOn<ModelFallbackEvent>(
@@ -232,7 +234,7 @@ export function setupEventListeners(): () => void {
     applyModelFallback,
   );
 
-  const cancelProviderStatus = wailsEventOn<ProviderStatusEvent>('provider:status', applyProviderStatus);
+  const cancelProviderStatus = wailsEventOn<ProviderStatusEvent>('provider:status', (evt, origin) => applyProviderStatus(evt, backendKeyForOrigin(origin.backendId)));
 
   // provider:account — account probe result on cache miss, plus login /
   // switch / removal transitions. Hydrates the global accountInfo store; the
@@ -243,7 +245,7 @@ export function setupEventListeners(): () => void {
   // snapshots are pulled above.
   const cancelProviderAccount = wailsEventOn<ProviderAccountEvent>(
     'provider:account',
-    applyProviderAccount,
+    (evt, origin) => applyProviderAccount(evt, backendKeyForOrigin(origin.backendId)),
   );
   void hydrateProviderAccounts().catch((error) => {
     console.warn('events: hydrate provider accounts failed', error);
@@ -259,9 +261,9 @@ export function setupEventListeners(): () => void {
   // channel replays nothing, so a client that attached mid-flow asks.
   const cancelProviderLoginState = wailsEventOn<ProviderLoginState>(
     'provider:login',
-    applyProviderLogin,
+    (evt, origin) => applyProviderLogin(evt, backendKeyForOrigin(origin.backendId)),
   );
-  void hydrateProviderLogins().catch((error) => {
+  if (attachedBackends().some((entry) => entry.home)) void hydrateProviderLogins().catch((error) => {
     console.warn('events: hydrate provider sign-in state failed', error);
   });
   const cancelProviderAccountUsageError = wailsEventOn<ProviderAccountUsageErrorEvent>(
@@ -281,7 +283,7 @@ export function setupEventListeners(): () => void {
   // the sidebar render.
   const cancelSystemStats = wailsEventOn<SystemStatsEvent>(
     'system:stats',
-    (evt) => {
+    (evt, origin) => {
       if (
         !evt
         || typeof evt.isWsl !== 'boolean'
@@ -291,7 +293,7 @@ export function setupEventListeners(): () => void {
       ) {
         return;
       }
-      setSystemStats(evt);
+      setSystemStats(evt, backendKeyForOrigin(origin.backendId));
     },
   );
 
@@ -325,15 +327,15 @@ export function setupEventListeners(): () => void {
   // any in-flight local write. See resyncSettings.
   const cancelSettingsUpdated = wailsEventOn<SettingsUpdatedEvent>(
     'settings:updated',
-    (payload) => {
-      void resyncSettings();
+    (payload, origin) => {
+      void resyncSettings(backendKeyForOrigin(origin.backendId));
       // The editor preference is a settings value with its own RPC and its
       // own store, sitting behind a catalog TTL that nothing invalidated —
       // so a change made anywhere else left every open header icon pointing
       // at the previous editor. Gated on the KEY the frame names, because
       // the re-read this triggers is a second RPC and every other settings
       // write would otherwise pay for it.
-      if (payload?.keys?.includes('editor')) void resyncEditorPreference();
+      if (payload?.keys?.includes('editor')) void resyncEditorPreference(backendKeyForOrigin(origin.backendId));
     },
   );
   // keybindings:updated — the user keybindings file was rewritten or reset,
@@ -343,13 +345,6 @@ export function setupEventListeners(): () => void {
   const cancelKeybindingsUpdated = wailsEventOn('keybindings:updated', () => {
     void resyncKeybindings();
   });
-  // chatbar:favorites — the starred model / discussion list, whole, after any
-  // client's write. `SetChatBarFavorite` answers with the same slice, so the
-  // writer's own echo settles on bytes it already applied.
-  const cancelChatBarFavorites = wailsEventOn<unknown>(
-    'chatbar:favorites',
-    (payload) => { applyChatBarFavorites(payload as never); },
-  );
   // chatbar:new-thread-defaults — the seed a future thread gets, plus the
   // project whose open draft placeholders adopt it. Without this a second
   // device's "+ New" composer kept the superseded model, effort and runtime
@@ -362,8 +357,10 @@ export function setupEventListeners(): () => void {
   // removal). Distinct from provider:account, which reports one card's
   // contents on every usage probe and can express neither an addition nor a
   // removal.
-  const cancelProviderAccountsChanged = wailsEventOn('provider:accounts_changed', () => {
-    applyProviderAccountsChanged();
+  const cancelProviderAccountsChanged = wailsEventOn('provider:accounts_changed', (_evt, origin) => {
+    const backend = backendKeyForOrigin(origin.backendId);
+    invalidateClaudeProbeCommands(backend);
+    applyProviderAccountsChanged(backend);
   });
   // discussion:definitions-changed — a discussion definition was created,
   // renamed, edited or deleted. Payload-less, the same shape
@@ -487,10 +484,13 @@ export function setupEventListeners(): () => void {
   const cancelThreadUpdated = wailsEventOn<ThreadUpdateEvent>('thread:updated', (evt, origin) => {
     const id = evt?.thread?.id ?? evt?.id;
     if (id) {
-      if (evt.action === 'deleted') forgetThread(id);
-      else noteThread(id, backendKeyForOrigin(origin.backendId));
+      const backend = backendKeyForOrigin(origin.backendId);
+      if (!noteThread(id, backend, evt.thread ? (evt.thread.ownershipEpoch ?? 0) : undefined)) return;
     }
     applyThreadUpdated(evt);
+    // Store removal needs the origin to invalidate that computer's catalog.
+    // Forgetting first would make the writer fall back to the home computer.
+    if (id && evt.action === 'deleted') forgetThread(id);
   });
 
   // thread:error_notice — a row of kind `error` was persisted on some
@@ -685,6 +685,7 @@ export function setupEventListeners(): () => void {
   );
 
   return () => {
+    cancelComputerHydration();
     cancelBrowserCompanionState();
     cancelItemEvent();
     flushItemEventQueue();
@@ -704,7 +705,6 @@ export function setupEventListeners(): () => void {
     cancelThreadCost();
     cancelSettingsUpdated();
     cancelKeybindingsUpdated();
-    cancelChatBarFavorites();
     cancelNewThreadDefaults();
     cancelProviderAccountsChanged();
     cancelDiscussionDefinitions();

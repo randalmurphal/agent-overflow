@@ -1,9 +1,11 @@
 <script lang="ts">
+  import type { BackendKey } from '../../transport/backendKey';
   import Modal from '../primitives/Modal.svelte';
   import Button from '../primitives/Button.svelte';
   import EditorLink from '../common/EditorLink.svelte';
 
   interface Props {
+    backend: BackendKey;
     open: boolean;
     workspacePath?: string;
     savePath: string;
@@ -13,7 +15,7 @@
     onSave: () => void | Promise<void>;
   }
 
-  let { open, workspacePath, savePath, saving, onPathChange, onClose, onSave }: Props = $props();
+  let { backend, open, workspacePath, savePath, saving, onPathChange, onClose, onSave }: Props = $props();
 </script>
 
 <Modal
@@ -29,7 +31,7 @@
       {#if workspacePath}
         <span class="inline-flex items-center gap-1 align-baseline">
           <code class="font-mono text-[0.75rem] bg-surface-2/50 px-1 rounded">{workspacePath}</code>
-          <EditorLink path={workspacePath} asIcon class="opacity-70 hover:opacity-100" />
+          <EditorLink {backend} path={workspacePath} asIcon class="opacity-70 hover:opacity-100" />
         </span>
       {:else}
         <code class="font-mono text-[0.75rem] bg-surface-2/50 px-1 rounded">the workspace</code>

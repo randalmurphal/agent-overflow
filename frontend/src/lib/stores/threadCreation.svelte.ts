@@ -13,6 +13,10 @@ import { addToast } from './toast.svelte';
 import { errString } from '../utils/errors';
 import type { DraftPlaceholderDefaults, ThreadPane } from './thread.svelte';
 import type { Project, Thread } from '../types/models';
+import { preferredProjectTarget } from './projectTargets';
+import { withBackendTarget } from '../transport/backends';
+import { noteThread, projectBackend } from '../transport/entityIndex';
+import { HOME_BACKEND } from '../transport/backendKey';
 
 interface DraftDefaultsRequest {
   token: object;
@@ -59,7 +63,8 @@ async function loadAndStartDraftPlaceholder(
   const request = beginDraftDefaultsRequest(pane);
   let defaults: DraftPlaceholderDefaults | undefined;
   try {
-    defaults = await GetThreadDefaults({ projectId: project.id, mode: 'chat' });
+    defaults = await withBackendTarget(projectBackend(project.id) ?? HOME_BACKEND,
+      () => GetThreadDefaults({ projectId: project.id, mode: 'chat' }));
   } catch (err) {
     console.warn('GetThreadDefaults failed; using empty placeholder defaults', err);
   }
@@ -89,8 +94,8 @@ async function loadAndStartDraftPlaceholder(
 export async function flipPaneDraftPlaceholder(
   pane: ThreadPane,
   project: Project,
-): Promise<void> {
-  await loadAndStartDraftPlaceholder(pane, project);
+): Promise<boolean> {
+  return loadAndStartDraftPlaceholder(pane, project);
 }
 
 /**
@@ -138,10 +143,11 @@ export async function openDraftThreadForProject(
 ): Promise<ThreadPane | null> {
   const { projectId, targetPane, openInNewPane = false } = options;
   expandProject(projectId);
-  const project = getProject(projectId)?.project;
-  if (!project) {
+  const source = getProject(projectId)?.project;
+  if (!source) {
     throw new Error('Project not found');
   }
+  const project = preferredProjectTarget(source);
   const pane: ThreadPane = openInNewPane
     ? openEmptyPane()
     : (targetPane ?? getFocusedPaneOrNull() ?? ensureMainPane());
@@ -200,7 +206,9 @@ export async function openTerminalThread(
   const { projectId, cwd } = options;
   let thread: Thread;
   try {
-    thread = await StartTerminal({ projectId, cwd });
+    const backend = projectId ? projectBackend(projectId) ?? HOME_BACKEND : HOME_BACKEND;
+    thread = await withBackendTarget(backend, () => StartTerminal({ projectId, cwd }));
+    noteThread(thread.id, backend, thread.ownershipEpoch ?? 0);
   } catch (err) {
     console.error('StartTerminal failed', err);
     addToast('error', `Could not start terminal: ${errString(err)}`);

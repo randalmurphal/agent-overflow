@@ -4,7 +4,8 @@ Read-only reader for Codex's own on-disk session state: the `state_5.sqlite`
 thread index and the rollout JSONL files it points at. It lists importable
 sessions (`List`) and converts a rollout into the neutral `internal/importir`
 stream the session-import writer consumes (`Parse`). Nothing here spawns a
-process, writes Codex state, or resolves the Codex home.
+process, writes live Codex state, or resolves the Codex home. Transfer copies
+write only a NEW caller-owned operation scratch directory.
 
 **The on-disk format is documented elsewhere.**
 [`docs/references/codex.md` §Rollout files on disk](../../../../docs/references/codex.md#rollout-files-on-disk)
@@ -236,6 +237,20 @@ status, without which ~99% of searches settle as unresolved.
 
 ## Testing and references
 
+### Conversation transfer files
+
+`transfer.go` collects explicit `thread/read` paths and their `history_base`
+closure. This targeted export does not change session listing or its immutable
+index reader. A reverted rollout's filename ID can differ from `session_meta.id`;
+prefix lookup uses the filename while root validation uses the native session ID.
+Only a prefix dependency triggers the bounded filename index over sessions and
+archived_sessions. Plain files take precedence over compressed siblings; zstd
+metadata reads have a bounded decoder. Unknown history modes, missing/ambiguous
+prefixes, cycles and excessive depth are refusals. Callers provide all child
+references and release provider writers before snapshotting. Archive bytes remain
+opaque; there is no path replacement in arbitrary historical text.
+
+
 Fixtures are hand-written into `t.TempDir()`: a `state_5.sqlite` built from a
 schema subset in `list_test.go`, and rollout JSONL written line by line. This
 package must never read the developer's real `~/.codex`, which holds live
@@ -248,3 +263,53 @@ on-disk format and how to read upstream. In `/home/rmurphy/repos/codex`,
 installed CLI, so cross-check against real files. `internal/importir/` is the
 neutral vocabulary this package emits, and `internal/provider/events.go` holds
 the `ProviderEvent` kinds.
+
+## Native transfers
+
+`TransferGraph` follows structured collaboration references as well as
+`history_base` prefixes. Native `thread/fork` copies only the root: its saved
+child IDs still name the originals. `CopyTransferFiles` therefore assigns
+operation-stable independent IDs to root, children and prefix files; it remaps
+only understood identity fields, preserving prose and unrelated tool payloads.
+Prefix files precede dependents. Re-encoding recomputes byte offsets at exact
+record boundaries and preserves ordinal coordinates. Incomplete records fail
+transfer rather than silently truncating the continuation.
+
+The source app calls `FlattenTransferFiles` before copying or moving a paginated
+prefix chain. It streams only retained records into a standalone native rollout,
+with the current header and contiguous ordinals. Both byte and ordinal cuts must
+agree; historical turn/item IDs and content payloads remain unchanged. Remap
+`subagent_history_start_ordinal` over removed metadata headers so inherited
+context stays outside the child's projected turns. A boundary beyond retained
+history is a refusal; `forked_from_ordinal_exclusive` names the logical parent
+and is not a coordinate on the child's rewritten file. The provider then
+rebuilds its own SQLite history index on resume. Copying a prefix chain alone
+preserves model context but leaves that index empty in a fresh home, breaking
+historical reverts (CLI 0.153.4 probe). `TransferGraph` likewise visits only retained
+prefix records: discarded future collaboration calls cannot pull unrelated
+sessions into a transfer. The session importer still reports `history_base` gaps;
+this transfer-specific materialization does not change its parsing contract.
+
+Current reverted filenames carry `<thread-id>_<rollout-id>`. `SessionIDFromPath`
+selects the first identity for native metadata; `rolloutFileIDs` supplies the
+second for prefix discovery and byte coordinates. Copy rewrites BOTH filename
+identities. A trailing UUID parser would confuse ownership with a history segment
+and reject current revert files (verified with CLI 0.153.4, 2026-09-05).
+Collaboration output can be a string or content-item array; decode structured
+results only in `input_text`, preserving image/audio/encrypted items. Nested JSON
+uses `UseNumber` too: UUID remapping must not round unrelated integer content.
+
+A fork can put its new header BEFORE an inherited source header. Prefer the
+explicit session ID, otherwise the filename's ID and finally the first header;
+never take the last metadata record. Current paths come from metadata-only
+app-server reads, not stale descendant indexes or guessed filenames.
+An injected home may use a filesystem alias the provider canonicalizes. Transfer
+resolves only that trusted home and repeats lexical containment against it; never
+stat an arbitrary rejected target to decide whether it was safe to read.
+
+`TransferMinimumVersion` reads every native member's declared history mode.
+Paginated history requires Codex 0.148.0; legacy uses AO's ordinary CLI floor,
+independent of the source's current binary version. Isolated Go-produced Move
+and Copy exports from 0.153.4 resumed, continued and reverted on 0.148.0.
+Upstream's [0.148 metadata contract](https://github.com/openai/codex/blob/rust-v0.148.0/codex-rs/protocol/src/protocol.rs)
+also carries child projection boundaries. Unknown modes remain refusals.

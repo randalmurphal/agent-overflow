@@ -52,6 +52,20 @@ What stays in `internal/app`:
   caller still owes its client a row.
 - Thread action locks self-clean through `internal/keyedlock`; callers never
   delete registry entries manually.
+- `LockMutable` is a separate, self-cleaning registry for ordinary edits and
+  queue admission. Transfer reservation takes action then mutation; a mutation
+  must never wait for action. This preserves composer saves during sends and
+  edit-resend sagas. `CheckMutable` checks AO and native ownership while either
+  lock is held, including tombstones whose display rows were deleted. Call it
+  before edits or execution. `CheckCleanup` additionally permits deleting a
+  confirmed outgoing move's local cache. It never releases an unconfirmed
+  handoff, calls native background cleanup, or removes the journal/native
+  retirement. Project/worktree cleanup uses that same distinction: retired
+  caches are never reattached or resumed. Store-only bulk metadata checks within its own
+  writer transaction instead. Neither registry is a cached ownership model.
+- Public metadata reads use `GetOwnedThread`, the same SQL ownership view as
+  lists. Internal `Store.GetThread` can still read a retained transfer cache;
+  exposing that row would restore a retired owner on reconnect.
 - Creation provenance is observed once, at creation, and never restated.
   `CreatedByDevice` arrives on the options struct (root reads it off the
   connection; this package only records it), and the git coordinates come

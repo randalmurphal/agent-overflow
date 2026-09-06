@@ -60,6 +60,9 @@ func (r *Router) HasPendingWork(threadID string) bool {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if identity := r.identityIfPresent(threadID); identity != nil && identity.pendingEchoes > 0 {
+		return true
+	}
 	st := r.threadStateIfPresent(threadID)
 	if st == nil {
 		return false

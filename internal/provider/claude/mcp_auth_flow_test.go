@@ -64,12 +64,14 @@ done
 	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
 		t.Fatalf("write mock Claude: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// This checks session cleanup, not response latency. Leave the scripted
+	// subprocess time to be scheduled alongside the full provider suite.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	flow, result, err := StartMCPAuth(ctx, MCPAuthConfig{
 		Config:         Config{Binary: binary, WorkDir: dir},
 		ReadCredential: func() ([]byte, error) { return nil, fs.ErrNotExist },
-		RequestTimeout: time.Second,
+		RequestTimeout: 5 * time.Second,
 	}, "srv")
 	if err != nil {
 		t.Fatalf("StartMCPAuth: %v", err)

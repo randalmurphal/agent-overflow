@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"log"
 
@@ -12,14 +13,14 @@ import (
 // OTHER machines this installation drives (docs/specs/remote-access.md
 // §10).
 //
-// All four are `host` scope, which is what makes them local-machine-only
+// These methods use `host` scope, which makes them local-machine-only
 // without a second rule: host presence is the only key that opens a host
 // method, and no session grant does. That matters more here than almost
 // anywhere else on the wire — a caller that could attach a backend could
 // point this installation at a machine of its choosing, and a caller that
 // could list them learns every computer this person works on.
 //
-// All four are `home` route: they act on THIS backend's own profile
+// They use `home` route: they act on THIS backend's own profile
 // directory. Asked of an attached backend they would answer about that
 // machine's attachments, which is a real thing to want one day and not
 // what this surface is.
@@ -121,6 +122,18 @@ func (a *App) AddBackend(pairingLink string) (BackendAttachment, error) {
 	return attachment, nil
 }
 
+// RepairBackendAddress verifies a new address using an existing pairing's
+// certificate trust. It never enrolls another device or replaces its session.
+//
+//ao:scope host
+//ao:route home
+func (a *App) RepairBackendAddress(ctx context.Context, id, endpoint string) (string, error) {
+	if a.backends == nil {
+		return "", errNoBackendProfiles
+	}
+	return a.backends.RepairAddress(ctx, id, endpoint)
+}
+
 // awaitAttachment runs one confirmation wait and announces how it ended.
 //
 // On the App's own context so a shutdown mid-wait ends it rather than
@@ -138,6 +151,8 @@ func (a *App) awaitAttachment(id string) {
 			outcome.Error = err.Error()
 		}
 		a.emit(eventchan.BackendAttach, outcome)
+		a.signalRemotePeers()
+		a.emit(eventchan.AgentComputersChanged, struct{}{})
 	}()
 }
 
@@ -155,6 +170,8 @@ func (a *App) RemoveBackend(id string) error {
 		return err
 	}
 	a.emit(eventchan.BackendSetChanged, BackendSetChange{Action: BackendSetRemoved, ID: id})
+	a.signalRemotePeers()
+	a.emit(eventchan.AgentComputersChanged, struct{}{})
 	return nil
 }
 

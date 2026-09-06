@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { workflowItemHasScope } from '../../transport/entityScopes';
   // Discard — preview is consent (UI-SPEC §4.5, D23). Nothing is destroyed
   // until this dialog has shown exactly what would be: one row per worktree in
   // the run's tree (the run's own, its units' sub-worktrees, its children's),
@@ -15,7 +16,6 @@
   import { getWorkflowCosts, getWorkflowDetail, getWorkflowRun } from '../../stores/workflowRuns.svelte';
   import { resolveWorkflowRun } from '../../stores/workflowResolve';
   import { userFacingError } from '../../utils/userFacingError';
-  import { hasScope } from '../../transport/scopes';
 
   interface Props {
     open: boolean;
@@ -25,7 +25,7 @@
   let { open, itemId, onClose }: Props = $props();
 
   // Every control here drives the workflow engine, which is `threads:autonomy`.
-  let ungranted = $derived(!hasScope('threads:autonomy'));
+  let ungranted = $derived(!workflowItemHasScope('threads:autonomy', itemId));
   let item = $derived(getWorkflowRun(itemId));
   // Composed spend (see WorkflowRunDetail): `usage.costUsd` is wire-reported
   // cost alone and reads as zero for a run that ran on Codex.

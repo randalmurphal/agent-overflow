@@ -19,7 +19,7 @@ import (
 const (
 	observeMethod  = "ListThreads"                // threads:read
 	executeMethod  = "RenameThread"               // threads:operate
-	hostMethod     = "BrowseDirectory"            // host
+	hostMethod     = "OpenExternalURL"            // host
 	stepUpMethod   = "SetNetworkSettings"         // settings:write + //ao:stepup
 	settingsGetter = "GetSettings"                // settings:read
 	floorMethod    = "SetUIState"                 // session: the floor

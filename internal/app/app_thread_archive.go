@@ -53,6 +53,9 @@ func (a *App) ArchiveThread(id string) error {
 	requestedAt := time.Now().UnixMilli()
 	unlock := a.threadLocks().Lock(id)
 	defer unlock()
+	if err := a.threadApplication().CheckMutable(id); err != nil {
+		return err
+	}
 
 	row, changed, err := a.threadApplication().Archive(id)
 	if err != nil {
@@ -88,6 +91,9 @@ func (a *App) ArchiveThread(id string) error {
 func (a *App) UnarchiveThread(id string) (store.Thread, error) {
 	unlock := a.threadLocks().Lock(id)
 	defer unlock()
+	if err := a.threadApplication().CheckMutable(id); err != nil {
+		return store.Thread{}, err
+	}
 	row, changed, err := a.threadApplication().Unarchive(id)
 	if err != nil {
 		return store.Thread{}, err

@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/url"
 	"os"
 	"time"
 
 	appservice "agent-overflow/internal/app"
 	"agent-overflow/internal/network"
+	"agent-overflow/internal/supervise"
 )
 
 // The `serve` boot: a backend with no window, left running on a machine
@@ -45,6 +47,8 @@ import (
 // unit that starts, fails, and restarts on a loop.
 func checkBackendVerbFlags(verb string, flags cliFlags) error {
 	switch {
+	case flags.frontend:
+		return fmt.Errorf("cannot combine %s with --frontend: a frontend starts no execution backend", verb)
 	case flags.connect != "":
 		return fmt.Errorf("cannot combine %s with --connect: %s IS a backend, and --connect attaches to somebody else's", verb, verb)
 	case flags.headless:
@@ -116,6 +120,7 @@ func runServe(flags cliFlags) {
 	appservice.InitWSLUpdater(appService.App, bootSettingsDir())
 
 	srv := bootTransport(appService, flags.listenAddr, bootTransportOptions{
+		BackendLockHeldBySupervisor: supervisor != nil && supervisor.ownsDataRoot,
 		// A browser pointed at a serve host must not load the SPA against a
 		// backend whose store is not open yet: /bootstrap.json answers 503
 		// until MarkReady, and the page retries. The desktop boot can skip
@@ -145,7 +150,9 @@ func runServe(flags cliFlags) {
 		// into the same failure on a loop, and nobody would ever read the
 		// reason.
 		log.Printf("serve: startup failed; serving terminal bootstrap failure until shutdown")
-		waitForHeadlessShutdown(appService, srv)
+		if waitForHeadlessShutdownOrRestart(appService, srv, supervisor.restartRequested()) {
+			os.Exit(supervise.RestartForUpdateExitCode)
+		}
 		return
 	}
 	logBootPhase("serve.service_startup", phaseStarted)
@@ -171,18 +178,17 @@ func runServe(flags cliFlags) {
 	// way it would at any other moment.
 	go runServeEnrollment(bootCtx, defaultServeConsole(), appEnrollment{app: appService}, serveEnrollmentPoll)
 
-	waitForHeadlessShutdown(appService, srv)
+	if waitForHeadlessShutdownOrRestart(appService, srv, supervisor.restartRequested()) {
+		os.Exit(supervise.RestartForUpdateExitCode)
+	}
 }
 
 // printServeEndpoints writes the addresses a person needs to reach this
 // backend.
 //
 // Ordered by what the reader does with it: the bound address first (the
-// fact, and the only line that is always true), then the URL to open, then
-// the caveats. The launch token is printed because it is the credential a
-// same-host `agent-overflow --connect` needs and the headless boot already
-// publishes it on the same channel; a device on another machine pairs
-// instead and never sees it.
+// fact), then public addresses and the pairing command. Neither launch
+// credentials nor ticket-bearing share URLs belong in service logs.
 //
 // The tailnet URL is usually absent at this moment even when the node is
 // enabled: bring-up is asynchronous and a first sign-in is interactive, so
@@ -191,18 +197,26 @@ func runServe(flags cliFlags) {
 func printServeEndpoints(w io.Writer, endpoints network.Settings, addr string) {
 	fmt.Fprintf(w, "Agent Overflow is serving on %s\n", addr)
 	if endpoints.URL != "" {
-		fmt.Fprintf(w, "  Open:    %s\n", endpoints.URL)
+		fmt.Fprintf(w, "  Open:    %s\n", publicServeAddress(endpoints.URL))
 	}
 	if endpoints.Tailnet.URL != "" {
-		fmt.Fprintf(w, "  Tailnet: %s\n", endpoints.Tailnet.URL)
+		fmt.Fprintf(w, "  Tailnet: %s\n", publicServeAddress(endpoints.Tailnet.URL))
 	}
-	if endpoints.Token != "" {
-		fmt.Fprintf(w, "  Token:   %s\n", endpoints.Token)
-	}
+	fmt.Fprintln(w, "  Pair a device: agent-overflow pair (add --lan to enable LAN access)")
 	if endpoints.Insecure {
-		fmt.Fprintln(w, "  This address is http, so everything it carries — the token included — crosses the network in the clear.")
-		fmt.Fprintln(w, "  Put it behind a tailnet or a tunnel, or set a canonical domain in Settings > Network, before sharing it.")
+		fmt.Fprintln(w, "  Browser access over http crosses the network in the clear. Use HTTPS or a tailnet for browser pairing.")
 	}
+}
+
+func publicServeAddress(raw string) string {
+	address, err := url.Parse(raw)
+	if err != nil {
+		return "address unavailable"
+	}
+	address.User = nil
+	address.RawQuery = ""
+	address.Fragment = ""
+	return address.String()
 }
 
 // serveEnrollmentPoll is how often the console re-reads a pending link

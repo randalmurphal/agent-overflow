@@ -1,10 +1,11 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import ThreadSettings from './ThreadSettings.svelte';
-import { loadSettings } from '../../stores/settings.svelte';
+import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
 import type { Settings } from '../../types/settings';
 import { makeSettings } from '../../../test/helpers/settings';
+import { getSettings } from '../../stores/settings.svelte';
 
 async function seed(overrides: Partial<Settings> = {}): Promise<Settings> {
   const merged = makeSettings(overrides);
@@ -35,9 +36,8 @@ describe('<ThreadSettings> — New threads', () => {
 
     await fireEvent.click(toggle);
 
-    const mock = getBindingMock('UpdateSettings');
-    expect(mock).toBeDefined();
-    expect(mock!.mock.calls[0][0]).toEqual({ autoPinNewThreads: false });
+    expect(getSettings().autoPinNewThreads).toBe(false);
+    expect(getBindingMock('UpdateSettings')).not.toHaveBeenCalled();
   });
 
   it('dispatches defaultThreadEnvMode patch on change', async () => {
@@ -46,9 +46,8 @@ describe('<ThreadSettings> — New threads', () => {
     select.value = 'worktree';
     await fireEvent.change(select);
 
-    const mock = getBindingMock('UpdateSettings');
-    expect(mock).toBeDefined();
-    expect(mock!.mock.calls[0][0]).toEqual({ defaultThreadEnvMode: 'worktree' });
+    expect(getSettings().defaultThreadEnvMode).toBe('worktree');
+    expect(getBindingMock('UpdateSettings')).not.toHaveBeenCalled();
   });
 });
 
@@ -61,11 +60,10 @@ describe('<ThreadSettings> — Safety checks', () => {
     const { getByRole } = render(ThreadSettings);
 
     await fireEvent.click(getByRole('switch', { name: 'Toggle Archive Confirmation' }));
-    const mock = getBindingMock('UpdateSettings');
-    expect(mock).toBeDefined();
-    expect(mock!.mock.calls[0][0]).toEqual({ confirmArchive: false });
+    expect(getSettings().confirmArchive).toBe(false);
 
     await fireEvent.click(getByRole('switch', { name: 'Toggle Delete Confirmation' }));
-    expect(mock!.mock.calls[1][0]).toEqual({ confirmDelete: false });
+    expect(getSettings().confirmDelete).toBe(false);
+    expect(getBindingMock('UpdateSettings')).not.toHaveBeenCalled();
   });
 });

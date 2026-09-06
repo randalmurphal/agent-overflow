@@ -568,3 +568,17 @@ Under the table sits the one sentence the whole run-verb set turns on: **`run
 resume` continues and preserves; `run resume --phase <id>` starts that phase
 over**, re-running everything in it including the runs it called. It is stated
 once, outside any row, because an agent needs it before it picks a row at all.
+
+`pair` is an owner-console command against an already running app/service. It
+reads the private `localcontrol` rendezvous, uses the same WS RPCs as Devices,
+and requires the matching six digits before confirmation. `--json` exposes the
+same ceremony to SSH setup; stdin closure cancels the invitation. Tests must
+supply an isolated config root (the default is structurally refused in a test
+binary). Never print the rendezvous credential. `--lan` explicitly enables LAN
+without changing tailnet or TLS configuration.
+
+`remote` is another session command group over scoped RPC. Run prints its stable
+request UUID BEFORE posting, so a lost reply remains recoverable. Keep argv as
+an array through the wire; no extra shell quoting/interpolation. The destination
+validates workspace and authority and holds the process independently of this
+short-lived CLI. Status/cancel is scoped to the initiating conversation.

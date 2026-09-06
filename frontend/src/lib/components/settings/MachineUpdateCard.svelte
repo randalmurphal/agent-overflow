@@ -5,6 +5,7 @@
   // this card mirrors its status frames (`stores/serviceUpdate.svelte.ts`).
   import SettingsCallout from './SettingsCallout.svelte';
   import VersionPicker from './VersionPicker.svelte';
+  import Button from '../primitives/Button.svelte';
   import { PRIMARY_BUTTON_CLASS } from './styles';
   import { attachedBackendEntry, backendDisplayName } from '../../stores/attachedBackends.svelte';
   import {
@@ -13,6 +14,7 @@
     loadServiceReleases,
     machineUpdate,
     requestServiceUpdate,
+    cancelServiceUpdate,
     selectServiceRelease,
   } from '../../stores/serviceUpdate.svelte';
   import type { BackendKey } from '../../transport/backendKey';
@@ -62,7 +64,10 @@
         return 'Verifying…';
       case 'staging':
         return 'Staging…';
+      case 'waiting':
+        return m.status?.waitingFor || 'Waiting for this computer to finish its work…';
       case 'requested':
+        if (m.status?.error) return 'Restarting to check the update result…';
         return target ? `Restarting into version ${target}…` : 'Restarting…';
       default:
         return '';
@@ -136,6 +141,10 @@
       <SettingsCallout tone={outcomeCopy.tone}>{outcomeCopy.text}</SettingsCallout>
     {/if}
 
+    {#if phase === 'canceled'}
+      <p class="text-sm text-fg-muted">Update canceled. This computer is still running {currentVersion}.</p>
+    {/if}
+
     {#if inFlight}
       <div class="flex flex-col gap-1.5" data-testid="machine-update-progress">
         <div class="flex items-center justify-between text-[0.6875rem] text-fg-muted">
@@ -151,8 +160,11 @@
           ></div>
         </div>
       </div>
+      {#if m.status?.cancelable}
+        <Button size="sm" variant="ghost" disabled={m.canceling} onclick={() => void cancelServiceUpdate(key)}>{m.canceling ? 'Canceling…' : 'Cancel update'}</Button>
+      {/if}
     {:else}
-      {#if !latestVersion && phase !== 'error'}
+      {#if !latestVersion && phase !== 'error' && phase !== 'canceled'}
         <p class="text-[0.75rem] text-fg-muted">Up to date.</p>
       {/if}
 

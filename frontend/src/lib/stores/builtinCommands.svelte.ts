@@ -1,3 +1,4 @@
+import { selectedBackend } from './selectedBackend.svelte';
 // Built-in command registration. Wires command ids to mutations that talk to
 // the existing stores/bindings. Kept in its own module so tests can register
 // a smaller surface without dragging in every dependency the real app uses.
@@ -1176,7 +1177,7 @@ export function makeCommandContext(pane: ThreadPane | null, extra: Partial<Comma
     // Derived here, not passed in, for the same reason as the overlay flags:
     // the palette, per-keypress dispatch and tests must all see one answer for
     // "was this session granted that".
-    accessAdmin: hasScope('access:admin'),
+    accessAdmin: hasScope('access:admin', selectedBackend()),
     // The other three capability flags, on the same terms. A command whose
     // RPCs need one gates on it, so a session without the grant finds the
     // command absent from the palette and its chord falling through rather
@@ -1188,9 +1189,9 @@ export function makeCommandContext(pane: ThreadPane | null, extra: Partial<Comma
     // flag reads false there — a gate would break the xterm escape for
     // everybody. They are unreachable anyway, since a session that cannot
     // open a terminal never has one focused.
-    threadsOperate: hasScope('threads:operate'),
-    terminalOperate: hasScope('terminal:operate'),
-    gitOperate: hasScope('git:operate'),
+    threadsOperate: hasScope('threads:operate', selectedBackend()),
+    terminalOperate: hasScope('terminal:operate', selectedBackend()),
+    gitOperate: hasScope('git:operate', selectedBackend()),
     ...extra,
   };
   return {

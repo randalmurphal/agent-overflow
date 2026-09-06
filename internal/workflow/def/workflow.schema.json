@@ -95,7 +95,7 @@
         "mcp": {"type": "array", "items": {"type": "string"}},
         "grants": {
           "type": "array", "uniqueItems": true,
-          "items": {"enum": ["start-run", "schedule", "update-notes", "introspect", "resolve"]}
+          "items": {"enum": ["start-run", "schedule", "update-notes", "introspect", "resolve", "remote-commands"]}
         },
         "access": {"enum": ["read-only", "write"]},
         "fan_out": {"type": "array", "items": {"$ref": "#/$defs/unit"}},

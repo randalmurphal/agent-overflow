@@ -170,6 +170,8 @@
       />
     </SettingsField>
 
+    <details>
+      <summary class="cursor-pointer text-xs text-fg-muted">Custom coordination server</summary>
     <SettingsField
       id="remote.tailnet-control-url"
       label="Coordination server"
@@ -190,6 +192,7 @@
         class="{INPUT_CLASS} max-w-[26rem] font-mono"
       />
     </SettingsField>
+    </details>
   </div>
 
   <div class="mt-3 flex items-center gap-2">

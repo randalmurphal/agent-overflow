@@ -136,6 +136,11 @@ func (a *App) syncPeerSessionName(threadID string) {
 		// row and a project row to find that out.
 		return
 	}
+	unlock, err := a.threadApplication().LockMutable(context.Background(), threadID)
+	if err != nil {
+		return
+	}
+	defer unlock()
 	t, err := a.store.GetThread(threadID)
 	if err != nil {
 		return

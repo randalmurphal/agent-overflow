@@ -1,3 +1,7 @@
+import { rememberedIdentity, forgetRememberedIdentity } from './rememberedIdentity';
+import { isNativeShell } from '../native/platform';
+import { isFrontendOnly } from './runMode';
+import { storedBackendEndpoint } from './homeEndpoint';
 // The backends this client is attached to, one `TransportHandle` each.
 //
 // Phase 7 of the remote-access spec (§10, "One seam, two realizations")
@@ -43,9 +47,9 @@ import {
   getBackendIdentity,
   onBackendIdentity,
 } from './backendIdentity';
-import { forgetBackendEntities, threadBackend, type ForgottenEntities } from './entityIndex';
+import { captureThreadMetadataRead, forgetBackendEntities, onThreadOwnershipChanged, threadBackend, type ForgottenEntities } from './entityIndex';
 import { forgetBackendClock, registerBackendClock } from './backendClock';
-import { grantedScopes, refreshGrantedScopes, type ScopeSnapshot } from './scopes';
+import { grantedScopes, refreshGrantedScopes, forgetGrantedScopes, type ScopeSnapshot } from './scopes';
 import {
   fetchBackendManifest,
   manifestBackendDescriptors,
@@ -92,7 +96,7 @@ export interface BackendEntry {
   /** Display name, as the descriptor supplied it. Empty for home, whose
    *  name is the hello frame's `backendName` and belongs to the UI wave. */
   readonly name: string;
-  /** Live history identity, `''` until this backend's manifest resolves. */
+  /** Stable computer identity, available from pairing even while offline. */
   readonly backendId: string;
   readonly generation: string;
   /** What this backend's session was granted. Per backend, because a
@@ -112,6 +116,8 @@ export interface BackendEntry {
 
 // A registry entry: the public view plus what only this module writes.
 interface Entry extends BackendEntry {
+  name: string;
+  descriptor?: BackendDescriptor;
   /** Cached origin object, rebuilt only when this backend's identity
    *  moves. Events stamp it by reference; a fresh object per frame would
    *  be pure garbage on the busiest path in the app. */
@@ -123,6 +129,9 @@ interface Entry extends BackendEntry {
 // order because the fan-out walks it on every `all` call, and an array
 // walk is the cheaper of the two.
 const entries: Entry[] = [];
+// The frontend-only controller still receives local administrative calls and
+// events. It has no projects, history, accounts or execution scope to fan out to.
+const computers: Entry[] = isFrontendOnly() ? [] : entries;
 // Every id an entry answers to: its registry id, and its live backend UUID
 // once a manifest has named one. Two keys onto one object, so
 // `backendById` stays a single lookup whether the caller holds the
@@ -152,6 +161,8 @@ export interface BackendDetachment {
   readonly projectIds: readonly string[];
   /** Thread-group ids this client had indexed to it. */
   readonly threadGroupIds: readonly string[];
+  /** Workflow items whose detail, receipts and requests must be released. */
+  readonly workflowItemIds: readonly string[];
 }
 
 const detachListeners = new Set<(detached: BackendDetachment) => void>();
@@ -188,6 +199,9 @@ let clientLease: LeaseState = 'active';
 // which moves under it — a thread's owner becomes known after the set that
 // carried it was already sent.
 let watchedThreadIds: string[] = [];
+onThreadOwnershipChanged((id) => {
+  if (watchedThreadIds.includes(id)) for (const entry of entries) sendWatchedThreads(entry);
+});
 
 // What this screen last said it was doing, held for the fourth instance of
 // the same reason: "every attached backend, and every one attached
@@ -240,6 +254,7 @@ function makeEntry(
   home: boolean,
   client: WSClient,
   name: string,
+  pairedBackendId = '',
 ): Entry {
   let handle: TransportHandle;
   const entry: Entry = {
@@ -255,7 +270,7 @@ function makeEntry(
       return handle;
     },
     get backendId(): string {
-      return getBackendIdentity(id).backendId;
+      return getBackendIdentity(id).backendId || pairedBackendId || rememberedIdentity(id)?.backendId || '';
     },
     get generation(): string {
       return getBackendIdentity(id).generation;
@@ -280,8 +295,25 @@ function makeEntry(
 // singleton. Nothing is CALLED on the client here: construction must not
 // open a socket, because the boot sequence decides when that happens.
 const homeEntry = makeEntry(HOME_BACKEND, true, wsClient, '');
-entries.push(homeEntry);
-byId.set(HOME_BACKEND, homeEntry);
+if (!isNativeShell() || storedBackendEndpoint() !== '') {
+  entries.push(homeEntry);
+  byId.set(HOME_BACKEND, homeEntry);
+}
+
+/** Restore the legacy phone slot after pairing, before the app mounts. New
+ * phone pairings use computer IDs; an absent legacy slot is not a computer. */
+export function restoreHomeBackend(): void {
+  if (byId.has(HOME_BACKEND)) return;
+  entries.unshift(homeEntry);
+  byId.set(HOME_BACKEND, homeEntry);
+  refreshGrantedScopes(HOME_BACKEND);
+  if (installedProver !== null) homeEntry.handle.installStepUpProver(installedProver);
+  homeEntry.handle.setLease(clientLease);
+  sendWatchedThreads(homeEntry);
+  sendScreenPresence(homeEntry);
+  for (const sub of standing) attachStanding(sub, homeEntry);
+  notifyBackendsChanged();
+}
 
 // A backend's live UUID becomes a second key onto its entry the moment its
 // manifest names one, so the origin stamp on a hot event path resolves by
@@ -299,33 +331,40 @@ onBackendIdentity((identity, backendKey) => {
   if (existing === undefined) byId.set(identity.backendId, entry);
 });
 
-/** The page's own backend. Always attached; never detachable. */
+/** The local administrative connection (also an execution host on ordinary boots). */
 export function homeBackend(): BackendEntry {
   return homeEntry;
 }
 
 /**
- * Every attached backend, home first, in attach order.
+ * Execution computers in attach order, home first when it executes work.
+ * The standalone frontend's administrative controller is excluded.
  *
  * A plain array, deliberately not reactive: this is the transport-level
  * view, walked on the RPC fan-out path. The reactive mirror the UI reads
  * is `stores/attachedBackends.svelte.ts`.
  */
 export function attachedBackends(): readonly BackendEntry[] {
-  return entries;
+  return computers;
 }
 
-/** How many backends are attached. One means every route resolves home. */
+/** How many backends are attached, including a legacy home slot when present. */
 export function attachedBackendCount(): number {
-  return entries.length;
+  return computers.length;
+}
+
+/** An unknown entity is unambiguous only while exactly one computer is attached. */
+export function requireEntityBackend(owner: BackendKey | undefined): BackendKey {
+  if (owner !== undefined) return owner;
+  if (computers.length === 1) return computers[0].id;
+  throw new Error('The computer that owns this item is unknown. Refresh it before continuing.');
 }
 
 /**
  * The backend registered under `id`, resolving BOTH spellings: the
  * registry id and the backend's live UUID (which is what an event's origin
- * stamp carries). `undefined` when nothing answers to it — callers that
- * must have an answer fall back to home rather than throwing, since a
- * single-backend app has to behave exactly as it did.
+ * stamp carries). `undefined` when nothing answers to it. An explicit
+ * target must never fall back to another computer when it is absent.
  */
 export function backendById(id: string): BackendEntry | undefined {
   return byId.get(id);
@@ -361,20 +400,30 @@ export function backendKeyForOrigin(backendId: string): BackendKey {
 export function attachBackend(descriptor: BackendDescriptor): BackendEntry {
   if (descriptor.id === HOME_BACKEND) return homeEntry;
   const held = byId.get(descriptor.id);
-  if (held !== undefined) return held;
+  if (held !== undefined) {
+    held.descriptor = descriptor;
+    if (held.name !== descriptor.name) {
+      held.name = descriptor.name;
+      notifyBackendsChanged();
+    }
+    return held;
+  }
   const entry = makeEntry(
     descriptor.id,
     false,
     new WSClient({
-      bootstrap: () => fetchBackendManifest(descriptor),
+      bootstrap: () => fetchBackendManifest(entry.descriptor ?? descriptor),
       // Its own credential slot. Empty on a desktop, where the local
       // process holds the profile and proxies same-origin; a phone's
       // slot per machine is what makes its dial name the right session.
       backend: descriptor.id,
     }),
     descriptor.name,
+    descriptor.backendId,
   );
+  entry.descriptor = descriptor;
   entries.push(entry);
+  if (computers !== entries) computers.push(entry);
   byId.set(descriptor.id, entry);
   if (descriptor.backendId !== '' && !byId.has(descriptor.backendId)) {
     byId.set(descriptor.backendId, entry);
@@ -402,15 +451,19 @@ export function attachBackend(descriptor: BackendDescriptor): BackendEntry {
 }
 
 /**
- * Detach a backend and close its socket. The home backend is never
- * detachable — it is the page's own connection, and a page with no
- * connection has nothing to be.
+ * Detach a backend and close its socket. A desktop's local backend owns
+ * the page and cannot detach. A phone's legacy first pairing is ordinary
+ * remote access and can be removed independently of its other computers.
  */
 export function detachBackend(id: string): void {
   const entry = byId.get(id);
-  if (entry === undefined || entry.home) return;
+  if (entry === undefined || (entry.home && !isNativeShell())) return;
   const at = entries.indexOf(entry);
   if (at >= 0) entries.splice(at, 1);
+  if (computers !== entries) {
+    const computerAt = computers.indexOf(entry);
+    if (computerAt >= 0) computers.splice(computerAt, 1);
+  }
   for (const [key, held] of byId) {
     if (held === entry) byId.delete(key);
   }
@@ -419,6 +472,7 @@ export function detachBackend(id: string): void {
     sub.cancels.delete(entry);
   }
   entry.client.close();
+  forgetGrantedScopes(entry.id);
   // Everything keyed on this backend goes with it. Leaving the entity
   // index populated would resolve a thread to a machine this client is no
   // longer attached to, and `resolveTransport` would silently answer home:
@@ -438,6 +492,7 @@ export function detachBackend(id: string): void {
   // attached to would keep skewing whatever still names that id.
   forgetBackendClock(entry.id);
   notifyBackendDetached({ backendId: entry.id, ...forgotten });
+  forgetRememberedIdentity(entry.id);
   notifyBackendsChanged();
 }
 
@@ -706,32 +761,37 @@ export async function callEveryBackend(
   args: unknown[],
   observe?: (result: unknown, backendId: string) => void,
 ): Promise<unknown> {
-  const targets = entries.slice();
-  const settled = await Promise.allSettled(
-    targets.map((entry) => entry.client.callByID(methodId, args)),
-  );
-  const shares: unknown[] = [];
-  let homeShare: unknown;
-  let homeError: unknown = null;
-  let firstError: unknown = null;
-  let anyFulfilled = false;
-  for (let i = 0; i < targets.length; i += 1) {
-    const entry = targets[i];
-    const outcome = settled[i];
-    if (outcome.status === 'fulfilled') {
-      anyFulfilled = true;
-      entry.lastFanoutError = null;
-      shares.push(outcome.value);
-      observe?.(outcome.value, entry.id);
-      if (entry.home) homeShare = outcome.value;
-      continue;
+  const targets = computers.slice();
+  const verify = targets.map((entry) => captureThreadMetadataRead(methodId, entry.id));
+  try {
+    const settled = await Promise.allSettled(
+      targets.map(async (entry) => entry.client.callByID(methodId, args)),
+    );
+    const shares: unknown[] = [];
+    let homeShare: unknown;
+    let homeError: unknown = null;
+    let firstError: unknown = null;
+    let anyFulfilled = false;
+    for (let i = 0; i < targets.length; i += 1) {
+      const entry = targets[i];
+      if (byId.get(entry.id) !== entry) continue;
+      let outcome = settled[i];
+      try { if (outcome.status === 'fulfilled') verify[i]?.verify(outcome.value); } catch (reason) { outcome = { status: 'rejected', reason }; }
+      if (outcome.status === 'fulfilled') {
+        anyFulfilled = true;
+        entry.lastFanoutError = null;
+        shares.push(outcome.value);
+        observe?.(outcome.value, entry.id);
+        if (entry.home) homeShare = outcome.value;
+        continue;
+      }
+      entry.lastFanoutError = outcome.reason;
+      if (firstError === null) firstError = outcome.reason;
+      if (entry.home) homeError = outcome.reason;
     }
-    entry.lastFanoutError = outcome.reason;
-    if (firstError === null) firstError = outcome.reason;
-    if (entry.home) homeError = outcome.reason;
-  }
-  if (!anyFulfilled) throw homeError ?? firstError ?? new Error('no backend answered');
-  return mergeBackendResults(shares, homeShare);
+    if (!anyFulfilled) throw homeError ?? firstError ?? new Error('no backend answered');
+    return mergeBackendResults(shares, homeShare);
+  } finally { for (const read of verify) read?.release(); }
 }
 
 // ---------------------------------------------------------------------------
@@ -840,6 +900,7 @@ export function __resetBackendsForTest(): void {
     if (!entry.home) detachBackend(entry.id);
   }
   homeEntry.lastFanoutError = null;
+  restoreHomeBackend();
   installedProver = null;
   clientLease = 'active';
   watchedThreadIds = [];
@@ -856,8 +917,9 @@ export function __attachBackendForTest(
   descriptor: BackendDescriptor,
   client: WSClient,
 ): BackendEntry {
-  const entry = makeEntry(descriptor.id, false, client, descriptor.name);
+  const entry = makeEntry(descriptor.id, false, client, descriptor.name, descriptor.backendId);
   entries.push(entry);
+  if (computers !== entries) computers.push(entry);
   byId.set(descriptor.id, entry);
   if (descriptor.backendId !== '' && !byId.has(descriptor.backendId)) {
     byId.set(descriptor.backendId, entry);

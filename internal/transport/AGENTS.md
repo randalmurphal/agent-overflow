@@ -87,6 +87,12 @@ repeated toggles with an existing WebSocket.
 
 ## Auxiliary listeners
 
+Bootstrap may carry bounded `routes` from the boot-injected `ComputerRoutes`
+getter, only after ordinary manifest admission and once backend identity exists.
+These are credential-free HTTPS candidates, not new authorities. The client
+verifies their TLS trust and `/healthz` backend ID before sending any credential.
+No listener or browser-origin policy changes merely because a route is advertised.
+
 `auxlistener.go` serves a listener the CALLER acquired, with this server's
 routes, credentials, Host and Origin rules, per-RPC scope gate and session
 registry (spec §7, "Multi-listener, one session store"). `internal/tailnet` is
@@ -161,6 +167,13 @@ credential or scope gate applies to it, because none of those bytes are ours.
   `devgateway_contract_test.go` drives all three, including another
   port's preview cookie, which the browser attaches because a host is
   shared and a port is not.
+- **Browser grants have their own lifetime.** Losing all app connections stops
+  discovery, but `ReleaseIdlePorts` retains the gateway while tickets, cookie
+  handoffs, or unexpired grants exist. Ticket minting and idle retirement share
+  the gateway lock; an exchange holds a counted reservation from before ticket
+  consumption through grant publication. There must be no gap where idle cleanup
+  closes the browser's listener. Explicit port removal and shutdown still retire
+  it immediately. Retention never bypasses per-request or socket revocation.
 - **A retired listener CUTS the sockets it handed out**
   (`previewconns.go`). net/http STOPS TRACKING a connection the moment
   a handler takes it over from the server, which is what an UPGRADE
@@ -274,7 +287,8 @@ The two non-grants:
   authority its NAME decides would be an ungated surface.
 
 `//ao:stepup` marks the calls §4 requires a fresh per-call proof for: minting a
-pairing link, BEGINNING a passkey registration, network bind / exposure
+pairing link, pairing the selected computer with an agent peer,
+BEGINNING a passkey registration, network bind / exposure
 changes, provider custom-env writes, MCP config writes, the WSL distro
 preference, worktree-setup recipe writes (stored argv that runs unattended
 on every worktree cut), and installing or withdrawing the push sender
@@ -704,6 +718,7 @@ that has never met this backend gets one.
 | route | what the caller presents | registered when |
 |---|---|---|
 | `/auth/pair` | a single-use pairing token, plus the proof of the key the device generated first — signed in `X-AO-Device-Key`, or a bare identifier in the body for a device that cannot sign | `Config.AuthEndpoints != nil` |
+| `/auth/token/recover` | a saved client-chosen successor plus the predecessor and a fresh device proof; older hosts must never consume this exchange | recovery-capable `AuthEndpoints` |
 | `/auth/token` | a rotating refresh secret in the body, its device proof in `X-AO-Device-Key` | `Config.AuthEndpoints != nil` |
 | `/auth/passkey/begin` | nothing at all, and no body | `Config.AuthEndpoints != nil` |
 | `/auth/passkey/finish` | an assertion over the challenge that begin issued, plus a device proof in `X-AO-Device-Key` | `Config.AuthEndpoints != nil` |
@@ -1077,6 +1092,29 @@ the phone waves and is a design of its own.
 
 `GetAttachmentThumbnail` stays an RPC. ~10-30 KB is not a large body, and a grid
 would pay a mint round trip per tile.
+
+## Computer-to-computer handoff bytes
+
+`thread_transfer.go` owns `/transfers/<operation>/<action>`. The optional
+`Config.ThreadTransfers` adapter supplies durable state and authorization. The
+adapter is separate from App's bound control methods; no device credential is
+exported to another computer. The source presents a single-operation bearer in
+Authorization, and the destination rechecks that grant on every request. The
+destination additionally compares `X-AO-Transfer-Backend` before mutation;
+every reply carries the backend and operation identities for the sender to verify.
+
+Off-loopback calls require TLS. There are no cookies, query credentials or CORS
+grants. A separate peer budget bounds grant lookups without consuming pairing or
+reconnect budgets. Control bodies are capped at 4 KiB; chunks at 8 MiB with an
+exact length, offset and SHA-256. Socket read deadlines interrupt stalled body
+reads. The wire DTO/limit/path drift test binds this handler to `transferwire`
+and `transferfiles`. Errors use fixed codes; internal details stay server-side.
+
+Both activation and cancellation require the source secret in addition to the
+offer grant. Source cancellation intent must be durable before that proof is
+sent. This prevents an independent frontend cancel from racing source retirement.
+The adapter serializes operations and rechecks durable phases; the transport
+never assumes that an HTTP failure means the peer made no change.
 
 ## The backend is the phone's update server
 
@@ -1521,6 +1559,13 @@ field rename fails there rather than shipping merged frames a client ignores.
 
 ## Wire frames and the gap marker
 
+Ownership refusals use `thread_moved` or `thread_transfer_pending` with an
+optional `transfer: {operationId, backendId}`. The dispatcher recognizes the
+transport-neutral `ThreadTransferRef` error interface and supplies fixed public
+prose; wrapped errors and local paths never cross this boundary. Older clients
+can display the message. New clients may route only to an already attached
+owner, never enroll or choose a fallback computer from an error frame.
+
 `frame.go` is the frame catalog: `ClientFrame` and `ServerFrame` document every
 type, field, and bound (`MaxReplayChannels`, `MaxSubscribeChannels`,
 `MaxRPCParams`, `MaxWatchThreads`, `MaxWatchThreadIDBytes`) beside the decoder.
@@ -1844,6 +1889,10 @@ closes it, and `CloseSession` is that something.
 - Wire-bound errors carry only generic prose (`"internal error"`,
   `"bad parameter"`). Full text plus a correlation id is logged server-side, and
   internal panics and file paths must never reach the wire.
+  A missing database row (`sql.ErrNoRows`, wrapped or bare) is `not_found`
+  with fixed user-facing prose on every origin. It is distinct from an absent
+  RPC (`method_not_found`); never make a missing conversation disable a feature.
+  `dispatcher_notfound_test.go` pins this classification and redaction.
 - A full subscriber buffer drops the incoming event, and the loss is
   ANNOUNCED (`Subscriber.deliver`): the channel is flagged per subscriber, the
   next event that fits on it arrives `gap:true` (re-encoded per subscriber),
@@ -1866,3 +1915,21 @@ closes it, and `CloseSession` is that something.
 - `frontend/bindings/agent-overflow/app.ts` for the generated bindings the wire
   format must keep working, and `frontend/src/lib/transport/` for the wsClient
   and `@wailsio/runtime` shim on the other side of this wire.
+
+`commands.remote.v1` advertises the bounded remote-command RPC contract. Peer
+clients verify this flag, protocol and backend identity on the authenticated
+WebSocket before dispatch, and never replay mutations automatically. The
+session-scoped CLI methods require remote-commands for workflow phases.
+`agent-computers:changed` is a latest-only, terminal:operate invalidation of the
+selected source computer's opt-in table; it contains no peer list or secrets.
+PairAgentComputer is selected-computer access:admin plus step-up and still
+requires the destination's ordinary owner-confirmed pairing.
+
+
+`Config.WaitForActivation` gates the entire HTTP handler during supervisor
+trials, including credential, transfer, bundle and WebSocket routes. Only
+`/healthz` bypasses it. Wait on the request context and abort disconnected
+requests without an auth-shaped response; older clients treated HTTP 503 as
+revocation. The gate is supplied by App's existing activation owner. Do not
+replace it with a bootstrap-only check: paired clients can mint tickets and
+rotate credentials without fetching bootstrap first.

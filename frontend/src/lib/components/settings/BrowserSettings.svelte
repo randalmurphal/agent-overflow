@@ -1,6 +1,7 @@
 <script lang="ts">
   import { ClearBrowserSiteData } from '../../stores/bindings';
-  import { getSettings, updateSetting } from '../../stores/settings.svelte';
+  import { settingsComputer } from './settingsComputer';
+  const { getSettings, updateSetting, call } = settingsComputer();
   import { addToast } from '../../stores/toast.svelte';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import SettingsField from './SettingsField.svelte';
@@ -18,7 +19,7 @@
     }
     clearing = true;
     try {
-      await ClearBrowserSiteData();
+      await call(() => ClearBrowserSiteData());
       addToast('success', 'Browser site data cleared');
     } catch (err) {
       console.error('Failed to clear browser site data:', err);

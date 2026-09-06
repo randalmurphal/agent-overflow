@@ -51,17 +51,11 @@ func (a *App) highlightService() *highlightapp.Service {
 // HighlightCodeRequest carries raw text (markdown code blocks, any
 // free-standing source) plus its language name (markdown fence info
 // string or canonical name; unknown names render plain).
-type HighlightCodeRequest struct {
-	Lang   string `json:"lang"`
-	Source string `json:"source"`
-}
+type HighlightCodeRequest = highlightapp.CodeRequest
 
 // HighlightPatchRequest carries one file's unified diff exactly as the
 // frontend's patch parser splits it; Path drives language detection.
-type HighlightPatchRequest struct {
-	Path  string `json:"path"`
-	Patch string `json:"patch"`
-}
+type HighlightPatchRequest = highlightapp.PatchRequest
 
 // HighlightPatchContextRequest is HighlightPatchRequest plus the
 // review-pane scope fields (same shape as DiffContextRequest) that
@@ -88,17 +82,7 @@ type HighlightPatchContextRequest struct {
 // retry can succeed, and frontend caches must apply the same
 // transient-vs-permanent distinction instead of memoizing the partial
 // result for the session.
-type HighlightResult struct {
-	Lang       string                  `json:"lang"`
-	Lines      []highlight.EncodedLine `json:"lines"`
-	Truncated  bool                    `json:"truncated"`
-	Incomplete bool                    `json:"incomplete"`
-	// Primed: spans were computed with real file content above each
-	// hunk. The frontend span cache treats primed entries as strictly
-	// better than unprimed ones for the same content (monotonic
-	// upgrade, never downgrade).
-	Primed bool `json:"primed,omitempty"`
-}
+type HighlightResult = highlightapp.Result
 
 // HighlightClassNames returns the classId → semantic-name table
 // (index = class id, 0 = "none"). The frontend fetches it once at boot
@@ -131,8 +115,7 @@ func (a *App) HighlightSchemaVersion() string {
 //ao:scope files:read
 //ao:route home
 func (a *App) HighlightCode(req HighlightCodeRequest) (HighlightResult, error) {
-	res, err := a.highlightService().Code(req.Lang, req.Source)
-	return wireHighlightResult(res), err
+	return a.highlightService().Code(req.Lang, req.Source)
 }
 
 // HighlightPatch returns patch-aligned spans for one file's unified
@@ -144,8 +127,7 @@ func (a *App) HighlightCode(req HighlightCodeRequest) (HighlightResult, error) {
 //ao:scope files:read
 //ao:route home
 func (a *App) HighlightPatch(req HighlightPatchRequest) (HighlightResult, error) {
-	res, err := a.highlightService().Patch(req.Path, req.Patch)
-	return wireHighlightResult(res), err
+	return a.highlightService().Patch(req.Path, req.Patch)
 }
 
 const highlightContextAction = "highlight patch with context"
@@ -201,11 +183,7 @@ func (a *App) highlightPatchWithContext(workspace, threadID string, req Highligh
 		Path: req.Path, Patch: req.Patch, EditPayloadID: req.EditPayloadID,
 		EditTurnIndex: req.EditTurnIndex,
 	})
-	return wireHighlightResult(res), err
-}
-
-func wireHighlightResult(res highlightapp.Result) HighlightResult {
-	return HighlightResult{Lang: res.Lang, Lines: res.Lines, Truncated: res.Truncated, Incomplete: res.Incomplete, Primed: res.Primed}
+	return res, err
 }
 
 type HighlightSeedEvent struct {

@@ -3,6 +3,8 @@ import { flushSync } from 'svelte';
 import { clearPairedSession, redeemPairing, type PairingPayload } from './deviceSession';
 import {
   SCOPES,
+  setCarriedSessionScopes,
+  forgetGrantedScopes,
   __resetScopesForTest,
   grantedScopes,
   hasScope,
@@ -44,6 +46,16 @@ async function pairWith(scopes?: unknown): Promise<void> {
 }
 
 describe('scopes', () => {
+  it('exposes carried grants without granting host access and forgets them on detach', () => {
+    setCarriedSessionScopes('gpu', ['files:read', 'git:operate', 'host', 'unknown']);
+    expect(hasScope('git:operate', 'gpu')).toBe(true);
+    expect(hasScope('settings:write', 'gpu')).toBe(false);
+    expect(hasScope('host', 'gpu')).toBe(false);
+    refreshGrantedScopes('gpu');
+    expect(hasScope('git:operate', 'gpu')).toBe(true);
+    forgetGrantedScopes('gpu');
+    expect(hasScope('git:operate', 'gpu')).toBe(false);
+  });
   beforeEach(() => {
     clearPairedSession();
     __resetScopesForTest();
@@ -65,7 +77,7 @@ describe('scopes', () => {
     const dispose = $effect.root(() => {
       $effect(() => {
         source = grantedScopes().source;
-        held = SCOPES.map((scope) => hasScope(scope));
+        held = SCOPES.map((scope) => hasScope(scope, ''));
       });
     });
     flushSync();
@@ -109,7 +121,7 @@ describe('scopes', () => {
     expect(snapshot.onHost).toBe(true);
     // Explicitly all, not "no check ran": every name answers true,
     // including `host`, which presence rather than a grant authorizes.
-    for (const scope of SCOPES) expect(hasScope(scope)).toBe(true);
+    for (const scope of SCOPES) expect(hasScope(scope, '')).toBe(true);
   });
 
   it('gives an unpaired networked page nothing of its own', () => {
@@ -119,7 +131,7 @@ describe('scopes', () => {
     expect(snapshot.source).toBe('unpaired');
     expect(snapshot.everyScope).toBe(false);
     expect(snapshot.onHost).toBe(false);
-    for (const scope of SCOPES) expect(hasScope(scope)).toBe(false);
+    for (const scope of SCOPES) expect(hasScope(scope, '')).toBe(false);
   });
 
   it('takes a paired session over the page, on loopback and off it', async () => {
@@ -132,9 +144,9 @@ describe('scopes', () => {
 
     expect(grantedScopes().source).toBe('paired-session');
     expect(grantedScopes().everyScope).toBe(false);
-    expect(hasScope('files:read')).toBe(true);
-    expect(hasScope('threads:operate')).toBe(false);
-    expect(hasScope('access:admin')).toBe(false);
+    expect(hasScope('files:read', '')).toBe(true);
+    expect(hasScope('threads:operate', '')).toBe(false);
+    expect(hasScope('access:admin', '')).toBe(false);
   });
 
   it('answers `host` from presence, never from the grant set', async () => {
@@ -160,7 +172,7 @@ describe('scopes', () => {
     await pairWith(['threads:read']);
     expect(grantedScopes().source).toBe('paired-session');
     expect(hasScope('host')).toBe(false);
-    expect(hasScope('threads:read')).toBe(true);
+    expect(hasScope('threads:read', '')).toBe(true);
   });
 
   it('reads an empty published grant set as "granted nothing"', async () => {
@@ -168,7 +180,7 @@ describe('scopes', () => {
     await pairWith([]);
 
     expect(grantedScopes().source).toBe('paired-session');
-    for (const scope of SCOPES) expect(hasScope(scope)).toBe(false);
+    for (const scope of SCOPES) expect(hasScope(scope, '')).toBe(false);
   });
 
   it('falls back to judging the page when the backend published no grants', async () => {
@@ -179,7 +191,7 @@ describe('scopes', () => {
     await pairWith(undefined);
 
     expect(grantedScopes().source).toBe('local-page');
-    expect(hasScope('threads:operate')).toBe(true);
+    expect(hasScope('threads:operate', '')).toBe(true);
   });
 
   it('drops capability names this build has no gate for', async () => {
@@ -192,17 +204,17 @@ describe('scopes', () => {
 
   it('re-resolves when pairing completes, without being asked twice', async () => {
     setPageGrantsFromBootstrap(true);
-    expect(hasScope('threads:autonomy')).toBe(false);
+    expect(hasScope('threads:autonomy', '')).toBe(false);
 
     // redeemPairing stores the credential; the re-resolve is what
     // wsClient.redialAfterPairing() drives when the flow finishes.
     const fetcher = vi.fn(async () =>
       grantResponse(['threads:read', 'threads:autonomy'])) as unknown as typeof fetch;
     await redeemPairing(PAYLOAD, 'a phone', fetcher);
-    expect(hasScope('threads:autonomy')).toBe(false);
+    expect(hasScope('threads:autonomy', '')).toBe(false);
 
     refreshGrantedScopes();
-    expect(hasScope('threads:autonomy')).toBe(true);
+    expect(hasScope('threads:autonomy', '')).toBe(true);
   });
 
   it('survives a reconnect the way the hello snapshot does', async () => {
@@ -218,7 +230,7 @@ describe('scopes', () => {
     const after = grantedScopes();
 
     expect(after.source).toBe('paired-session');
-    expect(hasScope('git:operate')).toBe(true);
+    expect(hasScope('git:operate', '')).toBe(true);
     // Identity, not just equality: an unchanged answer must not mint a new
     // snapshot, or every gated surface in the app re-evaluates per
     // reconnect for a value that did not move.
@@ -235,7 +247,7 @@ describe('scopes', () => {
     refreshGrantedScopes();
 
     expect(grantedScopes().source).toBe('local-page');
-    expect(hasScope('threads:operate')).toBe(true);
+    expect(hasScope('threads:operate', '')).toBe(true);
   });
 
   describe('view-only mode', () => {
@@ -290,7 +302,7 @@ describe('scopes', () => {
       clearPairedSession();
       await pairWith(['threads:read', 'files:read', 'settings:read']);
       expect(isViewOnly()).toBe(true);
-      expect(hasScope('git:operate')).toBe(false);
+      expect(hasScope('git:operate', '')).toBe(false);
     });
 
     // The same question asked about a set that came from somewhere else:

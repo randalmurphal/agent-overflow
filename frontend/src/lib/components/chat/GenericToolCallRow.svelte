@@ -250,7 +250,7 @@ let hasExpandableBody = $derived(
     {#snippet body()}
       <span class={previewClass} data-testid="tool-call-card-preview">
         {#if preview.path}
-          <EditorLink
+          <EditorLink backend={threadMachine(item.threadId, pane?.thread?.projectId)}
             path={preview.path.path}
             line={preview.path.line ?? 0}
             col={preview.path.col ?? 0}

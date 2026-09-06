@@ -221,7 +221,7 @@ func (a *App) initWorkflowEngine(dataRoot string) error {
 	// rebuilt workflow state below.
 	usageAttentionRecoveries := a.workflowApplication().ReclaimUsageAttention()
 	if err := a.workflowApplication().StartEngine(a.lifeCtx(), workflowapp.EngineRuntimeConfig{
-		Runner: runner, Definitions: definitions, Profiles: profiles,
+		Runner: runner, Definitions: definitions, Profiles: profiles, BeginWork: a.workAdmission.begin,
 		Spend: workflowSpendSource{store: a.store}, Paused: settingsSnapshot.WorkflowPaused,
 		Log: newWorkflowEngineLog(a.engineLogger), Emit: a.emitWithReplay(),
 	}); err != nil {

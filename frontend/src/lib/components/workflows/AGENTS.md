@@ -58,3 +58,11 @@ correctness. Every `workflow:*` event carries strictly less than the view,
 so anything a payload does not determine EXACTLY returns `invalidate` from
 `stores/workflowRunMapPatch.ts`, which refetches while keeping the last
 value. A plausible guess is a map that lies until something refetches.
+
+## Connected computers
+
+The overlay combines runs from attached computers. Run actions follow the run's
+owner, including threads excluded from the ordinary sidebar. Pause-all requires
+workflow control on every attached computer and reports partial failures by
+computer. Engine state is per computer; one paused engine must never make a
+second engine look paused. Creating a run uses the selected project's computer.

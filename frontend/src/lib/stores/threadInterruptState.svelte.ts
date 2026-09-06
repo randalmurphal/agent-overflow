@@ -6,17 +6,18 @@
 // the new optimistic row. This registry keeps Send closed until the
 // authoritative cut has been applied locally.
 
-import { onBackendIdentity } from '../transport/backendIdentity';
+import { onThreadHistoryInvalidated } from './threadIdentityInvalidation';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 
 const pendingByThread = createKeyedSignalRegistry<number>(0);
-const generations = new Map<string, number>();
+const pendingThreads = new Set<string>();
+let nextToken = 0;
 
 /** Claim the one interrupt transaction allowed on a thread. */
 export function beginThreadInterrupt(threadId: string): number | null {
   if (!threadId || pendingByThread.get(threadId) !== 0) return null;
-  const token = (generations.get(threadId) ?? 0) + 1;
-  generations.set(threadId, token);
+  const token = ++nextToken;
+  pendingThreads.add(threadId);
   pendingByThread.set(threadId, token);
   return token;
 }
@@ -29,6 +30,7 @@ export function finishThreadInterrupt(threadId: string, token: number): void {
   if (!threadId || token <= 0) return;
   if (pendingByThread.get(threadId) !== token) return;
   pendingByThread.drop(threadId);
+  pendingThreads.delete(threadId);
 }
 
 export function isThreadInterruptPending(threadId: string | null | undefined): boolean {
@@ -37,10 +39,13 @@ export function isThreadInterruptPending(threadId: string | null | undefined): b
 
 export function resetThreadInterruptStateForTest(): void {
   pendingByThread.reset();
-  generations.clear();
+  pendingThreads.clear();
 }
 
-onBackendIdentity(() => {
-  pendingByThread.reset();
-  generations.clear();
+onThreadHistoryInvalidated((owns) => {
+  for (const id of pendingThreads) {
+    if (!owns(id)) continue;
+    pendingByThread.drop(id);
+    pendingThreads.delete(id);
+  }
 });

@@ -20,7 +20,8 @@
   // launched through a PTY with no `--settings` flag, so offering these there
   // would advertise settings that cannot reach the binary.
 
-  import { getSettings, updateSettingsPatch } from '../../stores/settings.svelte';
+  import { settingsComputer } from './settingsComputer';
+  const { getSettings, updateSettingsPatch } = settingsComputer();
   import {
     CLAUDE_OUTPUT_STYLE_OPTIONS,
     CLAUDE_SUBAGENT_LIMIT_MAX,

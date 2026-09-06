@@ -32,6 +32,7 @@ import (
 
 	"agent-overflow/internal/backendproxy"
 	"agent-overflow/internal/deviceclient"
+	"agent-overflow/internal/keyedlock"
 	"agent-overflow/internal/transport"
 )
 
@@ -54,6 +55,7 @@ type Manager struct {
 
 	mu       sync.Mutex
 	carriers map[string]*carrier
+	profiles *keyedlock.Registry
 }
 
 // New builds a manager over one device profile directory. The directory
@@ -62,7 +64,7 @@ func New(dir, label, platform string) (*Manager, error) {
 	if dir == "" {
 		return nil, errors.New("attachedbackends: a device profile directory is required")
 	}
-	return &Manager{dir: dir, label: label, platform: platform, carriers: map[string]*carrier{}}, nil
+	return &Manager{dir: dir, label: label, platform: platform, carriers: map[string]*carrier{}, profiles: keyedlock.New()}, nil
 }
 
 // Attached implements transport.AttachedBackends.
@@ -101,6 +103,8 @@ func (m *Manager) Carrier(id string) transport.BackendCarrier {
 
 // carrier resolves the live hop for one profile, building it on first use.
 func (m *Manager) carrier(id string) (*carrier, error) {
+	unlock := m.profiles.Lock(id)
+	defer unlock()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if held, ok := m.carriers[id]; ok {
@@ -201,6 +205,22 @@ func (m *Manager) Add(ctx context.Context, pairingLink string) (Attachment, erro
 	if err != nil {
 		return Attachment{}, err
 	}
+	unlock, err := m.profiles.LockCtx(ctx, link.BackendID)
+	if err != nil {
+		return Attachment{}, err
+	}
+	defer unlock()
+	// Pairing is a new grant. Do not revive an old agent opt-in after
+	// revocation or an incomplete pairing; the explicit enable follows it.
+	if err := m.writeAgentAccess(link.BackendID, false); err != nil {
+		return Attachment{}, err
+	}
+	m.mu.Lock()
+	if old := m.carriers[link.BackendID]; old != nil {
+		old.client.Retire()
+	}
+	delete(m.carriers, link.BackendID)
+	m.mu.Unlock()
 	client, pairing, err := deviceclient.Pair(ctx, m.dir, link, m.label, m.platform)
 	if err != nil {
 		return Attachment{}, err
@@ -233,6 +253,12 @@ func (m *Manager) Await(ctx context.Context, id string) error {
 	if err := held.client.AwaitActivation(ctx); err != nil {
 		return err
 	}
+	m.mu.Lock()
+	current := m.carriers[id] == held
+	m.mu.Unlock()
+	if !current {
+		return deviceclient.ErrSessionEnded
+	}
 	held.reached()
 	return nil
 }
@@ -241,9 +267,19 @@ func (m *Manager) Await(ctx context.Context, id string) error {
 // DEVICE, and the far side adopts its row by thumbprint if this
 // installation ever pairs with it again.
 func (m *Manager) Remove(id string) error {
+	unlock := m.profiles.Lock(id)
+	defer unlock()
+	if err := m.writeAgentAccess(id, false); err != nil {
+		return err
+	}
 	m.mu.Lock()
+	defer m.mu.Unlock()
+	if held := m.carriers[id]; held != nil {
+		if err := held.client.Forget(); err != nil {
+			return err
+		}
+	}
 	delete(m.carriers, id)
-	m.mu.Unlock()
 	return deviceclient.ForgetSession(m.dir, id)
 }
 
@@ -260,6 +296,17 @@ func (m *Manager) Rename(id, nickname string) error {
 		return err
 	}
 	return held.client.SetNickname(nickname)
+}
+
+// RepairAddress adds an explicitly entered, verified alternative to an
+// existing pairing. The live client owns the profile write and route change.
+func (m *Manager) RepairAddress(ctx context.Context, id, endpoint string) (string, error) {
+	held, err := m.carrier(id)
+	if err != nil {
+		return "", err
+	}
+	route, err := held.client.RepairAddress(ctx, endpoint)
+	return route.Endpoint, err
 }
 
 // carrier is one attached machine's live hop.
@@ -325,6 +372,7 @@ func (c *carrier) Manifest(ctx context.Context) (transport.AttachedManifest, err
 	}
 	c.reached()
 	return transport.AttachedManifest{
+		SessionScopes:     c.client.Session().Scopes,
 		BackendID:         manifest.BackendID,
 		ReplicaGeneration: manifest.ReplicaGeneration,
 		BackendName:       manifest.BackendName,

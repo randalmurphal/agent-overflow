@@ -22,8 +22,9 @@
 // a tab that is killed mid-exchange cannot release anything, so the entry
 // EXPIRES rather than being held forever. Nothing here waits longer than
 // that expiry, and the caller re-reads its own state inside the lease
-// rather than trusting exclusion alone, which is what makes a lost race
-// a no-op instead of a second exchange.
+// rather than trusting exclusion alone. Recoverable renewal additionally
+// saves its successor before send and compares the generation after fetch.
+// This protects a suspended tab whose lease expires during the exchange.
 
 /** What the guarded work is told about its own standing. */
 export interface LeaseHold {

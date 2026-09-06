@@ -95,6 +95,9 @@ type revertedConversationCut struct {
 }
 
 func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (cut revertedConversationCut, err error) {
+	if err := a.store.CheckThreadExecutionAccess(args.thread); err != nil {
+		return cut, err
+	}
 	// Confirmed background-task kill runs before the provider rollback:
 	// the Codex terminal-clean RPC needs the session still live, and the
 	// tray rows flip inactive immediately after provider-owned work is

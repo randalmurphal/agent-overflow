@@ -88,6 +88,7 @@ import {
 } from '@playwright/test';
 
 import { launchHarness, type HarnessApp } from '../src/harness.js';
+import { unusedPort } from '../src/ports.js';
 import {
   RESULT_LINE,
   advance,
@@ -181,10 +182,39 @@ async function passCredentialPrompt(device: AndroidDevice, lock: Locator): Promi
     // Window focus arrives before the native PIN field is ready on a
     // cold launch. Fill that field through Android's UI selector so no
     // prefix of the PIN is lost during the credential animation.
-    await device.fill({ res: 'com.android.systemui:id/lockPassword', focused: true }, LOCK_PIN);
+    try {
+      await expect.poll(() => focusedWindow(device), { message: 'the platform credential prompt must receive focus' })
+        .toContain('BiometricPrompt');
+      fs.writeFileSync(test.info().outputPath('native-lock-ime.txt'), await device.shell('dumpsys input_method'));
+      // A WebView field may have owned the IME before the second pairing.
+      // Focus the system field explicitly, as a tap on the prompt would.
+      await device.tap({ res: 'com.android.systemui:id/lockPassword' });
+      await device.fill({ res: 'com.android.systemui:id/lockPassword', focused: true }, LOCK_PIN);
+    } catch (error) {
+      await test.info().attach('native-lock-screen', { body: await device.screenshot({ path: test.info().outputPath('native-lock.png') }), contentType: 'image/png' });
+      console.info('Native lock focus:', await focusedWindow(device));
+      console.info('App lock text:', await lock.innerText().catch(() => '<not present>'));
+      // Use the driver's existing UiAutomation connection. Android allows
+      // only one owner, so a second `uiautomator dump` cannot inspect it.
+      fs.writeFileSync(test.info().outputPath('native-lock.json'), JSON.stringify(await device.info({ depth: 0 }), null, 2));
+      throw error;
+    }
     await device.shell('input keyevent 66');
   }
   await expect(lock).toBeHidden({ timeout: HUMAN_LOCK ? 120_000 : 30_000 });
+}
+
+// Playwright 1.62 resolves a WebView's package with `ps -A | grep <pid>`
+// and keeps the last matching process, including substring/parent-PID
+// matches. Select the documented socket identity from the app's exact PID
+// instead, on every launch (including a bundle swap or notification).
+async function shellWebView(device: AndroidDevice) {
+  let pid = '';
+  await expect.poll(async () => {
+    pid = (await device.shell(`pidof ${SHELL_PACKAGE}`)).toString().trim();
+    return pid;
+  }, { message: 'the shell must have one running app process', timeout: WEBVIEW_MS }).toMatch(/^[1-9]\d*$/);
+  return device.webView({ socketName: `webview_devtools_remote_${pid}` }, { timeout: WEBVIEW_MS });
 }
 
 /** Long enough for a cold WebView on an emulator, short enough to fail. */
@@ -393,7 +423,7 @@ const test = base.extend<ShellFixtures>({
     await device.shell(`pm clear ${SHELL_PACKAGE}`);
     await device.shell(`pm grant ${SHELL_PACKAGE} android.permission.POST_NOTIFICATIONS`);
     await device.shell(`am start -n ${SHELL_ACTIVITY}`);
-    const webView = await device.webView({ pkg: SHELL_PACKAGE }, { timeout: WEBVIEW_MS });
+    const webView = await shellWebView(device);
     await use(await webView.page());
   },
 });
@@ -433,6 +463,8 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
   // this origin), so the reload is what actually runs `main.ts` again
   // with the hash present. Both lines are load-bearing.
   const invite = await harness.rpc<PairingInvite>('MintDevicePairing', 'phone', 'full');
+  const privatePairing = JSON.parse(Buffer.from(fragmentOf(invite).slice(6), 'base64url').toString('utf8')) as { certFingerprint?: string; backendId: string };
+  expect(privatePairing.certFingerprint, 'the native path must verify the real private certificate').toMatch(/^sha256:[0-9a-f]{64}$/);
   await page.goto(SHELL_ORIGIN + '/' + fragmentOf(invite));
   await page.reload();
 
@@ -449,6 +481,9 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
   const shown = page.getByLabel('Verification number');
   await expect(shown).toBeVisible();
   await confirmOnHost(harness, ((await shown.textContent()) ?? '').trim());
+
+  expect(await page.evaluate((id) => JSON.parse(localStorage.getItem('agent-overflow:backendEndpoints') ?? '{}')[id], privatePairing.backendId))
+    .toBe(`https://127.0.0.1:${harness.bootstrap.port}`);
 
   // --- 3. The lock gates the app, and the device credential passes it --
   // The lock screen is mounted BEFORE the app so a phone never flashes a
@@ -472,6 +507,58 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
   await expect(row).toBeVisible({ timeout: PAIRED_MOUNT_MS });
   await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'list');
 
+  // Age the real key-bound session and reload. Renewal must cross the
+  // native private-TLS HTTP adapter and preserve this computer's pairing.
+  const oldSession = await page.evaluate((id) => {
+    const key = `agent-overflow:deviceSession:${id}`;
+    const held = JSON.parse(localStorage.getItem(key)!);
+    if (held.proofKind !== 'key' || held.refreshRecovery !== true) throw new Error('native renewal prerequisites missing');
+    held.expiresAtMs = 1;
+    delete held.refreshRecovery; // A pairing saved before recovery negotiation.
+    localStorage.setItem(key, JSON.stringify(held));
+    return { id: held.sessionId as string, secret: held.refreshSecret as string };
+  }, privatePairing.backendId);
+  await page.reload();
+  await expect(lock).toBeVisible({ timeout: PAIRED_MOUNT_MS });
+  await passCredentialPrompt(device, lock);
+  await expect(row).toBeVisible({ timeout: PAIRED_MOUNT_MS });
+  const renewed = await page.evaluate(({ backend, before }) => {
+    const held = JSON.parse(localStorage.getItem(`agent-overflow:deviceSession:${backend}`)!);
+    return held.sessionId === before.id && held.refreshSecret !== before.secret && !held.pendingNextSecret && held.expiresAtMs > Date.now();
+  }, { backend: privatePairing.backendId, before: oldSession });
+  expect(renewed, 'native renewal must preserve the pairing and finish its saved operation').toBe(true);
+
+  // The paired origin now disappears while the same computer is available
+  // through its advertised LAN listener. This goes through the actual native
+  // TLS bridge (Playwright request routing cannot intercept those requests).
+  const network = await harness.rpc<Record<string, unknown>>('GetNetworkSettings');
+  await harness.rpc('SetNetworkSettings', { ...network, bindAll: true });
+  await page.reload();
+  await expect(lock).toBeVisible({ timeout: PAIRED_MOUNT_MS });
+  await passCredentialPrompt(device, lock);
+  await expect(row).toBeVisible({ timeout: PAIRED_MOUNT_MS });
+  await expect.poll(() => page.evaluate((id) => {
+    const profile = JSON.parse(localStorage.getItem(`agent-overflow:computerRoutes:${id}`) ?? '{}');
+    return (profile.routes ?? []).some((route: { endpoint: string }) => !route.endpoint.includes('127.0.0.1'));
+  }, privatePairing.backendId), { message: 'the authenticated manifest advertises a reachable LAN route' }).toBe(true);
+  await run(adbPath(), ['-s', device.serial(), 'reverse', '--remove', `tcp:${harness.bootstrap.port}`]);
+  await page.evaluate((id) => {
+    const key = `agent-overflow:deviceSession:${id}`;
+    const held = JSON.parse(localStorage.getItem(key)!);
+    held.expiresAtMs = 1;
+    localStorage.setItem(key, JSON.stringify(held));
+  }, privatePairing.backendId);
+  await page.reload();
+  await expect(lock).toBeVisible({ timeout: PAIRED_MOUNT_MS });
+  await passCredentialPrompt(device, lock);
+  await expect(row).toBeVisible({ timeout: PAIRED_MOUNT_MS });
+  await expect.poll(() => page.evaluate(({ id, sessionId }) => {
+    const held = JSON.parse(localStorage.getItem(`agent-overflow:deviceSession:${id}`)!);
+    const profile = JSON.parse(localStorage.getItem(`agent-overflow:computerRoutes:${id}`) ?? '{}');
+    return held.sessionId === sessionId && held.expiresAtMs > Date.now() && !held.pendingNextSecret
+      && !!profile.lastEndpoint && !profile.lastEndpoint.includes('127.0.0.1');
+  }, { id: privatePairing.backendId, sessionId: oldSession.id }), { message: 'LAN selection and renewal preserve the original pairing' }).toBe(true);
+
   // --- 5. A tap opens the thread ---------------------------------------
   await row.click();
   await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'thread');
@@ -488,6 +575,13 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
     await pressBack(device);
     await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'thread');
   }
+
+  // Bytes must cross the native private-TLS bridge, not just open a chooser.
+  await page.getByLabel('Choose attachments').setInputFiles({
+    name: 'lan-transfer.txt', mimeType: 'text/plain', buffer: Buffer.alloc(256 * 1024, 'x'),
+  });
+  await expect(page.getByLabel('Remove lan-transfer.txt')).toBeVisible();
+  await page.getByLabel('Remove lan-transfer.txt').click();
 
   // Back during a live turn must navigate, never execute Escape's interrupt.
   const threadId = seed.projects[0].threadIds[0];
@@ -515,6 +609,33 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
   await advance(harness, mockId, 'finish-after-back');
   await harness.waitForEvent('provider:turn_completed');
 
+  // Retire every saved route by changing the host's port. The offline
+  // computer's address repair must retain its native pairing and thread.
+  const repairedPort = await unusedPort();
+  const repairedOrigin = await page.evaluate(({ id, port }) => {
+    const profile = JSON.parse(localStorage.getItem(`agent-overflow:computerRoutes:${id}`)!);
+    const endpoint = new URL(profile.lastEndpoint);
+    endpoint.port = String(port);
+    return endpoint.origin;
+  }, { id: privatePairing.backendId, port: repairedPort });
+  const currentNetwork = await harness.rpc<Record<string, unknown>>('GetNetworkSettings');
+  await harness.rpc('SetNetworkSettings', { ...currentNetwork, listenPort: repairedPort });
+  await page.reload();
+  await expect(lock).toBeVisible({ timeout: PAIRED_MOUNT_MS });
+  await passCredentialPrompt(device, lock);
+  await expect(row).toBeVisible({ timeout: PAIRED_MOUNT_MS });
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('tab', { name: 'Computers', exact: true }).click();
+  const computer = page.getByTestId('attached-machine');
+  await computer.getByRole('button', { name: 'Change address' }).click();
+  await computer.getByLabel('New computer address').fill(repairedOrigin);
+  await computer.getByRole('button', { name: 'Verify & reconnect' }).click();
+  await expect(computer).toContainText('Connected', { timeout: PAIRED_MOUNT_MS });
+  expect(await page.evaluate((id) => JSON.parse(localStorage.getItem(`agent-overflow:deviceSession:${id}`)!).sessionId, privatePairing.backendId)).toBe(oldSession.id);
+  await page.getByRole('button', { name: 'Close Settings', exact: true }).click();
+  await row.click();
+  await expect(page.getByTestId('chat-header-title')).toHaveText('Shell boot thread');
+
   // --- 7. The Capacitor bridge is really in the page -------------------
   // `isNativeShell()` branches every seam in `frontend/src/lib/native/` on
   // this, and every unit test for those seams stubs it. This is the one
@@ -526,6 +647,99 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
           ?.isNativePlatform?.() === true,
     ),
   ).toBe(true);
+});
+
+test('new pairings preserve a legacy first computer and removing it preserves the other computer', async ({ device, harness, page }) => {
+  const second = await launchHarness();
+  const port = String(second.bootstrap.port);
+  await run(adbPath(), ['-s', device.serial(), 'reverse', `tcp:${port}`, `tcp:${port}`]);
+  async function pair(computer: HarnessApp): Promise<string> {
+    const invite = await computer.rpc<PairingInvite>('MintDevicePairing', 'phone', 'full');
+    const payload = JSON.parse(Buffer.from(fragmentOf(invite).slice(6), 'base64url').toString('utf8')) as { backendId: string };
+    await page.goto(SHELL_ORIGIN + '/' + fragmentOf(invite));
+    await page.reload();
+    await expect(page.getByRole('heading', { name: 'Pair this device' })).toBeVisible();
+    await page.getByRole('button', { name: 'Pair', exact: true }).click();
+    const verification = page.getByLabel('Verification number');
+    await expect(verification).toBeVisible();
+    await confirmOnHost(computer, (await verification.textContent())!.trim());
+    const lock = page.getByTestId('app-lock');
+    await expect(lock).toBeVisible({ timeout: PAIRED_MOUNT_MS });
+    await passCredentialPrompt(device, lock);
+    return payload.backendId;
+  }
+  async function settings(name: string): Promise<void> {
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await page.getByRole('tab', { name, exact: true }).click();
+  }
+  try {
+    for (const [computer, title] of [[harness, 'First computer thread'], [second, 'Second computer thread']] as const) {
+      await computer.rpc('HarnessSeed', { projects: [{ name: title, repo: { commits: [{ files: { 'README.md': title } }] }, threads: [{ title, turns: [{ userText: 'Hello', items: [{ kind: 'assistant_text', summary: 'Ready' }] }] }] }] });
+    }
+    const firstId = await pair(harness);
+    await expect(page.getByTestId('thread-row').filter({ hasText: 'First computer thread' })).toBeVisible();
+    await settings('Typography');
+    const font = page.getByTestId('settings-font-size');
+    await font.fill('17');
+    await font.press('Tab');
+    const size = await page.evaluate(() => getComputedStyle(document.documentElement).fontSize);
+    // Fixture for an already-installed phone: older builds stored their
+    // first pairing under the empty key. The signing key is per frontend;
+    // the credential and exact-origin pin are unchanged by this fixture.
+    const credential = await page.evaluate((id) => {
+      const key = `agent-overflow:deviceSession:${id}`;
+      const session = localStorage.getItem(key)!;
+      localStorage.setItem('agent-overflow:deviceSession', session);
+      localStorage.removeItem(key);
+      const endpoints = JSON.parse(localStorage.getItem('agent-overflow:backendEndpoints')!);
+      endpoints[''] = endpoints[id];
+      delete endpoints[id];
+      localStorage.setItem('agent-overflow:backendEndpoints', JSON.stringify(endpoints));
+      return session;
+    }, firstId);
+    const secondId = await pair(second);
+    expect(await page.evaluate(() => localStorage.getItem('agent-overflow:deviceSession'))).toBe(credential);
+    await expect(page.getByTestId('thread-row').filter({ hasText: 'Second computer thread' })).toBeVisible();
+    try {
+      await expect(page.getByTestId('thread-row').filter({ hasText: 'First computer thread' })).toBeVisible();
+    } catch (error) {
+      // Addresses and UI state only: never attach paired credentials.
+      console.info('Paired computer addresses:', await page.evaluate(() => localStorage.getItem('agent-overflow:backendEndpoints')));
+      await settings('Computers');
+      await test.info().attach('computers-state', { body: await page.locator('body').ariaSnapshot(), contentType: 'text/plain' });
+      throw error;
+    }
+    await harness.stop();
+    await settings('Computers');
+    const first = page.getByTestId('home-computer');
+    await first.getByRole('button', { name: 'Remove', exact: true }).click();
+    await first.getByRole('button', { name: 'Confirm remove', exact: true }).click();
+    const lock = page.getByTestId('app-lock');
+    await expect(lock).toBeVisible({ timeout: PAIRED_MOUNT_MS });
+    await passCredentialPrompt(device, lock);
+    await expect(page.getByTestId('thread-row').filter({ hasText: 'Second computer thread' })).toBeVisible();
+    await expect(page.getByTestId('thread-row').filter({ hasText: 'First computer thread' })).toHaveCount(0);
+    expect(await page.evaluate(() => Object.keys(JSON.parse(localStorage.getItem('agent-overflow:backendEndpoints')!)))).toEqual([secondId]);
+    expect(await page.evaluate(() => getComputedStyle(document.documentElement).fontSize)).toBe(size);
+    await expect(page.getByTestId('transport-status-banner')).toBeHidden();
+  } finally {
+    await run(adbPath(), ['-s', device.serial(), 'reverse', '--remove', `tcp:${port}`]).catch(() => undefined);
+    await second.close();
+  }
+});
+
+test('a private certificate mismatch refuses pairing before credentials cross', async ({ harness, page }) => {
+  const invite = await harness.rpc<PairingInvite>('MintDevicePairing', 'phone', 'full');
+  const payload = JSON.parse(Buffer.from(fragmentOf(invite).slice(6), 'base64url').toString('utf8'));
+  payload.certFingerprint = `sha256:${'0'.repeat(64)}`;
+  await page.goto(`${SHELL_ORIGIN}/#pair=${Buffer.from(JSON.stringify(payload)).toString('base64url')}`);
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Pair this device' })).toBeVisible();
+  await page.getByRole('button', { name: 'Pair', exact: true }).click();
+  await expect(page.getByText(/certificate could not be verified/)).toBeVisible();
+  await expect(page.getByLabel('Verification number')).toHaveCount(0);
+  const overview = await harness.rpc<AccessOverview>('GetAccessOverview');
+  expect((overview.pendingPairings ?? []).some((pairing) => pairing.redeemed)).toBe(false);
 });
 
 // ---------------------------------------------------------------------
@@ -702,7 +916,7 @@ test('the shell stages a bundle, boots on it, and refuses a damaged one', async 
   // process that is actually starting.
   await device.shell(`am force-stop ${SHELL_PACKAGE}`);
   await device.shell(`am start -n ${SHELL_ACTIVITY}`);
-  const relaunched = await (await device.webView({ pkg: SHELL_PACKAGE }, { timeout: WEBVIEW_MS }))
+  const relaunched = await (await shellWebView(device))
     .page();
 
   // The origin is unchanged: a bundle swap changes which FILES the
@@ -822,7 +1036,7 @@ test('a notification tap opens its thread after the lock is answered', async ({
     `am start -n ${SHELL_ACTIVITY} --es ${EXTRA_TARGET} '${target}' --es ${EXTRA_ID} '${tag}'`,
   );
 
-  const tapped = await (await device.webView({ pkg: SHELL_PACKAGE }, { timeout: WEBVIEW_MS })).page();
+  const tapped = await (await shellWebView(device)).page();
 
   // The lock is in front of it, and the tap survives being held there:
   // the activation queue waits for hydration and the app under the lock

@@ -74,7 +74,7 @@ const WORKFLOW_RUN_MAP_STORE = 'lib/stores/workflowRunMap.svelte.ts';
 const APPEARANCE_STORE = 'lib/stores/appearance.svelte.ts';
 const EDITORS_STORE = 'lib/stores/editors.svelte.ts';
 const BROWSER_COMPANION_STORE = 'lib/stores/browserCompanion.svelte.ts';
-const PROVIDER_ACCOUNTS_STORE = 'lib/stores/providerAccounts.svelte.ts';
+const PROVIDER_ACCOUNTS_STORE = 'lib/stores/computerAccounts.svelte.ts';
 const SYSTEMS_STORE = 'lib/stores/systems.svelte.ts';
 const SERVICE_UPDATE_STORE = 'lib/stores/serviceUpdate.svelte.ts';
 const DEV_SERVERS_STORE = 'lib/stores/devServers.svelte.ts';
@@ -117,7 +117,7 @@ const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
     CHAT_BAR_FAVORITES_STORE,
     'ensureChatBarFavorites() + peekChatBarFavorites()',
   ),
-  SetChatBarFavorite: owned(CHAT_BAR_FAVORITES_STORE, 'setChatBarFavorite()'),
+  SetChatBarFavorite: owned(CHAT_BAR_FAVORITES_STORE, 'frontend-local setChatBarFavorite(); backend writes exist only for older clients'),
   WorkflowGetRunMap: owned(WORKFLOW_RUN_MAP_STORE, 'the run-map entity source'),
   // Appearance is one app-global value over one directory, so its store is a
   // plain module store rather than an entityStore — but the ownership rule is
@@ -125,7 +125,8 @@ const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   // SetAppearance itself would hold a selection the applier never sees, and a
   // surface that called SetWindowBackgroundColor outside the store would race
   // the cache the next launch reads.
-  GetThemeFiles: owned(APPEARANCE_STORE, 'loadAppearance()'),
+  GetThemeFiles: owned('lib/stores/appearanceFiles.ts', 'readAppearanceFiles() / copyAppearanceFiles()'),
+  GetSpinnerFiles: owned('lib/stores/appearanceFiles.ts', 'readSpinnerFiles() / copyAppearanceFiles()'),
   SetAppearance: owned(APPEARANCE_STORE, 'setAppearance()'),
   SetWindowBackgroundColor: owned(APPEARANCE_STORE, 'syncWindowBackground()'),
   // The provider-account surface is one listing and one credential slot per

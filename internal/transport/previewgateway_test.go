@@ -8,9 +8,109 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestIdlePreviewRetentionFollowsTicketsAndBrowserGrants(t *testing.T) {
+	var clock atomic.Int64
+	clock.Store(time.Unix(1_700_000_000, 0).UnixNano())
+	gw := NewPreviewGateway(PreviewGatewayConfig{
+		Sources:     []PreviewListenerSource{&stubPreviewSource{host: "backend.test"}},
+		SessionLive: func(string) bool { return true }, Now: func() time.Time { return time.Unix(0, clock.Load()) },
+	})
+	t.Cleanup(gw.Close)
+	gw.SetPorts(httpPorts(5173))
+	gw.ReleaseIdlePorts()
+	if len(gw.Ports()) != 0 {
+		t.Fatal("idle gateway without a visitor retained listeners")
+	}
+	gw.SetPorts(httpPorts(5173))
+	if _, err := gw.MintURL("phone", 5173, "/app/"); err != nil {
+		t.Fatal(err)
+	}
+	gw.ReleaseIdlePorts()
+	if len(gw.Ports()) != 1 {
+		t.Fatal("app disconnect retired an invitation before its browser opened")
+	}
+	clock.Add(int64(previewTicketTTL + time.Second))
+	gw.ReleaseIdlePorts()
+	if len(gw.Ports()) != 0 {
+		t.Fatal("an unspent expired invitation retained listeners")
+	}
+	gw.SetPorts(httpPorts(5173))
+	raw, err := gw.MintURL("phone", 5173, "/app/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	if !gw.exchange(w, httptest.NewRequest(http.MethodGet, raw, nil), ticketOf(t, raw), 5173, previewCookiePrefix+"5173") {
+		t.Fatal("browser did not obtain a preview grant")
+	}
+	clock.Add(int64(previewTicketTTL + time.Second))
+	gw.ReleaseIdlePorts()
+	if len(gw.Ports()) != 1 {
+		t.Fatal("app disconnect retired the independently admitted browser")
+	}
+	clock.Add(int64(previewGrantTTL + time.Second))
+	gw.ReleaseIdlePorts()
+	if len(gw.Ports()) != 0 {
+		t.Fatal("expired browser grants retained listeners")
+	}
+}
+
+func TestIdleRetirementCannotSplitATicketToCookieHandoff(t *testing.T) {
+	for _, authorized := range []bool{true, false} {
+		t.Run(strconv.FormatBool(authorized), func(t *testing.T) {
+			validating, resume, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			release := sync.OnceFunc(func() { close(resume) })
+			gw := NewPreviewGateway(PreviewGatewayConfig{
+				Sources:     []PreviewListenerSource{&stubPreviewSource{host: "backend.test"}},
+				SessionLive: func(string) bool { close(validating); <-resume; return authorized },
+			})
+			t.Cleanup(gw.Close)
+			gw.SetPorts(httpPorts(5173))
+			raw, err := gw.MintURL("phone", 5173, "/")
+			if err != nil {
+				t.Fatal(err)
+			}
+			ticket := ticketOf(t, raw)
+			var accepted bool
+			go func() {
+				accepted = gw.exchange(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, raw, nil), ticket, 5173, previewCookiePrefix+"5173")
+				close(done)
+			}()
+			t.Cleanup(func() {
+				release()
+				select {
+				case <-done:
+				case <-time.After(5 * time.Second):
+					t.Error("preview exchange did not finish")
+				}
+			})
+			select {
+			case <-validating:
+			case <-time.After(5 * time.Second):
+				t.Fatal("preview did not reach principal validation")
+			}
+			gw.ReleaseIdlePorts()
+			if len(gw.Ports()) != 1 {
+				t.Fatal("idle retirement split ticket consumption from grant publication")
+			}
+			release()
+			<-done
+			if accepted != authorized {
+				t.Fatalf("preview admission=%v want=%v", accepted, authorized)
+			}
+			gw.ReleaseIdlePorts()
+			if (len(gw.Ports()) == 1) != authorized {
+				t.Fatal("handoff retention did not end on refusal or follow the accepted grant")
+			}
+		})
+	}
+}
 
 // ticketOf pulls the ticket out of a minted URL.
 func ticketOf(t *testing.T, raw string) string {

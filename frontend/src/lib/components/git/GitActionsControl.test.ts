@@ -3,7 +3,7 @@ import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import GitActionsControl from './GitActionsControl.svelte';
 import { resetPanesForTest } from '../../stores/panes.svelte';
-import { loadSettings } from '../../stores/settings.svelte';
+import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import type { GitStatus } from '../../types/git';
 import type { Project, Thread } from '../../types/models';
 import { createThreadPane } from '../../stores/thread.svelte';

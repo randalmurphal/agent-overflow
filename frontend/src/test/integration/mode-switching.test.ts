@@ -49,8 +49,8 @@ describe('App integration — agent-mode toggle', () => {
       ...thread,
       mode: mode as Thread['mode'],
     }));
-    const { getByTestId } = await mountWithThread(thread);
-    const btn = getByTestId('composer-agent-mode-toggle');
+    const { findByTestId } = await mountWithThread(thread);
+    const btn = await findByTestId('composer-agent-mode-toggle');
     expect(btn.textContent ?? '').toMatch(/build/i);
 
     await fireEvent.click(btn);
@@ -66,8 +66,8 @@ describe('App integration — agent-mode toggle', () => {
       throw new Error('backend down');
     });
     const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const { getByTestId } = await mountWithThread(thread);
-    const btn = getByTestId('composer-agent-mode-toggle');
+    const { findByTestId } = await mountWithThread(thread);
+    const btn = await findByTestId('composer-agent-mode-toggle');
     await fireEvent.click(btn);
     await flush(10);
 

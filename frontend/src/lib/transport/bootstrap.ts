@@ -1,3 +1,4 @@
+import { networkFetch } from './networkFetch';
 // Bootstrap manifest handling for the transport: the /bootstrap.json
 // fetch that exchanges the page's one-time ticket for its session
 // cookie, and the WS-URL validation that keeps a tampered manifest from
@@ -18,7 +19,7 @@
 // URL carries no credential at all (./pageHost.ts). Both end at the same
 // exchange, on the same route, with the same cookie.
 
-import { setPageGrantsFromBootstrap } from './scopes';
+import { setPageGrantsFromBootstrap, setCarriedSessionScopes } from './scopes';
 import {
   publishManifestBackends,
   readBackendDescriptors,
@@ -28,9 +29,14 @@ import { setHarnessPageMarkerFromBootstrap, setHarnessSessionFromBootstrap } fro
 import { setPasskeysAvailableFromBootstrap } from './passkey';
 import { setBackendIdentityFromBootstrap } from './backendIdentity';
 import { clampString } from './frames';
-import { hasPairedSession, pairedSessionHeaders, renewPairedSession } from './deviceSession';
+import { fetchPairedComputer, hasPairedSession, observePairedComputerBootstrap, pairedSessionHeaders, renewPairedSession } from './deviceSession';
+import { computerResponseURL } from './computerRoutes';
+import type { ComputerRoute } from './computerRoute';
 import { awaitInjectedPageTicket, clearInjectedPageTicket, isWebviewHosted } from './pageHost';
 import { homeCredentials, homeOriginParts, homeUrl, originPartsOf } from './homeEndpoint';
+import { HOME_BACKEND, type BackendKey } from './backendKey';
+import { isNativeShell } from '../native/platform';
+import { hasHomeEndpoint } from './homeEndpoint';
 
 // BootstrapRejectedError marks the one bootstrap failure that retrying
 // cannot fix: the server answered, and refused our credential. The
@@ -44,7 +50,7 @@ import { homeCredentials, homeOriginParts, homeUrl, originPartsOf } from './home
 // actionable state instead of a silent forever-loop.
 export class BootstrapRejectedError extends Error {
   status: number;
-  constructor(status: number) {
+  constructor(status: number, readonly paired = false) {
     super(`bootstrap credential refused: HTTP ${status}`);
     this.name = 'BootstrapRejectedError';
     this.status = status;
@@ -118,6 +124,8 @@ export interface AttachedBackend {
 }
 
 export interface Bootstrap {
+  routes?: ComputerRoute[];
+  sessionScopes?: string[];
   wsUrl: string;
   /**
    * Identifies this backend launch. Not a credential and not a secret:
@@ -187,6 +195,9 @@ export interface Bootstrap {
 // served the page; the credential exchange and the same-origin manifest
 // are identical, which is what lets this file hold no per-flow branches.
 export async function defaultBootstrap(): Promise<Bootstrap> {
+  // A new phone has no legacy home connection. Never send its bootstrap
+  // to the APK's asset origin; its saved computers bootstrap independently.
+  if (isNativeShell() && !hasHomeEndpoint()) throw new BootstrapRejectedError(401, true);
   if (isWebviewHosted()) {
     // The host window injects the ticket; there is none on the URL to
     // read and nothing to scrub afterwards. A delivery that never
@@ -211,6 +222,59 @@ export async function defaultBootstrap(): Promise<Bootstrap> {
   return fetchManifest(ticket);
 }
 
+// Home and attached backends share credential presentation and recovery.
+// Snapshot pairing before header generation: a missing device key can clear
+// storage, but the remedy is still pairing rather than a new page ticket.
+async function fetchAuthenticatedManifest(
+  url: string, path: string, credentials: RequestCredentials, backend: BackendKey = HOME_BACKEND,
+): Promise<Response> {
+  const paired = hasPairedSession(backend);
+  // same-origin credentials is the default for a same-origin request,
+  // but state it: this fetch is the cookie's whole delivery path, and a
+  // future caller passing a different mode would silently unauthenticate
+  // the page. A PAIRED page also presents its stored session credential:
+  // its one-time ticket is long spent and its cookie dies with the
+  // backend launch that planted it, so after a restart the session
+  // credential is the only thing that still names this page.
+  let resp = await fetchPairedComputer(backend, networkFetch, url, {
+    credentials,
+    // The PATH, never the absolute URL: a device proof binds
+    // (method, path) and the backend compares `r.URL.Path`
+    // (internal/identity/deviceproof.go), so a cross-origin fetch signs
+    // exactly what a same-origin one signs.
+    headers: await pairedSessionHeaders('GET', path, backend),
+  });
+  if (!resp.ok && CREDENTIAL_REFUSED_STATUSES.has(resp.status) && hasPairedSession(backend)) {
+    // The stored access credential may simply have aged out between
+    // visits; the refresh exchange decides whether the session is dead.
+    // One renewal, one retry. A definitive refusal clears the store and
+    // asks for pairing; an inconclusive exchange stays retryable.
+    if (await renewPairedSession(networkFetch, backend)) {
+      resp = await fetchPairedComputer(backend, networkFetch, url, {
+        credentials,
+        // A fresh proof: proofs are single-use, so the one the first
+        // attempt carried is spent.
+        headers: await pairedSessionHeaders('GET', path, backend),
+      });
+    } else if (hasPairedSession(backend)) {
+      // A network failure, throttling, or pending confirmation is not
+      // evidence that the renewal credential is dead. Keep retrying.
+      throw new Error('paired session renewal unavailable');
+    }
+  }
+  if (!resp.ok) {
+    if (!CREDENTIAL_REFUSED_STATUSES.has(resp.status)) {
+      // Transient: the server is up but not serving the manifest yet
+      // (503 readiness gate, 500 startup failure) or something in
+      // between failed. The cookie the exchange already set is still
+      // the right one — the server issues it before those gates run.
+      throw new Error(`bootstrap fetch failed: HTTP ${resp.status}`);
+    }
+    throw new BootstrapRejectedError(resp.status, paired);
+  }
+  return resp;
+}
+
 // fetchManifest is the one /bootstrap.json fetch + validation path.
 //
 // The ticket rides the request when the URL still carries one; on every
@@ -227,45 +291,7 @@ async function fetchManifest(ticket: string): Promise<Bootstrap> {
   const url = homeUrl(ticket === ''
     ? '/bootstrap.json'
     : `/bootstrap.json?${PAGE_TICKET_PARAM}=${encodeURIComponent(ticket)}`);
-  // same-origin credentials is the default for a same-origin request,
-  // but state it: this fetch is the cookie's whole delivery path, and a
-  // future caller passing a different mode would silently unauthenticate
-  // the page. A PAIRED page also presents its stored session credential:
-  // its one-time ticket is long spent and its cookie dies with the
-  // backend launch that planted it, so after a restart the session
-  // credential is the only thing that still names this page.
-  let resp = await fetch(url, {
-    credentials: homeCredentials(),
-    // The PATH, never the absolute URL: a device proof binds
-    // (method, path) and the backend compares `r.URL.Path`
-    // (internal/identity/deviceproof.go), so a cross-origin fetch signs
-    // exactly what a same-origin one signs.
-    headers: await pairedSessionHeaders('GET', '/bootstrap.json'),
-  });
-  if (!resp.ok && CREDENTIAL_REFUSED_STATUSES.has(resp.status) && hasPairedSession()) {
-    // The stored access credential may simply have aged out between
-    // visits; the refresh exchange decides whether the session is dead.
-    // One renewal, one retry — a renewal the backend refuses as dead
-    // clears the store, and the retry below then runs unpaired.
-    if (await renewPairedSession()) {
-      resp = await fetch(url, {
-        credentials: homeCredentials(),
-        // A fresh proof: proofs are single-use, so the one the first
-        // attempt carried is spent.
-        headers: await pairedSessionHeaders('GET', '/bootstrap.json'),
-      });
-    }
-  }
-  if (!resp.ok) {
-    if (!CREDENTIAL_REFUSED_STATUSES.has(resp.status)) {
-      // Transient: the server is up but not serving the manifest yet
-      // (503 readiness gate, 500 startup failure) or something in
-      // between failed. The cookie the exchange already set is still
-      // the right one — the server issues it before those gates run.
-      throw new Error(`bootstrap fetch failed: HTTP ${resp.status}`);
-    }
-    throw new BootstrapRejectedError(resp.status);
-  }
+  const resp = await fetchAuthenticatedManifest(url, '/bootstrap.json', homeCredentials());
   const contentType = resp.headers.get('content-type') ?? '';
   if (!contentType.toLowerCase().startsWith('application/json')) {
     throw new Error(`bootstrap response not JSON: content-type ${clampString(contentType)}`);
@@ -277,7 +303,8 @@ async function fetchManifest(ticket: string): Promise<Bootstrap> {
   if (typeof data.wsUrl !== 'string') {
     throw new Error('bootstrap response missing wsUrl');
   }
-  validateWsUrl(data.wsUrl);
+  validateWsUrl(data.wsUrl, originPartsOf(computerResponseURL(resp, url)) ?? homeOriginParts());
+  await observePairedComputerBootstrap(HOME_BACKEND, data.backendId, data.routes);
   data.remote = data.remote === true;
   // Locality is this page's half of the capability answer: a page served
   // over loopback IS the owner's screen, and a page served over the
@@ -395,6 +422,9 @@ export function validateWsUrl(
   if (parsed.protocol !== 'ws:' && parsed.protocol !== 'wss:') {
     throw new Error(`bootstrap wsUrl scheme not ws/wss: ${clampString(parsed.protocol)}`);
   }
+  if (parsed.username || parsed.password || parsed.hash) {
+    throw new Error('bootstrap wsUrl cannot contain credentials or a fragment');
+  }
   if (expected === null) {
     // An origin requirement we cannot evaluate is a requirement we
     // cannot meet. Unreachable in practice — the only caller fetched a
@@ -428,26 +458,23 @@ export function validateWsUrl(
 // subject rather than an exemption.
 setBackendManifestFetcher(async (descriptor) => {
   const remote = originPartsOf(descriptor.bootstrapUrl);
-  const resp = await fetch(descriptor.bootstrapUrl, {
-    credentials: remote === null ? 'same-origin' : 'omit',
-  });
-  if (!resp.ok) {
-    // Same split the page's own manifest makes: a refused credential is
-    // terminal for this backend and the reconnect ladder must stop, while
-    // a 503 or a 500 is the proxy not being ready yet and is worth
-    // retrying. Reusing the same two classes is what makes an attached
-    // backend's transport states read like home's.
-    if (CREDENTIAL_REFUSED_STATUSES.has(resp.status)) throw new BootstrapRejectedError(resp.status);
-    throw new Error(`bootstrap fetch failed: HTTP ${resp.status}`);
-  }
+  const path = new URL(descriptor.bootstrapUrl, window.location.href).pathname;
+  const resp = await fetchAuthenticatedManifest(
+    descriptor.bootstrapUrl, path, remote === null ? 'same-origin' : 'omit', descriptor.id,
+  );
   const data = (await resp.json()) as Partial<Bootstrap>;
   const wsUrl = typeof data.wsUrl === 'string' ? data.wsUrl : descriptor.wsUrl;
-  validateWsUrl(wsUrl, remote ?? homeOriginParts());
+  if (descriptor.backendId && data.backendId !== descriptor.backendId) {
+    throw new Error('This address belongs to a different computer. Pair with that computer before connecting.');
+  }
+  validateWsUrl(wsUrl, originPartsOf(computerResponseURL(resp, descriptor.bootstrapUrl)) ?? remote ?? homeOriginParts());
+  await observePairedComputerBootstrap(descriptor.id, data.backendId, data.routes);
   setBackendIdentityFromBootstrap(
     data.backendId,
     data.replicaGeneration,
     data.backendName ?? descriptor.name,
     descriptor.id,
   );
+  setCarriedSessionScopes(descriptor.id, data.sessionScopes);
   return { ...data, wsUrl };
 });

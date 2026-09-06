@@ -52,7 +52,10 @@ type AccountSink interface {
 
 // Deps are the narrow process/lifecycle ports used by Manager.
 type Deps struct {
-	Context         func() context.Context
+	Context func() context.Context
+	// BeginWork fences credential transactions and live sign-in sessions
+	// against a host restart. Acquire before account/reconcile locks.
+	BeginWork       func(context.Context) (func(), error)
 	IsShuttingDown  func() bool
 	ShutdownError   error
 	CurrentSettings func() settings.Settings
@@ -100,6 +103,13 @@ type Manager struct {
 // together during startup or focused-test setup; no App field retains either.
 func NewManager(deps Deps) *Manager {
 	return &Manager{deps: deps, fingerprints: make(map[string][32]byte)}
+}
+
+func (m *Manager) beginWork(ctx context.Context) (func(), error) {
+	if m.deps.BeginWork != nil {
+		return m.deps.BeginWork(ctx)
+	}
+	return func() {}, ctx.Err()
 }
 
 // Attach transfers the metadata and credential stores into the Manager.

@@ -206,7 +206,7 @@ func (s *Store) ListProjectsWithThreadCounts() ([]ProjectWithCounts, error) {
 		          0
 		        ) AS last_active
 		 FROM projects p
-		 LEFT JOIN threads t ON t.project_id = p.id AND t.archived = 0 AND `+hiddenClause+`
+		 LEFT JOIN owned_threads t ON t.project_id = p.id AND t.archived = 0 AND `+hiddenClause+`
 		 WHERE p.archived = 0
 		 GROUP BY p.id
 		 ORDER BY p.name ASC`, hiddenArgs...,
@@ -374,11 +374,15 @@ func (s *Store) UnarchiveProject(id string) (Project, bool, error) {
 // Keeping the emptiness predicate in the DELETE closes the race with a thread
 // inserted immediately before this statement.
 func (s *Store) DeleteProject(id string) error {
+	if err := s.CheckProjectTransferAccess(id); err != nil {
+		return err
+	}
 	result, err := s.db.Exec(
 		`DELETE FROM projects
 		  WHERE id = ?
-		    AND NOT EXISTS (SELECT 1 FROM threads WHERE project_id = ?)`,
-		id, id,
+		    AND NOT EXISTS (SELECT 1 FROM threads WHERE project_id = ?)
+		    AND NOT EXISTS (SELECT 1 FROM thread_transfers WHERE project_id = ? AND direction = 'incoming' AND phase NOT IN ('complete','canceled'))`,
+		id, id, id,
 	)
 	if err != nil {
 		return fmt.Errorf("store: delete project %s: %w", id, err)
@@ -388,6 +392,9 @@ func (s *Store) DeleteProject(id string) error {
 		return fmt.Errorf("store: delete project %s rows affected: %w", id, err)
 	}
 	if deleted == 0 {
+		if err := s.CheckProjectTransferAccess(id); err != nil {
+			return err
+		}
 		var exists int
 		if err := s.reader().QueryRow(`SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?)`, id).Scan(&exists); err != nil {
 			return fmt.Errorf("store: check project %s after guarded delete: %w", id, err)

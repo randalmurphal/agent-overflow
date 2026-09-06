@@ -52,6 +52,8 @@
   import Icon from '../primitives/Icon.svelte';
   import SettingsCallout from './SettingsCallout.svelte';
   import SettingsField from './SettingsField.svelte';
+  import FrontendAssetImport from './FrontendAssetImport.svelte';
+  import { usesFrontendAssetLibrary } from '../../stores/appearanceFiles';
   import { SELECT_CLASS } from './styles';
 
   const MODE_OPTIONS: Array<{ value: AppearanceMode; label: string }> = [
@@ -308,6 +310,8 @@
     </SettingsField>
   </div>
 
+  <FrontendAssetImport kind="themes" />
+
   {#if directory}
     <p class="mt-2 text-[0.71875rem] leading-snug text-fg-hint">
       Theme files live in
@@ -323,7 +327,7 @@
         selection is remembered on this device.
       </SettingsCallout>
     </div>
-  {:else if !writable}
+  {:else if !writable && !usesFrontendAssetLibrary()}
     <div class="mt-2" data-testid="settings-theme-local-only">
       <SettingsCallout tone="info">
         This session can read the theme files but cannot change what the desktop app has selected,

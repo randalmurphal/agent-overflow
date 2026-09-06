@@ -1,3 +1,4 @@
+import { resetSettingsForTest } from '../lib/stores/settings.svelte';
 import '@testing-library/jest-dom/vitest';
 import './helpers/firstDivergence';
 import { afterEach, beforeEach, vi } from 'vitest';
@@ -304,4 +305,5 @@ afterEach(() => {
   } catch {
     // ignore — tests running without localStorage continue happily.
   }
+  resetSettingsForTest();
 });

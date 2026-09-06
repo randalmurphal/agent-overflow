@@ -398,10 +398,10 @@ func (e authEndpoints) RedeemPairing(req transport.PairingRedemption) (transport
 func (e authEndpoints) RenewSession(req transport.SessionRenewal) (transport.TokenGrant, string) {
 	state := e.app.identityState()
 	if state == nil {
-		return transport.TokenGrant{}, identity.ReasonUnknownCredential.Code()
+		return transport.TokenGrant{}, identity.ReasonTemporarilyUnavailable.Code()
 	}
 	tokens, reason := state.sessions.Refresh(identity.RefreshRequest{
-		Secret: req.RefreshSecret,
+		Secret: req.RefreshSecret, NextSecret: req.NextRefreshSecret,
 		Proof: identity.DeviceProof{
 			Value:  req.DeviceProof,
 			Method: req.Method,
@@ -525,3 +525,5 @@ func localGrant(tokens identity.TokenSet) transport.TokenGrant {
 // identitySlot is the App field type. Declared here rather than inline on
 // the struct so the whole subsystem stays in one file.
 type identitySlot = atomic.Pointer[identityState]
+
+func (e authEndpoints) SupportsRefreshRecovery() bool { return true }

@@ -22,6 +22,7 @@ vi.mock('../../stores/transportStatus.svelte', async (importOriginal) => ({
 }));
 
 import TransportStatusBanner from './TransportStatusBanner.svelte';
+import ComputerTransportStatus from './ComputerTransportStatus.svelte';
 import {
   __resetBundleNoticeForTest,
   noteBundleReady,
@@ -52,6 +53,13 @@ describe('<TransportStatusBanner>', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it('explains a removed target without offering a retry that cannot run', async () => {
+    const view = render(ComputerTransportStatus, { backend: 'removed-computer' });
+    await settleBootGrace();
+    expect(view.getByTestId('transport-status-banner')).toHaveTextContent('This computer was removed. Choose another computer.');
+    expect(view.queryByTestId('transport-status-retry')).toBeNull();
   });
 
   it('reserves no layout height on the happy path (connected)', async () => {

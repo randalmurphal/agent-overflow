@@ -15,7 +15,10 @@
   import SteppedSpinner from '../primitives/SteppedSpinner.svelte';
   import { presentAuthReason } from '../../transport/authReason';
   import { PasskeyAbandonedError, passkeysUsable } from '../../transport/passkey';
+  import { userFacingError } from '../../utils/userFacingError';
   import { suggestDeviceLabel } from '../../utils/deviceLabel';
+  import { HOME_BACKEND, type BackendKey } from '../../transport/backendKey';
+  import { networkFetch } from '../../transport/networkFetch';
   import {
     PairingRefusedError,
     acceptPairingEndpoint,
@@ -29,11 +32,12 @@
     /** Null when the fragment could not be read; `parseError` then says why. */
     payload: PairingPayload | null;
     parseError?: string;
+    backend?: BackendKey;
     /** Called once the pairing is confirmed and the app should boot. */
     onDone: () => void;
   }
 
-  let { payload, parseError, onDone }: Props = $props();
+  let { payload, parseError, onDone, backend = HOME_BACKEND }: Props = $props();
 
   // How often the waiting state asks whether the owner confirmed, and
   // for how long. The confirm window on the other side is ten minutes
@@ -74,7 +78,7 @@
     // page, which can never be its backend's origin, ADOPTS what the
     // payload names. One call, because it is one decision about where
     // this redemption is going (transport/deviceSession.ts).
-    if (!acceptPairingEndpoint(payload, location.origin)) {
+    if (!acceptPairingEndpoint(payload, location.origin, backend)) {
       stage = {
         at: 'failed',
         title: 'This link belongs to a different address.',
@@ -84,7 +88,7 @@
     }
     stage = { at: 'redeeming' };
     try {
-      const outcome = await redeemPairing(payload, label.trim() || suggestDeviceLabel());
+      const outcome = await redeemPairing(payload, label.trim() || suggestDeviceLabel(), networkFetch, backend);
       stage = { at: 'waiting', verificationNumber: outcome.verificationNumber };
       scheduleProbe(Date.now() + PROBE_DEADLINE_MS);
     } catch (err) {
@@ -95,7 +99,7 @@
         stage = {
           at: 'failed',
           title: 'Pairing did not go through.',
-          hint: 'Check that this device is on the same network, then ask for a new link.',
+          hint: userFacingError(err) || 'Check that this device is on the same network, then try again.',
         };
       }
     }
@@ -136,7 +140,7 @@
       stage = {
         at: 'failed',
         title: 'Signing in did not go through.',
-        hint: 'Check that this device is on the same network, then try again.',
+        hint: userFacingError(err) || 'Check that this device is on the same network, then try again.',
       };
     }
   }
@@ -144,7 +148,7 @@
   function scheduleProbe(deadline: number): void {
     probeTimer = setTimeout(async () => {
       probeTimer = null;
-      const admitted = await probeActivation();
+      const admitted = await probeActivation(networkFetch, backend);
       if (admitted) {
         stage = { at: 'ready' };
         // A short beat so the confirmation lands visually before the

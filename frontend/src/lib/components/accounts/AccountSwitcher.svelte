@@ -1,4 +1,8 @@
 <script lang="ts">
+  import ComputerSelect from '../primitives/ComputerSelect.svelte';
+  import { hasMultipleBackends } from '../../stores/attachedBackends.svelte';
+  import { selectedBackend } from '../../stores/selectedBackend.svelte';
+  let backend = $state(untrack(selectedBackend));
   // Account switcher: the quick surface for the one recurring Settings trip —
   // "which account am I on, how much is left on it, switch me to the other
   // one". Top-aligned picker over every saved Claude and Codex account.
@@ -59,17 +63,21 @@
     rows: PickerRow[];
   }
 
+  $effect(() => {
+    if (open) backend = untrack(selectedBackend);
+  });
+
   let activeIndex = $state(0);
   let listEl: HTMLDivElement | undefined = $state(undefined);
 
-  let loading = $derived(isProviderAccountsLoading());
+  let loading = $derived(isProviderAccountsLoading(backend));
 
   // Only providers with something saved get a section; the flat index is
   // assigned here so the template never has to compute a row's position.
   let groups: PickerGroup[] = $derived.by(() => {
     let index = 0;
     const out: PickerGroup[] = [];
-    for (const group of getProviderAccountGroups()) {
+    for (const group of getProviderAccountGroups(backend)) {
       if (group.accounts.length === 0) continue;
       out.push({
         provider: group.provider,
@@ -92,7 +100,7 @@
   let activeLogins = $derived(
     PROVIDER_SETTINGS_ORDER.filter(
       (provider) =>
-        isProviderLoginActive(provider) || getProviderLogin(provider).phase === 'failed',
+        isProviderLoginActive(provider, backend) || getProviderLogin(provider, backend).phase === 'failed',
     ),
   );
 
@@ -106,9 +114,9 @@
   // browser can reach this effect before the bootstrap manifest resolves the
   // answer, and a refused RPC would surface as a raw failure toast.
   $effect(() => {
-    if (!open || !hasScope('access:admin')) return;
+    if (!open || !hasScope('access:admin', backend)) return;
     activeIndex = 0;
-    void loadProviderAccounts();
+    void loadProviderAccounts(backend);
     requestAnimationFrame(() => listEl?.focus());
   });
 
@@ -125,13 +133,14 @@
   });
 
   async function select(row: PickerRow): Promise<void> {
+    const target = backend;
     const { provider, account } = row;
     // A saved account whose credential is gone can't be selected; the login
     // flow resolves back to this same account by identity (email +
     // organization, same behaviour as the Settings card), so the picker stays
     // open for its result.
     if (account.needsLogin) {
-      await startProviderLogin(provider);
+      await startProviderLogin(provider, backend);
       return;
     }
     // Picking what is already active is a confirmation, not a no-op button.
@@ -139,7 +148,7 @@
       onClose();
       return;
     }
-    if (await switchProviderAccount(provider, account)) onClose();
+    if (await switchProviderAccount(provider, account, target) && backend === target && open) onClose();
   }
 
   function refreshLabel(account: ManagedProviderAccount): string {
@@ -179,12 +188,15 @@
 
   function openProviderSettings(): void {
     onClose();
-    openSettingsOverlay(SETTINGS_PROVIDERS[0]);
+    openSettingsOverlay(SETTINGS_PROVIDERS[0], backend);
   }
 </script>
 
 <Modal {open} title="Switch account" {onClose} width="md" padding="tight" align="top">
   {#snippet children()}
+    {#if hasMultipleBackends()}
+      <div class="px-2 pb-3"><ComputerSelect value={backend} onchange={(value) => { backend = value; }} scope="access:admin" /></div>
+    {/if}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
     <div
@@ -195,7 +207,7 @@
       onkeydown={handleKeydown}
     >
       {#each activeLogins as provider (provider)}
-        <ProviderLoginFlow {provider} login={getProviderLogin(provider)} />
+        <ProviderLoginFlow {backend} {provider} login={getProviderLogin(provider, backend)} />
       {/each}
 
       {#if loading && rows.length === 0}
@@ -215,8 +227,8 @@
         </div>
       {:else}
         {#each groups as group (group.provider)}
-          {@const actions = getProviderAccountActions(group.provider)}
-          {@const credentialOpInFlight = isProviderCredentialOpInFlight(group.provider)}
+          {@const actions = getProviderAccountActions(group.provider, backend)}
+          {@const credentialOpInFlight = isProviderCredentialOpInFlight(group.provider, backend)}
           <section class="mb-3 last:mb-0" data-testid="account-switcher-group-{group.provider}">
             <h3
               class="mb-1 flex items-center gap-1.5 px-1 text-[0.625rem] font-medium uppercase tracking-[0.14em] text-fg-hint"
@@ -227,7 +239,7 @@
             <ul class="flex flex-col gap-1">
               {#each group.rows as row (row.account.id)}
                 {@const account = row.account}
-                {@const limits = getProviderRateLimits(group.provider, account.id)}
+                {@const limits = getProviderRateLimits(group.provider, account.id, backend)}
                 <li
                   class={[
                     'rounded-[var(--radius-field)] px-2 py-1.5 transition-colors',
@@ -283,7 +295,7 @@
                         label={refreshLabel(account)}
                         disabled={account.needsLogin || !!actions.refreshingID}
                         testId="account-switcher-refresh-{account.id}"
-                        onClick={() => void refreshProviderAccountUsage(group.provider, account)}
+                        onClick={() => void refreshProviderAccountUsage(group.provider, account, backend)}
                       >
                         <Icon
                           icon={RefreshCw}

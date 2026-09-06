@@ -323,22 +323,23 @@ recoloring, breaks under token renames).
   the backend's data dir and the client machine's config home. A
   client-side `themes/` dir works with all existing infra (fs watcher
   template, App-bound RPCs, `a.emit`).
-- `--connect` client mode (`main_desktop.go#runClient`): the client
-  process registers **no services**. The SPA RPCs entirely against the
-  remote backend; the local process is a static stub
-  (`internal/clientmode`) that serves the SPA shell verbatim and answers
-  `/bootstrap.json`. But the client binary DOES have a durable per-machine
-  ClientID (`ensureClientID`) and its own `<configDir>` on the client
-  machine. So client-side theme files are *storable* there today, but
-  there is no live channel from the stub to the webview, so theme data
-  would ride the stub's manifest (applied at page load; live file-watch
-  reload needs a small stub endpoint later).
-- Pure-browser remote sessions: no local process, no files. Built-in
-  themes + localStorage selection only.
+- Paired `--connect` (`internal/frontendclient`): the local controller owns
+  theme and spinner files, keybindings, and ordinary transport push events.
+  Its `<configDir>/frontend/` and stable ClientID are separate from the
+  ordinary desktop window. Asset watchers reload changes live; the cached
+  native window background is read from this same directory at construction.
+  No remote host is needed to load presentation preferences. The legacy
+  launch-token relay remains in `internal/clientmode`.
+- Phone and remote-browser sessions: frontend-owned theme and animation files
+  in `agent-overflow:frontend-assets` IndexedDB, plus localStorage selection.
+  A legacy first-host directory migrates once. Settings → Theme / Working
+  indicator can explicitly copy custom files from any connected computer.
+  Copying replaces that library, preserving selections. Forgetting the source
+  computer or going offline does not delete the files. Storage failures surface
+  and leave the previous copy intact.
 
-This staging is the price of decision 3 and is acceptable: the primary
-surface (desktop app) gets the full feature; `--connect` gets themes at
-load; browsers get built-ins.
+Both desktop entry points own their presentation services. Phone/browser
+libraries are separate from execution-computer caches and survive their purge.
 
 ### 6.2 Consequences for existing settings
 
@@ -533,10 +534,9 @@ Go is pipe and never parses theme JSON beyond `appearance.json`):
   probe-resolved values (`cssColorProbe.ts`).
 - FOUC: last-applied mode class + window background stamped in
   `localStorage`, read by an inline script before first paint.
-- Remote/browser sessions (`--connect`, LAN browser): built-in themes
-  + `localStorage` selection; the theme RPCs target the DESKTOP's own
-  config dir and are refused remotely per their classification, so
-  the store must degrade cleanly when they are unavailable.
+- Direct remote browser sessions: built-ins, frontend-owned custom-file library,
+  and localStorage selection (§6.1). File reads are `settings:read`; writes to
+  the desktop's selection remain host-only.
 
 ### Phase 3: code-theme bundles + remote clients
 
@@ -544,9 +544,8 @@ Go is pipe and never parses theme JSON beyond `appearance.json`):
   Monokai, Dracula, Solarized, Tokyo Night, Catppuccin, …) shipped as
   built-in code themes: syntax 21 + ansi 16 + terminal + code-block/
   inline backgrounds, mapped by hand onto the 29-family taxonomy.
-- `--connect`: theme payload carried on the stub's `/bootstrap.json`
-  manifest; optional stub endpoint for live reload. Browser sessions: built-ins +
-  localStorage selection.
+- Paired `--connect`: local presentation services with file watchers on the
+  ordinary transport. Browser sessions: built-ins + localStorage selection.
 - Optional later: in-app theme editing UI. The file format is the
   contract either way; agents are the primary editor.
 
@@ -676,8 +675,9 @@ read):
   Built-ins only, and the settings surface says so.
 - **`writesRefused`**: a refused `SetAppearance` or a refused read, and
   a session not on the host (`hasScope('host')`) is write-blocked up front
-  rather than after a failure. A write-blocked session still TAKES the wire's themes,
-  directory and warnings; what it never adopts is the SELECTION. That is
+  rather than after a failure. Phone/browser frontends use their own durable
+  files through `appearanceFiles.ts`; legacy migration and explicit imports
+  never adopt the source's SELECTION. That is
   the client-residency decision (§6.1) enforced at the read: a remote
   browser renders its own choice out of `localStorage`, which is the only
   copy such a session can have, and is not repainted by whoever is at the
@@ -713,9 +713,9 @@ line each:
 - **A remote session keeps its own selection.** §9.6's one degrade flag
   split into three independent facts: `readAvailable` (no themes
   directory at all), `writesRefused` (structural, and a session
-  without `settings:write` is write-blocked up front), and `loadError` (transient, latches
-  nothing). A write-blocked session still takes the wire's themes,
-  directory and warnings but never adopts its SELECTION, which stays in
+  without host presence is write-blocked up front), and `loadError` (transient, latches
+  nothing). Copying files into a phone/browser library never adopts the source's
+  SELECTION, which stays in
   `localStorage`: the theme is a property of the CLIENT, so a browser
   attached to someone's backend must not be repainted by whoever is at
   the desktop.

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { HOME_BACKEND, type BackendKey } from '../../transport/backendKey';
   // The one provider sign-in surface, shared by Settings → Providers →
   // Accounts and the account-switcher picker. Both are already conditional
   // surfaces with their own chrome, so this is an inline block rather than a
@@ -35,7 +36,7 @@
   import type { ProviderID } from '../../types/providers';
   import { handleExternalURL } from '../../utils/externalLinks';
 
-  let { provider, login }: { provider: ProviderID; login: ProviderLoginState } = $props();
+  let { provider, login, backend = HOME_BACKEND }: { provider: ProviderID; login: ProviderLoginState; backend?: BackendKey } = $props();
 
   let label = $derived(resolveProviderLabel(provider));
   let phase = $derived(login.phase);
@@ -94,7 +95,7 @@
     if (!code || submitting) return;
     submitting = true;
     try {
-      await submitProviderLoginCode(provider, code);
+      await submitProviderLoginCode(provider, code, backend);
       pastedCode = '';
     } finally {
       submitting = false;
@@ -116,7 +117,7 @@
       </p>
     {/if}
     <div class="mt-3 flex justify-end">
-      <Button variant="ghost" size="xs" onclick={() => void cancelProviderLogin(provider)}>
+      <Button variant="ghost" size="xs" onclick={() => void cancelProviderLogin(provider, backend)}>
         Close
       </Button>
     </div>
@@ -143,7 +144,7 @@
           </p>
         {/if}
       </div>
-      <Button variant="ghost" size="xs" onclick={() => void cancelProviderLogin(provider)}>
+      <Button variant="ghost" size="xs" onclick={() => void cancelProviderLogin(provider, backend)}>
         Cancel
       </Button>
     </div>

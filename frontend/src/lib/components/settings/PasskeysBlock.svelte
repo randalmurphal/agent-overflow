@@ -1,4 +1,7 @@
 <script lang="ts">
+  import { settingsComputer } from './settingsComputer';
+  const { call } = settingsComputer();
+
   // Settings → Remote access → Devices → Passkeys: the credentials that let a
   // browser sign in with no link, and that let a REMOTE owner satisfy
   // step-up (docs/specs/remote-access.md §4 "Passkeys").
@@ -44,7 +47,7 @@
 
   async function load(): Promise<void> {
     try {
-      passkeys = await ListPasskeys();
+      passkeys = await call(() => ListPasskeys());
     } catch (err) {
       addToast('error', `Failed to load passkeys: ${errString(err)}`);
     }
@@ -65,15 +68,15 @@
     acting = true;
     try {
       const label = suggestDeviceLabel();
-      const challenge = await BeginPasskeyRegistration(label);
+      const challenge = await call(() => BeginPasskeyRegistration(label));
       const response = await answerChallenge(
         { ceremonyId: challenge.ceremonyId, options: challenge.options },
         'create',
       );
-      const added = await FinishPasskeyRegistration(
+      const added = await call(() => FinishPasskeyRegistration(
         challenge.ceremonyId,
         JSON.parse(response) as unknown,
-      );
+      ));
       addToast('success', `Added a passkey for ${added.label}.`);
       await load();
     } catch (err) {
@@ -105,7 +108,7 @@
         // No step-up: removing issues nothing, and the device you can
         // still reach has to be able to remove the credential on the one
         // you cannot (internal/app/AGENTS.md).
-        await DeletePasskey(passkey.id);
+        await call(() => DeletePasskey(passkey.id));
       } catch (err) {
         addToast('error', `Failed to remove the passkey: ${errString(err)}`);
       } finally {
@@ -144,7 +147,7 @@
           otherwise need you at the computer running Agent Overflow. Removing one does not
           sign any device out. Revoke the device for that.
         {:else}
-          Passkeys need a domain name for this backend. Set one under Domain and HTTPS above,
+          Passkeys need a domain name for this backend. Set one in Advanced network settings,
           then add a passkey here.
         {/if}
       </p>

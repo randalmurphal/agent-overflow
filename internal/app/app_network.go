@@ -206,6 +206,7 @@ func (a *App) SetNetworkSettings(ctx context.Context, s network.Settings) (netwo
 	// ever set, and the next boot would silently move there).
 	if prev.ListenPort != stored.ListenPort {
 		a.recordBoundPort(portFromAddr(srv.Addr()))
+		a.publishLocalControl()
 	}
 
 	// The certificate half runs on its own goroutine. Kicking it here is

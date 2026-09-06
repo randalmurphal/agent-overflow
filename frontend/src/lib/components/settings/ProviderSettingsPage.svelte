@@ -14,7 +14,8 @@
   // so nothing here repeats the provider's name at the top.
 
   import { GetProviderStatuses } from '../../stores/bindings';
-  import { getSettings, updateSetting } from '../../stores/settings.svelte';
+  import { settingsComputer } from './settingsComputer';
+  const { getSettings, updateSetting, call, backend } = settingsComputer();
   import { addToast } from '../../stores/toast.svelte';
   import type { ProviderStatus } from '../../types/settings';
   import {
@@ -58,7 +59,7 @@
 
   let definition = $derived(getProviderDefinition(provider));
   let settings = $derived(getSettings());
-  let models = $derived(getProviderModels(provider));
+  let models = $derived(getProviderModels(provider, backend));
   let dependents = $derived(dependentProviders(provider));
   let status = $state<ProviderStatus | undefined>(undefined);
   let loadGeneration = 0;
@@ -77,8 +78,8 @@
     const generation = ++loadGeneration;
     void (async () => {
       const [statusResult, modelResult] = await Promise.allSettled([
-        GetProviderStatuses(),
-        refreshProviderModels(provider),
+        call(() => GetProviderStatuses()),
+        refreshProviderModels(provider, backend),
       ]);
       if (generation !== loadGeneration) return;
 

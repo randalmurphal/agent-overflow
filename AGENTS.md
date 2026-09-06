@@ -59,9 +59,12 @@ final binaries on the same minimum macOS version.
    no in-memory read models. The deliberate exceptions are coordination,
    not orchestration, and are called out where they live: lightweight
    brokering between provider processes and the frontend (deliberation
-   turn tracking), and the workflows engine
-   (`internal/workflow/`; spec: `docs/specs/workflows-system.md`), which
-   sequences phases over the same thread/provider runtime.
+   turn tracking); the workflows engine (`internal/workflow/`; spec:
+   `docs/specs/workflows-system.md`), which sequences phases over the same
+   thread/provider runtime; and fixed conversation handoff coordination
+   (`internal/threadtransfer/`; spec: `docs/specs/conversation-transfer.md`),
+   which moves verified files and execution ownership without replicating
+   provider state.
 2. **Provider process is the source of truth during a turn.** Don't
    duplicate its state. Provider session files (`~/.claude/`,
    `~/.codex/`) are the authoritative history for crash recovery.
@@ -202,6 +205,12 @@ See [docs/references/spike-policy.md](docs/references/spike-policy.md).
   parser work on either provider.
 
 ## Permanent invariants
+
+- **Updater helpers dispatch before ordinary boot.** `main` calls
+  `updater.HandleHelperMode` before CLI/session guards, discovery and provider
+  setup. A paired desktop frontend relaunches as `--frontend` with its data
+  root, never with a consumed invitation or a computer that may be removed.
+  The shared updater owns argv preservation and rollback environment cleanup.
 
 - **Transport boundary stays clean.** Go → frontend goes through
   `app.Event.Emit` and Wails bindings only; UI code must not add a

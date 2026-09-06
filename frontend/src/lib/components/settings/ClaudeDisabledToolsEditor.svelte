@@ -12,7 +12,8 @@
   // projection, and a member typed into the free-form field lands in the
   // group's rows rather than as a stray chip.
 
-  import { getSettings, updateSettingsPatch } from '../../stores/settings.svelte';
+  import { settingsComputer } from './settingsComputer';
+  const { getSettings, updateSettingsPatch } = settingsComputer();
   import {
     CLAUDE_TODO_TOOL_GROUP,
     CLAUDE_TOOL_SUGGESTIONS,

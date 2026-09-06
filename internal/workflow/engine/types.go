@@ -545,7 +545,10 @@ type SpendSource interface {
 // parallelism is a resource fact (project profile capacities), not a config
 // knob, so the global pause kill switch is all that survives a restart.
 type Config struct {
-	Paused bool
+	// BeginWork fences new running ownership against host maintenance.
+	// Nil admits immediately. It must not call back into the engine.
+	BeginWork func(context.Context) (func(), error)
+	Paused    bool
 	// Log receives the run-lifecycle record. It is optional: a nil sink falls
 	// back to the standard logger, which is exactly where these lines went
 	// before there was a sink, so an engine wired without one loses nothing.

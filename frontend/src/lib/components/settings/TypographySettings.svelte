@@ -5,7 +5,8 @@
   // backend enforces rather than trusting the number input's own `min`/`max`
   // (a typed value bypasses them).
 
-  import { getSettings, updateSetting } from '../../stores/settings.svelte';
+  import { settingsComputer } from './settingsComputer';
+  const { getSettings, updateSetting } = settingsComputer();
   import type { MonoFont, SansFont } from '../../types/settings';
   import SettingsField from './SettingsField.svelte';
   import { INPUT_CLASS, SELECT_CLASS } from './styles';

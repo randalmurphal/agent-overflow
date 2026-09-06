@@ -1,5 +1,6 @@
-// Custom working-indicator sprites — one app-global list, mirroring the
-// themes pipeline one directory over: the backend lists
+// Custom working-indicator sprites — one frontend-owned list, mirroring the
+// themes pipeline. appearanceFiles.ts selects the local editable directory or
+// this browser/phone's durable library. The backend lists
 // <configDir>/spinners/ `<id>.png` + `<id>.json` pairs as opaque bytes
 // (internal/spinner), this store parses the manifest, decodes the strip
 // to learn its frame geometry, and every consumer (the activity rail's
@@ -15,10 +16,11 @@
 // lib/spinners/customs.ts), matching the themes principle that a broken
 // user file must say so in the UI rather than silently doing nothing.
 
-import { GetSpinnerFiles } from './bindings';
+import { readSpinnerFiles, usesFrontendAssetLibrary } from './appearanceFiles';
+import { onFrontendAssetsChanged } from './frontendAssets';
 import { wailsEventOn } from './wailsEvents';
 import type { SpinnerSprite } from '../spinners/catalog';
-import { buildCustomSprite, parseCustomManifest } from '../spinners/customs';
+import { buildCustomSprite, parseCustomManifest, pngDimensions, MAX_LIBRARY_PIXELS } from '../spinners/customs';
 import { createEntityStore, type EntityAttachment } from './entityStore.svelte';
 
 const KEY = 'app';
@@ -52,44 +54,71 @@ function pngDataUrl(png: string): string {
 
 /** Decode one strip to learn its pixel size. Never rejects: a failed
  * decode answers 0×0, which buildCustomSprite turns into a warning. */
-function imageSize(src: string): Promise<{ width: number; height: number }> {
+function imageSize(src: string, signal: AbortSignal): Promise<{ width: number; height: number }> {
   return new Promise((resolve) => {
+    if (signal.aborted) { resolve({ width: 0, height: 0 }); return; }
     const image = new Image();
-    image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
-    image.onerror = () => resolve({ width: 0, height: 0 });
+    const finish = (width = 0, height = 0): void => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', aborted);
+      image.onload = null;
+      image.onerror = null;
+      image.src = '';
+      resolve({ width, height });
+    };
+    const aborted = (): void => finish();
+    const timer = setTimeout(() => finish(), 5_000);
+    signal.addEventListener('abort', aborted, { once: true });
+    image.onload = () => finish(image.naturalWidth, image.naturalHeight);
+    image.onerror = () => finish();
     image.src = src;
   });
 }
 
-async function fetchCustomSpinners(): Promise<CustomSpinners> {
-  const wire = ((await GetSpinnerFiles()) ?? {}) as WireFiles;
+async function fetchCustomSpinners(signal: AbortSignal): Promise<CustomSpinners> {
+  const wire = ((await readSpinnerFiles()) ?? {}) as WireFiles;
   const result: CustomSpinners = {
     dir: wire.dir ?? '',
     sprites: [],
     warnings: [...(wire.warnings ?? [])],
   };
+  let pixels = 0;
   for (const entry of wire.sprites ?? []) {
+    if (signal.aborted) break;
     const manifest = parseCustomManifest(entry.id, entry.manifest);
     if (typeof manifest === 'string') {
       result.warnings.push(manifest);
       continue;
     }
+    const dimensions = pngDimensions(entry.png);
+    if (!dimensions) {
+      result.warnings.push(`${entry.id}.png: invalid PNG or image dimensions exceed the animation memory limit`);
+      continue;
+    }
+    const area = dimensions.width * dimensions.height;
+    if (pixels + area > MAX_LIBRARY_PIXELS) {
+      result.warnings.push(`${entry.id}.png: the animation library exceeds its memory limit`);
+      continue;
+    }
     const src = pngDataUrl(entry.png);
-    const { width, height } = await imageSize(src);
+    const { width, height } = await imageSize(src, signal);
+    if (signal.aborted) break;
     const sprite = buildCustomSprite(entry.id, manifest, src, width, height);
     if (typeof sprite === 'string') {
       result.warnings.push(sprite);
       continue;
     }
     result.sprites.push(sprite);
+    pixels += area;
   }
   return result;
 }
 
 const store = createEntityStore<CustomSpinners, void>({
   name: 'spinners',
-  source: async ({ apply }) => {
-    apply(await fetchCustomSpinners());
+  backendForKey: () => usesFrontendAssetLibrary() ? null : '',
+  source: async ({ apply, signal }) => {
+    apply(await fetchCustomSpinners(signal));
     // Nothing to release: the watcher lives backend-side and pushes
     // `spinner:changed`; the subscription below invalidates.
     return () => {};
@@ -100,7 +129,10 @@ const store = createEntityStore<CustomSpinners, void>({
 // Module-scope subscription — the store is app-global and the event is
 // entity-keyed to the app, so there is nothing to scope it to.
 wailsEventOn('spinner:changed', () => {
-  if (hold !== null) store.invalidate(KEY);
+  if (hold !== null && !usesFrontendAssetLibrary()) store.invalidate(KEY);
+});
+onFrontendAssetsChanged((kind) => {
+  if (kind === 'spinners' && hold !== null && usesFrontendAssetLibrary()) store.invalidate(KEY);
 });
 
 let hold: EntityAttachment<CustomSpinners> | null = null;
@@ -116,6 +148,8 @@ const EMPTY: CustomSpinners = { dir: '', sprites: [], warnings: [] };
 export function peekCustomSpinners(): CustomSpinners {
   return store.peek(KEY) ?? EMPTY;
 }
+
+export function customSpinnersError(): string | null { return store.peekError(KEY); }
 
 /** Test seam: drop the entry and the hold, as a fresh module load would. */
 export function __resetCustomSpinnersForTest(): void {

@@ -22,6 +22,11 @@ func (m *Manager) RemoveProviderAccount(providerName, accountID string) error {
 	if m.store == nil || m.credentials == nil {
 		return errors.New("provider account storage is unavailable")
 	}
+	endWork, err := m.beginWork(m.context())
+	if err != nil {
+		return err
+	}
+	defer endWork()
 	reconcileMu := m.reconcileMutex(providerName)
 	reconcileMu.Lock()
 	defer reconcileMu.Unlock()

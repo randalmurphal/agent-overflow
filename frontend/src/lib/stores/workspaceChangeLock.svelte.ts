@@ -101,6 +101,7 @@ function activityError(err: unknown): unknown {
 // error both mean "unverified", which is locked.
 const store = createEntityStore<WorkspaceActivity, void>({
   name: 'workspaceChangeLock',
+  backendForKey: workspaceKeyBackend,
   source: async ({ key, apply, fail, signal }) => {
     const backend = workspaceKeyBackend(key);
     const path = workspaceKeyPath(key);

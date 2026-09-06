@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { BackendKey } from '../../transport/backendKey';
   // Reusable open-in-editor affordance. Two render modes:
   //   - inline: <a> styled like a path link (used in copy, plan hints,
   //     ChatHeader badge sibling).
@@ -26,6 +27,7 @@
   import { hasScope } from '../../transport/scopes';
 
   interface Props {
+    backend: BackendKey;
     path: string;
     /** 1-indexed line number; 0 means "no cursor placement". */
     line?: number;
@@ -59,7 +61,7 @@
     class?: string;
   }
 
-  let {
+  let { backend,
     path,
     line = 0,
     col = 0,
@@ -75,7 +77,7 @@
   }: Props = $props();
 
   // Opening a file in an editor acts on the host desktop.
-  let noHost = $derived(!hasScope('host'));
+  let noHost = $derived(!hasScope('host', backend));
   const targetLabel = $derived(openLabel ?? label ?? path);
   const generatedAriaLabel = $derived(openInEditorLabel(targetLabel, line, col));
   const effectiveAriaLabel = $derived(ariaLabel ?? generatedAriaLabel);
@@ -94,7 +96,7 @@
     try {
       // Empty editorID → the user's default editor. Inline path links
       // never target a specific editor.
-      await openInEditor(path, line, col, workspacePath, '');
+      await openInEditor(backend, path, line, col, workspacePath, '');
     } catch (err) {
       addToast('error', errString(err));
     }

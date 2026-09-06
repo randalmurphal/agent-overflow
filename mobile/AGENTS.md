@@ -33,11 +33,83 @@ backend's are two different things for the first time. That seam is
 `frontend/src/lib/transport/AGENTS.md`; nothing in this directory should
 grow a second way to address a backend.
 
-`CapacitorHttp` is disabled on purpose. It intercepts `fetch` and routes
-it through the native HTTP stack, which is the opposite of what this
-transport needs: the WebView opens its own WebSocket, and the fetches
-beside it carry a session header and a device proof. The WebView's own
-`fetch` and `WebSocket` are the whole transport.
+Phone pairings are independent computer slots. New pairings, including the
+first, use the computer UUID; an existing empty-key HOME pairing stays in its
+legacy slot until explicitly removed. Native boot needs any saved computer,
+not HOME. Pairing another computer cannot replace HOME's endpoint or credential,
+and removing HOME preserves the other pairings and frontend preferences. The
+Android smoke exercises the legacy slot alongside a new pairing, removes the
+first host while offline, and verifies a usable reload through the second host.
+Native prompt tests wait for the credential window before using Android input
+selectors; the WebView lock overlay appears before that system window does.
+The notification cold-start case fetches the named thread if initial catalog
+hydration was superseded; a successful reconnect must not strand its activation.
+
+`CapacitorHttp` stays disabled. Ordinary HTTPS uses the WebView's fetch and
+WebSocket. A native LAN pairing with a certificate fingerprint uses the local
+`Network` plugin through `transport/networkFetch.ts` and `networkSocket.ts`.
+Both carry the same HTTP+WS wire and the same device proofs, tickets, grants,
+and replay cursors; Java never dispatches app RPCs.
+
+### Private LAN certificates
+
+`native/networkTrust.ts` promotes a fingerprint-bearing pairing to HTTPS and
+stores its SHA-256 leaf-DER pin against the exact origin. Pairing establishes
+trust; an authenticated bootstrap may advertise additional origins and pins
+for the same computer (`transport/computerRoutes.ts`). A changed certificate
+on the only trusted route fails closed and asks for pairing again; there is
+no fallback to unverified TLS, ordinary CA verification, or HTTP. Removing the
+last connection using an origin also removes its pin. This matches Go's
+`internal/deviceclient/pin.go`. Existing public HTTPS pairings need no plugin.
+An APK without Network shows an install instruction when LAN is attempted;
+bundle-only updates continue working with its existing Tailscale connection.
+
+`Network.getCapabilities().computerRoutes` negotiates native health verification.
+An older APK keeps its original connection without invoking this new capability.
+For health probes, an explicitly empty pin selects Android's normal WebPKI;
+null or malformed pins still fail closed. Probes carry no credentials, reject
+redirects, check backend identity and bound responses to 64 KiB. At most eight
+probes use the bridge concurrently, with at most 32 queued and a two-second
+selection deadline, leaving bridge capacity for ordinary app traffic.
+
+Alternate addresses and the last-working hint live in a separate localStorage
+record bound to backend ID, session ID and the original paired origin/pin.
+They never overwrite credential renewal state or change the frontend's computer
+key. HTTP, attachment bytes, bundle downloads and socket creation each capture
+one verified address and its TLS verifier. Never repeat an outbound request
+after a network failure; choose the next route before the next request. Socket
+failures without advertisements must retain the older host's ordinary reconnect.
+
+Manual address repair uses only an existing private pin or the same WebPKI
+hostname. Recheck trust and pairing after its health probe and save the address
+before reporting success. It must not overwrite a pending renewal or restore a
+pin superseded while the check was running. The Android smoke covers this after
+changing its backend's port so every previously saved address becomes obsolete.
+
+`network/PinnedClients.java` owns TLS and an LRU of at most 16 clients sharing
+one dispatcher/pool. Redirects, automatic request retries and cookies are off:
+a refresh POST is single-use and may not be replayed by the native library.
+Errors inspect suppressed exceptions as well as causes: multiple address
+attempts can hide the certificate refusal behind a later connection refusal.
+Never include network exception URLs in JS errors; they can contain tickets.
+
+`HttpStreams` permits 16 HTTP transfers, 64 KiB bridge chunks, one upload
+chunk of backpressure, and a two-minute idle cleanup. Blob uploads keep the
+original file-backed Blob. Responses are pulled through ReadableStream, never
+assembled into a whole-file base64 string. Cancellation closes the native body,
+call, and bridge handles. Small JSON numbers arrive as Integer in Capacitor;
+read the bounded byte length with getInt, never getLong (which returns its
+default for an Integer). A bodyless POST still needs an empty native RequestBody
+for the ticket endpoint. Blocking IO uses a bounded executor, never Capacitor's
+single plugin thread. Socket messages acknowledge delivery before Java queues
+another; a suspended WebView therefore backpressures the socket instead of
+accumulating bridge events. WSClient still owns reconnection and replay.
+
+`PinnedNetworkTest` proves real TLS pin verification, refusal before credentials,
+no redirect following, streamed bodies, cancellation and the ordinary WS wire
+against a local TLS server. The emulator smoke verifies the actual plugin
+registration and WebView bridge. Keep both: a JVM test cannot prove a plugin
+can be called by a downloaded bundle.
 
 ## Building
 
@@ -106,10 +178,10 @@ APK build number below that floor.
 The release APK declares no network security config, so it keeps the
 platform default: at `targetSdkVersion` 36, cleartext is refused for
 every host. That is the correct posture rather than an inconvenience.
-The phone's path to a backend is tailnet TLS
-(`docs/specs/remote-access.md`, "The phone client"), so a pairing link
-naming an `http://` endpoint fails at the fetch on a real device, which
-is the answer that should be given.
+Native LAN pairing upgrades the advertised address to HTTPS and verifies the
+certificate fingerprint from the pairing link. It needs neither Tailscale nor
+a public CA. Public HTTPS still uses the ordinary WebView stack. A release
+connection never uses unencrypted LAN HTTP.
 
 `android/app/src/debug/` is a debug-only manifest overlay pointing at
 `res/xml/network_security_config.xml`, and that file permits cleartext to
@@ -499,6 +571,7 @@ never resolves a Capacitor module at runtime:
 
 | File | Does |
 |---|---|
+| `native/networkTrust.ts`, `networkHttp.ts`, `networkSocket.ts` | private TLS trust and bounded native HTTP/WS adapters |
 | `native/platform.ts` | `isNativeShell()`, off `window.Capacitor` |
 | `native/plugins.ts` | the guarded dynamic imports, and nothing else |
 | `native/lifecycle.ts` | pause/resume to `setClientLease`, hardware back as one stack (`answerBackPress`: Escape, terminal drawer, on-screen companion, list, exit) |
@@ -608,3 +681,9 @@ Named here so nobody reads their absence as an oversight:
   that a phone whose disk is readable and whose lock screen is off gives
   up the replica; do not write copy that implies the biometric prompt
   protects the data.
+
+A failed native HTTP transfer retains its completed error until the header reader
+consumes it or the idle sweep reclaims it. Removing the handle in OkHttp’s failure
+callback races the bridge and turns an actionable certificate failure into a
+misleading missing-transfer error. Re-pairing can repair damaged stored trust for
+one origin; other damaged origins must still fail closed.

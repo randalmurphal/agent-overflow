@@ -1,3 +1,4 @@
+import { networkFetch } from '../transport/networkFetch';
 // The phone shell's update channel: the backend it is paired with is
 // also its app store (docs/specs/remote-access.md §9, "Bundle sync").
 //
@@ -32,7 +33,7 @@
 import { onBackendHelloChange } from '../stores/transportStatus.svelte';
 import { noteBundleReady, noteBundleTooOld } from '../stores/bundleNotice.svelte';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
-import { pairedSessionHeaders } from '../transport/deviceSession';
+import { fetchPairedComputer, pairedSessionHeaders } from '../transport/deviceSession';
 import type { LeaseState } from '../transport/frames';
 import { backendCredentials, backendUrl } from '../transport/homeEndpoint';
 import { clientLease, onClientLeaseChange } from '../transport/lease';
@@ -468,7 +469,7 @@ async function fetchAndStage(id: string, backend: BackendKey): Promise<void> {
  */
 async function pairedFetch(path: string, backend: BackendKey): Promise<Response> {
   const headers = await pairedSessionHeaders('GET', path, backend);
-  const response = await fetch(backendUrl(path, backend), {
+  const response = await fetchPairedComputer(backend, networkFetch, backendUrl(path, backend), {
     headers,
     credentials: backendCredentials(backend),
   });

@@ -103,6 +103,10 @@ func CallerScopeFrom(ctx context.Context) (CallerScope, bool) {
 // here. It cannot be: it depends on the run record, not on the method name. The
 // bound methods enforce it from the scope on their context.
 var ScopedTokenMethods = map[string][]string{
+	"AgentRemoteComputers": {"remote-commands"},
+	"AgentRemoteStart":     {"remote-commands"},
+	"AgentRemoteStatus":    {"remote-commands"},
+	"AgentRemoteCancel":    {"remote-commands"},
 	// Campaign memory. GrantNotRequired: recording what the work learned is part
 	// of doing the work, exactly as returning an envelope is, and a `grants:`
 	// line between an element and its own campaign's memory would mean every

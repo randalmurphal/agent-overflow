@@ -53,7 +53,7 @@ func TestAnUnreadableDeviceClassResolvesToDesktop(t *testing.T) {
 }
 
 // End to end through the RPC the frontend actually calls: a paired PHONE
-// reads lowPowerMode on, from the class table, having written nothing.
+// starts in normal power mode without any stored override.
 func TestAPairedPhoneReadsItsClassDefaultThroughGetSettings(t *testing.T) {
 	app := withTierStore(t, identityApp(t))
 	device, session := pairDeviceOfClass(t, app, identity.DevicePhone, "A phone", "thumb-phone-defaults")
@@ -62,8 +62,8 @@ func TestAPairedPhoneReadsItsClassDefaultThroughGetSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("phone GetSettings: %v", err)
 	}
-	if !got.LowPowerMode {
-		t.Fatal("a paired phone read lowPowerMode off; §6 says its class ships it on")
+	if got.LowPowerMode {
+		t.Fatal("a paired phone must start with lowPowerMode off")
 	}
 	if settings.DefaultSettings.LowPowerMode {
 		t.Fatal("the global default is already on; this test proves nothing")
@@ -91,34 +91,32 @@ func TestAPairedPhoneReadsItsClassDefaultThroughGetSettings(t *testing.T) {
 	}
 }
 
-// The phone can say no, and the no sticks. This is the case that fails
-// outright if mutate probes the global default instead of the class-resolved
-// one: the patch would move nothing, persist nothing, and read back as true.
-func TestAPairedPhoneCanTurnItsClassDefaultOff(t *testing.T) {
+// Opting into low power persists; clearing the override restores normal power.
+func TestAPairedPhoneCanOptIntoLowPowerMode(t *testing.T) {
 	app := withTierStore(t, identityApp(t))
 	device, session := pairDeviceOfClass(t, app, identity.DevicePhone, "A phone", "thumb-phone-optout")
 	ctx := sessionCtx(session.ID, "")
 
-	next, err := app.UpdateSettings(ctx, map[string]any{"lowPowerMode": false})
+	next, err := app.UpdateSettings(ctx, map[string]any{"lowPowerMode": true})
 	if err != nil {
 		t.Fatalf("phone UpdateSettings: %v", err)
 	}
-	if next.LowPowerMode {
+	if !next.LowPowerMode {
 		t.Fatal("the write's own return value still reports the class default")
 	}
 	got, err := app.GetSettings(ctx)
 	if err != nil {
 		t.Fatalf("phone GetSettings: %v", err)
 	}
-	if got.LowPowerMode {
-		t.Fatal("the phone's explicit false did not outrank its class default")
+	if !got.LowPowerMode {
+		t.Fatal("the phone's explicit true did not outrank its class default")
 	}
 	rows, err := app.store.GetUIState("device:" + device.ID)
 	if err != nil {
 		t.Fatalf("read the phone's bucket: %v", err)
 	}
-	if rows["lowPowerMode"] != "false" {
-		t.Fatalf("phone bucket[lowPowerMode] = %q, want an explicit false", rows["lowPowerMode"])
+	if rows["lowPowerMode"] != "true" {
+		t.Fatalf("phone bucket[lowPowerMode] = %q, want an explicit true", rows["lowPowerMode"])
 	}
 
 	// And clearing the row returns the phone to its CLASS default, not to the
@@ -131,8 +129,8 @@ func TestAPairedPhoneCanTurnItsClassDefaultOff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("phone GetSettings after clear: %v", err)
 	}
-	if !cleared.LowPowerMode {
-		t.Fatal("clearing fell through to the global default instead of the phone class's")
+	if cleared.LowPowerMode {
+		t.Fatal("clearing the override did not restore normal power mode")
 	}
 }
 
@@ -198,7 +196,7 @@ func TestADeviceTierFrameLetsEachDeviceReadItsOwnClassResolvedValues(t *testing.
 		t.Errorf("browser FontSize = %d, want the default %d — the phone's write reached it",
 			browserAfter.FontSize, settings.DefaultSettings.FontSize)
 	}
-	if !phoneAfter.LowPowerMode {
+	if phoneAfter.LowPowerMode {
 		t.Error("the phone lost its class default across an unrelated device-tier write")
 	}
 	if browserAfter.LowPowerMode {

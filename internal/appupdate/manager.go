@@ -573,5 +573,5 @@ func (p verifiedProvider) Check(ctx context.Context, req updater.CheckRequest) (
 }
 
 func (p verifiedProvider) Download(ctx context.Context, rel *updater.Release, dst io.Writer, onProgress func(written, total int64)) error {
-	return p.inner.Download(ctx, rel, dst, onProgress)
+	return downloadBoundedArtifact(ctx, p.inner, rel, dst, onProgress, maxDownloadBytes)
 }

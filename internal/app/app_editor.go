@@ -35,8 +35,8 @@ type EditorInfo struct {
 // set even when their binary is on PATH — see editor.DetectEditors
 // for the WSL-bridge resolution rules.
 //
-//ao:scope host
-//ao:route home
+//ao:scope settings:read
+//ao:route selected
 func (a *App) ListAvailableEditors() ([]EditorInfo, error) {
 	detected := editor.DetectEditors(context.Background())
 	out := make([]EditorInfo, 0, len(detected))
@@ -131,7 +131,7 @@ func (a *App) OpenInEditor(path string, line, col int, workspacePath, editorID s
 // "Auto" pill rather than guessing on the frontend.
 //
 //ao:scope settings:read
-//ao:route home
+//ao:route selected
 func (a *App) GetEditorSettings() settings.EditorSettings {
 	if a.settings == nil {
 		return settings.EditorSettings{}
@@ -150,7 +150,7 @@ func (a *App) GetEditorSettings() settings.EditorSettings {
 // availability flags.
 //
 //ao:scope settings:write
-//ao:route home
+//ao:route selected
 func (a *App) SetEditorSettings(s settings.EditorSettings) (settings.EditorSettings, error) {
 	// Match the error shape used by every other settings-touching
 	// binding ("settings service unavailable") rather than ErrShuttingDown,

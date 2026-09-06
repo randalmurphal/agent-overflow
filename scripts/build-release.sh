@@ -163,7 +163,7 @@ package_darwin_zips() {
 	app="$ROOT_DIR/bin/agent-overflow.app"
 	validate_arm64_macho "$app/Contents/MacOS/agent-overflow"
 	"$ROOT_DIR/scripts/verify-macos-app.sh" "$app"
-	( cd "$ROOT_DIR/bin" && zip -qr "$OUT_DIR/agent-overflow-darwin-arm64.zip" "agent-overflow.app" )
+	( cd "$ROOT_DIR/bin" && zip -qry "$OUT_DIR/agent-overflow-darwin-arm64.zip" "agent-overflow.app" )
 }
 
 validate_version

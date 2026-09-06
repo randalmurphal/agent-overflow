@@ -1,4 +1,7 @@
 <script lang="ts">
+  import { getSessionImportBackend } from '../../stores/sessionImport.svelte';
+  import { backendById } from '../../transport/backends';
+  import { backendDisplayName, hasMultipleBackends } from '../../stores/attachedBackends.svelte';
   // The import surface. Reads everything from sessionImport.svelte.ts —
   // including `open`, which the store owns so a palette command or the
   // sidebar trigger can raise the modal without either of them mounting it.
@@ -81,7 +84,7 @@
   let run = $derived(getSessionImportRun());
   let runActive = $derived(run?.active === true);
   // Importing walks the provider homes and writes the threads it finds.
-  let ungranted = $derived(!hasScope('threads:operate'));
+  let ungranted = $derived(!hasScope('threads:operate', getSessionImportBackend()));
 
   let providerFilter = $derived(getImportProviderFilter());
   let projectFilter = $derived(getImportProjectFilter());
@@ -242,7 +245,8 @@
 
 <Modal
   {open}
-  title="Import Sessions"
+  title={hasMultipleBackends() && backendById(getSessionImportBackend())
+    ? `Import Sessions · ${backendDisplayName(backendById(getSessionImportBackend())!)}` : 'Import Sessions'}
   onClose={closeSessionImport}
   width="xl"
   padding="none"

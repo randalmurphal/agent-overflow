@@ -43,7 +43,12 @@ import (
 // last once their inputs are ready.
 //
 //wails:ignore
-func (a *App) Start(ctx context.Context) error {
+func (a *App) Start(ctx context.Context) (startErr error) {
+	defer func() {
+		if startErr == nil {
+			a.publishLocalControl()
+		}
+	}()
 	started := time.Now()
 	defer logBootPhase("app.service_startup.total", started)
 
@@ -159,6 +164,10 @@ func (a *App) Start(ctx context.Context) error {
 // is the SQLite triple; provider credentials, attachment files, git objects,
 // ACME rate limits and tailnet state are all outside it.
 func (a *App) startUnattendedWork() error {
+	a.startRemotePeerDiscovery()
+	if err := a.startThreadTransfers(); err != nil {
+		return err
+	}
 	// Probe provider binaries once on boot so the thread-level banner can
 	// surface "claude not found" / "codex too old" before the user opens
 	// settings. Runs in a goroutine because DetectProvider spawns subprocesses
@@ -677,6 +686,9 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	}
 	a.browser.liveEnabled.Store(browserSettings.BrowserEnabled)
 	a.terminals = terminal.NewManager(a.terminalOutputCallback, a.terminalExitCallback)
+	if err := a.initRemoteJobs(st); err != nil {
+		return err
+	}
 	attachmentStore, err := attachment.NewStore(attachment.Config{
 		RootDir: filepath.Join(dbDir, "attachments"),
 	}, st)

@@ -1,11 +1,11 @@
 <script lang="ts">
-  // Settings → Remote access: opening this backend to the network, the
-  // devices paired to it, and the WSL distro the launcher boots. The
-  // machines this window reaches are the Systems page.
+  // Settings → Access & sharing: network access and devices paired to the
+  // selected computer. This frontend's connections live on Computers.
 
   import NetworkSection from './NetworkSection.svelte';
   import DevicesSection from './DevicesSection.svelte';
   import WSLSection from './WSLSection.svelte';
+  import AgentComputersSection from './AgentComputersSection.svelte';
 </script>
 
 <!--
@@ -18,5 +18,6 @@
 <div class="settings-sections">
   <NetworkSection />
   <DevicesSection />
+  <AgentComputersSection />
   <WSLSection />
 </div>

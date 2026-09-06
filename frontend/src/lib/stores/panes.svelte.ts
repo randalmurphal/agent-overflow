@@ -6,6 +6,7 @@ import {
   averagePaneWidthPx,
   getPaneLayoutItems,
   movePaneLayoutItem,
+  notePaneLayoutMutation,
   removePaneLayoutItem,
   sourcePaneIdOf,
   type PaneLayoutItem,
@@ -19,6 +20,7 @@ import {
   setPaneBackend,
 } from './selectedBackend.svelte';
 import { onBackendDetached } from '../transport/backends';
+import { onThreadOwnershipChanged } from '../transport/entityIndex';
 import { REVEAL_PANE_EVENT } from './eventNames';
 import {
   refreshWatchedThreads,
@@ -43,6 +45,10 @@ let panePersistenceHandler: (() => void) | null = null;
 // way only (companion stores read the pane registry, never the reverse).
 let paneDestroyedObservers: Array<(paneId: string) => void> = [];
 let paneThreadMountedObservers: Array<(paneId: string, threadId: string) => void> = [];
+
+onThreadOwnershipChanged((id) => {
+  for (const pane of panes.values()) if (pane.threadId === id) void pane.refreshOwnership();
+});
 
 // Every open pane's thread is watched, foreground and background alike —
 // the registry is the whole membership question and nothing about where a
@@ -110,6 +116,7 @@ function hasLayoutPane(paneId: string): boolean {
 
 function addThreadPaneToLayout(paneId: string, insertIndex?: number): void {
   if (hasLayoutPane(paneId)) return;
+  notePaneLayoutMutation();
   addPaneLayoutItem({
     id: paneId,
     paneId,
@@ -609,6 +616,7 @@ export async function mountThreadInPane(
   targetPane?: string | ThreadPane | null,
   activation: PaneActivation = 'committed',
 ): Promise<ThreadPane> {
+  notePaneLayoutMutation();
   const existing = revealThreadIfOpen(thread.id, activation);
   if (existing) return existing;
   return replaceThreadInPane(thread, resolveOpenTargetPane(targetPane), activation);

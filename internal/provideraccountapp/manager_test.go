@@ -4,6 +4,7 @@ import (
 	"maps"
 	"testing"
 
+	"agent-overflow/internal/kerneltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/settings"
@@ -11,6 +12,7 @@ import (
 
 func newTestManager(t *testing.T) (*Manager, *provideraccounts.Store, *provideraccounts.Credentials) {
 	t.Helper()
+	isolation := kerneltest.IsolateSpawns(t)
 	store, err := provideraccounts.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -19,7 +21,7 @@ func newTestManager(t *testing.T) (*Manager, *provideraccounts.Store, *providera
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager := NewManager(Deps{})
+	manager := NewManager(Deps{ProviderBinary: func(string) string { return isolation.PoisonedBinary }})
 	if err := manager.Attach(store, credentials, ""); err != nil {
 		t.Fatal(err)
 	}

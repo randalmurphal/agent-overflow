@@ -331,12 +331,31 @@ func (a *App) sendMessageLocked(
 	ctx context.Context, threadID string, content string,
 	opts sendMessageOptions, prepared sendMessagePrepared,
 ) (item store.Item, err error) {
+	endAdmission, admitErr := a.workAdmission.begin(ctx)
+	if admitErr != nil {
+		return store.Item{}, admitErr
+	}
+	defer endAdmission()
+
 	// The test seam lives at the narrowest waist every send path passes
 	// through, not at the outer entry point: a saga that dispatches its
 	// send here (RevertConversationAndResendMessage) would otherwise
 	// bypass a test's stub and drive a real provider session.
 	if a.sendMessageFn != nil {
 		return store.Item{}, a.sendMessageFn(threadID, content, opts.AttachmentIDs)
+	}
+	// The operation journal outlives the provider process and the frontend
+	// that requested a move. Check under the action lock before any new send
+	// side effect, including queue registration or lazy provider startup.
+	if err := a.store.CheckThreadTransferAccess(threadID); err != nil {
+		return store.Item{}, err
+	}
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		return store.Item{}, fmt.Errorf("send message: load thread: %w", err)
+	}
+	if err := a.store.CheckThreadExecutionAccess(thread); err != nil {
+		return store.Item{}, err
 	}
 
 	// Idempotency, first thing inside the lock and before ANY side effect:
@@ -362,7 +381,7 @@ func (a *App) sendMessageLocked(
 		}
 	}
 
-	thread, err := a.store.GetThread(threadID)
+	thread, err = a.store.GetThread(threadID)
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: load thread: %w", err)
 	}

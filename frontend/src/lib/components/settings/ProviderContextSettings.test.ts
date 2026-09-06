@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import ProviderContextSettings from './ProviderContextSettings.svelte';
-import { loadSettings } from '../../stores/settings.svelte';
+import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import {
   setBindingMock,
   getBindingMock,

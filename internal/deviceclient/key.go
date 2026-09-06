@@ -1,6 +1,7 @@
 package deviceclient
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -70,6 +71,14 @@ func DeviceKey(dir string) (*ecdsa.PrivateKey, error) {
 // redemption and then fails to store cannot enroll a device this process
 // can never present again.
 func EnrollDeviceKey(dir string) (*ecdsa.PrivateKey, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), profileWriteTimeout)
+	defer cancel()
+	release, err := lockProfile(ctx, dir, KeyFileName)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
 	held, err := DeviceKey(dir)
 	if err == nil {
 		return held, nil

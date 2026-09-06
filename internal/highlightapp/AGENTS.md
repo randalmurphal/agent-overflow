@@ -5,8 +5,9 @@ Application coordination around the pure `internal/highlight` parser.
 `Service` owns the content-addressed cache, streaming fence seed state, bounded
 diff-persistence workers, persisted span encoding, and remote-client gating.
 `internal/app` injects lifecycle state, diff-context resolution, filesystem
-reads, event emission, and the store; Wails DTOs and methods remain on the named
-`main.App` wrapper through promoted methods.
+reads, event emission, and the store. Stateless code/patch request and result
+DTOs live in `wire.go`, shared by the App wrapper and frontend-only controller;
+contextual methods remain on the App, where workspace ownership is resolved.
 
 This package holds no thread-to-directory lookup. `PatchWithContext` and
 `ObserveDiffPayload` take an already-resolved workspace directory; the App

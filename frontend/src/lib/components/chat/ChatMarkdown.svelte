@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { threadMachine } from '../../stores/attachedBackends.svelte';
   // Streaming-aware markdown renderer.
   //
   // Powered by `lib/markdown/`, which mounts a Svelte component tree
@@ -132,7 +133,7 @@
 
   // Path links resolve to an editor open on the host desktop, so a page
   // that cannot act there emits none.
-  let noHost = $derived(!hasScope('host'));
+  let noHost = $derived(!hasScope('host', threadMachine(threadId, null)));
   const diagnostics = isHarnessSession();
 
   // Aggregation hook for the chat warm-gate "is the visible
@@ -415,6 +416,7 @@
 
 <div
   bind:this={markdownRoot}
+  data-computer={threadMachine(threadId, null)}
   {@attach publishFootnoteSource}
   class={['markdown-body', className].filter(Boolean).join(' ')}
 >

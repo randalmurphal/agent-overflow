@@ -28,7 +28,8 @@
   // where the session can read it, so a device without `access:admin`
   // sees the toggles and nothing else (./PhonePushBlock.svelte).
 
-  import { getSettings, updateSetting } from '../../stores/settings.svelte';
+  import { settingsComputer } from './settingsComputer';
+  const { getSettings, updateSetting } = settingsComputer();
   import type { NotifyQuietWhen } from '../../types/settings';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import PhonePushBlock from './PhonePushBlock.svelte';

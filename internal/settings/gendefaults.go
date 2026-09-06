@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -76,6 +77,29 @@ func FrontendDefaultsSource() string {
 	b.WriteString("export const SETTINGS_DEFAULTS = ")
 	b.WriteString(emitStruct(reflect.ValueOf(DefaultSettings), "", frontendDefaultsDenied))
 	b.WriteString(" satisfies Settings;\n")
+	b.WriteString("\n// Frontend-owned preferences. Backend persistence remains a migration/notification mirror.\n")
+	b.WriteString("export const FRONTEND_SETTINGS_KEYS = [\n")
+	var keys []string
+	for key, tier := range tierByKey {
+		if tier == TierDevice || key == "confirmArchive" || key == "confirmDelete" || key == "autoPinNewThreads" || key == "projectSortMode" || key == "defaultThreadEnvMode" || key == "claudeHiddenModels" || key == "codexHiddenModels" {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		b.WriteString("  " + strconv.Quote(key) + ",\n")
+	}
+	b.WriteString("] as const satisfies readonly (keyof Settings)[];\n")
+	b.WriteString("\n// Keys mirrored to each connection's device-scoped backend bucket.\n")
+	b.WriteString("export const FRONTEND_DEVICE_SETTINGS_KEYS = [\n")
+	for _, key := range keys {
+		if tierByKey[key] == TierDevice {
+			b.WriteString("  " + strconv.Quote(key) + ",\n")
+		}
+	}
+	b.WriteString("] as const satisfies readonly (keyof Settings)[];\n")
+
+	emitFrontendConstraints(&b)
 	return b.String()
 }
 
@@ -190,4 +214,36 @@ func tsString(s string) string {
 		panic("settings: gendefaults cannot quote string: " + err.Error())
 	}
 	return string(b)
+}
+
+// Export the existing validator tables so offline preferences obey the same
+// rules as their server mirror. New options change in one place.
+func emitFrontendConstraints(b *strings.Builder) {
+	options := map[string]map[string]struct{}{
+		"timestampFormat": allowedTimestampFormats, "sansFont": allowedFonts,
+		"monoFont": allowedFonts, "defaultThreadEnvMode": allowedThreadEnvModes,
+		"paneDensity": allowedPaneDensities, "activityRunDefault": allowedActivityRunDefaults,
+		"notifyQuietWhen": allowedNotifyQuietWhen, "projectSortMode": allowedProjectSortModes,
+		"usagePeriod": allowedUsagePeriods,
+	}
+	b.WriteString("\nexport const FRONTEND_SETTING_OPTIONS: Partial<Record<keyof Settings, readonly string[]>> = {\n")
+	keys := make([]string, 0, len(options))
+	for key := range options {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		values := make([]string, 0, len(options[key]))
+		for value := range options[key] {
+			values = append(values, value)
+		}
+		sort.Strings(values)
+		encoded, _ := json.Marshal(values)
+		fmt.Fprintf(b, "  %s: %s,\n", strconv.Quote(key), encoded)
+	}
+	b.WriteString("};\n")
+	b.WriteString("\nexport const FRONTEND_SETTING_RANGES: Partial<Record<keyof Settings, readonly [number, number]>> = {\n")
+	fmt.Fprintf(b, "  fontSize: [%d, %d],\n", MinFontSize, MaxFontSize)
+	fmt.Fprintf(b, "  activityRunWindowRows: [%d, %d],\n", MinActivityRunWindowRows, MaxActivityRunWindowRows)
+	b.WriteString("};\n")
 }

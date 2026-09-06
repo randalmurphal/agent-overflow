@@ -10,6 +10,9 @@ import type {
   WorkflowSoftStopEvent,
 } from '../types/workflow';
 import { addToast } from './toast.svelte';
+import type { EventOrigin } from '../transport/handle';
+import { backendKeyForOrigin } from '../transport/backends';
+import { noteWorkflowItem, noteThread } from '../transport/entityIndex';
 import {
   applyWorkflowDefinitionsChanged,
   applyWorkflowEngineState,
@@ -26,10 +29,10 @@ import {
 const MAX_ERROR_DEDUPE_KEYS = 100;
 const shownErrors = new Set<string>();
 
-export function applyWorkflowErrorEvent(event: WorkflowErrorEvent): void {
+export function applyWorkflowErrorEvent(event: WorkflowErrorEvent, origin?: EventOrigin): void {
   if (!event || typeof event.error !== 'string' || event.error.trim() === '') return;
   const message = event.error.trim().slice(0, 240);
-  const key = `${event.itemId ?? ''}\n${message}`;
+  const key = `${backendKeyForOrigin(origin?.backendId ?? '')}\n${event.itemId ?? ''}\n${message}`;
   if (shownErrors.has(key)) return;
   shownErrors.add(key);
   if (shownErrors.size > MAX_ERROR_DEDUPE_KEYS) {
@@ -44,23 +47,32 @@ export function applyWorkflowErrorEvent(event: WorkflowErrorEvent): void {
 // view, which is entity-keyed and patches in place rather than refetching the
 // whole run per event. They read the same frame and answer different
 // questions, so neither is derivable from the other.
-export function applyWorkflowItemStateEvent(event: WorkflowItemStateEvent): void {
+export function applyWorkflowItemStateEvent(event: WorkflowItemStateEvent, origin?: EventOrigin): void {
+  noteEventOwner(event, origin);
   applyWorkflowItemState(event);
   applyWorkflowRunMapItemState(event);
 }
 
-export function applyWorkflowPhaseStateEvent(event: WorkflowPhaseStateEvent): void {
+export function applyWorkflowPhaseStateEvent(event: WorkflowPhaseStateEvent, origin?: EventOrigin): void {
+  noteEventOwner(event, origin);
   applyWorkflowPhaseState(event);
   applyWorkflowRunMapPhaseState(event);
 }
 
-export function applyWorkflowSoftStopEvent(event: WorkflowSoftStopEvent): void {
+export function applyWorkflowSoftStopEvent(event: WorkflowSoftStopEvent, origin?: EventOrigin): void {
+  noteEventOwner(event, origin);
   applyWorkflowSoftStop(event);
   applyWorkflowRunMapSoftStop(event);
 }
 
-export function applyWorkflowEngineStateEvent(event: WorkflowEngineStateEvent): void {
-  applyWorkflowEngineState(event);
+export function applyWorkflowEngineStateEvent(event: WorkflowEngineStateEvent, origin?: EventOrigin): void {
+  applyWorkflowEngineState(event, backendKeyForOrigin(origin?.backendId ?? ''));
+}
+
+function noteEventOwner(event: { itemId?: string; threadId?: string }, origin?: EventOrigin): void {
+  const backend = backendKeyForOrigin(origin?.backendId ?? '');
+  if (event?.itemId) noteWorkflowItem(event.itemId, backend);
+  if (event?.threadId) noteThread(event.threadId, backend);
 }
 
 export function applyWorkflowDefinitionsChangedEvent(): void {

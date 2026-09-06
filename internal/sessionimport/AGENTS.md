@@ -81,6 +81,11 @@ writes nothing —
 
 ## Contract
 
+`ManagerConfig.BeginWork` fences user-started imports and history refresh
+commits against host restart. Import runs retain the lease through all workers
+and final progress publication, including cancellation; synchronous refreshes
+acquire before the thread lock. Read-only scans do not retain restart leases.
+
 ```go
 w := sessionimport.NewWriter(store, thread)
 batch, warnings, err := w.Build(events)          // store-pure
@@ -147,7 +152,14 @@ override, WSL relocation) and a guess lists sessions AO cannot resume.
 
 - **`Scan` subtracts what would duplicate history**, which makes "Import All"
   safe to press twice: everything `store.ListImportedSessionRefs` reports (a
-  read failure fails the scan), plus subagent and spawned-child sessions.
+  read failure fails the scan), plus subagent and spawned-child sessions. The
+  dedup set includes transfer-reserved native sessions even after AO history
+  deletion. `ImportOne` rechecks under the store's native-session lock before
+  project creation, so a stale scan cannot revive a retired session. The bulk
+  manager applies the same gate before its earlier project-resolution step;
+  an ownership refusal is per row, never cached against the whole repository. Transfer
+  preparation takes the same lock while reserving the native closure. Refresh
+  application also checks AO/native execution ownership under its thread lock.
 - **Explicit provider forks are RETAINED**, because each has a distinct
   provider session id and resumes independently. `Row.ParentSessionID` carries
   Claude's `forkedFrom.sessionId` or Codex's `forked_from_id`, while Codex

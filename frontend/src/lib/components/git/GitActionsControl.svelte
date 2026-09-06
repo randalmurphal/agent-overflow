@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { threadHasScope } from '../../transport/entityScopes';
   // Split-button control: primary action on the left, caret opens a menu
   // with the remaining git actions. The dropdown composes the Popover +
   // Menu + MenuItem primitives so it inherits portaling, arrow-key nav,
@@ -30,7 +31,6 @@
   import Button from '../primitives/Button.svelte';
   import { SPLIT_BTN_BASE } from '../primitives/splitButton';
   import { createWorkspaceChangeLockState } from '../../stores/workspaceChangeLock.svelte';
-  import { hasScope } from '../../transport/scopes';
   import {
     primaryActionFor,
     runCreatePRAction,
@@ -76,7 +76,7 @@
   // (the store's own guard), so this control is normally absent rather than
   // inert; the gate is what keeps every action honest if a status ever
   // arrives without the grant to act on it.
-  let gitUngranted = $derived(!hasScope('git:operate'));
+  let gitUngranted = $derived(!threadHasScope('git:operate', pane.threadId, pane.thread?.projectId));
 
   let actionLoading = $state(false);
 

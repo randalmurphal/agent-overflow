@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -101,6 +102,11 @@ func (a *App) UpdateThreadContextSettings(threadID string, update ContextSetting
 	if a.store == nil {
 		return store.Thread{}, fmt.Errorf("update thread context settings: store unavailable")
 	}
+	unlock, err := a.threadApplication().LockMutable(context.Background(), threadID)
+	if err != nil {
+		return store.Thread{}, err
+	}
+	defer unlock()
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
 		return store.Thread{}, err

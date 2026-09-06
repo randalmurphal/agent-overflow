@@ -60,6 +60,79 @@ func TestRefreshRotatesAndKeepsTheSession(t *testing.T) {
 	}
 }
 
+func TestRefreshAfterIdleAndBackendRestart(t *testing.T) {
+	for _, mode := range []string{"expired-access", "restart", "prune"} {
+		t.Run(mode, func(t *testing.T) {
+			sessions, st, c, owner, _ := newFixture(t)
+			device := newSigningDevice(t)
+			_, first := keyPairedDevice(t, sessions, owner, device, c.now())
+			c.advance(24 * time.Hour)
+			if _, reason := sessions.Verify(first.Credential); reason != ReasonExpiredSession {
+				t.Fatalf("old access credential = %s, want expired", reason)
+			}
+			if mode == "restart" {
+				var err error
+				sessions, err = NewSessions(st, testBackendID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				sessions.now = c.now
+			}
+			if mode == "prune" {
+				sessions.PruneCredentials(0)
+			}
+			second, reason := sessions.Refresh(RefreshRequest{
+				Secret: first.RefreshSecret,
+				Proof:  device.proof(t, "POST", "/auth/token", "idle-renewal", c.now()),
+			})
+			if reason.Refused() {
+				t.Fatalf("renew after idle: %s", reason)
+			}
+			if second.SessionID != first.SessionID {
+				t.Fatal("renewal replaced the pairing")
+			}
+			if _, reason := sessions.Verify(second.Credential); reason.Refused() {
+				t.Fatalf("renewed access: %s", reason)
+			}
+			if second.RefreshExpiresAtMillis <= first.RefreshExpiresAtMillis {
+				t.Fatal("renewal did not extend the inactivity window")
+			}
+			if _, reason := sessions.Verify(first.Credential); reason != ReasonExpiredSession {
+				t.Fatalf("renewal revived old access credential: %s", reason)
+			}
+		})
+	}
+}
+
+func TestIdleRenewalStillRequiresAnAdmittedDeviceAndProof(t *testing.T) {
+	for _, refusal := range []string{"session-revoked", "device-revoked", "missing-proof", "wrong-proof"} {
+		t.Run(refusal, func(t *testing.T) {
+			sessions, _, c, owner, _ := newFixture(t)
+			device, tokens := pairedDevice(t, sessions, owner, "idle-device")
+			c.advance(24 * time.Hour)
+			proof := bearerProof("idle-device")
+			want := ReasonRevokedSession
+			switch refusal {
+			case "session-revoked":
+				if _, err := sessions.RevokeSession(tokens.SessionID); err != nil {
+					t.Fatal(err)
+				}
+			case "device-revoked":
+				if _, err := sessions.RevokeDevice(device.ID); err != nil {
+					t.Fatal(err)
+				}
+			case "missing-proof":
+				proof, want = DeviceProof{}, ReasonMissingProof
+			case "wrong-proof":
+				proof, want = bearerProof("another-device"), ReasonKeyMismatch
+			}
+			if _, reason := sessions.Refresh(RefreshRequest{Secret: tokens.RefreshSecret, Proof: proof}); reason != want {
+				t.Fatalf("idle renewal = %s, want %s", reason, want)
+			}
+		})
+	}
+}
+
 // TestRefreshReuseRevokesTheWholeFamily is the leaked-copy detector. A
 // spent secret presented again must end the session, every socket carrying
 // it, and every outstanding secret in the chain.

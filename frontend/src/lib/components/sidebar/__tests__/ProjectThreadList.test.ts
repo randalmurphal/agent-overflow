@@ -4,7 +4,7 @@ import ProjectThreadList from '../ProjectThreadList.svelte';
 import { createThreadPane } from '../../../stores/thread.svelte';
 import { registerPaneForTest, resetPanesForTest } from '../../../stores/panes.svelte';
 import type { Thread, ThreadGroup } from '../../../types/models';
-import { loadSettings } from '../../../stores/settings.svelte';
+import { loadSettingsFixture as loadSettings } from '../../../../test/helpers/settingsFixture';
 import { resetThreadGroupsForTest } from '../../../stores/threadGroups.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../../test/mocks/bindings-app';
 import {

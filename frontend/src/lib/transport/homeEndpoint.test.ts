@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   __resetHomeEndpointForTest,
   forgetBackendEndpoint,
+  backendTransferUrl,
   hasHomeEndpoint,
   homeCredentials,
   homeEndpoint,
@@ -161,5 +162,19 @@ describe('the shell door', () => {
     delete (globalThis as { __aoHomeEndpoint?: string }).__aoHomeEndpoint;
     warn.mockRestore();
     vi.resetModules();
+  });
+});
+
+
+describe('attachment transfer boundaries', () => {
+  it.each([
+    'https://elsewhere.test/attachments/upload?ticket=x',
+    '//elsewhere.test/attachments/upload?ticket=x',
+    '/attachments/../auth/refresh?ticket=x',
+    '/attachments/%2e%2e/auth/refresh?ticket=x',
+    '/attachments/a%2fb/c?ticket=x',
+    '/attachments/upload#secret',
+  ])('rejects a minted path outside the transfer routes: %s', (path) => {
+    expect(() => backendTransferUrl(path, 'gpu')).toThrow();
   });
 });

@@ -1,44 +1,74 @@
-// Which backend owns which entity.
+// Entity ownership for routing. Projects have globally unique IDs; moves keep
+// the conversation ID and advance a durable ownership epoch. Keep backend
+// identity in this index, not duplicated on every sidebar row. Thread rows carry
+// the epoch because offline catalogs must remain orderable across computers.
 //
-// Once a client is attached to more than one backend, "send this message
-// to thread X" needs a machine as well as an id. Thread and project ids
-// are globally unique (`internal/entityid`, the contract spec §10 states
-// for exactly this reason), so nothing about a row has to change to make
-// that resolvable — the client only has to REMEMBER where each row came
-// from. This module is that memory, and ./runtime.ts's `thread` and
-// `project` routes are its only hot reader.
+// Lists, thread-row events and matching per-computer catalogs populate the
+// index. Search/patch hints cannot displace an already known owner. An unknown
+// entity retains the single-computer HOME fallback; contradictory owners never
+// get that fallback. Higher epochs supersede old cached rows and invalidate
+// thread history/read state through the ownership notification.
 //
-// **Rows gain no field.** The alternative — stamping `backendId` onto
-// every Thread and Project — costs a property on every row in the sidebar,
-// makes two copies of one fact (the index would still be needed for ids
-// whose row is not loaded), and puts a transport concern in a store type.
-// A row that genuinely needs to RENDER its machine reads the index.
-//
-// Plain `Map`s and nothing else: no reactivity, no eviction policy beyond
-// the explicit forget calls, no allocation on read. The bound is the
-// number of threads and projects this client has seen, which is the same
-// bound the sidebar already carries.
-//
-// **An id this index does not know resolves HOME**, not an error
-// (./handle.ts states that fallback). That is what makes a single-backend
-// app behave identically: it never populates the index for its own rows
-// beyond what the fan-out notes, and every lookup that misses lands where
-// it always did.
-//
-// **What actually populates it**, and nothing else does: the `all`
-// fan-out's per-backend shares (`noteRowsFromCall`, called from
-// ./runtime.ts with each backend's own answer), the ids a routed call
-// ANSWERED with (`noteFamilyRowsFromCall`, same door), and the origin
-// stamp on a `thread:updated` / `project:updated` /
-// `thread-group:updated` frame (`stores/events.ts`). The replica's cold
-// open does NOT populate it: a window painted from IndexedDB carries no
-// origin, so a thread whose row this session never listed resolves home
-// until a list call or an event names its machine.
+// Plain maps, bounded by the metadata rows already held by the frontend.
 
 import { HOME_BACKEND, type BackendKey } from './backendKey';
 import type { IdFamily } from './methodFamilies';
+import type { WorkflowItemDetail, WorkflowRunMapView } from '../types/workflow';
 
-const threads = new Map<string, BackendKey>();
+interface ThreadOwner { backend: BackendKey; epoch?: number; conflict?: boolean }
+const threads = new Map<string, ThreadOwner>();
+// Ownership evidence only lives as long as the metadata requests it can
+// invalidate. A late list may contain an archived ID this frontend has never
+// indexed; forgetting the destination must not erase evidence for that read.
+interface MetadataRead { claims: Map<string, ThreadOwner>; detached: boolean }
+const metadataReads = new Map<BackendKey, Set<MetadataRead>>();
+export interface ThreadMetadataRead {
+  verify(result: unknown): void;
+  release(): void;
+}
+export function captureThreadMetadataRead(methodId: number, backend: BackendKey): ThreadMetadataRead | undefined {
+  const single = methodId === 1098302047; // GetThread
+  const ref = ROW_THREAD_REF_BY_METHOD[methodId];
+  if (!single && ROW_ENTITY_BY_METHOD[methodId] !== 'thread' && ref === undefined) return undefined;
+  const held: MetadataRead = { claims: new Map(), detached: false };
+  let pending = metadataReads.get(backend);
+  if (!pending) { pending = new Set(); metadataReads.set(backend, pending); }
+  pending.add(held);
+  return {
+    verify(result) {
+      if (held.detached) throw new Error('Computer was removed during this read.');
+      if (held.claims.size === 0) return;
+      const rows = single ? [result] : Array.isArray(result) ? result : [];
+      for (const row of rows) {
+        if (!row || typeof row !== 'object') continue;
+        const id = (row as Record<string, unknown>)[ref ?? 'id'];
+        const claim = typeof id === 'string' ? held.claims.get(id) : undefined;
+        const epoch = (row as { ownershipEpoch?: number }).ownershipEpoch ?? 0;
+        if (claim && ((claim.epoch ?? 0) > epoch
+          || ((claim.epoch ?? 0) === epoch && (claim.conflict || claim.backend !== backend)))) {
+          throw new Error('Conversation ownership changed during this read. Refresh to load its current computer.');
+        }
+      }
+    },
+    release() {
+      pending.delete(held);
+      if (pending.size === 0 && metadataReads.get(backend) === pending) metadataReads.delete(backend);
+    },
+  };
+}
+
+function invalidateMetadataClaim(threadId: string, claim: ThreadOwner): void {
+  const snapshot = { ...claim };
+  for (const pending of metadataReads.values()) {
+    for (const read of pending) read.claims.set(threadId, snapshot);
+  }
+}
+
+const ownershipListeners = new Set<(threadId: string, previousBackend: BackendKey) => void>();
+export function onThreadOwnershipChanged(listener: (threadId: string, previousBackend: BackendKey) => void): () => void {
+  ownershipListeners.add(listener);
+  return () => { ownershipListeners.delete(listener); };
+}
 const projects = new Map<string, BackendKey>();
 // The id families that are neither thread nor project and cannot be
 // resolved through one: a workflow item and an automation belong to a
@@ -57,7 +87,30 @@ const threadGroups = new Map<string, BackendKey>();
 
 /** The backend that owns `threadId`, or undefined when unknown. */
 export function threadBackend(threadId: string): BackendKey | undefined {
-  return threads.get(threadId);
+  return threads.get(threadId)?.backend;
+}
+
+/** Read-only hints cannot displace a verified move or resolve conflicting owners. */
+export function resolveThreadBackend(threadId: string): BackendKey | undefined {
+  const owner = threads.get(threadId);
+  if (owner?.conflict) throw new Error('Two computers claim this conversation. Reconnect them to verify its owner before continuing.');
+  return owner?.backend;
+}
+
+/** Thread-scoped runtime frames from a retired owner cannot alter live state. */
+export function currentThreadEvent(threadId: string, backend: BackendKey): boolean {
+  const owner = threads.get(threadId);
+  return !owner || (!owner.conflict && owner.backend === backend);
+}
+
+export function validOwnershipEpoch(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+/** Whether a catalog row still belongs to the newest known ownership. */
+export function currentThreadRow(row: { id: string; ownershipEpoch?: number }, backend?: BackendKey): boolean {
+  const owner = threads.get(row.id);
+  return !owner || (!owner.conflict && (backend === undefined || owner.backend === backend) && (owner.epoch ?? 0) === (row.ownershipEpoch ?? 0));
 }
 
 /** The backend that owns `projectId`, or undefined when unknown. */
@@ -85,9 +138,30 @@ export function subscriptionBackend(subscriptionId: string): BackendKey | undefi
   return subscriptions.get(subscriptionId);
 }
 
-export function noteThread(threadId: string, backendId: BackendKey): void {
-  if (threadId === '') return;
-  threads.set(threadId, backendId);
+export function noteThread(threadId: string, backendId: BackendKey, epoch?: unknown): boolean {
+  if (threadId === '' || (epoch !== undefined && !validOwnershipEpoch(epoch))) return false;
+  const previous = threads.get(threadId);
+  if (previous) {
+    // Patches and search references are hints. They never move an indexed id.
+    if (epoch === undefined) return previous.backend === backendId && !previous.conflict;
+    if (previous.epoch !== undefined) {
+      if (epoch < previous.epoch) return false;
+      if (epoch === previous.epoch) {
+        if (previous.backend !== backendId) {
+          previous.conflict = true;
+          invalidateMetadataClaim(threadId, previous);
+        }
+        return !previous.conflict;
+      }
+    }
+  }
+  const current = { backend: backendId, epoch };
+  threads.set(threadId, current);
+  if ((epoch ?? 0) > 0 || (previous && previous.backend !== backendId)) invalidateMetadataClaim(threadId, current);
+  if (previous && (previous.backend !== backendId || (previous.epoch ?? 0) !== (epoch ?? 0))) {
+    for (const listener of ownershipListeners) listener(threadId, previous.backend);
+  }
+  return true;
 }
 
 export function noteProject(projectId: string, backendId: BackendKey): void {
@@ -160,6 +234,7 @@ export interface ForgottenEntities {
   readonly threadIds: readonly string[];
   readonly projectIds: readonly string[];
   readonly threadGroupIds: readonly string[];
+  readonly workflowItemIds: readonly string[];
 }
 
 /**
@@ -178,13 +253,19 @@ export interface ForgottenEntities {
  * client no longer holds a socket to.
  */
 export function forgetBackendEntities(backendId: BackendKey): ForgottenEntities {
-  const threadIds = takeOwned(threads, backendId);
+  for (const read of metadataReads.get(backendId) ?? []) read.detached = true;
+  metadataReads.delete(backendId);
+  const threadIds: string[] = [];
+  for (const [id, owner] of threads) {
+    if (owner.backend === backendId) { threadIds.push(id); threads.delete(id); }
+  }
   const projectIds = takeOwned(projects, backendId);
   const threadGroupIds = takeOwned(threadGroups, backendId);
-  for (const map of [workflowItems, automations, terminals, subscriptions]) {
+  const workflowItemIds = takeOwned(workflowItems, backendId);
+  for (const map of [automations, terminals, subscriptions]) {
     takeOwned(map, backendId);
   }
-  return { threadIds, projectIds, threadGroupIds };
+  return { threadIds, projectIds, threadGroupIds, workflowItemIds };
 }
 
 // Delete every entry `backendId` owns and answer with their ids. One pass,
@@ -259,7 +340,7 @@ export function noteRowsFromCall(
   if (ref !== undefined && Array.isArray(result)) {
     for (const row of result) {
       const id = (row as Record<string, unknown> | null)?.[ref];
-      if (typeof id === 'string' && id !== '') threads.set(id, backendId);
+      if (typeof id === 'string' && id !== '') noteThread(id, backendId, (row as Record<string, unknown>).ownershipEpoch);
     }
   }
   noteFamilyRowsFromCall(methodId, result, backendId);
@@ -287,6 +368,11 @@ interface ResultFamily {
 }
 
 const RESULT_FAMILIES: Readonly<Record<number, ResultFamily>> = {
+  1009082601: { family: 'workflowItem', key: 'id', single: true }, // WorkflowStartRun
+  2615697354: { family: 'workflowItem', key: 'id', single: true }, // WorkflowRunAutomationNow
+  1931806823: { family: 'workflowItem', key: 'id', single: true }, // WorkflowBindThread
+  2006703348: { family: 'workflowItem', key: 'id', single: true }, // WorkflowUnbindThread
+  3011758347: { family: 'workflowAutomation', key: 'id', single: true }, // WorkflowCreateAutomation
   2247958725: { family: 'terminal', key: 'terminalID', single: true }, // OpenTerminal
   2319799628: { family: 'workflowAutomation', key: 'id' }, // WorkflowListAutomations
   2445206506: { family: 'terminal', key: 'terminalID' }, // ListTerminals
@@ -299,6 +385,7 @@ const RESULT_FAMILIES: Readonly<Record<number, ResultFamily>> = {
 };
 
 const FAMILY_NOTERS: Readonly<Record<IdFamily, (id: string, backendId: BackendKey) => void>> = {
+  project: noteProject,
   workflowItem: noteWorkflowItem,
   workflowAutomation: noteAutomation,
   terminal: noteTerminal,
@@ -321,6 +408,26 @@ export function noteFamilyRowsFromCall(
   result: unknown,
   backendId: BackendKey,
 ): void {
+  if (methodId === 1236472344 || methodId === 1172404443) { // WorkflowDiscussPR / WorkflowSendPRReviewCommentsToThread
+    const row = result as { id?: string; ownershipEpoch?: number } | null;
+    if (row?.id) noteThread(row.id, backendId, row.ownershipEpoch ?? 0);
+  }
+  // These reads name threads excluded from the ordinary sidebar catalog.
+  // Only declared metadata fields teach ownership; outputs and artifacts
+  // may contain arbitrary user data and must never be traversed for IDs.
+  if (methodId === 70120675 && result && typeof result === 'object') { // WorkflowGetItem
+    const detail = result as WorkflowItemDetail;
+    if (detail.item?.id) noteWorkflowItem(detail.item.id, backendId);
+    if (detail.item?.projectId) noteProject(detail.item.projectId, backendId);
+    if (detail.item?.triageThreadId) noteThread(detail.item.triageThreadId, backendId);
+    noteWorkflowThreads(detail, backendId);
+  } else if (methodId === 4156752389 && result && typeof result === 'object') { // WorkflowGetRunMap
+    const view = result as WorkflowRunMapView;
+    for (const run of view.runs ?? []) {
+      if (run.itemId) noteWorkflowItem(run.itemId, backendId);
+      noteWorkflowThreads(run, backendId);
+    }
+  }
   const spec = RESULT_FAMILIES[methodId];
   if (spec === undefined || result === null || typeof result !== 'object') return;
   const note = FAMILY_NOTERS[spec.family];
@@ -337,11 +444,17 @@ export function noteFamilyRowsFromCall(
   }
 }
 
+function noteWorkflowThreads(row: { phases?: { threadId?: string }[]; units?: { threadId?: string }[] }, backend: BackendKey): void {
+  for (const phase of row.phases ?? []) if (phase.threadId) noteThread(phase.threadId, backend);
+  for (const unit of row.units ?? []) if (unit.threadId) noteThread(unit.threadId, backend);
+}
+
 /** Record a batch of thread rows from one backend's share of a list call. */
 function noteThreadRows(rows: readonly unknown[], backendId: BackendKey): void {
   for (const row of rows) {
-    const id = (row as { id?: unknown })?.id;
-    if (typeof id === 'string' && id !== '') threads.set(id, backendId);
+    const record = row as { id?: unknown; ownershipEpoch?: unknown };
+    const id = record?.id;
+    if (typeof id === 'string' && id !== '') noteThread(id, backendId, record.ownershipEpoch ?? 0);
   }
 }
 
@@ -361,6 +474,7 @@ function noteProjectRows(rows: readonly unknown[], backendId: BackendKey): void 
 /** Test seam: forget everything. Every map, so one case cannot leak a
  *  group or a terminal into the next. */
 export function __resetEntityIndexForTest(): void {
+  metadataReads.clear();
   threads.clear();
   projects.clear();
   workflowItems.clear();

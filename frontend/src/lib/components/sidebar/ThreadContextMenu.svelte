@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { threadHasScope } from '../../transport/entityScopes';
   // Popover-anchored right-click menu for a thread row. Mirrors the
   // ProjectContextMenu composition: Popover anchors to the row element,
   // Menu owns keyboard nav, MenuItem renders each action. Confirm
@@ -28,6 +29,7 @@
     copyThreadPathAction,
     deleteThreadAction,
     forkThreadAction,
+    transferThreadAction,
     markThreadUnreadAction,
     PIN_GROUP_BACK,
     PIN_GROUP_FRONT,
@@ -60,6 +62,8 @@
   import { getSettings } from '../../stores/settings.svelte';
   import { hasScope } from '../../transport/scopes';
   import { countNoun } from '../../utils/format';
+  import { canOfferConversationTransfer } from '../../stores/conversationTransfers.svelte';
+  import { threadMachine } from '../../stores/attachedBackends.svelte';
 
   interface Props {
     thread: Thread;
@@ -138,7 +142,7 @@
   // "this thread wasn't imported", which is a different fact.
   // CheckThreadImportUpdates re-reads the provider session file and writes
   // what it finds into the thread.
-  let importUpdatesUngranted = $derived(!hasScope('threads:operate'));
+  let importUpdatesUngranted = $derived(!threadHasScope('threads:operate', thread.id, thread.projectId));
   // The backend ships user-facing prose for the verdict it returned; it
   // knows the turn count and the exact wording, so it wins. The fallback
   // only covers a backend that sends none — and says the same two numbers.
@@ -409,6 +413,13 @@
                 onClose();
                 void forkThreadAction(ctx());
               }}
+            />
+          {/if}
+          {#if canOfferConversationTransfer(thread)}
+            <MenuItem
+              label="Move or copy to computer…"
+              disabled={!hasScope('threads:operate', threadMachine(thread.id, thread.projectId))}
+              onSelect={() => { onClose(); transferThreadAction(ctx()); }}
             />
           {/if}
           {#if canCheckImportUpdates}

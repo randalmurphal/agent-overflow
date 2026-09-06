@@ -235,7 +235,7 @@ describe('<NetworkSection>', () => {
 
     const { findByRole, findByText, findByLabelText } = render(NetworkSection);
     await findByLabelText('Application URL');
-    await findByText(/These settings belong to the backend this window is attached to/i);
+    await findByText(/Let paired devices reach this computer over your LAN/i);
     expect(await findByRole('switch', { name: 'Toggle remote access' })).toBeTruthy();
     expect(getMock).toHaveBeenCalled();
   });
@@ -294,7 +294,7 @@ describe('<NetworkSection>', () => {
     const getMock = setBindingMock('GetNetworkSettings', async () => networkSettings());
 
     const { findByText, queryByRole, queryByTestId } = render(NetworkSection);
-    await findByText(/was not granted the access that manages it/i);
+    await findByText(/This connection cannot change network access/i);
     expect(queryByRole('switch', { name: 'Toggle remote access' })).toBeNull();
     expect(queryByTestId('share-url-host-only')).toBeNull();
     expect(getMock).not.toHaveBeenCalled();

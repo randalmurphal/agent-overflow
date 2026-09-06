@@ -25,10 +25,12 @@
 // `eventsTransportGap.ts`, which is where `markImportConnectionLost` is
 // called from.
 
-import { wsClient } from '../transport/wsClient';
+import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
+import { backendKeyForOrigin } from '../transport/backends';
+import { onBackendStatusChange } from './transportStatus.svelte';
 import type { ImportRowStatus, SessionImportProgressEvent } from '../types/sessionImport';
 import { isRowStatus } from '../types/sessionImport';
-import { applyImportProgress, getSessionImportRun } from './sessionImport.svelte';
+import { applyImportProgress, getSessionImportRun, getSessionImportBackend } from './sessionImport.svelte';
 import { wailsEventOn } from './wailsEvents';
 
 /** Bounds the user-facing prose a frame can carry into the row stamps. */
@@ -53,7 +55,7 @@ function isCount(value: unknown): value is number {
  * one — a silently dropped frame here would show up as a progress bar that
  * stopped moving with no explanation anywhere.
  */
-export function applySessionImportProgress(payload: unknown): boolean {
+export function applySessionImportProgress(payload: unknown, backend: BackendKey = HOME_BACKEND): boolean {
   if (!payload || typeof payload !== 'object') return false;
   const evt = payload as Record<string, unknown>;
 
@@ -95,7 +97,7 @@ export function applySessionImportProgress(payload: unknown): boolean {
   if (typeof evt.error === 'string' && evt.error !== '') frame.error = evt.error;
   if (threadIds) frame.threadIds = threadIds;
 
-  applyImportProgress(frame);
+  applyImportProgress(frame, backend);
   return true;
 }
 
@@ -109,20 +111,13 @@ export function applySessionImportProgress(payload: unknown): boolean {
  * unrecoverable case is the gap signal (see the module header).
  */
 export function setupSessionImportEvents(): () => void {
-  const cancelProgress = wailsEventOn<unknown>('session-import:progress', (payload) => {
-    if (!applySessionImportProgress(payload)) {
+  const cancelProgress = wailsEventOn<unknown>('session-import:progress', (payload, origin) => {
+    if (!applySessionImportProgress(payload, backendKeyForOrigin(origin.backendId))) {
       console.warn('events: session-import:progress dropped a malformed frame', payload);
     }
   });
-  // Only a TRANSITION out of `connected` is a drop. `onStatusChange` fires
-  // synchronously with the current snapshot on subscribe, and at wiring time
-  // that snapshot is 'disconnected' (the transport connects lazily), so the
-  // previous status is the whole test.
-  let previous = wsClient.getStatus().status;
-  const cancelStatus = wsClient.onStatusChange((snapshot) => {
-    const was = previous;
-    previous = snapshot.status;
-    if (was !== 'connected' || snapshot.status === 'connected') return;
+  const cancelStatus = onBackendStatusChange((backend, snapshot) => {
+    if (backend !== getSessionImportBackend() || snapshot.status === 'connected') return;
     const run = getSessionImportRun();
     if (!run?.active) return;
     console.info(

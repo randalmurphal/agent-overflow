@@ -117,6 +117,9 @@ func (a *App) RevertConversationAndResendMessage(
 
 	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()
+	if err := a.threadApplication().CheckMutable(threadID); err != nil {
+		return err
+	}
 
 	thread, item, err := a.resolveRevertAndResendTarget(threadID, userItemID, opts.KillRunningBackgroundTasks)
 	if err != nil {

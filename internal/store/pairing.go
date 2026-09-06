@@ -72,10 +72,12 @@ func (p PairingLink) Settled() bool { return p.ConfirmedAt != 0 || p.CanceledAt 
 // because recognising a second presentation of it is the whole reuse
 // detector (§4 "Sessions").
 type RefreshSecret struct {
-	ID        string `json:"id"`
-	SessionID string `json:"sessionId"`
-	CreatedAt int64  `json:"createdAt"`
-	ExpiresAt int64  `json:"expiresAt"`
+	// NextSecretHash recognizes the same client-selected renewal after a lost reply.
+	NextSecretHash []byte `json:"-"`
+	ID             string `json:"id"`
+	SessionID      string `json:"sessionId"`
+	CreatedAt      int64  `json:"createdAt"`
+	ExpiresAt      int64  `json:"expiresAt"`
 	// ConsumedAt is 0 for the one secret a session's device currently
 	// holds. Every earlier one in the chain carries a stamp.
 	ConsumedAt int64 `json:"consumedAt,omitempty"`
@@ -92,7 +94,7 @@ const pairingLinkColumns = `id, user_id, scopes, binding_class, device_class,
 	key_thumbprint, session_id, confirmed_at, canceled_at`
 
 const refreshSecretColumns = `id, session_id, created_at, expires_at,
-	consumed_at, consumed_by`
+	consumed_at, consumed_by, next_secret_hash`
 
 // CreatePairingLink writes a minted link. The caller owns the id and the
 // token hash, because the token itself is returned to the minting surface
@@ -437,7 +439,7 @@ func scanRefreshSecret(sc interface{ Scan(...any) error }) (RefreshSecret, error
 	var consumedAt sql.NullInt64
 	if err := sc.Scan(
 		&secret.ID, &secret.SessionID, &secret.CreatedAt, &secret.ExpiresAt,
-		&consumedAt, &secret.ConsumedBy,
+		&consumedAt, &secret.ConsumedBy, &secret.NextSecretHash,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return RefreshSecret{}, err

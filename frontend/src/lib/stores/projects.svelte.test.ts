@@ -1,3 +1,4 @@
+import { takePinnedBackend, attachedBackendCount } from '../transport/backends';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   addProjectLocal,
@@ -166,7 +167,14 @@ describe('projects store — merged entries (wave 7d)', () => {
   });
 
   async function load(rows: ProjectWithCounts[]): Promise<void> {
-    setBindingMock('ListProjects', async () => rows);
+    setBindingMock('ListProjects', async () => {
+      const backend = takePinnedBackend();
+      if (attachedBackendCount() === 1) return rows;
+      return rows.filter((row) => {
+        const remote = ['p-laptop', 'p-solo', 'b'].includes(row.project.id);
+        return backend === 'laptop' ? remote : !remote;
+      });
+    });
     await refreshProjects();
   }
 

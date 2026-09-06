@@ -63,14 +63,6 @@ func New(config Config) *Service {
 	return &Service{config: config, cache: highlight.NewCache()}
 }
 
-type Result struct {
-	Lang       string
-	Lines      []highlight.EncodedLine
-	Truncated  bool
-	Incomplete bool
-	Primed     bool
-}
-
 func (s *Service) Code(langName, source string) (Result, error) {
 	if s.config.IsShuttingDown() {
 		return Result{}, s.config.ShutdownError

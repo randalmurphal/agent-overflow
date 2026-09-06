@@ -70,6 +70,13 @@ func reasonAllowed(reason Reason) bool {
 }
 
 func (e *Engine) transition(item *runtimeItem, to State, reason Reason) error {
+	if to == StateRunning && e.beginWork != nil {
+		release, err := e.beginWork(e.ctx)
+		if err != nil {
+			return err
+		}
+		defer release()
+	}
 	from := State(item.item.State)
 	if !transitionAllowed(from, to) {
 		return fmt.Errorf("transition item %q: invalid transition %s -> %s", item.item.ID, from, to)

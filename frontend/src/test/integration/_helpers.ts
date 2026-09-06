@@ -35,7 +35,7 @@ import {
   replaceQueueForThread,
   resetForTest as resetSendQueueForTest,
 } from '../../lib/stores/sendQueue.svelte';
-import { getThreads } from '../../lib/stores/threads.svelte';
+import { getThreads, replaceAllThreads } from '../../lib/stores/threads.svelte';
 import {
   resetThreadTerminalStatesForTest,
   resetTerminalFocusForTest,
@@ -72,6 +72,7 @@ export function resetAppState(): void {
   // Reset the projects-first sidebar state so tests that expect a clean
   // project list / collapsed chevrons don't inherit from a prior case.
   resetProjectsForTest();
+  replaceAllThreads([]);
   resetAppStorageForTest();
   resetSidebarForTest();
   resetSettingsForTest();

@@ -1,3 +1,7 @@
+import { threadBackend } from '../transport/entityIndex';
+import { HOME_BACKEND } from '../transport/backendKey';
+import { requireEntityBackend } from '../transport/backends';
+import { isFrontendOnly } from '../transport/runMode';
 import {
   BrowserCompanionAction,
   BrowserCompanionDo,
@@ -42,14 +46,26 @@ const paneIds = new Map<string, string>();
 const liveStates = createKeyedSignalRegistry<BrowserCompanionEvent | null>(null);
 const hydratedThreads = new Set<string>();
 
+function canUseNativeBrowser(threadId: string): boolean {
+  if (!hasScope('host') || isFrontendOnly()) return false;
+  try {
+    return requireEntityBackend(threadBackend(threadId)) === HOME_BACKEND;
+  } catch {
+    return false;
+  }
+}
+
 function emptyView(state: BrowserCompanionEvent): BrowserCompanionView {
   return { state, error: '', actionError: '' };
 }
 
 const store = createEntityStore<BrowserCompanionView, void>({
   name: 'browserCompanion',
+  // Native views and their mounts belong to this window's local execution host.
+  backendForKey: () => HOME_BACKEND,
   rawValue: true,
   source: async ({ key, apply }) => {
+    if (!canUseNativeBrowser(key)) throw new Error('A native browser pane is unavailable for this conversation on this device.');
     const result = await BrowserCompanionPaneAttach(key);
     paneIds.set(key, result.id);
     apply(emptyView(result.state));
@@ -238,7 +254,7 @@ export function hydrateBrowserCompanionState(threadId: string): void {
   // caller is an $effect, host presence lands with the bootstrap manifest
   // after the first pane mounts, and pinning the thread on the placeholder
   // answer would leave it unhydrated for the life of the page.
-  if (!hasScope('host')) return;
+  if (!canUseNativeBrowser(threadId)) return;
   hydratedThreads.add(threadId);
   void (async () => {
     // The async wrapper folds a SYNCHRONOUS throw from the binding into the

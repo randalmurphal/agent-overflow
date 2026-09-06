@@ -1,3 +1,4 @@
+import { appStorageGet } from '../../lib/stores/appStorage';
 import { describe, expect, it, beforeAll, beforeEach, vi } from 'vitest';
 import { render, waitFor } from '@testing-library/svelte';
 import App from '../../App.svelte';
@@ -55,7 +56,7 @@ function installUIStateWithPaneLayout(initialPaneLayout: unknown) {
   });
   return {
     get paneLayout(): PaneLayoutPersistedSettings {
-      return JSON.parse(entries.paneLayout) as PaneLayoutPersistedSettings;
+      return JSON.parse(appStorageGet('paneLayout') ?? entries.paneLayout) as PaneLayoutPersistedSettings;
     },
     setUIState,
   };
@@ -226,8 +227,8 @@ describe('App integration - pane restoration', () => {
     // a composer stealing DOM focus on mount — removed as a bug: only the
     // focused pane's composer takes focus now.)
     focusPane('left');
-    await waitFor(() => expect(uiState.setUIState).toHaveBeenCalled());
-    uiState.setUIState.mockClear();
+    await waitFor(() => expect(uiState.paneLayout.panes.map((pane) => pane.threadId)).toEqual([left.id, right.id]));
+    const beforeResize = appStorageGet('paneLayout');
 
     applyPaneBoundaryDrag({
       leftPaneId: 'left',
@@ -242,7 +243,8 @@ describe('App integration - pane restoration', () => {
 
     window.dispatchEvent(new Event('pagehide'));
 
-    await waitFor(() => expect(uiState.setUIState).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(appStorageGet('paneLayout')).not.toBe(beforeResize));
+    expect(uiState.setUIState).not.toHaveBeenCalled();
     expect(uiState.paneLayout.panes.map((pane) => pane.threadId)).toEqual([left.id, right.id]);
   });
 });

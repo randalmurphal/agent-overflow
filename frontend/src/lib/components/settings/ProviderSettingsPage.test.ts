@@ -4,7 +4,7 @@ import { describe, expect, it, beforeEach } from "vitest";
 import { render, fireEvent, waitFor } from "@testing-library/svelte";
 import ClaudeSettings from "./ClaudeSettings.svelte";
 import CodexSettings from "./CodexSettings.svelte";
-import { loadSettings } from "../../stores/settings.svelte";
+import { getSettings, loadSettings } from "../../stores/settings.svelte";
 import { getToasts } from "../../stores/toast.svelte";
 import type { ModelInfo } from "../../types/settings";
 import {
@@ -65,7 +65,7 @@ describe("provider page — model visibility toggles", () => {
 		expect(chip.textContent?.trim()).toBe("GPT 5.6 Sol");
 	});
 
-  it("dispatches a hide patch when clicking a visible model chip", async () => {
+  it("hides a model on this frontend when clicking its chip", async () => {
     await seed();
     setBindingMock("GetModelsForProvider", async () => CLAUDE_CATALOG);
     const { findByTestId } = render(ClaudeSettings);
@@ -74,14 +74,12 @@ describe("provider page — model visibility toggles", () => {
     expect(chip.getAttribute("data-hidden")).toBe("false");
     await fireEvent.click(chip);
 
-    const mock = getBindingMock("UpdateSettings");
-    expect(mock).toBeDefined();
-    expect(mock!.mock.calls.at(-1)![0]).toEqual({
-      claudeHiddenModels: ["claude-opus-4-8"],
-    });
+    expect(getSettings().claudeHiddenModels).toEqual(["claude-opus-4-8"]);
+    expect(chip.getAttribute("data-hidden")).toBe("true");
+    expect(getBindingMock("UpdateSettings")).not.toHaveBeenCalled();
   });
 
-  it("marks hidden models and dispatches an unhide patch on click", async () => {
+  it("unhides a model on this frontend when clicking its chip", async () => {
     await seed({ claudeHiddenModels: ["claude-opus-4-8"] });
     setBindingMock("GetModelsForProvider", async () => CLAUDE_CATALOG);
     const { findByTestId } = render(ClaudeSettings);
@@ -90,8 +88,9 @@ describe("provider page — model visibility toggles", () => {
     expect(chip.getAttribute("data-hidden")).toBe("true");
     await fireEvent.click(chip);
 
-    const mock = getBindingMock("UpdateSettings");
-    expect(mock!.mock.calls.at(-1)![0]).toEqual({ claudeHiddenModels: [] });
+    expect(getSettings().claudeHiddenModels).toEqual([]);
+    expect(chip.getAttribute("data-hidden")).toBe("false");
+    expect(getBindingMock("UpdateSettings")).not.toHaveBeenCalled();
   });
 
   it("refuses to hide the last visible model", async () => {

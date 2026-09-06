@@ -169,6 +169,13 @@ func (s *Session) startOrResumeThread(ctx context.Context, cfg Config) error {
 	// The version comes from the handshake recorded moments ago — the
 	// connected process's own statement of its build.
 	threadParams := buildThreadParams(cfg, s.AppServerVersion())
+	if cfg.AdditionalInstructions != "" {
+		instructions, err := s.appendDeveloperInstructions(ctx, cfg.AdditionalInstructions)
+		if err != nil {
+			return err
+		}
+		threadParams["developerInstructions"] = instructions
+	}
 	var method string
 	if cfg.ResumeThreadID != "" {
 		method = "thread/resume"

@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { flushSync } from 'svelte';
+import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
+import { detachBackend } from '../transport/backends';
 
 import {
   getSystemStats,
@@ -10,6 +12,18 @@ import {
 describe('systemStats store', () => {
   afterEach(() => {
     resetForTest();
+    resetStagedBackends();
+  });
+
+  it('keeps each computer’s samples separate and drops a removed computer', () => {
+    stageBackend({ id: 'gpu' });
+    setSystemStats({ isWsl: false, cpuPercent: 20, memUsedBytes: 1, memTotalBytes: 2 });
+    setSystemStats({ isWsl: false, cpuPercent: 90, memUsedBytes: 3, memTotalBytes: 4 }, 'gpu');
+    expect(getSystemStats()?.cpuPercent).toBe(20);
+    expect(getSystemStats('gpu')?.cpuPercent).toBe(90);
+    detachBackend('gpu');
+    expect(getSystemStats('gpu')).toBeNull();
+    expect(getSystemStats()?.cpuPercent).toBe(20);
   });
 
   it('returns null before the first event arrives', () => {

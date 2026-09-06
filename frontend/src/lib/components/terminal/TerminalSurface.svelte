@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { threadMachine } from '../../stores/attachedBackends.svelte';
   import { onMount } from 'svelte';
   import {
     OpenTerminal,
@@ -217,7 +218,7 @@
   });
 </script>
 
-<TerminalTabStrip
+<TerminalTabStrip backend={threadMachine(surface.threadId ?? '', null)}
   {handle}
   onOpen={() => void openTerminal({ focus: true })}
   onClose={closeTerminal}

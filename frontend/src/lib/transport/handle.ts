@@ -20,7 +20,7 @@
 // event with it pays a string compare, never a new object.
 
 import { HOME_BACKEND, type BackendKey } from './backendKey';
-import { backendById, homeBackend } from './backends';
+import { backendById } from './backends';
 import type { LeaseState } from './frames';
 import type { StepUpProver } from './wsClient';
 
@@ -84,19 +84,16 @@ export interface TransportHandle {
 /**
  * The transport to route through.
  *
- * Omitted, or naming a backend this client is not attached to, answers
- * the HOME backend — the page's own connection. Falling back rather than
- * throwing is deliberate and is what keeps a single-backend app behaving
- * exactly as it did: an unresolvable entity, an unknown method id and an
- * older bundle all land on the one connection that has always answered
- * them (./runtime.ts warns once per method in dev when a route could not
- * be resolved, which is where a real routing bug becomes visible).
+ * Omitted means the home connection. An explicit unknown target is an
+ * error: a disappeared computer must never turn a path-based mutation into
+ * an action against another computer's filesystem.
  *
  * The argument accepts either spelling of a backend — its registry id or
  * its live UUID off an event's origin stamp — because both are in the
  * registry's index.
  */
 export function resolveTransport(backendId: BackendKey = HOME_BACKEND): TransportHandle {
-  if (backendId === HOME_BACKEND) return homeBackend().handle;
-  return (backendById(backendId) ?? homeBackend()).handle;
+  const backend = backendById(backendId);
+  if (!backend) throw new Error('The selected computer is no longer connected. Choose a computer and try again.');
+  return backend.handle;
 }

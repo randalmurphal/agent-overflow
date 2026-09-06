@@ -37,6 +37,10 @@ and `orb` are ids; `Robo Papers`, `robo_papers` and `-orb` are not.
 ## The strip
 
 - **One row.** Frames run left to right, no second row, no padding rows.
+- **Bounded image memory.** At most 32,768 px wide, 4,096 px tall, and
+  4,194,304 pixels per strip. The complete custom pool is capped at 8,388,608
+  pixels. The app checks the PNG header before decoding; oversized strips
+  are skipped with a warning even if their compressed files are small.
 - **Equal width.** Every frame occupies exactly `width / frames` pixels,
   and the app REFUSES a strip whose width does not divide evenly by
   `frames`. Playback slides a background offset one frame-width per

@@ -64,7 +64,7 @@ export function attachedBackendEntry(key: BackendKey): BackendEntry | undefined 
  */
 export function backendDisplayName(entry: BackendEntry): string {
   if (entry.home) return getBackendIdentity().name || 'This machine';
-  return entry.name || entry.id;
+  return list.find((current) => current.id === entry.id)?.name || entry.name || entry.id;
 }
 
 /** Whether this backend's socket is open and serving. */
@@ -99,15 +99,12 @@ export function threadActsHere(threadId: string): boolean {
 /**
  * Whether a thread's machine is off-line from this client's point of view.
  *
- * Home never answers true here: the page's own backend dropping is the
- * full-width transport banner's job (spec §10, "Reachability is ambient,
- * not modal"), and dimming every row under it as well would say one thing
- * twice. Answers false outright on a single-backend client so the sidebar
- * and the composer pay nothing until a second machine exists.
+ * A single-computer outage is already explained by the transport banner.
+ * With several computers, every owner is checked, including the first
+ * paired host: the other computers can still be used while it is offline.
  */
 export function threadMachineUnreachable(threadId: string, projectId: string | null | undefined): boolean {
   if (list.length < 2) return false;
   const key = threadMachine(threadId, projectId);
-  if (key === HOME_BACKEND) return false;
   return !backendReachable(key);
 }

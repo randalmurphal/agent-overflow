@@ -5,7 +5,10 @@
 import type { RateLimitEntry, RateLimitsSnapshot } from '../types/events';
 import { asProviderID, type ProviderID } from '../types/providers';
 import { getProviderAccount } from './accountInfo.svelte';
+import { onBackendDetached } from '../transport/backends';
 import { compositeKey } from '../utils/compositeKey';
+
+import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 
 const LEGACY_ACCOUNT = '__active__';
 const MAX_TIMER_DELAY = 2_147_000_000;
@@ -14,7 +17,7 @@ const RESET_JITTER_TOLERANCE_SECONDS = 60;
 type LimitMap = Map<string, RateLimitEntry>;
 type AccountMap = Map<string, LimitMap>;
 
-let limitsByProvider: Map<ProviderID, AccountMap> = $state(new Map());
+let limitsByProvider: Map<string, AccountMap> = $state(new Map());
 let expiryTimer: ReturnType<typeof setTimeout> | undefined;
 // Bumped when a stored reset boundary passes so getter-driven $deriveds
 // re-read. The stored entries themselves are never rewritten at expiry —
@@ -29,12 +32,12 @@ function accountKey(snapshot: RateLimitsSnapshot): string {
   return snapshot.accountId?.trim() || LEGACY_ACCOUNT;
 }
 
-export function setProviderRateLimits(snapshot: RateLimitsSnapshot): void {
+export function setProviderRateLimits(snapshot: RateLimitsSnapshot, backend: BackendKey = HOME_BACKEND): void {
   if (!snapshot?.limits?.length) return;
   const provider = asProviderID(snapshot.provider);
   if (!provider) return;
 
-  const providerAccounts = limitsByProvider.get(provider) ?? new Map<string, LimitMap>();
+  const providerAccounts = limitsByProvider.get(compositeKey(backend, provider)) ?? new Map<string, LimitMap>();
   const key = accountKey(snapshot);
   const existing = providerAccounts.get(key) ?? new Map<string, RateLimitEntry>();
   const merged = new Map(existing);
@@ -96,7 +99,7 @@ export function setProviderRateLimits(snapshot: RateLimitsSnapshot): void {
   const nextAccounts = new Map(providerAccounts);
   nextAccounts.set(key, merged);
   const next = new Map(limitsByProvider);
-  next.set(provider, nextAccounts);
+  next.set(compositeKey(backend, provider), nextAccounts);
   limitsByProvider = next;
   scheduleExpiry();
 }
@@ -109,16 +112,16 @@ function rateLimitEntriesEqual(a: RateLimitEntry, b: RateLimitEntry): boolean {
     && a.resetsAt === b.resetsAt;
 }
 
-function activeAccountKey(provider: ProviderID): string {
-  return getProviderAccount(provider)?.accountId || LEGACY_ACCOUNT;
+function activeAccountKey(provider: ProviderID, backend: BackendKey): string {
+  return getProviderAccount(provider, backend)?.accountId || LEGACY_ACCOUNT;
 }
 
-function limitsForAccount(provider: ProviderID, accountId?: string): LimitMap | undefined {
-  const accounts = limitsByProvider.get(provider);
+function limitsForAccount(provider: ProviderID, accountId: string | undefined, backend: BackendKey): LimitMap | undefined {
+  const accounts = limitsByProvider.get(compositeKey(backend, provider));
   if (!accounts) return undefined;
   const explicitAccount = accountId?.trim();
   if (explicitAccount) return accounts.get(explicitAccount);
-  const key = activeAccountKey(provider);
+  const key = activeAccountKey(provider, backend);
   return accounts.get(key) ?? (key !== LEGACY_ACCOUNT ? accounts.get(LEGACY_ACCOUNT) : undefined);
 }
 
@@ -132,10 +135,10 @@ function limitsForAccount(provider: ProviderID, accountId?: string): LimitMap | 
 // stale-window guard in setProviderRateLimits reject every real post-reset
 // snapshot for the entire window). formatResetCountdown renders the passed
 // boundary as "Resetting now" until the next snapshot lands.
-function entriesForAccount(provider: ProviderID, accountId?: string): RateLimitEntry[] {
+function entriesForAccount(provider: ProviderID, accountId: string | undefined, backend: BackendKey): RateLimitEntry[] {
   void expiryGeneration;
   const nowSeconds = Date.now() / 1000;
-  return [...(limitsForAccount(provider, accountId)?.values() ?? [])]
+  return [...(limitsForAccount(provider, accountId, backend)?.values() ?? [])]
     .map((entry) => projectExpired(entry, nowSeconds));
 }
 
@@ -186,9 +189,10 @@ export function getProviderRateLimit(
   provider: ProviderID | undefined,
   windowMins: number,
   accountId?: string,
+  backend: BackendKey = HOME_BACKEND,
 ): RateLimitEntry | null {
   if (!provider || windowMins <= 0) return null;
-  const candidates = entriesForAccount(provider, accountId)
+  const candidates = entriesForAccount(provider, accountId, backend)
     .filter((entry) => entry.windowMins === windowMins);
   return defaultLimit(provider, candidates);
 }
@@ -206,9 +210,10 @@ export function getProviderRateLimitsForWindow(
   provider: ProviderID | undefined,
   windowMins: number,
   accountId?: string,
+  backend: BackendKey = HOME_BACKEND,
 ): RateLimitWindowGroup {
   if (!provider || windowMins <= 0) return { primary: null, limits: [] };
-  const candidates = entriesForAccount(provider, accountId)
+  const candidates = entriesForAccount(provider, accountId, backend)
     .filter((entry) => entry.windowMins === windowMins);
   const primary = defaultLimit(provider, candidates);
   const primaryKey = primary ? entryKey(primary) : '';
@@ -224,22 +229,23 @@ export function getProviderRateLimitsForWindow(
 export function getProviderRateLimits(
   provider: ProviderID,
   accountId?: string,
+  backend: BackendKey = HOME_BACKEND,
 ): RateLimitEntry[] {
-  return entriesForAccount(provider, accountId)
+  return entriesForAccount(provider, accountId, backend)
     .sort((a, b) => a.windowMins - b.windowMins
       || rateLimitDisplayName(a).localeCompare(rateLimitDisplayName(b)));
 }
 
-export function clearProviderRateLimits(provider: ProviderID, accountId: string): void {
-  const providerAccounts = limitsByProvider.get(provider);
+export function clearProviderRateLimits(provider: ProviderID, accountId: string, backend: BackendKey = HOME_BACKEND): void {
+  const providerAccounts = limitsByProvider.get(compositeKey(backend, provider));
   if (!providerAccounts?.has(accountId)) return;
   const nextAccounts = new Map(providerAccounts);
   nextAccounts.delete(accountId);
   const next = new Map(limitsByProvider);
   if (nextAccounts.size > 0) {
-    next.set(provider, nextAccounts);
+    next.set(compositeKey(backend, provider), nextAccounts);
   } else {
-    next.delete(provider);
+    next.delete(compositeKey(backend, provider));
   }
   limitsByProvider = next;
   scheduleExpiry();
@@ -276,3 +282,9 @@ export function resetForTest(): void {
   expiryTimer = undefined;
   limitsByProvider = new Map();
 }
+
+onBackendDetached(({ backendId }) => {
+  const prefix = compositeKey(backendId, '');
+  limitsByProvider = new Map([...limitsByProvider].filter(([key]) => !key.startsWith(prefix)));
+  scheduleExpiry();
+});

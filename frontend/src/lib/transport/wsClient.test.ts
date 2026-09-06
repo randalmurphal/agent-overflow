@@ -256,6 +256,25 @@ describe('WSClient', () => {
     client.close();
   });
 
+  it.each(['thread_moved', 'thread_transfer_pending'])('preserves %s ownership on a lost-owner call', async (code) => {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    const promise = client.callByID(7, []);
+    const rejected = expect(promise).rejects.toMatchObject({
+      code, transfer: { operationId: 'transfer-1', backendId: 'computer-b' },
+    });
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+    const rpc = ws.sent.find((frame) => frame.type === 'rpc')!;
+    ws.pushFrame({ type: 'rpc', id: rpc.id, error: {
+      code, message: 'Conversation transfer',
+      transfer: { operationId: 'transfer-1', backendId: 'computer-b' },
+    } });
+    await rejected;
+    client.close();
+  });
+
   it('subscribe receives event frames and unsubscribe stops them', async () => {
     const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
 
@@ -1652,7 +1671,7 @@ describe('WSClient', () => {
       const unsubscribe = client.subscribe('workflow:item-state', () => {});
       await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
       expect(hasScope('host')).toBe(false);
-      expect(hasScope('threads:operate')).toBe(false);
+      expect(hasScope('threads:operate', '')).toBe(false);
       unsubscribe();
     } finally {
       client.close();
@@ -1677,7 +1696,7 @@ describe('WSClient', () => {
     try {
       const first = createWSClient({ WebSocketCtor: FakeCtor });
       void first.callByID(1, []).catch(() => {});
-      await flushMicrotasks();
+      await vi.waitFor(() => expect(window.location.search).toBe(''));
       expect(fetchMock).toHaveBeenCalledWith('/bootstrap.json?t=ticket-1', expect.anything());
       expect(window.location.search).toBe('');
       first.close();
@@ -2729,6 +2748,18 @@ describe('WSClient', () => {
   // dead socket: the loop would otherwise show "Reconnecting…" forever
   // while every attempt is structurally doomed. On a session that cannot
   // mint a new token the refusal is TERMINAL — the ladder stops.
+  it('asks a refused paired device to pair instead of reopening a share link', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: async () => { throw new BootstrapRejectedError(404, true); },
+      loopbackOrigin: () => false,
+    });
+    await expect(client.callByID(1, [])).rejects.toBeInstanceOf(DisconnectedError);
+    expect(client.getStatus().status).toBe('pairing-required');
+    client.close();
+  });
+
   it('latches a terminal unauthorized state on a refused credential and stops retrying', async () => {
     vi.useFakeTimers();
     vi.spyOn(Math, 'random').mockReturnValue(0.5);

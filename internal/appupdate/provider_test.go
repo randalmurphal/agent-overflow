@@ -604,6 +604,17 @@ func newConfiguredUpdater(t *testing.T) *updater.Updater {
 	return up
 }
 
+func TestConfigureForwardsRelaunchArgumentValidation(t *testing.T) {
+	service := &Service{}
+	err := service.Configure(updater.New(noopUpdaterHost{}), Config{
+		CurrentVersion: "0.0.1", Platform: runtime.GOOS, Arch: runtime.GOARCH,
+		RelaunchArgs: []string{"--frontend", "invalid\x00argument"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "NUL") {
+		t.Fatalf("configured updater lost relaunch arguments: %v", err)
+	}
+}
+
 func TestDownloadUpdateRejectsInvalidTag(t *testing.T) {
 	a := &Service{updater: appUpdaterState{handle: newConfiguredUpdater(t)}}
 	if err := a.DownloadUpdate("bad tag with spaces"); !errors.Is(err, ErrInvalidReleaseTag) {

@@ -1,3 +1,6 @@
+import { invalidateReplicaCatalog } from '../replica/session';
+import { computerCatalogWriter } from './computerCatalogWriter';
+import { computerCatalog, readComputerRows, retainUnavailableComputerRows } from './computerRows';
 // Sidebar-facing projects store. Mirrors the pattern of threads.svelte.ts:
 // a single reactive $state array driven by an explicit refresh, with
 // optimistic local mutations so the sidebar can reflect a create/rename/
@@ -19,7 +22,7 @@ import {
 } from '../utils/pathDisplay';
 import { repoKey } from '../utils/repoKey';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
-import { projectBackend } from '../transport/entityIndex';
+import { projectBackend, noteProject } from '../transport/entityIndex';
 import { onBackendDetached } from '../transport/backends';
 import { hasMultipleBackends } from './attachedBackends.svelte';
 
@@ -179,21 +182,17 @@ export function isLoaded(): boolean {
   return loaded;
 }
 
-/**
- * Pull the authoritative list from every attached backend. Resolves once
- * the store has been populated (or left unchanged on failure — previous
- * data is preserved so the sidebar doesn't blank out on a transient
- * error).
- *
- * `ListProjects` takes the `all` route, so the arrays are concatenated and
- * a machine that fails to answer is dropped from the merge rather than
- * failing the load (`transport/backends.ts`). Two machines holding the
- * SAME repo arrive as two rows and render as one entry (`projectEntries`).
- */
+/** Refresh each computer independently, preserving its cached rows on failure.
+ * Superseded reads neither publish an empty catalog nor mark initial load done. */
 export async function refreshProjects(): Promise<void> {
   try {
-    const result = (await ListProjects()) as ProjectWithCounts[] | null;
-    projects = Array.isArray(result) ? result : [];
+    const result = await readComputerRows<ProjectWithCounts>(
+      () => ListProjects(), (row, backend) => noteProject(row.project.id, backend), computerCatalog('projects', () => projects, (row) => projectBackend(row.project.id), (late) => {
+        projects = retainUnavailableComputerRows(projects, late, (row) => projectBackend(row.project.id));
+        loaded = true;
+      }));
+    if (!result) return;
+    projects = retainUnavailableComputerRows(projects, result, (row) => projectBackend(row.project.id));
     loaded = true;
   } catch (err) {
     console.error('Failed to load projects:', err);
@@ -207,6 +206,8 @@ export async function refreshProjects(): Promise<void> {
  * wraps it as ProjectWithCounts with zero counts — the next refresh will
  * reconcile actual totals.
  */
+const catalogWriter = computerCatalogWriter('projects', () => projects, (row) => projectBackend(row.project.id));
+
 export function addProjectLocal(p: Project): void {
   // Prevent duplicate inserts if the caller fires this and a refresh
   // races. Refresh wins because it carries thread counts.
@@ -217,6 +218,7 @@ export function addProjectLocal(p: Project): void {
     lastActive: 0,
   };
   projects = [wrapped, ...projects];
+  catalogWriter.changed(projectBackend(p.id));
 }
 
 /**
@@ -225,6 +227,7 @@ export function addProjectLocal(p: Project): void {
  * back to 0 threads until the next refresh.
  */
 export function updateProjectLocal(p: Project): void {
+  catalogWriter.changed(projectBackend(p.id));
   projects = projects.map((existing) =>
     existing.project.id === p.id
       ? { ...existing, project: p }
@@ -257,6 +260,8 @@ export function getProjectLiveActivityAt(p: ProjectWithCounts): number {
 
 /** Drop a project row and any related thread counts. */
 export function removeProjectLocal(id: string): void {
+  invalidateReplicaCatalog(projectBackend(id) ?? '', 'projects');
+  catalogWriter.changed(projectBackend(id));
   projects = projects.filter((p) => p.project.id !== id);
   liveActivityAt.drop(id);
 }
@@ -279,6 +284,7 @@ export function dropProjectsForDetachedBackend(ids: readonly string[]): void {
 onBackendDetached(({ projectIds }) => dropProjectsForDetachedBackend(projectIds));
 
 export function resetProjectsForTest(): void {
+  catalogWriter.reset();
   projects = [];
   loaded = false;
   liveActivityAt.reset();

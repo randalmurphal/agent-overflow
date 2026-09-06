@@ -11,13 +11,14 @@ import (
 // specific item's kind + summary so users can jump directly to the matching
 // turn.
 type ThreadMessageHit struct {
-	ThreadID    string `json:"threadId"`
-	ThreadTitle string `json:"threadTitle"`
-	Provider    string `json:"provider"`
-	ItemID      string `json:"itemId"`
-	TurnIndex   int    `json:"turnIndex"`
-	ItemKind    string `json:"itemKind"`
-	ItemRole    string `json:"itemRole"`
+	OwnershipEpoch int64  `json:"ownershipEpoch"`
+	ThreadID       string `json:"threadId"`
+	ThreadTitle    string `json:"threadTitle"`
+	Provider       string `json:"provider"`
+	ItemID         string `json:"itemId"`
+	TurnIndex      int    `json:"turnIndex"`
+	ItemKind       string `json:"itemKind"`
+	ItemRole       string `json:"itemRole"`
 	// Summary is the item's stored summary field. The frontend can highlight
 	// the query within it.
 	Summary string `json:"summary"`
@@ -88,10 +89,10 @@ func (s *Store) SearchThreadItems(threadID, query string, limit int) ([]ThreadMe
 	pattern := likePattern(trimmed)
 
 	rows, err := s.reader().Query(`
-		SELECT t.id, t.title, t.provider,
+		SELECT t.id, t.title, t.provider, t.ownership_epoch,
 			i.id, i.turn_index, i.kind, i.role, i.summary
 		FROM timeline_items i
-		JOIN threads t ON t.id = i.thread_id
+		JOIN owned_threads t ON t.id = i.thread_id
 		WHERE i.thread_id = ?
 			AND LOWER(i.summary) LIKE ? ESCAPE '\'
 		ORDER BY i.turn_index ASC, i.item_index ASC
@@ -111,8 +112,8 @@ func (s *Store) searchTitleHits(pattern string, limit int) ([]ThreadMessageHit, 
 	hiddenClause, hiddenArgs := hiddenThreadModesClause("mode")
 	args := append([]any{pattern}, hiddenArgs...)
 	rows, err := s.reader().Query(`
-		SELECT id, title, provider
-		FROM threads
+		SELECT id, title, provider, ownership_epoch
+		FROM owned_threads
 		WHERE LOWER(title) LIKE ? ESCAPE '\' AND `+hiddenClause+`
 		ORDER BY updated_at DESC
 		`+limitSuffix(limit),
@@ -126,7 +127,7 @@ func (s *Store) searchTitleHits(pattern string, limit int) ([]ThreadMessageHit, 
 	var hits []ThreadMessageHit
 	for rows.Next() {
 		var h ThreadMessageHit
-		if err := rows.Scan(&h.ThreadID, &h.ThreadTitle, &h.Provider); err != nil {
+		if err := rows.Scan(&h.ThreadID, &h.ThreadTitle, &h.Provider, &h.OwnershipEpoch); err != nil {
 			return nil, fmt.Errorf("store: scan title hit: %w", err)
 		}
 		h.MatchType = "title"
@@ -166,10 +167,10 @@ func (s *Store) searchGlobalItemHits(pattern string, limit int) ([]ThreadMessage
 	hiddenClause, hiddenArgs := hiddenThreadModesClause("t.mode")
 	args := append([]any{pattern}, hiddenArgs...)
 	rows, err := s.reader().Query(`
-		SELECT t.id, t.title, t.provider,
+		SELECT t.id, t.title, t.provider, t.ownership_epoch,
 			i.id, i.turn_index, i.kind, i.role, i.summary
 		FROM timeline_items i
-		JOIN threads t ON t.id = i.thread_id
+		JOIN owned_threads t ON t.id = i.thread_id
 		WHERE LOWER(i.summary) LIKE ? ESCAPE '\' AND `+hiddenClause+`
 		ORDER BY i.created_at DESC
 		`+limitSuffix(limit),
@@ -183,13 +184,13 @@ func (s *Store) searchGlobalItemHits(pattern string, limit int) ([]ThreadMessage
 }
 
 // scanItemHits scans the shared item-hit column tuple (both the global and the
-// thread-scoped item queries project these eight columns in this order).
+// thread-scoped item queries project these nine columns in this order).
 func scanItemHits(rows *sql.Rows) ([]ThreadMessageHit, error) {
 	var hits []ThreadMessageHit
 	for rows.Next() {
 		var h ThreadMessageHit
 		if err := rows.Scan(
-			&h.ThreadID, &h.ThreadTitle, &h.Provider,
+			&h.ThreadID, &h.ThreadTitle, &h.Provider, &h.OwnershipEpoch,
 			&h.ItemID, &h.TurnIndex, &h.ItemKind, &h.ItemRole, &h.Summary,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan item hit: %w", err)

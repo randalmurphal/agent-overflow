@@ -1,3 +1,4 @@
+import { threadMachine } from './attachedBackends.svelte';
 import { getProviderDefinition } from '../providers/catalog';
 import type { ContextWindow } from '../types/events';
 import type { Thread } from '../types/models';
@@ -148,7 +149,7 @@ export function activeAutoCompactPercent(
     : nextThread.autoCompactStandardPercent ?? 0;
   if (override > 0) return override;
 
-  const settings = getSettings();
+  const settings = getSettings(threadMachine(nextThread.id, nextThread.projectId));
   const providerSettings = getProviderDefinition(nextThread.provider).settings;
   const providerSetting = isExtended
     ? settings[providerSettings.extendedCompactKey]

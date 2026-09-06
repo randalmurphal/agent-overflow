@@ -6,6 +6,7 @@
   import XCircle from '@lucide/svelte/icons/x-circle';
   import X from '@lucide/svelte/icons/x';
   import Icon from '../primitives/Icon.svelte';
+  import Button from '../primitives/Button.svelte';
   import { getToasts, removeToast, type ToastType } from '../../stores/toast.svelte';
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -33,7 +34,7 @@
 </script>
 
 {#if toasts.length > 0}
-  <div class="fixed bottom-4 right-4 z-[80] flex flex-col gap-2 max-w-sm" aria-live="polite" aria-relevant="additions">
+  <div class="fixed bottom-4 right-4 z-[80] flex flex-col gap-2 max-w-[min(24rem,calc(100vw-2rem))]" aria-live="polite" aria-relevant="additions">
     {#each toasts as toast (toast.id)}
       <div
         in:fly={{ x: 80, duration: 200 }}
@@ -46,7 +47,15 @@
         <span class="mt-0.5 shrink-0 flex items-center">
           <Icon icon={iconForType(toast.type)} size={14} strokeWidth={2} class="opacity-90" />
         </span>
-        <span class="flex-1 leading-snug line-clamp-3">{toast.message}</span>
+        <div class="min-w-0 flex-1 leading-snug">
+          <span class="line-clamp-3 break-words">{toast.message}</span>
+          {#if toast.action}
+            <Button size="xs" variant="ghost" class="mt-1" onclick={() => {
+              removeToast(toast.id);
+              toast.action?.run();
+            }}>{toast.action.label}</Button>
+          {/if}
+        </div>
         <button
           onclick={() => removeToast(toast.id)}
           class="shrink-0 opacity-60 hover:opacity-100 cursor-pointer rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-opacity"

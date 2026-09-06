@@ -11,7 +11,8 @@
   // settings page matches the rest of the toggles in the file: no Save
   // button, no profile concept, no per-thread mode.
 
-  import { getSettings, updateSetting } from '../../stores/settings.svelte';
+  import { settingsComputer } from './settingsComputer';
+  const { getSettings, updateSetting } = settingsComputer();
   import { getProviderDefinition } from '../../providers/catalog';
   import type { Settings } from '../../types/settings';
   import { providerFieldId, type SettingsProvider } from './fields';

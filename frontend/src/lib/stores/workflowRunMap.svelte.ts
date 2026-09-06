@@ -1,3 +1,4 @@
+import { workflowItemBackend } from '../transport/entityIndex';
 // The run map's data plane: one whole run TREE per watched run, kept live by
 // patching the `workflow:*` events into it and refetching whenever a patch
 // cannot be placed exactly (RUN-MAP §4.4).
@@ -246,6 +247,7 @@ const NOTHING_ACQUIRED = (): void => {};
 
 const store = createEntityStore<WorkflowRunMapView, void>({
   name: 'workflowRunMap',
+  backendForKey: (key) => workflowItemBackend(key) ?? '',
   // A view is a whole run tree — thousands of small objects for a long
   // campaign — and NOTHING writes into one: the patcher rebuilds the touched
   // run and reuses every other object, and consumers only ever re-project the

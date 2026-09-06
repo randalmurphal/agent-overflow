@@ -68,6 +68,11 @@ func (m *Manager) refreshProviderAccountUsage(
 	if m.store == nil || m.credentials == nil {
 		return errors.New("provider account storage is unavailable")
 	}
+	endWork, admitErr := m.beginWork(ctx)
+	if admitErr != nil {
+		return admitErr
+	}
+	defer endWork()
 	refreshMu := m.reconcileMutex(providerName)
 	refreshMu.Lock()
 	defer refreshMu.Unlock()

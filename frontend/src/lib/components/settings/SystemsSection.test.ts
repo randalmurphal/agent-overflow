@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
+import { within } from '@testing-library/svelte';
 import SystemsSection from './SystemsSection.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { resetRunMode, setRunMode } from '../../../test/runMode';
@@ -65,7 +66,7 @@ describe('<SystemsSection>', () => {
     }));
     const { getByLabelText, getByText, findByTestId } = render(SystemsSection);
     await fireEvent.input(getByLabelText('Pairing link'), { target: { value: ' https://laptop.example/pair#t ' } });
-    await fireEvent.click(getByText('Attach'));
+    await fireEvent.click(getByText('Connect'));
     await waitFor(() => expect(add).toHaveBeenCalledWith('https://laptop.example/pair#t'));
     const pending = await findByTestId('pending-attachment');
     expect(pending.textContent).toMatch(/Waiting for Laptop/);
@@ -76,10 +77,10 @@ describe('<SystemsSection>', () => {
     stageBackend();
     setBindingMock('ListBackends', async () => [LAPTOP]);
     const remove = setBindingMock('RemoveBackend', async () => {});
-    const { findByText, getByText, queryByTestId } = render(SystemsSection);
-    await fireEvent.click(await findByText('Detach'));
+    const { getByText, findByTestId, queryByTestId } = render(SystemsSection);
+    await fireEvent.click(within(await findByTestId('attached-system')).getByText('Remove'));
     expect(remove).not.toHaveBeenCalled();
-    await fireEvent.click(getByText('Confirm detach'));
+    await fireEvent.click(getByText('Confirm remove'));
     await waitFor(() => expect(remove).toHaveBeenCalledWith('laptop'));
     await waitFor(() => expect(queryByTestId('attached-system')).toBeNull());
   });
@@ -155,11 +156,11 @@ describe('<SystemsSection>', () => {
         JSON.stringify({ sessionId: 's', credential: 'c', expiresAtMs: Date.now() + 60_000 }),
       );
       stageBackend();
-      const { findByText, getByText, queryByTestId } = render(SystemsSection);
+      const { getByText, getByTestId, queryByTestId } = render(SystemsSection);
 
-      await fireEvent.click(await findByText('Detach'));
+      await fireEvent.click(within(getByTestId('attached-machine')).getByText('Remove'));
       expect(queryByTestId('attached-machine')).not.toBeNull();
-      await fireEvent.click(getByText('Confirm detach'));
+      await fireEvent.click(getByText('Confirm remove'));
 
       await waitFor(() => expect(queryByTestId('attached-machine')).toBeNull());
       expect(hasPairedSession('laptop')).toBe(false);

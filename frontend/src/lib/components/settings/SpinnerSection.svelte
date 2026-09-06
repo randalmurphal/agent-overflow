@@ -8,12 +8,15 @@
   // <configDir>/spinners/ joins the pool without a settings write.
   // Custom-verb editing commits on blur, like every settings field.
 
-  import { getSettings, updateSetting } from '../../stores/settings.svelte';
+  import { settingsComputer } from './settingsComputer';
+  const { getSettings, updateSetting } = settingsComputer();
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import SettingsField from './SettingsField.svelte';
   import WorkingSprite from '../composer/WorkingSprite.svelte';
   import { mergedSprites } from '../../spinners/select';
-  import { ensureCustomSpinners, peekCustomSpinners } from '../../stores/spinners.svelte';
+  import { ensureCustomSpinners, peekCustomSpinners, customSpinnersError } from '../../stores/spinners.svelte';
+  import FrontendAssetImport from './FrontendAssetImport.svelte';
+  import SettingsCallout from './SettingsCallout.svelte';
   import { SELECT_CLASS } from './styles';
 
   let settings = $derived(getSettings());
@@ -156,6 +159,8 @@
         </select>
       </SettingsField>
 
+      <FrontendAssetImport kind="spinners" />
+
       {#if customs.dir !== ''}
         <p class="px-1 pt-1 text-[0.75rem] text-fg-hint">
           Add your own: drop a strip PNG + JSON pair into
@@ -171,6 +176,9 @@
           {/each}
         </ul>
       {/if}
+    {/if}
+    {#if customSpinnersError()}
+      <SettingsCallout tone="warn">{customSpinnersError()}</SettingsCallout>
     {/if}
   </div>
 </section>

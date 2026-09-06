@@ -60,7 +60,17 @@ var heldHarnessLock *harnessInstanceLock
 // is released by the kernel when the process dies however it dies, so a
 // crashed boot leaves the next one free with no reaping at all.
 func acquireHarnessInstanceLock(dataDir, mode string) (*harnessInstanceLock, error) {
-	path := filepath.Join(dataDir, harnessLockFileName)
+	held, err := acquireInstanceLock(dataDir, mode, harnessLockFileName, "another isolated boot")
+	if err == nil {
+		heldHarnessLock = held
+	}
+	return held, err
+}
+
+// Shared OS primitive for isolated and ordinary backend boots. Filename is
+// internal policy, never caller input. The open descriptor is the authority.
+func acquireInstanceLock(dataDir, mode, filename, owner string) (*harnessInstanceLock, error) {
+	path := filepath.Join(dataDir, filename)
 	file, err := openHarnessLock(path, appdirs.SensitiveFilePerm)
 	if err != nil {
 		return nil, fmt.Errorf("open harness instance lock %s: %w", path, err)
@@ -73,12 +83,7 @@ func acquireHarnessInstanceLock(dataDir, mode string) (*harnessInstanceLock, err
 	if !locked {
 		holder := describeHarnessLockHolder(file)
 		file.Close()
-		return nil, fmt.Errorf(
-			"another isolated boot already holds %s (%s); an isolated boot refuses to share a data root — "+
-				"two backends would open the same SQLite file and the second would overwrite the first's "+
-				"instance registry row. Stop it (`ao-harness down`, or kill the pid) or pass a different --data-dir",
-			path, holder,
-		)
+		return nil, fmt.Errorf("%s already holds %s (%s); two backends cannot share a data root. Connect to the running backend, stop it, or pass a different --data-dir", owner, path, holder)
 	}
 	// Written only once the lock is HELD, so two boots can never
 	// interleave writes into it. Truncate first: a previous holder's
@@ -99,7 +104,6 @@ func acquireHarnessInstanceLock(dataDir, mode string) (*harnessInstanceLock, err
 		}
 	}
 	held := &harnessInstanceLock{file: file, path: path}
-	heldHarnessLock = held
 	return held, nil
 }
 

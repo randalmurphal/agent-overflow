@@ -1,3 +1,4 @@
+import { takePinnedBackend } from '../../transport/backends';
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
@@ -5,7 +6,7 @@ import ThreadRow from './ThreadRow.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest } from '../../stores/paneLayout.svelte';
-import { loadSettings } from '../../stores/settings.svelte';
+import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { refreshThreads } from '../../stores/threads.svelte';
 import {
   beginThreadLiveStateHydration,
@@ -1264,7 +1265,7 @@ describe('<ThreadRow> on an unreachable machine', () => {
     expect(row).not.toHaveAttribute('data-machine-unreachable');
   });
 
-  it('never dims a home row, whatever the second backend is doing', async () => {
+  it('keeps an available home row undimmed while another computer is offline', async () => {
     stageBackend({ status: 'reconnecting' });
     const thread = makeThread();
     const pane = createThreadPane();
@@ -1302,10 +1303,13 @@ describe('<ThreadRow> machine chip', () => {
 
   async function seedRepoOnBothMachines(): Promise<void> {
     stageBackend();
-    setBindingMock('ListProjects', async () => [
+    setBindingMock('ListProjects', async () => {
+      const backend = takePinnedBackend();
+      return [
       { project: { id: 'p-home', path: '/home/me/app', name: 'app', remoteURL: 'git@github.com:me/app.git', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 1 },
       { project: { id: 'p-laptop', path: '/Users/me/app', name: 'app', remoteURL: 'https://github.com/me/app', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 1 },
-    ]);
+    ].filter((row) => backend === 'laptop' ? row.project.id === 'p-laptop' : row.project.id === 'p-home');
+    });
     await refreshProjects();
     noteProject('p-laptop', 'laptop');
   }
@@ -1320,12 +1324,12 @@ describe('<ThreadRow> machine chip', () => {
     expect(getByTestId('thread-row-worktree-name').textContent?.trim()).toBe('app-wt');
   });
 
-  it('renders the chip alone for a base-checkout thread, and home by its own name', async () => {
+  it('omits the machine for a local base-checkout thread', async () => {
     await seedRepoOnBothMachines();
     const thread = makeThread({ projectId: 'p-home' });
     const pane = createThreadPane();
-    const { getByTestId, queryByTestId } = render(ThreadRow, { props: { thread, pane } });
-    expect(getByTestId('thread-row-machine-name').textContent?.trim()).toBe('Desk');
+    const { queryByTestId } = render(ThreadRow, { props: { thread, pane } });
+    expect(queryByTestId('thread-row-machine-name')).toBeNull();
     expect(queryByTestId('thread-row-worktree-label')).toBeNull();
   });
 
@@ -1355,10 +1359,13 @@ describe('<ThreadRow> machine chip', () => {
         bundleId: '',
       } as never,
     });
-    setBindingMock('ListProjects', async () => [
+    setBindingMock('ListProjects', async () => {
+      const backend = takePinnedBackend();
+      return [
       { project: { id: 'p-home', path: '/home/me/app', name: 'app', remoteURL: 'git@github.com:me/app.git', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 1 },
       { project: { id: 'p-laptop', path: '/Users/me/app', name: 'app', remoteURL: 'https://github.com/me/app', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 1 },
-    ]);
+    ].filter((row) => backend === 'laptop' ? row.project.id === 'p-laptop' : row.project.id === 'p-home');
+    });
     await refreshProjects();
     noteProject('p-laptop', 'laptop');
     noteThread('thread-1', 'laptop');
@@ -1370,14 +1377,26 @@ describe('<ThreadRow> machine chip', () => {
 
   it('shows nothing when the project lives on one machine', async () => {
     stageBackend();
-    setBindingMock('ListProjects', async () => [
+    setBindingMock('ListProjects', async () => {
+      const backend = takePinnedBackend();
+      return [
       { project: { id: 'p-home', path: '/home/me/app', name: 'app', remoteURL: 'git@github.com:me/app.git', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 1 },
-    ]);
+    ].filter((row) => backend === 'laptop' ? row.project.id === 'p-laptop' : row.project.id === 'p-home');
+    });
     await refreshProjects();
     const thread = makeThread({ projectId: 'p-home' });
     const pane = createThreadPane();
     const { queryByTestId } = render(ThreadRow, { props: { thread, pane } });
     expect(queryByTestId('thread-row-worktree')).toBeNull();
+  });
+
+  it('identifies a remote-only project without needing a local clone', async () => {
+    stageBackend();
+    noteThread('thread-1', 'laptop');
+    const thread = makeThread({ projectId: 'remote-only' });
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
+    expect(getByTestId('thread-row-machine-name').textContent?.trim()).toBe('Laptop');
   });
 });
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { BackendKey } from '../../transport/backendKey';
   // Mention-search popover anchored to the textarea. Uses the Popover
   // primitive (which portals to document.body) so it escapes the
   // composer card's `overflow-hidden` clip and any other containing-
@@ -11,6 +12,7 @@
   import EditorLink from '../common/EditorLink.svelte';
 
   interface Props {
+    backend: BackendKey;
     anchor?: HTMLElement | undefined;
     open: boolean;
     query: string;
@@ -25,7 +27,7 @@
     onClose?: (reason?: PopoverCloseReason) => void;
   }
 
-  let {
+  let { backend,
     anchor,
     open,
     query,
@@ -98,7 +100,7 @@
                 stays the row click.
               -->
               <div class="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover/mention:opacity-100 transition-opacity">
-                <EditorLink path={file.path} {workspacePath} asIcon stopPropagation />
+                <EditorLink {backend} path={file.path} {workspacePath} asIcon stopPropagation />
               </div>
             </li>
           {/each}

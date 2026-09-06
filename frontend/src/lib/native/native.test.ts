@@ -163,9 +163,9 @@ describe('adoptPairingEndpoint', () => {
     __resetHomeEndpointForTest();
   });
 
-  it('sets the home endpoint from the payload and answers no problem', () => {
+  it('validates a new computer without replacing the existing home endpoint', () => {
     expect(adoptPairingEndpoint(payload)).toBe('');
-    expect(homeEndpoint()).toBe('https://desk.tail-scale.ts.net:7777');
+    expect(homeEndpoint()).toBe('');
   });
 
   it('answers a sentence for a payload that names nowhere, and sets nothing', () => {

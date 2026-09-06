@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { threadMachine } from '../../stores/attachedBackends.svelte';
   import { untrack } from 'svelte';
   import PanelRightOpen from '@lucide/svelte/icons/panel-right-open';
   import { getSettings } from '../../stores/settings.svelte';
@@ -195,7 +196,7 @@
                   <Icon icon={PanelRightOpen} size={12} />
                 </button>
               {/if}
-              <EditorLink
+              <EditorLink backend={threadMachine(item.threadId, pane?.thread?.projectId)}
                 path={file.path}
                 workspacePath={paneWorkspacePath(pane)}
                 asIcon

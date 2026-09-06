@@ -51,6 +51,14 @@ claim here.
   claim left behind — see §"Externally queued turns" for what reads those
   claims. Both outbound verbs stamp `SendOptions.ClientUserMessageID` as
   `clientUserMessageId` — see §"Turn identity and the steer contract".
+- `session_transfer.go` uses a threadless oneshot app-server for metadata-only
+  `thread/read` of the complete native collaboration graph. The caller closes
+  the source writer first. Never use a temporary resumed Session: loading a
+  thread can drain queued prompts and execute work just to copy history.
+  Check `thread/queue/list` for every session; only method-not-found proves
+  the older CLI has no durable queue. Other errors remain unknown state.
+  A real helper-process test accepts only initialize, initialized, queue/list and
+  metadata-only thread/read for root/children; it rejects every execution verb.
 - `jsonrpc.go` — JSON-RPC request/response/notification writes,
   pending response correlation, read loop, and raw line dispatch.
 - `account.go` — shared `account/read` decoding plus the cached app-server
@@ -681,3 +689,11 @@ Params and response shapes are in `codex-wire.md`. These are the AO-side rules.
 - [`docs/references/codex.md`](../../../docs/references/codex.md) for reading
   those sources, [`spike-policy.md`](../../../docs/references/spike-policy.md)
   for when both are silent.
+
+App-owned additional instructions augment `developerInstructions` at cold
+start/resume. Read effective `developer_instructions` with config/read scoped
+to cwd first and prepend the native value; overwriting it would discard user
+config/profile guidance. With no additional guidance, omit the override. This
+field resolves from config on each cold resume, unlike baseInstructions, whose
+rollout inheritance is different. Additional instructions are spawn-only and
+use the existing deferred config restart boundary.

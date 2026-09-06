@@ -1,16 +1,65 @@
 package worktreesetupapp
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/worktreesetup"
 )
+
+type admissionSetupEvents struct {
+	once            sync.Once
+	entered, resume chan struct{}
+}
+
+func (e *admissionSetupEvents) Setup(Event) {
+	e.once.Do(func() { close(e.entered); <-e.resume })
+}
+func (*admissionSetupEvents) ThreadUpdated(store.Thread) {}
+
+func TestSetupAdmissionOutlivesLaunchAndEndsAfterCleanup(t *testing.T) {
+	root := t.TempDir()
+	thread := store.Thread{ID: "thread", ProjectID: "project", ProjectPath: root, WorktreePath: root, WorkspacePath: root}
+	storage := &testStore{threads: map[string]store.Thread{thread.ID: thread}, config: worktreesetup.Config{Run: [][]string{{"/bin/sh", "-c", "exit 0"}}}}
+	events := &admissionSetupEvents{entered: make(chan struct{}), resume: make(chan struct{})}
+	var active atomic.Int32
+	service := New(Config{Store: storage, Events: events, Context: t.Context, BeginWork: func(context.Context) (func(), error) {
+		active.Add(1)
+		return func() { active.Add(-1) }, nil
+	}})
+	resume := sync.OnceFunc(func() { close(events.resume) })
+	t.Cleanup(func() { resume(); service.Stop() })
+	if err := service.LaunchThread(thread, true); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-events.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("setup did not start")
+	}
+	if active.Load() != 1 {
+		t.Fatal("setup launch returned without retaining admission")
+	}
+	resume()
+	service.Stop()
+	if active.Load() != 0 {
+		t.Fatalf("setup cleanup left %d leases", active.Load())
+	}
+	if err := service.LaunchThread(thread, true); err == nil {
+		t.Fatal("stopped service accepted setup")
+	}
+	if active.Load() != 0 {
+		t.Fatal("failed setup launch leaked admission")
+	}
+}
 
 type testStore struct {
 	mu      sync.Mutex

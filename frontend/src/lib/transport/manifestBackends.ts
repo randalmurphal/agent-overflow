@@ -171,7 +171,7 @@ export function descriptorForAttachedId(
     const scheme = base.protocol === 'https:' ? 'wss://' : 'ws://';
     return {
       id,
-      backendId: '',
+      backendId: id,
       name,
       wsUrl: scheme + base.host + '/ws',
       bootstrapUrl: base.origin + '/bootstrap.json',

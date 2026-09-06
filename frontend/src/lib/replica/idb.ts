@@ -1,5 +1,5 @@
 // Minimal promise-shaped IndexedDB adapter for the thread replica.
-// The only IndexedDB in the app; deliberately not a general-purpose
+// Deliberately not a general-purpose
 // wrapper — it knows this database's two object stores and nothing else.
 //
 // Every operation is bounded by a watchdog. An IndexedDB request can

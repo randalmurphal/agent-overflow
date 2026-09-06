@@ -49,14 +49,15 @@ func (p connPragma) dsnToken() string {
 //   - foreign_keys=ON enforces the schema's cascades. A connection that
 //     lost it writes orphans that no later connection can explain.
 //   - synchronous=NORMAL is the WAL-recommended desktop config. With WAL
-//     the journal is always fsync'd before commit; NORMAL drops the
-//     redundant fsync of the main database file at checkpoint time.
+//     NORMAL syncs at checkpoint/reuse boundaries instead of every commit.
 //     Power-loss can lose the last few committed transactions but the
 //     database cannot corrupt — and per root CLAUDE.md principle 2 the
 //     provider session files are the authoritative history, so a
 //     re-stream covers any lost SQLite-side writes. NORMAL meaningfully
 //     shortens fsync stalls during stream bursts, which is the
-//     per-block-stop freeze hot path.
+//     per-block-stop freeze hot path. Execution ownership is an exception:
+//     beginDurableTx holds one writer connection with EXTRA/fullfsync until
+//     its transfer transaction ends, then restores this ordinary policy.
 var writerConnPragmas = []connPragma{
 	{name: "busy_timeout", dsnValue: "5000", want: 5000},
 	{name: "foreign_keys", dsnValue: "1", want: 1},

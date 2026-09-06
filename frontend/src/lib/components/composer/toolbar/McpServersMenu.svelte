@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { threadMachine } from '../../../stores/attachedBackends.svelte';
   // The popup behind the composer-toolbar "MCP" trigger. Rows come
   // from the provider-native listing for the pane's MCP entity (live
   // session truth when the thread has one, config + status cache
@@ -56,7 +57,8 @@
   let scopeProvider = $derived(pane.thread?.provider ?? '');
   let scopeThreadId = $derived(pane.threadId ?? '');
   let scopeWorkspacePath = $derived(pane.thread?.workspacePath ?? '');
-  let target = $derived(mcpTargetFor(scopeProvider, scopeThreadId, scopeWorkspacePath));
+  let backend = $derived(threadMachine(pane.threadId ?? '', pane.thread?.projectId));
+  let target = $derived(mcpTargetFor(scopeProvider, scopeThreadId, scopeWorkspacePath, backend));
 
   $effect(() => {
     const opened = target;
@@ -149,8 +151,9 @@
   }
 
   async function refresh(row: ThreadMCPServer): Promise<void> {
+    if (!target) return;
     try {
-      await refreshMcpServerStatus(row.provider, row.name);
+      await refreshMcpServerStatus(target, row.name);
     } catch (err) {
       addToast('error', `Status check failed for ${row.name}: ${errString(err)}`);
     }

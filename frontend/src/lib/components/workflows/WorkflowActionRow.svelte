@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { workflowItemHasScope } from '../../transport/entityScopes';
   // The fixed action-row footer (UI-SPEC §4.3), primary first, each button
   // carrying the key §8 binds it to. Every mutation on the run detail goes
   // through here, which is why this is also where the §8 key target is
@@ -34,7 +35,6 @@
     setWorkflowsOverlayDialog,
   } from '../../stores/workflowsOverlay.svelte';
   import { addToast } from '../../stores/toast.svelte';
-  import { hasScope } from '../../transport/scopes';
 
   interface Props {
     item: WorkItem;
@@ -54,7 +54,7 @@
   }: Props = $props();
 
   // Every action on this row resolves a workflow run.
-  let ungranted = $derived(!hasScope('threads:autonomy'));
+  let ungranted = $derived(!workflowItemHasScope('threads:autonomy', item.id));
   const ungrantedTitle = $derived(ungranted ? 'Not granted to this device' : undefined);
   let kind = $derived(workflowResolutionKind(item));
   // A stop request only exists where a boundary exists to honour it: the ROOT

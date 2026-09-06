@@ -36,17 +36,19 @@ import {
   GetServiceUpdateStatus,
   ListServiceReleases,
   RequestServiceUpdate,
+  CancelServiceUpdate,
   type ReleaseSummary,
   type ServiceUpdateStatus,
 } from './bindings';
 import { wailsEventOn } from './wailsEvents';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import { getAttachedBackends } from './attachedBackends.svelte';
-import { isMethodUnavailableError, onBackendHelloChange } from './transportStatus.svelte';
+import { isMethodUnavailableError, onBackendHelloChange, onBackendStatusChange, getTransportHelloFor } from './transportStatus.svelte';
 import {
   attachedBackends as registryBackends,
   backendKeyForOrigin,
   withBackendTarget,
+  onBackendDetached,
 } from '../transport/backends';
 import type { BackendKey } from '../transport/backendKey';
 import { hasScope } from '../transport/scopes';
@@ -74,6 +76,7 @@ export interface MachineUpdate {
   loadError: string;
   /** Request sent, first status frame not yet back. */
   requesting: boolean;
+  canceling: boolean;
   requestError: string;
   outcome: ServiceUpdateOutcome | null;
   releases: readonly ReleaseSummary[];
@@ -87,6 +90,7 @@ const EMPTY: MachineUpdate = Object.freeze({
   status: null,
   loadError: '',
   requesting: false,
+  canceling: false,
   requestError: '',
   outcome: null,
   releases: [],
@@ -97,6 +101,7 @@ const EMPTY: MachineUpdate = Object.freeze({
 });
 
 const machines = createKeyedSignalRegistry<MachineUpdate>(EMPTY);
+const statusReads = new Map<BackendKey, symbol>();
 
 function patch(key: BackendKey, changes: Partial<MachineUpdate>): void {
   machines.set(key, { ...machines.get(key), ...changes });
@@ -136,6 +141,7 @@ export function isServiceUpdateInFlight(phase: string): boolean {
     phase === 'downloading' ||
     phase === 'verifying' ||
     phase === 'staging' ||
+    phase === 'waiting' ||
     phase === 'requested'
   );
 }
@@ -149,12 +155,18 @@ export function isServiceUpdateInFlight(phase: string): boolean {
  */
 export async function loadMachineUpdate(key: BackendKey): Promise<void> {
   if (!hasScope('access:admin', key)) return;
+  const request = Symbol();
+  statusReads.set(key, request);
   try {
     const status = await withBackendTarget(key, () => GetServiceUpdateStatus());
+    if (statusReads.get(key) !== request) return;
     patch(key, { status, loadError: '', requesting: false });
   } catch (err) {
+    if (statusReads.get(key) !== request) return;
     if (isScopeRefusal(err) || isMethodUnavailableError(err)) return;
     patch(key, { loadError: userFacingError(err, 'Could not read the update status.') });
+  } finally {
+    if (statusReads.get(key) === request) statusReads.delete(key);
   }
 }
 
@@ -218,6 +230,21 @@ export async function requestServiceUpdate(key: BackendKey, tag: string): Promis
   }
 }
 
+/** The status advertises this operation, so old hosts never receive it. */
+export async function cancelServiceUpdate(key: BackendKey): Promise<void> {
+  const m = machines.get(key);
+  if (!m.status?.cancelable || m.canceling) return;
+  patch(key, { canceling: true, requestError: '' });
+  try {
+    await withBackendTarget(key, () => CancelServiceUpdate());
+    await loadMachineUpdate(key);
+  } catch (err) {
+    patch(key, { requestError: userFacingError(err, 'Could not cancel the update.') });
+  } finally {
+    patch(key, { canceling: false });
+  }
+}
+
 let cancel: (() => void) | null = null;
 
 /**
@@ -226,25 +253,51 @@ let cancel: (() => void) | null = null;
  */
 export function initServiceUpdates(): () => void {
   if (cancel !== null) return stopServiceUpdates;
+  const scheduled = new Set<BackendKey>();
+  let stopped = false;
+  const schedule = (key: BackendKey) => {
+    if (scheduled.has(key)) return;
+    scheduled.add(key);
+    queueMicrotask(() => {
+      if (stopped || !scheduled.delete(key)) return;
+      void loadMachineUpdate(key);
+    });
+  };
   const cancels = [
     wailsEventOn<ServiceUpdateStatus>('service:update-status', (status, origin) => {
-      patch(backendKeyForOrigin(origin.backendId), { status, requesting: false, loadError: '' });
+      const key = backendKeyForOrigin(origin.backendId);
+      statusReads.delete(key);
+      patch(key, { status, requesting: false, loadError: '' });
     }),
     wailsEventOn<ServiceUpdateOutcome>('service:update-outcome', (outcome, origin) => {
       patch(backendKeyForOrigin(origin.backendId), { outcome });
     }),
     onBackendHelloChange((key, hello) => {
       if (hello !== null) {
-        void loadMachineUpdate(key);
+        schedule(key);
         return;
       }
       // A null hello is a dropped socket OR a detached backend. Only the
       // second forgets: a machine mid-restart keeps its `requested` status
       // so the card can say what it is waiting for.
+      statusReads.delete(key);
+      scheduled.delete(key);
       if (!registryBackends().some((b) => b.id === key)) machines.drop(key);
+    }),
+    onBackendStatusChange((key, status) => {
+      if (status.status === 'connected' && getTransportHelloFor(key)) schedule(key);
+      else { statusReads.delete(key); scheduled.delete(key); }
+    }),
+    onBackendDetached(({ backendId }) => {
+      statusReads.delete(backendId);
+      scheduled.delete(backendId);
+      machines.drop(backendId);
     }),
   ];
   cancel = () => {
+    stopped = true;
+    scheduled.clear();
+    statusReads.clear();
     for (const c of cancels) c();
   };
   return stopServiceUpdates;
@@ -259,4 +312,5 @@ export function stopServiceUpdates(): void {
 export function resetServiceUpdatesForTest(): void {
   stopServiceUpdates();
   machines.reset();
+  statusReads.clear();
 }

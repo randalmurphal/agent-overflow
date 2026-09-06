@@ -1,5 +1,9 @@
 # Remote Access & Multi-Device
 
+Current product amendment: [Connected computers](connected-computers.md).
+It supersedes conflicting first-host, settings, portability, LAN, and UI rulings
+below. The historical implementation notes here describe the existing foundation.
+
 Status: draft, reviewed (robustness / architecture / completeness)
 2026-08-04. Owner: Randy. Companion doc:
 [remote-access-boundaries.md](./remote-access-boundaries.md).
@@ -251,7 +255,7 @@ ticket renewal single-flight ACROSS BROWSING CONTEXTS via
 `renewalLease.ts`: `navigator.locks` where the context is secure, a
 short-TTL localStorage lease where it is not, since a plain-HTTP LAN
 page has neither Web Locks nor `crypto.subtle`; store-before-use
-rotation, never retried unread, re-reading its own stored state inside
+rotation with a saved successor for recoverable renewals, re-reading its own stored state inside
 the lease so a lost race answers with the other context's success
 instead of spending the secret twice), and the
 full-page `PairingScreen`. Step 6's fingerprint field is reserved in
@@ -260,17 +264,22 @@ built.
 
 ### Sessions
 
+The current recovery and mixed-version contract is in
+[session-renewal.md](../architecture/session-renewal.md).
+
 - **Access tokens are short-lived** (minutes–hours), always
   key-bound for the `device-bound` class.
 - **Refresh is rotating with reuse detection**: each renewal issues a
   new refresh secret and invalidates its predecessor; replay of a spent
-  refresh forks the family, **auto-revokes the whole family**, and
-  alerts the owner. This is how a leaked credential is detected; a copy
+  refresh with a DIFFERENT successor **auto-revokes the whole family**
+  and alerts the owner. Repeating a recorded operation recovers a lost reply
+  without minting another refresh generation. This is how a leaked credential is detected; a copy
   cannot renew indefinitely alongside the real device.
 - Refresh binds to the device key on every listener. A bare bearer
   token on its own cannot self-renew.
-- Browser class: short TTL, non-renewable without passkey re-auth where
-  passkeys are available.
+- Browser class: shorter access and refresh windows. Renewal does not
+  require a passkey; passkeys can establish a fresh session after the
+  previous family ends, where available.
 
 LANDED 2026-08-31 (wave 5b): rotating refresh in
 `internal/identity/refresh.go` over `refresh_secrets` (v80). The family
@@ -278,7 +287,13 @@ key IS the session id — a renewal extends the session row rather than
 minting a new one, so revoke-the-family is exactly revoke-the-session
 and every open socket keys on one durable id. Reuse spends the whole
 chain FIRST, then revokes. Windows live in `policy.go` (browser
-15m/12h, native 1h/30d). Browser passkey re-auth gating is phase 5.
+15m/12h, native 1h/30d).
+
+The refresh window slides on each successful renewal; it is not a fixed
+monthly re-pairing deadline. Expired access still refuses requests but does
+not prevent renewal with an unexpired refresh secret and valid device proof.
+Backend restarts retain that session. Credential cleanup must retain the
+session and refresh-reuse evidence until their refresh retention window ends.
 
 LANDED 2026-08-31 (wave 8a): the signed device-key proof replaced the
 bare thumbprint on `X-AO-Device-Key` for every path that binds to a
@@ -382,7 +397,7 @@ relying party resolved per ceremony (`internal/app/app_passkey.go`:
 canonical domain as the only RP ID candidate, origins =
 `https://domain` + `https://domain:port`, http only for the
 `.localhost` family the e2e rig uses). Sign-in mints through the same
-`Mint`/`issueFor` chokepoints pairing uses, with a REQUIRED device-key
+`Mint`/`accessTokensFor` chokepoints pairing uses, with a REQUIRED device-key
 proof: the passkey proves the PERSON, the device row is what
 revocation reaches, and `resolvePasskeyDevice` applies pairing's
 adoption rules (revoked refused, other-user key mismatch, class
@@ -454,7 +469,8 @@ mechanism gap.
 ### Step-up (mandatory, not optional)
 
 A per-call fresh passkey (or host-presence) proof, never an ambient
-standing scope, is required for: minting pairing links, network bind /
+standing scope, is required for: minting pairing links, enrolling the selected
+computer with an agent peer, network bind /
 exposure changes, provider custom-env writes, MCP config writes, WSL
 distro preference, worktree-setup recipe writes (stored argv that runs
 unattended with the user's environment on every worktree cut — the
@@ -656,7 +672,7 @@ written to the auth audit log (no transport→identity hook for it).
 ### Host-only scope (`scope: host`)
 
 Acts on the host desktop or reconfigures the host itself; no remote
-form: `OpenInEditor`, `NotificationActivated`, `BrowseDirectory`, WSL
+form: `OpenInEditor`, `NotificationActivated`, WSL
 inventory + distro preference, window geometry, UI render-trace and
 error-log writes, observability reconfiguration, self-update
 download/apply (§7 covers the remote-trigger exception), and any
@@ -774,8 +790,8 @@ it; the backend derives scope from the authenticated session's device.
   (embedded webview, WSL relay, `--connect` stub) presents the same
   channel session and one shared bucket would regress multi-screen.
   The user tier and typed validation remain phase-4 work.
-- Device tier (defaults per device class; phone ships `lowPowerMode`
-  on): `lowPowerMode`, fonts + `fontSize`, `paneDensity`,
+- Device tier (defaults per device class; `lowPowerMode` is opt-in
+  on every class, including phones): `lowPowerMode`, fonts + `fontSize`, `paneDensity`,
   `activityRunWindowRows`, `activityRunDefault`, `streamingEnabled`,
   `diffWordWrap`, `collapseDiffPreviews`, `timestampFormat`,
   `editor.preference`, `backgroundGitFetch`, `usagePeriod`,
@@ -896,10 +912,10 @@ Device-class defaults LANDED 2026-09-01 (wave 6c, phone phase): the
 class table (`internal/settings/classdefaults.go`) resolves a
 device-tier read as Default < class row < the bucket's own writes, AT
 READ and never written into a bucket, so a device that never wrote a
-key tracks a future table change with no migration. Phone is the only
-populated row — `lowPowerMode: true`, exactly what this section
-commits — and the table is total over the declared classes with the
-empty rows pinned as decisions. A written key outranks the class
+key tracks a future table change with no migration. Every class currently
+inherits the global defaults, including normal-power mode on phones. The
+table is total over the declared classes; layer tests exercise synthetic
+overrides independently of these product defaults. A written key outranks the class
 (including writing the class default's opposite; the mutate pre-read
 is class-resolved so the opposite registers as a change), and clearing
 a key returns to the CLASS default. `settings.DeviceClass` mirrors
@@ -1035,13 +1051,14 @@ refusal collapses to one re-pair remedy), and the pinned dial —
 present, WebPKI when none (no encrypted-but-unverified state).
 `--connect` resolves three forms by structure (ws:// endpoint → today's
 same-host attach unchanged; `#` → pairing link; else stored profile,
-then bare payload). A paired `clientmode` stub carries the upgrade with
+then bare payload). A paired `frontendclient` controller carries each upgrade with
 a fresh single-use `?ticket=` per handshake over the pinned transport
 (the ticket is the whole admission; the header arm deliberately does
 not stand in for the launch credential), probes `/bootstrap.json` with
-session + per-request proof, and preflights one ticket before the
-window exists so a removed device is a terminal sentence, not a
-reconnect loop. Wire spellings pinned by drift tests
+session + per-request proof. The local catalog and window open without any
+upstream preflight: removed/offline computers have independent reconnect or
+repair state, and cannot prevent using another computer. The legacy launch-token
+relay remains in `clientmode`. Wire spellings pinned by drift tests
 (`wire_drift_test.go`, 8 rows + a real redemption round-trip);
 `/bootstrap.json` and `/ws` are exported constants
 (`transport.BootstrapPath`/`WSPath`) shared by every restating package.
@@ -1656,19 +1673,23 @@ trial refusal in review):
   with its `UpdateID`; the supervisor's `service:update-outcome` frame
   (its scope fixed from `host`, which no session can hold, to
   `access:admin`) is what closes the loop for the client that asked.
-- *The RPCs*: `GetServiceUpdateStatus` and `ListServiceReleases` are
+- *The RPCs*: `GetServiceUpdateStatus`, `ListServiceReleases`, and
+  `CancelServiceUpdate` are
   `access:admin`; `RequestServiceUpdate(tag)` is `access:admin` +
   step-up, `route selected`. It refuses an invalid tag, the running
-  version, a host with no supervisor, a build with no single-file
+  version, a host with no supervisor, a build with no stageable
   artifact, a second flow, a shutting-down backend, and a TRIAL boot
   (the supervisor is already mid-update; refusing before the download
   is the review addition). `host` would have made the whole feature
   reachable only from the machine it exists to save a trip to.
+  Status advertises `cancelable` before the supervisor handoff. Cancellation
+  shares that handoff's mutex, so a late preparation result cannot restart a
+  canceled flow. Canceling yields `canceled`; a timeout remains an error.
 - *Where it is absent*: `ConfigureServiceUpdates` runs only from a
   supervised `serve` whose build has a stageable artifact
   (`serviceArtifactPlatform()`: `headless-<GOOS>` for the windowless
-  build, `linux` for the GUI one, empty on darwin's app-bundle zip and
-  on windows). An empty answer is the `Unavailable` sentence, not a
+  build, `linux` or `darwin` for the ordinary build, empty on Windows).
+  macOS ZIPs are expanded and staged with their complete bundle. An empty answer is the `Unavailable` sentence, not a
   button that cannot work. The passive `Latest` check runs once,
   unparked, during a trial too.
 - *Frontend half LANDED (2026-09-02)*: `stores/serviceUpdate.svelte.ts`,

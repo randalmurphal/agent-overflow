@@ -43,6 +43,9 @@ How the app works today. Under [`architecture/`](architecture/).
 | [`observability.md`](architecture/observability.md) | OpenTelemetry + per-thread NDJSON event log. |
 | [`transport.md`](architecture/transport.md) | Wire mechanism deep-dives: port pinning, the gap marker, scoped-token routes, coalescing, keepalive. |
 | [`remote-access-setup.md`](architecture/remote-access-setup.md) | Mac-to-Android setup: Tailscale, APK installation, pairing, release signing, and troubleshooting. |
+| [`remote-commands.md`](architecture/remote-commands.md) | Explicit peer access, durable remote commands, connection recovery, and ownership. |
+| [`session-renewal.md`](architecture/session-renewal.md) | Recoverable renewal, saved successors, legacy compatibility and lost-response validation. |
+| [`computer-routes.md`](architecture/computer-routes.md) | Contract for verified LAN/tailnet routes, failure recovery and platform boundaries; implementation in progress. |
 | [`serve-mode.md`](architecture/serve-mode.md) | Operating `agent-overflow serve`: the windowless boot, first-device enrollment from the console, credential storage, bind and port configuration, and installing it as a service. |
 
 ### Providers and sessions
@@ -103,7 +106,9 @@ ships and stops being cited gets deleted (git history keeps it).
 | [`agent-thread-tools.md`](specs/agent-thread-tools.md) | Agent-callable thread search, ask, spawn, and `/side-chat`. Design awaiting sign-off; not implemented. |
 | [`file-attachments.md`](specs/file-attachments.md) | Any-file composer attachments: copy to the attachments root, path line in the prompt, `--add-dir` for Claude. Signed off 2026-09-02; implementation in progress. |
 | [`sidebar-thread-groups.md`](specs/sidebar-thread-groups.md) | Named, collapsible, pinnable groups of threads inside a project's sidebar list. Signed off and implemented 2026-09-02. |
-| [`remote-access.md`](specs/remote-access.md) | Remote and multi-device access. Draft; only phase-0 groundwork is built. |
+| [`remote-access.md`](specs/remote-access.md) | Remote transport, pairing, Android, previews, and supervised updates; historical implementation notes and outstanding requirements. |
+| [`connected-computers.md`](specs/connected-computers.md) | Approved multi-computer product contract, ownership, portability, and acceptance matrix; implementation in progress. |
+| [`conversation-transfer.md`](specs/conversation-transfer.md) | Move/copy ownership protocol, native portability evidence, archive boundaries, and required failure tests; implementation in progress. |
 | [`remote-access-boundaries.md`](specs/remote-access-boundaries.md) | The boundaries and guarantees companion to the remote-access spec. |
 | [`testing-harness.md`](specs/testing-harness.md) | The harness contract and design rationale. `architecture/agent-harness.md` describes the built surface. |
 | [`prompt-tool-overrides.md`](specs/prompt-tool-overrides.md) | Settings-level system-prompt overrides and per-provider tool toggles. |

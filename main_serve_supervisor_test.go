@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -32,6 +33,7 @@ func supervisorPair(t *testing.T, timeout time.Duration) (*serveSupervisor, *os.
 		conn:          supervise.NewConn(downR, upW, nil),
 		answerTimeout: timeout,
 		committed:     make(chan struct{}),
+		restart:       make(chan struct{}),
 	}
 	return sup, upR, downW
 }
@@ -51,38 +53,32 @@ func readFrame(t *testing.T, r *os.File) supervise.Message {
 	return msg
 }
 
-// The answer arrives on a goroutine that ends when the channel does, so a
-// supervisor whose loop is wedged while its process lives would never end the
-// wait on its own. An unbounded wait leaves the caller's one-flow fence
-// claimed for the life of the process and every later request refused as busy,
-// which is the state a person cannot get out of without restarting a machine
-// they are not at.
-func TestAnUnansweredUpdateRequestGivesUpAndLetsTheNextOneThrough(t *testing.T) {
+// A timeout cannot recycle an uncorrelated reply slot. The parent may still
+// accept the first request, so drain and restart before accepting more work.
+func TestAnUnansweredUpdateRequestsRestartAndRejectsRetry(t *testing.T) {
 	sup, up, _ := supervisorPair(t, 20*time.Millisecond)
-
-	for attempt := 1; attempt <= 2; attempt++ {
-		done := make(chan error, 1)
-		go func() {
-			_, err := sup.RequestUpdate("2.0.0")
-			done <- err
-		}()
-
-		if msg := readFrame(t, up); msg.Type != supervise.MsgRequestUpdate || msg.TargetVersion != "2.0.0" {
-			t.Fatalf("attempt %d sent %+v, want a request for 2.0.0", attempt, msg)
+	done := make(chan error, 1)
+	go func() { _, err := sup.RequestUpdate("2.0.0"); done <- err }()
+	if msg := readFrame(t, up); msg.Type != supervise.MsgRequestUpdate {
+		t.Fatal(msg)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, supervise.ErrUpdateOutcomeUnknown) {
+			t.Fatal(err)
 		}
-		select {
-		case err := <-done:
-			if err == nil {
-				t.Fatalf("attempt %d was answered by a supervisor that said nothing", attempt)
-			}
-			// The second attempt is the point: a request that gave up must
-			// have released the waiter, or this reads "already waiting".
-			if !strings.Contains(err.Error(), "did not answer") {
-				t.Fatalf("attempt %d failed with %v, want the timeout", attempt, err)
-			}
-		case <-time.After(10 * time.Second):
-			t.Fatalf("attempt %d never gave up", attempt)
-		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("unanswered request never settled")
+	}
+	select {
+	case <-sup.restartRequested():
+	default:
+		t.Fatal("ambiguous result did not request orderly restart")
+	}
+	// A late acknowledgment must not be delivered to a newer request.
+	sup.deliver(supervise.Message{Type: supervise.MsgUpdateAccepted, UpdateID: "late"})
+	if _, err := sup.RequestUpdate("3.0.0"); !errors.Is(err, supervise.ErrUpdateOutcomeUnknown) {
+		t.Fatalf("retry: %v", err)
 	}
 }
 

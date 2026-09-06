@@ -1,3 +1,6 @@
+import { pairingEndpoint } from '../native/networkTrust';
+import { isNativeShell } from '../native/platform';
+import { networkFetch } from './networkFetch';
 // Attaching, listing and detaching a second machine from a client that IS
 // the client.
 //
@@ -30,7 +33,7 @@
 // minutes and a row that vanished on a re-render.
 
 import { HOME_BACKEND, type BackendKey } from './backendKey';
-import { attachedBackends, detachBackend, syncAttachedBackends } from './backends';
+import { attachedBackends, backendById, detachBackend, syncAttachedBackends } from './backends';
 import {
   clearPairedSession,
   parsePairingFragment,
@@ -42,6 +45,7 @@ import { runBeforeBackendDetach } from './detachSteps';
 import { purgeClientState } from './clientPurge';
 import {
   endpointHost,
+  setHomeEndpoint,
   forgetBackendEndpoint,
   storeBackendEndpoint,
   storedBackendEndpoints,
@@ -73,6 +77,15 @@ export function payloadFromLink(link: string): PairingPayload {
   return payload;
 }
 
+/** A repeated invitation repairs its own slot, including a legacy first
+ * pairing. New computers never replace the first computer's credential. */
+export function pairingBackendKey(payload: PairingPayload): BackendKey {
+  if (!payload.backendId || payload.backendId.includes(' ')) {
+    throw new Error('That pairing link does not name a machine this app can attach.');
+  }
+  return attachedBackends().find((entry) => entry.backendId === payload.backendId)?.id ?? payload.backendId;
+}
+
 /**
  * Redeem a pairing link into a NEW session slot on this client.
  *
@@ -89,22 +102,18 @@ export function payloadFromLink(link: string): PairingPayload {
  */
 export async function attachBackendFromLink(link: string): Promise<AttachedPairing> {
   const payload = payloadFromLink(link);
-  const id = payload.backendId;
-  if (id === '' || id === HOME_BACKEND || id.includes(' ')) {
-    // A registry id is the prefix of every path-keyed composite key, and
-    // the empty string is the page's own backend. Refused at the door,
-    // the same rule `manifestBackends.readBackendDescriptors` applies.
-    throw new Error('That pairing link does not name a machine this app can attach.');
-  }
+  const id = pairingBackendKey(payload);
   const name = payload.backendName || endpointHost(payload.endpoint);
   // Stored before the credential, so a session can never outlive the
   // knowledge of where to present it.
-  storeBackendEndpoint(id, payload.endpoint);
-  const outcome = await redeemPairing(payload, name, fetch, id);
+  const endpoint = pairingEndpoint(payload);
+  storeBackendEndpoint(id, endpoint);
+  if (id === HOME_BACKEND && isNativeShell()) setHomeEndpoint(endpoint);
+  const outcome = await redeemPairing(payload, name, networkFetch, id);
   setPendingAttachment({
     id,
     name,
-    endpoint: payload.endpoint,
+    endpoint,
     verificationNumber: outcome.verificationNumber,
   });
   return { id, name, verificationNumber: outcome.verificationNumber };
@@ -128,12 +137,13 @@ export async function awaitAttachedActivation(
   const deadline = Date.now() + deadlineMs;
   for (;;) {
     if (!pending.has(id)) return false;
-    if (await probeActivation(fetch, id)) {
+    if (await probeActivation(networkFetch, id)) {
       forgetPendingAttachment(id);
       // The descriptor is rebuilt from the stored endpoint map, so this
       // is the same sync a shell boot performs — one code path for "these
       // are the machines I am attached to".
       syncAttachedBackends();
+      await backendById(id)?.client.redialAfterPairing();
       return true;
     }
     if (Date.now() >= deadline) {
@@ -173,11 +183,11 @@ export async function awaitAttachedActivation(
  * say "stop waking me", and the backend would keep sending until the
  * registration died of old age (./detachSteps.ts).
  *
- * The home backend is refused: it is the page's own connection, and a
- * page with no connection has nothing to be.
+ * A desktop's local HOME is refused. A phone's legacy HOME pairing can be
+ * removed independently; its caller reloads after closing that singleton.
  */
 export function detachAttachedBackend(id: BackendKey): void {
-  if (id === HOME_BACKEND) return;
+  if (id === HOME_BACKEND && !isNativeShell()) return;
   runBeforeBackendDetach(id);
   forgetPendingAttachment(id);
   detachBackend(id);

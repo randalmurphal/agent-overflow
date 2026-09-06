@@ -815,22 +815,20 @@ func (s *Store) ActivateSession(sessionID string, at, expiresAt int64) (bool, er
 	return rows > 0, nil
 }
 
-// ExtendSession moves a live session's expiry forward, reporting whether
+// ExtendSession moves a confirmed, unrevoked session's expiry forward, reporting whether
 // it moved. This is what a refresh rotation writes: the access window is
 // the row's expiry, so renewing one means moving the other.
 //
-// Never shortens and never resurrects: the predicate requires the session
-// to be live — its own row AND its device's — and the new expiry to be
-// later than the one it holds, so a replayed or reordered renewal cannot
-// cut a window short, and a rotation racing a device revocation cannot
-// move a window the revocation just closed.
+// Access may already have expired: renewal is authorized by the longer-lived
+// refresh secret in identity. Never shorten a window, extend into the past,
+// or extend an unconfirmed/revoked session or a revoked device.
 func (s *Store) ExtendSession(sessionID string, expiresAt, now int64) (bool, error) {
 	result, err := s.db.Exec(
 		`UPDATE sessions SET expires_at = ?
 		 WHERE id = ? AND revoked_at IS NULL AND activated_at IS NOT NULL
-		   AND expires_at > ? AND expires_at < ?
+		   AND expires_at < ? AND ? > ?
 		   AND device_id IN (SELECT id FROM devices WHERE revoked_at IS NULL)`,
-		expiresAt, sessionID, now, expiresAt)
+		expiresAt, sessionID, expiresAt, expiresAt, now)
 	if err != nil {
 		return false, fmt.Errorf("store: extend session: %w", err)
 	}
@@ -845,13 +843,16 @@ func (s *Store) ExtendSession(sessionID string, expiresAt, now int64) (bool, err
 // `before`, returning how many went.
 //
 // The only identity rows this package deletes, and the bound is what makes
-// it safe: a session past its expiry can never admit a presentation again,
-// so removing it takes nothing away from anybody. The caller keeps a
+// it safe: access expiry alone does not end a renewable session. Keep rows
+// with refresh secrets still inside the retention window, including spent
+// secrets needed to detect reuse. The caller keeps a
 // generous margin so the device list can still show recent history.
 // Revoked-but-unexpired rows are deliberately NOT covered — they are the
 // evidence that a revocation happened.
 func (s *Store) DeleteSessionsExpiredBefore(before int64) (int64, error) {
-	result, err := s.db.Exec(`DELETE FROM sessions WHERE expires_at < ?`, before)
+	result, err := s.db.Exec(`DELETE FROM sessions WHERE expires_at < ?
+        AND NOT EXISTS (SELECT 1 FROM refresh_secrets r
+                        WHERE r.session_id = sessions.id AND r.expires_at >= ?)`, before, before)
 	if err != nil {
 		return 0, fmt.Errorf("store: delete expired sessions: %w", err)
 	}

@@ -1,4 +1,7 @@
 <script lang="ts">
+  import { settingsComputer } from './settingsComputer';
+  const { call, hasScope } = settingsComputer();
+
   import {
     GetNetworkSettings,
     SetNetworkSettings,
@@ -9,8 +12,7 @@
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { tokenizeCommandLine } from '../../utils/shellArgv';
-  import { isClientMode } from '../../transport/runMode';
-  import { hasScope } from '../../transport/scopes';
+
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import NetworkDomainEditor from './NetworkDomainEditor.svelte';
   import NetworkPortEditor from './NetworkPortEditor.svelte';
@@ -44,7 +46,6 @@
   // this launch's token and both ticket-bearing share URLs are withheld
   // from a caller that is not at the machine, which `shareURLWithheld`
   // below reads off the answer rather than re-deriving.
-  const clientMode = isClientMode();
   let noAdmin = $derived(!hasScope('access:admin'));
   let onHost = $derived(hasScope('host'));
 
@@ -65,7 +66,7 @@
     if (noAdmin || loading) return;
     loading = true;
     try {
-      const result = await GetNetworkSettings();
+      const result = await call(() => GetNetworkSettings());
       settings = result;
     } catch (err) {
       addToast('error', `Failed to load network settings: ${errString(err)}`);
@@ -102,7 +103,7 @@
     // the rebind round-trips. Any error path restores `previous`.
     settings = { ...settings, bindAll: next } as NetworkSettings;
     try {
-      settings = await SetNetworkSettings(writeRequest(previous, { bindAll: next }));
+      settings = await call(() => SetNetworkSettings(writeRequest(previous, { bindAll: next })));
     } catch (err) {
       settings = previous;
       addToast('error', `Failed to update network settings: ${errString(err)}`);
@@ -120,7 +121,7 @@
     saving = true;
     const previous = settings;
     try {
-      settings = await SetNetworkSettings(writeRequest(previous, { listenPort: port }));
+      settings = await call(() => SetNetworkSettings(writeRequest(previous, { listenPort: port })));
     } catch (err) {
       addToast('error', `Failed to change the port: ${errString(err)}`);
     } finally {
@@ -138,14 +139,14 @@
     saving = true;
     const previous = settings;
     try {
-      settings = await SetNetworkSettings(
+      settings = await call(() => SetNetworkSettings(
         writeRequest(previous, {
           canonicalDomain: draft.canonicalDomain.trim(),
           acmeDnsHook: tokenizeCommandLine(draft.dnsHook),
           externalCertFile: draft.externalCertFile.trim(),
           externalKeyFile: draft.externalKeyFile.trim(),
         }),
-      );
+      ));
     } catch (err) {
       addToast('error', `Failed to update network settings: ${errString(err)}`);
     } finally {
@@ -158,12 +159,12 @@
     saving = true;
     const previous = settings;
     try {
-      settings = await SetNetworkSettings(
+      settings = await call(() => SetNetworkSettings(
         writeRequest(previous, {
           tailnetEnabled: draft.enabled,
           tailnetControlUrl: draft.controlURL.trim(),
         }),
-      );
+      ));
     } catch (err) {
       addToast('error', `Failed to update tailnet settings: ${errString(err)}`);
     } finally {
@@ -175,7 +176,7 @@
     if (!settings || saving) return;
     saving = true;
     try {
-      settings = await ForgetTailnetNode();
+      settings = await call(() => ForgetTailnetNode());
     } catch (err) {
       addToast('error', `Failed to forget this node: ${errString(err)}`);
     } finally {
@@ -187,7 +188,7 @@
     if (!settings || saving) return;
     saving = true;
     try {
-      settings = await RenewCanonicalDomainCert();
+      settings = await call(() => RenewCanonicalDomainCert());
     } catch (err) {
       addToast('error', `Failed to check the certificate: ${errString(err)}`);
     } finally {
@@ -290,33 +291,13 @@
   data-testid={noAdmin ? 'network-section-local-only' : undefined}
 >
   <section>
-    <SettingsHeader title="Network binding">
-      {#snippet details()}
-        {#if noAdmin}
-          Network binding belongs to the machine running Agent Overflow. This device
-          was not granted the access that manages it, so the bind preference and the
-          share URL are shown and changed there.
-        {:else}
-          {#if clientMode}
-            These settings belong to the backend this window is attached to, not to
-            the machine you are sitting at.
-          {/if}
-          By default the server binds to
-          <code class="font-mono text-[0.6875rem]">127.0.0.1</code> so only this machine can
-          reach it. Toggle on to listen on every network interface — other devices on
-          your LAN can then open the URL below in a browser. Without a certificate the
-          traffic is plain <code class="font-mono text-[0.6875rem]">ws://</code>; give
-          this backend a domain below, or route through Tailscale Serve or an SSH
-          tunnel, before using it beyond a trusted LAN.
-        {/if}
-      {/snippet}
-    </SettingsHeader>
+    <SettingsHeader title="Local network" description={noAdmin ? 'This connection cannot change network access.' : 'Let paired devices reach this computer over your LAN.'} />
     {#if !noAdmin}
       <div class="flex flex-col gap-1">
         <SettingsField
           id="remote.allow-remote-access"
           label="Allow remote access"
-          hint="Listen on all interfaces (0.0.0.0) so devices on your network can connect. Toggling off stops new LAN connections; a device already connected stays until it closes — revoke it under Devices to cut it now."
+          hint="Accept connections from paired devices on your network. Manage their access in Devices."
           align="start"
         >
           <ToggleSwitch
@@ -326,26 +307,28 @@
             onToggle={toggleBindAll}
           />
         </SettingsField>
-        {#if settings}
-          <NetworkPortEditor {settings} busy={saving} onsave={savePort} />
-        {/if}
+
       </div>
     {/if}
   </section>
 
   {#if !noAdmin && settings}
-    <NetworkDomainEditor
-      {settings}
-      busy={saving}
-      onsave={saveDomain}
-      onrenew={renewCertificate}
-    />
-
     <NetworkTailnetEditor
       {settings}
       busy={saving}
       onsave={saveTailnet}
       onforget={forgetTailnetNode}
+    />
+
+    <details class="rounded-[var(--radius-field)] border border-border-subtle p-3">
+      <summary class="cursor-pointer text-sm font-medium text-fg">Advanced network settings</summary>
+      <div class="settings-sections mt-4">
+        <NetworkPortEditor {settings} busy={saving} onsave={savePort} />
+    <NetworkDomainEditor
+      {settings}
+      busy={saving}
+      onsave={saveDomain}
+      onrenew={renewCertificate}
     />
 
     <!--
@@ -407,5 +390,7 @@
         {/if}
       {/if}
     </section>
+      </div>
+    </details>
   {/if}
 </div>

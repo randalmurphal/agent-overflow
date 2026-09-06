@@ -1,30 +1,29 @@
 // Latest host system stats (CPU%, memory used/total, WSL flag) pushed
 // from the Go backend every ~2s on the `system:stats` channel.
 //
-// PHASE 7, HOME-ONLY: one slot, last writer wins, so with two backends
-// attached the footer shows whichever machine pushed most recently. The
-// event carries its origin (`wailsEventOn`'s second argument) and keying
-// this by backend is a one-line change — but WHICH machine's load a single
-// footer should show is a design question remote-access §10 owns, not a
-// keying one, so it stays as it is until that answers.
 // Consumed by the sidebar's SystemStatsFooter. Null until the first
 // event arrives so the footer can hide rather than flashing a
 // placeholder.
 
 import type { SystemStatsEvent } from '../types/events';
+import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
+import { onBackendDetached } from '../transport/backends';
+import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 
-let stats: SystemStatsEvent | null = $state(null);
+const stats = createKeyedSignalRegistry<SystemStatsEvent | null>(null);
 
-export function setSystemStats(s: SystemStatsEvent): void {
-  stats = s;
+export function setSystemStats(s: SystemStatsEvent, backend: BackendKey = HOME_BACKEND): void {
+  stats.set(backend, s);
 }
 
-export function getSystemStats(): SystemStatsEvent | null {
-  return stats;
+export function getSystemStats(backend: BackendKey = HOME_BACKEND): SystemStatsEvent | null {
+  return stats.get(backend);
 }
 
 // Test-only reset. Production code never clears the store — the
 // sampler emits on a fixed cadence for the app's lifetime.
 export function resetForTest(): void {
-  stats = null;
+  stats.reset();
 }
+
+onBackendDetached(({ backendId }) => stats.drop(backendId));

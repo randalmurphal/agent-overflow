@@ -37,7 +37,7 @@ import {
   workspaceRefForThread,
 } from '../utils/workspaceKey';
 import { backendKeyForOrigin, withBackendTarget } from '../transport/backends';
-import { HOME_BACKEND } from '../transport/backendKey';
+import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 
 /** What a source needs from whoever is holding the key. */
 export interface GitStatusCtx {
@@ -101,6 +101,7 @@ function removeAlias(cwdKey: string, key: string, owner: AliasOwner): void {
 
 const store = createEntityStore<GitStatus, GitStatusCtx>({
   name: 'gitStatus',
+  backendForKey: workspaceKeyBackend,
   source: async ({ key, getCtx, apply, signal }) => {
     const owner: AliasOwner = Symbol(key);
     const backend = workspaceKeyBackend(key);
@@ -379,8 +380,8 @@ export function gitStatusKeys(): string[] {
  * and re-sourcing KEEPS each key's last status, so no badge blinks on the way
  * to the fresh one.
  */
-export function resyncGitStatusAfterGap(): void {
-  store.invalidateAll();
+export function resyncGitStatusAfterGap(backend: BackendKey = HOME_BACKEND): void {
+  for (const key of store.keys()) if (workspaceKeyBackend(key) === backend) store.invalidate(key);
 }
 
 // ---------------------------------------------------------------------------

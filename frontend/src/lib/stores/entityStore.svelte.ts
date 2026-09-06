@@ -39,7 +39,8 @@
 
 import { untrack } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
-import { onTransportStatusChange } from './transportStatus.svelte';
+import { getTransportStatusFor, onBackendStatusChange } from './transportStatus.svelte';
+import type { BackendKey } from '../transport/backendKey';
 import { errString } from '../utils/errors';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 
@@ -123,6 +124,8 @@ export interface EntityStore<T, Ctx = void> {
 export interface EntityStoreConfig<T, Ctx> {
   /** Diagnostics prefix. */
   name: string;
+  /** The computer owning a key; null only for frontend-owned state. */
+  backendForKey: (key: string) => BackendKey | null;
   /**
    * Acquire backend resources for key. Called on 0→1 refcount and on
    * invalidate / retry / resetAll. Must deliver observations via the
@@ -274,6 +277,28 @@ export function createEntityStore<T, Ctx = void>(
   const entries = new SvelteMap<string, EntityEntry<T, Ctx>>();
   let suspended = false;
   let nextAttachId = 0;
+  let stopWatching: (() => void) | null = null;
+
+  function isSuspended(entry: EntityEntry<T, Ctx>): boolean {
+    if (suspended) return true;
+    return untrack(() => {
+      const backend = config.backendForKey(entry.key);
+      return backend !== null && getTransportStatusFor(backend).status !== 'connected';
+    });
+  }
+
+  function watchConnections(): void {
+    stopWatching ??= onBackendStatusChange((backend) => {
+      for (const entry of snapshotEntries()) {
+        if (untrack(() => config.backendForKey(entry.key)) !== backend) continue;
+        teardown(entry);
+        entry.value = null;
+        entry.error = null;
+        if (retained(entry)) startSource(entry);
+        else dropEntry(entry);
+      }
+    });
+  }
 
   // Every mutating path looks entries up through here. A SvelteMap read
   // subscribes the surrounding reaction to the key set (a miss deliberately
@@ -301,6 +326,10 @@ export function createEntityStore<T, Ctx = void>(
   function dropEntry(entry: EntityEntry<T, Ctx>): void {
     if (lookup(entry.key) !== entry) return;
     entries.delete(entry.key);
+    if (untrack(() => entries.size) === 0) {
+      stopWatching?.();
+      stopWatching = null;
+    }
     if (!config.onDrop) return;
     try {
       config.onDrop(entry.key);
@@ -416,7 +445,7 @@ export function createEntityStore<T, Ctx = void>(
   function scheduleRetry(entry: EntityEntry<T, Ctx>, generation: number): void {
     // Retry only while somebody is holding the key. A detached entry that
     // kept retrying would resurrect itself forever.
-    if (!retained(entry) || suspended) return;
+    if (!retained(entry) || isSuspended(entry)) return;
     // One curve per failure, not per report of it. A source that keeps
     // fail()ing (an event-driven poll against a broken backend) must not
     // restart the curve on every event — that is how a backoff never backs
@@ -440,7 +469,7 @@ export function createEntityStore<T, Ctx = void>(
   }
 
   function startSource(entry: EntityEntry<T, Ctx>): void {
-    if (suspended || entry.sourcing) return;
+    if (isSuspended(entry) || entry.sourcing) return;
     const generation = entry.generation;
     entry.sourcing = true;
     const controller = new AbortController();
@@ -519,6 +548,7 @@ export function createEntityStore<T, Ctx = void>(
       const attachId = nextAttachId++;
       entry.ctxs.set(attachId, ctx);
       entry.refs += 1;
+      watchConnections();
       if (entry.retryTimer !== null) {
         // Somebody new is watching. Waiting out the rest of a backoff that
         // belongs to a previous holder's failure would leave a freshly
@@ -628,18 +658,6 @@ export function createEntityStore<T, Ctx = void>(
       return untrack(() => [...entries.keys()]);
     },
   };
-
-  // The transport edge is the primitive's business, not each store's. A
-  // reconnect gets a new backend connection whose predecessor's ConnState
-  // cleanup already released every subscription it held, so every key must
-  // re-acquire; a disconnect suspends rather than grinding a retry curve
-  // against a dead socket, which would only produce error states the
-  // connection banner already explains. Five stores carried a verbatim copy
-  // of this before it moved here, and a sixth would have had to remember to.
-  onTransportStatusChange((status) => {
-    if (status.status === 'connected') store.resetAll();
-    else store.suspend();
-  });
 
   return store;
 }

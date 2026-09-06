@@ -3,7 +3,7 @@ import type { SubagentFoldSnapshot } from '../utils/subagentFold';
 import type { TimelineCursorLike } from './threadItems';
 import type { SettledTurn } from './threadTurnProjection';
 import type { ThreadHistoryStamp } from './threadHistoryStamps';
-import { onBackendIdentity } from '../transport/backendIdentity';
+import { onThreadHistoryInvalidated } from './threadIdentityInvalidation';
 
 /**
  * Snapshot of a thread's hydrated timeline state captured at the moment
@@ -89,6 +89,7 @@ export interface ThreadItemCache {
   set(threadId: string, snapshot: ThreadItemSnapshot): void;
   evict(threadId: string): void;
   clear(): void;
+  evictMatching(matches: (threadId: string) => boolean): void;
   /**
    * Transport-gap recovery (docs/architecture/thread-replica-sync.md §3.4):
    * strip the paired stamp from every snapshot whose stamp was NOT
@@ -120,6 +121,13 @@ export function createThreadItemCache(cap: number = THREAD_ITEM_CACHE_CAP): Thre
   let cachedChars = 0;
 
   return {
+    evictMatching(matches) {
+      for (const [id, row] of byThread) {
+        if (!matches(id)) continue;
+        cachedChars -= row.chars;
+        byThread.delete(id);
+      }
+    },
     get(threadId) {
       const entry = byThread.get(threadId);
       if (!entry) return null;
@@ -249,9 +257,7 @@ export const threadItemCache: ThreadItemCache = createThreadItemCache();
 // match, which a later `fresh` echo would never correct. Same rule as
 // the durable replica: drop, never migrate. L1 is not exempt just
 // because it is in memory.
-onBackendIdentity(() => {
-  threadItemCache.clear();
-});
+onThreadHistoryInvalidated((owns) => threadItemCache.evictMatching(owns));
 
 /** Test helper: drop every cached snapshot. Real code should use
  *  `evict(threadId)` for the targeted-eviction path. */

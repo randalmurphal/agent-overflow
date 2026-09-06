@@ -16,7 +16,8 @@
     SetProviderCustomEnvVar,
     DeleteProviderCustomEnvVar,
   } from '../../stores/bindings';
-  import { getSettings, applySettingsSnapshot } from '../../stores/settings.svelte';
+  import { settingsComputer } from './settingsComputer';
+  const { getSettings, applySettingsSnapshot, call } = settingsComputer();
   import { addToast } from '../../stores/toast.svelte';
   import type { ProviderEnvVar, Settings } from '../../types/settings';
   import type { ProviderDefinition } from '../../providers/catalog';
@@ -93,12 +94,12 @@
     if (!canAdd) return;
     const ok = await run(
       () =>
-        SetProviderCustomEnvVar(
+        call(() => SetProviderCustomEnvVar(
           provider.id,
           draftName.trim(),
           draftValue,
           draftSensitive,
-        ),
+        )),
       'Failed to save the environment variable.',
     );
     if (!ok) return;
@@ -111,7 +112,7 @@
     if (!entry.sensitive && value === entry.value) return;
     if (entry.sensitive && value === '') return;
     await run(
-      () => SetProviderCustomEnvVar(provider.id, entry.name, value, entry.sensitive ?? false),
+      () => call(() => SetProviderCustomEnvVar(provider.id, entry.name, value, entry.sensitive ?? false)),
       'Failed to save the environment variable.',
     );
   }
@@ -120,14 +121,14 @@
     // Only reachable for a visible value: masking one hides it from every read
     // path, so unmasking would have nothing to restore.
     await run(
-      () => SetProviderCustomEnvVar(provider.id, entry.name, entry.value, true),
+      () => call(() => SetProviderCustomEnvVar(provider.id, entry.name, entry.value, true)),
       'Failed to mask the environment variable.',
     );
   }
 
   async function removeVar(entry: ProviderEnvVar): Promise<void> {
     await run(
-      () => DeleteProviderCustomEnvVar(provider.id, entry.name),
+      () => call(() => DeleteProviderCustomEnvVar(provider.id, entry.name)),
       'Failed to remove the environment variable.',
     );
   }

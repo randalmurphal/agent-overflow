@@ -1,6 +1,8 @@
 package deviceclient
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -9,6 +11,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/atomicfile"
+	"agent-overflow/internal/computerroute"
 )
 
 // SessionsDirName holds one file per backend this installation is paired
@@ -29,10 +32,14 @@ var ErrNoSession = errors.New("deviceclient: this profile holds no session for t
 // Session is one paired backend as this installation holds it: what to
 // dial, what to pin, and the credential pair to present.
 //
-// Persisted verbatim as JSON, so every field is additive-only. A field this
-// build does not know survives a rotation only if it is declared here, and
-// the ones that are not are the ones a rotation legitimately replaces.
+// Persisted as additive JSON. Unknown fields survive changes made by this
+// build, so an older client cannot erase a newer build's route or profile data.
 type Session struct {
+	extraFields map[string]json.RawMessage
+	// PendingNextSecret is saved before a recoverable renewal reaches the wire.
+	PendingNextSecret string `json:"pendingNextSecret,omitempty"`
+	// RefreshRecovery is learned from this backend, never guessed from client version.
+	RefreshRecovery *bool `json:"refreshRecovery,omitempty"`
 	// BackendID is the key this file is named by and the identity a
 	// person names on the command line.
 	BackendID string `json:"backendId"`
@@ -48,6 +55,10 @@ type Session struct {
 	// CertFingerprint is what this device pins for the endpoint. Empty
 	// means ordinary WebPKI verification, never "unverified".
 	CertFingerprint string `json:"certFingerprint,omitempty"`
+	// Routes are alternatives learned from a trusted bootstrap. The original
+	// Endpoint and its pairing trust remain stable across route selection.
+	Routes       []computerroute.Route `json:"routes,omitempty"`
+	LastEndpoint string                `json:"lastEndpoint,omitempty"`
 
 	// SessionID is stable across every rotation of this session.
 	SessionID string `json:"sessionId"`
@@ -101,6 +112,17 @@ func SaveSession(dir string, session Session) error {
 	if err != nil {
 		return err
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), profileWriteTimeout)
+	defer cancel()
+	release, err := lockProfile(ctx, dir, filepath.Base(path))
+	if err != nil {
+		return err
+	}
+	defer release()
+	return writeSession(path, session)
+}
+
+func writeSession(path string, session Session) error {
 	if err := atomicfile.WriteJSON(path, session); err != nil {
 		return fmt.Errorf("deviceclient: persist the session for %s: %w", session.BackendID, err)
 	}
@@ -135,6 +157,14 @@ func ForgetSession(dir, backendID string) error {
 	if err != nil {
 		return err
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), profileWriteTimeout)
+	defer cancel()
+	release, err := lockProfile(ctx, dir, filepath.Base(path))
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("deviceclient: forget the session for %s: %w", backendID, err)
 	}

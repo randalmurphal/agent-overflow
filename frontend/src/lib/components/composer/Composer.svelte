@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { threadHasScope } from '../../transport/entityScopes';
   // Send + prompt shell. The editing core — textarea, completion menus,
   // attachments, uploads, image placeholders, terminal chips — is
   // ComposerInputSurface.svelte; everything else (model/provider picker,
@@ -117,7 +118,7 @@
   // vanished would leave a thread looking broken rather than read-only,
   // and the disabled state is the affordance the rest of the app already
   // uses for a control that is out of reach.
-  let sendUngranted = $derived(!hasScope('threads:operate'));
+  let sendUngranted = $derived(!threadHasScope('threads:operate', pane.threadId, pane.thread?.projectId));
   // The thread's machine, when it is not this page's own and its socket is
   // down. Empty on a single-backend client and for home, whose drop the
   // transport banner already announces.
@@ -145,7 +146,7 @@
     return !(machine === HOME_BACKEND && hasScope('host'));
   });
   let compactLayout = $derived(isCompactLayout());
-  let respondUngranted = $derived(!hasScope('approvals:respond'));
+  let respondUngranted = $derived(!threadHasScope('approvals:respond', pane.threadId, pane.thread?.projectId));
   // Mid-round signal: a wire round is currently in flight (the model
   // is streaming text/tool work). The composer stays typeable during
   // a round and Send routes through the backend-owned per-thread
@@ -855,7 +856,7 @@
     // Uploading rides `attachments:write`, and a paste or a drop is not a
     // control anybody chose to press — so this refuses without a toast.
     // Nothing was offered, so nothing failed.
-    if (!hasScope('attachments:write')) {
+    if (!threadHasScope('attachments:write', pane.threadId, pane.thread?.projectId)) {
       event.preventDefault();
       return true;
     }

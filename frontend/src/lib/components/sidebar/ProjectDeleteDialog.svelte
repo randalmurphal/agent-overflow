@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { projectHasScope } from '../../transport/entityScopes';
   // What deleting a project involves when it owns workflow work (D25).
   //
   // Informational, not a consent gate: deletion is cleanup. It removes the runs
@@ -16,7 +17,6 @@
   import Button from '../primitives/Button.svelte';
   import type { ProjectDeletionPreview } from '../../types/workflow';
   import { cleanupSummary, retainedInPreview } from '../../utils/projectCleanup';
-  import { hasScope } from '../../transport/scopes';
 
   interface Props {
     open: boolean;
@@ -38,7 +38,7 @@
   }: Props = $props();
 
   // Deleting a project is thread/project bookkeeping.
-  let ungranted = $derived(!hasScope('threads:operate'));
+  let ungranted = $derived(!projectHasScope('threads:operate', preview.projectId));
   let threadSummary = $derived(
     `Permanently delete "${projectName}" and all ${threadCount} thread${
       threadCount === 1 ? '' : 's'

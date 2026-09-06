@@ -1,3 +1,5 @@
+import { networkFetch } from './networkFetch';
+import { fetchPairedComputer } from './deviceSession';
 // Attachment bytes, over HTTP rather than over the WebSocket.
 //
 // Every attachment byte used to ride base64 inside one WS RPC frame, so a
@@ -21,7 +23,10 @@
 // either way.
 
 import { MintAttachmentDownloadTicket, MintAttachmentUploadTicket } from '../stores/bindings';
-import { homeCredentials, homeUrl } from './homeEndpoint';
+import { backendCredentials, backendTransferUrl } from './homeEndpoint';
+import { withBackendTarget } from './backends';
+import { threadBackend } from './entityIndex';
+import { HOME_BACKEND } from './backendKey';
 import type { Attachment } from '../types/attachment';
 
 /**
@@ -41,8 +46,9 @@ import type { Attachment } from '../types/attachment';
  * 50 MiB at most, and the composer compresses images first).
  */
 export async function uploadAttachmentBytes(threadId: string, file: File): Promise<Attachment> {
-  const url = await MintAttachmentUploadTicket(threadId, file.name, file.type || '', file.size);
-  const response = await fetch(homeUrl(url), {
+  const backend = threadBackend(threadId) ?? HOME_BACKEND;
+  const url = await withBackendTarget(backend, () => MintAttachmentUploadTicket(threadId, file.name, file.type || '', file.size));
+  const response = await fetchPairedComputer(backend, networkFetch, backendTransferUrl(url, backend), {
     method: 'PUT',
     // The file itself, streamed. Never read into a string: the whole
     // point of the move is that a 10 MiB image is not a JS string, a
@@ -55,7 +61,7 @@ export async function uploadAttachmentBytes(threadId: string, file: File): Promi
     // silent break in one boot only. A shell page has no cookie for the
     // backend's origin at all and omits instead; the ticket is the whole
     // admission there, exactly as the route's header argues.
-    credentials: homeCredentials(),
+    credentials: backendCredentials(backend),
   });
   if (!response.ok) {
     throw new Error(await transferFailure(response, 'Upload failed'));
@@ -71,8 +77,9 @@ export async function uploadAttachmentBytes(threadId: string, file: File): Promi
  * which is the whole reason the lightbox refetches instead of caching.
  */
 export async function fetchAttachmentBytes(threadId: string, attachmentId: string): Promise<Blob> {
-  const url = await MintAttachmentDownloadTicket(threadId, attachmentId);
-  const response = await fetch(homeUrl(url), { credentials: homeCredentials() });
+  const backend = threadBackend(threadId) ?? HOME_BACKEND;
+  const url = await withBackendTarget(backend, () => MintAttachmentDownloadTicket(threadId, attachmentId));
+  const response = await fetchPairedComputer(backend, networkFetch, backendTransferUrl(url, backend), { credentials: backendCredentials(backend) });
   if (!response.ok) {
     throw new Error(await transferFailure(response, 'Could not load image'));
   }

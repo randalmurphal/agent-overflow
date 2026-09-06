@@ -26,6 +26,9 @@ import (
 
 // Config describes one supervised install.
 type Config struct {
+	// OwnsDataRoot is true only when the executable shell holds the data-root
+	// OS lock for this supervisor's whole lifetime, including update gaps.
+	OwnsDataRoot bool
 	// DataDir is the app data directory (<configRoot>/agent-overflow), the one
 	// holding agent-overflow.db. Absolute.
 	DataDir string
@@ -194,6 +197,11 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		case outcomeShutdown:
 			s.stopChild(child)
 			return nil
+		case outcomeRestart:
+			s.stopChild(child)
+			// The child drained before its special exit. Choose from the
+			// current durable state again, including any accepted update.
+			continue
 		case outcomeExited:
 			// Already gone; this closes the channel and reaps nothing.
 			s.stopChild(child)
@@ -278,6 +286,7 @@ type outcomeKind int
 const (
 	outcomeShutdown outcomeKind = iota
 	outcomeExited
+	outcomeRestart
 	outcomeUpdate
 	outcomeTrialFailed
 )
@@ -313,6 +322,13 @@ func (s *Supervisor) runChild(ctx context.Context, c *child, state *State) outco
 		case <-c.exited:
 			if trial {
 				return outcome{kind: outcomeTrialFailed, reason: trialExitReason(c.exitErr)}
+			}
+			if acceptedFor != "" {
+				return outcome{kind: outcomeUpdate, target: acceptedFor}
+			}
+			var exit *exec.ExitError
+			if errors.As(c.exitErr, &exit) && exit.ExitCode() == RestartForUpdateExitCode {
+				return outcome{kind: outcomeRestart}
 			}
 			return outcome{kind: outcomeExited, err: c.exitErr}
 

@@ -12,7 +12,7 @@
   import { WorkflowRunAutomationNow, WorkflowSetAutomationEnabled } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
-  import { hasScope } from '../../transport/scopes';
+  import { automationHasScope } from '../../transport/entityScopes';
   import type { WorkflowAutomationView, WorkflowDefinitionListing } from '../../types/workflow';
   import { workflowChainSummary, workflowCountdown, workflowDefinitionMeta, workflowMetaLine } from '../../stores/workflowData';
   import { refreshWorkflowRunsSoon } from '../../stores/workflowRuns.svelte';
@@ -24,8 +24,6 @@
   let { definition, automations }: Props = $props();
 
   // Every control here drives the workflow engine, which is `threads:autonomy`.
-  let ungranted = $derived(!hasScope('threads:autonomy'));
-  const ungrantedTitle = $derived(ungranted ? 'Not granted to this device' : undefined);
   let busy = $state('');
 
   let chain = $derived(workflowChainSummary(definition) || workflowDefinitionMeta(definition));
@@ -40,7 +38,7 @@
   }
 
   async function toggleAutomation(automation: WorkflowAutomationView): Promise<void> {
-    if (ungranted || busy) return;
+    if (!automationHasScope('threads:autonomy', automation.id) || busy) return;
     busy = automation.id;
     try {
       await WorkflowSetAutomationEnabled(automation.id, !automation.enabled);
@@ -52,7 +50,7 @@
   }
 
   async function runNow(automation: WorkflowAutomationView): Promise<void> {
-    if (ungranted || busy) return;
+    if (!automationHasScope('threads:autonomy', automation.id) || busy) return;
     busy = automation.id;
     try {
       await WorkflowRunAutomationNow(automation.id);
@@ -80,6 +78,8 @@
   {/if}
 
   {#each automations as automation (automation.id)}
+    {@const ungranted = !automationHasScope('threads:autonomy', automation.id)}
+    {@const ungrantedTitle = ungranted ? 'Not granted to this device' : undefined}
     <div class="mt-1 flex min-w-0 items-center gap-2 pl-3" data-testid="workflow-automation-row" data-automation-id={automation.id}>
       <span class="min-w-0 flex-1 truncate text-[0.6875rem] text-fg-muted">{automation.name} · {automationMeta(automation)}</span>
       <button

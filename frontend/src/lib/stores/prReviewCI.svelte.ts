@@ -1,3 +1,5 @@
+import { withBackendTarget } from '../transport/backends';
+import { workspaceKeyBackend } from '../utils/workspaceKey';
 // CI pipeline state, keyed by PR.
 //
 // The pipeline belongs to the pull request, not to the pane showing it:
@@ -59,7 +61,7 @@ export async function loadPRCIJobs(key: string, ref: PRRef): Promise<void> {
   const seq = ++entry.seq;
   entry.loading = true;
   try {
-    const pipeline = (await GetPRCIJobs(prReferenceWire(ref))) as CIPipeline;
+    const pipeline = (await withBackendTarget(workspaceKeyBackend(key), () => GetPRCIJobs(prReferenceWire(ref)))) as CIPipeline;
     if (seq !== entry.seq) return;
     entry.pipeline = pipeline ?? null;
     entry.error = null;

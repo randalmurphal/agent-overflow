@@ -36,9 +36,10 @@ func (a *App) OpenExternalURL(rawURL string) error {
 
 // BrowseDirectory lists the contents of path for the project-picker
 // UI. The full contract (path normalisation, ordering, .git-marker
-// detection, EntryLimit truncation) lives in internal/dirbrowse.
+// detection, EntryLimit truncation) lives in internal/dirbrowse. This reads
+// the selected computer; it opens no native picker and works for paired clients.
 //
-//ao:scope host
+//ao:scope files:read
 //ao:route selected
 func (a *App) BrowseDirectory(path string) (dirbrowse.Listing, error) {
 	return dirbrowse.Browse(path)

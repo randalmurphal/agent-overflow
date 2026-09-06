@@ -75,8 +75,9 @@ type Deps struct {
 // Service owns thread persistence policy and action serialization. It does not
 // own provider processes or provider session files.
 type Service struct {
-	deps  Deps
-	locks *keyedlock.Registry
+	deps      Deps
+	locks     *keyedlock.Registry
+	mutations *keyedlock.Registry
 }
 
 func New(deps Deps) *Service {
@@ -86,7 +87,7 @@ func New(deps Deps) *Service {
 	if deps.LifeContext == nil {
 		deps.LifeContext = context.Background
 	}
-	return &Service{deps: deps, locks: keyedlock.New()}
+	return &Service{deps: deps, locks: keyedlock.New(), mutations: keyedlock.New()}
 }
 
 func (s *Service) database(action string) (*store.Store, error) {

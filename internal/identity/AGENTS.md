@@ -64,8 +64,9 @@ instead of a flag on the connection.
 **Revocation is absolute** (spec §2, owner ruling 2026-08-31): a session is
 live only while its own row AND its device's row are both unrevoked. Every
 consult reads that conjunction — the per-RPC gate, `Verify`, refresh
-rotation, `/auth/ticket`, the connection's interval re-check — because all
-five reach it through `Sessions.Live`.
+rotation, `/auth/ticket`, the connection's interval re-check. `Sessions.Live`
+and renewal share `confirmedSession` for durable revocation/confirmation
+checks; only access admission requires the short access window to be live.
 
 It costs nothing per call, and the shape is why. `internal/store`'s
 `sessionSelect` JOINs the device onto every session read and
@@ -262,24 +263,24 @@ keeping:
 
 ## Rotating refresh, and what "reuse" costs
 
-`refresh.go`. Each renewal issues a new refresh secret and spends its
-predecessor; presenting a SPENT secret revokes the whole family — the
-session, every socket carrying it, and every outstanding secret in the
-chain — and writes `refresh-reuse-detected`. That is the leaked-copy
-detector, and it is deliberately unable to tell the copy from the
-original, which is why BOTH stop.
+`refresh.go` and store's `refresh_rotation.go` implement
+[recoverable renewal](../../docs/architecture/session-renewal.md). Device
+possession, confirmation and revocation are checked **before** reuse can
+revoke a family. A spent secret alone must never be a revocation primitive.
 
-The ordering inside `Refresh` is the contract:
+One durable transaction consumes the predecessor, records the proposed
+successor's digest, inserts the successor and extends access. It checks
+session/device revocation again inside that transaction. A replay with the
+same successor recovers the operation; a different successor revokes the
+family. Recognized operations already superseded return `refresh_superseded`
+without revoking newer state. Legacy clients retain strict single-use renewal.
 
-1. resolve the secret (unknown / spent / lapsed each answer differently);
-2. judge session liveness and the device-key proof;
-3. only then CAS-consume, and treat a lost CAS as reuse.
-
-Checks before consumption, so a client that presents the right secret with
-a wrong or missing proof can correct itself. Consuming first would sign a
-device out for one mistyped header. The cost is that a client must not
-retry a renewal whose response it never read: it cannot distinguish that
-from a copy, and neither can this package.
+Access expiry is separate from renewal expiry. `Refresh` uses
+`confirmedSession`, never `Live`; expired access can renew while its refresh
+secret remains valid. Pruning retains sessions and spent-secret evidence
+through their refresh retention windows. Recovery uses the still-live
+successor even after the predecessor is pruned. Store failures are temporary
+refusals and must preserve the client's recovery state.
 
 Refresh binds to the device key on EVERY listener. A bare bearer refresh
 is `missing_proof` even on loopback, because a credential that could
@@ -295,18 +296,13 @@ class with a script-execution surface. Renewal is NOT passkey-gated for
 any class: rotation is the control on a LIVE family, and a passkey is what
 re-authenticates one that has ENDED (below).
 
-`issueFor` is the only function in this package that builds a `TokenSet`.
-Every issuance path — pairing, renewal, the local channel — goes through
-it, so a policy change cannot reach some callers and miss others.
-
-It takes the DEVICE ROW rather than a policy, and derives the policy
-itself. Every caller built the same `PolicyFor(device.Class,
-session.BindingClass)` anyway, and taking the row means a caller cannot
-pass a policy from one device with a session from another — nor issue
-without having read a device at all, which is what lets the device half of
-the conjunction be refused here (spec §2). `Mint` is the matching
-chokepoint for the session ROW: it is the only caller of
-`store.CreateSession`, and the device predicate lives inside that INSERT.
+`accessTokensFor` builds the access half from a persisted session and a
+DEVICE ROW, rejecting a revoked device. Initial issuance uses `issueFor` to
+add its first refresh secret; renewal uses the transaction's existing
+successor. `PolicyFor` owns both paths' windows. `Mint` is the matching
+chokepoint for creation: `store.CreateSession` carries the device predicate
+inside its INSERT. The mint-gate test enumerates these write/signing paths;
+adding a path requires revocation coverage, not just an allow-list edit.
 
 ## The local page channel
 

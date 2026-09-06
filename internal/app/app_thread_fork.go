@@ -49,6 +49,9 @@ func (a *App) ForkThread(ctx context.Context, sourceThreadID string, atTurnIndex
 	// Mirrors the un-send path's thread action lock.
 	unlock := a.threadLocks().Lock(sourceThreadID)
 	defer unlock()
+	if err := a.threadApplication().CheckMutable(sourceThreadID); err != nil {
+		return store.Thread{}, err
+	}
 
 	// Forking DURING an active turn is supported: the fork is a snapshot
 	// "as if interrupted right now". The SOURCE is never interrupted and
@@ -244,6 +247,9 @@ func (a *App) ForkThread(ctx context.Context, sourceThreadID string, atTurnIndex
 func (a *App) ForkThreadFromMessage(ctx context.Context, sourceThreadID string, userItemID string) (store.Thread, error) {
 	unlock := a.threadLocks().Lock(sourceThreadID)
 	defer unlock()
+	if err := a.threadApplication().CheckMutable(sourceThreadID); err != nil {
+		return store.Thread{}, err
+	}
 
 	// Forking from a message DURING an active turn is supported, same
 	// snapshot semantics as ForkThread. The anchor is a real message, so

@@ -48,6 +48,7 @@ var workspaceContentMethods = map[string]Scope{
 	"VerifyEditDiffs":              ScopeFilesRead,
 	"HighlightPatchWithContext":    ScopeFilesRead,
 	"SearchWorkspaceFiles":         ScopeFilesRead,
+	"BrowseDirectory":              ScopeFilesRead,
 	"GetLocalImageData":            ScopeFilesRead,
 	"ListDiffReviewComments":       ScopeThreadsRead,
 	"MintAttachmentDownloadTicket": ScopeThreadsRead,
@@ -197,6 +198,7 @@ func TestEveryGeneratedMethodCarriesADeclaredScope(t *testing.T) {
 func TestStepUpMethodsAreTheSpecSet(t *testing.T) {
 	want := map[string]string{
 		"MintDevicePairing":            "minting a pairing link",
+		"PairAgentComputer":            "enrolling this computer with another computer for agent commands",
 		"SetNetworkSettings":           "network bind / exposure change",
 		"SetProviderCustomEnvVar":      "provider custom-env write",
 		"DeleteProviderCustomEnvVar":   "provider custom-env write",

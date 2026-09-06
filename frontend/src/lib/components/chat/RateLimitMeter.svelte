@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { HOME_BACKEND, type BackendKey } from '../../transport/backendKey';
   import { compositeKey } from '../../utils/compositeKey';
   import { formatResetCountdown } from '../../utils/format';
   import { getProviderAccount } from '../../stores/accountInfo.svelte';
@@ -22,12 +23,14 @@
   // had. When provider is undefined (transient state during thread
   // setup) the entry resolves to null and the ring renders empty.
   let {
+    backend = HOME_BACKEND,
     windowMins,
     provider,
     accountId,
     accountEmail,
     subscriptionType,
   }: {
+    backend?: BackendKey;
     windowMins: number;
     provider?: ProviderID;
     accountId?: string;
@@ -39,7 +42,7 @@
   // ring. Additional entries only enrich the hover card, so a scoped
   // Fable/Spark quota can never make the account-wide ring look exhausted.
   let limitGroup = $derived(
-    getProviderRateLimitsForWindow(provider, windowMins, accountId),
+    getProviderRateLimitsForWindow(provider, windowMins, accountId, backend),
   );
   let entries = $derived(limitGroup.limits);
   let entry = $derived(limitGroup.primary);
@@ -109,14 +112,14 @@
     if (subscriptionType) return subscriptionType;
     if (accountId) return '';
     if (!provider) return '';
-    const acc = getProviderAccount(provider);
+    const acc = getProviderAccount(provider, backend);
     return acc?.subscriptionType ?? '';
   });
   let emailLabel = $derived.by(() => {
     if (accountEmail) return accountEmail;
     if (accountId) return '';
     if (!provider) return '';
-    return getProviderAccount(provider)?.email ?? '';
+    return getProviderAccount(provider, backend)?.email ?? '';
   });
 </script>
 

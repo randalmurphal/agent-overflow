@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { projectHasScope } from '../../../transport/entityScopes';
   // Prune preview: the consent surface for deleting local branches whose
   // remote counterpart is gone. Safe rows (merged into the default
   // branch, or tip exactly matching a merged PR head — the squash case)
@@ -12,7 +13,6 @@
   import Button from '../../primitives/Button.svelte';
   import SteppedSpinner from '../../primitives/SteppedSpinner.svelte';
   import { GitListBranchPruneCandidates, GitPruneBranches } from '../../../stores/bindings';
-  import { hasScope } from '../../../transport/scopes';
   import { addToast } from '../../../stores/toast.svelte';
   import { userFacingError } from '../../../utils/userFacingError';
   import type {
@@ -31,7 +31,7 @@
   let { workspace, open, onClose }: Props = $props();
 
   // Listing and deleting branches are both git mutations of the workspace.
-  let ungranted = $derived(!hasScope('git:operate'));
+  let ungranted = $derived(!projectHasScope('git:operate', workspace.projectId));
   let loading = $state(false);
   let deleting = $state(false);
   let loadError = $state('');

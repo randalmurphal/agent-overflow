@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
+
+	"agent-overflow/internal/keyedlock"
 
 	_ "modernc.org/sqlite" // SQLite driver
 )
@@ -37,6 +40,10 @@ type Store struct {
 	// readsQuiesced routes reads back to the writer pool while VACUUM
 	// needs the exclusive lock — see quiesceReads.
 	readsQuiesced atomic.Bool
+	// Native import and transfer preparation serialize before publishing an AO
+	// alias or reserving its provider identity. Entries reclaim themselves.
+	nativeLocksOnce sync.Once
+	nativeLocks     *keyedlock.Registry
 }
 
 // New opens (or creates) the SQLite database at the given path and runs migrations.
@@ -383,6 +390,9 @@ func (o ThreadOrigin) IsZero() bool {
 // (ReasoningEffort, FastMode, ContextWindow) are persisted so two threads
 // sharing a project can diverge on these axes.
 type Thread struct {
+	// OwnershipEpoch comes from completed incoming handoffs, never the history
+	// cache. Frontends use it to order stale catalogs from different computers.
+	OwnershipEpoch int64  `json:"ownershipEpoch"`
 	ID             string `json:"id"`
 	ProjectID      string `json:"projectId"`
 	ProjectPath    string `json:"projectPath"`

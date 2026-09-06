@@ -10,6 +10,7 @@
   import { hasPendingUpdate } from '../../stores/updates.svelte';
   import { getSettings, updateSetting } from '../../stores/settings.svelte';
   import { hasScope, isViewOnly } from '../../transport/scopes';
+  import { isFrontendOnly } from '../../transport/runMode';
 
   interface Props {
     onOpenSettings?: () => void;
@@ -24,7 +25,7 @@
   // keepAwakeEnabled is a host-tier settings key (internal/settings/tier.go):
   // it drives THIS machine's sleep inhibitor, so it is host presence that
   // authorizes it rather than any grant.
-  let noHost = $derived(!hasScope('host'));
+  let noHost = $derived(isFrontendOnly() || !hasScope('host'));
   // The app's one ambient read-only marker. It rides the footer the
   // sidebar already draws rather than a banner of its own: the mode is a
   // standing fact about this session, not an event, and a surface that

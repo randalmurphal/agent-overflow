@@ -14,7 +14,8 @@ const (
 	// holds nothing at all.
 	authPairPath = "/auth/pair"
 	// authTokenPath rotates the credential pair.
-	authTokenPath = "/auth/token"
+	authTokenPath        = "/auth/token"
+	authTokenRecoverPath = "/auth/token/recover"
 	// authTicketPath mints the single-use ticket the WebSocket upgrade
 	// names its session with.
 	authTicketPath = "/auth/ticket"
@@ -35,13 +36,5 @@ const (
 	WSTicketParam = "ticket"
 )
 
-// reasonPendingConfirmation is the one refusal code this package branches
-// on, from `internal/identity`'s closed set.
-//
-// It is the only refusal whose remedy is on ANOTHER device and the only
-// one where presenting the same credential again is expected to succeed
-// shortly, which is exactly why it must not be treated as a dead session.
-// Every other code means the credential will not start working on its
-// own, and this package's answer to all of them is one answer: forget the
-// session and say that re-pairing is the way back.
+// Pending confirmation is the renewal refusal whose remedy is on the host.
 const reasonPendingConfirmation = "pending_confirmation"

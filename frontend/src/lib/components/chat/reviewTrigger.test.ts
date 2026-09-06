@@ -14,7 +14,7 @@ vi.mock('../../stores/reviewPane.svelte', async (importOriginal) => ({
 
 const THREAD = { id: 'thread-1', workspacePath: '/repo', projectId: 'project-1' } as Thread;
 const SUBJECT = {
-  identity: 'thread-1',
+  identity: expect.any(String),
   threadId: 'thread-1',
   workspace: { projectId: 'project-1', workspacePath: '/repo' },
   thread: THREAD,

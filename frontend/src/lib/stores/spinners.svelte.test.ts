@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setBindingMock, resetBindingMocks } from '../../test/mocks/bindings-app';
+import { pngHeader } from '../../test/pngHeader';
 import {
   __resetCustomSpinnersForTest,
   ensureCustomSpinners,
@@ -36,9 +37,9 @@ describe('custom spinners store', () => {
     setBindingMock('GetSpinnerFiles', () => ({
       dir: '/cfg/spinners',
       sprites: [
-        { id: 'good', manifest: '{"frames": 4, "frameMs": 100}', png: 'aGk=' },
+        { id: 'good', manifest: '{"frames": 4, "frameMs": 100}', png: pngHeader(288, 72) },
         { id: 'broken', manifest: '{nope', png: 'aGk=' },
-        { id: 'crooked', manifest: '{"frames": 7, "frameMs": 100}', png: 'aGk=' },
+        { id: 'crooked', manifest: '{"frames": 7, "frameMs": 100}', png: pngHeader(288, 72) },
       ],
       warnings: ['lonely.png: skipped, no lonely.json beside it'],
     }));
@@ -66,5 +67,16 @@ describe('custom spinners store', () => {
 
   it('answers empty before the first load resolves', () => {
     expect(peekCustomSpinners()).toEqual({ dir: '', sprites: [], warnings: [] });
+  });
+
+  it('rejects oversized images before allocating a browser decoder', async () => {
+    const decode = vi.fn();
+    vi.stubGlobal('Image', decode);
+    setBindingMock('GetSpinnerFiles', () => ({
+      dir: '/cfg/spinners', sprites: [{ id: 'huge', manifest: '{"frames":4,"frameMs":100}', png: pngHeader(32_000, 32_000) }], warnings: [],
+    }));
+    ensureCustomSpinners();
+    await vi.waitFor(() => expect(peekCustomSpinners().warnings[0]).toContain('memory limit'));
+    expect(decode).not.toHaveBeenCalled();
   });
 });

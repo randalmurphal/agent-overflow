@@ -160,3 +160,8 @@ machines is one project choice and one machine choice. An unreachable machine st
 disabled — never a silent failover. The same answer drives the composer's
 disabled reason (`unreachableTarget` in `composerInputState.ts`) and the
 dimmed sidebar row, all from `stores/attachedBackends.svelte.ts`.
+
+An existing Claude/Codex conversation opens the shared Move/Copy dialog when
+another capable computer is selected. It never redirects that conversation's
+RPCs by changing the draft target. The transfer protocol and ownership epoch
+decide when its new home becomes usable; see `components/transfers/AGENTS.md`.

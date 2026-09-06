@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -447,6 +448,18 @@ func (d *Dispatcher) processResults(m *Method, results []reflect.Value, exposeEr
 		errResult := results[len(results)-1]
 		if !errResult.IsNil() {
 			methodErr := errResult.Interface().(error)
+			// Ownership is application state, independent of authorization.
+			// A tiny interface keeps transport free of the store package and
+			// carries only fixed prose plus the operation/owner identities.
+			var transfer interface{ ThreadTransferRef() (string, string, bool) }
+			if errors.As(methodErr, &transfer) {
+				operationID, backendID, moved := transfer.ThreadTransferRef()
+				frame := &FrameError{Code: ErrCodeThreadTransferPending, Message: "This conversation has a pending transfer. Resume or cancel it before continuing.", Transfer: &TransferRef{OperationID: operationID, BackendID: backendID}}
+				if moved {
+					frame.Code, frame.Message = ErrCodeThreadMoved, "This conversation moved to another computer. Open it there to continue."
+				}
+				return nil, frame
+			}
 			if frame, isAuthz := AuthzFrame(methodErr); isAuthz {
 				// The method refused on its ARGUMENTS rather than failing
 				// (authorize.go): a runtime mode the session may not select,
@@ -456,6 +469,11 @@ func (d *Dispatcher) processResults(m *Method, results []reflect.Value, exposeEr
 				// and a remote caller told "method failed" here would be
 				// told nothing it could act on.
 				return nil, frame
+			}
+			if errors.Is(methodErr, sql.ErrNoRows) {
+				// Missing history is ordinary application state. Preserve that
+				// verdict on every origin without exposing SQL or wrapper paths.
+				return nil, &FrameError{Code: ErrCodeNotFound, Message: "The requested item no longer exists."}
 			}
 			cid := newCorrelationID()
 			log.Printf("transport: %s returned error (id: %s): %v", m.FQN, cid, methodErr)

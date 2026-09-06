@@ -4,6 +4,9 @@ import { tick } from 'svelte';
 import AddProjectModal from '../AddProjectModal.svelte';
 import { resetProjectsForTest } from '../../../stores/projects.svelte';
 import { setBindingMock } from '../../../../test/mocks/bindings-app';
+import { addComputerProject, projectAtComputerPath } from '../../../stores/computerProjects';
+import { noteProject, __resetEntityIndexForTest } from '../../../transport/entityIndex';
+import { takePinnedBackend } from '../../../transport/backends';
 
 // Flush the focus-trap + effect queue so the modal is fully mounted and
 // the browser has kicked off its initial BrowseDirectory.
@@ -39,6 +42,7 @@ function mockBrowseDirectory(
 describe('<AddProjectModal>', () => {
   beforeEach(() => {
     resetProjectsForTest();
+    __resetEntityIndexForTest();
     mockBrowseDirectory();
   });
 
@@ -151,5 +155,22 @@ describe('<AddProjectModal>', () => {
     const err = await findByTestId('add-project-error');
     expect(err.textContent).toMatch(/stat failed/i);
     consoleSpy.mockRestore();
+  });
+
+  it('captures the selected computer for registration and distinguishes identical paths', async () => {
+    const local = { id: 'local', path: '/repo', name: 'repo', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false };
+    const remote = { ...local, id: 'remote' };
+    setBindingMock('ListProjects', async () => [{ project: local, threadCount: 0 }]);
+    const { refreshProjects } = await import('../../../stores/projects.svelte');
+    await refreshProjects();
+    noteProject(local.id, '');
+    setBindingMock('CreateProject', async (path) => {
+      expect(takePinnedBackend()).toBe('gpu');
+      expect(path).toBe('/repo');
+      return remote;
+    });
+    await addComputerProject('gpu', '/repo');
+    expect(projectAtComputerPath('', '/repo')?.id).toBe('local');
+    expect(projectAtComputerPath('gpu', '/repo')?.id).toBe('remote');
   });
 });

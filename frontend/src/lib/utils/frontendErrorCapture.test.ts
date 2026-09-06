@@ -87,7 +87,8 @@ describe('frontendErrorCapture', () => {
     expect(record.stack).toContain('"eventTrusted":true');
     expect(record.stack).toContain('"eventType":"click"');
     expect(record.stack).toContain('"eventDetail":1');
-    expect(record.stack).toContain('"eventAgeAtWrite":12');
+    const writeState = JSON.parse(record.stack.split('\n', 1)[0]);
+    expect(writeState.eventAgeAtWrite).toBeCloseTo(12);
     expect(record.stack).toContain('"focusedAtFailure":false');
     expect(record.stack).toContain('"activeAtFailure":false');
     expect(lines.join('')).not.toContain('private clipboard payload');

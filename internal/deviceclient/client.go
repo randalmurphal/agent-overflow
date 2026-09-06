@@ -8,8 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 )
@@ -29,8 +29,9 @@ type Client struct {
 	key *ecdsa.PrivateKey
 	// base is the URL this client dials, which is not always the endpoint
 	// the payload printed (dialBase).
-	base string
-	http *http.Client
+	base   string
+	http   *http.Client
+	routes *routeTransport
 	// now is the clock, so a test can age a credential without sleeping.
 	// Never nil: New fills it.
 	now func() time.Time
@@ -39,6 +40,9 @@ type Client struct {
 	// session is the stored pair, held in memory because it is read on
 	// every request and written only on rotation.
 	session Session
+	// Retired clients cannot write a replacement profile or authorize a
+	// request. This fences late renewals after removal or re-pairing.
+	retired bool
 	// renewing is the in-flight rotation, or nil. Two callers asking at
 	// once must observe ONE exchange: a second concurrent renewal would
 	// present a secret the first already spent, which the backend reads
@@ -104,6 +108,7 @@ func (r *Refusal) Error() string {
 // because a refusal and a grant arrive on the same route and reading them
 // apart would mean deciding which to decode before knowing which it is.
 type grant struct {
+	refreshRecovery      bool
 	SessionID            string   `json:"sessionId"`
 	Credential           string   `json:"credential"`
 	ExpiresAtMs          int64    `json:"expiresAtMs"`
@@ -160,7 +165,7 @@ func Pair(ctx context.Context, dir string, link Link, label, platform string) (*
 		dir:  dir,
 		key:  key,
 		base: base,
-		http: &http.Client{Transport: pinnedTransport(link.CertFingerprint), Timeout: pinTimeout},
+		http: credentialHTTPClient(link.CertFingerprint),
 		now:  time.Now,
 	}
 
@@ -184,6 +189,7 @@ func Pair(ctx context.Context, dir string, link Link, label, platform string) (*
 	}
 
 	session := Session{
+		RefreshRecovery:    &issued.refreshRecovery,
 		BackendID:          link.BackendID,
 		BackendName:        link.BackendName,
 		Endpoint:           link.Endpoint,
@@ -200,6 +206,7 @@ func Pair(ctx context.Context, dir string, link Link, label, platform string) (*
 		return nil, Pairing{}, err
 	}
 	client.session = session
+	client.installRoutes()
 	return client, Pairing{
 		BackendName:        link.BackendName,
 		Endpoint:           link.Endpoint,
@@ -225,14 +232,16 @@ func Open(dir string, session Session) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Client{
+	client := &Client{
 		dir:     dir,
 		key:     key,
 		base:    base,
-		http:    &http.Client{Transport: pinnedTransport(session.CertFingerprint), Timeout: pinTimeout},
+		http:    credentialHTTPClient(session.CertFingerprint),
 		now:     time.Now,
 		session: session,
-	}, nil
+	}
+	client.installRoutes()
+	return client, nil
 }
 
 // Session returns a snapshot of the stored session. A copy: the caller
@@ -240,13 +249,21 @@ func Open(dir string, session Session) (*Client, error) {
 func (c *Client) Session() Session {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.retired {
+		return Session{BackendID: c.session.BackendID, Endpoint: c.session.Endpoint}
+	}
 	held := c.session
 	held.Scopes = append([]string(nil), held.Scopes...)
+	held.Routes = slices.Clone(held.Routes)
+	if held.RefreshRecovery != nil {
+		supported := *held.RefreshRecovery
+		held.RefreshRecovery = &supported
+	}
 	return held
 }
 
-// Endpoint is the base URL this client actually dials, which is the
-// payload's endpoint promoted to https when a certificate is pinned.
+// Endpoint is the stable base callers address, promoted to HTTPS when pinned.
+// The shared RoundTripper may select a verified alternative before sending.
 func (c *Client) Endpoint() string { return c.base }
 
 // RoundTripper is the pinned transport, for a caller that has to make its
@@ -265,6 +282,10 @@ func (c *Client) RoundTripper() http.RoundTripper { return c.http.Transport }
 // `proof_not_bound`.
 func (c *Client) Authorize(req *http.Request) error {
 	c.mu.Lock()
+	if c.retired {
+		c.mu.Unlock()
+		return ErrNoSession
+	}
 	credential := c.session.Credential
 	c.mu.Unlock()
 	if credential == "" {
@@ -363,6 +384,12 @@ func (c *Client) AwaitActivation(ctx context.Context) error {
 	ticker := time.NewTicker(probeInterval)
 	defer ticker.Stop()
 	for {
+		c.mu.Lock()
+		retired := c.retired
+		c.mu.Unlock()
+		if retired {
+			return ErrSessionEnded
+		}
 		// Every failure is waited through, refusal and transport error
 		// alike. A refusal here is the pending one by construction — the
 		// route answers 404 for "not admitted yet" — and a transport
@@ -398,29 +425,42 @@ func (c *Client) AwaitActivation(ctx context.Context) error {
 // roll the credential back to a refresh secret the backend has already
 // spent. Taking the same lock rotate does makes the two orderly.
 func (c *Client) SetNickname(nickname string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.session.BackendID == "" {
-		return ErrNoSession
-	}
-	updated := c.session
-	updated.Nickname = nickname
-	if err := SaveSession(c.dir, updated); err != nil {
-		return err
-	}
-	c.session = updated
-	return nil
+	ctx, cancel := context.WithTimeout(context.Background(), profileWriteTimeout)
+	defer cancel()
+	return c.sessionTransaction(ctx, func(path string, latest *Session) error {
+		latest.Nickname = nickname
+		return writeSession(path, *latest)
+	})
 }
 
-// Forget drops this backend's stored session. The device key survives — it
-// names the DEVICE, and the backend adopts its row by thumbprint when this
-// installation pairs again.
+// Forget retires this owner and deletes only the pairing it still owns.
 func (c *Client) Forget() error {
+	ctx, cancel := context.WithTimeout(context.Background(), profileWriteTimeout)
+	defer cancel()
+	err := c.sessionTransaction(ctx, func(path string, latest *Session) error {
+		if err := removeSessionFile(path); err != nil {
+			return err
+		}
+		c.retired = true
+		*latest = Session{BackendID: latest.BackendID, Endpoint: latest.Endpoint}
+		return nil
+	})
+	if errors.Is(err, ErrSessionEnded) {
+		return nil
+	}
+	return err
+}
+
+// Retire closes this in-memory owner before a replacement writes the same
+// profile. It preserves the file so a failed new pairing can still recover.
+func (c *Client) Retire() {
 	c.mu.Lock()
-	backendID := c.session.BackendID
-	c.session = Session{BackendID: backendID, Endpoint: c.session.Endpoint}
-	c.mu.Unlock()
-	return ForgetSession(c.dir, backendID)
+	defer c.mu.Unlock()
+	c.retired = true
+	c.session = Session{BackendID: c.session.BackendID, Endpoint: c.session.Endpoint}
+	if c.routes != nil {
+		c.routes.CloseIdleConnections()
+	}
 }
 
 // mintTicket performs one /auth/ticket exchange with a fresh proof.
@@ -445,6 +485,9 @@ func (c *Client) mintTicket(ctx context.Context) (string, error) {
 		// from "this path does not exist". The caller disambiguates by
 		// rotating, not by reading a code that is not there.
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseBytes))
+		if err := temporaryHTTPFailure(resp.StatusCode); err != nil {
+			return "", err
+		}
 		return "", &Refusal{Status: resp.StatusCode}
 	}
 	var minted struct {
@@ -455,6 +498,21 @@ func (c *Client) mintTicket(ctx context.Context) (string, error) {
 	}
 	if minted.Ticket == "" {
 		return "", errors.New("deviceclient: the backend answered a socket ticket with no ticket in it")
+	}
+	c.mu.Lock()
+	knownRecovery := c.session.RefreshRecovery != nil && *c.session.RefreshRecovery
+	c.mu.Unlock()
+	if !knownRecovery && resp.Header.Get(RefreshRecoveryHeader) == "1" {
+		if err := c.sessionTransaction(ctx, func(path string, latest *Session) error {
+			if latest.RefreshRecovery != nil && *latest.RefreshRecovery {
+				return nil
+			}
+			supported := true
+			latest.RefreshRecovery = &supported
+			return writeSession(path, *latest)
+		}); err != nil {
+			return "", err
+		}
 	}
 	return minted.Ticket, nil
 }
@@ -471,24 +529,14 @@ func (c *Client) renewIfStale(ctx context.Context) error {
 	return c.renew(ctx)
 }
 
-// renew rotates the credential pair, single-flight.
-//
-// Three rules hold here and each is load-bearing (the argument is
-// `internal/identity/refresh.go`'s, and the browser half restates it):
-//
-//   - SINGLE-FLIGHT. Two concurrent rotations present the same secret and
-//     the second reads as reuse evidence, which ends the session, every
-//     socket carrying it, and every outstanding secret in the chain.
-//   - STORE BEFORE USE. The new pair is persisted before this function
-//     returns, so nothing can present a credential whose successor was
-//     already issued and lost.
-//   - NEVER RETRY AN UNREAD EXCHANGE. A request whose response never
-//     arrived may or may not have spent the secret, and this client cannot
-//     tell that from a copy any better than the backend can. So a
-//     transport failure is reported as itself, the stored session is left
-//     alone, and only the next DELIBERATE presentation finds out.
+// renew coalesces callers in this process. The profile transaction and saved
+// successor also coordinate independent processes; see refresh_recovery.go.
 func (c *Client) renew(ctx context.Context) error {
 	c.mu.Lock()
+	if c.retired {
+		c.mu.Unlock()
+		return ErrSessionEnded
+	}
 	if flight := c.renewing; flight != nil {
 		c.mu.Unlock()
 		select {
@@ -510,79 +558,6 @@ func (c *Client) renew(ctx context.Context) error {
 	c.mu.Unlock()
 	close(flight.done)
 	return flight.err
-}
-
-// rotate is one /auth/token exchange. Only renew calls it, and only ever
-// one at a time.
-func (c *Client) rotate(ctx context.Context, held Session) error {
-	if held.RefreshSecret == "" {
-		// A session with no secret cannot renew and never will. That is
-		// not a transient state to retry past: it is either a binding
-		// class that does not rotate or a store this client already
-		// cleared, and both mean the same thing to the caller.
-		return ErrSessionEnded
-	}
-	body, err := json.Marshal(struct {
-		RefreshSecret string `json:"refreshSecret"`
-	}{RefreshSecret: held.RefreshSecret})
-	if err != nil {
-		return fmt.Errorf("deviceclient: encode the renewal: %w", err)
-	}
-
-	issued, err := c.exchange(ctx, authTokenPath, body, &held)
-	if err != nil {
-		var refusal *Refusal
-		if errors.As(err, &refusal) && refusal.Reason == reasonPendingConfirmation {
-			// Real, and not admitted yet. The stored session stays: it
-			// becomes admitted the moment the owner confirms.
-			return ErrAwaitingConfirmation
-		}
-		if errors.As(err, &refusal) {
-			// Every other refusal on this route means the credential is
-			// finished. Forget it here rather than leaving a client to
-			// retry something that can never succeed.
-			c.forgetAfterRefusal()
-			return fmt.Errorf("%w (%s)", ErrSessionEnded, refusal.Reason)
-		}
-		return err
-	}
-
-	rotated := held
-	rotated.SessionID = issued.SessionID
-	rotated.Credential = issued.Credential
-	rotated.ExpiresAtMs = issued.ExpiresAtMs
-	rotated.RefreshSecret = issued.RefreshSecret
-	rotated.RefreshExpiresAtMs = issued.RefreshExpiresAtMs
-	if len(issued.Scopes) > 0 {
-		// A rotation that published no grants keeps the ones the
-		// redemption did: grants are immutable for a session's lifetime,
-		// so the carried copy is still true and dropping it would turn a
-		// renewal into a downgrade of what this client believes it holds.
-		rotated.Scopes = issued.Scopes
-	}
-	// Stored before it is returned, so no caller can present a credential
-	// this process failed to write down.
-	if err := SaveSession(c.dir, rotated); err != nil {
-		return err
-	}
-	c.mu.Lock()
-	c.session = rotated
-	c.mu.Unlock()
-	return nil
-}
-
-// forgetAfterRefusal drops the stored session once the backend has said it
-// will not honour it.
-//
-// The refusal is what the caller is told; a failure to delete the file is
-// said here instead of replacing it. The in-memory session is cleared
-// either way, so this process stops presenting it immediately, and a file
-// that survived only means the next run is refused once more before it
-// asks to pair.
-func (c *Client) forgetAfterRefusal() {
-	if err := c.Forget(); err != nil {
-		log.Printf("deviceclient: could not remove the refused session file: %v", err)
-	}
 }
 
 // maxResponseBytes bounds one credential response. These bodies carry a
@@ -625,10 +600,26 @@ func (c *Client) exchange(ctx context.Context, path string, body []byte, held *S
 	if err := decodeBody(resp.Body, &answered); err != nil && resp.StatusCode == http.StatusOK {
 		return grant{}, err
 	}
+	if err := temporaryHTTPFailure(resp.StatusCode); err != nil {
+		return grant{}, err
+	}
 	if resp.StatusCode != http.StatusOK || answered.SessionID == "" || answered.Credential == "" {
+		if answered.Reason == "" {
+			return grant{}, fmt.Errorf("deviceclient: backend returned an invalid credential response (HTTP %d)", resp.StatusCode)
+		}
 		return grant{}, &Refusal{Status: resp.StatusCode, Reason: answered.Reason}
 	}
+	answered.refreshRecovery = resp.Header.Get(RefreshRecoveryHeader) == "1"
 	return answered, nil
+}
+
+// Only an authentication verdict can end a stored pairing. A busy backend,
+// proxy failure or rate limit is not evidence that the device was revoked.
+func temporaryHTTPFailure(status int) error {
+	if status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || status >= http.StatusInternalServerError {
+		return fmt.Errorf("deviceclient: backend temporarily unavailable (HTTP %d); try again", status)
+	}
+	return nil
 }
 
 // request builds one bounded request against this backend.

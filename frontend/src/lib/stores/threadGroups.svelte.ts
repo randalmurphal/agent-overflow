@@ -1,3 +1,7 @@
+import { invalidateReplicaCatalog } from '../replica/session';
+import { computerCatalogWriter } from './computerCatalogWriter';
+import { computerCatalog, readComputerRows, retainUnavailableComputerRows } from './computerRows';
+import { noteThreadGroup, threadGroupBackend } from '../transport/entityIndex';
 // Thread groups: the named, collapsible sidebar rows that gather threads
 // of one project. Entity-keyed on the GROUP, not on the sidebar surface
 // that renders it — the tree builder, the context menus and the drop
@@ -18,6 +22,7 @@ import type { ThreadGroup } from '../types/models';
 import type { ThreadGroupUpdateEvent } from '../types/events';
 
 let threadGroups: ThreadGroup[] = $state([]);
+const catalogWriter = computerCatalogWriter('groups', () => threadGroups, (row) => threadGroupBackend(row.id));
 
 // Shared empty bucket so a project with no groups hands every reader the
 // same reference — an identity cutoff downstream can't be defeated by a
@@ -91,7 +96,11 @@ onBackendDetached(({ threadGroupIds }) => dropThreadGroupsForDetachedBackend(thr
  * decides; `refreshThreadGroups` is the surfaced-error wrapper.
  */
 export async function loadThreadGroups(): Promise<readonly ThreadGroup[]> {
-  threadGroups = await ListThreadGroups() as ThreadGroup[];
+  const result = await readComputerRows<ThreadGroup>(
+    async () => await ListThreadGroups() as ThreadGroup[], (row, backend) => noteThreadGroup(row.id, backend), computerCatalog('groups', () => threadGroups, (row) => threadGroupBackend(row.id), (late) => {
+      threadGroups = retainUnavailableComputerRows(threadGroups, late, (row) => threadGroupBackend(row.id));
+    }));
+  if (result) threadGroups = retainUnavailableComputerRows(threadGroups, result, (row) => threadGroupBackend(row.id));
   return threadGroups;
 }
 
@@ -107,6 +116,7 @@ export async function refreshThreadGroups(): Promise<void> {
 /** Insert or replace one row. Used by every group RPC's response reconcile. */
 export function upsertThreadGroup(group: ThreadGroup): void {
   if (!group?.id) return;
+  catalogWriter.changed(threadGroupBackend(group.id));
   const index = threadGroups.findIndex((existing) => existing.id === group.id);
   if (index === -1) {
     threadGroups = [...threadGroups, group];
@@ -119,6 +129,8 @@ export function upsertThreadGroup(group: ThreadGroup): void {
 
 export function removeThreadGroup(id: string): void {
   if (!id) return;
+  invalidateReplicaCatalog(threadGroupBackend(id) ?? '', 'groups');
+  catalogWriter.changed(threadGroupBackend(id));
   const next = threadGroups.filter((group) => group.id !== id);
   if (next.length === threadGroups.length) return;
   threadGroups = next;
@@ -172,6 +184,7 @@ export function consumePendingGroupRename(groupId: string): boolean {
 
 /** Test helper: drops every row and the bucket cache. */
 export function resetThreadGroupsForTest(): void {
+  catalogWriter.reset();
   threadGroups = [];
   bucketSource = null;
   buckets = new Map();

@@ -79,6 +79,24 @@ type BackendHelloListener = (backendId: BackendKey, hello: TransportHello | null
 // the module-load sweep publishes into it: a `const` further down the
 // file would be in its temporal dead zone when the first hello lands.
 const helloEdgeListeners = new Set<BackendHelloListener>();
+type BackendStatusListener = (backend: BackendKey, status: TransportStatusSnapshot) => void;
+const backendStatusListeners = new Set<BackendStatusListener>();
+
+function publishBackendStatus(id: BackendKey, next: TransportStatusSnapshot): void {
+  const previous = statusByBackend.get(id);
+  statusByBackend.set(id, next);
+  if (previous.status === next.status) return;
+  for (const listener of backendStatusListeners) {
+    try { listener(id, next); }
+    catch (err) { console.warn('transportStatus: a status listener threw', err); }
+  }
+}
+
+/** Connection edges for entity resources. Initial state is read per key. */
+export function onBackendStatusChange(listener: BackendStatusListener): () => void {
+  backendStatusListeners.add(listener);
+  return () => { backendStatusListeners.delete(listener); };
+}
 
 function publishHello(id: BackendKey, next: TransportHello | null): void {
   for (const listener of helloEdgeListeners) {
@@ -96,7 +114,7 @@ function watchBackendStatus(id: BackendKey): void {
   const client = entry?.client ?? attachedBackends().find((b) => b.id === id)?.client;
   if (client === undefined) return;
   const cancelStatus = client.onStatusChange((next) => {
-    statusByBackend.set(id, next);
+    publishBackendStatus(id, next);
   });
   const cancelHello = client.onHelloChange((next) => {
     helloByBackend.set(id, next);
@@ -118,6 +136,7 @@ function syncBackendStatusSubscriptions(): void {
     if (live.has(id)) continue;
     cancel();
     backendStatusSubscriptions.delete(id);
+    publishBackendStatus(id, DISCONNECTED);
     statusByBackend.drop(id);
     helloByBackend.drop(id);
     publishHello(id, null);
@@ -240,7 +259,12 @@ export function onTransportStatusChange(listener: TransportStatusListener): () =
  * care about an outage drive it themselves.
  */
 export function __setTransportStatusForTest(next: TransportStatusSnapshot): void {
+  publishBackendStatus(HOME_BACKEND, next);
   publish(next);
+}
+
+export function __setBackendStatusForTest(id: BackendKey, next: TransportStatusSnapshot): void {
+  publishBackendStatus(id, next);
 }
 
 /**
@@ -403,4 +427,5 @@ export function resetTransportStatusForTest(): void {
  */
 export function __setTransportHelloForTest(next: TransportHello | null): void {
   hello = next;
+  helloByBackend.set(HOME_BACKEND, next);
 }

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { threadMachine } from '../../stores/attachedBackends.svelte';
   import { paneWorkspacePath } from '../../stores/thread.svelte';
   import type {
     PaneDoors,
@@ -115,7 +116,7 @@
   </div>
 </div>
 
-<ProposedPlanSaveModal
+<ProposedPlanSaveModal backend={threadMachine(pane?.threadId ?? item.threadId, pane?.thread?.projectId)}
   open={planExport.saveDialogOpen}
   workspacePath={paneWorkspacePath(pane)}
   savePath={planExport.savePath}

@@ -122,6 +122,28 @@ describe('notification activation queue', () => {
     await vi.waitFor(() => expect(opened).toEqual(['thread-1', 'thread-2']));
   });
 
+  it('bounds warm activations while an earlier lookup is stalled', async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const opened: string[] = [];
+    const queue = createNotificationActivationQueue({
+      getThreadById: async (id) => {
+        if (id === 'blocked') await blocked;
+        return thread(id);
+      },
+      openThread: async (row) => { opened.push(row.id); },
+      openWorkflowRun: async () => {},
+      console: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    });
+    await queue.markHydrated();
+    queue.receive({ kind: 'thread', threadId: 'blocked' });
+    for (let i = 0; i < 20; i++) queue.receive({ kind: 'thread', threadId: `${i}` });
+    expect(queue.pendingCount()).toBe(8);
+    release();
+    await queue.markHydrated();
+    expect(opened).toEqual(['blocked', '12', '13', '14', '15', '16', '17', '18', '19']);
+  });
+
   it('rejects unsupported, ambiguous, and oversized targets', () => {
     const { queue, logger } = setup();
     queue.receive({ kind: 'thread', threadId: 'thread-1', projectId: 'project' });
@@ -196,4 +218,16 @@ describe('notification activation queue', () => {
     expect(logger.error).toHaveBeenCalledTimes(1);
     expect(failingQueue.pendingCount()).toBe(0);
   });
+});
+
+
+it('passes a notification’s computer through both supported entity routes', async () => {
+  const getThreadById = vi.fn(async () => thread('t'));
+  const openWorkflowRun = vi.fn(async () => {});
+  const queue = createNotificationActivationQueue({ getThreadById, openWorkflowRun, openThread: async () => {}, console });
+  queue.receive({ kind: 'thread', threadId: 't', backendId: 'gpu' });
+  queue.receive({ kind: 'workflow-item', workItemId: 'w', backendId: 'workhorse' });
+  await queue.markHydrated();
+  expect(getThreadById).toHaveBeenCalledWith('t', 'gpu');
+  expect(openWorkflowRun).toHaveBeenCalledWith('w', 'workhorse');
 });

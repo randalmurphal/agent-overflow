@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { threadHasScope } from '../../transport/entityScopes';
+  import { threadMachine } from '../../stores/attachedBackends.svelte';
   // The composer's editing core: text entry + attachments. Everything the
   // host decides — send, thread lifecycle, pending prompts, toolbar — is
   // outside. See composerInputSurface.ts for the contract, and its doc
@@ -9,7 +11,6 @@
   import { paneWorkspacePath } from '../../stores/thread.svelte';
   import ComposerAttachmentRow from './ComposerAttachmentRow.svelte';
   import AttachmentPicker from './AttachmentPicker.svelte';
-  import { hasScope } from '../../transport/scopes';
   import { providerSupports } from '../../providers/catalog';
   import ComposerCommandHighlight from './ComposerCommandHighlight.svelte';
   import ComposerMentionPopover from './ComposerMentionPopover.svelte';
@@ -372,7 +373,7 @@
 
 <div class="flex items-end gap-1 px-4 pt-3 pb-2">
   <div class="relative min-w-0 flex-1">
-    <ComposerMentionPopover
+    <ComposerMentionPopover backend={threadMachine(pane.threadId ?? '', pane.thread?.projectId)}
       anchor={textarea}
       open={mentions.mentionTrigger !== null}
       query={mentions.mentionTrigger?.query ?? ''}
@@ -426,7 +427,7 @@
       {textarea}
     />
   </div>
-  {#if showDraftRows && editsDraft && hasScope('attachments:write') && providerSupports(pane.thread?.provider, 'attachments')}
+  {#if showDraftRows && editsDraft && threadHasScope('attachments:write', pane.threadId, pane.thread?.projectId) && providerSupports(pane.thread?.provider, 'attachments')}
     <AttachmentPicker {disabled} onChoose={chooseAttachments} />
     <input bind:this={fileInput} type="file" multiple hidden aria-label="Choose attachments" onchange={attachSelectedFiles} />
   {/if}

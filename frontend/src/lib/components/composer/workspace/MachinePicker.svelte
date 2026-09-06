@@ -1,18 +1,6 @@
 <script lang="ts">
-  // Machine trigger in the composer workspace strip: WHICH attached
-  // backend the draft in this pane is for. Mounted only when more than
-  // one backend is attached (spec §10, 2026-09-01 ruling), so a
-  // single-backend app never sees it.
-  //
-  // The label names the machine that owns the pane's project. Picking
-  // another machine flips the draft to the SAME repository there when the
-  // entry spans it (a target choice, wave 7d), else to that machine's
-  // first project. An unreachable machine stays in the list, dimmed, and
-  // cannot be picked — never a silent failover elsewhere.
-  //
-  // Lock policy mirrors ProjectPicker: interactive while the pane shows a
-  // draft; a static label once the thread has messages, because a thread
-  // does not move between machines.
+  // A draft stays on its repository when changing computers. If the target
+  // has no registered checkout, ask for that folder explicitly.
 
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import MonitorIcon from '@lucide/svelte/icons/monitor';
@@ -24,7 +12,7 @@
   import type { PopoverCloseReason } from '../../../utils/popoverOwnership';
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
-  import { getProjects, projectSiblingOn } from '../../../stores/projects.svelte';
+  import { getProject, projectSiblingOn } from '../../../stores/projects.svelte';
   import { flipPaneDraftPlaceholder } from '../../../stores/threadCreation.svelte';
   import { setPaneBackend, setSelectedBackend } from '../../../stores/selectedBackend.svelte';
   import {
@@ -35,10 +23,14 @@
     threadMachine,
   } from '../../../stores/attachedBackends.svelte';
   import { backendHasBrowser } from '../../../utils/browserTools';
-  import { projectBackend } from '../../../transport/entityIndex';
   import { HOME_BACKEND, type BackendKey } from '../../../transport/backendKey';
+  import { rememberProjectTarget } from '../../../stores/projectTargets';
+  import AddProjectModal from '../../sidebar/AddProjectModal.svelte';
+  import type { Project } from '../../../types/models';
   import { addToast } from '../../../stores/toast.svelte';
   import { userFacingError } from '../../../utils/userFacingError';
+  import { canOfferConversationTransfer, openConversationTransfer, supportsConversationTransfer } from '../../../stores/conversationTransfers.svelte';
+  import { hasScope } from '../../../transport/scopes';
 
   interface Props {
     pane: ThreadPane;
@@ -49,6 +41,8 @@
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
   let open = $state(false);
   let switching = $state(false);
+  let addOn = $state<BackendKey | null>(null);
+  let addForThread: string | null = null;
 
   let isLocked = $derived(
     !pane.thread || (!pane.hasDraftPlaceholder && pane.thread.isDraft !== true),
@@ -64,9 +58,11 @@
     const entry = attachedBackendEntry(activeKey);
     return entry ? backendDisplayName(entry) : 'Machine';
   });
+  let canTransfer = $derived(Boolean(pane.thread && isLocked && canOfferConversationTransfer(pane.thread) && hasScope('threads:operate', activeKey)));
+  let selectable = $derived(!isLocked || canTransfer);
 
   function handleTrigger(): void {
-    if (isLocked) return;
+    if (!selectable) return;
     open = !open;
   }
 
@@ -76,32 +72,29 @@
   }
 
   async function selectMachine(key: BackendKey): Promise<void> {
-    if (isLocked || switching) return;
+    if (!selectable || switching) return;
     const thread = pane.thread;
     if (!thread) return;
     if (key === activeKey) {
       closeMenu();
       return;
     }
+    if (isLocked) {
+      closeMenu();
+      openConversationTransfer(thread, key);
+      return;
+    }
     switching = true;
     try {
       const entry = attachedBackendEntry(key);
       if (!entry) throw new Error('That machine is no longer attached');
-      // The same repo on the chosen machine when the entry spans it (a
-      // TARGET choice, wave 7d); else that machine's first project.
-      const project = (
-        (thread.projectId ? projectSiblingOn(thread.projectId, key) : undefined)
-        ?? getProjects().find((pwc) => (projectBackend(pwc.project.id) ?? HOME_BACKEND) === key)
-      )?.project;
+      const project = thread.projectId ? projectSiblingOn(thread.projectId, key)?.project : undefined;
       if (!project) {
-        addToast('info', `${backendDisplayName(entry)} has no projects yet`);
+        addForThread = thread.id;
+        addOn = key;
         return;
       }
-      // Staged before the flip: the flip's own RPCs take the `selected`
-      // route and must already know which machine the draft is for.
-      setPaneBackend(pane.paneId, key);
-      setSelectedBackend(key);
-      await flipPaneDraftPlaceholder(pane, project);
+      await switchToProject(project, key);
     } catch (err) {
       console.error('Failed to switch draft machine:', err);
       addToast('error', userFacingError(err));
@@ -110,6 +103,28 @@
       closeMenu();
     }
   }
+  async function switchToProject(project: Project, key: BackendKey): Promise<void> {
+    if (await flipPaneDraftPlaceholder(pane, project)) {
+      setPaneBackend(pane.paneId, key);
+      setSelectedBackend(key);
+      rememberProjectTarget(project, key);
+    }
+  }
+
+  async function useAddedProject(project: Project): Promise<void> {
+    const key = addOn;
+    addOn = null;
+    if (key === null || pane.thread?.id !== addForThread || isLocked) return;
+    switching = true;
+    try {
+      await switchToProject(project, key);
+    } catch (err) {
+      addToast('error', userFacingError(err));
+    } finally {
+      switching = false;
+    }
+  }
+
 </script>
 
 {#if pane.thread}
@@ -117,26 +132,26 @@
     bind:this={triggerEl}
     type="button"
     onclick={handleTrigger}
-    disabled={isLocked || switching}
-    aria-haspopup={isLocked ? undefined : 'menu'}
-    aria-expanded={isLocked ? undefined : open}
+    disabled={!selectable || switching}
+    aria-haspopup={selectable ? 'menu' : undefined}
+    aria-expanded={selectable ? open : undefined}
     data-testid="machine-picker-trigger"
-    data-locked={isLocked || undefined}
+    data-locked={!selectable || undefined}
     class={[
       composerTriggerClasses,
       // Same read as the locked project picker: a label, not a broken
       // control.
-      isLocked ? '!opacity-100 !cursor-default hover:!bg-transparent' : '',
+      !selectable ? '!opacity-100 !cursor-default hover:!bg-transparent' : '',
     ].join(' ')}
   >
     <Icon icon={MonitorIcon} size={12} strokeWidth={2} class="opacity-70" />
     <span class="truncate max-w-[160px] text-fg">{activeLabel}</span>
-    {#if !isLocked}
+    {#if selectable}
       <Icon icon={ChevronDown} size={12} strokeWidth={2} class="opacity-60" />
     {/if}
   </button>
 
-  {#if !isLocked}
+  {#if selectable}
     <Popover
       anchor={triggerEl}
       {open}
@@ -154,11 +169,12 @@
         {#each backends as entry (entry.id)}
           {@const reachable = backendReachable(entry.id)}
           {@const noBrowser = !backendHasBrowser(entry.id)}
+          {@const transferUnavailable = isLocked && entry.id !== activeKey && (!supportsConversationTransfer(entry.id) || !hasScope('threads:operate', entry.id))}
           <MenuItem
             label={backendDisplayName(entry)}
-            description={!reachable ? 'Unreachable' : noBrowser ? 'No browser' : undefined}
+            description={!reachable ? 'Unreachable' : transferUnavailable ? 'Update or access required' : isLocked && entry.id !== activeKey ? 'Move or copy conversation…' : noBrowser ? 'No browser' : undefined}
             checked={entry.id === activeKey}
-            disabled={!reachable}
+            disabled={!reachable || transferUnavailable}
             title={!reachable
               ? 'This machine cannot be reached right now'
               : noBrowser
@@ -170,4 +186,18 @@
       </Menu>
     </Popover>
   {/if}
+{/if}
+
+
+{#if addOn !== null}
+  <AddProjectModal
+    open={true}
+    initialBackend={addOn}
+    onClose={() => { addOn = null; }}
+    onCreated={(project) => void useAddedProject(project)}
+    onDuplicate={(id) => {
+      const project = getProject(id)?.project;
+      if (project) void useAddedProject(project);
+    }}
+  />
 {/if}

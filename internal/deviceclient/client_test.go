@@ -37,6 +37,7 @@ type backend struct {
 	ticketRefusals atomic.Int32
 	tickets        atomic.Int32
 	rotations      atomic.Int32
+	failureStatus  atomic.Int32
 	// proofs is every X-AO-Device-Key value this backend was presented,
 	// so a test can see that a proof was minted per request.
 	proofs []string
@@ -51,6 +52,10 @@ func newBackend(t *testing.T) *backend {
 }
 
 func (b *backend) route(w http.ResponseWriter, r *http.Request) {
+	if status := b.failureStatus.Load(); status != 0 {
+		http.Error(w, "temporary test failure", int(status))
+		return
+	}
 	b.mu.Lock()
 	b.proofs = append(b.proofs, r.Header.Get("X-AO-Device-Key"))
 	b.mu.Unlock()
@@ -121,7 +126,9 @@ func openAgainst(t *testing.T, be *backend, mutate func(*Session)) (*Client, str
 	if _, err := EnrollDeviceKey(dir); err != nil {
 		t.Fatalf("EnrollDeviceKey: %v", err)
 	}
+	legacy := false
 	session := Session{
+		RefreshRecovery:    &legacy,
 		BackendID:          "backend-a",
 		Endpoint:           be.URL,
 		SessionID:          "session-1",
@@ -383,7 +390,7 @@ func TestPinnedTransport_RefusesAnotherCertificateBeforeAnythingIsSent(t *testin
 	t.Cleanup(upstream.Close)
 
 	presented := upstream.Certificate().Raw
-	client := &http.Client{Transport: pinnedTransport("sha256:" + strings.Repeat("00", 32))}
+	client := &http.Client{Transport: NewPinnedTransport("sha256:" + strings.Repeat("00", 32))}
 	_, err := client.Get(upstream.URL)
 	if !errors.Is(err, ErrCertificateMismatch) {
 		t.Fatalf("a mismatched pin = %v, want ErrCertificateMismatch", err)
@@ -397,7 +404,7 @@ func TestPinnedTransport_RefusesAnotherCertificateBeforeAnythingIsSent(t *testin
 
 	// The matching pin connects, which is what makes the refusal above a
 	// judgement about the certificate rather than about TLS in general.
-	client = &http.Client{Transport: pinnedTransport(servercert.Fingerprint(presented))}
+	client = &http.Client{Transport: NewPinnedTransport(servercert.Fingerprint(presented))}
 	resp, err := client.Get(upstream.URL)
 	if err != nil {
 		t.Fatalf("the matching pin refused a good certificate: %v", err)
@@ -422,5 +429,36 @@ func TestPinnedTLSConfig_NoFingerprintIsOrdinaryWebPKI(t *testing.T) {
 	}
 	if err := cfg.VerifyPeerCertificate(nil, nil); !errors.Is(err, ErrCertificateMismatch) {
 		t.Errorf("a peer presenting no certificate = %v, want a mismatch", err)
+	}
+}
+
+func TestHTTPFailuresPreservePairingAndRecoverWithoutEnrollment(t *testing.T) {
+	for _, status := range []int{408, 429, 500, 502, 503, 401} {
+		for _, stale := range []bool{false, true} {
+			t.Run(strconv.Itoa(status)+"/stale="+strconv.FormatBool(stale), func(t *testing.T) {
+				be := newBackend(t)
+				client, dir := openAgainst(t, be, func(session *Session) {
+					if stale {
+						session.ExpiresAtMs = time.Now().Add(-time.Minute).UnixMilli()
+					}
+				})
+				before := client.Session()
+				be.failureStatus.Store(int32(status))
+				if _, err := client.Ticket(context.Background()); err == nil || errors.Is(err, ErrSessionEnded) {
+					t.Fatal("HTTP outage was treated as a successful call or revoked pairing", err)
+				}
+				saved, err := LoadSession(dir, before.BackendID)
+				if err != nil || saved.Credential != before.Credential || saved.RefreshSecret != before.RefreshSecret {
+					t.Fatal("temporary failure discarded the stored pairing", err)
+				}
+				if be.rotations.Load() != 0 {
+					t.Fatal("temporary failure consumed a refresh secret")
+				}
+				be.failureStatus.Store(0)
+				if _, err := client.Ticket(context.Background()); err != nil {
+					t.Fatal("did not recover using the same pairing", err)
+				}
+			})
+		}
 	}
 }

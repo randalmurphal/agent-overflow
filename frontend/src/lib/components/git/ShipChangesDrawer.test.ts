@@ -3,7 +3,7 @@ import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ShipChangesDrawer from './ShipChangesDrawer.svelte';
 import { createShipChangesState } from '../../stores/shipChanges.svelte';
-import { loadSettings } from '../../stores/settings.svelte';
+import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { getToasts } from '../../stores/toast.svelte';
 import type { GitActionResult, GitStatus } from '../../types/git';
 import type { Thread } from '../../types/models';

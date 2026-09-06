@@ -46,6 +46,9 @@ func buildThreadParams(cfg Config, codexVersion string) map[string]any {
 	if cfg.SystemPrompt != "" {
 		params["baseInstructions"] = cfg.SystemPrompt
 	}
+	if cfg.AdditionalInstructions != "" {
+		params["developerInstructions"] = cfg.AdditionalInstructions
+	}
 
 	// `config` is the free-form override bag on ThreadStartParams. We set
 	// mcp_servers (app-owned per-thread wiring) and model_reasoning_effort (the

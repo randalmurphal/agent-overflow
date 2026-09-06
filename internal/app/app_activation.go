@@ -22,17 +22,16 @@ var errNoSupervisor = errors.New(
 //
 // A backend booted as a supervisor TRIAL has to prove it works before anything
 // commits to it: it opens the store, runs migrations, binds the transport and
-// answers RPCs — and it must do all of that WITHOUT taking a single action of
-// its own. Serving is what "prepared" means, so serving is correct. What has
-// to wait is everything self-initiated, because a trial that is rolled back
+// answers read-only health probes. Both client requests and unattended work
+// wait for commit, because a trial that is rolled back
 // has its database restored and nothing else: a `git fetch` it ran, a
 // credential it refreshed, an ACME order it placed, a retention sweep that
 // deleted attachment files, a workflow turn it started — none of those are
 // inside the snapshot boundary, and several of them cost real money or a real
 // provider login.
 //
-// So there is ONE gate, and one place that waits on it: `Start` hands the
-// whole unattended set to `activation.Run`. Not a flag per subsystem — a
+// There is ONE gate: `Start` hands the unattended set to `activation.Run`,
+// and the transport enters through WaitForActivation. No flag per subsystem: a
 // second boolean is how the eleventh subsystem gets added without one.
 //
 // The zero value is OPEN. Every boot mode except a supervisor trial never
@@ -112,6 +111,24 @@ func (g *activation) Run(ctx context.Context, work func() error) error {
 // could park this backend's unattended work over the wire is a denial of
 // service with a friendly name.
 func ParkUnattendedWork(a *App) { a.activation.Park() }
+
+// WaitForActivation is the transport admission seam. A trial may prove its
+// listener healthy, but client credentials and work must wait for commit.
+// Waiting also preserves older clients which mistake HTTP 503 for revoked auth.
+func WaitForActivation(a *App, ctx context.Context) error {
+	a.activation.mu.Lock()
+	parked := a.activation.parked
+	a.activation.mu.Unlock()
+	if parked == nil {
+		return ctx.Err()
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-parked:
+		return ctx.Err()
+	}
+}
 
 // ActivateUnattendedWork opens the gate and publishes the update's outcome.
 //

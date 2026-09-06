@@ -42,9 +42,13 @@ function fakeBackendClient(): never {
     setLease: () => undefined,
     installStepUpProver: () => undefined,
     getStatus: () => ({ status: 'connected', nextAttemptAt: null }),
-    onStatusChange: () => () => undefined,
+    onStatusChange: (listener: (status: { status: 'connected'; nextAttemptAt: null }) => void) => {
+      listener({ status: 'connected', nextAttemptAt: null });
+      return () => undefined;
+    },
     getHello: () => null,
     onHelloChange: () => () => undefined,
+    onReplay: () => () => undefined,
     close: () => undefined,
   } as never;
 }

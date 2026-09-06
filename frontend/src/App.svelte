@@ -12,10 +12,13 @@
     installPaneLayoutPersistence,
     loadPersistedPaneLayout,
   } from './lib/stores/paneLayoutPersistence';
-  import { flushPaneLayoutPersistence, setPaneLayoutItems } from './lib/stores/paneLayout.svelte';
+  import { flushPaneLayoutPersistence, paneLayoutMutationRevision, setPaneLayoutItems } from './lib/stores/paneLayout.svelte';
   import { installCompanionPanes } from './lib/stores/companionPanes.svelte';
   import { flushAppStorage, hydrateAppStorage } from './lib/stores/appStorage';
   import { loadSettings, getSettings } from './lib/stores/settings.svelte';
+  import { selectedBackend } from './lib/stores/selectedBackend.svelte';
+  import { HOME_BACKEND } from './lib/transport/backendKey';
+  import { backendReachable } from './lib/stores/attachedBackends.svelte';
   import { syncSidebarFromAppStorage, syncSidebarFromSettings } from './lib/stores/sidebar.svelte';
   import {
     isWorkflowsOverlayOpen,
@@ -70,6 +73,8 @@
   import MessageSearch from './lib/components/palette/MessageSearch.svelte';
   import UnifiedThreadPicker from './lib/components/palette/UnifiedThreadPicker.svelte';
   import ThreadActionConfirmationHost from './lib/components/palette/ThreadActionConfirmationHost.svelte';
+  import ConversationTransferHost from './lib/components/transfers/ConversationTransferHost.svelte';
+  import { initConversationTransfers } from './lib/stores/conversationTransfers.svelte';
   import UnsentMessageConfirmationHost from './lib/components/composer/UnsentMessageConfirmationHost.svelte';
   import type { Thread } from './lib/types/models';
   import { getPaletteTargetPaneId, isPaletteOpen } from './lib/stores/palette.svelte';
@@ -274,11 +279,15 @@
   }
 
   async function loadSettingsAndWarmModelCatalogs(): Promise<void> {
-    const loaded = await loadSettings();
+    const backend = selectedBackend();
+    // Its independent connection hydrates settings when it becomes ready.
+    // An offline launch computer does not make this frontend's boot fail.
+    if (backend !== HOME_BACKEND && !backendReachable(backend)) return;
+    const loaded = await loadSettings(backend);
     if (!loaded) return;
     syncSidebarFromSettings();
     syncUsagePeriodFromSettings();
-    void preloadProviderModelsForSettings(getSettings());
+    void preloadProviderModelsForSettings(getSettings(backend), backend);
   }
 
   // ── The theme is applied in TWO pre-effects and read back in one plain
@@ -386,6 +395,7 @@
   });
 
   onMount(() => {
+    let disposed = false;
     const cleanupEvents = setupEventListeners();
     // Theme first, and not awaited: the pre-effects above already painted the
     // built-in palette, so this only ever UPGRADES what is on screen — and it
@@ -402,6 +412,7 @@
     // status on every hello, and their flow frames. Silent where no backend
     // reports a supervisor.
     const cleanupServiceUpdates = initServiceUpdates();
+    const cleanupConversationTransfers = initConversationTransfers();
     // Which ports each attached machine will share a preview of, and the
     // two actions the external-link delegate calls. Silent on a machine
     // this session holds no `preview:open` for.
@@ -411,6 +422,7 @@
     // the durable copies over the pre-hydration cache. A failed
     // hydration (offline backend) leaves the same-session cache in
     // charge, which is the correct degraded behavior.
+    const restoreRevision = paneLayoutMutationRevision();
     const appStorageReady = hydrateAppStorage();
     // Highlight schema-version + class-name tables, warmed in parallel
     // with the layout restore and awaited (bounded) before PaneHost
@@ -421,22 +433,23 @@
     // (past it, the first rows fall back to the RPC path).
     const highlightTablesWarm = warmHighlightTables();
     void (async () => {
-      let threadRegistryHydrated = false;
       try {
         const threads = await loadThreads();
-        threadRegistryHydrated = true;
+        if (disposed) return;
         // Groups load beside the threads they contain, but never gate the
         // layout restore below: a failed group load must not be read as a
         // failed boot (refreshThreadGroups owns its own error surface).
         void refreshThreadGroups();
         await appStorageReady;
+        if (disposed) return;
         syncSidebarLayoutFromAppStorage();
         syncSidebarFromAppStorage();
         // The workflows overlay stack/filter/sweep cursor are durable per
         // client (UI-SPEC §2.1), so they adopt the hydrated copy the same way
         // the sidebar's view state does.
         syncWorkflowsOverlayFromAppStorage();
-        await loadPersistedPaneLayout(threads);
+        await loadPersistedPaneLayout(threads, restoreRevision);
+        if (disposed) return;
         installPaneLayoutPersistence();
         installCompanionPanes();
         await Promise.race([
@@ -444,14 +457,21 @@
           new Promise((resolve) => setTimeout(resolve, 1500)),
         ]);
       } catch (err) {
+        if (disposed) return;
         console.error('Failed to restore pane layout:', err);
-        setPaneLayoutItems([]);
-        resetPaneRegistry(null);
+        if (paneLayoutMutationRevision() === restoreRevision) {
+          setPaneLayoutItems([]);
+          resetPaneRegistry(null);
+        }
         addToast('error', userFacingError(err, 'Failed to restore pane layout.'));
       } finally {
-        if (threadRegistryHydrated) await markNotificationHydrated();
+        if (disposed) return;
+        // Layout restoration has settled even if its initial catalog read
+        // was superseded by a reconnect. Notification resolution can fetch
+        // its specific thread; it must not wait forever on that old read.
         paneLayoutRestored = true;
         appReady = true;
+        void markNotificationHydrated();
       }
     })();
     // Footer attention badge (§6/§7): authoritative on app open, so a missed
@@ -531,6 +551,7 @@
     const stopIdleMemoryTrim = startIdleMemoryTrim();
 
     return () => {
+      disposed = true;
       stopIdleMemoryTrim();
       stopAmbientTicker();
       flushPaneLayout();
@@ -539,6 +560,7 @@
       cleanupLayoutMode();
       cleanupUpdates();
       cleanupServiceUpdates();
+      cleanupConversationTransfers();
       cleanupDevServers();
       cleanupExternalLinks();
       cleanupLongPress();
@@ -602,6 +624,7 @@
 />
 <CommandPalette context={paletteContext} contextForPane={makeCommandContextForPaneId} />
 <ThreadActionConfirmationHost />
+<ConversationTransferHost />
 
 <UnsentMessageConfirmationHost />
 <KeybindingsCheatSheet open={isCheatSheetOpen()} onClose={closeCheatSheet} />

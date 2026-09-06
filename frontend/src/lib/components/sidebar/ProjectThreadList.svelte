@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { projectHasScope } from '../../transport/entityScopes';
   // Nested thread list for a single project. Builds the discussion tree
   // (depth ≤ 2) once per render so child status / activity bubbles into
   // each parent row, then truncates to the project-specific visible
@@ -55,7 +56,6 @@
     syncExpandedTreeForActiveThread,
   } from '../../utils/sidebarTreeView';
   import { THREAD_PREVIEW_LIMIT, THREAD_REVEAL_INCREMENT } from '../../utils/sidebarThreadLimits';
-  import { hasScope } from '../../transport/scopes';
   import {
     canDropThreadInGroup,
     canUngroupDroppedThread,
@@ -81,7 +81,7 @@
   let lastNewThreadContextMenuAt = 0;
   // Creating a thread rides `threads:operate`. The empty-state control is
   // the whole content of an empty project, so it stays and goes inert.
-  let newThreadUngranted = $derived(!hasScope('threads:operate'));
+  let newThreadUngranted = $derived(!projectHasScope('threads:operate', projectId));
 
   // Tree is built per-render: cheap (small N) and lets us reactively
   // pick up effective live-status changes from the status store and

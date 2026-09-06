@@ -18,6 +18,7 @@ import type { TransportHello, TransportStatusSnapshot } from '../../lib/transpor
 export const REMOTE_BACKEND_UUID = '99999999-8888-4777-8666-555555555555';
 
 export interface StagedBackend {
+  readonly reconnect: () => void;
   /** Flip the backend's reachability; the status box wakes synchronously. */
   setStatus: (status: TransportStatusSnapshot['status']) => void;
   /** State this backend's hello; the hello box and its edge listeners wake. */
@@ -44,6 +45,7 @@ export function stageBackend(
     callByName: vi.fn(async () => undefined),
     subscribe: vi.fn(() => () => undefined),
     installStepUpProver: vi.fn(),
+    onReplay: vi.fn(() => () => undefined),
     setWatchedThreads: vi.fn(),
     getStatus: vi.fn(() => snapshot),
     onStatusChange: vi.fn((listener: (next: TransportStatusSnapshot) => void) => {
@@ -58,6 +60,7 @@ export function stageBackend(
       return () => helloListeners.delete(listener);
     }),
     close: vi.fn(),
+    triggerReconnect: vi.fn(),
   };
   __attachBackendForTest(
     {
@@ -71,6 +74,7 @@ export function stageBackend(
     client as never,
   );
   return {
+    reconnect: client.triggerReconnect,
     setStatus(next) {
       snapshot = { status: next, nextAttemptAt: null } as TransportStatusSnapshot;
       for (const listener of listeners) listener(snapshot);

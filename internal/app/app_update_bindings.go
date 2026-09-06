@@ -19,44 +19,12 @@ var (
 // builds that can't self-update, in which case the frontend hides the update
 // section entirely. When Supported && Available, the release fields describe
 // the newer version the user may choose to install.
-type UpdateAvailability struct {
-	Supported      bool   `json:"supported"`
-	Available      bool   `json:"available"`
-	CurrentVersion string `json:"currentVersion"`
-	LatestVersion  string `json:"latestVersion,omitempty"`
-	ReleaseName    string `json:"releaseName,omitempty"`
-	ReleaseNotes   string `json:"releaseNotes,omitempty"`
-	// LastApplyFailure is the boot-detected notice that a previously staged
-	// update never got applied (WSL only: the Windows launcher owns that swap
-	// and this process is gone by the time it runs, so the NEXT boot is the
-	// only observer). Empty on every ordinary launch. It is process-lifetime
-	// state recomputed from the on-disk marker at boot, so it persists across
-	// re-checks within a session and clears on the next boot whose running
-	// version matches what the marker expected — a re-check must not make a
-	// failed install look successful.
-	LastApplyFailure string `json:"lastApplyFailure,omitempty"`
-	// CheckError, when non-empty, reports that the release check itself failed
-	// (network down, GitHub unreachable, rate-limited). It is result state
-	// rather than an RPC error so the fields the backend knows WITHOUT the
-	// network — Supported, CurrentVersion, and above all LastApplyFailure —
-	// still reach the panel: the boot-detected "didn't apply" notice must not
-	// vanish behind an offline check.
-	CheckError string `json:"checkError,omitempty"`
-}
+type UpdateAvailability = appupdate.UpdateAvailability
 
 // ReleaseSummary describes one installable release for the version picker. Only
 // releases that ship an asset for the running platform AND a checksum sidecar
 // are surfaced — anything else can't be installed here, so it's omitted.
-type ReleaseSummary struct {
-	Tag         string `json:"tag"`         // e.g. "v0.0.7"
-	Version     string `json:"version"`     // tag without the leading "v"
-	Name        string `json:"name"`        // release title
-	PublishedAt string `json:"publishedAt"` // RFC3339, or "" if absent
-	Prerelease  bool   `json:"prerelease"`
-	IsLatest    bool   `json:"isLatest"`  // newest stable (matches /releases/latest)
-	IsCurrent   bool   `json:"isCurrent"` // same version as the running build
-	IsOlder     bool   `json:"isOlder"`   // older than the running build (a downgrade)
-}
+type ReleaseSummary = appupdate.ReleaseSummary
 
 // CheckForUpdate asks the configured provider whether a newer release exists.
 // It only reads metadata — nothing is downloaded or installed. Returns
@@ -71,21 +39,7 @@ func (a *App) CheckForUpdate() (UpdateAvailability, error) {
 	if a.updater == nil {
 		return UpdateAvailability{CurrentVersion: a.version}, nil
 	}
-	availability, err := a.updater.CheckForUpdate()
-	return wireUpdateAvailability(availability), err
-}
-
-func wireUpdateAvailability(availability appupdate.UpdateAvailability) UpdateAvailability {
-	return UpdateAvailability{
-		Supported:        availability.Supported,
-		Available:        availability.Available,
-		CurrentVersion:   availability.CurrentVersion,
-		LatestVersion:    availability.LatestVersion,
-		ReleaseName:      availability.ReleaseName,
-		ReleaseNotes:     availability.ReleaseNotes,
-		LastApplyFailure: availability.LastApplyFailure,
-		CheckError:       availability.CheckError,
-	}
+	return a.updater.CheckForUpdate()
 }
 
 // ListReleases returns the installable releases for this build's update target,
@@ -101,24 +55,10 @@ func (a *App) ListReleases() ([]ReleaseSummary, error) {
 	if err != nil {
 		return nil, err
 	}
-	return wireReleaseSummaries(releases), nil
-}
-
-func wireReleaseSummaries(releases []appupdate.ReleaseSummary) []ReleaseSummary {
-	out := make([]ReleaseSummary, len(releases))
-	for i, release := range releases {
-		out[i] = ReleaseSummary{
-			Tag:         release.Tag,
-			Version:     release.Version,
-			Name:        release.Name,
-			PublishedAt: release.PublishedAt,
-			Prerelease:  release.Prerelease,
-			IsLatest:    release.IsLatest,
-			IsCurrent:   release.IsCurrent,
-			IsOlder:     release.IsOlder,
-		}
+	if releases == nil {
+		releases = []ReleaseSummary{}
 	}
-	return out
+	return releases, nil
 }
 
 // DownloadUpdate downloads, verifies, and stages a release, then leaves it

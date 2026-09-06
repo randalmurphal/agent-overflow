@@ -283,6 +283,12 @@ func (s *Store) SetThreadGroup(threadIDs []string, groupID string) ([]Thread, er
 	}
 	touched := make([]string, 0, len(ids))
 	for _, id := range ids {
+		// Group membership is store-only metadata, so it needs no action
+		// lock. Check inside this writer transaction to serialize it with a
+		// transfer reservation; a stale client cannot revive the old row.
+		if err := checkThreadTransferAccess(tx, id); err != nil {
+			return nil, err
+		}
 		var (
 			rows *sql.Rows
 			err  error

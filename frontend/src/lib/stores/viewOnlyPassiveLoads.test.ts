@@ -96,7 +96,8 @@ describe('view-only sessions issue no passive operate RPCs', () => {
 
   it('does not list MCP servers without settings:write', async () => {
     await pairViewOnly();
-    const handle = attachMcpServers('claude:' + WORKSPACE, {
+    const handle = attachMcpServers(' claude:' + WORKSPACE, {
+      backend: '',
       provider: 'claude',
       threadId: THREAD,
       workspacePath: WORKSPACE,

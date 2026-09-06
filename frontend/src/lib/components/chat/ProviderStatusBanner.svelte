@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { threadMachine } from '../../stores/attachedBackends.svelte';
   import { fade } from 'svelte/transition';
   import type { ErrorSurface } from '../../stores/threadPaneRoles';
   import {
@@ -12,6 +13,7 @@
     type ProviderStatusEvent,
   } from '../../stores/providerStatus.svelte';
   import { handleExternalURL } from '../../utils/externalLinks';
+  import { withBackendTarget } from '../../transport/backends';
   import { hasScope } from '../../transport/scopes';
   import {
     recheckProviderAccount,
@@ -34,6 +36,7 @@
   // threadPaneRoles.ts lists it on ErrorSurface.
   let { pane }: { pane: ErrorSurface } = $props();
 
+  let backend = $derived(threadMachine(pane.threadId ?? '', pane.thread?.projectId));
   let reconnecting = $state(false);
   let retryingHistory = $state(false);
   let rechecking = $state(false);
@@ -42,8 +45,8 @@
   // rides `access:admin` along with the whole provider-account surface. The
   // banners still render — they explain why a thread is stuck — and only
   // the buttons go inert.
-  let operateUngranted = $derived(!hasScope('threads:operate'));
-  let accountsUngranted = $derived(!hasScope('access:admin'));
+  let operateUngranted = $derived(!hasScope('threads:operate', backend));
+  let accountsUngranted = $derived(!hasScope('access:admin', backend));
 
   // Provider-level status is keyed by the pane's current provider. When
   // the pane has no thread yet (boot, between switches) we stay empty.
@@ -54,7 +57,7 @@
     if (!pane.thread) return null;
     const evt = pane.providerBanner !== undefined
       ? pane.providerBanner
-      : getProviderStatus(pane.thread.provider);
+      : getProviderStatus(pane.thread.provider, threadMachine(pane.threadId ?? '', pane.thread.projectId));
     if (!evt) return null;
     // Ready events are clear-banner signals — render nothing.
     return evt.status === 'ready' ? null : evt;
@@ -154,7 +157,7 @@
   // Recheck stays beside it: a sign-in done elsewhere (another window, the
   // provider's own CLI) is cleared by re-reading, not by signing in again.
   let signingIn = $derived(
-    !!providerStatus && isProviderLoginActive(providerStatus.provider),
+    !!providerStatus && isProviderLoginActive(providerStatus.provider, backend),
   );
 
   async function handleSignIn() {
@@ -165,9 +168,9 @@
     // Settings is what puts the user in front of the link the sign-in is
     // about to produce.
     openSettingsOverlay(
-      isProviderID(status.provider) ? providerSettingsSection(status.provider) : undefined,
+      isProviderID(status.provider) ? providerSettingsSection(status.provider) : undefined, backend,
     );
-    await startProviderLogin(status.provider);
+    await startProviderLogin(status.provider, backend);
   }
 
   async function handleReconnect() {
@@ -207,12 +210,14 @@
   async function handleRecheckAuth() {
     const status = providerStatus;
     if (!status || rechecking || accountsUngranted) return;
+    const target = backend;
+    const threadID = pane.threadId;
     rechecking = true;
     try {
       // RecheckProviderAccount evicts the per-process probe cache before
       // re-running the probe — the cached pre-login zero-value would
       // otherwise mask the new auth state for up to 5 minutes.
-      const account = await recheckProviderAccount(status.provider);
+      const account = await recheckProviderAccount(status.provider, target);
       if (recheckResultClearsAuthBanner(status.provider, account)) {
         const readyStatus: ProviderStatusEvent = {
           provider: status.provider,
@@ -220,8 +225,8 @@
           message: '',
           actionable: false,
         };
-        recordProviderStatus(readyStatus);
-        pane.setProviderBanner(status.threadId ? null : undefined);
+        recordProviderStatus(readyStatus, target);
+        if (pane.threadId === threadID) pane.setProviderBanner(status.threadId ? null : undefined);
       }
     } catch (err) {
       console.error('Failed to recheck provider account:', err);
@@ -239,7 +244,7 @@
     if (rechecking || accountsUngranted) return;
     rechecking = true;
     try {
-      await GetProviderStatuses();
+      await withBackendTarget(backend, () => GetProviderStatuses());
     } catch (err) {
       console.error('Failed to recheck provider status:', err);
     } finally {

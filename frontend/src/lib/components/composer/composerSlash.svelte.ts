@@ -1,3 +1,6 @@
+import { withBackendTarget } from '../../transport/backends';
+import { composeWorkspaceKey } from '../../utils/workspaceKey';
+import { threadMachine } from '../../stores/attachedBackends.svelte';
 // Composer command-menu state.
 //
 // Owns: which trigger is open (the `/name` completion, or `/review`'s target
@@ -60,7 +63,7 @@ interface OpenTrigger {
 
 interface ReviewGitData {
   /** The checkout the rows were read from — the staleness key. */
-  workspacePath: string;
+  key: string;
   branches: GitBranch[];
   commits: BranchCommit[];
   loading: boolean;
@@ -117,6 +120,8 @@ export function createComposerSlash(opts: ComposerSlashOptions): ComposerSlashHa
   // `/review` reads branches and commits out of a CHECKOUT, so a draft
   // placeholder answers the same rows a persisted thread does.
   const workspace = $derived<WorkspaceRef | null>(pane.workspace);
+  const backend = $derived(threadMachine(pane.threadId ?? '', pane.thread?.projectId));
+  const reviewKey = $derived(composeWorkspaceKey(backend, workspace?.workspacePath ?? ''));
   const provider = $derived(pane.thread?.provider ?? '');
 
   const interceptedNames = $derived(interceptedCommandNames(provider));
@@ -124,7 +129,7 @@ export function createComposerSlash(opts: ComposerSlashOptions): ComposerSlashHa
   const slashSections = $derived.by(() => {
     if (!trigger) return [];
     if (trigger.level === 'review') {
-      const git = reviewGit?.workspacePath === (workspace?.workspacePath ?? '') ? reviewGit : null;
+      const git = reviewGit?.key === reviewKey ? reviewGit : null;
       return filterCommandSections(
         buildReviewSections({
           branches: git?.branches ?? [],
@@ -136,14 +141,14 @@ export function createComposerSlash(opts: ComposerSlashOptions): ComposerSlashHa
       );
     }
     const frame = getProviderCommandsFrame(pane.threadId);
-    const probe = getClaudeProbeCommands();
+    const probe = getClaudeProbeCommands(threadMachine(pane.threadId ?? '', pane.thread?.projectId));
     const sections = buildCommandSections({
       provider,
       atStart: trigger.atStart,
       sessionCommands: frame ? frame.commands : null,
       probeCommands: probe.probed ? probe.commands : null,
-      skills: getCodexSkills(workspacePath).skills,
-      claudeSkills: getClaudeSkills(workspacePath).skills,
+      skills: getCodexSkills(workspacePath, threadMachine(pane.threadId ?? '', pane.thread?.projectId)).skills,
+      claudeSkills: getClaudeSkills(workspacePath, threadMachine(pane.threadId ?? '', pane.thread?.projectId)).skills,
     });
     return filterCommandSections(sections, trigger.query);
   });
@@ -163,34 +168,35 @@ export function createComposerSlash(opts: ComposerSlashOptions): ComposerSlashHa
     }
     if (!next.atStart) return;
     if (provider === 'codex') {
-      void ensureCodexSkills(workspacePath);
+      void ensureCodexSkills(workspacePath, false, threadMachine(pane.threadId ?? '', pane.thread?.projectId));
     } else if (provider !== '') {
-      void ensureClaudeProbeCommands();
-      void ensureClaudeSkills(workspacePath);
+      void ensureClaudeProbeCommands(threadMachine(pane.threadId ?? '', pane.thread?.projectId));
+      void ensureClaudeSkills(workspacePath, threadMachine(pane.threadId ?? '', pane.thread?.projectId));
     }
   }
 
   async function loadReviewGit(): Promise<void> {
     const ws = workspace;
     if (!ws) return;
-    const key = ws.workspacePath;
-    if (reviewGit?.workspacePath === key) return;
-    reviewGit = { workspacePath: key, branches: [], commits: [], loading: true, error: '' };
+    const key = reviewKey;
+    const target = backend;
+    if (reviewGit?.key === key) return;
+    reviewGit = { key, branches: [], commits: [], loading: true, error: '' };
     try {
       // Commits are the workspace's recent commits (plain `git log` from
       // HEAD) — the same source codex's own review picker uses — NOT the
       // review pane's `base..HEAD` list, which is empty for a thread
       // sitting on the default branch.
       const [branches, commits] = await Promise.all([
-        GitListBranches(ws).then((b) => (b ?? []) as GitBranch[]),
-        ListRecentCommits(ws).then((c) => (c ?? []) as BranchCommit[]),
+        withBackendTarget(target, () => GitListBranches(ws)).then((b) => (b ?? []) as GitBranch[]),
+        withBackendTarget(target, () => ListRecentCommits(ws)).then((c) => (c ?? []) as BranchCommit[]),
       ]);
-      if (pane.workspace?.workspacePath !== key) return;
-      reviewGit = { workspacePath: key, branches, commits, loading: false, error: '' };
+      if (reviewKey !== key) return;
+      reviewGit = { key, branches, commits, loading: false, error: '' };
     } catch (err) {
-      if (pane.workspace?.workspacePath !== key) return;
+      if (reviewKey !== key) return;
       reviewGit = {
-        workspacePath: key,
+        key,
         branches: [],
         commits: [],
         loading: false,

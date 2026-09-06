@@ -344,6 +344,33 @@ func (s *Sessions) Live(sessionID string) (store.Session, Reason) {
 		s.forget(sessionID)
 	}
 
+	session, reason := s.confirmedSession(sessionID, now)
+	if reason.Refused() {
+		return store.Session{}, reason
+	}
+	if session.ExpiresAt <= now {
+		return store.Session{}, ReasonExpiredSession
+	}
+
+	s.mu.Lock()
+	// Only cache what was still current for the whole read. A revocation
+	// that landed while this read was in flight moved the generation, and
+	// installing the row we fetched before it would resurrect a dead
+	// session in the fast path.
+	if s.generation == generation {
+		if len(s.live) >= liveSweepThreshold {
+			s.sweepExpiredLocked(now)
+		}
+		s.live[sessionID] = session
+	}
+	s.mu.Unlock()
+	return session, ReasonNone
+}
+
+// confirmedSession checks durable admission state, independently of the access
+// window. Refresh has already checked its own longer-lived secret; Live must
+// additionally check access expiry before admitting a request or caching a row.
+func (s *Sessions) confirmedSession(sessionID string, now int64) (store.Session, Reason) {
 	session, err := s.store.GetSession(sessionID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return store.Session{}, ReasonUnknownSession
@@ -362,29 +389,17 @@ func (s *Sessions) Live(sessionID string) (store.Session, Reason) {
 	if session.DeviceRevokedAt != 0 {
 		return store.Session{}, ReasonRevokedDevice
 	}
-	if session.ExpiresAt <= now {
-		return store.Session{}, ReasonExpiredSession
-	}
 	// Checked after expiry on purpose: a pairing whose window lapsed
 	// before anyone confirmed it needs a fresh link, which is what
 	// "expired" says. Only a session still inside its window has a
 	// confirmation worth waiting for.
 	if session.AwaitingConfirmation() {
+		if session.ExpiresAt <= now {
+			return store.Session{}, ReasonExpiredSession
+		}
 		return store.Session{}, ReasonPendingConfirmation
 	}
 
-	s.mu.Lock()
-	// Only cache what was still current for the whole read. A revocation
-	// that landed while this read was in flight moved the generation, and
-	// installing the row we fetched before it would resurrect a dead
-	// session in the fast path.
-	if s.generation == generation {
-		if len(s.live) >= liveSweepThreshold {
-			s.sweepExpiredLocked(now)
-		}
-		s.live[sessionID] = session
-	}
-	s.mu.Unlock()
 	return session, ReasonNone
 }
 

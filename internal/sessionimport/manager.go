@@ -31,6 +31,7 @@ const (
 // the process user's real home.
 type ManagerConfig struct {
 	Context       func() context.Context
+	BeginWork     func(context.Context) (func(), error)
 	ResolveDeps   func() (Deps, error)
 	ValidateStart func() error
 	LockThread    func(string) func()
@@ -122,6 +123,9 @@ type managerJobResult struct {
 func NewManager(config ManagerConfig) *Manager {
 	if config.Context == nil {
 		config.Context = context.Background
+	}
+	if config.BeginWork == nil {
+		config.BeginWork = func(ctx context.Context) (func(), error) { return func() {}, ctx.Err() }
 	}
 	if config.LockThread == nil {
 		config.LockThread = func(string) func() { return func() {} }
@@ -215,6 +219,11 @@ func (m *Manager) CheckThreadUpdates(threadID string) (UpdateStatus, error) {
 // lock; a status returned earlier is never trusted as a write plan.
 func (m *Manager) ApplyThreadUpdates(threadID string) (AppliedUpdate, error) {
 	threadID = strings.TrimSpace(threadID)
+	endWork, err := m.config.BeginWork(m.config.Context())
+	if err != nil {
+		return AppliedUpdate{}, err
+	}
+	defer endWork()
 	deps, err := m.deps()
 	if err != nil {
 		return AppliedUpdate{}, err
@@ -245,6 +254,16 @@ func (m *Manager) Start(ids []string) (RunHandle, error) {
 			return RunHandle{}, err
 		}
 	}
+	endWork, err := m.config.BeginWork(m.config.Context())
+	if err != nil {
+		return RunHandle{}, err
+	}
+	transferred := false
+	defer func() {
+		if !transferred {
+			endWork()
+		}
+	}()
 	ctx, cancel := context.WithCancel(m.config.Context())
 	run := &managerRun{id: uuid.NewString(), total: len(ids), cancel: cancel}
 	m.mu.Lock()
@@ -261,8 +280,10 @@ func (m *Manager) Start(ids []string) (RunHandle, error) {
 	m.active = run
 	m.wg.Add(1)
 	m.mu.Unlock()
+	transferred = true
 	go func() {
 		defer m.wg.Done()
+		defer endWork()
 		defer cancel()
 		defer m.finish(run)
 		m.run(ctx, run, ids)
@@ -332,6 +353,21 @@ func (m *Manager) run(ctx context.Context, run *managerRun, ids []string) {
 		row, found := rows[id]
 		job := managerJob{id: id, row: row, found: found}
 		if found && strings.TrimSpace(row.ProjectID) == "" {
+			// Project registration is an import side effect too. A cached
+			// scan must not create projects for a session retired since the
+			// scan, before ImportOne reaches its own execution fence.
+			unlock, lockErr := deps.Store.LockNativeSessions(ctx, []store.TransferSession{{Provider: row.Provider, Ref: row.SessionID}})
+			if lockErr != nil {
+				job.prepareErr = lockErr
+				jobs = append(jobs, job)
+				continue
+			}
+			if accessErr := deps.Store.CheckNativeSessionImport(row.Provider, row.SessionID); accessErr != nil {
+				unlock()
+				job.prepareErr = accessErr
+				jobs = append(jobs, job)
+				continue
+			}
 			path := strings.TrimSpace(row.ProjectPath)
 			resolved, ok := projectsByPath[path]
 			if !ok {
@@ -347,6 +383,7 @@ func (m *Manager) run(ctx context.Context, run *managerRun, ids []string) {
 			} else {
 				job.row.ProjectID = resolved.id
 			}
+			unlock()
 		}
 		jobs = append(jobs, job)
 	}

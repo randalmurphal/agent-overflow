@@ -103,13 +103,18 @@ func (a *App) startDevServerPreviews() {
 }
 
 // devServerScanTick runs one pass and reports whether the loop goes on.
-// Its own method because both of its stop paths have to hand the
-// listeners back, and a body inlined in a goroutine has no test.
+// Idle discovery retains independently opened previews; a failed scan retires
+// its listeners. Keeping this outside the goroutine makes both paths testable.
 func (a *App) devServerScanTick(ctx context.Context) bool {
 	if !a.devServerScanWanted() {
-		// Nobody off this machine can read the list any more, so nothing
-		// may stay bound on the strength of the last pass that could.
-		a.releasePreviewListeners()
+		// The app's connection may disappear after handing a preview to a
+		// browser. Stop scanning, but let that browser retain its own grant.
+		a.preview.mu.Lock()
+		gateway := a.preview.gateway
+		a.preview.mu.Unlock()
+		if gateway != nil {
+			gateway.ReleaseIdlePorts()
+		}
 		return true
 	}
 	if _, err := a.scanDevServers(ctx); err != nil {
@@ -128,16 +133,11 @@ func (a *App) devServerScanTick(ctx context.Context) bool {
 
 // releasePreviewListeners retires every listener the last pass bound.
 //
-// A preview listener exists because a scan put its port in the served
-// set, and `reconcilePreviewListeners` is the only thing that ever takes
-// one back out — so every path that stops scanning leaves the whole set
-// bound with nobody reading the list it was reconciled against. Three
-// paths do that: the receiver count going to zero (the last remote
-// session detached), a halted enumerator, and the life context ending.
-// The first is not shutdown at all, so the gateway must survive it: this
-// releases the PORTS and keeps the gateway, and the next pass rebinds
-// whatever is still listening. Shutdown is `closePreviewGateway`, which
-// retires the grants too.
+// A halted enumerator or ending life context invalidates the discovery set.
+// This releases its ports while preserving the gateway. Merely losing the
+// app's remote readers uses ReleaseIdlePorts instead: an external browser's
+// ticket or grant has an independent lifetime. Shutdown is closePreviewGateway,
+// which retires the grants too.
 //
 // Nothing is built here. A gateway that was never constructed has no
 // listeners to release, and building one to hand it an empty set would

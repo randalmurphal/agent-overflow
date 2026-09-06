@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { projectHasScope } from '../../transport/entityScopes';
   // New run (UI-SPEC §5.1). Project · Goal · Workflow · Base branch · the
   // workflow's own fields · step mode. The footer's primary is `Start`: rev 2
   // has no queue, so there is no position to show and nothing to predict.
@@ -16,7 +17,6 @@
   import { getProjectLabelText, getProjects } from '../../stores/projects.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
-  import { hasScope } from '../../transport/scopes';
   import { workflowChainSummary, workflowDefinitionMeta } from '../../stores/workflowData';
   import { compactWorkflowSeeds, workflowIntakeError, workflowSeedDefault } from '../../utils/workflowIntake';
   import { getWorkflowCatalog, refreshWorkflowRunsSoon } from '../../stores/workflowRuns.svelte';
@@ -29,9 +29,9 @@
   let { open, onClose }: Props = $props();
 
   // Every control here drives the workflow engine, which is `threads:autonomy`.
-  let ungranted = $derived(!hasScope('threads:autonomy'));
   let projects = $derived(getProjects());
   let projectId = $state('');
+  let ungranted = $derived(!projectHasScope('threads:autonomy', projectId));
   let goal = $state('');
   let workflowId = $state('');
   let seeds = $state<Record<string, unknown>>({});

@@ -1,125 +1,110 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { tick } from 'svelte';
 import {
-  applyChatBarFavorites,
-  ensureChatBarFavorites,
-  peekChatBarFavorites,
-  peekChatBarFavoritesError,
-  setChatBarFavorite,
+  __resetChatBarFavoritesForTest, ensureChatBarFavorites, peekChatBarFavorites,
+  peekChatBarFavoritesError, setChatBarFavorite,
 } from './chatBarFavorites.svelte';
 import type { ChatBarFavorite } from './bindings';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { __setTransportStatusForTest } from './transportStatus.svelte';
+import { readFrontendValue, writeFrontendValue } from './frontendStorage';
+import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
+import { takePinnedBackend } from '../transport/backends';
+import { setCarriedSessionScopes } from '../transport/scopes';
+import { setSelectedBackend } from './selectedBackend.svelte';
 
 function favorite(value: string): ChatBarFavorite {
   return { kind: 'model', provider: 'claude', value, label: value, createdAt: 0 };
 }
+async function flush(): Promise<void> { for (let i = 0; i < 8; i++) await tick(); }
 
-async function flush(n = 6): Promise<void> {
-  for (let i = 0; i < n; i += 1) await tick();
-}
-
-describe('chatBarFavorites', () => {
-  it('loads once however many menus ask for it', async () => {
+describe('frontend favorites', () => {
+  it('migrates once and retains the seed across a frontend restart', async () => {
     const list = setBindingMock('ListChatBarFavorites', async () => [favorite('opus')]);
     ensureChatBarFavorites();
     ensureChatBarFavorites();
     await flush();
-
     expect(list).toHaveBeenCalledTimes(1);
-    expect(peekChatBarFavorites().map((f) => f.value)).toEqual(['opus']);
-  });
-
-  it('lands a star on the shared list, so every mounted menu sees it', async () => {
-    setBindingMock('ListChatBarFavorites', async () => []);
-    setBindingMock('SetChatBarFavorite', async () => [favorite('opus')]);
+    expect(peekChatBarFavorites()).toEqual([favorite('opus')]);
+    __resetChatBarFavoritesForTest();
     ensureChatBarFavorites();
     await flush();
-    expect(peekChatBarFavorites()).toEqual([]);
-
-    await setChatBarFavorite(favorite('opus'), true);
-
-    expect(peekChatBarFavorites().map((f) => f.value)).toEqual(['opus']);
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(peekChatBarFavorites()).toEqual([favorite('opus')]);
   });
 
-  it('surfaces a failed load as state instead of latching an empty list', async () => {
+  it('stars and unstars while offline without writing to a computer', async () => {
+    const write = setBindingMock('SetChatBarFavorite', async () => []);
+    __setTransportStatusForTest({ status: 'disconnected', nextAttemptAt: null });
+    await setChatBarFavorite(favorite('opus'), true);
+    await setChatBarFavorite(favorite('haiku'), true);
+    expect(peekChatBarFavorites().map((row) => row.value)).toEqual(['haiku', 'opus']);
+    await setChatBarFavorite(favorite('opus'), false);
+    __resetChatBarFavoritesForTest();
+    expect(peekChatBarFavorites()).toEqual([favorite('haiku')]);
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('a late migration cannot overwrite a choice made on this frontend', async () => {
+    let finish!: (rows: ChatBarFavorite[]) => void;
+    setBindingMock('ListChatBarFavorites', () => new Promise((resolve) => { finish = resolve; }));
+    ensureChatBarFavorites();
+    await setChatBarFavorite(favorite('haiku'), true);
+    finish([favorite('opus')]);
+    await flush();
+    expect(peekChatBarFavorites()).toEqual([favorite('haiku')]);
+  });
+
+  it('a failed seed is visible and retries on the next menu open', async () => {
     let broken = true;
     setBindingMock('ListChatBarFavorites', async () => {
-      if (broken) throw new Error('boom');
+      if (broken) throw new Error('favorites unavailable');
       return [favorite('opus')];
     });
     ensureChatBarFavorites();
     await flush();
-
-    expect(peekChatBarFavoritesError()).toContain('boom');
-
-    // The old per-menu latch never retried a failed first load. A reconnect
-    // re-sources, and this time it works.
+    expect(peekChatBarFavoritesError()).toMatch(/favorites unavailable/i);
     broken = false;
-    __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
+    ensureChatBarFavorites();
     await flush();
-
     expect(peekChatBarFavoritesError()).toBeNull();
-    expect(peekChatBarFavorites().map((f) => f.value)).toEqual(['opus']);
+    expect(peekChatBarFavorites()).toEqual([favorite('opus')]);
   });
 
-  it('drops the list while the transport is down and re-reads on reconnect', async () => {
-    const list = setBindingMock('ListChatBarFavorites', async () => [favorite('opus')]);
-    ensureChatBarFavorites();
-    await flush();
-    expect(peekChatBarFavorites()).toHaveLength(1);
-
-    __setTransportStatusForTest({ status: 'disconnected', nextAttemptAt: null });
-    await flush();
-    expect(peekChatBarFavorites()).toEqual([]);
-    expect(list).toHaveBeenCalledTimes(1);
-
-    __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
-    await flush();
-    expect(list).toHaveBeenCalledTimes(2);
-    expect(peekChatBarFavorites()).toHaveLength(1);
+  it('can seed from the selected remote computer and keeps stars when it is forgotten', async () => {
+    stageBackend({ id: 'laptop' });
+    setCarriedSessionScopes('laptop', ['settings:read']);
+    setBindingMock('ListChatBarFavorites', async () => {
+      expect(takePinnedBackend()).toBe('laptop');
+      return [favorite('remote-model')];
+    });
+    setSelectedBackend('laptop');
+    try {
+      ensureChatBarFavorites();
+      await flush();
+      expect(peekChatBarFavorites()).toEqual([favorite('remote-model')]);
+    } finally { setSelectedBackend(''); resetStagedBackends(); }
+    expect(peekChatBarFavorites()).toEqual([favorite('remote-model')]);
   });
 
-  // Star and unstar used to reach only the client that clicked: the RPC
-  // answers with the new list and nothing else was ever told, so a second
-  // device kept showing the old stars in every menu until reload.
-  it('adopts the whole list another client’s write produced', async () => {
-    setBindingMock('ListChatBarFavorites', async () => [favorite('opus')]);
+  it('reads other windows and validates malformed saved entries', async () => {
+    writeFrontendValue('chat-bar-favorites', [favorite('opus'), favorite('opus'), null, { kind: 'bogus', value: 'x' }]);
+    window.dispatchEvent(new StorageEvent('storage', { key: 'agent-overflow:frontend:chat-bar-favorites', storageArea: localStorage }));
+    expect(peekChatBarFavorites()).toEqual([favorite('opus')]);
+    writeFrontendValue('chat-bar-favorites', []);
+    window.dispatchEvent(new StorageEvent('storage', { key: 'agent-overflow:frontend:chat-bar-favorites', storageArea: localStorage }));
+    expect(peekChatBarFavorites()).toEqual([]);
     ensureChatBarFavorites();
     await flush();
-
-    applyChatBarFavorites([favorite('opus'), favorite('haiku')]);
-    await flush();
-
-    expect(peekChatBarFavorites().map((f) => f.value)).toEqual(['opus', 'haiku']);
+    expect(readFrontendValue('chat-bar-favorites')).toEqual([]);
   });
 
-  it('takes an emptied list, and treats a malformed frame as empty', async () => {
-    setBindingMock('ListChatBarFavorites', async () => [favorite('opus')]);
-    ensureChatBarFavorites();
-    await flush();
-
-    applyChatBarFavorites([]);
-    await flush();
-    expect(peekChatBarFavorites()).toEqual([]);
-
-    applyChatBarFavorites(null);
-    await flush();
-    expect(peekChatBarFavorites()).toEqual([]);
-  });
-
-  // Applying before anything holds the list would seed an entry no menu is
-  // reading, and the first ensureChatBarFavorites sources it anyway.
-  it('ignores a frame that arrives before any menu has asked', async () => {
-    const list = setBindingMock('ListChatBarFavorites', async () => []);
-
-    applyChatBarFavorites([favorite('opus')]);
-    await flush();
-    expect(peekChatBarFavorites()).toEqual([]);
-    expect(list).not.toHaveBeenCalled();
-
-    ensureChatBarFavorites();
-    await flush();
-    expect(peekChatBarFavorites()).toEqual([]);
+  it('a failed local write keeps the last saved list', async () => {
+    await setChatBarFavorite(favorite('opus'), true);
+    const write = vi.spyOn(localStorage, 'setItem').mockImplementation(() => { throw new Error('quota'); });
+    try {
+      await expect(setChatBarFavorite(favorite('haiku'), true)).rejects.toThrow('could not save');
+      expect(peekChatBarFavorites()).toEqual([favorite('opus')]);
+    } finally { write.mockRestore(); }
   });
 });

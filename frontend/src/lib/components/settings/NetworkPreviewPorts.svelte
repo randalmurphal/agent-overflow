@@ -24,7 +24,8 @@
     machineDevServers,
     sharedPreviewPorts,
   } from '../../stores/devServers.svelte';
-  import { HOME_BACKEND } from '../../transport/backendKey';
+  import { settingsComputer } from './settingsComputer';
+  const { backend } = settingsComputer();
   import SettingsField from './SettingsField.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
   import { INPUT_CLASS, PRIMARY_BUTTON_CLASS, SECONDARY_BUTTON_CLASS, SECTION_PROSE_CLASS } from './styles';
@@ -33,16 +34,16 @@
 
   let draft = $state('');
 
-  let machine = $derived(machineDevServers(HOME_BACKEND));
+  let machine = $derived(machineDevServers(backend));
   // Two kinds of shared port, and only one of them has a control. A port
   // in the persisted set is this list's to take back; a port shared because
   // a thread is running a server on it goes away when that run does, and
   // `DisallowPreviewPort` would edit a set it is not in. `ports` is both,
   // because the field below refuses a port that is already reachable
   // whichever way it got there.
-  let ports = $derived(allowedPreviewPorts(HOME_BACKEND));
-  let shared = $derived(sharedPreviewPorts(HOME_BACKEND));
-  let attributed = $derived(attributedPreviewPorts(HOME_BACKEND));
+  let ports = $derived(allowedPreviewPorts(backend));
+  let shared = $derived(sharedPreviewPorts(backend));
+  let attributed = $derived(attributedPreviewPorts(backend));
   let previewHost = $derived(machine.list?.previewHost ?? '');
   let answered = $derived(machine.list !== null);
 
@@ -64,11 +65,11 @@
     // reconciled by the backend's next frame, so there is nothing here to
     // roll back, and a field that stays full reads as a press that missed.
     draft = '';
-    await allowPreviewPort(HOME_BACKEND, port);
+    await allowPreviewPort(backend, port);
   }
 
   $effect(() => {
-    void loadDevServers(HOME_BACKEND);
+    void loadDevServers(backend);
   });
 </script>
 
@@ -99,7 +100,7 @@
             class={SECONDARY_BUTTON_CLASS}
             data-testid="preview-port-remove"
             aria-label="Stop sharing port {port}"
-            onclick={() => void disallowPreviewPort(HOME_BACKEND, port)}
+            onclick={() => void disallowPreviewPort(backend, port)}
           >
             Stop sharing
           </button>

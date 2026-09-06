@@ -81,3 +81,63 @@ The reachability warning considers both LAN binding and a running tailnet;
 `GetNetworkSettings` is readable with `access:admin`, including on paired
 phones. Unknown reachability must not recommend changing a working network.
 `DevicesSection.test.ts` covers a tailnet-only host.
+
+Access & sharing puts LAN and Tailscale controls first, followed by Devices
+and optional agent access. Domain, ports and certificate setup stay under
+Advanced network settings. Help text names its destination without assuming
+that it is above or below the control. Computers groups existing connections
+before its add form, so managing a machine does not require scanning past setup.
+
+An offline saved connection exposes `ComputerAddress`. Its repair belongs to
+the frontend's pairing, not settings on the selected computer. Go's host-only
+`RepairBackendAddress` and the native route controller verify existing trust
+before saving. Keep errors beside the entered address, leave failed input
+editable, and reconnect only the captured connection if it still exists.
+
+## Computer ownership
+
+SettingsView captures a computer independently of the active thread. Its keyed
+ComputerSettingsPage provides settingsComputer context to every child editor:
+use that context's getters, mutators, scope checks, and `call` for a single
+synchronously dispatched RPC. Remount on computer changes so a pending form
+cannot write to a newly selected host. Provider-account and model stores also
+receive the captured backend explicitly. Frontend preferences are local to this
+frontend and overlay every computer's redacted settings snapshot.
+
+A page's initial read belongs in onMount. Calling a loader that reads its cache
+inside an effect subscribes the effect to the response it writes, creating an
+unbounded read loop. Refresh subsequent changes through the settings event and
+reconnect paths; never by observing a whole settings snapshot in that loader.
+
+The editor preference is configurable on the selected computer with
+`settings:read` / `settings:write`. Discovering its installed editors is a read of
+that computer’s settings; launching an editor remains `host`-scoped. A phone can
+configure a computer’s preference without being allowed to launch its desktop.
+# SSH setup
+
+`SSHConnectModal` is desktop/host-only and uses the existing AddBackend profile
+flow. It compares both verification numbers before explicit confirmation.
+Closing before confirmation cancels even late start/redemption responses;
+closing during confirmation preserves the profile because the remote may have
+accepted before its reply arrives. The installed service outlives its console.
+
+Agent access is configured on the selected originating computer. Its peer
+toggles never imply that two computers already share a phone's credentials.
+The pair-and-enable action captures both endpoints, mints on the destination,
+enrolls the source, compares backend identity and both verification numbers,
+then confirms on the destination and opts in on the source. A failed comparison
+cancels the pending invitation. Existing scope and step-up checks stay active.
+Refresh this page on its own computer's reconnect and agent-computers:changed
+event; a late read cannot replace a newer table or refill a closed page.
+Existing peers appear once, outside the add selector. A failed Enable retains
+an explicit Connect again action when this frontend can reach the destination;
+an incomplete saved pairing must not lose its repair path after reloading.
+
+A native select bound with Svelte's bind:value belongs in browser tests: the
+installed happy-dom selector implementation recognizes :checked on inputs only,
+so it cannot emulate Svelte reading a selected option. Do not alter production
+select handling or fake selector results to make that DOM emulator pass.
+
+Connection banners stay below the shared Settings/Workflows overlay layer.
+On compact screens both occupy the top edge; a higher banner intercepts the
+close button. The offline standalone-client browser flow exercises this seam.

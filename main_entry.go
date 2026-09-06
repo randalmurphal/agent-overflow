@@ -183,6 +183,7 @@ type bootFlags struct {
 	listen             *string
 	printURLFD         *string
 	connect            *string
+	frontend           *bool
 	dataDir            *string
 	harness            *bool
 	soak               *bool
@@ -208,7 +209,8 @@ func newBootFlagSet() (*flag.FlagSet, bootFlags) {
 	return flagSet, bootFlags{
 		listen:             flagSet.String("listen", "", "transport bind address (e.g. 127.0.0.1:0). Empty means use the default loopback + ephemeral port."),
 		printURLFD:         flagSet.String("print-url-fd", "", "run headless and write {port,token} to this file descriptor as JSON. Falls back to a stdout sentinel when the fd isn't open."),
-		connect:            flagSet.String("connect", "", "remote client mode: attach the desktop window to a backend instead of booting a local one. Takes a pairing link (pairs this device, then attaches), a backend this device is already paired with (its id, its endpoint, or host:port), or ws://host:port/?token=<value> for a backend on this machine. Skips local transport boot."),
+		connect:            flagSet.String("connect", "", "remote client mode: attach the desktop window to a backend instead of booting a local one. Takes a pairing link (pairs this device, then attaches), a backend this device is already paired with (its id, its endpoint, or host:port), or ws://host:port/?token=<value> for a backend on this machine. Skips local execution boot."),
+		frontend:           flagSet.Bool("frontend", false, "open the desktop frontend with its saved computers, without starting a local execution backend or requiring any computer to be online."),
 		dataDir:            flagSet.String("data-dir", "", "data directory root override; app data lives in <data-dir>/agent-overflow. Required by --harness."),
 		harness:            flagSet.Bool("harness", false, "agent test harness mode: headless boot on an isolated --data-dir with mock providers and the Harness RPC surface. See docs/architecture/agent-harness.md."),
 		soak:               flagSet.Bool("soak", false, "launcher-shell isolated backend: harness-grade isolation (mock providers, isolated data dir + HOME) behind the ORDINARY headless bootstrap, so the Windows launcher can host it in a real WebView2 window. Launcher-owned wire flag; the historical name is why it says soak. Defaults --data-dir to ~/.agent-overflow-harness, or ~/.agent-overflow-soak with --autopilot."),
@@ -233,18 +235,16 @@ func newBootFlagSet() (*flag.FlagSet, bootFlags) {
 // rename from leaving the launcher passing a flag we reject.
 const resetTransportPortFlag = wsllauncher.ResetTransportPortFlag
 
-// cliFlags carries the parsed command-line state. Four modes are
-// mutually exclusive: --connect (Phase F remote-client), --print-url-fd
-// (Phase D headless), --harness (agent test harness), and the default
-// desktop boot. parseFlags enforces the pairwise conflicts so mode
-// selection is unambiguous.
+// cliFlags carries parsed boot state. parseFlags rejects conflicting frontend,
+// execution, launcher and isolated-test modes before any boot side effects.
 type cliFlags struct {
 	listenAddr string
 	printURLFD int
 	headless   bool
 	connect    string
+	frontend   bool
 	// dataDir overrides the data directory root (app data lives in
-	// <dataDir>/agent-overflow). Usable with any local-backend mode;
+	// <dataDir>/agent-overflow). Usable with local-backend modes and --frontend;
 	// required by --harness so a harness can never touch real data.
 	dataDir string
 	// harness boots the agent test harness: headless transport, isolated
@@ -307,6 +307,7 @@ func parseFlags(args []string) (cliFlags, error) {
 	out := cliFlags{
 		listenAddr:             *values.listen,
 		connect:                *values.connect,
+		frontend:               *values.frontend,
 		dataDir:                *values.dataDir,
 		harness:                *values.harness,
 		soak:                   *values.soak,
@@ -331,6 +332,20 @@ func parseFlags(args []string) (cliFlags, error) {
 		return cliFlags{}, errors.New("--isolated-profile perf cannot arm --autopilot")
 	}
 
+	if out.frontend {
+		for _, conflict := range []struct {
+			name string
+			set  bool
+		}{
+			{"connect", out.connect != ""}, {"print-url-fd", *values.printURLFD != ""},
+			{"harness", out.harness}, {"soak", out.soak}, {"window", out.window},
+			{"listen", out.listenAddr != ""},
+		} {
+			if conflict.set {
+				return cliFlags{}, fmt.Errorf("cannot combine --frontend with --%s", conflict.name)
+			}
+		}
+	}
 	if out.connect != "" && *values.printURLFD != "" {
 		return cliFlags{}, errors.New("cannot combine --connect with --print-url-fd")
 	}

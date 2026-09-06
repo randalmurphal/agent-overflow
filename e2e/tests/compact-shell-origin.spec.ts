@@ -337,6 +337,25 @@ test.describe.serial('the SPA served from its own origin', () => {
       'the allowed origin is one origin, never a wildcard',
     ).toBe(true);
 
+    // Old stored pairings must learn renewal support across real browser
+    // CORS. An unreadable health probe would leave this session unrenewed.
+    const sessionId = await page.evaluate(() => {
+      const key = 'agent-overflow:deviceSession';
+      const held = JSON.parse(localStorage.getItem(key)!);
+      delete held.refreshRecovery;
+      held.expiresAtMs = 1;
+      localStorage.setItem(key, JSON.stringify(held));
+      return held.sessionId as string;
+    });
+    await page.reload();
+    await expect(row).toBeVisible({ timeout: PAIRED_APP_MOUNT_MS });
+    expect(seen('GET', '/auth/token').some((answer) => answer.status === 405 && answer.allowOrigin === bundle.origin)).toBe(true);
+    expect(seen('POST', '/auth/token/recover').some((answer) => answer.status === 200)).toBe(true);
+    expect(await page.evaluate((before) => {
+      const held = JSON.parse(localStorage.getItem('agent-overflow:deviceSession')!);
+      return held.sessionId === before && held.expiresAtMs > Date.now() && !held.pendingNextSecret;
+    }, sessionId)).toBe(true);
+
     // --- One RPC, driven from the UI -------------------------------------
     await row.click();
     await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'thread');

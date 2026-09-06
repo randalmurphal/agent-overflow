@@ -29,7 +29,7 @@ export const SETTINGS_SECTIONS = [
     label: 'Theme',
     group: 'Appearance',
     description:
-      'Light or dark mode and the two theme axes. Themes are JSON files you or an agent can edit; the app reloads them as they are saved.',
+      'Light or dark mode, interface colors, and code highlighting.',
   },
   {
     id: 'typography',
@@ -137,17 +137,18 @@ export const SETTINGS_SECTIONS = [
   },
   {
     id: 'remote',
-    label: 'Remote access',
+    label: 'Access & sharing',
+    navigation: false,
     group: 'Workspace',
     description:
-      "Open this backend to other devices on your network, and the devices that are paired to it.",
+      "Connections and devices allowed to access this computer.",
   },
   {
     id: 'systems',
-    label: 'Systems',
+    label: 'Computers',
     group: 'Workspace',
     description:
-      "The machines this window is attached to: this one, and any other backend it reaches over a paired session.",
+      "Your connected computers, accounts, projects and remote access.",
   },
   {
     id: 'observability',
@@ -166,6 +167,7 @@ export const SETTINGS_SECTIONS = [
   label: string;
   group: SettingsGroup;
   description: string;
+  navigation?: boolean;
 }>;
 
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number]['id'];
@@ -182,7 +184,7 @@ export const DEFAULT_SETTINGS_SECTION: SettingsSection = 'theme';
  */
 export const SETTINGS_SECTION_GROUPS = SETTINGS_GROUPS.map((label) => ({
   label,
-  sections: SETTINGS_SECTIONS.filter((s) => s.group === label),
+  sections: SETTINGS_SECTIONS.filter((s) => s.group === label && !('navigation' in s && s.navigation === false)),
 })).filter((group) => group.sections.length > 0);
 
 /**
@@ -208,4 +210,11 @@ export function providerSettingsSection(provider: ProviderID): 'claude' | 'codex
   const root = getProviderDefinition(provider).dependsOnProvider ?? provider;
   if (root === 'claude' || root === 'codex') return root;
   throw new Error(`no settings page for provider ${provider}`);
+}
+
+/** Pages that configure execution on a computer, rather than this frontend. */
+export function settingsUsesComputer(section: SettingsSection): boolean {
+  return ['performance', 'notifications', 'claude', 'codex', 'commit-messages',
+    'browser', 'discussions', 'projects', 'git', 'editor', 'remote',
+    'observability', 'storage'].includes(section);
 }

@@ -1,5 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { buildCustomSprite, parseCustomManifest } from './customs';
+import { buildCustomSprite, parseCustomManifest, pngDimensions } from './customs';
+import { pngHeader } from '../../test/pngHeader';
+
+describe('pngDimensions', () => {
+  it('reads a bounded strip without decoding image pixels', () => {
+    expect(pngDimensions(pngHeader(288, 72))).toEqual({ width: 288, height: 72 });
+  });
+  it.each([[0, 10], [10, 0], [32_000, 32_000], [65_536, 1]])('refuses unsafe dimensions %s by %s', (width, height) => {
+    expect(pngDimensions(pngHeader(width, height))).toBeNull();
+  });
+  it.each(['', 'bad base64 !', btoa('this is not a PNG')])('refuses invalid PNG headers', (raw) => {
+    expect(pngDimensions(raw)).toBeNull();
+  });
+});
 
 describe('parseCustomManifest', () => {
   it('parses a minimal manifest', () => {

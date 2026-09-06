@@ -8,7 +8,7 @@
 
 import { describe, expect, it, beforeEach } from 'vitest';
 import { render } from '@testing-library/svelte';
-import { loadSettings } from '../../stores/settings.svelte';
+import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { resetKeybindingsStore } from '../../stores/keybindings.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeSettings } from '../../../test/helpers/settings';
@@ -34,6 +34,8 @@ async function seed(): Promise<void> {
     themes: [],
     appearance: { mode: 'system', uiTheme: 'default', codeTheme: 'github' },
   }));
+  setBindingMock('ListProjects', async () => [{ project: { id: 'settings-project', name: 'repo', path: '/repo', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 0 }]);
+  setBindingMock('GetProjectWorktreeSetup', async () => ({ copy: [], run: [], timeout: '' }));
   setBindingMock('ListAvailableEditors', async () => []);
   setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
   setBindingMock('GetSpinnerFiles', async () => ({ dir: '/tmp/spinners', sprites: [], warnings: [] }));

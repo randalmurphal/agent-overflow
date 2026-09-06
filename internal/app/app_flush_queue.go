@@ -861,6 +861,12 @@ func (a *App) dropDurableFlushQueue(threadID string) {
 func (a *App) registerQueueItem(
 	threadID string, message string, opts SendMessageOptions, injected injectedQueueOptions,
 ) (QueuedItem, error) {
+	endAdmission, admitErr := a.workAdmission.begin(a.lifeCtx())
+	if admitErr != nil {
+		return QueuedItem{}, admitErr
+	}
+	defer endAdmission()
+
 	if a.shuttingDown.Load() {
 		return QueuedItem{}, ErrShuttingDown
 	}
@@ -885,6 +891,11 @@ func (a *App) registerQueueItem(
 	if opts.RevisionSourceDiffReview == nil && len(opts.RevisionSourceDiffCommentIDs) > 0 {
 		return QueuedItem{}, fmt.Errorf("register queue item: diff review comments require a source diff review")
 	}
+	unlock, err := a.threadApplication().LockMutable(context.Background(), threadID)
+	if err != nil {
+		return QueuedItem{}, err
+	}
+	defer unlock()
 	// Thread-existence check: a stale or attacker-supplied threadID
 	// would otherwise grow a permanent in-memory queue entry that
 	// CleanupThread never sweeps (no session ever attached). Same
@@ -914,16 +925,11 @@ func (a *App) registerQueueItem(
 	// discarding the turn-starting prompt. See the a.flushDispatch.handoffMu field doc
 	// (app.go) for the window and why this isn't the per-thread action lock.
 	//
-	// Lock hierarchy (acyclic): threadLock -> a.flushDispatch.handoffMu -> {r.mu (triage),
-	// a.flushDispatch.mu, sessionruntime}. The only threadLock/a.flushDispatch.handoffMu edge is the
-	// revert predicate's (InterruptAndRevertIfClean holds threadLock and reaches
-	// a.flushDispatch.handoffMu via pendingFlushWorkCount). This span acquires r.mu,
-	// a.flushDispatch.mu (the synchronous enqueueFlushDispatch inflight bump), and
-	// sessionruntime (sessionManager().get below) while holding a.flushDispatch.handoffMu, but never
-	// the thread lock — enqueueFlushDispatch spawns the dispatch worker, which
-	// takes threadLock asynchronously. And no path holds sessionruntime when entering
-	// RegisterQueueItem or pendingFlushWorkCount, so sessionruntime is never inverted
-	// against a.flushDispatch.handoffMu. No cycle, no deadlock.
+	// Lock order: action -> ordinary mutation -> handoff -> triage/runtime.
+	// Queue admission holds only the mutation and handoff locks, so a slow
+	// send/revert never blocks typing into the queue. Transfer reservation
+	// takes action then mutation before checking queues and recording its
+	// fence. Dispatch workers acquire action asynchronously after admission.
 	a.flushDispatch.handoffMu.Lock()
 	defer a.flushDispatch.handoffMu.Unlock()
 

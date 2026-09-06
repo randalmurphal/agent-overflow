@@ -13,7 +13,8 @@ import { requestFileSpans } from '../../utils/diffSpanCache.svelte';
 import type { PatchFile, PatchLine } from '../../utils/patchFiles';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
-import { loadSettings, resetSettingsForTest } from '../../stores/settings.svelte';
+import { resetSettingsForTest } from '../../stores/settings.svelte';
+import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { makeSettings } from '../../../test/helpers/settings';
 import { buildPane, makeItem } from '../../../test/helpers/chat';
 import { formatTimeOfDay } from '../../utils/format';
@@ -132,7 +133,9 @@ const PANE_THREAD = {
 
 /** What `openReviewForItem` derives from `fakePane()`. */
 const PANE_SUBJECT = {
-  identity: 'thread-1',
+  // Opaque lifecycle key; ownership/checkout invalidation is covered by the
+  // companion tests. This card's contract is the actual thread and workspace.
+  identity: expect.any(String),
   threadId: 'thread-1',
   workspace: { projectId: 'project-1', workspacePath: '/tmp/workspace' },
   thread: PANE_THREAD,

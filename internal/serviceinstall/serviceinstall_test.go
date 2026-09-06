@@ -558,3 +558,32 @@ func assertCalls(t *testing.T, runner *fakeRunner, want []string) {
 		}
 	}
 }
+
+func TestStopDoesNotTreatSignalDeliveryAsProcessExit(t *testing.T) {
+	runner := newRunner()
+	cfg := linuxConfig(t.TempDir())
+	cfg.GOOS, cfg.UID = "darwin", "501"
+	target := "gui/501/" + LaunchdLabel
+	runner.answers["launchctl print "+target] = answer{output: "state = exiting\n pid = 42", code: 0}
+	manager, err := New(cfg, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := manager.Stop(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("stop with a surviving pid = %v, want cancellation rather than success", err)
+	}
+}
+
+func TestStopReportsManagerRefusals(t *testing.T) {
+	runner := newRunner()
+	manager, err := New(linuxConfig(t.TempDir()), runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner.answers["systemctl --user stop "+ServiceName+".service"] = answer{output: "access denied", code: 1}
+	if err := manager.Stop(t.Context()); err == nil || !strings.Contains(err.Error(), "access denied") {
+		t.Fatalf("stop = %v, want manager refusal", err)
+	}
+}

@@ -15,7 +15,7 @@
 package main
 
 func runClient(_ string) {
-	fatalf("--connect mode is not available in this build; the WSL backend payload only runs headless. Launch the desktop binary on your host OS instead.")
+	fatalf("--frontend and --connect require a desktop build; this binary only runs headless. Launch the desktop binary on your host OS instead.")
 }
 
 func runDesktop(_ string) {

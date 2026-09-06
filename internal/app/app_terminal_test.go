@@ -13,14 +13,15 @@ import (
 // newAppWithTerminals constructs an App with a live terminal manager but no
 // Wails runtime, so output/exit callbacks become no-ops (they guard on
 // a.app == nil).
-func newAppWithTerminals() *App {
-	app := NewApp()
+func newAppWithTerminals(t *testing.T) *App {
+	t.Helper()
+	app := newTestAppWithStore(t)
 	app.terminals = terminal.NewManager(app.terminalOutputCallback, app.terminalExitCallback)
 	return app
 }
 
 func TestOpenTerminalRequiresCwd(t *testing.T) {
-	app := newAppWithTerminals()
+	app := newAppWithTerminals(t)
 	_, err := app.OpenTerminal("thread-a", TerminalOpenOptions{})
 	if err == nil {
 		t.Fatal("expected error for missing cwd")
@@ -28,7 +29,7 @@ func TestOpenTerminalRequiresCwd(t *testing.T) {
 }
 
 func TestOpenTerminalReturnsHandle(t *testing.T) {
-	app := newAppWithTerminals()
+	app := newAppWithTerminals(t)
 	t.Cleanup(func() { _ = app.terminals.Shutdown() })
 
 	handle, err := app.OpenTerminal("thread-a", TerminalOpenOptions{
@@ -50,7 +51,7 @@ func TestOpenTerminalReturnsHandle(t *testing.T) {
 }
 
 func TestWriteTerminalDecodesBase64(t *testing.T) {
-	app := newAppWithTerminals()
+	app := newAppWithTerminals(t)
 	t.Cleanup(func() { _ = app.terminals.Shutdown() })
 
 	handle, err := app.OpenTerminal("thread-w", TerminalOpenOptions{
@@ -68,7 +69,7 @@ func TestWriteTerminalDecodesBase64(t *testing.T) {
 }
 
 func TestWriteTerminalRejectsBadBase64(t *testing.T) {
-	app := newAppWithTerminals()
+	app := newAppWithTerminals(t)
 	t.Cleanup(func() { _ = app.terminals.Shutdown() })
 
 	handle, err := app.OpenTerminal("thread-b", TerminalOpenOptions{
@@ -88,7 +89,7 @@ func TestWriteTerminalRejectsBadBase64(t *testing.T) {
 }
 
 func TestResizeAndCloseTerminal(t *testing.T) {
-	app := newAppWithTerminals()
+	app := newAppWithTerminals(t)
 	t.Cleanup(func() { _ = app.terminals.Shutdown() })
 
 	handle, err := app.OpenTerminal("thread-r", TerminalOpenOptions{
@@ -187,7 +188,7 @@ func TestMoveThreadTerminalsRequiresDraftSourceAndRealTarget(t *testing.T) {
 }
 
 func TestRestartTerminalReturnsNewHandle(t *testing.T) {
-	app := newAppWithTerminals()
+	app := newAppWithTerminals(t)
 	t.Cleanup(func() { _ = app.terminals.Shutdown() })
 
 	handle, err := app.OpenTerminal("thread-rs", TerminalOpenOptions{
@@ -207,7 +208,7 @@ func TestRestartTerminalReturnsNewHandle(t *testing.T) {
 }
 
 func TestGetTerminalReplayReturnsBase64(t *testing.T) {
-	app := newAppWithTerminals()
+	app := newAppWithTerminals(t)
 	t.Cleanup(func() { _ = app.terminals.Shutdown() })
 
 	handle, err := app.OpenTerminal("thread-g", TerminalOpenOptions{
@@ -257,7 +258,7 @@ func TestWriteTerminalMissingBindingFails(t *testing.T) {
 }
 
 func TestResizeTerminalOnMissingIsErrorFromManager(t *testing.T) {
-	app := newAppWithTerminals()
+	app := newAppWithTerminals(t)
 	t.Cleanup(func() { _ = app.terminals.Shutdown() })
 
 	err := app.ResizeTerminal("does-not-exist", 24, 80)

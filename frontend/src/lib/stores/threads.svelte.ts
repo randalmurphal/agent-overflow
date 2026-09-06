@@ -1,3 +1,7 @@
+import { reconcileThreadRows } from './eventsThreadRows';
+import { computerCatalogWriter } from './computerCatalogWriter';
+import { computerCatalog, readComputerRows, retainUnavailableComputerRows } from './computerRows';
+import { currentThreadRow, noteThread, onThreadOwnershipChanged, threadBackend } from '../transport/entityIndex';
 import type { Thread } from '../types/models';
 import { clearPayloadCacheForThread } from '../utils/payloadDataCache';
 import { clearThreadScrollSnapshot } from '../utils/threadScrollSnapshots';
@@ -8,6 +12,7 @@ import { ListThreads, MarkThreadRead, MarkThreadUnread } from './bindings';
 import { dropActivityRailUiPrefs, dropLiveTodoUiPrefs } from './liveTodoState.svelte';
 import { threadItemCache } from './threadItemCache';
 import { removeReplicaWindow } from '../replica';
+import { invalidateReplicaCatalog } from '../replica/session';
 import { dropThreadHistoryStamp } from './threadHistoryStamps';
 import { clearLiveUsageSnapshot } from './threadContextWindow';
 import { clearThreadStatus } from './threadStatuses.svelte';
@@ -20,6 +25,14 @@ import { withLocalReadMarker } from './threadReadWrites';
 type ThreadReadStatePatch = Partial<Pick<Thread, 'lastReadAt' | 'hasIncompleteTurn'>>;
 
 let threads: Thread[] = $state([]);
+const catalogWriter = computerCatalogWriter('threads', () => threads, (row) => threadBackend(row.id));
+// Ownership changes before the destination's row is applied. Invalidate the
+// former owner's pending reads and rewrite its catalog without the moved row;
+// otherwise removing the destination could expose the old offline snapshot.
+onThreadOwnershipChanged((_id, previousBackend) => {
+  invalidateReplicaCatalog(previousBackend, 'threads');
+  catalogWriter.changed(previousBackend);
+});
 
 // Live-activity bumps arrive on every streaming flush (tens per second
 // while a turn runs). They are FIELD patches, not membership or order
@@ -38,26 +51,43 @@ export function getThreads(): Thread[] {
   return threads;
 }
 
-/**
- * Boot-time wholesale load (also the test-seeding helper). Replaces the
- * registry with the backend snapshot verbatim, which is only safe while
- * no local read-state exists yet: mid-session, a snapshot can predate
- * the debounced MarkThreadRead persist and revert lastReadAt. Mid-session
- * resyncs go through eventsThreadRows' refreshSidebarProjections, which
- * merges each row against local state first.
- *
- * `ListThreads` is routed to EVERY attached backend and the arrays are
- * concatenated (`transport/methodRoutes.ts` → `transport/backends.ts`), so
- * one sidebar shows every machine's threads and this store needs no
- * knowledge of how many there are. A backend that fails to answer is
- * dropped from the merge and recorded on its own entry rather than failing
- * the load, so one unreachable machine cannot blank the sidebar of the
- * ones that answered — which is also why nothing here treats a short list
- * as a deletion. Which backend a row came from is recorded in
- * `transport/entityIndex.ts`, not on the row.
- */
+// Only outstanding reads retain the latest promise; startup follows a newer
+// reconnect snapshot before validating saved pane IDs.
+let latestThreadRead: Promise<Thread[]> | null = null;
+let pendingThreadReads = 0;
+
+export async function readThreadRows(): Promise<Thread[]> {
+  pendingThreadReads++;
+  const request = readCurrentThreadRows();
+  latestThreadRead = request;
+  try { return await request; }
+  finally { if (--pendingThreadReads === 0) latestThreadRead = null; }
+
+  async function readCurrentThreadRows(): Promise<Thread[]> {
+    const result = await readComputerRows<Thread>(
+      async () => await ListThreads() as Thread[], (row, backend) => { noteThread(row.id, backend, row.ownershipEpoch ?? 0); }, computerCatalog('threads', () => threads, (row) => threadBackend(row.id), (late) => {
+        reconcileThreadRows(currentRows(retainUnavailableComputerRows(threads, late, (row) => threadBackend(row.id))));
+      }), currentThreadRow);
+    // Startup must validate saved panes against the winning snapshot, even
+    // when a first hello superseded its read. A local mutation with no newer
+    // read already lives in `threads`. Retain the latest promise only while
+    // reads are outstanding; no second persistent catalog is needed.
+    if (!result) return latestThreadRead && latestThreadRead !== request ? latestThreadRead : currentRows(threads);
+    return currentRows(retainUnavailableComputerRows(threads, result, (row) => threadBackend(row.id)));
+  }
+}
+
+function currentRows(rows: Thread[]): Thread[] {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    if (!currentThreadRow(row) || seen.has(row.id)) return false;
+    seen.add(row.id);
+    return true;
+  });
+}
+
 export async function loadThreads(): Promise<Thread[]> {
-  threads = await ListThreads() as Thread[];
+  threads = await readThreadRows();
   liveActivityAt.reset();
   return threads;
 }
@@ -77,7 +107,8 @@ export async function refreshThreads(): Promise<void> {
  * (see eventsThreadRows.resyncThreadRows); this setter stays dumb so
  * that policy lives in one place.
  */
-export function replaceAllThreads(rows: Thread[]): void {
+export function replaceAllThreads(rows: Thread[], mutation = true): void {
+  for (const backend of new Set([...threads, ...rows].map((row) => threadBackend(row.id)))) catalogWriter.changed(backend, mutation);
   threads = rows;
   // Callers hand rows already reconciled against local state (including
   // the live-activity box, via mergeThreadRowWithLocal), so the boxes'
@@ -86,10 +117,13 @@ export function replaceAllThreads(rows: Thread[]): void {
 }
 
 export function prependThread(thread: Thread): void {
+  catalogWriter.changed(threadBackend(thread.id));
   threads = [thread, ...threads.filter((t) => t.id !== thread.id)];
 }
 
 export function removeThread(id: string): void {
+  invalidateReplicaCatalog(threadBackend(id) ?? '', 'threads');
+  catalogWriter.changed(threadBackend(id));
   threads = threads.filter((t) => t.id !== id);
   liveActivityAt.drop(id);
   // Drop any live-status entry so the sidebar doesn't keep painting a
@@ -118,14 +152,17 @@ export function removeThread(id: string): void {
 }
 
 export function updateThreadTitle(id: string, title: string): void {
+  catalogWriter.changed(threadBackend(id));
   threads = threads.map((t) => t.id === id ? { ...t, title } : t);
 }
 
 export function updateThreadModel(id: string, model: string): void {
+  catalogWriter.changed(threadBackend(id));
   threads = threads.map((t) => t.id === id ? { ...t, model } : t);
 }
 
 export function replaceThread(thread: Thread): void {
+  catalogWriter.changed(threadBackend(thread.id));
   threads = threads.map((t) => t.id === thread.id ? thread : t);
 }
 
@@ -164,6 +201,7 @@ export function updateThreadReadState(
   id: string,
   patch: ThreadReadStatePatch,
 ): void {
+  catalogWriter.changed(threadBackend(id));
   threads = threads.map((t) =>
     t.id === id ? { ...t, ...patch } : t,
   );
@@ -225,6 +263,7 @@ export function updateThreadPinState(
   pinnedAt: number | undefined,
   pinGroup: number | undefined,
 ): void {
+  catalogWriter.changed(threadBackend(id));
   threads = threads.map((t) =>
     t.id === id ? { ...t, pinnedAt, pinGroup } : t,
   );
@@ -241,6 +280,7 @@ export function updateThreadPinState(
  */
 export function updateThreadGroupState(rows: readonly Thread[]): void {
   if (rows.length === 0) return;
+  for (const backend of new Set(rows.map((row) => threadBackend(row.id)))) catalogWriter.changed(backend);
   const byId = new Map(rows.map((row) => [row.id, row] as const));
   threads = threads.map((t) => {
     const row = byId.get(t.id);
@@ -260,6 +300,7 @@ export function clearThreadGroupMembership(groupId: string): void {
   const next = threads.map((t) => {
     if (t.groupId !== groupId) return t;
     changed = true;
+    catalogWriter.changed(threadBackend(t.id));
     return { ...t, groupId: undefined };
   });
   if (changed) threads = next;

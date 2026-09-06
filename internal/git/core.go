@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -563,6 +564,13 @@ type commandSpec struct {
 	ctx context.Context
 	// stdin is written to the child when non-empty.
 	stdin string
+	// input/output stream large object packs without retaining them as strings.
+	// input and stdin are mutually exclusive; output requires a positive cap.
+	input       io.Reader
+	output      io.Writer
+	outputLimit int64
+	// timeout overrides the interactive default for app-lifetime transfer jobs.
+	timeout time.Duration
 	// maxBytes caps stdout and stderr independently; <= 0 falls back to
 	// the Core's configured cap, then the package default.
 	maxBytes int64
@@ -591,7 +599,13 @@ type commandSpec struct {
 
 // runSpec is the shared runner behind every git / gh / glab subprocess.
 func (c *Core) runSpec(spec commandSpec) (commandResult, error) {
+	if (spec.input != nil && spec.stdin != "") || (spec.output != nil && spec.outputLimit <= 0) {
+		return commandResult{}, errors.New("git: invalid streaming command configuration")
+	}
 	timeout := c.timeout
+	if spec.timeout > 0 {
+		timeout = spec.timeout
+	}
 	if timeout <= 0 {
 		timeout = defaultTimeout
 	}
@@ -632,17 +646,27 @@ func (c *Core) runSpec(spec commandSpec) (commandResult, error) {
 	}
 	if spec.stdin != "" {
 		cmd.Stdin = strings.NewReader(spec.stdin)
+	} else if spec.input != nil {
+		cmd.Stdin = spec.input
 	}
 
 	stdoutBuf := newLimitedBuffer(maxBytes)
 	stderrBuf := newLimitedBuffer(maxBytes)
 	cmd.Stdout = stdoutBuf
 	cmd.Stderr = stderrBuf
+	var streamed *commandStreamWriter
+	if spec.output != nil {
+		streamed = &commandStreamWriter{writer: spec.output, remaining: spec.outputLimit, cancel: cancel}
+		cmd.Stdout = streamed
+	}
 
 	err := cmd.Run()
 	result := commandResult{
 		stdout: stdoutBuf.String(),
 		stderr: stderrBuf.String(),
+	}
+	if streamed != nil && streamed.err != nil {
+		return result, fmt.Errorf("%s output stream failed: %w", formatCommand(spec.binary, spec.args...), streamed.err)
 	}
 
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -689,13 +713,19 @@ func formatCommand(binary string, args ...string) string {
 func parseWorktreeList(stdout string) []Worktree {
 	var worktrees []Worktree
 	current := Worktree{}
+	lockReason := ""
 
 	flush := func() {
 		if strings.TrimSpace(current.Path) == "" {
 			return
 		}
-		worktrees = append(worktrees, current)
+		// A transfer's registered staging index retains its objects through
+		// GC, but is not a workspace the user can select before activation.
+		if !isTransferPreparationWorktree(current.Path, lockReason) {
+			worktrees = append(worktrees, current)
+		}
 		current = Worktree{}
+		lockReason = ""
 	}
 
 	for _, rawLine := range strings.Split(stdout, "\n") {
@@ -713,6 +743,8 @@ func parseWorktreeList(stdout string) []Worktree {
 			current.HEAD = strings.TrimSpace(strings.TrimPrefix(line, "HEAD "))
 		case strings.HasPrefix(line, "branch "):
 			current.Branch = trimBranchRef(strings.TrimSpace(strings.TrimPrefix(line, "branch ")))
+		case strings.HasPrefix(line, "locked "):
+			lockReason = strings.TrimPrefix(line, "locked ")
 		}
 	}
 

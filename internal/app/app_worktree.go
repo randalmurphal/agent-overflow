@@ -72,6 +72,11 @@ func (a *App) GitCreateWorktree(threadID, branch string) (string, error) {
 //
 //ao:scope git:operate
 func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string, carryLocalChanges bool) (store.Thread, error) {
+	endWork, admitErr := a.workAdmission.begin(a.lifeCtx())
+	if admitErr != nil {
+		return store.Thread{}, admitErr
+	}
+	defer endWork()
 	unlock := a.threadLocks().Lock(threadID)
 	// Registered BEFORE the unlock defer so LIFO runs it AFTER the lock is
 	// released: the setup run outlives this call, and starting it under the
@@ -174,6 +179,11 @@ func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string
 //
 //ao:scope git:operate
 func (a *App) AttachThreadWorktree(threadID, branch string) (store.Thread, error) {
+	endWork, admitErr := a.workAdmission.begin(a.lifeCtx())
+	if admitErr != nil {
+		return store.Thread{}, admitErr
+	}
+	defer endWork()
 	unlock := a.threadLocks().Lock(threadID)
 	// Registered BEFORE the unlock defer so LIFO runs it AFTER the lock is
 	// released — same rationale as PrepareThreadWorktree's kickoff.
@@ -256,9 +266,9 @@ func (a *App) GitRemoveWorktree(threadID string) error {
 }
 
 // RemoveOtherWorktree removes one of the project's worktrees, optionally
-// forcing through dirty/unpushed safety. Every thread attached to it is reset
-// back to the project root and its session restarts so the workspace switch
-// takes effect.
+// forcing through dirty/unpushed safety. Locally owned threads are reset to the
+// project root and their sessions restart. Confirmed outgoing moves keep their
+// immutable retired metadata; pending transfers block removal.
 //
 // The returned state is the CALLER's workspace after the removal: unchanged
 // when it removed some other worktree, reset to the project root when it
@@ -341,6 +351,19 @@ func (a *App) removeProjectWorktree(project, worktreePath string, force bool) er
 	if !slices.Equal(attached, slices.Compact(recheck)) {
 		return fmt.Errorf("worktree %s occupancy changed during removal; retry", worktreePath)
 	}
+	// A pending handoff still needs this source state. A confirmed move's
+	// local rows are immutable history caches: removal may reclaim the old
+	// checkout, but must not reattach or resume those retired conversations.
+	mutable := make([]string, 0, len(attached))
+	for _, id := range attached {
+		retired, err := a.threadApplication().CheckCleanup(id)
+		if err != nil {
+			return err
+		}
+		if !retired {
+			mutable = append(mutable, id)
+		}
+	}
 
 	if err := a.ensureWorkspaceChangeAllowed("remove this worktree", worktreePath); err != nil {
 		return err
@@ -354,7 +377,7 @@ func (a *App) removeProjectWorktree(project, worktreePath string, force bool) er
 	// Then clear the durable state of every thread that pointed here — a "Setup
 	// failed" pill for a worktree that no longer exists has nothing to offer.
 	// Their runs are already gone, so this is the column and nothing else.
-	for _, id := range attached {
+	for _, id := range mutable {
 		a.cancelThreadWorktreeSetup(id)
 	}
 	if err := core.RemoveWorktreeForce(project, worktreePath, force); err != nil {
@@ -381,7 +404,7 @@ func (a *App) removeProjectWorktree(project, worktreePath string, force bool) er
 	// updatedAt, so the unchanged timestamp in the broadcast event is
 	// invariant-safe.
 	var sweepErrs []error
-	for _, id := range attached {
+	for _, id := range mutable {
 		t, err := a.store.GetThread(id)
 		if err != nil {
 			sweepErrs = append(sweepErrs, fmt.Errorf("thread %s not refreshed: %w", id, err))

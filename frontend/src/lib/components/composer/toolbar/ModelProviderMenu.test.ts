@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 
 import ModelProviderMenu from './ModelProviderMenu.svelte';
-import { loadSettings, resetSettingsForTest } from '../../../stores/settings.svelte';
+import { resetSettingsForTest } from '../../../stores/settings.svelte';
+import { loadSettingsFixture as loadSettings } from '../../../../test/helpers/settingsFixture';
 import type { Item, Thread } from '../../../types/models';
 import type { DiscussionDefinition } from '../../../types/discussion';
 import {
@@ -237,7 +238,7 @@ describe('<ModelProviderMenu>', () => {
     await fireEvent.click(getByTestId('composer-model-menu-trigger'));
 
     const errorRow = await findByTestId('chat-bar-favorites-error');
-    expect(errorRow.textContent ?? '').toMatch(/favorites unavailable/);
+    expect(errorRow.textContent ?? '').toMatch(/favorites unavailable/i);
   });
 
   it('filters favorites whose model is hidden in settings (star survives for re-show)', async () => {

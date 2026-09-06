@@ -2278,10 +2278,7 @@ describe('setupEventListeners', () => {
       channel: 'provider:item_event',
       seq: 42,
     });
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(liveThreadActivity('thread-stale')).toBe(10_000);
+    await vi.waitFor(() => { expect(liveThreadActivity('thread-stale')).toBe(10_000); });
     expect(liveProjectActivity('project-stale')).toBe(10_000);
   });
 
@@ -2433,10 +2430,7 @@ describe('setupEventListeners', () => {
       channel: 'thread:updated',
       seq: 4,
     });
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(getThreads()[0]?.lastReadAt).toBe(500);
+    await vi.waitFor(() => { expect(getThreads()[0]?.lastReadAt).toBe(500); });
   });
 
   it('converges pane thread rows on completions backfilled by a transport-gap resync', async () => {
@@ -2459,10 +2453,7 @@ describe('setupEventListeners', () => {
       channel: 'provider:turn_completed',
       seq: 11,
     });
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(getThreads().find((t) => t.id === 'thread-gap')?.latestTurnCompletedAt).toBe(900);
+    await vi.waitFor(() => { expect(getThreads().find((t) => t.id === 'thread-gap')?.latestTurnCompletedAt).toBe(900); });
     expect(pane.thread?.latestTurnCompletedAt).toBe(900);
     expect(pane.thread?.lastReadAt).toBe(350);
   });

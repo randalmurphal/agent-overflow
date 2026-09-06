@@ -8,6 +8,7 @@ import (
 	"time"
 
 	appbrowser "agent-overflow/internal/browser"
+	"agent-overflow/internal/computerroute"
 	"agent-overflow/internal/network"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/windowgeom"
@@ -149,6 +150,21 @@ func SetDataDirOverride(a *App, dataDir string) { a.dataDirOverride = dataDir }
 // string a device is told to pin is the string that listener presents.
 // Call before the transport serves.
 func SetCertFingerprint(a *App, fingerprint string) { a.certFingerprint = fingerprint }
+
+// ComputerRoutes observes this computer's reachable listeners for its trusted
+// bootstrap manifest. It is boot wiring, not a separately callable RPC.
+func ComputerRoutes(a *App) []computerroute.Route {
+	srv := a.transportServer.Load()
+	if srv == nil {
+		return nil
+	}
+	settings := a.persistedNetworkSettings()
+	lanIP := ""
+	if settings.BindAll {
+		lanIP = network.DiscoverLocalLANIP()
+	}
+	return network.ComputerRoutes(srv, settings, lanIP)
+}
 
 // SetBrowserCDPRelay installs the backend end of the Windows launcher's CDP
 // tunnel, which the executable creates before the transport so the same

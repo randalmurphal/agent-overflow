@@ -42,7 +42,8 @@ const supervisorAnswerTimeout = 30 * time.Second
 // serveSupervisor is this process's end of the channel, plus the small
 // amount of state a request needs to be answered.
 type serveSupervisor struct {
-	conn *supervise.Conn
+	conn         *supervise.Conn
+	ownsDataRoot bool
 	// trial is whether this boot must report prepared and wait for a commit.
 	trial bool
 	// updateID is the update this boot is the outcome of, empty when this
@@ -67,8 +68,10 @@ type serveSupervisor struct {
 	// pending is the caller waiting on a request-update answer. One at a
 	// time: the supervisor refuses a second while one is in flight, so a
 	// second waiter would be waiting on an answer that already said so.
-	mu      sync.Mutex
-	pending chan supervise.Message
+	mu        sync.Mutex
+	pending   chan supervisorUpdateReply
+	uncertain error
+	restart   chan struct{}
 	// committed is closed when the supervisor commits this trial.
 	committed chan struct{}
 }
@@ -99,10 +102,12 @@ func attachServeSupervisor() (*serveSupervisor, error) {
 	}
 	sup := &serveSupervisor{
 		conn: conn, trial: opening.Trial, updateID: opening.UpdateID,
-		outcome: opening.Outcome, reason: opening.Reason,
+		ownsDataRoot: opening.OwnsDataRoot,
+		outcome:      opening.Outcome, reason: opening.Reason,
 		target:        opening.TargetVersion,
 		answerTimeout: supervisorAnswerTimeout,
 		committed:     make(chan struct{}),
+		restart:       make(chan struct{}),
 	}
 	if err := conn.Send(supervise.Message{
 		Type:            supervise.MsgHello,
@@ -125,7 +130,12 @@ func (s *serveSupervisor) read() {
 			// The supervisor's end went away. Nothing to do about it here:
 			// this process is the child, and a supervisor that died will be
 			// restarted by the service manager, which will restart us too.
-			s.failPending(errors.New("the supervisor closed the channel"))
+			s.mu.Lock()
+			waiting := s.pending != nil
+			s.mu.Unlock()
+			if waiting {
+				s.failPending(errors.New("the supervisor closed the channel"))
+			}
 			return
 		}
 		switch msg.Type {
@@ -153,30 +163,58 @@ func (s *serveSupervisor) deliver(msg supervise.Message) {
 	s.pending = nil
 	s.mu.Unlock()
 	if waiter != nil {
-		waiter <- msg
+		waiter <- supervisorUpdateReply{message: msg}
 	}
 }
 
-func (s *serveSupervisor) failPending(err error) {
+type supervisorUpdateReply struct {
+	message supervise.Message
+	err     error
+}
+
+func (s *serveSupervisor) failPending(err error) error {
 	s.mu.Lock()
+	if s.uncertain == nil {
+		s.uncertain = fmt.Errorf("%w: %v", supervise.ErrUpdateOutcomeUnknown, err)
+		if s.restart != nil {
+			close(s.restart)
+		}
+	}
+	failure := s.uncertain
 	waiter := s.pending
 	s.pending = nil
 	s.mu.Unlock()
 	if waiter != nil {
-		waiter <- supervise.Message{Type: supervise.MsgUpdateRefused, Reason: err.Error()}
+		waiter <- supervisorUpdateReply{err: failure}
 	}
+	return failure
+}
+
+// restartRequested is nil for an unsupervised host. An ambiguous reply asks
+// for ordinary ordered shutdown; the supervisor settles its durable selection
+// and boots a fresh backend before any more work can be accepted.
+func (s *serveSupervisor) restartRequested() <-chan struct{} {
+	if s == nil {
+		return nil
+	}
+	return s.restart
 }
 
 // RequestUpdate asks the supervisor to run an already-staged version and
 // returns the update id it minted.
 //
-// This is the function the NEXT wave's step-up-gated RPC calls. It is wired in
-// as an injected callback rather than reached from a bound method today,
-// because a bound method is a wire RPC by construction and an update trigger
-// with no step-up in front of it is not a thing to ship a wave early.
+// The step-up-gated App RPC calls this only after staging and quiescence.
+// A missing reply is ambiguous: keep the admission fence and ask the main
+// serve loop for ordered shutdown. Never recycle the uncorrelated reply slot
+// while an older answer can still arrive.
 func (s *serveSupervisor) RequestUpdate(target string) (string, error) {
-	answer := make(chan supervise.Message, 1)
+	answer := make(chan supervisorUpdateReply, 1)
 	s.mu.Lock()
+	if s.uncertain != nil {
+		err := s.uncertain
+		s.mu.Unlock()
+		return "", err
+	}
 	if s.pending != nil {
 		s.mu.Unlock()
 		return "", errors.New("an update request is already waiting for an answer")
@@ -187,27 +225,30 @@ func (s *serveSupervisor) RequestUpdate(target string) (string, error) {
 	if err := s.conn.Send(supervise.Message{
 		Type: supervise.MsgRequestUpdate, TargetVersion: target,
 	}); err != nil {
-		s.failPending(err)
-		return "", err
+		return "", s.failPending(err)
 	}
-	var msg supervise.Message
+	var reply supervisorUpdateReply
 	select {
-	case msg = <-answer:
+	case reply = <-answer:
 	case <-time.After(s.answerTimeout):
-		// The supervisor is a single loop, so an answer that has not arrived
-		// in this long means it is not running that loop. Waiting on it
-		// forever would leave the caller's one-flow fence claimed for the
-		// life of the process, and every later request refused as busy.
+		// A slow preflight may still accept after this deadline. Restart
+		// through the supervisor instead of treating silence as refusal.
 		err := fmt.Errorf("the supervisor did not answer the update request within %s", s.answerTimeout)
-		s.failPending(err)
-		return "", err
+		return "", s.failPending(err)
 	}
+	if reply.err != nil {
+		return "", reply.err
+	}
+	msg := reply.message
 	if msg.Type != supervise.MsgUpdateAccepted {
 		reason := msg.Reason
 		if reason == "" {
 			reason = "the supervisor refused it"
 		}
 		return "", errors.New(reason)
+	}
+	if msg.UpdateID == "" {
+		return "", s.failPending(errors.New("the accepted update has no receipt"))
 	}
 	return msg.UpdateID, nil
 }
@@ -277,8 +318,8 @@ func configureServeSupervision(appService *App, sup *serveSupervisor) {
 // missing button:
 //
 //   - This binary is not one the release feed publishes for a supervised host
-//     (serviceArtifactPlatform is ""). darwin ships an app bundle the
-//     supervisor cannot stage as one file; windows is not a serve mode.
+//     (serviceArtifactPlatform is ""). Windows uses the WSL launcher; it is
+//     not a supervised serve host.
 //   - The data directory cannot be resolved, which is the same condition
 //     `supervise` itself refuses to start on, so this is only reachable in an
 //     unsupervised boot that got here by some other route.
@@ -332,8 +373,8 @@ func configureServeRemoteUpdate(appService *App) {
 // An ordinary supervised boot opens its gate immediately (Start already ran
 // the unattended set inline, so this only publishes the outcome of whatever
 // update preceded it). A TRIAL reports prepared, waits, and opens the gate on
-// the commit frame — which is the whole point: it has been answering RPCs the
-// entire time and has taken no action of its own.
+// the commit frame. Health probes can verify the listener while all client
+// requests and unattended actions remain outside the rollback boundary.
 func finishServeSupervision(appService *App, sup *serveSupervisor) {
 	if sup == nil {
 		return

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { threadMachine } from '../../stores/attachedBackends.svelte';
   // Stable read row for one or more adjacent Read tool_calls. A
   // single Read projects through this component from first render, so
   // adding another adjacent Read appends a file link instead of
@@ -186,7 +187,7 @@
       >
         {#each displayEntries as entry (entry.id)}
           {#if entry.path}
-            <EditorLink
+            <EditorLink backend={threadMachine(pane?.threadId ?? firstMember?.threadId ?? '', pane?.thread?.projectId)}
               path={entry.path}
               line={entry.line}
               col={entry.col}

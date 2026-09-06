@@ -9,7 +9,7 @@ import (
 
 // The bound address is the one line that is always true, so it is always
 // printed. Everything else appears only when it is a fact: a URL the server
-// could actually form, a tailnet node that is up, a token this launch minted.
+// could actually form and a tailnet node that is up. Credentials stay private.
 func TestPrintServeEndpointsAlwaysNamesTheBoundAddress(t *testing.T) {
 	out := &strings.Builder{}
 	printServeEndpoints(out, network.Settings{}, "127.0.0.1:7777")
@@ -18,23 +18,28 @@ func TestPrintServeEndpointsAlwaysNamesTheBoundAddress(t *testing.T) {
 	if !strings.Contains(text, "127.0.0.1:7777") {
 		t.Fatalf("the bound address is missing:\n%s", text)
 	}
-	if strings.Count(text, "\n") != 1 {
-		t.Fatalf("printed %d lines for a bare bind, want one:\n%s", strings.Count(text, "\n"), text)
+	if strings.Count(text, "\n") != 2 || !strings.Contains(text, "agent-overflow pair") {
+		t.Fatalf("bare bind must show its address and pairing command:\n%s", text)
 	}
 }
 
 func TestPrintServeEndpointsPrintsWhatIsLive(t *testing.T) {
 	out := &strings.Builder{}
 	endpoints := network.Settings{
-		URL:   "https://ao.example.com/",
+		URL:   "https://ao.example.com/?t=page-secret",
 		Token: "launch-token",
 	}
-	endpoints.Tailnet.URL = "https://host.tail1234.ts.net/"
+	endpoints.Tailnet.URL = "https://host.tail1234.ts.net/?t=tailnet-secret"
 	printServeEndpoints(out, endpoints, "0.0.0.0:7777")
 
-	for _, want := range []string{"0.0.0.0:7777", "https://ao.example.com/", "https://host.tail1234.ts.net/", "launch-token"} {
+	for _, want := range []string{"0.0.0.0:7777", "https://ao.example.com/", "https://host.tail1234.ts.net/"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("%q is missing:\n%s", want, out.String())
+		}
+	}
+	for _, secret := range []string{"launch-token", "page-secret", "tailnet-secret"} {
+		if strings.Contains(out.String(), secret) {
+			t.Fatal("service log contains a credential")
 		}
 	}
 }

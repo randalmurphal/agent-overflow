@@ -93,7 +93,7 @@ interface DevServerHit {
 interface FakeDevServer {
   /** The loopback port it bound, which is also the preview listener's. */
   readonly port: number;
-  /** Every request since the last `reset()`, in arrival order. */
+  /** Every non-discovery request since the last reset, in arrival order. */
   readonly hits: DevServerHit[];
   reset(): void;
   close(): Promise<void>;
@@ -117,8 +117,11 @@ async function startFakeDevServer(): Promise<FakeDevServer> {
       origin: req.headers.origin ?? null,
       cookie: req.headers.cookie ?? null,
     };
-    hits.push(hit);
     const path = (req.url ?? '').split('?', 1)[0];
+    // Reopening the app legitimately triggers discovery while a later case
+    // asserts browser traffic. Exclude only Go's probe at /; a proxied browser
+    // request keeps its own User-Agent and must still be recorded at any path.
+    if (!(path === '/' && req.headers['user-agent'] === 'Go-http-client/1.1')) hits.push(hit);
     if (path === '/' || path === '/app/') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end('<!doctype html><title>dev</title><h1>dev</h1>');
@@ -266,10 +269,12 @@ async function openCommandRow(page: Page): Promise<void> {
 async function openRemoteAccessPage(page: Page): Promise<void> {
   await page.getByTestId('sidebar-settings-button').click();
   await expect(page.getByRole('tablist', { name: 'Settings Sections' })).toBeVisible();
-  await page.getByRole('tab', { name: 'Remote access' }).click();
+  await page.getByRole('tab', { name: 'Computers', exact: true }).click();
+  await page.getByTestId('home-computer').getByRole('button', { name: 'Access & sharing', exact: true }).click();
   // Selecting drills into the page; on compact the rail (and its tab)
   // leaves the screen, so the arrival assertion is the page header.
-  await expect(page.getByTestId('settings-page-header')).toContainText('Remote access');
+  await expect(page.getByTestId('settings-page-header')).toContainText('Access & sharing');
+  await page.getByText('Advanced network settings', { exact: true }).click();
 }
 
 async function closeSettings(page: Page): Promise<void> {
@@ -598,6 +603,7 @@ export function definePreviewGatewaySuite(surface: PreviewSurface): void {
       // install's own self-signed one, which nothing can verify.
       const viewer = await request.newContext({ ignoreHTTPSErrors: true });
       const spender = await request.newContext({ ignoreHTTPSErrors: true });
+      const appURL = phone.url();
       try {
         const exchange = await viewer.get(mintedURL, { maxRedirects: 0 });
         expect(exchange.status(), 'the first hit spends the ticket').toBe(302);
@@ -620,6 +626,13 @@ export function definePreviewGatewaySuite(surface: PreviewSurface): void {
           devServer.hits,
           "the ticket exchange is the gateway's own answer and never reaches the dev server",
         ).toEqual([]);
+
+        // An external preview has its own browser grant. Let the app's last
+        // remote connection disappear across a complete 3s discovery tick;
+        // the request below must still reach the dev server. Fake-clock unit
+        // tests cover the ticket/grant expiry boundaries without this delay.
+        await phone.goto('about:blank');
+        await phone.waitForTimeout(4_000);
 
         // The path and query, byte for byte, and the Host the upstream
         // insists on. `%2F` stays encoded: a re-encoded path is an HMR
@@ -671,6 +684,11 @@ export function definePreviewGatewaySuite(surface: PreviewSurface): void {
       } finally {
         await viewer.dispose();
         await spender.dispose();
+        await phone.goto(appURL);
+        await expect(phone.getByTestId('thread-row')).toHaveCount(1, {
+          timeout: PAIRED_APP_MOUNT_MS,
+        });
+        await surface.openThread(phone, THREAD_TITLE);
       }
     });
 

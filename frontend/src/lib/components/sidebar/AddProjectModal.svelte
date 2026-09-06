@@ -11,11 +11,12 @@
   import Modal from '../primitives/Modal.svelte';
   import Button from '../primitives/Button.svelte';
   import DirectoryBrowser from './DirectoryBrowser.svelte';
-  import { CreateProject } from '../../stores/bindings';
-  import {
-    addProjectLocal,
-    getProjects,
-  } from '../../stores/projects.svelte';
+  import { addComputerProject, projectAtComputerPath } from '../../stores/computerProjects';
+  import { selectedBackend } from '../../stores/selectedBackend.svelte';
+  import { hasMultipleBackends } from '../../stores/attachedBackends.svelte';
+  import ComputerSelect from '../primitives/ComputerSelect.svelte';
+  import type { BackendKey } from '../../transport/backendKey';
+  import { hasScope } from '../../transport/scopes';
   import { addToast } from '../../stores/toast.svelte';
   import type { Project } from '../../types/models';
 
@@ -30,15 +31,21 @@
     onDuplicate?: (projectId: string) => void;
     /** Starting path for the browser. Defaults to the user's home dir. */
     initialPath?: string;
+    /** Fixed starting computer for an action launched from another surface. */
+    initialBackend?: BackendKey;
+    /** A containing workflow has already chosen its destination. */
+    lockBackend?: boolean;
   }
 
-  let { open, onClose, onCreated, onDuplicate, initialPath = '~' }: Props = $props();
+  let { open, onClose, onCreated, onDuplicate, initialPath = '~', initialBackend, lockBackend = false }: Props = $props();
 
   // Snapshot the initial path so $state init doesn't read a reactive prop
   // directly. After mount, `pendingPath` is driven by DirectoryBrowser's
   // onSelect callback.
-  const startingPath = untrack(() => initialPath);
-  let pendingPath = $state(startingPath);
+  let browserStart = $state(untrack(() => initialPath));
+  let pendingPath = $state('');
+  let dialogGeneration = 0;
+  let computer = $state<BackendKey>(untrack(() => initialBackend ?? selectedBackend()));
   let submitting = $state(false);
   let submitError: string | null = $state(null);
   let duplicateOf: string | null = $state(null);
@@ -46,9 +53,17 @@
   // Reset per-open so reopening after a cancel doesn't show a stale error.
   $effect(() => {
     if (open) {
+      ++dialogGeneration;
+      untrack(() => {
+        computer = initialBackend ?? selectedBackend();
+        browserStart = initialPath;
+      });
+      pendingPath = '';
+      submitting = false;
       submitError = null;
       duplicateOf = null;
     }
+    return () => { ++dialogGeneration; };
   });
 
   function handleBrowserSelect(path: string): void {
@@ -61,28 +76,39 @@
     }
   }
 
+  function selectComputer(backend: BackendKey): void {
+    if (submitting) return;
+    computer = backend;
+    browserStart = '~';
+    pendingPath = '';
+    submitError = null;
+    duplicateOf = null;
+  }
+
   async function handleAdd(): Promise<void> {
-    if (submitting || !pendingPath.trim()) return;
+    if (submitting || !pendingPath.trim() || !hasScope('git:operate', computer)) return;
     submitting = true;
     submitError = null;
     duplicateOf = null;
+    const generation = dialogGeneration;
+    const backend = computer;
+    const path = pendingPath.trim();
     try {
-      const created = (await CreateProject(pendingPath.trim())) as Project;
-      addProjectLocal(created);
+      const created = await addComputerProject(backend, path);
       addToast('info', `Added project "${created.name}".`);
+      if (generation !== dialogGeneration || !open) return;
       onCreated?.(created);
       onClose();
     } catch (err) {
+      if (generation !== dialogGeneration || !open) return;
       const message = err instanceof Error ? err.message : String(err);
       if (/already/i.test(message)) {
         // Map the ErrProjectPathInUse signal to a soft warning. Surface
         // which existing project matches so the parent can focus it.
-        const existing = getProjects().find(
-          (p) => p.project.path === pendingPath.trim(),
-        );
+        const existing = projectAtComputerPath(backend, path);
         if (existing) {
-          duplicateOf = existing.project.id;
-          onDuplicate?.(existing.project.id);
+          duplicateOf = existing.id;
+          onDuplicate?.(existing.id);
           onClose();
           return;
         }
@@ -91,11 +117,12 @@
         submitError = message;
       }
     } finally {
-      submitting = false;
+      if (generation === dialogGeneration) submitting = false;
     }
   }
 
   function handleCancel(): void {
+    ++dialogGeneration;
     onClose();
   }
 </script>
@@ -107,7 +134,12 @@
         Pick a directory to track as a project. Threads created inside it
         will group here.
       </p>
-      <DirectoryBrowser {initialPath} onSelect={handleBrowserSelect} />
+      {#if hasMultipleBackends()}
+        <ComputerSelect value={computer} onchange={selectComputer} disabled={submitting || lockBackend} scope="git:operate" />
+      {/if}
+      {#key computer}
+        <DirectoryBrowser initialPath={browserStart} backend={computer} onSelect={handleBrowserSelect} />
+      {/key}
       {#if submitError}
         <p
           role="alert"
@@ -141,7 +173,7 @@
       variant="primary"
       size="sm"
       onclick={handleAdd}
-      disabled={!pendingPath.trim()}
+      disabled={!pendingPath.trim() || !hasScope('git:operate', computer)}
       loading={submitting}
       testId="add-project-submit"
     >

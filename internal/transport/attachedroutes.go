@@ -138,6 +138,7 @@ type BackendCarrier interface {
 // another's page. What remains is what identifies the backend's history
 // store, what to call it, and which launch this is.
 type AttachedManifest struct {
+	SessionScopes     []string
 	BackendID         string
 	ReplicaGeneration string
 	BackendName       string
@@ -306,6 +307,7 @@ func (s *Server) handleAttachedBootstrap(w http.ResponseWriter, r *http.Request)
 	wsOrigin := strings.TrimSuffix(deriveWSURL(r), WSPath)
 	_ = json.NewEncoder(w).Encode(Bootstrap{
 		WSURL:             wsOrigin + AttachedWSPrefix + id,
+		SessionScopes:     manifest.SessionScopes,
 		LaunchID:          manifest.LaunchID,
 		BackendID:         manifest.BackendID,
 		ReplicaGeneration: manifest.ReplicaGeneration,

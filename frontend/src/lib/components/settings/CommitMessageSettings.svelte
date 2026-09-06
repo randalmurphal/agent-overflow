@@ -7,7 +7,8 @@
   // SettingsView renders the page title and description, so there is no
   // header here.
 
-  import { updateSetting, updateSettingsPatch, getSettings } from '../../stores/settings.svelte';
+  import { settingsComputer } from './settingsComputer';
+  const { updateSetting, updateSettingsPatch, getSettings } = settingsComputer();
   import type { CommitMessageStyle, ReasoningEffort } from '../../types/settings';
   import {
     getProviderDefinition,

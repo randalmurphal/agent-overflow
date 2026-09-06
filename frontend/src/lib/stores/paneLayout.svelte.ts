@@ -68,6 +68,12 @@ function defaultMainPaneLayoutItem(): PaneLayoutItem {
 }
 
 let layoutItems: PaneLayoutItem[] = $state([]);
+let mutationRevision = 0;
+export function paneLayoutMutationRevision(): number { return mutationRevision; }
+// Navigation can defer persistence until switchThread resolves. Record the
+// user's intent before that await, independently of writing a snapshot.
+export function notePaneLayoutMutation(): void { mutationRevision++; }
+
 let persistenceHandlers: PaneLayoutPersistenceHandlers | null = null;
 
 export function setPaneLayoutPersistenceHandlers(handlers: PaneLayoutPersistenceHandlers | null): void {
@@ -75,6 +81,7 @@ export function setPaneLayoutPersistenceHandlers(handlers: PaneLayoutPersistence
 }
 
 function requestLayoutPersistence(debounced = false): void {
+  mutationRevision++;
   if (!persistenceHandlers) return;
   if (debounced) {
     persistenceHandlers.debounced();

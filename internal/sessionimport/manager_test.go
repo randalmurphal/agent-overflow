@@ -2,12 +2,75 @@ package sessionimport
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestManagerImportAdmissionLastsThroughCancellationAndPublication(t *testing.T) {
+	var active atomic.Int32
+	var publishedWithLease atomic.Bool
+	entered := make(chan struct{})
+	manager := NewManager(ManagerConfig{
+		Context: t.Context,
+		BeginWork: func(context.Context) (func(), error) {
+			active.Add(1)
+			return func() { active.Add(-1) }, nil
+		},
+		ResolveDeps: func() (Deps, error) { return Deps{}, nil },
+		Scan: func(context.Context, Deps, Filter) (ScanResult, error) {
+			return ScanResult{Rows: []Row{{ID: "one", ProjectID: "project", SizeBytes: 1}}}, nil
+		},
+		EmitProgress: func(frame ProgressEvent) {
+			if frame.Done {
+				publishedWithLease.Store(active.Load() == 1)
+			}
+		},
+	})
+	manager.importOne = func(ctx context.Context, _ Deps, _ Row) (ImportOutcome, error) {
+		close(entered)
+		<-ctx.Done()
+		return ImportOutcome{}, ctx.Err()
+	}
+	t.Cleanup(manager.Stop)
+	run, err := manager.Start([]string{"one"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("import worker did not start")
+	}
+	if _, err := manager.Start([]string{"two"}); err == nil {
+		t.Fatal("duplicate run was accepted")
+	}
+	if active.Load() != 1 {
+		t.Fatalf("accepted run lost or leaked its lease: %d", active.Load())
+	}
+	if err := manager.Cancel(run.ImportID); err != nil {
+		t.Fatal(err)
+	}
+	manager.Stop()
+	if active.Load() != 0 || !publishedWithLease.Load() {
+		t.Fatalf("cleanup/publication lease: active=%d published=%v", active.Load(), publishedWithLease.Load())
+	}
+}
+
+func TestManagerWritesRefuseRestartFenceBeforeResolvingDependencies(t *testing.T) {
+	blocked := errors.New("restart in progress")
+	manager := NewManager(ManagerConfig{BeginWork: func(context.Context) (func(), error) { return nil, blocked }})
+	if _, err := manager.Start([]string{"one"}); !errors.Is(err, blocked) {
+		t.Fatalf("start: %v", err)
+	}
+	if _, err := manager.ApplyThreadUpdates("thread"); !errors.Is(err, blocked) {
+		t.Fatalf("refresh: %v", err)
+	}
+}
 
 func TestManagerBoundedImportsOverlapSmallSessionsAndRunLargeOnesAlone(t *testing.T) {
 	initialStarted := make(chan string, managerWorkers)

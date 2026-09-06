@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
@@ -18,8 +19,8 @@ import (
 //
 // The access credential is the wave-5a signed claims, unchanged. What this
 // file adds is the other half of the pair: a secret that buys a fresh
-// access credential exactly once, and whose second presentation is treated
-// as evidence rather than as a retry.
+// access generation once. A recorded successor makes that operation
+// recoverable after a lost reply; a different successor is reuse evidence.
 //
 // The family is the SESSION. A renewal extends the session row's window and
 // issues the next secret in the same chain, rather than minting a new
@@ -46,9 +47,8 @@ const reuseDetectedDetail = "reuse-detected"
 // TokenSet is one issuance: the short-lived access credential and the
 // single-use secret that renews it.
 //
-// Both strings are returned exactly once and neither is stored — the rows
-// hold a session id and a digest, and no material that could reconstruct
-// either value.
+// Neither bearer is stored on the server. Recoverable renewals return the
+// successor the client already saved; the receipt records only its digest.
 type TokenSet struct {
 	// SessionID is the durable session both halves belong to. Returned so
 	// a caller can attribute a connection without parsing the credential.
@@ -86,6 +86,8 @@ type TokenSet struct {
 type RefreshRequest struct {
 	// Secret is the refresh secret as the device holds it.
 	Secret string
+	// NextSecret is chosen and persisted by a retry-capable client before sending.
+	NextSecret string
 	// Proof is the device's proof of possession. Required for every
 	// `device-bound` and `public` session on EVERY listener, so a bare
 	// bearer copy of a refresh secret cannot renew itself even from
@@ -100,117 +102,107 @@ type RefreshRequest struct {
 	Peer string
 }
 
-// Refresh exchanges a refresh secret for a fresh credential pair.
-//
-// The order is the contract, and the two halves of it decide different
-// things:
-//
-//  1. Resolve the presented secret. Unknown → refused and nothing else.
-//     Already spent → the real device exchanged this secret and moved on,
-//     so a second presentation is a copy in circulation: the whole family
-//     is revoked (see revokeFamilyForReuse). Past its window → expired.
-//  2. Judge the SESSION and the device proof, both BEFORE the secret is
-//     consumed. A device whose proof is momentarily wrong keeps its
-//     secret and can present it again with a correct one; consuming
-//     first would sign out a device for a recoverable mistake.
-//  3. Only then spend it, through the store's one-statement CAS, which is
-//     what makes rotation single-use against every other connection. A
-//     lost CAS means another presentation of the same secret won between
-//     steps 1 and 3 — the same evidence step 1 looks for, answered the
-//     same way.
-//
-// A device that loses the RESPONSE to a successful renewal and retries with
-// the same secret is signed out by step 1. That is the spec's rule as
-// written, and it is what makes the detector meaningful: a copy renewing
-// alongside the real device is indistinguishable from a device renewing
-// twice. A client must treat a renewal whose answer it never read as spent
-// and re-authenticate rather than retry.
+// Refresh advances one durable refresh generation. Retry-capable clients
+// propose their saved successor, so a lost reply can recover the same operation
+// without treating every second presentation as a stolen secret. Legacy
+// callers omit NextSecret and retain strict single-use rotation.
 func (s *Sessions) Refresh(req RefreshRequest) (TokenSet, Reason) {
 	if req.Secret == "" {
 		return TokenSet{}, ReasonMissingProof
 	}
 	digest := hashRefreshSecret(req.Secret)
-	now := s.now().UnixMilli()
-
-	held, reason := s.resolveRefreshSecret(digest[:], now, req.Peer)
-	if reason.Refused() {
-		return TokenSet{}, reason
+	nextSecret := req.NextSecret
+	recoverable := nextSecret != ""
+	var nextDigest [sha256.Size]byte
+	if recoverable {
+		decoded, err := base64.RawURLEncoding.DecodeString(nextSecret)
+		if err != nil || len(decoded) != refreshSecretBytes || nextSecret == req.Secret {
+			return TokenSet{}, ReasonMalformedProof
+		}
+		nextDigest = hashRefreshSecret(nextSecret)
 	}
-	session, reason := s.Live(held.SessionID)
+	now := s.now().UnixMilli()
+	held, err := s.store.GetRefreshSecretByHash(digest[:])
+	if errors.Is(err, sql.ErrNoRows) && recoverable {
+		// The predecessor may have aged out while the proposed successor is
+		// still live. Possessing that successor and the device key can recover.
+		held, err = s.store.GetRefreshSecretByHash(nextDigest[:])
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		s.audit(store.AuthAuditEntry{Event: string(AuditRefreshRefused), Outcome: store.AuthAuditOutcomeRefused, Reason: ReasonUnknownCredential.Code(), Peer: req.Peer})
+		return TokenSet{}, ReasonUnknownCredential
+	}
+	if err != nil {
+		return s.refreshUnavailable("read renewal", err)
+	}
+	session, reason := s.confirmedSession(held.SessionID, now)
 	if reason.Refused() {
 		s.RecordRefusal(reason, req.Peer, held.SessionID)
 		return TokenSet{}, reason
 	}
+	// Prove possession BEFORE declaring reuse. A spent bearer alone must not
+	// let someone without the device key revoke its still-live family.
 	if reason := s.CheckDeviceProof(session, req.Proof); reason.Refused() {
 		s.RecordRefusal(reason, req.Peer, session.ID)
 		return TokenSet{}, reason
 	}
-
-	// The consumption record names the DEVICE, not the presentation: a
-	// proof is a one-off signature, so storing it would write a value no
-	// later reader could match against anything.
-	if _, err := s.store.ConsumeRefreshSecret(digest[:], now, session.DeviceID); err != nil {
-		if !errors.Is(err, sql.ErrNoRows) {
-			log.Printf("identity: consume refresh secret: %v", err)
-			return TokenSet{}, ReasonUnknownCredential
+	if !recoverable {
+		if held.Spent() {
+			s.revokeFamilyForReuse(held, req.Peer)
+			return TokenSet{}, ReasonRevokedSession
 		}
-		// Another presentation of this same secret won the race while we
-		// were checking. Exactly the evidence step 1 looks for.
+		if held.ExpiresAt <= now {
+			s.audit(store.AuthAuditEntry{Event: string(AuditRefreshRefused), Outcome: store.AuthAuditOutcomeRefused, Reason: ReasonExpiredSession.Code(), SessionID: held.SessionID, Peer: req.Peer})
+			return TokenSet{}, ReasonExpiredSession
+		}
+		nextSecret, nextDigest, err = newRefreshSecret()
+		if err != nil {
+			return s.refreshUnavailable("choose successor", err)
+		}
+	}
+	device, err := s.store.GetDevice(session.DeviceID)
+	if err != nil {
+		return s.refreshUnavailable("read device", err)
+	}
+	policy := PolicyFor(DeviceClass(device.Class), BindingClass(session.BindingClass))
+	generation := s.generationNow()
+	rotated, err := s.store.RotateRefreshSecret(context.Background(), store.RefreshRotation{
+		SessionID: session.ID, DeviceID: session.DeviceID, OldHash: digest[:], NextHash: nextDigest[:],
+		Now: now, AccessUntil: now + policy.Access.Milliseconds(), RefreshUntil: now + policy.Refresh.Milliseconds(), Recoverable: recoverable,
+	})
+	switch {
+	case errors.Is(err, store.ErrRefreshReuse):
 		s.revokeFamilyForReuse(held, req.Peer)
 		return TokenSet{}, ReasonRevokedSession
+	case errors.Is(err, store.ErrRefreshSuperseded):
+		return TokenSet{}, ReasonRefreshSuperseded
+	case errors.Is(err, sql.ErrNoRows):
+		if _, reason := s.confirmedSession(session.ID, now); reason.Refused() {
+			return TokenSet{}, reason
+		}
+		return TokenSet{}, ReasonExpiredSession
+	case err != nil:
+		return s.refreshUnavailable("commit renewal", err)
 	}
-
-	tokens, err := s.reissue(session, now)
+	s.rememberAt(generation, rotated.Session)
+	tokens, err := s.accessTokensFor(rotated.Session, device, now)
 	if err != nil {
-		log.Printf("identity: reissue session %s: %v", session.ID, err)
-		return TokenSet{}, ReasonUnknownCredential
+		return s.refreshUnavailable("sign renewal", err)
 	}
-	s.audit(store.AuthAuditEntry{
-		Event: string(AuditSessionRefreshed), Outcome: store.AuthAuditOutcomeAllowed,
-		UserID: session.UserID, DeviceID: session.DeviceID, SessionID: session.ID,
-		Peer: req.Peer,
-	})
+	tokens.RefreshSecret = nextSecret
+	tokens.RefreshExpiresAtMillis = rotated.Secret.ExpiresAt
+	if !rotated.Replayed {
+		s.audit(store.AuthAuditEntry{Event: string(AuditSessionRefreshed), Outcome: store.AuthAuditOutcomeAllowed,
+			UserID: session.UserID, DeviceID: session.DeviceID, SessionID: session.ID, Peer: req.Peer})
+	}
 	return tokens, ReasonNone
 }
 
-// resolveRefreshSecret reads the presented secret and classifies it. The
-// three refusals it can produce are the three things a bare secret can be
-// wrong about, and each carries a different consequence.
-func (s *Sessions) resolveRefreshSecret(digest []byte, now int64, peer string) (store.RefreshSecret, Reason) {
-	held, err := s.store.GetRefreshSecretByHash(digest)
-	if errors.Is(err, sql.ErrNoRows) {
-		s.audit(store.AuthAuditEntry{
-			Event: string(AuditRefreshRefused), Outcome: store.AuthAuditOutcomeRefused,
-			Reason: ReasonUnknownCredential.Code(), Peer: peer,
-		})
-		return store.RefreshSecret{}, ReasonUnknownCredential
-	}
-	if err != nil {
-		log.Printf("identity: read refresh secret: %v", err)
-		return store.RefreshSecret{}, ReasonUnknownCredential
-	}
-	if held.Spent() {
-		s.revokeFamilyForReuse(held, peer)
-		return store.RefreshSecret{}, ReasonRevokedSession
-	}
-	if held.ExpiresAt <= now {
-		s.audit(store.AuthAuditEntry{
-			Event: string(AuditRefreshRefused), Outcome: store.AuthAuditOutcomeRefused,
-			Reason: ReasonExpiredSession.Code(), SessionID: held.SessionID, Peer: peer,
-		})
-		return store.RefreshSecret{}, ReasonExpiredSession
-	}
-	return held, ReasonNone
+func (s *Sessions) refreshUnavailable(step string, err error) (TokenSet, Reason) {
+	log.Printf("identity: %s: %v", step, err)
+	return TokenSet{}, ReasonTemporarilyUnavailable
 }
 
-// revokeFamilyForReuse ends a session because a spent secret was presented
-// again, and records why.
-//
-// Order matters the same way it does in RevokeSession, and for the same
-// reason: the outstanding secrets are spent FIRST, so a renewal already in
-// flight on another connection cannot slip through between the revocation
-// and the chain teardown. RevokeSession then writes the row, drops the fast
-// path, and force-closes the live sockets.
 func (s *Sessions) revokeFamilyForReuse(secret store.RefreshSecret, peer string) {
 	now := s.now().UnixMilli()
 	outstanding, err := s.store.SpendRefreshSecretsForSession(secret.SessionID, now, reuseDetectedDetail)
@@ -263,7 +255,7 @@ func (s *Sessions) CheckDeviceProof(session store.Session, proof DeviceProof) Re
 		return ReasonKeyMismatch
 	}
 	if device.RevokedAt != 0 {
-		// Defensive. Every caller consults Live first, and Live now answers
+		// Defensive. Callers check confirmedSession (directly or through Live), which answers
 		// the conjunction — so a revoked device is refused there, with this
 		// same code, before a proof is ever compared. Kept because this
 		// function is exported and a later caller may not have.
@@ -339,36 +331,6 @@ func (s *Sessions) verifyDeviceProof(thumbprint string, presented DeviceProof) R
 	return s.admitProof(parsed, presented)
 }
 
-// reissue extends a live session's window and issues the next credential
-// pair in its chain.
-//
-// The session row's expiry IS the access window — the claims carry the same
-// two stamps, and a claim outliving its row would be admitted by nothing —
-// so renewing one means moving the other, in that order: extend the row
-// first, sign second, so a signature can never name a window the row does
-// not hold.
-func (s *Sessions) reissue(session store.Session, now int64) (TokenSet, error) {
-	device, err := s.store.GetDevice(session.DeviceID)
-	if err != nil {
-		return TokenSet{}, fmt.Errorf("identity: reissue: read device: %w", err)
-	}
-	expiresAt := now + PolicyFor(DeviceClass(device.Class), BindingClass(session.BindingClass)).
-		Access.Milliseconds()
-	if _, err := s.store.ExtendSession(session.ID, expiresAt, now); err != nil {
-		return TokenSet{}, err
-	}
-	// The extend is conditional (it never shortens a window), so read back
-	// what the row actually holds rather than assuming ours won. A session
-	// whose window already reached further keeps it, and the claims say so.
-	generation := s.generationNow()
-	extended, err := s.store.GetSession(session.ID)
-	if err != nil {
-		return TokenSet{}, fmt.Errorf("identity: reissue: read session: %w", err)
-	}
-	s.rememberAt(generation, extended)
-	return s.issueFor(extended, device, now)
-}
-
 // issueFor signs the access credential for a session row and, when the
 // policy is renewable, mints the next refresh secret.
 //
@@ -389,31 +351,11 @@ func (s *Sessions) reissue(session store.Session, now int64) (TokenSet, error) {
 //     credential worthless is that every consult re-asks (Sessions.Live).
 //     Refusing here is what stops one being HANDED OUT in the first place.
 func (s *Sessions) issueFor(session store.Session, device store.Device, now int64) (TokenSet, error) {
-	if device.RevokedAt != 0 {
-		return TokenSet{}, fmt.Errorf("identity: issue for session %s: %w",
-			session.ID, store.ErrDeviceRevoked)
+	tokens, err := s.accessTokensFor(session, device, now)
+	if err != nil {
+		return TokenSet{}, err
 	}
 	policy := PolicyFor(DeviceClass(device.Class), BindingClass(session.BindingClass))
-	key, err := s.signingKeyByID(session.SigningKeyID)
-	if err != nil {
-		return TokenSet{}, err
-	}
-	credential, err := signClaims(Claims{
-		KeyID:     key.ID,
-		SessionID: session.ID,
-		IssuedAt:  now,
-		ExpiresAt: session.ExpiresAt,
-	}, key.Secret, s.backendID)
-	if err != nil {
-		return TokenSet{}, err
-	}
-	tokens := TokenSet{
-		SessionID:            session.ID,
-		Credential:           credential,
-		ExpiresAtMillis:      session.ExpiresAt,
-		AwaitingConfirmation: session.AwaitingConfirmation(),
-		Scopes:               session.Scopes,
-	}
 	if !policy.Renewable() {
 		return tokens, nil
 	}
@@ -428,6 +370,34 @@ func (s *Sessions) issueFor(session store.Session, device store.Device, now int6
 	tokens.RefreshSecret = secret
 	tokens.RefreshExpiresAtMillis = refreshExpiry
 	return tokens, nil
+}
+
+// accessTokensFor signs the access half for already persisted session state.
+func (s *Sessions) accessTokensFor(session store.Session, device store.Device, now int64) (TokenSet, error) {
+	if device.RevokedAt != 0 {
+		return TokenSet{}, fmt.Errorf("identity: issue for session %s: %w",
+			session.ID, store.ErrDeviceRevoked)
+	}
+	key, err := s.signingKeyByID(session.SigningKeyID)
+	if err != nil {
+		return TokenSet{}, err
+	}
+	credential, err := signClaims(Claims{
+		KeyID:     key.ID,
+		SessionID: session.ID,
+		IssuedAt:  now,
+		ExpiresAt: session.ExpiresAt,
+	}, key.Secret, s.backendID)
+	if err != nil {
+		return TokenSet{}, err
+	}
+	return TokenSet{
+		SessionID:            session.ID,
+		Credential:           credential,
+		ExpiresAtMillis:      session.ExpiresAt,
+		AwaitingConfirmation: session.AwaitingConfirmation(),
+		Scopes:               session.Scopes,
+	}, nil
 }
 
 // signingKeyByID resolves a key row through the same cache Verify uses,
@@ -498,7 +468,8 @@ func hashRefreshSecret(secret string) [sha256.Size]byte {
 }
 
 // PruneCredentials drops credential rows that can never admit anything
-// again: sessions and refresh secrets whose windows closed before `before`,
+// again: sessions whose access and refresh windows closed before `before`,
+// refresh secrets outside that retention window,
 // and pairing links that expired without being redeemed.
 //
 // The only deletion this package performs, and the bound is what makes it

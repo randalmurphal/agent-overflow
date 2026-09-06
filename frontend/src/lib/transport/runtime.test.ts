@@ -47,6 +47,9 @@ import {
   __resetEntityIndexForTest,
   subscriptionBackend,
   terminalBackend,
+  noteThread,
+  forgetBackendEntities,
+  threadBackend,
 } from './entityIndex';
 import { setBackendIdentityFromBootstrap } from './backendIdentity';
 
@@ -73,6 +76,15 @@ describe('Call', () => {
     expect(promise).toBeInstanceOf(CancellablePromise);
     await expect(promise).resolves.toBe('hello');
     expect(mockClient.callByID).toHaveBeenCalledWith(42, ['a', 'b']);
+  });
+
+  it('refuses an absent pinned computer even when only home remains', async () => {
+    await expect(withBackendTarget('removed', () => Call.ByID(42, '/same/path')))
+      .rejects.toThrow('no longer connected');
+    await expect(withBackendTarget('removed', () => Call.ByName('Run', '/same/path')))
+      .rejects.toThrow('no longer connected');
+    expect(mockClient.callByID).not.toHaveBeenCalled();
+    expect(mockClient.callByName).not.toHaveBeenCalled();
   });
 
   it('ByName delegates to wsClient.callByName and rejects on transport error', async () => {
@@ -119,6 +131,20 @@ describe('Events.On', () => {
 
     off();
     expect(subscription.unsubscribe).toHaveBeenCalled();
+  });
+
+  it('drops old-owner runtime frames after a move', () => {
+    const subscription = captureSubscription();
+    const handler = vi.fn();
+    const off = Events.On('provider:turn_completed', handler);
+    noteThread('moving', '', 0);
+    subscription.deliver({ threadId: 'moving' });
+    expect(handler).toHaveBeenCalledTimes(1);
+    noteThread('moving', 'gpu', 1);
+    subscription.deliver({ threadId: 'moving' });
+    expect(handler).toHaveBeenCalledTimes(1);
+    off();
+    __resetEntityIndexForTest();
   });
 
   it('stamps each event with the backend the connection identified as', () => {
@@ -276,7 +302,7 @@ describe('Call.ByID indexes what a pinned call answers with', () => {
   const LIST_TERMINALS = 2445206506;
 
   function remoteClient(result: unknown) {
-    const callByID = vi.fn(async () => result);
+    const callByID = vi.fn(async (_method: number, _args: unknown[]) => result);
     __attachBackendForTest(
       {
         id: REMOTE,
@@ -322,6 +348,23 @@ describe('Call.ByID indexes what a pinned call answers with', () => {
     expect(subscriptionBackend('sub-1')).toBe(REMOTE);
   });
 
+  it.each([1098302047, 1496882310, 1186337974, 70120675])('refuses unknown entity ownership with two computers for method %s', async (method) => {
+    const callByID = remoteClient(null);
+    await expect(Call.ByID(method, 'unseen')).rejects.toThrow('computer that owns');
+    expect(callByID).not.toHaveBeenCalled();
+    expect(mockClient.callByID).not.toHaveBeenCalled();
+  });
+
+  it('opens a hidden workflow thread on the computer that supplied the run map', async () => {
+    const callByID = remoteClient({ runs: [{ itemId: 'child', phases: [{ threadId: 'phase-thread' }], units: [{ threadId: 'unit-thread' }] }] });
+    await withBackendTarget(REMOTE, () => Call.ByID(4156752389, 'root'));
+    await Call.ByID(1098302047, 'phase-thread');
+    await Call.ByID(1098302047, 'unit-thread');
+    await Call.ByID(70120675, 'child');
+    expect(callByID.mock.calls.map(([id]) => id)).toEqual([4156752389, 1098302047, 1098302047, 70120675]);
+    expect(mockClient.callByID).not.toHaveBeenCalled();
+  });
+
   it('notes every row of a pinned list call', async () => {
     remoteClient([{ terminalID: 'term-a' }, { terminalID: 'term-b' }]);
 
@@ -329,6 +372,22 @@ describe('Call.ByID indexes what a pinned call answers with', () => {
 
     expect(terminalBackend('term-a')).toBe(REMOTE);
     expect(terminalBackend('term-b')).toBe(REMOTE);
+  });
+
+  it.each(['pinned', 'all', 'single'] as const)('drops an old ownership reply on the %s path after the new computer is forgotten', async (path) => {
+    const oldRows = [{ id: 'moving', ownershipEpoch: 0 }];
+    let finish!: (rows: typeof oldRows) => void;
+    const pending = new Promise<typeof oldRows>((resolve) => { finish = resolve; });
+    if (path !== 'single') remoteClient([]);
+    mockClient.callByID.mockReturnValueOnce(pending);
+    noteThread('moving', '', 0);
+    const call = path === 'pinned' ? withBackendTarget('', () => Call.ByID(1090132042)) : Call.ByID(1090132042);
+    noteThread('moving', 'destination', 1);
+    forgetBackendEntities('destination');
+    finish(oldRows);
+    if (path === 'all') await expect(call).resolves.toEqual([]);
+    else await expect(call).rejects.toThrow('ownership changed');
+    expect(threadBackend('moving')).toBeUndefined();
   });
 
   it('hands the caller the result untouched', async () => {

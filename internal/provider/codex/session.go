@@ -643,6 +643,7 @@ type Config struct {
 	// keeps its raw events and never needs the tail.
 	ResumeHasUnresolvedSubagents bool
 	SystemPrompt                 string
+	AdditionalInstructions       string
 	MCPServers                   map[string]any
 	ContextWindow                int
 	AutoCompactTokenLimit        int

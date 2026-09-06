@@ -5,6 +5,10 @@ rows and menus; the tree they render is computed in `utils/`, and every
 mutation goes through the two action modules below rather than a binding
 call inside a component.
 
+The footer's sleep inhibitor belongs to the local execution host. A standalone
+frontend has local profile administration but no execution host, so it must not
+show the host sleep toggle merely because its controller grants `host`.
+
 ## The tree is two files
 
 - `utils/sidebarTree.ts` — the BUILD half: the `SidebarTreeNode`
@@ -177,3 +181,31 @@ not contain. The collapsed set is never pruned at all. The expanded set
 prunes only ids naming a thread of the tree in hand that is no longer
 expandable; pruning against the whole set instead had each project's pass
 delete the other's, and two expanded projects converged on empty.
+
+## Projects on connected computers
+
+AddProjectModal chooses the target explicitly. computerProjects captures it for
+both BrowseDirectory and CreateProject; duplicate paths are compared only on
+that computer. A browser change remounts DirectoryBrowser, whose destruction
+invalidates pending reads. Typing or navigating clears the committable path
+immediately, including during the debounce, and only a successful listing
+restores it. Mount the browser once with onMount: its selection callback must
+not become an effect dependency that clears a later submission error.
+
+With multiple computers, thread metadata names nonlocal owners even when the
+repository has no local clone. The host name shares the worktree metadata line;
+the local desktop omits its own name, while a remote frontend names each host.
+
+ThreadFromPRDialog also captures a computer on open. Its GitLab host allowlist
+and create RPC use that computer; global pane focus cannot redirect submission.
+Index the returned thread/project before publishing the row, including a reply
+after the dialog closes. A dismissed dialog or changed target pane must not
+navigate on that late success.
+
+SystemStatsFooter follows the selected computer, names it when several are
+attached, and hides offline samples. `system:stats` is keyed by event origin in
+the shared store; interleaved samples from two machines never share one slot.
+
+Directory browsing distinguishes `exists: false` (an incomplete/missing path,
+which may use parent-prefix filtering) from a failed RPC (a visible connection
+or access error). Typing must not turn network failures into “No Matches”.

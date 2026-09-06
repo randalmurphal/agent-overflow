@@ -20,6 +20,25 @@ export const MAX_FRAMES = 240;
 export const MIN_FRAME_MS = 20;
 export const MAX_FRAME_MS = 2000;
 const MAX_LABEL_CHARS = 64;
+export const MAX_SPRITE_PIXELS = 4_194_304;
+export const MAX_LIBRARY_PIXELS = 8_388_608;
+
+/** Inspect the fixed PNG header before asking the browser to allocate a decoded
+ * image. Compressed-byte limits alone do not bound image memory. */
+export function pngDimensions(png: string): { width: number; height: number } | null {
+  try {
+    const header = atob(png.slice(0, 44));
+    if (header.length < 33 || header.slice(0, 8) !== '\x89PNG\r\n\x1a\n' || header.slice(12, 16) !== 'IHDR') return null;
+    const uint32 = (at: number): number => (
+      header.charCodeAt(at) * 0x1000000 + header.charCodeAt(at + 1) * 0x10000
+      + header.charCodeAt(at + 2) * 0x100 + header.charCodeAt(at + 3)
+    );
+    if (uint32(8) !== 13) return null;
+    const width = uint32(16), height = uint32(20);
+    if (width < 1 || height < 1 || width > 32_768 || height > 4_096 || width * height > MAX_SPRITE_PIXELS) return null;
+    return { width, height };
+  } catch { return null; }
+}
 
 /**
  * Parse one sidecar manifest. Returns the manifest or a human-readable
@@ -67,6 +86,9 @@ export function buildCustomSprite(
 ): SpinnerSprite | string {
   if (width <= 0 || height <= 0) {
     return `${id}.png: could not decode the image`;
+  }
+  if (width > 32_768 || height > 4_096 || width * height > MAX_SPRITE_PIXELS) {
+    return `${id}.png: image dimensions exceed the animation memory limit`;
   }
   if (width % manifest.frames !== 0) {
     return `${id}.png: width ${width}px does not divide into ${manifest.frames} equal frames`;

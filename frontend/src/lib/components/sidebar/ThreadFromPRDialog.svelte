@@ -1,5 +1,7 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import Modal from '../primitives/Modal.svelte';
+  import ComputerSelect from '../primitives/ComputerSelect.svelte';
   import Button from '../primitives/Button.svelte';
   import { CreateThreadFromPR } from '../../stores/bindings';
   import { parsePRReference, type ParsedPRReference } from '../../utils/prReference';
@@ -8,6 +10,12 @@
   import { prependThread } from '../../stores/threads.svelte';
   import { openThreadInPane } from '../../stores/panes.svelte';
   import { getSettings } from '../../stores/settings.svelte';
+  import { selectedBackend } from '../../stores/selectedBackend.svelte';
+  import { backendReachable, hasMultipleBackends } from '../../stores/attachedBackends.svelte';
+  import { withBackendTarget } from '../../transport/backends';
+  import { noteProject, noteThread } from '../../transport/entityIndex';
+  import { hasScope } from '../../transport/scopes';
+  import { HOME_BACKEND, type BackendKey } from '../../transport/backendKey';
   import {
     getProviderDefinition,
     PROVIDER_SETTINGS_ORDER,
@@ -24,6 +32,7 @@
   } = $props();
 
   let url = $state('');
+  let backend = $state<BackendKey>(HOME_BACKEND);
   let provider = $state<ProviderID>('claude');
   let model = $state('');
   let submitting = $state(false);
@@ -37,7 +46,7 @@
   // Self-hosted GitLab allowlist extends the URL parser so users can
   // paste their corporate-host MR URLs. Short refs are forge-neutral
   // already and don't need this list.
-  let gitlabHosts = $derived(getSettings().gitlabSelfHostedHosts ?? []);
+  let gitlabHosts = $derived(getSettings(backend).gitlabSelfHostedHosts ?? []);
 
   // Live validation feedback — computed each render so the "Create" button's
   // disabled state tracks exactly what the submit path would see.
@@ -47,7 +56,8 @@
   });
   let parseErrorMessage = $derived(parsed && !parsed.ok ? parsed.error : null);
   let canSubmit = $derived(
-    !submitting && parsed !== null && parsed.ok && provider !== null,
+    !submitting && parsed !== null && parsed.ok && provider !== null
+      && backendReachable(backend) && hasScope('threads:operate', backend),
   );
   $effect(() => {
     if (!open) {
@@ -58,6 +68,7 @@
     // Dialog is opening — bump once so a fresh submission starts in a new
     // generation window.
     submitGeneration += 1;
+    backend = untrack(selectedBackend);
     url = '';
     model = '';
     error = null;
@@ -85,6 +96,9 @@
     error = null;
     const effectiveModel = model.trim();
     const startGeneration = submitGeneration;
+    const target = backend;
+    const targetPane = pane;
+    const targetThreadId = pane?.threadId;
     const prNumber = parsed.value.number;
     const labels = forgeLabels(parsed.value.forge);
     const refSigil = `${labels.noun} ${labels.numberSigil}`;
@@ -92,14 +106,17 @@
       const project = parsed.value.namespace
         ? `${parsed.value.namespace}/${parsed.value.repo}`
         : parsed.value.repo;
-      const thread = (await CreateThreadFromPR(
+      const thread = (await withBackendTarget(target, () => CreateThreadFromPR(
         project,
         prNumber,
         provider,
         effectiveModel,
         parsed.value.forge,
-      )) as Thread;
-      if (submitGeneration !== startGeneration) {
+      ))) as Thread;
+      noteThread(thread.id, target);
+      if (thread.projectId) noteProject(thread.projectId, target);
+      prependThread(thread);
+      if (submitGeneration !== startGeneration || pane !== targetPane || pane?.threadId !== targetThreadId) {
         // User closed the dialog before the backend finished. The thread
         // exists server-side but we must not navigate away or pollute
         // the already-dismissed dialog's state. Keep them informed with
@@ -107,8 +124,7 @@
         addToast('info', `Thread from ${refSigil}${prNumber} was created in the background`);
         return;
       }
-      prependThread(thread);
-      if (pane) await openThreadInPane(thread, pane);
+      if (targetPane) await openThreadInPane(thread, targetPane);
       else await openThreadInPane(thread);
       addToast('success', `Thread created from ${refSigil}${prNumber}`);
       onClose();
@@ -147,6 +163,9 @@
       data-testid="thread-from-pr-dialog"
       onkeydown={handleBodyKeydown}
     >
+      {#if hasMultipleBackends()}
+        <ComputerSelect value={backend} onchange={(value) => { backend = value; error = null; }} disabled={submitting} scope="threads:operate" />
+      {/if}
       <div class="space-y-2">
         <label for="pr-url-input" class="text-[0.75rem] text-fg-muted block font-medium">
           Pull request / merge request URL or short ref

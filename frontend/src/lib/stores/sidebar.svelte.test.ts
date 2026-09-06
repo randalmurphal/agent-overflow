@@ -174,7 +174,7 @@ describe('sidebar store', () => {
       expect(updateMock!.mock.calls.length).toBe(0);
     });
 
-    it('Go wins when both Go and memory have non-default values', async () => {
+    it('the frontend keeps its choice when the host has another value', async () => {
       setBindingMock('UpdateSettings', async () => null);
       setProjectSortMode('createdAt');
 
@@ -184,7 +184,7 @@ describe('sidebar store', () => {
       await loadSettings();
 
       syncSidebarFromSettings();
-      expect(getProjectSortMode()).toBe('manual');
+      expect(getProjectSortMode()).toBe('createdAt');
       expect(updateMock!.mock.calls.length).toBe(0);
     });
 
@@ -210,9 +210,7 @@ describe('sidebar store', () => {
       // The in-memory value should NOT be overwritten with the default.
       expect(getProjectSortMode()).toBe('manual');
 
-      expect(updateMock!.mock.calls.length).toBe(1);
-      const patch = updateMock!.mock.calls[0][0] as Record<string, unknown>;
-      expect(patch.projectSortMode).toBe('manual');
+      expect(updateMock!.mock.calls.length).toBe(0);
     });
 
     it('does not push when both Go and memory are at defaults', async () => {

@@ -15,12 +15,14 @@
   //    (either via drill-in or direct path-input text); the parent uses
   //    the latest value to drive its Add button.
 
-  import { onDestroy, untrack } from 'svelte';
+  import { onDestroy, onMount, untrack } from 'svelte';
   import { createDirectoryBrowser } from './directoryBrowserState.svelte';
   import { isImeComposingEvent } from '../../utils/imeComposition';
+  import type { BackendKey } from '../../transport/backendKey';
 
   interface Props {
     initialPath?: string;
+    backend?: BackendKey;
     /** Fires every time the current listed path changes (including when
      * the user types a path directly). Parent is expected to use the
      * latest value as the "pending add" target. */
@@ -29,7 +31,7 @@
     onSelectFile?: (path: string) => void;
   }
 
-  let { initialPath = '~', onSelect, onSelectFile }: Props = $props();
+  let { initialPath = '~', backend, onSelect, onSelectFile }: Props = $props();
 
   // Snapshot the initial path once. `untrack` tells Svelte we don't want
   // this $state init to re-fire if the parent passes a new initialPath —
@@ -38,6 +40,7 @@
 
   const browser = createDirectoryBrowser({
     initialPath: startingPath,
+    backend: untrack(() => backend),
     // Forward to the prop via a closure so Svelte doesn't flag the prop
     // reference as a one-shot capture. The wrapper is cheap; the alternative
     // is stashing the reference in a local $state, which just moves the
@@ -47,11 +50,7 @@
 
   let listboxEl: HTMLUListElement | undefined = $state(undefined);
 
-  $effect(() => {
-    browser.mount();
-    // onDestroy fires too late for $effect teardown in some test setups;
-    // we still register it below for component unmount.
-  });
+  onMount(() => browser.mount());
 
   onDestroy(() => {
     browser.destroy();

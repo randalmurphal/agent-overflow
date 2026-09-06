@@ -927,6 +927,24 @@ var channelPolicies = []ChannelPolicy{
 			"that says how it ended.",
 	},
 	{
+		Channel:   eventchan.ThreadTransfer,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
+		Why: "Public, bounded conversation handoff status, matching GetThreadTransfers. " +
+			"Paired devices need progress and ownership outcomes after reconnect. " +
+			"Several operations may progress independently, so retaining only the last " +
+			"global event would lose another conversation's completion. Grants and " +
+			"activation secrets are excluded by the store status JSON shape.",
+	},
+	{
+		Channel:   eventchan.AgentComputersChanged,
+		Audience:  AudienceAny,
+		Retention: RetentionLatestOnly,
+		Scope:     ScopeTerminalOperate,
+		Why:       "Invalidates the selected computer's agent-peer configuration, matching ListAgentComputers. No peer identities or credentials ride the event. One latest dirty signal suffices because clients read the whole configuration.",
+	},
+	{
 		Channel:   eventchan.BackendSetChanged,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,

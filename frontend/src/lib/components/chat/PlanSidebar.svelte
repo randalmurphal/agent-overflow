@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { threadMachine } from '../../stores/attachedBackends.svelte';
   import { onDestroy, onMount, untrack } from 'svelte';
   import Send from '@lucide/svelte/icons/send';
   import X from '@lucide/svelte/icons/x';
@@ -291,7 +292,7 @@
 
   </section>
 
-<ProposedPlanSaveModal
+<ProposedPlanSaveModal backend={threadMachine(threadId ?? '', null)}
   open={planExport.saveDialogOpen}
   workspacePath={ctx.workspacePath}
   savePath={planExport.savePath}

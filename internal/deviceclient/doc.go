@@ -20,7 +20,9 @@
 //   - The pairing link. Decoding what the minting surface produced, in
 //     every form a person can paste.
 //   - The rotating session. One atomicfile JSON per backend id, renewed
-//     single-flight, stored before use, never retried unread.
+//     single-flight, with a saved successor for recoverable renewals. HTTP outages,
+//     throttling and malformed credential responses preserve the session;
+//     only a structured authentication refusal can retire it.
 //   - The pin. A `tls.Config` that compares the leaf's fingerprint against
 //     the one the pairing payload carried, and refuses on a mismatch with
 //     re-pairing named as the remedy.

@@ -15,7 +15,8 @@
   // file or a downgrade leaves something the user can see and delete rather
   // than a setting that is stored, inert, and invisible.
 
-  import { getSettings, updateSettingsPatch } from '../../stores/settings.svelte';
+  import { settingsComputer } from './settingsComputer';
+  const { getSettings, updateSettingsPatch } = settingsComputer();
   import {
     CODEX_TOOL_TOGGLES,
     disabledToolsFor,

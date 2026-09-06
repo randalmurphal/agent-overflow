@@ -4,6 +4,8 @@ import type { PaneLayoutPersistedSettings } from '../types/settings';
 import {
   flushPaneLayoutPersistence,
   getPaneLayoutItems,
+  paneLayoutMutationRevision,
+  addPaneLayoutItem,
   resetPaneLayoutForTest,
   applyPaneBoundaryDrag,
   setPaneLayoutItemsForTest,
@@ -115,6 +117,7 @@ function persistedPaneLayout(): unknown {
  * Passing null leaves the bucket empty.
  */
 async function installUIStateMock(initialPaneLayout: unknown = makeSavedLayout([], null)) {
+  resetAppStorageForTest();
   setBindingMock('GetUIState', async () =>
     initialPaneLayout === null ? {} : { paneLayout: JSON.stringify(initialPaneLayout) },
   );
@@ -122,10 +125,21 @@ async function installUIStateMock(initialPaneLayout: unknown = makeSavedLayout([
   setBindingMock('SetUIState', setUIState);
   setBindingMock('DeleteUIState', async () => null);
   await hydrateAppStorage();
-  return { setUIState };
+  const writes = vi.spyOn(localStorage, 'setItem');
+  writes.mockClear();
+  return { get writeCount() { return writes.mock.calls.filter(([key]) => key === 'agent-overflow:uistate:bucket').length; } };
 }
 
 describe('pane layout persistence', () => {
+  it('keeps a pane opened while the initial computer was still loading', async () => {
+    const revision = paneLayoutMutationRevision();
+    seedPane('chosen-now', makeThread());
+    addPaneLayoutItem({ id: 'chosen-now', paneId: 'chosen-now', kind: 'thread', widthPx: 500 });
+    await loadPersistedPaneLayout([], revision);
+    expect(getPaneLayoutItems().map((pane) => pane.id)).toContain('chosen-now');
+    expect(getAllPanes().get('chosen-now')?.threadId).toBe('thread-1');
+  });
+
   beforeEach(async () => {
     localStorage.removeItem(LEGACY_KEY);
     resetBindingMocks();
@@ -515,12 +529,12 @@ describe('pane layout persistence', () => {
     });
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(199);
-    expect(mocks.setUIState).not.toHaveBeenCalled();
+    expect(mocks.writeCount).toBe(0);
 
     await vi.advanceTimersByTimeAsync(1);
     await waitForPaneLayoutPersistenceForTest();
 
-    expect(mocks.setUIState).toHaveBeenCalledTimes(1);
+    expect(mocks.writeCount).toBe(1);
     const layout = persistedPaneLayout() as PaneLayoutPersistedSettings;
     expect(layout.panes.map((pane) => pane.threadId)).toEqual(['left-thread', 'right-thread']);
   });
@@ -547,13 +561,13 @@ describe('pane layout persistence', () => {
       zeroSum: true,
     });
     await vi.advanceTimersByTimeAsync(0);
-    expect(mocks.setUIState).not.toHaveBeenCalled();
+    expect(mocks.writeCount).toBe(0);
 
     await flushPaneLayoutPersistence();
 
-    expect(mocks.setUIState).toHaveBeenCalledTimes(1);
+    expect(mocks.writeCount).toBe(1);
     await vi.advanceTimersByTimeAsync(400);
-    expect(mocks.setUIState).toHaveBeenCalledTimes(1);
+    expect(mocks.writeCount).toBe(1);
   });
 
   it('drops saved panes whose threads are no longer returned by ListThreads', async () => {
@@ -611,9 +625,7 @@ describe('pane layout persistence', () => {
     expect(persistedPaneLayout()).toEqual(makeSavedLayout([
       { paneId: 'left', threadId: left.id, widthPx: 840 },
     ], 'left'));
-    expect(mocks.setUIState).toHaveBeenCalledWith(
-      expect.objectContaining({ paneLayout: expect.stringContaining('left-thread') }),
-    );
+    expect(mocks.writeCount).toBeGreaterThan(0);
     expect(localStorage.getItem(LEGACY_KEY)).toBeNull();
   });
 
@@ -701,16 +713,9 @@ describe('pane layout persistence', () => {
   it('treats write failures as best-effort', async () => {
     seedPane('left', makeThread({ id: 'left-thread' }));
     setPaneLayoutItemsForTest([{ id: 'left', paneId: 'left', kind: 'thread', widthPx: 1 }]);
-    setBindingMock('SetUIState', async () => {
-      throw new Error('ui state write failed');
-    });
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
-
+    const write = vi.spyOn(localStorage, 'setItem').mockImplementation(() => { throw new Error('Storage full'); });
     expect(() => persistPaneLayout()).not.toThrow();
     await waitForPaneLayoutPersistenceForTest();
-    expect(consoleError).toHaveBeenCalledWith(
-      'appStorage: flush failed:',
-      expect.any(Error),
-    );
+    expect(write).toHaveBeenCalledWith('agent-overflow:uistate:bucket', expect.stringContaining('left-thread'));
   });
 });

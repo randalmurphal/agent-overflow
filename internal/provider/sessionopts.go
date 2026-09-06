@@ -145,6 +145,9 @@ type SessionOptions struct {
 	Mode                       InteractionMode
 	RuntimeMode                RuntimeMode
 	SystemPrompt               string
+	// AdditionalInstructions appends feature guidance without replacing the
+	// provider's own prompt or a user-authored override. Spawn/resume only.
+	AdditionalInstructions string
 
 	// SystemPromptOverrideSource is the STORED (unrendered) text of the
 	// settings-level prompt override that produced SystemPrompt, or "" when

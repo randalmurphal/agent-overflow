@@ -142,6 +142,10 @@ const (
 	// authenticator. The step is written to the server log, where a
 	// developer can read it, rather than to a caller who cannot act on it.
 	ReasonPasskeyRefused
+	// Temporary storage/signing failures preserve the client's renewal state.
+	ReasonTemporarilyUnavailable
+	// The same recognized renewal already has a later legitimate successor.
+	ReasonRefreshSuperseded
 )
 
 // reasonCodes maps each Reason to its stable wire spelling, indexed by
@@ -170,6 +174,8 @@ var reasonCodes = [...]string{
 	ReasonPasskeyUnavailable:      "passkey_unavailable",
 	ReasonPasskeyChallengeUnknown: "passkey_challenge_unknown",
 	ReasonPasskeyRefused:          "passkey_refused",
+	ReasonTemporarilyUnavailable:  "temporarily_unavailable",
+	ReasonRefreshSuperseded:       "refresh_superseded",
 }
 
 // Code returns the stable wire spelling. An out-of-range value — only

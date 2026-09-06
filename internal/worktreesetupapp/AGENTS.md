@@ -16,6 +16,11 @@ Application service for asynchronous chat-worktree setup runs.
 
 ## Ordering
 
+- `Config.BeginWork` acquires the host restart lease before reserving a run.
+  Transfer it to the execution goroutine and release after command cleanup and
+  terminal publication. Failed starts and recipes with no steps release too.
+  Canceling/observing an existing run needs no new admission.
+
 - The stopped check, registry reservation, and WaitGroup `Add` share one
   critical section. `Stop` sets stopped under that mutex before `Wait`.
 - Settlement publishes terminal state under the same mutex used by snapshot,

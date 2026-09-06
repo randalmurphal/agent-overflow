@@ -1,5 +1,12 @@
 # lib/transport/
 
+A renewal response retires a pairing only when HTTP 401 carries a known,
+permanent refusal. Unknown future reasons, pending confirmation, spent proofs,
+clock-window failures and superseded operations keep the pairing. A proxy's
+plain 401 page, a rate limit, or a backend outage is not proof of revocation. Keep
+the same distinction in the Go deviceclient; never purge cached client state
+because an intermediary returned an unrecognized response.
+
 The client half of the HTTP+WS wire that carries every RPC and every
 pushed event, for the embedded webview, `agent-overflow --connect`, and a
 remote browser alike. Protocol and authz rules:
@@ -274,25 +281,25 @@ remote browser alike. Protocol and authz rules:
   only when ITS identity moves, so a streaming channel does not mint one
   per frame.
 
-  **An unresolvable target answers home rather than throwing.** An unknown
-  method id, an entity the index has never seen, a `selected` backend that
-  has since detached: all three land on the one connection that has always
-  answered them, because a single-backend app must behave exactly as it did
-  and a throw here would be a blank screen for a table that is merely
-  incomplete. `runtime.ts` warns once per method id in dev, which is where a
-  route that is genuinely missing becomes visible.
-- `entityIndex.ts` is which backend owns which entity: plain `Map`s from
-  thread id and project id to registry id, populated at exactly three
-  doors — the `all` fan-out's per-backend shares, the ids a routed call
-  answered with, and the origin stamp on a `thread:updated` /
-  `project:updated` / `thread-group:updated` frame. The replica's cold open
-  is NOT one of them: a window painted from IndexedDB carries no origin, so
-  a thread this session never listed resolves home until a list call or an
-  event names its machine. **Rows gain no field.**
-  Stamping `backendId` onto every Thread would cost a property on every
-  sidebar row, make two copies of one fact, and still need the index for
-  ids whose row is not loaded. An id it does not know resolves home, which
-  is what makes a single-backend app identical.
+  **An explicit detached target fails closed.** Unknown entity ownership resolves only when exactly one computer is
+  attached; otherwise it refuses. Explicit, indexed and selected targets
+  never fall back. An unknown method keeps its legacy HOME route. HOME itself can be absent on a phone. The single-backend
+  fast path requires an actual HOME entry, not merely one remaining computer.
+  A moved conversation's epoch excludes older catalog rows and conflicting
+  equal-epoch claims from admission. Its ownership notification carries the
+  former computer so the thread store invalidates pending reads and rewrites
+  that computer's offline catalog. Delete events apply store cleanup before
+  forgetting the origin used to choose the catalog.
+- `entityIndex.ts` records the backend owning each entity. Lists, routed
+  family results, thread/project/group row events and matching per-computer
+  catalogs populate it. Backend IDs are not duplicated onto row types.
+  Thread rows carry a durable `ownershipEpoch`: higher epochs supersede old
+  offline catalogs, patches cannot move an indexed ID, and equal-epoch
+  contradictory owners refuse RPC routing. Ownership changes invalidate cached
+  thread state and restate the watched-thread set on all connections.
+  History-window cold opens alone carry no ownership evidence. An unknown ID
+  uses the sole attached computer; several computers require ownership
+  evidence, and a known conflict always refuses.
 
   Which entity a list method's rows ARE is keyed on the METHOD, never
   sniffed from the row's shape. A shape-based walker is wrong the first
@@ -309,28 +316,20 @@ remote browser alike. Protocol and authz rules:
   index, `home` is the page's own backend, `selected` is the machine the
   person is looking at (`stores/selectedBackend.svelte.ts`), and `all` fans
   out and merges.
-- `methodFamilies.ts` is the hand-kept table the generator cannot write.
-  49 bound methods are keyed by an id that is neither a thread nor a
-  project and carry it as argument 0 — a workflow item, a workflow
-  automation, a terminal, a subscription, a thread group, a thread-id
-  batch — and the generator parks all of them on `home`, because
-  `itemID` and `automationID` are both `string` and no signature scan can
-  tell them apart. Home is the right FALLBACK and the wrong answer once one
-  of those lives on a second machine, so **route resolution asks the family
-  table first** and only falls through to the generated route when the
-  index has never seen that id. The families are learned from what a call
-  ANSWERED with (`entityIndex.ts`'s `RESULT_FAMILIES`: the list that
-  enumerated them, the open that minted a terminal, the subscribe that
-  minted a subscription id), keyed by METHOD and never sniffed from the
-  row. `methodFamilies.test.ts` pins every id against the generated table
-  AND asserts the count above, so a rename fails loudly instead of quietly
-  reverting to home and the number in this sentence cannot drift. Device,
-  passkey and backend-profile admin families are deliberately absent: they
-  administer this client's own attachments and belong to home for good.
-  One gap is known and named in the module header rather than left to be
-  rediscovered: several `WorkflowAgent*` methods carry their item id inside
-  a STRUCT argument, so `args[0]` is an object the lookup cannot read and
-  they stay on home. The merge rule is stated and implemented exactly once, in
+- `methodFamilies.ts` names workflow items, automations, terminals,
+  subscriptions, groups and thread batches that the generator cannot infer
+  from string parameters. Route resolution checks this table first. Unknown
+  IDs require a sole attached computer, instead of falling through to HOME.
+  List and creation results teach family ownership by their declared method
+  shape; `methodFamilies.test.ts` pins each method against the generated table.
+  Device, passkey and backend-profile administration stays on its explicitly
+  selected configuration computer rather than using an entity family.
+  Structured inputs declare the exact ID field in the same family table,
+  including workflow item operations and project-owned automation creation.
+  Run detail and run-map answers index their declared phase/unit thread IDs;
+  arbitrary output and artifact contents never teach ownership. A newly
+  started workflow or minted automation is indexed from its RPC result before
+  returning to the caller. The merge rule lives in
   `backends.ts`'s `mergeBackendResults`: arrays concatenate in attach
   order, id-keyed objects shallow-merge, anything else takes the home
   share. A failed backend's share is DROPPED and recorded on its entry
@@ -534,7 +533,7 @@ remote browser alike. Protocol and authz rules:
   direction.
 - `scopes.ts` is the capability answer, and the TypeScript mirror of
   `internal/transport/scopes.go`'s vocabulary. A surface asks
-  `hasScope('threads:operate')` rather than "am I a remote session",
+  `hasScope('threads:operate', backend)` rather than "am I a remote session",
   because the two answer the same only for a device paired with FULL
   access. The pairing modal also mints VIEW-ONLY, whose session holds the
   three observe scopes and nothing else, and a gate written against the
@@ -558,15 +557,18 @@ remote browser alike. Protocol and authz rules:
   view-only device's own font size and its ui_state bucket ride it
   server-side. Never authorization: the backend re-checks every
   RPC, so the worst a wrong answer does is offer a control that is
-  refused or hide one that would have worked.
+  refused or hide one that would have worked. Non-host checks require an
+  explicit computer in TypeScript; entity controls resolve it through
+  `entityScopes.ts`. Only local shell presence checks may omit HOME.
 
   The home answer RESOLVES LATE. `setPageGrantsFromBootstrap` runs from
-  the manifest fetch inside `wsClient.connect()`, which starts after App
-  mounts, so anything armed from `onMount` or a launch-time call sees
+  the manifest fetch owned by `wsClient`, normally after App mounts, so anything armed from `onMount` or a launch-time call sees
   the placeholder ("not on host, granted nothing") if it reads then. A
   reactive reader (`$derived`, `$effect`, a template) is fine, it re-runs
   when the answer lands; an install-time decision awaits
-  `pageGrantsResolved()` first. `hasScope` / `grantedScopes` / `isViewOnly`
+  `pageGrantsResolved()` first. A standalone frontend boot starts that same
+  client through `ready()` before its passive profile load; never fetch the
+  bootstrap separately and race the one-use page ticket. `hasScope` / `grantedScopes` / `isViewOnly`
   throw in test mode, and report once in a running app, when the home
   answer is read before resolution outside a tracking context: the idle
   memory trim did exactly that at mount and shipped as a permanent no-op
@@ -702,6 +704,11 @@ remote browser alike. Protocol and authz rules:
   credential on the manifest fetch (renewing once on a refusal), because
   its ticket is spent and its cookie dies with the backend launch — after
   a restart that credential is the only thing that still names the page.
+  Home and attached manifests use the same authenticated fetch. A failed
+  renewal with the paired session still stored is inconclusive and must stay
+  retryable; only definitive refusal stops reconnecting. Remember whether the
+  attempt was paired before header/renewal code can clear storage, so that
+  refusal asks for pairing rather than claiming the backend restarted.
   Assembling those headers is ASYNCHRONOUS, because a signing device
   mints a proof there, so the fetch awaits
   `pairedSessionHeaders('GET', '/bootstrap.json')` and passes the route
@@ -782,13 +789,13 @@ remote browser alike. Protocol and authz rules:
   is on is the backend it is pairing with and a payload naming another
   endpoint is stale or edited. A shell can never be a backend's origin, so
   what the QR names is where that backend lives and adopting it is the
-  point of scanning it. The way BACK is `unpairHome()`: a browser whose
-  credential died is one navigation away from a new link, a fixed-origin
-  page is not, so `TransportStatusBanner` offers "Pair again" exactly
-  when `hasHomeEndpoint()` (and no passkey there, since a passkey is
-  bound to the backend's domain and the browser refuses the ceremony
-  from any other origin). It forgets the session and then the endpoint,
-  and the next boot is a first run.
+  point of scanning it. New phone pairings use the computer UUID as their
+  credential/endpoint slot, including the first pairing. `pairingBackendKey`
+  repairs an already-known computer in its existing slot, preserving legacy
+  HOME pairings. Validating a new invitation must never repoint HOME. The
+  phone's "Pair again" opens Computers, where another invitation repairs its
+  own connection without discarding other computers or frontend preferences.
+  Passkeys remain limited to their own browser origin.
 - `backendAttach.ts` is how a client with no local process attaches,
   lists and removes a SECOND machine. A desktop hands the link to its Go
   side, which holds a profile and proxies the machine; a phone has nothing
@@ -814,6 +821,14 @@ remote browser alike. Protocol and authz rules:
   credential, then the credential, then the address, which is the same
   rule the pairing paths keep in the other direction (a stored session
   never outlives the knowledge of where to present it).
+
+  A phone may remove its legacy HOME entry too; a desktop may not remove
+  its local process. Removing HOME reloads the phone document after closing
+  the singleton. Native boot mounts the app whenever any saved computer
+  remains, and all fan-out, settings warmup, and connection banners work
+  without HOME. The banner follows the selected conversation/computer; one
+  unavailable first host must not cover a working second host. A phone
+  recovering one credential must not reload another computer's active pane.
 
   **`detachSteps.ts` is what runs BEFORE any of the three, and before
   `unpairHome()` drops the home credential too.** There are exactly two
@@ -880,9 +895,14 @@ remote browser alike. Protocol and authz rules:
   names its session with. The page credential doctrine above is
   untouched — an unpaired page still has nothing to stash. Rotation
   discipline lives in the module header and is load-bearing: renewal is
-  single-flight, stores before use, and never retries an unread
-  exchange, because a refresh secret presented twice reads as reuse
-  evidence that ends the session.
+  single-flight and stores before use. A supporting host receives a saved
+  client-chosen successor on `/auth/token/recover`; retries reuse that
+  operation with fresh proofs. See
+  [session renewal](../../../../docs/architecture/session-renewal.md).
+  Verify that pending state was actually saved before sending. Re-read the
+  lease AND saved generation after every network/proof await; late success,
+  refusal or missing-key responses cannot replace or clear newer state.
+  Keep unknown stored fields on every update. Auth fetches reject redirects.
   `components/pairing/PairingScreen.svelte` (mounted by `main.ts` on a
   `#pair=` fragment) is its enrolment surface. While a paired session is
   stored, it is the ONLY identity the upgrade may present: a dial that
@@ -1131,3 +1151,69 @@ The device KEY is deliberately not keyed: it names this browser profile,
 not a session, and every backend that enrols it records the same thumbprint
 against its own device row. A second key per backend would be a second
 device, which is not what happened.
+
+## Explicit computer targets never fall back
+
+A `mode=frontend` desktop has a local administrative HOME handle but no HOME
+execution computer. Keep its handle in lifecycle/event wiring and out of the
+computer catalog, single-computer optimization and all-computer fan-out. Read
+the local bootstrap catalog before mount loaders resolve the launch selection;
+never wait for an execution host there. `frontendController.test.ts` covers
+fan-out, local administration and removal of the original launch computer.
+
+`TransportError.transfer` preserves the operation and owner from
+`thread_moved`/`thread_transfer_pending` refusals. This is a navigation hint,
+not authority to attach a computer or repeat the operation on another host.
+
+A missing explicit target is a rejected RPC, including when only HOME remains.
+The single-connection fast path may bypass fan-out for HOME/all; it must never
+bypass an explicit pin or a selected route naming a removed computer.
+resolveTransport refuses missing targets. Pin one synchronously dispatched call
+with withBackendTarget, and capture that target again for every follow-up RPC
+across an await. runtime.test.ts covers absent pins on ByID and ByName.
+
+Entity permission checks use the same sole-computer rule for unknown ownership.
+With multiple computers they refuse ambiguity; they never borrow HOME grants,
+including the standalone frontend controller's local administrative authority.
+
+
+## Native LAN and attachment routing
+
+`computerRoutes.ts` selects among bounded addresses learned from an authenticated
+bootstrap, only after the APK advertises native health verification. Keep route
+metadata separate from credential renewal, bind it to the pairing, and check that
+binding again after network waits. Every request captures one URL/TLS pair;
+failed outbound requests are surfaced once, never replayed during selection.
+Bootstrap validates its socket URL against the actual response origin captured
+for that request. Attachment and bundle HTTP use `fetchPairedComputer` too.
+See [computer-routes.md](../../../../docs/architecture/computer-routes.md).
+
+`networkFetch` and `createNetworkSocket` select native certificate verification
+only for origins explicitly trusted by a native pairing. They never patch the
+browser globals or introduce a second protocol. See `mobile/AGENTS.md` for the
+bounded bridge and its real-TLS tests.
+
+Attachment tickets and bytes belong to the same captured thread owner. Use
+`backendTransferUrl` for both upload and download: the desktop relays through
+`/backend/<id>/attachments/...`, while the phone addresses that host directly.
+Never combine an entity-routed mint with a HOME-only HTTP URL. Reject minted
+paths outside the attachment routes before presenting their tickets.
+
+### Carried session grants
+
+A desktop proxy holds its device credential in Go, so browser credential slots
+cannot describe its access. The authenticated attached bootstrap publishes
+`sessionScopes` from that carrier's actual session. `scopes.ts` validates named
+grants, excludes `host`, and forgets the snapshot on detach. The direct native
+session still wins when present. Missing metadata means unknown access, never
+full access inferred from a same-origin URL. The backend enforces every call.
+
+### Retired metadata replies
+
+ListThreads, ListArchivedThreads, SearchThreadMessages and GetThread retain
+newer ownership claims for the lifetime of their pending RPC. Detachment
+invalidates that computer's reads. Every runtime dispatch path (single HOME,
+pinned and all-computer fan-out) checks before exposing an older row, including
+archived IDs that were not indexed before the request. Evidence survives removal
+of the destination until these reads settle, then is released. Mutation RPCs do
+not use this read-only cancellation rule.

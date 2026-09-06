@@ -24,6 +24,7 @@ import (
 // does not emit this by itself", not "this cannot carry traffic".
 func eventChannelConstants() []eventchan.Channel {
 	return []eventchan.Channel{
+		eventchan.AgentComputersChanged,
 		eventchan.BackendAttach,
 		eventchan.BackendSetChanged,
 		eventchan.BrowserCompanionState,
@@ -93,6 +94,7 @@ func eventChannelConstants() []eventchan.Channel {
 		eventchan.ThreadRuntimeModeChanged,
 		eventchan.ThreadTitleGeneration,
 		eventchan.ThreadUpdated,
+		eventchan.ThreadTransfer,
 		eventchan.UpdaterDownloadStarted,
 		eventchan.UpdaterError,
 		eventchan.UpdaterInstall,

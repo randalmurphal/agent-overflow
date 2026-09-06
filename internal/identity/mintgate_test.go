@@ -17,17 +17,18 @@ import (
 // today refuse a revoked device; this proves a path added TOMORROW cannot
 // quietly opt out.
 //
-// It works because the enforcement is not in any of those callers. Four
+// It works because the enforcement is not in any of those callers. These
 // calls are what bring a credential into existence or keep one alive, and
 // each carries the device gate at the point of the write:
 //
 //   - store.CreateSession — the device predicate is inside the INSERT;
 //   - store.ActivateSession, store.ExtendSession — inside the UPDATE;
+//   - store.RotateRefreshSecret — session/device predicates inside the durable transaction;
 //   - signClaims — reached only through Mint (which must then survive
-//     CreateSession) or issueFor (which takes the device ROW and refuses
+//     CreateSession) or accessTokensFor (which takes the device ROW and refuses
 //     a revoked one).
 //
-// So a new mint path built from these four inherits the refusal. This test
+// So a new mint path built from these operations inherits the refusal. This test
 // fails when one of them is called from somewhere new, which is the moment
 // somebody has to decide whether the new caller is a mint path — and if it
 // is, add it to TestNoMintPathAdmitsARevokedDevice rather than only here.
@@ -37,10 +38,11 @@ import (
 // for a device the owner revoked.
 func TestEveryCredentialProducingCallGoesThroughAChokepoint(t *testing.T) {
 	chokepoints := map[string][]string{
-		"CreateSession":   {"Sessions.Mint"},
-		"ActivateSession": {"Sessions.ConfirmPairing"},
-		"ExtendSession":   {"Sessions.EnsureLocalChannelSession", "Sessions.reissue"},
-		"signClaims":      {"Sessions.Mint", "Sessions.issueFor"},
+		"CreateSession":       {"Sessions.Mint"},
+		"ActivateSession":     {"Sessions.ConfirmPairing"},
+		"RotateRefreshSecret": {"Sessions.Refresh"},
+		"ExtendSession":       {"Sessions.EnsureLocalChannelSession"},
+		"signClaims":          {"Sessions.Mint", "Sessions.accessTokensFor"},
 	}
 	found := map[string][]string{}
 	for name, callers := range callersInPackage(t) {

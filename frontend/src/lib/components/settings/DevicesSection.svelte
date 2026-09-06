@@ -1,4 +1,8 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
+  import { settingsComputer } from './settingsComputer';
+  const { call, hasScope } = settingsComputer();
+
   // Settings → Remote access → Devices: which devices hold a credential on this
   // backend, the pairing flow that adds one (PairDeviceModal), and the
   // revocations that take one away — plus restore and forget, the two
@@ -34,17 +38,12 @@
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { relativeTime } from '../../utils/format';
-  import { isClientMode } from '../../transport/runMode';
-  import { hasScope, isViewOnlyGrantSet } from '../../transport/scopes';
+  import { isViewOnlyGrantSet } from '../../transport/scopes';
   import PairDeviceModal from './PairDeviceModal.svelte';
   import PasskeysBlock from './PasskeysBlock.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
   import { GHOST_BUTTON_CLASS } from './styles';
 
-  // Device access is a decision about THIS machine's credentials; in
-  // --connect mode the RPCs are refused as local-only, so the section
-  // renders a pointer instead of controls that can only fail.
-  const clientMode = isClientMode();
   // The other axis, and the one a paired device lands on. Every RPC on
   // this screen carries `//ao:scope access:admin`, which full access holds and
   // view-only does not — so a view-only device's mount fired
@@ -55,7 +54,7 @@
   // a session can lack `access:admin` without being view-only, and the
   // gate has to be right for that one too.
   let ungranted = $derived(!hasScope('access:admin'));
-  let unavailable = $derived(clientMode || ungranted);
+  let unavailable = $derived(ungranted);
 
   const CLASS_ICONS = {
     phone: Smartphone,
@@ -85,7 +84,7 @@
   async function load(): Promise<void> {
     if (unavailable) return;
     try {
-      overview = await GetAccessOverview();
+      overview = await call(() => GetAccessOverview());
     } catch (err) {
       addToast('error', `Failed to load devices: ${errString(err)}`);
     }
@@ -94,7 +93,7 @@
 
   async function loadReachability(): Promise<void> {
     try {
-      const network = await GetNetworkSettings();
+      const network = await call(() => GetNetworkSettings());
       remoteReachable = network.bindAll || (network.tailnet?.running && !!network.tailnet.dnsName);
     } catch {
       // Unknown reachability must not instruct the owner to change a
@@ -205,7 +204,7 @@
   function revokeDevice(device: AccessDevice): void {
     armOrRun(`device:${device.id}`, () =>
       act('Failed to revoke the device', async () => {
-        const result = await RevokeAccessDevice(device.id);
+        const result = await call(() => RevokeAccessDevice(device.id));
         addToast('success', revokedSummary(result, device.label));
       }),
     );
@@ -213,12 +212,12 @@
 
   function endSession(sessionId: string): void {
     armOrRun(`session:${sessionId}`, () =>
-      act('Failed to end the session', () => RevokeAccessSession(sessionId)),
+      act('Failed to end the session', () => call(() => RevokeAccessSession(sessionId))),
     );
   }
 
   function restoreDevice(device: AccessDevice): void {
-    void act('Failed to restore the device', () => RestoreAccessDevice(device.id));
+    void act('Failed to restore the device', () => call(() => RestoreAccessDevice(device.id)));
   }
 
   // Two-step, on the same arming path as revoke: the row and its
@@ -226,16 +225,16 @@
   // afterwards.
   function forgetDevice(device: AccessDevice): void {
     armOrRun(`forget:${device.id}`, () =>
-      act('Failed to remove the device', () => ForgetAccessDevice(device.id)),
+      act('Failed to remove the device', () => call(() => ForgetAccessDevice(device.id))),
     );
   }
 
   function confirmPending(link: PendingPairing): void {
-    void act('Failed to allow the device', () => ConfirmDevicePairing(link.linkId));
+    void act('Failed to allow the device', () => call(() => ConfirmDevicePairing(link.linkId)));
   }
 
   function cancelPending(link: PendingPairing): void {
-    void act('Failed to cancel the link', () => CancelDevicePairing(link.linkId));
+    void act('Failed to cancel the link', () => call(() => CancelDevicePairing(link.linkId)));
   }
 
   // Whole minutes until a future epoch; the 3s pending poll re-renders
@@ -245,7 +244,7 @@
   }
 
   $effect(() => {
-    void load();
+    if (!unavailable) untrack(() => void load());
     return () => {
       if (armTimer) clearTimeout(armTimer);
     };
@@ -266,10 +265,8 @@
   <div class="flex items-start justify-between gap-4">
     <SettingsHeader
       title="Devices"
-      description={clientMode
-        ? 'Device credentials are managed from the backend machine itself. This window is attached remotely, so pairing and revocation live on that install’s own screen.'
-        : ungranted
-          ? 'Pairing and revocation were not granted to this device. They stay on the machine running Agent Overflow, and on devices paired with full access.'
+      description={ungranted
+          ? 'This connection cannot manage device access. Connect with full access to pair or revoke devices.'
           : 'Each paired device holds its own credential for this backend. Revoking one signs that device out everywhere without touching the others.'}
     />
     {#if !unavailable}

@@ -23,6 +23,11 @@
   // socket's status from the transport registry, the same answer the
   // composer's machine picker dims on.
 
+  import ComputerActions from './ComputerActions.svelte';
+  import SSHConnectModal from './SSHConnectModal.svelte';
+  import { HOME_BACKEND } from '../../transport/backendKey';
+  import { selectedBackend, setSelectedBackend } from '../../stores/selectedBackend.svelte';
+  import { backendDisplayName } from '../../stores/attachedBackends.svelte';
   import { onMount } from 'svelte';
   import MonitorIcon from '@lucide/svelte/icons/monitor';
   import Button from '../primitives/Button.svelte';
@@ -32,7 +37,7 @@
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { relativeTime } from '../../utils/format';
-  import { isClientMode } from '../../transport/runMode';
+  import { isClientMode, isFrontendOnly } from '../../transport/runMode';
   import { hasScope } from '../../transport/scopes';
   import { isNativeShell } from '../../native/platform';
   import {
@@ -58,17 +63,16 @@
   } from '../../stores/systems.svelte';
 
   const clientMode = isClientMode();
-  // A phone shell holds its own credentials and manages its own list; a
-  // `--connect` window manages nobody's and cannot be a shell. Stating
-  // that here rather than assuming it keeps every gate below a single
-  // question.
+  // A phone and a frontend-only desktop each manage their own connections.
+  // The legacy token relay still has no local management service.
   const nativeShell = isNativeShell() && !clientMode;
   let offHost = $derived(!hasScope('host'));
   // The desktop's own profile list, which is what `host` gates.
-  let hostList = $derived(!clientMode && !offHost);
+  let hostList = $derived((!clientMode || isFrontendOnly()) && !offHost);
   let unavailable = $derived(!hostList && !nativeShell);
   let canAdd = $derived(hostList || nativeShell);
 
+  let home = $derived(getAttachedBackends().find((entry) => entry.home));
   let systems = $derived(getSystems());
   let pending = $derived(getPendingAttachments());
   let loaded = $derived(systemsLoaded());
@@ -82,6 +86,7 @@
   let machines = $derived(nativeShell ? attachedMachines(getAttachedBackends()) : []);
 
   let link = $state('');
+  let sshOpen = $state(false);
   let adding = $state(false);
   let acting = $state(false);
   let armedRemove: string | null = $state(null);
@@ -178,6 +183,15 @@
     }
     detachAttachedBackend(id);
     armedRemove = null;
+    // No existing conversation changes owner. Only the empty composer’s
+    // general choice moves away from the computer explicitly removed here.
+    if (selectedBackend() === id) {
+      const next = getAttachedBackends()[0];
+      if (next) setSelectedBackend(next.id);
+    }
+    // The legacy singleton is closed permanently; a new document drops its
+    // old endpoint and boots from the remaining independent pairings.
+    if (id === HOME_BACKEND || getAttachedBackends().length === 0) location.reload();
   }
 
   function startRename(id: string, current: string): void {
@@ -215,52 +229,20 @@
 </script>
 
 <section data-testid={unavailable ? 'systems-section-unavailable' : 'systems-section'}>
-  <SettingsHeader
-    title="Systems"
-    description={clientMode
-      ? 'Systems are attached from the machine that runs Agent Overflow. This window is attached remotely, so that list lives on that install’s own screen.'
-      : nativeShell
-        ? 'The machines this phone is paired with. Their threads appear in the sidebar beside each other, and the composer picks which one a new thread starts on.'
-        : offHost
-          ? 'Attaching another machine stays on the computer running Agent Overflow. This device sees every attached machine’s threads, but the list is managed there.'
-          : 'Other machines running Agent Overflow. Their threads appear in the sidebar beside this machine’s, and the composer picks which one a new thread starts on.'}
-  />
-
-  {#if canAdd}
-    <form
-      class="mt-3 flex items-center gap-2"
-      onsubmit={(e) => {
-        e.preventDefault();
-        void submitLink();
-      }}
-    >
-      <input
-        type="text"
-        class="{INPUT_CLASS} min-w-0 flex-1"
-        placeholder="Paste a pairing link from that machine’s Settings → Devices"
-        aria-label="Pairing link"
-        bind:value={link}
-        disabled={adding}
-        autocomplete="off"
-        spellcheck={false}
-      />
-      {#if nativeShell}
-        <Button
-          variant="secondary"
-          size="sm"
-          class="shrink-0 whitespace-nowrap"
-          disabled={adding}
-          onclick={() => void scan()}
-        >
-          Scan
-        </Button>
-      {/if}
-      <Button type="submit" variant="primary" size="sm" class="shrink-0 whitespace-nowrap" disabled={adding || !link.trim()}>
-        Attach
-      </Button>
-    </form>
+  {#if home}
+    <div data-testid="home-computer" class="rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-3 py-3 mb-4">
+      <div class="flex min-w-0 items-center gap-3">
+        <p class="min-w-0 flex-1 truncate text-sm font-medium text-fg">{backendDisplayName(home)}</p>
+        {#if nativeShell}
+          <Button variant={armedRemove === HOME_BACKEND ? 'danger' : 'danger-ghost'} size="xs" onclick={() => detachMachine(HOME_BACKEND)}>
+            {armedRemove === HOME_BACKEND ? 'Confirm remove' : 'Remove'}
+          </Button>
+        {/if}
+      </div>
+      <p class="text-xs text-fg-muted">{backendReachable(HOME_BACKEND) ? 'Connected' : 'Offline'}{hostList ? ' · This computer' : ''}</p>
+      <ComputerActions backend={HOME_BACKEND} />
+    </div>
   {/if}
-
   {#if !unavailable}
     <div class="mt-3 flex flex-col gap-1.5">
       {#each pendingRows as row (row.id)}
@@ -309,9 +291,10 @@
               size="xs"
               onclick={() => detachMachine(machine.id)}
             >
-              {armedRemove === machine.id ? 'Confirm detach' : 'Detach'}
+              {armedRemove === machine.id ? 'Confirm remove' : 'Remove'}
             </Button>
           </div>
+          <ComputerActions backend={machine.id} />
         </div>
       {/each}
 
@@ -356,17 +339,63 @@
               disabled={acting}
               onclick={() => void remove(system.id)}
             >
-              {armedRemove === system.id ? 'Confirm detach' : 'Detach'}
+              {armedRemove === system.id ? 'Confirm remove' : 'Remove'}
             </Button>
           </div>
+          <ComputerActions backend={system.id} />
         </div>
       {/each}
 
       {#if nothingAttached && pendingRows.length === 0}
         <p class="px-0.5 text-[0.71875rem] text-fg-muted" data-testid="systems-empty">
-          No other machines attached.
+          No other computers connected.
         </p>
       {/if}
     </div>
   {/if}
+  <div class="mt-5">
+    <SettingsHeader title="Connect another computer" description="Paste an invitation from that computer, or scan its QR code." />
+
+    {#if canAdd}
+      <form
+        class="mt-3 flex items-center gap-2"
+        onsubmit={(e) => {
+          e.preventDefault();
+          void submitLink();
+        }}
+      >
+        <input
+          type="text"
+          class="{INPUT_CLASS} min-w-0 flex-1"
+          placeholder="Pairing link"
+          aria-label="Pairing link"
+          bind:value={link}
+          disabled={adding}
+          autocomplete="off"
+          spellcheck={false}
+        />
+        {#if nativeShell}
+          <Button
+            variant="secondary"
+            size="sm"
+            class="shrink-0 whitespace-nowrap"
+            disabled={adding}
+            onclick={() => void scan()}
+          >
+            Scan
+          </Button>
+        {/if}
+        <Button type="submit" variant="primary" size="sm" class="shrink-0 whitespace-nowrap" disabled={adding || !link.trim()}>
+          Connect
+        </Button>
+      </form>
+      {#if hostList}
+        <Button variant="ghost" size="sm" class="mt-2" onclick={() => { sshOpen = true; }}>Connect over SSH…</Button>
+      {/if}
+    {:else}
+      <p class="text-xs text-fg-muted">Open the desktop app to add another computer to this window.</p>
+    {/if}
+  </div>
 </section>
+
+{#if sshOpen}<SSHConnectModal onClose={() => { sshOpen = false; }} />{/if}

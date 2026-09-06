@@ -27,8 +27,14 @@ import (
 // (logged): in-app updates simply stay unavailable while the app runs
 // normally. Failing to set up the updater must never block startup.
 func InitUpdater(appService *App, app *application.App) {
-	if appService.version == "dev" {
-		log.Printf("updater: disabled for dev build (version=%q)", appService.version)
+	InitWindowUpdater(appService.updater, app, appService.version, nil)
+}
+
+// InitWindowUpdater shares the native update adapter with frontend-only windows.
+// Call before serving their page so handlers never observe partial configuration.
+func InitWindowUpdater(service *appupdate.Service, app *application.App, version string, relaunchArgs []string) {
+	if version == "dev" {
+		log.Printf("updater: disabled for dev build (version=%q)", version)
 		return
 	}
 
@@ -51,8 +57,9 @@ func InitUpdater(appService *App, app *application.App) {
 	// updaterDownloadTimeout) bound each operation instead; DefaultTransport
 	// still applies sane dial / TLS-handshake timeouts. Shared with the
 	// targetable wrapper so list/by-tag API calls use the same client.
-	if err := appService.updater.Configure(app.Updater, appupdate.Config{
-		CurrentVersion: appService.version,
+	if err := service.Configure(app.Updater, appupdate.Config{
+		CurrentVersion: version,
+		RelaunchArgs:   relaunchArgs,
 		Platform:       runtime.GOOS,
 		Arch:           runtime.GOARCH,
 		HTTPClient:     &http.Client{},
@@ -61,8 +68,8 @@ func InitUpdater(appService *App, app *application.App) {
 		return
 	}
 
-	bridgeUpdaterEvents(appService, app)
-	log.Printf("updater: configured (current version %s)", appService.version)
+	bridgeUpdaterEvents(service, app)
+	log.Printf("updater: configured (current version %s)", version)
 }
 
 // bridgeUpdaterEvents forwards every updater lifecycle event selected by the
@@ -73,14 +80,14 @@ func InitUpdater(appService *App, app *application.App) {
 // The On() removers are intentionally discarded: this runs exactly once from
 // initUpdater and the bridge lives for the whole process, so there is nothing
 // to unsubscribe.
-func bridgeUpdaterEvents(appService *App, app *application.App) {
+func bridgeUpdaterEvents(service *appupdate.Service, app *application.App) {
 	for _, wailsEvent := range appupdate.BridgedEvents() {
 		app.Event.On(wailsEvent, func(e *application.CustomEvent) {
 			var data any
 			if e != nil {
 				data = e.Data
 			}
-			appService.updater.ForwardFrameworkEvent(wailsEvent, data)
+			service.ForwardFrameworkEvent(wailsEvent, data)
 		})
 	}
 }

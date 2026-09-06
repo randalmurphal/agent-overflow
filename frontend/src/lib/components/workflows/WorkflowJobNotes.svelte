@@ -1,7 +1,7 @@
 <script lang="ts">
+  import { automationHasScope } from '../../transport/entityScopes';
   import { WorkflowGetJobNotes, WorkflowSetJobNotes } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
-  import { hasScope } from '../../transport/scopes';
   interface Props { automationId: string }
   let { automationId }: Props = $props();
   let expanded = $state(false);
@@ -9,7 +9,7 @@
   let loaded = $state(false);
   let timer: ReturnType<typeof setTimeout> | null = null;
   // The notes ride an automation's row, which the workflow engine owns.
-  let ungranted = $derived(!hasScope('threads:autonomy'));
+  let ungranted = $derived(!automationHasScope('threads:autonomy', automationId));
 
   $effect(() => {
     if (!ungranted || !timer) return;

@@ -10,11 +10,11 @@
 //
 // The three moments, and they are the whole list:
 //
-//   - **Sign-out.** `deviceSession.unpairHome()`, the phone shell's "Pair
-//     again" and the only door a fixed-origin page has. Every backend
-//     goes, because the page is about to become a first run.
+//   - **Explicit full purge.** A null scope removes every backend's
+//     private cache. Removing the first pairing is NOT a full purge.
 //   - **Detach.** `backendAttach.detachAttachedBackend()` and Settings →
-//     Systems. One backend goes.
+//     Computers, or the legacy `deviceSession.unpairHome()` door. One
+//     backend goes; frontend-owned preferences and layout stay local.
 //   - **A refused credential.** `deviceSession`'s 401 branch, where the
 //     session family has ended and nothing about waiting brings it back.
 //     One backend goes.

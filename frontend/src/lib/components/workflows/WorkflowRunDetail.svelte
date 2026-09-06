@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { workflowItemBackend, HOME_BACKEND } from '../../transport/entityIndex';
   // Run detail (UI-SPEC §4) — the resolution surface. Header block, the
   // two-row digest, per-state evidence, the run map, the outputs block, and
   // the fixed action-row footer.
@@ -42,7 +43,7 @@
   let item = $derived(getWorkflowRun(itemId));
   let detail = $derived(getWorkflowDetail(itemId));
   // The only gated affordance is opening a run artifact in an editor.
-  let noHost = $derived(!hasScope('host'));
+  let noHost = $derived(!hasScope('host', workflowItemBackend(itemId) ?? HOME_BACKEND));
   let expandFirstDiff = $state(false);
 
   $effect(() => {
@@ -83,7 +84,7 @@
   async function openArtifact(path: string): Promise<void> {
     if (noHost) return;
     try {
-      await openInEditor(path, 0, 0, '', '');
+      await openInEditor(workflowItemBackend(itemId) ?? HOME_BACKEND, path, 0, 0, '', '');
     } catch (err) {
       addToast('error', userFacingError(err, 'Could not open that file.'));
     }

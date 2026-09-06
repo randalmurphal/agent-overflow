@@ -221,15 +221,15 @@ file, which is what the pre-database boot readers in `main.go` and
 - `classdefaults.go`: the DEVICE-CLASS layer between `DefaultSettings` and a
   screen's own writes (`docs/specs/remote-access.md` §6). `classDefaults` is a
   table from `DeviceClass` to the device-tier keys that class starts from,
-  total over the five declared classes; today only `phone` is populated, with
-  the one default §6 commits to (`lowPowerMode: true`). Four rules with tests
-  behind them:
+  total over the five declared classes. All rows currently inherit global
+  defaults: low-power mode is opt-in on phones too. Layer tests use a synthetic
+  override so precedence stays covered. Four rules hold:
   - **The order is `DefaultSettings` < the class row < the bucket's own
     rows**, applied in that order by `getFor` and by `mutate`'s pre-read. A
     device's own write always outranks its class, INCLUDING the class
     default's opposite — and that only works because `mutate` probes the
-    class-resolved value, or a phone patching `lowPowerMode` to false would
-    move nothing, persist nothing, and read back as true.
+    class-resolved value; otherwise writing the global default over a differing
+    class default could be incorrectly dropped as unchanged.
   - **Resolved at read, never written.** No class value ever reaches
     `SetUIState`, so a device that never wrote the key TRACKS a later change
     to the table with no migration. It is also what makes CLEARING coherent:
@@ -356,7 +356,7 @@ file, which is what the pre-database boot readers in `main.go` and
   screen with no class gets, the class row is what THAT kind of screen
   starts from, and neither is written into a bucket. Add a row only when
   the difference is a property of the hardware rather than of the
-  person's taste — the phone's `lowPowerMode` is the shape to match.
+  person's taste. Normal-power mode remains the default on every class.
   A field whose intended default is the Go zero value stays OUT of
   `DefaultSettings`. That is what makes an absent key read as the
   default for every settings file written before the field existed.

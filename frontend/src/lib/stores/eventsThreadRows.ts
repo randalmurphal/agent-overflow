@@ -7,12 +7,11 @@
 // setupEventListeners.
 import type { TurnCompletedEvent } from '../types/events';
 import type { Thread } from '../types/models';
-import { ListThreads } from './bindings';
 import { closePanesShowingThread, findPaneShowingThread, iterPanes, syncThread } from './panes.svelte';
 import { refreshProjects, touchProjectActivity } from './projects.svelte';
 import { refreshThreadGroups } from './threadGroups.svelte';
 import { addToast } from './toast.svelte';
-import { getThreadById, getThreadLiveActivityAt, getThreads, prependThread, removeThread, replaceAllThreads, replaceThread, touchThreadActivity } from './threads.svelte';
+import { getThreadById, getThreadLiveActivityAt, getThreads, readThreadRows, prependThread, removeThread, replaceAllThreads, replaceThread, touchThreadActivity } from './threads.svelte';
 import { projectReaderMessageSent, projectThreadError } from './threadStatuses.svelte';
 import type { ThreadPaneIngest } from './threadPaneRoles';
 import { pendingLocalReadMarker } from './threadReadWrites';
@@ -167,15 +166,19 @@ export function syncThreadActivity(threadId: string, updatedAt: number): void {
 async function resyncThreadRows(): Promise<void> {
   let rows: Thread[];
   try {
-    rows = await ListThreads() as Thread[];
+    rows = await readThreadRows();
   } catch (err) {
     console.error('Failed to resync threads after transport gap:', err);
     addToast('error', 'Failed to load threads');
     return;
   }
+  reconcileThreadRows(rows);
+}
+
+export function reconcileThreadRows(rows: Thread[]): void {
   const cachedById = new Map(getThreads().map((thread) => [thread.id, thread]));
   const merged = rows.map((row) => mergeThreadRowWithLocal(row, cachedById.get(row.id)));
-  replaceAllThreads(merged);
+  replaceAllThreads(merged, false);
   const mergedById = new Map(merged.map((thread) => [thread.id, thread]));
   for (const pane of ingestPanes()) {
     if (!pane.threadId || !pane.thread) continue;

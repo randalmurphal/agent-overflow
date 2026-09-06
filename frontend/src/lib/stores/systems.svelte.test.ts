@@ -41,6 +41,23 @@ describe('systems store', () => {
     __resetManifestBackendsForTest();
   });
 
+  it('does not resurrect a removed computer from a stale list or attachment result', async () => {
+    let reply!: (rows: typeof LAPTOP[]) => void;
+    let calls = 0;
+    setBindingMock('ListBackends', () => ++calls === 1
+      ? new Promise<typeof LAPTOP[]>((resolve) => { reply = resolve; }) : Promise.resolve([]));
+    setBindingMock('RemoveBackend', async () => {});
+    const loading = loadSystems();
+    await removeSystem('laptop');
+    reply([LAPTOP]);
+    await loading;
+    expect(getSystems()).toEqual([]);
+    expect(backendById('laptop')).toBeUndefined();
+    applyBackendAttach({ id: 'laptop', attached: true });
+    await loadSystems();
+    expect(backendById('laptop')).toBeUndefined();
+  });
+
   it('loads the list once, and not at all for a session without host', async () => {
     const list = setBindingMock('ListBackends', async () => [LAPTOP]);
     await Promise.all([loadSystems(), loadSystems()]);

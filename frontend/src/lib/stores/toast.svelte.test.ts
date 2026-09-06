@@ -45,4 +45,15 @@ describe('toast store', () => {
     removeToast('not-a-real-id');
     expect(getToasts().find((t) => t.id === id)).toBeDefined();
   });
+
+  it('retains an actionable failure until explicitly dismissed', () => {
+    const run = vi.fn();
+    const id = addToast('error', 'Computer unavailable', 0, { label: 'Try again', run });
+    vi.advanceTimersByTime(60_000);
+    expect(getToasts().find((toast) => toast.id === id)?.action?.label).toBe('Try again');
+    expect(run).not.toHaveBeenCalled();
+    removeToast(id);
+    expect(getToasts()).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
 });

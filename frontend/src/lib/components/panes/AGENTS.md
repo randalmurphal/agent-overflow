@@ -32,8 +32,16 @@ contract explicit:
   an exactly-fitting layout into a phantom horizontal scrollbar.
 - Global app surfaces do not belong in the pane loop unless the feature
   is intentionally one-instance-per-pane.
+- Companion body mounts and review-state reuse share `companionSubjectKey`:
+  conversation ID, ownership epoch and checkout. A moved conversation keeps
+  its ID but must retire captured requests, subscriptions and workspace state.
+  A title/token change must not remount a companion.
 - Browser companions are live, ephemeral projections of an explicitly
-  presented backend page. Background pages do not open them; normal page
+  presented page on this window's local execution host. The frontend-only
+  controller's admin grant is not a native-browser capability. Never hydrate
+  a remote or ambiguously owned thread against the local browser manager;
+  native mounts remain tied to HOME, matching their bound RPC route.
+  Background pages do not open them; normal page
   activity does not steal their selected tab. They are never layout
   persisted, and their host rect is a real native view's airspace: the
   mount must be released on unmount so a dead pane cannot leave a browser

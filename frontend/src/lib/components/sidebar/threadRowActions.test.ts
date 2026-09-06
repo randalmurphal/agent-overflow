@@ -12,7 +12,7 @@ import {
   isProjectExpanded,
 } from '../../stores/sidebar.svelte';
 import type { Thread } from '../../types/models';
-import { loadSettings } from '../../stores/settings.svelte';
+import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { makeSettings } from '../../../test/helpers/settings';
 
 function makeCtx(thread: Partial<Thread>): ThreadActionCtx {

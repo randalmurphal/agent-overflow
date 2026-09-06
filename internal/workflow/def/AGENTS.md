@@ -182,7 +182,7 @@ Rules only. The reasoning lives in `docs/specs/workflows-system.md` (section num
 
 - A phase may declare `grants:`, the first-party `ao` capabilities its agent is
   allowed to exercise (spec §5). The set is CLOSED — `start-run`, `schedule`,
-  `update-notes`, `introspect` — and lives in `grants.go`. An unknown name is a
+  `update-notes`, `introspect`, `resolve`, `remote-commands` — and lives in `grants.go`. An unknown name is a
   finding rather than an ignored line, because a typo would otherwise read as
   "this phase deliberately has no authority".
 - Grants require an agent session, which `phaseHoldsAgentSession` is the one

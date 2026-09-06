@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   // The project's worktree setup recipe: files copied out of the main checkout
   // and commands run in a newly created worktree.
   //
@@ -130,7 +131,7 @@
 
   $effect(() => {
     void projectId;
-    void load();
+    untrack(() => void load());
   });
 </script>
 

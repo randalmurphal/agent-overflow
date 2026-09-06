@@ -40,6 +40,7 @@ func TestDecideEntry(t *testing.T) {
 		// unrunnable from the place it is most often run.
 		{name: "harness mode inside a session still boots", args: []string{"--harness", "--data-dir", "/tmp/x"}, lookupEnv: inSession, want: entryBoot},
 		{name: "connect mode inside a session still boots", args: []string{"--connect", "ws://host:1/?token=t"}, lookupEnv: inSession, want: entryBoot},
+		{name: "saved frontend inside a session still boots", args: []string{"--frontend"}, lookupEnv: inSession, want: entryBoot},
 		{name: "single-dash boot flags inside a session boot", args: []string{"-listen", "127.0.0.1:0"}, lookupEnv: inSession, want: entryBoot},
 		{name: "a boot flag with an inline value inside a session boots", args: []string{"--data-dir=/tmp/x"}, lookupEnv: inSession, want: entryBoot},
 		// `serve` is a boot with a name. It is matched BEFORE the CLI check,
@@ -199,6 +200,7 @@ func TestCheckServeFlags(t *testing.T) {
 		args []string
 	}{
 		{name: "connect", args: []string{"--connect", "ws://host:1/?token=t"}},
+		{name: "frontend", args: []string{"--frontend"}},
 		{name: "print-url-fd", args: []string{"--print-url-fd", "3"}},
 		{name: "harness", args: []string{"--harness", "--data-dir", "/tmp/x"}},
 		{name: "soak", args: []string{"--soak", "--data-dir", "/tmp/x"}},
@@ -242,6 +244,22 @@ func TestCheckServeFlags(t *testing.T) {
 			if err := checkBackendVerbFlags(verb, flags); err != nil {
 				t.Fatalf("checkBackendVerbFlags(%q, %q) = %v, want nil", verb, args, err)
 			}
+		}
+	}
+}
+
+func TestFrontendFlags(t *testing.T) {
+	flags, err := parseFlags([]string{"--frontend", "--data-dir", "/an isolated root", "--" + resetTransportPortFlag})
+	if err != nil || !flags.frontend || flags.dataDir != "/an isolated root" || !flags.resetTransportPort {
+		t.Fatalf("frontend flags: %+v %v", flags, err)
+	}
+	for _, args := range [][]string{
+		{"--connect", "ws://host:1/?token=t"}, {"--harness"}, {"--soak"},
+		{"--window"}, {"--print-url-fd", "3"}, {"--listen", "127.0.0.1:0"},
+		{"--mock-provider", "/mock"},
+	} {
+		if _, err := parseFlags(append([]string{"--frontend"}, args...)); err == nil {
+			t.Errorf("frontend accepted conflicting arguments: %v", args)
 		}
 	}
 }

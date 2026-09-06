@@ -132,6 +132,9 @@ type PreviewGateway struct {
 	notes map[int]string
 	// grants maps an opaque cookie token to what it admits.
 	grants map[string]previewGrant
+	// exchanges holds the ticket-to-cookie handoff across principal validation.
+	// Idle retirement cannot run between consuming a ticket and storing its grant.
+	exchanges int
 }
 
 // previewListener is one served port.
@@ -265,17 +268,6 @@ func (g *PreviewGateway) Notes() map[int]string {
 // person clicked; it is preserved byte for byte, because a dev server's
 // upgrade is routed only when the path matches its `base` exactly.
 func (g *PreviewGateway) MintURL(sessionID string, port int, path string) (string, error) {
-	g.mu.Lock()
-	listener := g.ports[port]
-	note := g.notes[port]
-	g.mu.Unlock()
-	if listener == nil {
-		if note == "" {
-			note = fmt.Sprintf("Port %d is not shared from this machine.", port)
-		}
-		return "", errors.New(note)
-	}
-
 	// The path is validated BEFORE anything is minted. A ticket book is
 	// bounded and evicts its oldest entry to make room, so a call that
 	// was always going to be refused would still have spent a slot and
@@ -290,6 +282,19 @@ func (g *PreviewGateway) MintURL(sessionID string, port int, path string) (strin
 		target.Path = "/" + target.Path
 	}
 
+	// Publish the ticket before idle retirement can remove its listener.
+	// Lock order is gateway then ticket book; consume releases the book before
+	// publishing a grant. Neither operation holds these locks across network I/O.
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	listener := g.ports[port]
+	if listener == nil {
+		note := g.notes[port]
+		if note == "" {
+			note = fmt.Sprintf("Port %d is not shared from this machine.", port)
+		}
+		return "", errors.New(note)
+	}
 	ticket, err := g.tickets.mint(previewSubject(sessionID, port))
 	if err != nil {
 		return "", err
@@ -346,16 +351,47 @@ func (g *PreviewGateway) Close() {
 	}
 	g.closed = true
 	close(g.stop)
-	listeners := make([]*previewListener, 0, len(g.ports))
-	for port, listener := range g.ports {
-		listeners = append(listeners, listener)
-		delete(g.ports, port)
-	}
-	g.notes = make(map[int]string)
+	listeners := g.takePortsLocked()
 	g.grants = make(map[string]previewGrant)
 	g.mu.Unlock()
 
 	for _, listener := range listeners {
 		closePreviewListener(listener)
 	}
+}
+
+// ReleaseIdlePorts stops serving only when neither an invitation, a cookie
+// handoff nor an unexpired browser grant needs the gateway. Discovery can sleep
+// while an independently opened preview remains usable. Every request still
+// checks revocation; retaining a listener never grants access.
+func (g *PreviewGateway) ReleaseIdlePorts() {
+	g.mu.Lock()
+	if g.closed || (len(g.ports) == 0 && len(g.notes) == 0) || g.exchanges != 0 || g.tickets.hasLive() {
+		g.mu.Unlock()
+		return
+	}
+	now := g.now().UnixNano()
+	for _, grant := range g.grants {
+		if grant.expiresAtNanos > now {
+			g.mu.Unlock()
+			return
+		}
+	}
+	clear(g.grants)
+	listeners := g.takePortsLocked()
+	g.mu.Unlock()
+	for _, listener := range listeners {
+		closePreviewListener(listener)
+	}
+}
+
+// Caller holds mu. Closing the returned servers happens after releasing it.
+func (g *PreviewGateway) takePortsLocked() []*previewListener {
+	listeners := make([]*previewListener, 0, len(g.ports))
+	for port, listener := range g.ports {
+		listeners = append(listeners, listener)
+		delete(g.ports, port)
+	}
+	g.notes = make(map[int]string)
+	return listeners
 }

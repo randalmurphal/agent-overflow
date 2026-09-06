@@ -232,6 +232,9 @@ func (a *App) DeleteProject(id string) (ProjectDeletionResult, error) {
 	if a.store == nil {
 		return ProjectDeletionResult{}, fmt.Errorf("delete project: store unavailable")
 	}
+	if err := a.store.CheckProjectTransferAccess(id); err != nil {
+		return ProjectDeletionResult{}, err
+	}
 	result := ProjectDeletionResult{ThreadIDs: []string{}, RetainedWorktrees: []RetainedWorktree{}}
 	footprint, err := a.projectApplication().WorkflowFootprint(id)
 	if err != nil {
@@ -290,7 +293,16 @@ func (a *App) DeleteProject(id string) (ProjectDeletionResult, error) {
 		return ProjectDeletionResult{}, fmt.Errorf("delete project: contained workflow work changed during deletion; retry")
 	}
 
+	var deletedLocalIDs []string
 	for _, threadID := range ids {
+		retired, err := a.threadApplication().CheckCleanup(threadID)
+		if err != nil {
+			return ProjectDeletionResult{}, err
+		}
+		if retired {
+			continue
+		}
+		deletedLocalIDs = append(deletedLocalIDs, threadID)
 		reason, err := a.threadActivityBlockReason(threadID)
 		if err != nil {
 			return ProjectDeletionResult{}, fmt.Errorf("delete project: check thread %s activity: %w", threadID, err)
@@ -340,7 +352,9 @@ func (a *App) DeleteProject(id string) (ProjectDeletionResult, error) {
 		return ProjectDeletionResult{}, err
 	}
 	a.broadcastProjectDeleted(id)
-	result.ThreadIDs = slicesx.OrEmpty(ids)
+	// The same ID now belongs to another computer after a move. Returning its
+	// retired cache ID would make the frontend close that computer's live pane.
+	result.ThreadIDs = slicesx.OrEmpty(deletedLocalIDs)
 	return result, nil
 }
 

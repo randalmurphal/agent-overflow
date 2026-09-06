@@ -1,3 +1,5 @@
+import type { EventOrigin } from '../transport/handle';
+import { backendKeyForOrigin } from '../transport/backends';
 // Transport-gap recovery event domain: coarse-grained resync when
 // wsClient.ts detects a missed seq on a channel — re-fetches sidebar
 // projections and the affected panes' loaded windows so SQLite (the
@@ -28,7 +30,7 @@ import { resyncWorktreeSetups } from './eventsWorktreeSetup';
 import { markImportConnectionLost } from './sessionImport.svelte';
 import { releaseThreadTitleGenerationPending } from './threadTitleGeneration.svelte';
 import { getThreads } from './threads.svelte';
-import { hasScope } from '../transport/scopes';
+import { threadHasScope } from '../transport/entityScopes';
 import { resyncGitStatusAfterGap } from './gitStatusStore.svelte';
 import { resyncPRReviewAfterGap } from './prReviewStore.svelte';
 import { resyncMcpServersAfterGap } from './mcpServers.svelte';
@@ -45,7 +47,7 @@ import { dropAllThreadHistoryStamps } from './threadHistoryStamps';
 import { threadItemCache } from './threadItemCache';
 import type { ThreadPaneIngest } from './threadPaneRoles';
 import { holdBackendRecovery } from './transportRecovery';
-import { threadMachine } from './attachedBackends.svelte';
+import { threadMachine, getAttachedBackends } from './attachedBackends.svelte';
 
 // The registry hands out whole ThreadPanes; this module narrows them to
 // the ingest surface at the one acquisition point, so a new pane member
@@ -87,7 +89,7 @@ function resyncWorkflowRunRecords(): void {
  * leaves the catalogs — and therefore the start dialog's workflow list — behind
  * the files on disk. Both are indefinite, both are invisible.
  */
-function applyWorkflowGap(channel: string): void {
+function applyWorkflowGap(channel: string, origin?: EventOrigin): void {
   switch (channel) {
     case 'workflow:item-state':
     case 'workflow:phase-state':
@@ -95,7 +97,7 @@ function applyWorkflowGap(channel: string): void {
       resyncWorkflowRunRecords();
       return;
     case 'workflow:engine-state':
-      void resyncWorkflowEngineState();
+      void resyncWorkflowEngineState(backendKeyForOrigin(origin?.backendId ?? ''));
       return;
     case 'workflow:definitions-changed':
       // The event handler IS the resync: it re-reads every loaded project's
@@ -114,7 +116,7 @@ function applyWorkflowGap(channel: string): void {
       // exactly the channel nobody has thought about yet.
       console.warn(`events: transport gap on unknown workflow channel "${channel}" — resyncing every workflow surface`);
       resyncWorkflowRunRecords();
-      void resyncWorkflowEngineState();
+      void resyncWorkflowEngineState(backendKeyForOrigin(origin?.backendId ?? ''));
       applyWorkflowDefinitionsChanged();
   }
 }
@@ -124,7 +126,7 @@ function applyWorkflowGap(channel: string): void {
 // straddle upserts AND deltas; refreshing the whole pane is the
 // simplest correct response. (Channel semantics are documented at the
 // wiring site in events.ts.)
-export function applyTransportGap(gap: { channel: string; seq: number }): void {
+export function applyTransportGap(gap: { channel: string; seq: number }, origin?: EventOrigin): void {
   if (!gap || typeof gap.channel !== 'string') return;
   // The workflow channels, caught by PREFIX so a channel added later cannot
   // reach the unknown-channel default (which refreshes panes and leaves every
@@ -134,7 +136,7 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
   // frame is terminal for its consumer: no later frame restates it, and the
   // stale value is indistinguishable from a correct one.
   if (gap.channel.startsWith('workflow:')) {
-    applyWorkflowGap(gap.channel);
+    applyWorkflowGap(gap.channel, origin);
     return;
   }
   switch (gap.channel) {
@@ -187,11 +189,11 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
       // puts a row in that queue. A session without it has no queue to
       // repair, and a gap on a busy backend would otherwise fan one
       // refusal out per open pane.
-      if (!hasScope('threads:operate')) return;
       const seen = new Set<string>();
       for (const pane of ingestPanes()) {
         if (!pane.threadId || seen.has(pane.threadId)) continue;
         const threadId = pane.threadId;
+        if (!threadHasScope('threads:operate', threadId)) continue;
         seen.add(threadId);
         void GetThread(threadId).then((thread) => {
           const t = thread as Thread | null;
@@ -227,13 +229,13 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
     // fresh one loads, so a blanket resync costs a few RPCs and zero
     // flicker.
     case 'git:status':
-      resyncGitStatusAfterGap();
+      resyncGitStatusAfterGap(backendKeyForOrigin(origin?.backendId ?? ''));
       return;
     case 'pr:updated':
-      resyncPRReviewAfterGap();
+      resyncPRReviewAfterGap(backendKeyForOrigin(origin?.backendId ?? ''));
       return;
     case 'mcp:status':
-      resyncMcpServersAfterGap();
+      resyncMcpServersAfterGap(backendKeyForOrigin(origin?.backendId ?? ''));
       return;
     case 'project:updated': {
       // Edge-triggered like thread:updated: one frame per persisted project
@@ -263,6 +265,7 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
       const seen = new Set<string>();
       for (const pane of ingestPanes()) {
         const threadId = pane.threadId;
+        if (!threadHasScope('threads:operate', threadId)) continue;
         if (!threadId || seen.has(threadId)) continue;
         seen.add(threadId);
         const revisionAtRequest = getQueueRevisionForThread(threadId);
@@ -323,6 +326,7 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
       // a gap is not a reason to do that.
       for (const pane of ingestPanes()) {
         const threadId = pane.threadId;
+        if (!threadHasScope('threads:operate', threadId)) continue;
         if (!threadId || hasRememberedDraftSnapshot(threadId)) continue;
         void getComposerDraftForPane(pane.paneId)?.reloadFromBackend(threadId);
       }
@@ -338,9 +342,13 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
       // changed KEYS and the handler ignores them, because settings converge
       // by re-reading the whole (redacted) projection anyway. One read of an
       // in-memory value recovers every tier at once.
-      void resyncSettings();
+      for (const computer of getAttachedBackends()) void resyncSettings(computer.id);
       return;
     }
+    case 'agent-computers:changed':
+      // Latest-only invalidation: the following retained event re-reads the
+      // open settings page. Its mount/reconnect also reads the whole table.
+      return;
     case 'system:stats':
     case 'highlight:seed':
     case 'highlight:diff_seed': {
@@ -370,7 +378,7 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
       // "outcome unknown" (and resyncs the sidebar for whatever landed)
       // rather than leaving a progress bar frozen forever. A gap with no run
       // in flight is a no-op there.
-      markImportConnectionLost();
+      markImportConnectionLost(backendKeyForOrigin(origin?.backendId ?? ''));
       return;
     }
     case 'thread:title_generation': {

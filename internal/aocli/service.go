@@ -11,8 +11,10 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"agent-overflow/internal/appdirs"
+	"agent-overflow/internal/localcontrol"
 	"agent-overflow/internal/serviceinstall"
 	"agent-overflow/internal/supervise"
 )
@@ -71,6 +73,8 @@ func serviceCommand(args []string, env serviceEnv, stdout, stderr io.Writer) int
 		return exitOK
 	case "install":
 		return serviceInstall(args[1:], env, stdout, stderr)
+	case "start", "stop":
+		return serviceControl(args[0], args[1:], env, stdout, stderr)
 	case "update":
 		return serviceUpdate(args[1:], env, stdout, stderr)
 	case "uninstall":
@@ -81,6 +85,57 @@ func serviceCommand(args []string, env serviceEnv, stdout, stderr io.Writer) int
 	fmt.Fprintf(stderr, "agent-overflow service: unknown command %q\n", args[0])
 	_ = writeOutput(stderr, serviceUsage)
 	return exitError
+}
+
+// Control an already installed service without rewriting its unit or data.
+func serviceControl(action string, args []string, env serviceEnv, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("agent-overflow service "+action, flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	usage := "Usage: agent-overflow service " + action + "\n"
+	if code, done := parseServiceFlags(flags, args, usage, stdout, stderr); done {
+		return code
+	}
+	if action == "start" && env.configRootErr == nil && env.configRoot != "" {
+		// A desktop app may already own this data root. Reuse its backend;
+		// starting a service alongside it would create a second provider owner.
+		if endpoint, err := localcontrol.Read(env.configRoot); err == nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			client, err := localcontrol.Dial(ctx, endpoint)
+			cancel()
+			if err == nil {
+				client.Close()
+				fmt.Fprintln(stdout, "Agent Overflow is already running. Use agent-overflow pair to connect.")
+				return exitOK
+			}
+		}
+	}
+	manager, _, code := serviceManager(env, "", "", stderr)
+	if manager == nil {
+		return code
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	status, err := manager.Status(ctx)
+	if err != nil {
+		return operationalError(stderr, err)
+	}
+	if !status.Installed {
+		return operationalError(stderr, fmt.Errorf("no service is installed; run agent-overflow service install first"))
+	}
+	if action == "start" {
+		err = manager.Start(ctx)
+	} else {
+		err = manager.Stop(ctx)
+	}
+	if err != nil {
+		return operationalError(stderr, err)
+	}
+	if action == "start" {
+		fmt.Fprintln(stdout, "Started the Agent Overflow service.")
+	} else {
+		fmt.Fprintln(stdout, "Stopped the Agent Overflow service. It remains installed for the next login.")
+	}
+	return exitOK
 }
 
 func serviceInstall(args []string, env serviceEnv, stdout, stderr io.Writer) int {

@@ -411,3 +411,14 @@ decisions, and the enricher stays a pure function of the text.
 - New persisted payload kind: extend `payload_items.go` and update
   [`schema.md`](../../docs/architecture/schema.md). Preview and stats go
   in `meta`, full content in `data`.
+
+## Host maintenance activity
+
+`AnyUnfinishedWork` reads turn, queue, acknowledgment, settlement and wakeup
+ownership under one mutex. Queue dispatch claims and pending-echo claims live
+on the stable thread identity until their callbacks finish, including across
+cleanup. Never infer Claude idleness from runtime ActiveTurns: Claude opens
+logical turns through init/echo instead of Codex's turn/start event. The native
+Claude 2.1.261 isolated fake-API spike confirmed init precedes echo on repeated
+sends; both orders remain supported. Activity checks must cover the handoff,
+not assume one provider's observed order is universal.

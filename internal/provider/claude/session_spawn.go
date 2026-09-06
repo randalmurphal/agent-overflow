@@ -44,7 +44,8 @@ type Config struct {
 	// spawn and removed on Close) rather than as an argv value — the two
 	// flags are wire-identical, and the file avoids both MAX_ARG_STRLEN and
 	// /proc exposure. See WriteSystemPromptFile.
-	SystemPrompt string
+	SystemPrompt           string
+	AdditionalInstructions string
 	// OutputSchema is the inline JSON schema passed to --json-schema when
 	// the session process starts. It is sticky for every turn in the session.
 	OutputSchema    string

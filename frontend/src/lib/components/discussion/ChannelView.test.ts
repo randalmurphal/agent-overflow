@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ChannelView from './ChannelView.svelte';
-import { loadSettings } from '../../stores/settings.svelte';
+import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { getToasts } from '../../stores/toast.svelte';
 import type { ChannelMessage, ChannelStatePayload } from '../../types/discussion';
 import type { Thread } from '../../types/models';

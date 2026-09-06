@@ -1,4 +1,4 @@
-// Pure activation-queue factory for OS-notification deep links. It has no
+// Bounded activation queue for OS-notification deep links, cold and warm. It has no
 // store imports on purpose: eventsNotification.ts wires the app singleton,
 // while unit tests construct queues with stub dependencies and never pull
 // the thread/pane stores into the test module graph.
@@ -8,8 +8,8 @@ import type { Thread } from '../types/models';
  * `backendId` names WHICH backend the route resolves against — the deep-link
  * scheme in docs/specs/remote-access.md §9. It is orthogonal to `kind`, not a
  * fourth route, which is why it is a property of every member rather than a
- * member of its own. Single-backend routing ignores it; it is parsed and
- * carried so the shape does not silently drop on this half of the wire.
+ * member of its own. It is passed to the resolver so a cold notification can find a thread
+ * before that computer’s sidebar catalog has loaded.
  */
 export type NotificationTarget =
   | { kind: 'thread'; threadId: string; backendId?: string }
@@ -22,7 +22,7 @@ const maxNotificationWorkItemIdBytes = 256;
 const maxNotificationBackendIdBytes = 256;
 
 export interface NotificationActivationDependencies {
-  getThreadById(id: string): Thread | undefined | Promise<Thread | undefined>;
+  getThreadById(id: string, backendId?: string): Thread | undefined | Promise<Thread | undefined>;
   openThread(thread: Thread): Promise<unknown>;
   /**
    * Deep link for a parked run (UI-SPEC §7): foreground the app, open the
@@ -31,8 +31,9 @@ export interface NotificationActivationDependencies {
    * first — a target naming a run that no longer exists drops off the stack
    * once the listing lands.
    */
-  openWorkflowRun(workItemId: string): Promise<unknown>;
+  openWorkflowRun(workItemId: string, backendId?: string): Promise<unknown>;
   console: Pick<Console, 'info' | 'warn' | 'error'>;
+  failed?(target: NotificationTarget, error: unknown): void;
 }
 
 export interface NotificationActivationQueue {
@@ -88,8 +89,7 @@ export function createNotificationActivationQueue(
 ): NotificationActivationQueue {
   let hydrated = false;
   let pending: NotificationTarget[] = [];
-  let hydrationPromise: Promise<void> | null = null;
-  let activationChain = Promise.resolve();
+  let draining: Promise<void> | null = null;
 
   async function apply(target: NotificationTarget): Promise<void> {
     try {
@@ -98,13 +98,12 @@ export function createNotificationActivationQueue(
         return;
       }
       if (target.kind === 'workflow-item') {
-        await dependencies.openWorkflowRun(target.workItemId);
+        await dependencies.openWorkflowRun(target.workItemId, target.backendId);
         return;
       }
-      const thread = await dependencies.getThreadById(target.threadId);
+      const thread = await dependencies.getThreadById(target.threadId, target.backendId);
       if (!thread) {
-        dependencies.console.warn(`notification:activated: unknown thread ${target.threadId}`);
-        return;
+        throw new Error('This conversation is no longer available on its computer.');
       }
       await dependencies.openThread(thread);
     } catch (error) {
@@ -112,6 +111,7 @@ export function createNotificationActivationQueue(
         `notification:activated: failed to open ${target.kind} target`,
         error,
       );
+      dependencies.failed?.(target, error);
     }
   }
 
@@ -121,29 +121,32 @@ export function createNotificationActivationQueue(
       dependencies.console.warn('notification:activated: invalid target', target);
       return;
     }
-    if (!hydrated) {
-      if (pending.length === pendingActivationCapacity) {
-        const dropped = pending.shift();
-        dependencies.console.warn('notification:activated: pending queue full; dropped oldest', dropped);
-      }
-      pending.push(validated);
-      return;
+    if (pending.length === pendingActivationCapacity) {
+      const dropped = pending.shift();
+      dependencies.console.warn('notification:activated: pending queue full; dropped oldest', dropped);
     }
-    activationChain = activationChain.then(() => apply(validated));
+    pending.push(validated);
+    if (hydrated) void drain();
   }
 
-  async function markHydrated(): Promise<void> {
-    if (hydrated) return;
-    if (!hydrationPromise) {
-      hydrationPromise = (async () => {
+  function drain(): Promise<void> {
+    if (!draining) {
+      draining = (async () => {
         while (pending.length > 0) {
           const target = pending.shift();
           if (target) await apply(target);
         }
-        hydrated = true;
-      })();
+      })().finally(() => {
+        draining = null;
+        if (pending.length > 0) void drain();
+      });
     }
-    await hydrationPromise;
+    return draining;
+  }
+
+  async function markHydrated(): Promise<void> {
+    hydrated = true;
+    await drain();
   }
 
   return {

@@ -1,12 +1,19 @@
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ThreadFromPRDialog from './ThreadFromPRDialog.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { loadSettings } from '../../stores/settings.svelte';
+import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import type { Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { installPaneMocks } from '../../../test/helpers/chat';
+import { stageBackend, resetStagedBackends } from '../../../test/helpers/backends';
+import { grantBackendScopes } from '../../../test/helpers/scopes';
+import { takePinnedBackend } from '../../transport/backends';
+import { threadBackend, projectBackend } from '../../transport/entityIndex';
+import { setSelectedBackend, __resetSelectedBackendForTest } from '../../stores/selectedBackend.svelte';
+
+afterEach(() => { resetStagedBackends(); __resetSelectedBackendForTest(); });
 
 if (typeof Element !== 'undefined' && !('animate' in Element.prototype)) {
   (Element.prototype as unknown as { animate: unknown }).animate = function () {
@@ -39,6 +46,32 @@ describe('<ThreadFromPRDialog>', () => {
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
     await loadSettings();
+  });
+
+  it('captures the chosen computer and indexes a background-created thread there', async () => {
+    stageBackend({ id: 'gpu' });
+    await grantBackendScopes('gpu', ['threads:operate']);
+    const pane = await buildPane();
+    let complete!: (thread: Thread) => void;
+    let destination: string | null = null;
+    setBindingMock('CreateThreadFromPR', () => {
+      destination = takePinnedBackend();
+      return new Promise<Thread>((resolve) => { complete = resolve; });
+    });
+    const view = render(ThreadFromPRDialog, { props: { open: true, pane, onClose() {} } });
+    await flush();
+    await fireEvent.change(view.getByRole('combobox', { name: 'Computer' }), { target: { value: 'gpu' } });
+    setSelectedBackend('');
+    await fireEvent.input(view.getByTestId('thread-from-pr-url'), { target: { value: 'owner/repo#7' } });
+    await fireEvent.click(view.getByTestId('thread-from-pr-submit'));
+    expect(destination).toBe('gpu');
+    await view.rerender({ open: false, pane, onClose() {} });
+    complete({ id: 'remote-pr', projectId: 'remote-project', title: 'PR', provider: 'claude',
+      workspacePath: '/repo', projectPath: '/repo', model: '', createdAt: 0, updatedAt: 0, archived: false });
+    await flush(20);
+    expect(threadBackend('remote-pr')).toBe('gpu');
+    expect(projectBackend('remote-project')).toBe('gpu');
+    expect(pane.thread).toBeNull();
   });
 
   it('does not render when `open` is false', async () => {

@@ -111,14 +111,27 @@ func (a *App) buildSessionOptions(t store.Thread) (provider.SessionOptions, erro
 	// reconciler — is what keeps a config diff from flapping between a resolved
 	// and an unresolved tier for the same thread.
 	opts.FastModeTierID = a.fastModeTierIDForModel(t.Provider, t.Model)
+	opts.AdditionalInstructions = a.remoteInstructionsForThread(t)
 
 	return opts, nil
 }
 
 func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string) error {
+	endAdmission, admitErr := a.workAdmission.begin(a.lifeCtx())
+	if admitErr != nil {
+		return admitErr
+	}
+	defer endAdmission()
+
+	if err := a.store.CheckThreadTransferAccess(threadID); err != nil {
+		return err
+	}
 	t, err := a.store.GetThread(threadID)
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
+	}
+	if err := a.store.CheckThreadExecutionAccess(t); err != nil {
+		return err
 	}
 	sanitized := a.sanitizeThreadModelSettings(t)
 	if !chatmodel.SameModelFields(t, sanitized) {

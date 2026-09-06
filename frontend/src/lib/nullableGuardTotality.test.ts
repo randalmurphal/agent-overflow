@@ -34,6 +34,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { join } from 'node:path';
+import ts from 'typescript';
 import { SRC_ROOT, expectAllowlistExact, repoPath, scannedSources } from '../test/sourceScan';
 
 /** Everything after the last `</script>`: the template half of the file. */
@@ -146,8 +147,27 @@ function renderExpressions(body: string): string[] {
  * when the branch is demonstrably alive. Neutralize them before judging, or
  * every `onclick={() => x.foo()}` in the tree reads as an offender.
  */
-function renderTimeSlice(expression: string): string {
-  return expression.replace(/=>\s*\{[\s\S]*\}|=>[^,;]*/g, '=>0');
+function renderReads(expression: string): { bare: Set<string>; names: Set<string> } {
+  const bare = new Set<string>();
+  const names = new Set<string>();
+  // Read syntax, not string contents: "Themes copied." is not a dereference
+  // of a `copied` state variable. Template interpolations still contribute
+  // their real reads, and deferred callback bodies contribute none.
+  const source = ts.createSourceFile('expression.ts', `(${expression})`, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const visit = (node: ts.Node): void => {
+    if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) return;
+    if (ts.isPropertyAccessExpression(node) && !node.questionDotToken && ts.isIdentifier(node.expression)) {
+      bare.add(node.expression.text);
+    }
+    if (ts.isIdentifier(node)) {
+      const parent = node.parent;
+      const isPropertyName = (ts.isPropertyAccessExpression(parent) || ts.isPropertyAssignment(parent)) && parent.name === node;
+      if (!isPropertyName) names.add(node.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return { bare, names };
 }
 
 /**
@@ -182,9 +202,10 @@ function scanTree(): Scan {
       for (const name of guardedNullables(block.condition, reactive)) {
         const bareDeref = new RegExp(String.raw`(?<![\w$?.])${name}\.`);
         for (const expression of renderExpressions(block.body)) {
-          const rendered = renderTimeSlice(expression);
-          if (!bareDeref.test(rendered)) continue;
-          const extraDeps = [...new Set([...rendered.matchAll(IDENTIFIER)].map((m) => m[0]))]
+          if (!bareDeref.test(expression)) continue;
+          const reads = renderReads(expression);
+          if (!reads.bare.has(name)) continue;
+          const extraDeps = [...reads.names]
             .filter((other) => other !== name && reactive.has(other));
           if (extraDeps.length === 0) {
             singleDep++;
@@ -192,7 +213,7 @@ function scanTree(): Scan {
           }
           const path = repoPath(file);
           const why = `\`${name}\` deref'd bare beside \`${extraDeps.join('`, `')}\` in: `
-            + rendered.replace(/\s+/g, ' ').trim().slice(0, 120);
+            + expression.replace(/\s+/g, ' ').trim().slice(0, 120);
           offenders.set(path, [...(offenders.get(path) ?? []), why]);
         }
       }
@@ -247,4 +268,23 @@ describe('nullable-guarded branches render total expressions', () => {
         .toBe(true);
     });
   }
+});
+
+describe('render-time dependency recognition', () => {
+  it('ignores strings, comments and property names that happen to name a guard', () => {
+    const reads = renderReads('kind === "themes" ? "Themes copied." : other /* copied.field */');
+    expect([...reads.bare]).toEqual([]);
+    expect([...reads.names]).toEqual(['kind', 'other']);
+    expect([...renderReads('({ copied: other })').names]).toEqual(['other']);
+  });
+  it('retains real dependencies inside template interpolations', () => {
+    const reads = renderReads('`${label}: ${view.y + other}`');
+    expect([...reads.bare]).toEqual(['view']);
+    expect([...reads.names]).toEqual(['label', 'view', 'other']);
+  });
+  it('distinguishes optional access and event-time callbacks from bare render-time access', () => {
+    expect([...renderReads('view?.y + other').bare]).toEqual([]);
+    expect([...renderReads('() => view.y + other').names]).toEqual([]);
+    expect([...renderReads('view.y + other').bare]).toEqual(['view']);
+  });
 });

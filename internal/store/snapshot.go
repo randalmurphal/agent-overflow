@@ -113,6 +113,35 @@ func (s *Store) RestoreFrom(srcPath string) (identity Identity, retErr error) {
 		}
 	}()
 
+	// A prepared installation and an unsealed snapshot refer to the current
+	// history/projects. Rewinding them underneath a host job would invalidate
+	// a promise already made to the other computer. Completed tombstones remain
+	// preserved below; pending operations must settle before a history restore.
+	var transferring bool
+	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM thread_transfers WHERE phase NOT IN ('complete','canceled'))`).Scan(&transferring); err != nil {
+		return Identity{}, err
+	}
+	if transferring {
+		return Identity{}, fmt.Errorf("Finish or cancel conversation transfers before restoring history.")
+	}
+	var commandsRunning bool
+	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM remote_jobs WHERE state = 'running')`).Scan(&commandsRunning); err != nil {
+		return Identity{}, err
+	}
+	if commandsRunning {
+		return Identity{}, fmt.Errorf("Finish or cancel remote commands before restoring history.")
+	}
+	var missingOwnership bool
+	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM main.owned_threads owned
+WHERE EXISTS(SELECT 1 FROM main.thread_transfers live WHERE live.thread_id = owned.id AND live.direction = 'incoming' AND live.phase = 'complete')
+AND NOT EXISTS(SELECT 1 FROM restore_src.thread_transfers saved JOIN restore_src.threads history ON history.id = saved.thread_id
+WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phase = 'complete' AND saved.ownership_epoch = owned.ownership_epoch))`).Scan(&missingOwnership); err != nil {
+		return Identity{}, err
+	}
+	if missingOwnership {
+		return Identity{}, fmt.Errorf("This snapshot predates a conversation received from another computer. Choose a snapshot made after that transfer completed.")
+	}
+
 	// Bracket the row copy with the history triggers dropped. They exist
 	// to catch writes nobody remembered to account for; a whole-database
 	// replace is not one of those — the counters it must land on are the
@@ -136,11 +165,19 @@ func (s *Store) RestoreFrom(srcPath string) (identity Identity, retErr error) {
 	}
 
 	for _, table := range tables {
+		// A history restore cannot revoke a transfer commit. Keep local
+		// ownership/recovery records, including tombstones for deleted rows.
+		if table == "thread_transfers" || table == "thread_transfer_sessions" || table == "remote_jobs" {
+			continue
+		}
 		if _, err := tx.Exec(`DELETE FROM main."` + table + `"`); err != nil {
 			return Identity{}, fmt.Errorf("store: restore: clear %s: %w", table, err)
 		}
 	}
 	for _, table := range tables {
+		if table == "thread_transfers" || table == "thread_transfer_sessions" || table == "remote_jobs" {
+			continue
+		}
 		if !srcTables[table] {
 			// The migrated snapshot is on the same schema version, so a
 			// missing table means real corruption, not drift.

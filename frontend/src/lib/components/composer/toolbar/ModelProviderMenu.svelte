@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { threadMachine } from '../../../stores/attachedBackends.svelte';
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import type { Thread } from '../../../types/models';
   import type { ModelInfo } from '../../../types/settings';
@@ -53,6 +54,7 @@
   }
 
   let { pane }: Props = $props();
+  let backend = $derived(threadMachine(pane.threadId ?? '', pane.thread?.projectId));
 
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
   let open = $state(false);
@@ -67,7 +69,7 @@
 
   async function ensureModels(provider: ProviderID): Promise<void> {
     try {
-      await ensureProviderModels(provider);
+      await ensureProviderModels(provider, backend);
     } catch (err) {
       const label = getProviderDefinition(provider).label;
       console.error('GetModelsForProvider failed:', err);
@@ -112,7 +114,7 @@
   }
 
   function getModels(provider: ProviderID): ModelInfo[] {
-    return getProviderModels(provider);
+    return getProviderModels(provider, backend);
   }
 
   function handleTrigger(): void {
@@ -231,7 +233,7 @@
       : 'Provider default',
   );
 
-  let settings = $derived(getSettings());
+  let settings = $derived(getSettings(backend));
   let isLocked = $derived(pane.isLocked);
   let isDiscussion = $derived(pane.thread?.mode === 'discussion');
   let activeProvider = $derived(asProviderID(pane.thread?.provider));

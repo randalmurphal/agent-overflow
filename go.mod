@@ -181,7 +181,7 @@ require (
 	github.com/joho/godotenv v1.5.1 // indirect
 	github.com/jsimonetti/rtnetlink v1.4.1 // indirect
 	github.com/kevinburke/ssh_config v1.4.0 // indirect
-	github.com/klauspost/compress v1.19.1 // indirect
+	github.com/klauspost/compress v1.19.1
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/klauspost/pgzip v1.2.6 // indirect
 	github.com/konoui/go-qsort v0.1.0 // indirect
@@ -363,8 +363,13 @@ tool github.com/wailsapp/wails/v3/cmd/wails3
 //     transient activation and makes clipboard writes fail. All shell
 //     creation goes through internal/uiwindow.New. Upstream-PR candidate.
 //
+// 11. Updater launch arguments (90881ddb0): preserve argv through update
+//     and rollback; allow consumed invitations to be normalized with
+//     Config.RelaunchArgs; clear helper metadata before every relaunch.
+//     https://github.com/randalmurphal/wails/pull/1
+//
 // Dropped at the beta.4 rebase — both landed upstream: the mixed-DPI
 // monitor-scale-detection re-enable (#5732 -> PR #5734) and the host
 // rasterization-scale stand-down (PR #5761, which generalised it to
 // visual hosting). Do not re-add them.
-replace github.com/wailsapp/wails/v3 => github.com/randalmurphal/wails/v3 v3.0.0-beta.4.0.20260905043122-0c73296a403c
+replace github.com/wailsapp/wails/v3 => github.com/randalmurphal/wails/v3 v3.0.0-beta.4.0.20260906003838-90881ddb0feb

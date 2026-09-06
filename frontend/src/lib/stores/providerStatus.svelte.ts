@@ -1,3 +1,6 @@
+import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
+import { onBackendDetached } from '../transport/backends';
+import { compositeKey } from '../utils/compositeKey';
 import type { ProviderStatusEvent } from '../types/events';
 
 export type { ProviderStatusEvent } from '../types/events';
@@ -13,7 +16,7 @@ export type { ProviderStatusEvent } from '../types/events';
  * established pattern elsewhere in the codebase (threadStatuses.svelte.ts)
  * and is what makes $derived consumers re-run.
  */
-let statuses: Map<ProviderStatusEvent['provider'], ProviderStatusEvent> = $state(new Map());
+let statuses: Map<string, ProviderStatusEvent> = $state(new Map());
 
 /**
  * Read the latest status for a given provider, or null if no event
@@ -22,8 +25,9 @@ let statuses: Map<ProviderStatusEvent['provider'], ProviderStatusEvent> = $state
  */
 export function getProviderStatus(
   provider: ProviderStatusEvent['provider'],
+  backend: BackendKey = HOME_BACKEND,
 ): ProviderStatusEvent | null {
-  return statuses.get(provider) ?? null;
+  return statuses.get(compositeKey(backend, provider)) ?? null;
 }
 
 /**
@@ -37,12 +41,12 @@ export function getProviderStatus(
  * `eventsProvider.ts applyProviderStatus`; kept as the sole mutator on
  * the map so the store has one entry point.
  */
-export function recordProviderStatus(evt: ProviderStatusEvent | null | undefined): void {
+export function recordProviderStatus(evt: ProviderStatusEvent | null | undefined, backend: BackendKey = HOME_BACKEND): void {
   if (!evt || typeof evt.provider !== 'string') return;
   const hasStatus = typeof evt.status === 'string' && evt.status.length > 0;
   const hasKind = typeof evt.kind === 'string' && evt.kind.length > 0;
   if (!hasStatus && !hasKind) return;
-  statuses = new Map(statuses).set(evt.provider, evt);
+  statuses = new Map(statuses).set(compositeKey(backend, evt.provider), evt);
 }
 
 /**
@@ -54,3 +58,8 @@ export function resetForTest(): void {
   if (statuses.size === 0) return;
   statuses = new Map();
 }
+
+onBackendDetached(({ backendId }) => {
+  const prefix = compositeKey(backendId, '');
+  statuses = new Map([...statuses].filter(([key]) => !key.startsWith(prefix)));
+});

@@ -29,7 +29,7 @@ import (
 // The ORDER is the safety property, and it is the same order the local command
 // uses (internal/aocli's serviceUpdate):
 //
-//	resolving -> downloading -> verifying -> staging -> requested
+//	resolving -> downloading -> verifying -> staging -> waiting (if busy) -> requested
 //
 // Verify BEFORE stage, always. Two different refusals live in that step and
 // both have to happen while the artifact is still a temp file: a download that
@@ -55,7 +55,7 @@ import (
 type ServiceUpdateDeps struct {
 	// Source resolves and downloads releases for THIS host's artifact. nil
 	// means this host cannot fetch releases at all — no release artifact it
-	// could install as a single file — which the status RPC says in words.
+	// could install — which the status RPC says in words.
 	Source *appupdate.ReleaseSource
 	// Layout is the supervisor's directory tree: where a version is staged,
 	// and the filesystem the download must land on so the stage is a local
@@ -86,6 +86,11 @@ type serviceUpdateState struct {
 	// busy is the one-flow-at-a-time fence. Claimed by RequestServiceUpdate
 	// under mu and dropped by the goroutine that finishes.
 	busy bool
+	// cancel owns the flow independently of the requesting connection.
+	// committing fences cancellation once the supervisor handoff begins.
+	cancel          context.CancelFunc
+	committing      bool
+	cancelRequested bool
 	// status is the last published frame, minus the fields derived per read.
 	status ServiceUpdateStatus
 }
@@ -99,7 +104,9 @@ const (
 	serviceUpdatePhaseVerifying   = "verifying"
 	serviceUpdatePhaseStaging     = "staging"
 	serviceUpdatePhaseRequested   = "requested"
+	serviceUpdatePhaseWaiting     = "waiting"
 	serviceUpdatePhaseError       = "error"
+	serviceUpdatePhaseCanceled    = "canceled"
 )
 
 // serviceUpdateProgressInterval throttles the download's status frames. The
@@ -171,8 +178,12 @@ type ServiceUpdateStatus struct {
 	// takes.
 	LatestTag string `json:"latestTag,omitempty"`
 	// Phase is where the current or last flow got to: idle, resolving,
-	// downloading, verifying, staging, requested, error.
+	// downloading, verifying, staging, waiting, requested, canceled, error.
 	Phase string `json:"phase"`
+	// Cancelable is false on older hosts and after the supervisor handoff.
+	Cancelable bool `json:"cancelable,omitempty"`
+	// WaitingFor names the work keeping a staged update from restarting.
+	WaitingFor string `json:"waitingFor,omitempty"`
 	// TargetTag is the tag the current or last flow was asked for.
 	TargetTag string `json:"targetTag,omitempty"`
 	// TargetVersion is what that tag resolved to, once known.
@@ -255,6 +266,9 @@ func ConfigureServiceUpdates(a *App, deps ServiceUpdateDeps) {
 // facts derived per read. Caller holds a.serviceUpdate.mu.
 func (a *App) serviceUpdateStatusLocked() ServiceUpdateStatus {
 	status := a.serviceUpdate.status
+	status.Cancelable = a.serviceUpdate.busy && a.serviceUpdate.cancel != nil &&
+		!a.serviceUpdate.committing && !a.serviceUpdate.cancelRequested &&
+		status.Phase != serviceUpdatePhaseError && status.Phase != serviceUpdatePhaseCanceled
 	status.CurrentVersion = a.version
 	status.Supervised = a.serviceUpdate.request != nil
 	status.Available = status.Supervised && a.serviceUpdate.deps.Source != nil
@@ -326,7 +340,10 @@ func (a *App) ListServiceReleases() ([]ReleaseSummary, error) {
 	if err != nil {
 		return nil, err
 	}
-	return wireReleaseSummaries(releases), nil
+	if releases == nil {
+		releases = []ReleaseSummary{}
+	}
+	return releases, nil
 }
 
 // RequestServiceUpdate downloads a release, proves it runs here, stages it,
@@ -386,11 +403,15 @@ func (a *App) RequestServiceUpdate(ctx context.Context, tag string) error {
 		a.serviceUpdate.mu.Unlock()
 		return ErrServiceUpdateUnavailable
 	}
-	if a.serviceUpdate.busy {
+	if a.serviceUpdate.busy || a.serviceUpdate.status.Phase == serviceUpdatePhaseRequested {
 		a.serviceUpdate.mu.Unlock()
 		return ErrServiceUpdateBusy
 	}
 	a.serviceUpdate.busy = true
+	flowCtx, cancel := context.WithCancel(a.lifeCtx())
+	a.serviceUpdate.cancel = cancel
+	a.serviceUpdate.committing = false
+	a.serviceUpdate.cancelRequested = false
 	// The whole previous flow's record is replaced, not patched: a stale
 	// target version or a stale error beside a fresh phase is a client
 	// rendering two updates at once.
@@ -404,27 +425,54 @@ func (a *App) RequestServiceUpdate(ctx context.Context, tag string) error {
 	a.serviceUpdate.mu.Unlock()
 	a.emit(eventchan.ServiceUpdateStatus, status)
 
-	go a.runServiceUpdate(deps, tag)
+	go a.runServiceUpdate(flowCtx, deps, tag)
 	return nil
 }
 
-// runServiceUpdate is the flow. It runs on a.lifeCtx so a shutdown ends it,
-// and it drops the fence on every exit path.
-func (a *App) runServiceUpdate(deps ServiceUpdateDeps, tag string) {
+// CancelServiceUpdate stops preparation before the supervisor takes ownership.
+// Disconnecting the requesting frontend never calls this implicitly.
+//
+//ao:scope access:admin
+//ao:route selected
+func (a *App) CancelServiceUpdate() error {
+	a.serviceUpdate.mu.Lock()
+	defer a.serviceUpdate.mu.Unlock()
+	if a.serviceUpdate.status.Phase == serviceUpdatePhaseRequested || (a.serviceUpdate.busy && a.serviceUpdate.committing) {
+		return errors.New("this update is already restarting the computer")
+	}
+	if !a.serviceUpdate.busy || a.serviceUpdate.cancel == nil {
+		return nil
+	}
+	a.serviceUpdate.cancelRequested = true
+	a.serviceUpdate.cancel()
+	return nil
+}
+
+// runServiceUpdate owns the flow on a.lifeCtx. Preparation/cancellation errors
+// reopen admission; an accepted or uncertain handoff stays fenced until shutdown.
+func (a *App) runServiceUpdate(ctx context.Context, deps ServiceUpdateDeps, tag string) {
 	defer func() {
 		a.serviceUpdate.mu.Lock()
+		a.serviceUpdate.cancel()
+		a.serviceUpdate.cancel = nil
 		a.serviceUpdate.busy = false
+		requested := a.serviceUpdate.status.Phase == serviceUpdatePhaseRequested
 		a.serviceUpdate.mu.Unlock()
+		if !requested {
+			a.workAdmission.reopen()
+		}
 	}()
-
-	ctx, cancel := context.WithTimeout(a.lifeCtx(), serviceUpdateFlowTimeout)
-	defer cancel()
 
 	if err := a.serviceUpdateFlow(ctx, deps, tag); err != nil {
 		deps.Log("serve: update to %s failed: %v", tag, err)
 		a.publishServiceUpdate(func(status *ServiceUpdateStatus) {
 			status.Phase = serviceUpdatePhaseError
 			status.Error = err.Error()
+			status.WaitingFor = ""
+			if errors.Is(err, context.Canceled) && a.serviceUpdate.cancelRequested {
+				status.Phase = serviceUpdatePhaseCanceled
+				status.Error = ""
+			}
 		})
 	}
 }
@@ -433,6 +481,11 @@ func (a *App) runServiceUpdate(deps ServiceUpdateDeps, tag string) {
 // sentence that names the step it failed at. The supervisor is untouched
 // until the last one.
 func (a *App) serviceUpdateFlow(ctx context.Context, deps ServiceUpdateDeps, tag string) error {
+	// Preparation is bounded; waiting for the user's work is cancelable without
+	// an arbitrary deadline interrupting a long workflow or GPU command.
+	preparationCtx, finishPreparation := context.WithTimeout(ctx, serviceUpdateFlowTimeout)
+	defer finishPreparation()
+
 	// The download lands beside the version directories it is about to become
 	// one of, so the stage is a local copy on one filesystem rather than a
 	// cross-device move that could tear. 0700 on the directory and the file:
@@ -463,7 +516,7 @@ func (a *App) serviceUpdateFlow(ctx context.Context, deps ServiceUpdateDeps, tag
 	a.publishServiceUpdate(func(status *ServiceUpdateStatus) {
 		status.Phase = serviceUpdatePhaseDownloading
 	})
-	resolved, err := deps.Source.Fetch(ctx, tag, file, a.serviceUpdateProgress())
+	resolved, err := deps.Source.Fetch(preparationCtx, tag, file, a.serviceUpdateProgress())
 	if closeErr := file.Close(); closeErr != nil && err == nil {
 		err = closeErr
 	}
@@ -484,7 +537,12 @@ func (a *App) serviceUpdateFlow(ctx context.Context, deps ServiceUpdateDeps, tag
 		status.Phase = serviceUpdatePhaseVerifying
 		status.TargetVersion = resolved.Version
 	})
-	answer, err := deps.Preflight(ctx, downloaded)
+	artifact, err := supervise.PrepareArtifact(preparationCtx, downloaded, resolved.AssetName, resolved.Digest)
+	if err != nil {
+		return fmt.Errorf("preparing %s: %w", resolved.AssetName, err)
+	}
+	defer artifact.Close()
+	answer, err := deps.Preflight(preparationCtx, artifact.Binary)
 	if err != nil {
 		return fmt.Errorf("checking the downloaded %s: %w", resolved.AssetName, err)
 	}
@@ -517,20 +575,52 @@ func (a *App) serviceUpdateFlow(ctx context.Context, deps ServiceUpdateDeps, tag
 		status.Phase = serviceUpdatePhaseStaging
 		status.TargetVersion = answer.Version
 	})
-	if err := supervise.StageBinary(deps.Layout, answer.Version, downloaded); err != nil {
+	if err := preparationCtx.Err(); err != nil {
+		return err
+	}
+	if err := artifact.Stage(deps.Layout, answer.Version); err != nil {
 		return fmt.Errorf("staging version %s: %w", answer.Version, err)
+	}
+
+	if err := preparationCtx.Err(); err != nil {
+		return err
+	}
+	finishPreparation()
+	if err := a.waitForUpdateIdle(ctx); err != nil {
+		return err
 	}
 
 	// The supervisor's turn. Everything after this belongs to W8h1: it
 	// accepts, stops this process, snapshots the database, and boots the
 	// target as a trial.
+	// Claim the handoff under the SAME lock as cancellation. A canceled
+	// download that finishes staging late must never ask for a restart.
+	a.serviceUpdate.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		a.serviceUpdate.mu.Unlock()
+		return err
+	}
+	a.serviceUpdate.committing = true
+	a.serviceUpdate.mu.Unlock()
 	updateID, err := a.serviceUpdateRequest(answer.Version)
+	if errors.Is(err, supervise.ErrUpdateOutcomeUnknown) {
+		// The bootstrap callback requests ordered shutdown in this case.
+		// Keep admission closed: the supervisor may still accept its request.
+		deps.Log("serve: restarting to resolve update to %s: %v", answer.Version, err)
+		a.publishServiceUpdate(func(status *ServiceUpdateStatus) {
+			status.Phase = serviceUpdatePhaseRequested
+			status.WaitingFor = ""
+			status.Error = err.Error()
+		})
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("asking the supervisor to run version %s: %w", answer.Version, err)
 	}
 	deps.Log("serve: update %s accepted; the supervisor is switching to version %s", updateID, answer.Version)
 	a.publishServiceUpdate(func(status *ServiceUpdateStatus) {
 		status.Phase = serviceUpdatePhaseRequested
+		status.WaitingFor = ""
 		status.TargetVersion = answer.Version
 		status.UpdateID = updateID
 	})

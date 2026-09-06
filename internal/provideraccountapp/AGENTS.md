@@ -17,6 +17,17 @@ session runtime remain in `internal/app`.
 
 ## Sign-in is a session, not a call
 
+`Deps.BeginWork` admits credential-changing operations before any account or
+reconcile lock. Sign-in transfers its lease to the session driver and releases
+it only after provider teardown and credential cleanup, including cancellation,
+replacement and failed starts. Account switches/removals, identity probes,
+external-login reconciliation, transfer validation and usage refresh retain
+their lease through the complete transaction. The host's update guard must not
+observe an idle gap between a refresh consuming and saving a credential.
+Submitting/canceling an existing sign-in needs no new admission: its session
+already owns one. Fixtures use `kerneltest.IsolateSpawns` and explicitly replace
+the poisoned binary with a mock for tests that exercise native login transport.
+
 `loginsession.go` holds one live sign-in per provider behind a registry whose
 lock is a LEAF: no other Manager lock is taken under it, and nothing is
 published while it is held. Four bound methods drive it — `StartProviderLogin`,
@@ -47,3 +58,10 @@ Rules the drivers impose, and this layer obeys:
   `ANTHROPIC_BASE_URL` that changes which backend answers changes which account
   the person is signing in to, and adopting from a probe that ran elsewhere
   would file one login under another's identity.
+
+Transfer readiness uses fresh account state. `ProbeRequest.Validate` skips the
+display cache and examines the stable identity/credential pair under the same
+reconcile lock before adoption. A healthy Claude credential remains usable while
+its profile is rebuilding after an account switch; a retained subscription label
+on a sign-out husk is not a login. Successful probes still adopt any native
+credential rotation through the ordinary account transaction.

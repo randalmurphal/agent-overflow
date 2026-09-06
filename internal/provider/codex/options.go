@@ -232,18 +232,19 @@ func ConfigFromOptions(opts provider.SessionOptions) Config {
 	}
 
 	return Config{
-		Model:                 model,
-		WorkDir:               opts.WorkDir,
-		ApprovalPolicy:        runtime.ApprovalPolicy,
-		Sandbox:               runtime.Sandbox,
-		ApprovalsReviewer:     runtime.ApprovalsReviewer,
-		ResumeThreadID:        opts.Resume,
-		SystemPrompt:          opts.SystemPrompt,
-		DisabledTools:         opts.DisabledTools,
-		ReasoningEffort:       codexEffortFromOption(opts.ReasoningEffort),
-		ServiceTier:           codexServiceTier(opts.FastMode, opts.FastModeTierID),
-		ContextWindow:         contextWindow,
-		AutoCompactTokenLimit: autoCompactTokenLimit(contextWindow, autoCompactPercent),
+		Model:                  model,
+		WorkDir:                opts.WorkDir,
+		ApprovalPolicy:         runtime.ApprovalPolicy,
+		Sandbox:                runtime.Sandbox,
+		ApprovalsReviewer:      runtime.ApprovalsReviewer,
+		ResumeThreadID:         opts.Resume,
+		SystemPrompt:           opts.SystemPrompt,
+		AdditionalInstructions: opts.AdditionalInstructions,
+		DisabledTools:          opts.DisabledTools,
+		ReasoningEffort:        codexEffortFromOption(opts.ReasoningEffort),
+		ServiceTier:            codexServiceTier(opts.FastMode, opts.FastModeTierID),
+		ContextWindow:          contextWindow,
+		AutoCompactTokenLimit:  autoCompactTokenLimit(contextWindow, autoCompactPercent),
 	}
 }
 

@@ -15,6 +15,7 @@ import {
 import { ListThreads } from './bindings';
 import {
   getPaneLayoutItems,
+  paneLayoutMutationRevision,
   setPaneLayoutPersistenceHandlers,
   setPaneLayoutItems,
   type PaneLayoutItem,
@@ -342,7 +343,12 @@ async function loadThreadsForValidation(availableThreads?: Thread[]): Promise<Th
  * — before that, only the same-session cache is visible and a fresh
  * launch would restore an empty layout.
  */
-export async function loadPersistedPaneLayout(availableThreads?: Thread[]): Promise<void> {
+export async function loadPersistedPaneLayout(
+  availableThreads?: Thread[], expectedRevision = paneLayoutMutationRevision(),
+): Promise<void> {
+  // Opening/closing a pane while startup waits is newer user intent than
+  // the saved layout. Never erase that interaction when a slow host answers.
+  if (paneLayoutMutationRevision() !== expectedRevision) return;
   const persisted = readPersistedLayout();
   if (!persisted) {
     emptyLayout();
@@ -350,6 +356,7 @@ export async function loadPersistedPaneLayout(availableThreads?: Thread[]): Prom
   }
 
   const threads = await loadThreadsForValidation(availableThreads);
+  if (paneLayoutMutationRevision() !== expectedRevision) return;
   const threadPanes = persisted.panes.filter((pane) => pane.kind === 'thread' && pane.threadId);
   const companionPanes = persisted.panes.filter((pane) => isPersistedCompanionKind(pane.kind));
   const neededThreadIds = new Set(threadPanes.map((pane) => pane.threadId as string));
@@ -378,6 +385,7 @@ export async function loadPersistedPaneLayout(availableThreads?: Thread[]): Prom
     : registryEntries[0]?.paneId ?? null;
   setPaneLayoutItems(layoutItems);
   await hydrateRestoredPaneRegistry(registryEntries, restoredFocusedPaneId);
+  if (paneLayoutMutationRevision() !== expectedRevision) return;
 
   const restoredThreadItems = layoutItems.filter((item) => getAllPanes().has(item.paneId));
   const companionsBySource = new Map<string, PaneLayoutItem[]>();

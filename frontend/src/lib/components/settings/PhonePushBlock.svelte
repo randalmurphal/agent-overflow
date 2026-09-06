@@ -1,4 +1,7 @@
 <script lang="ts">
+  import { settingsComputer } from './settingsComputer';
+  const { call, hasScope } = settingsComputer();
+
   // Settings → General → Notifications → Phone push: whether this backend
   // can wake a paired phone that is not connected, and the credential it
   // does that with (docs/specs/remote-access.md §9, "Push").
@@ -26,7 +29,7 @@
   } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
-  import { hasScope } from '../../transport/scopes';
+
   import SettingsField from './SettingsField.svelte';
   import { INPUT_CLASS, PRIMARY_BUTTON_CLASS, SECONDARY_BUTTON_CLASS } from './styles';
 
@@ -64,7 +67,7 @@
   async function load(): Promise<void> {
     if (ungranted) return;
     try {
-      status = await GetPushSenderStatus();
+      status = await call(() => GetPushSenderStatus());
     } catch (err) {
       addToast('error', `${COPY.loadFailed}: ${errString(err)}`);
     }
@@ -91,7 +94,7 @@
     if (credential === '' || busy) return;
     busy = true;
     try {
-      await SetPushSenderCredential(credential);
+      await call(() => SetPushSenderCredential(credential));
       // Cleared on success only. A key that was refused stays in the box
       // so a person can fix a truncated paste rather than find it again.
       pasted = '';
@@ -108,7 +111,7 @@
     if (busy) return;
     busy = true;
     try {
-      await ClearPushSenderCredential();
+      await call(() => ClearPushSenderCredential());
       addToast('success', COPY.cleared);
       await load();
     } catch (err) {

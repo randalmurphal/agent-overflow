@@ -55,12 +55,18 @@ func runSupervise(bootArgs []string) {
 	if dataDir == "" {
 		fatalf("supervise: cannot determine the data directory. Name one with --data-dir.")
 	}
+	lock, err := acquireBackendInstanceLock(dataDir)
+	if err != nil {
+		fatalf("supervise: %v", err)
+	}
+	heldBackendLock = lock
 	executable, err := os.Executable()
 	if err != nil {
 		fatalf("supervise: cannot find this binary's own path: %v", err)
 	}
 
 	supervisor, err := supervise.New(supervise.Config{
+		OwnsDataRoot:   true,
 		DataDir:        dataDir,
 		SelfExecutable: executable,
 		SelfVersion:    version,

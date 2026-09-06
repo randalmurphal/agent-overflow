@@ -7,7 +7,7 @@
 // project can legitimately list different servers and neither answer is
 // stale. Codex enumerates from ~/.codex/config.toml, which is app-global.
 //
-// So: Codex is one app-global key, Claude is one key per workspace, and
+// So: Codex is one key per computer, Claude is one key per computer and workspace, and
 // every composer menu on that workspace renders the same rows and heals
 // together.
 //
@@ -48,6 +48,9 @@ import {
 } from './bindings';
 import { createEntityStore, type EntityAttachment } from './entityStore.svelte';
 import { hasScope } from '../transport/scopes';
+import { backendKeyForOrigin, withBackendTarget } from '../transport/backends';
+import type { BackendKey } from '../transport/backendKey';
+import { composeWorkspaceKey, workspaceKeyBackend } from '../utils/workspaceKey';
 import { wailsEventOn } from './wailsEvents';
 import { addToast } from './toast.svelte';
 
@@ -69,8 +72,8 @@ interface MCPOAuthCompletedPayload {
   error?: string;
 }
 
-/** The app-global Codex key — the backend's `enabled` flag is global. */
-export const MCP_CODEX_KEY = 'codex';
+/** The computer-wide Codex configuration entity, before adding its owner. */
+const MCP_CODEX_KEY = 'codex';
 
 /** mcpRowKey identifies one server row. Matches Go's `mcpstatus.Key`. */
 export function mcpRowKey(provider: string, name: string): string {
@@ -85,6 +88,7 @@ export function mcpRowKey(provider: string, name: string): string {
  * the one that happened to be showing at attach time.
  */
 export interface MCPCtx {
+  readonly backend: BackendKey;
   readonly provider: string;
   /** Empty for a draft placeholder: no thread row, so no session listing. */
   readonly threadId: string;
@@ -115,12 +119,13 @@ export function mcpTargetFor(
   provider: string,
   threadId: string,
   workspacePath: string,
+  backend: BackendKey,
 ): MCPTarget | null {
   if (!provider) return null;
   const path = workspacePath.trim();
   const key = mcpEntityKey(provider, path);
   if (key === null) return null;
-  return { key, provider, threadId, workspacePath: path };
+  return { key: composeWorkspaceKey(backend, key), backend, provider, threadId, workspacePath: path };
 }
 
 // ---------------------------------------------------------------------------
@@ -159,18 +164,19 @@ const sourceThreadIds = new SvelteMap<string, string>();
 // read out of one after an await may not be the value the RPC ran against.
 // Every use here starts from a flat copy taken at the call site.
 function ctxSnapshot(ctx: MCPCtx): MCPCtx {
-  return { provider: ctx.provider, threadId: ctx.threadId, workspacePath: ctx.workspacePath };
+  return { backend: ctx.backend, provider: ctx.provider, threadId: ctx.threadId, workspacePath: ctx.workspacePath };
 }
 
 async function listRows(ctx: MCPCtx): Promise<ThreadMCPServer[]> {
-  const rows = ctx.threadId
-    ? await ListThreadMcpServers(ctx.threadId)
-    : await ListWorkspaceMcpServers(ctx.provider, ctx.workspacePath);
+  const rows = await withBackendTarget(ctx.backend, () => ctx.threadId
+    ? ListThreadMcpServers(ctx.threadId)
+    : ListWorkspaceMcpServers(ctx.provider, ctx.workspacePath));
   return rows ?? [];
 }
 
 const store = createEntityStore<ThreadMCPServer[], MCPCtx>({
   name: 'mcpServers',
+  backendForKey: workspaceKeyBackend,
   source: async ({ key, getCtx, apply, signal }) => {
     bumpLoad(key, 1);
     try {
@@ -191,7 +197,7 @@ const store = createEntityStore<ThreadMCPServer[], MCPCtx>({
       // replaced it. Superseded work stops here.
       if (statusFetchHolds.has(key) && needsEphemeralRefresh(rows)) {
         const ctx = ctxSnapshot(getCtx());
-        await RefreshMcpServerStatus(ctx.provider, ctx.workspacePath);
+        await withBackendTarget(ctx.backend, () => RefreshMcpServerStatus(ctx.provider, ctx.workspacePath));
         if (signal.aborted) return () => {};
         const again = ctxSnapshot(getCtx());
         const refreshed = await listRows(again);
@@ -239,8 +245,9 @@ export function needsEphemeralRefresh(rows: ThreadMCPServer[]): boolean {
 // to match the server name against), and invalidating aborts the superseded
 // run and re-lists; skipping left a held-but-still-loading workspace showing
 // the pre-toggle answer with nothing due to correct it.
-function invalidateKeysWithServer(provider: string, name: string): void {
+function invalidateKeysWithServer(provider: string, name: string, backend: BackendKey): void {
   for (const key of store.keys()) {
+    if (workspaceKeyBackend(key) !== backend) continue;
     const rows = store.snapshot(key);
     if (rows && !rows.some((row) => row.provider === provider && row.name === name)) continue;
     store.invalidate(key);
@@ -255,13 +262,14 @@ function invalidateKeysWithServer(provider: string, name: string): void {
 // it is the signal that the authoritative listing moved. Rendering it would
 // downgrade a live row to "Not checked" for one round-trip; discarding it
 // (which this used to do) threw away the one push that says a toggle landed.
-function patchStatus(status: MCPServerStatus): void {
+function patchStatus(status: MCPServerStatus, backend: BackendKey): void {
   if (!status?.provider || !status.name || !status.status) return;
   if ((status.status as string) === 'unknown') {
-    invalidateKeysWithServer(status.provider, status.name);
+    invalidateKeysWithServer(status.provider, status.name, backend);
     return;
   }
   for (const key of store.keys()) {
+    if (workspaceKeyBackend(key) !== backend) continue;
     const rows = store.snapshot(key);
     if (!rows) continue;
     const idx = rows.findIndex(
@@ -293,14 +301,14 @@ let mcpEventOffs: Array<() => void> = [];
 function installMcpEventListeners(): void {
   for (const off of mcpEventOffs) off();
   mcpEventOffs = [
-    wailsEventOn<MCPServerStatus>('mcp:status', (payload) => {
-      if (payload) patchStatus(payload);
+    wailsEventOn<MCPServerStatus>('mcp:status', (payload, origin) => {
+      if (payload) patchStatus(payload, backendKeyForOrigin(origin.backendId));
     }),
-    wailsEventOn<MCPOAuthCompletedPayload>('mcp:oauth-completed', (payload) => {
+    wailsEventOn<MCPOAuthCompletedPayload>('mcp:oauth-completed', (payload, origin) => {
       if (!payload?.serverName || !payload?.provider) return;
       // Signing in changes what the next listing reports for that server on
       // every entity that carries it, not just the thread the popup ran in.
-      invalidateKeysWithServer(payload.provider, payload.serverName);
+      invalidateKeysWithServer(payload.provider, payload.serverName, backendKeyForOrigin(origin.backendId));
       if (!payload.threadId && !payload.success && !payload.timedOut) {
         const detail = payload.error ? `: ${payload.error}` : '';
         addToast('error', `Sign-in failed for ${payload.serverName}${detail}`);
@@ -336,7 +344,7 @@ export function attachMcpServers(
   key: string,
   ctx: MCPCtx,
 ): EntityAttachment<ThreadMCPServer[]> {
-  if (!hasScope('settings:write')) return NO_MCP_SERVERS;
+  if (!hasScope('settings:write', workspaceKeyBackend(key))) return NO_MCP_SERVERS;
   return store.attach(key, ctx);
 }
 
@@ -405,9 +413,9 @@ export async function setMcpServerEnabled(
 ): Promise<void> {
   if (!name) return;
   if (target.threadId) {
-    await SetThreadMcpServerEnabled(target.threadId, name, enabled);
+    await withBackendTarget(target.backend, () => SetThreadMcpServerEnabled(target.threadId, name, enabled));
   } else {
-    await SetWorkspaceMcpServerEnabled(target.provider, target.workspacePath, name, enabled);
+    await withBackendTarget(target.backend, () => SetWorkspaceMcpServerEnabled(target.provider, target.workspacePath, name, enabled));
   }
 }
 
@@ -418,7 +426,7 @@ export async function setMcpServerEnabled(
  * re-list arrives through the sentinel rather than from here.
  */
 export async function reconnectMcpServer(target: MCPTarget, name: string): Promise<void> {
-  await ReconnectMcpServer(target.threadId, name);
+  await withBackendTarget(target.backend, () => ReconnectMcpServer(target.threadId, name));
 }
 
 /**
@@ -426,15 +434,15 @@ export async function reconnectMcpServer(target: MCPTarget, name: string): Promi
  * rows, where there is no live session to reconnect; the resulting cache Put
  * patches rows via `mcp:status`.
  */
-export async function refreshMcpServerStatus(provider: string, name: string): Promise<void> {
-  await GetMcpServerStatus(provider, name, true);
+export async function refreshMcpServerStatus(target: MCPTarget, name: string): Promise<void> {
+  await withBackendTarget(target.backend, () => GetMcpServerStatus(target.provider, name, true));
 }
 
 export async function triggerMcpAuth(target: MCPTarget, name: string): Promise<MCPAuthInitResult> {
   if (target.threadId) {
-    return TriggerMcpAuth(target.threadId, name);
+    return withBackendTarget(target.backend, () => TriggerMcpAuth(target.threadId, name));
   }
-  return TriggerWorkspaceMcpAuth(target.provider, target.workspacePath, name);
+  return withBackendTarget(target.backend, () => TriggerWorkspaceMcpAuth(target.provider, target.workspacePath, name));
 }
 
 /** Diagnostics / tests: the entities currently held. */
@@ -454,8 +462,10 @@ export function mcpServersKeys(): string[] {
  * one degree coarser. Live keys are bounded by the mounted panes, and
  * re-sourcing keeps each key's rows, so membership never blinks.
  */
-export function resyncMcpServersAfterGap(): void {
-  store.invalidateAll();
+export function resyncMcpServersAfterGap(backend: BackendKey): void {
+  for (const key of store.keys()) {
+    if (workspaceKeyBackend(key) === backend) store.invalidate(key);
+  }
 }
 
 // ---------------------------------------------------------------------------

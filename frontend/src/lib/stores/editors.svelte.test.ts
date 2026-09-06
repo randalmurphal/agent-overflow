@@ -4,6 +4,7 @@ import {
   ensureEditorsLoaded,
   refreshEditors,
   getEditors,
+  getEditorPreference,
   getAvailableEditors,
   getResolvedEditor,
   getEditorsError,
@@ -19,7 +20,8 @@ import {
 } from '../../test/mocks/bindings-app';
 import type { EditorInfo } from './bindings';
 import { DisconnectedError } from '../transport/wsClient';
-import { __setTransportStatusForTest } from './transportStatus.svelte';
+import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
+import { takePinnedBackend, detachBackend } from '../transport/backends';
 
 // Plain-object rows — the store reads .id/.available/.envFallback, which
 // matches what the ListAvailableEditors RPC returns over the wire.
@@ -303,15 +305,17 @@ describe('editors store', () => {
       .mockResolvedValueOnce([ed('code', true)]));
     setBindingMock('GetEditorSettings', vi.fn(async () => ({ preference: '' })));
 
-    __setTransportStatusForTest({ status: 'reconnecting', nextAttemptAt: Date.now() + 1 });
-    await ensureEditorsLoaded();
-    expect(getEditorsLoadStatus()).toBe('error');
+    const machine = stageBackend({ id: 'gpu', status: 'reconnecting' });
+    await ensureEditorsLoaded('gpu');
+    expect(getEditorsLoadStatus('gpu')).toBe('error');
 
-    __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
-    await vi.waitFor(() => expect(getEditorsLoadStatus()).toBe('loaded'));
+    machine.setStatus('connected');
+    machine.setHello({ backendName: 'GPU' } as never);
+    await vi.waitFor(() => expect(getEditorsLoadStatus('gpu')).toBe('loaded'));
 
     expect(listMock).toHaveBeenCalledTimes(2);
-    expect(getResolvedEditor()?.id).toBe('code');
+    expect(getResolvedEditor('gpu')?.id).toBe('code');
+    resetStagedBackends();
     consoleError.mockRestore();
   });
 });
@@ -404,4 +408,24 @@ describe('resyncEditorPreference', () => {
     expect(getResolvedEditor()?.id).toBe('cursor');
     expect(getEditorsError()).toBeNull();
   });
+});
+
+it('isolates editor preferences and pending writes by computer', async () => {
+  stageBackend({ id: 'gpu' });
+  const writes: string[] = [];
+  setBindingMock('ListAvailableEditors', async () => [ed(takePinnedBackend() === 'gpu' ? 'zed' : 'code', true)]);
+  setBindingMock('GetEditorSettings', async () => ({ preference: takePinnedBackend() === 'gpu' ? 'zed' : 'code' }));
+  setBindingMock('SetEditorSettings', async (value: unknown) => {
+    writes.push(takePinnedBackend() ?? '');
+    return value;
+  });
+  await Promise.all([refreshEditors(), refreshEditors('gpu')]);
+  expect(getResolvedEditor()?.id).toBe('code');
+  expect(getResolvedEditor('gpu')?.id).toBe('zed');
+  await setEditorPreference('', 'gpu');
+  expect(writes).toEqual(['gpu']);
+  expect(getEditorPreference()).toBe('code');
+  detachBackend('gpu');
+  expect(getEditors('gpu')).toEqual([]);
+  resetStagedBackends();
 });

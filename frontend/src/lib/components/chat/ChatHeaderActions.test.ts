@@ -4,7 +4,7 @@ import { tick } from 'svelte';
 import ChatHeaderActions from './ChatHeaderActions.svelte';
 import { resetPanesForTest } from '../../stores/panes.svelte';
 import { setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
-import { loadSettings } from '../../stores/settings.svelte';
+import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { resetEditorsForTest } from '../../stores/editors.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import type { GitStatus } from '../../types/git';

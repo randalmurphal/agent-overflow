@@ -1,6 +1,8 @@
 package app
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -61,9 +63,12 @@ type serviceUpdateRig struct {
 	preflightVersion  string
 	preflightProtocol int
 	preflightErr      error
+	preflightBinary   string
 }
 
 type serviceUpdateOptions struct {
+	assetName, platform, arch string
+	artifact                  []byte
 	// tags are the releases the feed publishes, newest first.
 	tags []string
 	// checksum, when non-empty, replaces the artifact's published digest, so
@@ -95,10 +100,16 @@ func newServiceUpdateRig(t *testing.T, opts serviceUpdateOptions) *serviceUpdate
 	rig.layout = layout
 
 	srv := newServiceUpdateFeed(t, opts)
+	if opts.platform == "" {
+		opts.platform = "headless-linux"
+	}
+	if opts.arch == "" {
+		opts.arch = "amd64"
+	}
 	rig.source, err = appupdate.NewReleaseSource(appupdate.Config{
 		CurrentVersion: serviceUpdateRunningVer,
-		Platform:       "headless-linux",
-		Arch:           "amd64",
+		Platform:       opts.platform,
+		Arch:           opts.arch,
 		Repository:     serviceUpdateTestRepo,
 		ChecksumAsset:  serviceUpdateTestSums,
 		BaseURL:        srv.URL,
@@ -152,7 +163,7 @@ func newServiceUpdateRig(t *testing.T, opts serviceUpdateOptions) *serviceUpdate
 }
 
 // configureWithoutSource is the supervised host that has no release artifact
-// it could install: darwin's app bundle, or a build the feed does not publish.
+// it could install, such as an architecture the feed does not publish.
 func (r *serviceUpdateRig) configureWithoutSource() {
 	ConfigureServiceUpdates(r.app, ServiceUpdateDeps{
 		Layout:    r.layout,
@@ -160,9 +171,10 @@ func (r *serviceUpdateRig) configureWithoutSource() {
 	})
 }
 
-func (r *serviceUpdateRig) fakePreflight(context.Context, string) (supervise.Preflight, error) {
+func (r *serviceUpdateRig) fakePreflight(_ context.Context, binary string) (supervise.Preflight, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.preflightBinary = binary
 	if r.preflightErr != nil {
 		return supervise.Preflight{}, r.preflightErr
 	}
@@ -181,7 +193,7 @@ func (r *serviceUpdateRig) settled() ServiceUpdateStatus {
 			r.t.Fatalf("GetServiceUpdateStatus: %v", err)
 		}
 		switch status.Phase {
-		case serviceUpdatePhaseRequested, serviceUpdatePhaseError:
+		case serviceUpdatePhaseRequested, serviceUpdatePhaseError, serviceUpdatePhaseCanceled:
 			return status
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -252,7 +264,13 @@ func (r *serviceUpdateRig) leftovers() []string {
 // uses. Loopback, and it publishes exactly one artifact plus its sidecar.
 func newServiceUpdateFeed(t *testing.T, opts serviceUpdateOptions) *httptest.Server {
 	t.Helper()
-	digest := sha256.Sum256(serviceUpdateArtifact)
+	if opts.artifact == nil {
+		opts.artifact = serviceUpdateArtifact
+	}
+	if opts.assetName == "" {
+		opts.assetName = serviceUpdateTestAsset
+	}
+	digest := sha256.Sum256(opts.artifact)
 	published := hex.EncodeToString(digest[:])
 	if opts.checksum != "" {
 		published = opts.checksum
@@ -264,9 +282,9 @@ func newServiceUpdateFeed(t *testing.T, opts serviceUpdateOptions) *httptest.Ser
 
 	release := func(tag string) map[string]any {
 		assets := []map[string]any{{
-			"name":                 serviceUpdateTestAsset,
+			"name":                 opts.assetName,
 			"content_type":         "application/octet-stream",
-			"size":                 len(serviceUpdateArtifact),
+			"size":                 len(opts.artifact),
 			"browser_download_url": srv.URL + "/dl/bin/" + tag,
 		}}
 		if !opts.noSidecar {
@@ -305,13 +323,13 @@ func newServiceUpdateFeed(t *testing.T, opts serviceUpdateOptions) *httptest.Ser
 		write(w, out)
 	})
 	mux.HandleFunc("/dl/sums/", func(w http.ResponseWriter, _ *http.Request) {
-		if _, err := io.WriteString(w, published+"  "+serviceUpdateTestAsset+"\n"); err != nil {
+		if _, err := io.WriteString(w, published+"  "+opts.assetName+"\n"); err != nil {
 			t.Errorf("write sidecar: %v", err)
 		}
 	})
 	mux.HandleFunc("/dl/bin/", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
-		if _, err := w.Write(serviceUpdateArtifact); err != nil {
+		if _, err := w.Write(opts.artifact); err != nil {
 			t.Errorf("write artifact: %v", err)
 		}
 	})
@@ -937,5 +955,140 @@ func TestTheReleaseFeedFixtureIsInternallyConsistent(t *testing.T) {
 	}
 	if fmt.Sprint(resolved.AssetName) != serviceUpdateTestAsset {
 		t.Fatalf("resolved asset %q", resolved.AssetName)
+	}
+}
+
+func TestServiceUpdateStagesTheCompleteMacBundleAfterPreflightingItsExecutable(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("macOS bundle execution modes require Unix")
+	}
+	var data bytes.Buffer
+	archive := zip.NewWriter(&data)
+	for _, entry := range []struct {
+		name, body string
+		mode       os.FileMode
+	}{
+		{"agent-overflow.app/Contents/MacOS/agent-overflow", "fake Mach-O", 0o755},
+		{"agent-overflow.app/Contents/Info.plist", "bundle metadata", 0o644},
+	} {
+		h := &zip.FileHeader{Name: entry.name}
+		h.SetMode(entry.mode)
+		w, err := archive.CreateHeader(h)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(w, entry.body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rig := newServiceUpdateRig(t, serviceUpdateOptions{tags: []string{"v1.5.0"}, configure: true, supervised: true,
+		platform: "darwin", arch: "arm64", assetName: "agent-overflow-darwin-arm64.zip", artifact: data.Bytes()})
+	if err := rig.app.RequestServiceUpdate(context.Background(), "v1.5.0"); err != nil {
+		t.Fatal(err)
+	}
+	if status := rig.settled(); status.Phase != serviceUpdatePhaseRequested {
+		t.Fatal("bundle update did not reach supervisor", status)
+	}
+	rig.mu.Lock()
+	preflight := rig.preflightBinary
+	rig.mu.Unlock()
+	if !strings.HasSuffix(preflight, filepath.Join("agent-overflow.app", "Contents", "MacOS", "agent-overflow")) {
+		t.Fatal("preflight did not inspect the bundled executable", preflight)
+	}
+	version, _ := rig.layout.VersionDir("1.5.0")
+	info, err := os.ReadFile(filepath.Join(version, "agent-overflow.app", "Contents", "Info.plist"))
+	if err != nil || string(info) != "bundle metadata" {
+		t.Fatal("bundle metadata lost", err)
+	}
+	if len(rig.supervisorCalls()) != 1 {
+		t.Fatal("supervisor was not asked exactly once")
+	}
+	if leftovers := rig.leftovers(); len(leftovers) != 0 {
+		t.Fatal("update retained extraction files", leftovers)
+	}
+}
+
+// A preflight may finish successfully after cancellation. That late success
+// must not cross the supervisor boundary or masquerade as an installation.
+func TestCancelServiceUpdateFencesLatePreparation(t *testing.T) {
+	rig := newServiceUpdateRig(t, serviceUpdateOptions{configure: true, supervised: true})
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	rig.app.serviceUpdate.mu.Lock()
+	rig.app.serviceUpdate.deps.Preflight = func(context.Context, string) (supervise.Preflight, error) {
+		close(entered)
+		<-release
+		return supervise.Preflight{ProtocolVersion: supervise.ProtocolVersion, Version: "1.5.0"}, nil
+	}
+	rig.app.serviceUpdate.mu.Unlock()
+	if err := rig.app.RequestServiceUpdate(context.Background(), "v1.5.0"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("preflight did not start")
+	}
+	status, _ := rig.app.GetServiceUpdateStatus()
+	if !status.Cancelable {
+		t.Fatal("preparation cannot be canceled")
+	}
+	if err := rig.app.CancelServiceUpdate(); err != nil {
+		t.Fatal(err)
+	}
+	status, _ = rig.app.GetServiceUpdateStatus()
+	if status.Cancelable {
+		t.Fatal("canceled preparation remains actionable")
+	}
+	unblock()
+	status = rig.settled()
+	if status.Phase != serviceUpdatePhaseCanceled || status.Error != "" || status.Cancelable {
+		t.Fatalf("cancellation: %+v", status)
+	}
+	if len(rig.supervisorCalls()) != 0 {
+		t.Fatal("late success restarted the backend")
+	}
+	if err := rig.app.CancelServiceUpdate(); err != nil {
+		t.Fatal("cancel retry:", err)
+	}
+}
+
+func TestCancelServiceUpdateCannotUndoSupervisorHandoff(t *testing.T) {
+	rig := newServiceUpdateRig(t, serviceUpdateOptions{configure: true, supervised: true})
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	SetServiceUpdateRequester(rig.app, func(string) (string, error) {
+		close(entered)
+		<-release
+		return "accepted", nil
+	})
+	if err := rig.app.RequestServiceUpdate(context.Background(), "v1.5.0"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("handoff did not start")
+	}
+	status, _ := rig.app.GetServiceUpdateStatus()
+	if status.Cancelable {
+		t.Fatal("handoff still advertises cancellation")
+	}
+	if err := rig.app.CancelServiceUpdate(); err == nil {
+		t.Fatal("claimed to cancel an accepted restart")
+	}
+	unblock()
+	if status := rig.settled(); status.Phase != serviceUpdatePhaseRequested {
+		t.Fatalf("handoff: %+v", status)
+	}
+	if err := rig.app.RequestServiceUpdate(context.Background(), "v1.6.0"); !errors.Is(err, ErrServiceUpdateBusy) {
+		t.Fatal("accepted restart admitted a second update:", err)
 	}
 }

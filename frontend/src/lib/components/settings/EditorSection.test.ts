@@ -114,17 +114,16 @@ describe('<EditorSection>', () => {
     expect(zedRadio.disabled).toBe(true);
   });
 
-  it('renders a placeholder + skips RPCs in client mode', async () => {
+  it('allows the selected computer’s editor preference in client mode', async () => {
     setRunMode('client');
     const listMock = setBindingMock('ListAvailableEditors', vi.fn(async () => FIXTURE_EDITORS));
     const getMock = setBindingMock('GetEditorSettings', vi.fn(async () => ({ preference: '' })));
 
     const { findByTestId, queryByTestId } = render(EditorSection);
-    await findByTestId('editor-section-clientmode');
-    expect(queryByTestId('editor-section-radiogroup')).toBeNull();
-
-    expect(listMock).not.toHaveBeenCalled();
-    expect(getMock).not.toHaveBeenCalled();
+    await findByTestId('editor-section-radiogroup');
+    expect(queryByTestId('editor-section-clientmode')).toBeNull();
+    expect(listMock).toHaveBeenCalledTimes(1);
+    expect(getMock).toHaveBeenCalledTimes(1);
   });
 
   it('renders the same local-only placeholder in a view-only browser', async () => {

@@ -4,7 +4,7 @@ import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test
 import type { SourceProposedPlan, Thread } from '../../types/models';
 import { resetForTest as resetWorktreeIntent } from '../../stores/worktreeIntent.svelte';
 import { replaceAllThreads } from '../../stores/threads.svelte';
-import { loadSettings } from '../../stores/settings.svelte';
+import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { makeSettings } from '../../../test/helpers/settings';
 import { DisconnectedError } from '../../transport/wsClient';
 import {

@@ -3,7 +3,8 @@
   // reject the same shapes so the UI never surfaces "looks fine" for an
   // input the strict-update path would refuse.
 
-  import { getSettings, updateSetting } from '../../stores/settings.svelte';
+  import { settingsComputer } from './settingsComputer';
+  const { getSettings, updateSetting } = settingsComputer();
   import SettingsHeader from './SettingsHeader.svelte';
   import { INPUT_CLASS, PRIMARY_BUTTON_CLASS, GHOST_BUTTON_CLASS } from './styles';
   import { isImeComposingEvent } from '../../utils/imeComposition';

@@ -100,6 +100,13 @@ still renders as itself instead of collapsing into "unknown".
 
 ## Pairing chooses the reachable listener
 
+`ComputerRoutes` advertises credential-free HTTPS alternatives in bootstrap.
+It observes both the saved LAN toggle and the actual bind, the exact served
+canonical domain, and live tailnet HTTPS. Each address keeps its own TLS trust;
+the main listener's fingerprint never follows the tailnet or canonical domain.
+Advertisements mint no page tickets. Validation/bounds live in `computerroute`;
+health verification and selection belong to the clients.
+
 `PairingURL` prefers the live tailnet, then the canonical domain, LAN,
 and loopback. It returns the certificate pin with the URL: tailnet and
 canonical HTTPS use WebPKI, and only the main address uses its self-signed

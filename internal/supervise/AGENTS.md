@@ -205,3 +205,45 @@ with no snapshot and no attempt (the boot snapshots, then trials, then rolls
 back cleanly), the same with an attempt already spent (the boot starts nothing
 and names the remedy), and a settled outcome carried to exactly one backend
 across two boots.
+
+## Data-root ownership
+
+The executable supervisor holds `backend.lock` throughout its lifetime, including
+the interval with no child during snapshot/rollback. Config.OwnsDataRoot may be
+set only after that lock is held; the additive activate-frame field tells a new
+child to reuse this ownership. A legacy supervisor omits it, so a new child
+acquires its own lock. Ordinary desktop/serve/harness boots also take that lock.
+The root shell owns the OS primitive; the supervisor package does not infer
+ownership from a PID, an environment variable, or merely having a parent.
+
+## macOS release bundles
+
+`PrepareArtifact` only receives downloads already verified by `ReleaseSource`.
+It bounds ZIP entry count and expanded bytes, rejects path traversal and special
+files, creates links after regular files, and resolves the complete link graph
+inside the canonical bundle root. Canonicalize both sides of containment checks:
+macOS temporary directories can have `/var` and `/private/var` spellings.
+
+Preflight inspects the executable inside the expanded bundle. `Artifact.Stage`
+fsyncs the tree and publishes the complete version directory without replacing
+an existing version. Its flat `agent-overflow` entry point execs the real bundle
+executable, preserving compatibility with the installed supervisor protocol.
+An identical staged archive or a legacy flat executable with identical bytes is
+reused; a different build under the same version is refused. Closing an artifact
+removes only its temporary extraction. Resources and framework links are retained.
+
+macOS release ZIP writers use `zip -qry`: `-y` preserves framework symlinks.
+Following links while packaging can invalidate the signed bundle even when the
+extractor preserves every archived byte. Keep both CI and local packaging aligned.
+
+In process tests, observe the supervisor's durable state before stopping it.
+A child logging `hello` proves only that it wrote a frame; cancelling then can
+beat the supervisor reading it or saving the reported outcome. Use the rig's
+condition wait for assertions about a durable acknowledgement.
+
+A backend that loses the update reply drains and exits with
+`RestartForUpdateExitCode` (75). The supervisor chooses from its durable state
+again, even without a service manager. An accepted update continues if its child
+exits before response grace expires. Older supervisors propagate this nonzero
+exit to launchd/systemd, whose on-failure restart loads the same journal. A trial
+exiting with this code still fails its trial; it cannot bypass rollback.

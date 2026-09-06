@@ -132,6 +132,12 @@ const STATIC_FIELDS = [
     keywords: ['syntax', 'highlight', 'terminal colors'],
   },
 
+  {
+    id: 'theme.copy-files', section: 'theme', label: 'Copy themes',
+    hint: 'Replace this device’s custom files with a copy from a computer. Your selections stay the same.',
+    keywords: ['import', 'custom', 'offline', 'phone', 'files'], conditional: true,
+  },
+
   // --- Typography ---------------------------------------------------------
   {
     id: 'typography.ui-font',
@@ -248,6 +254,12 @@ const STATIC_FIELDS = [
     hint: "Shown while the provider compacts the thread's context.",
     keywords: ['compact', 'context'],
     conditional: true,
+  },
+
+  {
+    id: 'spinner.copy-files', section: 'spinner', label: 'Copy animations',
+    hint: 'Replace this device’s custom files with a copy from a computer. Your selections stay the same.',
+    keywords: ['import', 'custom', 'offline', 'phone', 'files'], conditional: true,
   },
 
   // --- Threads ------------------------------------------------------------
@@ -527,7 +539,7 @@ const STATIC_FIELDS = [
     section: 'remote',
     heading: 'Network binding',
     label: 'Allow remote access',
-    hint: 'Listen on all interfaces (0.0.0.0) so devices on your network can connect. Toggling off stops new LAN connections; a device already connected stays until it closes — revoke it under Devices to cut it now.',
+    hint: 'Accept connections from paired devices on your network. Manage their access in Devices.',
     keywords: ['lan', 'bind', 'listen', 'phone', 'tablet', 'network'],
     conditional: true,
   },

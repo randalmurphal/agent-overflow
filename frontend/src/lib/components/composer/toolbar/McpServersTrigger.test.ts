@@ -113,7 +113,7 @@ describe('<McpServersTrigger>', () => {
 
     // …and the ctx followed the pane, so the next listing runs against the
     // thread it holds now rather than the one it attached with.
-    refreshMcpServers('claude:/repo');
+    refreshMcpServers(' claude:/repo');
     await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
     expect(list).toHaveBeenLastCalledWith('thread-b');
   });

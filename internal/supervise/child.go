@@ -93,6 +93,7 @@ func (s *Supervisor) spawn(selection Selection) (*child, error) {
 		Trial: selection.Trial, UpdateID: selection.UpdateID,
 		Outcome: string(selection.Outcome), Reason: selection.Reason,
 		TargetVersion: selection.Target,
+		OwnsDataRoot:  s.config.OwnsDataRoot,
 	}); err != nil {
 		closeAll(childReads, childWrites, parentReads, parentWrites)
 		return nil, err

@@ -123,7 +123,7 @@ func runServeEnrollment(ctx context.Context, console serveConsole, surface serve
 		// it has to say what to do rather than what happened.
 		fmt.Fprintln(console.out,
 			"No device is paired with this backend, and nothing here can confirm a new one: "+
-				"stop the service and run `agent-overflow serve` from a terminal once to pair your first device.")
+				"run `agent-overflow pair --lan` from a terminal to pair a device while the service keeps running.")
 		return
 	}
 	if err := enrollFirstDevice(ctx, console, surface, poll); err != nil {

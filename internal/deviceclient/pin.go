@@ -70,7 +70,7 @@ func pinnedTLSConfig(certFingerprint string) *tls.Config {
 	}
 }
 
-// pinnedTransport is the RoundTripper every request this client makes goes
+// NewPinnedTransport is the RoundTripper every request this client makes goes
 // through, including the WebSocket upgrade a `--connect` stub carries.
 //
 // One transport per client rather than one per call: connection reuse is
@@ -78,7 +78,7 @@ func pinnedTLSConfig(certFingerprint string) *tls.Config {
 // and the pin is a property of the transport, so sharing it is also what
 // makes "every request from this device is verified" true by construction
 // rather than by every call site remembering.
-func pinnedTransport(certFingerprint string) *http.Transport {
+func NewPinnedTransport(certFingerprint string) *http.Transport {
 	cloned := &http.Transport{Proxy: http.ProxyFromEnvironment}
 	if base, ok := http.DefaultTransport.(*http.Transport); ok {
 		cloned = base.Clone()
@@ -91,4 +91,12 @@ func pinnedTransport(certFingerprint string) *http.Transport {
 	// negotiated protocol this client cannot upgrade over.
 	cloned.ForceAttemptHTTP2 = false
 	return cloned
+}
+
+// A credential POST may neither change authority nor be replayed by net/http.
+// Endpoint changes require a separately verified computer route.
+func credentialHTTPClient(fingerprint string) *http.Client {
+	return &http.Client{Transport: NewPinnedTransport(fingerprint), Timeout: pinTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 }

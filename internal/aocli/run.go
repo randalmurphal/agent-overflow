@@ -40,6 +40,12 @@ type topLevelCommand struct {
 // the verb set this package owns still would not own that one. The argument
 // lives beside the code that routes it, at serveVerb in main_entry.go.
 var topLevelCommands = []topLevelCommand{
+	{name: "remote", run: func(args []string, _ string, lookupEnv func(string) (string, bool), stdout, stderr io.Writer) int {
+		return remoteCommand(args, lookupEnv, stdout, stderr)
+	}},
+	{name: "pair", run: func(args []string, root string, _ func(string) (string, bool), stdout, stderr io.Writer) int {
+		return pairCommand(args, root, os.Stdin, stdout, stderr)
+	}},
 	{name: "help", run: func(_ []string, _ string, _ func(string) (string, bool), stdout, stderr io.Writer) int {
 		if err := writeOutput(stdout, rootUsage); err != nil {
 			return operationalError(stderr, err)

@@ -15,7 +15,7 @@ make_fake_release() {
 	mkdir -p "$macos_stage/Agent Overflow.app/Contents/MacOS"
 	printf '#!/usr/bin/env sh\nexit 0\n' > "$macos_stage/Agent Overflow.app/Contents/MacOS/agent-overflow"
 	chmod +x "$macos_stage/Agent Overflow.app/Contents/MacOS/agent-overflow"
-	( cd "$macos_stage" && zip -qr "$dir/agent-overflow-darwin-arm64.zip" "Agent Overflow.app" )
+	( cd "$macos_stage" && zip -qry "$dir/agent-overflow-darwin-arm64.zip" "Agent Overflow.app" )
 	"$ROOT_DIR/scripts/package-release-assets.sh" "$dir"
 	[ ! -e "$dir/agent-overflow.desktop" ] || {
 		echo "ERROR: release packaging emitted the redundant Linux desktop entry" >&2

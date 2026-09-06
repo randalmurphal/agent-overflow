@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import SettingsView from './SettingsView.svelte';
-import { loadSettings } from '../../stores/settings.svelte';
+import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { resetKeybindingsStore } from '../../stores/keybindings.svelte';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import type { Settings } from '../../types/settings';
@@ -55,14 +55,14 @@ describe('settings section map', () => {
       ['theme', 'typography', 'chat', 'spinner'],
       ['threads', 'performance', 'keybindings', 'notifications', 'updates'],
       ['claude', 'codex', 'commit-messages', 'browser', 'discussions'],
-      ['projects', 'git', 'editor', 'remote', 'systems'],
+      ['projects', 'git', 'editor', 'systems'],
       ['observability', 'storage'],
     ]);
   });
 
   it('derives the keyboard-nav order from the same grouped list', () => {
-    expect(SETTINGS_SECTION_IDS).toHaveLength(SETTINGS_SECTIONS.length);
-    expect(new Set(SETTINGS_SECTION_IDS)).toEqual(new Set(SETTINGS_SECTIONS.map((s) => s.id)));
+    expect(SETTINGS_SECTION_IDS).toHaveLength(SETTINGS_SECTIONS.length - 1);
+    expect(new Set(SETTINGS_SECTION_IDS)).toEqual(new Set(SETTINGS_SECTIONS.filter((s) => s.id !== 'remote').map((s) => s.id)));
   });
 
   it('gives every page a one-line description for the page header', () => {
@@ -79,7 +79,7 @@ describe('<SettingsView> tabs', () => {
 
   it('renders every page as a tab plus a decorative group label', async () => {
     const { getAllByRole, getByText } = render(SettingsView, { onClose: vi.fn() });
-    expect(getAllByRole('tab')).toHaveLength(SETTINGS_SECTIONS.length);
+    expect(getAllByRole('tab')).toHaveLength(SETTINGS_SECTION_IDS.length);
     for (const group of SETTINGS_SECTION_GROUPS) {
       const label = getByText(group.label);
       expect(label.getAttribute('aria-hidden')).toBe('true');
@@ -134,9 +134,9 @@ describe('<SettingsView> tabs', () => {
 
   it('requires confirmation before clearing browser site data', async () => {
     setBindingMock('ClearBrowserSiteData', async () => undefined);
-    const { getByRole } = render(SettingsView, { onClose: vi.fn() });
+    const { getByRole, findByRole } = render(SettingsView, { onClose: vi.fn() });
     await fireEvent.click(getByRole('tab', { name: 'Browser' }));
-    await fireEvent.click(getByRole('button', { name: 'Clear site data' }));
+    await fireEvent.click(await findByRole('button', { name: 'Clear site data' }));
     expect(getBindingMock('ClearBrowserSiteData')).not.toHaveBeenCalled();
     await fireEvent.click(getByRole('button', { name: 'Clear now' }));
     expect(getBindingMock('ClearBrowserSiteData')).toHaveBeenCalledOnce();
@@ -220,7 +220,7 @@ describe('<SettingsView> search', () => {
 
     await fireEvent.click(getByTestId('settings-search-clear'));
     expect(queryByTestId('settings-search-results')).toBeNull();
-    expect(queryAllByRole('tab')).toHaveLength(SETTINGS_SECTIONS.length);
+    expect(queryAllByRole('tab')).toHaveLength(SETTINGS_SECTION_IDS.length);
   });
 
   it('opens the hit page and flashes the field', async () => {
@@ -266,7 +266,7 @@ describe('<SettingsView> search', () => {
     const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
     input.dispatchEvent(escape);
     expect(escape.defaultPrevented).toBe(true);
-    await waitFor(() => expect(queryAllByRole('tab')).toHaveLength(SETTINGS_SECTIONS.length));
+    await waitFor(() => expect(queryAllByRole('tab')).toHaveLength(SETTINGS_SECTION_IDS.length));
 
     // With no query the press is left alone so `settings.close` can act on it.
     const escapeAgain = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });

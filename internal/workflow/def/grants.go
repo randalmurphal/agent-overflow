@@ -28,6 +28,8 @@ const (
 	// answering a decision the workflow author routed to a human is authority
 	// an author must hand out deliberately.
 	GrantResolve Grant = "resolve"
+	// GrantRemoteCommands permits commands on explicitly enabled paired peers.
+	GrantRemoteCommands Grant = "remote-commands"
 )
 
 // grantSet is the closed membership test behind validation and the app's token
@@ -36,11 +38,12 @@ const (
 // the name before the behaviour exists would let a workflow declare a
 // capability nothing can honour.
 var grantSet = map[Grant]struct{}{
-	GrantStartRun:    {},
-	GrantSchedule:    {},
-	GrantUpdateNotes: {},
-	GrantIntrospect:  {},
-	GrantResolve:     {},
+	GrantStartRun:       {},
+	GrantSchedule:       {},
+	GrantUpdateNotes:    {},
+	GrantIntrospect:     {},
+	GrantResolve:        {},
+	GrantRemoteCommands: {},
 }
 
 // KnownGrant reports whether name is a grant the system can enforce.

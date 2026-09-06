@@ -206,7 +206,7 @@ but the DEVICE tier is resolved from the connection: `uiStateScreen`
 behind it, and `settings.Service.For(bucket, class)` is the service seen from
 there (`internal/settings/residency.go`). Two screens on one backend read two
 font sizes and one shared set of confirmations, and a paired phone that never
-touched `lowPowerMode` reads it on.
+touched `lowPowerMode` reads the normal-power default; a saved override wins.
 
 - **`settingsCaller(ctx)` is the ONLY way this package builds a per-connection
   settings view.** Both halves come from one derivation, so a bucket can never
@@ -607,15 +607,14 @@ WHO the owners are, and WHEN a scan is worth doing.
   to PID, because both spawn paths call `procutil.ConfigureGroup` — and
   the group is the half that still matches after a dev server daemonises
   out of the ancestor chain.
-- **A stop releases the listeners.** Both paths that end discovery — the
-  last remote receiver going away, and the halt a scan error records —
-  call `releasePreviewListeners`, which is `SetPorts(nil)`. Discovery
-  stopping is what makes the published list unmaintainable, so a gateway
-  still holding a port from the last good scan is serving an address
-  nothing re-verifies and that no `DisallowPreviewPort` will visit,
-  because the row it acted on is gone. Any future exit from the scan owes
-  the same call; it is cheap and it refuses to build a gateway that does
-  not exist.
+- **A preview outlives the app connection that opened it.** With no remote
+  app readers, discovery sleeps and `ReleaseIdlePorts` releases listeners only
+  after outstanding tickets, cookie handoffs, and browser grants have expired.
+  An independently opened browser must not lose its preview when the app
+  disconnects. Every preview request still revalidates the session. A scan
+  error or ending life context calls `releasePreviewListeners` (`SetPorts(nil)`)
+  to retire the discovery set immediately; removing a shared port also closes
+  its listener. Neither idle cleanup nor forced retirement builds a gateway.
 - **A scan error stops discovery and is remembered.** Every error a scan
   can return comes from the enumerator (this platform cannot look, or the
   socket tables cannot be read) and neither changes on a retry; the probe
@@ -678,9 +677,9 @@ WHO the owners are, and WHEN a scan is worth doing.
 `app_activation.go` is the backend half of `internal/supervise`: a boot that is
 a supervisor TRIAL must prove it works before anything commits to it, which
 means booting FULLY — store, migrations, transport bind, ready — and answering
-RPCs, while taking no action of its own.
+read-only health probes. Client requests and unattended actions wait for commit.
 
-- **One gate, one waiter.** `Start` hands the whole unattended set to
+- **One gate.** `Start` hands the whole unattended set to
   `activation.Run` as a single function (`startUnattendedWork`). Not a flag per
   subsystem: a second boolean is how the eleventh subsystem gets added without
   one.
@@ -694,14 +693,19 @@ RPCs, while taking no action of its own.
   waits — background git fetch, provider status and account probes, rate-limit
   probes, the idle-session reaper, the retention sweep (which deletes attachment
   FILES), the ACME reconciler, the tailnet node, and workflow autoresume plus the
-  scheduler. Serving RPCs while parked is CORRECT; that is what "prepared" means.
+  scheduler. `WaitForActivation` gates every transport request except health.
+  Credential rotation is a side effect too: returning a new refresh secret
+  before commit lets a rollback invalidate a client's saved pairing.
+  Requests wait on the same gate and their connection context, rather than
+  receiving HTTP 503 that older Go clients misclassified as revoked auth.
+  `TestTrialKeepsEveryClientRouteOutsideTheRollbackBoundary` pins the boundary.
 - **A git READ is not an action.** `backfillProjectIdentity` runs unparked, in
   its own goroutine, because its whole effect is two TEXT columns in SQLite —
   inside the snapshot boundary — and `git remote get-url` / `git rev-list`
   change nothing. The rule is about what a rollback cannot undo, not about
   whether a subprocess was spawned.
 - **`startWorkflowAutomation` is split out of `initWorkflowEngine`** for that
-  reason: the engine must exist for RPCs to answer, and only the autoresume
+  reason: the engine must initialize before reporting prepared, and only the autoresume
   sweep and the scheduler are unattended. `startWorkflowEngineForTest` calls
   both, because a fixture with an engine and no scheduler is a state no boot
   produces.
@@ -712,6 +716,42 @@ RPCs, while taking no action of its own.
   construction. A caller that could park this backend's unattended work over
   the wire is a denial of service with a friendly name, and one that could
   point the updater at a release feed of its choosing is worse.
+
+## Update admission
+
+`workAdmission` fences new work against a staged update's final idle check.
+Acquire inside shared send, queue, provider-start, terminal-start, remote-command
+and transfer entry points, including internal callers. Workflow `BeginWork`
+wraps new-run creation and transitions back to running. Leases cover admission;
+existing triage, dispatch, runtime, command and workflow owners retain the work's
+lifetime. Transfer attempts hold their lease through file/SQLite publication;
+parked transfer journals resume after restart.
+
+The provider-account manager receives the same `BeginWork` port. Live sign-in
+sessions retain it through teardown; credential-switch, removal, probe,
+reconciliation and usage-refresh transactions retain it through publication.
+Acquire before account/reconcile locks. This includes periodic refreshes that
+can consume a single-use credential: restarting mid-rotation can invalidate a
+login even when no agent turn is running.
+
+Chat worktree setup and session-import managers receive it too. Their accepted
+asynchronous runs hold the lease through command/worker cleanup and final
+publication. History refresh holds it across its thread lock and commit.
+Creating a thread or preparing/attaching its worktree holds admission through
+the setup kickoff, including deferred kickoff after the thread lock releases.
+The async setup lease must overlap its caller's lease: otherwise an update can
+leave a created worktree whose setup was never started or reported as failed.
+
+The idle predicate runs under the admission mutex. It may read those owners and
+SQLite, but must never call the workflow actor, a provider, another admission,
+or acquire a thread action lock. Read triage before dispatch counts to preserve
+queue-handoff overlap. On explicit refusal/cancellation reopen admission; after accepted
+handoff keep it closed until shutdown. Waiting new callers use a cancellation
+context and have not accepted work. Preparation is bounded to 20 minutes; waiting
+for existing work has no artificial deadline and remains explicitly cancelable.
+Running PTYs block restart until closed, since an idle shell can still own jobs.
+At shutdown, reject callers parked behind the restart fence before transport
+drains; they have accepted no work and must not await the later app cancellation.
 
 ## The remote update trigger
 
@@ -724,7 +764,7 @@ verify) and `internal/supervise` below (preflight, stage, request).
 (`internal/aocli`'s `serviceUpdate`):
 
 ```
-resolving -> downloading -> verifying -> staging -> requested
+resolving -> downloading -> verifying -> staging -> waiting (if busy) -> requested
 ```
 
 - **Verify BEFORE stage, always.** Two refusals live in that step and both have
@@ -751,12 +791,24 @@ resolving -> downloading -> verifying -> staging -> requested
   on every exit path** including success. Under the root because
   `StageBinary` must be a local copy on one filesystem rather than a
   cross-device move that could tear.
-- **A failure at any step sets `Phase: error` naming the step and leaves the
-  supervisor untouched.** After `requested` the status STAYS there: this
+- **Preparation failures and explicit supervisor refusals set `Phase: error`
+  naming the step.** A timeout/broken supervisor pipe is ambiguous: keep work
+  admission closed, retain `requested`, and request ordered backend shutdown.
+  The supervisor's durable state decides which version boots next. Never retry
+  an uncorrelated update request or reuse its reply slot after a lost answer.
+  After `requested` the status STAYS there: this
   process is about to be stopped by its own supervisor, and a client polling in
   those seconds needs to see which update to wait for.
 - **One flow at a time** (`ErrServiceUpdateBusy`). Two downloads racing for one
   staging layout is a corrupted version directory with a friendly name.
+- **Cancellation ends preparation, never an accepted restart.**
+  `CancelServiceUpdate` is selected-computer `access:admin`. The flow owns its
+  context independently of the requesting socket. Cancellation and the final
+  supervisor handoff share the state mutex; a preflight or stage that finishes
+  late must check that context under the mutex before claiming the handoff.
+  Status advertises `cancelable` only before that boundary. A canceled flow
+  publishes `canceled`, while a deadline remains an error. An accepted restart
+  continues refusing a second update even after its preparation goroutine ends.
 - **A trial boot refuses before it downloads** (`ErrServiceUpdateTrial`). A
   trial IS a supervisor mid-update, and the supervisor accepts one at a time,
   so the only thing a download could earn is a refusal after the stage. The
@@ -769,9 +821,10 @@ undo it?" and a read of a public release list undoes itself by ending. Parking
 it would only mean a trial's update surface reported no known release for as
 long as the trial ran. `TestThePassiveCheckRunsDuringATrial` pins that.
 
-**The three RPCs and their scopes.** `GetServiceUpdateStatus` (never touches
+**The RPCs and their scopes.** `GetServiceUpdateStatus` (never touches
 the network, answers `Supervised:false` with no error off a supervised host)
-and `ListServiceReleases` are `access:admin`. `RequestServiceUpdate` is
+and `ListServiceReleases` are `access:admin`, as is `CancelServiceUpdate`.
+`RequestServiceUpdate` is
 `access:admin` + `//ao:stepup`: choosing which build a machine runs is what a
 paired admin device is for, and `host` would have left the whole feature
 reachable only from the machine it exists to save a trip to — which is what
@@ -780,10 +833,11 @@ remote trigger on, and `TestStepUpMethodsAreTheSpecSet` pins the annotation.
 
 **Everything here is absent on every boot but one.** `ConfigureServiceUpdates`
 runs only from a supervised `serve` whose build has a release artifact a
-supervisor can stage as a single file (`serviceArtifactPlatform()` in package
-main: `headless-<GOOS>` for the windowless build, `<GOOS>` for the GUI one on
-linux, and `""` on darwin — an app-bundle zip — and windows, which is not a
-serve mode). An empty answer becomes the `Unavailable` sentence rather than a
+supervisor can stage (`serviceArtifactPlatform()` in package main:
+`headless-linux` for the windowless Linux build, `linux` or `darwin` for the
+ordinary build, and `""` on Windows, which is not a supervised serve mode).
+`supervise.PrepareArtifact` expands verified macOS releases before preflight,
+retains the entire bundle, and publishes the old flat supervisor entry point. An empty answer becomes the `Unavailable` sentence rather than a
 button that cannot work.
 
 The frontend half is `frontend/src/lib/stores/serviceUpdate.svelte.ts` (one box
@@ -972,3 +1026,94 @@ match the listener being reached. A main-port change retires only the plain
 tailnet listener; the phone's HTTPS listener stays on 443. Withdrawing
 certificate domains retires HTTPS. See
 `TestTailnetRetiresOnlyListenersWhoseConfigurationChanged`.
+
+## Remote project registration
+
+BrowseDirectory is a selected-computer `files:read` RPC, not a native desktop
+picker. Keep its bounded dirbrowse implementation available to paired clients;
+CreateProject independently requires `git:operate`. Filesystem paths never
+identify which computer a caller intends, so frontend operations pin their
+computer before dispatch, including follow-up reads after awaits.
+
+
+The headless pairing console uses `app_local_control.go`: successful startup
+publishes the private local endpoint, a listener-port change republishes it,
+and shutdown withdraws only its own launch. Never print or export `control.json`;
+its credential stays on this computer. CLI pairing exercises the existing
+Devices methods over transport rather than bypassing authorization.
+
+## Conversation transfers
+
+`app_thread_transfer*.go` composes provider-owned snapshot/copy formats, Git
+workspace preparation, attachment installation, and the store ownership journal.
+`BeginThreadTransfer` returns only a public activation challenge. The frontend
+accepts an offer on its explicitly chosen destination, then binds that single
+operation grant on the source. Neither backend needs the phone's device key or
+session credential. The destination resolves its own project/workspace paths
+and authorizes the selected execution mode; those choices are immutable.
+
+`startThreadTransfers` runs behind the unattended-work activation gate. Jobs use
+the app lifetime, recover journal work at startup, and are joined after app
+cancellation before store/provider teardown. `ThreadTransferEndpoints` is the
+bootstrap HTTP adapter, not a wire RPC. Status serialization must never include
+private grants, activation secrets, or installation recipes.
+
+Snapshot creation closes the source provider, flushes final history, checks
+queues/wakeups/background tasks, and takes native identity locks. A read-only
+Codex metadata probe must not resume the native thread. Source file/Git state is
+checked again after archiving; the completion marker makes retries reuse one
+snapshot. Destination validation imports history into an isolated scratch SQLite
+file, checks its complete attachment/native closure, and records exact file
+baselines plus a registered worktree plan before advertising prepared. Fresh
+provider installation/account checks and the native format's minimum CLI version
+must pass first. The source's installed version is not a required target version. Activation
+publishes files and commits history/ownership atomically at the store boundary.
+
+Source reservation takes the thread action lock, then `LockMutable` before
+checking idle state and recording its fence. Ordinary edits (drafts, model
+settings, comments, uploads, queue admission, terminal creation) use
+`threadapp.LockMutable`; actions already holding the action lock use
+`CheckMutable`. Never take an action lock while holding the mutation lock:
+composer saves and queue admission must work during a send or edit-resend.
+Keep the guard through the write and its synchronous side effects. A guard
+only at RPC dispatch races reservation. Group metadata checks the same fence
+inside its SQL transaction. Delete checks precede provider/file cleanup.
+`CheckCleanup` permits host-local project/retention cleanup after a confirmed
+outgoing move, while ordinary thread actions still return the new owner. Retired
+worktree caches are never reattached or resumed. Project deletion's returned
+thread IDs omit those caches, so a frontend cannot close the new owner's pane;
+SQL/native retirement survives every cleanup.
+
+Destination offers reserve their project in the journal's typed `ProjectID`.
+Project deletion checks that reservation atomically; private app JSON must not
+become a SQL query interface. History restores refuse unfinished transfers and
+snapshots predating currently owned incoming conversations. UI status reads
+exclude private grants, project reservation data, and installation details.
+
+App integration tests use isolated native files and two real TLS listeners.
+Never restart the developer's running backend to test a transfer: it may host
+this conversation. Current implementation progress and remaining delivery work
+are tracked in `docs/specs/conversation-transfer.md`.
+
+## Commands on peer computers
+
+`app_remote_jobs.go` routes the session-scoped AO CLI to explicitly enabled
+paired peers. Pairing a frontend with two computers does not grant those
+computers credentials for each other. The source uses its own attached carrier;
+never copy the phone's key or rotating session into another backend. Agent
+access defaults off and is checked before each start. Status/cancel remain
+available after opt-out for already accepted work.
+
+Enabling first verifies the authenticated peer's identity, protocol, command
+capability and terminal scope. Disabling never needs a live peer. A saved
+profile does not prove confirmation completed; the UI must retain its reconnect
+action after a lost acknowledgment or reload. The full pairing grants the
+originating computer ordinary device access; the agent toggle separately gates
+command starts. Operator details: `docs/architecture/remote-commands.md`.
+
+Destination commands use terminal:operate, resolve a registered workspace and
+attribute the receipt to the authenticated session's device (never the screen
+ID query argument). Source provenance comes from CallerScope. The source checks
+that status/cancel belongs to that conversation. Workflow phases additionally
+need remote-commands. Context cancellation of a source RPC does not cancel the
+accepted destination process. Stop the job manager before closing SQLite.

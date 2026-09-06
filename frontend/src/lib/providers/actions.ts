@@ -1,4 +1,6 @@
 import { RecheckClaudeAccount, RecheckCodexAccount } from '../stores/bindings';
+import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
+import { withBackendTarget } from '../transport/backends';
 import type { ProviderID } from '../types/providers';
 
 export interface ProviderAccountInfo {
@@ -9,15 +11,16 @@ export interface ProviderAccountInfo {
 
 export async function recheckProviderAccount(
   provider: ProviderID,
+  backend: BackendKey = HOME_BACKEND,
 ): Promise<ProviderAccountInfo> {
   switch (provider) {
     // claude-tui reuses claude's binary and account, so it rechecks the same
     // Claude account.
     case 'claude':
     case 'claude-tui':
-      return await RecheckClaudeAccount() as ProviderAccountInfo;
+      return await withBackendTarget(backend, () => RecheckClaudeAccount()) as ProviderAccountInfo;
     case 'codex':
-      return await RecheckCodexAccount() as ProviderAccountInfo;
+      return await withBackendTarget(backend, () => RecheckCodexAccount()) as ProviderAccountInfo;
   }
 }
 

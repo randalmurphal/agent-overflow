@@ -35,6 +35,7 @@
 // under us would be a silent break in exactly one boot.
 
 import { isNativeShell } from '../native/platform';
+import { forgetCertificatePin } from '../native/networkTrust';
 import { HOME_BACKEND, type BackendKey } from './backendKey';
 
 /** localStorage key holding every backend's endpoint, home under `''`. */
@@ -141,6 +142,20 @@ export function backendUrl(path: string, backend: BackendKey = HOME_BACKEND): st
   if (backend === HOME_BACKEND) return homeUrl(path);
   const stored = storedBackendEndpoint(backend);
   return stored === '' ? path : stored + path;
+}
+
+/** Ticket-bearing attachment URLs stay on the computer that minted them. */
+export function backendTransferUrl(path: string, backend: BackendKey = HOME_BACKEND): string {
+  const parsed = new URL(path, 'https://attachment.invalid');
+  if (!path.startsWith('/attachments/') || path.includes('\\')
+    || parsed.origin !== 'https://attachment.invalid' || parsed.hash
+    || parsed.pathname !== path.split('?')[0]
+    || !/^\/attachments\/(?:upload|[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+)$/.test(parsed.pathname)) {
+    throw new Error('Invalid attachment transfer URL.');
+  }
+  if (backend === HOME_BACKEND || storedBackendEndpoint(backend) !== '') return backendUrl(path, backend);
+  // Desktop attachments use the same local relay as that computer's socket.
+  return `/backend/${encodeURIComponent(backend)}${path}`;
 }
 
 /** The credentials mode a fetch to `backend` uses; see homeCredentials(). */
@@ -306,8 +321,10 @@ export function endpointHost(endpoint: string): string {
 export function forgetBackendEndpoint(backend: BackendKey): void {
   const map = readEndpointMap();
   if (!(backend in map)) return;
+  const origin = map[backend];
   delete map[backend];
   writeEndpointMap(map);
+  if (!Object.values(map).includes(origin)) forgetCertificatePin(origin);
 }
 
 // The shell's and the e2e spec's shared door, read ONCE at module load.

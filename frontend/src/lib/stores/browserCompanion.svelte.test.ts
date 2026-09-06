@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   applyBrowserCompanionState,
+  hydrateBrowserCompanionState,
   closeFocusedBrowserTab,
   reconcileBrowserCompanionForPane,
   resetBrowserCompanionForTest,
@@ -12,10 +13,14 @@ import { makeThread } from '../../test/helpers/chat';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { flushSync } from 'svelte';
 import { __resetScopesForTest, setPageGrantsFromBootstrap } from '../transport/scopes';
+import { noteThread, forgetBackendEntities } from '../transport/entityIndex';
+import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
+import * as runMode from '../transport/runMode';
 
 const page = (url: string, title: string) => ({ id: 'page-1', url, title, canGoBack: false, canGoForward: false });
 
 describe('browser companion state routing', () => {
+  afterEach(() => { forgetBackendEntities('remote'); resetStagedBackends(); vi.restoreAllMocks(); });
   beforeEach(() => {
     resetBrowserCompanionForTest();
     resetCompanionPanesForTest();
@@ -144,6 +149,22 @@ describe('browser companion state routing', () => {
     flushSync();
     expect(read).toHaveBeenCalledTimes(1);
     dispose();
+  });
+
+  it('does not ask the local host to hydrate another computer’s native browser', () => {
+    const read = setBindingMock('BrowserCompanionThreadState', vi.fn());
+    stageBackend({ id: 'remote', backendId: 'remote' });
+    noteThread('remote-browser', 'remote');
+    hydrateBrowserCompanionState('remote-browser');
+    hydrateBrowserCompanionState('unknown-browser');
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it('does not treat a frontend controller’s admin grant as a native execution host', () => {
+    const read = setBindingMock('BrowserCompanionThreadState', vi.fn());
+    vi.spyOn(runMode, 'isFrontendOnly').mockReturnValue(true);
+    hydrateBrowserCompanionState('thread-browser');
+    expect(read).not.toHaveBeenCalled();
   });
 });
 

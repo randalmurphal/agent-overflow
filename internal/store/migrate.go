@@ -1589,6 +1589,22 @@ ALTER TABLE projects ADD COLUMN root_commit TEXT NOT NULL DEFAULT '';`,
 		// the key, and why `send_id` carries no unique index.
 		SQL: flushQueueV85SQL,
 	},
+	{
+		Version: 86,
+		Name:    "thread_transfers",
+		SQL:     threadTransfersV86SQL,
+	},
+	{
+		Version: 87,
+		Name:    "remote_jobs",
+		SQL:     remoteJobsV87SQL,
+	},
+	{
+		Version: 88,
+		Name:    "recoverable_refresh",
+		SQL: `ALTER TABLE refresh_secrets ADD COLUMN next_secret_hash BLOB
+              CHECK (next_secret_hash IS NULL OR length(next_secret_hash) = 32);`,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

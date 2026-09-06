@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { BackendKey } from '../../transport/backendKey';
   // The chat header's "Open" affordance. The primary segment opens the
   // project in the user's default editor and shows that editor's icon so
   // the button says *where* it will open. When more than one editor is
@@ -31,12 +32,12 @@
   import EditorIcon from '../shared/EditorIcon.svelte';
   import { hasScope } from '../../transport/scopes';
 
-  let { path, name }: { path: string; name: string } = $props();
+  let { backend, path, name }: { backend: BackendKey; path: string; name: string } = $props();
 
   // The editor catalog and the open itself both act on the host desktop.
-  let noHost = $derived(!hasScope('host'));
-  let available = $derived(getAvailableEditors());
-  let resolved = $derived(getResolvedEditor());
+  let noHost = $derived(!hasScope('host', backend));
+  let available = $derived(getAvailableEditors(backend));
+  let resolved = $derived(getResolvedEditor(backend));
   let hasChoice = $derived(available.length > 1);
 
   let showDropdown = $state(false);
@@ -44,7 +45,7 @@
 
   $effect(() => {
     if (noHost) return;
-    void ensureEditorsLoaded();
+    void ensureEditorsLoaded(backend);
   });
 
   // path is the project root (already absolute); workspacePath is unused.
@@ -53,13 +54,13 @@
   async function openIn(editorID: string): Promise<void> {
     if (noHost) return;
     try {
-      await openInEditor(path, 0, 0, '', editorID);
+      await openInEditor(backend, path, 0, 0, '', editorID);
     } catch (err) {
       addToast('error', errString(err));
     } finally {
       // A primary open does not need the frontend catalog, but it is a useful
       // revalidation edge after the shared snapshot reaches its 60s TTL.
-      void ensureEditorsLoaded();
+      void ensureEditorsLoaded(backend);
     }
   }
 

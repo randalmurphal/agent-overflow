@@ -53,7 +53,7 @@ describe('<OpenInEditorControl>', () => {
     const open = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
 
     const { getByTestId, queryByTestId } = render(OpenInEditorControl, {
-      props: { path: '/proj', name: 'Alpha' },
+      props: { backend: '', path: '/proj', name: 'Alpha' },
     });
 
     expect(queryByTestId('chat-header-open-editor-caret')).toBeNull();
@@ -69,7 +69,7 @@ describe('<OpenInEditorControl>', () => {
     const open = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
 
     const { getByTestId, getByText, findByText } = render(OpenInEditorControl, {
-      props: { path: '/proj', name: 'Alpha' },
+      props: { backend: '', path: '/proj', name: 'Alpha' },
     });
 
     // Caret present because more than one editor is available.
@@ -95,7 +95,7 @@ describe('<OpenInEditorControl>', () => {
     setBindingMock('OpenInEditor', vi.fn(async () => undefined));
 
     const { getByTestId, getByText, findByText } = render(OpenInEditorControl, {
-      props: { path: '/proj', name: 'Alpha' },
+      props: { backend: '', path: '/proj', name: 'Alpha' },
     });
 
     await fireEvent.click(getByTestId('chat-header-open-editor-caret'));
@@ -112,7 +112,7 @@ describe('<OpenInEditorControl>', () => {
     const open = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
 
     const { getByTestId, queryByTestId } = render(OpenInEditorControl, {
-      props: { path: '/proj', name: 'Alpha' },
+      props: { backend: '', path: '/proj', name: 'Alpha' },
     });
 
     expect(queryByTestId('chat-header-open-editor-caret')).toBeNull();
@@ -130,7 +130,7 @@ describe('<OpenInEditorControl>', () => {
     const open = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
 
     const { queryByTestId } = render(OpenInEditorControl, {
-      props: { path: '/proj', name: 'Alpha' },
+      props: { backend: '', path: '/proj', name: 'Alpha' },
     });
     await Promise.resolve();
 

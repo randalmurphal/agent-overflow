@@ -119,10 +119,8 @@ func (b *ticketBook) consume(token string) (subject string, ok bool) {
 	return "", false
 }
 
-// dropLapsed removes every entry past its deadline. Called from mint and
-// consume rather than from a timer: a book nobody is using costs nothing,
-// and the two operations that walk the slice are the two that would
-// otherwise have to skip lapsed entries anyway. Caller holds b.mu.
+// dropLapsed removes expired entries on access rather than owning a timer.
+// Caller holds b.mu.
 func (b *ticketBook) dropLapsed(nowNanos int64) {
 	if b.ttl <= 0 {
 		return
@@ -134,6 +132,14 @@ func (b *ticketBook) dropLapsed(nowNanos int64) {
 		}
 	}
 	b.entries = kept
+}
+
+// hasLive reports whether an unspent ticket can still be redeemed.
+func (b *ticketBook) hasLive() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.dropLapsed(b.now().UnixNano())
+	return len(b.entries) != 0
 }
 
 // outstanding reports how many tickets are minted but unspent. For tests,

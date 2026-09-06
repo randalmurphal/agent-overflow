@@ -15,6 +15,7 @@ import {
   setWorkflowsOverlayExclusion,
 } from './workflowsOverlay.svelte';
 import { isCompactLayout } from './layoutMode.svelte';
+import type { BackendKey } from '../transport/backendKey';
 import {
   DEFAULT_SETTINGS_SECTION,
   type SettingsSection,
@@ -22,6 +23,10 @@ import {
 
 let open = $state(false);
 let section = $state<SettingsSection>(DEFAULT_SETTINGS_SECTION);
+let computer = $state<BackendKey | null>(null);
+
+export function getSettingsComputer(): BackendKey | null { return computer; }
+export function setSettingsComputer(backend: BackendKey): void { computer = backend; }
 // Compact renders Settings as stacked screens (docs/specs/remote-access.md
 // § The phone client): the rail is one screen, a section's page is the
 // next, and "back" from the page is the rail. Which of the two is showing
@@ -54,13 +59,14 @@ export function hideSettingsRail(): void {
  * The one settings-open path. Omitting `nextSection` keeps whichever tab was
  * last shown.
  */
-export function openSettingsOverlay(nextSection: SettingsSection = section): void {
+export function openSettingsOverlay(nextSection: SettingsSection = section, backend?: BackendKey): void {
   // Settings and the workflows overlay are both full-height layers over the
   // pane strip, each with its own focus trap; stacking them has no coherent
   // Esc. The reverse direction runs off `openWorkflowsOverlay`, the one writer
   // of that store's `open` (armed at the bottom of this module).
   closeWorkflowsOverlay();
   section = nextSection;
+  computer = backend ?? null;
   // A deep link to a specific section lands on that page directly.
   railOpen = nextSection === DEFAULT_SETTINGS_SECTION;
   open = true;
@@ -109,4 +115,5 @@ export function resetSettingsOverlayForTest(): void {
   open = false;
   section = DEFAULT_SETTINGS_SECTION;
   railOpen = true;
+  computer = null;
 }

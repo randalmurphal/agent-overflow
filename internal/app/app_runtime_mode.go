@@ -53,6 +53,9 @@ func (a *App) applyRuntimeMode(threadID string, mode provider.RuntimeMode) error
 }
 
 func (a *App) applyRuntimeModeLocked(threadID string, mode provider.RuntimeMode) error {
+	if err := a.threadApplication().CheckMutable(threadID); err != nil {
+		return err
+	}
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
 		return err

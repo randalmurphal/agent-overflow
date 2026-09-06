@@ -81,7 +81,9 @@ const threadColumns = `id, COALESCE(project_id, ''),
        ORDER BY turns.turn_index DESC
        LIMIT 1
     ), 0),
-    NOT EXISTS (SELECT 1 FROM timeline_items WHERE timeline_items.thread_id = threads.id)`
+    NOT EXISTS (SELECT 1 FROM timeline_items WHERE timeline_items.thread_id = threads.id),
+    (SELECT COALESCE(MAX(ownership_epoch),0) FROM thread_transfers
+      WHERE thread_id = threads.id AND direction = 'incoming' AND phase = 'complete')`
 
 // -- Validation errors for enum fields. Each binding checks against the
 // -- list before hitting SQLite so the caller sees a typed error instead
@@ -193,7 +195,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		&t.GroupID,
 		&t.WorktreeSetupState, &t.ImportSource,
 		&t.CreatedByDevice, &t.Origin.Branch, &t.Origin.RemoteURL, &t.Origin.HeadCommit,
-		&hasActionableProposedPlan, &hasIncompleteTurn, &isDraft,
+		&hasActionableProposedPlan, &hasIncompleteTurn, &isDraft, &t.OwnershipEpoch,
 	); err != nil {
 		return Thread{}, err
 	}
@@ -268,9 +270,7 @@ func prepareThreadForCreate(t Thread) (Thread, any, error) {
 	return t, nullableInt64(lastReadAt), nil
 }
 
-func insertThread(execer threadExecer, t Thread, lastReadAtArg any) error {
-	_, err := execer.Exec(
-		`INSERT INTO threads (id, project_id, title, provider, model,
+const threadInsertColumns = `id, project_id, title, provider, model,
 		    workspace_path, worktree_path, branch, pr_ref, session_ref, pending_fork_session_ref,
 		    pending_fork_resume_at,
 		    mode, reasoning_effort, fast_mode, context_window,
@@ -278,8 +278,18 @@ func insertThread(execer threadExecer, t Thread, lastReadAtArg any) error {
 		    discussion_id, parent_thread_id, forked_from_thread_id, last_token_usage,
 		    created_at, updated_at, archived, last_read_at, import_source,
 		    created_by_device, created_branch, created_remote_url, created_head_commit,
-		    group_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		    group_id`
+
+const threadInsertSQL = `INSERT INTO threads (` + threadInsertColumns + `)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+func insertThread(execer threadExecer, t Thread, lastReadAtArg any) error {
+	return writeThread(execer, t, lastReadAtArg, "")
+}
+
+func writeThread(execer threadExecer, t Thread, lastReadAtArg any, conflict string) error {
+	_, err := execer.Exec(
+		threadInsertSQL+conflict,
 		t.ID, nilIfEmpty(t.ProjectID), t.Title, t.Provider, t.Model,
 		t.WorkspacePath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch),
 		t.PRRef,
@@ -308,6 +318,20 @@ func (s *Store) GetThread(id string) (Thread, error) {
 		return Thread{}, fmt.Errorf("store: get thread %s: %w", id, err)
 	}
 	return t, nil
+}
+
+// GetOwnedThread is the public metadata read. A retained transfer cache is
+// readable internally, but must not teach a reconnecting client that this
+// computer still owns the conversation. Keep the ownership test in the row
+// query so a concurrent retirement cannot land between a check and its read.
+func (s *Store) GetOwnedThread(id string) (Thread, error) {
+	row, err := scanThread(s.reader().QueryRow(`SELECT `+threadColumns+` FROM owned_threads AS threads WHERE id = ?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		if ownershipErr := s.CheckThreadTransferAccess(id); ownershipErr != nil {
+			return Thread{}, ownershipErr
+		}
+	}
+	return row, err
 }
 
 // GetThreadProviderWorkspace reads only the provider and workspace_path
@@ -370,7 +394,7 @@ func (s *Store) ThreadExists(id string) (bool, error) {
 
 func (s *Store) ListThreads() ([]Thread, error) {
 	rows, err := s.reader().Query(
-		`SELECT ` + threadColumns + ` FROM threads WHERE archived = 0 ORDER BY updated_at DESC`,
+		`SELECT ` + threadColumns + ` FROM owned_threads AS threads WHERE archived = 0 ORDER BY updated_at DESC`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list threads: %w", err)
@@ -398,7 +422,7 @@ func (s *Store) ListThreads() ([]Thread, error) {
 func (s *Store) ListThreadsWithItems() ([]Thread, error) {
 	hiddenClause, hiddenArgs := hiddenThreadModesClause("mode")
 	rows, err := s.reader().Query(
-		`SELECT `+threadColumns+` FROM threads
+		`SELECT `+threadColumns+` FROM owned_threads AS threads
 		 WHERE archived = 0 AND `+hiddenClause+`
 		   AND (
 		       threads.mode = 'terminal'
@@ -433,7 +457,7 @@ func (s *Store) ListThreadsWithItems() ([]Thread, error) {
 func (s *Store) ListArchivedThreads() ([]Thread, error) {
 	hiddenClause, hiddenArgs := hiddenThreadModesClause("mode")
 	rows, err := s.reader().Query(
-		`SELECT `+threadColumns+` FROM threads
+		`SELECT `+threadColumns+` FROM owned_threads AS threads
 		 WHERE archived = 1 AND `+hiddenClause+` ORDER BY updated_at DESC`, hiddenArgs...,
 	)
 	if err != nil {
@@ -459,7 +483,7 @@ func (s *Store) ListThreadsByProject(projectID string) ([]Thread, error) {
 	hiddenClause, hiddenArgs := hiddenThreadModesClause("mode")
 	args := append([]any{projectID}, hiddenArgs...)
 	rows, err := s.reader().Query(
-		`SELECT `+threadColumns+` FROM threads
+		`SELECT `+threadColumns+` FROM owned_threads AS threads
 		 WHERE project_id = ? AND archived = 0 AND `+hiddenClause+`
 		 ORDER BY updated_at DESC`,
 		args...,
@@ -1340,7 +1364,19 @@ func (s *Store) UpdateTitle(threadID, title string) error {
 }
 
 func (s *Store) UpdateTitleIfCurrent(threadID, currentTitle, newTitle string) (bool, error) {
-	result, err := s.db.Exec(
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	if err := checkThreadTransferAccess(tx, threadID); err != nil {
+		var transfer *ThreadTransferError
+		if errors.As(err, &transfer) {
+			return false, nil
+		}
+		return false, err
+	}
+	result, err := tx.Exec(
 		`UPDATE threads SET title = ? WHERE id = ? AND title = ?`,
 		newTitle, threadID, currentTitle,
 	)
@@ -1350,6 +1386,9 @@ func (s *Store) UpdateTitleIfCurrent(threadID, currentTitle, newTitle string) (b
 	rows, err := result.RowsAffected()
 	if err != nil {
 		return false, fmt.Errorf("store: compare-and-swap title rows affected for %s: %w", threadID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
 	}
 	return rows > 0, nil
 }

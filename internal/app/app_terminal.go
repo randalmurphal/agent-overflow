@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"strings"
@@ -58,9 +59,20 @@ type TerminalReplay struct {
 //
 //ao:scope terminal:operate
 func (a *App) OpenTerminal(threadID string, opts TerminalOpenOptions) (TerminalHandle, error) {
+	endAdmission, admitErr := a.workAdmission.begin(a.lifeCtx())
+	if admitErr != nil {
+		return TerminalHandle{}, admitErr
+	}
+	defer endAdmission()
+
 	if a.terminals == nil {
 		return TerminalHandle{}, fmt.Errorf("terminal manager not initialized")
 	}
+	unlock, err := a.threadApplication().LockMutable(context.Background(), threadID)
+	if err != nil {
+		return TerminalHandle{}, err
+	}
+	defer unlock()
 	summary, err := a.terminals.Open(threadID, terminal.SessionOptions{
 		Shell: opts.Shell,
 		Cwd:   opts.Cwd,
@@ -168,6 +180,11 @@ func (a *App) MoveThreadTerminals(fromThreadID, toThreadID string) ([]terminal.S
 	if a.terminals == nil {
 		return nil, fmt.Errorf("terminal manager not initialized")
 	}
+	unlock, err := a.threadApplication().LockMutable(context.Background(), toThreadID)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	if !isDraftPlaceholderThreadID(fromThreadID) {
 		return nil, fmt.Errorf("terminal: source thread must be a draft placeholder")
 	}
@@ -205,9 +222,24 @@ func isDraftPlaceholderThreadID(threadID string) bool {
 //ao:scope terminal:operate
 //ao:route home
 func (a *App) RestartTerminal(terminalID string) (TerminalHandle, error) {
+	endAdmission, admitErr := a.workAdmission.begin(a.lifeCtx())
+	if admitErr != nil {
+		return TerminalHandle{}, admitErr
+	}
+	defer endAdmission()
+
 	if a.terminals == nil {
 		return TerminalHandle{}, fmt.Errorf("terminal manager not initialized")
 	}
+	previous, err := a.terminals.Summary(terminalID)
+	if err != nil {
+		return TerminalHandle{}, err
+	}
+	unlock, err := a.threadApplication().LockMutable(context.Background(), previous.ThreadID)
+	if err != nil {
+		return TerminalHandle{}, err
+	}
+	defer unlock()
 	summary, err := a.terminals.Restart(terminalID)
 	if err != nil {
 		return TerminalHandle{}, err

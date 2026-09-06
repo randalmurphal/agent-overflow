@@ -21,6 +21,7 @@ const schedulerStopTimeout = 3 * time.Second
 // succeeds; root still constructs the provider-aware Runner and the definition,
 // profile, spend, logging, and transport adapters they require.
 type EngineRuntimeConfig struct {
+	BeginWork   func(context.Context) (func(), error)
 	Runner      *workflowhost.Runner
 	Definitions engine.DefinitionSource
 	Profiles    engine.ProfileSource
@@ -50,7 +51,7 @@ func (s *Service) StartEngine(ctx context.Context, config EngineRuntimeConfig) e
 	workflowEngine, err := engine.New(
 		s.deps.Store, config.Runner, runtimeEmitter{service: s, emit: config.Emit},
 		config.Definitions, config.Profiles, config.Spend,
-		engine.Config{Paused: config.Paused, Log: config.Log},
+		engine.Config{Paused: config.Paused, Log: config.Log, BeginWork: config.BeginWork},
 	)
 	if err != nil {
 		return err

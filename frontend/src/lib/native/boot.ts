@@ -1,3 +1,4 @@
+import { pairingEndpoint } from './networkTrust';
 // What the shell does before anything mounts.
 //
 // `main.ts` calls `prepareNativeShell()` first and reads the answer to
@@ -5,20 +6,17 @@
 // scanner, the lock, or the app. Everything platform-shaped lives here so
 // `main.ts` keeps one shape for every client.
 //
-// **The endpoints are read before the first fetch, not after.** A phone
-// is the one client whose home backend is not the origin that served it,
-// so `transport/homeEndpoint.setHomeEndpoint` has to be called before
-// anything can address `/bootstrap.json` — which on this client means
-// before `App.svelte` mounts, since mounting it issues the whole boot
-// fan-out.
+// Endpoints are read before the first fetch. A legacy HOME slot is restored
+// when present; every new pairing has its own computer ID and descriptor.
+// No pairing may repoint another computer's live transport.
 //
-// **A shell with no stored endpoint has never paired**, which is the
-// first-run screen and not an error: the answer to "where is my backend"
-// is the QR code on the owner's own desktop.
+// With no saved computers the shell shows first run. Removing the first
+// computer does not hide or erase any of the remaining connections.
 
 import { applyNotificationActivated } from '../stores/eventsNotification';
 import { parseNotificationTarget } from '../stores/notificationActivationQueue';
-import { setBackendSource, syncAttachedBackends } from '../transport/backends';
+import { attachedBackends, restoreHomeBackend, setBackendSource, syncAttachedBackends } from '../transport/backends';
+import { initializeSelectedBackend } from '../stores/selectedBackend.svelte';
 import { onBeforeBackendDetach } from '../transport/detachSteps';
 import type { PairingPayload } from '../transport/deviceSession';
 import { setHomeEndpoint, storedBackendEndpoint } from '../transport/homeEndpoint';
@@ -29,7 +27,7 @@ import { isNativeShell } from './platform';
 export interface ShellBoot {
   /** False in every browser build; nothing below it applies. */
   shell: boolean;
-  /** True when this launch already knows where its home backend is. */
+  /** True when at least one computer is saved on this frontend. */
   paired: boolean;
 }
 
@@ -51,25 +49,31 @@ export function prepareNativeShell(): ShellBoot {
   setBackendSource(storedBackendDescriptors);
 
   const home = storedBackendEndpoint();
-  if (home === '') return { shell: true, paired: false };
-  setHomeEndpoint(home);
+  if (home !== '') {
+    setHomeEndpoint(home);
+    restoreHomeBackend();
+  }
   syncAttachedBackends();
-  return { shell: true, paired: true };
+  const computers = attachedBackends();
+  initializeSelectedBackend(computers);
+  return { shell: true, paired: computers.length > 0 };
 }
 
 /**
- * Point a shell that has not paired at the backend a pairing payload
- * names, before the pairing screen's first request. Both doors into
- * pairing on a shell come through here, the scanned QR and a `#pair=`
- * hash, so "where does this pairing go" is decided in one place.
+ * Validate the address from a scan or app link before showing pairing.
+ * PairingScreen stores it in the selected computer's credential slot when
+ * the user starts pairing; scanning alone changes no existing connection.
  *
  * Answers a sentence for a person when the payload names nowhere a
  * credential could be presented, else `''`.
  */
 export function adoptPairingEndpoint(payload: PairingPayload): string {
   try {
-    setHomeEndpoint(payload.endpoint);
-  } catch {
+    // Validate without repointing an existing connection. PairingScreen
+    // stores the endpoint in the computer's own slot when pairing begins.
+    pairingEndpoint(payload);
+  } catch (error) {
+    if (error instanceof Error && !(error instanceof TypeError)) return error.message;
     return 'That pairing link does not say where the app is. Ask for a new one.';
   }
   return '';

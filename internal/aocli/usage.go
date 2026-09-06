@@ -1,5 +1,27 @@
 package aocli
 
+const remoteUsage = `Usage: agent-overflow remote <command> [options]
+
+  list                     List enabled computers and registered projects
+  run --computer <uuid> --project <uuid> [--workspace <path>]
+      [--id <request-uuid>] [--timeout <seconds>] -- <command> [arguments...]
+  status --computer <uuid> <request-uuid>
+  cancel --computer <uuid> <request-uuid>
+
+Replies are JSON. Commands run on the destination with its environment and
+survive frontend disconnection. Output retains the last 128 KiB. The default
+time limit is one hour; the maximum is seven days. Up to four commands may run
+per computer. There is no implicit queue or automatic retry.
+
+Enable agent access for the destination in the originating computer's settings.
+Workflow phases additionally require the remote-commands grant. Status and
+cancellation are restricted to the conversation that started the command.
+
+A request UUID is printed before run sends its request. After a lost reply,
+inspect status or retry the identical command with that same --id. A computer
+restart marks unfinished work interrupted; it never reruns it automatically.
+`
+
 // Every usage string the binary prints. They live together so the command tree
 // is readable in one place, and so adding a subcommand without documenting it is
 // an obvious omission rather than a hidden one.
@@ -9,6 +31,9 @@ const rootUsage = `Usage: agent-overflow <command> [options]
 Host commands (run on the machine the backend lives on):
   serve              Run the backend with no window, for access from elsewhere
   service install    Run that backend at login, and keep it running
+  service start      Start an installed backend without a window
+  service stop       Stop it while keeping the service installed
+  pair --lan         Connect a device to the running backend
   service uninstall  Stop it and remove the service
   service status     Report what the service manager says about it
 
@@ -23,6 +48,7 @@ Session commands (run inside an Agent Overflow agent session):
   memory             Record and read this campaign's accumulated lessons
   notes              Read and write an automation's continuity notes
   schedule           Create a cron automation for a workflow
+  remote             Run and inspect commands on enabled paired computers
 
 Exit codes: 0 success, 1 the asked-about thing said no (a run resting in a
 state other than done, validation findings, an absent record), 2 error.
@@ -38,6 +64,8 @@ const serviceUsage = `Usage: agent-overflow service <command> [options]
 
 Commands:
   install    Run the backend at login, and keep it running
+  start      Start an installed backend without opening a window
+  stop       Stop the backend and keep its service installed
   update     Point the installed service at a new binary
   uninstall  Stop it and remove the service
   status     Report what the service manager says about it
@@ -46,8 +74,8 @@ Manages a per-user background service: a systemd user unit on Linux, a launchd
 LaunchAgent on macOS. On Windows the launcher already supervises its own
 backend inside WSL; install the service inside the WSL distribution instead.
 
-Pair it with "agent-overflow serve" run once by hand first: a service manager
-gives the backend no terminal, and pairing your FIRST device needs one.
+Pair a device while the service runs with "agent-overflow pair --lan".
+No desktop window or service restart is required.
 `
 
 const serviceInstallUsage = `Usage: agent-overflow service install [options]
@@ -508,4 +536,14 @@ Options:
   --name <text>       name shown in the automations list
   --scope <scope>     resolve the workflow in this scope (shared|project)
   --seed <key=value>  seed one declared input (repeatable; JSON values parsed)
+`
+
+const pairUsage = `Usage: agent-overflow pair [--lan] [--class browser|android|desktop] [--json] [--wait 30s]
+
+Pair a device with this computer's running app or background service.
+Compare the number on both devices, then enter the six digits here.
+--wait waits for a starting backend (at most 2m).
+--lan enables access on the local network. Existing tailnet settings remain.
+--json emits invitation, verification, and paired records for SSH setup;
+confirmation is still required on stdin. No launch credential is printed.
 `

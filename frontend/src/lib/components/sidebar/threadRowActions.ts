@@ -37,6 +37,11 @@ import { copyToClipboard } from '../../utils/clipboard';
 import { userFacingError } from '../../utils/userFacingError';
 import type { Thread } from '../../types/models';
 import { autoPinNewThread } from '../../stores/threadAutoPin';
+import { openConversationTransfer } from '../../stores/conversationTransfers.svelte';
+
+export function transferThreadAction(ctx: ThreadActionCtx): void {
+  openConversationTransfer(ctx.thread);
+}
 
 export const PIN_GROUP_FRONT = 0;
 export const PIN_GROUP_BACK = 1;

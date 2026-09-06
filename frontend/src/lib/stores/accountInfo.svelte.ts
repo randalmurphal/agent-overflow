@@ -1,22 +1,9 @@
-// Per-provider selected authenticated-account snapshot, hydrated from the
-// startup probe and updated live after account login or switching. A running
-// thread may temporarily use a different account (notably while a Codex
-// app-server waits for its safe reconnect); that session-scoped identity lives
-// on ThreadPane. The rate-limit ring popover reads `subscriptionType` to render
-// "Plan: pro" / "Plan: Claude Max"; absence is rendered as a neutral fallback
-// so a misconfigured environment doesn't show a blank field.
-//
-// The store is process-global rather than per-pane because:
-//   1. The probe runs once per app boot. Threading it through every
-//      pane registry would mean re-firing the probe per pane (or
-//      adding a global cache anyway).
-//   2. This store represents provider-wide selection; per-thread live account
-//      attribution is kept with the pane that owns the provider session.
-//   3. The wire shape (`provider:account` event with one entry) maps
-//      cleanly to a `Map<provider, account>` rather than a per-pane
-//      flag.
-
+// Selected account and generation belong to a computer and provider.
 import type { ProviderAccountEvent } from '../types/events';
+
+import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
+import { onBackendDetached } from '../transport/backends';
+import { compositeKey } from '../utils/compositeKey';
 
 type Provider = ProviderAccountEvent['provider'];
 type Account = ProviderAccountEvent['account'] & {
@@ -24,43 +11,47 @@ type Account = ProviderAccountEvent['account'] & {
   generation?: number;
 };
 
-let accounts: Map<Provider, Account> = $state(new Map());
-let generations: Map<Provider, number> = $state(new Map());
+let accounts: Map<string, Account> = $state(new Map());
+let generations: Map<string, number> = $state(new Map());
 
 export function setProviderAccount(
   provider: Provider,
   account: ProviderAccountEvent['account'],
   accountId?: string,
   generation?: number,
+  backend: BackendKey = HOME_BACKEND,
 ): void {
+  const key = compositeKey(backend, provider);
   // Reassign the Map rather than mutating in place so readers using
   // `$derived` over `accounts.get(...)` invalidate. Svelte 5 runes
   // track Map identity, not internal mutations.
-  if (generation !== undefined && (generations.get(provider) ?? 0) > generation) return;
+  if (generation !== undefined && (generations.get(key) ?? 0) > generation) return;
   const next = new Map(accounts);
-  next.set(provider, { ...account, accountId, generation });
+  next.set(key, { ...account, accountId, generation });
   accounts = next;
   if (generation !== undefined) {
     const nextGenerations = new Map(generations);
-    nextGenerations.set(provider, generation);
+    nextGenerations.set(key, generation);
     generations = nextGenerations;
   }
 }
 
-export function getProviderAccount(provider: Provider): Account | null {
-  return accounts.get(provider) ?? null;
+export function getProviderAccount(provider: Provider, backend: BackendKey = HOME_BACKEND): Account | null {
+  const key = compositeKey(backend, provider);
+  return accounts.get(key) ?? null;
 }
 
-export function clearProviderAccount(provider: Provider, generation?: number): void {
-  if (generation !== undefined && (generations.get(provider) ?? 0) > generation) return;
-  if (accounts.has(provider)) {
+export function clearProviderAccount(provider: Provider, generation?: number, backend: BackendKey = HOME_BACKEND): void {
+  const key = compositeKey(backend, provider);
+  if (generation !== undefined && (generations.get(key) ?? 0) > generation) return;
+  if (accounts.has(key)) {
     const next = new Map(accounts);
-    next.delete(provider);
+    next.delete(key);
     accounts = next;
   }
   if (generation !== undefined) {
     const nextGenerations = new Map(generations);
-    nextGenerations.set(provider, generation);
+    nextGenerations.set(key, generation);
     generations = nextGenerations;
   }
 }
@@ -71,3 +62,9 @@ export function resetForTest(): void {
   accounts = new Map();
   generations = new Map();
 }
+
+onBackendDetached(({ backendId }) => {
+  const prefix = compositeKey(backendId, '');
+  accounts = new Map([...accounts].filter(([key]) => !key.startsWith(prefix)));
+  generations = new Map([...generations].filter(([key]) => !key.startsWith(prefix)));
+});

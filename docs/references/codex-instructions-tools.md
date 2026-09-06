@@ -125,3 +125,13 @@ RPC. It is process-wide and lower precedence than the config map.
 - Enterprise/managed installs can veto some of these (`web_search_mode`
   is `Constrained`; `feature_requirements` entries become protected
   keys). An override can be refused on a managed machine.
+
+### App-owned appended guidance
+
+The current source in `app-server-protocol/src/protocol/v2/thread.rs` exposes
+`developer_instructions` on start/resume/fork; `v2/config.rs` exposes it in
+config/read. `core/src/session/mod.rs` resolves developer instructions from
+config on cold start/resume, whereas base instructions explicitly consult
+conversation history. AO therefore reads cwd-scoped config before appending
+its optional remote-command guide, and omits the override when that guide is
+absent. Native developer instructions remain first and unchanged.

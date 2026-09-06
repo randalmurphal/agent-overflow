@@ -37,6 +37,10 @@ const AuthPairPath = "/auth/pair"
 // AuthTokenPath rotates a device's credential pair.
 const AuthTokenPath = "/auth/token"
 
+// AuthTokenRecoverPath is separate so a downgraded host cannot ignore the
+// proposed successor and accidentally consume a recoverable client's secret.
+const AuthTokenRecoverPath = "/auth/token/recover"
+
 // AuthTicketPath mints a single-use WebSocket ticket for the session the
 // caller already holds.
 const AuthTicketPath = "/auth/ticket"
@@ -150,7 +154,8 @@ type PairingRedemption struct {
 type SessionRenewal struct {
 	// RefreshSecret is the secret issued alongside the credential this
 	// call replaces.
-	RefreshSecret string `json:"refreshSecret"`
+	RefreshSecret     string `json:"refreshSecret"`
+	NextRefreshSecret string `json:"nextRefreshSecret,omitempty"`
 	// DeviceProof comes from DeviceKeyHeader, never from the body: a proof
 	// a caller may write into the same document it is proving something
 	// about is not a proof. A signed JWS or a bare thumbprint, per that
@@ -333,12 +338,20 @@ func (s *Server) handleAuthPair(w http.ResponseWriter, r *http.Request) {
 // could renew itself from possession of the secret alone would make
 // rotation bookkeeping rather than a control.
 func (s *Server) handleAuthToken(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == AuthTokenRecoverPath && !s.supportsRefreshRecovery() {
+		http.NotFound(w, r)
+		return
+	}
 	endpoints := s.cfg.AuthEndpoints
 	if endpoints == nil || !s.acceptAuthPost(w, r) {
 		return
 	}
 	var req SessionRenewal
 	if !decodeAuthBody(w, r, &req) {
+		return
+	}
+	if r.URL.Path == AuthTokenRecoverPath && req.NextRefreshSecret == "" {
+		http.Error(w, "renewal successor required", http.StatusBadRequest)
 		return
 	}
 	req.DeviceProof = r.Header.Get(DeviceKeyHeader)
@@ -400,7 +413,11 @@ func writePasskeyChallenge(w http.ResponseWriter, csp ContentSecurityPolicy, cha
 	h.Set("Cache-Control", "no-store")
 	h.Set("Content-Type", "application/json")
 	if reason != "" {
-		w.WriteHeader(http.StatusUnauthorized)
+		status := http.StatusUnauthorized
+		if reason == "temporarily_unavailable" {
+			status = http.StatusServiceUnavailable
+		}
+		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(authRefusal{Reason: reason})
 		return
 	}
@@ -465,6 +482,7 @@ func (s *Server) handleAuthTicket(w http.ResponseWriter, r *http.Request) {
 // bootstrap exchange: these routes hand out credentials, and a request
 // another origin initiated must never be answered with one.
 func (s *Server) acceptAuthPost(w http.ResponseWriter, r *http.Request) bool {
+	s.writeRefreshRecoveryCapability(w.Header())
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -564,4 +582,20 @@ func WriteSessionCookie(w http.ResponseWriter, r *http.Request, credential strin
 // the client dialled, exactly as pageCookieName does.
 func sessionCookieName(host string) string {
 	return cookieNameForHost(sessionCookiePrefix, host)
+}
+
+// RefreshRecoveryHeader is additive negotiation for a retryable renewal. A
+// current client probes health before its first renewal of an older pairing;
+// older hosts omit this header and retain the legacy exchange.
+const RefreshRecoveryHeader = "X-AO-Refresh-Recovery"
+
+func (s *Server) writeRefreshRecoveryCapability(h http.Header) {
+	if s.supportsRefreshRecovery() {
+		h.Set(RefreshRecoveryHeader, "1")
+	}
+}
+
+func (s *Server) supportsRefreshRecovery() bool {
+	capable, ok := s.cfg.AuthEndpoints.(interface{ SupportsRefreshRecovery() bool })
+	return ok && capable.SupportsRefreshRecovery()
 }

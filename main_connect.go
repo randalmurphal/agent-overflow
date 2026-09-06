@@ -117,22 +117,12 @@ func pairAndAttach(ctx context.Context, dir, raw string) (clientmode.Config, err
 	return pairedConfig(client)
 }
 
-// attachPaired opens a stored session and proves it still works before a
-// window exists.
-//
-// The proof is one socket ticket, which is the cheapest authenticated
-// call this client has and the only one that renews a stale credential on
-// the way. Spending it here rather than discovering the answer on the
-// first carried upgrade is the difference between a sentence in the
-// terminal and a window that reconnects forever: the SPA's ladder cannot
-// tell "this device was removed" from "the network is down", and the
-// person who ran this command is standing right here.
-func attachPaired(ctx context.Context, dir string, session deviceclient.Session) (clientmode.Config, error) {
+// Stored pairings open without a network probe. The independent frontend shows
+// this computer's reconnect/refusal state while its other computers remain
+// usable; an offline selected computer must never prevent opening the window.
+func attachPaired(_ context.Context, dir string, session deviceclient.Session) (clientmode.Config, error) {
 	client, err := deviceclient.Open(dir, session)
 	if err != nil {
-		return clientmode.Config{}, err
-	}
-	if _, err := client.Ticket(ctx); err != nil {
 		return clientmode.Config{}, err
 	}
 	fmt.Printf("Attaching to %s.\n", backendDisplay(session.BackendName, session.Endpoint))
@@ -147,7 +137,7 @@ func pairedConfig(client *deviceclient.Client) (clientmode.Config, error) {
 	if err != nil {
 		return clientmode.Config{}, err
 	}
-	return clientmode.Config{WSURL: wsURL, Paired: client}, nil
+	return clientmode.Config{WSURL: wsURL, Paired: client, BackendID: client.Session().BackendID}, nil
 }
 
 // backendDisplay names a backend the way a person would: what it calls

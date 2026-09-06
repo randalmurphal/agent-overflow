@@ -8,14 +8,16 @@ Derived, version-stamped render metadata (span blobs, provider cost
 estimates) is cache content too: a stale row is dropped and recomputed,
 never migrated.
 
-**One family is exempt and it is the only one**: the identity tables
+**Authoritative records are exempt**: the identity tables
 (`users`, `devices`, `sessions`, `signing_keys`, `recovery_codes`,
 `auth_audit`, migration v79; `pairing_links` and `refresh_secrets`,
 migration v80; `passkeys`, migration v82) are authoritative. They cannot
 be rebuilt from a provider session file, and dropping a stale row means
-someone is locked out. See "Recent schema changes (v79)", "(v80)" and
-"(v82)" below before touching any sweep, prune, or restore path that
-walks tables generically.
+someone is locked out. The durable flush queue (v85) holds accepted but
+undispatched messages. Transfer coordination (v86) holds execution ownership
+and recovery authority. Remote command receipts (v87) hold accepted request IDs
+and bounded settled output, independently of conversation history. See the corresponding schema sections below before
+touching any sweep, prune, or restore path that walks tables generically.
 
 - `docs/architecture/schema.md`: table-by-table reference and the index
   list. Update it when you add a table, column, or index.
@@ -1193,6 +1195,118 @@ an empty `provider_turn_id`.
   so no rebuild; a future `work_items` rebuild must carry it, like every other
   column added since v39.
 
+## Recent schema changes (v86) — conversation transfer coordination
+
+Conversation copies rescope durable turn IDs and review comments' sent-turn
+references; provider turn IDs remain verbatim. Moves preserve those identities.
+Validate a parsed transfer against the live database's globally keyed rows before
+acknowledging preparation. Validation in an empty scratch database alone misses
+collisions with earlier copies or independently imported history.
+
+- Move ownership epochs are exact JavaScript-safe integers. Outgoing moves
+  advance the latest completed incoming epoch; a return must exceed every
+  non-canceled epoch seen here. Copies start at zero with a fresh AO identity.
+  The `owned_threads` view hides retired source and unactivated destination
+  rows from catalogs, global search and project counts. Physical history reads
+  remain available for recovery. `Thread.ownershipEpoch` is derived from the
+  journal, never a second mutable cache column.
+- `thread_transfers` is authoritative coordination. Its immutable request ID
+  binds the source/target conversation, peer, destination project, direction,
+  move/copy kind, activation hash and private request. The same ID with different inputs is a conflict.
+- An incoming `project_id` reserves the target project before preparation.
+  Creation validates it in the journal transaction; project deletion repeats
+  the reservation predicate in its conditional write. Completed/canceled rows
+  release the reservation. Never query app-private JSON to infer a project.
+  History restore refuses pending transfers and snapshots predating a currently
+  owned incoming conversation; retaining its tombstone without its history would
+  leave that conversation impossible to discover or reimport.
+- `thread_transfer_sessions` reserves the immutable provider-native closure.
+  Copies reserve NEW native IDs. Native ownership survives deleting an AO alias
+  and is included in import scan deduplication. Completed incoming history is
+  canonical and must not be reimported under another AO ID. `LockNativeSessions`
+  orders import against reservation; take the existing thread action lock first
+  and never acquire another thread lock while holding native locks. Preparation
+  refuses native identities already claimed by another independently executable
+  AO row. Source preparation holds both locks while checking idleness and binding.
+  Ordinary copies also call `CheckTransferSourceAliases` on ORIGINAL identities;
+  reserving only the new copy IDs would miss another AO row writing the originals.
+  Pending Claude forks borrow historical input and always mint their own native
+  root, even for Move. They do not claim or retire the parent; source file stamps
+  still refuse a transcript/sidecar that changes during their snapshot.
+  `ReturningTransferSessions` authorizes replacement only for native identities
+  this computer previously retired for the same AO thread. Per-file baselines
+  remain mandatory; this does not authorize replacing unrelated native sessions.
+  Execution fences check current SessionRef; PendingForkRef is historical input
+  to an independent fork and does not inherit the source execution tombstone.
+- Ownership journal transactions use `beginDurableTx`, reserving the sole
+  writer connection with `synchronous=EXTRA` and `fullfsync=ON`, then restoring
+  ordinary stream policy after commit/rollback. WAL+NORMAL history-cache commits
+  may rewind after a power loss; source retirement, incoming activation, secret
+  binding and cancellation promises must not. Scheduling/error timestamps remain
+  ordinary cache writes. Never hold this connection over network I/O.
+  See [SQLite synchronous](https://sqlite.org/pragma.html#pragma_synchronous).
+- Source phases advance preparing → prepared → committed → complete. Only
+  preparing or prepared can be canceled unilaterally. Errors preserve the
+  recovery phase; a timeout never restores source ownership. Destination
+  completion goes through `CommitIncomingThreadTransfer`: verify the source
+  secret and import installed history in one transaction. Phase-only advancement
+  cannot unlock an incoming thread. An identical activation retry returns its
+  durable completion without importing again.
+- `BindThreadTransferArchive` binds `manifest_hash` and `archive_size` once.
+  Outgoing means the snapshot is sealed; incoming means those upload bytes were
+  declared, not yet validated. A sealed copy releases the original while keeping
+  its private native closure reserved. The pending unique index permits other
+  handoffs after a copy seals, and still forbids concurrent snapshots/moves.
+  `next_attempt_at` / `retry_count` support the fixed host retry loop. Scheduler
+  scans use bounded `NextThreadTransferJobs` projections, never recovery blobs.
+  Incoming waits park; startup resets retry times so persisted proof cannot be
+  stranded by a crash between writing it and waking the job.
+  `cleanup_pending` also keeps terminal rows eligible until private operation
+  files are removed. Losing a cleanup write only repeats idempotent removal;
+  compact journal/ownership/receipts are never garbage-collected with archives.
+- `cancel_requested` persists source intent before contacting the peer and
+  blocks retirement in the same transaction that would commit it. Source
+  execution stays fenced while cancellation is unacknowledged. Destination
+  cancellation requires source proof through `CancelIncomingThreadTransfer`;
+  an offer grant alone cannot independently cancel across source retirement.
+  A canceled destination refuses every later activation with that secret.
+- `CheckThreadTransferAccess` gates execution under the app's thread action
+  lock. A completed outgoing move remains a tombstone. An explicitly authorized
+  incoming move can return a previously moved thread; copies have fresh IDs.
+- The journal deliberately has no thread FK. Deletion/retention of history must
+  not erase retirement. `RestoreFrom` retains LIVE journal and native closure rows instead of
+  importing or rewinding the snapshot's ownership records. Whole-file service
+  rollback must separately respect the transfer commit boundary.
+- `PrivateState`, `PeerState` and `ActivationHash` are excluded from status JSON.
+  The peer offer binds once after both ends have been authorized, without
+  changing the immutable request or allowing a lost reply to redirect it. Never
+  expose a destination grant or activation secret via ordinary status replies.
+- `transfer_history.go` streams a versioned, schema-independent history file
+  through bounded metadata pages and 256 KiB payload chunks. It reads logical
+  timeline views, preserving shared/imported history and subagent rows. Import
+  uses one transaction and requires an end marker, complete ordered payloads,
+  matching source ownership, and a caller-selected destination thread. It never
+  imports credentials, settings, billing ledger rows or derived render caches.
+  Provider transforms receive only item metadata. Hydration orders each page by
+  timeline position, independently of the ID cursor selecting it; compare no
+  row identity against that running cursor. The multi-page metadata-transform
+  regression uses reverse IDs to keep this distinction exercised.
+- Attachment collection follows inherited user-message references as well as
+  directly owned files. `TransferredAttachment` is the one destination metadata
+  rule shared by installation and import; independent copies get deterministic
+  new attachment/comment IDs. `itemmeta` rewrites structured references while
+  preserving provider IDs, unknown metadata, numeric precision and prose. Draft
+  terminal handles remain on their source computer.
+- Returning history replaces a retired cache without deleting its parent
+  thread row, which would null other local threads' fork links. Existing uploads
+  remain available to local forks; repeated attachment identities must match.
+  Activation advances both history counters past the former cache. A failure
+  restores old history, counters and the pending execution fence together.
+- `idx_thread_transfers_pending` enforces one freezing operation per thread;
+  `idx_thread_transfers_owner` bounds ownership lookups. Reads do not maintain
+  an in-memory replica of this table. `idx_thread_transfers_retry` orders small
+  recovery pages by their next attempt.
+
 ## Recent schema changes (v85) — the durable flush queue
 
 - `flush_queue_items` (`migration_v85_flush_queue.go`, accessors in
@@ -1341,6 +1455,13 @@ v79 — every bullet there applies here unchanged.
   picks the winner and every loser reads `sql.ErrNoRows`, so no caller
   can open a check-then-write window by forgetting a guard. Both take a
   HASH; neither table can hold a token or a secret.
+- **Renewal commits as one durable transaction (v88).**
+  `RotateRefreshSecret` owns predecessor consumption, successor insertion,
+  the optional successor digest receipt and access extension. It rechecks
+  session/device revocation and confirmation inside the transaction. Never
+  rebuild this from `ConsumeRefreshSecret` + `CreateRefreshSecret` +
+  `ExtendSession`: a failed middle write strands the client. See
+  [session renewal](../../docs/architecture/session-renewal.md).
 - **`refresh_secrets.session_id` IS the family key.** A rotation keeps
   the session row and replaces the secret, so no `family_id` column
   exists to drift out of step with it. Rotating the SESSION id instead
@@ -1358,8 +1479,11 @@ v79 — every bullet there applies here unchanged.
 - **`sessions.activated_at` is the confirmation gate, and it is a
   PREDICATE, not a flag someone must remember to read.** `Session.Live`
   requires it, so an unconfirmed session refuses on every presentation
-  path — verification, renewal, ticket, upgrade — without any of them
-  knowing pairing exists. `ActivateSession` also requires
+  access path — verification, ticket, upgrade. Renewal uses identity's
+  shared confirmation/revocation check and the refresh secret's expiry;
+  expired access alone must not prevent `ExtendSession`. Pruning retains
+  the session while any refresh secret remains inside the retention window,
+  including spent secrets needed for reuse detection. `ActivateSession` also requires
   `expires_at > ?`: the pending window IS the deadline on the
   confirmation, so accepting one after it lapsed would make the deadline
   decorative. The v80 migration backfills existing rows to `created_at`,
@@ -1393,8 +1517,8 @@ Six tables in one migration (`migration_v75_identity.go`, accessors in
 `identity.go`): `users`, `devices`, `sessions`, `signing_keys`,
 `recovery_codes`, `auth_audit`. Spec: `docs/specs/remote-access.md` §3.
 
-- **These rows are NOT cache.** Every other table in this database can be
-  rebuilt from provider session files; identity cannot. The
+- **These rows are NOT cache.** Identity cannot be rebuilt from provider
+  session files (nor can accepted queue messages or transfer ownership). The
   "stale means drop and recompute" rule that governs span blobs and cost
   estimates does not apply to any of them — a dropped session row is a
   person locked out, and the only recovery is re-pairing from a host-local
@@ -1963,7 +2087,8 @@ Belongs here: timeline items and payloads, thread and project metadata,
 channels and messages, discussion templates, attachment metadata, composer
 favorites and model-profile seeds, workflow run records, automation
 definitions and cursors, identity rows (accounts, devices, sessions,
-signing keys, recovery codes, the credential audit log), migrations,
+signing keys, recovery codes, the credential audit log), durable transfer
+coordination, migrations,
 indices, CHECK constraints, and query helpers returning typed rows.
 
 Does not belong here: live per-turn provider state (the provider process
@@ -2023,3 +2148,12 @@ SELECT thread_id, COUNT(*) FROM items i WHERE parent_id<>'' AND
 NOT EXISTS (SELECT 1 FROM items p WHERE p.thread_id=i.thread_id AND
 p.id=i.parent_id) GROUP BY thread_id;
 ```
+
+## Remote command receipts (v87)
+
+`remote_jobs` records durable acceptance before a command can execute. Preserve
+it during history restore and generic cleanup. Keep request IDs after output
+retention; forgetting acceptance would let a delayed retry run a command twice.
+Only the latest 128 settled 128 KiB tails remain. Boot marks accepted unfinished
+work interrupted and never replays it. `beginDurableTx` is shared with transfer
+ownership so power loss cannot rewind an acknowledgement another host acted on.

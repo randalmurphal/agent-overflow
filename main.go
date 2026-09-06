@@ -28,6 +28,7 @@ import (
 	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/bundle"
 	"agent-overflow/internal/cdprelay"
+	"agent-overflow/internal/computerroute"
 	"agent-overflow/internal/diagenv"
 	"agent-overflow/internal/harness/darwinbundle"
 	"agent-overflow/internal/logging"
@@ -42,6 +43,8 @@ import (
 	"agent-overflow/internal/shellenv"
 	"agent-overflow/internal/supervise"
 	"agent-overflow/internal/transport"
+
+	"github.com/wailsapp/wails/v3/pkg/updater"
 )
 
 //go:embed all:frontend/dist
@@ -95,6 +98,9 @@ var dataDirRoot string
 var resetTransportPortPin bool
 
 func main() {
+	// An updater helper is an internal re-exec, not a desktop or CLI launch.
+	// Handle it before session guards, discovery, logging or provider setup.
+	updater.HandleHelperMode()
 	if err := disclaimHarnessResponsibility(); err != nil {
 		fatalf("isolate macOS harness responsibility: %v", err)
 	}
@@ -236,7 +242,7 @@ func main() {
 		// and checkBackendVerbFlags already refused every flag that would
 		// have selected a different one.
 		runServe(flags)
-	case flags.connect != "":
+	case flags.frontend || flags.connect != "":
 		runClient(flags.connect)
 	case flags.harness:
 		runHarness(flags)
@@ -258,7 +264,7 @@ func shouldSyncShellEnv(flags cliFlags) bool {
 	// absolute path) and git (system PATH); skipping the probe keeps boot
 	// fast and deterministic — and keeps a login-shell probe out of a
 	// mode whose whole promise is that it resolves no real tooling.
-	return flags.connect == "" && !flags.harness && !flags.soak
+	return !flags.frontend && flags.connect == "" && !flags.harness && !flags.soak
 }
 
 func syncShellEnvForBoot() {
@@ -298,8 +304,11 @@ func syncShellEnvForBoot() {
 // function makes deterministic decisions from its arguments, never reads
 // disk on its own.
 type bootTransportOptions struct {
-	LoadPersistedNetwork     bool
-	RequireReadyForBootstrap bool
+	// Set only from the parent's explicit activate-frame claim. An older
+	// supervisor omits it, so its child still takes the ordinary boot lock.
+	BackendLockHeldBySupervisor bool
+	LoadPersistedNetwork        bool
+	RequireReadyForBootstrap    bool
 	// HarnessReceiver, when non-nil, is registered on the dispatcher as
 	// a second RPC receiver under "main.Harness.<Method>". Only harness
 	// mode sets this — in every other boot the harness surface does not
@@ -336,6 +345,13 @@ func bootBrowserCDPRelay() *cdprelay.Endpoint {
 }
 
 func bootTransport(appService *App, listenAddr string, opts bootTransportOptions) *transport.Server {
+	if !opts.BackendLockHeldBySupervisor {
+		lock, lockErr := acquireBackendInstanceLock(bootSettingsDir())
+		if lockErr != nil {
+			fatalf("backend: %v", lockErr)
+		}
+		heldBackendLock = lock
+	}
 	started := time.Now()
 	defer logBootPhase("transport.total", started)
 
@@ -409,6 +425,7 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		AssetHandler:             assetHandler,
 		DevAssetProxy:            devAssetProxy,
 		RequireReadyForBootstrap: opts.RequireReadyForBootstrap,
+		WaitForActivation:        func(ctx context.Context) error { return appservice.WaitForActivation(appService.App, ctx) },
 		// The link-time stamp, injected rather than read by the transport:
 		// /healthz reports it, and the update watchdog compares it across
 		// a restart to tell a new build from a bounce.
@@ -424,6 +441,9 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		// ever sees two strings.
 		BackendIdentity: func() (string, string) {
 			return appservice.BackendIdentity(appService.App)
+		},
+		ComputerRoutes: func() []computerroute.Route {
+			return appservice.ComputerRoutes(appService.App)
 		},
 		// Not late-bound, unlike the identity above: a hostname is
 		// knowable before the store opens, and it is the same string the
@@ -466,7 +486,8 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		},
 		// Pairing redemption and credential rotation. The App adapts the
 		// session core onto the transport's dumb DTOs.
-		AuthEndpoints: appservice.AuthEndpoints(appService.App),
+		AuthEndpoints:   appservice.AuthEndpoints(appService.App),
+		ThreadTransfers: appservice.ThreadTransferEndpoints(appService.App),
 		// Attachment bytes, which cross on HTTP rather than inside a WS
 		// frame. Late-bound the same way: the adapter holds the App and
 		// reads its attachment store per call, so the store opening during
@@ -754,15 +775,26 @@ func runHeadless(listenAddr string, printURLFD int) {
 }
 
 func waitForHeadlessShutdown(appService *App, srv *transport.Server) {
+	waitForHeadlessShutdownOrRestart(appService, srv, nil)
+}
+
+func waitForHeadlessShutdownOrRestart(appService *App, srv *transport.Server, restart <-chan struct{}) bool {
 	// Wait for SIGINT / SIGTERM. Wails' Run() handles this for us in
 	// the desktop path; here we own the loop directly.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
-	sig := <-sigCh
-	log.Printf("headless: received %s, shutting down", sig)
+	restarting := false
+	select {
+	case sig := <-sigCh:
+		log.Printf("headless: received %s, shutting down", sig)
+	case <-restart:
+		restarting = true
+		log.Printf("headless: restarting to resolve the supervisor's update result")
+	}
 
 	shutdownHeadless(appService, srv)
+	return restarting
 }
 
 // shutdownHeadless tears down the headless backend in the same order

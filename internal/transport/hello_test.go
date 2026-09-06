@@ -142,6 +142,7 @@ func TestServer_AdvertisedCapabilitiesAreFrozen(t *testing.T) {
 	want := []string{
 		"notifications.remote",
 		"passkeys",
+		"commands.remote.v1",
 	}
 	assertCapabilities(t, serverCapabilities, want)
 	assertCapabilities(t, serverCapabilitiesWithBrowser, append(append([]string{}, want...), "browser"))

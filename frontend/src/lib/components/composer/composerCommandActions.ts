@@ -1,3 +1,4 @@
+import { threadMachine } from '../../stores/attachedBackends.svelte';
 // Running an intercepted composer command.
 //
 // These commands are consumed at send: the draft text never reaches a provider
@@ -56,7 +57,7 @@ function fail(error: string): CommandActionResult {
 function activeModelInfo(pane: ThreadPane): ModelInfo | undefined {
   const provider = asProviderID(pane.thread?.provider);
   if (!provider) return undefined;
-  return getProviderModels(provider).find((model) => model.slug === (pane.thread?.model ?? ''));
+  return getProviderModels(provider, threadMachine(pane.threadId ?? '', pane.thread?.projectId)).find((model) => model.slug === (pane.thread?.model ?? ''));
 }
 
 function modelCandidates(pane: ThreadPane): ArgCandidate[] {
@@ -65,7 +66,7 @@ function modelCandidates(pane: ThreadPane): ArgCandidate[] {
   const models = pickerVisibleModels(
     getSettings(),
     provider,
-    getProviderModels(provider),
+    getProviderModels(provider, threadMachine(pane.threadId ?? '', pane.thread?.projectId)),
     pane.activeModel,
   );
   return models.map((model) => ({

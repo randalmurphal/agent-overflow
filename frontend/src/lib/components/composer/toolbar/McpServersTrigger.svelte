@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { threadMachine } from '../../../stores/attachedBackends.svelte';
   // Composer-toolbar entry for MCP server selection. Renders the
   // trigger button (icon + "MCP" + active count) and hosts the
   // popup that lets the user toggle which provider-configured
@@ -64,7 +65,8 @@
   let provider = $derived(pane.thread?.provider ?? '');
   let threadId = $derived(pane.threadId ?? '');
   let workspacePath = $derived(pane.thread?.workspacePath ?? '');
-  let target = $derived(mcpTargetFor(provider, threadId, workspacePath));
+  let backend = $derived(threadMachine(pane.threadId ?? '', pane.thread?.projectId));
+  let target = $derived(mcpTargetFor(provider, threadId, workspacePath, backend));
   let enabledCount = $derived(
     target ? peekMcpServers(target.key).filter((r) => !r.disabled).length : 0,
   );
@@ -86,6 +88,7 @@
     const key = mcpKey;
     if (key === null) return;
     const handle = attachMcpServers(key, {
+      get backend() { return backend; },
       get provider() {
         return target?.provider ?? '';
       },

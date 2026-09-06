@@ -219,6 +219,15 @@ describe('the registry', () => {
     expect(client.setWatchedThreads).toHaveBeenLastCalledWith(['thread-laptop']);
   });
 
+  it('moves an already watched conversation to its new owner without reopening the pane', () => {
+    noteThread('moving', '', 0);
+    const { client } = attachFake();
+    setWatchedThreadsEverywhere(['moving']);
+    noteThread('moving', 'laptop', 1);
+    expect(homeClient.setWatchedThreads).toHaveBeenLastCalledWith([]);
+    expect(client.setWatchedThreads).toHaveBeenLastCalledWith(['moving']);
+  });
+
   it('sends a thread of unknown origin to every backend', () => {
     // The entity index only knows what this session has listed or been
     // pushed, so a deep link or a replica cold open has no machine yet.

@@ -114,6 +114,7 @@ type resourceKey struct {
 
 // Engine owns all mutable scheduler and FSM state on its command goroutine.
 type Engine struct {
+	beginWork   func(context.Context) (func(), error)
 	store       persistence
 	runner      Runner
 	emitter     Emitter
@@ -167,7 +168,7 @@ func New(store persistence, runner Runner, emitter Emitter, definitions Definiti
 	}
 	return &Engine{
 		store: store, runner: runner, emitter: emitter, definitions: definitions,
-		profiles: profiles, spend: spend, log: config.Log,
+		profiles: profiles, spend: spend, log: config.Log, beginWork: config.BeginWork,
 		paused: config.Paused, now: time.Now, startReplyBudget: runnerStartReplyBudget,
 		commands: make(chan any, commandBuffer), done: make(chan struct{}),
 		items: make(map[string]*runtimeItem), holders: make(map[resourceKey]int),

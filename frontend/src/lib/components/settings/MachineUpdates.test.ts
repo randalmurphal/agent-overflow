@@ -39,6 +39,18 @@ describe('<MachineUpdates>', () => {
     resetStagedBackends();
   });
 
+  it('explains why a staged update is waiting and keeps cancellation available', async () => {
+    const { findByTestId, getByRole } = render(MachineUpdates);
+    emitWailsEvent('service:update-status', status({
+      phase: 'waiting', targetVersion: '1.3.0', cancelable: true,
+      waitingFor: 'Waiting for workflows to finish…',
+    }));
+    const card = await findByTestId('machine-update');
+    expect(card.textContent).toContain('Waiting for workflows to finish…');
+    expect(getByRole('button', { name: 'Cancel update' })).toBeTruthy();
+    expect(card.textContent).not.toContain('Up to date');
+  });
+
   it('renders nothing until a machine reports a supervisor', async () => {
     const { container } = render(MachineUpdates);
     expect(container.textContent).toBe('');
@@ -168,4 +180,18 @@ describe('<MachineUpdates>', () => {
     await fireEvent(details, new Event('toggle'));
     await waitFor(() => expect(list).toHaveBeenCalledTimes(1));
   });
+  it('shows cancellation only while the selected host advertises it', async () => {
+    const cancel = setBindingMock('CancelServiceUpdate', async () => {});
+    setBindingMock('GetServiceUpdateStatus', async () => status({ phase: 'canceled' }));
+    const view = render(MachineUpdates);
+    emitWailsEvent('service:update-status', status({ phase: 'downloading' }));
+    await waitFor(() => expect(view.getByTestId('machine-update-progress')).toBeTruthy());
+    expect(view.queryByRole('button', { name: 'Cancel update' })).toBeNull();
+    emitWailsEvent('service:update-status', status({ phase: 'downloading', cancelable: true }));
+    await fireEvent.click(await view.findByRole('button', { name: 'Cancel update' }));
+    await waitFor(() => expect(cancel).toHaveBeenCalledOnce());
+    await waitFor(() => expect(view.getByText('Update canceled. This computer is still running 1.2.0.')).toBeTruthy());
+    expect(view.queryByText('Up to date.')).toBeNull();
+  });
+
 });

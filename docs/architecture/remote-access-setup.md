@@ -4,7 +4,8 @@ The Mac runs the backend and providers. The Android APK is a client of that
 backend; an Android system image, Docker image, or public server is unnecessary.
 Agent Overflow joins Tailscale as its **own node**, normally `agent-overflow`.
 The Mac's separate Tailscale app does not have to be connected for that node to
-serve the phone. The phone's Tailscale app must be connected to the same tailnet.
+serve the phone. For tailnet access, the phone's Tailscale app must be connected
+to the same tailnet. A private LAN connection can work without Tailscale.
 
 ## Set up the host
 
@@ -14,7 +15,7 @@ serve the phone. The phone's Tailscale app must be connected to the same tailnet
    enable MagicDNS and HTTPS certificates. HTTPS is required for the Android
    shell. Tailscale's confirmation explains that certificate names appear in
    public certificate-transparency logs; the app itself stays tailnet-only.
-3. In Agent Overflow → Settings → Remote access → Tailnet, enable the node
+3. In Agent Overflow → Settings → Access & sharing → Tailnet, enable the node
    and save. Leave the coordination-server field empty for ordinary Tailscale.
    Open the sign-in link shown there and approve the node on your tailnet.
 4. Wait for `Running` and the `https://agent-overflow.…ts.net/` address.
@@ -36,10 +37,10 @@ and [HTTPS setup](https://tailscale.com/docs/how-to/set-up-https-certificates).
    desktop. On the Pixel, open the download and allow that browser or file
    manager to install unknown apps when Android asks. This is an APK install,
    not a phone reflash. Release assets include `SHASUMS256`.
-2. Connect the Pixel's Tailscale app to the host's tailnet. Set up a phone
+2. Connect through the same LAN or the host's tailnet. Set up a phone
    screen lock: Agent Overflow uses Android's biometric/device-credential
    prompt when it opens.
-3. On the Mac, open Settings → Remote access → Devices → Pair a device →
+3. On the Mac, open Settings → Access & sharing → Devices → Pair a device →
    Phone or tablet. Choose Full access to drive agents and answer approvals.
 4. Open Agent Overflow on the Pixel and use its **in-app QR scanner** to
    scan the desktop's code (or paste the pairing link). Verify that both
@@ -63,6 +64,29 @@ must keep the same signing key and application id across releases. Android's
 [signing](https://developer.android.com/studio/publish/app-signing) and
 [versioning](https://developer.android.com/studio/publish/versioning) rules
 apply even to private sideloaded apps.
+
+Pairing survives backend restarts. The phone renews its short-lived access
+credential automatically; each successful renewal starts a fresh 30-day
+refresh window. This is an inactivity limit, not monthly re-pairing.
+
+## LAN access and changed addresses
+
+Enable LAN access on the host's Access & sharing page, then pair through its invitation.
+Use an APK with the native Network plugin: the invitation carries the private
+certificate fingerprint, so Android verifies the host without installing a
+system-wide CA. An older APK can continue using its public HTTPS tailnet route.
+
+A reachable host advertises its enabled LAN and tailnet routes. Installed
+clients remember a bounded set and verify the computer before changing routes.
+Switching routes preserves the pairing, conversations and frontend preferences.
+It does not replay a failed command or upload automatically.
+
+If the host changes IP or port and every saved route is unreachable, open
+Settings → Computers → the offline computer → Change address. Enter its new
+HTTPS address and choose Verify & reconnect. This reuses the saved pairing's
+trust. A replacement certificate or an unfamiliar public hostname may require
+a new pairing link. A healthy saved route can advertise updated addresses and
+certificate pins without this manual step.
 
 ## Test production builds before a release
 
@@ -140,7 +164,8 @@ optional real-push smoke.
 |---|---|
 | Tailnet waits for login | Open and approve the app node's sign-in link; signing in the Mac's separate Tailscale app does not enroll it. |
 | Tailnet URL is HTTP | Enable MagicDNS and HTTPS certificates in the tailnet admin panel. The app observes changes without restart. Check the reported tailnet error if TLS cannot attach. |
-| QR names `127.0.0.1` or a LAN IP | The app node is not yet reachable. Finish tailnet setup and mint a fresh invitation. |
+| QR names `127.0.0.1` | Enable LAN access or finish tailnet setup, then mint a fresh invitation. |
+| QR names a LAN IP | Works on that reachable LAN with the current APK. For off-site access, enable the app's tailnet node. |
 | HTTPS name cannot be reached | Check phone Tailscale, both devices' tailnet membership, ACL access to the app node's TCP 443, host sleep, and whether the backend is running. |
 | Works on Wi-Fi, fails on cellular | Keep Tailscale connected on cellular; verify the tailnet path and relay availability. LAN addresses do not work off-site. |
 | Pairing fails after reinstall | Revoke/forget the old device entry if desired, then pair the fresh installation. |
@@ -150,8 +175,27 @@ optional real-push smoke.
 Verification is layered: Go tests cover identity, revocation, TLS/listeners and
 a local fake tailnet; client tests cover renewal/reconnect; browser harness
 specs cover off-host pairing and live state; `make e2e-android` covers the real
-WebView and native seams on an emulator using the debug APK's loopback
-exception. It does not verify the release APK's HTTPS connection. Real
+WebView and native seams on an emulator, including actual pinned HTTPS,
+removal of the original connection, LAN recovery, renewal and attachment upload.
+It uses a debug APK and does not prove the signed release APK on a real phone. Real
 Tailscale sign-in, public
 certificate issuance, Pixel biometrics, and cellular/DERP reach still require
 the device checks above. A green local suite alone does not prove those paths.
+
+## Headless computers
+
+On a desktop client, `agent-overflow --frontend` opens your saved computers
+without starting a local execution host. Add a computer in Settings → Computers,
+or use `agent-overflow --connect '<invitation>'` for terminal pairing. Subsequent
+frontend launches and updates work even when the originally paired host is off.
+
+On a computer with the release binary on PATH, run `agent-overflow service
+install`, then `agent-overflow pair --lan`. Open the invitation on the client,
+compare the numbers, and enter the six digits in the terminal. The service
+keeps running after the terminal or SSH connection closes. Existing services
+can pair more devices with the same command. `service start`, `service stop`,
+and `service status` control an installed host without its desktop app.
+
+A Mac LaunchAgent requires a logged-in user. A Linux user service needs
+lingering if it must survive logout; installation reports that command but
+does not change it automatically. See [serve mode](serve-mode.md).

@@ -927,6 +927,60 @@ export class ProposedPlanSourceRef {
 }
 
 /**
+ * RemoteJob is a command receipt. Accepted IDs survive history cleanup and
+ * restore: neither an absent reply nor a backend restart permits re-execution.
+ * Only live processes are held in memory. Output is a bounded settled tail.
+ */
+export class RemoteJob {
+    "id": string;
+    "sourceThreadId": string;
+    "projectId": string;
+    "workspace": string;
+    "state": string;
+    "startedAt": number;
+    "finishedAt"?: number;
+    "exitCode": number;
+    "output"?: string;
+    "truncated"?: boolean;
+    "error"?: string;
+
+    /** Creates a new RemoteJob instance. */
+    constructor($$source: Partial<RemoteJob> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("sourceThreadId" in $$source)) {
+            this["sourceThreadId"] = "";
+        }
+        if (!("projectId" in $$source)) {
+            this["projectId"] = "";
+        }
+        if (!("workspace" in $$source)) {
+            this["workspace"] = "";
+        }
+        if (!("state" in $$source)) {
+            this["state"] = "";
+        }
+        if (!("startedAt" in $$source)) {
+            this["startedAt"] = 0;
+        }
+        if (!("exitCode" in $$source)) {
+            this["exitCode"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new RemoteJob instance from a string or object.
+     */
+    static createFrom($$source: any = {}): RemoteJob {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new RemoteJob($$parsedSource as Partial<RemoteJob>);
+    }
+}
+
+/**
  * Thread represents a conversation thread.
  * 
  * ID is minted by internal/entityid and is unique across BACKENDS, not
@@ -940,6 +994,11 @@ export class ProposedPlanSourceRef {
  * sharing a project can diverge on these axes.
  */
 export class Thread {
+    /**
+     * OwnershipEpoch comes from completed incoming handoffs, never the history
+     * cache. Frontends use it to order stale catalogs from different computers.
+     */
+    "ownershipEpoch": number;
     "id": string;
     "projectId": string;
     "projectPath": string;
@@ -1103,6 +1162,9 @@ export class Thread {
 
     /** Creates a new Thread instance. */
     constructor($$source: Partial<Thread> = {}) {
+        if (!("ownershipEpoch" in $$source)) {
+            this["ownershipEpoch"] = 0;
+        }
         if (!("id" in $$source)) {
             this["id"] = "";
         }
@@ -1180,10 +1242,10 @@ export class Thread {
      * Creates a new Thread instance from a string or object.
      */
     static createFrom($$source: any = {}): Thread {
-        const $$createField35_0 = $$createType11;
+        const $$createField36_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("origin" in $$parsedSource) {
-            $$parsedSource["origin"] = $$createField35_0($$parsedSource["origin"]);
+            $$parsedSource["origin"] = $$createField36_0($$parsedSource["origin"]);
         }
         return new Thread($$parsedSource as Partial<Thread>);
     }
@@ -1247,6 +1309,7 @@ export class ThreadGroup {
  * turn.
  */
 export class ThreadMessageHit {
+    "ownershipEpoch": number;
     "threadId": string;
     "threadTitle": string;
     "provider": string;
@@ -1271,6 +1334,9 @@ export class ThreadMessageHit {
 
     /** Creates a new ThreadMessageHit instance. */
     constructor($$source: Partial<ThreadMessageHit> = {}) {
+        if (!("ownershipEpoch" in $$source)) {
+            this["ownershipEpoch"] = 0;
+        }
         if (!("threadId" in $$source)) {
             this["threadId"] = "";
         }
@@ -1345,6 +1411,73 @@ export class ThreadOrigin {
     static createFrom($$source: any = {}): ThreadOrigin {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new ThreadOrigin($$parsedSource as Partial<ThreadOrigin>);
+    }
+}
+
+/**
+ * ThreadTransfer is the durable coordination record, not a copy of provider
+ * runtime state. PrivateState is never serialized onto an ordinary status RPC:
+ * it may hold a one-operation destination grant or the source activation secret.
+ */
+export class ThreadTransfer {
+    "id": string;
+    "threadId": string;
+    "targetThreadId": string;
+    "peerBackendId": string;
+    "kind": string;
+    "direction": string;
+    "phase": string;
+    "manifestHash"?: string;
+    "archiveSize"?: number;
+    "cancelRequested"?: boolean;
+    "needsDestination"?: boolean;
+    "ownershipEpoch": number;
+    "error"?: string;
+    "createdAt": number;
+    "updatedAt": number;
+
+    /** Creates a new ThreadTransfer instance. */
+    constructor($$source: Partial<ThreadTransfer> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("threadId" in $$source)) {
+            this["threadId"] = "";
+        }
+        if (!("targetThreadId" in $$source)) {
+            this["targetThreadId"] = "";
+        }
+        if (!("peerBackendId" in $$source)) {
+            this["peerBackendId"] = "";
+        }
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+        if (!("direction" in $$source)) {
+            this["direction"] = "";
+        }
+        if (!("phase" in $$source)) {
+            this["phase"] = "";
+        }
+        if (!("ownershipEpoch" in $$source)) {
+            this["ownershipEpoch"] = 0;
+        }
+        if (!("createdAt" in $$source)) {
+            this["createdAt"] = 0;
+        }
+        if (!("updatedAt" in $$source)) {
+            this["updatedAt"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ThreadTransfer instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ThreadTransfer {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ThreadTransfer($$parsedSource as Partial<ThreadTransfer>);
     }
 }
 

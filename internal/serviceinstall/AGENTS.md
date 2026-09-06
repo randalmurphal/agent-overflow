@@ -52,12 +52,12 @@ machine.
   the verb the binary actually routes, because a rename on one side alone
   installs a unit whose command this binary rejects. An install over an older,
   `serve`-shaped unit migrates it: install always rewrites.
-- **`Stop` and `Start` are for `service update`, and are deliberately not
+- **`Stop` and `Start` back service control and updates, and are deliberately not
   `disable` / `bootout`.** An update restarts a service; it does not uninstall
   one. On launchd that means `kill SIGTERM` plus `kickstart` rather than
   `bootout` plus `bootstrap`, so the plist stays loaded throughout and a failed
-  update leaves a host that still comes back on reboot. `Stop` is also not
-  `mustRun`: stopping something already stopped is the state the caller wanted.
+  update leaves a host that still comes back on reboot. `Stop` waits for a launchd PID to disappear; signal delivery alone is not
+  exit. systemd stop already waits, and its nonzero refusal is an error.
 - **`LaunchdLabel` is not the app bundle identifier.** A Mac can run the
   desktop app and a serve agent at once, and launchd tells services apart by
   label.

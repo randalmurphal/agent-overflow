@@ -32,6 +32,10 @@ type DeletePorts struct {
 }
 
 func (s *Service) DeleteTree(threadID string, subtreeLocksHeld bool, ports DeletePorts) error {
+	retired, err := s.CheckCleanup(threadID)
+	if err != nil {
+		return err
+	}
 	database, err := s.database("delete thread")
 	if err != nil {
 		return err
@@ -64,7 +68,7 @@ func (s *Service) DeleteTree(threadID string, subtreeLocksHeld bool, ports Delet
 		}
 	}
 
-	if threadFound && ports.CleanProviderBackground != nil {
+	if threadFound && !retired && ports.CleanProviderBackground != nil {
 		if err := ports.CleanProviderBackground(thread); err != nil {
 			ports.Logf("delete thread %s: clean provider background terminals: %v", threadID, err)
 		}

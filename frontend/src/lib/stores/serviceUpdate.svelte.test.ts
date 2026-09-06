@@ -23,6 +23,7 @@ import {
   stageBackend,
 } from '../../test/helpers/backends';
 import { SCOPES } from '../transport/scopes';
+import { takePinnedBackend } from '../transport/backends';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { TransportError } from '../transport/wsClient';
 import { __resetScopesForTest } from '../transport/scopes';
@@ -35,6 +36,7 @@ import {
   loadServiceReleases,
   machineUpdate,
   requestServiceUpdate,
+  cancelServiceUpdate,
   resetServiceUpdatesForTest,
   selectServiceRelease,
   supervisedMachines,
@@ -326,4 +328,50 @@ describe('serviceUpdate store', () => {
       expect(machineUpdate(HOME_BACKEND).releasesLoading).toBe(false);
     });
   });
+  it('does not offer cancellation to a host that did not advertise it', async () => {
+    const cancel = setBindingMock('CancelServiceUpdate', async () => {});
+    initServiceUpdates();
+    emitWailsEvent('service:update-status', status({ phase: 'downloading' }));
+    await cancelServiceUpdate(HOME_BACKEND);
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
+  it('cancels on the captured computer and refreshes its resulting state', async () => {
+    stageBackend();
+    await grantBackendScopes('laptop', SCOPES);
+    initServiceUpdates();
+    emitWailsEvent('service:update-status', status({ phase: 'downloading', cancelable: true }), REMOTE_BACKEND_UUID);
+    const cancel = setBindingMock('CancelServiceUpdate', async () => { expect(takePinnedBackend()).toBe('laptop'); });
+    setBindingMock('GetServiceUpdateStatus', async () => { expect(takePinnedBackend()).toBe('laptop'); return status({ phase: 'canceled' }); });
+    await cancelServiceUpdate('laptop');
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(machineUpdate('laptop').status?.phase).toBe('canceled');
+    expect(machineUpdate('laptop').canceling).toBe(false);
+  });
+
+  it('does not let an older status read undo a live update transition', async () => {
+    initServiceUpdates();
+    let resolve!: (value: ServiceUpdateStatus) => void;
+    setBindingMock('GetServiceUpdateStatus', () => new Promise<ServiceUpdateStatus>((done) => { resolve = done; }));
+    const reading = loadMachineUpdate(HOME_BACKEND);
+    emitWailsEvent('service:update-status', status({ phase: 'requested' }));
+    resolve(status({ phase: 'idle' }));
+    await reading;
+    expect(machineUpdate(HOME_BACKEND).status?.phase).toBe('requested');
+  });
+
+  it('refreshes after reconnect even when the hello metadata is identical', async () => {
+    const laptop = stageBackend({ hello: LAPTOP_HELLO });
+    await grantBackendScopes('laptop', SCOPES);
+    const read = setBindingMock('GetServiceUpdateStatus', async () => status());
+    initServiceUpdates();
+    await tick();
+    expect(read).toHaveBeenCalledTimes(1);
+    laptop.setStatus('reconnecting');
+    laptop.setStatus('connected');
+    laptop.setHello(LAPTOP_HELLO);
+    await tick();
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
 });

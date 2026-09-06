@@ -28,6 +28,18 @@ directory.
   navigated one page several times was measured clearing at ~5.6s on
   macOS. A page still there at the ceiling fails the test as a leaked
   context.
+- `frontend-client-helpers.ts` starts the compiled `frontendclient` test fixture
+  under the same containment boundary. It owns a production frontend controller
+  and no execution backend. Its `open(page)` obtains a fresh local page ticket;
+  execution hosts still come from `launchHarness`. The desktop and compact
+  specs stop the original host before cold-starting that same frontend.
+- `ssh-computer.spec.ts` normally replaces only the SSH transport. Its manual
+  `AO_E2E_SSH_CONFIG=/absolute/isolated/config` mode instead uses real OpenSSH.
+  Supply an owned loopback sshd and a `gpu-test` alias with temporary identity
+  files and pinned `UserKnownHostsFile`; the executable path deliberately has
+  spaces and always names the isolated harness data root. It never installs a
+  service or uses the developer's normal SSH configuration. Stop the owned
+  daemon and delete its temporary keys after the manual run.
 - **A spec that asserts a MAPPED notification must not have a page open.**
   Since wave R5 the SPA states a screen presence on its socket, and the
   backend's default `notifyQuietWhen: "focused"` holds back a notification
@@ -134,6 +146,15 @@ when no device is attached, on purpose.
 differs from the APK even on the same checkout. The update case trims
 `bundle-id.txt` before checking that prerequisite; its trailing newline
 must never make identical bundles look different.
+
+The boot case also enables its isolated host's LAN listener, learns the
+advertised route, removes the original `adb reverse`, and reloads with an expired
+session. It must retain the pairing, renew over LAN, open a socket and upload an
+attachment. This case needs a LAN interface reachable from the emulator; the
+native HTTP bridge bypasses Playwright's request interception, so a browser
+route mock cannot stand in for this check.
+It then changes the backend's port, repairs the now-offline computer through
+Settings, and verifies that the same pairing and thread are usable afterwards.
 
 `scripts/android-smoke.sh` owns what is per RUN: it installs the APK
 `make apk` built, sets a device PIN, and clears the PIN on every exit
@@ -310,14 +331,12 @@ missing value over one that skips. Two rules keep the evidence real:
   `draft-first-turn-render.spec.ts` drives that path through the real
   composer and asserts the first turn RENDERS; a change to how a pane
   acquires its thread is not covered by the RPC-seeded specs.
-- **Every page this backend hands out shares ONE ui_state bucket.** Pane
-  layout persists under the `client:<id>` scope and `/pageurl` answers with
-  the same client id every time, so a second page BOOTS INTO the panes the
-  first one opened — and then watches their threads. A spec that needs a
-  client with no panes, or with a different set, opens it BEFORE any other
-  page opens one; `HarnessReset` clears ui_state, so the first page of each
-  test is the only one that can boot bare.
-  `transport-watch-badge-carriers.spec.ts` turns on that ordering.
+- **Each browser context owns its view preferences and layout.** `appStorage`
+  reads the legacy connection-scoped `ui_state` bucket only on first migration.
+  A fresh context can therefore inherit a seeded legacy layout, but later
+  changes stay in that context's local storage. An isolated context is the
+  boundary for frontend-independence tests; a reload preserves its cache.
+
 - **A spec boots its OWN backend only for state `harness.reset()` cannot
   undo**, and then owns everything downstream of it. The LAN bind and the
   canonical domain both PERSIST to the settings file and REBIND the
@@ -390,3 +409,14 @@ missing value over one that skips. Two rules keep the evidence real:
   `HarnessSessionEnv` (a READ of the token registry, never a mint) and
   spawns the binary with exactly that env. Everything past the process
   boundary is then production code.
+
+The Android credential helper waits for the actual BiometricPrompt window and
+selects its PIN field. An empty focused-window result is not readiness. Failure
+hierarchy capture uses Playwright's existing UiAutomation connection: launching
+`uiautomator dump` while the driver owns that connection cannot inspect the UI.
+
+Select Android WebViews by `webview_devtools_remote_<exact app PID>`, using the
+PID returned by `pidof` for the shell package. Playwright 1.62's package-name
+resolver keeps the last `ps` substring match for a PID, which can be another
+process or a child; a live debug socket can therefore become permanently
+invisible to a package-name selector. Re-resolve the PID after every cold start.

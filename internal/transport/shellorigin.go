@@ -88,6 +88,7 @@ var (
 	// are not, and a shell that could not read them would mis-render a
 	// download it was otherwise allowed to make.
 	shellExposedResponseHeaders = strings.Join([]string{
+		RefreshRecoveryHeader,
 		"Content-Type",
 		"Content-Length",
 		"Cache-Control",

@@ -214,6 +214,18 @@ func (m *Manager) StartProviderLogin(providerName string, method LoginMethod) (L
 		)
 	}
 
+	endWork, err := m.beginWork(m.context())
+	if err != nil {
+		return m.ProviderLoginState(providerName), err
+	}
+	// The accepted session owns the lease until its provider process and
+	// temporary credentials have been cleaned up, including cancellation.
+	transferred := false
+	defer func() {
+		if !transferred {
+			endWork()
+		}
+	}()
 	m.CancelProviderLogin(providerName)
 
 	attempt, err := m.beginLogin(providerName)
@@ -249,7 +261,11 @@ func (m *Manager) StartProviderLogin(providerName string, method LoginMethod) (L
 		return m.ProviderLoginState(providerName), joined
 	}
 	state := m.publishLoginFlow(run, flow, notice)
-	go m.driveLogin(ctx, run)
+	transferred = true
+	go func() {
+		defer endWork()
+		m.driveLogin(ctx, run)
+	}()
 	return state, nil
 }
 

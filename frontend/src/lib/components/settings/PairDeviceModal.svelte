@@ -1,4 +1,7 @@
 <script lang="ts">
+  import { settingsComputer } from './settingsComputer';
+  const { call } = settingsComputer();
+
   // The owner's half of device pairing (docs/specs/remote-access.md §4):
   // mint a link, hand it to the new device, and confirm the verification
   // number the device shows. The other half is PairingScreen, which the
@@ -111,7 +114,7 @@
     if (minting !== null) return;
     minting = deviceClass;
     try {
-      const invite = await MintDevicePairing(deviceClass, access);
+      const invite = await call(() => MintDevicePairing(deviceClass, access));
       stage = { at: 'share', invite };
       nowMs = Date.now();
       startWatching(invite.linkId);
@@ -136,7 +139,7 @@
   async function poll(linkId: string): Promise<void> {
     let status: PairingStatusView;
     try {
-      status = await DevicePairingStatus(linkId);
+      status = await call(() => DevicePairingStatus(linkId));
     } catch {
       // A failed poll is a hiccup, not a verdict; the next tick answers.
       return;
@@ -181,9 +184,10 @@
 
   async function confirm(): Promise<void> {
     if (stage.at !== 'verify' || deciding) return;
+    const linkId = stage.linkId;
     deciding = true;
     try {
-      await ConfirmDevicePairing(stage.linkId);
+      await call(() => ConfirmDevicePairing(linkId));
       stopTimers();
       stage = { at: 'done' };
       onChanged();
@@ -199,7 +203,7 @@
     if (linkId === null || deciding) return;
     deciding = true;
     try {
-      await CancelDevicePairing(linkId);
+      await call(() => CancelDevicePairing(linkId));
       stopTimers();
       onChanged();
       onClose();

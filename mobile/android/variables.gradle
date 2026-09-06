@@ -18,6 +18,8 @@ ext {
     // Push. The classpath entry is unconditional; google-services.json is
     // what decides whether it initialises (app/build.gradle says why).
     firebaseMessagingVersion = '25.1.2'
+    // Last release supporting this app's compileSdk 36; 5.5 requires 37.
+    okhttpVersion = '5.4.0'
     junitVersion = '4.13.2'
     // Unit tests only. android.jar's `org.json` is a stub whose methods
     // throw, so the JVM suite needs the real implementation on its

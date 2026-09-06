@@ -1,4 +1,7 @@
 <script lang="ts">
+  import { settingsComputer } from './settingsComputer';
+  const { hasScope, backend } = settingsComputer();
+  import { onMount } from 'svelte';
   // EditorSection: settings panel for the open-in-editor preference.
   // The Go-side catalog returns every editor it knows about
   // (available + unavailable), so the UI can offer a stable list and
@@ -10,14 +13,9 @@
   // explicit pick is persisted as the editor ID so a vendor binary
   // upgrade doesn't quietly switch selection.
   //
-  // In --connect mode and non-loopback browser sessions the panel is
-  // read-only. The backend owns the editor catalog and preference, and its
-  // list/write RPCs are deliberately unavailable to a remote peer.
-
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
-  import { isClientMode } from '../../transport/runMode';
-  import { hasScope } from '../../transport/scopes';
+
   import {
     ensureEditorsLoaded,
     getEditorPreference,
@@ -32,34 +30,30 @@
   import { SECTION_PROSE_CLASS } from './styles';
   import Button from '../primitives/Button.svelte';
 
-  const clientMode = isClientMode();
-  // Two independent axes. `clientMode` is a process-boot fact: a --connect
-  // stub's RPCs would edit the REMOTE machine's editor preference. `host` is
-  // authorization: the editor catalog is discovered on the host desktop.
-  let noHost = $derived(!hasScope('host'));
-  let localOnly = $derived(clientMode || noHost);
+  let localOnly = $derived(!hasScope('settings:read'));
+  let canWrite = $derived(hasScope('settings:write'));
 
-  let editors = $derived(getEditors());
-  let preference = $derived(getEditorPreference());
-  let loadStatus = $derived(getEditorsLoadStatus());
-  let loadError = $derived(getEditorsError());
-  let hasSnapshot = $derived(hasEditorsSnapshot());
+  let editors = $derived(getEditors(backend));
+  let preference = $derived(getEditorPreference(backend));
+  let loadStatus = $derived(getEditorsLoadStatus(backend));
+  let loadError = $derived(getEditorsError(backend));
+  let hasSnapshot = $derived(hasEditorsSnapshot(backend));
   let saving = $state(false);
 
   function retryLoad(): void {
     if (localOnly || loadStatus === 'loading') return;
-    void refreshEditors();
+    void refreshEditors(backend);
   }
 
   async function selectEditor(id: string): Promise<void> {
-    if (localOnly || saving || preference === id) return;
+    if (localOnly || !canWrite || saving || preference === id) return;
     saving = true;
     try {
       // Server validates against the live catalog at open time, not at
       // save time — invalid IDs persist quietly and silently fall back
       // to the catalog default. That matches Resolve()'s contract and
       // means we don't have to reject "VS Code (not installed)" here.
-      await setEditorPreference(id);
+      await setEditorPreference(id, backend);
     } catch (err) {
       addToast('error', `Failed to update editor preference: ${errString(err)}`);
     } finally {
@@ -67,28 +61,23 @@
     }
   }
 
-  $effect(() => {
+  onMount(() => {
     if (localOnly) return;
-    void ensureEditorsLoaded();
+    void ensureEditorsLoaded(backend);
   });
 </script>
 
 {#if localOnly}
   <section data-testid="editor-section-clientmode">
     <SettingsCallout>
-      Editor preferences are local to your install. This window is attached to a
-      remote backend, so changes here would update the remote machine's catalog,
-      not yours. Edit your editor preference from your local install.
+      This connection does not have permission to read this computer’s editor settings.
     </SettingsCallout>
   </section>
 {:else}
   <section>
     <p class="{SECTION_PROSE_CLASS} mb-3">
-      "Auto" follows the catalog priority order (VS Code, Cursor, Zed, …) with
-      <code class="font-mono text-[0.6875rem]">$EDITOR</code> /
-      <code class="font-mono text-[0.6875rem]">$VISUAL</code> as the final
-      fallback. Editors that aren't installed are listed for reference but can't
-      be selected.
+      Choose the editor this computer uses when opening files. Auto picks an
+      installed editor, with your environment’s editor as a fallback.
     </p>
 
     {#if loadStatus === 'loading' && !hasSnapshot}
@@ -145,7 +134,7 @@
             name="editor-preference"
             value=""
             checked={preference === ''}
-            disabled={saving}
+            disabled={saving || !canWrite}
             onchange={() => void selectEditor('')}
             class="accent-accent"
           />
@@ -154,7 +143,7 @@
         </label>
 
         {#each editors as editor (editor.id)}
-          {@const disabled = !editor.available || saving}
+          {@const disabled = !editor.available || saving || !canWrite}
           <label
             class="flex items-center gap-2.5 rounded-[var(--radius-field)] px-2 py-1.5 transition-colors
               {!editor.available ? 'opacity-60' : 'hover:bg-surface-2/30 cursor-pointer'}"

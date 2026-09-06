@@ -138,6 +138,9 @@ func (a *App) InterruptAndRevertIfClean(threadID string) (InterruptAndRevertResu
 
 	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()
+	if err := a.threadApplication().CheckMutable(threadID); err != nil {
+		return InterruptAndRevertResult{}, err
+	}
 
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {

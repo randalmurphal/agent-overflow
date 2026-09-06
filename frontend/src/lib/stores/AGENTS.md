@@ -1,5 +1,29 @@
 # lib/stores/
 
+## Frontend appearance files
+
+`appearanceFiles.ts` is the file-residency boundary for themes and custom
+animations. A desktop/controller reads and watches its own directory. A phone
+or remote browser uses `frontendAssets.ts`'s bounded IndexedDB library: one
+legacy first-host migration, then explicit copy-from-computer actions. Imports
+replace files atomically, never preferences. Neither backend removal nor replica
+purging may remove this frontend-owned database. Operations time out, close late
+handles, and retain the previous library on failure. Same-tab callbacks and
+cross-tab storage notices reload the library; remote file watchers do not.
+Spinner sources use frontend ownership (`backendForKey: null`) on these clients,
+so losing the old HOME connection cannot suspend their library.
+
+PNG header dimensions and the aggregate custom-pool pixel budget are checked
+before browser decoding (`spinners/customs.ts`). File byte caps alone do not
+bound memory. Keep the embedded `internal/spinner/assets/SPINNERS.md` true.
+
+Cold-start preference tests must import the module after seeding storage.
+Reset helpers cannot catch a validator declared after its module-level read:
+the guarded read catches that initialization error and silently chooses defaults
+(`appearanceColdStart.test.ts`; desktop's later file load used to hide it).
+
+## Store boundaries
+
 Every wire subscription and every entity-owned RPC lives here, and
 components read the result through `$derived`. Two of
 `src/lib/architecture.test.ts`'s five rules police that boundary, with
@@ -14,7 +38,11 @@ The deciding question is "is there something to release?".
   lifecycle: the first `attach` sources the key, every later attacher
   shares it, the last release tears it down, and the transport edge
   (suspend on disconnect, re-acquire on reconnect) is wired once for every
-  entity rather than per store. `apply` is the single write chokepoint, so
+  entity rather than per store. `backendForKey` is required: connection edges
+  suspend and re-acquire only that computer’s keys. The listener exists only
+  while entries are held. Use a null owner only for frontend-owned state.
+  A HOME disconnect must never clear or stop an attached computer’s resources.
+  `apply` is the single write chokepoint, so
   an `onApply` reconciliation hook cannot be bypassed by a new call site.
 - `keyedSignalRegistry.svelte.ts` for PUSH-FED state: events arrive and are
   written, nothing to acquire, nothing to tear down. One `$state.raw` box
@@ -43,7 +71,7 @@ stops waking readers.
   thread screen, so a new "open this pane" path that bypasses it leaves
   the phone on the list; route through `revealPane`. Tests use
   `setCompactLayoutForTest` and never drive `matchMedia` themselves.
-- **What a session may do is NOT a store.** `hasScope('git:operate')`
+- **What a session may do is NOT a store.** `hasScope('git:operate', backend)`
   and friends come from `transport/scopes.ts`, imported directly by
   components, stores and utils alike, and no store re-exports them. It is
   a credential fact resolved from the bootstrap manifest and the paired
@@ -55,7 +83,10 @@ stops waking readers.
   store that gates its own loader — `providerAccounts` on `access:admin`,
   the skills stores on `threads:operate`, `appearance` on
   `settings:write` — asks for the capability its RPCs actually carry,
-  never for a stand-in.
+  never for a stand-in. Non-host scope checks require a backend argument.
+  Thread/project/workflow controls use `transport/entityScopes.ts` to resolve
+  the entity’s owner, including a draft’s project. Never read the selected
+  computer while saving a captured draft or acting on an existing thread.
 - **A PASSIVE load asks before it fires.** A loader that runs because a
   pane mounted — thread live state, git status, the MCP listing, the model
   catalog, worktree setup, the PR entity, the launch update check — has
@@ -259,8 +290,8 @@ stops waking readers.
   and land after it. Re-reading the whole projection is also what makes the
   backend's per-caller device tier invisible here: a device-tier frame reaches
   every attached client and each one's re-read answers with ITS OWN values,
-  including the defaults its DEVICE CLASS starts from — a paired phone reads
-  `lowPowerMode` on without the frontend knowing a class exists
+  including any defaults its DEVICE CLASS supplies, without the frontend
+  knowing a class exists
   (`internal/settings/residency.go`, `classdefaults.go`).
 - **An app-state surface converges too, and the frame carries what its own
   RPC answered with.** Eleven writes persisted and answered their caller and
@@ -315,14 +346,15 @@ stops waking readers.
   `GetWorkspaceActivity`, `GetLocalImageData`, `StartTerminal`), and a path
   issued while a thread is on screen is about that thread's checkout;
   routing it by a picker value would ask one machine about another's
-  directory and get a plausible answer. It falls back to home when the
-  chosen backend detaches, so a single-backend client never leaves the
-  default. `stores/panes.svelte.ts` arms the focused-pane resolver at its
+  directory and get a plausible answer. The app-wide choice is a frontend
+  preference. A removed or offline choice stays selected until the user
+  changes it; dispatch must never silently reroute to home. A frontend without
+  a local execution host initially chooses its first saved computer only when
+  no launch or remembered choice exists. `stores/panes.svelte.ts` arms the focused-pane resolver at its
   own load — a function, not an import, because `panes → thread →
   gitStatusStore → transport` already exists. The picker that writes it is
-  `components/composer/workspace/MachinePicker.svelte`, mounted only when
-  `hasMultipleBackends()`; it stages the pane's choice BEFORE the draft
-  flip, because the flip's own RPCs take the `selected` route.
+  `components/composer/workspace/MachinePicker.svelte`. Draft switching captures
+  the destination project/host; it remembers the new choice after success.
 - `systems.svelte.ts` owns the attached-machine list (`ListBackends`,
   `AddBackend`, `RemoveBackend`, `RenameBackend`) and the `backend:attach`
   reaction. Pairing is two RPCs apart in time — the verification number
@@ -331,8 +363,8 @@ stops waking readers.
   publishes the descriptor to the transport registry itself
   (`publishAttachedBackend`) rather than waiting on a manifest re-fetch,
   and a removal detaches the socket as well as forgetting the descriptor.
-  All four RPCs are `host`: a `--connect` window and every paired device
-  see an explanation, and the passive load asks `hasScope('host')` first.
+  Desktop frontends manage profiles through their local controller. Phones
+  own their profiles locally; neither requires the first host to be online.
 - `serviceUpdate.svelte.ts` owns updating a SUPERVISED machine over the
   wire (`GetServiceUpdateStatus`, `ListServiceReleases`,
   `RequestServiceUpdate`; docs/architecture/serve-mode.md § Updating over
@@ -434,9 +466,8 @@ stops waking readers.
   A store keyed by a PATH is the opposite case and must be keyed by
   backend: `/home/me/repos/app` names a different repo on a different
   machine, and two machines with the same checkout is the ordinary case,
-  not the exotic one. Settings, provider accounts and sysstat stay
-  HOME-only reads for now and say so in a comment naming the phase-7 plan
-  item; a path-keyed store does not have that option, because collapsing
+  not the exotic one. Settings, provider accounts and sysstat are scoped to their computer.
+  A path-keyed store also includes the backend, because collapsing
   two machines' identical paths is a wrong ANSWER, not a missing one — an
   agent busy on one machine would unlock `Remove Worktree` over the other's
   identical directory.
@@ -445,8 +476,8 @@ stops waking readers.
   never spelled by hand. A composite STRING rather than a two-level map,
   because the hot path is one `Map.get` per status frame and per lock read
   and the concatenation happens once at derivation; it also keeps
-  `createEntityStore`'s single-string key, so refcounting, suspension and
-  diagnostics are untouched. Split it with `workspaceKeyPath` before any
+  `createEntityStore`'s single-string key. Its `backendForKey` reads the same
+  owner, so suspension and reconnect cannot affect another computer. Split it with `workspaceKeyPath` before any
   RPC — the wire wants a path — and pin the call to `workspaceKeyBackend`'s
   answer with `withBackendTarget`, because nothing in a path argument says
   which machine it is on and the route table cannot resolve one. The same
@@ -508,6 +539,46 @@ stops waking readers.
   outpace the RPC round-trip and no install ever lands. Use
   `utils/refreshScheduler.ts` (architecture rule 5); generation guards are
   for user-input-driven flows where the newest intent wins.
+
+## Computer-owned catalogs and navigation
+
+`agentComputers.svelte.ts` owns the mounted agent-access settings controller,
+including its RPCs, reconnect refresh and origin-filtered dirty events. The
+component holds only the target picker. Capture both computers before pairing;
+a settings switch must never redirect the later confirmation or opt-in write.
+
+Service-update status reads are invalidated by a newer read, a pushed status,
+disconnect or detach. Reconnect refresh listens to connection edges as well as
+hello metadata: a reconnect to the same backend may repeat an identical hello.
+Coalesce both edges before reading. Cancellation is offered only when that
+computer's status advertises `cancelable`; an older host receives no new RPC.
+
+MCP keys include the computer for both providers: Codex configuration is global
+on one computer; Claude configuration is per workspace on one computer. Events,
+status refreshes, toggle/auth calls, and gap recovery keep that same owner.
+Checking a grant must read the stable entity key rather than a live ctx getter:
+tracking the getter reattaches a menu whenever its thread changes inside the
+same workspace. `entityStore` sources read ctx untracked and stop follow-up work
+when their signal is aborted.
+
+Skills include computer plus workspace and hold at most 128 catalogs per
+provider. Claude command probes are per computer and invalidate when accounts
+change. Removed computers and superseded scans cannot publish late results.
+The import modal captures its computer on opening and retains it through scan,
+start, cancellation and progress. A frontend focus change cannot redirect those
+operations. Changing import computers discards the previous catalog; progress
+and reconnect diagnostics are filtered by their origin.
+
+Notification hydration means pane-layout restoration has settled, including a
+failed or superseded initial list read. It must not wait forever for that old
+read to succeed. A notification can fetch its specific thread before its sidebar
+catalog arrives. Known thread ownership outranks an older notification’s host
+hint after a move; an unknown explicit host never falls back to another machine.
+Failed notification lookups stay visible with a dismissible retry action. Keep
+only the latest failure, preserve its target, and resolve ownership again on an
+explicit retry; reconnection alone must not steal focus. Never turn a failed RPC
+into an absent/deleted target. The activation queue has at most eight waiting
+targets both before and after hydration, plus the one being processed.
 
 ## The ThreadPane modules
 
@@ -613,3 +684,143 @@ was rejected.
 
 State ownership taxonomy and the entity-keying doctrine:
 [`frontend/AGENTS.md`](../../../AGENTS.md).
+
+### Offline computers and history ownership
+
+Sidebar snapshots are bounded metadata in the owning computer’s replica database
+(`replica/catalog.ts`: at most 5,000 rows / 4 MiB per catalog, three catalogs).
+They share `replica/session.ts`’s identity token, failure latch and purge lifecycle;
+do not open an independent IndexedDB connection for another kind of cache.
+The existing 32 MiB history cap is separate from the 12 MiB metadata ceiling.
+A remembered identity may read matching cached rows while offline, but cannot
+publish a live identity, stamp a database, or write an attested window. Live
+bootstrap identity supersedes it and a generation mismatch drops the cache.
+Unclaimed-database sweeps preserve remembered attached computers too.
+
+Catalog merges index every origin before accepting rows. Moved conversations
+retain one AO ID; only the highest known ownership epoch is admitted, regardless
+of attachment/response order. Late updates and deletions from an old owner must
+not change the current owner's row. Ownership changes invalidate thread stamps,
+item caches and interrupt state, just as a history reset does for that thread.
+
+Thread-cache operations resolve the thread’s owner inside the replica API.
+History stamps, interrupt state and the in-memory item cache invalidate through
+`threadIdentityInvalidation.ts`, which filters by computer and handles detached
+IDs after the entity index has dropped them. A rename is not a history reset.
+Never let a second computer’s first connection clear the first computer’s state.
+Interrupt tokens remain monotonic across resets so an old completion cannot
+finish a new interrupt. Startup metadata reads have a deadline; timed-out reads
+must not later overwrite state or restore a removed connection.
+
+Catalog fallbacks accept a getter and read it untracked inside `computerCatalog`.
+A mount loader subscribing to the rows it replaces creates an asynchronous
+refresh loop; the loop crosses flushes, so the synchronous Svelte depth guard
+cannot stop it. Keep that snapshot read outside the caller’s dependencies.
+
+Editor catalogs and saved preferences are also per computer. Allocate reactive
+state at the attach edge, never lazily inside a getter’s `$derived`: Svelte does
+not subscribe a reaction to state that the reaction itself created. Settings
+writes and event-driven preference refreshes capture the owning backend. Opening
+an editor requires an explicit backend at the shared `openInEditor` boundary;
+paths alone do not identify a computer.
+
+Frontend preference writes complete locally. Only generated
+`FRONTEND_DEVICE_SETTINGS_KEYS` may be mirrored to the per-connection device
+bucket on each computer, independently of that computer’s settings read/save
+queue. User-tier defaults such as hidden models or archive confirmation never
+write through to a host. Mirrors coalesce while a request is pending and refresh
+on hello; an unavailable computer cannot hold a frontend control’s save open.
+
+Pane-layout restore captures `paneLayoutMutationRevision` before startup awaits.
+A user opening or closing a pane while the host is loading supersedes the saved
+layout. Restore checks the revision again after its asynchronous boundaries;
+never clear a newly chosen pane when delayed bootstrap work finishes. Integration
+tests wait for the control they drive, rather than guessing a microtask count.
+
+### Local view persistence and computer catalogs
+
+`appStorage` owns this frontend's layout and sidebar preferences. It adopts
+missing values from the legacy `GetUIState` bucket once, with a bounded read;
+local values and concurrent deletions win. Subsequent launches use local
+storage, including an empty bucket. Never make host availability or sign-out
+reset unrelated view preferences. `flushAppStorage` remains an explicit caller
+boundary; writes are synchronous and send no host RPC.
+
+Sidebar metadata uses `computerCatalogWriter` at mutation boundaries, not a
+render effect. It coalesces per computer and fences queued work by the replica
+token, so newly created/deleted rows survive offline reload without writes
+crossing a history reset. Streaming activity stays in the existing signal
+boxes and does not rewrite catalogs per beat.
+
+Catalog startup waits are bounded independently per computer. A response past
+the initial deadline still applies through the same store reconciliation,
+provided its attachment, history generation and catalog revision remain current.
+A local row mutation advances the revision; an older list cannot erase that
+edit. Thread snapshot reconciliation shares the event path's read-marker and
+completion merge rather than inventing a second rule for late responses.
+
+An entirely superseded catalog read returns no result, not an empty snapshot
+or a connection error. Its caller preserves loaded state and rows. Startup's
+thread read follows the winning outstanding read before validating saved panes;
+a first hello must neither toast an error nor erase the saved layout.
+
+Computer profiles: list responses are invalidated by local rename/removal. A
+late attachment event with no pending row refreshes the authoritative profile
+set before adding a transport entry. `computerSSH.svelte.ts` holds bounded local
+SSH aliases/paths only; removal forgets them, and credentials stay in OpenSSH.
+
+`conversationTransfers` keeps bounded status rows per computer and one frontend
+form. It persists no transfer authority. Status reads retain intervening events;
+completion refreshes the existing catalog reconciliation. Public setup recovery
+reads the original intent and the destination's accepted project so a lost reply
+never requires minting another copy. Native execution and retry jobs remain on
+the hosts after this frontend disconnects.
+
+### Metadata retirement and frontend stars
+
+List/search and direct thread reads retain newer ownership claims only for the
+lifetime of their pending RPC. The runtime rejects older rows even if the new
+computer has since been forgotten, including an archived ID this frontend had
+never indexed. Detachment invalidates that computer's reads. Claims are released
+when the request settles; never keep permanent frontend thread tombstones.
+
+`replica/catalogStamp.ts` synchronously invalidates a catalog before its queued
+IndexedDB rewrite, covering a crash between those steps. Catalog v2 envelopes
+carry that stamp as well as the backend generation. At most 192 separate
+localStorage stamp keys are retained; missing/evicted stamps mint a new value
+and cannot validate old data. Separate keys prevent concurrent windows from
+undoing each other's invalidations. A writer keeps the stamp under which its
+rows were read; only a successful fresh read or an explicit local invalidation
+adopts a new one. Moves and thread/project/group removal use this boundary.
+
+Composer favorites are frontend preferences in `frontendStorage`, bounded to
+256 validated entries. The selected computer's old list seeds them once; local
+writes and other-window storage events supersede an in-flight seed. Favorites
+remain editable offline and survive forgetting any computer. Ignore the old
+`chatbar:favorites` backend event; its RPC/event still serve older clients.
+
+### Workflows on connected computers
+
+Workflow catalogs and initial unresolved-run reads fan out through
+`readComputerRows`, retaining each failed computer's previous rows and applying
+late initial answers without needing another event. Engine pause state is keyed
+by computer; event origins and gap recovery address the same key. Pause-all
+captures the attached set and reports each failure. A successful write is
+reconciled from that computer's engine state.
+
+Run-map and detail RPCs teach the transport index their hidden phase/unit thread
+owners. Detail reads capture their computer and request identity; forced reads,
+closing the detail pane, and removing a computer invalidate older replies.
+Detachment carries the removed workflow IDs alongside project/thread IDs so
+receipts and pending reads cannot outlive the connection that owned them.
+
+Computer hydration listens to connection edges as well as hello metadata.
+The transport deduplicates identical hello payloads, so a reconnect to the same
+server cannot depend on a hello change to refresh missed catalog/settings state.
+Reads wait for connected status and metadata; same-tick edges share one sidebar
+refresh. The first successful home connection also hydrates settings, because an
+offline boot's initial read may have failed.
+
+Workflow item/soft-stop events supersede outstanding run-list snapshots. Apply
+the known fields immediately and coalesce a fresh list read for the fields the
+event cannot carry. A delayed response must not undo a newer live transition.

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { threadMachine } from '../../../stores/attachedBackends.svelte';
   // Bottom row of the composer card. Children still own their binding
   // calls; this file owns their layout and the measured compact mode that
   // hides low-value labels when the full toolbar would overflow.
@@ -69,6 +70,7 @@
     onInterrupt,
     hideSendButton = false,
   }: Props = $props();
+  let backend = $derived(threadMachine(pane.threadId ?? '', pane.thread?.projectId));
 
   // Discussion has its own composer flow; ordinary threads expose the
   // chat ↔ plan agent-mode toggle here.
@@ -84,7 +86,7 @@
   let showLimitRings = $derived(pane.isLocked && !!pane.thread?.provider);
   let providerID = $derived(asProviderID(pane.thread?.provider));
   let selectedAccount = $derived.by(() =>
-    providerID ? getProviderAccount(providerID) : null,
+    providerID ? getProviderAccount(providerID, backend) : null,
   );
   let sessionAccount = $derived(pane.providerSessionAccount);
   let sessionUsesSelectedAccount = $derived(
@@ -246,6 +248,7 @@
         data-testid="composer-rate-limit-5h"
       >
         <RateLimitMeter
+          {backend}
           windowMins={300}
           provider={providerID ?? undefined}
           accountId={currentAccountID}
@@ -259,6 +262,7 @@
         data-testid="composer-rate-limit-7d"
       >
         <RateLimitMeter
+          {backend}
           windowMins={10080}
           provider={providerID ?? undefined}
           accountId={currentAccountID}

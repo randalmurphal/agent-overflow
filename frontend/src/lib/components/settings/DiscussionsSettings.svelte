@@ -1,4 +1,7 @@
 <script lang="ts">
+  import { settingsComputer } from './settingsComputer';
+  const { call } = settingsComputer();
+
   import { untrack } from 'svelte';
   import type { DiscussionDefinition, DiscussionScope } from '../../types/discussion';
   import { createEmptyDiscussionDefinition } from '../../types/discussion';
@@ -32,8 +35,8 @@
     loadError = null;
     try {
       const [global, project] = await Promise.all([
-        ListDiscussions('global') as Promise<DiscussionDefinition[] | null>,
-        ListDiscussions('project') as Promise<DiscussionDefinition[] | null>,
+        call(() => ListDiscussions('global')) as Promise<DiscussionDefinition[] | null>,
+        call(() => ListDiscussions('project')) as Promise<DiscussionDefinition[] | null>,
       ]);
       if (seq !== loadSeq) return;
       discussions = [...(global ?? []), ...(project ?? [])];

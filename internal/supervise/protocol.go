@@ -19,6 +19,16 @@ import (
 // which replaces the supervisor with the operator standing there.
 const ProtocolVersion = 1
 
+// RestartForUpdateExitCode asks the supervisor to re-read its durable update
+// selection after the backend has drained safely. Older supervisors propagate
+// the failure to the service manager, whose on-failure restart does the same.
+const RestartForUpdateExitCode = 75
+
+// ErrUpdateOutcomeUnknown means the request may already be durably accepted.
+// The child must stop accepting work and restart through its supervisor; a
+// timeout or broken pipe is not an explicit refusal and cannot permit retry.
+var ErrUpdateOutcomeUnknown = errors.New("the supervisor's update result is unconfirmed")
+
 // The message types, in one closed set. Kept small on purpose: every frame
 // here is a state transition the supervisor's single loop must serialize, and
 // a vocabulary that grows is a state machine that grows with it.
@@ -58,6 +68,9 @@ type Message struct {
 	Version string `json:"version,omitempty"`
 	// Trial rides activate.
 	Trial bool `json:"trial,omitempty"`
+	// OwnsDataRoot rides activate. Its absence on an older supervisor means
+	// the child must acquire its own lock, preserving mixed-version boot.
+	OwnsDataRoot bool `json:"ownsDataRoot,omitempty"`
 	// UpdateID rides activate (on a trial), update-accepted, prepared and
 	// commit — the id the client correlates its reconnect against.
 	UpdateID string `json:"updateId,omitempty"`

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { threadMachine } from '../../stores/attachedBackends.svelte';
   /*
    * Inline per-file diff block. Visually structured to match
    * GenericToolCallRow — chevron + ToolKindIcon + lowercase label +
@@ -273,7 +274,7 @@
           class="min-w-0 flex-1 truncate text-[0.75rem] text-fg-muted/75 font-mono"
           data-testid="diff-file-path"
         >
-          <EditorLink
+          <EditorLink backend={threadMachine(threadId, null)}
             path={file.path}
             workspacePath={workspacePath ?? ''}
             label={displayPath}

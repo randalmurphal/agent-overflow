@@ -1,3 +1,5 @@
+import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
+import { threadMachine, getAttachedBackends } from './attachedBackends.svelte';
 // Provider-lifecycle event domain: approvals, user-input requests, usage /
 // rate-limit reporting, provider status + account probes, turn
 // started/completed, session-died, subagent notifications, and todo
@@ -163,7 +165,7 @@ export function applyUserInputEvent(evt: UserInputEvent): void {
   }
 }
 
-export function applyUsageEvent(evt: UsageEvent): void {
+export function applyUsageEvent(evt: UsageEvent, backend: BackendKey = HOME_BACKEND): void {
   if (!evt) return;
 
   // `rate_limits` piggybacks on the same channel but doesn't touch the
@@ -181,13 +183,13 @@ export function applyUsageEvent(evt: UsageEvent): void {
   // rate-limits branch doesn't read it.
   if (evt.action === 'rate_limits') {
     if (!evt.rateLimits) return;
-    setProviderRateLimits(evt.rateLimits);
+    setProviderRateLimits(evt.rateLimits, backend);
     return;
   }
   if (evt.action === 'rate_limits_removed') {
     const provider = asProviderID(evt.rateLimits?.provider);
     const accountId = evt.rateLimits?.accountId;
-    if (provider && accountId) clearProviderRateLimits(provider, accountId);
+    if (provider && accountId) clearProviderRateLimits(provider, accountId, backend);
     return;
   }
 
@@ -263,7 +265,7 @@ const KIND_TO_LEGACY_STATUS: Record<NonNullable<ProviderStatusEvent['kind']>, Pr
   binary_stale: 'binary_stale',
 };
 
-export function applyProviderStatus(evt: ProviderStatusEvent): void {
+export function applyProviderStatus(evt: ProviderStatusEvent, backend: BackendKey = HOME_BACKEND): void {
   if (!evt) return;
 
   // Chat-rewrite emissions carry `kind` and optionally `threadId`. The
@@ -287,7 +289,7 @@ export function applyProviderStatus(evt: ProviderStatusEvent): void {
   if (!provider || !effectiveStatus) return;
 
   if (!evt.threadId) {
-    invalidateProviderModels(provider);
+    invalidateProviderModels(provider, backend);
   }
 
   const normalized: ProviderStatusEvent = { ...evt, provider, status: effectiveStatus };
@@ -296,7 +298,7 @@ export function applyProviderStatus(evt: ProviderStatusEvent): void {
   // the provider-global cache leaks one pane's auth/session failure into
   // every other pane using the same provider.
   if (!evt.threadId) {
-    recordProviderStatus(normalized);
+    recordProviderStatus(normalized, backend);
   }
 
   // A thread-scoped clear WITHDRAWS the pane's own banner rather than
@@ -307,6 +309,7 @@ export function applyProviderStatus(evt: ProviderStatusEvent): void {
   const banner = effectiveStatus === 'ready' ? undefined : normalized;
   for (const pane of ingestPanes()) {
     if (pane.thread?.provider !== provider) continue;
+    if (threadMachine(pane.threadId ?? '', pane.thread?.projectId) !== backend) continue;
     // Kind-bearing events can carry a threadId for per-pane scoping; when
     // present, only update the matching pane. Without a threadId the event
     // is provider-global (legacy behavior) and fans out to every matching
@@ -335,10 +338,10 @@ export function applyProviderStatus(evt: ProviderStatusEvent): void {
 // It reports its own failures as a toast rather than rejecting, so the callers'
 // catch blocks are belt-and-braces.
 export async function hydrateProviderAccounts(): Promise<void> {
-  await loadProviderAccounts();
+  await Promise.all(getAttachedBackends().map((computer) => loadProviderAccounts(computer.id)));
 }
 
-export function applyProviderAccount(evt: ProviderAccountEvent): void {
+export function applyProviderAccount(evt: ProviderAccountEvent, backend: BackendKey = HOME_BACKEND): void {
   if (!evt) return;
   const provider = asProviderID(evt.provider);
   if (!provider) return;
@@ -349,15 +352,15 @@ export function applyProviderAccount(evt: ProviderAccountEvent): void {
   // (load, then swap) rather than invalidate: the composer's context/effort
   // labels read the store synchronously, and an emptied cache would blank them
   // until something happened to re-fetch.
-  void refreshProviderModels(provider).catch((error) => {
+  void refreshProviderModels(provider, backend).catch((error) => {
     console.warn(`events: refresh ${provider} model catalog after account change`, error);
   });
   if (evt.cleared) {
-    clearProviderAccount(provider, evt.generation);
+    clearProviderAccount(provider, evt.generation, backend);
     return;
   }
   if (typeof evt.account !== 'object' || evt.account === null) return;
-  setProviderAccount(provider, evt.account, evt.accountId, evt.generation);
+  setProviderAccount(provider, evt.account, evt.accountId, evt.generation, backend);
 }
 
 export function applyProviderSessionAccount(evt: ProviderSessionAccountEvent): void {

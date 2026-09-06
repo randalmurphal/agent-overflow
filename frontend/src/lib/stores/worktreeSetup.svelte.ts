@@ -1,3 +1,4 @@
+import { threadHasScope } from '../transport/entityScopes';
 // Worktree setup state, keyed by the owning thread.
 //
 // The backend runs the project's setup recipe over a worktree it just cut
@@ -28,7 +29,6 @@ import {
   RetryThreadWorktreeSetup,
 } from './bindings';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
-import { hasScope } from '../transport/scopes';
 
 export type WorktreeSetupState = 'idle' | 'running' | 'failed' | 'succeeded' | 'cancelled';
 export type WorktreeSetupStepStatus = 'pending' | 'running' | 'succeeded' | 'failed';
@@ -158,7 +158,7 @@ export async function hydrateWorktreeSetup(threadId: string): Promise<void> {
   // the transcript nor the retry control, and this runs on pane mount, so
   // asking would be one refusal per open of any thread whose row says a
   // setup ran.
-  if (!hasScope('terminal:operate')) return;
+  if (!threadHasScope('terminal:operate', threadId)) return;
   await hydrateInto(threadId, () => GetThreadWorktreeSetup(threadId));
 }
 

@@ -10,7 +10,7 @@ import { tick } from 'svelte';
 import ThreadGroupRow from './ThreadGroupRow.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { resetPanesForTest } from '../../stores/panes.svelte';
-import { loadSettings } from '../../stores/settings.svelte';
+import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { isGroupExpanded, resetSidebarForTest, toggleGroup } from '../../stores/sidebar.svelte';
 import {
   requestGroupRename,

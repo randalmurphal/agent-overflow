@@ -539,3 +539,14 @@ describe('renewal across browsing contexts', () => {
     expect(localStorage.getItem(key)).toContain('another-tab');
   });
 });
+
+it.each([401, 408, 429, 500, 503])('keeps the pairing when renewal gets an unstructured HTTP %s response', async (status) => {
+  await pairFirst();
+  const unavailable = vi.fn(async (path: string) => path === '/auth/ticket'
+    ? new Response('not found', { status: 404 })
+    : new Response('<html>Upstream unavailable</html>', { status }));
+  expect(await mintDialTicket(unavailable as unknown as typeof fetch)).toBeNull();
+  expect(hasPairedSession()).toBe(true);
+  const recovered = vi.fn(async () => new Response(JSON.stringify({ ticket: 'reconnected' }), { status: 200 }));
+  expect(await mintDialTicket(recovered as unknown as typeof fetch)).toBe('reconnected');
+});

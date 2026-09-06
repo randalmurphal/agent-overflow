@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/bundle"
+	"agent-overflow/internal/computerroute"
 	"agent-overflow/internal/loopback"
 	"agent-overflow/internal/pagehost"
 
@@ -33,7 +34,9 @@ import (
 // serves a LAN-reachable URL, not the loopback string the server
 // resolved at bind time.
 type Bootstrap struct {
-	WSURL string `json:"wsUrl"`
+	// SessionScopes describes the carried device session, never the local page.
+	SessionScopes []string `json:"sessionScopes,omitempty"`
+	WSURL         string   `json:"wsUrl"`
 	// LaunchID identifies this backend launch. The SPA scopes its
 	// notification replay checkpoint by it, since a sequence number from
 	// a previous launch means nothing to this one. Opaque, not a
@@ -71,6 +74,10 @@ type Bootstrap struct {
 	// Display only: no client keys anything on it, and BackendID stays
 	// the identity. Empty means unknown.
 	BackendName string `json:"backendName,omitempty"`
+	// Routes are credential-free candidates learned through this trusted
+	// manifest. Clients verify the backend ID over each candidate's TLS
+	// connection before sending credentials there.
+	Routes []computerroute.Route `json:"routes,omitempty"`
 	// PasskeysAvailable says a passkey sign-in can be started right now —
 	// this backend has a canonical domain to be a relying party for, and
 	// the identity seam is wired. The pairing screen offers the
@@ -188,6 +195,8 @@ type Config struct {
 	// Optional — when nil, the manifest carries no identity and the
 	// client keeps its replica disabled.
 	BackendIdentity func() (backendID, replicaGeneration string)
+	// ComputerRoutes observes the current listeners; never mints page tickets.
+	ComputerRoutes func() []computerroute.Route
 
 	// BackendName is the display name this backend answers to on the
 	// wire: the host's name, published in the hello frame and the
@@ -330,6 +339,10 @@ type Config struct {
 	// that does not ask for byte transfer.
 	AttachmentTransfer AttachmentTransfer
 
+	// ThreadTransfers accepts narrowly authorized computer-to-computer handoffs.
+	// Nil leaves the route absent; control authorization stays in bound RPCs.
+	ThreadTransfers ThreadTransferEndpoints
+
 	// Bundle is the SPA this backend serves, as the two bundle routes and
 	// the hello frame publish it (bundleroutes.go, internal/bundle).
 	//
@@ -448,6 +461,10 @@ type Config struct {
 	// ServiceStartup. Headless launchers use this to publish the port
 	// early but hold navigation until the backend is actually ready.
 	RequireReadyForBootstrap bool
+	// WaitForActivation keeps client requests outside an uncommitted supervisor
+	// trial. Only the read-only health endpoint remains available. In particular,
+	// credential renewal must not escape a database that could be rolled back.
+	WaitForActivation func(context.Context) error
 
 	// Harness announces harness/soak mode in the bootstrap manifest.
 	// main.go sets it exactly where it registers the Harness RPC
@@ -609,6 +626,7 @@ type Server struct {
 	pageURLLimit   *rateLimiter
 	scopedRPCLimit *rateLimiter
 	authLimit      *rateLimiter
+	transferLimit  *rateLimiter
 
 	// wsTickets holds the single-use tickets minted at AuthTicketPath and
 	// spent on the upgrade. Server-owned rather than Credential-owned
@@ -696,6 +714,7 @@ func New(cfg Config) (*Server, error) {
 		pageURLLimit:   newRateLimiter(PageURLPath, pageURLRateLimit),
 		scopedRPCLimit: newRateLimiter(ScopedRPCPath, scopedRPCRateLimit),
 		authLimit:      newRateLimiter("/auth", authRateLimit),
+		transferLimit:  newRateLimiter("/transfers", rateLimit{burst: 240, perSecond: 64}),
 		wsTickets:      newTicketBook(maxOutstandingWSTickets, wsTicketTTL),
 
 		attachmentDownloadTickets: newTicketBook(maxOutstandingAttachmentTickets, attachmentTicketTTL),
@@ -872,6 +891,8 @@ func (s *Server) buildHTTPServer() *http.Server {
 	if s.cfg.AuthEndpoints != nil {
 		mux.HandleFunc(AuthPairPath, withShellCORS(http.MethodPost,
 			rateLimited(s.authLimit, s.loopbackHostGuard(s.handleAuthPair))))
+		mux.HandleFunc(AuthTokenRecoverPath, withShellCORS(http.MethodPost,
+			rateLimited(s.authLimit, s.loopbackHostGuard(s.handleAuthToken))))
 		mux.HandleFunc(AuthTokenPath, withShellCORS(http.MethodPost,
 			rateLimited(s.authLimit, s.loopbackHostGuard(s.handleAuthToken))))
 		// Registered whenever the identity seam exists, not whenever a
@@ -947,6 +968,9 @@ func (s *Server) buildHTTPServer() *http.Server {
 		mux.HandleFunc(AttachedBootstrapPrefix, s.loopbackHostGuard(s.handleAttachedBootstrap))
 		mux.HandleFunc(AttachedTransferPrefix, s.loopbackHostGuard(s.handleAttachedTransfer))
 	}
+	if s.cfg.ThreadTransfers != nil {
+		mux.HandleFunc(ThreadTransferPrefix, rateLimited(s.transferLimit, s.loopbackHostGuard(s.handleThreadTransfer)))
+	}
 	assetH := s.cfg.AssetHandler
 	if assetH == nil {
 		assetH = http.NotFoundHandler()
@@ -957,7 +981,7 @@ func (s *Server) buildHTTPServer() *http.Server {
 	}
 	mux.Handle("/", assetFinal)
 	return &http.Server{
-		Handler:           mux,
+		Handler:           s.trialGuard(mux),
 		ReadHeaderTimeout: s.cfg.HTTPReadHeaderTimeout,
 		ReadTimeout:       s.cfg.HTTPReadTimeout,
 		WriteTimeout:      s.cfg.HTTPWriteTimeout,
@@ -967,6 +991,20 @@ func (s *Server) buildHTTPServer() *http.Server {
 		// rootCtx so existing handlers don't see a spurious cancel.
 		BaseContext: func(_ net.Listener) context.Context { return s.rootCtx },
 	}
+}
+
+func (s *Server) trialGuard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != HealthPath && s.cfg.WaitForActivation != nil {
+			if err := s.cfg.WaitForActivation(r.Context()); err != nil {
+				// The client left or this trial is shutting down. Close without
+				// an auth-shaped response: older clients treat HTTP failures as
+				// evidence that their stored credentials have been revoked.
+				panic(http.ErrAbortHandler)
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // loopbackHostGuard returns a wrapper that rejects non-loopback Host
@@ -1663,6 +1701,10 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	if pageAuthed && loopback.PeerAddress(r.RemoteAddr) {
 		attached = s.attachedBackendEntries(r)
 	}
+	var routes []computerroute.Route
+	if s.cfg.ComputerRoutes != nil && backendID != "" {
+		routes = computerroute.Merge(nil, s.cfg.ComputerRoutes())
+	}
 	_ = json.NewEncoder(w).Encode(Bootstrap{
 		// Build the wsUrl from the request's Host header so a LAN
 		// client gets a LAN-reachable URL even though the server's
@@ -1679,6 +1721,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		ReplicaGeneration: replicaGeneration,
 		PasskeysAvailable: s.cfg.AuthEndpoints != nil && s.cfg.AuthEndpoints.PasskeysAvailable(),
 		Backends:          attached,
+		Routes:            routes,
 	})
 }
 
@@ -1731,6 +1774,7 @@ type Health struct {
 // security headers every other route sends.
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
+	s.writeRefreshRecoveryCapability(h)
 	WriteSecurityHeaders(h, s.csp)
 	h.Set("Cache-Control", "no-store, max-age=0")
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -2040,7 +2084,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			// Resolved per accept, not at boot: the browser Manager picks
 			// its engine during the App's startup, which runs after this
 			// Config is built.
-			Capabilities: advertisedCapabilities(s.cfg.BrowserAvailable),
+			Capabilities: advertisedCapabilities(s.cfg.BrowserAvailable, s.cfg.ThreadTransfers != nil),
 			BackendID:    backendID,
 			BackendName:  s.cfg.BackendName,
 			// Sampled per accept: the field's whole purpose is letting a

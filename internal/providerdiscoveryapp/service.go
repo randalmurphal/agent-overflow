@@ -36,20 +36,22 @@ type AccountProbeRequest struct {
 // specific probe constructors remain separate so Claude and Codex transactions
 // cannot accidentally collapse into a lowest-common-denominator abstraction.
 type Deps struct {
-	CurrentSettings func() settings.Settings
-	SettingsService func() *settings.Service
-	ProviderBinary  func(providerName string) string
-	Selection       func(providerName string) AccountSelection
-	ProbeKey        func(providerName, binary, accountID string) provider.ProbeCacheKey
-	ProbeKeyForEnv  func(binary, accountID string, customEnv map[string]string) provider.ProbeCacheKey
-	RunAccountProbe func(AccountProbeRequest) (provider.AccountInfo, error)
-	ClaudeConfig    func(binary string) claude.ProbeConfig
-	CodexConfig     func(binary string) codex.ProbeConfig
-	EmitStatus      func(providerstatus.Event)
-	EmitRateLimits  func(provider.RateLimitsSnapshot)
-	DetectProvider  func(providerName, binary string) provider.ProviderStatus
-	ProbeClaude     func(context.Context, claude.ProbeConfig) (provider.AccountInfo, error)
-	ProbeCodex      func(context.Context, codex.ProbeConfig) (provider.AccountInfo, error)
+	CurrentSettings            func() settings.Settings
+	SettingsService            func() *settings.Service
+	ProviderBinary             func(providerName string) string
+	Selection                  func(providerName string) AccountSelection
+	ProbeKey                   func(providerName, binary, accountID string) provider.ProbeCacheKey
+	ProbeKeyForEnv             func(binary, accountID string, customEnv map[string]string) provider.ProbeCacheKey
+	RunAccountProbe            func(AccountProbeRequest) (provider.AccountInfo, error)
+	ClaudeConfig               func(binary string) claude.ProbeConfig
+	CodexConfig                func(binary string) codex.ProbeConfig
+	EmitStatus                 func(providerstatus.Event)
+	EmitRateLimits             func(provider.RateLimitsSnapshot)
+	DetectProvider             func(providerName, binary string) provider.ProviderStatus
+	ProbeClaude                func(context.Context, claude.ProbeConfig) (provider.AccountInfo, error)
+	ProbeCodex                 func(context.Context, codex.ProbeConfig) (provider.AccountInfo, error)
+	CheckClaudeTransferAccount func(context.Context, string) error
+	CheckCodexTransferAccount  func(context.Context, string) error
 }
 
 // Caches is the bounded process-wide discovery cache set. Probe answers are

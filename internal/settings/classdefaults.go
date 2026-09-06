@@ -8,43 +8,15 @@ import (
 	"sync"
 )
 
-// Device-class defaults: the layer between DefaultSettings and a screen's own
-// writes (docs/specs/remote-access.md §6, "Device tier (defaults per device
-// class; phone ships lowPowerMode on)").
+// Device-class defaults sit between DefaultSettings and a screen's own writes:
 //
-// A device-tier key resolves in three steps, in this order:
+//     DefaultSettings < class row < bucket's own rows
 //
-//	DefaultSettings  <  the CLASS row  <  the bucket's own rows
-//
-// RESOLVED AT READ, NEVER WRITTEN. A class row is applied by residency.go on
-// the way out; nothing here ever reaches SetUIState. Three consequences, and
-// each one is the reason for the design rather than a side effect of it:
-//
-//   - A device that never wrote the key TRACKS the table. Change a row here
-//     and every phone that never touched lowPowerMode moves with it, on its
-//     next read, with no migration.
-//   - A device that DID write the key keeps its own value, including the
-//     class default's opposite. That falls out of the order above: the
-//     bucket's row lands last. The write itself survives change detection for
-//     the same reason — mutate reads the class-resolved value as its `before`
-//     projection, so a phone patching lowPowerMode=false is a real change
-//     from the class's true, gets persisted, and sticks.
-//   - CLEARING a key returns it to the CLASS default, not to the global one.
-//     The only clear that exists is deleting the bucket's row (DeleteUIState
-//     reaches these rows: they share the bucket, spelled as the settings JSON
-//     key), and with the row gone the read falls through to the row below —
-//     which is the class's. That is the answer this design should give: a
-//     phone that resets lowPowerMode is asking for "whatever a phone gets",
-//     not "whatever a machine with no class gets".
-//
-// One thing the order does NOT give, stated here because it looks like a bug
-// and is not: a phone that patches lowPowerMode to TRUE — the value its class
-// already resolves to — writes no row, because mutate persists only keys a
-// write actually moved. That device keeps tracking the table. It is the same
-// rule DefaultSettings has always had (patching fontSize to its default
-// writes no row either), and the alternative — pinning a row on every save of
-// an unchanged form — is how a table change stops reaching the devices it was
-// made for.
+// Resolve at read, never persist defaults into a bucket. Untouched devices
+// follow future default changes; saved overrides win, and clearing one returns
+// to the current default. Mutate uses the same resolved pre-read so writing a
+// value opposite to a class override persists correctly. Writing an unchanged
+// value creates no override, preserving the existing sparse-settings contract.
 
 // DeviceClass is what kind of screen a device-tier read is being resolved
 // for. The values mirror identity.DeviceClass exactly.
@@ -102,16 +74,12 @@ func (c DeviceClass) Valid() bool { return slices.Contains(DeviceClasses, c) }
 // TestClassDefaultsSurviveValidation additionally drives each row through
 // Validate, because a default no write could ever produce is not a default.
 //
-// Phone is the only populated row, and only with what §6 commits to. The
-// table existing and being extensible is what this wave buys; inventing a
-// second phone default here would be inventing product behaviour.
+// All classes currently use the global defaults. Low-power mode is opt-in on
+// phones too; keep the layer for deliberate device-class differences.
 var classDefaults = map[DeviceClass]map[string]any{
-	DeviceDesktop: {},
-	DeviceBrowser: {},
-	// A phone is the one class whose renderer budget is a property of the
-	// hardware rather than of the person's taste, so it starts in low-power
-	// mode instead of asking every owner to find the switch.
-	DevicePhone:       {"lowPowerMode": true},
+	DeviceDesktop:     {},
+	DeviceBrowser:     {},
+	DevicePhone:       {},
 	DeviceCLI:         {},
 	DeviceBackendPeer: {},
 }

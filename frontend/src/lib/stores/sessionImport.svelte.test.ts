@@ -1,3 +1,8 @@
+import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
+import { takePinnedBackend } from '../transport/backends';
+import { setCarriedSessionScopes } from '../transport/scopes';
+import { setSelectedBackend } from './selectedBackend.svelte';
+import { getSessionImportBackend } from './sessionImport.svelte';
 // The import store drives the real binding layer (setBindingMock one level
 // deeper), never a hand-installed API object: mocking a dependency of a
 // `.svelte.ts` module is unreliable (frontend/AGENTS.md), and the binding
@@ -376,7 +381,7 @@ describe('view-only sessions', () => {
 
     expect(list).not.toHaveBeenCalled();
     expect(getSessionImportStatus()).toBe('error');
-    expect(getSessionImportError()).toMatch(/only available on the local app/);
+    expect(getSessionImportError()).toMatch(/not allowed to import sessions on this computer/);
   });
 
   it('refuses to start a run and says why', async () => {
@@ -387,7 +392,7 @@ describe('view-only sessions', () => {
 
     expect(start).not.toHaveBeenCalled();
     expect(getSessionImportRun()).toBeNull();
-    expect(getSessionImportError()).toMatch(/only available on the local app/);
+    expect(getSessionImportError()).toMatch(/not allowed to import sessions on this computer/);
   });
 });
 
@@ -875,5 +880,50 @@ describe('the unwired case', () => {
     await loadImportCatalog();
     expect(getSessionImportStatus()).toBe('error');
     expect(getSessionImportError()).toMatch(/ListImportableSessions/);
+  });
+});
+
+
+describe('imports stay on the computer whose catalog was opened', () => {
+  afterEach(() => { resetStagedBackends(); setSelectedBackend(''); });
+
+  it('pins scan, start and cancel despite frontend selection changes and ignores another computer’s frames', async () => {
+    stageBackend();
+    setCarriedSessionScopes('laptop', ['threads:operate']);
+    const targets: string[] = [];
+    installBindings({
+      list: async () => { targets.push(takePinnedBackend()!); return scanResult([row('claude:a')]); },
+      start: async () => { targets.push(takePinnedBackend()!); return { importId: 'shared-id', total: 1 }; },
+      cancel: async () => { targets.push(takePinnedBackend()!); },
+    });
+    openSessionImport('laptop');
+    setSelectedBackend('');
+    await loadImportCatalog();
+    await startImport(['claude:a']);
+    expect(getSessionImportBackend()).toBe('laptop');
+    applyImportProgress({ importId: 'shared-id', completed: 1, total: 1, done: true }, '');
+    markImportConnectionLost('');
+    expect(getSessionImportRun()?.active).toBe(true);
+    await stopImport();
+    expect(targets).toEqual(['laptop', 'laptop', 'laptop']);
+    applyImportProgress({ importId: 'shared-id', completed: 1, total: 1, done: true }, 'laptop');
+    expect(getSessionImportRun()?.active ?? false).toBe(false);
+  });
+
+  it('does not install a late catalog after opening another computer', async () => {
+    stageBackend();
+    setCarriedSessionScopes('laptop', ['threads:operate']);
+    let resolveHome!: (answer: ImportScanResult) => void;
+    installBindings({ list: () => takePinnedBackend() === ''
+      ? new Promise((resolve) => { resolveHome = resolve; })
+      : Promise.resolve(scanResult([row('laptop-session')])) });
+    openSessionImport('');
+    const late = loadImportCatalog();
+    closeSessionImport();
+    openSessionImport('laptop');
+    await loadImportCatalog();
+    resolveHome(scanResult([row('home-session')]));
+    await late;
+    expect(getImportRows().map((row) => row.id)).toEqual(['laptop-session']);
   });
 });

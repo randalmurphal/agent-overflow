@@ -15,7 +15,7 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { flushSync } from 'svelte';
-import { loadSettings } from '../../stores/settings.svelte';
+import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { buildPane, makeItem } from '../../../test/helpers/chat';
 import type { ThreadPane } from '../../stores/thread.svelte';

@@ -1,94 +1,92 @@
-// Chat-bar favorites — one app-global list.
-//
-// Doctrine (frontend/CLAUDE.md → State Boundaries): state is keyed by its
-// ENTITY. Starred models and discussions are an APP fact: `ListChatBarFavorites`
-// takes no arguments and `SetChatBarFavorite` returns the whole new list. Each
-// mounted model menu used to hold its own copy behind a loaded-once latch, so
-// starring in one pane left every other open menu showing the old list until it
-// was closed and reopened — and the latch meant a failed first load never
-// retried.
-//
-// One key, one loader, one retry curve; every menu derives from it.
+// Stars are frontend preferences. A legacy host list seeds this device once;
+// subsequent edits work offline and never change another frontend's choices.
+import { untrack } from 'svelte';
+import { isProviderID } from '../types/providers';
+import { ListChatBarFavorites, type ChatBarFavorite } from './bindings';
+import { readFrontendValue, writeFrontendValue, onFrontendValueChanged } from './frontendStorage';
+import { selectedBackend } from './selectedBackend.svelte';
+import { backendById, withBackendTarget } from '../transport/backends';
+import { hasScope } from '../transport/scopes';
+import { userFacingError } from '../utils/userFacingError';
 
-import { ListChatBarFavorites, SetChatBarFavorite, type ChatBarFavorite } from './bindings';
-import { createEntityStore, type EntityAttachment } from './entityStore.svelte';
+const KEY = 'chat-bar-favorites';
+const LIMIT = 256;
+function identity(row: ChatBarFavorite): string { return `${row.kind}:${row.provider ?? ''}:${row.value}`; }
+function validated(value: unknown): ChatBarFavorite[] {
+  if (!Array.isArray(value)) return [];
+  const rows = new Map<string, ChatBarFavorite>();
+  for (const raw of value.slice(0, LIMIT)) {
+    if (!raw || typeof raw !== 'object' || (raw.kind !== 'model' && raw.kind !== 'discussion')
+      || typeof raw.value !== 'string' || !raw.value || raw.value.length > 4096
+      || typeof raw.label !== 'string' || raw.label.length > 1024
+      || (raw.kind === 'model' && !isProviderID(raw.provider))) continue;
+    const row: ChatBarFavorite = { kind: raw.kind, value: raw.value, label: raw.label,
+      createdAt: Number.isSafeInteger(raw.createdAt) && raw.createdAt >= 0 ? raw.createdAt : 0 };
+    if (row.kind === 'model') row.provider = raw.provider;
+    rows.set(identity(row), row);
+  }
+  return [...rows.values()];
+}
+function read(): ChatBarFavorite[] | null {
+  const saved = readFrontendValue(KEY);
+  return saved === null ? null : validated(saved);
+}
+let favorites = $state<ChatBarFavorite[] | null>(read());
+let error = $state<string | null>(null);
+let loading = false;
+let revision = 0;
 
-const KEY = 'app';
-
-async function fetchFavorites(): Promise<ChatBarFavorite[]> {
-  const res = (await ListChatBarFavorites()) as ChatBarFavorite[] | null;
-  return Array.isArray(res) ? res : [];
+/** Lazy, one-time migration. A failed seed can retry on the next menu open. */
+export function ensureChatBarFavorites(): void {
+  untrack(() => {
+    if (favorites !== null || loading) return;
+    const backend = selectedBackend();
+    const entry = backendById(backend);
+    if (!entry || !hasScope('settings:read', backend)) return;
+    const version = revision;
+    loading = true;
+    error = null;
+    void withBackendTarget(backend, () => ListChatBarFavorites()).then((rows) => {
+      if (version !== revision || backendById(backend) !== entry) return;
+      // Another window may have saved stars while this migration was in flight.
+      favorites = read() ?? validated(rows);
+      writeFrontendValue(KEY, favorites);
+    }).catch((reason) => {
+      if (version === revision && backendById(backend) === entry) error = userFacingError(reason);
+    }).finally(() => { if (version === revision) loading = false; });
+  });
 }
 
-const store = createEntityStore<ChatBarFavorite[], void>({
-  name: 'chatBarFavorites',
-  source: async ({ apply }) => {
-    apply(await fetchFavorites());
-    // Nothing to release: the seed is a pull, and the backend pushes every
-    // later list on `chatbar:favorites` through applyChatBarFavorites — a
-    // fan-out from events.ts, not a per-key subscription this source owns.
-    return () => {};
-  },
+export function peekChatBarFavorites(): ChatBarFavorite[] { return favorites ?? []; }
+export function peekChatBarFavoritesError(): string | null { return error; }
+
+export async function setChatBarFavorite(favorite: ChatBarFavorite, starred: boolean): Promise<void> {
+  const row = validated([favorite])[0];
+  if (!row) throw new Error('Invalid favorite.');
+  const key = identity(row);
+  const previous = read() ?? favorites ?? [];
+  const updated = previous.filter((entry) => identity(entry) !== key);
+  if (starred) {
+    if (updated.length >= LIMIT) throw new Error('Remove a favorite before adding another.');
+    updated.unshift(row);
+  }
+  if (!writeFrontendValue(KEY, updated)) throw new Error('This device could not save its favorites.');
+  ++revision;
+  loading = false;
+  error = null;
+  favorites = updated;
+}
+
+onFrontendValueChanged(KEY, () => {
+  ++revision;
+  loading = false;
+  error = null;
+  favorites = read();
 });
 
-// The one hold. Retention is not refcounted here because the entity is the
-// app: the list is cheap, every menu wants it, and dropping it when the last
-// menu closes would only buy a re-fetch on the next open. Expressed as a
-// permanent attachment rather than a retain-at-zero flag on the primitive:
-// one hold that the test seam can release is the whole mechanism, and the
-// primitive keeps exactly one retention rule.
-let hold: EntityAttachment<ChatBarFavorite[]> | null = null;
-
-/** Load the list once, lazily. Safe to call on every menu open. */
-export function ensureChatBarFavorites(): void {
-  hold ??= store.attach(KEY, undefined);
-}
-
-/** Reactive read; empty until the first load resolves. */
-export function peekChatBarFavorites(): ChatBarFavorite[] {
-  return store.peek(KEY) ?? [];
-}
-
-/** Reactive load error; null when healthy. */
-export function peekChatBarFavoritesError(): string | null {
-  return store.peekError(KEY);
-}
-
-/**
- * Star or unstar one favorite. The backend answers with the whole new list,
- * which lands on the shared entry — so every mounted menu updates, not just
- * the one that was clicked.
- */
-export async function setChatBarFavorite(
-  favorite: ChatBarFavorite,
-  starred: boolean,
-): Promise<void> {
-  ensureChatBarFavorites();
-  const updated = (await SetChatBarFavorite(favorite, starred)) as ChatBarFavorite[] | null;
-  store.apply(KEY, Array.isArray(updated) ? updated : []);
-}
-
-/**
- * The whole list, as any client's write left it.
- *
- * Star and unstar used to reach only the client that clicked: the RPC answers
- * with the new list and nothing else was ever told, so a second device kept
- * showing the old stars in every menu until reload. The frame is the same
- * slice the RPC returns, so the writer's own echo settles on bytes it already
- * applied.
- *
- * Ignored before anything holds the list. Applying would seed an entry no
- * menu is reading, and the first `ensureChatBarFavorites` sources it anyway.
- */
-export function applyChatBarFavorites(list: ChatBarFavorite[] | null): void {
-  if (!hold) return;
-  store.apply(KEY, Array.isArray(list) ? list : []);
-}
-
-/** Test seam: drop the entry and the hold, as a fresh module load would. */
 export function __resetChatBarFavoritesForTest(): void {
-  hold?.release();
-  hold = null;
-  store.suspend();
-  store.resetAll();
+  ++revision;
+  loading = false;
+  error = null;
+  favorites = read();
 }

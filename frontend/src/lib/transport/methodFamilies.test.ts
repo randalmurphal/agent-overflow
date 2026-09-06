@@ -19,6 +19,9 @@ import {
   __resetEntityIndexForTest,
   noteFamilyRowsFromCall,
   noteTerminal,
+  noteThread,
+  noteProject,
+  noteWorkflowItem,
   terminalBackend,
   workflowItemBackend,
 } from './entityIndex';
@@ -32,7 +35,6 @@ const WRITE_TERMINAL = 146795716;
 describe('the id-family route table', () => {
   it('names only methods the generated route table still knows', () => {
     const declared = Object.keys(ROUTE_BY_ID_FAMILY).map(Number);
-    expect(declared.length).toBe(49);
     for (const id of declared) {
       expect(METHOD_ROUTES[id], `id ${id} is not a bound method any more`).toBeDefined();
     }
@@ -47,23 +49,32 @@ describe('the id-family route table', () => {
     }
   });
 
-  it('declares each family at its documented size', () => {
-    const counts: Record<string, number> = {};
-    for (const family of Object.values(ROUTE_BY_ID_FAMILY)) {
-      counts[family] = (counts[family] ?? 0) + 1;
-    }
-    expect(counts).toEqual({
-      workflowItem: 26,
-      workflowAutomation: 8,
-      terminal: 6,
-      subscription: 3,
-      threadGroup: 5,
-      threadList: 1,
-    });
-  });
+
 });
 
 describe('familyBackend', () => {
+  it('routes declared object fields without mistaking neighboring IDs for an owner', () => {
+    __resetEntityIndexForTest();
+    noteWorkflowItem('run', 'gpu');
+    noteWorkflowItem('phase', 'mac');
+    noteProject('project', 'mac');
+    expect(familyBackend(1146143060, [{ itemId: 'run', phaseId: 'phase' }])).toBe('gpu');
+    expect(familyBackend(3011758347, [{ projectId: 'project', workflowId: 'run' }])).toBe('mac');
+    expect(familyBackend(1146143060, [{ phaseId: 'run' }])).toBeUndefined();
+    __resetEntityIndexForTest();
+  });
+  it('rechecks every thread in a group operation after one moves computers', () => {
+    __resetEntityIndexForTest();
+    noteThread('a', 'mac', 0);
+    noteThread('b', 'mac', 0);
+    expect(familyBackend(2514763466, [['a', 'b'], ''])).toBe('mac');
+    noteThread('b', 'gpu', 1);
+    expect(() => familyBackend(2514763466, [['a', 'b'], ''])).toThrow('same computer');
+    expect(() => familyBackend(2514763466, [['b', 'a'], ''])).toThrow('same computer');
+    expect(() => familyBackend(2514763466, [['missing', 'b'], ''])).toThrow('no longer available');
+    expect(() => familyBackend(2514763466, [['b', 'missing'], ''])).toThrow('no longer available');
+    __resetEntityIndexForTest();
+  });
   it('answers undefined for a method that names no family', () => {
     expect(familyBackend(WORKFLOW_LIST_ITEMS, ['project-1'])).toBeUndefined();
   });

@@ -13,6 +13,10 @@ export type MethodRoute = 'thread' | 'project' | 'workspace' | 'home' | 'selecte
 
 export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2629313140: 'home', // AddBackend
+	1158138718: 'selected', // AgentRemoteCancel
+	925837602: 'selected', // AgentRemoteComputers
+	1273975760: 'selected', // AgentRemoteStart
+	1365876070: 'selected', // AgentRemoteStatus
 	4007046465: 'selected', // AllowPreviewPort
 	2157691816: 'home', // AppendUIRenderTraceBatch
 	1352159878: 'project', // ArchiveProject
@@ -22,6 +26,8 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2098425262: 'thread', // BackgroundClaudeTask
 	1189501287: 'home', // BeginPasskeyRegistration
 	3214812657: 'home', // BeginPasskeyStepUp
+	3037746585: 'thread', // BeginThreadTransfer
+	3259519667: 'thread', // BindThreadTransferDestination
 	1374242488: 'home', // BookmarkUIRenderTrace
 	320967638: 'selected', // BrowseDirectory
 	197228034: 'home', // BrowserCompanionDo
@@ -33,7 +39,10 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2848608143: 'home', // BrowserHostReport
 	2608316491: 'home', // CancelDevicePairing
 	341374423: 'home', // CancelProviderLogin
+	812773075: 'home', // CancelSSHConnection
+	3773103567: 'selected', // CancelServiceUpdate
 	2562316972: 'selected', // CancelSessionImport
+	930267104: 'thread', // CancelThreadTransfer
 	2347956003: 'home', // CheckForUpdate
 	2932719708: 'thread', // CheckThreadImportUpdates
 	16360282: 'thread', // CleanCodexBackgroundTerminals
@@ -45,6 +54,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	4090329093: 'thread', // CompactCodexThread
 	4019739936: 'selected', // ConcludeDiscussion
 	3813775159: 'home', // ConfirmDevicePairing
+	2052844871: 'home', // ConfirmSSHConnection
 	2617952423: 'thread', // CountRunningBackgroundTasks
 	565306783: 'thread', // CreateDiffReviewComment
 	757689265: 'selected', // CreateDiscussion
@@ -53,6 +63,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2579322833: 'selected', // CreateThread
 	1716017387: 'selected', // CreateThreadFromPR
 	1478438024: 'project', // CreateThreadGroup
+	2485293844: 'selected', // CreateThreadTransferOffer
 	2428457759: 'thread', // DeleteAttachment
 	1303317790: 'thread', // DeleteDiffReviewComment
 	302062730: 'selected', // DeleteDiscussion
@@ -66,6 +77,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1186757769: 'home', // DeleteUIState
 	604263015: 'home', // DevicePairingStatus
 	1061100039: 'selected', // DisallowPreviewPort
+	2309612888: 'selected', // DiscardUnpreparedThreadTransfer
 	115027584: 'home', // DownloadUpdate
 	1601396603: 'home', // FinishPasskeyRegistration
 	1569276637: 'home', // FinishPasskeyStepUp
@@ -90,7 +102,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1924583939: 'selected', // GetDiscussion
 	875977146: 'thread', // GetDraft
 	949275134: 'thread', // GetEditDiffContextLines
-	1655853383: 'home', // GetEditorSettings
+	1655853383: 'selected', // GetEditorSettings
 	4123560639: 'workspace', // GetGitStatus
 	3015840904: 'home', // GetKeybindings
 	3247514443: 'selected', // GetLocalImageData
@@ -113,6 +125,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	447579616: 'home', // GetPushSenderStatus
 	3079581691: 'thread', // GetQueueState
 	3325141610: 'home', // GetRateLimitsSnapshots
+	324671375: 'home', // GetSSHConnection
 	2230314013: 'selected', // GetServiceUpdateStatus
 	2554697378: 'home', // GetSettings
 	2622552651: 'home', // GetSpinnerFiles
@@ -125,6 +138,9 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1848576136: 'thread', // GetThreadItemProjectionSource
 	70226550: 'thread', // GetThreadLiveState
 	2573491630: 'thread', // GetThreadRuntimeMode
+	183380121: 'selected', // GetThreadTransferDestinationProject
+	704384690: 'thread', // GetThreadTransferIntent
+	670257333: 'selected', // GetThreadTransfers
 	1512475224: 'thread', // GetThreadTurnPreview
 	3340938325: 'thread', // GetThreadUserMessageHistory
 	556088547: 'thread', // GetThreadUserMessageTicks
@@ -164,9 +180,10 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	753394581: 'thread', // InterruptAndRevertIfClean
 	850013031: 'thread', // InterruptTurn
 	2789068977: 'home', // IsWSL
+	2526318276: 'selected', // ListAgentComputers
 	2451527188: 'all', // ListArchivedThreads
 	1730798413: 'thread', // ListAttachments
-	2556802234: 'home', // ListAvailableEditors
+	2556802234: 'selected', // ListAvailableEditors
 	130055792: 'home', // ListBackends
 	352990129: 'workspace', // ListBranchCommits
 	2114948965: 'home', // ListChatBarFavorites
@@ -213,6 +230,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3362740399: 'home', // OpenExternalURL
 	3994295523: 'home', // OpenInEditor
 	2247958725: 'thread', // OpenTerminal
+	3436727647: 'selected', // PairAgentComputer
 	1748405812: 'thread', // PinThread
 	842795367: 'home', // PinThreadGroup
 	1315440605: 'selected', // PostChannelMessage
@@ -239,6 +257,10 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3682640111: 'thread', // RegenerateThreadTitle
 	2641306153: 'home', // RegisterPushToken
 	1034543696: 'thread', // RegisterQueueItem
+	235246962: 'selected', // RemoteCommandCancel
+	3924589370: 'selected', // RemoteCommandProjects
+	419612356: 'workspace', // RemoteCommandStart
+	3021549306: 'selected', // RemoteCommandStatus
 	3005272623: 'home', // RemoveBackend
 	2899196344: 'workspace', // RemoveOtherWorktree
 	684418419: 'home', // RemoveProviderAccount
@@ -247,6 +269,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	727416435: 'thread', // RenameThread
 	723690026: 'home', // RenameThreadGroup
 	95139518: 'home', // RenewCanonicalDomainCert
+	1188796788: 'home', // RepairBackendAddress
 	446243420: 'selected', // ReplyToPRThread
 	2174329377: 'home', // ReportFrontendErrorBatch
 	314214419: 'home', // ReportUpdateInstallStatus
@@ -259,6 +282,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	4152403588: 'home', // RestartTerminal
 	3141913084: 'home', // RestartToUpdate
 	3386497005: 'home', // RestoreAccessDevice
+	650634694: 'selected', // RetryThreadTransfer
 	1657104469: 'thread', // RetryThreadWorktreeSetup
 	2059566413: 'thread', // RevertConversationAndResendMessage
 	2945903583: 'home', // RevokeAccessDevice
@@ -273,9 +297,10 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1496882310: 'thread', // SendMessage
 	3632185196: 'thread', // SendMessageWithOptions
 	1407159655: 'thread', // SendPlanRevisionComments
+	1204782690: 'selected', // SetAgentComputerEnabled
 	3167202905: 'home', // SetAppearance
 	2813580982: 'home', // SetChatBarFavorite
-	3655340267: 'home', // SetEditorSettings
+	3655340267: 'selected', // SetEditorSettings
 	3915514446: 'home', // SetNetworkSettings
 	2594833485: 'selected', // SetPRThreadResolved
 	1078249699: 'home', // SetPRUpdatesActive
@@ -294,6 +319,8 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3188309099: 'thread', // StartDiscussion
 	2336869067: 'thread', // StartDiscussionByID
 	1484798083: 'home', // StartProviderLogin
+	531852766: 'home', // StartSSHComputer
+	2623175319: 'home', // StartSSHConnection
 	2850159713: 'thread', // StartSession
 	3009548683: 'selected', // StartTerminal
 	1698485705: 'thread', // SteerMessageWithOptions

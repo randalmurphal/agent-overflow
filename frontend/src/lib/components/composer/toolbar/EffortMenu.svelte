@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { threadMachine } from '../../../stores/attachedBackends.svelte';
   // Combined effort, context-window, and fast-mode menu. Auto-compact
   // thresholds live in Settings and are opened from the composer context meter.
 
@@ -37,6 +38,7 @@
   }
 
   let { pane }: Props = $props();
+  let backend = $derived(threadMachine(pane.threadId ?? '', pane.thread?.projectId));
 
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
   let open = $state(false);
@@ -79,7 +81,7 @@
   let activeModel = $derived(pane.thread?.model ?? '');
   let activeModelInfo = $derived<ModelInfo | undefined>(
     activeProvider
-      ? getProviderModels(activeProvider).find((candidate) => candidate.slug === activeModel)
+      ? getProviderModels(activeProvider, backend).find((candidate) => candidate.slug === activeModel)
       : undefined,
   );
   let contextOptions = $derived<ContextWindowOption[]>(activeModelInfo?.contextWindows ?? []);
@@ -190,14 +192,14 @@
     // transient blip — and, because Composer mounts this menu, it fired a
     // console.error on every Composer render in tests that don't mock the
     // model-catalog binding.
-    ensureProviderModels(activeProvider).catch(() => {});
+    ensureProviderModels(activeProvider, backend).catch(() => {});
   });
 
   async function ensureModelMetadata(): Promise<void> {
     const provider = activeProvider;
     if (!provider || !activeModel) return;
     try {
-      await ensureProviderModels(provider);
+      await ensureProviderModels(provider, backend);
     } catch (err) {
       console.error('GetModelsForProvider failed:', err);
       addToast('error', `Failed to load model capabilities: ${errString(err)}`);

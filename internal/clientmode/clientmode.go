@@ -60,6 +60,10 @@ type Config struct {
 	// upgrade — all over the pinned transport it supplies.
 	Paired PairedUpstream
 
+	// BackendID is the selected paired computer, available without a network
+	// probe. Desktop boot uses it to open the independent frontend controller.
+	BackendID string
+
 	// ClientID is this installation's durable UI-state client
 	// identity, threaded onto the page URL as ?cid= (the same parameter
 	// the native shells stamp) so the remote backend's per-client

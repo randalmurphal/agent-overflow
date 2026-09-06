@@ -23,28 +23,28 @@ func TestClassDefaultsCoverEveryDeclaredClass(t *testing.T) {
 	}
 }
 
-// What the table contains TODAY, spelled out. docs/specs/remote-access.md §6
-// commits to exactly one class default — "phone ships lowPowerMode on" — and
-// nothing else. A row that grows here is a product decision, so it should
-// cost a deliberate edit to this test rather than sliding in beside an
-// unrelated change.
-func TestOnlyThePhoneClassShipsADefaultToday(t *testing.T) {
-	for _, class := range []DeviceClass{DeviceDesktop, DeviceBrowser, DeviceCLI, DeviceBackendPeer} {
-		if got := classDefaults[class]; len(got) != 0 {
-			t.Errorf("%s row = %v, want empty", class, got)
+// Product defaults: normal power on every screen. Saved choices remain
+// covered by the layer tests below, using a synthetic differing class row.
+func TestAllDeviceClassesDefaultToNormalPower(t *testing.T) {
+	for _, class := range DeviceClasses {
+		if len(classDefaults[class]) != 0 {
+			t.Errorf("%s has unexpected overrides: %v", class, classDefaults[class])
 		}
 	}
-	want := map[string]any{"lowPowerMode": true}
-	if !maps.Equal(classDefaults[DevicePhone], want) {
-		t.Errorf("phone row = %v, want %v", classDefaults[DevicePhone], want)
+	if DefaultSettings.LowPowerMode {
+		t.Fatal("low-power mode must be opt-in")
 	}
+}
 
-	// The empty rows are also what makes internal/app's fallback for an
-	// unreadable device class (settingsDeviceClass → DeviceDesktop) a no-op
-	// rather than a guess with consequences.
-	if len(classOverrides(DeviceDesktop)) != 0 {
-		t.Error("the desktop row is populated; revisit settingsDeviceClass's fallback in internal/app")
-	}
+// Keep exercising a genuinely different class layer even when production
+// classes share defaults. These tests are non-parallel; restore on cleanup.
+func withPhoneClassDefault(t *testing.T) {
+	t.Helper()
+	previous := classRows
+	rows := maps.Clone(previous())
+	rows[DevicePhone] = map[string]string{"lowPowerMode": "true"}
+	classRows = func() map[DeviceClass]map[string]string { return rows }
+	t.Cleanup(func() { classRows = previous })
 }
 
 // Only DEVICE-tier keys may carry a class default. A host key here would be a
@@ -126,6 +126,7 @@ func TestClassRowsEncodeTheTable(t *testing.T) {
 // The headline: DefaultSettings < the class row < the bucket's own write, and
 // each step observable on its own.
 func TestDeviceClassDefaultsResolveUnderTheBucketsOwnWrite(t *testing.T) {
+	withPhoneClassDefault(t)
 	svc, store := tieredService(t)
 	const bucket = "device:phone-0001"
 
@@ -167,6 +168,7 @@ func TestDeviceClassDefaultsResolveUnderTheBucketsOwnWrite(t *testing.T) {
 // A class default is resolved at READ and never written. That is what lets a
 // device that only ever read the key track a later change to the table.
 func TestAClassDefaultIsNeverWrittenIntoTheBucket(t *testing.T) {
+	withPhoneClassDefault(t)
 	svc, store := tieredService(t)
 	const bucket = "device:phone-0002"
 
@@ -194,6 +196,7 @@ func TestAClassDefaultIsNeverWrittenIntoTheBucket(t *testing.T) {
 // backend read serves must not carry it, or a phone's write would make
 // lowPowerMode this backend's answer for every screen.
 func TestAClassDefaultDoesNotLeakIntoTheSharedSnapshot(t *testing.T) {
+	withPhoneClassDefault(t)
 	svc, _ := tieredService(t)
 	if _, err := svc.For("device:phone-0003", DevicePhone).Update(map[string]any{"fontSize": 17}); err != nil {
 		t.Fatalf("phone Update: %v", err)
@@ -214,6 +217,7 @@ func TestAClassDefaultDoesNotLeakIntoTheSharedSnapshot(t *testing.T) {
 // screen's own value there — a class row applied over the top would outrank
 // the very write it is supposed to sit under.
 func TestAStoreLessServiceIgnoresClassDefaults(t *testing.T) {
+	withPhoneClassDefault(t)
 	svc := NewService(t.TempDir())
 	if svc.For("device:phone-0004", DevicePhone).Get().LowPowerMode {
 		t.Error("a store-less service applied a class default")
@@ -223,6 +227,7 @@ func TestAStoreLessServiceIgnoresClassDefaults(t *testing.T) {
 // Two phones, one table, two independent answers: the class layer is shared
 // and the bucket layer is not.
 func TestTwoPhonesResolveTheSameClassAndKeepSeparateWrites(t *testing.T) {
+	withPhoneClassDefault(t)
 	svc, _ := tieredService(t)
 	const kept, changed = "device:phone-kept", "device:phone-changed"
 

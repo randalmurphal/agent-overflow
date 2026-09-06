@@ -15,6 +15,7 @@
 // Neither delegate cares which surface mounted the markdown; both
 // match on attributes / classes that any rendered tree can carry.
 
+import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { openInEditor } from '../stores/openInEditor';
 import { addToast } from '../stores/toast.svelte';
 import { errString } from './errors';
@@ -56,8 +57,9 @@ function handlePathLinkClick(event: MouseEvent): void {
   // The anchor may have been rendered before bootstrap established where
   // this page is. Keep the document-level boundary safe across that
   // transition even though ChatMarkdown stops emitting new path links.
-  if (!hasScope('host')) return;
-  void invokePathLink(parsed.path, parsed.line, parsed.col, parsed.workspacePath);
+  const backend = link.closest<HTMLElement>('[data-computer]')?.dataset.computer ?? HOME_BACKEND;
+  if (!hasScope('host', backend)) return;
+  void invokePathLink(backend, parsed.path, parsed.line, parsed.col, parsed.workspacePath);
 }
 
 // Middle/right-button flows on a path-link anchor must not reach the
@@ -77,6 +79,7 @@ function suppressPathLinkAuxClick(event: MouseEvent): void {
 }
 
 async function invokePathLink(
+  backend: BackendKey,
   path: string,
   line: number,
   col: number,
@@ -85,7 +88,7 @@ async function invokePathLink(
   try {
     // Empty editorID → open in the user's default editor (preference →
     // catalog → $EDITOR). Path links never target a specific editor.
-    await openInEditor(path, line, col, workspacePath, '');
+    await openInEditor(backend, path, line, col, workspacePath, '');
   } catch (err) {
     addToast('error', errString(err));
   }

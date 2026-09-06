@@ -20,6 +20,13 @@ import (
 // invocation resolves the child exactly once, so the definition the parent
 // validated is the definition the child runs.
 func (e *Engine) startNewItem(item store.WorkItem, resolved *ResolvedDefinition) error {
+	if e.beginWork != nil {
+		release, err := e.beginWork(e.ctx)
+		if err != nil {
+			return err
+		}
+		defer release()
+	}
 	if item.ID == "" || item.ProjectID == "" {
 		return fmt.Errorf("start item: id and project id are required")
 	}

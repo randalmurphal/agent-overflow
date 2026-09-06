@@ -337,6 +337,9 @@ type threadState struct {
 // two mutexes below guard themselves. Every other field is guarded by
 // r.mu, exactly as its Router map was.
 type threadIdentity struct {
+	// Pending echoes survive cleanup until their handler finishes (under r.mu).
+	pendingEchoes int
+
 	// anchorLock serializes, PER THREAD, every mutation of that thread's
 	// pending-send state that pairs with a store write: the echo-time pop
 	// + attach/deferred-persist (handleUserText), the interrupt-time

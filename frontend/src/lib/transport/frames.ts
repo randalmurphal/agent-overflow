@@ -19,7 +19,10 @@ export interface ServerRPCFrame {
   // `code` is one — a method error's TEXT does not survive the wire for a
   // non-loopback caller, and this is exactly what such a caller must
   // branch on to explain a disabled surface.
-  error?: { code: string; message: string; reason?: string; scope?: string };
+  error?: {
+    code: string; message: string; reason?: string; scope?: string;
+    transfer?: { operationId: string; backendId: string };
+  };
 }
 
 export interface ServerEventFrame {

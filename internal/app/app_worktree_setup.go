@@ -48,6 +48,7 @@ func (a *App) worktreeSetupService() *worktreesetupapp.Service {
 			Store:         setupStore,
 			Events:        appWorktreeSetupEvents{app: a},
 			Context:       a.lifeCtx,
+			BeginWork:     a.workAdmission.begin,
 			ShutdownError: ErrShuttingDown,
 		})
 	})

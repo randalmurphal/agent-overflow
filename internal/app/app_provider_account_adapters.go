@@ -186,6 +186,7 @@ func (s providerAccountEventSink) PublishLogin(state provideraccountapp.LoginSta
 func newProviderAccountManager(app *App) *provideraccountapp.Manager {
 	return provideraccountapp.NewManager(provideraccountapp.Deps{
 		Context:         app.lifeCtx,
+		BeginWork:       app.workAdmission.begin,
 		IsShuttingDown:  func() bool { return app.shuttingDown.Load() },
 		ShutdownError:   ErrShuttingDown,
 		CurrentSettings: app.currentSettings,

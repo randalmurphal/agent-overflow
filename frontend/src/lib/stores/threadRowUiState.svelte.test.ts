@@ -9,7 +9,8 @@ import {
 import { THINKING_PAYLOAD_EXPANSION_STATE_KEY } from '../utils/payloadVersion';
 import { payloadRetentionKey } from '../utils/rowUiRetention';
 import { createThreadRowUiState } from './threadRowUiState.svelte';
-import { loadSettings, resetSettingsForTest } from './settings.svelte';
+import { resetSettingsForTest } from './settings.svelte';
+import { loadSettingsFixture as loadSettings } from '../../test/helpers/settingsFixture';
 import { makeSettings } from '../../test/helpers/settings';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 

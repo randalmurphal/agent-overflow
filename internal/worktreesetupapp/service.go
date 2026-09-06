@@ -28,6 +28,7 @@ type Config struct {
 	Store         Store
 	Events        Events
 	Context       func() context.Context
+	BeginWork     func(context.Context) (func(), error)
 	ShutdownError error
 }
 
@@ -36,6 +37,7 @@ type Service struct {
 	store         Store
 	events        Events
 	context       func() context.Context
+	beginWork     func(context.Context) (func(), error)
 	shutdownError error
 
 	mu      sync.Mutex
@@ -49,6 +51,9 @@ func New(config Config) *Service {
 	if contextSource == nil {
 		contextSource = context.Background
 	}
+	if config.BeginWork == nil {
+		config.BeginWork = func(ctx context.Context) (func(), error) { return func() {}, ctx.Err() }
+	}
 	shutdownError := config.ShutdownError
 	if shutdownError == nil {
 		shutdownError = errors.New("worktree setup service stopped")
@@ -57,6 +62,7 @@ func New(config Config) *Service {
 		store:         config.Store,
 		events:        config.Events,
 		context:       contextSource,
+		beginWork:     config.BeginWork,
 		shutdownError: shutdownError,
 		runs:          make(map[string]*worktreeSetupRun),
 	}

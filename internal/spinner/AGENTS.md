@@ -54,6 +54,12 @@ in its type. A sprite strip is tens of KB and belongs there.
 
 ## Warnings are data
 
+The frontend checks PNG header dimensions before allocating a decoder and bounds
+the combined decoded pixels across the custom pool (`spinners/customs.ts`).
+Compressed file budgets do not bound image memory. Keep those limits and the
+embedded `SPINNERS.md` in agreement. Phone/browser libraries copy the same wire
+files into frontend-owned storage; a backend watcher never replaces that copy.
+
 `Files.Warnings` rides the RPC result beside a fully usable answer. A
 sprite that is half-written, oversized, unreadable, or named something
 that cannot be an id is skipped and explained; the directory being absent

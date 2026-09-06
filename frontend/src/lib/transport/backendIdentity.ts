@@ -1,3 +1,4 @@
+import { rememberIdentity, forgetRememberedIdentity } from './rememberedIdentity';
 // Backend history identity carried by the bootstrap manifest
 // (`backendId` / `replicaGeneration`, internal/transport/server.go).
 //
@@ -109,6 +110,8 @@ export function setBackendIdentityFromBootstrap(
   ) {
     return;
   }
+  if (next.backendId && next.generation) rememberIdentity(backend, next);
+  else forgetRememberedIdentity(backend);
   publish(backend, next);
 }
 
@@ -134,7 +137,9 @@ export function observeBackendGeneration(
   const current = getBackendIdentity(backend);
   if (current.backendId === '') return false;
   if (generation === current.generation) return false;
-  publish(backend, { backendId: current.backendId, generation, name: current.name });
+  const next = { backendId: current.backendId, generation, name: current.name };
+  rememberIdentity(backend, next);
+  publish(backend, next);
   return true;
 }
 

@@ -40,6 +40,11 @@ import {
 import { addToast } from './toast.svelte';
 import { userFacingError } from '../utils/userFacingError';
 import { patchWorkflowItems, patchWorkflowSoftStop, workflowAttentionCount } from './workflowData';
+import { readComputerRows, retainUnavailableComputerRows } from './computerRows';
+import { attachedBackends, backendById, onBackendDetached, onBackendsChanged, requireEntityBackend, withBackendTarget } from '../transport/backends';
+import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
+import { noteProject, noteThread, noteWorkflowItem, projectBackend, workflowItemBackend } from '../transport/entityIndex';
+import { getAttachedBackends } from './attachedBackends.svelte';
 
 const REFRESH_DEBOUNCE_MS = 200;
 
@@ -57,7 +62,7 @@ let automations = $state(new Map<string, WorkflowAutomationView[]>());
 let details = $state(new Map<string, WorkflowItemDetail>());
 let livePhases = $state(new Map<string, WorkflowLivePhase>());
 let receipts = $state(new Map<string, WorkflowResolvedReceipt>());
-let paused = $state(false);
+let paused = $state(new Map<BackendKey, boolean>());
 let overlayLoaded = $state(false);
 let loading = $state(false);
 let loadError = $state<string | null>(null);
@@ -65,7 +70,11 @@ let loadError = $state<string | null>(null);
 let lastProjectIds: string[] = [];
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let inFlight: Promise<void> | null = null;
-const detailLoads = new Map<string, Promise<WorkflowItemDetail | null>>();
+const detailLoads = new Map<string, { promise: Promise<WorkflowItemDetail | null> | null }>();
+let listRevision = 0;
+let projectRevision = 0;
+let attentionRequested = false;
+const engineRevisions = new Map<BackendKey, number>();
 
 export function getWorkflowRuns(): readonly WorkItem[] {
   return runs;
@@ -107,8 +116,10 @@ export function getWorkflowReceipt(itemId: string): WorkflowResolvedReceipt | un
   return receipts.get(itemId);
 }
 
-export function isWorkflowEnginePaused(): boolean {
-  return paused;
+export function isWorkflowEnginePaused(backend?: BackendKey): boolean {
+  if (backend !== undefined) return paused.get(backend) === true;
+  const computers = getAttachedBackends();
+  return computers.length > 0 && computers.every((entry) => paused.get(entry.id) === true);
 }
 
 export function isWorkflowOverlayLoaded(): boolean {
@@ -143,12 +154,26 @@ export function clearWorkflowReceipts(): void {
  * about it on every launch.
  */
 export async function hydrateWorkflowAttention(): Promise<void> {
+  attentionRequested = true;
   try {
-    const items = (await WorkflowListUnresolvedItems('')) as WorkItem[] | null;
-    if (Array.isArray(items)) runs = items;
+    await readRuns(false);
   } catch (err) {
     console.warn('workflows: attention hydration failed:', err);
   }
+}
+
+async function readRuns(all: boolean): Promise<void> {
+  const revision = ++listRevision;
+  const result = await readComputerRows<WorkItem>(
+    () => all ? WorkflowListItems('') : WorkflowListUnresolvedItems(''),
+    (item, backend) => {
+      noteWorkflowItem(item.id, backend);
+      if (item.projectId) noteProject(item.projectId, backend);
+      if (item.triageThreadId) noteThread(item.triageThreadId, backend);
+    }, undefined, undefined, (late) => {
+      if (revision === listRevision) runs = retainUnavailableComputerRows(runs, late, (item) => workflowItemBackend(item.id));
+    });
+  if (result && revision === listRevision) runs = retainUnavailableComputerRows(runs, result, (item) => workflowItemBackend(item.id));
 }
 
 /**
@@ -162,12 +187,10 @@ export async function loadWorkflowsOverlayData(projectIds: readonly string[]): P
   loading = true;
   inFlight = (async () => {
     try {
-      const [items, engineState] = await Promise.all([
-        WorkflowListItems('') as Promise<WorkItem[] | null>,
-        WorkflowGetEngineState().catch(() => null),
+      await Promise.all([
+        readRuns(true),
+        ...attachedBackends().map((entry) => resyncWorkflowEngineState(entry.id)),
       ]);
-      runs = Array.isArray(items) ? items : [];
-      if (engineState) paused = engineState.paused === true;
       const ids = new Set(lastProjectIds.filter(Boolean));
       for (const item of runs) if (item.projectId) ids.add(item.projectId);
       await loadProjectScopedData([...ids]);
@@ -185,27 +208,33 @@ export async function loadWorkflowsOverlayData(projectIds: readonly string[]): P
 }
 
 async function loadProjectScopedData(projectIds: readonly string[]): Promise<void> {
-  const loaded = await Promise.all(projectIds.map(async (projectId) => ({
-    projectId,
-    catalog: await WorkflowListDefinitions(projectId).catch((err) => {
-      console.warn(`workflows: definitions for ${projectId} failed:`, err);
-      return null;
-    }),
-    automations: await WorkflowListAutomations(projectId).catch((err) => {
-      console.warn(`workflows: automations for ${projectId} failed:`, err);
-      return null;
-    }),
-    costs: await WorkflowListItemCosts(projectId).catch((err) => {
-      console.warn(`workflows: costs for ${projectId} failed:`, err);
-      return null;
-    }),
-  })));
+  const revision = ++projectRevision;
+  const loaded = await Promise.all(projectIds.map(async (projectId) => {
+    let backend: BackendKey;
+    try { backend = requireEntityBackend(projectBackend(projectId)); }
+    catch { return null; } // A removed project's old view may still be closing.
+    const computer = backendById(backend);
+    const [catalog, automations, costs] = await Promise.all([
+      withBackendTarget(backend, () => WorkflowListDefinitions(projectId)).catch(() => null),
+      withBackendTarget(backend, () => WorkflowListAutomations(projectId)).catch(() => null),
+      withBackendTarget(backend, () => WorkflowListItemCosts(projectId)).catch(() => null),
+    ]);
+    return { projectId, backend, computer, catalog, automations, costs };
+  }));
+  if (revision !== projectRevision) return;
   const nextCatalogs = new Map<string, WorkflowDefinitionCatalog>();
   const nextAutomations = new Map<string, WorkflowAutomationView[]>();
   const nextCosts: Record<string, number> = {};
   for (const entry of loaded) {
-    if (entry.catalog) nextCatalogs.set(entry.projectId, entry.catalog);
-    if (entry.automations) nextAutomations.set(entry.projectId, entry.automations);
+    if (!entry) continue;
+    if (backendById(entry.backend) !== entry.computer) continue;
+    const catalog = entry.catalog ?? catalogs.get(entry.projectId);
+    const automation = entry.automations ?? automations.get(entry.projectId);
+    if (catalog) nextCatalogs.set(entry.projectId, catalog);
+    if (automation) nextAutomations.set(entry.projectId, automation);
+    if (!entry.costs) {
+      for (const item of runs) if (item.projectId === entry.projectId && costs[item.id] !== undefined) nextCosts[item.id] = costs[item.id];
+    }
     for (const [itemId, cost] of Object.entries(entry.costs ?? {})) {
       if (typeof cost === 'number' && Number.isFinite(cost)) nextCosts[itemId] = cost;
     }
@@ -220,11 +249,10 @@ export function refreshWorkflowRunsSoon(): void {
   if (refreshTimer !== null) return;
   refreshTimer = setTimeout(() => {
     refreshTimer = null;
-    if (!overlayLoaded) return;
+    if (!overlayLoaded && !attentionRequested) return;
     void (async () => {
       try {
-        const items = (await WorkflowListItems('')) as WorkItem[] | null;
-        if (Array.isArray(items)) runs = items;
+        await readRuns(overlayLoaded);
       } catch (err) {
         console.warn('workflows: run refresh failed:', err);
       }
@@ -244,21 +272,26 @@ export async function loadWorkflowDetail(itemId: string, force = false): Promise
     const cached = details.get(itemId);
     if (cached) return cached;
     const pending = detailLoads.get(itemId);
-    if (pending) return pending;
+    if (pending?.promise) return pending.promise;
   }
+  const pending = { promise: null as Promise<WorkflowItemDetail | null> | null };
+  detailLoads.set(itemId, pending);
   const load = (async () => {
     try {
-      const detail = await WorkflowGetItem(itemId);
+      const backend = requireEntityBackend(workflowItemBackend(itemId));
+      const computer = backendById(backend);
+      const detail = await withBackendTarget(backend, () => WorkflowGetItem(itemId));
+      if (detailLoads.get(itemId) !== pending || backendById(backend) !== computer) return null;
       details = new Map(details).set(itemId, detail);
       return detail;
     } catch (err) {
-      addToast('error', userFacingError(err, 'Could not load this run.'));
+      if (detailLoads.get(itemId) === pending) addToast('error', userFacingError(err, 'Could not load this run.'));
       return null;
     } finally {
-      detailLoads.delete(itemId);
+      if (detailLoads.get(itemId) === pending) detailLoads.delete(itemId);
     }
   })();
-  detailLoads.set(itemId, load);
+  pending.promise = load;
   return load;
 }
 
@@ -273,6 +306,7 @@ export async function loadWorkflowDetail(itemId: string, force = false): Promise
  * rewriting an already-minimal cache.
  */
 export function retainWorkflowDetails(rootItemId: string | null): void {
+  for (const id of detailLoads.keys()) if (id !== rootItemId) detailLoads.delete(id);
   if (details.size === 0) return;
   const kept = rootItemId !== null ? details.get(rootItemId) : undefined;
   if (rootItemId === null || kept === undefined) {
@@ -285,11 +319,12 @@ export function retainWorkflowDetails(rootItemId: string | null): void {
 
 export function applyWorkflowItemState(event: WorkflowItemStateEvent): void {
   if (!event || typeof event.itemId !== 'string' || event.itemId === '') return;
+  listRevision++;
   const known = runs.some((item) => item.id === event.itemId);
   runs = known ? patchWorkflowItems(runs, event) : runs;
-  // A transition on a run the cache has never seen is a fresh start (or a
-  // called run appearing under its parent); only the backend knows its row.
-  if (!known) refreshWorkflowRunsSoon();
+  // An event supersedes outstanding list reads, but carries only part of the
+  // row (no endedAt, for example). Reconcile once after the event burst.
+  refreshWorkflowRunsSoon();
   if (details.has(event.itemId)) void loadWorkflowDetail(event.itemId, true);
   if (event.to !== 'running') {
     const next = new Map(livePhases);
@@ -311,13 +346,16 @@ export function applyWorkflowPhaseState(event: WorkflowPhaseStateEvent): void {
 export function applyWorkflowSoftStop(event: WorkflowSoftStopEvent): void {
   if (!event || typeof event.itemId !== 'string' || event.itemId === '') return;
   if (typeof event.armed !== 'boolean') return;
+  listRevision++;
   runs = patchWorkflowSoftStop(runs, event.itemId, event.armed);
+  refreshWorkflowRunsSoon();
   if (details.has(event.itemId)) void loadWorkflowDetail(event.itemId, true);
 }
 
-export function applyWorkflowEngineState(event: WorkflowEngineStateEvent): void {
+export function applyWorkflowEngineState(event: WorkflowEngineStateEvent, backend: BackendKey = HOME_BACKEND): void {
   if (!event || typeof event.paused !== 'boolean') return;
-  paused = event.paused;
+  engineRevisions.set(backend, (engineRevisions.get(backend) ?? 0) + 1);
+  paused = new Map(paused).set(backend, event.paused);
 }
 
 /**
@@ -327,10 +365,13 @@ export function applyWorkflowEngineState(event: WorkflowEngineStateEvent): void 
  * pause-gated affordance describing the opposite of what the engine is doing,
  * indefinitely. `WorkflowGetEngineState` is the authority.
  */
-export async function resyncWorkflowEngineState(): Promise<void> {
+export async function resyncWorkflowEngineState(backend: BackendKey = HOME_BACKEND): Promise<void> {
+  const computer = backendById(backend);
+  const revision = (engineRevisions.get(backend) ?? 0) + 1;
+  engineRevisions.set(backend, revision);
   try {
-    const state = await WorkflowGetEngineState();
-    if (state) paused = state.paused === true;
+    const state = await withBackendTarget(backend, () => WorkflowGetEngineState());
+    if (state && engineRevisions.get(backend) === revision && backendById(backend) === computer) applyWorkflowEngineState(state, backend);
   } catch (err) {
     console.warn('workflows: engine state resync failed:', err);
   }
@@ -342,6 +383,33 @@ export function applyWorkflowDefinitionsChanged(): void {
   void loadProjectScopedData([...catalogs.keys()].length > 0 ? [...catalogs.keys()] : lastProjectIds);
 }
 
+onBackendsChanged(() => {
+  if (attentionRequested || overlayLoaded) refreshWorkflowRunsSoon();
+});
+
+onBackendDetached(({ backendId, projectIds, workflowItemIds }) => {
+  const removed = new Set(workflowItemIds);
+  runs = runs.filter((item) => !removed.has(item.id));
+  const nextCosts = { ...costs };
+  for (const id of removed) {
+    details.delete(id);
+    detailLoads.delete(id);
+    livePhases.delete(id);
+    receipts.delete(id);
+    delete nextCosts[id];
+  }
+  costs = nextCosts;
+  details = new Map(details);
+  livePhases = new Map(livePhases);
+  receipts = new Map(receipts);
+  for (const id of projectIds) { catalogs.delete(id); automations.delete(id); }
+  catalogs = new Map(catalogs);
+  automations = new Map(automations);
+  paused.delete(backendId);
+  engineRevisions.delete(backendId);
+  paused = new Map(paused);
+});
+
 export function resetWorkflowRunsForTest(): void {
   if (refreshTimer !== null) {
     clearTimeout(refreshTimer);
@@ -349,6 +417,10 @@ export function resetWorkflowRunsForTest(): void {
   }
   inFlight = null;
   detailLoads.clear();
+  listRevision++;
+  projectRevision++;
+  attentionRequested = false;
+  engineRevisions.clear();
   lastProjectIds = [];
   runs = [];
   costs = {};
@@ -357,7 +429,7 @@ export function resetWorkflowRunsForTest(): void {
   details = new Map();
   livePhases = new Map();
   receipts = new Map();
-  paused = false;
+  paused = new Map();
   overlayLoaded = false;
   loading = false;
   loadError = null;

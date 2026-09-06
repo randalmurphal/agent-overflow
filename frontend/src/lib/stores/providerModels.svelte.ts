@@ -1,147 +1,95 @@
+// Model catalogs are account- and computer-specific. A refreshed Mac catalog
+// never changes another computer's composer; stale loads cannot undo a switch.
 import { GetModelsForProvider } from './bindings';
-import { hasScope } from '../transport/scopes';
+import { hasScope, pageGrantsResolved } from '../transport/scopes';
+import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
+import { backendById, onBackendDetached, withBackendTarget } from '../transport/backends';
+import { compositeKey } from '../utils/compositeKey';
 import type { ModelInfo } from '../types/settings';
+import { asProviderID, PROVIDER_IDS, type ProviderID } from '../types/providers';
 import {
-  asProviderID,
-  PROVIDER_IDS,
-  type ProviderID,
-} from '../types/providers';
-import {
-  providerIsEnabled,
-  PROVIDER_SETTINGS_ORDER,
-  type ProviderEnablementSettings,
+  providerIsEnabled, PROVIDER_SETTINGS_ORDER, type ProviderEnablementSettings,
 } from '../providers/catalog';
+import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 
-let modelsByProvider = $state(new Map<ProviderID, ModelInfo[]>());
-const inFlight = new Map<ProviderID, Promise<ModelInfo[]>>();
-const generations = new Map<ProviderID, number>();
+const models = createKeyedSignalRegistry<ModelInfo[] | null>(null);
+const inFlight = new Map<string, Promise<ModelInfo[]>>();
+const generations = new Map<string, number>();
+const EMPTY: ModelInfo[] = [];
 
-class StaleProviderModelLoadError extends Error {
-  constructor(provider: ProviderID) {
-    super(`provider model catalog load for ${provider} was superseded`);
-  }
+export function getProviderModels(provider: ProviderID, backend: BackendKey = HOME_BACKEND): ModelInfo[] {
+  return models.get(compositeKey(backend, provider)) ?? EMPTY;
 }
 
-function setProviderModels(provider: ProviderID, models: ModelInfo[]): void {
-  const next = new Map(modelsByProvider);
-  next.set(provider, models);
-  modelsByProvider = next;
+export async function ensureProviderModels(provider: ProviderID, backend: BackendKey = HOME_BACKEND): Promise<ModelInfo[]> {
+  const key = compositeKey(backend, provider);
+  const cached = models.get(key);
+  if (cached) return Promise.resolve(cached);
+  if (!hasScope('threads:operate', backend)) return Promise.resolve(EMPTY);
+  return inFlight.get(key) ?? loadProviderModels(provider, backend);
 }
 
-export function getProviderModels(provider: ProviderID): ModelInfo[] {
-  return modelsByProvider.get(provider) ?? [];
+export async function refreshProviderModels(provider: ProviderID, backend: BackendKey = HOME_BACKEND): Promise<ModelInfo[]> {
+  if (!hasScope('threads:operate', backend)) return Promise.resolve(EMPTY);
+  const key = compositeKey(backend, provider);
+  generations.set(key, (generations.get(key) ?? 0) + 1);
+  return loadProviderModels(provider, backend);
 }
 
-export async function ensureProviderModels(provider: ProviderID): Promise<ModelInfo[]> {
-  const cached = modelsByProvider.get(provider);
-  if (cached) return cached;
-  // The catalog rides `threads:operate`: choosing a model is choosing what
-  // a turn will run under. A session without that grant is offered no
-  // model picker, and this warms on first paint — so asking would be one
-  // refusal per enabled provider on every boot, for a list nothing will
-  // render.
-  if (!hasScope('threads:operate')) return [];
-
-  const existing = inFlight.get(provider);
-  if (existing) return existing;
-
-  const generation = generations.get(provider) ?? 0;
-  const request = loadProviderModels(provider, generation);
-  inFlight.set(provider, request);
-  request.then(
-    () => clearInFlight(provider, request),
-    () => clearInFlight(provider, request),
-  );
-  return request;
-}
-
-export async function refreshProviderModels(provider: ProviderID): Promise<ModelInfo[]> {
-  if (!hasScope('threads:operate')) return [];
-  const generation = (generations.get(provider) ?? 0) + 1;
-  generations.set(provider, generation);
-  const request = loadProviderModels(provider, generation);
-  inFlight.set(provider, request);
-  request.then(
-    () => clearInFlight(provider, request),
-    () => clearInFlight(provider, request),
-  );
-  return request;
-}
-
-// Warms the catalogs the Settings and composer surfaces read on first paint.
-// Scoped to PROVIDER_SETTINGS_ORDER: claude-tui shares claude's catalog, so
-// preloading it would spend a second round trip on the same list — its
-// submenu warms itself lazily through ensureProviderModels on open.
-export async function preloadProviderModelsForSettings(
-  settings: ProviderEnablementSettings,
-): Promise<void> {
-  const providers = PROVIDER_SETTINGS_ORDER.filter((provider) =>
-    providerIsEnabled(settings, provider),
-  );
-
-  const results = await Promise.allSettled(
-    providers.map((provider) => ensureProviderModels(provider)),
-  );
-
-  for (const [index, result] of results.entries()) {
-    if (result.status === 'fulfilled') continue;
-    const provider = providers[index];
-    console.warn(`Failed to preload ${provider} models:`, result.reason);
-  }
-}
-
-function clearInFlight(provider: ProviderID, request: Promise<ModelInfo[]>): void {
-  if (inFlight.get(provider) === request) {
-    inFlight.delete(provider);
-  }
-}
-
-async function loadProviderModels(
-  provider: ProviderID,
-  generation: number,
-): Promise<ModelInfo[]> {
-  return (async () => {
-    try {
-      const result = (await GetModelsForProvider(provider)) as ModelInfo[] | null;
-      const models = Array.isArray(result) ? result : [];
-      if ((generations.get(provider) ?? 0) === generation) {
-        setProviderModels(provider, models);
-        return models;
-      }
-      throw new StaleProviderModelLoadError(provider);
-    } catch (err) {
-      if (err instanceof StaleProviderModelLoadError) {
-        const cached = modelsByProvider.get(provider);
-        if (cached) return cached;
-        return ensureProviderModels(provider);
-      }
-      throw err;
+function loadProviderModels(provider: ProviderID, backend: BackendKey): Promise<ModelInfo[]> {
+  const key = compositeKey(backend, provider);
+  const generation = generations.get(key) ?? 0;
+  const target = backendById(backend);
+  let request: Promise<ModelInfo[]>;
+  request = (async () => {
+    const result = await withBackendTarget(backend, () => GetModelsForProvider(provider));
+    if (backendById(backend) !== target) throw new Error('Computer was removed while loading its models.');
+    if ((generations.get(key) ?? 0) !== generation) {
+      // A superseded caller joins the newer load instead of publishing its
+      // old account's models. Retain an already loaded current catalog.
+      const cached = models.get(key);
+      if (cached) return cached;
+      return ensureProviderModels(provider, backend);
     }
+    const list = Array.isArray(result) ? result as ModelInfo[] : [];
+    models.set(key, list);
+    return list;
   })();
+  inFlight.set(key, request);
+  const clear = () => { if (inFlight.get(key) === request) inFlight.delete(key); };
+  void request.then(clear, clear);
+  return request;
+}
+
+export async function preloadProviderModelsForSettings(
+  settings: ProviderEnablementSettings, backend: BackendKey = HOME_BACKEND,
+): Promise<void> {
+  if (backend === HOME_BACKEND) await pageGrantsResolved();
+  const providers = PROVIDER_SETTINGS_ORDER.filter((provider) => providerIsEnabled(settings, provider));
+  const results = await Promise.allSettled(providers.map((provider) => ensureProviderModels(provider, backend)));
+  for (const [index, result] of results.entries()) {
+    if (result.status === 'rejected') console.warn(`Failed to preload ${providers[index]} models:`, result.reason);
+  }
 }
 
 export function invalidateProviderModels(
-  provider?: ProviderID | string | null,
+  provider?: ProviderID | string | null, backend: BackendKey = HOME_BACKEND,
 ): void {
-  if (provider === undefined || provider === null) {
-    modelsByProvider = new Map();
-    inFlight.clear();
-    for (const providerID of PROVIDER_IDS) {
-      generations.set(providerID, (generations.get(providerID) ?? 0) + 1);
-    }
-    return;
+  const selected = provider == null ? PROVIDER_IDS : [asProviderID(provider)].filter(Boolean) as ProviderID[];
+  for (const id of selected) {
+    const key = compositeKey(backend, id);
+    generations.set(key, (generations.get(key) ?? 0) + 1);
+    models.drop(key);
+    inFlight.delete(key);
   }
-
-  const providerID = asProviderID(provider);
-  if (!providerID) return;
-
-  generations.set(providerID, (generations.get(providerID) ?? 0) + 1);
-  const next = new Map(modelsByProvider);
-  next.delete(providerID);
-  modelsByProvider = next;
-  inFlight.delete(providerID);
 }
 
 export function resetProviderModelsForTest(): void {
-  invalidateProviderModels();
+  for (const key of new Set([...generations.keys(), ...inFlight.keys()])) {
+    generations.set(key, (generations.get(key) ?? 0) + 1);
+  }
+  models.reset();
+  inFlight.clear();
 }
+
+onBackendDetached(({ backendId }) => invalidateProviderModels(null, backendId));

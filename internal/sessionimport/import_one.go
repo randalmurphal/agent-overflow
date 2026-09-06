@@ -65,6 +65,14 @@ func ImportOne(ctx context.Context, d Deps, row Row) (ImportOutcome, error) {
 	if strings.TrimSpace(row.SessionID) == "" {
 		return ImportOutcome{}, fmt.Errorf("sessionimport: %s has no session id", row.ID)
 	}
+	unlock, err := d.Store.LockNativeSessions(ctx, []store.TransferSession{{Provider: row.Provider, Ref: row.SessionID}})
+	if err != nil {
+		return ImportOutcome{}, err
+	}
+	defer unlock()
+	if err := d.Store.CheckNativeSessionImport(row.Provider, row.SessionID); err != nil {
+		return ImportOutcome{}, err
+	}
 
 	proj, err := resolveProject(d.Store, row)
 	if err != nil {

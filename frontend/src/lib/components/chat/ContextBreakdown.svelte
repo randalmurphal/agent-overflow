@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { threadHasScope } from '../../transport/entityScopes';
   // Claude's canonical `/context` breakdown, read on demand from the live
   // session and rendered inside the context meter's popover.
   //
@@ -8,7 +9,6 @@
   // the next open re-reads. There is no polling and no refresh timer; the
   // always-on meter is still driven by streaming usage events.
   import { GetThreadContextUsage } from '../../stores/bindings';
-  import { hasScope } from '../../transport/scopes';
   import { formatTokens } from '../../utils/format';
 
   let { threadId }: { threadId: string } = $props();
@@ -53,7 +53,7 @@
     // one possible answer and asking would only spend a refusal to reach
     // it. The popover's own unavailable state says so in place; the meter
     // above keeps rendering the estimate, which is a read.
-    if (!hasScope('threads:operate')) {
+    if (!threadHasScope('threads:operate', tid)) {
       state = { kind: 'unavailable', reason: 'The exact breakdown is not available for this session.' };
       return;
     }

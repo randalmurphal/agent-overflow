@@ -375,3 +375,12 @@ than the run. One contract covers both.
   wakes bound threads, and a fired automation enters through `StartItem` like
   any other start. The engine holds no timer, no trigger, and no automation
   identity — a run started by one is just a run whose `source` is `automation`.
+
+## Host maintenance admission
+
+`Config.BeginWork` is an optional host admission hook. Both creation of a new
+run and every transition back to `running` acquire it before the durable state
+write. The hook may wait for host maintenance but must not call this actor.
+Existing running rows cover the spaces between phases; no second running-work
+counter or user-pause mutation is needed. A new path that writes running
+ownership must retain this boundary.

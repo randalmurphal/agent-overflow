@@ -175,7 +175,7 @@ func TestAdmittedResponseExposesWhatTheClientReads(t *testing.T) {
 	})(rec, req)
 
 	exposed := rec.Header().Get("Access-Control-Expose-Headers")
-	for _, want := range []string{"Content-Type", "Content-Length", "Cache-Control"} {
+	for _, want := range []string{"Content-Type", "Content-Length", "Cache-Control", RefreshRecoveryHeader} {
 		if !containsHeaderName(exposed, want) {
 			t.Errorf("expose-headers %q does not name %q", exposed, want)
 		}

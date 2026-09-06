@@ -1,3 +1,4 @@
+import { __setTransportStatusForTest } from './transportStatus.svelte';
 // session-import:progress ingestion. A frame that reaches the store drives a
 // progress bar, closes the modal and toasts "imported N sessions" — and the
 // channel reaches any client granted `threads:operate`, this device or
@@ -8,7 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
-import { wsClient, type TransportStatusSnapshot } from '../transport/wsClient';
+import type { TransportStatusSnapshot } from '../transport/wsClient';
 import { applySessionImportProgress, setupSessionImportEvents } from './eventsSessionImport';
 import { applyTransportGap } from './eventsTransportGap';
 import {
@@ -36,17 +37,9 @@ async function startRun(): Promise<void> {
  * plays a snapshot through the wiring.
  */
 function driveTransportStatus(initial: TransportStatusSnapshot['status']) {
-  let handler: ((snapshot: TransportStatusSnapshot) => void) | null = null;
-  vi.spyOn(wsClient, 'getStatus').mockReturnValue({ status: initial, nextAttemptAt: null });
-  vi.spyOn(wsClient, 'onStatusChange').mockImplementation((h) => {
-    handler = h;
-    h({ status: initial, nextAttemptAt: null });
-    return () => {
-      handler = null;
-    };
-  });
+  __setTransportStatusForTest({ status: initial, nextAttemptAt: null });
   return (status: TransportStatusSnapshot['status']) => {
-    handler?.({ status, nextAttemptAt: null });
+    __setTransportStatusForTest({ status, nextAttemptAt: null });
   };
 }
 

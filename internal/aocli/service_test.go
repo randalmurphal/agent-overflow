@@ -446,3 +446,38 @@ func writeFakeBinary(t *testing.T, path, marker string) {
 		t.Fatalf("write: %v", err)
 	}
 }
+
+func TestServiceStartStopPreserveInstalledUnit(t *testing.T) {
+	for _, goos := range []string{"linux", "darwin"} {
+		t.Run(goos, func(t *testing.T) {
+			runner := &recordingRunner{}
+			env := testServiceEnv(t, runner)
+			env.goos = goos
+			if code, _, stderr := runService(t, env, "install"); code != exitOK {
+				t.Fatal(stderr)
+			}
+			manager, _, _ := serviceManager(env, "", "", &bytes.Buffer{})
+			before, err := os.ReadFile(manager.UnitPath())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, action := range []string{"stop", "start"} {
+				if code, _, stderr := runService(t, env, action); code != exitOK {
+					t.Fatalf("%s: %s", action, stderr)
+				}
+			}
+			after, err := os.ReadFile(manager.UnitPath())
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("service control changed the unit: %v", err)
+			}
+		})
+	}
+}
+
+func TestServiceStartExplainsMissingInstallation(t *testing.T) {
+	env := testServiceEnv(t, &recordingRunner{})
+	code, _, stderr := runService(t, env, "start")
+	if code == exitOK || !strings.Contains(stderr, "service install") {
+		t.Fatalf("start = %d, %s", code, stderr)
+	}
+}

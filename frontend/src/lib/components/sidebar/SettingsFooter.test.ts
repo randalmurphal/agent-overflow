@@ -1,8 +1,14 @@
 import { render } from '@testing-library/svelte';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetBindingMocks } from '../../../test/mocks/bindings-app';
 import { pairViewOnly, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import SettingsFooter from './SettingsFooter.svelte';
+
+const mode = vi.hoisted(() => ({ frontend: false }));
+vi.mock('../../transport/runMode', async (original) => ({
+  ...await original<typeof import('../../transport/runMode')>(),
+  isFrontendOnly: () => mode.frontend,
+}));
 
 // The app's one ambient read-only marker. It is a MODE indicator, so its
 // predicate is the grant set (transport/scopes.ts isViewOnly) and never
@@ -10,13 +16,22 @@ import SettingsFooter from './SettingsFooter.svelte';
 // owner's own screen and a full-access paired device.
 describe('SettingsFooter view-only indicator', () => {
   beforeEach(() => {
+    mode.frontend = false;
     resetBindingMocks();
     resetToLocalPage();
   });
 
   afterEach(() => {
+    mode.frontend = false;
     resetToLocalPage();
     resetBindingMocks();
+  });
+
+  it('has no execution-host sleep control in a standalone frontend', () => {
+    mode.frontend = true;
+    const view = render(SettingsFooter, { onOpenSettings: () => {} });
+    expect(view.queryByTestId('sidebar-keep-awake-toggle')).toBeNull();
+    expect(view.getByTestId('sidebar-settings-button')).toBeVisible();
   });
 
   it('shows for a session holding the observe set alone', async () => {

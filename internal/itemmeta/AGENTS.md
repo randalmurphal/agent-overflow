@@ -7,6 +7,18 @@ logic lives here. Stdlib-only.
 
 ## Helpers
 
+- `transfer_codex.go`: rewrites structured saved collaboration identities for
+  independent native copies. Root status/generation maps, typed collab receiver
+  lists and agent records follow the provider-supplied ID map. Historical prompt,
+  nickname, result text, unrelated tool inputs and large numbers remain intact.
+  `store.ThreadHistoryExport` applies this only to snapshot rows, never originals.
+
+- `transfer.go`: remaps structured attachment ownership and plan/review links
+  when conversations move or copy. Raw JSON fields preserve provider IDs,
+  unknown extensions, prose and large numeric values. Missing attachment data
+  is an error; a partial transfer must not silently become a complete one. The
+  caller supplies destination identities, keeping this package stdlib-only.
+
 - `trim.go`: `TrimToolResultEcho(toolName, raw)` bounds the Claude
   completion echo (`tool_result` / `tool_use_result`) on persisted tool
   metas. Dropped on success, tail-capped error excerpts

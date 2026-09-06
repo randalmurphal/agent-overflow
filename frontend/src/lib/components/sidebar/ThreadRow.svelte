@@ -11,11 +11,12 @@
   import {
     attachedBackendEntry,
     backendDisplayName,
+    hasMultipleBackends,
     threadMachine,
     threadMachineUnreachable,
   } from '../../stores/attachedBackends.svelte';
   import { backendHasBrowser } from '../../utils/browserTools';
-  import { projectSpansBackends } from '../../stores/projects.svelte';
+  import { hasScope } from '../../transport/scopes';
   import MonitorIcon from '@lucide/svelte/icons/monitor';
   import { getMinuteNow } from '../../stores/minuteClock.svelte';
   import {
@@ -354,12 +355,13 @@
   // never dimmed here: its drop is the transport banner's.
   let machineUnreachable = $derived(threadMachineUnreachable(thread.id, thread.projectId));
   let worktreeName = $derived(pathBasename(thread.worktreePath));
-  // The machine chip shares the worktree chip's slot and appears only when
-  // the row's project spans more than one machine (spec §10, wave 7d):
-  // under an entry with one target the machine is implied.
+  // Remote-only projects need the same host label as merged projects.
+  // On a client with several hosts and no local backend, every host is named.
   let machineName = $derived.by(() => {
-    if (!thread.projectId || !projectSpansBackends(thread.projectId)) return '';
-    const entry = attachedBackendEntry(threadMachine(thread.id, thread.projectId));
+    if (!hasMultipleBackends()) return '';
+    const key = threadMachine(thread.id, thread.projectId);
+    if (key === HOME_BACKEND && hasScope('host')) return '';
+    const entry = attachedBackendEntry(key);
     return entry ? backendDisplayName(entry) : '';
   });
   // An agent on a machine with no browser tools cannot open a page at all.

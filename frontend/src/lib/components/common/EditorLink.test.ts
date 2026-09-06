@@ -23,7 +23,7 @@ describe('<EditorLink>', () => {
 
   it('renders inline with the path as text by default', () => {
     setBindingMock('OpenInEditor', vi.fn(async () => undefined));
-    const { getByTestId } = render(EditorLink, { props: { path: 'src/lib/foo.ts' } });
+    const { getByTestId } = render(EditorLink, { props: { backend: '', path: 'src/lib/foo.ts' } });
     const link = getByTestId('editor-link');
     // Inline mode uses a <button> rather than <a href="#"> — Svelte's
     // a11y rule rejects "#"; the visual treatment + accessibility live
@@ -36,7 +36,7 @@ describe('<EditorLink>', () => {
   it('renders as an icon button when asIcon=true', () => {
     setBindingMock('OpenInEditor', vi.fn(async () => undefined));
     const { getByTestId, queryByTestId } = render(EditorLink, {
-      props: { path: 'a/b.ts', asIcon: true },
+      props: { backend: '', path: 'a/b.ts', asIcon: true },
     });
     expect(queryByTestId('editor-link')).toBeNull();
     const btn = getByTestId('editor-link-icon');
@@ -46,7 +46,7 @@ describe('<EditorLink>', () => {
   it('invokes OpenInEditor with path/line/col/workspacePath on click', async () => {
     const mock = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
     const { getByTestId } = render(EditorLink, {
-      props: { path: 'src/foo.ts', line: 12, col: 4, workspacePath: '/work' },
+      props: { backend: '', path: 'src/foo.ts', line: 12, col: 4, workspacePath: '/work' },
     });
     await fireEvent.click(getByTestId('editor-link'));
     await waitFor(() => {
@@ -57,7 +57,7 @@ describe('<EditorLink>', () => {
 
   it('defaults line/col/workspacePath when not supplied', async () => {
     const mock = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
-    const { getByTestId } = render(EditorLink, { props: { path: 'README.md' } });
+    const { getByTestId } = render(EditorLink, { props: { backend: '', path: 'README.md' } });
     await fireEvent.click(getByTestId('editor-link'));
     await waitFor(() => {
       expect(mock).toHaveBeenCalledTimes(1);
@@ -69,7 +69,7 @@ describe('<EditorLink>', () => {
     setBindingMock('OpenInEditor', vi.fn(async () => {
       throw new Error('no editor available — set $EDITOR');
     }));
-    const { getByTestId } = render(EditorLink, { props: { path: 'a.ts' } });
+    const { getByTestId } = render(EditorLink, { props: { backend: '', path: 'a.ts' } });
     await fireEvent.click(getByTestId('editor-link'));
     await waitFor(() => {
       const toasts = getToasts();
@@ -82,7 +82,7 @@ describe('<EditorLink>', () => {
     setBindingMock('OpenInEditor', vi.fn(async () => undefined));
     const parentClick = vi.fn();
     const { getByTestId } = render(EditorLink, {
-      props: { path: 'a.ts', asIcon: true, stopPropagation: true },
+      props: { backend: '', path: 'a.ts', asIcon: true, stopPropagation: true },
     });
     // Listen on document.body so the event has to bubble through the
     // testing-library container to reach us. The button's
@@ -100,7 +100,7 @@ describe('<EditorLink>', () => {
     setBindingMock('OpenInEditor', vi.fn(async () => undefined));
     const parentClick = vi.fn();
     const { getByTestId } = render(EditorLink, {
-      props: { path: 'a.ts', asIcon: true },
+      props: { backend: '', path: 'a.ts', asIcon: true },
     });
     document.body.addEventListener('click', parentClick);
     try {
@@ -113,7 +113,7 @@ describe('<EditorLink>', () => {
 
   it('prevents default click behavior so a parent form submit does not fire', async () => {
     setBindingMock('OpenInEditor', vi.fn(async () => undefined));
-    const { getByTestId } = render(EditorLink, { props: { path: 'a.ts' } });
+    const { getByTestId } = render(EditorLink, { props: { backend: '', path: 'a.ts' } });
     const link = getByTestId('editor-link');
     const event = new MouseEvent('click', { bubbles: true, cancelable: true });
     link.dispatchEvent(event);
@@ -128,7 +128,7 @@ describe('<EditorLink>', () => {
   it('overrides label when provided', () => {
     setBindingMock('OpenInEditor', vi.fn(async () => undefined));
     const { getByTestId } = render(EditorLink, {
-      props: { path: 'a/b/c.ts', label: 'c.ts' },
+      props: { backend: '', path: 'a/b/c.ts', label: 'c.ts' },
     });
     const link = getByTestId('editor-link');
     expect(link.textContent).toBe('c.ts');
@@ -139,7 +139,7 @@ describe('<EditorLink>', () => {
   it('does not duplicate line and column suffixes in labelled editor tooltips', () => {
     setBindingMock('OpenInEditor', vi.fn(async () => undefined));
     const { getByTestId } = render(EditorLink, {
-      props: { path: 'src/lib/foo.ts', line: 12, col: 4, label: 'foo.ts:12:4' },
+      props: { backend: '', path: 'src/lib/foo.ts', line: 12, col: 4, label: 'foo.ts:12:4' },
     });
     expect(getByTestId('editor-link').getAttribute('title')).toBe(
       'Open foo.ts:12:4 in editor',
@@ -149,7 +149,7 @@ describe('<EditorLink>', () => {
   it('supports explicit action text for icon-only callers', () => {
     setBindingMock('OpenInEditor', vi.fn(async () => undefined));
     const { getByTestId } = render(EditorLink, {
-      props: {
+      props: { backend: '',
         path: '/work/project',
         asIcon: true,
         ariaLabel: 'Open Workspace in Editor',
@@ -164,8 +164,8 @@ describe('<EditorLink>', () => {
   it('renders inert text and omits icon actions in a view-only session', () => {
     setPageGrantsFromBootstrap(true);
     const open = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
-    const inline = render(EditorLink, { props: { path: 'src/foo.ts' } });
-    const icon = render(EditorLink, { props: { path: 'src/foo.ts', asIcon: true } });
+    const inline = render(EditorLink, { props: { backend: '', path: 'src/foo.ts' } });
+    const icon = render(EditorLink, { props: { backend: '', path: 'src/foo.ts', asIcon: true } });
 
     expect(inline.queryByTestId('editor-link')).toBeNull();
     expect(inline.getByTestId('editor-link-disabled').textContent).toBe('src/foo.ts');

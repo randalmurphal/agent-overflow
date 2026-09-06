@@ -200,6 +200,7 @@ const UNRESOLVED: ScopeSnapshot = {
 
 // One snapshot per backend. Home holds an entry from module load so a
 // reader before the first manifest gets the answer it always did.
+const carriedScopes = new Map<BackendKey, readonly string[]>();
 const snapshots = new Map<BackendKey, ScopeSnapshot>([[HOME_BACKEND, UNRESOLVED]]);
 // Locality as the manifest reported it, held apart from the snapshot
 // because it is an input to two of its fields and survives a re-resolve
@@ -292,7 +293,7 @@ function readSnapshot(backendId: BackendKey, caller: string): ScopeSnapshot {
 // for, not a second authorization rule.
 function resolve(backend: BackendKey): void {
   const home = backend === HOME_BACKEND;
-  const paired = pairedSessionScopes(backend);
+  const paired = pairedSessionScopes(backend) ?? carriedScopes.get(backend) ?? null;
   const onHost = home && pageOnHost;
   let next: ScopeSnapshot;
   if (paired !== null) {
@@ -324,6 +325,10 @@ function resolve(backend: BackendKey): void {
  * `host` is answered from host presence rather than from the grant set,
  * because no session holds it — see the module header.
  */
+// Local shell controls may omit HOME. Every grant check names its computer:
+// a full-access first host must never authorize or hide another host's UI.
+export function hasScope(scope: 'host', backendId?: BackendKey): boolean;
+export function hasScope(scope: Scope, backendId: BackendKey): boolean;
 export function hasScope(scope: Scope, backendId: BackendKey = HOME_BACKEND): boolean {
   const snapshot = readSnapshot(backendId, `hasScope(${scope})`);
   if (scope === 'host') return snapshot.onHost;
@@ -431,6 +436,22 @@ export function setPageGrantsFromBootstrap(remote: boolean): void {
  * — a session's grants are immutable for its lifetime, and a revocation
  * force-closes the socket rather than narrowing what it holds.
  */
+/** Authenticated desktop proxy metadata; the carrier keeps the credential.
+ * Only named grantable scopes cross. Never infer host access from the proxy. */
+export function setCarriedSessionScopes(backend: BackendKey, value: unknown): void {
+  if (backend === HOME_BACKEND) return;
+  carriedScopes.set(backend, Array.isArray(value)
+    ? value.filter((scope): scope is Scope => isScope(scope) && scope !== 'host' && scope !== 'session') : []);
+  resolve(backend);
+}
+
+export function forgetGrantedScopes(backend: BackendKey): void {
+  if (backend === HOME_BACKEND) return;
+  carriedScopes.delete(backend);
+  snapshots.delete(backend);
+  notifyScopesChanged?.();
+}
+
 export function refreshGrantedScopes(backendId: BackendKey = HOME_BACKEND): void {
   resolve(backendId);
 }
@@ -444,6 +465,7 @@ export function __resetScopesForTest(): void {
   pageGrantsSettled = false;
   settleWaiters = [];
   unresolvedReadReported = false;
+  carriedScopes.clear();
   snapshots.clear();
   snapshots.set(HOME_BACKEND, UNRESOLVED);
   notifyScopesChanged?.();

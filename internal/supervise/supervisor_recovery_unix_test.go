@@ -110,10 +110,12 @@ func TestASettledOutcomeReachesTheBackendExactlyOnce(t *testing.T) {
 		Reason: "the trial did not report prepared",
 	})
 
-	if err := rig.runUntil(rig.config(), "hello 1.0.0", 1); err != nil {
+	if err := rig.runUntilCondition(rig.config(), func() {
+		rig.waitForLog("hello 1.0.0", 1)
+		waitForReported(t, rig)
+	}); err != nil {
 		t.Fatalf("first Run: %v", err)
 	}
-	waitForReported(t, rig)
 
 	activate := rig.lines("activate")
 	if len(activate) != 1 {

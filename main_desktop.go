@@ -17,11 +17,13 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"unsafe"
 
 	appservice "agent-overflow/internal/app"
 	"agent-overflow/internal/appidentity"
+	"agent-overflow/internal/appupdate"
 	"agent-overflow/internal/clientmode"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/theme"
@@ -34,32 +36,21 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
-// runClient is the remote-client entry point. Instead of
-// booting the local transport (HTTP+WS server, App service registration,
-// SQLite, observability, sessions), the desktop binary points the
-// Wails webview at a tiny loopback stub that serves the SPA shell
-// verbatim, answers /bootstrap.json on its own origin, and carries the
-// SPA's WebSocket to the backend named on the command line with the
-// upstream credential attached in Go (internal/clientmode).
-//
-// What that credential is, and whether reaching it needs a pairing
-// ceremony first, is prepareConnection's answer (main_connect.go). The
-// ceremony runs BEFORE the window exists, on purpose: it is a
-// conversation between two people at two screens, and a window that
-// opened first would be showing an outage for the length of it.
-//
-// Why we still need a loopback HTTP server: the Wails webview only
-// loads `http://`/`https://` URLs (or the embedded asset URL with the
-// devserver path). Pointing it directly at `ws://...` won't work, and
-// the page needs an origin of its own for its cookie and its
-// same-origin manifest. The stub server is single-purpose: the shell,
-// the assets under /assets/, the manifest, and the /ws carry.
+// runClient opens a desktop frontend. A paired target uses a local connection
+// manager with one independent carrier per computer and no execution backend.
+// A launch-token URL retains the single-upstream relay for same-host tooling.
+// New pairing still confirms in the terminal before the window opens; existing
+// pairings never require an upstream probe to open the local frontend.
 func runClient(rawURL string) {
 	// Interrupt reaches the ceremony's waits: the confirmation poll runs
 	// for up to ten minutes, and Ctrl-C during it must end the process
 	// rather than be swallowed by a client that is mid-request.
 	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt)
-	cfg, err := prepareConnection(ctx, rawURL)
+	var cfg clientmode.Config
+	var err error
+	if rawURL != "" {
+		cfg, err = prepareConnection(ctx, rawURL)
+	}
 	stopSignals()
 	if err != nil {
 		fatalConnect(err)
@@ -67,33 +58,45 @@ func runClient(rawURL string) {
 
 	embeddedSPA, err := fs.Sub(assets, "frontend/dist")
 	if err != nil {
-		fatalf("--connect: locate embedded frontend/dist: %v", err)
+		fatalf("frontend: locate embedded frontend/dist: %v", err)
 	}
 	cfg.Assets = embeddedSPA
-	// Same durable identity the local-backend path uses: one client ID
-	// per installation, so this machine keeps one ui_state bucket on
-	// every backend it talks to, local or remote.
-	cfg.ClientID = ensureClientID()
-
-	stub, err := clientmode.Serve(cfg)
-	if err != nil {
-		fatalf("--connect: serve stub: %v", err)
+	// The stable screen identity scopes device preferences on execution hosts.
+	// The independent frontend keeps its own browser storage and presentation files.
+	appearanceDir := bootSettingsDir()
+	if cfg.Paired != nil || cfg.WSURL == "" {
+		appearanceDir = filepath.Join(appearanceDir, "frontend")
+	} else {
+		cfg.ClientID = ensureClientID()
 	}
-	log.Printf("clientmode: stub serving on %s, attaching to %s", stub.Addr(), cfg.WSURL)
 
 	title := appidentity.AppTitle(nativeSingleInstanceMode())
-	// No services registered (Services left nil): the App receiver in
-	// the local binary would only confuse a webview that's about to
-	// RPC against a remote backend instead.
+	// Native services are supplied through narrow hooks. Execution remains on
+	// the independently connected computers, so no App receiver is registered.
 	app := application.New(desktopApplicationOptions(title))
+	var window *application.WebviewWindow
+	stub, err := serveClientWindow(cfg, clientWindowHooks{
+		setBackground: func(r, g, b uint8) {
+			if window != nil {
+				window.SetBackgroundColour(application.NewRGBA(r, g, b, 255))
+			}
+		},
+		configureUpdater: func(service *appupdate.Service) {
+			appservice.InitWindowUpdater(service, app, version, frontendRelaunchArgs(dataDirRoot))
+		},
+	})
+	if err != nil {
+		fatalf("frontend: serve window: %v", err)
+	}
+	log.Printf("clientmode: frontend serving on %s", stub.Addr())
 
-	window := uiwindow.New(app, application.WebviewWindowOptions{
+	window = uiwindow.New(app, application.WebviewWindowOptions{
 		Title:            title,
 		Width:            1280,
 		Height:           800,
 		MinWidth:         800,
 		MinHeight:        600,
-		BackgroundColour: bootWindowBackgroundColour(),
+		BackgroundColour: windowBackgroundColour(appearanceDir),
 		URL:              stub.AppURL(),
 		KeyBindings:      uikeys.WithDevTools(uikeys.BrowserWithReload(stub.AppURL)),
 	})
@@ -283,6 +286,9 @@ func nativeWindowPointer(getWindow func() *application.WebviewWindow) func() uns
 // macOS/Linux/Windows native builds. The Windows binary that proxies
 // into WSL is a separate cmd/ — see cmd/agent-overflow-windows.
 func runDesktop(listenAddr string) {
+	if runExistingDesktop() {
+		return
+	}
 	appService := newApp()
 	// Assigned inside beforeRun, on this goroutine, before the app loop
 	// starts — so every later read (the reload keybinding on the UI
@@ -370,7 +376,11 @@ var defaultWindowBackgroundColour = application.NewRGBA(22, 22, 30, 255)
 // costs a wrong-colored resize flash, never a failed boot — which is why
 // nothing here is fatal and nothing here creates a directory.
 func bootWindowBackgroundColour() application.RGBA {
-	hex := theme.WindowBackground(bootSettingsDir())
+	return windowBackgroundColour(bootSettingsDir())
+}
+
+func windowBackgroundColour(dir string) application.RGBA {
+	hex := theme.WindowBackground(dir)
 	if hex == "" {
 		return defaultWindowBackgroundColour
 	}
