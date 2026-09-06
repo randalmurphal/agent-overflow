@@ -166,10 +166,12 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
       - name: Install tools and dependencies
         run: |
           corepack enable
-          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
           pnpm --dir frontend install --frozen-lockfile
           pnpm --dir mobile install --frozen-lockfile
       - name: Check version

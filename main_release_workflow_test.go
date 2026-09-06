@@ -174,6 +174,7 @@ func TestReleaseTagOnlyPromotesSavedCandidate(t *testing.T) {
 			Steps       []struct {
 				Name string
 				Run  string
+				Uses string
 			}
 		}
 	}
@@ -213,5 +214,18 @@ func TestReleaseTagOnlyPromotesSavedCandidate(t *testing.T) {
 	}
 	if !verified || !published {
 		t.Fatal("promotion must verify saved artifacts then publish them")
+	}
+	// Hosted runner SDK installations do not guarantee sdkmanager is on PATH.
+	androidSDK := false
+	for _, step := range workflow.Jobs["android"].Steps {
+		if strings.HasPrefix(step.Uses, "android-actions/setup-android@") {
+			androidSDK = true
+		}
+		if strings.Contains(step.Run, "build-apk.sh") && !androidSDK {
+			t.Error("Android release must provision its SDK before building")
+		}
+	}
+	if !androidSDK {
+		t.Error("Android release must explicitly provision its SDK")
 	}
 }

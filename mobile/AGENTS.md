@@ -129,6 +129,10 @@ the Android assets, so a run that skipped the SPA step would package a
 stale bundle and say nothing about it, and the JVM tests run before the
 assemble so a broken bundle store cannot be packaged.
 
+GitHub builds explicitly provision the SDK with `setup-android`, including
+the platform and build-tools packages. Do not assume a runner's preinstalled
+SDK puts `sdkmanager` on PATH; the first Android candidate failed that way.
+
 The toolchain is not on PATH on the development box. Both are discovered
 with the defaults below and can be overridden by exporting them:
 
