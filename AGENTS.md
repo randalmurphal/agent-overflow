@@ -162,6 +162,8 @@ Guardrails:
 
 Release artifact handoff is checked by `TestReleaseWorkflowCarriesEveryArtifactToPackaging`:
 a build output must survive CI upload and download before checksumming/publishing.
+Manual production candidates are tested before a tag promotes their exact saved
+bytes; see [release-candidates.md](docs/architecture/release-candidates.md).
 Android setup and signing instructions live in
 [remote-access-setup.md](docs/architecture/remote-access-setup.md).
 

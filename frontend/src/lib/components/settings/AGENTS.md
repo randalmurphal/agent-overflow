@@ -50,6 +50,10 @@ readings) is read on the BACKEND MACHINE's own screen alone (`internal/app/app_n
 either way, which is what its description says. The phone-push block stays
 at the FOOT, because it answers the same question one screen down.
 
+Phone push currently sends directly through Firebase. Its credential hint must
+say that the service account belongs to the Firebase project built into the
+Android APK; configuring an unrelated project cannot enable push for that APK.
+
 Two rules for editing it:
 
 - **The master switch HIDES rather than disables everything beneath it**,

@@ -40,7 +40,7 @@
     notConfigured: 'Not set up. Phones are not woken.',
     credentialLabel: 'Firebase service account key',
     credentialHint:
-      "Paste the JSON key file for the app's Firebase project. It stays on this machine and is never shown again.",
+      'Use a service-account JSON key from the Firebase project built into your Android APK. Other projects will not work. Saved only on this computer.',
     save: 'Save',
     clear: 'Clear',
     saved: 'Push credential saved.',

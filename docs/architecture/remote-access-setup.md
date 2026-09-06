@@ -106,6 +106,47 @@ certificate pins without this manual step.
 
 ## Test production builds before a release
 
+For the full installation rehearsal, use the same signed artifacts that will
+eventually be published:
+
+1. Sync the next version with `scripts/sync-release-version.sh`, review and
+   commit the metadata, and run `make verify`. Keep Android's persistent signing
+   secrets and matching Firebase app configuration in GitHub Actions as below.
+2. Run **Actions → Release build → Run workflow** against that commit's branch.
+   Leave the version input empty to use the committed version. This builds all
+   platforms and uploads artifacts without creating a tag or GitHub release.
+3. Download `agent-overflow-release-<version>` from the successful run and
+   extract it. Use its included installer on Mac or inside WSL:
+
+   ```sh
+   sh ./install.sh --download --source .
+   ```
+
+   Run this from the extracted directory. It detects the platform and verifies
+   the packaged checksums. Quit the installed app before replacing it.
+4. On the phone, download the smaller `android-raw` artifact from the same run,
+   extract it in Files, and open the APK to install/update it. No USB or wireless
+   debugging is needed. Allow installs from that browser or file manager if
+   Android asks. GitHub Actions artifact downloads require GitHub sign-in.
+5. Configure the host and pair through the ordinary settings screens. Existing
+   signed installations keep their data; do not uninstall merely to update.
+   Test push delivery and opening its thread with the sender configured below.
+
+Keep the installed hosts on the candidate while testing: a newer host may
+deliver a newer frontend bundle to the phone. The download page differs from
+the eventual Releases page, but the binaries and installation paths are the
+production ones. Desktop publisher signing is unchanged; Gatekeeper or
+SmartScreen may still require first-launch confirmation as described in README.
+
+A later version tag promotes the matching successful candidate's saved files;
+it does not rebuild them. Promotion requires the exact tagged commit and version
+and verifies the candidate manifest and checksums. Missing, expired, or ambiguous
+candidates fail rather than substituting another build. Keep the tested run's
+artifact until publication. A candidate is not offered by the public in-app
+update checker before it is published.
+
+For a local production build during development:
+
 On the Mac, `make build` creates the production app at
 `bin/agent-overflow.app`. To exercise the normal installer without cutting a
 release, package that build locally:
@@ -151,7 +192,7 @@ refuses missing signing configuration and verifies the resulting signature.
 release, including native compatibility changes. The displayed version comes
 from `frontend/package.json`; web-bundle-only updates do not require a new APK.
 
-The tag/manual GitHub workflow builds Android alongside the desktop artifacts,
+The manual GitHub workflow builds Android alongside the desktop artifacts,
 then includes it in the checksum manifest. Configure these repository secrets
 before running it:
 
@@ -162,8 +203,8 @@ before running it:
 
 A missing signing key fails the release instead of distributing an APK signed
 with an ephemeral runner's debug key. A manual workflow build uploads artifacts
-without publishing a GitHub release. A version tag publishes only after all
-platform jobs pass. Local APK builds do not run the full desktop release gate;
+without publishing a GitHub release. A version tag publishes the matching
+successful candidate after verifying its saved artifacts. Local APK builds do not run the full desktop release gate;
 run `make verify` before cutting a release.
 
 ## Notifications and troubleshooting
@@ -188,7 +229,9 @@ credential belongs on the host, not on each phone.
 3. On each trusted computer that should send push, save that private JSON key
    in Settings → Notifications → Phone push. Never put this key in the APK,
    source control, or another user's backend. The Firebase project must match
-   the one configured in the APK.
+   the one configured in the APK; a credential from an unrelated project will
+   not work. This is one-time setup for the trusted host, not a Firebase account
+   setup step for every person installing the phone app. App updates preserve it.
 4. Build/install the configured APK, unlock it and allow notifications. Enable
    the desired notification kinds on the host. Background the phone normally,
    finish a turn on the host, and verify both delivery and tap-to-thread.

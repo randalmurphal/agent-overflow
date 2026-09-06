@@ -42,6 +42,7 @@ How the app works today. Under [`architecture/`](architecture/).
 | [`root-decomposition.md`](architecture/root-decomposition.md) | Field-ownership and seam map of the `*App` root receiver, plus the wire-compat facts that make a split byte-identical on the wire. |
 | [`observability.md`](architecture/observability.md) | OpenTelemetry + per-thread NDJSON event log. |
 | [`transport.md`](architecture/transport.md) | Wire mechanism deep-dives: port pinning, the gap marker, scoped-token routes, coalescing, keepalive. |
+| [`release-candidates.md`](architecture/release-candidates.md) | Build and test an untagged production candidate, then publish its exact saved bytes. |
 | [`remote-access-setup.md`](architecture/remote-access-setup.md) | Mac-to-Android setup: Tailscale, APK installation, pairing, release signing, and troubleshooting. |
 | [`remote-commands.md`](architecture/remote-commands.md) | Explicit peer access, durable remote commands, connection recovery, and ownership. |
 | [`file-previews.md`](architecture/file-previews.md) | Generated HTML on its owning computer: relative assets, independent origins, authorization, browser trust and lifetime. |

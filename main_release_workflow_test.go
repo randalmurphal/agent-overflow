@@ -159,3 +159,59 @@ func TestReleaseWorkflowCarriesEveryArtifactToPackaging(t *testing.T) {
 		t.Error("Android APK is absent from CI uploads")
 	}
 }
+
+// A tag promotes tested bytes. It must never trigger platform builds or
+// regenerate checksums over an unverified replacement payload.
+func TestReleaseTagOnlyPromotesSavedCandidate(t *testing.T) {
+	body, err := os.ReadFile(".github/workflows/release-build.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		Jobs map[string]struct {
+			If          string
+			Permissions map[string]string
+			Steps       []struct {
+				Name string
+				Run  string
+			}
+		}
+	}
+	if err := yaml.Unmarshal(body, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"linux-wsl", "macos", "android", "package"} {
+		job := workflow.Jobs[name]
+		if job.If != "github.event_name == 'workflow_dispatch'" {
+			t.Errorf("%s must build only manual candidates", name)
+		}
+		if job.Permissions["contents"] == "write" {
+			t.Errorf("candidate job %s must not publish", name)
+		}
+	}
+	promote := workflow.Jobs["promote"]
+	if promote.If != "github.event_name == 'push' && github.ref_type == 'tag'" {
+		t.Fatal("promotion must run only for a pushed version tag")
+	}
+	verified := false
+	published := false
+	for _, step := range promote.Steps {
+		if strings.Contains(step.Run, "scripts/release-candidate.mjs download") {
+			verified = true
+		}
+		if strings.Contains(step.Run, "gh release create") {
+			if !verified || !strings.Contains(step.Run, "--verify-tag") {
+				t.Error("release must follow candidate verification and require an existing tag")
+			}
+			published = true
+		}
+		for _, forbidden := range []string{"build-release.sh", "package-release-assets.sh", "wails3", "build-apk.sh"} {
+			if strings.Contains(step.Run, forbidden) {
+				t.Errorf("promotion must not rebuild/repackage: %s", forbidden)
+			}
+		}
+	}
+	if !verified || !published {
+		t.Fatal("promotion must verify saved artifacts then publish them")
+	}
+}

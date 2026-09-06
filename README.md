@@ -61,6 +61,11 @@ Pin a specific release when you do not want "latest":
 curl -fsSL https://github.com/randalmurphal/agent-overflow/releases/download/v0.0.1/install.sh | sh -s -- --version 0.0.1
 ```
 
+Maintainers can also build an untagged production candidate from the **Release
+build** Actions workflow, download its packaged artifact, and test it before
+publishing. A later matching version tag promotes those exact saved files; see
+[release candidates](docs/architecture/release-candidates.md).
+
 Before an official release exists, use the same installer against a local
 release directory. `make release` writes artifacts to
 `dist/release/<version>/`; the `--source` path makes the installer read

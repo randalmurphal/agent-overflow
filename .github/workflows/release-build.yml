@@ -16,6 +16,7 @@ permissions:
 
 jobs:
   linux-wsl:
+    if: github.event_name == 'workflow_dispatch'
     name: Linux and WSL artifacts
     runs-on: ubuntu-latest
 
@@ -80,6 +81,7 @@ jobs:
           if-no-files-found: error
 
   macos:
+    if: github.event_name == 'workflow_dispatch'
     name: macOS artifact
     runs-on: macos-latest
 
@@ -152,6 +154,7 @@ jobs:
           if-no-files-found: error
 
   android:
+    if: github.event_name == 'workflow_dispatch'
     name: Android APK
     runs-on: ubuntu-latest
     steps:
@@ -207,10 +210,9 @@ jobs:
           if-no-files-found: error
 
   package:
+    if: github.event_name == 'workflow_dispatch'
     name: Package release assets
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     needs:
       - linux-wsl
       - macos
@@ -258,6 +260,15 @@ jobs:
           name: android-raw
           path: dist/release/${{ env.VERSION }}
 
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Record candidate provenance
+        run: |
+          node --test scripts/release-candidate.test.mjs
+          node scripts/release-candidate.mjs stamp "dist/release/$VERSION"
+
       - name: Package install assets
         shell: bash
         run: ./scripts/package-release-assets.sh "dist/release/$VERSION"
@@ -266,11 +277,42 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: agent-overflow-release-${{ env.VERSION }}
+          retention-days: 90
           path: dist/release/${{ env.VERSION }}/*
           if-no-files-found: error
 
+  promote:
+    name: Publish tested candidate
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - name: Verify tag version
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./frontend/package.json').version")"
+          if [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "Tag must match the committed release version v$version." >&2
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - name: Download and verify saved candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dist/release
+          node scripts/release-candidate.mjs download "dist/release/$VERSION"
+
       - name: Publish GitHub release assets
-        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -288,6 +330,7 @@ jobs:
           # --generate-notes builds the body from merged PRs/commits since the
           # previous tag; the client renders it in the Updates panel.
           gh release create "$release_tag" \
+            --verify-tag \
             --title "Agent Overflow $release_tag" \
             --generate-notes \
             dist/release/"$VERSION"/*
