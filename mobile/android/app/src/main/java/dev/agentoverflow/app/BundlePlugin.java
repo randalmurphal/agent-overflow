@@ -13,6 +13,8 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
 import java.io.File;
+import java.io.InputStream;
+import java.io.IOException;
 import java.util.Base64;
 import java.util.Map;
 
@@ -48,7 +50,25 @@ public class BundlePlugin extends Plugin {
     }
 
     private BundleStore store() {
-        return new BundleStore(rootFor(getContext().getFilesDir()));
+        return new BundleStore(rootFor(getContext().getFilesDir()), packagedVersion(getContext()));
+    }
+
+    static String packagedVersion(Context context) {
+        try (InputStream input = context.getAssets().open("public/" + BundleStore.RELEASE_FILE)) {
+            return BundleStore.readRelease(input);
+        } catch (IOException unavailable) {
+            return "";
+        }
+    }
+
+    @PluginMethod
+    public void discardPending(PluginCall call) {
+        try {
+            store().discardPending(call.getString("id", ""));
+            call.resolve();
+        } catch (IOException failure) {
+            call.reject("cannot discard the pending bundle");
+        }
     }
 
     /**
@@ -122,7 +142,8 @@ public class BundlePlugin extends Plugin {
      */
     @PluginMethod
     public void state(PluginCall call) {
-        BundleStore.State state = store().read();
+        BundleStore store = store();
+        BundleStore.State state = store.read();
         JSObject answer = new JSObject();
         answer.put("current", state.current);
         answer.put("next", state.next);
@@ -130,6 +151,10 @@ public class BundlePlugin extends Plugin {
         answer.put("lastKnownGood", state.lastKnownGood);
         answer.put("rolledBack", new JSArray(state.rolledBack));
         answer.put("versionCode", versionCode(getContext()));
+        answer.put("orderedUpdates", true);
+        answer.put("packagedVersion", store.packagedVersion);
+        answer.put("currentVersion", store.versionOf(state.current));
+        answer.put("nextVersion", state.next.isEmpty() ? "" : store.versionOf(state.next));
         call.resolve(answer);
     }
 

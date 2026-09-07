@@ -276,7 +276,7 @@ bundleSync.ts` decides when, and `internal/bundle` +
 authority: `docs/specs/remote-access.md` §9, "Bundle sync".
 
 **Everything that decides anything lives in `BundleStore`, which takes a
-directory and no Android type.** That is deliberate: the state
+directory, the packaged release version, and no Android type.** That is deliberate: the state
 transitions, the unzip, the verification and the rollback are the part
 of this feature that decides whether a phone boots, and none of it
 should need an emulator to be proved. `BundleStoreTest` is a plain JVM
@@ -284,6 +284,27 @@ JUnit test — no Robolectric — and `make apk` runs it before it
 assembles. What is left for the emulator is the part only a device has:
 that the WebView really serves from the staged directory, and that the
 plugin registers at all.
+
+### Release ordering
+
+`bundle-release.json` is part of the hashed archive and contains the SPA's
+strict SemVer `version`. Native staging reads this verified file, not a caller's
+version argument, and accepts only a release strictly newer than the packaged,
+current, and pending versions. Parsing is bounded; missing or malformed metadata
+fails closed. Numeric prerelease identifiers compare numerically, prereleases
+precede stable releases, and build metadata does not affect ordering. Rebuilding
+one version with different bytes does not make it an upgrade. Publish a greater
+release version to distribute a new frontend automatically.
+
+`MainActivity` and `BundlePlugin` read the packaged metadata through the same
+asset helper. `state()` advertises `orderedUpdates: true` and derives
+`packagedVersion`, `currentVersion`, and `nextVersion` from those assets/files;
+version fields are not duplicated in the state file. The frontend requires this
+native guard before staging. `discardPending(id)` clears only a matching `next`:
+a delayed cancellation cannot erase another update or change current/health
+state. Existing watchdog and failed-boot rollback remain explicit recovery
+exceptions to upgrade ordering. Staging cannot overwrite a selected bundle or
+reinstall an id whose health check failed.
 
 ### The state file
 
@@ -332,7 +353,8 @@ Within the same APK, the transition runs in this order:
 1. **`pendingHealth` is still set** → the previous launch swapped onto a
    bundle and never reported healthy. `current` becomes `lastKnownGood`,
    the bad id joins `rolledBack`, its directory is deleted.
-2. **`next` is set** → adopt it, and arm the health check by setting
+2. **`next` is set** → recheck its verified release metadata against the
+   packaged and current releases, then adopt it and arm the health check by setting
    `pendingHealth` to it. From here until the app reports healthy, case
    1 is what happens on any launch.
 3. Otherwise nothing moves.
@@ -394,11 +416,10 @@ wire subscription lives in `stores/`), decides, downloads over the paired
 session, and hands the bytes to `stage`. Four things about it are worth
 knowing before changing it:
 
-- **Which backend.** The newest attached one — highest `bundleVersion`,
-  home on ties and whenever the versions do not parse. One app cannot run
-  two bundles; picking home would strand a phone on an old desktop, and
-  picking the most recently attached would make the answer depend on
-  pairing order.
+- **Which backend.** The highest valid SemVer release strictly newer than
+  the executing and packaged releases. Build metadata and different content
+  hashes do not order same-version builds. Missing or malformed versions are
+  not update candidates; an older attached host cannot replace a newer app.
 - **The decision is a pure function** (`decideBundleSync`), one row per
   case, and each row has a unit test. Add a case by adding a row and a
   test, not by adding a branch to the driver around it. That includes the

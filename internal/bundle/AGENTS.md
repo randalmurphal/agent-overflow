@@ -27,23 +27,30 @@ device already extended by pairing.
 ## The id is content, not a version
 
 `ID` is the hex SHA-256 over the sorted `path\x00sha256\n` lines of the
-manifest. Two consequences, both load-bearing:
+manifest. Identical content shares an id across hosts; any changed release
+bytes produce a different id. Identity does not establish release order.
 
-- Two builds of identical content share an id, so a phone paired with
-  two machines on the same release downloads nothing when it moves
-  between them.
-- A `dev` build — which is every build on a developer's box, since
-  `main.version` defaults to it — still gets a real, distinct id, so the
-  whole update path is exercisable without cutting a release.
+The build stamps `bundle-release.json` with the frontend package's complete
+SemVer **before** hashing. That file is included in the manifest and archive;
+`Version` comes from those same hashed bytes, not the backend executable's
+link-time stamp. The metadata is bounded to 4 KiB and must contain exactly a
+valid `version` field. A malformed file refuses the manifest; only an absent
+file permits the legacy link-time fallback.
 
-`Version` (`main.version`) is display and ORDERING only: the shell
-compares ids to decide whether to download, and reads the version solely
-to pick the newest backend when several are attached.
+The phone accepts automatic updates only when the candidate is strictly newer
+than its executing and APK-packaged versions. Equal versions (including builds
+with different content or SemVer build metadata), older versions, and unordered
+values such as `dev` cannot replace installed code. Native staging verifies the
+release metadata against the manifest and checks the version again; a misleading
+hello or old backend cannot bypass that boundary. Content ids still identify
+exact downloads and failed boots. To test web updates without a release, build a
+strictly newer frontend package version; rebuilding the same version requires
+installing the APK instead.
 
 ## Two implementations of one rule, pinned by one golden
 
 The Go side hashes the embedded `frontend/dist`. `frontend/scripts/
-bundleId.ts` hashes the same tree at build time and stamps
+bundleId.ts` stamps `bundle-release.json`, hashes the same tree at build time, then stamps
 `bundle-id.txt` into it, because a shell running the bundle its APK
 shipped with has no state-file entry naming it and must still be able to
 say "the backend's id is the one I am already running".
@@ -78,14 +85,15 @@ plugin never saw).
 - Zip entries carry no modification time, so two builds of one tree
   produce byte-identical archives — the same property the id has.
 
-## MinShellBuild is the one version gate in the design
+## Native compatibility is separate from release ordering
 
 `MinShellBuild` is the lowest Android `versionCode` this bundle's
 `native/` seams can run on. Web code that calls a Capacitor plugin the
 installed APK was never built with does not degrade; it answers null
 forever or throws where nothing catches it. So the bundle states a floor
 and the shell compares its own build against it before downloading
-anything.
+anything. The current floor is 9, which includes native release ordering and
+pending-bundle cancellation.
 
 **Bump it in the same change that adds a seam needing a new plugin, and
 never for a web-only change.** A bump costs every phone below it its

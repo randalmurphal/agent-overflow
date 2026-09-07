@@ -155,9 +155,15 @@ spec's header lists them) plus two stale premises of its own. Do not
 read a green `make e2e-android` on a laptop as evidence: it exits 0
 when no device is attached, on purpose.
 
-`make e2e-android` enables UI trace in its backend build so its bundle
-differs from the APK even on the same checkout. The update case trims
-`bundle-id.txt` before checking that prerequisite; its trailing newline
+`make e2e-android` enables UI trace, then the Android runner builds a
+separate `bin/ao-android-harness` with a strictly newer release version for
+bundle-adoption tests. `build-android-bundle-fixture.ts` temporarily stamps only
+the two generated dist metadata files with the next patch above both the APK
+and source release, compiles the real SPA, and restores those files in `finally`.
+Do not run it concurrently with another build. The ordinary harness binary,
+source version, and signed APK keep their real release identity. A Go embed
+`-overlay` does not replace embedded file bytes, so it cannot build this fixture.
+The update case trims `bundle-id.txt` before comparing identities; a newline
 must never make identical bundles look different.
 
 The boot case also enables its isolated host's LAN listener, learns the
@@ -244,8 +250,10 @@ For a **signed release APK**, set `AO_ANDROID_RELEASE_APK` to its absolute
 path when running `make e2e-android`. The same runner verifies its signature,
 refuses a debuggable manifest, and selects `android/release-recovery.spec.ts`.
 An explicitly requested release run fails if the SDK or emulator is missing.
-The APK and host bundles must differ for the adoption check; `make e2e-android`
-builds the host with `UI_TRACE=1` to differ from an ordinary release APK.
+The adoption check requires a strictly newer host release; the runner builds
+that isolated fixture from the real SPA. Different hashes of one release are
+intentionally not upgrades. The release test checks the host's hashed release
+metadata against the APK before pairing.
 That case drives Android accessibility directly: it never attaches CDP or adds
 debug flags to the app. Chromium forces WebView debugging on `userdebug` Android
 regardless of the app flag, so a runtime no-socket assertion applies only to a

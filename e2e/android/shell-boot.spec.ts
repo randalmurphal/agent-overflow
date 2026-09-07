@@ -89,6 +89,7 @@ import {
 
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { unusedPort } from '../src/ports.js';
+import { compareBundleVersions } from '../../frontend/src/lib/native/bundleVersion.ts';
 import {
   RESULT_LINE,
   advance,
@@ -908,9 +909,9 @@ test('a private certificate mismatch refuses pairing before credentials cross', 
 // the 30-second watchdog rolls it back.
 //
 // The bundle staged here is the HARNESS BACKEND'S. It is a different
-// build from the APK's (`make e2e-android` enables UI trace, which the
-// ordinary APK build does not, so its content id differs), and
-// the test checks that difference rather than assuming it, so this is a
+// release from the APK's: the runner builds a dedicated harness with a
+// strictly newer version stamped into the real SPA. The test checks
+// the content difference rather than assuming it, so this is a
 // genuine swap onto a bundle this phone did not ship with, which is the
 // case that has to work.
 test('the shell stages a bundle, boots on it, and refuses a damaged one', async ({
@@ -1002,6 +1003,8 @@ test('the shell stages a bundle, boots on it, and refuses a damaged one', async 
     lastKnownGood: string;
     rolledBack: string[];
     versionCode: number;
+    packagedVersion: string;
+    nextVersion: string;
   }> =>
     page.evaluate(async () => {
       const plugins = (window as Window & {
@@ -1030,13 +1033,14 @@ test('the shell stages a bundle, boots on it, and refuses a damaged one', async 
   const before = await readState();
   expect(before.current, 'a phone that has never updated runs its own assets').toBe('');
   expect(before.versionCode, 'the plugin must be able to say what this APK is').toBeGreaterThan(0);
+  expect(compareBundleVersions(before.nextVersion, before.packagedVersion)).toBe(1);
 
   // --- A damaged archive is refused ------------------------------------
   // Truncated: the zip's central directory is at the END, so half an
   // archive is not a zip at all. The plugin must say so and change
   // nothing.
   const truncated = archive.subarray(0, Math.floor(archive.length / 2));
-  expect(await stage(manifest.id, manifest, truncated.toString('base64')))
+  expect(await stage('truncated-fixture', manifest, truncated.toString('base64')))
     .not.toBe('');
   expect((await readState()).next, 'a refused stage must leave the state alone').toBe(manifest.id);
 
@@ -1049,15 +1053,14 @@ test('the shell stages a bundle, boots on it, and refuses a damaged one', async 
     ...manifest,
     files: manifest.files.map((f, i) => (i === 0 ? { ...f, sha256: 'f'.repeat(64) } : f)),
   };
-  expect(await stage(manifest.id, lying, archive.toString('base64')))
+  expect(await stage('lying-fixture', lying, archive.toString('base64')))
     .toContain(manifest.files[0].path);
   expect((await readState()).next).toBe(manifest.id);
 
-  // --- The real one is accepted from here too --------------------------
-  // The same id the sync staged, staged again from the page: `stage`
-  // replaces the directory and re-records `next`, so what is on disk is
-  // what THIS call verified.
-  expect(await stage(manifest.id, manifest, archive.toString('base64'))).toBe('');
+  // Selected bytes cannot be overwritten, and another id cannot make
+  // the same release an upgrade. Both refusals preserve the pending update.
+  expect(await stage(manifest.id, manifest, archive.toString('base64'))).toContain('already selected');
+  expect(await stage('same-release', manifest, archive.toString('base64'))).toContain('newer');
   const staged = await readState();
   expect(staged.next, 'a verified bundle waits for the next cold start').toBe(manifest.id);
   expect(staged.current, 'nothing swaps under a running app').toBe('');

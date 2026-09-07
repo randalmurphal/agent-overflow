@@ -1142,8 +1142,9 @@ plugin, and the routes the bytes come over are in
   `stores/transportStatus.svelte.ts`, never a client's `onHelloChange`
   directly. A wire subscription lives in `stores/`
   (`lib/architecture.test.ts` rule 2), and the shell needs EVERY attached
-  backend's hello rather than home's, because the rule is "run the newest
-  attached backend's bundle".
+  backend's hello rather than home's, to select the newest attached release
+  that is strictly newer than the executing and APK-packaged versions.
+  Equal, older, or unordered versions keep the installed bundle.
 - An absent field is "supplies no bundle", never a wildcard and never an
   error. A dev-server boot and every backend older than the routes both
   answer nothing, and a shell reads that as "keep running what I have".

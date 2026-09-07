@@ -33,9 +33,13 @@
 import { createHash } from 'node:crypto';
 import { readdir, readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
+import { compareBundleVersions } from '../src/lib/native/bundleVersion.ts';
 
 /** Where a built bundle records its own id. Mirrors `bundle.IDFileName`. */
 export const BUNDLE_ID_FILE = 'bundle-id.txt';
+/** Hashed release identity, consumed by both the backend and native installer. */
+export const BUNDLE_RELEASE_FILE = 'bundle-release.json';
+
 
 /** One file, as the manifest describes it. Mirrors `bundle.File`. */
 export interface BundleFile {
@@ -101,8 +105,18 @@ export async function computeBundleId(root: string): Promise<string> {
   return bundleId(await bundleFiles(root));
 }
 
+/** Release identity is part of the content hash, not the host binary's stamp. */
+export async function stampBundle(root: string, version: unknown): Promise<void> {
+  if (typeof version !== 'string' || compareBundleVersions(version, version) !== 0) {
+    throw new Error('The frontend package version must be a complete semantic version.');
+  }
+  await writeFile(path.join(root, BUNDLE_RELEASE_FILE), `${JSON.stringify({ version })}\n`, 'utf8');
+  const id = await computeBundleId(root);
+  await writeFile(path.join(root, BUNDLE_ID_FILE), `${id}\n`, 'utf8');
+}
+
 /**
- * The Vite plugin: after a production build, stamp `dist/bundle-id.txt`.
+ * The Vite plugin: stamp release metadata, then hash and stamp the content id.
  *
  * `closeBundle` rather than `writeBundle`, so every asset — including the
  * ones plugins emit late — is on disk before the walk. Build only: a dev
@@ -120,15 +134,17 @@ export function bundleIdPlugin(): {
   configResolved: (config: { build: { outDir: string }; root: string }) => void;
 } {
   let outDir = '';
+  let packagePath = '';
   return {
     name: 'agent-overflow:bundle-id',
     apply: 'build',
     configResolved(config) {
       outDir = path.resolve(config.root, config.build.outDir);
+      packagePath = path.resolve(config.root, 'package.json');
     },
     async closeBundle() {
-      const id = await computeBundleId(outDir);
-      await writeFile(path.join(outDir, BUNDLE_ID_FILE), `${id}\n`, 'utf8');
+      const pkg: { version?: unknown } = JSON.parse(await readFile(packagePath, 'utf8'));
+      await stampBundle(outDir, pkg.version);
     },
   };
 }

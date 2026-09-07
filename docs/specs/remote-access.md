@@ -1922,9 +1922,13 @@ Prerequisite sweep, valuable standalone:
   owner would trust with the desktop, which is the self-and-friends
   posture ruled for it; shell-baked signing returns as its own addition
   if distribution ever widens. With this, the SPA layer is effectively
-  skew-free for the single-backend common case (multi-backend runs
-  the newest attached backend's bundle and speaks flags to older
-  ones).
+  skew-free for the single-backend common case. Multi-backend selects
+  the newest attached release, adopting only a version strictly newer
+  than both the executing bundle and APK-packaged bundle; older peers
+  remain usable through capability flags. Release order comes from
+  SemVer in hashed `bundle-release.json`, never hash or arrival order.
+  Equal-version rebuilds and unordered `dev` versions cannot replace
+  installed code; development tests need a version bump or APK install.
 - **Code trust per client class, stated plainly.** Browsers and the
   desktop attach client load the SPA *from* the backend they connect
   to. A member using a browser against a team hub executes
@@ -2326,9 +2330,11 @@ shell version; a newer bundle downloads in the background over the
 paired session and is verified against the SHA-256 manifest the backend
 served on that same session (signing is cut; the session is the
 integrity boundary), swaps in on the next cold start, and rolls back to
-last-known-good if the first boot fails its health check. A backend
-older than the shell's minimum is refused with a clear message, never a
-half-working UI.
+last-known-good if the first boot fails its health check. An APK below
+the offered bundle's native compatibility floor keeps its current bundle
+and shows an APK-update notice. A different content hash alone does not
+authorize installation: verified release metadata must be strictly newer
+than the executing and APK-packaged versions.
 
 **Verification.** Playwright already drives the SPA against the harness;
 a compact-viewport project (390×844, touch enabled) runs the same
@@ -2466,9 +2472,10 @@ the review fixes that follow them):
   built from that manifest's own list and re-verified as it compresses.
   Walked lazily on first use; `*.map` and `bundle-id.txt` excluded;
   every path must pass `CleanPath` or the tree is refused;
-  `MinShellBuild = 1` is the one version gate in the design.
-  `frontend/scripts/bundleId.ts` is the build-side twin and stamps
-  `dist/bundle-id.txt`, the APK's own answer to "what am I running";
+  `MinShellBuild = 9` is the native compatibility floor, separate from
+  strictly newer release ordering. `frontend/scripts/bundleId.ts` stamps
+  `dist/bundle-release.json` from the frontend package version before
+  hashing, then stamps `dist/bundle-id.txt`, the APK's own answer to "what am I running";
   one fixture directory and one golden id pin the two implementations.
 - *The routes* (`internal/transport/bundleroutes.go`): `GET
   /bundle/manifest.json` and `GET /bundle/archive.zip`, admitted by the
@@ -2493,7 +2500,9 @@ the review fixes that follow them):
   runs before it assembles.
 - *The decision* (`frontend/src/lib/native/bundleSync.ts`): a pure
   `decideBundleSync` with one row per case; the newest attached backend
-  wins, home on ties; deferred while the OS has the app paused; the
+  wins, home on ties, and must be strictly newer than the executing and
+  APK-packaged releases; equal, older and unordered versions stay installed.
+  Deferred while the OS has the app paused; the
   attempt cap is an INPUT to the decision (`attempts`, six per id per
   launch) with its own `exhausted` row, because a cap the decision
   could not see only slowed the schedule; only a SUCCESS re-evaluates

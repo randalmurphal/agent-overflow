@@ -4,6 +4,8 @@
 // bridge; browser route mocks cannot establish this native lifecycle contract.
 import { _android, expect, test, type AndroidDevice, type AndroidSelector } from '@playwright/test';
 import { launchHarness } from '../src/harness.js';
+import { compareBundleVersions } from '../../frontend/src/lib/native/bundleVersion.ts';
+import { execFileSync } from 'node:child_process';
 import { RESULT_LINE, advance, claudeScenario, emit, seedAgentThread, startMock, textLines, waitForGate } from '../tests/agent-visibility-helpers.js';
 
 const PACKAGE = 'dev.agentoverflow.app';
@@ -96,6 +98,9 @@ test('the signed release recovers live and completed turns across Android suspen
   const wifi = (await phone.shell('settings get global wifi_on')).toString().trim() === '1';
   const data = (await phone.shell('settings get global mobile_data')).toString().trim() === '1';
   try {
+    const packagedVersion = JSON.parse(execFileSync('unzip', ['-p', process.env.AO_ANDROID_RELEASE_APK!, 'assets/public/bundle-release.json'], { encoding: 'utf8' })).version;
+    const release = await (await fetch(new URL('/bundle-release.json', harness.url))).json();
+    expect(compareBundleVersions(release.version, packagedVersion), 'adoption requires a strictly newer fixture release').toBe(1);
     await harness.rpc('SetNetworkSettings', { bindAll: true });
     const threadId = await seedAgentThread(harness, 'release-recovery', 'Release recovery');
     await harness.rpc('HarnessSetScenario', {
@@ -140,7 +145,7 @@ test('the signed release recovers live and completed turns across Android suspen
     const updateReady = named('A newer Agent Overflow is ready. It loads the next time the app starts.');
     try { await waitForNode(phone, updateReady); }
     catch (cause) {
-      throw new Error('No update-ready notice: this case requires a host bundle different from the APK. Build the harness with UI_TRACE=1.', { cause });
+      throw new Error('No update-ready notice: this case requires the newer Android bundle fixture built by make e2e-android.', { cause });
     }
     await phone.shell(`am force-stop ${PACKAGE}`);
     await phone.shell(`am start -n ${ACTIVITY}`);

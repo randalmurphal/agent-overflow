@@ -100,7 +100,10 @@ public class BundleStoreTest {
         return buffer.toByteArray();
     }
 
+    private int releaseNumber = 1;
+
     private void stageOk(BundleStore store, String id, Map<String, byte[]> files) throws Exception {
+        files.put(BundleStore.RELEASE_FILE, ("{\"version\":\"" + (++releaseNumber) + ".0.0\"}").getBytes(StandardCharsets.UTF_8));
         // Staging runs only after MainActivity has selected this APK's boot.
         if (store.read().apkBuild == 0) store.onBoot(1);
         store.stage(id, BundleStore.readManifest(manifestFor(files)), archiveFor(files));
@@ -124,7 +127,7 @@ public class BundleStoreTest {
 
     @Test
     public void stagingWritesEveryFileAndArmsTheSwap() throws Exception {
-        BundleStore store = new BundleStore(root());
+        BundleStore store = new BundleStore(root(), "1.0.0");
         Map<String, byte[]> files = spa();
         stageOk(store, "abc123", files);
 
@@ -143,7 +146,7 @@ public class BundleStoreTest {
 
     @Test
     public void aCorruptedFileIsRefusedByName() throws Exception {
-        BundleStore store = new BundleStore(root());
+        BundleStore store = new BundleStore(root(), "1.0.0");
         Map<String, byte[]> files = spa();
         JSONObject manifest = manifestFor(files);
         // One byte different from what the manifest promised: the case a
@@ -160,7 +163,7 @@ public class BundleStoreTest {
 
     @Test
     public void aTruncatedFileIsRefused() throws Exception {
-        BundleStore store = new BundleStore(root());
+        BundleStore store = new BundleStore(root(), "1.0.0");
         Map<String, byte[]> files = spa();
         JSONObject manifest = manifestFor(files);
         files.put("assets/app.js", "short".getBytes(StandardCharsets.UTF_8));
@@ -172,7 +175,7 @@ public class BundleStoreTest {
 
     @Test
     public void anEntryTheManifestDoesNotNameIsRefused() throws Exception {
-        BundleStore store = new BundleStore(root());
+        BundleStore store = new BundleStore(root(), "1.0.0");
         Map<String, byte[]> files = spa();
         JSONObject manifest = manifestFor(files);
         files.put("assets/extra.js", "console.log(1)".getBytes(StandardCharsets.UTF_8));
@@ -185,7 +188,7 @@ public class BundleStoreTest {
 
     @Test
     public void aManifestPathTheArchiveNeverCarriedIsRefused() throws Exception {
-        BundleStore store = new BundleStore(root());
+        BundleStore store = new BundleStore(root(), "1.0.0");
         Map<String, byte[]> files = spa();
         JSONObject manifest = manifestFor(files);
         Map<String, byte[]> short_ = new LinkedHashMap<>(files);
@@ -199,7 +202,7 @@ public class BundleStoreTest {
 
     @Test
     public void anEscapingPathIsRefusedWhereTheManifestIsRead() throws Exception {
-        BundleStore store = new BundleStore(root());
+        BundleStore store = new BundleStore(root(), "1.0.0");
         JSONObject manifest = manifestFor(spa());
         JSONObject escaping = new JSONObject();
         escaping.put("path", "../outside.js");
@@ -231,7 +234,7 @@ public class BundleStoreTest {
 
     @Test
     public void anArchiveThatIsNotAZipIsRefused() throws Exception {
-        BundleStore store = new BundleStore(root());
+        BundleStore store = new BundleStore(root(), "1.0.0");
         String message = stageRefused(
                 store, "abc123", manifestFor(spa()), "not a zip".getBytes(StandardCharsets.UTF_8));
         assertFalse(message.isEmpty());
@@ -244,7 +247,7 @@ public class BundleStoreTest {
 
     @Test
     public void aFreshInstallServesTheApkAssets() throws Exception {
-        BundleStore store = new BundleStore(root());
+        BundleStore store = new BundleStore(root(), "1.0.0");
         assertNull("no state means the APK's own assets", store.onBoot(1));
         assertEquals("", store.read().current);
         assertEquals(1, store.read().apkBuild);
@@ -252,7 +255,7 @@ public class BundleStoreTest {
 
     @Test
     public void anApkUpgradeReplacesCachedAndStagedCodeWithoutTouchingOtherData() throws Exception {
-        BundleStore store = new BundleStore(root());
+        BundleStore store = new BundleStore(root(), "1.0.0");
         stageOk(store, "old", spa());
         store.onBoot(1);
         store.ready();
@@ -282,7 +285,7 @@ public class BundleStoreTest {
 
     @Test
     public void aLegacyCacheCannotMaskTheFirstApkWithBuildTracking() throws Exception {
-        BundleStore store = new BundleStore(root());
+        BundleStore store = new BundleStore(root(), "1.0.0");
         stageOk(store, "legacy", spa());
         store.onBoot(1);
         store.ready();
@@ -294,12 +297,12 @@ public class BundleStoreTest {
         assertEquals(4, store.read().apkBuild);
         assertEquals("", store.read().current);
         assertNull("the migration is durable across a cold restart",
-                new BundleStore(root()).onBoot(4));
+                new BundleStore(root(), "1.0.0").onBoot(4));
     }
 
     @Test
     public void anApkUpgradeCannotRollBackIntoThePreviousShellsCode() throws Exception {
-        BundleStore store = new BundleStore(root());
+        BundleStore store = new BundleStore(root(), "1.0.0");
         stageOk(store, "good", spa());
         store.onBoot(1);
         store.ready();
@@ -316,7 +319,7 @@ public class BundleStoreTest {
 
     @Test
     public void anUnavailableApkVersionPreservesTheLastWorkingBundle() throws Exception {
-        BundleStore store = new BundleStore(root());
+        BundleStore store = new BundleStore(root(), "1.0.0");
         stageOk(store, "good", spa());
         store.onBoot(1);
         store.ready();
@@ -327,7 +330,7 @@ public class BundleStoreTest {
 
     @Test
     public void theNextBundleIsAdoptedOnTheFollowingBoot() throws Exception {
-        BundleStore store = new BundleStore(root());
+        BundleStore store = new BundleStore(root(), "1.0.0");
         stageOk(store, "abc123", spa());
 
         File serving = store.onBoot(1);
@@ -342,7 +345,7 @@ public class BundleStoreTest {
 
     @Test
     public void aHealthyBootPromotesTheBundleAndReapsTheRest() throws Exception {
-        BundleStore store = new BundleStore(root());
+        BundleStore store = new BundleStore(root(), "1.0.0");
         stageOk(store, "one", spa());
         store.onBoot(1);
         store.ready();
@@ -374,7 +377,7 @@ public class BundleStoreTest {
         // only then confirms this launch healthy. The reap that report
         // triggers must not take the bundle the person was just told
         // about.
-        BundleStore store = new BundleStore(root());
+        BundleStore store = new BundleStore(root(), "1.0.0");
         stageOk(store, "one", spa());
         store.onBoot(1);
         Map<String, byte[]> second = spa();
@@ -392,7 +395,7 @@ public class BundleStoreTest {
 
     @Test
     public void aBootThatNeverReportsHealthyRollsBack() throws Exception {
-        BundleStore store = new BundleStore(root());
+        BundleStore store = new BundleStore(root(), "1.0.0");
         stageOk(store, "good", spa());
         store.onBoot(1);
         store.ready();
@@ -418,7 +421,7 @@ public class BundleStoreTest {
 
     @Test
     public void aRollbackWithNoKnownGoodLandsOnTheApkAssets() throws Exception {
-        BundleStore store = new BundleStore(root());
+        BundleStore store = new BundleStore(root(), "1.0.0");
         stageOk(store, "bad", spa());
         store.onBoot(1);
 
@@ -430,7 +433,7 @@ public class BundleStoreTest {
 
     @Test
     public void theWatchdogRollsBackInPlace() throws Exception {
-        BundleStore store = new BundleStore(root());
+        BundleStore store = new BundleStore(root(), "1.0.0");
         stageOk(store, "good", spa());
         store.onBoot(1);
         store.ready();
@@ -449,7 +452,7 @@ public class BundleStoreTest {
 
     @Test
     public void theRolledBackListSurvivesAnOrdinaryBoot() throws Exception {
-        BundleStore store = new BundleStore(root());
+        BundleStore store = new BundleStore(root(), "1.0.0");
         stageOk(store, "good", spa());
         store.onBoot(1);
         store.ready();
@@ -480,7 +483,7 @@ public class BundleStoreTest {
 
     @Test
     public void aBundleDirectoryThatVanishedFallsBackToTheAssets() throws Exception {
-        BundleStore store = new BundleStore(root());
+        BundleStore store = new BundleStore(root(), "1.0.0");
         stageOk(store, "abc123", spa());
         store.onBoot(1);
         store.ready();
@@ -492,7 +495,7 @@ public class BundleStoreTest {
 
     @Test
     public void aDamagedStateFileReadsAsTheApkAssets() throws Exception {
-        BundleStore store = new BundleStore(root());
+        BundleStore store = new BundleStore(root(), "1.0.0");
         stageOk(store, "abc123", spa());
         File stateFile = new File(root(), BundleStore.STATE_FILE);
         Files.write(stateFile.toPath(), "{not json".getBytes(StandardCharsets.UTF_8));
@@ -504,4 +507,118 @@ public class BundleStoreTest {
         assertEquals(empty, state.rolledBack);
         assertNull(store.onBoot(1));
     }
+    private Map<String, byte[]> release(String version) {
+        Map<String, byte[]> files = spa();
+        files.put(BundleStore.RELEASE_FILE, ("{\"version\":\"" + version + "\"}").getBytes(StandardCharsets.UTF_8));
+        return files;
+    }
+
+    private void stageRelease(BundleStore store, String id, String version) throws Exception {
+        Map<String, byte[]> files = release(version);
+        store.stage(id, BundleStore.readManifest(manifestFor(files)), archiveFor(files));
+    }
+
+    @Test
+    public void onlyStrictlyNewerReleasesCanReplacePackagedCurrentOrPendingCode() throws Exception {
+        BundleStore store = new BundleStore(root(), "1.0.0");
+        store.onBoot(9);
+        for (String version : new String[]{"0.9.0", "1.0.0", "1.0.0+different", "1.0.0-rc.1"}) {
+            Map<String, byte[]> files = release(version);
+            stageRefused(store, "old", manifestFor(files), archiveFor(files));
+            assertEquals("", store.read().next);
+        }
+        stageRelease(store, "current", "2.0.0");
+        store.onBoot(9);
+        store.ready();
+        stageRelease(store, "newer", "4.0.0");
+        for (String version : new String[]{"2.0.0", "3.0.0", "4.0.0+other"}) {
+            Map<String, byte[]> files = release(version);
+            stageRefused(store, "late", manifestFor(files), archiveFor(files));
+            assertEquals("newer", store.read().next);
+            assertEquals("current", store.read().current);
+        }
+        BundleStore restarted = new BundleStore(root(), "1.0.0");
+        stageRelease(restarted, "newest", "5.0.0");
+        assertEquals(restarted.dir("newest"), restarted.onBoot(9));
+        assertEquals("5.0.0", restarted.versionOf(restarted.read().current));
+    }
+
+    @Test
+    public void missingInvalidOrOversizedReleaseMetadataFailsClosed() throws Exception {
+        BundleStore store = new BundleStore(root(), "1.0.0");
+        store.onBoot(9);
+        stageRelease(store, "waiting", "2.0.0");
+        for (String metadata : new String[]{"", "{}", "{\"version\":7}", "{\"version\":\"3.0.0\"} {}", "{\"version\":\"3.0.0\",\"extra\":1}", "{\"version\":\"v3.0.0\"}", "x".repeat(4097)}) {
+            Map<String, byte[]> files = spa();
+            if (!metadata.isEmpty()) files.put(BundleStore.RELEASE_FILE, metadata.getBytes(StandardCharsets.UTF_8));
+            stageRefused(store, "invalid", manifestFor(files), archiveFor(files));
+            assertEquals("waiting", store.read().next);
+        }
+        Map<String, byte[]> files = release("3.0.0");
+        stageRefused(new BundleStore(root(), ""), "unknown", manifestFor(files), archiveFor(files));
+        assertEquals("waiting", store.read().next);
+    }
+
+    @Test
+    public void pendingDiscardIsCompareAndSwapAndDoesNotChangeHealthOrCurrent() throws Exception {
+        BundleStore store = new BundleStore(root(), "1.0.0");
+        store.onBoot(9);
+        stageRelease(store, "current", "2.0.0");
+        store.onBoot(9);
+        stageRelease(store, "waiting", "3.0.0");
+        stageRelease(store, "replacement", "4.0.0");
+        store.discardPending("waiting");
+        assertEquals("replacement", store.read().next);
+        store.discardPending("replacement");
+        assertEquals("", store.read().next);
+        assertEquals("current", store.read().current);
+        assertEquals("current", store.read().pendingHealth);
+        assertFalse(store.dir("replacement").exists());
+        assertTrue(store.dir("current").exists());
+        store.discardPending("current");
+        assertEquals("current", store.read().pendingHealth);
+        assertNull("health rollback is still allowed to packaged code", store.onBoot(9));
+    }
+
+    @Test
+    public void bootRefusesLegacyPendingDowngradesEvenIfTheyBypassedStaging() throws Exception {
+        BundleStore store = new BundleStore(root(), "1.0.0");
+        store.onBoot(9);
+        stageRelease(store, "waiting", "2.0.0");
+        Files.write(new File(store.dir("waiting"), BundleStore.RELEASE_FILE).toPath(),
+                "{\"version\":\"1.0.0\"}".getBytes(StandardCharsets.UTF_8));
+        assertNull(store.onBoot(9));
+        assertEquals("", store.read().next);
+        assertEquals("", store.read().pendingHealth);
+    }
+
+    @Test
+    public void anAlreadySelectedBundleCannotBeOverwrittenByDifferentBytes() throws Exception {
+        BundleStore store = new BundleStore(root(), "1.0.0");
+        store.onBoot(9);
+        stageRelease(store, "same", "2.0.0");
+        Map<String, byte[]> newer = release("3.0.0");
+        stageRefused(store, "same", manifestFor(newer), archiveFor(newer));
+        assertEquals("2.0.0", store.versionOf("same"));
+        stageRefused(store, "../outside", manifestFor(newer), archiveFor(newer));
+        assertFalse(new File(temp.getRoot(), "outside").exists());
+    }
+
+    @Test
+    public void unknownPackagedReleaseAndMalformedLegacyCurrentFailClosedOnBoot() throws Exception {
+        BundleStore store = new BundleStore(root(), "1.0.0");
+        store.onBoot(9);
+        stageRelease(store, "current", "2.0.0");
+        store.onBoot(9);
+        store.ready();
+        assertNull(new BundleStore(root(), "").onBoot(9));
+        assertEquals("", store.read().current);
+        stageRelease(store, "legacy", "3.0.0");
+        store.onBoot(9);
+        store.ready();
+        Files.delete(new File(store.dir("legacy"), BundleStore.RELEASE_FILE).toPath());
+        assertNull(store.onBoot(9));
+        assertEquals("", store.read().current);
+    }
+
 }

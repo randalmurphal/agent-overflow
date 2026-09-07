@@ -133,6 +133,11 @@ if [[ -n "${AO_ANDROID_RELEASE_APK:-}" ]]; then
   '
 fi
 
+# Only this test runner builds/uses an explicitly newer release fixture.
+# The ordinary harness binary and production dist retain their real versions.
+node "$repo/e2e/scripts/build-android-bundle-fixture.ts" "$apk"
+export AO_HARNESS_BIN="$repo/bin/ao-android-harness"
+
 echo "==> installing"
 if ! install_output="$("$adb" -s "$serial" install -r "$apk" 2>&1)"; then
   # Release and debug signatures differ. Only the disposable emulator may

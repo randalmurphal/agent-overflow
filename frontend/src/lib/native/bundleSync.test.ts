@@ -30,6 +30,10 @@ function state(overrides: Partial<BundleState> = {}): BundleState {
     lastKnownGood: '',
     rolledBack: [],
     versionCode: 7,
+    orderedUpdates: true,
+    packagedVersion: '1.0.0',
+    currentVersion: '1.0.0',
+    nextVersion: '',
     ...overrides,
   };
 }
@@ -58,6 +62,24 @@ function input(overrides: Partial<BundleSyncInput> = {}): BundleSyncInput {
 }
 
 describe('decideBundleSync', () => {
+  it.each(['0.9.0', '1.0.0', '1.0.0+other', '1.0.0-rc.1', 'dev'])('never downloads or announces non-upgrade %s', (bundleVersion) => {
+    expect(decideBundleSync(input({ target: target({ bundleVersion }) }))).toEqual({ kind: 'idle' });
+  });
+
+  it('requires an upgrade over both the packaged and the executing release', () => {
+    expect(decideBundleSync(input({ state: state({ currentVersion: '1.3.0' }) }))).toEqual({ kind: 'idle' });
+    expect(decideBundleSync(input({ state: state({ packagedVersion: '1.3.0' }) }))).toEqual({ kind: 'idle' });
+    expect(decideBundleSync(input({ state: state({ currentVersion: '' }) }))).toEqual({ kind: 'idle' });
+    expect(decideBundleSync(input({ state: state({ orderedUpdates: false }) }))).toEqual({ kind: 'idle' });
+  });
+
+  it('discards an obsolete pending update even when the host now matches the running code', () => {
+    expect(decideBundleSync(input({ target: target({ bundleId: RUNNING, bundleVersion: '1.0.0' }), state: state({ next: OFFERED }) })))
+      .toEqual({ kind: 'discard', id: OFFERED });
+    expect(decideBundleSync(input({ target: null, state: state({ next: OFFERED }) })))
+      .toEqual({ kind: 'discard', id: OFFERED });
+  });
+
   it('downloads a bundle this phone does not have', () => {
     expect(decideBundleSync(input())).toEqual({
       kind: 'download',
@@ -81,7 +103,7 @@ describe('decideBundleSync', () => {
     // The window between staging and a restart is minutes or days. A
     // phone that re-downloaded across it would download the same bundle
     // on every reconnect for as long as nobody killed the app.
-    expect(decideBundleSync(input({ state: state({ next: OFFERED }) }))).toEqual({ kind: 'idle' });
+    expect(decideBundleSync(input({ state: state({ next: OFFERED }) }))).toEqual({ kind: 'ready', id: OFFERED });
   });
 
   it('refuses a bundle that already failed its first boot here', () => {
@@ -202,8 +224,8 @@ describe('pickBundleSource', () => {
     expect(pickBundleSource([nine, ten])?.backend).toBe('b-ten');
   });
 
-  it('tolerates a leading v and a pre-release suffix', () => {
-    const tagged = target({ backend: 'b-tag', bundleVersion: 'v1.4.0-rc.1' });
+  it('orders pre-release versions', () => {
+    const tagged = target({ backend: 'b-tag', bundleVersion: '1.4.0-rc.1' });
     expect(pickBundleSource([home, tagged])?.backend).toBe('b-tag');
   });
 
@@ -219,15 +241,15 @@ describe('pickBundleSource', () => {
     expect(pickBundleSource([home, tie])?.backend).toBe(HOME_BACKEND);
   });
 
-  it('prefers home when nothing parses at all, which is a fleet of dev builds', () => {
+  it('ignores unordered dev builds', () => {
     const devHome = target({ backend: HOME_BACKEND, bundleVersion: 'dev' });
     const devOther = target({ backend: 'b-laptop', bundleVersion: 'dev' });
-    expect(pickBundleSource([devOther, devHome])?.backend).toBe(HOME_BACKEND);
+    expect(pickBundleSource([devOther, devHome])).toBeNull();
   });
 
-  it('still answers when only unparseable versions are attached', () => {
+  it('ignores an unparseable version even when it is the only candidate', () => {
     const devOther = target({ backend: 'b-laptop', bundleVersion: 'dev' });
-    expect(pickBundleSource([devOther])?.backend).toBe('b-laptop');
+    expect(pickBundleSource([devOther])).toBeNull();
   });
 });
 

@@ -1,37 +1,15 @@
 import { networkFetch } from '../transport/networkFetch';
-// The phone shell's update channel: the backend it is paired with is
-// also its app store (docs/specs/remote-access.md §9, "Bundle sync").
+// The paired host supplies verified frontend releases. A content hash identifies
+// bytes; a strictly newer SemVer authorizes adoption. Same-version builds and
+// unknown versions stay installed, including locally rebuilt development code.
+// Android independently enforces this policy before publication and at boot.
 //
-// A shell runs the bundle its APK was built with until an attached
-// backend says it serves a different one. Then this module downloads
-// that bundle over the paired session, hands it to the native plugin to
-// verify and stage, and says one sentence about a restart. The swap
-// happens on the next cold start; the native side rolls back if the
-// first boot on it never reports healthy (mobile/AGENTS.md § The bundle
-// plugin).
-//
-// **Never blocking, never urgent.** Nothing here delays a connection, an
-// approval or a render. Every failure is a log line and a later retry,
-// because a phone that keeps running the bundle it already has is
-// working perfectly.
-//
-// **Which backend, when several are attached.** The rule is "run the
-// newest attached backend's bundle": the highest `bundleVersion` among
-// the backends that publish one, home on ties and whenever the versions
-// do not parse. One app cannot run two bundles, and picking the newest
-// is the only choice that converges — picking home would strand a phone
-// on an old desktop, and picking "the most recently attached" would make
-// the answer depend on the order somebody paired.
-//
-// **The decision is a pure function** (`decideBundleSync`), one row per
-// case, each row a unit test. What is left around it is the plumbing:
-// subscribe, fetch, stage, re-read.
-//
-// **What the person sees**: nothing, until a bundle is staged. Then the
-// one sentence in `stores/bundleNotice.svelte.ts`.
+// Selection is rechecked across downloads and native calls. A pending update
+// that no longer matches the selected host is compare-and-cleared, together
+// with its notice. Neither reconnection nor hash differences imply an upgrade.
 
 import { onBackendHelloChange } from '../stores/transportStatus.svelte';
-import { noteBundleReady, noteBundleTooOld } from '../stores/bundleNotice.svelte';
+import { clearBundleNotice, noteBundleReady, noteBundleTooOld } from '../stores/bundleNotice.svelte';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { fetchPairedComputer, pairedSessionHeaders } from '../transport/deviceSession';
 import type { LeaseState } from '../transport/frames';
@@ -43,6 +21,7 @@ import {
   type TransportHello,
 } from '../transport/wsClient';
 import { isNativeShell } from './platform';
+import { compareBundleVersions } from './bundleVersion';
 import {
   bundlePlugin,
   type BundleManifest,
@@ -107,6 +86,8 @@ export interface BundleSyncInput {
 export type BundleDecision =
   /** Nothing to do: no bundle offered, or the offered one is already here. */
   | { kind: 'idle' }
+  | { kind: 'discard'; id: string }
+  | { kind: 'ready'; id: string }
   /** Already downloaded once and failed its first boot. Never again. */
   | { kind: 'rolled-back'; id: string }
   /** Tried and failed too many times this launch. Wait for a relaunch. */
@@ -125,20 +106,30 @@ export type BundleDecision =
 /**
  * One decision, from facts alone.
  *
- * The order of the rows is the policy. Cheapest and most final first:
- * a bundle that is already running or already staged ends it, a bundle
- * that failed before is refused before anything is compared, and the
- * version floor is answered before a byte is fetched.
+ * Reconcile obsolete staging before the identical-content fast path. Only
+ * proven upgrades proceed to rollback, native compatibility and retry checks.
  */
 export function decideBundleSync(input: BundleSyncInput): BundleDecision {
   const target = input.target;
-  if (target === null || target.bundleId === '') return { kind: 'idle' };
+  if (target === null || target.bundleId === '') {
+    return input.state.orderedUpdates && input.state.next !== '' && input.inFlight === ''
+      ? { kind: 'discard', id: input.state.next } : { kind: 'idle' };
+  }
   const id = target.bundleId;
+  if (!input.state.orderedUpdates) {
+    return target.minShellBuild > input.state.versionCode
+      ? { kind: 'too-old', id, backendName: target.backendName }
+      : { kind: 'idle' };
+  }
 
-  // Already the running bundle, or already staged for the next start.
-  // The staged case is what keeps a phone from re-downloading between
-  // the moment it stages and the moment somebody restarts the app.
-  if (id === input.running || id === input.state.next) return { kind: 'idle' };
+  // A staged download is valid only while this exact release remains selected.
+  // Do not discard during an in-flight native operation; its completion rechecks.
+  if (input.inFlight === '' && input.state.next !== '' &&
+      (input.state.next !== id || !isUpgrade(target, input.state))) {
+    return { kind: 'discard', id: input.state.next };
+  }
+  if (id === input.running || !isUpgrade(target, input.state)) return { kind: 'idle' };
+  if (id === input.state.next) return { kind: 'ready', id };
 
   if (input.state.rolledBack.includes(id)) return { kind: 'rolled-back', id };
 
@@ -167,58 +158,21 @@ export function decideBundleSync(input: BundleSyncInput): BundleDecision {
   return { kind: 'download', id, backend: target.backend };
 }
 
-/**
- * The newest bundle among the attached backends.
- *
- * Highest `bundleVersion` wins. A version that does not parse ranks
- * below every one that does, and home wins every tie — including the tie
- * where nothing parses at all, which is what a fleet of `dev` builds
- * looks like.
- */
+/** Highest known release wins; home breaks equal-version ties. */
 export function pickBundleSource(candidates: readonly BundleCandidate[]): BundleCandidate | null {
   let best: BundleCandidate | null = null;
-  let bestParts: readonly number[] | null = null;
   for (const candidate of candidates) {
-    if (candidate.bundleId === '') continue;
-    const parts = parseVersion(candidate.bundleVersion);
-    if (best === null) {
-      best = candidate;
-      bestParts = parts;
-      continue;
-    }
-    const order = compareVersions(parts, bestParts);
-    if (order > 0 || (order === 0 && candidate.backend === HOME_BACKEND)) {
-      best = candidate;
-      bestParts = parts;
-    }
+    if (candidate.bundleId === '' || compareBundleVersions(candidate.bundleVersion, candidate.bundleVersion) === null) continue;
+    const order = best === null ? 1 : compareBundleVersions(candidate.bundleVersion, best.bundleVersion)!;
+    if (order > 0 || (order === 0 && candidate.backend === HOME_BACKEND)) best = candidate;
   }
   return best;
 }
 
-/**
- * `major.minor.patch` out of a version string, or null.
- *
- * Deliberately small: a leading `v` is tolerated because tags carry one,
- * a pre-release or build suffix is ignored because it cannot order two
- * bundles more usefully than the numbers already did, and anything else
- * — `dev` above all — is "does not parse", which the caller reads as
- * "rank below anything that does".
- */
-function parseVersion(version: string): readonly number[] | null {
-  const match = /^v?(\d+)\.(\d+)(?:\.(\d+))?/.exec(version.trim());
-  if (match === null) return null;
-  return [Number(match[1]), Number(match[2]), Number(match[3] ?? 0)];
-}
-
-function compareVersions(a: readonly number[] | null, b: readonly number[] | null): number {
-  if (a === null && b === null) return 0;
-  if (a === null) return -1;
-  if (b === null) return 1;
-  for (let i = 0; i < 3; i++) {
-    const diff = (a[i] ?? 0) - (b[i] ?? 0);
-    if (diff !== 0) return diff > 0 ? 1 : -1;
-  }
-  return 0;
+function isUpgrade(target: BundleCandidate, state: BundleState): boolean {
+  return state.orderedUpdates === true &&
+    compareBundleVersions(target.bundleVersion, state.packagedVersion ?? '') === 1 &&
+    compareBundleVersions(target.bundleVersion, state.currentVersion ?? '') === 1;
 }
 
 /** One backend's hello, as a candidate. Null when it publishes no bundle. */
@@ -253,6 +207,7 @@ let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let toldTooOld = '';
 let toldExhausted = '';
 let readyReported = false;
+let generation = 0;
 
 /**
  * Start watching every attached backend's hello, on a shell only.
@@ -264,17 +219,26 @@ let readyReported = false;
  */
 export async function startBundleSync(): Promise<() => void> {
   if (!isNativeShell()) return () => {};
-  plugin = await bundlePlugin();
+  stopBundleSync();
+  const launch = generation;
+  const bridge = await bundlePlugin();
+  if (launch !== generation) return () => {};
+  plugin = bridge;
   // No plugin means an APK built before this seam existed. It keeps
   // running its own bundle, which is exactly right.
   if (plugin === null) return () => {};
   try {
-    nativeState = await plugin.state();
+    const state = await plugin.state();
+    if (launch !== generation) return () => {};
+    nativeState = state;
   } catch (err) {
     console.warn('bundleSync: the native store did not answer', err);
     return () => {};
   }
-  runningId = nativeState.current !== '' ? nativeState.current : await readApkBundleId();
+  if (launch !== generation) return () => {};
+  const id = nativeState.current !== '' ? nativeState.current : await readApkBundleId();
+  if (launch !== generation) return () => {};
+  runningId = id;
 
   installed = [
     onBackendHelloChange((backend, hello) => {
@@ -285,11 +249,12 @@ export async function startBundleSync(): Promise<() => void> {
     }),
     onClientLeaseChange(() => evaluate()),
   ];
-  return stopBundleSync;
+  return () => { if (launch === generation) stopBundleSync(); };
 }
 
 /** Drop every subscription and forget this launch's progress. */
 export function stopBundleSync(): void {
+  generation++;
   for (const cancel of installed) cancel();
   installed = [];
   if (retryTimer !== null) {
@@ -305,6 +270,7 @@ export function stopBundleSync(): void {
   toldTooOld = '';
   toldExhausted = '';
   readyReported = false;
+  clearBundleNotice();
 }
 
 /**
@@ -329,13 +295,15 @@ export function stopBundleSync(): void {
 export async function reportBundleHealthy(): Promise<void> {
   if (readyReported || !isNativeShell()) return;
   readyReported = true;
+  const launch = generation;
   try {
     const bridge = plugin ?? (await bundlePlugin());
     if (bridge === null) return;
     await bridge.ready();
     // The store just pruned; re-read so a later decision is made against
     // what is on disk rather than what was there at boot.
-    nativeState = await bridge.state();
+    const state = await bridge.state();
+    if (launch === generation) nativeState = state;
   } catch (err) {
     console.warn('bundleSync: this launch could not be confirmed healthy', err);
   }
@@ -363,7 +331,15 @@ function evaluate(): void {
     attempts: target === null ? 0 : (attemptsById.get(target.bundleId) ?? 0),
   });
   switch (decision.kind) {
+    case 'ready':
+      noteBundleReady();
+      return;
+    case 'discard':
+      void discardPending(decision.id);
+      return;
     case 'idle':
+      if (nativeState.next === '') clearBundleNotice();
+      return;
     case 'joined':
     case 'busy':
     case 'deferred':
@@ -396,6 +372,8 @@ function evaluate(): void {
 }
 
 async function run(id: string, backend: BackendKey): Promise<void> {
+  const launch = generation;
+  const bridge = plugin!;
   inFlight = id;
   const attempt = (attemptsById.get(id) ?? 0) + 1;
   attemptsById.set(id, attempt);
@@ -403,26 +381,70 @@ async function run(id: string, backend: BackendKey): Promise<void> {
   // one tail call reads it and it means "this attempt staged a bundle".
   let staged = false;
   try {
-    await fetchAndStage(id, backend);
+    const manifest = await fetchJSON<BundleManifest>(MANIFEST_PATH, backend);
+    if (launch !== generation || !selected(id)) return;
+    if (manifest.id !== id || manifest.version !== pickBundleSource([...candidates.values()])?.bundleVersion) {
+      throw new Error('The backend bundle changed during download');
+    }
+    const archive = await fetchBytes(ARCHIVE_PATH, backend);
+    if (launch !== generation || !selected(id)) return;
+    await bridge.stage({ id, manifest, archiveBase64: base64(archive) });
+    // Host selection or teardown may have changed while the native call ran.
+    // Compare-and-clear cannot erase a different operation's pending bundle.
+    if (launch !== generation || !selected(id)) {
+      await bridge.discardPending({ id });
+      if (launch !== generation) return;
+    }
     attemptsById.delete(id);
     // Read back rather than assume: the store decides what `next` is,
     // and a decision made against a guess would re-download on the very
     // next hello if it guessed wrong.
-    nativeState = await plugin!.state();
-    noteBundleReady();
+    const state = await bridge.state();
+    if (launch !== generation) return;
+    nativeState = state;
     staged = true;
   } catch (err) {
+    if (launch !== generation) return;
     console.warn(`bundleSync: ${id} did not install (attempt ${attempt})`, err);
-    if (attempt < MAX_ATTEMPTS_PER_BUNDLE) scheduleRetry(attempt);
+    if (selected(id) && attempt < MAX_ATTEMPTS_PER_BUNDLE) scheduleRetry(attempt);
   } finally {
-    inFlight = '';
+    if (launch === generation) {
+      inFlight = '';
+      if (!selected(id)) evaluate();
+    }
   }
   // Only a SUCCESS re-evaluates here. After a failure the retry timer owns
   // the next look, and it is the only thing that may: re-evaluating inline
   // put the very next attempt on the same tick as the one that just failed,
   // which is a download loop with no delay in it. A hello that arrived
   // mid-download evaluates on its own edge either way.
-  if (staged) evaluate();
+  if (staged && launch === generation) evaluate();
+}
+
+function selected(id: string): boolean {
+  const target = pickBundleSource([...candidates.values()]);
+  return target?.bundleId === id && nativeState !== null && isUpgrade(target, nativeState);
+}
+
+async function discardPending(id: string): Promise<void> {
+  const launch = generation;
+  const bridge = plugin!;
+  inFlight = id;
+  try {
+    await bridge.discardPending({ id });
+    const state = await bridge.state();
+    if (launch !== generation) return;
+    nativeState = state;
+    clearBundleNotice();
+  } catch (error) {
+    if (launch !== generation) return;
+    console.warn('bundleSync: could not discard obsolete pending update', error);
+    scheduleRetry(1);
+    return;
+  } finally {
+    if (launch === generation) inFlight = '';
+  }
+  if (launch === generation) evaluate();
 }
 
 /**
@@ -439,23 +461,6 @@ function scheduleRetry(attempt: number): void {
     retryTimer = null;
     evaluate();
   }, delay);
-}
-
-/**
- * Manifest, archive, stage.
- *
- * The manifest is re-checked against the id the hello named. A mismatch
- * is an ordinary race — the backend rebuilt between the frame and the
- * fetch — so it throws, and the hello that lands after the rebuild
- * starts the sequence again with the new id.
- */
-async function fetchAndStage(id: string, backend: BackendKey): Promise<void> {
-  const manifest = await fetchJSON<BundleManifest>(MANIFEST_PATH, backend);
-  if (manifest.id !== id) {
-    throw new Error(`the backend now serves ${manifest.id}, not ${id}`);
-  }
-  const archive = await fetchBytes(ARCHIVE_PATH, backend);
-  await plugin!.stage({ id, manifest, archiveBase64: base64(archive) });
 }
 
 /**

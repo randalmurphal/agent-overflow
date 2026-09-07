@@ -25,6 +25,7 @@ import TransportStatusBanner from './TransportStatusBanner.svelte';
 import ComputerTransportStatus from './ComputerTransportStatus.svelte';
 import {
   __resetBundleNoticeForTest,
+  clearBundleNotice,
   noteBundleReady,
   noteBundleTooOld,
 } from '../../stores/bundleNotice.svelte';
@@ -272,7 +273,7 @@ describe('<TransportStatusBanner> and the bundle notice', () => {
     expect(queryByTestId('transport-status-retry')).toBeNull();
   });
 
-  it('is dismissible, because it never resolves on its own', async () => {
+  it('keeps dismissal stable on reconnect and clears obsolete update notices', async () => {
     // Every connection state clears itself; a staged bundle waits for a
     // restart the person chooses. Without a dismiss the strip sat over
     // the compact thread header for the rest of the session, eating its
@@ -283,6 +284,17 @@ describe('<TransportStatusBanner> and the bundle notice', () => {
 
     await fireEvent.click(getByTestId('transport-status-dismiss'));
     await tick();
+    expect(queryByTestId('transport-status-banner')).toBeNull();
+    noteBundleReady();
+    await tick();
+    expect(queryByTestId('transport-status-banner')).toBeNull();
+    clearBundleNotice();
+    noteBundleReady();
+    await tick();
+    expect(queryByTestId('transport-status-banner')).not.toBeNull();
+    clearBundleNotice();
+    await tick();
+    await vi.advanceTimersByTimeAsync(200);
     expect(queryByTestId('transport-status-banner')).toBeNull();
   });
 

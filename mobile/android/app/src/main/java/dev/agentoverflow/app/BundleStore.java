@@ -1,9 +1,11 @@
 package dev.agentoverflow.app;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -23,6 +25,7 @@ import java.util.zip.ZipInputStream;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+import org.json.JSONTokener;
 
 /**
  * Which web bundle this shell runs, and everything that decides it.
@@ -78,10 +81,70 @@ final class BundleStore {
      */
     private static final Object LOCK = new Object();
 
+    static final String RELEASE_FILE = "bundle-release.json";
     private final File root;
+    final String packagedVersion;
 
-    BundleStore(File root) {
+    BundleStore(File root, String packagedVersion) {
         this.root = root;
+        this.packagedVersion = packagedVersion;
+    }
+
+    static String readRelease(InputStream input) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        byte[] buffer = new byte[1024];
+        int count;
+        while ((count = input.read(buffer)) != -1) {
+            if (output.size() + count > 4096) return "";
+            output.write(buffer, 0, count);
+        }
+        byte[] bytes = output.toByteArray();
+        try {
+            JSONTokener tokens = new JSONTokener(new String(bytes, StandardCharsets.UTF_8));
+            JSONObject release = new JSONObject(tokens);
+            if (tokens.nextClean() != 0 || release.length() != 1) return "";
+            Object version = release.opt("version");
+            return version instanceof String && ReleaseVersion.parse((String) version) != null ? (String) version : "";
+        } catch (JSONException malformed) {
+            return "";
+        }
+    }
+
+    String versionOf(String id) {
+        return id.isEmpty() ? packagedVersion : versionIn(dir(id));
+    }
+
+    private String versionIn(File directory) {
+        try (InputStream input = Files.newInputStream(new File(directory, RELEASE_FILE).toPath())) {
+            return readRelease(input);
+        } catch (IOException unavailable) {
+            return "";
+        }
+    }
+
+    private void requireNewer(String candidate, String baseline) throws BundleException {
+        ReleaseVersion target = ReleaseVersion.parse(candidate), previous = ReleaseVersion.parse(baseline);
+        if (target == null || previous == null || target.compareTo(previous) <= 0) {
+            throw new BundleException("bundle release must be newer than the installed and pending releases");
+        }
+    }
+
+    private void requireUpgrade(String candidate, State state, boolean comparePending) throws BundleException {
+        requireNewer(candidate, packagedVersion);
+        requireNewer(candidate, versionOf(state.current));
+        if (comparePending && !state.next.isEmpty()) requireNewer(candidate, versionOf(state.next));
+    }
+
+    void discardPending(String id) throws IOException {
+        synchronized (LOCK) {
+            State state = readLocked();
+            if (id == null || id.isEmpty() || !id.equals(state.next)) return;
+            state.next = "";
+            writeLocked(state);
+            if (!id.equals(state.current) && !id.equals(state.lastKnownGood) && !id.equals(state.pendingHealth)) {
+                deleteRecursively(dir(id));
+            }
+        }
     }
 
     /** The mutable half of the state file, as one value. */
@@ -260,9 +323,14 @@ final class BundleStore {
             if (!state.pendingHealth.isEmpty()) {
                 rollbackLocked(state);
             } else if (!state.next.isEmpty()) {
-                state.current = state.next;
+                try {
+                    requireUpgrade(versionOf(state.next), state, false);
+                    state.current = state.next;
+                    state.pendingHealth = state.current;
+                } catch (BundleException obsolete) {
+                    // Staging is checked too; boot also fences legacy or damaged selection.
+                }
                 state.next = "";
-                state.pendingHealth = state.current;
             }
             File serving = resolveLocked(state);
             try {
@@ -302,8 +370,11 @@ final class BundleStore {
             return null;
         }
         File dir = dir(state.current);
-        if (dir.isDirectory() && new File(dir, ENTRY_FILE).isFile()) {
-            return dir;
+        try {
+            requireNewer(versionIn(dir), packagedVersion);
+            if (dir.isDirectory() && new File(dir, ENTRY_FILE).isFile()) return dir;
+        } catch (BundleException obsolete) {
+            // Unknown or obsolete downloaded code never masks the packaged release.
         }
         state.current = "";
         state.pendingHealth = "";
@@ -430,41 +501,40 @@ final class BundleStore {
      * something anybody can act on.
      */
     void stage(String id, Map<String, FileSpec> manifest, byte[] archive) throws BundleException {
-        if (id == null || id.isEmpty()) {
-            throw new BundleException("a bundle needs an id");
-        }
-        if (manifest.isEmpty()) {
-            throw new BundleException("bundle " + id + " has an empty manifest");
-        }
-        File staging = new File(root, id + STAGING_SUFFIX);
-        deleteRecursively(staging);
-        if (!staging.mkdirs()) {
-            throw new BundleException("cannot create " + staging);
-        }
-        try {
-            Set<String> delivered = unpack(staging, manifest, archive);
-            for (String wanted : manifest.keySet()) {
-                if (!delivered.contains(wanted)) {
-                    throw new BundleException("the archive did not carry " + wanted);
-                }
-            }
-            File target = dir(id);
-            deleteRecursively(target);
-            if (!staging.renameTo(target)) {
-                throw new BundleException("cannot install bundle " + id);
-            }
-        } catch (BundleException | RuntimeException failure) {
-            deleteRecursively(staging);
-            throw failure;
-        }
         synchronized (LOCK) {
+            if (id == null || !id.matches("[A-Za-z0-9_-]+")) {
+                throw new BundleException("a bundle needs a safe id");
+            }
+            if (manifest.isEmpty()) throw new BundleException("bundle " + id + " has an empty manifest");
             State state = readLocked();
-            state.next = id;
+            if (id.equals(state.current) || id.equals(state.next) || id.equals(state.lastKnownGood) || state.rolledBack.contains(id)) {
+                throw new BundleException("bundle is already selected or has failed its health check");
+            }
+            File staging = new File(root, id + STAGING_SUFFIX);
+            deleteRecursively(staging);
+            if (!staging.mkdirs()) throw new BundleException("cannot create " + staging);
             try {
-                writeLocked(state);
-            } catch (IOException io) {
-                deleteRecursively(dir(id));
-                throw new BundleException("cannot record bundle " + id, io);
+                Set<String> delivered = unpack(staging, manifest, archive);
+                for (String wanted : manifest.keySet()) {
+                    if (!delivered.contains(wanted)) throw new BundleException("the archive did not carry " + wanted);
+                }
+                if (!delivered.contains(RELEASE_FILE) || !delivered.contains(ENTRY_FILE)) {
+                    throw new BundleException("bundle requires verified release metadata and index.html");
+                }
+                requireUpgrade(versionIn(staging), state, true);
+                File target = dir(id);
+                deleteRecursively(target);
+                if (!staging.renameTo(target)) throw new BundleException("cannot install bundle " + id);
+                state.next = id;
+                try {
+                    writeLocked(state);
+                } catch (IOException io) {
+                    deleteRecursively(target);
+                    throw new BundleException("cannot record bundle " + id, io);
+                }
+            } catch (BundleException | RuntimeException failure) {
+                deleteRecursively(staging);
+                throw failure;
             }
         }
     }

@@ -549,8 +549,8 @@ apk apk-release:
 # to start one and exits clean, because the seams' web fallbacks are
 # already covered by `make test` and an unrunnable check that fails is a
 # check people learn to skip.
-# The update smoke must receive bytes different from the APK's ordinary
-# bundle, even when both were built from this exact checkout.
+# The runner builds a dedicated newer-release bundle fixture for adoption;
+# UI trace also makes its renderer inspectable without changing the APK.
 e2e-android: UI_TRACE=1
 e2e-android: harness-build
 	cd e2e && pnpm install --frozen-lockfile

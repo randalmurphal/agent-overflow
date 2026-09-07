@@ -517,7 +517,8 @@ missing field remains compatible with older backends.
   be wrong by the process uptime.
 - **The three bundle fields are on the frame, not behind a route**
   (wave 6g-a). They describe the SPA this backend serves — `bundleId`
-  is `internal/bundle`'s CONTENT id, `bundleVersion` is `main.version`,
+  is `internal/bundle`'s CONTENT id, `bundleVersion` comes from hashed frontend
+  release metadata (link-time fallback only for legacy trees),
   `minShellBuild` is the lowest Android `versionCode` this bundle's
   native seams can run on. The one client that reads them compares them
   against something it already holds on every connection, so a shell

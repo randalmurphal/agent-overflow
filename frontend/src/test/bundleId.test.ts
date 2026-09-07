@@ -15,10 +15,12 @@
 // each side's failure message says.
 
 import { readFileSync } from 'node:fs';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { bundleFiles, bundleId, computeBundleId, included } from '../../scripts/bundleId';
+import { BUNDLE_ID_FILE, BUNDLE_RELEASE_FILE, bundleFiles, bundleId, bundleIdPlugin, computeBundleId, included, stampBundle } from '../../scripts/bundleId';
 
 const TESTDATA = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -88,5 +90,32 @@ describe('the bundle id rule', () => {
     // a build to fail; the id rule itself is total, so the two never
     // disagree about what "nothing" hashes to.
     expect(bundleId([])).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+describe('release identity in built bundles', () => {
+  it('stamps the frontend package version before hashing all release bytes', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'ao-bundle-release-'));
+    try {
+      const output = resolve(root, 'dist');
+      await mkdir(output);
+      await writeFile(resolve(output, 'index.html'), '<html>UI</html>');
+      await writeFile(resolve(root, 'package.json'), JSON.stringify({ version: '1.2.3-rc.1+build.4' }));
+      const plugin = bundleIdPlugin();
+      plugin.configResolved({ root, build: { outDir: 'dist' } });
+      await plugin.closeBundle();
+      expect(JSON.parse(await readFile(resolve(output, BUNDLE_RELEASE_FILE), 'utf8'))).toEqual({ version: '1.2.3-rc.1+build.4' });
+      const first = (await readFile(resolve(output, BUNDLE_ID_FILE), 'utf8')).trim();
+      expect(first).toBe(await computeBundleId(output));
+      expect((await bundleFiles(output)).map((file) => file.path)).toContain(BUNDLE_RELEASE_FILE);
+      await stampBundle(output, '1.2.3');
+      expect(await computeBundleId(output)).not.toBe(first);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([undefined, null, 12, '', 'dev', 'v1.2.3', '1.2', '01.2.3', '1.2.3-01', '1.2.3\n', '1.2.3-', '1.2.3+'])('rejects invalid package version %j before writing', async (version) => {
+    await expect(stampBundle('/not-a-real-build-directory', version)).rejects.toThrow('semantic version');
   });
 });

@@ -79,6 +79,11 @@ export interface BundleState {
   rolledBack: string[];
   /** The APK's own `versionCode`. 0 when the platform could not say. */
   versionCode: number;
+  /** Present only in shells that enforce release ordering at publication. */
+  orderedUpdates?: boolean;
+  packagedVersion?: string;
+  currentVersion?: string;
+  nextVersion?: string;
 }
 
 /**
@@ -98,6 +103,7 @@ export interface BundleSyncPlugin {
   }): Promise<void>;
   ready(): Promise<void>;
   state(): Promise<BundleState>;
+  discardPending(options: { id: string }): Promise<void>;
 }
 
 /** One notification, as the tray renders it. Mirrors `notify.Send`. */

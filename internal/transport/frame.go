@@ -228,14 +228,11 @@ type helloFrame struct {
 	// backend too old to send them gives, and the answer that leaves a
 	// shell running what it has.
 	//
-	// BundleID is the CONTENT id (bundle.Manifest.ID), so the comparison
-	// a shell makes is "am I running these exact files", never "is this
-	// version newer". BundleVersion is `main.version`, and its only use
-	// is ordering: a phone attached to several machines runs the newest
-	// attached backend's bundle. MinShellBuild is the lowest Android
-	// versionCode this bundle's native seams can run on — the one version
-	// gate in the design, and it is here because the capability it names
-	// is native code this channel cannot ship.
+	// BundleID identifies exact content. BundleVersion comes from the
+	// bundle's hashed release metadata (link-time fallback for legacy
+	// bundles); the shell only installs strictly newer releases.
+	// MinShellBuild is the lowest Android versionCode this bundle's native
+	// seams support, independently of release ordering.
 	BundleID      string `json:"bundleId,omitempty"`
 	BundleVersion string `json:"bundleVersion,omitempty"`
 	MinShellBuild int    `json:"minShellBuild,omitempty"`

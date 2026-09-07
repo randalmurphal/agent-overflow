@@ -37,12 +37,14 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash"
 	"io"
 	"io/fs"
 	"path"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -56,15 +58,19 @@ import (
 // forever, or throws where nothing can catch it. So the bundle states
 // the floor and the shell compares it against its own build before it
 // downloads anything: a shell below the floor keeps the bundle it has
-// and says, once, that the phone's app needs a store update. That is the
-// single case in this design that gates on a version rather than on a
-// capability, and it is here because the capability in question is
-// NATIVE code that cannot be shipped over this channel at all.
+// and says, once, that the phone's app needs an APK update. This floor is
+// separate from release ordering: native code cannot ship over this channel.
 //
 // **Bump it when a seam needs a plugin an older APK lacks**, in the same
 // change that adds the seam. Never for a web-only change: a bump costs
 // every phone below it its updates until the person installs a new APK.
-const MinShellBuild = 1
+const MinShellBuild = 9
+
+// ReleaseFileName binds release ordering to the exact files being installed.
+// Unlike IDFileName it is included in the manifest, content hash and archive.
+const ReleaseFileName = "bundle-release.json"
+
+var releaseVersionPattern = regexp.MustCompile(`^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$`)
 
 // IDFileName is where a built bundle records its own id, written into
 // `frontend/dist` by the Vite plugin that mirrors the hash rule below
@@ -123,18 +129,12 @@ type Manifest struct {
 	// ID identifies this bundle's CONTENT: the hex SHA-256 over the
 	// sorted `path\x00sha256\n` lines of Files.
 	//
-	// Content rather than a version string, for two reasons that both
-	// bite in practice. Two builds of identical content share an id, so
-	// a phone paired with two machines running the same release
-	// downloads nothing when it moves between them. And a "dev" build —
-	// every build on a developer's box, since `main.version` defaults to
-	// that — still gets a real, distinct id, so the update path can be
-	// exercised without cutting a release.
+	// Identical release bytes share an id across hosts. A different id
+	// identifies different content; Version separately orders releases.
 	ID string `json:"id"`
-	// Version is `main.version`, the link-time stamp. Display and
-	// ordering only: the shell compares IDs to decide whether to
-	// download, and reads this only to pick the NEWEST backend when
-	// several are attached.
+	// Version comes from hashed release metadata; only legacy trees without
+	// metadata use the link-time stamp. Automatic installation requires a
+	// strictly newer semantic version, never a different hash alone.
 	Version string `json:"version"`
 	// MinShellBuild is the constant above, carried so a shell can answer
 	// the question without a second route.
@@ -164,7 +164,7 @@ type Bundle struct {
 
 // New wraps the served file tree. `fsys` is the SPA root — the same
 // `fs.Sub(assets, "frontend/dist")` the asset handler serves — and
-// `version` is `main.version`.
+// `version` is the legacy link-time fallback for trees without release metadata.
 //
 // Nothing is read here. A backend that never has a client ask never
 // walks the tree at all.
@@ -203,6 +203,7 @@ func (b *Bundle) Archive() ([]byte, error) {
 // build walks the tree once and produces the manifest.
 func (b *Bundle) build() (Manifest, error) {
 	files := make([]File, 0, 64)
+	version := b.version
 	digest := sha256.New()
 	err := fs.WalkDir(b.fsys, ".", func(name string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -214,7 +215,27 @@ func (b *Bundle) build() (Manifest, error) {
 		if !CleanPath(name) {
 			return fmt.Errorf("%q is not a path a shell may write", name)
 		}
-		sum, size, err := b.hashFile(name, digest)
+		var sum string
+		var size int64
+		if name == ReleaseFileName {
+			var data []byte
+			data, err = b.releaseMetadata()
+			if err != nil {
+				return err
+			}
+			var metadata map[string]json.RawMessage
+			if err = json.Unmarshal(data, &metadata); err != nil || len(metadata) != 1 {
+				return errors.New("invalid bundle release metadata")
+			}
+			version = ""
+			if err = json.Unmarshal(metadata["version"], &version); err != nil || len(version) > 256 || !releaseVersionPattern.MatchString(version) {
+				return errors.New("invalid bundle release version")
+			}
+			hash := sha256.Sum256(data)
+			sum, size = hex.EncodeToString(hash[:]), int64(len(data))
+		} else {
+			sum, size, err = b.hashFile(name, digest)
+		}
 		if err != nil {
 			return err
 		}
@@ -233,10 +254,26 @@ func (b *Bundle) build() (Manifest, error) {
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	return Manifest{
 		ID:            ID(files),
-		Version:       b.version,
+		Version:       version,
 		MinShellBuild: MinShellBuild,
 		Files:         files,
 	}, nil
+}
+
+func (b *Bundle) releaseMetadata() ([]byte, error) {
+	file, err := b.fsys.Open(ReleaseFileName)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, 4097))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > 4096 {
+		return nil, errors.New("bundle release metadata exceeds 4096 bytes")
+	}
+	return data, nil
 }
 
 // ID is the content-id rule, in one place because two implementations
