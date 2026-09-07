@@ -20,6 +20,8 @@ new scan cannot replace the results a prior caller is about to consume.
 `Relay` binds individual Windows physical private IPv4 addresses at the backend
 port. `GetIfEntry2Ex` identifies physical interfaces; do not guess from adapter
 names. The upstream is a literal private IPv4 WSL address with an explicit port.
+The backend checks its actual listener before enabling the relay: saved LAN
+preferences cannot make an explicit loopback-only bind remotely reachable.
 Loopback, hostnames, public addresses, credentials and URL paths are refused
 inside the relay constructor, not just by its caller.
 
@@ -43,8 +45,12 @@ remain available. Name changes replace the advertisement. The bridge publishes
 actual external endpoints so pairing QR codes and authenticated alternate-route
 bootstrap do not advertise an unreachable WSL NAT address.
 
-Connection count is capped at 64; upstream dialing is bounded to five seconds;
-shutdown cancels both directions and waits for active copies. TCP half-close
+Connection count is capped at 64; upstream dialing is bounded to five seconds.
+The latest upstream dial failure
+is reported through the existing host network state and clears after a successful
+dial; accepting a Windows socket alone does not prove WSL is reachable.
+
+Shutdown cancels both directions and waits for active copies. TCP half-close
 must preserve a host response after the client finishes writing. Relay tests
 use loopback fixtures only by bypassing constructor admission *inside the test*
 (the production constructor still rejects loopback), and verify original TLS,

@@ -207,7 +207,7 @@ func newBootFlagSet() (*flag.FlagSet, bootFlags) {
 	flagSet := flag.NewFlagSet("agent-overflow", flag.ContinueOnError)
 	flagSet.SetOutput(os.Stderr)
 	return flagSet, bootFlags{
-		listen:             flagSet.String("listen", "", "transport bind address (e.g. 127.0.0.1:0). Empty means use the default loopback + ephemeral port."),
+		listen:             flagSet.String("listen", "", "transport bind address (e.g. 127.0.0.1:0). Empty honors saved network settings (default: loopback with a stable automatic port)."),
 		printURLFD:         flagSet.String("print-url-fd", "", "run headless and write {port,token} to this file descriptor as JSON. Falls back to a stdout sentinel when the fd isn't open."),
 		connect:            flagSet.String("connect", "", "remote client mode: attach the desktop window to a backend instead of booting a local one. Takes a pairing link (pairs this device, then attaches), a backend this device is already paired with (its id, its endpoint, or host:port), or ws://host:port/?token=<value> for a backend on this machine. Skips local execution boot."),
 		frontend:           flagSet.Bool("frontend", false, "open the desktop frontend with its saved computers, without starting a local execution backend or requiring any computer to be online."),

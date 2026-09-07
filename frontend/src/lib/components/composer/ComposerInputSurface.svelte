@@ -83,6 +83,7 @@
   const slash = createComposerSlash({ getTextarea: () => textarea, getPane: () => pane });
 
   const uploads = createComposerUploads({
+    getContext: () => draft.contextKey,
     getThreadId: () => (uploadThreadId ? uploadThreadId() : pane.threadId),
     ensureThreadId: () => (ensureUploadThreadId ? ensureUploadThreadId() : pane.ensureMaterializedThread()),
     getAttachmentCount: () => draft.attachments.length,
@@ -352,6 +353,9 @@
 </script>
 
 {#if showDraftRows}
+  {#if uploads.uploading}
+    <div class="px-4 py-1 text-xs text-fg-muted" role="status">Uploading…</div>
+  {/if}
   <ComposerAttachmentRow
     attachments={draft.attachments}
     onRemove={imagePlaceholders.removeAttachmentFromComposer}

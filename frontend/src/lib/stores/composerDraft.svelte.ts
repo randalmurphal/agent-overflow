@@ -74,6 +74,9 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingSaveGeneration = 0;
   let switchGeneration = 0;
+  // A new editing destination invalidates pending gestures. Adoption of a
+  // materialized placeholder preserves this context, unlike hydration epochs.
+  let contextKey = $state(Symbol());
   let hasPendingSave: boolean = $state(false);
   // Cleanup follows this screen's edit or materialization. A newly listed
   // remote row may still be waiting for its creator's first debounced save;
@@ -324,6 +327,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
 
   async function setThread(id: string | null): Promise<void> {
     if (threadId === id) return;
+    contextKey = Symbol();
     const previousId = threadId;
     const previousSnapshot = previousId && hasPendingSave ? buildSnapshot() : null;
     clearDebounce();
@@ -472,6 +476,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
   return {
     // ---- reads ----
     get threadId() { return threadId; },
+    get contextKey() { return contextKey; },
     get content() { return content; },
     get attachments() { return attachments; },
     get terminalChips() { return terminalChips; },
@@ -538,6 +543,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
       clearDebounce();
       pendingSaveGeneration++;
       switchGeneration++;
+      contextKey = Symbol();
       threadId = id;
       clearOptimisticRestoredDraftMarker();
       applySnapshot(snapshot);

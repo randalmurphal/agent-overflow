@@ -188,6 +188,10 @@
   // mounted so entered answers survive collapse/expand.
   let userInputCollapsed = $derived(pane.activityRailInputCollapsed);
   let sending = $state(false);
+  let preparingSend = $state(false);
+  let sendAdmission: symbol | null = null;
+  let cancelStaleSend = $state<(() => void) | null>(null);
+  let disposed = false;
   let preparingWorktree = $state(false);
   let releasePlanEvents: (() => void) | null = null;
   let locallyImplementedPlanIds = $state<Set<string>>(new Set());
@@ -222,7 +226,7 @@
   let sendState = $derived(deriveComposerSendState({
     isDisabled,
     sendUngranted,
-    sending,
+    sending: false,
     sendSuspended: sendSuspended || interruptPending,
     hasBlockingPrompt,
     hasUserInputPrompt,
@@ -233,7 +237,7 @@
     hasDraftDiffReviewComments,
     isTurnActive,
   }));
-  let canSend = $derived(sendState.canSend);
+  let canSend = $derived(sendState.canSend && !sending);
   let sendLabel = $derived(sendState.label);
   let sendAction = $derived(sendState.action);
   let hasPlanImplementAction = $derived(sendState.hasPlanImplementAction);
@@ -446,29 +450,73 @@
    * and the draft is still untouched at this point, so the user keeps
    * everything they typed.
    */
-  async function prepareWorktreeForSend(): Promise<boolean> {
+  async function prepareWorktreeForSend(pane: ThreadPane, isCurrent: () => boolean): Promise<boolean> {
     try {
       await prepareThreadWorktreeIntent({
         pane,
         onWorktreePrepareStarted: () => {
-          preparingWorktree = true;
+          if (isCurrent()) preparingWorktree = true;
         },
         onWorktreePrepareFinished: () => {
-          preparingWorktree = false;
+          if (isCurrent()) preparingWorktree = false;
         },
       });
       return true;
     } catch (err) {
       console.error('Failed to prepare the thread workspace:', err);
-      pane.setGeneralError(`Failed to prepare the workspace: ${errString(err)}`);
+      if (isCurrent()) pane.setGeneralError(`Failed to prepare the workspace: ${errString(err)}`);
       return false;
     } finally {
-      preparingWorktree = false;
+      if (isCurrent()) preparingWorktree = false;
     }
   }
 
+  $effect(() => {
+    pane.threadId;
+    pane.draftPlaceholder?.id;
+    draft.threadId;
+    cancelStaleSend?.();
+  });
+
   async function send(includeReviewComments = true) {
-    if (!canSend) return;
+    if (sending || !sendState.canSend) return;
+    const owner = Symbol();
+    sendAdmission = owner;
+    sending = true;
+    preparingSend = true;
+    const sendPane = pane;
+    const sendDraft = draft;
+    const contextKey = draft.contextKey;
+    const initialThreadId = pane.threadId;
+    const placeholderId = pane.draftPlaceholder?.id;
+    const isCurrent = () => !disposed && sendAdmission === owner && pane === sendPane && draft === sendDraft
+      && draft.contextKey === contextKey
+      && (initialThreadId === null || pane.threadId === initialThreadId)
+      && (!pane.hasDraftPlaceholder || pane.draftPlaceholder?.id === placeholderId)
+      && pane.threadId === draft.threadId;
+    const release = () => {
+      if (sendAdmission !== owner) return;
+      sendAdmission = null;
+      cancelStaleSend = null;
+      sending = false;
+      preparingSend = false;
+      preparingWorktree = false;
+    };
+    cancelStaleSend = () => { if (!isCurrent()) release(); };
+    try {
+      await sendAdmitted(sendPane, sendDraft, includeReviewComments, isCurrent, release);
+    } finally {
+      release();
+    }
+  }
+
+  async function sendAdmitted(
+    pane: ThreadPane,
+    draft: ComposerDraftStore,
+    includeReviewComments: boolean,
+    isCurrent: () => boolean,
+    release: () => void,
+  ) {
     // Intercepted commands (`/model`, `/clear`, `/compact`, …) are decided
     // from the text alone and BEFORE anything else the send path does — they
     // must not materialize a thread, open a queue slot, or leave a persisted
@@ -486,41 +534,44 @@
     // snapshots `draft.attachments`, and an upload still in the air is not in
     // it yet — so the message would go without the attachment the user just
     // added. Awaited here, above the branch point, so the queue path and the
-    // send path cannot answer this differently. Nothing visible changes: the
-    // send control's own state is unaffected.
+    // send path cannot answer this differently. Admission is already held,
+    // so repeated clicks cannot resume against the first send's cleared draft.
     //
     // Guarded rather than awaited unconditionally: an already-resolved promise
     // still costs the rest of `send` a microtask hop, and the overwhelmingly
     // common send has no upload to wait for.
     if (surface?.uploading()) await surface.waitForUploads();
+    if (!isCurrent() || !sendState.canSend) return;
     if (!pane.threadId) {
-      if (!(await pane.ensureMaterializedThread())) return;
+      if (!(await pane.ensureMaterializedThread()) || !isCurrent() || !sendState.canSend) return;
     }
     // Materialize first. Workspace choices are row-owned, and materializing
     // also seeds the default-worktree setting. Existing threads stay on the
     // synchronous path until a staged choice actually needs an RPC.
-    if (hasStagedWorktreeIntent(pane.thread) && !(await prepareWorktreeForSend())) return;
+    if (hasStagedWorktreeIntent(pane.thread)) {
+      if (!(await prepareWorktreeForSend(pane, isCurrent)) || !isCurrent() || !sendState.canSend) return;
+    }
     const planSourceForImplement = latestPlanSource;
     if (planSourceForImplement && !hasDraftContent && !hasDraftPlanComments && !hasDraftDiffReviewComments) {
-      sending = true;
+      preparingSend = false;
       try {
         const implemented = await implementProposedPlan(
           pane,
           planSourceForImplement,
           {
             onWorktreePrepareStarted: () => {
-              preparingWorktree = true;
+              if (isCurrent()) preparingWorktree = true;
             },
             onWorktreePrepareFinished: () => {
-              preparingWorktree = false;
+              if (isCurrent()) preparingWorktree = false;
             },
           },
         );
-        if (implemented) {
+        if (implemented && isCurrent()) {
           locallyImplementedPlanIds = new Set([...locallyImplementedPlanIds, planSourceForImplement.itemId]);
         }
       } finally {
-        sending = false;
+        if (isCurrent()) preparingWorktree = false;
       }
       return;
     }
@@ -581,6 +632,9 @@
       surface?.recreateInput();
       try {
         await draftReady;
+        // This snapshot is consumed. New text may be queued independently
+        // while this operation waits for its acknowledgement.
+        release();
         await registerQueueItem(midTurnThreadId, message, sendOptions);
       } catch (err) {
         pane.setGeneralError(`Failed to queue message: ${String(err)}`);
@@ -602,7 +656,7 @@
 
     const threadId = pane.threadId;
     if (!threadId) return;
-    sending = true;
+    preparingSend = false;
     pane.setSendInFlight(true);
     const draftReady = draft.prepareForSend();
     draft.clearLocalForSend();
@@ -669,9 +723,10 @@
         await refreshDiffReviewComments(threadId, diffReviewSourceForSend.scope, diffReviewSourceForSend.sourceKey);
       }
     } finally {
-      preparingWorktree = false;
-      sending = false;
-      sendPane.setSendInFlight(false);
+      if (isCurrent()) {
+        preparingWorktree = false;
+        sendPane.setSendInFlight(false);
+      }
     }
   }
 
@@ -887,6 +942,7 @@
   });
 
   onDestroy(() => {
+    disposed = true;
     releasePlanEvents?.();
     releaseDraftRegistration?.();
     releaseDraftRegistration = null;
@@ -1001,7 +1057,9 @@
       sendInFlight={isSendInFlight(pane.threadId, pane.sendInFlight)}
       {sendAction}
       {sendLabel}
-      sendDisabledReason={interruptPending
+      sendDisabledReason={preparingSend
+        ? 'Preparing message…'
+        : interruptPending
         ? 'Wait for the interrupted message to finish reverting'
         : undefined}
       hasCurrentPlan={Boolean(latestPlanItem)}

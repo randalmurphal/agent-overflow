@@ -16,7 +16,7 @@ a host can name what it holds without importing the component's chunk.
 `composerSend.ts`, deliberately holding nothing reactive: each call
 captures the current thread id and draft snapshot, then delegates back to
 the pane and draft store. Drag, drop, paste and upload live in
-`composerUploads.svelte.ts`, which carries a per-thread guard so a slow
+`composerUploads.svelte.ts`, which carries an editing-context guard so a slow
 upload cannot land in the wrong pane. The bytes themselves go over HTTP,
 not the RPC wire: `uploadAttachmentBytes`
 (`lib/transport/attachmentTransfer.ts`) mints a single-use ticket for
@@ -94,6 +94,20 @@ nothing will ever reference the row — so it is discarded through the same
 fire-and-forget `discardAbandonedAttachmentRecords` an abandoned draft
 uses, rather than left as a database row and a file on disk that no
 message, no draft and no later pass knows about.
+
+Send admission is acquired synchronously before uploads, materialization, or
+worktree preparation. Repeated taps and Enter share that admission; the send
+button stays disabled during preflight rather than changing into Stop. Recheck
+current eligibility after each wait, before consuming a snapshot. The draft's
+`contextKey` changes when its editing destination changes, including a round
+trip back to the same thread, but survives placeholder adoption. A stale gesture
+cannot send, clear, or change the busy state of the newly opened draft.
+Queue admission releases after draft-save preparation, before waiting for the
+queue acknowledgement, so a distinct next message remains sendable. Each
+admission owns its cleanup; a delayed old completion cannot release a newer one.
+Uploads use the same context key and show a shared `Uploading…` status while
+pending. A late upload from an abandoned context discards its attachment record,
+even if the user has returned to the same thread.
 
 A send awaits `waitForUploads()` before it snapshots `draft.attachments`
 — dropping a file and pressing Enter is one gesture, and an upload still

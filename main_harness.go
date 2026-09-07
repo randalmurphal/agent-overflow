@@ -117,6 +117,7 @@ func runHarness(flags cliFlags) {
 	defer controlServer.Shutdown()
 	srv := bootTransport(appService, flags.listenAddr, bootTransportOptions{
 		RequireReadyForBootstrap: true,
+		IgnorePersistedNetwork:   true,
 		HarnessReceiver:          h,
 		HarnessPageMarker:        harnessrpc.PageMarker(h),
 		HarnessMethodsSink:       func(names []string) { harnessrpc.SetWireMethods(h, names) },

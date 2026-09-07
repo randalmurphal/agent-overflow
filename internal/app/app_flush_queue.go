@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -323,6 +324,12 @@ func (a *App) dispatchFlushWithGeneration(threadID string, items []triage.Queued
 			return
 		}
 		flushedItem, flushedEmitted, requeue, err := a.dispatchFlushItem(threadID, item)
+		if errors.Is(err, errEmptyUserMessage) {
+			// Older clients admitted empty rows. They have no input to retry
+			// or restore, and must not block the meaningful tail of the queue.
+			item.Settlement.Settle()
+			continue
+		}
 		if err != nil {
 			log.Printf("flush dispatch: thread=%s item=%s: %v", threadID, item.ID, err)
 			if !a.isFlushDispatchGenerationCurrent(threadID, generation) {
@@ -373,6 +380,14 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		if err := json.Unmarshal(item.Payload, &payload); err != nil {
 			return QueueFlushedItem{}, false, requeue, fmt.Errorf("decode payload: %w", err)
 		}
+	}
+	if err := validateUserMessageInput(item.Message, payload.AttachmentIDs, payload.RevisionSourceCommentIDs, payload.RevisionSourceDiffCommentIDs); err != nil {
+		if item.StaleUserItemID != "" {
+			if cleanupErr := a.cleanupStaleFlushRow(threadID, item.StaleUserItemID); cleanupErr != nil {
+				return QueueFlushedItem{}, false, requeue, cleanupErr
+			}
+		}
+		return QueueFlushedItem{}, false, requeue, err
 	}
 
 	resolved, err := a.resolveUserMessageEnvelope(threadID, item.Message, userMessageInputs{
@@ -876,6 +891,10 @@ func (a *App) registerQueueItem(
 			Message:    record.item.Summary,
 			EnqueuedAt: record.item.CreatedAt,
 		}, nil
+	}
+
+	if err := validateUserMessageInput(message, opts.AttachmentIDs, opts.RevisionSourceCommentIDs, opts.RevisionSourceDiffCommentIDs); err != nil {
+		return QueuedItem{}, fmt.Errorf("register queue item: %w", err)
 	}
 
 	totalQueued := a.triage.QueuedFlushItemCount(threadID) + a.triage.DeferredPendingFlushItemCount(threadID) + a.flushDispatchItemCount(threadID)

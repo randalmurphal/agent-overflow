@@ -20,15 +20,16 @@ const maxConnections = 64
 // Its upstream is always a non-loopback WSL address: forwarding to localhost
 // would let an off-host peer acquire local-only authorization semantics.
 type Relay struct {
-	listeners []net.Listener
-	addresses []string
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup
-	slots     chan struct{}
-	target    string
-	once      sync.Once
-	errMu     sync.Mutex
-	err       error
+	listeners   []net.Listener
+	addresses   []string
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
+	slots       chan struct{}
+	target      string
+	once        sync.Once
+	errMu       sync.Mutex
+	err         error
+	upstreamErr error
 }
 
 func StartRelay(ctx context.Context, target string, addresses []string) (*Relay, error) {
@@ -120,6 +121,14 @@ func (r *Relay) accept(ctx context.Context, listener net.Listener) {
 func (r *Relay) carry(ctx context.Context, client net.Conn) {
 	defer client.Close()
 	upstream, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "tcp4", r.target)
+	if ctx.Err() == nil {
+		r.errMu.Lock()
+		r.upstreamErr = nil
+		if err != nil {
+			r.upstreamErr = fmt.Errorf("Windows cannot reach the WSL backend at %s: %w", r.target, err)
+		}
+		r.errMu.Unlock()
+	}
 	if err != nil {
 		return
 	}
@@ -173,4 +182,8 @@ func LANAddresses() ([]string, error) {
 	return result, nil
 }
 
-func (r *Relay) Err() error { r.errMu.Lock(); defer r.errMu.Unlock(); return r.err }
+func (r *Relay) Err() error {
+	r.errMu.Lock()
+	defer r.errMu.Unlock()
+	return errors.Join(r.err, r.upstreamErr)
+}

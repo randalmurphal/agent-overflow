@@ -135,3 +135,45 @@ func TestRelayHalfCloseLetsHostFinishAndCancellationClosesActiveStreams(t *testi
 		t.Fatal("active stream survived shutdown")
 	}
 }
+
+// A bound Windows listener does not prove the backend is reachable. Keep the
+// latest upstream failure visible in host settings, and clear it on recovery.
+func TestRelayReportsUpstreamFailureAndClearsItAfterRecovery(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := listener.Addr().String()
+	listener.Close()
+	relay := &Relay{target: target}
+	carry := func() {
+		client, server := net.Pipe()
+		done := make(chan struct{})
+		go func() { relay.carry(context.Background(), server); close(done) }()
+		client.Close()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Fatal("relay did not finish")
+		}
+	}
+	carry()
+	if err := relay.Err(); err == nil || !strings.Contains(err.Error(), "cannot reach the WSL backend") {
+		t.Fatalf("missing host-side upstream error: %v", err)
+	}
+	listener, err = net.Listen("tcp4", target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		conn, err := listener.Accept()
+		if err == nil {
+			conn.Close()
+		}
+	}()
+	carry()
+	if err := relay.Err(); err != nil {
+		t.Fatalf("recovery retained stale error: %v", err)
+	}
+}

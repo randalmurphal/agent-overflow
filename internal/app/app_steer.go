@@ -118,6 +118,9 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 	} else if found {
 		return record.item, nil
 	}
+	if err := validateUserMessageInput(content, opts.AttachmentIDs, opts.RevisionSourceCommentIDs, opts.RevisionSourceDiffCommentIDs); err != nil {
+		return store.Item{}, fmt.Errorf("steer message: %w", err)
+	}
 	// Reject commands this RPC cannot execute before activity admission or
 	// runtime-mode writes, while accepted retries still return above.
 	if opts.ExpandComposerCommands && thread.Provider == string(provider.Codex) {

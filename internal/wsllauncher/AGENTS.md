@@ -284,3 +284,11 @@ over the same authenticated notification RPC connection. Result-bearing calls
 share its pending map, refusal handling, timeout and disconnect behavior.
 `internal/nativenetwork` owns the native listener and public discovery reports;
 no launcher credential is forwarded with remote network traffic.
+
+## Backend bind ownership
+
+Launch argv requests `--print-url-fd 0` without `--listen`. The backend owns
+persisted network settings and restores its LAN bind before the native relay
+connects; forcing loopback at launch breaks LAN hosting after every restart.
+Explicit caller-supplied `--listen` remains an override. Harness/soak boot paths
+keep their separate isolated network policy.

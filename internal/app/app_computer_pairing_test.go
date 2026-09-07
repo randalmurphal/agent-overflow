@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -234,12 +236,15 @@ func TestComputerPairingReplacementRequiresDurableCancellation(t *testing.T) {
 	}
 	a.storeIdentity.Store(&stored)
 	srv := startTestTransportServer(t)
+	if err := srv.Rebind(net.JoinHostPort("0.0.0.0", strconv.Itoa(portFromAddr(srv.Addr()))), nil); err != nil {
+		t.Fatal(err)
+	}
 	a.SetTransportServer(srv)
 	if _, err := a.settings.SetNetwork(settings.NetworkSettings{BindAll: true}); err != nil {
 		t.Fatal(err)
 	}
-	// A synthetic native ingress keeps this test independent of physical
-	// interfaces and suppresses real multicast advertisement on Open.
+	// A synthetic native ingress backed by a LAN listener keeps this test
+	// independent of physical interfaces and suppresses multicast on Open.
 	a.nativeNetwork.seen = true
 	a.nativeNetwork.addresses = []string{fmt.Sprintf("https://192.168.1.55:%d", portFromAddr(srv.Addr()))}
 	s := &a.computerPairing

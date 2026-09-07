@@ -101,6 +101,25 @@ type userMessageInputs struct {
 	sendID string
 }
 
+var errEmptyUserMessage = errors.New("enter a message or attach a file before sending")
+
+// Check admission before queue/draft/runtime effects. References and mode/schema
+// options are metadata, not provider input; attachments and selected revision
+// comments are resolved into input later by resolveUserMessageEnvelope.
+func validateUserMessageInput(content string, attachmentIDs, planCommentIDs, diffCommentIDs []string) error {
+	if strings.TrimSpace(content) != "" {
+		return nil
+	}
+	for _, ids := range [][]string{attachmentIDs, planCommentIDs, diffCommentIDs} {
+		for _, id := range ids {
+			if strings.TrimSpace(id) != "" {
+				return nil
+			}
+		}
+	}
+	return errEmptyUserMessage
+}
+
 // resolvedUserMessage bundles everything resolveUserMessageEnvelope
 // produces: the (possibly comment-appended) content, the loaded
 // attachments in both provider and store shape, the validated
@@ -282,6 +301,19 @@ func (a *App) sendMessageWithOptions(
 	if a.shuttingDown.Load() {
 		return store.Item{}, ErrShuttingDown
 	}
+	if err := validateUserMessageInput(content, opts.AttachmentIDs, opts.RevisionSourceCommentIDs, opts.RevisionSourceDiffCommentIDs); err != nil {
+		// A retry still returns its accepted receipt, even if the caller has
+		// since cleared its composer. Check before workflow takeover too.
+		if record, found, lookupErr := a.findRecordedSend(threadID, opts.SendID); lookupErr != nil {
+			return store.Item{}, lookupErr
+		} else if found {
+			if record.dispatched {
+				return record.item, nil
+			}
+			return store.Item{}, nil
+		}
+		return store.Item{}, fmt.Errorf("send message: %w", err)
+	}
 
 	runtimeMode, hasRuntimeMode, err := threadmode.ParseOptionalRuntime(opts.RuntimeMode)
 	if err != nil {
@@ -386,6 +418,10 @@ func (a *App) sendMessageLocked(
 		// not a `user_text` row yet, so there is no item to return; the
 		// thread view the bound method reads back is unaffected either way.
 		return store.Item{}, nil
+	}
+
+	if err := validateUserMessageInput(content, opts.AttachmentIDs, opts.RevisionSourceCommentIDs, opts.RevisionSourceDiffCommentIDs); err != nil {
+		return store.Item{}, fmt.Errorf("send message: %w", err)
 	}
 
 	intent := messageDirect

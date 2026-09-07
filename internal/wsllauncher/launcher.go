@@ -249,8 +249,8 @@ func (l *Launcher) Stop() error {
 // incident 2026-08-30, first Windows launch after the wrapper landed).
 // The backend never needed the login shell: it probes login-shell PATH
 // itself via internal/shellenv. After the command,
-// `--listen 127.0.0.1:0 --print-url-fd 0` puts the backend in headless mode
-// and tells it to hand its {port, token} back over the stdout bootstrap
+// `--print-url-fd 0` selects headless mode without overriding the backend's
+// saved network bind. It hands {port, token} back over the stdout bootstrap
 // sentinel (fd 0 here selects that stdout channel — see writeBootstrap and
 // readBootstrapLine — rather than the unreliable fd-3 path through wsl.exe).
 func buildLaunchArgs(distro, binaryPath string, extraArgs []string) []string {
@@ -284,7 +284,7 @@ func buildLaunchArgsWithMemoryLimit(distro, binaryPath string, extraArgs []strin
 		command[0],
 	}
 	args = append(args, command[1:]...)
-	args = append(args, "--listen", "127.0.0.1:0", "--print-url-fd", "0")
+	args = append(args, "--print-url-fd", "0")
 	return append(args, extraArgs...)
 }
 

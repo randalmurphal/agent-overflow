@@ -11,7 +11,7 @@ WSL itself stays in `internal/wsllauncher` so it is testable off-Windows:
 discovery, spawn, Job Object lifetime, bootstrap-line parsing, and the
 reconnecting backend WS client this binary's notification handlers hang
 off. The backend is not a separate program; it is the same root `main.go`
-binary running headless inside the distro (`--listen` / `--print-url-fd`),
+binary running headless inside the distro (`--print-url-fd`),
 and the chat UI is the embedded SPA under `frontend/`.
 
 The build cross-compiles the Linux ELF backend first, embeds it as a payload,
@@ -309,7 +309,10 @@ The `main.go` package doc has the step-by-step launcher flow.
 
 The notification bridge also runs `nativenetwork.Run`: the native process binds
 physical Windows LAN interfaces while the backend enables LAN sharing, and
-relays raw TLS to its **non-loopback** WSL interface. Existing localhost forwarding
+relays raw TLS to its **non-loopback** WSL interface. The launcher passes only
+`--print-url-fd 0`; it must not inject a loopback `--listen` override. The backend
+restores persisted LAN/port/domain settings just like desktop and serve boots;
+isolated harnesses opt out explicitly. Existing localhost forwarding
 is only for this desktop window. Do not advertise WSL NAT addresses to external
 clients, proxy remote traffic through localhost, or inject local credentials.
 The backend receives external endpoints and errors over the same owner RPC.

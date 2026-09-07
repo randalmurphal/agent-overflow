@@ -127,9 +127,6 @@ func runServe(flags cliFlags) {
 		// this because the window it opens is under the same process's
 		// control; a remote browser is not.
 		RequireReadyForBootstrap: true,
-		// The whole point of this mode. --listen still overrides the bind
-		// inside bootTransport; the canonical domain applies either way.
-		LoadPersistedNetwork: true,
 	})
 	appservice.ConfigureTransportNotifications(appService.App)
 	// The bus exists now, so the boot's update check can say its piece to a

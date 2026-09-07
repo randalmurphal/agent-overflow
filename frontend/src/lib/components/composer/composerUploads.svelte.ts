@@ -61,6 +61,8 @@ export interface ComposerUploadsOptions {
    * so uploads race-safe against a thread switch mid-upload.
    */
   getThreadId: () => string | null;
+  /** Editing session identity, stable while a placeholder materializes. */
+  getContext?: () => symbol;
   /** Creates/loads a backend thread when the composer is on a local placeholder. */
   ensureThreadId?: () => Promise<string | null>;
   /** Fired when a freshly-uploaded Attachment should be added to the draft. */
@@ -113,6 +115,7 @@ export function createComposerUploads(opts: ComposerUploadsOptions): ComposerUpl
     threadId: string,
     file: File,
     insertion: UploadInsertionPoint | null,
+    context: symbol | undefined,
   ): Promise<boolean> {
     // An over-limit image gets one recompression attempt before the
     // size guard runs — a HiDPI screenshot paste routinely exceeds the
@@ -127,6 +130,7 @@ export function createComposerUploads(opts: ComposerUploadsOptions): ComposerUpl
         console.error('image compression failed:', err);
       }
     }
+    if (opts.getContext?.() !== context) return false;
     // Pre-upload guard: reject by the kind's size ceiling before the
     // bytes go anywhere. The same check runs when the ticket is minted
     // and again in the store, but failing here keeps an over-limit drop
@@ -143,7 +147,7 @@ export function createComposerUploads(opts: ComposerUploadsOptions): ComposerUpl
       const record = await uploadAttachmentBytes(threadId, upload);
       // Guard against thread-switch-in-flight: only stamp the draft when
       // we're still on the thread the user initiated the upload from.
-      if (opts.getThreadId() === threadId) {
+      if (opts.getThreadId() === threadId && opts.getContext?.() === context) {
         opts.addAttachment(record, insertion);
         return true;
       }
@@ -168,10 +172,11 @@ export function createComposerUploads(opts: ComposerUploadsOptions): ComposerUpl
     const list = Array.from(files);
     if (list.length === 0) return;
 
+    const context = opts.getContext?.();
     activeUploadBatches += 1;
     try {
       const threadId = opts.getThreadId() ?? await opts.ensureThreadId?.() ?? null;
-      if (!threadId) return;
+      if (!threadId || opts.getContext?.() !== context) return;
       const existingCount = opts.getAttachmentCount?.() ?? 0;
       const availableSlots = Math.max(0, maxAttachments - existingCount);
       if (availableSlots === 0) {
@@ -181,12 +186,12 @@ export function createComposerUploads(opts: ComposerUploadsOptions): ComposerUpl
       let acceptedCount = 0;
       let processedCount = 0;
       for (const file of list) {
-        if (acceptedCount >= availableSlots) break;
+        if (acceptedCount >= availableSlots || opts.getContext?.() !== context) break;
         processedCount += 1;
-        const accepted = await uploadOne(threadId, file, insertion);
+        const accepted = await uploadOne(threadId, file, insertion, context);
         if (accepted) acceptedCount += 1;
       }
-      if (processedCount < list.length) {
+      if (processedCount < list.length && opts.getContext?.() === context) {
         addToast('warning', `Only the first ${availableSlots} valid file${availableSlots === 1 ? '' : 's'} were attached.`);
       }
     } finally {

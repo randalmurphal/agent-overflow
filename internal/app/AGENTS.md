@@ -861,6 +861,15 @@ per attached backend, fed by both channels and re-read on every hello) and
 
 ## Send admission, identity and placement
 
+`validateUserMessageInput` rejects blank input at direct, steer and queue
+admission, before draft consumption, runtime changes or workflow takeover.
+Attachments and selected revision comments count as input; plan references,
+mode and schema options alone do not. Accepted SendID receipts win over this
+validation. Dispatch settles empty rows admitted by older clients without
+sending them, adding error rows or blocking the queue behind them. Attachment
+and comment resolution still occurs at dispatch, preserving their normal
+validation and recovery behavior.
+
 `app_user_message_placement.go` owns direct/composer/steer/flush/fallback
 placement under the thread action lock. Callers must not calculate turn
 indices themselves or trust frontend activity. Preserve the separate display
@@ -921,9 +930,9 @@ live in `app_draft_consumption_test.go`.
 
 ## The flush queue outlives the process
 
-The composer clears the moment `RegisterQueueItem` returns, so between the
-register and the provider write the queue is the message's only copy — and it
-was process memory, which a crash threw away with no trace anywhere. It now
+After queue admission, the cleared composer's message lives in the queue until
+the provider write. That queue was process memory, which a crash threw away
+with no trace anywhere. It now
 has a row (`flush_queue_items`, migration v85). `internal/triage` keeps the
 live queue and a narrow accepted-message lookup; this package owns durable
 queue mutation and recovery.
@@ -961,6 +970,13 @@ queue mutation and recovery.
   event a session death uses — queued text ahead of whatever the composer
   itself holds — and deletes the rows only once that write succeeded, so a
   failure means the next boot tries again.
+
+Known recovery gap: unresolved queued revision selections are not represented
+by `composerdraft.Part`. Comment records survive, but restoring the queue can
+lose which plan/review and selected comments belonged to a message. Already
+expanded user messages retain their comment text. Fixing this requires durable
+revision context and merge/consumption rules; flattening comments into draft
+text alone would duplicate still-selected comments on resend.
 
 Automatic empty-draft cleanup deletes a thread row just like explicit deletion:
 `DeleteEmptyDraftThread` must broadcast `thread:updated` / `deleted` after a

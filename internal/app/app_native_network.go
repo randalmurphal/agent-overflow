@@ -113,6 +113,7 @@ func (a *App) GetNativeNetworkConfig(ctx context.Context) (nativenetwork.Config,
 	}
 	id, _ := a.backendIdentity()
 	cfg := nativenetwork.Config{Enabled: a.currentSettings().Network.BindAll, BackendID: id, Name: a.backendDisplayName(), ScanID: scanID, Generation: generation}
+	cfg.Enabled = cfg.Enabled && nativeLANListenerError(srv.Addr()) == ""
 	if cfg.Enabled {
 		cfg.Target = "https://" + net.JoinHostPort(network.DiscoverLocalLANIP(), strconv.Itoa(portFromAddr(srv.Addr())))
 	}
@@ -177,16 +178,29 @@ func (a *App) ReportNativeNetworkState(ctx context.Context, report nativenetwork
 	return nil
 }
 
+func nativeLANListenerError(address string) string {
+	host, _, err := net.SplitHostPort(address)
+	if err == nil && net.ParseIP(host).IsLoopback() {
+		return "The WSL backend is listening only on localhost. Turn local network access off and back on; remove any loopback --listen override before restarting."
+	}
+	return ""
+}
+
 func (a *App) nativeLANStatus() *network.LANStatus {
 	port := 0
+	listenerError := ""
 	if srv := a.transportServer.Load(); srv != nil {
 		port = portFromAddr(srv.Addr())
+		listenerError = nativeLANListenerError(srv.Addr())
 	}
 	s := &a.nativeNetwork
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.seen {
 		return nil
+	}
+	if a.currentSettings().Network.BindAll && listenerError != "" {
+		return &network.LANStatus{Error: listenerError}
 	}
 	message := s.err
 	addresses := make([]string, 0, len(s.addresses))

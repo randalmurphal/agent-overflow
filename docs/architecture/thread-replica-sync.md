@@ -428,8 +428,8 @@ resets localStorage (see `ensureClientID`'s comment in `main.go`). Without a
 fix the desktop replica would be empty on every boot, which is the
 exact case this design targets.
 
-Fix: when the resolved listen port is 0 (no `--listen`, or the WSL
-launcher's `--listen 127.0.0.1:0`), the backend binds a **persisted
+Fix: when the resolved listen port is 0 (the ordinary desktop/WSL default,
+or an explicit `--listen 127.0.0.1:0`), the backend binds a **persisted
 per-install port**. First boot binds ephemeral and records the port
 it got (`transport-port.json` next to `client-id.json`, atomicfile);
 later boots re-bind it. Any bind failure falls back to ephemeral for

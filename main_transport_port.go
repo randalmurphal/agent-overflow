@@ -35,8 +35,8 @@ type transportPortPin struct {
 // otherwise take an ephemeral one, and returns the pin the caller
 // adopts from once the listener is actually bound.
 //
-// A zero cfg.Port is the desktop default AND what `--listen 127.0.0.1:0`
-// (the Windows WSL launcher) resolves to; both want a stable port,
+// A zero cfg.Port is the desktop/WSL default and what an explicit
+// `--listen 127.0.0.1:0` resolves to; both want a stable port,
 // because the embedded webview's origin is host+port and every
 // origin-scoped store the frontend owns — localStorage, the IndexedDB
 // thread replica (docs/architecture/thread-replica-sync.md §6.0) — is wiped

@@ -53,9 +53,12 @@ the process runs, through `app.SetBoundPortRecorder`: whenever the operator
 touches the port field, the port the listener ended up on is written to the
 cache.
 
-Boot only reads the setting where `LoadPersistedNetwork` is on — the desktop and
-`serve` boots. The Windows launcher's headless backend is deliberately outside
-it, along with the rest of the persisted network preferences.
+Every ordinary boot reads these host settings: desktop, `serve`, and the
+Windows launcher's headless backend. Only the isolated harness opts out through
+`IgnorePersistedNetwork`. The launcher requests its bootstrap channel without
+injecting a `--listen` override; an explicitly supplied CLI bind still wins over
+saved LAN preferences. Restoring a Windows host must bind the WSL backend before
+the native LAN relay can reach it; a listener on loopback alone cannot do that.
 
 ### Bind failure: `Config.EphemeralPortFallback`
 

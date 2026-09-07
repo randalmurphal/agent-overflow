@@ -296,18 +296,13 @@ func syncShellEnvForBoot() {
 // two copies in sync as the registration call evolves (allow lists,
 // bus capacity, asset handler choices).
 //
-// LoadPersistedNetwork is the desktop-path-only escape hatch for the
-// stored network preferences: the Phase E LAN-bind toggle and the
-// canonical domain. Headless boots only honor the explicit --listen flag
-// (the Windows launcher always passes one), so it passes false here.
-// Pulling the load out of the helper keeps the boot graph linear: this
-// function makes deterministic decisions from its arguments, never reads
-// disk on its own.
+// Ordinary shells share persisted network preferences. Only isolated harness
+// boots opt out; an explicit --listen still wins over the saved bind address.
 type bootTransportOptions struct {
 	// Set only from the parent's explicit activate-frame claim. An older
 	// supervisor omits it, so its child still takes the ordinary boot lock.
 	BackendLockHeldBySupervisor bool
-	LoadPersistedNetwork        bool
+	IgnorePersistedNetwork      bool
 	RequireReadyForBootstrap    bool
 	// HarnessReceiver, when non-nil, is registered on the dispatcher as
 	// a second RPC receiver under "main.Harness.<Method>". Only harness
@@ -521,40 +516,9 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		log.Printf("transport: renderer diag mode — cross-origin isolation headers on (remote subresources will not load)")
 	}
 	applyServerCertificate(&cfg, appService)
-	if listenAddr != "" {
-		host, port, err := splitListenAddr(listenAddr)
-		if err != nil {
-			// Never a silent default: a malformed --listen used to
-			// collapse to loopback + port 0, which the port pin then
-			// resolves to the PINNED port — a bind the operator never
-			// asked for and could not explain from the logs.
-			fatalf("transport: %v", err)
-		}
-		cfg.BindAddr = host
-		cfg.Port = port
-	}
-	settingsPort := 0
-	canonicalDomain := ""
-	if opts.LoadPersistedNetwork {
-		// Honor the persisted network preferences at boot so a user who
-		// turned these on in a previous session doesn't see the server
-		// snap back after a restart. CLI --listen still wins for the BIND
-		// — operator override beats stored prefs — but the canonical
-		// domain is not an address and applies either way: it decides
-		// which Host header this listener answers to, whatever it bound.
-		persisted := loadPersistedNetworkSettings()
-		if persisted.BindAll && listenAddr == "" {
-			cfg.BindAddr = "0.0.0.0"
-		}
-		// The saved port is applied by pinTransportPort, which owns the
-		// whole three-way precedence and the cache interaction.
-		settingsPort = persisted.ListenPort
-		cfg.CanonicalHost = persisted.CanonicalDomain
-		// The origin allow-list is NOT computed here. Every pattern it
-		// emits names the bound port, and this boot has not resolved one
-		// yet — the pin below and then the bind itself decide it. It is
-		// installed after Start, where the number is a fact.
-		canonicalDomain = persisted.CanonicalDomain
+	settingsPort, canonicalDomain, err := configureTransportNetwork(&cfg, listenAddr, opts.IgnorePersistedNetwork)
+	if err != nil {
+		fatalf("transport: %v", err)
 	}
 
 	// Resolve the listen port: --listen, else the saved network.listenPort,
@@ -709,13 +673,10 @@ func runHeadless(listenAddr string, printURLFD int) {
 	// fully wired App.updater.handle / App.updater.wsl without a race. Gated at runtime
 	// on the Windows launcher having spawned us; a no-op otherwise.
 	appservice.InitWSLUpdater(appService.App, bootSettingsDir())
-	// Headless mode honors only the explicit --listen flag — the
-	// Windows launcher always passes 127.0.0.1:0, so the persisted
-	// LAN-bind preference is irrelevant here. The Windows-side
-	// WebView2 fetches /bootstrap.json + the SPA over the transport,
-	// but the SPA bundle the WebView2 *displays* lives in the
-	// Windows binary's embed; the transport just needs an asset
-	// handler so non-RPC paths return 404 cleanly.
+	// This is the Windows launcher's backend and the owner of its embedded SPA.
+	// It shares ordinary desktop network preferences; the launcher does not
+	// inject a loopback --listen override that would undo saved LAN hosting.
+
 	srv := bootTransport(appService, listenAddr, bootTransportOptions{RequireReadyForBootstrap: true})
 	appservice.ConfigureTransportNotifications(appService.App)
 	// Now that the bus exists, the boot check above can say its piece. The
@@ -901,7 +862,7 @@ const defaultListenHost = "127.0.0.1"
 
 // splitListenAddr parses "host:port" or ":port" into a (host, port)
 // pair. Port 0 keeps its meaning — "let the transport choose", which is
-// what `--listen 127.0.0.1:0` (the Windows WSL launcher) and `:0` ask
+// what explicit `--listen 127.0.0.1:0` and `:0` ask
 // for, and what pinTransportPort then resolves against the pinned port.
 //
 // Malformed input is an error, never a silent default. A value the

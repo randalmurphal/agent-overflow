@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -26,7 +27,7 @@ func nativeNetworkBackend(t *testing.T) (*pairedBackend, context.Context, *trans
 		return []net.Addr{&net.IPNet{IP: net.ParseIP("172.20.0.2"), Mask: net.CIDRMask(16, 32)}}, nil
 	}
 	t.Cleanup(func() { network.Interfaces, network.InterfaceAddrs = oldInterfaces, oldAddrs })
-	b := newPairedBackend(t)
+	b := newPairedBackend(t, func(cfg *transport.Config) { cfg.BindAddr = "0.0.0.0" })
 	if _, err := b.app.settings.SetNetwork(settings.NetworkSettings{BindAll: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -222,4 +223,25 @@ func TestNativeDiscoveryTimeoutAllowsFreshScan(t *testing.T) {
 	}
 	conn.RunCleanups()
 	<-next
+}
+
+func TestNativeNetworkDoesNotAdvertiseAnExplicitLoopbackListener(t *testing.T) {
+	b, ctx, _, cfg := nativeNetworkBackend(t)
+	if err := b.app.ReportNativeNetworkState(ctx, nativeReport(b, cfg)); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.srv.Rebind(net.JoinHostPort("127.0.0.1", strconv.Itoa(portFromAddr(b.srv.Addr()))), nil); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := b.app.GetNativeNetworkConfig(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Enabled || cfg.Target != "" {
+		t.Fatalf("loopback listener enabled a broken LAN relay: %+v", cfg)
+	}
+	status := b.app.nativeLANStatus()
+	if len(status.Addresses) != 0 || !strings.Contains(status.Error, "listening only on localhost") {
+		t.Fatalf("actual loopback bind did not override stale ready report: %+v", status)
+	}
 }

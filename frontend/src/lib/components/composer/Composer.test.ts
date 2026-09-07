@@ -1023,34 +1023,130 @@ describe('<Composer>', () => {
     expect(draft.content).toBe('[Image #1] [Image #2]');
   });
 
-  it('a send waits for an upload still in flight, so its id travels with the message', async () => {
+  it.each(['direct', 'queued'] as const)('admits one %s send while upload is pending, without turning repeated taps into interrupts', async (mode) => {
+    const pane = await buildPane();
+    if (mode === 'queued') pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
+    const draft = await buildDraft();
+    const uploadGate = deferred<Attachment>();
+    mockAttachmentUpload(() => uploadGate.promise);
+    const send = setBindingMock('SendMessageWithOptions', async () => makeTestThread());
+    const queue = setBindingMock('RegisterQueueItem', async (threadId: string, message: string) => ({
+      id: 'q-upload', threadId, message, attachmentIds: ['late-pdf'], enqueuedAt: 1,
+    }));
+    const { getByLabelText, getByTestId, getByText, queryByTestId, queryByText } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: 'have a look' } });
+    await fireEvent(getByTestId('composer-root'), makeFileDrop([
+      new File(['%PDF'], 'report.pdf', { type: 'application/pdf' }),
+    ]));
+    expect(getByText('Uploading…').getAttribute('role')).toBe('status');
+    const button = getByTestId('composer-send');
+    await fireEvent.click(button);
+    expect(button).toBeDisabled();
+    expect(queryByTestId('composer-interrupt')).toBeNull();
+    await fireEvent.click(button);
+    await fireEvent.keyDown(textarea, { key: 'Enter' });
+    await fireEvent.keyDown(textarea, { key: 'Enter' });
+    expect(send).not.toHaveBeenCalled();
+    expect(queue).not.toHaveBeenCalled();
+    uploadGate.resolve(makeAttachment('late-pdf', 'report.pdf', 'application/pdf'));
+    const operation = mode === 'queued' ? queue : send;
+    await waitFor(() => expect(operation).toHaveBeenCalledExactlyOnceWith('thread-1', 'have a look', sentWith({ attachmentIds: ['late-pdf'] })));
+    expect(queryByText('Uploading…')).toBeNull();
+    expect(draft.content).toBe('');
+  });
+
+  it('does not resume an upload-waiting send after switching away and back to a different draft', async () => {
     const pane = await buildPane();
     const draft = await buildDraft();
     const uploadGate = deferred<Attachment>();
     mockAttachmentUpload(() => uploadGate.promise);
-    const send = setBindingMock('SendMessageWithOptions', async () =>
-      makeTestThread({ runtimeMode: 'full-access' }));
-
-    const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
-    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
-    await fireEvent.input(textarea, { target: { value: 'have a look' } });
-
-    await fireEvent(getByTestId('composer-root'), makeFileDrop([
+    const discard = setBindingMock('DeleteAttachment', async () => {});
+    const send = setBindingMock('SendMessageWithOptions', async () => makeTestThread());
+    const view = render(Composer, { props: { pane, draft } });
+    draft.setContent('old message');
+    await tick();
+    await fireEvent(view.getByTestId('composer-root'), makeFileDrop([
       new File(['%PDF'], 'report.pdf', { type: 'application/pdf' }),
     ]));
-    // Enter lands while the upload is still pending: without the wait
-    // the draft snapshot is taken here, and the message goes without the file.
-    await fireEvent.keyDown(textarea, { key: 'Enter' });
+    await fireEvent.click(view.getByTestId('composer-send'));
+    await draft.setThread('other-thread');
+    await draft.setThread('thread-1');
+    draft.setContent('replacement draft');
     await tick();
-    expect(send).not.toHaveBeenCalled();
-
     uploadGate.resolve(makeAttachment('late-pdf', 'report.pdf', 'application/pdf'));
+    await waitFor(() => expect(view.queryByText('Uploading…')).toBeNull());
+    expect(send).not.toHaveBeenCalled();
+    expect(draft.content).toBe('replacement draft');
+    expect(draft.attachments).toEqual([]);
+    expect(discard).toHaveBeenCalledExactlyOnceWith('thread-1', 'late-pdf');
+    await fireEvent.click(view.getByTestId('composer-send'));
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+  });
 
-    await waitFor(() => {
-      expect(send).toHaveBeenCalledWith('thread-1', 'have a look', sentWith({
-        attachmentIds: ['late-pdf'],
-      }));
+  it('does not send an emptied draft after an upload fails', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const pane = await buildPane();
+    const draft = await buildDraft();
+    const uploadGate = deferred<Attachment>();
+    mockAttachmentUpload(() => uploadGate.promise);
+    const send = setBindingMock('SendMessageWithOptions', async () => makeTestThread());
+    const view = render(Composer, { props: { pane, draft } });
+    draft.setContent('old message');
+    await tick();
+    await fireEvent(view.getByTestId('composer-root'), makeFileDrop([
+      new File(['%PDF'], 'report.pdf', { type: 'application/pdf' }),
+    ]));
+    await fireEvent.click(view.getByTestId('composer-send'));
+    draft.setContent('');
+    uploadGate.reject(new Error('Upload failed'));
+    await waitFor(() => expect(view.queryByText('Uploading…')).toBeNull());
+    expect(send).not.toHaveBeenCalled();
+    expect(view.getByTestId('composer-send')).toBeDisabled();
+    consoleError.mockRestore();
+  });
+
+  it('admits one send through deferred materialization and preserves placeholder adoption', async () => {
+    const pane = createThreadPane({ paneId: 'send-materialization' });
+    const project = makeProject({ id: 'project-send' });
+    pane.startDraftPlaceholder(project, 'chat');
+    const draft = await buildDraft(null);
+    const created = makeTestThread({ id: 'created-send', projectId: project.id });
+    const createGate = deferred<typeof created>();
+    const create = setBindingMock('CreateThread', () => createGate.promise);
+    const send = setBindingMock('SendMessageWithOptions', async () => created);
+    const view = render(Composer, { props: { pane, draft } });
+    await fireEvent.input(view.getByLabelText('Message Input'), { target: { value: 'first message' } });
+    const button = view.getByTestId('composer-send');
+    await fireEvent.click(button);
+    await fireEvent.click(button);
+    await fireEvent.keyDown(view.getByLabelText('Message Input'), { key: 'Enter' });
+    expect(send).not.toHaveBeenCalled();
+    createGate.resolve(created);
+    await waitFor(() => expect(send).toHaveBeenCalledExactlyOnceWith('created-send', 'first message', sentWith({ attachmentIds: [] })));
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts a distinct queued message while the previous acknowledgement is pending', async () => {
+    const pane = await buildPane();
+    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
+    const draft = await buildDraft();
+    const first = deferred<void>();
+    const queue = setBindingMock('RegisterQueueItem', async (threadId: string, message: string) => {
+      if (message === 'first') await first.promise;
+      return { id: message, threadId, message, attachmentIds: [], enqueuedAt: 1 };
     });
+    const view = render(Composer, { props: { pane, draft } });
+    await fireEvent.input(view.getByLabelText('Message Input'), { target: { value: 'first' } });
+    await fireEvent.click(view.getByTestId('composer-send'));
+    await waitFor(() => expect(queue).toHaveBeenCalledTimes(1));
+    await fireEvent.input(view.getByLabelText('Message Input'), { target: { value: 'second' } });
+    await fireEvent.click(view.getByTestId('composer-send'));
+    await waitFor(() => expect(queue).toHaveBeenCalledTimes(2));
+    first.resolve();
+    await tick();
+    expect(queue.mock.calls.map(call => call[1])).toEqual(['first', 'second']);
+    expect(queue.mock.calls[0][2]).not.toEqual(queue.mock.calls[1][2]);
   });
 
   it('sends the draft and clears it on success', async () => {
@@ -1997,7 +2093,7 @@ describe('<Composer>', () => {
       });
       return worktreeThread;
     });
-    setBindingMock('SendMessageWithOptions', async () => worktreeThread);
+    const send = setBindingMock('SendMessageWithOptions', async () => worktreeThread);
 
     const { getByLabelText, getByTestId, queryByTestId } = render(Composer, { props: { pane, draft } });
     await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'work there' } });
@@ -2007,10 +2103,14 @@ describe('<Composer>', () => {
       expect(getByTestId('composer-worktree-preparing').textContent).toContain('Preparing worktree...');
     });
 
+    expect(getByTestId('composer-send')).toBeDisabled();
+    await fireEvent.click(getByTestId('composer-send'));
+    await fireEvent.keyDown(getByLabelText('Message Input'), { key: 'Enter' });
     finishPrepare();
 
     await waitFor(() => {
       expect(queryByTestId('composer-worktree-preparing')).toBeNull();
+      expect(send).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -2042,6 +2142,34 @@ describe('<Composer>', () => {
     expect(draft.content).toBe('keep this [Image #1]');
     expect(draft.attachments.map((attachment) => attachment.id)).toEqual(['att-2']);
     expect(pane.items.some((item) => item.summary === 'race send [Image #1]')).toBe(false);
+  });
+
+  it('does not let an older send completion release a newer thread’s send', async () => {
+    const threadOne = makeTestThread({ id: 'thread-1' });
+    const threadTwo = makeTestThread({ id: 'thread-2' });
+    const pane = await buildPane(threadOne);
+    const draft = await buildDraft();
+    const first = deferred<typeof threadOne>();
+    const second = deferred<typeof threadTwo>();
+    const send = setBindingMock('SendMessageWithOptions', (threadId: string) => threadId === 'thread-1' ? first.promise : second.promise);
+    const view = render(Composer, { props: { pane, draft } });
+    draft.setContent('first');
+    await tick();
+    await fireEvent.click(view.getByTestId('composer-send'));
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    await pane.switchThread(threadTwo);
+    await draft.setThread('thread-2');
+    draft.setContent('second');
+    await tick();
+    await fireEvent.click(view.getByTestId('composer-send'));
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+    expect(pane.sendInFlight).toBe(true);
+    first.resolve(threadOne);
+    await tick();
+    await tick();
+    expect(pane.sendInFlight).toBe(true);
+    second.resolve(threadTwo);
+    await waitFor(() => expect(pane.sendInFlight).toBe(false));
   });
 
   it('sends image-only drafts with a visible image placeholder and attachment ids', async () => {

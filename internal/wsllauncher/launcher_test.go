@@ -25,7 +25,7 @@ func TestBuildLaunchArgs(t *testing.T) {
 		"--cd", "~",
 		"-d", "Ubuntu-24.04",
 		"--exec",
-		"/home/u/.local/bin/agent-overflow", "--listen", "127.0.0.1:0", "--print-url-fd", "0",
+		"/home/u/.local/bin/agent-overflow", "--print-url-fd", "0",
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("buildLaunchArgs() = %v, want %v", got, want)
@@ -72,7 +72,7 @@ func TestBuildLaunchArgsWithMemoryLimitWrapsLinuxBackend(t *testing.T) {
 	if command[5] != "/home/u/agent-overflow" {
 		t.Fatalf("wrapped backend = %q, want original binary", command[5])
 	}
-	if got[len(got)-4] != "--listen" || got[len(got)-3] != "127.0.0.1:0" {
+	if got[len(got)-2] != "--print-url-fd" || got[len(got)-1] != "0" || slices.Contains(got, "--listen") {
 		t.Fatalf("bootstrap args moved after wrapper: %v", got)
 	}
 }
