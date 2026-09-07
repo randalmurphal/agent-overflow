@@ -162,7 +162,6 @@ test('the signed release recovers live and completed turns across Android suspen
 
     const mockId = await startMock(harness, threadId);
     const composer = { clazz: 'android.widget.EditText', pkg: PACKAGE };
-    await testInfo.attach('native-composer', { body: JSON.stringify(await phone.info(composer)), contentType: 'application/json' });
     await fillNode(phone, composer, 'Run release lifecycle');
     await tapNode(phone, named('Send message'));
     await waitForGate(harness, 'resume-active');
