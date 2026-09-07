@@ -78,10 +78,15 @@ func pinnedTLSConfig(certFingerprint string) *tls.Config {
 // and the pin is a property of the transport, so sharing it is also what
 // makes "every request from this device is verified" true by construction
 // rather than by every call site remembering.
-func NewPinnedTransport(certFingerprint string) *http.Transport {
+func NewPinnedTransport(certFingerprint string, opts ...Option) *http.Transport {
 	cloned := &http.Transport{Proxy: http.ProxyFromEnvironment}
 	if base, ok := http.DefaultTransport.(*http.Transport); ok {
 		cloned = base.Clone()
+	}
+	if dial := resolveOptions(opts).dial; dial != nil {
+		cloned.DialContext = dial
+		cloned.DialTLSContext, cloned.DialTLS = nil, nil
+		cloned.Proxy = nil
 	}
 	cloned.TLSClientConfig = pinnedTLSConfig(certFingerprint)
 	// ForceAttemptHTTP2 would ask for h2 by ALPN, and the backend answers
@@ -95,8 +100,8 @@ func NewPinnedTransport(certFingerprint string) *http.Transport {
 
 // A credential POST may neither change authority nor be replayed by net/http.
 // Endpoint changes require a separately verified computer route.
-func credentialHTTPClient(fingerprint string) *http.Client {
-	return &http.Client{Transport: NewPinnedTransport(fingerprint), Timeout: pinTimeout,
+func credentialHTTPClient(fingerprint string, opts ...Option) *http.Client {
+	return &http.Client{Transport: NewPinnedTransport(fingerprint, opts...), Timeout: pinTimeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 }

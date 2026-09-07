@@ -249,7 +249,7 @@ func (a *App) DevicePairingStatus(linkID string) (PairingStatusView, error) {
 	return PairingStatusView{
 		LinkID:             link.ID,
 		State:              pairingState(link, state.sessions.Now()),
-		VerificationNumber: number,
+		VerificationNumber: a.computerPairingNumber(link.ID, number),
 		DeviceLabel:        a.pairedDeviceLabel(link),
 		ExpiresAtMs:        pairingDeadline(link),
 	}, nil
@@ -261,6 +261,12 @@ func (a *App) DevicePairingStatus(linkID string) (PairingStatusView, error) {
 //ao:scope access:admin
 //ao:route home
 func (a *App) ConfirmDevicePairing(linkID string) error {
+	pairing := &a.computerPairing
+	pairing.mu.Lock()
+	defer pairing.mu.Unlock()
+	if pairing.linkID == linkID && linkID != "" && (pairing.book == nil || pairing.book.Snapshot("").LinkID != linkID) {
+		return identity.ErrPairingRefused
+	}
 	state, err := a.accessState()
 	if err != nil {
 		return err
@@ -553,7 +559,7 @@ func (a *App) pendingPairings(state *identityState, now int64) ([]PendingPairing
 			if err != nil {
 				return nil, fmt.Errorf("access: derive verification number for %s: %w", link.ID, err)
 			}
-			view.VerificationNumber = number
+			view.VerificationNumber = a.computerPairingNumber(link.ID, number)
 			view.DeviceLabel = a.pairedDeviceLabel(link)
 		}
 		out = append(out, view)

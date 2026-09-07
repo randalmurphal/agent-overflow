@@ -15,7 +15,9 @@ require (
 	github.com/gobwas/ws v1.4.0
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/google/uuid v1.6.0
+	github.com/hashicorp/mdns v1.0.7
 	github.com/jchv/go-webview2 v0.0.0-20260205173254-56598839c808
+	github.com/miekg/dns v1.1.72
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2
 	github.com/rjeczalik/notify v0.9.3
 	github.com/robfig/cron/v3 v3.0.1
@@ -49,6 +51,7 @@ require (
 	golang.org/x/crypto v0.55.0
 	golang.org/x/image v0.44.0
 	golang.org/x/mod v0.38.0
+	golang.org/x/net v0.57.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sync v0.22.0
 	golang.org/x/sys v0.47.0
@@ -273,7 +276,6 @@ require (
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba // indirect
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
 	golang.org/x/exp/typeparams v0.0.0-20260112195511-716be5621a96 // indirect
-	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/term v0.45.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	golang.org/x/tools v0.48.0 // indirect

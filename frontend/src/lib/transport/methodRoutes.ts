@@ -49,9 +49,11 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	544013229: 'home', // ClearBrowserSiteData
 	296814681: 'thread', // ClearDraft
 	1055713894: 'home', // ClearPushSenderCredential
+	2321581502: 'home', // CloseComputerPairing
 	2702963191: 'home', // CloseTerminal
 	1705768020: 'thread', // CloseThreadTerminals
 	4090329093: 'thread', // CompactCodexThread
+	2151872702: 'home', // ComputerPairingStatus
 	4019739936: 'selected', // ConcludeDiscussion
 	3813775159: 'home', // ConfirmDevicePairing
 	2052844871: 'home', // ConfirmSSHConnection
@@ -78,6 +80,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	604263015: 'home', // DevicePairingStatus
 	1061100039: 'selected', // DisallowPreviewPort
 	2309612888: 'selected', // DiscardUnpreparedThreadTransfer
+	4113468152: 'home', // DiscoverComputers
 	115027584: 'home', // DownloadUpdate
 	1601396603: 'home', // FinishPasskeyRegistration
 	1569276637: 'home', // FinishPasskeyStepUp
@@ -110,6 +113,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	4139359668: 'home', // GetMcpServerStatus
 	3176695009: 'workspace', // GetMergeConflictFile
 	1632984917: 'selected', // GetModelsForProvider
+	652617244: 'home', // GetNativeNetworkConfig
 	1026796858: 'home', // GetNetworkSettings
 	2411810578: 'selected', // GetPRCIJobLog
 	2370852281: 'selected', // GetPRCIJobs
@@ -230,6 +234,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1471520668: 'thread', // MintPreviewURL
 	3013708277: 'thread', // MoveThreadTerminals
 	2831503793: 'home', // NotificationActivated
+	3980787304: 'home', // OpenComputerPairing
 	3362740399: 'home', // OpenExternalURL
 	3994295523: 'home', // OpenInEditor
 	2247958725: 'thread', // OpenTerminal
@@ -275,6 +280,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1188796788: 'home', // RepairBackendAddress
 	446243420: 'selected', // ReplyToPRThread
 	2174329377: 'home', // ReportFrontendErrorBatch
+	2325136475: 'home', // ReportNativeNetworkState
 	314214419: 'home', // ReportUpdateInstallStatus
 	3093237072: 'selected', // RequestServiceUpdate
 	2045178958: 'home', // RequestWebviewMemoryTrim

@@ -22,6 +22,8 @@ type BootstrapResult struct {
 // Bootstrap brings first-boot identity into existence: the signing key,
 // the owner account, and that account's recovery codes. Idempotent — safe
 // to call on every boot, which is how it is meant to be wired.
+// Unfinished invitations are retired before this new session core is published;
+// confirmed pairings survive. Call only at boot, never on a live session core.
 //
 // Codes are minted only when the account has NO recovery-code rows at all,
 // spent ones included. Keying on "no UNSPENT rows" would silently re-mint
@@ -53,6 +55,9 @@ func Bootstrap(st *store.Store, backendID, ownerName string) (*Sessions, Bootstr
 			return nil, BootstrapResult{}, fmt.Errorf("identity: bootstrap recovery codes: %w", err)
 		}
 		result.RecoveryCodes = codes
+	}
+	if err := st.RetirePendingPairings(sessions.Now()); err != nil {
+		return nil, BootstrapResult{}, fmt.Errorf("identity: retire unfinished pairing: %w", err)
 	}
 	return sessions, result, nil
 }

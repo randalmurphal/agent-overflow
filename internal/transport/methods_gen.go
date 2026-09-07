@@ -78,9 +78,11 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ClearBrowserSiteData", ID: 544013229, Scope: "terminal:operate", Route: "home"},                          // main.App.ClearBrowserSiteData
 	{Name: "ClearDraft", ID: 296814681, Scope: "threads:operate", Route: "thread"},                                   // main.App.ClearDraft
 	{Name: "ClearPushSenderCredential", ID: 1055713894, Scope: "access:admin", Route: "home", StepUp: true},          // main.App.ClearPushSenderCredential
+	{Name: "CloseComputerPairing", ID: 2321581502, Scope: "access:admin", Route: "home"},                             // main.App.CloseComputerPairing
 	{Name: "CloseTerminal", ID: 2702963191, Scope: "terminal:operate", Route: "home"},                                // main.App.CloseTerminal
 	{Name: "CloseThreadTerminals", ID: 1705768020, Scope: "terminal:operate", Route: "thread"},                       // main.App.CloseThreadTerminals
 	{Name: "CompactCodexThread", ID: 4090329093, Scope: "threads:operate", Route: "thread"},                          // main.App.CompactCodexThread
+	{Name: "ComputerPairingStatus", ID: 2151872702, Scope: "access:admin", Route: "home"},                            // main.App.ComputerPairingStatus
 	{Name: "ConcludeDiscussion", ID: 4019739936, Scope: "threads:operate", Route: "selected"},                        // main.App.ConcludeDiscussion
 	{Name: "ConfirmDevicePairing", ID: 3813775159, Scope: "access:admin", Route: "home"},                             // main.App.ConfirmDevicePairing
 	{Name: "ConfirmSSHConnection", ID: 2052844871, Scope: "host", Route: "home"},                                     // main.App.ConfirmSSHConnection
@@ -107,6 +109,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "DevicePairingStatus", ID: 604263015, Scope: "access:admin", Route: "home"},                               // main.App.DevicePairingStatus
 	{Name: "DisallowPreviewPort", ID: 1061100039, Scope: "access:admin", Route: "selected"},                          // main.App.DisallowPreviewPort
 	{Name: "DiscardUnpreparedThreadTransfer", ID: 2309612888, Scope: "threads:operate", Route: "selected"},           // main.App.DiscardUnpreparedThreadTransfer
+	{Name: "DiscoverComputers", ID: 4113468152, Scope: "host", Route: "home"},                                        // main.App.DiscoverComputers
 	{Name: "DownloadUpdate", ID: 115027584, Scope: "host", Route: "home"},                                            // main.App.DownloadUpdate
 	{Name: "FinishPasskeyRegistration", ID: 1601396603, Scope: "access:admin", Route: "home"},                        // main.App.FinishPasskeyRegistration
 	{Name: "FinishPasskeyStepUp", ID: 1569276637, Scope: "session", Route: "home"},                                   // main.App.FinishPasskeyStepUp
@@ -139,6 +142,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetMcpServerStatus", ID: 4139359668, Scope: "settings:write", Route: "home"},                             // main.App.GetMcpServerStatus
 	{Name: "GetMergeConflictFile", ID: 3176695009, Scope: "git:operate", Route: "workspace"},                         // main.App.GetMergeConflictFile
 	{Name: "GetModelsForProvider", ID: 1632984917, Scope: "threads:operate", Route: "selected"},                      // main.App.GetModelsForProvider
+	{Name: "GetNativeNetworkConfig", ID: 652617244, Scope: "host", Route: "home"},                                    // main.App.GetNativeNetworkConfig
 	{Name: "GetNetworkSettings", ID: 1026796858, Scope: "access:admin", Route: "home"},                               // main.App.GetNetworkSettings
 	{Name: "GetPRCIJobLog", ID: 2411810578, Scope: "git:operate", Route: "selected"},                                 // main.App.GetPRCIJobLog
 	{Name: "GetPRCIJobs", ID: 2370852281, Scope: "git:operate", Route: "selected"},                                   // main.App.GetPRCIJobs
@@ -259,6 +263,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "MintPreviewURL", ID: 1471520668, Scope: "preview:open", Route: "thread"},                                 // main.App.MintPreviewURL
 	{Name: "MoveThreadTerminals", ID: 3013708277, Scope: "terminal:operate", Route: "thread"},                        // main.App.MoveThreadTerminals
 	{Name: "NotificationActivated", ID: 2831503793, Scope: "host", Route: "home"},                                    // main.App.NotificationActivated
+	{Name: "OpenComputerPairing", ID: 3980787304, Scope: "access:admin", Route: "home", StepUp: true},                // main.App.OpenComputerPairing
 	{Name: "OpenExternalURL", ID: 3362740399, Scope: "host", Route: "home"},                                          // main.App.OpenExternalURL
 	{Name: "OpenInEditor", ID: 3994295523, Scope: "host", Route: "home"},                                             // main.App.OpenInEditor
 	{Name: "OpenTerminal", ID: 2247958725, Scope: "terminal:operate", Route: "thread"},                               // main.App.OpenTerminal
@@ -304,6 +309,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "RepairBackendAddress", ID: 1188796788, Scope: "host", Route: "home"},                                     // main.App.RepairBackendAddress
 	{Name: "ReplyToPRThread", ID: 446243420, Scope: "git:operate", Route: "selected"},                                // main.App.ReplyToPRThread
 	{Name: "ReportFrontendErrorBatch", ID: 2174329377, Scope: "host", Route: "home"},                                 // main.App.ReportFrontendErrorBatch
+	{Name: "ReportNativeNetworkState", ID: 2325136475, Scope: "host", Route: "home"},                                 // main.App.ReportNativeNetworkState
 	{Name: "ReportUpdateInstallStatus", ID: 314214419, Scope: "host", Route: "home"},                                 // main.App.ReportUpdateInstallStatus
 	{Name: "RequestServiceUpdate", ID: 3093237072, Scope: "access:admin", Route: "selected", StepUp: true},           // main.App.RequestServiceUpdate
 	{Name: "RequestWebviewMemoryTrim", ID: 2045178958, Scope: "host", Route: "home"},                                 // main.App.RequestWebviewMemoryTrim

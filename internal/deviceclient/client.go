@@ -33,6 +33,7 @@ type Client struct {
 	base   string
 	http   *http.Client
 	routes *routeTransport
+	dial   DialContextFunc
 	// now is the clock, so a test can age a credential without sleeping.
 	// Never nil: New fills it.
 	now func() time.Time
@@ -153,7 +154,7 @@ type Pairing struct {
 // The returned credential is real and admits nothing yet. Every
 // presentation refuses until the owner matches Pairing.VerificationNumber,
 // which is what AwaitActivation waits for.
-func Pair(ctx context.Context, dir string, link Link, label, platform string) (*Client, Pairing, error) {
+func Pair(ctx context.Context, dir string, link Link, label, platform string, opts ...Option) (*Client, Pairing, error) {
 	key, err := EnrollDeviceKey(dir)
 	if err != nil {
 		return nil, Pairing{}, err
@@ -166,7 +167,8 @@ func Pair(ctx context.Context, dir string, link Link, label, platform string) (*
 		dir:  dir,
 		key:  key,
 		base: base,
-		http: credentialHTTPClient(link.CertFingerprint),
+		http: credentialHTTPClient(link.CertFingerprint, opts...),
+		dial: resolveOptions(opts).dial,
 		now:  time.Now,
 	}
 
@@ -224,7 +226,7 @@ func Pair(ctx context.Context, dir string, link Link, label, platform string) (*
 // the thumbprint its session names, and a fresh key would be refused one
 // round trip later under a reason describing a different problem. The
 // caller gets ErrNoDeviceKey and can forget the session.
-func Open(dir string, session Session) (*Client, error) {
+func Open(dir string, session Session, opts ...Option) (*Client, error) {
 	key, err := DeviceKey(dir)
 	if err != nil {
 		return nil, err
@@ -237,7 +239,8 @@ func Open(dir string, session Session) (*Client, error) {
 		dir:     dir,
 		key:     key,
 		base:    base,
-		http:    credentialHTTPClient(session.CertFingerprint),
+		http:    credentialHTTPClient(session.CertFingerprint, opts...),
+		dial:    resolveOptions(opts).dial,
 		now:     time.Now,
 		session: session,
 	}
@@ -369,45 +372,22 @@ const (
 // AwaitActivation blocks until the owner confirms the verification number,
 // the pairing is refused, or the confirmation window closes.
 //
-// The probe is a ticket mint, which is the cheapest authenticated call
-// that distinguishes admitted from not — and NOT a rotation, because a
-// rotation that succeeded would spend the refresh secret once per poll for
-// no reason. The ticket it mints goes unused and lapses in seconds, which
-// the ticket book prices in.
-//
-// The window closing is not the same answer as the pairing being refused,
-// and the difference matters to the person waiting: the owner may have
-// cancelled, or a different device may have redeemed the link. So the
-// deadline spends ONE rotation to learn which — the same rotation Ticket
-// would have made — and reports what it says.
+// Pending renewal is a read-only confirmation check: it neither spends the
+// refresh secret nor issues a grant. The first successful renewal activates
+// this client. Unlike ticket refusal, renewal distinguishes cancellation from
+// waiting, so a rejected pairing ends promptly.
 func (c *Client) AwaitActivation(ctx context.Context) error {
 	deadline := c.now().Add(probeDeadline)
 	ticker := time.NewTicker(probeInterval)
 	defer ticker.Stop()
 	for {
-		c.mu.Lock()
-		retired := c.retired
-		c.mu.Unlock()
-		if retired {
-			return ErrSessionEnded
-		}
-		// Every failure is waited through, refusal and transport error
-		// alike. A refusal here is the pending one by construction — the
-		// route answers 404 for "not admitted yet" — and a transport
-		// error says nothing about the pairing at all: the backend may be
-		// mid-restart, or the network may have blinked. The deadline is
-		// the bound on both.
-		if _, err := c.mintTicket(ctx); err == nil {
+		err := c.renew(ctx)
+		if err == nil {
 			return nil
 		}
-		if !c.now().Before(deadline) {
-			// One rotation, for the reason above. It either names the
-			// refusal and forgets the session, or reports that the
-			// pairing is still merely unconfirmed.
-			if err := c.renew(ctx); err != nil {
-				return err
-			}
-			return nil
+		var refusal *Refusal
+		if errors.Is(err, ErrSessionEnded) || errors.Is(err, ErrNoSession) || errors.As(err, &refusal) || !c.now().Before(deadline) {
+			return err
 		}
 		select {
 		case <-ticker.C:

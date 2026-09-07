@@ -26,6 +26,8 @@ export {
     CodexAccountUsageBucket,
     CodexReviewStarted,
     CodexReviewTarget,
+    ComputerPairingView,
+    ComputerPairingWindow,
     ContextSettingsProfile,
     ContextSettingsUpdate,
     CreateThreadOptions,

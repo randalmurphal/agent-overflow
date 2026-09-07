@@ -114,10 +114,10 @@ type PairingPayload struct {
 	// MintDevicePairing reads it from there), so a value invented here
 	// would be a second answer to a question this package cannot see.
 	//
-	// Empty is still a valid link, and still the shape a browser gets: it
-	// is the trust-on-first-use path the spec describes for the
-	// typed-code case — safe on proof-of-possession plus the verification
-	// number, never on channel secrecy.
+	// Empty delegates to ordinary WebPKI verification in native clients;
+	// it never means skipping TLS checks. Invitation trust comes from its
+	// delivery (QR/link or the committed pairbootstrap exchange), not from
+	// repeating the server-returned verification number over untrusted TLS.
 	CertFingerprint string `json:"certFingerprint,omitempty"`
 }
 

@@ -4,6 +4,17 @@ The session core: mints session credentials, verifies a presentation,
 answers the per-RPC liveness question, and revokes. Spec:
 [docs/specs/remote-access.md](../../docs/specs/remote-access.md) §3 and §4.
 
+Boot retires every unconfirmed invitation and its pending session in one store
+transaction before publishing the new session core. A screen comparison cannot
+survive its owner process; nearby pairing's ephemeral SAS mapping must never
+fall back to ordinary invitation digits after a crash. Confirmed pairings and
+their renewal credentials survive unchanged. This sweep has no UI list limit.
+
+Waiting for owner confirmation polls renewal. `ReasonPendingConfirmation`
+returns before any refresh secret is consumed and is not an audit error;
+approval permits the first successful rotation. All other refusals retain
+their normal audit and revocation behavior.
+
 Rows live in `internal/store` (migrations v79 and v80). Enforcement of what
 a scope PERMITS is not here: `internal/transport` gates every RPC and every
 event channel, and `internal/app` rechecks the authorities that depend on a

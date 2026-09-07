@@ -61,7 +61,7 @@ function conversationTransferForProvider(provider: 'claude' | 'codex'): void {
       await page.getByRole('button', { name: 'Settings', exact: true }).click();
       await page.getByRole('tab', { name: 'Connections', exact: true }).click();
       pairing = await headlessPairing(destination);
-      await page.getByRole('textbox', { name: 'Pairing link' }).fill(pairing.invite.url);
+      await page.getByRole('textbox', { name: /^(Computer address or pairing link|Pairing link)$/ }).fill(pairing.invite.url);
       await page.getByRole('button', { name: 'Connect', exact: true }).click();
       const verification = page.getByLabel('Verification number');
       await expect(verification).toBeVisible();

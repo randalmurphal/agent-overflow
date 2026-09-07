@@ -118,3 +118,36 @@ export class Attachment {
         return new Attachment($$parsedSource as Partial<Attachment>);
     }
 }
+
+export class DiscoveredComputer {
+    "backendId": string;
+    "name": string;
+    "address": string;
+    "network": string;
+
+    /** Creates a new DiscoveredComputer instance. */
+    constructor($$source: Partial<DiscoveredComputer> = {}) {
+        if (!("backendId" in $$source)) {
+            this["backendId"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("address" in $$source)) {
+            this["address"] = "";
+        }
+        if (!("network" in $$source)) {
+            this["network"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new DiscoveredComputer instance from a string or object.
+     */
+    static createFrom($$source: any = {}): DiscoveredComputer {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new DiscoveredComputer($$parsedSource as Partial<DiscoveredComputer>);
+    }
+}

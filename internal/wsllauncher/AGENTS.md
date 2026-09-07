@@ -276,3 +276,11 @@ no kill-on-close coverage.
   launcher surface).
 - `app_wsl.go` is the secondary consumer (calls `ListDistros` only, from
   the WSL-side backend, for the Settings UI distro picker).
+
+## Native LAN bridge
+
+`native_network.go` carries GetNativeNetworkConfig and ReportNativeNetworkState
+over the same authenticated notification RPC connection. Result-bearing calls
+share its pending map, refusal handling, timeout and disconnect behavior.
+`internal/nativenetwork` owns the native listener and public discovery reports;
+no launcher credential is forwarded with remote network traffic.

@@ -100,6 +100,28 @@ when enabled, and sends the explicit choice without changing host settings.
 Older hosts retain their automatic mint RPC. Never label an automatically
 selected tailnet URL as a LAN invitation.
 
+`pairing.nearby.v1` adds desktop address/discovery pairing. Another computer
+opens a short-lived `ComputerPairingWindow` on the captured host; Connections
+discovers on the frontend's own local service, once per open or explicit Refresh.
+Its capability gate reads the controller hello (`backendHasCapability`); a
+frontend-only controller is deliberately absent from the execution registry.
+Discovery filters this frontend's existing computer identities and pending
+addresses. It is a hint, never trust: both screens still compare the independently
+derived verification number before host approval. A `verifying` status may show
+the number, but approval requires `ready` with its redeemed link ID. Polls are
+serial, stop on expiry/unmount, and hide stale approval after a failed read.
+Closing cancels even a late open response; a confirmation already dispatched
+must not be revoked on an ambiguous response. Phones keep native QR/link pairing,
+and older hosts keep their invitation flow without discovery RPCs.
+
+Windows-backed LAN settings include a live `lan` status: show its forwarding
+error beside the LAN toggle and refresh while LAN is enabled and this page is
+open. A poll started before a settings edit cannot replace the edit's newer
+response; runtime status is never included in the persisted write request.
+Read failures stay in one inline callout with Retry, including the first load;
+background polling must not produce repeated error toasts. A current successful
+read clears the callout, while an obsolete read cannot replace newer state.
+
 Remote access has four visible navigation pages: Connections, Pairing & network,
 Accounts, and Agent access. Accounts owns both providers' sign-in controls;
 provider configuration pages keep model and runtime settings. Account-switcher

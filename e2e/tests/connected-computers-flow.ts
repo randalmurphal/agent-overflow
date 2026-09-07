@@ -58,7 +58,7 @@ export function connectedComputersFlow(): void {
       await settingsPage(page, 'Connections');
       pairing = await headlessPairing(remote);
       const invite = pairing.invite;
-      await page.getByRole('textbox', { name: 'Pairing link' }).fill(invite.url);
+      await page.getByRole('textbox', { name: /^(Computer address or pairing link|Pairing link)$/ }).fill(invite.url);
       await page.getByRole('button', { name: 'Connect', exact: true }).click();
       const verification = page.getByLabel('Verification number');
       await expect(verification).toBeVisible();

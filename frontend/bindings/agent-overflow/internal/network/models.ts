@@ -11,8 +11,42 @@ import { Create as $Create } from "@wailsio/runtime";
  * user-controlled state) plus server-derived URL + Token fields the
  * user can copy. The URL and Token are read-only on Set — the server
  * owns those.
+ * LANStatus reports a native launcher's externally reachable LAN endpoints.
+ * Nil means the backend itself owns LAN ingress; an empty list never falls
+ * back to an unreachable WSL-internal address.
  */
+export class LANStatus {
+    "addresses": string[];
+    "error": string;
+
+    /** Creates a new LANStatus instance. */
+    constructor($$source: Partial<LANStatus> = {}) {
+        if (!("addresses" in $$source)) {
+            this["addresses"] = [];
+        }
+        if (!("error" in $$source)) {
+            this["error"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new LANStatus instance from a string or object.
+     */
+    static createFrom($$source: any = {}): LANStatus {
+        const $$createField0_0 = $$createType0;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("addresses" in $$parsedSource) {
+            $$parsedSource["addresses"] = $$createField0_0($$parsedSource["addresses"]);
+        }
+        return new LANStatus($$parsedSource as Partial<LANStatus>);
+    }
+}
+
 export class Settings {
+    "lan"?: LANStatus | null;
+
     /**
      * BindAll, when true, asks the transport server to listen on the
      * LAN-reachable bind (0.0.0.0) so other devices on the network
@@ -165,18 +199,22 @@ export class Settings {
      * Creates a new Settings instance from a string or object.
      */
     static createFrom($$source: any = {}): Settings {
-        const $$createField3_0 = $$createType0;
-        const $$createField8_0 = $$createType1;
-        const $$createField9_0 = $$createType2;
+        const $$createField0_0 = $$createType2;
+        const $$createField4_0 = $$createType0;
+        const $$createField9_0 = $$createType3;
+        const $$createField10_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("lan" in $$parsedSource) {
+            $$parsedSource["lan"] = $$createField0_0($$parsedSource["lan"]);
+        }
         if ("acmeDnsHook" in $$parsedSource) {
-            $$parsedSource["acmeDnsHook"] = $$createField3_0($$parsedSource["acmeDnsHook"]);
+            $$parsedSource["acmeDnsHook"] = $$createField4_0($$parsedSource["acmeDnsHook"]);
         }
         if ("tls" in $$parsedSource) {
-            $$parsedSource["tls"] = $$createField8_0($$parsedSource["tls"]);
+            $$parsedSource["tls"] = $$createField9_0($$parsedSource["tls"]);
         }
         if ("tailnet" in $$parsedSource) {
-            $$parsedSource["tailnet"] = $$createField9_0($$parsedSource["tailnet"]);
+            $$parsedSource["tailnet"] = $$createField10_0($$parsedSource["tailnet"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }
@@ -380,5 +418,7 @@ export class TailnetStatus {
 
 // Private type creation functions
 const $$createType0 = $Create.Array($Create.Any);
-const $$createType1 = TLSStatus.createFrom;
-const $$createType2 = TailnetStatus.createFrom;
+const $$createType1 = LANStatus.createFrom;
+const $$createType2 = $Create.Nullable($$createType1);
+const $$createType3 = TLSStatus.createFrom;
+const $$createType4 = TailnetStatus.createFrom;

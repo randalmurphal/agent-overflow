@@ -73,6 +73,7 @@ var serverCapabilities = []string{
 	CapabilityPasskeys,
 	CapabilityRemoteCommands,
 	CapabilityPairingNetworks,
+	CapabilityNearbyPairing,
 	CapabilityDeviceName,
 }
 
@@ -546,3 +547,6 @@ type batchFrame struct {
 // batchFramePrefix is the fixed opening of a spliced batch frame; the
 // splice appends comma-joined event envelopes and closes with "]}".
 const batchFramePrefix = `{"type":"` + frameTypeBatch + `","events":[`
+
+// CapabilityNearbyPairing supports discovering and pairing computers without transferring a link.
+const CapabilityNearbyPairing = "pairing.nearby.v1"

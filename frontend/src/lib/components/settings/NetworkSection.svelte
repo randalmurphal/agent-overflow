@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { settingsComputer } from './settingsComputer';
   const { call, hasScope } = settingsComputer();
 
@@ -14,6 +15,7 @@
   import { tokenizeCommandLine } from '../../utils/shellArgv';
 
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
+  import Button from '../primitives/Button.svelte';
   import NetworkDomainEditor from './NetworkDomainEditor.svelte';
   import NetworkPortEditor from './NetworkPortEditor.svelte';
   import NetworkPreviewPorts from './NetworkPreviewPorts.svelte';
@@ -50,26 +52,32 @@
   let onHost = $derived(hasScope('host'));
 
   let settings = $state<NetworkSettings | null>(null);
+  let loadError = $state('');
   let saving = $state(false);
   let copyState = $state<'idle' | 'copied' | 'failed'>('idle');
   let copyTimeout: ReturnType<typeof setTimeout> | null = null;
 
   // How often the screen re-reads while the backend says it is working
-  // on a certificate. There is no push channel for this: a DNS-01
+  // on a certificate or tracks the Windows LAN listener. There is no push channel for this: a DNS-01
   // exchange is a minutes-long, once-in-a-while event, so one read every
   // few seconds costs less than a channel that would idle forever.
-  const TLS_POLL_MS = 3000;
+  const STATUS_POLL_MS = 3000;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
 
-  let loading = false;
+  let loading = $state(false);
   async function load(): Promise<void> {
-    if (noAdmin || loading) return;
+    if (noAdmin || untrack(() => loading || saving)) return;
+    const previous = untrack(() => settings);
     loading = true;
     try {
       const result = await call(() => GetNetworkSettings());
-      settings = result;
+      // A poll that began before an edit cannot overwrite its newer reply.
+      if (settings === previous) {
+        settings = result;
+        loadError = '';
+      }
     } catch (err) {
-      addToast('error', `Failed to load network settings: ${errString(err)}`);
+      if (settings === previous) loadError = `Could not refresh network settings: ${errString(err)}`;
     } finally {
       loading = false;
     }
@@ -224,7 +232,8 @@
   let awaitingTailnet = $derived(
     (settings?.tailnetEnabled ?? false) && !(settings?.tailnet.running ?? false),
   );
-  let polling = $derived(renewing || awaitingTailnet);
+  let watchingLAN = $derived((settings?.bindAll ?? false) && !!settings?.lan);
+  let polling = $derived(renewing || awaitingTailnet || watchingLAN);
 
   // The backend withholds this launch's token and both ticket-bearing
   // share URLs from a caller that is not at the machine
@@ -258,7 +267,7 @@
 
   $effect(() => {
     if (!polling || noAdmin) return;
-    pollTimer = setInterval(() => void load(), TLS_POLL_MS);
+    pollTimer = setInterval(() => void load(), STATUS_POLL_MS);
     return () => {
       if (pollTimer) clearInterval(pollTimer);
       pollTimer = null;
@@ -270,6 +279,14 @@
   class="flex flex-col gap-4"
   data-testid={noAdmin ? 'network-section-local-only' : undefined}
 >
+  {#if !noAdmin && loadError}
+    <SettingsCallout tone="error">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <span>{loadError}</span>
+        <Button size="xs" loading={loading} disabled={loading} onclick={() => void load()}>Retry</Button>
+      </div>
+    </SettingsCallout>
+  {/if}
   <section class="rounded-xl border border-border-subtle bg-surface-0 p-4">
     <SettingsHeader title="Local network" description={noAdmin ? 'This connection cannot change network access.' : 'Use the same Wi-Fi or wired network. Tailscale is optional at home.'} />
     {#if !noAdmin}
@@ -287,7 +304,9 @@
             onToggle={toggleBindAll}
           />
         </SettingsField>
-
+        {#if settings?.bindAll && settings.lan?.error}
+          <SettingsCallout tone="error">{settings.lan.error}</SettingsCallout>
+        {/if}
       </div>
     {/if}
   </section>

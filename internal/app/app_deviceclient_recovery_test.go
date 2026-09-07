@@ -52,6 +52,10 @@ func testLostCommittedRenewal(t *testing.T, switchRoute bool) {
 	if err := client.AwaitActivation(ctx); err != nil {
 		t.Fatal(err)
 	}
+	activationChain, err := backend.app.store.ListRefreshSecretsForSession(client.Session().SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	upstream := &http.Client{Transport: client.RoundTripper(), Timeout: 5 * time.Second}
 	var lose atomic.Bool
 	lose.Store(true)
@@ -157,7 +161,7 @@ func testLostCommittedRenewal(t *testing.T, switchRoute bool) {
 		t.Fatal("did not recover the original rotation")
 	}
 	chain, err := backend.app.store.ListRefreshSecretsForSession(held.SessionID)
-	if err != nil || len(chain) != 2 {
-		t.Fatalf("refresh generations: %d, %v", len(chain), err)
+	if err != nil || len(chain) != len(activationChain)+1 {
+		t.Fatalf("refresh generations: got %d, want %d after one recovered rotation: %v", len(chain), len(activationChain)+1, err)
 	}
 }

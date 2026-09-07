@@ -398,10 +398,9 @@ are facts about this process rather than about a row:
   link, not an edit to a row.
 
 Every method carries `//ao:scope access:admin`, which is what keeps the
-set together: one annotation, so the surface moves as a unit. Two of them
-add `//ao:stepup`, and they are the two that ISSUE: minting a pairing
-link, and BEGINNING a passkey registration. A standing grant must not
-make either — a session that could mint could enroll its way around its
+set together: one annotation, so the surface moves as a unit. The operations that ISSUE add `//ao:stepup`: minting a pairing
+link, opening a computer-pairing window, and BEGINNING a passkey registration. A standing grant must not
+permit them implicitly — a session that could mint could enroll its way around its
 own revocation, and a session that could register a credential could do
 the same thing with a different kind of key. The FINISH deliberately
 carries no second proof; `app_passkey.go`'s doc comment argues why one
@@ -453,8 +452,8 @@ Two shapes are worth knowing before editing:
 
 `app_backends.go` is the mirror image of the device-access surface: that
 one is "who may reach THIS backend", this one is "which other backends do
-I reach". Four methods — `ListBackends`, `AddBackend`, `RemoveBackend`,
-`RenameBackend` — all `//ao:scope host` and `//ao:route home`, all thin
+I reach". Its connection methods, including discovery/address pairing, are
+all `//ao:scope host` and `//ao:route home`, thin
 adapters over `internal/attachedbackends`.
 
 `host` scope is the whole access rule and needs no second one: host
@@ -468,20 +467,27 @@ that machine's attachments, which is a real thing to want one day and not
 what this surface is.
 
 **`AddBackend` returns before the pairing admits anything, and that is not
-a shortcut.** The confirmation window is ten minutes
-(`deviceclient.AwaitActivation`), longer than any timeout between here and
-the page, so the call answers the verification number a person has to
+a shortcut.** The confirmation wait can outlast an RPC
+(`deviceclient.AwaitActivation`), so the call answers the verification number a person has to
 compare and the wait runs on its own goroutine, reporting on the
 `backend:attach` channel. The same split the terminal ceremony makes
 between printing the number and waiting for it. The wait runs on `appCtx`,
 so a shutdown mid-wait ends it rather than leaving a pinned TLS transport
 open for ten minutes.
 
-A boot with no resolvable config root has no manager, and all four answer
+A boot with no resolvable config root has no manager, and these adapters answer
 that as a plain refusal rather than panicking. The transport is handed a
 nil interface in that case (`attachedBackendsSeam` in `main.go` — a typed
 nil in an interface is not nil), so the carried routes are absent rather
 than serving 404s from an empty set.
+
+Desktop discovery/address setup is specified in
+[computer-pairing.md](../../docs/architecture/computer-pairing.md).
+`app_computer_pairing.go` owns the short-lived window and approval mapping;
+`app_computer_discovery.go` selects candidate sources and outbound networks.
+`app_native_network.go` accepts only current launcher/configuration observations:
+never derive local authorization from the Windows forwarding path or publish
+WSL NAT addresses in place of unavailable native ingress.
 
 ## The canonical domain's certificate
 

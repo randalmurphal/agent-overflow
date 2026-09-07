@@ -885,6 +885,8 @@ func (s *Server) buildHTTPServer() *http.Server {
 	// credential, so a peer that has exhausted its patience on one must
 	// not simply move to the next.
 	if s.cfg.AuthEndpoints != nil {
+		mux.HandleFunc(NearbyPairPath, withShellCORS(http.MethodPost,
+			rateLimited(s.authLimit, s.loopbackHostGuard(s.handleNearbyPair))))
 		mux.HandleFunc(AuthPairPath, withShellCORS(http.MethodPost,
 			rateLimited(s.authLimit, s.loopbackHostGuard(s.handleAuthPair))))
 		mux.HandleFunc(AuthTokenRecoverPath, withShellCORS(http.MethodPost,

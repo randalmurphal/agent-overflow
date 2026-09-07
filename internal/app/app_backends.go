@@ -205,4 +205,9 @@ func (a *App) RenameBackend(id, nickname string) error {
 func AttachedBackends(a *App) *attachedbackends.Manager { return a.backends }
 
 // SetAttachedBackends installs the manager during boot.
-func SetAttachedBackends(a *App, manager *attachedbackends.Manager) { a.backends = manager }
+func SetAttachedBackends(a *App, manager *attachedbackends.Manager) {
+	a.backends = manager
+	if manager != nil {
+		manager.SetNetwork(func() string { id, _ := a.backendIdentity(); return id }, a.dialComputer)
+	}
+}

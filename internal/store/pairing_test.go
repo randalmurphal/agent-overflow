@@ -24,6 +24,47 @@ func seedPairingLink(t *testing.T, s *Store, owner User, hash []byte, expires in
 	return link
 }
 
+func TestRetirePendingPairingsRollsBackIfLinkRetirementFails(t *testing.T) {
+	s, owner, device := seedOwnerDevice(t)
+	key := seedSigningKey(t, s)
+	link := seedPairingLink(t, s, owner, []byte("hash"), 9000)
+	session := newTestSession("pending", owner, device, key, 9000)
+	session.ActivatedAt = 0
+	if err := s.CreateSession(session); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RedeemPairingLink([]byte("hash"), 2000, "key"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AttachPairingRedemption(link.ID, device.ID, session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`CREATE TRIGGER reject_pairing_retirement BEFORE UPDATE OF canceled_at ON pairing_links BEGIN SELECT RAISE(ABORT, 'test failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RetirePendingPairings(3000); err == nil {
+		t.Fatal("injected transaction failure was ignored")
+	}
+	after, err := s.GetSession(session.ID)
+	if err != nil || after.RevokedAt != 0 {
+		t.Fatal("session revocation escaped rollback", err)
+	}
+	if _, err := s.db.Exec(`DROP TRIGGER reject_pairing_retirement`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RetirePendingPairings(3001); err != nil {
+		t.Fatal(err)
+	}
+	after, err = s.GetSession(session.ID)
+	if err != nil || after.RevokedAt != 3001 {
+		t.Fatal("pending session not revoked", err)
+	}
+	retired, err := s.GetPairingLink(link.ID)
+	if err != nil || retired.CanceledAt != 3001 {
+		t.Fatal("pending link not retired", err)
+	}
+}
+
 func TestPairingLinkRoundTrips(t *testing.T) {
 	s, owner, _ := seedOwnerDevice(t)
 	seedPairingLink(t, s, owner, []byte("hash-1"), 9000)

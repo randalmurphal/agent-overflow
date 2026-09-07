@@ -137,7 +137,9 @@ func (s *Sessions) Refresh(req RefreshRequest) (TokenSet, Reason) {
 	}
 	session, reason := s.confirmedSession(held.SessionID, now)
 	if reason.Refused() {
-		s.RecordRefusal(reason, req.Peer, held.SessionID)
+		if reason != ReasonPendingConfirmation {
+			s.RecordRefusal(reason, req.Peer, held.SessionID)
+		}
 		return TokenSet{}, reason
 	}
 	// Prove possession BEFORE declaring reuse. A spent bearer alone must not

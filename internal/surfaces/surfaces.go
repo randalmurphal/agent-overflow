@@ -332,6 +332,18 @@ type Registry struct {
 // the count docs/specs/remote-access.md §13 recorded on 2026-08-30.
 var Listeners = []Listener{
 	{
+		Name: "nearby computer discovery", Package: "internal/nearby",
+		Binding: BindLANCapable, Credential: CredNone, Posture: PostureStructured,
+		Sites: []string{"internal/nearby/nearby.go"},
+		Why:   "Bounded DNS-SD discovery on private IPv4 interfaces. The responder advertises only an open owner-approved pairing window: display name, backend ID and address, never credentials, certificate pins or project data. Replies are untrusted hints, verified by probing the bootstrap endpoint and then a separately approved SAS exchange. Discovery cannot enroll a device.",
+	},
+	{
+		Name: "Windows LAN forwarding", Package: "internal/nativenetwork",
+		Binding: BindLANCapable, Credential: CredNone, Posture: PostureProxied,
+		Sites: []string{"internal/nativenetwork/relay.go"},
+		Why:   "Opt-in LAN access binds physical Windows private interfaces and forwards raw TCP to this launcher's WSL backend at a non-loopback private address. TLS and all application admission remain at that backend; no owner credential or header is injected. The non-loopback upstream preserves remote peer classification. The relay grants no additional access; its lifecycle follows the authenticated native owner bridge, with bounded concurrent connections and dialing.",
+	},
+	{
 		Name:       "app transport",
 		Package:    "internal/transport",
 		Binding:    BindLANCapable,
@@ -701,6 +713,13 @@ var Routes = []Route{
 			"stays on /bootstrap.json's 503 rather than being folded in " +
 			"here — a probe that conflates booting with unreachable is what " +
 			"both consumers are trying to avoid.",
+	},
+	{
+		Pattern:    "/auth/pair/nearby",
+		Listener:   "app transport",
+		Credential: CredNone,
+		Posture:    PostureStructured,
+		Why:        "Owner-opened, bounded committed-DH pairing bootstrap. Discovery and the exchange grant no access. Only the committed client can decrypt the invitation, which enrolls an inert session through /auth/pair; owner comparison of independently derived digits activates it. Shares auth origin, host, body and peer budgets. No comparison digits or plaintext invitation leave this route.",
 	},
 	{
 		Pattern:    "/auth/pair",
@@ -1199,6 +1218,16 @@ var Routes = []Route{
 // bytes they are. The one listener absent from this list serves none:
 // the dev supervisor's probe never attaches a handler.
 var Origins = []Origin{
+	{
+		Name: "nearby computer DNS-SD", Listener: "nearby computer discovery",
+		Author: AuthorRuntime, Posture: PostureStructured,
+		Why: "DNS records describe the open pairing window's public name, identity and endpoint. Display names remain data in a bounded DNS-SD protocol, never executable documents or trusted enrollment material.",
+	},
+	{
+		Name: "upstream TLS (Windows LAN)", Listener: "Windows LAN forwarding",
+		Author: AuthorUpstream, Posture: PostureProxied,
+		Why: "Raw TLS streams belong to the fixed WSL backend and retain its certificate, admission and content-origin rules. The native launcher neither terminates TLS nor inserts local credentials or authored documents.",
+	},
 	{
 		Name:     "SPA origin (embedded webview and remote browser)",
 		Listener: "app transport",

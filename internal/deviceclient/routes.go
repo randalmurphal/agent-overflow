@@ -85,7 +85,7 @@ func (t *routeTransport) update(routes []computerroute.Route) {
 		}
 		if reused == nil {
 			target, _ := url.Parse(route.Endpoint)
-			reused = &dialRoute{Route: route, target: target, transport: NewPinnedTransport(route.CertFingerprint)}
+			reused = &dialRoute{Route: route, target: target, transport: NewPinnedTransport(route.CertFingerprint, WithDialContext(t.owner.dial))}
 		}
 		next = append(next, reused)
 	}

@@ -197,6 +197,7 @@ func TestEveryGeneratedMethodCarriesADeclaredScope(t *testing.T) {
 // nothing else in the tree would notice.
 func TestStepUpMethodsAreTheSpecSet(t *testing.T) {
 	want := map[string]string{
+		"OpenComputerPairing":          "opening a nearby/address pairing window that may mint one invitation",
 		"MintDevicePairing":            "minting a pairing link",
 		"MintDevicePairingOnNetwork":   "minting a pairing link on an explicitly selected network",
 		"PairAgentComputer":            "enrolling this computer with another computer for agent commands",

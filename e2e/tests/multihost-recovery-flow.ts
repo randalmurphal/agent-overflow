@@ -80,7 +80,7 @@ export function multihostRecoveryFlow(): void {
       for (const [index, host] of [first, second].entries()) {
         const pairing = baseline && host === first ? await baselinePairing(host) : await headlessPairing(host);
         try {
-          await page.getByRole('textbox', { name: 'Pairing link' }).fill(pairing.invite.url);
+          await page.getByRole('textbox', { name: /^(Computer address or pairing link|Pairing link)$/ }).fill(pairing.invite.url);
           await page.getByRole('button', { name: 'Connect', exact: true }).click();
           const verification = page.getByLabel('Verification number');
           await expect(verification).toBeVisible();

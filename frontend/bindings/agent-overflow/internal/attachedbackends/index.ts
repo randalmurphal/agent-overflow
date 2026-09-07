@@ -3,5 +3,6 @@
 
 export {
     Attached,
-    Attachment
+    Attachment,
+    DiscoveredComputer
 } from "./models.js";

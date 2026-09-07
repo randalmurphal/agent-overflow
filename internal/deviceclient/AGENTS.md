@@ -4,6 +4,12 @@
 Production code imports neither identity nor transport; wire spellings are
 pinned by tests. Credential requests never follow redirects.
 
+Confirmation waits poll renewal, not socket tickets. Pending confirmation is
+read-only on the server and preserves the saved renewal operation; approval
+performs one successful rotation. Terminal refusal ends promptly and retires
+the session, while transport outages retry until cancellation or the bounded
+confirmation deadline. No unused socket tickets or audit errors per pending poll.
+
 `routes.go` learns bounded alternatives from the authenticated bootstrap. Its
 RoundTripper keeps the caller's original target stable, chooses one immutable
 address/verifier before sending, and never replays a failed request. Alternative
@@ -33,3 +39,9 @@ survive every update. Retired clients never write again.
 Tests use private profile directories and local fixture servers; never use a
 real device profile or provider home. Cross-process and lost-response tests
 must exercise persisted state, not just two references to one Client.
+
+`WithDialContext` selects a network path at construction for pairing, reopened
+clients, learned alternatives and address-repair probes alike. It bypasses
+environment proxies but never changes TLS pinning, destination authority or
+credential rules. The owner can route tailnet destinations through its tsnet
+node and ordinary LAN destinations through the OS without a global dialer.

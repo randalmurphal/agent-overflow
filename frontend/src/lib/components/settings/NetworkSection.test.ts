@@ -5,6 +5,7 @@ import { setBindingMock, resetBindingMocks } from '../../../test/mocks/bindings-
 import { setRunMode, resetRunMode } from '../../../test/runMode';
 import { pairViewOnly, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import { SCOPES } from '../../transport/scopes';
+import { getToasts } from '../../stores/toast.svelte';
 
 /** A device paired with full access holds every grantable scope — not `host`. */
 function pairFullAccess(): Promise<void> {
@@ -44,6 +45,7 @@ interface MockNetworkSettings {
   url: string;
   token: string;
   insecure?: boolean;
+  lan?: { addresses: string[]; error: string };
 }
 
 function tailnetStatus(overrides: Partial<MockTailnetStatus> = {}): MockTailnetStatus {
@@ -95,6 +97,7 @@ describe('<NetworkSection>', () => {
     resetBindingMocks();
     resetRunMode();
     resetToLocalPage();
+    vi.useRealTimers();
   });
 
   afterEach(() => {
@@ -107,6 +110,7 @@ describe('<NetworkSection>', () => {
     resetBindingMocks();
     resetRunMode();
     resetToLocalPage();
+    vi.useRealTimers();
   });
 
   it('refreshes the tailnet certificate status after returning from its admin panel', async () => {
@@ -121,6 +125,65 @@ describe('<NetworkSection>', () => {
     https = true;
     window.dispatchEvent(new Event('focus'));
     await waitFor(() => expect(status.textContent).toContain('over HTTPS'));
+  });
+
+  it('refreshes a Windows LAN forwarding error until it clears, without polling after the page closes', async () => {
+    vi.useFakeTimers();
+    let error = 'Windows LAN forwarding is not ready.';
+    const get = setBindingMock('GetNetworkSettings', async () => networkSettings({ bindAll: true, lan: { addresses: [], error } }));
+    const view = render(NetworkSection);
+    await vi.waitFor(() => expect(view.getByRole('alert')).toHaveTextContent(error));
+    error = '';
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(view.queryByRole('alert')).toBeNull();
+    expect(get).toHaveBeenCalledTimes(2);
+    view.unmount();
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries an initial read and keeps repeated offline poll failures in one inline state without toasts', async () => {
+    vi.useFakeTimers();
+    const previousToasts = new Set(getToasts().map(toast => toast.id));
+    const ready = networkSettings({ bindAll: true, lan: { addresses: ['192.168.1.20'], error: '' } });
+    const get = setBindingMock('GetNetworkSettings', async () => { throw new Error('offline'); });
+    const view = render(NetworkSection);
+    await vi.waitFor(() => expect(view.getByRole('alert')).toHaveTextContent('offline'));
+    get.mockResolvedValue(ready);
+    await fireEvent.click(view.getByRole('button', { name: 'Retry' }));
+    await vi.waitFor(() => expect(view.queryByRole('alert')).toBeNull());
+    get.mockRejectedValue(new Error('disconnected'));
+    for (let poll = 0; poll < 2; poll++) {
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(view.getAllByRole('alert')).toHaveLength(1);
+      expect(view.getByRole('alert')).toHaveTextContent('disconnected');
+      expect(getToasts().filter(toast => !previousToasts.has(toast.id))).toEqual([]);
+    }
+    get.mockResolvedValue(ready);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(get).toHaveBeenCalledTimes(5);
+    expect(view.queryByRole('alert')).toBeNull();
+    expect(getToasts().filter(toast => !previousToasts.has(toast.id))).toEqual([]);
+  });
+
+  it('does not let a pending LAN status poll overwrite a newer network edit', async () => {
+    vi.useFakeTimers();
+    const before = networkSettings({ bindAll: true, lan: { addresses: [], error: 'Waiting for Windows' } });
+    const get = setBindingMock('GetNetworkSettings', async () => before);
+    setBindingMock('SetNetworkSettings', async () => networkSettings({ bindAll: false }));
+    const view = render(NetworkSection);
+    await vi.waitFor(() => expect(view.getByRole('alert')).toBeTruthy());
+    let resolve!: (value: MockNetworkSettings) => void;
+    get.mockImplementationOnce(() => new Promise<MockNetworkSettings>(done => { resolve = done; }));
+    await vi.advanceTimersByTimeAsync(3_000);
+    const toggle = view.getByRole('switch', { name: 'Toggle remote access' });
+    await fireEvent.click(toggle);
+    await vi.waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'false'));
+    resolve(before);
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+    expect(view.queryByRole('alert')).toBeNull();
+    expect(get).toHaveBeenCalledTimes(2);
   });
 
   it('renders the toggle in the loaded state', async () => {

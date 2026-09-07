@@ -672,6 +672,7 @@ type notificationEvent struct {
 }
 
 type notificationServerFrame struct {
+	Result json.RawMessage `json:"result,omitempty"`
 	notificationEvent
 	Type   string                  `json:"type"`
 	ID     string                  `json:"id,omitempty"`

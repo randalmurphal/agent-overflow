@@ -995,6 +995,72 @@ export class CodexReviewTarget {
     }
 }
 
+export class ComputerPairingView {
+    "state": string;
+    "verificationNumber": string;
+    "deviceLabel": string;
+    "linkId": string;
+    "expiresAtMs": number;
+
+    /** Creates a new ComputerPairingView instance. */
+    constructor($$source: Partial<ComputerPairingView> = {}) {
+        if (!("state" in $$source)) {
+            this["state"] = "";
+        }
+        if (!("verificationNumber" in $$source)) {
+            this["verificationNumber"] = "";
+        }
+        if (!("deviceLabel" in $$source)) {
+            this["deviceLabel"] = "";
+        }
+        if (!("linkId" in $$source)) {
+            this["linkId"] = "";
+        }
+        if (!("expiresAtMs" in $$source)) {
+            this["expiresAtMs"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ComputerPairingView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ComputerPairingView {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ComputerPairingView($$parsedSource as Partial<ComputerPairingView>);
+    }
+}
+
+export class ComputerPairingWindow {
+    "id": string;
+    "address": string;
+    "expiresAtMs": number;
+
+    /** Creates a new ComputerPairingWindow instance. */
+    constructor($$source: Partial<ComputerPairingWindow> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("address" in $$source)) {
+            this["address"] = "";
+        }
+        if (!("expiresAtMs" in $$source)) {
+            this["expiresAtMs"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ComputerPairingWindow instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ComputerPairingWindow {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ComputerPairingWindow($$parsedSource as Partial<ComputerPairingWindow>);
+    }
+}
+
 export class ContextSettingsProfile {
     "provider": string;
     "model": string;

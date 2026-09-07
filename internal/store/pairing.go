@@ -233,6 +233,27 @@ func (s *Store) CancelPairingLink(id string, at int64) (PairingLink, error) {
 	return link, nil
 }
 
+// RetirePendingPairings runs before a restarted host serves credentials. An
+// unfinished screen comparison cannot survive the process that owned it; an
+// already-confirmed device is deliberately outside both update predicates.
+func (s *Store) RetirePendingPairings(at int64) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: retire pending pairings: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec(`UPDATE sessions SET revoked_at = ?
+		WHERE revoked_at IS NULL AND activated_at IS NULL
+		AND id IN (SELECT session_id FROM pairing_links WHERE confirmed_at IS NULL)`, at); err != nil {
+		return fmt.Errorf("store: retire pending pairing sessions: %w", err)
+	}
+	if _, err = tx.Exec(`UPDATE pairing_links SET canceled_at = ?
+		WHERE confirmed_at IS NULL AND canceled_at IS NULL`, at); err != nil {
+		return fmt.Errorf("store: retire pending pairing links: %w", err)
+	}
+	return tx.Commit()
+}
+
 // GetPairingLink reads one link by id. sql.ErrNoRows when it does not
 // exist. The minting surface reads it to learn which device redeemed and
 // what verification number to display.

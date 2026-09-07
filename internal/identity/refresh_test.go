@@ -266,14 +266,43 @@ func TestRefreshRefusesARevokedDevice(t *testing.T) {
 // TestRefreshRefusesAnUnconfirmedSession — the confirmation gate covers the
 // renewal path too, by the same predicate rather than a second check.
 func TestRefreshRefusesAnUnconfirmedSession(t *testing.T) {
-	sessions, _, _, owner, _ := newFixture(t)
-	link := mustMintLink(t, sessions, owner)
-	redemption := mustRedeem(t, sessions, link.Token, "thumb-phone")
-
-	if _, reason := sessions.Refresh(RefreshRequest{
-		Secret: redemption.Tokens.RefreshSecret, Proof: bearerProof("thumb-phone"),
-	}); reason != ReasonPendingConfirmation {
-		t.Fatalf("unconfirmed renewal = %s, want pending_confirmation", reason)
+	for _, recoverable := range []bool{false, true} {
+		name := "legacy"
+		if recoverable {
+			name = "recoverable"
+		}
+		t.Run(name, func(t *testing.T) {
+			sessions, st, _, owner, _ := newFixture(t)
+			link := mustMintLink(t, sessions, owner)
+			redemption := mustRedeem(t, sessions, link.Token, "thumb-phone")
+			req := RefreshRequest{Secret: redemption.Tokens.RefreshSecret, Proof: bearerProof("thumb-phone")}
+			if recoverable {
+				var err error
+				req.NextSecret, _, err = newRefreshSecret()
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := st.ListRecentAuthAudit(100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for range 3 {
+				if _, reason := sessions.Refresh(req); reason != ReasonPendingConfirmation {
+					t.Fatal("pending renewal changed outcome", reason)
+				}
+			}
+			after, err := st.ListRecentAuthAudit(100)
+			if err != nil || len(after) != len(before) {
+				t.Fatal("ordinary waiting created audit errors", err)
+			}
+			if _, err := sessions.ConfirmPairing(link.Link.ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, reason := sessions.Refresh(req); reason.Refused() {
+				t.Fatal("pending polls spent the original refresh secret", reason)
+			}
+		})
 	}
 }
 

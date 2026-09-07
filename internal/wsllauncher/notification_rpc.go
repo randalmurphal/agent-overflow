@@ -27,7 +27,8 @@ const (
 )
 
 type notificationRPCResult struct {
-	err error
+	data json.RawMessage
+	err  error
 }
 
 // pendingRPC is one in-flight call. The method name rides along so a server
@@ -154,7 +155,7 @@ func (c *NotificationClient) ReportBrowserHost(ctx context.Context, pageID strin
 // RPC the launcher makes. A server-answered rejection returns
 // *RPCRefusedError; every other failure (no connection, write error, timeout)
 // returns a plain error, because none of them prove the call did not land.
-func (c *NotificationClient) callRPC(ctx context.Context, idPrefix, method string, params []json.RawMessage) error {
+func (c *NotificationClient) callRPC(ctx context.Context, idPrefix, method string, params []json.RawMessage, output ...any) error {
 	conn, err := c.waitForConnection(ctx)
 	if err != nil {
 		return err
@@ -183,6 +184,11 @@ func (c *NotificationClient) callRPC(ctx context.Context, idPrefix, method strin
 		c.removePending(id)
 		return fmt.Errorf("%s RPC: %w", method, rpcCtx.Err())
 	case response := <-result:
+		if response.err == nil && len(output) > 0 {
+			if err := json.Unmarshal(response.data, output[0]); err != nil {
+				return fmt.Errorf("decode %s RPC: %w", method, err)
+			}
+		}
 		return response.err
 	}
 }
@@ -203,7 +209,7 @@ func (c *NotificationClient) resolveRPC(frame notificationServerFrame) {
 		}}
 		return
 	}
-	call.result <- notificationRPCResult{}
+	call.result <- notificationRPCResult{data: frame.Result}
 }
 
 func (c *NotificationClient) removePending(id string) {

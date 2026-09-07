@@ -25,7 +25,7 @@ func (c *Client) RepairAddress(ctx context.Context, endpoint string) (computerro
 	var verified computerroute.Route
 	for _, candidate := range candidates {
 		target, _ := url.Parse(candidate.Endpoint)
-		route := &dialRoute{Route: candidate, target: target, transport: NewPinnedTransport(candidate.CertFingerprint)}
+		route := &dialRoute{Route: candidate, target: target, transport: NewPinnedTransport(candidate.CertFingerprint, WithDialContext(c.dial))}
 		err = verifyComputerRoute(probeCtx, route, held.BackendID)
 		closeIdleRoute(route)
 		if err == nil {

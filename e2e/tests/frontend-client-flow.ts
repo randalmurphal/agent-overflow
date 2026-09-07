@@ -25,7 +25,7 @@ export function frontendClientFlow(): void {
       if (await allSettings.isVisible()) await allSettings.click();
       await page.getByRole('tab', { name: 'Connections', exact: true }).click();
       await expect(page.getByTestId('attached-system')).toHaveCount(0);
-      await expect(page.getByRole('textbox', { name: 'Pairing link' })).toBeVisible();
+      await expect(page.getByRole('textbox', { name: /^(Computer address or pairing link|Pairing link)$/ })).toBeVisible();
       await expect(page.getByTestId('transport-status-banner')).toHaveCount(0);
       expect(errors).toEqual([]);
     } finally {

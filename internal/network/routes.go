@@ -13,6 +13,7 @@ func ComputerRoutes(srv *transport.Server, s Settings, lanIP string) []computerr
 	if srv == nil {
 		return nil
 	}
+	lanIP = LANIP(s, lanIP)
 	var routes []computerroute.Route
 	if s.Tailnet.Running && s.Tailnet.HTTPS && s.Tailnet.DNSName != "" {
 		routes = append(routes, computerroute.Route{Endpoint: "https://" + s.Tailnet.DNSName})
@@ -25,6 +26,11 @@ func ComputerRoutes(srv *transport.Server, s Settings, lanIP string) []computerr
 	if err == nil && s.BindAll && bound != nil && !bound.IsLoopback() {
 		if ip := net.ParseIP(lanIP); ip != nil && (ip.IsPrivate() || ip.IsLinkLocalUnicast() || isTailscaleCGNAT(ip)) && (bound.IsUnspecified() || bound.Equal(ip)) && s.TLS.SelfSignedFingerprint != "" {
 			routes = append(routes, computerroute.Route{Endpoint: "https://" + net.JoinHostPort(ip.String(), port), CertFingerprint: s.TLS.SelfSignedFingerprint})
+		}
+		if s.LAN != nil && s.TLS.SelfSignedFingerprint != "" {
+			for _, endpoint := range s.LAN.Addresses {
+				routes = append(routes, computerroute.Route{Endpoint: endpoint, CertFingerprint: s.TLS.SelfSignedFingerprint})
+			}
 		}
 		if s.CanonicalDomain != "" && srv.ServesDomain(s.CanonicalDomain) {
 			routes = append(routes, computerroute.Route{Endpoint: "https://" + authorityFor(srv, s.CanonicalDomain, "443")})

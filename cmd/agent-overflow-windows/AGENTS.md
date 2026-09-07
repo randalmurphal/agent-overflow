@@ -299,3 +299,14 @@ Wails boots, refusing symlinked or reparse-point components (a junction is a
 reparse point even when `os.Lstat` does not call it one, so both checks run).
 
 The `main.go` package doc has the step-by-step launcher flow.
+
+## LAN hosting across WSL
+
+The notification bridge also runs `nativenetwork.Run`: the native process binds
+physical Windows LAN interfaces while the backend enables LAN sharing, and
+relays raw TLS to its **non-loopback** WSL interface. Existing localhost forwarding
+is only for this desktop window. Do not advertise WSL NAT addresses to external
+clients, proxy remote traffic through localhost, or inject local credentials.
+The backend receives external endpoints and errors over the same owner RPC.
+See [nativenetwork](../../internal/nativenetwork/AGENTS.md) for admission, pairing
+advertisements, mirrored mode, cancellation, and firewall/testing boundaries.

@@ -1,8 +1,7 @@
 <script lang="ts">
   // Settings → Remote access → Connections: the other machines this installation is attached
-  // to. Adding one is the same profile pairing `agent-overflow --connect`
-  // performs, driven from here instead of a terminal; the pairing link
-  // comes from the OTHER machine's Settings → Remote access → Pairing & network.
+  // to. Desktop discovery and address entry enroll the same profile as an
+  // invitation. The other machine opens pairing and confirms the number.
   //
   // Host-only on the DESKTOP by nature: those profiles live in this
   // machine's own directory, so a `--connect` window sees why rather than
@@ -25,6 +24,7 @@
 
   import ComputerActions from './ComputerActions.svelte';
   import ComputerNickname from './ComputerNickname.svelte';
+  import NearbyComputers from './NearbyComputers.svelte';
   import DeviceNameField from './DeviceNameField.svelte';
   import { openSettingsOverlay } from '../../stores/settingsOverlay.svelte';
   import SSHConnectModal from './SSHConnectModal.svelte';
@@ -42,6 +42,7 @@
   import { relativeTime } from '../../utils/format';
   import { isClientMode, isFrontendOnly } from '../../transport/runMode';
   import { hasScope } from '../../transport/scopes';
+  import { backendHasCapability } from '../../stores/transportStatus.svelte';
   import { isNativeShell } from '../../native/platform';
   import {
     attachBackendFromLink,
@@ -73,6 +74,9 @@
   let hostList = $derived((!clientMode || isFrontendOnly()) && !offHost);
   let unavailable = $derived(!hostList && !nativeShell);
   let canAdd = $derived(hostList || nativeShell);
+  // Connections belongs to the local controller, which is not an execution
+  // backend entry in frontend-only mode.
+  let nearbyPairing = $derived(hostList && backendHasCapability('pairing.nearby.v1'));
 
   let home = $derived(getAttachedBackends().find((entry) => entry.home));
   let systems = $derived(getSystems());
@@ -90,6 +94,7 @@
   let link = $state('');
   let sshOpen = $state(false);
   let adding = $state(false);
+  let connectionError = $state('');
   let acting = $state(false);
   let armedRemove: string | null = $state(null);
 
@@ -102,10 +107,11 @@
     });
   });
 
-  async function submitLink(): Promise<void> {
-    const raw = link.trim();
+  async function submitLink(address = link): Promise<void> {
+    const raw = address.trim();
     if (!raw || adding) return;
     adding = true;
+    connectionError = '';
     try {
       if (nativeShell) {
         const attached = await attachBackendFromLink(raw);
@@ -134,7 +140,7 @@
       await addSystem(raw);
       link = '';
     } catch (err) {
-      addToast('error', errString(err));
+      connectionError = errString(err);
     } finally {
       adding = false;
     }
@@ -325,9 +331,14 @@
     <Button variant="secondary" size="sm" onclick={() => openSettingsOverlay('remote', selectedBackend())}>Pair a device</Button>
   </div>
   <div class="mt-5 rounded-xl border border-border-subtle bg-surface-0 p-4">
-    <SettingsHeader title="Connect another computer" description="On that computer, open Remote access → Pairing & network and choose Pair a device. Paste its link here or scan the QR code." />
+    <SettingsHeader title="Connect another computer" description={nativeShell
+      ? 'On that computer, open Remote access → Pairing & network and choose Pair a device → Phone or tablet. Scan its QR code here.'
+      : nearbyPairing
+        ? 'On that computer, open Remote access → Pairing & network and choose Pair a device → Another computer.'
+        : 'On that computer, open Remote access → Pairing & network and choose Pair a device. Paste its pairing link here.'} />
 
     {#if canAdd}
+      {#if nearbyPairing}<NearbyComputers connecting={adding} onConnect={submitLink} />{/if}
       <form
         class="mt-3 flex flex-wrap items-center gap-2"
         onsubmit={(e) => {
@@ -338,8 +349,8 @@
         <input
           type="text"
           class="{INPUT_CLASS} min-w-0 flex-1 compact:basis-full"
-          placeholder="Pairing link"
-          aria-label="Pairing link"
+          placeholder={nearbyPairing ? 'Computer address or pairing link' : 'Pairing link'}
+          aria-label={nearbyPairing ? 'Computer address or pairing link' : 'Pairing link'}
           bind:value={link}
           disabled={adding}
           autocomplete="off"
@@ -360,6 +371,7 @@
           Connect
         </Button>
       </form>
+      {#if connectionError}<p class="mt-2 text-xs text-error" role="alert">{connectionError}</p>{/if}
       {#if hostList}
         <Button variant="ghost" size="sm" class="mt-2" onclick={() => { sshOpen = true; }}>Connect over SSH…</Button>
       {/if}

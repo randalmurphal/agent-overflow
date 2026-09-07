@@ -1,10 +1,50 @@
 package identity
 
 import (
+	"fmt"
 	"testing"
 
 	"agent-overflow/internal/store/storetest"
 )
+
+func TestBootstrapRetiresEveryUnfinishedInvitationButPreservesConfirmedDevice(t *testing.T) {
+	st := storetest.Clone(t)
+	s, boot, err := Bootstrap(st, testBackendID, "Owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	confirmed := mustMintLink(t, s, boot.Owner)
+	active := mustRedeem(t, s, confirmed.Token, "confirmed-device")
+	if _, err := s.ConfirmPairing(confirmed.Link.ID); err != nil {
+		t.Fatal(err)
+	}
+	pending := mustMintLink(t, s, boot.Owner)
+	inactive := mustRedeem(t, s, pending.Token, "pending-device")
+	// More than the access overview's row limit: boot is a store sweep, not
+	// a loop over whichever rows the current settings page happened to show.
+	links := make([]PairingLink, 61)
+	for i := range links {
+		links[i] = mustMintLink(t, s, boot.Owner)
+	}
+	next, _, err := Bootstrap(st, testBackendID, "Owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, reason := next.Verify(active.Tokens.Credential); reason.Refused() {
+		t.Fatal("confirmed credential lost on restart", reason)
+	}
+	if _, reason := next.Verify(inactive.Tokens.Credential); !reason.Refused() {
+		t.Fatal("pending credential admitted after restart")
+	}
+	if _, err := next.ConfirmPairing(pending.Link.ID); err == nil {
+		t.Fatal("old comparison could confirm after restart")
+	}
+	for i, link := range links {
+		if _, reason := next.RedeemPairing(RedemptionRequest{Token: link.Token, Proof: bearerProof(fmt.Sprintf("late-%d", i))}); !reason.Refused() {
+			t.Fatal("unredeemed invitation survived restart", i)
+		}
+	}
+}
 
 func TestBootstrapMintsOnceAndIsSafeToRepeat(t *testing.T) {
 	st := storetest.Clone(t)

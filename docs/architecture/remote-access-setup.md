@@ -300,6 +300,30 @@ connection. Both use an emulator; neither proves Pixel-specific biometrics,
 real Tailscale sign-in, public certificate issuance, or cellular/DERP reach.
 Those still require the device checks above. A skipped device test is not a pass.
 
+## Connect two desktops
+
+1. On the computer you want to work on, open **Settings → Remote access →
+   Pairing & network**. Enable **Local network** for LAN or sign AO's Tailscale
+   node into your tailnet for remote access.
+2. Choose **Pair a device → Another computer** and leave that window open.
+3. On the other desktop, open **Remote access → Connections**, select the
+   computer shown under discovery, and connect. If it does not appear, type
+   the address shown in its pairing window; no invitation link is needed.
+4. Compare the six digits on both computers, then approve on the host.
+
+For automatic tailnet discovery, enable AO's Tailscale node on both desktop
+apps. The separate OS Tailscale app can route a typed address but does not
+provide the embedded node's discovery list. A paired computer learns both
+available routes; connecting again for LAN versus Tailscale is unnecessary.
+
+On Windows, the desktop launcher exposes LAN access through its native
+interfaces even when the backend runs inside WSL NAT. Allow Windows' normal
+Private network firewall prompt if shown. AO does not change firewall rules or
+WSL networking settings. Forwarding errors appear in the LAN settings.
+Closing or restarting the host cancels unfinished setup; completed pairings
+survive. Older builds still use invitation links. Protocol and validation:
+[computer pairing](computer-pairing.md).
+
 ## Headless computers
 
 On a desktop client, `agent-overflow --frontend` opens your saved computers

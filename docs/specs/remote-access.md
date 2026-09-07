@@ -220,8 +220,8 @@ remain a separate, narrower credential class, unchanged.
    `MintDevicePairing` retains automatic selection for compatible clients.
 2. The **new device generates a keypair first** and presents its
    thumbprint during redemption. Proof-of-possession is universal, not
-   peer-only: an intercepted or photographed link is useless without the
-   device key.
+   peer-only. Possessing a link does not activate access: the owner must
+   confirm the number for the requesting device key.
 3. The link is single-use, 5-minute TTL, CSPRNG, token in the URL
    fragment; consumption is an atomic compare-and-set.
 4. The minting surface displays a **short verification number** derived
@@ -232,15 +232,14 @@ remain a separate, narrower credential class, unchanged.
 6. Native clients receive the backend's cert fingerprint inside the
    pairing payload (§7) and run the redemption exchange over that
    pinned TLS channel from the first byte. This is required whenever
-   the payload form can carry it (QR, link). The **typed-code path** (a
-   laptop with no camera enters the short code by hand) cannot carry
-   a fingerprint, so its redemption is trust-on-first-use: safe for
-   the same reason browser redemptions are (proof-of-possession plus
-   the verification number, never channel secrecy), and the
-   redemption response returns the fingerprint over the
-   now-authenticated channel, pinned from then on.
+   the payload form can carry it (QR, link). Desktop address pairing uses
+   a committed key exchange and independently derived comparison digits
+   to deliver that invitation encrypted before ordinary pinned redemption.
+   Server-returned digits alone cannot authenticate an untrusted TLS
+   connection; a camera-free client must not simply accept a pin returned
+   over that connection. See [computer pairing](../architecture/computer-pairing.md).
 7. First-ever pairing needs an address before anything is saved: the
-   LAN listener may advertise via mDNS (opt-in, off with the listener)
+   LAN listener advertises via mDNS during an explicitly opened pairing window
    so a new device picks "found *home-server*" instead of typing an
    IP. Discovery is convenience only. It grants nothing and changes
    no trust step.
@@ -473,7 +472,8 @@ mechanism gap.
 ### Step-up (mandatory, not optional)
 
 A per-call fresh passkey (or host-presence) proof, never an ambient
-standing scope, is required for: minting pairing links, enrolling the selected
+standing scope, is required for: minting pairing links (including opening a
+nearby/address pairing window with `OpenComputerPairing`), enrolling the selected
 computer with an agent peer, network bind /
 exposure changes, provider custom-env writes, MCP config writes, WSL
 distro preference, worktree-setup recipe writes (stored argv that runs

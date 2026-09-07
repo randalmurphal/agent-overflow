@@ -267,3 +267,7 @@ func (s *service) deviceNameChanged(name string) {
 	s.computers.SyncDeviceName()
 	s.emit(eventchan.BackendNameChanged, map[string]string{"name": name})
 }
+
+func (s *service) DiscoverComputers(ctx context.Context) ([]attachedbackends.DiscoveredComputer, error) {
+	return s.computers.Discover(ctx, nil)
+}

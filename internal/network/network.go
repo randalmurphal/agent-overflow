@@ -3,6 +3,7 @@ package network
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,7 +16,16 @@ import (
 // user-controlled state) plus server-derived URL + Token fields the
 // user can copy. The URL and Token are read-only on Set — the server
 // owns those.
+// LANStatus reports a native launcher's externally reachable LAN endpoints.
+// Nil means the backend itself owns LAN ingress; an empty list never falls
+// back to an unreachable WSL-internal address.
+type LANStatus struct {
+	Addresses []string `json:"addresses"`
+	Error     string   `json:"error"`
+}
+
 type Settings struct {
+	LAN *LANStatus `json:"lan,omitempty"`
 	// BindAll, when true, asks the transport server to listen on the
 	// LAN-reachable bind (0.0.0.0) so other devices on the network
 	// can reach the app. Default false keeps the server on
@@ -266,9 +276,9 @@ func PairingURLOnNetwork(srv *transport.Server, s Settings, choice string) (page
 	switch choice {
 	case "lan":
 		if !s.BindAll {
-			return "", "", fmt.Errorf("enable Allow remote access before pairing over the local network")
+			return "", "", fmt.Errorf("enable Allow LAN connections before pairing over the local network")
 		}
-		ip := DiscoverLocalLANIP()
+		ip := LANIP(s, DiscoverLocalLANIP())
 		if parsed := net.ParseIP(ip); parsed == nil || (!parsed.IsPrivate() && !parsed.IsLinkLocalUnicast()) {
 			return "", "", fmt.Errorf("no local network address is available for pairing")
 		}
@@ -398,6 +408,10 @@ func OriginPatterns(bindAll bool, lanIP, canonicalDomain string, port int) []str
 // panel therefore hands out a URL that opens one browser session — a
 // second device needs the panel read again.
 func AppURLWithLAN(srv *transport.Server, s Settings, lanIP string) string {
+	lanIP = LANIP(s, lanIP)
+	if s.BindAll && s.LAN != nil && lanIP == "" {
+		return ""
+	}
 	if s.CanonicalDomain != "" && srv.ServesDomain(s.CanonicalDomain) {
 		if url, ok := ticketedURL(srv, "https", authorityFor(srv, s.CanonicalDomain, "443")); ok {
 			return url
@@ -631,4 +645,47 @@ func isTailscaleCGNAT(ip net.IP) bool {
 		return false
 	}
 	return v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127
+}
+
+// LANIP resolves the actual ingress, which can be on the Windows host rather
+// than inside its WSL backend. Runtime reports were validated by the App.
+func LANIP(s Settings, fallback string) string {
+	if s.LAN == nil {
+		return fallback
+	}
+	if len(s.LAN.Addresses) == 0 {
+		return ""
+	}
+	u, err := url.Parse(s.LAN.Addresses[0])
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
+}
+
+// PairingAddressOnNetwork is the credential-free address for native setup.
+// Opening a pairing window must not spend an unused browser page ticket.
+func PairingAddressOnNetwork(srv *transport.Server, s Settings, choice string) (string, error) {
+	if srv == nil {
+		return "", fmt.Errorf("the computer's network listener is unavailable")
+	}
+	if choice == "tailnet" {
+		if !s.Tailnet.Running || !s.Tailnet.HTTPS || s.Tailnet.DNSName == "" {
+			return "", fmt.Errorf("connect this computer to Tailscale with HTTPS enabled before pairing")
+		}
+		return "https://" + strings.TrimSuffix(s.Tailnet.DNSName, "."), nil
+	}
+	if choice != "lan" || !s.BindAll {
+		return "", fmt.Errorf("enable Allow LAN connections before pairing")
+	}
+	ip := LANIP(s, DiscoverLocalLANIP())
+	parsed := net.ParseIP(ip)
+	if parsed == nil || (!parsed.IsPrivate() && !parsed.IsLinkLocalUnicast()) {
+		return "", fmt.Errorf("the computer's local network connection is not ready")
+	}
+	_, port, err := net.SplitHostPort(srv.Addr())
+	if err != nil || port == "" || port == "0" {
+		return "", fmt.Errorf("the local network listener is unavailable")
+	}
+	return "https://" + net.JoinHostPort(ip, port), nil
 }

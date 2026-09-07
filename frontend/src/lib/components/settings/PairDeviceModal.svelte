@@ -2,7 +2,9 @@
   import { settingsComputer } from './settingsComputer';
   const { call, backend } = settingsComputer();
 
-  // The owner's half of device pairing (docs/specs/remote-access.md §4):
+  // The owner's half of device pairing (docs/specs/remote-access.md §4).
+  // Current desktop pairing is owned by ComputerPairingWindow; this modal
+  // retains QR/invitation pairing for phones and older hosts:
   // mint a link, hand it to the new device, and confirm the verification
   // number the device shows. The other half is PairingScreen, which the
   // link opens on the device itself.
@@ -36,6 +38,7 @@
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import SettingsCallout from './SettingsCallout.svelte';
+  import ComputerPairingWindow from './ComputerPairingWindow.svelte';
   import { INPUT_CLASS } from './styles';
 
   interface Props {
@@ -52,6 +55,7 @@
 
   type Stage =
     | { at: 'choose' }
+    | { at: 'computer' }
     | { at: 'share'; invite: PairingInvite }
     | { at: 'verify'; linkId: string; number: string; deviceLabel: string }
     | { at: 'done' }
@@ -77,6 +81,7 @@
   let networkError = $state('');
   let networkGeneration = 0;
   const explicitNetworks = $derived(getTransportHelloFor(backend)?.capabilities.includes('pairing.networks.v1') ?? false);
+  const nearbyPairing = $derived(getTransportHelloFor(backend)?.capabilities.includes('pairing.nearby.v1') ?? false);
   const cannotMint = $derived(minting !== null || (explicitNetworks && (loadingNetworks || networkOptions.length === 0)));
   let deciding = $state(false);
   let copyState = $state<'idle' | 'copied' | 'failed'>('idle');
@@ -145,6 +150,10 @@
 
   async function mint(deviceClass: 'phone' | 'browser'): Promise<void> {
     if (cannotMint) return;
+    if (deviceClass === 'browser' && nearbyPairing) {
+      stage = { at: 'computer' };
+      return;
+    }
     minting = deviceClass;
     try {
       const invite = await call(() => explicitNetworks
@@ -270,12 +279,13 @@
 </script>
 
 <Modal {open} title="Pair a device" {onClose} width="sm">
-  {#if stage.at === 'choose'}
+  {#if stage.at === 'computer'}
+    {#if open}<ComputerPairingWindow {networkChoice} {access} {onChanged} {onClose} />{/if}
+  {:else if stage.at === 'choose'}
     <div class="flex flex-col gap-3">
       <p class="text-[0.75rem] leading-snug text-fg-muted">
-        A pairing link enrolls one device with its own credential, which you
-        can revoke on its own later. The link works once and only after you
-        confirm a matching number on both screens.
+        Choose a device, then compare the verification numbers on both screens
+        before allowing access. You can revoke the device later.
       </p>
       {#if !remoteReachable}
         <SettingsCallout tone="warn">
@@ -298,7 +308,7 @@
           <p class="text-[0.75rem] leading-snug text-fg-muted">
             {networkChoice === 'lan'
               ? 'Connect the other device to the same local network. Tailscale can stay off on that device.'
-              : 'Connect the other device to Tailscale before opening this link.'}
+              : 'Connect the other device to Tailscale before pairing.'}
             After pairing, it can use either available network.
           </p>
         {:else if remoteReachable}
@@ -334,7 +344,7 @@
         >
           <Laptop size={22} strokeWidth={1.75} />
           <span class="text-[0.75rem] font-medium text-fg">Another computer</span>
-          <span class="text-[0.6875rem] leading-snug text-fg-hint">Open a link in its browser</span>
+          <span class="text-[0.6875rem] leading-snug text-fg-hint">{nearbyPairing ? 'Choose this device in Connections' : 'Open a link in its browser'}</span>
         </button>
       </div>
     </div>

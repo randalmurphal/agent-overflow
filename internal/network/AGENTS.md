@@ -120,6 +120,14 @@ with its pin even when Tailscale or a canonical domain is configured. A CGNAT
 fallback is not LAN. Refuse unavailable choices instead of silently switching
 networks; retain `PairingURL` for older clients and automatic handoff flows.
 
+`PairingAddressOnNetwork` supplies the ticket-free HTTPS address for desktop
+bootstrap. Native Windows observations in `Settings.LAN` replace the inaccessible
+WSL address in every public LAN URL/route. An empty observation means unavailable,
+not permission to fall back to WSL. The runtime record is never persisted as a
+setting. `TestForwardedWindowsIngressDrivesPairingAndRouteTrust` covers addresses,
+QR links and route pins together; [computer pairing](../../docs/architecture/computer-pairing.md)
+explains the native boundary.
+
 ## Two records, and what the second leaves out
 
 `Settings` is read by two kinds of caller and only one of them is at the

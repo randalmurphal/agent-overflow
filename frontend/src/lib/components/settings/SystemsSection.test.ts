@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import { within } from '@testing-library/svelte';
 import SystemsSection from './SystemsSection.svelte';
+import { __setTransportHelloForTest } from '../../stores/transportStatus.svelte';
 import { backendNickname, __resetBackendNicknamesForTest } from '../../stores/attachedBackends.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { resetRunMode, setRunMode } from '../../../test/runMode';
@@ -30,6 +31,7 @@ const LAPTOP = {
 describe('<SystemsSection>', () => {
   beforeEach(() => {
     resetBindingMocks();
+    __setTransportHelloForTest(null);
     __resetBackendNicknamesForTest();
     resetRunMode();
     __resetSystemsForTest();
@@ -39,6 +41,7 @@ describe('<SystemsSection>', () => {
 
   afterEach(() => {
     cleanup();
+    __setTransportHelloForTest(null);
     resetRunMode();
     resetStagedBackends();
     __resetManifestBackendsForTest();
@@ -73,6 +76,25 @@ describe('<SystemsSection>', () => {
     const pending = await findByTestId('pending-attachment');
     expect(pending.textContent).toMatch(/Waiting for Laptop/);
     expect(pending.textContent).toMatch(/73/);
+  });
+
+  it('keeps a failed address editable and clears its inline error after retry', async () => {
+    __setTransportHelloForTest({ backendId: 'mac', backendName: 'Mac', capabilities: ['pairing.nearby.v1'], protocolVersion: 1, serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 });
+    setBindingMock('DiscoverComputers', async () => []);
+    setBindingMock('ListBackends', async () => []);
+    const add = setBindingMock('AddBackend', async () => { throw new Error('Open Pair a device on this computer first.'); });
+    const view = render(SystemsSection);
+    const input = view.getByLabelText('Computer address or pairing link');
+    await fireEvent.input(input, { target: { value: 'workstation.ts.net' } });
+    await fireEvent.submit(input.closest('form')!);
+    expect(await view.findByRole('alert')).toHaveTextContent('Open Pair a device');
+    expect(input).toBeEnabled();
+    expect(input).toHaveValue('workstation.ts.net');
+    add.mockResolvedValue({ id: 'laptop', name: 'Laptop', endpoint: LAPTOP.endpoint, verificationNumber: '73' });
+    await fireEvent.submit(input.closest('form')!);
+    await view.findByTestId('pending-attachment');
+    expect(view.queryByRole('alert')).toBeNull();
+    expect(input).toHaveValue('');
   });
 
   it('detaches only on the second press', async () => {

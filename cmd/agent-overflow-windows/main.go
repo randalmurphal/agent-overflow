@@ -65,6 +65,7 @@ import (
 	"agent-overflow/internal/diagenv"
 	"agent-overflow/internal/harness/governor"
 	"agent-overflow/internal/harness/instanceinfo"
+	"agent-overflow/internal/nativenetwork"
 	"agent-overflow/internal/notify"
 	"agent-overflow/internal/observability/pprofserve"
 	"agent-overflow/internal/pagehost"
@@ -1650,6 +1651,7 @@ func (a *launcherApp) startNotificationBridge(bs *wsllauncher.Bootstrap, launche
 	a.mu.Unlock()
 
 	go client.Run(ctx)
+	go nativenetwork.Run(ctx, client)
 	if startDrain {
 		go a.drainNotificationActivations()
 	}

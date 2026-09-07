@@ -184,3 +184,28 @@ it('blocks minting until networks load and lets a failed read be retried', async
   expect(view.queryByRole('radio', { name: 'Local network' })).toBeNull();
   expect((phone as HTMLButtonElement).disabled).toBe(false);
 });
+
+it('opens discovery pairing for another computer while preserving QR pairing for phones', async () => {
+  __setTransportHelloForTest({
+    backendId: 'mac', backendName: 'Studio Mac', capabilities: ['pairing.networks.v1', 'pairing.nearby.v1'], protocolVersion: 1,
+    serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0,
+  });
+  setBindingMock('GetNetworkSettings', async () => ({ bindAll: true }));
+  const open = setBindingMock('OpenComputerPairing', async () => ({ id: 'window', address: 'https://192.168.1.20:443', expiresAtMs: Date.now() + 300_000 }));
+  const close = setBindingMock('CloseComputerPairing', async () => {});
+  setBindingMock('ComputerPairingStatus', async () => ({ state: 'waiting', verificationNumber: '', deviceLabel: '', linkId: '', expiresAtMs: Date.now() + 300_000 }));
+  const mint = setBindingMock('MintDevicePairingOnNetwork', async () => INVITE);
+  const view = renderModal();
+  await view.findByRole('radio', { name: 'Local network' });
+  await fireEvent.click(view.getByRole('button', { name: /Another computer/ }));
+  await view.findByText(/Studio Mac/);
+  expect(open).toHaveBeenCalledExactlyOnceWith('lan', 'full');
+  expect(mint).not.toHaveBeenCalled();
+  await view.rerender({ open: false, remoteReachable: true, onClose: () => {}, onChanged: () => {} });
+  await waitFor(() => expect(close).toHaveBeenCalledExactlyOnceWith('window'));
+  await view.rerender({ open: true, remoteReachable: true, onClose: () => {}, onChanged: () => {} });
+  await view.findByRole('radio', { name: 'Local network' });
+  await fireEvent.click(view.getByRole('button', { name: /Phone or tablet/ }));
+  await view.findByLabelText('Pairing QR code');
+  expect(mint).toHaveBeenCalledExactlyOnceWith('phone', 'full', 'lan');
+});

@@ -21,11 +21,14 @@
 package attachedbackends
 
 import (
+	"agent-overflow/internal/pairbootstrap"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"golang.org/x/sync/singleflight"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -45,7 +48,10 @@ import (
 // one for the same backend would mean two processes rotating one refresh
 // secret against each other.
 type Manager struct {
-	dir string
+	dir       string
+	dial      deviceclient.DialContextFunc
+	selfID    func() string
+	discovery singleflight.Group
 
 	// labelGetter reads this installation's current name; label is the static
 	// fallback for embedders. Platform describes this process, not a pairing.
@@ -116,7 +122,7 @@ func (m *Manager) carrier(id string) (*carrier, error) {
 	if err != nil {
 		return nil, err
 	}
-	client, err := deviceclient.Open(m.dir, session)
+	client, err := deviceclient.Open(m.dir, session, deviceclient.WithDialContext(m.dial))
 	if err != nil {
 		return nil, err
 	}
@@ -210,14 +216,49 @@ type Attachment struct {
 // its own and reports the outcome as an event.
 func (m *Manager) Add(ctx context.Context, pairingLink string) (Attachment, error) {
 	link, err := deviceclient.DecodeLink(pairingLink)
+	comparison := ""
+	addressPairing := err != nil && !strings.Contains(pairingLink, "#")
+	if addressPairing {
+		label, nameErr := m.localLabel()
+		if nameErr != nil {
+			return Attachment{}, nameErr
+		}
+		hc := pairbootstrap.NewHTTPClient(m.dial)
+		defer hc.CloseIdleConnections()
+		// Public metadata may refuse redundant setup, never authorize it.
+		// Check before occupying the other computer's pairing window, and
+		// check again under the profile lock after the sealed exchange.
+		if info, inspectErr := inspectComputer(ctx, hc, pairingLink); inspectErr == nil {
+			if m.selfID != nil && info.BackendID == m.selfID() {
+				return Attachment{}, errors.New("this is the computer you are already using")
+			}
+			if _, savedErr := deviceclient.LoadSession(m.dir, info.BackendID); savedErr == nil {
+				return Attachment{}, errors.New("this computer is already connected; use its existing connection")
+			}
+		}
+		invite, number, exchangeErr := pairbootstrap.Exchange(ctx, hc, pairingLink, label, m.platform)
+		if exchangeErr != nil {
+			return Attachment{}, exchangeErr
+		}
+		link, err = deviceclient.DecodeLink(invite.URL)
+		comparison = number
+	}
 	if err != nil {
 		return Attachment{}, err
+	}
+	if m.selfID != nil && link.BackendID == m.selfID() {
+		return Attachment{}, errors.New("this is the computer you are already using")
 	}
 	unlock, err := m.profiles.LockCtx(ctx, link.BackendID)
 	if err != nil {
 		return Attachment{}, err
 	}
 	defer unlock()
+	if addressPairing {
+		if _, savedErr := deviceclient.LoadSession(m.dir, link.BackendID); savedErr == nil {
+			return Attachment{}, errors.New("this computer is already connected; use its existing connection")
+		}
+	}
 	// Pairing is a new grant. Do not revive an old agent opt-in after
 	// revocation or an incomplete pairing; the explicit enable follows it.
 	if err := m.writeAgentAccess(link.BackendID, false); err != nil {
@@ -233,7 +274,7 @@ func (m *Manager) Add(ctx context.Context, pairingLink string) (Attachment, erro
 	if err != nil {
 		return Attachment{}, err
 	}
-	client, pairing, err := deviceclient.Pair(ctx, m.dir, link, label, m.platform)
+	client, pairing, err := deviceclient.Pair(ctx, m.dir, link, label, m.platform, deviceclient.WithDialContext(m.dial))
 	if err != nil {
 		return Attachment{}, err
 	}
@@ -250,6 +291,9 @@ func (m *Manager) Add(ctx context.Context, pairingLink string) (Attachment, erro
 	}
 	m.carriers[link.BackendID] = built
 	m.mu.Unlock()
+	if comparison != "" {
+		pairing.VerificationNumber = comparison
+	}
 	return Attachment{
 		ID:                 link.BackendID,
 		Name:               displayName(client.Session()),

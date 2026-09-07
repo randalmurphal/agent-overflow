@@ -6,8 +6,9 @@ This backend as a node on the owner's tailnet, using
 no tunnel, no port forward, so every path a request can take is one the
 owner enrolled.
 
-The package owns the node's LIFECYCLE and its published STATUS, and
-nothing else. It never serves a request — the listeners it hands back go
+The package owns the node's lifecycle, published status, bounded peer
+enumeration and outbound dialing through its userspace network. It never serves
+a request — the listeners it hands back go
 to `internal/transport`, which answers them with the same mux, the same
 credentials and the same per-call gate its main bind uses. It knows
 nothing about settings either; `internal/app/app_tailnet.go` reconciles
@@ -18,6 +19,11 @@ the user's preference onto it.
 - `node.go`: `Node` (construct / start / listen / status / close),
   `Options`, `Status`, `StateDir`, and `Forget`.
 - `doc.go`: the package's one-paragraph purpose.
+- `peers.go`: bounded online peer candidates and outbound `DialContext`.
+  Candidates are not identified AO hosts: the caller probes HTTPS 443 and
+  still requires ordinary owner-confirmed pairing. Never filter by hostname
+  prefix or treat a tailnet peer name as authorization. Outbound dial selection
+  is injected into the existing pinned HTTP client, never a parallel transport.
 
 ## The three properties worth knowing before editing
 

@@ -222,6 +222,11 @@ func (a *App) SetNetworkSettings(ctx context.Context, s network.Settings) (netwo
 	// on" and "be on the tailnet" cannot be one call. The screen polls the
 	// status and shows the link.
 	a.kickTailnet()
+	// A changed listener invalidates the open invitation and its advertisement.
+	if prev.BindAll != stored.BindAll || prev.ListenPort != stored.ListenPort || prev.TailnetEnabled != stored.TailnetEnabled || prev.TailnetControlURL != stored.TailnetControlURL || prev.CanonicalDomain != stored.CanonicalDomain {
+		a.closeComputerPairing()
+		a.invalidateNativeNetwork()
+	}
 
 	return a.networkSettingsForCallerWithLAN(ctx, srv, a.networkSettingsFrom(stored), lanIP), nil
 }
@@ -275,6 +280,7 @@ func (a *App) persistedNetworkSettings() network.Settings {
 
 func (a *App) networkSettingsFrom(stored settings.NetworkSettings) network.Settings {
 	return network.Settings{
+		LAN:             a.nativeLANStatus(),
 		BindAll:         stored.BindAll,
 		ListenPort:      stored.ListenPort,
 		CanonicalDomain: stored.CanonicalDomain,

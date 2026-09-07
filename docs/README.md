@@ -48,6 +48,7 @@ How the app works today. Under [`architecture/`](architecture/).
 | [`remote-commands.md`](architecture/remote-commands.md) | Explicit peer access, durable remote commands, connection recovery, and ownership. |
 | [`file-previews.md`](architecture/file-previews.md) | Generated HTML on its owning computer: relative assets, independent origins, authorization, browser trust and lifetime. |
 | [`session-renewal.md`](architecture/session-renewal.md) | Recoverable renewal, saved successors, legacy compatibility and lost-response validation. |
+| [`computer-pairing.md`](architecture/computer-pairing.md) | Desktop LAN/tailnet discovery, address pairing, comparison trust and Windows forwarding. |
 | [`computer-routes.md`](architecture/computer-routes.md) | Contract for verified LAN/tailnet routes, failure recovery and platform boundaries; implementation in progress. |
 | [`serve-mode.md`](architecture/serve-mode.md) | Operating `agent-overflow serve`: the windowless boot, first-device enrollment from the console, credential storage, bind and port configuration, and installing it as a service. |
 

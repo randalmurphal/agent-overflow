@@ -728,6 +728,7 @@ that has never met this backend gets one.
 
 | route | what the caller presents | registered when |
 |---|---|---|
+| `/auth/pair/nearby` | Credential-free discovery/committed comparison exchange only; ordinary invitation remains encrypted until the client derives its key. No session admission; see [computer pairing](../../docs/architecture/computer-pairing.md). | `Config.AuthEndpoints != nil` |
 | `/auth/pair` | a single-use pairing token, plus the proof of the key the device generated first — signed in `X-AO-Device-Key`, or a bare identifier in the body for a device that cannot sign | `Config.AuthEndpoints != nil` |
 | `/auth/token/recover` | a saved client-chosen successor plus the predecessor and a fresh device proof; older hosts must never consume this exchange | recovery-capable `AuthEndpoints` |
 | `/auth/token` | a rotating refresh secret in the body, its device proof in `X-AO-Device-Key` | `Config.AuthEndpoints != nil` |
