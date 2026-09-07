@@ -369,6 +369,7 @@ func (a *App) unregisterSession(threadID, sessionToken string) {
 	if !ok {
 		return
 	}
+	a.revokeRemoteMCP(threadID, removed.Token)
 	a.emitProviderSessionDisconnected(threadID, removed.Provider)
 
 	// Self-exit teardown bypasses closeProviderSession (the subprocess is

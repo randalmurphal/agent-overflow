@@ -66,7 +66,7 @@ func (a *App) browserMCPConfigForThread(thread store.Thread) (map[string]any, er
 }
 
 func isAppManagedMCPServer(name string) bool {
-	return strings.TrimSpace(name) == appbrowser.ServerName
+	return strings.TrimSpace(name) == appbrowser.ServerName || strings.TrimSpace(name) == remoteMCPName
 }
 
 func (a *App) withBrowserMCPRow(thread store.Thread, rows []ThreadMCPServer, live bool) []ThreadMCPServer {
@@ -80,7 +80,7 @@ func (a *App) withBrowserMCPRow(thread store.Thread, rows []ThreadMCPServer, liv
 		source = mcpRowSourceSession
 	}
 	for i := range rows {
-		if !isAppManagedMCPServer(rows[i].Name) {
+		if rows[i].Name != appbrowser.ServerName {
 			continue
 		}
 		if !threadEnabled {

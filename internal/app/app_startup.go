@@ -165,7 +165,7 @@ func (a *App) Start(ctx context.Context) (startErr error) {
 // ACME rate limits and tailnet state are all outside it.
 func (a *App) startUnattendedWork() error {
 	a.startOwnDeviceConnections()
-	a.startRemotePeerDiscovery()
+	a.startRemoteMCPRefresh()
 	if err := a.startThreadTransfers(); err != nil {
 		return err
 	}

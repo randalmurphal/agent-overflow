@@ -30,25 +30,46 @@ settings. Existing computers appear once; the add selector lists new peers.
 
 ## Agent use
 
-The source backend checks explicitly enabled peers independently of any open
-frontend. When a reachable peer has registered projects, Claude and Codex get
-additional guidance at their existing safe session-configuration boundary.
-The guidance disappears after no usable enabled peers remain. Discovery is a
-periodic hint; every command rechecks the actual authenticated connection.
-Workflow phases must additionally declare the `remote-commands` grant in the
-frozen workflow definition. Claude TUI receives no extra prompt.
+Claude and Codex receive the built-in **ao-remote-tools** MCP server, controlled
+from the composer's MCP menu. It uses the same provider registration and HTTP
+boundary as **ao-browser-tools**. Tool descriptions carry usage; no CLI guidance
+is injected into the system/developer prompt. Claude TUI is not supported.
+Workflow phases must declare `remote-commands` in their frozen definition.
 
-The guidance documents `agent-overflow remote list`, `remote run`, `remote
-status`, and `remote cancel`. Run accepts an exact argument vector after `--`;
-there is no implicit shell interpolation. Use `remote --help` for current
-flags and limits. Destination project IDs and workspace paths come from that
-computer. It has its own files, account environment and installed programs.
-Commands receive no source AO session credentials.
+- `remote_computers` lists enabled destinations with registered project IDs,
+  paths and reachability errors. Discovery does not enable a computer.
+- `remote_run` takes a computer ID, destination project/workspace, exact `argv`
+  and a caller-chosen UUID `request_id`. There is no implicit shell interpolation.
+- `remote_status` reads the receipt and output for that ID.
+- `remote_cancel` cancels that job without interrupting the source conversation.
 
-Run prints its request UUID before sending and returns a durable receipt.
-After a lost reply, query that UUID or retry the identical request with `--id`.
-Changing the UUID can start another command. The destination persists acceptance
-before spawning and refuses a changed request under an existing UUID.
+The server advertises tools when paired profiles exist, even if a machine is
+currently offline. Destinations still require Agent access opt-in at every start.
+Status/cancel remain useful after opt-out. Configuration changes refresh live MCP
+discovery; no background network polling or provider restart is needed. A
+provider starting during a configuration change refreshes after registration.
+Thread toggles last for this app process and survive provider-session restarts,
+like the built-in browser toggle; machine opt-ins persist across app restarts.
+
+`remote_run` normally waits up to one second for a result. `wait_seconds` can
+request zero (return immediately) through ten seconds on run/status/cancel.
+A running receipt is accepted work, not an error or permission to start again.
+The separate `timeout_seconds` limits the actual job (one hour by default,
+seven days maximum). After a lost reply, query the chosen UUID or retry identical
+arguments with that same UUID. A changed UUID can start a second job; a changed
+request under the old UUID is refused.
+
+Replies include the destination, receipt state, exit code and a bounded output
+tail. `max_output_bytes` defaults to 8192; zero requests metadata only, and up to
+131072 retrieves more retained output. `omittedOutputBytes` counts retained
+bytes withheld by the reply budget; `truncated` means older output was discarded
+at the destination. Increasing the budget cannot recover discarded data. For
+large test/build logs, explicitly write a log file on the destination. Each
+status call reads the current tail; this is not a cursor-based complete log.
+
+The session-scoped `agent-overflow remote` CLI remains a compatibility entry
+point into the same execution/authorization methods. Agents use MCP directly;
+they need no repository instructions or knowledge of the CLI.
 
 A phone disconnect or source-backend restart does not cancel an accepted job.
 Status and cancellation belong to the original source conversation and the
@@ -62,8 +83,9 @@ receipt survives. Old output can expire while its receipt remains.
 
 `internal/remotejobs` owns processes and durable receipts; `attachedbackends`
 reuses its existing credential owner and pinned transport. `app_remote_jobs.go`
-binds authenticated ownership and workspace resolution. Provider adapters append
-the optional instructions without replacing native/custom instructions.
+binds authenticated ownership and workspace resolution. `app_remote_mcp.go`
+adapts the same methods to MCP without provider-specific command behavior or
+prompt overrides. `threadmcp` owns the shared HTTP guard.
 
 The source-to-destination tests exercise actual pairing, TLS, authorization,
 lost-reply retries, opt-out, revocation and discovery with injected job runners.

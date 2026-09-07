@@ -155,12 +155,12 @@ type App struct {
 	// profile directory to keep pairings in — a test fixture, and the
 	// harness — and every attached-backend method is a plain refusal
 	// then, never a panic.
-	backends    *attachedbackends.Manager
-	sshSetup    appSSHSetup
-	transfers   appThreadTransfers
-	terminals   *terminal.Manager
-	remoteJobs  *remotejobs.Manager
-	remotePeers appRemotePeers
+	backends   *attachedbackends.Manager
+	sshSetup   appSSHSetup
+	transfers  appThreadTransfers
+	terminals  *terminal.Manager
+	remoteJobs *remotejobs.Manager
+	remoteMCP  appRemoteMCP
 	// providerTerminals is the per-connection take-control bookkeeping for
 	// claude-tui PTYs: which caller armed which attachment, so a dead socket
 	// releases exactly its own claim and its input lease. Zero value ready.

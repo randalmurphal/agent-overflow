@@ -21,6 +21,7 @@ the package's whole documentation, so they carry more.
 | `transferwire/` | Versioned computer-to-computer handoff DTOs and bounds. Stdlib only; no ownership policy. |
 | `transferclient/` | One-operation handoff client: pinned TLS, bounded replies, identity checks and no redirects or implicit mutation retries. Uses deviceclient's shared TLS transport without owning a device credential. |
 | `threadtransfer/` | Fixed source handoff protocol over the durable journal and transfer client; bounded active coordination, no provider state or general orchestration. App owns snapshot creation and job lifecycle. |
+| `threadmcp/` | Shared thread-capability HTTP MCP transport for built-in browser and remote tools. Has its own guide. |
 | `remotejobs/` | Bounded peer-command processes and durable acceptance receipts. Has its own subarea guide. |
 | `filepreview/` | Confined generated HTML and asset serving at independent preview origins, with bounded directory lifetime. Has its own subarea guide. |
 | `rpcclient/` | Small serialized wire RPC client for local owner commands and paired peers. Has its own subarea guide. |

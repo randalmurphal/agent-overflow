@@ -1,52 +1,33 @@
 package browser
 
 import (
-	"bytes"
+	"agent-overflow/internal/threadmcp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/google/uuid"
-	"io"
-	"net"
 	"net/http"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
-
-	"agent-overflow/internal/loopback"
 )
 
 const (
-	mcpProtocolVersion     = "2025-03-26"
-	maxMCPRequestBytes     = 1 << 20
 	browserMCPInstructions = "Browser pages are shared only within this AO thread. browser_open and browser_open_file create a new background page when page_id is omitted; retain the returned page_id and pass it on later calls. When multiple pages exist, implicit page selection fails safely: call browser_pages and pass the intended page_id. Use browser_visibility with visible=true and page_id only when the user should see that page."
 )
 
 var cachedToolDefinitions = toolDefinitions()
 
 type MCPServer struct {
+	*threadmcp.Server[Access]
 	controller Controller
-	enabled    atomic.Bool
-
-	mu            sync.Mutex
-	server        *http.Server
-	listener      net.Listener
-	baseURL       string
-	threadToToken map[string]string
-	tokenToAccess map[string]Access
-	threadEnabled map[string]bool
 }
 
 func NewMCPServer(controller Controller, enabled bool) *MCPServer {
-	s := &MCPServer{controller: controller, threadToToken: make(map[string]string), tokenToAccess: make(map[string]Access), threadEnabled: make(map[string]bool)}
-	s.enabled.Store(enabled)
+	s := &MCPServer{controller: controller}
+	s.Server = threadmcp.New(ServerName, browserMCPInstructions, func(Access) []map[string]any { return cachedToolDefinitions }, s.handleToolCall)
+	s.SetEnabled(enabled)
 	return s
 }
-
-func (s *MCPServer) SetEnabled(enabled bool) { s.enabled.Store(enabled) }
-
 func (s *MCPServer) RegisterThread(access Access) (map[string]any, error) {
 	access.ThreadID = strings.TrimSpace(access.ThreadID)
 	access.Workspace = strings.TrimSpace(access.Workspace)
@@ -56,155 +37,24 @@ func (s *MCPServer) RegisterThread(access Access) (map[string]any, error) {
 	if s.controller == nil {
 		return nil, fmt.Errorf("browser MCP: controller unavailable")
 	}
-	if err := s.ensureStarted(); err != nil {
-		return nil, err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	token := s.threadToToken[access.ThreadID]
-	if token == "" {
-		token = uuid.NewString()
-		s.threadToToken[access.ThreadID] = token
-	}
-	s.tokenToAccess[token] = access
-	if _, ok := s.threadEnabled[access.ThreadID]; !ok {
-		s.threadEnabled[access.ThreadID] = true
-	}
-	return map[string]any{ServerName: map[string]any{"url": s.baseURL + "/mcp/" + token}}, nil
+	return s.Server.RegisterThread(access.ThreadID, access)
 }
-
 func (s *MCPServer) UnregisterThread(threadID string) {
-	s.mu.Lock()
-	token := s.threadToToken[threadID]
-	delete(s.threadToToken, threadID)
-	delete(s.threadEnabled, threadID)
-	if token != "" {
-		delete(s.tokenToAccess, token)
-	}
-	s.mu.Unlock()
+	s.Server.UnregisterThread(threadID)
 	if s.controller != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = s.controller.CloseThread(ctx, threadID)
 	}
 }
-
-func (s *MCPServer) SetThreadEnabled(threadID string, enabled bool) {
-	s.mu.Lock()
-	s.threadEnabled[strings.TrimSpace(threadID)] = enabled
-	s.mu.Unlock()
-}
-
-func (s *MCPServer) ThreadEnabled(threadID string) bool {
-	s.mu.Lock()
-	enabled, ok := s.threadEnabled[strings.TrimSpace(threadID)]
-	s.mu.Unlock()
-	return !ok || enabled
-}
-
-func (s *MCPServer) RegisteredThreadCount() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.threadToToken)
-}
-
-func (s *MCPServer) Close() error {
-	s.mu.Lock()
-	server, listener := s.server, s.listener
-	s.server, s.listener, s.baseURL = nil, nil, ""
-	s.threadToToken = make(map[string]string)
-	s.tokenToAccess = make(map[string]Access)
-	s.threadEnabled = make(map[string]bool)
-	s.mu.Unlock()
-	if server != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		return server.Shutdown(ctx)
-	}
-	if listener != nil {
-		return listener.Close()
-	}
-	return nil
-}
-
-// ensureStarted binds the loopback listener on first thread
-// registration. It cannot defer the bind until a tool is called: the
-// endpoint URL rides the provider CLI's argv at spawn, so the listener
-// has to exist before the process starts.
-func (s *MCPServer) ensureStarted() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.server != nil {
-		return nil
-	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return fmt.Errorf("browser MCP: listen: %w", err)
-	}
-	server := &http.Server{Handler: http.HandlerFunc(s.handle), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 35 * time.Second, WriteTimeout: 35 * time.Minute, IdleTimeout: 60 * time.Second}
-	s.server, s.listener = server, listener
-	s.baseURL = "http://" + listener.Addr().String()
-	go func() { _ = server.Serve(listener) }()
-	return nil
-}
-
-func (s *MCPServer) handle(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		// An OPTIONS preflight lands here too, and answering it with 405
-		// and no CORS headers is what the content-type check below relies
-		// on: the browser stops before it sends the real request.
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if !validMCPRequest(w, r) {
-		return
-	}
-	access, ok := s.accessForPath(r.URL.Path)
-	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxMCPRequestBytes)
-	defer r.Body.Close()
-	var req rpcRequest
-	decoder := json.NewDecoder(r.Body)
-	if err := decoder.Decode(&req); err != nil {
-		writeRPCError(w, req.ID, http.StatusBadRequest, -32700, "invalid JSON")
-		return
-	}
-	if err := ensureJSONEOF(decoder); err != nil {
-		writeRPCError(w, req.ID, http.StatusBadRequest, -32700, "invalid JSON")
-		return
-	}
-	switch req.Method {
-	case "initialize":
-		writeRPCResult(w, req.ID, map[string]any{"protocolVersion": mcpProtocolVersion, "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]any{"name": ServerName, "version": "1.0.0"}, "instructions": browserMCPInstructions})
-	case "notifications/initialized":
-		w.WriteHeader(http.StatusNoContent)
-	case "tools/list":
-		tools := []map[string]any{}
-		if s.enabled.Load() && s.ThreadEnabled(access.ThreadID) {
-			tools = cachedToolDefinitions
-		}
-		writeRPCResult(w, req.ID, map[string]any{"tools": tools})
-	case "tools/call":
-		s.handleToolCall(w, r.Context(), req, access)
-	default:
-		writeRPCError(w, req.ID, http.StatusOK, -32601, "method not found")
-	}
-}
-
-func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, req rpcRequest, access Access) {
-	if !s.enabled.Load() || !s.ThreadEnabled(access.ThreadID) {
-		writeToolError(w, req.ID, fmt.Errorf("built-in browser tools are disabled"))
-		return
-	}
+func (s *MCPServer) handle(w http.ResponseWriter, r *http.Request) { s.ServeHTTP(w, r) }
+func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, req threadmcp.Request, access Access) {
 	var call struct {
 		Name      string          `json:"name"`
 		Arguments json.RawMessage `json:"arguments"`
 	}
 	if err := json.Unmarshal(req.Params, &call); err != nil {
-		writeRPCError(w, req.ID, http.StatusOK, -32602, "invalid tools/call params")
+		threadmcp.WriteError(w, req.ID, http.StatusOK, -32602, "invalid tools/call params")
 		return
 	}
 	var result any
@@ -219,7 +69,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 			URL    string `json:"url"`
 			PageID string `json:"page_id"`
 		}
-		err = decodeArgs(call.Arguments, &a)
+		err = threadmcp.DecodeArgs(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.Open(ctx, access, a.URL, OpenOptions{PageID: a.PageID})
 		}
@@ -230,7 +80,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 			Path   string `json:"path"`
 			PageID string `json:"page_id"`
 		}
-		err = decodeArgs(call.Arguments, &a)
+		err = threadmcp.DecodeArgs(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.OpenFile(ctx, access, a.Path, OpenOptions{PageID: a.PageID})
 		}
@@ -240,7 +90,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 		var a struct {
 			PageID string `json:"page_id"`
 		}
-		err = decodeArgs(call.Arguments, &a)
+		err = threadmcp.DecodeArgs(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.SelectPage(ctx, access, a.PageID)
 		}
@@ -249,7 +99,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 			PageID string `json:"page_id"`
 			Label  string `json:"label"`
 		}
-		err = decodeArgs(call.Arguments, &a)
+		err = threadmcp.DecodeArgs(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.LabelPage(ctx, access, a.PageID, a.Label)
 		}
@@ -257,7 +107,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 		var a struct {
 			Name string `json:"name"`
 		}
-		err = decodeArgs(call.Arguments, &a)
+		err = threadmcp.DecodeArgs(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.NameSession(ctx, access, a.Name)
 		}
@@ -266,13 +116,13 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 			Visible *bool  `json:"visible"`
 			PageID  string `json:"page_id"`
 		}
-		err = decodeArgs(call.Arguments, &a)
+		err = threadmcp.DecodeArgs(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.Visibility(ctx, access, a.Visible, a.PageID)
 		}
 	case "browser_viewport":
 		var a ViewportOptions
-		err = decodeArgs(call.Arguments, &a)
+		err = threadmcp.DecodeArgs(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.Viewport(ctx, access, a)
 		}
@@ -280,7 +130,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 		var a struct {
 			PageID string `json:"page_id"`
 		}
-		err = decodeArgs(call.Arguments, &a)
+		err = threadmcp.DecodeArgs(call.Arguments, &a)
 		if err == nil {
 			err = s.controller.ClosePage(ctx, access, a.PageID)
 			result = map[string]any{"closed": err == nil}
@@ -289,7 +139,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 		var a struct {
 			PageID string `json:"page_id"`
 		}
-		err = decodeArgs(call.Arguments, &a)
+		err = threadmcp.DecodeArgs(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.Snapshot(ctx, access, a.PageID)
 		}
@@ -299,7 +149,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 			FullPage bool      `json:"full_page"`
 			Clip     *ClipRect `json:"clip"`
 		}
-		err = decodeArgs(call.Arguments, &a)
+		err = threadmcp.DecodeArgs(call.Arguments, &a)
 		if err == nil {
 			var data []byte
 			data, err = s.controller.Screenshot(ctx, access, ScreenshotOptions{PageID: a.PageID, FullPage: a.FullPage, Clip: a.Clip})
@@ -313,25 +163,25 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 			PageID   string `json:"page_id"`
 			Selector string `json:"selector"`
 		}
-		err = decodeArgs(call.Arguments, &a)
+		err = threadmcp.DecodeArgs(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.Click(ctx, access, a.PageID, a.Selector)
 		}
 	case "browser_locator":
 		var a LocatorOptions
-		err = decodeArgs(call.Arguments, &a)
+		err = threadmcp.DecodeArgs(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.Locator(ctx, access, a)
 		}
 	case "browser_pointer":
 		var a PointerOptions
-		err = decodeArgs(call.Arguments, &a)
+		err = threadmcp.DecodeArgs(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.Pointer(ctx, access, a)
 		}
 	case "browser_dom":
 		var a DOMActionOptions
-		err = decodeArgs(call.Arguments, &a)
+		err = threadmcp.DecodeArgs(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.DOMAction(ctx, access, a)
 		}
@@ -342,7 +192,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 			Text     string `json:"text"`
 			Clear    bool   `json:"clear"`
 		}
-		err = decodeArgs(call.Arguments, &a)
+		err = threadmcp.DecodeArgs(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.Type(ctx, access, TypeOptions{PageID: a.PageID, Selector: a.Selector, Text: a.Text, Clear: a.Clear})
 		}
@@ -352,7 +202,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 			Key    string   `json:"key"`
 			Keys   []string `json:"keys"`
 		}
-		err = decodeArgs(call.Arguments, &a)
+		err = threadmcp.DecodeArgs(call.Arguments, &a)
 		if err == nil {
 			key := strings.TrimSpace(a.Key)
 			if key == "" {
@@ -373,13 +223,13 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 			X        float64 `json:"x"`
 			Y        float64 `json:"y"`
 		}
-		err = decodeArgs(call.Arguments, &a)
+		err = threadmcp.DecodeArgs(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.Scroll(ctx, access, a.PageID, a.Selector, a.X, a.Y)
 		}
 	case "browser_wait":
 		var a WaitOptions
-		err = decodeArgs(call.Arguments, &a)
+		err = threadmcp.DecodeArgs(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.WaitAdvanced(ctx, access, a)
 		}
@@ -388,7 +238,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 			PageID string `json:"page_id"`
 			Action string `json:"action"`
 		}
-		err = decodeArgs(call.Arguments, &a)
+		err = threadmcp.DecodeArgs(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.History(ctx, access, a.PageID, a.Action)
 		}
@@ -397,7 +247,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 			PageID     string `json:"page_id"`
 			Expression string `json:"expression"`
 		}
-		err = decodeArgs(call.Arguments, &a)
+		err = threadmcp.DecodeArgs(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.Evaluate(ctx, access, a.PageID, a.Expression)
 		}
@@ -408,7 +258,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 			Argument   json.RawMessage `json:"argument"`
 			TimeoutMS  int             `json:"timeout_ms"`
 		}
-		err = decodeArgs(call.Arguments, &a)
+		err = threadmcp.DecodeArgs(call.Arguments, &a)
 		if err == nil {
 			var timeout time.Duration
 			timeout, err = boundedTimeout(a.TimeoutMS)
@@ -422,30 +272,30 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 		}
 	case "browser_clipboard":
 		var a ClipboardOptions
-		err = decodeArgs(call.Arguments, &a)
+		err = threadmcp.DecodeArgs(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.Clipboard(ctx, access, a)
 		}
 	case "browser_console_logs":
 		var a ConsoleOptions
-		err = decodeArgs(call.Arguments, &a)
+		err = threadmcp.DecodeArgs(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.ConsoleLogs(ctx, access, a)
 		}
 	case "browser_downloads":
 		var a DownloadOptions
-		err = decodeArgs(call.Arguments, &a)
+		err = threadmcp.DecodeArgs(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.Downloads(ctx, access, a)
 		}
 	case "browser_assets":
 		var a AssetOptions
-		err = decodeArgs(call.Arguments, &a)
+		err = threadmcp.DecodeArgs(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.Assets(ctx, access, a)
 		}
 	default:
-		writeRPCError(w, req.ID, http.StatusOK, -32602, "unknown tool")
+		threadmcp.WriteError(w, req.ID, http.StatusOK, -32602, "unknown tool")
 		return
 	}
 	if err != nil {
@@ -527,120 +377,6 @@ func hasJSFunctionPrefix(expression, keyword string) bool {
 	}
 }
 
-// validMCPRequest applies the request checks every request clears before
-// any method dispatch — initialize, notifications, tools/list and
-// tools/call alike — and writes the refusal itself when one fails.
-//
-// The only client of this endpoint is a provider CLI
-// this app spawned, which pins what a genuine request looks like: it
-// arrives from a loopback peer, carries no Origin, and declares JSON.
-// Both real clients match (verified 2026-08-30): Claude Code's HTTP
-// transport and the Codex app-server's rmcp adapter each set
-// `content-type: application/json` on every POST and neither sets Origin
-// — Codex goes further and rejects a user-configured Origin header
-// outright (codex-rs/rmcp-client/src/http_headers.rs).
-//
-// The per-thread UUID in the path is the only other credential, and it
-// rides provider argv, so it is readable by any process of the same
-// user. Same-user is already the trust boundary; these checks are what
-// keeps a document in a browser — which is not the same user's
-// process — from reaching the endpoint.
-func validMCPRequest(w http.ResponseWriter, r *http.Request) bool {
-	// Peer verification off the accepting socket, matching the claudetui
-	// gateway's check (isLoopback, internal/provider/claudetui/hookrelay.go
-	// — that copy also accepts the literal "localhost", which an accepted
-	// connection's RemoteAddr never carries). Go fills RemoteAddr from the
-	// accepted socket, so a request header cannot set it.
-	if !loopback.PeerAddress(r.RemoteAddr) {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return false
-	}
-	// A local process sends no Origin. A document always sends one on a
-	// POST, cross-origin or same-origin, so refusing the header refuses
-	// the page without touching the provider CLI.
-	if r.Header.Get("Origin") != "" {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return false
-	}
-	// Requiring JSON before the body is decoded is more than hygiene. A
-	// POST declaring text/plain is a CORS simple request: it is sent with
-	// no preflight, so a page could invoke a tool the browser never asked
-	// permission for — it could not read the reply, but the page
-	// evaluation or workspace file read would already have run. JSON is
-	// not a simple content type, so the browser must preflight first, and
-	// the method check in handle refuses that preflight.
-	if !jsonContentType(r.Header.Get("Content-Type")) {
-		http.Error(w, "unsupported media type", http.StatusUnsupportedMediaType)
-		return false
-	}
-	return true
-}
-
-// jsonContentType reports whether a Content-Type header declares JSON.
-// Parameters are allowed: both provider clients send the bare type, but
-// a charset is legal and some MCP clients attach one.
-func jsonContentType(value string) bool {
-	mediaType, _, _ := strings.Cut(value, ";")
-	return strings.EqualFold(strings.TrimSpace(mediaType), "application/json")
-}
-
-func (s *MCPServer) accessForPath(path string) (Access, bool) {
-	const prefix = "/mcp/"
-	if !strings.HasPrefix(path, prefix) {
-		return Access{}, false
-	}
-	token := strings.TrimPrefix(path, prefix)
-	if token == "" || strings.Contains(token, "/") {
-		return Access{}, false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	access, ok := s.tokenToAccess[token]
-	return access, ok
-}
-
-type rpcRequest struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      json.RawMessage `json:"id"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params"`
-}
-
-func decodeArgs(raw json.RawMessage, target any) error {
-	if len(raw) == 0 {
-		raw = []byte("{}")
-	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
-		return fmt.Errorf("invalid tool arguments")
-	}
-	if err := ensureJSONEOF(decoder); err != nil {
-		return fmt.Errorf("invalid tool arguments")
-	}
-	return nil
-}
-
-func ensureJSONEOF(decoder *json.Decoder) error {
-	var extra any
-	if err := decoder.Decode(&extra); err == io.EOF {
-		return nil
-	}
-	return fmt.Errorf("extra JSON value")
-}
-
-func writeRPCResult(w http.ResponseWriter, id json.RawMessage, result any) {
-	writeRPC(w, http.StatusOK, map[string]any{"jsonrpc": "2.0", "id": id, "result": result})
-}
-func writeRPCError(w http.ResponseWriter, id json.RawMessage, status, code int, message string) {
-	writeRPC(w, status, map[string]any{"jsonrpc": "2.0", "id": id, "error": map[string]any{"code": code, "message": message}})
-}
-func writeRPC(w http.ResponseWriter, status int, value any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
-}
-
 // writeToolJSON writes one tool result. A non-empty engine note becomes a
 // SECOND content entry rather than a wrapper around the payload: the first
 // entry stays the exact JSON every caller already parses, on every engine.
@@ -654,17 +390,17 @@ func writeToolJSON(w http.ResponseWriter, id json.RawMessage, value any, note st
 	if note != "" {
 		content = append(content, map[string]any{"type": "text", "text": note})
 	}
-	writeRPCResult(w, id, map[string]any{"content": content})
+	threadmcp.WriteResult(w, id, map[string]any{"content": content})
 }
 func writeToolImage(w http.ResponseWriter, id json.RawMessage, data []byte) {
-	writeRPCResult(w, id, map[string]any{"content": []map[string]any{{"type": "image", "mimeType": "image/jpeg", "data": base64.StdEncoding.EncodeToString(data)}}})
+	threadmcp.WriteResult(w, id, map[string]any{"content": []map[string]any{{"type": "image", "mimeType": "image/jpeg", "data": base64.StdEncoding.EncodeToString(data)}}})
 }
 func writeToolError(w http.ResponseWriter, id json.RawMessage, err error) {
 	message := strings.TrimSpace(err.Error())
 	if len(message) > 1000 {
 		message = message[:1000]
 	}
-	writeRPCResult(w, id, map[string]any{"isError": true, "content": []map[string]any{{"type": "text", "text": message}}})
+	threadmcp.WriteResult(w, id, map[string]any{"isError": true, "content": []map[string]any{{"type": "text", "text": message}}})
 }
 
 func toolDefinitions() []map[string]any {

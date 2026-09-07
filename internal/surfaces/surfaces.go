@@ -484,12 +484,12 @@ var Listeners = []Listener{
 			"distinguish a wrong token from a wrong port.",
 	},
 	{
-		Name:       "browser MCP endpoint",
-		Package:    "internal/browser",
+		Name:       "built-in MCP endpoints",
+		Package:    "internal/threadmcp",
 		Binding:    BindLoopback,
 		Credential: CredUnguessablePath,
 		Posture:    PostureStructured,
-		Sites:      []string{"internal/browser/mcp.go"},
+		Sites:      []string{"internal/threadmcp/server.go"},
 		Why: "The row this inventory exists for. Behind the path sit page " +
 			"evaluation and workspace file reads — a far larger grant than " +
 			"'holds no session credential' suggests, and the credential is " +
@@ -601,7 +601,7 @@ var Listeners = []Listener{
 	},
 	{
 		Name:       "managed Chrome DevTools port",
-		Package:    "internal/browser",
+		Package:    "internal/threadmcp",
 		Binding:    BindLoopback,
 		Credential: CredUnguessablePath,
 		Posture:    PostureStructured,
@@ -1348,8 +1348,8 @@ var Origins = []Origin{
 		Why:      "JSON this process writes about scenario state. Read by mock providers only.",
 	},
 	{
-		Name:     "browser MCP endpoint",
-		Listener: "browser MCP endpoint",
+		Name:     "built-in MCP endpoints",
+		Listener: "built-in MCP endpoints",
 		Author:   AuthorRuntime,
 		Posture:  PostureStructured,
 		Why: "JSON-RPC results. Tool output can embed page content the " +

@@ -290,6 +290,7 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		"close gitwatch manager",
 		"close PR update subscriptions",
 		"close terminal sessions",
+		"close remote MCP server",
 		"close logger",
 		"close store",
 	}

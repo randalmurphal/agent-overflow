@@ -393,19 +393,6 @@ func TestMCPPreflightIsRefusedWithoutCORSHeaders(t *testing.T) {
 	}
 }
 
-func TestJSONContentTypeAllowsParametersAndCasing(t *testing.T) {
-	for _, accepted := range []string{"application/json", "application/json; charset=utf-8", "Application/JSON", " application/json "} {
-		if !jsonContentType(accepted) {
-			t.Errorf("jsonContentType(%q) = false", accepted)
-		}
-	}
-	for _, refused := range []string{"", "text/plain", "text/plain;charset=UTF-8", "application/json-patch+json", "multipart/form-data"} {
-		if jsonContentType(refused) {
-			t.Errorf("jsonContentType(%q) = true", refused)
-		}
-	}
-}
-
 func postMCPRequest(t *testing.T, url, contentType string, headers map[string]string, body string) *http.Response {
 	t.Helper()
 	request, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))

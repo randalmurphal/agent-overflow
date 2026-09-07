@@ -201,6 +201,12 @@ func (a *App) remoteAgentScope(ctx context.Context) (transport.CallerScope, erro
 	if !ok {
 		return scope, errors.New("this command must originate in an Agent Overflow agent session")
 	}
+	if scope.IsPhase() && !scope.HasGrant("remote-commands") {
+		return scope, errors.New("remote-commands grant required")
+	}
+	if !a.remoteMCPServer().ThreadEnabled(scope.ThreadID) {
+		return scope, errors.New("remote tools are disabled for this conversation")
+	}
 	if a.backends == nil {
 		return scope, errNoBackendProfiles
 	}

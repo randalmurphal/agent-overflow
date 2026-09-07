@@ -184,7 +184,7 @@ func threadMCPServers(rows []mcpapp.ThreadMCPServer) []ThreadMCPServer {
 //ao:scope settings:write
 func (a *App) TriggerMcpAuth(threadID, name string) (MCPAuthInitResult, error) {
 	if isAppManagedMCPServer(name) {
-		return MCPAuthInitResult{}, errors.New("trigger mcp auth: built-in browser does not use provider OAuth")
+		return MCPAuthInitResult{}, errors.New("trigger mcp auth: built-in MCP server does not use provider OAuth")
 	}
 	result, err := a.mcpService().TriggerMcpAuth(threadID, name)
 	return mcpAuthInitResult(result), err
@@ -201,8 +201,8 @@ func (a *App) TriggerMcpAuth(threadID, name string) (MCPAuthInitResult, error) {
 //
 //ao:scope settings:write
 func (a *App) ReconnectMcpServer(threadID, name string) error {
-	if isAppManagedMCPServer(name) {
-		return errors.New("reconnect mcp server: built-in browser is controlled in Settings")
+	if isAppManagedMCPServer(name) && name != remoteMCPName {
+		return errors.New("reconnect mcp server: built-in MCP server is controlled in Settings")
 	}
 	return a.mcpService().ReconnectMcpServer(threadID, name)
 }
@@ -265,7 +265,7 @@ func (a *App) ListThreadMcpServers(threadID string) ([]ThreadMCPServer, error) {
 		return nil, err
 	}
 	_, live := a.sessionManager().get(threadID)
-	return a.withBrowserMCPRow(thread, threadMCPServers(rows), live), nil
+	return a.withRemoteMCPRow(thread, a.withBrowserMCPRow(thread, threadMCPServers(rows), live), live), nil
 }
 
 // ListWorkspaceMcpServers returns the config+cache view of a
@@ -307,6 +307,9 @@ func (a *App) SetThreadMcpServerEnabled(threadID, name string, enabled bool) err
 		if err != nil {
 			return err
 		}
+		if name == remoteMCPName {
+			return a.setRemoteThreadMCPEnabled(thread, enabled)
+		}
 		return a.setBrowserThreadMCPEnabled(thread, enabled)
 	}
 	return a.mcpService().SetThreadMcpServerEnabled(threadID, name, enabled)
@@ -322,7 +325,7 @@ func (a *App) SetThreadMcpServerEnabled(threadID, name string, enabled bool) err
 //ao:stepup
 func (a *App) SetWorkspaceMcpServerEnabled(providerName, workspacePath, name string, enabled bool) error {
 	if isAppManagedMCPServer(name) {
-		return errors.New("set workspace mcp server enabled: built-in browser is controlled in Settings")
+		return errors.New("set workspace mcp server enabled: built-in MCP server is controlled in Settings")
 	}
 	return a.mcpService().SetWorkspaceMcpServerEnabled(providerName, workspacePath, name, enabled)
 }

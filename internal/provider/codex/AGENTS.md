@@ -689,11 +689,3 @@ Params and response shapes are in `codex-wire.md`. These are the AO-side rules.
 - [`docs/references/codex.md`](../../../docs/references/codex.md) for reading
   those sources, [`spike-policy.md`](../../../docs/references/spike-policy.md)
   for when both are silent.
-
-App-owned additional instructions augment `developerInstructions` at cold
-start/resume. Read effective `developer_instructions` with config/read scoped
-to cwd first and prepend the native value; overwriting it would discard user
-config/profile guidance. With no additional guidance, omit the override. This
-field resolves from config on each cold resume, unlike baseInstructions, whose
-rollout inheritance is different. Additional instructions are spawn-only and
-use the existing deferred config restart boundary.

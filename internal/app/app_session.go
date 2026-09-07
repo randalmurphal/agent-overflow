@@ -111,7 +111,6 @@ func (a *App) buildSessionOptions(t store.Thread) (provider.SessionOptions, erro
 	// reconciler — is what keeps a config diff from flapping between a resolved
 	// and an unresolved tier for the same thread.
 	opts.FastModeTierID = a.fastModeTierIDForModel(t.Provider, t.Model)
-	opts.AdditionalInstructions = a.remoteInstructionsForThread(t)
 
 	return opts, nil
 }
@@ -219,6 +218,25 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 		return fmt.Errorf("start session: register browser tools: %w", err)
 	}
 
+	remoteRevision := a.remoteMCP.revision.Load()
+	remoteServers, err := a.remoteMCPConfigForThread(t, sessionToken)
+	if err != nil {
+		return fmt.Errorf("start session: register remote tools: %w", err)
+	}
+	registeredRemote := false
+	defer func() {
+		if !registeredRemote {
+			a.revokeRemoteMCP(threadID, sessionToken)
+		}
+	}()
+	if browserServers == nil {
+		browserServers = remoteServers
+	} else {
+		for name, config := range remoteServers {
+			browserServers[name] = config
+		}
+	}
+
 	// The one side effect a rendered system-prompt override carries. Gated
 	// on the resolution above (which already knows whether the override won
 	// the prompt) and never fatal to the spawn.
@@ -248,6 +266,10 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 	}
 
 	a.sessionManager().put(threadID, newSess)
+	registeredRemote = true
+	if a.remoteMCP.revision.Load() != remoteRevision {
+		a.signalRemotePeers()
+	}
 	a.emitProviderSessionAccount(threadID)
 
 	// Register the freshly-spawned process group with the orphan reaper so

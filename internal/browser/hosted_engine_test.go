@@ -694,6 +694,13 @@ func newFakeCDPServer(t *testing.T, respond func(call fakeCDPCall) any) (wsURL s
 	var mu sync.Mutex
 	var seen []fakeCDPCall
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Local discovery may probe any listening port. Only CDP WebSocket
+		// handshakes belong to this fixture; unrelated HTTP is not a test failure.
+		if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+			http.NotFound(w, r)
+			return
+		}
+
 		conn, _, _, err := ws.UpgradeHTTP(r, w)
 		if err != nil {
 			t.Errorf("upgrade: %v", err)

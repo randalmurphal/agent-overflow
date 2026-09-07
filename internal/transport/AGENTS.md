@@ -1953,7 +1953,8 @@ closes it, and `CloseSession` is that something.
 `commands.remote.v1` advertises the bounded remote-command RPC contract. Peer
 clients verify this flag, protocol and backend identity on the authenticated
 WebSocket before dispatch, and never replay mutations automatically. The
-session-scoped CLI methods require remote-commands for workflow phases.
+session-scoped command methods require remote-commands for workflow phases;
+the MCP adapter rechecks the same grant before calling them.
 `agent-computers:changed` is a latest-only, terminal:operate invalidation of the
 selected source computer's opt-in table; it contains no peer list or secrets.
 PairAgentComputer is selected-computer access:admin plus step-up and still

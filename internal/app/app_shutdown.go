@@ -333,7 +333,8 @@ func (a *App) Shutdown(ctx context.Context) error {
 		a.remoteJobs.Close()
 		record("close remote commands", nil)
 	}
-	a.remotePeers.wg.Wait()
+	a.remoteMCP.wg.Wait()
+	record("close remote MCP server", a.remoteMCPServer().Close())
 	if a.backends != nil {
 		a.backends.WaitOwnDevices()
 	}

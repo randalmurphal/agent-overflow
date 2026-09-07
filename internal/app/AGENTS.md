@@ -1155,12 +1155,29 @@ are tracked in `docs/specs/conversation-transfer.md`.
 
 ## Commands on peer computers
 
-`app_remote_jobs.go` routes the session-scoped AO CLI to explicitly enabled
+`app_remote_jobs.go` routes session-scoped remote commands to explicitly enabled
 paired peers. Pairing a frontend with two computers does not grant those
 computers credentials for each other. The source uses its own attached carrier;
 never copy the phone's key or rotating session into another backend. Agent
 access defaults off and is checked before each start. Status/cancel remain
 available after opt-out for already accepted work.
+
+`app_remote_mcp.go` registers `ao-remote-tools` beside browser MCP for Claude and
+Codex. `threadmcp` owns the shared HTTP boundary. A tool call must match a live
+provider session and rederive its frozen workflow grant and execution ownership.
+Session close/failure/exit revokes only its own capability; replacement and
+thread-disabled state survive stale cleanup. Destination opt-out refuses starts,
+while status/cancel remain usable for accepted work. The composer MCP toggle
+disables all four tools for that thread. Provider descriptions carry usage;
+never append remote CLI guidance to system/developer instructions.
+
+Configuration invalidations coalesce through one lifecycle-owned worker with
+no periodic peer probes. Refresh only registered, enabled live servers; a
+configuration change during provider startup schedules a refresh after Put.
+Remote jobs use durable request IDs selected before execution. MCP responses
+bound wait and output independently of the job lifetime and retained log tail.
+Validate response options before starting a command. A larger requested output
+budget can reveal retained bytes, never recover output discarded by retention.
 
 Enabling first verifies the authenticated peer's identity, protocol, command
 capability and terminal scope. Disabling never needs a live peer. A saved

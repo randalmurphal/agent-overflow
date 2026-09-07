@@ -122,6 +122,7 @@ func (a *App) runSessionStart(ctx context.Context, threadID string, start func()
 }
 
 func (a *App) closeProviderSession(threadID string, sess session) error {
+	a.revokeRemoteMCP(threadID, sess.Token)
 	providerSess := sess.ProviderSession()
 	if providerSess == nil {
 		return nil

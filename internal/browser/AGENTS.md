@@ -17,7 +17,7 @@ an absence rather than 28 tools that could only fail.
 
 ## Ownership and isolation
 
-- `MCPServer` owns the loopback Streamable HTTP endpoint. Every provider
+- `MCPServer` uses `internal/threadmcp` for the loopback Streamable HTTP endpoint. Every provider
   thread receives an unguessable capability URL; unregistering the thread
   revokes it and closes only that thread's pages.
 - The capability URL is not the only check. Before any method dispatch,
@@ -575,3 +575,6 @@ builder for macOS.
   directives and reports cross to.
 - `internal/cdprelay/AGENTS.md`: the tunnel the hosted engine attaches chromedp
   through.
+
+The fake CDP listener returns 404 to ordinary HTTP discovery probes before
+checking a WebSocket handshake. Port discovery can reach test listeners too.

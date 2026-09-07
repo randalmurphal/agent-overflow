@@ -10,7 +10,6 @@ import (
 
 	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/gitapp"
-	"agent-overflow/internal/provider"
 	"agent-overflow/internal/remotejobs"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
@@ -194,66 +193,5 @@ func TestAgentRemoteEnableChecksPairingAndDestinationScope(t *testing.T) {
 				t.Fatal("forgotten revoked peer cannot be disabled:", err)
 			}
 		})
-	}
-}
-
-func TestAgentRemoteDiscoveryAddsAndRemovesProviderGuidance(t *testing.T) {
-	backend := newPairedBackend(t)
-	source := identityApp(t)
-	manager, err := attachedbackends.New(t.TempDir(), "test source", "linux")
-	if err != nil {
-		t.Fatal(err)
-	}
-	source.backends = manager
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	source.appCtx = ctx
-	t.Cleanup(func() { cancel(); source.remotePeers.wg.Wait() })
-	invite, _ := backend.mintLink(t, "full")
-	peer, err := manager.Add(ctx, invite.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.app.ConfirmDevicePairing(invite.LinkID); err != nil {
-		t.Fatal(err)
-	}
-	if err := manager.Await(ctx, peer.ID); err != nil {
-		t.Fatal(err)
-	}
-	source.startRemotePeerDiscovery()
-	thread := store.Thread{ID: uuid.NewString(), ProjectID: uuid.NewString(), Provider: string(provider.Claude)}
-	if source.remoteInstructionsForThread(thread) != "" {
-		t.Fatal("guidance appeared before opt-in")
-	}
-	if err := source.SetAgentComputerEnabled(ctx, peer.ID, true); err != nil {
-		t.Fatal(err)
-	}
-	awaitReady := func(want bool) {
-		t.Helper()
-		for source.remotePeers.ready.Load() != want {
-			select {
-			case <-ctx.Done():
-				t.Fatal("peer discovery did not converge", want)
-			case <-time.After(5 * time.Millisecond):
-			}
-		}
-	}
-	awaitReady(true)
-	for _, name := range []string{string(provider.Claude), string(provider.Codex)} {
-		thread.Provider = string(name)
-		if !strings.Contains(source.remoteInstructionsForThread(thread), "remote run") {
-			t.Fatal("missing peer guidance", name)
-		}
-	}
-	thread.Provider = "claude-tui"
-	if source.remoteInstructionsForThread(thread) != "" {
-		t.Fatal("unsupported provider got command guidance")
-	}
-	if err := source.SetAgentComputerEnabled(ctx, peer.ID, false); err != nil {
-		t.Fatal(err)
-	}
-	awaitReady(false)
-	thread.Provider = string(provider.Claude)
-	if source.remoteInstructionsForThread(thread) != "" {
-		t.Fatal("guidance survived disabling the peer")
 	}
 }

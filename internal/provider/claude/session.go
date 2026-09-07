@@ -38,8 +38,7 @@ type Session struct {
 	// `--system-prompt-file`, or "" when the session carries no override.
 	// Removed by Close; see WriteSystemPromptFile for why the prompt does
 	// not travel in argv.
-	systemPromptPath     string
-	additionalPromptPath string
+	systemPromptPath string
 	// allowsBypassPermissions records whether the process was spawned with
 	// --allow-dangerously-skip-permissions. The CLI rejects a live
 	// set_permission_mode escalation to bypassPermissions without it
@@ -240,14 +239,6 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		return nil, fmt.Errorf("claude: %w", err)
 	}
 	args := buildArgs(cfg, systemPromptPath)
-	additionalPromptPath, err := WriteSystemPromptFile(cfg.AdditionalInstructions)
-	if err != nil {
-		RemoveSystemPromptFile(systemPromptPath)
-		return nil, fmt.Errorf("claude: %w", err)
-	}
-	if additionalPromptPath != "" {
-		args = append(args, "--append-system-prompt-file", additionalPromptPath)
-	}
 
 	childCtx, cancel := context.WithCancel(ctx)
 
@@ -264,14 +255,12 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	if err != nil {
 		cancel()
 		RemoveSystemPromptFile(systemPromptPath)
-		RemoveSystemPromptFile(additionalPromptPath)
 		return nil, fmt.Errorf("claude: spawn: %w", err)
 	}
 
 	s := &Session{
 		proc:                     proc,
 		systemPromptPath:         systemPromptPath,
-		additionalPromptPath:     additionalPromptPath,
 		threadID:                 threadID,
 		workDir:                  cfg.WorkDir,
 		projectsDir:              cfg.ProjectsDir,
@@ -370,7 +359,6 @@ func (s *Session) Close() error {
 	// removing it while a wedged process might still be starting up would
 	// turn a slow spawn into a missing system prompt.
 	RemoveSystemPromptFile(s.systemPromptPath)
-	RemoveSystemPromptFile(s.additionalPromptPath)
 	// Release parser-owned state so the dedup sets
 	// (completedToolUseIDs, completedTasks, backgroundToolUses, etc.)
 	// don't linger after the readLoop exits.
