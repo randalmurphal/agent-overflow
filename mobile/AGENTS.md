@@ -116,9 +116,18 @@ hold the transfer monitor around blocking IO; cancellation must unblock it.
 Small JSON numbers arrive as Integer in Capacitor; read the bounded byte length
 with getInt, never getLong (which returns its default for an Integer). A bodyless POST still needs an empty native RequestBody
 for the ticket endpoint. Blocking IO uses a bounded executor, never Capacitor's
-single plugin thread. Socket messages acknowledge delivery before Java queues
-another; a suspended WebView therefore backpressures the socket instead of
-accumulating bridge events. WSClient still owns reconnection and replay.
+single plugin thread. Socket opens opt into `batchMessages`; older SPAs still receive one `message`
+per acknowledgement, and older APKs ignore the option. Opted-in clients receive
+ordered `messages` arrays with a per-delivery sequence and acknowledge that
+sequence once. `SocketMessages` delivers the first message immediately and
+batches messages accumulated behind it, with no timer. Its 64-message / 256-Ki
+UTF-16-character budget includes both queued and unacknowledged deliveries; one
+oversized frame may travel alone under the existing frame limit. A full budget
+blocks OkHttp's reader, never the plugin thread. Stale/duplicate sequence ACKs
+cannot release a later batch. Cancellation clears retained messages and wakes
+waiters. A normal peer close waits for the queued tail to be acknowledged before
+notifying JS; cancellation and timeout still leave recovery to WSClient.
+Callbacks run outside the queue monitor. WSClient owns reconnection and replay.
 
 `PinnedNetworkTest` proves real TLS pin verification, refusal before credentials,
 no redirect following, streamed bodies, cancellation and the ordinary WS wire

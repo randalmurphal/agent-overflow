@@ -34,9 +34,13 @@ sliding under the 50 MiB file one.
 
 - `store.go`: `Store` type plus the `Upload` / `CopyToThread` / `Read` /
   `Delete` lifecycle, the kind rule (`classifyUpload`), and the on-disk
-  layout. Owns the `tmp → insert-row → atomic rename` sequence
-  (`commitStagedWrite`) so a crash at any point leaves a consistent
-  view.
+  layout. `StageUpload` streams to a root-private `.upload-<uuid>.tmp`;
+  `StagedUpload.Commit` publishes under the caller's thread mutation lock.
+  `Abort` removes an uncommitted stage. `Upload` composes both phases for
+  already-serialized callers. `commitStagedWrite` retains the existing
+  insert-row → atomic rename sequence and rollback on reported errors.
+  Process death between those two operations can leave missing final bytes;
+  staged files themselves are never referenced by metadata.
 - `promptline.go`: `PromptLine` / `FormatSize` — the one formatter for
   the `[Attached file …]` line a `file` reaches the agent as. Mirrored
   by `formatAttachmentSize` in `frontend/src/lib/types/attachment.ts`,
@@ -104,10 +108,20 @@ at its caller:
   allocation this path removed. A `file` has no signature that would mean
   anything, so it streams verbatim.
 
-The tmp file is removed by ONE deferred cleanup covering every failure
-path. A streaming write has more ways to fail part-way than the single
-`os.WriteFile` it replaced — the reader can error after the file exists
-and has content — so per-branch removal would be a list to keep in step.
+`StagedUpload` owns the temporary file and removes it on staging failure.
+Callers defer `Abort` after successful staging; `Commit` consumes that
+ownership and rolls back failed publication. Never leave cleanup to the
+HTTP caller or scatter direct file removal across app failure paths.
+
+App upload admission checks thread existence and transfer ownership before
+reading, releases the mutation lock while staging, then rechecks under the
+same lock before Commit. Thread deletion holds that lock for final file/row
+cleanup. Never put network reads back under it: a stalled body otherwise
+blocks composer saves and queue admission. Stages stay outside thread
+directories so delete/transfer cannot capture partial bytes. `NewStore` runs
+before uploads begin under exclusive data-root ownership and prunes only
+reserved root stage filenames; interrupted legacy copy `.tmp` siblings
+retain their existing behavior.
 
 ## Responsibility boundary
 
@@ -140,8 +154,9 @@ and has content — so per-branch removal would be a list to keep in step.
   it is "an image": every type here is painted at the app's own origin
   (`internal/surfaces`, `PostureOpaqueMedia`), so SVG is a `file`
   deliberately and promoting it would make that classification false.
-- To change the write flow: preserve the "DB row + final file both
-  exist, or neither does" invariant. Test the crash points.
+- To change the write flow: preserve rollback on reported failures and
+  explicit ownership of unpublished bytes. Test failure points; do not
+  describe the SQLite insert and filesystem rename as crash-atomic.
 - To clone an attachment onto another thread: `CopyToThread`, which
   copies the bytes on disk under the same invariant. Do NOT round-trip
   through `ReadThreadBytes` + `Upload` — that re-validates a payload the
@@ -150,9 +165,10 @@ and has content — so per-branch removal would be a list to keep in step.
 
 ## Anti-patterns
 
-- Do NOT write the final file before inserting the metadata row. The
-  tmp-then-rename order exists so a crash never leaves an orphan file
-  referenced by a DB row.
+- Do NOT bypass `commitStagedWrite` when publishing staged bytes. Its
+  metadata insert, atomic rename and failed-rename rollback must stay shared
+  across uploads and copies. These are separate disk operations, with the
+  process-death gap described above.
 - Do NOT gate "safe to hand back to a client" on the MIME type. The
   attachment root now holds arbitrary bytes; the guarantee lives on the
   KIND, and every byte-serving path goes through `ReadThreadBytes` /

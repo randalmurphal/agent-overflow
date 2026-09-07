@@ -3,9 +3,11 @@ import { unthenable } from './plugins';
 
 export interface SocketEvent {
   id: string;
-  type: 'open' | 'message' | 'close' | 'error';
+  type: 'open' | 'message' | 'messages' | 'close' | 'error';
   data: string;
   code: number;
+  messages?: string[];
+  sequence?: number;
 }
 
 export interface NetworkPlugin {
@@ -15,9 +17,9 @@ export interface NetworkPlugin {
   httpWrite(options: { id: string; data: string; end: boolean }): Promise<void>;
   httpRead(options: { id: string }): Promise<{ data: string }>;
   httpClose(options: { id: string }): Promise<void>;
-  socketOpen(options: { id: string; url: string; pin: string }): Promise<void>;
+  socketOpen(options: { id: string; url: string; pin: string; batchMessages?: boolean }): Promise<void>;
   socketSend(options: { id: string; data: string }): Promise<void>;
-  socketAck(options: { id: string }): Promise<void>;
+  socketAck(options: { id: string; sequence?: number }): Promise<void>;
   socketClose(options: { id: string }): Promise<void>;
   addListener(event: 'socket', handler: (event: SocketEvent) => void): Promise<{ remove(): Promise<void> }>;
 }

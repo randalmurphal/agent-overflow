@@ -95,6 +95,10 @@ func (s *Service) DeleteTree(threadID string, subtreeLocksHeld bool, ports Delet
 	if ports.ClearAutoReconnect != nil {
 		ports.ClearAutoReconnect(threadID)
 	}
+	// Network uploads stage outside the thread. Serialize only publication
+	// and final deletion, after provider/process cleanup has finished.
+	unlockMutation := s.mutations.Lock(threadID)
+	defer unlockMutation()
 	if ports.CleanupAttachments != nil {
 		if err := ports.CleanupAttachments(threadID); err != nil {
 			errs = append(errs, fmt.Errorf("cleanup attachments: %w", err))

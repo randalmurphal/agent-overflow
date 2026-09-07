@@ -63,6 +63,12 @@ What stays in `internal/app`:
   retirement. Project/worktree cleanup uses that same distinction: retired
   caches are never reattached or resumed. Store-only bulk metadata checks within its own
   writer transaction instead. Neither registry is a cached ownership model.
+- `DeleteTree` holds the mutation lock for final attachment cleanup and row
+  deletion, after slow provider/terminal cleanup. Uploads stage outside this
+  lock and reacquire it for ownership-checked publication. Keep action →
+  mutation ordering; a partial upload must not delay draft/queue edits or
+  publish after deletion. Empty draft deletion uses the same final boundary
+  and rechecks emptiness there.
 - Public metadata reads use `GetOwnedThread`, the same SQL ownership view as
   lists. Internal `Store.GetThread` can still read a retained transfer cache;
   exposing that row would restore a retired owner on reconnect.

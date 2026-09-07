@@ -31,7 +31,7 @@ export class PinnedSocket {
       if (this.readyState !== 0) return;
       this.plugin = plugin;
       this.started = true;
-      await plugin.socketOpen({ id: this.id, url, pin });
+      await plugin.socketOpen({ id: this.id, url, pin, batchMessages: true });
       // Closing during the asynchronous native open must close what it just
       // created, even if the earlier close arrived before it existed.
       if (sockets.get(this.id) !== this) await plugin.socketClose({ id: this.id });
@@ -59,9 +59,17 @@ export class PinnedSocket {
       if (this.readyState !== 0) return;
       this.readyState = 1;
       this.events.dispatchEvent(new Event('open'));
-    } else if (event.type === 'message' && this.readyState === 1) {
-      this.events.dispatchEvent(new MessageEvent('message', { data: event.data }));
-      void this.plugin?.socketAck({ id: this.id }).catch((error) => this.fail(String(error)));
+    } else if ((event.type === 'message' || event.type === 'messages') && this.readyState === 1) {
+      // Old shells deliver one frame; newer shells amortize bridge round trips
+      // over bounded batches. Transport still receives the original ordered frames.
+      const messages = event.type === 'messages' ? event.messages ?? [] : [event.data];
+      for (const data of messages) {
+        if (this.readyState !== 1) return;
+        this.events.dispatchEvent(new MessageEvent('message', { data }));
+      }
+      if (this.readyState !== 1) return;
+      const ack = event.type === 'messages' ? { id: this.id, sequence: event.sequence } : { id: this.id };
+      void this.plugin?.socketAck(ack).catch((error) => this.fail(String(error)));
     } else if (event.type === 'error') this.fail(event.data);
     else if (event.type === 'close') this.finish(event.code, event.data);
   }

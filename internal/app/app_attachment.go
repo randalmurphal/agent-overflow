@@ -239,7 +239,7 @@ func (t attachmentTransfer) OpenAttachment(threadID, attachmentID string) (trans
 // internal/store; the transport marshals nothing of its own and learns
 // nothing about what an attachment is.
 func (t attachmentTransfer) StoreAttachment(req transport.AttachmentUpload) (json.RawMessage, error) {
-	record, err := t.app.storeAttachment(req.ThreadID, req.Filename, req.MimeType, req.Size, req.Body)
+	record, err := t.app.storeAttachment(req.Context, req.ThreadID, req.Filename, req.MimeType, req.Size, req.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -252,14 +252,48 @@ func (t attachmentTransfer) StoreAttachment(req transport.AttachmentUpload) (jso
 // making it a method the binding generator can see would put back the RPC
 // wave 6b removed. The transfer adapter above and the package's own tests
 // reach it here instead.
-func (a *App) storeAttachment(threadID, filename, mimeType string, size int64, body io.Reader) (store.Attachment, error) {
+func (a *App) storeAttachment(ctx context.Context, threadID, filename, mimeType string, size int64, body io.Reader) (store.Attachment, error) {
 	if a.attachments == nil {
 		return store.Attachment{}, fmt.Errorf("attachment store not initialized")
 	}
-	unlock, err := a.threadApplication().LockMutable(context.Background(), threadID)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	unlock, err := a.lockAttachmentUpload(ctx, threadID)
+	if err != nil {
+		return store.Attachment{}, err
+	}
+	unlock()
+	staged, err := a.attachments.StageUpload(threadID, filename, mimeType, size, body, time.Now().UnixMilli())
+	if err != nil {
+		return store.Attachment{}, err
+	}
+	defer staged.Abort()
+	unlock, err = a.lockAttachmentUpload(ctx, threadID)
 	if err != nil {
 		return store.Attachment{}, err
 	}
 	defer unlock()
-	return a.attachments.Upload(threadID, filename, mimeType, size, body, time.Now().UnixMilli())
+	return staged.Commit()
+}
+
+func (a *App) lockAttachmentUpload(ctx context.Context, threadID string) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	unlock, err := a.threadApplication().LockMutable(ctx, threadID)
+	if err != nil {
+		return nil, err
+	}
+	// LockMutable permits missing rows for cleanup operations. Uploads need
+	// an existing owner both before receiving bytes and before publication.
+	if _, err := a.store.GetThread(threadID); err != nil {
+		unlock()
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		unlock()
+		return nil, err
+	}
+	return unlock, nil
 }

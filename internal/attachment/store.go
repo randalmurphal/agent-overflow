@@ -117,7 +117,8 @@ type Store struct {
 	meta        *store.Store
 }
 
-// NewStore creates the root directory if needed and returns a ready store.
+// NewStore initializes the exclusively owned root before uploads begin and
+// removes abandoned upload stages. Never reopen a root with active uploads.
 // Errors are fatal — callers are expected to return them from startup.
 func NewStore(cfg Config, meta *store.Store) (*Store, error) {
 	if cfg.RootDir == "" {
@@ -137,6 +138,22 @@ func NewStore(cfg Config, meta *store.Store) (*Store, error) {
 	}
 	if err := ensurePrivateTree(cfg.RootDir); err != nil {
 		return nil, fmt.Errorf("attachment: create root %s: %w", cfg.RootDir, err)
+	}
+	entries, err := os.ReadDir(cfg.RootDir)
+	if err != nil {
+		return nil, fmt.Errorf("attachment: read staging directory: %w", err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !entry.Type().IsRegular() || !strings.HasPrefix(name, ".upload-") || !strings.HasSuffix(name, ".tmp") {
+			continue
+		}
+		if _, err := uuid.Parse(strings.TrimSuffix(strings.TrimPrefix(name, ".upload-"), ".tmp")); err != nil {
+			continue
+		}
+		if err := os.Remove(filepath.Join(cfg.RootDir, name)); err != nil {
+			return nil, fmt.Errorf("attachment: remove abandoned upload: %w", err)
+		}
 	}
 	return &Store{root: cfg.RootDir, maxSize: cfg.MaxSize, maxFileSize: cfg.MaxFileSize, meta: meta}, nil
 }
@@ -180,16 +197,15 @@ const copyBufferSize = 32 << 10
 
 // Upload STREAMS one attachment body onto disk, decides its kind, validates
 // it, and inserts a metadata row atomically from the caller's point of view.
-// The sequence is: write to a tmp sibling file first, INSERT the DB row,
+// The sequence is: write to a root-private staging file, INSERT the DB row,
 // then atomic rename to the final path on commit. If the DB insert fails
 // the staged bytes are removed; if the atomic rename fails the DB row is
 // deleted. ThreadID must reference an existing thread (FK enforced).
 //
-// The tmp-then-rename pattern means a crash at ANY point leaves a
-// consistent view: either the DB row + final file both exist, or
-// neither does. A tmp file left behind after a crash is detectable by
-// its .tmp suffix; we don't currently sweep those, but they're bounded
-// in size and never referenced from any code path.
+// Staged bytes are never referenced by metadata. NewStore removes abandoned
+// root staging files before serving uploads. Failed commits remove their row
+// and staged bytes; process death between metadata INSERT and rename retains
+// the existing crash window where a row can reference a missing final file.
 //
 // The kind is decided BEFORE the size check, so a 30 MiB PNG is still
 // refused at the image cap rather than sliding under the file one.
@@ -209,73 +225,96 @@ const copyBufferSize = 32 << 10
 // allocation this path exists to remove. A file streams verbatim: there is
 // no signature that would mean anything for an arbitrary file.
 func (s *Store) Upload(threadID, filename, mimeType string, declaredSize int64, body io.Reader, createdAt int64) (store.Attachment, error) {
+	staged, err := s.StageUpload(threadID, filename, mimeType, declaredSize, body, createdAt)
+	if err != nil {
+		return store.Attachment{}, err
+	}
+	defer staged.Abort()
+	return staged.Commit()
+}
+
+// StagedUpload owns unpublished bytes. Call Abort on every exit; Commit consumes
+// the stage once. The caller serializes Commit with thread deletion/transfer.
+// Stage/Commit/Abort are single-owner operations, not concurrent methods.
+type StagedUpload struct {
+	owner            *Store
+	record           store.Attachment
+	temporary, final string
+}
+
+// StageUpload validates and streams bounded bytes outside the thread directory.
+// No metadata or final path exists until Commit; a thread can be deleted or
+// transferred during the upload without capturing incomplete bytes.
+func (s *Store) StageUpload(threadID, filename, mimeType string, declaredSize int64, body io.Reader, createdAt int64) (*StagedUpload, error) {
 	if strings.TrimSpace(threadID) == "" {
-		return store.Attachment{}, errors.New("attachment: thread id is required")
+		return nil, errors.New("attachment: thread id is required")
 	}
 	if strings.TrimSpace(filename) == "" {
-		return store.Attachment{}, errors.New("attachment: filename is required")
+		return nil, errors.New("attachment: filename is required")
 	}
 	if body == nil {
-		return store.Attachment{}, errors.New("attachment: body is required")
+		return nil, errors.New("attachment: body is required")
 	}
 	if declaredSize <= 0 {
-		return store.Attachment{}, errors.New("attachment: payload is empty")
+		return nil, errors.New("attachment: payload is empty")
 	}
 
 	upload, err := classifyUpload(mimeType, filename)
 	if err != nil {
-		return store.Attachment{}, err
+		return nil, err
 	}
 	if limit := s.MaxSizeFor(upload.kind); declaredSize > limit {
-		return store.Attachment{}, fmt.Errorf("attachment: payload %d bytes exceeds limit %d", declaredSize, limit)
+		return nil, fmt.Errorf("attachment: payload %d bytes exceeds limit %d", declaredSize, limit)
 	}
 
 	id := uuid.NewString()
 	relativePath := upload.relativePath(threadID, id)
-	absolutePath, err := s.resolveWritePath(relativePath)
+	final, err := s.resolveWritePath(relativePath)
 	if err != nil {
-		return store.Attachment{}, err
+		return nil, err
 	}
-	tmpPath := absolutePath + ".tmp"
+	staged := &StagedUpload{owner: s, temporary: filepath.Join(s.root, ".upload-"+id+".tmp"), final: final,
+		record: store.Attachment{ID: id, ThreadID: threadID, Filename: filename, MimeType: upload.mime, Size: declaredSize,
+			RelativePath: filepath.ToSlash(relativePath), CreatedAt: createdAt, Kind: upload.kind}}
+	written, err := s.writeTemp(staged.temporary, upload, declaredSize, body)
+	if err != nil {
+		staged.Abort()
+		return nil, err
+	}
+	if written != declaredSize {
+		staged.Abort()
+		return nil, fmt.Errorf("attachment: body delivered %d bytes, declared %d", written, declaredSize)
+	}
+	return staged, nil
+}
 
-	// Everything staged below comes off again on any failure, by this one
-	// defer: a streaming write has more ways to fail part-way than a single
-	// os.WriteFile did, and for a file the stage includes its own directory.
+func (u *StagedUpload) Abort() {
+	if u.temporary != "" {
+		_ = os.Remove(u.temporary)
+		u.temporary = ""
+	}
+}
+
+func (u *StagedUpload) Commit() (store.Attachment, error) {
+	if u.temporary == "" {
+		return store.Attachment{}, errors.New("attachment: upload already finished")
+	}
+	temporary := u.temporary
+	u.temporary = ""
 	committed := false
 	defer func() {
 		if !committed {
-			s.rollbackStagedWrite(upload.kind, tmpPath, absolutePath)
+			u.owner.rollbackStagedWrite(u.record.Kind, temporary, u.final)
 		}
 	}()
-
-	// For a file this creates the attachment's own `<id>` directory; for an
-	// image it is the thread directory, which usually already exists.
-	if err := os.MkdirAll(filepath.Dir(absolutePath), privateDirPerm); err != nil {
+	if err := os.MkdirAll(filepath.Dir(u.final), privateDirPerm); err != nil {
 		return store.Attachment{}, fmt.Errorf("attachment: mkdir: %w", err)
 	}
-	written, err := s.writeTemp(tmpPath, upload, declaredSize, body)
-	if err != nil {
-		return store.Attachment{}, err
-	}
-	if written != declaredSize {
-		return store.Attachment{}, fmt.Errorf("attachment: body delivered %d bytes, declared %d", written, declaredSize)
-	}
-
-	record := store.Attachment{
-		ID:           id,
-		ThreadID:     threadID,
-		Filename:     filename,
-		MimeType:     upload.mime,
-		Size:         declaredSize,
-		RelativePath: filepath.ToSlash(relativePath),
-		CreatedAt:    createdAt,
-		Kind:         upload.kind,
-	}
-	if err := s.commitStagedWrite(record, tmpPath, absolutePath); err != nil {
+	if err := u.owner.commitStagedWrite(u.record, temporary, u.final); err != nil {
 		return store.Attachment{}, err
 	}
 	committed = true
-	return record, nil
+	return u.record, nil
 }
 
 // writeTemp streams the body into the staging file and reports how many
@@ -343,8 +382,8 @@ func (s *Store) commitStagedWrite(record store.Attachment, tmpPath, absolutePath
 // rollbackStagedWrite removes what a failed write left behind. A `file`
 // owns its whole `<id>` directory, so that is what comes off — otherwise a
 // failed upload would leave an empty directory per attempt under the
-// thread. An image only ever staged a tmp sibling in the shared thread
-// directory, so only that file is removed.
+// thread. An image shares its final directory with other attachments, so
+// rollback removes only its staging file (root upload stage or copy sibling).
 func (s *Store) rollbackStagedWrite(kind, tmpPath, absolutePath string) {
 	_ = os.Remove(tmpPath)
 	if kind == store.AttachmentKindFile {

@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -189,12 +190,14 @@ type AttachmentContent struct {
 
 // AttachmentUpload is one streamed upload as it reaches the app side.
 //
-// Every field except Body comes from the TICKET's subject, never from the
+// Every field except Body and Context comes from the TICKET's subject, never from the
 // request. A filename or a content type read off the wire would be a
 // caller describing bytes it is in the middle of sending, and the whole
 // value of minting through an authorized RPC is that the description was
 // fixed by a call the scope gate had already judged.
 type AttachmentUpload struct {
+	// Context bounds admission waits and cancels unpublished uploads.
+	Context  context.Context
 	ThreadID string
 	Filename string
 	MimeType string
@@ -434,6 +437,7 @@ func (s *Server) handleAttachmentUpload(w http.ResponseWriter, r *http.Request) 
 	}
 	extendTransferDeadline(w, AttachmentTransferWindowFor(upload.Size))
 	upload.Body = http.MaxBytesReader(w, r.Body, upload.Size)
+	upload.Context = r.Context()
 
 	record, err := transfer.StoreAttachment(upload)
 	if err != nil {

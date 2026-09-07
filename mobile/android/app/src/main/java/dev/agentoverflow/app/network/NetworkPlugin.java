@@ -1,6 +1,7 @@
 package dev.agentoverflow.app.network;
 
 import com.getcapacitor.JSObject;
+import com.getcapacitor.JSArray;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
@@ -30,11 +31,12 @@ public class NetworkPlugin extends Plugin {
     private final HttpStreams http = new HttpStreams(clients);
     private static final class SocketSlot {
         volatile WebSocket socket;
-        final java.util.concurrent.Semaphore delivery = new java.util.concurrent.Semaphore(1);
+        final SocketMessages delivery;
+        SocketSlot(SocketMessages delivery) { this.delivery = delivery; }
         volatile boolean closed;
         void close() {
             closed = true;
-            delivery.release();
+            delivery.close();
             if (socket != null) socket.cancel();
         }
     }
@@ -120,7 +122,15 @@ public class NetworkPlugin extends Plugin {
         if (!id.matches("[a-zA-Z0-9-]{1,80}") || sockets.containsKey(id) || sockets.size() >= 32) {
             call.reject("Too many connections or invalid connection id"); return;
         }
-        SocketSlot slot = new SocketSlot();
+        boolean batchMessages = call.getBoolean("batchMessages", false);
+        SocketSlot slot = new SocketSlot(new SocketMessages(batchMessages, batch -> {
+            if (batchMessages) {
+                JSObject event = new JSObject();
+                event.put("id", id); event.put("type", "messages");
+                event.put("messages", new JSArray(batch.messages)); event.put("sequence", batch.sequence);
+                notifyListeners("socket", event);
+            } else event(id, "message", batch.messages.get(0), 0);
+        }));
         sockets.put(id, slot);
         try {
             Request request = new Request.Builder().url(PinnedClients.endpoint(call.getString("url", "")))
@@ -130,16 +140,22 @@ public class NetworkPlugin extends Plugin {
                 @Override public void onMessage(WebSocket ws, String text) {
                     if (text.length() > 75 * 1024 * 1024) { ws.close(1009, "Frame too large"); return; }
                     try {
-                        if (!slot.delivery.tryAcquire(60, TimeUnit.SECONDS) || slot.closed) {
+                        if (!slot.delivery.add(text)) {
                             ws.cancel(); return;
                         }
-                        event(id, "message", text, 0);
                     } catch (InterruptedException interrupted) {
                         Thread.currentThread().interrupt(); ws.cancel();
                     }
                 }
                 @Override public void onMessage(WebSocket ws, ByteString bytes) { ws.close(1003, "Text frames required"); }
-                @Override public void onClosing(WebSocket ws, int code, String reason) { ws.close(code, reason); }
+                @Override public void onClosing(WebSocket ws, int code, String reason) {
+                    try {
+                        if (slot.delivery.awaitDrained()) ws.close(code, reason);
+                        else ws.cancel();
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt(); ws.cancel();
+                    }
+                }
                 @Override public void onClosed(WebSocket ws, int code, String reason) {
                     sockets.remove(id, slot); slot.close(); event(id, "close", reason, code);
                 }
@@ -156,7 +172,7 @@ public class NetworkPlugin extends Plugin {
 
     @PluginMethod public void socketAck(PluginCall call) {
         SocketSlot slot = sockets.get(call.getString("id", ""));
-        if (slot != null && slot.delivery.availablePermits() == 0) slot.delivery.release();
+        if (slot != null) slot.delivery.acknowledge(call.getInt("sequence", -1));
         call.resolve();
     }
 

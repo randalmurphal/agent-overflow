@@ -208,6 +208,16 @@ func (a *App) DeleteEmptyDraftThread(threadID string) (bool, error) {
 	a.clearThreadSystemPrompt(threadID)
 	a.removeDeliberation(thread)
 	a.clearAutoReconnectAttempted(threadID)
+	unlockMutation, err := a.threadApplication().LockMutable(context.Background(), threadID)
+	if err != nil {
+		return false, err
+	}
+	defer unlockMutation()
+	// Upload publication or another frontend's draft save may have won
+	// while the provider/terminal cleanup ran outside the mutation lock.
+	if empty, err := a.store.IsEmptyDraftThread(threadID); err != nil || !empty {
+		return false, err
+	}
 	if err := a.cleanupThreadAttachmentFiles(threadID); err != nil {
 		errs = append(errs, fmt.Errorf("cleanup attachments: %w", err))
 	}

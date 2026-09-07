@@ -143,7 +143,48 @@ describe('native sockets', () => {
     event({ id, type: 'message', data: 'stale', code: 0 });
     expect(messages).toEqual(['reply']);
     expect(bridge.socketSend).toHaveBeenCalledWith({ id, data: 'request' });
+    expect(bridge.socketAck).toHaveBeenCalledExactlyOnceWith({ id });
+    expect(bridge.socketOpen).toHaveBeenCalledWith(expect.objectContaining({ batchMessages: true }));
     expect(ws.readyState).toBe(3);
+  });
+
+  it('delivers batches in wire order and acknowledges each socket after dispatch', async () => {
+    const { PinnedSocket } = await import('./networkSocket');
+    const first = new PinnedSocket('wss://gpu.test/ws', PIN);
+    const second = new PinnedSocket('wss://mac.test/ws', PIN);
+    const received: string[] = [];
+    first.addEventListener('message', ({ data }) => {
+      expect(bridge.socketAck).not.toHaveBeenCalled();
+      received.push(data);
+    });
+    second.addEventListener('message', ({ data }) => received.push(data));
+    await vi.waitFor(() => expect(bridge.socketOpen).toHaveBeenCalledTimes(2));
+    const event = bridge.addListener.mock.calls[0][1];
+    const [a, b] = bridge.socketOpen.mock.calls.map(([options]) => options.id);
+    for (const id of [a, b]) event({ id, type: 'open', data: '', code: 0 });
+    event({ id: a, type: 'messages', messages: ['delta', 'completion', 'rpc reply'], sequence: 12, data: '', code: 0 });
+    event({ id: b, type: 'messages', messages: ['other reply'], sequence: 1, data: '', code: 0 });
+    expect(received).toEqual(['delta', 'completion', 'rpc reply', 'other reply']);
+    expect(bridge.socketAck.mock.calls).toEqual([[{ id: a, sequence: 12 }], [{ id: b, sequence: 1 }]]);
+    first.close();
+    second.close();
+  });
+
+  it('drops the rest of a batch when transport closes during delivery', async () => {
+    const { PinnedSocket } = await import('./networkSocket');
+    const ws = new PinnedSocket('wss://gpu.test/ws', PIN);
+    const received: string[] = [];
+    ws.addEventListener('message', ({ data }) => { received.push(data); ws.close(); });
+    await vi.waitFor(() => expect(bridge.socketOpen).toHaveBeenCalledTimes(1));
+    const event = bridge.addListener.mock.calls[0][1];
+    const { id } = bridge.socketOpen.mock.calls[0][0];
+    event({ id, type: 'open', data: '', code: 0 });
+    const batch: SocketEvent = { id, type: 'messages', messages: ['close now', 'stale'], sequence: 1, data: '', code: 0 };
+    event(batch);
+    event(batch);
+    expect(received).toEqual(['close now']);
+    expect(bridge.socketAck).not.toHaveBeenCalled();
+    expect(bridge.socketClose).toHaveBeenCalledTimes(1);
   });
 
   it('closes a native socket that finishes opening after cancellation', async () => {

@@ -915,6 +915,12 @@ late echoes, simultaneous cross-method retries and workflow preflight.
 
 ## Composer draft consumption
 
+Attachment upload bytes stage outside the thread mutation lock. Only initial
+ownership admission and final publication take it, so slow uploads cannot
+block draft saves or queue registration. Both check thread existence; final
+publication also respects request cancellation and any intervening transfer.
+Thread deletion shares that publication lock (see `threadapp/AGENTS.md`).
+
 `SendMessageOptions.consumeDraft` names the persisted composer snapshot captured
 before sending. Direct admission and queue admission compare/delete that exact
 snapshot through `removeThreadDraft`; they share `encodeThreadDraft` with

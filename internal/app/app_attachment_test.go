@@ -82,7 +82,7 @@ func pngSignature() []byte {
 // this; the tests that care about the transfer itself go over HTTP below.
 func uploadTestAttachment(t *testing.T, app *App, threadID, filename, mimeType string, data []byte) store.Attachment {
 	t.Helper()
-	record, err := app.storeAttachment(threadID, filename, mimeType, int64(len(data)), bytes.NewReader(data))
+	record, err := app.storeAttachment(context.Background(), threadID, filename, mimeType, int64(len(data)), bytes.NewReader(data))
 	if err != nil {
 		t.Fatalf("storeAttachment(%s): %v", filename, err)
 	}
