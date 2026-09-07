@@ -211,9 +211,9 @@ their next frame supersedes the lost one, which mirrors `Replay`'s carve-out.
 
 Before 2026-08-29 the server never recorded a drop, and detection relied
 entirely on the client noticing a seq forward-skip on a LATER same-channel
-delivery. A flood starves exactly that: during a subagent fan-out storm the
-dropped channel's next frames were themselves dropped, so no skip was ever
-observable and a pane sat truncated for 30-40s on a healthy connection.
+delivery. Sustained traffic can delay that delivery: during a subagent fan-out
+burst the dropped channel's next frames were themselves dropped, so no skip
+was ever observable and a pane sat truncated for 30-40s on a healthy connection.
 
 `wsClient.handleEventEntry` keeps the client half: an event whose seq is more
 than one past the channel's cursor is treated as a gap, with the same

@@ -882,8 +882,7 @@ func TestServer_ReplayGapMarker(t *testing.T) {
 }
 
 // Replay frames with too many channels must be rejected at the wire
-// before reaching the bus, capping memory exposure on adversarial
-// input.
+// before reaching the bus, bounding memory use for oversized input.
 func TestServer_ReplayMapTooLarge(t *testing.T) {
 	f := newServerFixture(t)
 	conn := f.dial(t)
@@ -1658,7 +1657,7 @@ func TestServer_BootstrapAcceptsTheCanonicalDomainAndNoOtherName(t *testing.T) {
 			t.Fatalf("Host %q got %d, want 200", host, got)
 		}
 	}
-	for _, host := range []string{"other.example", "evil.backend.example", "backend.example.evil.test"} {
+	for _, host := range []string{"other.example", "untrusted.backend.example", "backend.example.untrusted.test"} {
 		if got := get(t, host); got != http.StatusNotFound {
 			t.Fatalf("Host %q got %d, want 404", host, got)
 		}
@@ -1762,8 +1761,8 @@ func TestRebind_FormerSrvsBounded(t *testing.T) {
 // path: when the deferred graceful shutdown returns, the entry is
 // removed from formerSrvs. Real apps spend most of their time in this
 // regime — graceful shutdown completes well within 5s, the slice goes
-// back to empty, and the cap is only reached on adversarial rebind
-// loops.
+// back to empty, and the cap is only reached when repeated rebinds outpace
+// shutdown completion.
 func TestRebind_FormerSrvsDrainsOnShutdownComplete(t *testing.T) {
 	f := newServerFixture(t)
 

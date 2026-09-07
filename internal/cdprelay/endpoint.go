@@ -73,8 +73,8 @@ const (
 	// makes through the tunnel before attaching chromedp.
 	discoveryTimeout = 15 * time.Second
 	// maxVersionBytes bounds the /json/version body. The real document is
-	// a few hundred bytes; this only exists so a wedged or hostile
-	// endpoint cannot make the backend allocate without bound.
+	// a few hundred bytes; the cap prevents an oversized endpoint response
+	// from making the backend allocate without bound.
 	maxVersionBytes = 64 << 10
 )
 

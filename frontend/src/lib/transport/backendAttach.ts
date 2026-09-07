@@ -307,7 +307,7 @@ type NamedBackend = { id: string; home: boolean; name: string };
  * `entries` defaults to the registry's own array, which is plain on
  * purpose (./backends.ts: the fan-out walks it). A Svelte surface passes
  * the reactive mirror instead, so its list re-derives on attach and
- * detach rather than on a signal read this module smuggled in.
+ * detach without an implicit reactive dependency inside this module.
  */
 export function attachedMachines(
   entries: readonly NamedBackend[] = attachedBackends(),

@@ -104,7 +104,7 @@ type RefreshRequest struct {
 
 // Refresh advances one durable refresh generation. Retry-capable clients
 // propose their saved successor, so a lost reply can recover the same operation
-// without treating every second presentation as a stolen secret. Legacy
+// without treating a retry as unauthorized secret reuse. Legacy
 // callers omit NextSecret and retain strict single-use rotation.
 func (s *Sessions) Refresh(req RefreshRequest) (TokenSet, Reason) {
 	if req.Secret == "" {

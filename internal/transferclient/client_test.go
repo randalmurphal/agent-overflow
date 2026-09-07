@@ -25,7 +25,7 @@ func testOffer() Offer {
 }
 
 func TestTransferClientRefusesUnsafeOffersBeforeConnecting(t *testing.T) {
-	for _, endpoint := range []string{"http://192.168.1.8:3437", "http://localhost.evil.example", "ftp://host", "https://user:password@host", "https://host/path", "https://host?secret=one", "https://host?", "https://host/#secret", "https://host:0", "https://host:99999", "https:opaque", "/relative"} {
+	for _, endpoint := range []string{"http://192.168.1.8:3437", "http://localhost.untrusted.example", "ftp://host", "https://user:password@host", "https://host/path", "https://host?secret=one", "https://host?", "https://host/#secret", "https://host:0", "https://host:99999", "https:opaque", "/relative"} {
 		t.Run(endpoint, func(t *testing.T) {
 			offer := testOffer()
 			offer.Endpoint = endpoint

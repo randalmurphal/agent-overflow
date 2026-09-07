@@ -43,7 +43,7 @@ describe('private LAN trust', () => {
     expect(JSON.parse(localStorage.getItem('agent-overflow:certificatePins')!)).toEqual({ 'https://192.168.1.50:7777': PIN });
   });
 
-  it.each(['sha256:wrong', '', 'https://attacker.test'])('never trusts an invalid pin: %s', (pin) => {
+  it.each(['sha256:wrong', '', 'https://not-a-fingerprint.test'])('never trusts an invalid pin: %s', (pin) => {
     if (!pin) expect(pairingEndpoint({ ...payload, certFingerprint: pin })).toBe(payload.endpoint);
     else expect(() => pairingEndpoint({ ...payload, certFingerprint: pin })).toThrow(/fingerprint/);
     expect(certificatePin('https://192.168.1.50:7777/bootstrap.json')).toBeNull();

@@ -244,7 +244,8 @@ revocation rules are specified in [computer-pairing.md](../architecture/computer
    fragment; consumption is an atomic compare-and-set.
 4. The minting surface displays a **short verification number** derived
    from the device key; the owner confirms it matches on the new device
-   before the session activates. Defeats silent-race interception.
+   before the session activates. Prevents activation of a substituted pairing
+   without owner verification.
 5. Pairing links may carry a scope subset (viewer links, peer
    invitations).
 6. Native clients receive the backend's cert fingerprint inside the
@@ -497,9 +498,8 @@ exposure changes, provider custom-env writes, MCP config writes, WSL
 distro preference, worktree-setup recipe writes (stored argv that runs
 unattended with the user's environment on every worktree cut — the
 same class as an MCP config write), and remote update triggering (§7).
-Optional step-up is theater; these are the calls that re-key the
-system, re-route every prompt, or register something the host will
-execute.
+These calls require step-up because they change credentials, prompt
+routing, or commands the host will execute.
 
 ### Local clients
 
@@ -508,7 +508,8 @@ The embedded webview drops `?t=`: at boot the backend mints an implicit
 bootstrap. The WSL launcher **forwards that credential** rather than
 relying on apparent loopback origin. With topology no longer
 authorizing by itself, "looks like loopback" must stop being a trust
-basis (a same-host relay can otherwise launder remote peers).
+basis (a same-host relay can otherwise cause remote peers to be
+misclassified as local).
 
 LANDED 2026-08-31 (wave 5b), with one delivery difference: the session
 credential rides the existing bootstrap EXCHANGE (an HttpOnly
@@ -783,11 +784,11 @@ pairing surface is a later decision, not a phase-3 gap.
 
 ## 6. Per-device and per-user state
 
-### Fix the identity hole
+### Derive device identity from the authenticated session
 
 `GetUIState`/`SetUIState`/`DeleteUIState` currently take a
-caller-supplied `clientID`, a spoofable bearer string. They stop taking
-it; the backend derives scope from the authenticated session's device.
+caller-supplied `clientID` with no authenticated device binding. They stop
+taking it; the backend derives scope from the authenticated session's device.
 
 ### One mechanism, three tiers
 
@@ -986,8 +987,8 @@ two-option control defaulting to Full access.
 Loopback (webview, CLI), optional LAN bind, optional tsnet listener.
 Sessions are valid across listeners **subject
 to their binding class** (§2). Local clients never hairpin through the
-tailnet, and a soft listener cannot launder a strong credential into a
-weaker presentation.
+tailnet, and every listener must enforce the credential's binding class;
+a different network path cannot relax its presentation requirements.
 
 Cross-origin defense is explicit: strict Host allow-list (canonical
 domain + known loopback names), Origin / `Sec-Fetch-Site` checks on

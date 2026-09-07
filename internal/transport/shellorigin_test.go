@@ -24,7 +24,7 @@ func TestOriginAllowedAdmitsTheShellAndNothingLikeIt(t *testing.T) {
 		"http://shell.agent-overflow.invalid",       // wrong scheme
 		"https://shell.agent-overflow.invalid.test", // a name somebody can register
 		"https://agent-overflow.invalid",
-		"https://evil.shell.agent-overflow.invalid",
+		"https://untrusted.shell.agent-overflow.invalid",
 		"null",
 	} {
 		req := httpRequestForOrigin(t, "desk.example-tailnet.ts.net", origin)

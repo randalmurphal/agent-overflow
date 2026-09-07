@@ -496,10 +496,8 @@ func (s *Server) acceptAuthPost(w http.ResponseWriter, r *http.Request) bool {
 }
 
 // decodeAuthBody reads exactly one JSON document of at most maxAuthBody
-// bytes. A trailing second document is a bad request, not a value to
-// ignore: it is the shape a request-smuggling relay produces, and
-// accepting the first would authorize on a body some other component read
-// differently.
+// bytes. Reject trailing documents so authorization cannot rely on a body
+// that another component could interpret differently.
 func decodeAuthBody(w http.ResponseWriter, r *http.Request, into any) bool {
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAuthBody))
 	if err := decoder.Decode(into); err != nil {

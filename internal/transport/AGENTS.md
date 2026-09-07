@@ -5,6 +5,14 @@ HTTP+WebSocket wire between the Svelte frontend (the Wails-embedded webview,
 walkthroughs live in
 [docs/architecture/transport.md](../../docs/architecture/transport.md).
 
+## Terminology
+
+Describe remote-access comments, docs and identifiers in terms of protocol
+roles, trust boundaries, validation failures and resource limits. Name test
+participants by their role in the exchange. Preserve precise security terms
+and the conditions a check prevents; avoid metaphors where the mechanism
+can be stated directly.
+
 ## What this package owns
 
 The HTTP listener (embedded SPA, `/bootstrap.json`, `/healthz`, the `/ws`
@@ -1228,9 +1236,8 @@ present.
   (`TestRateLimiterAdmitsWithoutAllocating`, `TestPeerKeyDoesNotAllocate`); keep
   them passing rather than treating them as incidental.
 - Refusals are logged with per-peer attribution, once per dry spell rather than
-  once per request — a flood must not be able to flood the log with its own
-  evidence. The capacity refusal has no bucket to mark, so it is throttled by
-  time instead.
+  once per request, keeping log volume bounded during sustained refusals.
+  The capacity refusal has no bucket to mark, so it is throttled by time instead.
 
 ## Security headers
 
@@ -1921,8 +1928,8 @@ closes it, and `CloseSession` is that something.
   next event that fits on it arrives `gap:true` (re-encoded per subscriber),
   and other flagged channels get standalone `{gap:true, data:null}` markers
   flushed ahead of any later delivery. Client-side seq-skip detection alone
-  needed a later same-channel delivery to fire, which a flood starves — a
-  subagent fan-out storm left a pane's timeline truncated for 30-40s with the
+  needed a later same-channel delivery to fire, which sustained traffic can delay.
+  A subagent fan-out burst left a pane's timeline truncated for 30-40s with the
   connection healthy (incident 2026-08-29). Latest-only channels stay
   unannounced on purpose: the next frame supersedes the lost one.
 - `Server.Start` returns when the listener is bound. The HTTP serve goroutine

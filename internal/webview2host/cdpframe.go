@@ -42,9 +42,9 @@ type TunnelControl struct {
 
 // MaxTunnelStreams bounds concurrent streams on one tunnel. chromedp
 // holds one browser-level connection plus one per attached target, so a
-// pane with a handful of tabs sits in single digits; 64 is a ceiling that
-// only a leak or a hostile backend reaches, and reaching it must not let
-// the launcher open unbounded sockets.
+// pane with a handful of tabs sits in single digits. The ceiling of 64
+// prevents leaked streams or excessive backend requests from opening
+// unbounded launcher sockets.
 const MaxTunnelStreams = 64
 
 // MaxTunnelFrameBytes is the per-frame read limit on both directions.

@@ -973,7 +973,7 @@ export function createThreadSwitchLoad(
     // `fresh` only attests as much as the stamp we SENT was worth: an
     // echo of an event-carried stamp confirms the server's counter, not
     // that this client received every frame up to it, so upgrading it to
-    // attested here would launder it straight into the replica.
+    // attested here would incorrectly mark incomplete replica data as current.
     if (page || sentStamp?.attested) {
       recordAttestedStamp(threadId, response.epoch, response.rev);
       // The pane's own copy: this answer attested the window it is

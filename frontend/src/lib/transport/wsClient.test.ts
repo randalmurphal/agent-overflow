@@ -1897,7 +1897,7 @@ describe('WSClient', () => {
       ok: true,
       status: 200,
       headers: new Headers({ 'content-type': 'application/json' }),
-      json: async () => ({ wsUrl: 'http://evil/', token: 'x' }),
+      json: async () => ({ wsUrl: 'http://untrusted.invalid/', token: 'x' }),
     }));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -2271,8 +2271,8 @@ describe('WSClient', () => {
 
   it('evicts the oldest channel from lastSeqByChannel when capacity exceeds MAX_REPLAY_CHANNELS', async () => {
     // The bookkeeping cap mirrors the server-side limit; without
-    // eviction, a malicious or flaky remote could pump unique channel
-    // names and drive the client's Map past the wire-frame cap. This
+    // eviction, a remote emitting distinct channel names could grow the
+    // client's Map past the wire-frame cap. This
     // test pins the eviction order: the oldest entry (insertion order)
     // is the one that drops.
     const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });

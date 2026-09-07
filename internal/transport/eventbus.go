@@ -59,7 +59,7 @@ const DefaultSubscriberBuffer = 1024
 //     tail. The client's forward-skip detection (wsClient.ts
 //     handleEventEntry) still covers the mid-stream case on its own; the
 //     sticky flag exists because that detection needs a later same-channel
-//     delivery to fire, which a flood can starve for tens of seconds
+//     delivery to fire, which sustained traffic can delay for tens of seconds
 //     (incident 2026-08-29: 30-40s standing timeline truncation under a
 //     subagent fan-out storm). Other gapped channels piggyback: any
 //     successful delivery first flushes standalone {gap:true} markers

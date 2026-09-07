@@ -211,12 +211,11 @@ export type ClientFrame =
   | ClientPresenceFrame;
 
 // Logged strings (channel names, error messages) get clamped before
-// reaching console / toast surfaces. Caps the worst-case noise from a
-// pathological remote without losing the prefix that identifies the
-// channel.
+// reaching console / toast surfaces. Bounds remote log output while
+// preserving the prefix that identifies the channel.
 const LOG_STRING_MAX = 256;
 
-// clampString truncates noisy / hostile log content before it reaches
+// clampString truncates oversized log content before it reaches
 // console or toast surfaces. The `…` suffix preserves the visual signal
 // that the value was abbreviated.
 export function clampString(value: string, max = LOG_STRING_MAX): string {

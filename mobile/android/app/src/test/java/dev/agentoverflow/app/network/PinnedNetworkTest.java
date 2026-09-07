@@ -87,7 +87,7 @@ public class PinnedNetworkTest {
     @Test public void redirectsDoNotForwardTicketsOrCredentials() throws Exception {
         HeldCertificate cert = new HeldCertificate.Builder().commonName("test").build();
         try (MockWebServer server = server(cert); PinnedClients clients = new PinnedClients()) {
-            server.enqueue(new MockResponse.Builder().code(307).addHeader("Location", server.url("/stolen")).build());
+            server.enqueue(new MockResponse.Builder().code(307).addHeader("Location", server.url("/redirect-target")).build());
             try (Response response = clients.forPin(pin(cert)).newCall(new Request.Builder().url(server.url("/attachments/upload?ticket=secret")).build()).execute()) {
                 assertEquals(307, response.code());
             }

@@ -74,14 +74,14 @@ func (m *Manager) Open(file, workspace, principal string, local bool) (string, e
 		}
 		if len(m.entries) >= maxDirectories {
 			var oldest key
-			var victim *entry
+			var oldestEntry *entry
 			for candidate, existing := range m.entries {
-				if victim == nil || existing.used < victim.used {
-					oldest, victim = candidate, existing
+				if oldestEntry == nil || existing.used < oldestEntry.used {
+					oldest, oldestEntry = candidate, existing
 				}
 			}
 			delete(m.entries, oldest)
-			victim.close()
+			oldestEntry.close()
 		}
 		m.entries[k] = e
 	} else if err := e.check(target); err != nil {

@@ -603,10 +603,9 @@ func (a *launcherApp) PickDistro(name string) error {
 }
 
 // validateDistroName ensures `name` matches one of the distros wsl.exe
-// reported when the launcher started. Without this check, a malicious
-// or corrupted picker page could pass arbitrary strings into the WSL
-// invocation. The list is fixed for the launcher's lifetime, so a
-// linear scan is fine.
+// reported when the launcher started. Without this check, unvalidated
+// picker input could pass arbitrary strings into the WSL invocation. The
+// list is fixed for the launcher's lifetime, so a linear scan is fine.
 func (a *launcherApp) validateDistroName(name string) error {
 	if name == "" {
 		return errors.New("distro name is required")
@@ -1252,7 +1251,7 @@ func probeBootstrapWithConfig(port int, token string, cfg bootstrapProbeConfig) 
 		resp, err := getWithToken(client, url, token)
 		if err == nil {
 			sawHTTPResponse = true
-			// 64KB bounds a rogue server's response while leaving room
+			// 64KB bounds the bootstrap response while leaving room
 			// for the real document: Bootstrap grew past 256 bytes once
 			// harness boots added pageMarker + store identity, and a cap
 			// below the document size truncates valid JSON — decode then

@@ -18,18 +18,17 @@ import (
 // ListThreadSliceAround response is the worst-case shape — items.meta
 // + payload metadata across a whole window can run into tens of
 // MiB. 75 MiB is the headroom budget: large enough that real threads
-// load without surprise, small enough to keep a hostile/buggy peer
-// from exhausting host memory with a single frame. The frontend
+// load without surprise, small enough to prevent a peer from exhausting
+// host memory with a single oversized frame. The frontend
 // MAX_FRAME_BYTES tracks this value 1:1 so the symmetric cap holds —
 // see frontend/src/lib/transport/wsClient.ts. Anything larger than
 // this still belongs on a separate paged endpoint, not over WS.
 const DefaultReadLimit = 75 * 1024 * 1024
 
 // DefaultMaxConcurrentRPCs caps how many RPC dispatches a single WS
-// connection can have in flight at once. Bound exists so a misbehaving
-// or misbehaving client can't fan out unbounded goroutines on the
-// server. Sized for typical streaming UX (chat thread expansion can
-// fire ~30 GetPayloadData in parallel).
+// connection can have in flight at once. The bound prevents unbounded
+// server goroutines from concurrent client requests. Sized for typical
+// streaming UX (chat thread expansion can fire ~30 GetPayloadData in parallel).
 const DefaultMaxConcurrentRPCs = 64
 
 const (

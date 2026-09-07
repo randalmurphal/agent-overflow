@@ -549,8 +549,8 @@ func TestDeletingAPasskeyEndsNoSession(t *testing.T) {
 }
 
 // The book is bounded, and it drops the oldest entry rather than refusing
-// a begin: refusing would let a flood of begins lock the owner out of
-// their own sign-in, which is worse than the flood.
+// a begin: refusing would let repeated begin requests prevent the owner
+// from starting their own sign-in.
 func TestTheCeremonyBookIsBoundedAndKeepsTheNewest(t *testing.T) {
 	sessions, _, _, _ := newPasskeyFixture(t)
 

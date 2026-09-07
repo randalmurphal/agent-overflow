@@ -1,8 +1,8 @@
 import { networkFetch } from './networkFetch';
 // Bootstrap manifest handling for the transport: the /bootstrap.json
 // fetch that exchanges the page's one-time ticket for its session
-// cookie, and the WS-URL validation that keeps a tampered manifest from
-// pivoting the connection to another origin or scheme.
+// cookie, and WS-URL validation that restricts connections to the
+// expected origin and scheme, even if the manifest has been modified.
 //
 // The page holds no credential of its own. It arrives carrying a
 // one-time ticket, spends it on the first manifest fetch, and from then
@@ -390,13 +390,12 @@ export function wsUrlMatchesPageOrigin(
 // validateWsUrl rejects a bootstrap manifest that points the client's
 // WebSocket somewhere it must not go. Two checks, both unconditional:
 //
-//  1. Scheme. A manifest can't pivot the connection to an arbitrary URL
-//     handler.
+//  1. Scheme. A manifest may select only the expected WebSocket scheme.
 //  2. Origin. Every manifest the SPA can receive is served by the same
 //     origin as the page, and names a wsUrl that server derived from
 //     this very request's Host header (internal/transport/server.go
 //     deriveWSURL, and clientmode's manifestJSON via the same helper).
-//     Anything naming another authority was tampered with in flight.
+//     Anything naming another authority fails the origin check.
 //
 // The `--connect` stub used to be an exemption: it injected a manifest
 // naming a remote backend and the page opened a cross-origin socket. It

@@ -191,8 +191,8 @@ const MAX_TRACKED_REPLAY_CHANNELS = MAX_REPLAY_CHANNELS - 1;
 // Defensive cap on concurrent client RPCs. The server caps at 64 per
 // connection — at 10_000 client-side, something pathological is happening.
 export const MAX_PENDING_RPCS = 10_000;
-// Protects the main thread from a hostile/buggy server flooding huge
-// frames. Symmetric with the server's DefaultReadLimit
+// Protects the main thread from oversized server frames.
+// Symmetric with the server's DefaultReadLimit
 // (internal/transport/conn.go) so a frame that fits the server cap
 // also fits the client cap — keep both values in lockstep. 75 MiB is
 // sized for the worst legitimate load: a long thread's
@@ -903,7 +903,7 @@ export class WSClient {
   // Per-channel cursor, replayed to the server on reconnect. Map
   // iteration order is insertion-ordered, so we evict the oldest entry
   // once we hit MAX_REPLAY_CHANNELS — the cap mirrors the server's own
-  // clamp and stops a hostile remote from blowing the wire frame.
+  // clamp and keeps the reconnect frame within the channel-count limit.
   private readonly lastSeqByChannel: Map<string, ChannelCursor> = new Map();
   // Channel sequence numbers belong to one server process, not the durable
   // backend ID. A restarted process can already have overtaken an old cursor,
@@ -2545,7 +2545,7 @@ export class WSClient {
         return b;
       });
       // Null the cached promise on rejection so the next call retries.
-      // Without this, a transient 5xx on /bootstrap.json would poison
+      // Without this, a cached transient 5xx on /bootstrap.json would fail
       // every subsequent connect attempt.
       p.catch(() => {
         if (this.bootstrapPromise === p) this.bootstrapPromise = null;

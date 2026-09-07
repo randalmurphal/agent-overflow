@@ -37,7 +37,7 @@ func TestConstantTimeEqual_Mismatch(t *testing.T) {
 		t.Fatalf("mismatched tokens should error")
 	}
 	// Same length to exercise the constant-time branch on equal-length
-	// inputs (the timing-attack defense).
+	// inputs (the constant-time credential comparison).
 	if err := ConstantTimeEqual("aaaaaa", "bbbbbb"); err == nil {
 		t.Fatalf("equal-length mismatched tokens should error")
 	}

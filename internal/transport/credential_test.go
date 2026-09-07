@@ -259,7 +259,7 @@ func TestCredential_UpgradeRefusesForeignOrigin(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, origin := range []string{
-		"http://evil.example",
+		"http://untrusted.example",
 		// Another listener on this very host: same cookie scope,
 		// different principal.
 		"http://127.0.0.1:" + neighbourPort(port),
@@ -407,7 +407,7 @@ func TestCredential_PageURLRouteMintsForTokenHolders(t *testing.T) {
 	t.Run("refuses a foreign origin", func(t *testing.T) {
 		resp := ask(t, func(r *http.Request) {
 			withToken(r)
-			r.Header.Set("Origin", "http://evil.example")
+			r.Header.Set("Origin", "http://untrusted.example")
 		})
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusNotFound {

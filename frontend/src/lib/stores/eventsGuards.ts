@@ -10,7 +10,7 @@
  * Cap for unbounded text fields (item summaries/deltas/meta and
  * discussion message content). 2M chars is comfortably above the
  * largest single payload the item stream legitimately carries while
- * still bounding a hostile frame.
+ * still bounding oversized fields from remote frames.
  */
 export const ITEM_EVENT_TEXT_FIELD_MAX_CHARS = 2_000_000;
 

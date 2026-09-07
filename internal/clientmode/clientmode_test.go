@@ -838,7 +838,7 @@ func TestHandleWS_RefusesUnauthenticatedAndForeignOrigin(t *testing.T) {
 		{name: "no credential", header: http.Header{}},
 		{name: "foreign origin with a valid cookie", header: http.Header{
 			"Cookie": {cookie.Name + "=" + cookie.Value},
-			"Origin": {"http://evil.example"},
+			"Origin": {"http://untrusted.example"},
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

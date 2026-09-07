@@ -414,13 +414,10 @@ func (s *Sessions) admitProof(parsed parsedDeviceProof, presented DeviceProof) R
 
 // strictJSON decodes exactly one JSON object and refuses unknown members.
 //
-// Strict on both counts. Anything but a clean EOF after the first document
-// is the shape a smuggling relay produces, and an unknown member in a
-// signed structure is a field this build does not understand inside
-// something it is about to act on — for a proof, that is a claim being
-// made that nothing here checks. The client and the server are the same
-// project, so there is no forward-compatibility cost: a new member ships
-// with the code that reads it.
+// Trailing documents can be interpreted differently by different components.
+// Unknown members in a signed structure would introduce claims this build
+// does not validate. Both ends are maintained in this project; new members
+// require corresponding validation code.
 func strictJSON(data []byte, into any) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()

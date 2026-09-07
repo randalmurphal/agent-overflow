@@ -56,9 +56,9 @@ const (
 )
 
 // maxSubagentDescendants caps one expansion load, mirroring the
-// maxWindowItems DoS guard on the window pagers (app_paging.go):
-// ListSubagentDescendants is a wire RPC, so a malicious LAN-attached
-// caller must not be able to stream an unbounded subtree per call.
+// maxWindowItems resource limit on the window pagers (app_paging.go):
+// ListSubagentDescendants is a wire RPC, so its response must stay
+// bounded even when a remote caller requests a large subtree.
 // Real subagent transcripts run one to two orders of magnitude below
 // this. When the cap binds, the newest rows win — transcripts resolve
 // tail-first like every other capped read in this package — and the

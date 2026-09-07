@@ -107,7 +107,7 @@ const (
 	// so a real one holds one or two entries; the caps exist so an
 	// unauthenticated begin route cannot grow either without bound. At the
 	// cap the OLDEST entry is dropped rather than the request refused —
-	// refusing would let a flood of begins lock the owner out of their own
+	// refusing would let repeated begin requests lock the owner out of their own
 	// sign-in, which is the failure this bound must not create.
 	//
 	// passkeyCeremonyLimit is PER PURPOSE, and eviction only ever considers

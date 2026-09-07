@@ -88,8 +88,8 @@ type peerBucket struct {
 	last int64
 	// noted records that this peer's exhaustion has already been logged.
 	// Cleared when the budget refills, so the log carries one line per dry
-	// spell rather than one per refused request — a flood must not be able
-	// to flood the log with its own evidence.
+	// spell rather than one per refused request, keeping log volume bounded
+	// during sustained rate-limit refusals.
 	noted bool
 }
 
@@ -128,8 +128,7 @@ type rateLimiter struct {
 	peers map[string]peerBucket
 	// fullNotedAt is when the table-full refusal was last logged, in Unix
 	// nanoseconds. That path has no bucket to mark, so it is throttled by
-	// time instead — a flood must not be able to flood the log with its
-	// own evidence.
+	// time instead to bound log volume during sustained capacity refusals.
 	fullNotedAt int64
 }
 

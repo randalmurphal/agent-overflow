@@ -112,7 +112,7 @@ func TestCommitmentAndFrozenChallengeRejectTranscriptReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, change := range map[string]func(*Reveal){"key": func(r *Reveal) { r.PublicKey = newClient(t).reveal.PublicKey }, "nonce": func(r *Reveal) { r.Nonce = encode(random(32)) }, "label": func(r *Reveal) { r.Label = "Attacker" }, "platform": func(r *Reveal) { r.Platform = "attacker" }} {
+	for name, change := range map[string]func(*Reveal){"key": func(r *Reveal) { r.PublicKey = newClient(t).reveal.PublicKey }, "nonce": func(r *Reveal) { r.Nonce = encode(random(32)) }, "label": func(r *Reveal) { r.Label = "Changed label" }, "platform": func(r *Reveal) { r.Platform = "changed-platform" }} {
 		t.Run(name, func(t *testing.T) {
 			bad := r
 			change(&bad)
@@ -139,24 +139,24 @@ func TestCommitmentAndFrozenChallengeRejectTranscriptReplacement(t *testing.T) {
 	}
 }
 
-func TestInterceptingRelayCannotReuseHostCiphertextOrComparison(t *testing.T) {
+func TestSeparateRelayExchangesCannotReuseHostCiphertextOrComparison(t *testing.T) {
 	host, hostWindow := startBook(t)
-	attacker := newClient(t)
-	_, _, hostSealed := handshake(t, host, attacker)
+	relayInitiator := newClient(t)
+	_, _, hostSealed := handshake(t, host, relayInitiator)
 	// The relay can decrypt the invitation it obtained as its own initiator,
-	// but cannot show that exchange's digits in the victim's trusted client.
-	victim := newClient(t)
+	// but the intended client derives different digits for its separate exchange.
+	intendedClient := newClient(t)
 	relay, _ := startBook(t)
-	_, _, relaySealed := handshake(t, relay, victim)
-	if _, _, err := victim.Open(hostSealed); !errors.Is(err, ErrInvalid) {
+	_, _, relaySealed := handshake(t, relay, intendedClient)
+	if _, _, err := intendedClient.Open(hostSealed); !errors.Is(err, ErrInvalid) {
 		t.Fatal("cross-exchange ciphertext accepted")
 	}
-	_, victimSAS, err := victim.Open(relaySealed)
+	_, clientSAS, err := intendedClient.Open(relaySealed)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if victimSAS == host.Snapshot(hostWindow.WindowID).VerificationNumber {
-		t.Fatal("intercepting relay unexpectedly matched comparison")
+	if clientSAS == host.Snapshot(hostWindow.WindowID).VerificationNumber {
+		t.Fatal("separate relay exchange unexpectedly matched comparison")
 	}
 	// An opaque byte relay is the ordinary successful handshake: without
 	// either private key a third client cannot decrypt its invitation.

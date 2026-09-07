@@ -132,8 +132,8 @@ func loopbackDialAddrs(rawURL string) (key string, addrs []string, err error) {
 		return "", nil, errors.New("dev-server URL host must be loopback")
 	}
 	// A zone suffix ("::1%eth0") is meaningless on loopback, cannot be
-	// produced by triage, and would give attacker-shaped input an
-	// unbounded distinct-key space in the verdict cache.
+	// produced by triage, and would let equivalent addresses generate
+	// unbounded distinct keys in the verdict cache.
 	if addr.Zone() != "" {
 		return "", nil, errors.New("dev-server URL host must be loopback")
 	}

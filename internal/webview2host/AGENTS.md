@@ -100,8 +100,8 @@ nothing ever crosses the WSL boundary inbound:
 The port is fixed at `NewCDPTunnel` and rides no wire field, so the
 tunnel is a relay to one endpoint and never a general proxy. A control
 frame carries a stream id and nothing addressable. Keep it that way: the
-moment an address arrives over the wire, a backend that has been talked
-into it reaches anything the launcher can.
+moment an address arrives over the wire, backend requests could reach
+arbitrary destinations accessible to the launcher.
 
 Bounds: 64 concurrent streams, 1MiB per frame, 32KiB read chunks, a 30s
 write timeout so a backend that stops draining cannot wedge a pump.

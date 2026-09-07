@@ -640,7 +640,7 @@ func TestPasskeyFinishNeverReadsAProofFromTheBody(t *testing.T) {
 		"ceremonyId":    "ceremony-1",
 		"response":      json.RawMessage(`{}`),
 		"keyThumbprint": "thumb-from-body",
-		"deviceProof":   "forged-from-body",
+		"deviceProof":   "unverified-body-proof",
 	}
 	postJSON(t, f.srv.Addr(), AuthPasskeyFinishPath, body, map[string]string{
 		DeviceKeyHeader: "the-real-proof",

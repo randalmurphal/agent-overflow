@@ -50,7 +50,7 @@ describe('isLoopbackHostname', () => {
       // Near-misses that must not read as loopback: a name that merely
       // contains the string, and an address outside 127.0.0.0/8.
       'notlocalhost',
-      'localhost.evil.com',
+      'localhost.untrusted.invalid',
       '128.0.0.1',
       '1.127.0.0',
       '',
@@ -84,7 +84,7 @@ describe('wsUrlMatchesPageOrigin', () => {
   });
 
   it('rejects a different host', () => {
-    expect(wsUrlMatchesPageOrigin('ws://evil.example.com/ws', httpPage)).toBe(false);
+    expect(wsUrlMatchesPageOrigin('ws://untrusted.example.com/ws', httpPage)).toBe(false);
     expect(wsUrlMatchesPageOrigin('ws://127.0.0.2:34567/ws', httpPage)).toBe(false);
   });
 
@@ -207,7 +207,7 @@ describe('defaultBootstrap', () => {
   // else was tampered with in flight, and honouring it would point the
   // page's socket at another authority.
   it('refuses a cross-origin wsUrl from the fetched manifest', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: 'ws://evil.example.com/ws' })));
+    vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: 'ws://untrusted.example.com/ws' })));
 
     await expect(defaultBootstrap()).rejects.toThrow(/not same-origin/);
   });

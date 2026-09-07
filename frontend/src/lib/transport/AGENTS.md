@@ -738,10 +738,11 @@ remote browser alike. Protocol and authz rules:
   instead. `GetAttachmentThumbnail` stays an RPC on purpose: ~10-30 KB is
   not a large body, and a grid would pay a mint round trip per tile.
 - `bootstrap.ts` owns the `/bootstrap.json` fetch, the one-time page-ticket
-  exchange, and WS-URL validation that stops a tampered manifest pivoting
-  the connection to another scheme. **No credential is readable by page
-  script.** The first fetch forwards a one-time ticket, the server answers
-  with an HttpOnly cookie, and the ticket is gone: scrubbed from the URL
+  exchange, and WS-URL validation that restricts the connection to its
+  expected origin and scheme, even if the manifest has been modified.
+  **No credential is readable by page script.** The first fetch forwards a
+  one-time ticket, the server answers with an HttpOnly cookie, and the ticket
+  is gone: scrubbed from the URL
   for a browser, never in the URL at all for a window the backend owns
   (`pageHost.ts` below). Every later request (the manifest refetch on
   reconnect, the `/ws` upgrade) carries the cookie because
