@@ -5,6 +5,7 @@ import { applyItemStreamEvent, flushItemEventQueue, resetItemEventQueue } from '
 import { resetPanesForTest } from './panes.svelte';
 import { getSettings } from './settings.svelte';
 import { __setSmoothingClockForTest } from './threadPaneShared';
+import { pendingItemEventsSettled } from './itemEventSettlement';
 
 beforeEach(installThreadPaneTestEnv);
 afterEach(() => {
@@ -13,6 +14,24 @@ afterEach(() => {
   vi.useRealTimers();
   getSettings().lowPowerMode = false;
   __setSmoothingClockForTest(undefined);
+});
+
+it('settles replay only after every captured budgeted mutation is applied', async () => {
+  const pane = await buildPane();
+  const done = vi.fn();
+  for (const [itemIndex, id] of ['first', 'second'].entries()) {
+    const item = makeItem({ id, itemIndex, summary: 'x'.repeat(140_000) });
+    applyItemStreamEvent({ action: 'upsert', threadId: item.threadId, item });
+  }
+  const fence = pendingItemEventsSettled()!.then(done);
+  flushItemEventQueue();
+  await Promise.resolve();
+  expect(pane.items.map(item => item.id)).toEqual(['first']);
+  expect(done).not.toHaveBeenCalled();
+  flushItemEventQueue();
+  await fence;
+  expect(pane.items.map(item => item.id)).toEqual(['first', 'second']);
+  expect(done).toHaveBeenCalledOnce();
 });
 
 it.each([100, 140_000, 400_000])('bounds batches without losing large events (%i chars)', async (size) => {

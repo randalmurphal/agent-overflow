@@ -2082,6 +2082,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			// Config is built.
 			Capabilities: advertisedCapabilities(s.cfg.BrowserAvailable, s.cfg.ThreadTransfers != nil, s.cfg.FilePreviews),
 			BackendID:    backendID,
+			LaunchID:     s.launchID,
 			BackendName:  s.backendName(),
 			// Sampled per accept: the field's whole purpose is letting a
 			// client measure its own skew against this backend, which a

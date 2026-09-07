@@ -136,7 +136,14 @@ stops waking readers.
   `transportRecovery.ts` owns the reconnect lifecycle boundary beside the
   connection-status mirror. Gap handlers register their snapshot promises
   with `holdBackendRecovery`; completion is per backend and waits for those
-  reads. It retains promises only during recovery, never event payloads.
+  reads and the item mutations already queued when replay ends. The leaf
+  `itemEventSettlement.ts` fences that work across budgeted flushes; later live
+  events do not extend the fence. Gap snapshot reads wait behind the same fence
+  so an older queued replay cannot overwrite a newer snapshot. It holds only
+  counters and waiters, never event payloads.
+  `refreshSidebarProjections` coalesces a burst of gaps into one microtask.
+  Clear its queued flag before issuing reads: an invalidation arriving while
+  those reads are pending must still request a newer snapshot.
 - `watchedThreads.ts` decides which threads the backend keeps pushing the
   entity-filtered channels for (`transport/entityFilteredChannels.ts`). It is
   a leaf that unions REGISTERED SOURCES rather than importing the stores it

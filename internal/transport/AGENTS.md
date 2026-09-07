@@ -451,7 +451,7 @@ hello first seeds its compatibility state before anything else lands and
 needs no "have I been told yet" branch on every other frame. Racing it
 against the pump would make that guarantee probabilistic.
 
-It carries `protocolVersion`, `capabilities`, `backendId`,
+It carries `protocolVersion`, `capabilities`, `backendId`, `launchId`,
 `backendName`, `serverTimeMs`, `replayBaseline`, and the three bundle fields
 (`bundleId`, `bundleVersion`, `minShellBuild`).
 
@@ -463,6 +463,13 @@ outage. Tracking only previously received channels loses a channel's first
 event during disconnect — notably `turn_completed`, leaving a finished turn
 looking active. Baselines describe the subscription boundary, not historical
 delivery; `notification:activated` retains its separate cold-launch replay.
+
+`launchId` is the process identity already carried by bootstrap, refreshed in
+every hello because successful reconnects can reuse a cached bootstrap. Replay
+cursors belong to that launch: after a restart, even a cursor inside the new
+ring can silently skip unrelated new events. Clients reset and recover on a
+changed launch, rather than relying on above-head gap detection alone. A
+missing field remains compatible with older backends.
 
 - **Nothing gates on the version.** Features negotiate through capability
   flags: a client asks "does this backend have X" and degrades on the

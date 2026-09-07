@@ -44,6 +44,7 @@ import {
 } from './bootstrap';
 import {
   type ClientFrame,
+  MAX_REPLAY_CHANNELS,
   type ClientRPCFrame,
   type LeaseState,
   type ServerEventFrame,
@@ -59,6 +60,7 @@ import { HOME_BACKEND, type BackendKey } from './backendKey';
 import { homeWsUrl } from './homeEndpoint';
 import { refreshGrantedScopes } from './scopes';
 import { randomId } from '../utils/randomId';
+import { ReplayBuffer } from './replayBuffer';
 
 /**
  * Append this screen's identity to the upgrade URL. Kept as a function rather
@@ -157,7 +159,7 @@ export const REDIAL_SETTLE_BUDGET_MS = 5_000;
 const TRANSPORT_GAP_CHANNEL = 'transport:gap';
 // Cap matches server-side MaxReplayChannels (frame.go) so the replay
 // frame can't exceed the wire limit.
-export const MAX_REPLAY_CHANNELS = 1024;
+export { MAX_REPLAY_CHANNELS } from './frames';
 
 // Mirrors internal/transport/frame.go MaxWatchThreads. A set past this is
 // refused by the backend, so the client checks it rather than sending one.
@@ -899,6 +901,11 @@ export class WSClient {
   // once we hit MAX_REPLAY_CHANNELS — the cap mirrors the server's own
   // clamp and stops a hostile remote from blowing the wire frame.
   private readonly lastSeqByChannel: Map<string, ChannelCursor> = new Map();
+  // Channel sequence numbers belong to one server process, not the durable
+  // backend ID. A restarted process can already have overtaken an old cursor,
+  // so numeric above-head gap detection alone cannot establish continuity.
+  private replayLaunchId = '';
+  private restartRecoveryChannels: string[] = [];
   // The channel currently at lastSeqByChannel's insertion-order tail —
   // lets recordChannelSeq skip the LRU delete/re-insert for the common
   // consecutive-events-on-one-channel case. Only recordChannelSeq
@@ -910,8 +917,7 @@ export class WSClient {
   // drop) from "…on a previous one" (the replay answer already settled
   // what was missed). See ChannelCursor.
   private connectionEpoch = 0;
-  private notificationReplayPending = false;
-  private notificationReplayBuffer: ServerEventFrame[] = [];
+  private replayBuffer: ReplayBuffer | null = null;
   private notificationCheckpointScope: string | null = null;
   // The watched-thread set this client is DESIRING, sorted. `null` means
   // no set has ever been composed, which is the wildcard state the backend
@@ -1533,6 +1539,8 @@ export class WSClient {
   // singleton is never closed during normal operation.
   close(): void {
     this.publishReplay('cancel');
+    this.replayBuffer = null;
+    this.restartRecoveryChannels = [];
     this.closed = true;
     this.detachLifecycleListeners?.();
     this.stopStaleWatchdog();
@@ -2010,8 +2018,7 @@ export class WSClient {
     } else {
       this.notificationCheckpointScope = null;
     }
-    this.notificationReplayPending = true;
-    this.notificationReplayBuffer = [];
+    this.replayBuffer = new ReplayBuffer();
     for (const [channel, cursor] of this.lastSeqByChannel) {
       replay[channel] = cursor.seq;
     }
@@ -2097,7 +2104,7 @@ export class WSClient {
       this.noteUnknownInput('untyped');
       return;
     }
-    this.handleFrame(parsed as ServerFrame);
+    this.handleFrame(parsed as ServerFrame, text.length);
   }
 
   // handleSocketClose tears down after a socket dies: outage
@@ -2168,8 +2175,7 @@ export class WSClient {
       cause: this.lastSocketError ?? undefined,
       terminal: this.terminal !== null,
     }));
-    this.notificationReplayPending = false;
-    this.notificationReplayBuffer = [];
+    this.replayBuffer = null;
     this.ws = null;
     this.socketNamedPairedSession = false;
     if (!attempt.settled) {
@@ -2557,7 +2563,12 @@ export class WSClient {
   // a client of this generation must run correctly against the next
   // one's wire. Unknown FIELDS need no handling at all: nothing here
   // enumerates a frame's properties.
-  private handleFrame(frame: ServerFrame): void {
+  private handleFrame(frame: ServerFrame, wireChars: number): void {
+    if (this.replayBuffer && (
+      (frame.type === 'event' && this.shouldBufferReplayChannel(frame.channel))
+      || (frame.type === 'batch' && Array.isArray(frame.events)
+        && frame.events.some((event) => this.shouldBufferReplayChannel(event?.channel)))
+    )) this.replayBuffer.addFrameSize(wireChars);
     if (frame.type === 'ping') {
       // Server keepalive heartbeat. The message listener already
       // refreshed lastFrameAt; the first ping additionally proves this
@@ -2591,10 +2602,7 @@ export class WSClient {
       return;
     }
     if (frame.type === 'event') {
-      if (this.notificationReplayPending && frame.channel === NOTIFICATION_ACTIVATED_CHANNEL) {
-        this.notificationReplayBuffer.push(frame);
-        return;
-      }
+      if (this.bufferReplayEvent(frame)) return;
       this.handleEventEntry(frame);
       return;
     }
@@ -2608,25 +2616,32 @@ export class WSClient {
         return;
       }
       for (const evt of frame.events) {
-        // Guard BEFORE building the ServerEventFrame shape: replay
-        // buffering is live only during the brief post-reconnect window
-        // and only for one rare channel, so the steady streaming state
-        // (coalesced batches of up to 50 item deltas) must not pay a
-        // throwaway spread copy per event just to probe it.
-        if (this.notificationReplayPending && evt?.channel === NOTIFICATION_ACTIVATED_CHANNEL) {
-          this.notificationReplayBuffer.push({ type: 'event', ...evt });
-          continue;
-        }
+        if (this.bufferReplayEvent(evt)) continue;
         this.handleEventEntry(evt);
       }
       return;
     }
     if (frame.type === 'replay') {
-      const buffered = this.notificationReplayBuffer
-        .sort((a, b) => a.seq - b.seq);
-      this.notificationReplayBuffer = [];
-      this.notificationReplayPending = false;
-      for (const event of buffered) this.handleEventEntry(event);
+      const buffered = this.replayBuffer;
+      this.replayBuffer = null;
+      buffered?.drain(
+        (event) => this.handleEventEntry(event),
+        (heads) => {
+          const channels = new Set([...this.lastSeqByChannel.keys(), ...this.subscribers.keys(), ...heads.keys()]);
+          channels.delete(TRANSPORT_GAP_CHANNEL);
+          for (const channel of channels) {
+            const seq = heads.get(channel) ?? this.lastSeqByChannel.get(channel)?.seq ?? 0;
+            this.recordChannelSeq(channel, seq);
+            this.dispatchToSubscribers(TRANSPORT_GAP_CHANNEL, { channel, seq });
+          }
+        },
+      );
+      // Start authoritative restart snapshots after the old buffered events
+      // have been applied. Otherwise a fast snapshot can be overwritten by
+      // the replay it was meant to reconcile.
+      const restarted = this.restartRecoveryChannels;
+      this.restartRecoveryChannels = [];
+      for (const channel of restarted) this.dispatchToSubscribers(TRANSPORT_GAP_CHANNEL, { channel, seq: 0 });
       this.publishReplay('complete');
       return;
     }
@@ -2639,6 +2654,17 @@ export class WSClient {
     // whole reason the branch exists is that the runtime wire is not
     // limited to what the type declares.
     this.noteUnknownInput((frame as { type: string }).type);
+  }
+
+  private bufferReplayEvent(event: Omit<ServerEventFrame, 'type'>): boolean {
+    if (!this.replayBuffer || !this.shouldBufferReplayChannel(event?.channel)) return false;
+    if (!event || typeof event.channel !== 'string' || !Number.isSafeInteger(event.seq) || event.seq < 0) return false;
+    this.replayBuffer.push(event);
+    return true;
+  }
+
+  private shouldBufferReplayChannel(channel: unknown): boolean {
+    return this.connectionEpoch > 1 || channel === NOTIFICATION_ACTIVATED_CHANNEL;
   }
 
   // noteUnknownInput records one piece of wire input this build cannot
@@ -2687,6 +2713,20 @@ export class WSClient {
   // look like a backend with no capabilities at all. Unknown FIELDS are
   // ignored for free: nothing here enumerates the object.
   private applyHello(frame: ServerHelloFrame): void {
+    // Bootstrap can remain cached across healthy reconnects. Only the socket's
+    // own hello proves which process owns its sequence numbers. Reset even if
+    // that process has already overtaken our old numeric cursor; the server
+    // cannot infer that collision from a replay request without an epoch.
+    const launchId = typeof frame.launchId === 'string' ? frame.launchId : '';
+    if (launchId !== '' && this.replayLaunchId !== '' && launchId !== this.replayLaunchId) {
+      const channels = [...this.lastSeqByChannel.keys()];
+      for (const channel of channels) this.lastSeqByChannel.get(channel)!.seq = 0;
+      // Keep keys so this hello's baseline cannot skip the new process's
+      // prefix. The request sent at open may carry old cursors, so snapshots
+      // are required even when replay returns no numeric gap at all.
+      this.restartRecoveryChannels = channels;
+    }
+    if (launchId !== '') this.replayLaunchId = launchId;
     // Seed quiet channels too: receiving turn_started does not imply this
     // client has ever seen turn_completed. Its first completion can land
     // during an outage. Never advance an existing cursor from a new hello,

@@ -635,6 +635,37 @@ func TestServer_ReplayMissedEvents(t *testing.T) {
 	}
 }
 
+// Live delivery can win the race against the client's replay request. The
+// replay cursor still names the outage, not the newest live frame written on
+// this socket. Clients must reconcile both streams before advancing it.
+func TestServer_ReplayIncludesMissedEventsAfterNewerLiveDelivery(t *testing.T) {
+	f := newServerFixture(t)
+	const channel = "ch1"
+	for _, value := range []string{"upsert", "delta during outage"} {
+		if _, err := f.bus.Emit(channel, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	conn := f.dial(t)
+	readFirstFrame(t, conn)
+	if _, err := f.bus.Emit(channel, "live delta"); err != nil {
+		t.Fatal(err)
+	}
+	live := wireEntries(t, readPastHello(t, conn))
+	if len(live) != 1 || live[0].Seq != 3 {
+		t.Fatalf("live events = %+v, want sequence 3", live)
+	}
+	replay := requestReplay(t, conn, map[string]uint64{channel: 0})
+	if len(replay.events) != 3 {
+		t.Fatalf("replay = %+v, want the full missed interval", replay.events)
+	}
+	for i, event := range replay.events {
+		if event.Seq != uint64(i+1) || event.Gap {
+			t.Fatalf("replay event %d = %+v, want sequence %d without gap", i, event, i+1)
+		}
+	}
+}
+
 // A reconnect during heavy streaming is the worst case for per-event
 // frames: the ring can hold DefaultRingCapacity entries. Replay ships
 // them through the same batch envelope the live pump uses, chunked at

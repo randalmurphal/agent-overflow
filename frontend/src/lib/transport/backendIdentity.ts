@@ -5,9 +5,10 @@ import { rememberIdentity, forgetRememberedIdentity } from './rememberedIdentity
 // `backendId` keys the client-side replica database; `replicaGeneration`
 // is re-minted whenever the backend's rev/epoch continuity breaks for a
 // reason the counters cannot express (a restored database rewinds them).
-// Both are refetched on every reconnect, which is the only moment a
-// mid-session generation change can be observed — hence the subscription
-// rather than a one-shot read.
+// Bootstrap refreshes attest both fields; window sync can also observe a
+// changed generation. Consumers subscribe rather than taking a one-shot read.
+// Healthy socket reconnects may reuse bootstrap; socket launch continuity is
+// independently established by hello.launchId in wsClient.ts.
 //
 // Either field empty means "this backend does not identify its history"
 // (the `--connect` stub injects its own manifest and carries neither);

@@ -22,11 +22,29 @@ vi.mock('../transport/backends', () => ({
 }));
 
 import { holdBackendRecovery, onBackendRecovery } from './transportRecovery';
+import { itemEventQueued, itemEventsSettled, resetItemEventSettlement } from './itemEventSettlement';
 
 const offs: Array<() => void> = [];
 afterEach(() => {
+  resetItemEventSettlement();
   for (const off of offs.splice(0)) off();
   for (const client of [fixture.home, fixture.remote]) for (const fn of client.replay) fn('cancel');
+});
+
+it('finishes replay presentation after queued item mutations reach the panes', async () => {
+  const events: string[] = [];
+  offs.push(onBackendRecovery((id, phase) => events.push(`${id}:${phase}`)));
+  replay(fixture.home, 'start');
+  itemEventQueued();
+  itemEventQueued();
+  replay(fixture.home, 'complete');
+  itemEventsSettled(1);
+  await Promise.resolve();
+  expect(events).toEqual([':start']);
+  itemEventQueued(); // New live work must not extend the captured replay fence.
+  itemEventsSettled(1);
+  await Promise.resolve();
+  expect(events).toEqual([':start', ':complete']);
 });
 function deferred() {
   let resolve!: () => void;

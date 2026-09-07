@@ -19,6 +19,7 @@ import { lookupDiscussionLiveTail } from './discussionLiveTail';
 import { isBoundedString, isFiniteNumber } from './eventsGuards';
 import { compositeKey } from '../utils/compositeKey';
 import type { ThreadPaneIngest } from './threadPaneRoles';
+import { itemEventQueued, itemEventsSettled, resetItemEventSettlement } from './itemEventSettlement';
 
 // The registry hands out whole ThreadPanes; this module narrows them to
 // the ingest surface at the one acquisition point, so a new pane member
@@ -89,6 +90,7 @@ export function resetItemEventQueue(): void {
   itemEventQueue = [];
   itemEventQueueStart = 0;
   itemEventQueueChars = 0;
+  resetItemEventSettlement();
 }
 
 function isValidItemForThread(item: Item | null | undefined, threadId: string): item is Item {
@@ -310,6 +312,7 @@ export function applyItemStreamEvent(evt: ItemStreamEvent): void {
     flushItemEventQueue();
   }
   itemEventQueue.push(evt);
+  itemEventQueued();
   itemEventQueueChars += chars;
   scheduleItemEventFlush();
 }
@@ -478,5 +481,6 @@ export function flushItemEventQueue(): void {
     // One failed mutation/subscriber must not strand the untouched queue tail
     // after this flush cancelled both of its wakeups. The error still surfaces.
     if (itemEventQueueStart < itemEventQueue.length) scheduleItemEventFlush();
+    itemEventsSettled(events.length);
   }
 }

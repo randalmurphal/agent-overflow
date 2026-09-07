@@ -101,6 +101,7 @@ import { clearPairedSession, hasPairedSession, redeemPairing } from './deviceSes
 // two answers to what the client sends.
 import { FakeCtor, flushMicrotasks, MockWebSocket } from '../../test/helpers/mockWebSocket';
 import { __resetHomeEndpointForTest, setHomeEndpoint } from './homeEndpoint';
+import { MAX_REPLAY_BUFFER_CHARS } from './replayBuffer';
 
 const bootstrap = async () => ({ wsUrl: 'ws://example/ws', token: 'test-token' });
 
@@ -1153,6 +1154,168 @@ describe('WSClient', () => {
     client.close();
   });
 
+  it.each([
+    ['launch-b', true],
+    ['launch-a', false],
+    [undefined, false],
+  ])('scopes replay cursors across reconnect to %s', async (nextLaunch, restarted) => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    let launchId: string | undefined = 'launch-a';
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: async () => ({ ...(await bootstrap()), launchId }),
+    });
+    const items: unknown[] = [];
+    const gaps: unknown[] = [];
+    const recovery: string[] = [];
+    client.onReplay((phase) => recovery.push(phase));
+    client.subscribe('provider:item_event', (data) => items.push(data));
+    client.subscribe(transportGapChannel, (data) => {
+      gaps.push(data);
+      expect(recovery.at(-1)).toBe('start');
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    first.pushFrame({ type: 'hello', launchId, replayBaseline: { 'provider:turn_completed': 8 } });
+    first.pushFrame({ type: 'event', channel: 'provider:item_event', seq: 4, data: 'old launch' });
+    first.pushFrame({ type: 'replay' });
+
+    launchId = nextLaunch;
+    first.triggerClose();
+    await vi.advanceTimersByTimeAsync(125);
+    const second = MockWebSocket.instances[1]!;
+    second.acceptOpen();
+    const replay = second.sent.find((frame) => frame.type === 'replay')!;
+    expect(replay.lastSeqByChannel).toMatchObject({
+      'provider:item_event': 4,
+      'provider:turn_completed': 8,
+    });
+    second.pushFrame({ type: 'hello', launchId, replayBaseline: { 'provider:item_event': 10, 'provider:turn_completed': 12 } });
+    // The restarted process already has more events than the old cursor.
+    // Numeric overlap cannot produce a server gap: launch identity must
+    // demand snapshot recovery, even for a quiet completion channel.
+    expect(gaps).toEqual([]);
+    second.pushFrame({ type: 'event', channel: 'provider:item_event', seq: 2, data: 'new launch' });
+    second.pushFrame({ type: 'replay' });
+    expect(items).toEqual(restarted ? ['old launch', 'new launch'] : ['old launch']);
+    expect(gaps).toEqual(restarted ? [
+      { channel: 'provider:turn_completed', seq: 0 },
+      { channel: 'provider:item_event', seq: 0 },
+    ] : []);
+    expect(recovery.at(-1)).toBe('complete');
+    client.close();
+  });
+
+  it('keeps restart recovery pending when the first replay disconnects', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    const items: unknown[] = [];
+    const gaps: unknown[] = [];
+    client.subscribe('provider:item_event', (item) => items.push(item));
+    client.subscribe(transportGapChannel, (gap) => gaps.push(gap));
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    first.pushFrame({ type: 'hello', launchId: 'before-restart' });
+    first.pushFrame({ type: 'event', channel: 'provider:item_event', seq: 50, data: 'old process' });
+    first.triggerClose();
+    await vi.advanceTimersByTimeAsync(125);
+    const second = MockWebSocket.instances[1]!;
+    second.acceptOpen();
+    second.pushFrame({ type: 'hello', launchId: 'after-restart' });
+    second.pushFrame({ type: 'event', channel: 'provider:item_event', seq: 1, data: 'partial replay' });
+    second.triggerClose();
+    await vi.advanceTimersByTimeAsync(250);
+    const third = MockWebSocket.instances[2]!;
+    third.acceptOpen();
+    third.pushFrame({ type: 'hello', launchId: 'after-restart' });
+    expect(gaps).toEqual([]);
+    expect(items).toEqual(['old process']);
+    third.pushFrame({ type: 'event', channel: 'provider:item_event', seq: 1, data: 'complete replay' });
+    third.pushFrame({ type: 'replay' });
+    expect(items).toEqual(['old process', 'complete replay']);
+    expect(gaps).toEqual([{ channel: 'provider:item_event', seq: 0 }]);
+    client.close();
+  });
+
+  it('orders replay before overtaking live events while RPC replies keep flowing', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    const items: unknown[] = [];
+    client.subscribe('provider:item_event', (item) => items.push(item));
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    first.pushFrame({ type: 'event', channel: 'provider:item_event', seq: 1, data: 'before outage' });
+    first.triggerClose();
+    await vi.advanceTimersByTimeAsync(125);
+    const second = MockWebSocket.instances[1]!;
+    second.acceptOpen();
+    second.pushFrame({ type: 'event', channel: 'provider:item_event', seq: 4, data: 'live' });
+    const call = client.callByID(2, []);
+    await flushMicrotasks();
+    const id = second.sent.find((frame) => frame.type === 'rpc')!.id;
+    second.pushFrame({ type: 'rpc', id, result: 'answered during replay' });
+    await expect(call).resolves.toBe('answered during replay');
+    second.pushFrame({ type: 'batch', events: [
+      { channel: 'provider:item_event', seq: 2, data: 'missed prose' },
+      { channel: 'provider:item_event', seq: 3, data: 'missed tool' },
+      { channel: 'provider:item_event', seq: 4, data: 'live' },
+    ] });
+    expect(items).toEqual(['before outage']);
+    second.pushFrame({ type: 'replay' });
+    expect(items).toEqual(['before outage', 'missed prose', 'missed tool', 'live']);
+    second.pushFrame({ type: 'event', channel: 'provider:item_event', seq: 5, data: 'after replay' });
+    expect(items.at(-1)).toBe('after replay');
+    client.close();
+  });
+
+  it('does not charge ordinary first-connection traffic to notification replay', async () => {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    const activated = vi.fn();
+    client.subscribe('notification:activated', activated);
+    await flushMicrotasks();
+    const socket = MockWebSocket.instances[0]!;
+    socket.acceptOpen();
+    socket.pushFrame({ type: 'event', channel: 'notification:activated', seq: 1, data: { threadId: 'target' } });
+    const text = 'x'.repeat(MAX_REPLAY_BUFFER_CHARS / 2);
+    for (const seq of [1, 2, 3]) socket.pushFrame({ type: 'event', channel: 'provider:item_event', seq, data: text });
+    socket.pushFrame({ type: 'replay' });
+    expect(activated).toHaveBeenCalledExactlyOnceWith({ threadId: 'target' });
+    client.close();
+  });
+
+  it('recovers snapshots when reconnect payloads exceed the buffer budget', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    const items: unknown[] = [];
+    const gaps: unknown[] = [];
+    client.subscribe('provider:item_event', (item) => items.push(item));
+    client.subscribe('provider:turn_completed', () => {});
+    client.subscribe(transportGapChannel, (gap) => gaps.push(gap));
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    first.triggerClose();
+    await vi.advanceTimersByTimeAsync(125);
+    const second = MockWebSocket.instances[1]!;
+    second.acceptOpen();
+    const text = 'x'.repeat(MAX_REPLAY_BUFFER_CHARS / 2);
+    for (const seq of [1, 2, 3]) second.pushFrame({ type: 'event', channel: 'provider:item_event', seq, data: text });
+    second.pushFrame({ type: 'replay' });
+    expect(items).toEqual([]);
+    expect(gaps).toContainEqual({ channel: 'provider:item_event', seq: 3 });
+    expect(gaps).toContainEqual({ channel: 'provider:turn_completed', seq: 0 });
+    second.pushFrame({ type: 'event', channel: 'provider:item_event', seq: 4, data: 'live after recovery' });
+    expect(items).toEqual(['live after recovery']);
+    client.close();
+  });
+
   it('emits transport:gap and console.warn on a gap event', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
@@ -1455,6 +1618,7 @@ describe('WSClient', () => {
     expect(gaps).toEqual([]);
 
     // Detection re-arms from the first event observed on THIS connection.
+    second.pushFrame({ type: 'replay' });
     second.pushFrame({ type: 'event', channel: 'system:stats', seq: 90, data: { cpu: 3 } });
     expect(gaps).toEqual([{ channel: 'system:stats', seq: 90 }]);
 

@@ -127,8 +127,23 @@ visible to this connection, captured atomically with its live subscription.
 Zero heads include channels that have never emitted. The client seeds only
 missing cursors, so a channel's first event during an outage is replayable
 without fetching historical activity from before attachment. Existing cursors
-survive reconnect hello unchanged. The local `notification:activated` channel
+survive reconnect hello unchanged within the same launch. The local `notification:activated` channel
 keeps its separate cold-launch checkpoint instead of adopting this baseline.
+
+Every hello also carries `launchId`, the same process identity as bootstrap.
+Bootstrap can remain cached across successful reconnects; hello cannot. A new
+launch invalidates old cursors even when their numbers happen to fall inside
+the new ring. Clients clear those cursors and recover snapshots, since numeric
+overlap would otherwise silently skip new history. Older backends without this
+additive field retain gap-based recovery.
+
+Live and replay frames may interleave, and a live frame may arrive before the
+server receives the replay request. The replay completion marker closes this
+reconciliation window. Clients must reconcile by channel sequence before
+advancing their cursors: arrival-order dedup would discard older replay after
+a newer live delta, potentially losing the upsert that created the row. The
+server keeps delivering to clients that never request replay; no handshake
+wait blocks their event pump or RPCs.
 
 ### A cursor can fall outside the ring at either end
 

@@ -74,6 +74,8 @@ export interface ServerHelloFrame {
   protocolVersion: number;
   capabilities: string[];
   backendId?: string;
+  /** Backend process identity; replay cursors cannot cross launches. */
+  launchId?: string;
   /** The backend's display name (its hostname). Display only — see
    *  TransportHello.backendName in wsClient.ts. */
   backendName?: string;
@@ -120,6 +122,9 @@ export interface ClientRPCFrame {
    */
   stepUpToken?: string;
 }
+
+/** Mirrors internal/transport/frame.go MaxReplayChannels. */
+export const MAX_REPLAY_CHANNELS = 1024;
 
 export interface ClientReplayFrame {
   type: 'replay';

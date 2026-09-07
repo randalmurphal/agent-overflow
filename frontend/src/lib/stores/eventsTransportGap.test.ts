@@ -45,6 +45,19 @@ import {
 } from './threadTitleGeneration.svelte';
 import type { ThreadItemSnapshot } from './threadItemCache';
 import type { ThreadHistoryStamp } from './threadHistoryStamps';
+import { itemEventQueued, itemEventsSettled } from './itemEventSettlement';
+
+it('starts a gap snapshot after older queued replay mutations settle', async () => {
+  resetPanesForTest();
+  const pane = await buildPane(makeThread({ id: 'gap-queued-replay' }), [], 'main');
+  const refresh = vi.spyOn(pane, 'refreshFromBackend').mockResolvedValue();
+  itemEventQueued();
+  applyTransportGap({ channel: 'provider:item_event', seq: 3 });
+  expect(refresh).not.toHaveBeenCalled();
+  itemEventsSettled(1);
+  await Promise.resolve();
+  expect(refresh).toHaveBeenCalledOnce();
+});
 
 function snapshot(threadId: string, stamp: ThreadHistoryStamp): ThreadItemSnapshot {
   return {
@@ -70,6 +83,32 @@ describe('transport gap', () => {
     // errors, but an unmocked binding would still log and toast.
     setBindingMock('ListThreads', async () => []);
     setBindingMock('ListProjects', async () => []);
+  });
+
+  it('coalesces a replay gap burst into one sidebar read but preserves later invalidations', async () => {
+    let finishRead!: (rows: never[]) => void;
+    const pendingRead = new Promise<never[]>((resolve) => { finishRead = resolve; });
+    setBindingMock('ListThreads', () => pendingRead);
+    setBindingMock('ListThreadGroups', async () => []);
+    const channels = ['provider:item_event', 'provider:turn_started', 'provider:turn_completed', 'thread:updated'];
+    try {
+      for (const channel of channels) applyTransportGap({ channel, seq: 5 });
+      await vi.waitFor(() => {
+        for (const method of ['ListThreads', 'ListProjects', 'ListThreadGroups']) {
+          expect(getBindingMock(method)).toHaveBeenCalledTimes(1);
+        }
+      });
+      // The previous thread read is still pending. This later invalidation
+      // needs a newer snapshot, not the result of the earlier request.
+      for (const channel of channels) applyTransportGap({ channel, seq: 6 });
+      await vi.waitFor(() => {
+        for (const method of ['ListThreads', 'ListProjects', 'ListThreadGroups']) {
+          expect(getBindingMock(method)).toHaveBeenCalledTimes(2);
+        }
+      });
+    } finally {
+      finishRead([]);
+    }
   });
 
   it('strips unattested stamps from cached snapshots and keeps attested ones', () => {

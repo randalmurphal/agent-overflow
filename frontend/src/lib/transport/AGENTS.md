@@ -75,6 +75,23 @@ remote browser alike. Protocol and authz rules:
   cap the baseline like event cursors. `notification:activated` is excluded
   because its cold-launch replay deliberately reaches before subscription.
 
+  **Cursors belong to the socket's server launch.** Bootstrap may be cached;
+  `hello.launchId` proves the current process. A changed nonempty launch resets
+  tracked channel cursors and requests their snapshots after replay drains,
+  even when new sequence numbers overlap the old process's range. A missing
+  launch ID preserves legacy gap-based recovery; a route switch within one
+  launch preserves its cursors.
+
+  **Live traffic can overtake replay.** The server pump and replay writes can
+  interleave, including before the replay request reaches the server. During
+  reconnect, `replayBuffer.ts` orders each channel through the completion marker
+  before cursor dedup runs. RPC replies, hello and heartbeats remain immediate.
+  First connections buffer only notification activation. Payload and channel
+  bounds are enforced inside the buffer; overflow discards payloads and recovers
+  authoritative snapshots, never delivers a partial prefix. Disconnect and close
+  release the buffer. Snapshot recovery starts after draining so buffered events
+  cannot overwrite the snapshot that reconciles them.
+
   **Replay has a presentation boundary.** `onReplay` reports start on a
   reconnect (never the first connection), complete after `replay-complete`,
   and cancel on socket loss or close. It carries no payloads and changes no
@@ -1149,8 +1166,8 @@ None of them is a capability — that axis is `scopes.ts` above:
   channel, installs a document-wide MutationObserver and can hold a rAF
   loop open. Keying it on a manifest field rather than a build flag is
   what lets a production binary serve a harness with no frontend rebuild.
-- `backendIdentity.ts` is refetched on every reconnect, the only moment a
-  mid-session generation change is observable, so consumers subscribe
+- `backendIdentity.ts` observes bootstrap refreshes and window-sync generation
+  changes; healthy socket reconnects may reuse bootstrap. Consumers subscribe
   rather than read once. Either field empty means the backend does not
   identify its history, which consumers must treat as replica-DISABLED,
   never as a wildcard. It carries `name` too — the backend's display name,

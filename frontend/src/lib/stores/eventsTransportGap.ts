@@ -1,5 +1,6 @@
 import type { EventOrigin } from '../transport/handle';
 import { backendKeyForOrigin } from '../transport/backends';
+import { pendingItemEventsSettled } from './itemEventSettlement';
 // Transport-gap recovery event domain: coarse-grained resync when
 // wsClient.ts detects a missed seq on a channel — re-fetches sidebar
 // projections and the affected panes' loaded windows so SQLite (the
@@ -124,6 +125,14 @@ function applyWorkflowGap(channel: string, origin?: EventOrigin): void {
 // simplest correct response. (Channel semantics are documented at the
 // wiring site in events.ts.)
 export function applyTransportGap(gap: { channel: string; seq: number }, origin?: EventOrigin): void {
+  const mutations = pendingItemEventsSettled();
+  if (mutations) {
+    holdBackendRecovery(backendKeyForOrigin(origin?.backendId ?? ''),
+      mutations.then(() => applySettledTransportGap(gap, origin)));
+  } else applySettledTransportGap(gap, origin);
+}
+
+function applySettledTransportGap(gap: { channel: string; seq: number }, origin?: EventOrigin): void {
   if (!gap || typeof gap.channel !== 'string') return;
   // The workflow channels, caught by PREFIX so a channel added later cannot
   // reach the unknown-channel default (which refreshes panes and leaves every

@@ -113,6 +113,43 @@ func TestServer_HelloCarriesBackendIdentity(t *testing.T) {
 	}
 }
 
+// A successful reconnect can reuse bootstrap indefinitely. The first frame
+// must therefore identify the live process's sequence space itself, including
+// when a restarted backend's new sequence numbers overlap the old ones.
+func TestServer_HelloLaunchIDMatchesBootstrapAndChangesOnlyAcrossBoots(t *testing.T) {
+	var previousLaunch string
+	for range 2 {
+		f := newServerFixtureWith(t, func(cfg *Config) {
+			cfg.BackendIdentity = func() (string, string) {
+				return "same-installation", "same-generation"
+			}
+		})
+		resp := getBootstrap(t, f.srv.Addr())
+		var bootstrap Bootstrap
+		err := json.NewDecoder(resp.Body).Decode(&bootstrap)
+		resp.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bootstrap.LaunchID == "" || bootstrap.LaunchID == previousLaunch {
+			t.Fatalf("new boot launch ID = %q, previous %q", bootstrap.LaunchID, previousLaunch)
+		}
+		for range 2 {
+			conn := f.dial(t)
+			var hello helloFrame
+			if err := json.Unmarshal(readFirstFrame(t, conn), &hello); err != nil {
+				t.Fatal(err)
+			}
+			if hello.BackendID != "same-installation" || hello.LaunchID != bootstrap.LaunchID {
+				t.Fatalf("hello identity = (%q, %q), want (same-installation, %q)",
+					hello.BackendID, hello.LaunchID, bootstrap.LaunchID)
+			}
+			conn.CloseNow()
+		}
+		previousLaunch = bootstrap.LaunchID
+	}
+}
+
 // A backend whose store has not opened yet reports an empty id rather
 // than inventing one. The client's rule is that empty means UNKNOWN and
 // never a wildcard, so the wire has to be able to say it.

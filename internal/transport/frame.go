@@ -200,6 +200,9 @@ type helloFrame struct {
 	// Empty when the history store has not opened yet — the same rule as
 	// the bootstrap manifest, and it means "unknown", never a wildcard.
 	BackendID string `json:"backendId,omitempty"`
+	// LaunchID scopes replay cursors to this process's sequence space. Unlike
+	// bootstrap, hello is refreshed on every successful reconnect.
+	LaunchID string `json:"launchId,omitempty"`
 	// BackendName is the installation's editable display name, also used by
 	// pairing and push. A client's optional nickname remains separate. Names
 	// never authorize or key anything; BackendID remains the stable identity.

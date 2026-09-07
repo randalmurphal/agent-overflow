@@ -894,9 +894,9 @@ func (h *connHandler) callerProof(frame ClientFrame) CallerProof {
 
 // handleReplay streams every event missed since the client's
 // LastSeqByChannel into the wire. Live deliveries continue from the
-// event pump in parallel; any event whose seq <= the last replayed
-// seq from the live pump is naturally suppressed by the client's own
-// dedup (the wsClient lib tracks lastSeq per channel).
+// event pump in parallel, including before the replay request arrives.
+// Clients reconcile live and replay by channel sequence before advancing
+// their cursors; ordinary arrival-order dedup would lose older replay.
 //
 // Replay ships through the same batch frames the live pump uses, in
 // chunks of DefaultCoalesceMaxEvents. A reconnect during heavy
@@ -905,9 +905,8 @@ func (h *connHandler) callerProof(frame ClientFrame) CallerProof {
 // (1000) events, so the un-batched loop handed the worst case the
 // least protection. No timer is involved — the whole backlog is
 // already in hand, so chunking is a pure fan-in with no added latency.
-// Ordering survives: writeBatchFrame writes each chunk in order under
-// writeMu, spliceBatchFrame preserves slice order inside a chunk, and
-// every batch consumer iterates entries in order.
+// Chunks preserve the ring's order within each channel. writeMu guards
+// individual wire frames, not the whole replay: live frames may interleave.
 //
 // The map size is capped so an oversized replay request can't force
 // the bus to allocate proportionally large response slices.
@@ -948,9 +947,8 @@ func (h *connHandler) handleReplay(ctx context.Context, frame ClientFrame) {
 	// Trailing partial chunk; writeBatchFrame no-ops on an empty slice
 	// and falls through to a plain event frame for a single event.
 	h.writeBatchFrame(ctx, chunk)
-	// Replay and the live pump share writeMu, so live frames may interleave
-	// with replay frames. This completion marker lets clients buffer the one
-	// channel whose strict click ordering matters, then apply by sequence.
+	// The completion marker closes the client's live/replay reconciliation
+	// window. RPC responses and keepalives remain free to interleave as well.
 	h.writeFrame(ctx, ServerFrame{Type: frameTypeReplay, ID: frame.ID})
 }
 

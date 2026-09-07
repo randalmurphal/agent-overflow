@@ -190,13 +190,21 @@ export function reconcileThreadRows(rows: Thread[]): void {
   }
 }
 
+let sidebarRefreshQueued = false;
+
 export function refreshSidebarProjections(): void {
-  void resyncThreadRows();
-  void refreshProjects();
-  // Groups have no per-row merge to do (nothing local ever runs ahead of
-  // the backend on them), so the boot-time wholesale load is also the
-  // correct gap recovery.
-  void refreshThreadGroups();
+  if (sidebarRefreshQueued) return;
+  sidebarRefreshQueued = true;
+  // Replay recovery can invalidate many channels in one frame. They share
+  // these projections; fetch once after that burst, while later invalidations
+  // still start a fresh read even if this one's RPCs remain outstanding.
+  queueMicrotask(() => {
+    sidebarRefreshQueued = false;
+    void resyncThreadRows();
+    void refreshProjects();
+    // Groups have no local row merge, so the ordinary list load recovers them.
+    void refreshThreadGroups();
+  });
 }
 
 /**

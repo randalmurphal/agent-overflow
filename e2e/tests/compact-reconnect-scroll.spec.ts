@@ -84,6 +84,10 @@ for (const mode of ['large', 'small', 'reading', 'gesture', 'gap'] as const) {
       expect(await scroll.evaluate((el) => el.scrollTop)).toBeCloseTo(readingTop, 0);
       expect(await distance()).toBeGreaterThan(200);
     } else {
+      // Idle metadata can arrive before the budgeted item queue and layout
+      // settle. Assert the actual recovered tail before measuring catch-up.
+      await expect(page.getByText(mode === 'small' ? 'Done.' :
+        `End of recovered paragraph ${mode === 'gap' ? 179 : 29}.`, { exact: mode === 'small' })).toBeVisible();
       await expect.poll(distance).toBeLessThanOrEqual(2);
       const samples = await page.evaluate(() => {
         const state = (window as any).__reconnectScroll;

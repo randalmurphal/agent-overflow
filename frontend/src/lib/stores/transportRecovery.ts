@@ -1,8 +1,9 @@
-// Replay ends on the wire before gap-triggered snapshots necessarily return.
-// Keep this boundary per backend and include those reads before publishing
-// completion to mounted timelines. No event payloads are retained here.
+// Wire replay ends before queued item mutations and gap snapshots necessarily
+// settle. Include both before publishing completion to mounted timelines.
+// Recovery remains per backend; no event payloads are retained here.
 import { attachedBackends, onBackendsChanged } from '../transport/backends';
 import type { BackendKey } from '../transport/backendKey';
+import { pendingItemEventsSettled } from './itemEventSettlement';
 
 export type RecoveryPhase = 'start' | 'complete' | 'cancel';
 type Listener = (backend: BackendKey, phase: RecoveryPhase) => void;
@@ -18,6 +19,8 @@ function publish(backend: BackendKey, phase: RecoveryPhase): void {
 }
 
 async function complete(backend: BackendKey, pending: Set<Promise<unknown>>): Promise<void> {
+  const mutations = pendingItemEventsSettled();
+  if (mutations) await mutations;
   while (active.get(backend) === pending && pending.size) {
     await Promise.allSettled([...pending]);
   }

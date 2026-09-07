@@ -69,6 +69,7 @@ it.each([0, 7])('replays a completion never received by this client (baseline %i
   });
   second.pushFrame({ type: 'event', channel: 'provider:turn_completed',
     seq: completedBeforeConnect + 1, data: { turnId: 'turn' } });
+  second.pushFrame({ type: 'replay' });
   expect(completed).toHaveBeenCalledExactlyOnceWith({ turnId: 'turn' });
   client.close();
 });
