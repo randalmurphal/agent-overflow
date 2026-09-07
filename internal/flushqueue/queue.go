@@ -23,6 +23,7 @@ import (
 // already used as plain JSON across the existing send path.
 type QueuedItem struct {
 	ID                           string                       `json:"id"`
+	SendID                       string                       `json:"sendId,omitempty"`
 	ThreadID                     string                       `json:"threadId"`
 	Message                      string                       `json:"message"`
 	AttachmentIDs                []string                     `json:"attachmentIds,omitempty"`
@@ -97,6 +98,7 @@ func itemFrom(threadID, id, message string, enqueuedAt int64, raw []byte) Queued
 		return out
 	}
 	out.AttachmentIDs = payload.AttachmentIDs
+	out.SendID = payload.SendID
 	out.SourceProposedPlan = payload.SourceProposedPlan
 	out.RevisionSourceProposedPlan = payload.RevisionSourceProposedPlan
 	out.RevisionSourceCommentIDs = payload.RevisionSourceCommentIDs

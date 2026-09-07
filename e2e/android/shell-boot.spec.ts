@@ -418,13 +418,32 @@ const test = base.extend<ShellFixtures>({
   // one at "Waiting for confirmation". The permission is granted again
   // after the clear, because the prompt it would otherwise raise is a
   // dialog no assertion here is about.
-  page: async ({ device }, use) => {
+  page: async ({ device, harness: _harness }, use, testInfo) => {
     if (HUMAN_LOCK) await awaitOwnerUnlock(device);
     await device.shell(`pm clear ${SHELL_PACKAGE}`);
     await device.shell(`pm grant ${SHELL_PACKAGE} android.permission.POST_NOTIFICATIONS`);
     await device.shell(`am start -n ${SHELL_ACTIVITY}`);
     const webView = await shellWebView(device);
-    await use(await webView.page());
+    try {
+      await use(await webView.page());
+    } finally {
+      if (testInfo.status !== testInfo.expectedStatus) {
+        try {
+          const page = await (await shellWebView(device)).page();
+          const state = await page.evaluate(() => ({
+            selected: localStorage.getItem('agent-overflow:frontend:selected-computer'),
+            endpoints: localStorage.getItem('agent-overflow:backendEndpoints'),
+          }));
+          await testInfo.attach('connection-selection', { body: JSON.stringify(state, null, 2), contentType: 'application/json' });
+          await testInfo.attach('failed-shell-screen', { body: await page.locator('body').ariaSnapshot(), contentType: 'text/plain' });
+        } catch (error) {
+          await testInfo.attach('connection-diagnostic-error', { body: String(error), contentType: 'text/plain' });
+        }
+      }
+      // Stop native retries before the harness removes its reverse listener.
+      // Otherwise they outlive this case and can hit another test's port.
+      await device.shell(`am force-stop ${SHELL_PACKAGE}`);
+    }
   },
 });
 
@@ -527,11 +546,13 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
   await expect(lock).toBeVisible({ timeout: PAIRED_MOUNT_MS });
   await passCredentialPrompt(device, lock);
   await expect(row).toBeVisible({ timeout: PAIRED_MOUNT_MS });
-  const renewed = await page.evaluate(({ backend, before }) => {
+  await expect.poll(() => page.evaluate(({ backend, before }) => {
     const held = JSON.parse(localStorage.getItem(`agent-overflow:deviceSession:${backend}`)!);
     return held.sessionId === before.id && held.refreshSecret !== before.secret && !held.pendingNextSecret && held.expiresAtMs > Date.now();
-  }, { backend: privatePairing.backendId, before: oldSession });
-  expect(renewed, 'native renewal must preserve the pairing and finish its saved operation').toBe(true);
+  }, { backend: privatePairing.backendId, before: oldSession }), {
+    message: 'native renewal must preserve the pairing and finish its saved operation',
+    timeout: PAIRED_MOUNT_MS,
+  }).toBe(true);
 
   // The paired origin now disappears while the same computer is available
   // through its advertised LAN listener. This goes through the actual native
@@ -546,7 +567,6 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
     const profile = JSON.parse(localStorage.getItem(`agent-overflow:computerRoutes:${id}`) ?? '{}');
     return (profile.routes ?? []).some((route: { endpoint: string }) => !route.endpoint.includes('127.0.0.1'));
   }, privatePairing.backendId), { message: 'the authenticated manifest advertises a reachable LAN route' }).toBe(true);
-  await run(adbPath(), ['-s', device.serial(), 'reverse', '--remove', `tcp:${harness.bootstrap.port}`]);
   await page.evaluate((id) => {
     const key = `agent-overflow:deviceSession:${id}`;
     const held = JSON.parse(localStorage.getItem(key)!);
@@ -556,8 +576,11 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
   // Removing an adb reverse listener leaves established TCP streams alive
   // (verified with an isolated socket exchange). A WebView reload also keeps
   // the native HTTP client's connection pool. Cold-start to actually remove
-  // the old route, while preserving all pairing and renewal state.
+  // the old route, while preserving all pairing and renewal state. Stop the
+  // app before removing the listener: ADB 37 aborts its server if a reconnect
+  // races removal ("handle_packet disallowed connect").
   await device.shell(`am force-stop ${SHELL_PACKAGE}`);
+  await run(adbPath(), ['-s', device.serial(), 'reverse', '--remove', `tcp:${harness.bootstrap.port}`]);
   await device.shell(`am start -n ${SHELL_ACTIVITY}`);
   page = await (await shellWebView(device)).page();
   lock = page.getByTestId('app-lock');

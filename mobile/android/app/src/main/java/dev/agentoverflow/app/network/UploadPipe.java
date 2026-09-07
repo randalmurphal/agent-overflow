@@ -57,8 +57,8 @@ final class UploadPipe extends RequestBody {
         catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IOException("Upload interrupted", e); }
     }
 
-    synchronized void cancel() {
-        failure = new IOException("Transfer closed");
+    synchronized void cancel(IOException cause) {
+        if (failure == null) failure = cause;
         chunk = null;
         notifyAll();
     }

@@ -22,6 +22,7 @@ import { createKeyedSignalRegistry, type KeyedSignalRegistry } from './keyedSign
  * after `provider:queue_state_changed` arrives, and what
  * RegisterQueueItem returns. */
 export interface QueueItem {
+  sendId?: string;
   id: string;
   threadId: string;
   message: string;
@@ -47,10 +48,11 @@ export interface FlushedLifecycle {
 }
 
 /** Zone 2 entry. Carries the queue id (frontend-allocated) and the
- * backend-allocated `user:<turnIndex>:flush:<n>` id so the
+ * opaque backend-allocated user item id so the
  * "this row's Meta has provider_item_id" detection can clear the
  * marker. */
 export interface FlushedItem {
+  sendId?: string;
   queueItemId: string;
   userItemId: string;
   message: string;
@@ -250,7 +252,7 @@ export function replaceFlushedForThread(
  * original flushedAt and lifecycle; the replay carries nothing newer. */
 export function markItemsFlushed(
   threadId: string,
-  items: readonly { queueItemId: string; userItemId: string; message: string }[],
+  items: readonly Pick<FlushedItem, 'queueItemId' | 'userItemId' | 'message' | 'sendId'>[],
 ): void {
   if (!threadId || items.length === 0) return;
   const now = Date.now();
@@ -268,6 +270,7 @@ export function markItemsFlushed(
     if (knownUserItemIds.has(item.userItemId)) continue;
     knownUserItemIds.add(item.userItemId);
     additions.push({
+      sendId: item.sendId,
       queueItemId: item.queueItemId,
       userItemId: item.userItemId,
       message: item.message,
@@ -379,6 +382,7 @@ export function clearForThread(threadId: string): void {
 /** Convert the generated Wails queue DTO to the local send-queue shape. */
 export function queueItemFromWire(item: WireQueuedItem): QueueItem {
   return {
+    sendId: item.sendId,
     id: item.id,
     threadId: item.threadId,
     message: item.message,

@@ -853,44 +853,50 @@ per attached backend, fed by both channels and re-read on every hello) and
 `components/settings/MachineUpdates.svelte`; its guide entry is
 `frontend/src/lib/stores/AGENTS.md`.
 
-## A send is answered once, however many times it arrives
+## Send admission, identity and placement
 
-A socket that died AFTER the frame reached the backend looks exactly like one
-that died before it: the RPC never answers. The client's transport re-sends
-the frame for two methods and only two (`RETRY_ON_TRANSIENT_CLOSE` in
-`frontend/src/lib/transport/wsClient.ts`), so both have to be idempotent HERE
-— a retry that started a second turn would be worse than the lost answer it
-was recovering.
+`app_user_message_placement.go` owns direct/composer/steer/flush/fallback
+placement under the thread action lock. Callers must not calculate turn
+indices themselves or trust frontend activity. Preserve the separate display
+turn, response turn and persistence policy; internal turn-opening sends retain
+workflow and edit/resend semantics. The cross-layer contract and regression
+map live in [user-message-ordering.md](../../docs/architecture/user-message-ordering.md).
 
-`app_send_idempotency.go` is the whole mechanism, and it is deliberately not
-a table.
+`app_send_idempotency.go` owns admission for repeated SendIDs. All three public
+SendID-bearing wrappers acquire the shared `(threadID, SendID)` lock before
+thread/action or queue/mutation locks. Internal send→queue redirects must not
+reacquire it. Empty SendIDs retain legacy behavior; edit-and-resend has its own
+transaction contract and no SendID.
 
-- **The id is the client's, minted once per send** (`buildSendOptions`), and
-  it rides `SendMessageOptions.SendID` on both paths. An EMPTY id is legal
-  and disables the check: every app-internal injector sends one, as does any
-  bundle older than the field, and treating them as one message would collapse
-  a workflow's injected sends into the first.
-- **The record is the message itself**, in whichever of its two homes it
-  reached. A dispatched send is a `user_text` row whose `meta` carries
-  `sendId` (`internal/usermessage`); a queued one is a `flush_queue_items`
-  row whose `send_id` column carries it. `findRecordedSend` looks in both and
-  answers the caller from what it finds — the persisted item, or the queue
-  row projected back through `flushqueue.ItemFromStore`.
-- **Retained history, matched through sparse indexes.**
-  `store.FindUserTextItemBySendID(threadID, sendID)` probes send identities on
-  both physical timeline arms and hydrates at most one row. A disconnected
-  frontend can retry after another frontend added many messages; a newest-N
-  cutoff must never turn that retry into a new send. Migration v89 indexes only
-  top-level user rows carrying an identity, preserving cheap misses without an
-  extra receipt table. Imported overrides and the reader-authored predicate
-  remain part of the lookup. Query-plan tests require both indexes.
-- **The check runs under the lock that serializes the path, before any side
-  effect.** In `sendMessageLocked` that is first thing inside the thread
-  action lock — before the runtime-mode write, before the session start,
-  above all before the provider write. In `registerQueueItem` it is
-  immediately after `handoffMu`, which is the queue path's serialization
-  point, and BEFORE the length cap so a duplicate cannot be answered "queue
-  full".
+- **Check before effects.** The locked send checks before runtime-mode changes,
+  session start and provider write. Workflow preparation also checks before
+  takeover because that preparation runs outside the action lock. Queue
+  registration checks under `handoffMu`, before even the queue-length cap.
+  Legacy steer checks before runtime-mode changes or active-turn validation.
+- **The message is the record.** `FindAcceptedUserMessageBySendID` holds the
+  flush anchor across history → durable queue → pending-echo lookup. A provider
+  write can settle the queue before its echo persists history; the retained
+  pending input closes that gap. A consumed echo with a failed cache write must
+  remain accepted, never resent.
+- **No newest-N shortcut.** `Store.FindUserTextItemBySendID` probes both timeline
+  arms through sparse indexes and hydrates at most one row. A retry remains
+  identifiable after another device added many messages. Preserve imported
+  overrides and the reader-authored predicate; query-plan tests require both
+  indexes (migration v89).
+- **Negotiate provisional-row reconciliation.** A SendID is an idempotency key,
+  not proof that a caller understands opaque row IDs: old frontends already
+  send it. Only `ReconcileBySendID` opts a direct composer into opaque IDs and
+  authoritative queue-on-busy admission. Legacy composers retain numeric direct
+  IDs and are rejected before accepting a busy send, so their rollback works.
+  Explicit queue/steer paths already consume backend-resolved IDs.
+- **IDs are opaque.** Negotiated identified sends derive a UUID independently of turn
+  coordinates; placement-only fallback never renames them. Numeric IDs remain
+  valid for legacy/internal callers. Only registration assertions and legacy
+  allocators inspect grammar.
+
+`app_user_message_placement_test.go`, `app_send_active_test.go` and
+`app_send_receipt_test.go` enforce these boundaries, including rowless turns,
+late echoes, simultaneous cross-method retries and workflow preflight.
 
 ## The flush queue outlives the process
 
@@ -898,17 +904,19 @@ The composer clears the moment `RegisterQueueItem` returns, so between the
 register and the provider write the queue is the message's only copy — and it
 was process memory, which a crash threw away with no trace anywhere. It now
 has a row (`flush_queue_items`, migration v85). `internal/triage` keeps the
-live queue and knows nothing about the row; this package owns its whole life.
+live queue and a narrow accepted-message lookup; this package owns durable
+queue mutation and recovery.
 
 - **Durable first, then memory.** `registerQueueItem` inserts before
   `triage.RegisterQueueItem`, so an insert failure is a visible refusal to
   queue rather than a message that quietly is not there tomorrow.
-- **The row dies at a durable endpoint, and `triage.FlushSettlement` is
-  already exactly that.** `flushQueueSettlement` composes the delete with
-  whatever an injector passed as `onDurable`, so the two moments the message
-  is safely somewhere else — the dispatcher's persisted `user_text` row, and a
-  session-death restore into the composer draft — delete it exactly once
-  (`sync.Once`) with no call site having to remember the table.
+- **Settlement deletes the row once.** `flushQueueSettlement` composes the
+  delete with an injector's `onDurable`: successful provider dispatch or a
+  session-death restore into the composer draft settles it (`sync.Once`).
+  Deferred input can still await its echo after dispatch. Its pending entry
+  answers session-local retries; provider transcripts own consumed-input
+  recovery. This is not a durable exactly-once receipt across a crash between
+  provider acceptance and the cached user row.
 - **A requeue KEEPS its row.** A failed dispatch, a pre-init teardown that
   could not write the draft: the message is still undelivered, so the row is
   still its only durable copy. `requeueEagerPersistedFlushes` deliberately

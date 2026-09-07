@@ -58,6 +58,21 @@ func (s *Store) ListItemsForTurn(threadID string, turnIndex int) ([]Item, error)
 }
 
 func (s *Store) LastTurnIndex(threadID string) (int, error) {
+	index, err := s.lastTurnIndex(threadID)
+	return int(index.Int64), err
+}
+
+// NextTurnIndex reserves known turns even when they have no cached items yet.
+// An empty thread starts at zero; unlike LastTurnIndex, zero is not ambiguous.
+func (s *Store) NextTurnIndex(threadID string) (int, error) {
+	index, err := s.lastTurnIndex(threadID)
+	if err != nil || !index.Valid {
+		return 0, err
+	}
+	return int(index.Int64) + 1, nil
+}
+
+func (s *Store) lastTurnIndex(threadID string) (sql.NullInt64, error) {
 	var maxIndex sql.NullInt64
 	err := s.reader().QueryRow(
 		`SELECT MAX(turn_index)
@@ -69,12 +84,9 @@ func (s *Store) LastTurnIndex(threadID string) (int, error) {
 		threadID, threadID,
 	).Scan(&maxIndex)
 	if err != nil {
-		return 0, fmt.Errorf("store: last turn index: %w", err)
+		return sql.NullInt64{}, fmt.Errorf("store: last turn index: %w", err)
 	}
-	if !maxIndex.Valid {
-		return 0, nil
-	}
-	return int(maxIndex.Int64), nil
+	return maxIndex, nil
 }
 
 func (s *Store) FindTurnItem(threadID string, turnIndex int, kind string) (Item, bool, error) {

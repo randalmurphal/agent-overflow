@@ -276,3 +276,35 @@ func TestComputerRouteSelectionCoalescesAndDoesNotWaitForAStalledRoute(t *testin
 		t.Fatalf("probes=%d calls=%d", probes.Load(), calls.Load())
 	}
 }
+
+func TestComputerRoutesAllowColdVPNPath(t *testing.T) {
+	first := newBackend(t)
+	client, _ := openAgainst(t, first, nil)
+	var sent atomic.Int32
+	candidate := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			select {
+			case <-time.After(3 * time.Second):
+				json.NewEncoder(w).Encode(map[string]string{"backendId": client.Session().BackendID})
+			case <-r.Context().Done():
+			}
+			return
+		}
+		if r.URL.Path == "/next" {
+			sent.Add(1)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer candidate.Close()
+	learnRoutes(t, client, computerroute.Route{Endpoint: candidate.URL, CertFingerprint: servercert.Fingerprint(candidate.Certificate().Raw)})
+	first.Close()
+	if err := routeRequest(client, http.MethodGet, "/next"); err == nil {
+		t.Fatal("closed LAN unexpectedly responded")
+	}
+	if err := routeRequest(client, http.MethodGet, "/next"); err != nil {
+		t.Fatalf("reachable VPN route failed before it could connect: %v", err)
+	}
+	if sent.Load() != 1 {
+		t.Fatalf("requests sent = %d, want exactly one", sent.Load())
+	}
+}

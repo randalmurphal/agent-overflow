@@ -60,13 +60,15 @@ public final class HttpStreams implements AutoCloseable {
             } finally { touched = System.nanoTime(); reading.set(false); }
         }
 
-        synchronized void close() {
+        void close() { close(new IOException("Transfer closed")); }
+
+        synchronized void close(IOException failure) {
             if (closed) return;
             closed = true;
-            if (upload != null) upload.cancel();
+            if (upload != null) upload.cancel(failure);
             call.cancel();
             if (response != null) response.close();
-            headers.completeExceptionally(new IOException("Transfer closed"));
+            headers.completeExceptionally(failure);
         }
     }
 
@@ -92,11 +94,12 @@ public final class HttpStreams implements AutoCloseable {
         transfers.put(id, transfer);
         transfer.call.enqueue(new Callback() {
             public void onFailure(Call call, IOException failure) {
-                transfer.headers.completeExceptionally(failure);
                 // Keep the completed failure until the renderer reads headers
                 // (or the idle sweep reclaims it). Removing the handle here
                 // races httpHeaders and hides a certificate error as "gone".
-                transfer.close();
+                // The body writer can reach the bridge before its header
+                // reader; both must retain the original network failure.
+                transfer.close(failure);
             }
             public void onResponse(Call call, Response response) { transfer.received(response); }
         });

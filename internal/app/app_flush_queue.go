@@ -50,8 +50,8 @@ type flushDispatchBatch struct {
 // message in the above-composer pending area while waiting for the
 // provider-visible wire echo.
 //
-// The userItemId is the deterministic AO row id the dispatcher will
-// allocate (`user:<turnIndex>:flush:<n>`). The frontend matches the
+// The userItemId is the opaque AO row identity allocated independently
+// of placement for identified client sends. The frontend matches the
 // id against incoming `provider:item_event` upserts: when the
 // corresponding row's Meta carries a `provider_item_id`, the wire echo
 // has arrived and the Zone 2 marker can drop.
@@ -67,6 +67,7 @@ type QueueFlushedEvent struct {
 // timeline.
 type QueueFlushedItem struct {
 	QueueItemID string `json:"queueItemId"`
+	SendID      string `json:"sendId,omitempty"`
 	UserItemID  string `json:"userItemId"`
 	Message     string `json:"message"`
 }
@@ -274,7 +275,7 @@ type flushQueuePayload = flushqueue.Payload
 //  1. Decode QueuedFlushItem.Payload into flushQueuePayload.
 //  2. Resolve attachments + source/revision plan refs (same shape
 //     Send and Steer use).
-//  3. Allocate the AO item id (`user:<turnIndex>:flush:<n>`).
+//  3. Allocate a stable AO identity independently of its turn placement.
 //  4. Register the pending-send marker — provider-specific:
 //     - Claude with active turn: EAGER persist. The user_text row is
 //     persisted immediately at the active turn's index so it appears
@@ -346,7 +347,7 @@ func (a *App) dispatchFlushWithGeneration(threadID string, items []triage.Queued
 				Items:    []QueueFlushedItem{flushedItem},
 			})
 		}
-		// A successful provider write is one of the two durable endpoints for
+		// A successful provider write is one of the two settlement endpoints for
 		// an injected message; session-death recovery into the composer is the
 		// other. The shared settlement is exactly-once if those paths race.
 		item.Settlement.Settle()
@@ -414,32 +415,13 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 	}
 	defer unlockAccount()
 
-	responseTurnIndex, activeAtResolution, err := a.resolveFlushTurnPlacement(threadID, sess)
+	placement, err := a.resolveUserMessagePlacement(thread, messageFlush)
 	if err != nil {
-		return QueueFlushedItem{}, false, requeue, fmt.Errorf("resolve turn index: %w", err)
+		return QueueFlushedItem{}, false, requeue, fmt.Errorf("resolve placement: %w", err)
 	}
-
-	// Two placements, one per dispatch shape (resolveFlushTurnPlacement
-	// picks the response turn; this picks where the row is PERSISTED):
-	//
-	//   - Claude with an active turn: persist the user_text within the active
-	//     turn for timeline ordering (the message sorts alongside the ongoing
-	//     response at the point it was dispatched), but register the pending
-	//     send at the response turn so resolveTurnIndexOnStart opens a fresh
-	//     turn for the response. This is the only eager-persist case.
-	//   - Codex on `turn/steer`: the message joins the RUNNING turn's
-	//     pending_input, so resolveFlushTurnPlacement already returned the
-	//     active turn's index and both indices are the same one.
-	persistTurnIndex := responseTurnIndex
-	eagerPersist := false
-	if sess.Codex == nil {
-		if active, found, lookupErr := a.store.GetActiveTurn(threadID); lookupErr == nil && found {
-			persistTurnIndex = active.TurnIndex
-			eagerPersist = true
-		} else if lookupErr != nil {
-			return QueueFlushedItem{}, false, requeue, fmt.Errorf("resolve persist turn: %w", lookupErr)
-		}
-	}
+	responseTurnIndex := placement.responseTurn
+	persistTurnIndex := placement.displayTurn
+	eagerPersist := placement.persistence == messagePersistQuiet
 
 	// Mint the queued message's wire id for Claude-family sessions, like
 	// app_send.go does for direct sends: Claude honors a client-supplied
@@ -485,7 +467,7 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		requeue.StaleUserItemID = ""
 	}
 
-	flushItemID, err := a.nextFlushUserItemID(threadID, persistTurnIndex)
+	flushItemID, err := a.userMessageItemID(threadID, payload.SendID, persistTurnIndex, messageFlush)
 	if err != nil {
 		return QueueFlushedItem{}, false, requeue, fmt.Errorf("allocate item id: %w", err)
 	}
@@ -503,7 +485,7 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		UpdatedAt: now,
 	}
 
-	flushedItem := QueueFlushedItem{QueueItemID: item.ID, UserItemID: userItem.ID, Message: item.Message}
+	flushedItem := QueueFlushedItem{QueueItemID: item.ID, UserItemID: userItem.ID, Message: item.Message, SendID: payload.SendID}
 
 	// The identity this dispatch will be recognised by — wire stamp and
 	// registry expectation derived together (providerSendIdentity), so
@@ -520,18 +502,12 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 			ThreadID: threadID,
 			Items:    []QueueFlushedItem{flushedItem},
 		})
-		if persistErr := a.triage.PersistItemQuiet(userItem, nil); persistErr != nil {
+		if persistErr := a.triage.PersistAndRegisterPendingQuietFlushSendWithExpectation(
+			threadID, item.ID, userItem, responseTurnIndex, item.EnqueuedAt, sendExpect); persistErr != nil {
 			return QueueFlushedItem{}, true, requeue, fmt.Errorf("eager persist flush: %w", persistErr)
 		}
 		requeue.StaleUserItemID = userItem.ID
-		// Non-deferred pending send at the response turn. The item is
-		// already persisted at persistTurnIndex; on echo,
-		// attachProviderItemIDToUserRow stamps provider_item_id and
-		// emits the provider:item_event upsert that clears Zone 2.
-		// resolveTurnIndexOnStart reads responseTurnIndex from the
-		// FIFO to open a new turn for the response.
-		a.triage.RegisterPendingQuietFlushSendWithExpectation(
-			threadID, item.ID, userItem, responseTurnIndex, item.EnqueuedAt, sendExpect)
+
 	} else {
 		// Deferred: row persists at echo time via persistDeferredUserText.
 		a.triage.RegisterPendingFlushSendWithExpectation(threadID, item.ID, userItem, item.EnqueuedAt, sendExpect)
@@ -579,10 +555,12 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		}
 		if sess.Codex != nil && codex.IsNoActiveTurnRace(dispatchErr) {
 			a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
-			if activeAtResolution {
-				responseTurnIndex++
+			fallback, allocErr := a.resolveUserMessagePlacement(thread, messageFlushFallback)
+			if allocErr != nil {
+				return QueueFlushedItem{}, eagerPersist, requeue, allocErr
 			}
-			freshFlushItemID, allocErr := a.nextFlushUserItemID(threadID, responseTurnIndex)
+			responseTurnIndex = fallback.responseTurn
+			freshFlushItemID, allocErr := a.userMessageItemID(threadID, payload.SendID, responseTurnIndex, messageFlushFallback)
 			if allocErr != nil {
 				a.persistFlushDispatchError(threadID, responseTurnIndex, allocErr)
 				return QueueFlushedItem{}, eagerPersist, requeue, allocErr
@@ -591,10 +569,9 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 			userItem.TurnIndex = responseTurnIndex
 			userItem.CreatedAt = time.Now().UnixMilli()
 			userItem.UpdatedAt = userItem.CreatedAt
-			// The row id changed, and the client id IS the row id — so both
-			// the wire stamp and the expectation are re-derived from the new
-			// one. Re-registering with the old id would leave the entry
-			// waiting on a `clientId` nothing will ever echo.
+			// Legacy callers may get a new row id. Derive both
+			// wire stamp and expectation together; identified client sends
+			// preserve both across this placement-only fallback.
 			var refreshExpect triage.PendingSendExpectation
 			sendOpts.ClientUserMessageID, refreshExpect = providerSendIdentity(sess, userItem.ID, "")
 			a.triage.RegisterPendingFlushSendWithExpectation(
@@ -640,67 +617,6 @@ func (a *App) nextFlushSequenceForTurn(threadID string, turnIndex int) (int, err
 		return a.triage.NextFlushSequence(threadID, turnIndex)
 	}
 	return a.nextSequenceForScope(threadID, turnIndex, "flush")
-}
-
-// resolveFlushTurnPlacement picks the turn index for a flush-dispatched
-// message. Provider-specific because Claude and Codex handle queued
-// messages differently:
-//
-//   - Codex: Steer injects into the active turn's pending_input. The
-//     message is part of the current turn. Use the active turn's index.
-//   - Claude: Send writes to stdin, and the CLI may drain it either
-//     MID-loop (folded into the running wire round as a
-//     `queued_command` attachment, no new system.init) or at the next
-//     turn pickup. AO gives it a NEW logical turn index either way. That
-//     is a deliberate AO choice, not a reading of the CLI: reusing the
-//     active turn's index would make setOpenTurn reset id-allocating
-//     counters for the already-running turn and collide segment ids
-//     (text:T:0 overwriting the previous text:T:0). Triage owns the
-//     mid-loop case explicitly — openQueuedEchoTurn opens the logical
-//     turn when the echo arrives with no init behind it (see
-//     queue_dispatch_turn_test.go
-//     TestDeferredFlushEcho_MidLoopConsumption_OpensLogicalTurn).
-//
-// For the non-active-turn path (shared by both providers), in-flight
-// pending sends are consulted via MaxPendingSendTurnIndex because
-// deferred items don't land in items/turns until echo — two messages
-// queued during the same active turn would otherwise both resolve to
-// the same next index.
-func (a *App) resolveFlushTurnPlacement(threadID string, sess session) (turnIndex int, activeAtResolution bool, err error) {
-	// Codex STEERS a queued message into the running turn, so its row belongs
-	// in that turn.
-	if sess.Codex != nil {
-		if active, found, err := a.store.GetActiveTurn(threadID); err == nil && found {
-			return active.TurnIndex, true, nil
-		} else if err != nil {
-			return 0, false, fmt.Errorf("lookup active turn: %w", err)
-		}
-	}
-	turnIndex, err = a.nextSendTurnIndex(threadID)
-	if err != nil {
-		return 0, false, err
-	}
-	if a.triage != nil {
-		if maxPending, ok := a.triage.MaxPendingSendTurnIndex(threadID); ok && maxPending+1 > turnIndex {
-			turnIndex = maxPending + 1
-		}
-	}
-	return turnIndex, false, nil
-}
-
-func (a *App) nextSendTurnIndex(threadID string) (int, error) {
-	hasPriorItems, err := a.store.HasItems(threadID)
-	if err != nil {
-		return 0, fmt.Errorf("check prior items: %w", err)
-	}
-	last, err := a.store.LastTurnIndex(threadID)
-	if err != nil {
-		return 0, fmt.Errorf("get turn index: %w", err)
-	}
-	if hasPriorItems {
-		return last + 1, nil
-	}
-	return last, nil
 }
 
 // dispatchFlushToProvider routes the actual provider call based on
@@ -794,6 +710,12 @@ func (a *App) RegisterQueueItem(ctx context.Context, threadID string, message st
 	if err := a.requireAutonomyForThread(ctx, threadID, opts.RuntimeMode); err != nil {
 		return QueuedItem{}, err
 	}
+	unlockAdmission, err := a.lockSendAdmission(ctx, threadID, opts.SendID)
+	if err != nil {
+		return QueuedItem{}, err
+	}
+	defer unlockAdmission()
+
 	// A user queueing a message has just consumed their composer draft, so the
 	// bound entry point clears it, and nothing is waiting on the dispatch.
 	return a.registerQueueItem(threadID, message, opts, injectedQueueOptions{
@@ -820,7 +742,7 @@ type injectedQueueOptions struct {
 	onDurable func()
 }
 
-// flushQueueSettlement is the durable-endpoint hook every queued message
+// flushQueueSettlement is the dispatch-or-restore hook every queued message
 // carries: it deletes the message's durable row, then runs whatever
 // bookkeeping an injector added.
 //
@@ -832,7 +754,7 @@ type injectedQueueOptions struct {
 // endpoint from having to remember this table.
 //
 // A delete that fails is logged and not surfaced: the message has already
-// arrived somewhere durable, so the only cost is that the boot sweep may
+// been dispatched or restored, so the boot sweep may
 // restore it into the composer once, which is recoverable in a way that
 // failing a delivered send is not.
 func (a *App) flushQueueSettlement(threadID, id string, onDurable func()) *triage.FlushSettlement {
@@ -952,6 +874,7 @@ func (a *App) registerQueueItem(
 		// does not send a second copy.
 		return QueuedItem{
 			ID:         record.item.ID,
+			SendID:     opts.SendID,
 			ThreadID:   threadID,
 			Message:    record.item.Summary,
 			EnqueuedAt: record.item.CreatedAt,
@@ -1008,6 +931,7 @@ func (a *App) registerQueueItem(
 
 	wireItem := QueuedItem{
 		ID:                           id,
+		SendID:                       opts.SendID,
 		ThreadID:                     threadID,
 		Message:                      message,
 		AttachmentIDs:                opts.AttachmentIDs,

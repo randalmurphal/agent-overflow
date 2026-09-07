@@ -18,6 +18,7 @@ export interface AttachmentPreviewSource {
 }
 
 export interface UserMessageMeta {
+  sendId?: unknown;
   attachments?: unknown;
   sourceProposedPlan?: unknown;
   wire_only?: unknown;

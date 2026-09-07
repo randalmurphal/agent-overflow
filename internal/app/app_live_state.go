@@ -10,6 +10,7 @@ import (
 	"agent-overflow/internal/itemwire"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/usermessage"
 )
 
 // ThreadLiveState is the backend-owned live projection a freshly loaded
@@ -127,8 +128,13 @@ func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {
 		state.QueueItems = append(state.QueueItems, flushqueue.ItemFromTriage(threadID, item))
 	}
 	for _, item := range live.FlushedItems {
+		meta, err := usermessage.FromItem(store.Item{Meta: item.UserMeta})
+		if err != nil {
+			return state, fmt.Errorf("get thread live state: pending message metadata: %w", err)
+		}
 		state.FlushedItems = append(state.FlushedItems, QueueFlushedItem{
 			QueueItemID: item.QueueItemID,
+			SendID:      meta.SendID,
 			UserItemID:  item.UserItemID,
 			Message:     item.Message,
 		})

@@ -45,7 +45,11 @@ type sendMessageOptions struct {
 	// SendID is the client-minted idempotency id of one composer send. Empty
 	// for every app-internal caller, which is what keeps them out of each
 	// other's way. See app_send_idempotency.go.
-	SendID string
+	SendID            string
+	ReconcileBySendID bool
+	// QueueIfActive is set by composer entry points. The frontend's last
+	// observed turn state cannot decide whether this is a new provider turn.
+	QueueIfActive bool
 	// PreserveDraft keeps the thread's durable composer draft. Set by the
 	// app-internal injectors (the workflow wake) whose text did not come from
 	// the composer: a user send consumes the draft, but a system-injected
@@ -298,6 +302,14 @@ func (a *App) sendMessageWithOptions(
 			return store.Item{}, fmt.Errorf("send message: load thread: %w", err)
 		}
 		if peek.Mode == threadmode.ModeWorkflow {
+			// Takeover is itself a side effect and must run outside the
+			// action lock. Public wrappers already hold SendID admission;
+			// a retry must not detach a workflow started after its send.
+			if record, found, err := a.findRecordedSend(threadID, opts.SendID); err != nil {
+				return store.Item{}, err
+			} else if found {
+				return record.item, nil
+			}
 			itemID, err := a.prepareWorkflowTakeoverSend(ctx, peek)
 			if err != nil {
 				return store.Item{}, fmt.Errorf("send message: %w", err)
@@ -373,6 +385,30 @@ func (a *App) sendMessageLocked(
 		// not a `user_text` row yet, so there is no item to return; the
 		// thread view the bound method reads back is unaffected either way.
 		return store.Item{}, nil
+	}
+
+	intent := messageDirect
+	if opts.QueueIfActive {
+		intent = messageComposer
+		if !opts.ReconcileBySendID {
+			intent = messageLegacyComposer
+		}
+	}
+	placement, err := a.resolveUserMessagePlacement(thread, intent)
+	if err != nil {
+		return store.Item{}, fmt.Errorf("send message: placement: %w", err)
+	}
+	if placement.queue {
+		_, err := a.registerQueueItem(threadID, content, SendMessageOptions{
+			AttachmentIDs:                opts.AttachmentIDs,
+			SourceProposedPlan:           opts.SourceProposedPlan,
+			RevisionSourceProposedPlan:   opts.RevisionSourceProposedPlan,
+			RevisionSourceCommentIDs:     opts.RevisionSourceCommentIDs,
+			RevisionSourceDiffReview:     opts.RevisionSourceDiffReview,
+			RevisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
+			SendID:                       opts.SendID,
+		}, injectedQueueOptions{expandComposerCommands: opts.ExpandComposerCommands, preserveDraft: opts.PreserveDraft})
+		return store.Item{}, err
 	}
 
 	if prepared.hasRuntimeMode {
@@ -492,12 +528,10 @@ func (a *App) sendMessageLocked(
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: check prior items: %w", err)
 	}
-	turnIndex, err := a.store.LastTurnIndex(threadID)
+	turnIndex := placement.displayTurn
+	userItemID, err := a.userMessageItemID(threadID, opts.SendID, turnIndex, intent)
 	if err != nil {
-		return store.Item{}, fmt.Errorf("send message: get turn index: %w", err)
-	}
-	if hasPriorItems {
-		turnIndex++
+		return store.Item{}, fmt.Errorf("send message: allocate item id: %w", err)
 	}
 	if !isCodexReview {
 		a.maybeRenameTemporaryWorktreeBranch(threadID, content)
@@ -505,7 +539,7 @@ func (a *App) sendMessageLocked(
 
 	now := time.Now().UnixMilli()
 	userItem := store.Item{
-		ID:        fmt.Sprintf("user:%d", turnIndex),
+		ID:        userItemID,
 		ThreadID:  threadID,
 		TurnIndex: turnIndex,
 		Kind:      "user_text",

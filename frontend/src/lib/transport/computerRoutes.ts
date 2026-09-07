@@ -32,6 +32,9 @@ interface State {
   retryAt: number;
 }
 
+// Match the native connection budget: DNS and a cold VPN path may take
+// several seconds. Racing routes still returns immediately on first success.
+const ROUTE_PROBE_TIMEOUT_MS = 20_000;
 const KEY = 'agent-overflow:computerRoutes:';
 const states = new Map<BackendKey, State>();
 const responseURLs = new WeakMap<Response, string>();
@@ -86,7 +89,7 @@ async function choose(state: State): Promise<ComputerRoute> {
   if (Date.now() < state.retryAt) throw new Error('No verified address for this computer is reachable.');
   const controller = new AbortController();
   state.cancel = controller;
-  const timer = setTimeout(() => controller.abort(), 2000);
+  const timer = setTimeout(() => controller.abort(), ROUTE_PROBE_TIMEOUT_MS);
   const revision = state.revision;
   const routes = [...state.profile.routes];
   if (!routes.some((route) => route.endpoint === state.context.primary.endpoint)) routes.push(state.context.primary);
@@ -151,8 +154,10 @@ export async function fetchComputerRoute(context: ComputerRouteContext, fetcher:
   if (!context.current()) throw new Error('Computer pairing changed. Reconnect to continue.');
   signal?.throwIfAborted();
   context.beforeRequest?.();
+  // URL.host does not clear an existing explicit port when the new host
+  // uses its default. Replace the port too (LAN :60522 → HTTPS/WSS :443).
   const target = new URL(selected.endpoint);
-  url.protocol = target.protocol; url.host = target.host;
+  url.protocol = target.protocol; url.host = target.host; url.port = target.port;
   const redirected = input instanceof Request ? new Request(url, input) : url.href;
   try {
     const response = sameRoute(selected, context.primary) ? await fetcher(redirected, init)
@@ -199,7 +204,7 @@ export function computerSocketRoute(context: ComputerRouteContext, input: string
   const origin = url.origin.replace(/^wss:/, 'https:');
   if (origin !== context.primary.endpoint && !state.profile.routes.some((route) => route.endpoint === origin)) throw new Error('Socket does not belong to this computer.');
   const target = new URL(state.active.endpoint);
-  url.protocol = 'wss:'; url.host = target.host;
+  url.protocol = 'wss:'; url.host = target.host; url.port = target.port;
   return { url: url.href, pin: state.active.certFingerprint };
 }
 
@@ -224,7 +229,7 @@ export async function repairComputerAddress(context: ComputerRouteContext, endpo
   assertCurrent(state);
   const candidates = repairComputerRouteCandidates(context.primary, state.profile.routes, endpoint);
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 2000);
+  const timer = setTimeout(() => controller.abort(), ROUTE_PROBE_TIMEOUT_MS);
   let verified: ComputerRoute | undefined;
   try {
     for (const candidate of candidates) {

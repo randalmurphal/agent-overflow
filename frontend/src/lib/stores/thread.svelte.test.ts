@@ -15,6 +15,8 @@ import { LIVE_TODO_AUTOHIDE_MS } from './liveTodoState.svelte';
 import { type Item } from '../types/models';
 import {
   getActiveTurn,
+  projectTurnStarted,
+  projectTurnCompleted,
   getThreadStatus,
   isThreadLiveStateHydrating,
 } from './threadStatuses.svelte';
@@ -29,6 +31,76 @@ import { installThreadPaneTestEnv } from '../../test/helpers/threadPane';
 
 describe('createThreadPane', () => {
   beforeEach(installThreadPaneTestEnv);
+
+  it('restores missing activity and missed completion without reloading timeline history', async () => {
+    const pane = await buildPane(makeThread({ id: 'reconnect-activity' }));
+    const history = vi.fn();
+    setBindingMock('SyncThreadWindow', history);
+    const activeTurn = { threadId: pane.threadId, turnId: 'running', turnIndex: 3, startedAt: 100 };
+    setBindingMock('GetThreadLiveState', async () => ({ threadId: pane.threadId, activeTurn }));
+    await pane.refreshActiveTurn();
+    expect(getActiveTurn(pane.threadId)?.turnId).toBe('running');
+    setBindingMock('GetThreadLiveState', async () => ({ threadId: pane.threadId, activeTurn: null }));
+    await pane.refreshActiveTurn();
+    expect(getActiveTurn(pane.threadId)).toBeNull();
+    expect(history).not.toHaveBeenCalled();
+  });
+
+  it('does not restore a turn completed while the reconnect snapshot was pending', async () => {
+    const pane = await buildPane(makeThread({ id: 'reconnect-completed' }));
+    let resolve!: (value: unknown) => void;
+    setBindingMock('GetThreadLiveState', () => new Promise((done) => { resolve = done; }));
+    const refreshing = pane.refreshActiveTurn();
+    projectTurnStarted(pane.threadId!, 'finished', 2, 10);
+    projectTurnCompleted(pane.threadId!, 'finished');
+    resolve({ threadId: pane.threadId, activeTurn: { threadId: pane.threadId, turnId: 'finished', turnIndex: 2, startedAt: 10 } });
+    await refreshing;
+    expect(getActiveTurn(pane.threadId)).toBeNull();
+  });
+
+  it('keeps newer live activity over an idle reconnect snapshot', async () => {
+    const pane = await buildPane(makeThread({ id: 'reconnect-live-race' }));
+    let resolve!: (value: unknown) => void;
+    setBindingMock('GetThreadLiveState', () => new Promise((done) => { resolve = done; }));
+    const refreshing = pane.refreshActiveTurn();
+    projectTurnStarted(pane.threadId!, 'new', 4, 100);
+    resolve({ threadId: pane.threadId, activeTurn: null });
+    await refreshing;
+    expect(getActiveTurn(pane.threadId)?.turnId).toBe('new');
+  });
+
+  it('ignores a superseded reconnect snapshot and a snapshot for a cleared pane', async () => {
+    const pane = await buildPane(makeThread({ id: 'reconnect-superseded' }));
+    const releases: Array<(value: unknown) => void> = [];
+    setBindingMock('GetThreadLiveState', () => new Promise((done) => { releases.push(done); }));
+    const older = pane.refreshActiveTurn();
+    const newer = pane.refreshActiveTurn();
+    releases[1]({ threadId: pane.threadId, activeTurn: null });
+    await newer;
+    releases[0]({ threadId: pane.threadId, activeTurn: { threadId: pane.threadId, turnId: 'stale', turnIndex: 1, startedAt: 10 } });
+    await older;
+    expect(getActiveTurn(pane.threadId)).toBeNull();
+    const threadId = pane.threadId!;
+    const clearing = pane.refreshActiveTurn();
+    pane.clear();
+    releases[2]({ threadId, activeTurn: { threadId, turnId: 'stale', turnIndex: 1, startedAt: 10 } });
+    await clearing;
+    expect(getActiveTurn(threadId)).toBeNull();
+  });
+
+  it('keeps newer reconnect activity over an older full history hydration', async () => {
+    const pane = await buildPane(makeThread({ id: 'reconnect-history-race' }));
+    const releases: Array<(value: unknown) => void> = [];
+    setBindingMock('GetThreadLiveState', () => new Promise((done) => { releases.push(done); }));
+    const history = pane.refreshFromBackend();
+    await vi.waitFor(() => expect(releases).toHaveLength(1));
+    const activity = pane.refreshActiveTurn();
+    releases[1]({ threadId: pane.threadId, activeTurn: null });
+    await activity;
+    releases[0]({ threadId: pane.threadId, activeTurn: { threadId: pane.threadId, turnId: 'old-running', turnIndex: 1, startedAt: 10 } });
+    await history;
+    expect(getActiveTurn(pane.threadId)).toBeNull();
+  });
 
   it('starts empty', () => {
     const pane = createThreadPane();

@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/triage"
@@ -62,8 +61,15 @@ func (a *App) SteerMessageWithOptions(ctx context.Context, threadID string, cont
 	if err := a.requireAutonomyForThread(ctx, threadID, opts.RuntimeMode); err != nil {
 		return store.Thread{}, err
 	}
+	unlockAdmission, err := a.lockSendAdmission(ctx, threadID, opts.SendID)
+	if err != nil {
+		return store.Thread{}, err
+	}
+	defer unlockAdmission()
+
 	if _, err := a.steerMessageWithOptions(threadID, content, sendMessageOptions{
 		AttachmentIDs:                opts.AttachmentIDs,
+		SendID:                       opts.SendID,
 		RuntimeMode:                  opts.RuntimeMode,
 		SourceProposedPlan:           opts.SourceProposedPlan,
 		RevisionSourceProposedPlan:   opts.RevisionSourceProposedPlan,
@@ -84,9 +90,8 @@ func (a *App) SteerMessageWithOptions(ctx context.Context, threadID string, cont
 // implement-mode switch (mid-turn — there's no fresh turn to flip the
 // mode for), and worktree-rename / thread-title generation (those fire
 // on first send, not on mid-turn injection). Persists the user_text
-// row optimistically under a steer-suffixed id so it doesn't collide
-// with the existing `user:<turnIndex>` row that started the active
-// turn.
+// row optimistically under a distinct steer identity, independently of
+// the row that started the active turn.
 func (a *App) steerMessageWithOptions(threadID string, content string, opts sendMessageOptions) (item store.Item, err error) {
 	if strings.TrimSpace(threadID) == "" {
 		return store.Item{}, fmt.Errorf("steer message: empty thread id")
@@ -98,19 +103,23 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()
 
-	runtimeMode, hasRuntimeMode, err := threadmode.ParseOptionalRuntime(opts.RuntimeMode)
-	if err != nil {
-		return store.Item{}, fmt.Errorf("steer message: %w", err)
-	}
-	if hasRuntimeMode {
-		if err := a.applyRuntimeModeLocked(threadID, runtimeMode); err != nil {
-			return store.Item{}, fmt.Errorf("steer message: runtime mode: %w", err)
-		}
+	if err := a.store.CheckThreadTransferAccess(threadID); err != nil {
+		return store.Item{}, err
 	}
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
 		return store.Item{}, fmt.Errorf("steer message: load thread: %w", err)
 	}
+	if err := a.store.CheckThreadExecutionAccess(thread); err != nil {
+		return store.Item{}, err
+	}
+	if record, found, err := a.findRecordedSend(threadID, opts.SendID); err != nil {
+		return store.Item{}, err
+	} else if found {
+		return record.item, nil
+	}
+	// Reject commands this RPC cannot execute before activity admission or
+	// runtime-mode writes, while accepted retries still return above.
 	if opts.ExpandComposerCommands && thread.Provider == string(provider.Codex) {
 		_, isReview, parseErr := codexReviewCommandTarget(content)
 		if parseErr != nil {
@@ -120,11 +129,30 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 			return store.Item{}, fmt.Errorf("steer message: /review needs an idle thread; wait for the current turn to finish")
 		}
 	}
+	placement, err := a.resolveUserMessagePlacement(thread, messageSteer)
+	if err != nil {
+		return store.Item{}, err
+	}
+
+	runtimeMode, hasRuntimeMode, err := threadmode.ParseOptionalRuntime(opts.RuntimeMode)
+	if err != nil {
+		return store.Item{}, fmt.Errorf("steer message: %w", err)
+	}
+	if hasRuntimeMode {
+		if err := a.applyRuntimeModeLocked(threadID, runtimeMode); err != nil {
+			return store.Item{}, fmt.Errorf("steer message: runtime mode: %w", err)
+		}
+	}
+	thread, err = a.store.GetThread(threadID)
+	if err != nil {
+		return store.Item{}, fmt.Errorf("steer message: load thread: %w", err)
+	}
 
 	// Resolve plan refs the same way send does so traceability metadata
 	// stays accurate when a steer carries plan-revision context.
 	resolved, err := a.resolveUserMessageEnvelope(threadID, content, userMessageInputs{
 		attachmentIDs:                opts.AttachmentIDs,
+		sendID:                       opts.SendID,
 		sourceProposedPlan:           opts.SourceProposedPlan,
 		revisionSourceProposedPlan:   opts.RevisionSourceProposedPlan,
 		revisionSourceCommentIDs:     opts.RevisionSourceCommentIDs,
@@ -154,22 +182,11 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 		return store.Item{}, fmt.Errorf("steer message: not supported for provider %q", sess.Provider)
 	}
 
-	// Find the in-flight turn so we know which turnIndex to attach the
-	// new user_text row to. Steer requires an active turn — if the store
-	// has none, the frontend's read of the active-turn registry was
-	// stale and we surface the same shape the codex package would have.
-	activeTurn, found, err := a.store.GetActiveTurn(threadID)
-	if err != nil {
-		return store.Item{}, fmt.Errorf("steer message: lookup active turn: %w", err)
-	}
-	if !found {
-		return store.Item{}, codex.ErrNoActiveTurn
-	}
-	turnIndex := activeTurn.TurnIndex
+	turnIndex := placement.displayTurn
 
 	a.ensureTriageRouter()
 
-	steerItemID, err := a.nextSteerUserItemID(threadID, turnIndex)
+	steerItemID, err := a.userMessageItemID(threadID, opts.SendID, turnIndex, messageSteer)
 	if err != nil {
 		return store.Item{}, fmt.Errorf("steer message: allocate item id: %w", err)
 	}

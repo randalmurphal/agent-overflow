@@ -248,6 +248,17 @@ hold it together, and each one is a defect if dropped:
 
 ## Pending sends
 
+Admission, display placement, and provider-consumption boundaries are separate;
+see [user-message-ordering.md](../../docs/architecture/user-message-ordering.md).
+`user_message_confirmation.go` captures first-echo predecessor IDs under the
+flush-anchor and drain locks. Normal retries and session-death healing execute
+that same plan. Retain the first known echo item ID and parent across retries;
+missing fields may enrich that identity, but a different item ID must not
+replace it or contribute its parent. A captured sibling is only a candidate: its own consuming echo
+or teardown claim supersedes provisional group placement. All returned rows come
+from one successful store transaction; publish each through the existing item
+channel, without claiming a new atomic wire batch.
+
 Every AO-initiated user message registers a FIFO entry that its wire
 echo consumes. `consumeMatchingPendingSendForEcho` (`pending_send.go`)
 is the one rule, with keys in strict precedence. Do not add a fallback
@@ -269,8 +280,8 @@ that, a direct-send echo pops a queued entry still waiting for its own
 `clientId`, stamping one message onto the other's row and leaving the
 real echo to persist as "Injected provider context".
 
-The five `Register*WithExpectation` functions are the whole registration
-surface, so a new send path states its
+The `Register*WithExpectation` functions define the registration
+shape, so a new send path states its
 `PendingSendExpectation{ProviderItemID, ByClientID}` explicitly rather
 than reaching a default by omission. Each also stamps the entry's
 `sendShape` (`send_shape.go`): readers answer "is this a queued flush
@@ -280,7 +291,8 @@ a stamp contradicts the App layer's id grammar.
 
 Every mutation goes through a named transition
 (`pending_send_transitions.go`), whose doc comment states when it is
-legal and which lock it needs. Nothing else writes a `pendingSend`
+legal and which lock it needs. First-echo capture sets the immutable
+confirmation plan on the popped copy. Nothing else writes a `pendingSend`
 field, and `AOItemID` and `Shape` have no transition at all. Popped-copy
 transitions mutate the copy the echo path was handed, so `r.mu` must NOT
 be held and they must not become in-place mutation on the live registry.

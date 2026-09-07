@@ -65,24 +65,25 @@ replay re-upserts find the same row, which requires id stability).
 
 ## 3. `turn_index` is monotonic per thread
 
-**Rule.** `turn_index` on `items` is assigned under the per-thread send
-mutex. The first item in an empty thread uses turn index `0`; later
-user sends use `LastTurnIndex(threadID) + 1`. It never decreases within
-a thread's history.
+**Rule.** New logical turns are allocated under the per-thread action
+lock, above cached items, known turns (including rowless turns), and pending
+response turns. An empty thread starts at `0`. Sending into an existing turn
+does not allocate another turn merely because the frontend missed its start.
+Display position and response turn can differ; see
+[`user-message-ordering.md`](user-message-ordering.md).
 
 **Rationale.** Turn ordering is how we group items, order message
 anchors, and scope the interrupt queue. A non-monotonic turn_index
 would either group unrelated items into one turn (rollback drift) or
 split one turn into two (orphan items, orphan message anchor).
 
-**Enforcement.** `App.SendMessage` in `app_send.go` holds the
-per-thread action lock (`a.threadLocks().Lock(threadID)`) while
-`HasItems` / `LastTurnIndex` → compute → insert happens. Combined with
-the store's `SetMaxOpenConns(1)` in `internal/store/store.go`, this
-means no two events race on turn_index assignment.
+**Enforcement.** `resolveUserMessagePlacement` in
+`internal/app/app_user_message_placement.go` owns admission/dispatch placement;
+`Store.NextTurnIndex` distinguishes absent history from an existing turn `0`.
+Provider confirmation owns consumption position, independently of row identity.
 
-**Test.** `TestSendMessageIncrementsTurnIndex` in
-`app_send_test.go`, plus the concurrent-write coverage in
+**Test.** `TestUserMessagePlacement` in `app_user_message_placement_test.go`,
+`TestSendMessageIncrementsTurnIndex` in `app_send_test.go`, plus the concurrent-write coverage in
 `app_concurrent_test.go` and
 `TestConcurrentAppendItemAssignsUniqueIndex` in
 `internal/store/items_parent_test.go`.

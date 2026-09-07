@@ -1,3 +1,4 @@
+import { buildSendOptions } from '../../utils/sendOptions';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { dispatchSend } from './composerSend';
 import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
@@ -32,7 +33,7 @@ function sendOptions(threadId = 'thread-1') {
   return {
     threadId,
     message: 'Start work',
-    attachmentIds: [],
+    options: buildSendOptions({ attachmentIds: [] }),
     snapshot: { content: 'Start work', attachments: [], terminalChips: [] },
     restoreDraft: vi.fn(),
     draftThreadId: () => threadId,
@@ -66,8 +67,7 @@ describe('dispatchSend', () => {
     await dispatchSend({
       threadId: 'thread-1',
       message: 'Tighten the migration step.',
-      attachmentIds: [],
-      revisionSourceProposedPlan: source,
+      options: buildSendOptions({ attachmentIds: [], revisionSourceProposedPlan: source }),
       snapshot: { content: 'Tighten the migration step.', attachments: [], terminalChips: [] },
       restoreDraft: vi.fn(),
       draftThreadId: () => 'thread-1',
@@ -97,7 +97,7 @@ describe('dispatchSend', () => {
     const sent = await dispatchSend({
       threadId: 'thread-1',
       message: 'continue',
-      attachmentIds: [],
+      options: buildSendOptions({ attachmentIds: [] }),
       snapshot: { content: 'continue', attachments: [], terminalChips: [] },
       restoreDraft,
       draftThreadId: () => 'thread-1',
@@ -133,7 +133,7 @@ describe('dispatchSend', () => {
       const pending = dispatchSend({
         threadId: 'thread-1',
         message: 'continue',
-        attachmentIds: [],
+        options: buildSendOptions({ attachmentIds: [] }),
         snapshot: { content: 'continue', attachments: [], terminalChips: [] },
         restoreDraft,
         draftThreadId: () => 'thread-1',
@@ -185,7 +185,7 @@ describe('dispatchSend', () => {
       const sent = await dispatchSend({
         threadId: 'thread-1',
         message: 'continue',
-        attachmentIds: [],
+        options: buildSendOptions({ attachmentIds: [] }),
         snapshot: { content: 'continue', attachments: [], terminalChips: [] },
         restoreDraft,
         draftThreadId: () => 'thread-1',

@@ -13,6 +13,7 @@ import {
   compareCursors,
   compareItemsByTimelinePosition,
   cursorFromItem,
+  cursorsAfterItemUpserts,
   cursorIsValid,
   itemsForThread,
   mergeItemsById,
@@ -118,8 +119,8 @@ export interface ThreadTimelineWindow {
   resetAfterLoadError(): void;
   /** Streaming upsert dropped newer items below/above the window: re-arm the "load newer" affordance. */
   noteDroppedNewerItems(): void;
-  /** Streaming upsert appended to the tail: refresh the floor (if not already capped) and ceiling cursors. */
-  refreshCursorsAfterTailAppend(): void;
+  /** Follow repositioned anchors, retaining the capped floor and ordinary tail-append policy. */
+  refreshCursorsAfterUpserts(changedItems: readonly Item[], appended: boolean, previousItems: readonly Item[]): void;
   pruneToRecentWindowIfNeeded(options?: {
     hasMoreNewerAfterPrune?: boolean;
   }): void;
@@ -644,13 +645,21 @@ export function createThreadTimelineWindow(
     hasMoreNewer = true;
   }
 
-  function refreshCursorsAfterTailAppend(): void {
+  function refreshCursorsAfterUpserts(changedItems: readonly Item[], appended: boolean, previousItems: readonly Item[]): void {
     const thread = options.getThread();
-    if (thread && !hasMoreHistory) {
+    if (!thread) return;
+    const { oldest, newest } = cursorsAfterItemUpserts(
+      oldestLoadedCursor, newestLoadedCursor, previousItems, changedItems, thread.id,
+    );
+    if (oldest !== oldestLoadedCursor || newest !== newestLoadedCursor) {
+      setLoadedCursors(oldest, newest);
+    }
+    if (!appended) return;
+    if (!hasMoreHistory) {
       oldestLoadedCursor = oldestCursorFromItems(options.getItems());
       oldestLoadedTurnIndex = oldestLoadedCursor?.turnIndex ?? null;
     }
-    if (thread) {
+    if (!hasMoreNewer) {
       newestLoadedCursor = newestCursorFromItems(options.getItems());
       newestLoadedTurnIndex = newestLoadedCursor?.turnIndex ?? null;
     }
@@ -715,7 +724,6 @@ export function createThreadTimelineWindow(
     const pageGen = ++pagingGeneration;
     loadingOlder = true;
     try {
-      const previousNewest = cloneCursor(newestLoadedCursor);
       const paged = await ListItemsBeforeCursor(
         currentThread.id,
         cursorForBinding(floor),
@@ -743,8 +751,15 @@ export function createThreadTimelineWindow(
                 compareItemsByTimelinePosition(item, currentFirst) < 0,
             );
       const next = mergeItemsById(prepend, options.getItems());
-      const nextFloor = pagedOldestCursor(paged, prepend) ?? floor;
-      const nextNewest = previousNewest ?? newestCursorFromItems(next);
+      const pageBounds = cursorsAfterItemUpserts(
+        pagedOldestCursor(paged, prepend), pagedNewestCursor(paged, prepend),
+        prepend, options.getItems(), currentThread.id,
+      );
+      let nextFloor = pageBounds.oldest ?? cloneCursor(oldestLoadedCursor) ?? floor;
+      if (oldestLoadedCursor && compareCursors(nextFloor, oldestLoadedCursor) > 0) {
+        nextFloor = { ...oldestLoadedCursor };
+      }
+      const nextNewest = cloneCursor(newestLoadedCursor) ?? newestCursorFromItems(next);
       // Progress guard. If the backend returned no items AND the floor
       // didn't decrease, another click would fire the same query for
       // the same range. Force hasMore=false so the UI stops offering a
@@ -940,7 +955,6 @@ export function createThreadTimelineWindow(
     const pageGen = ++pagingGeneration;
     loadingNewer = true;
     try {
-      const previousOldest = cloneCursor(oldestLoadedCursor);
       const paged = await ListItemsAfterCursor(
         currentThread.id,
         cursorForBinding(ceiling),
@@ -968,8 +982,15 @@ export function createThreadTimelineWindow(
                 compareItemsByTimelinePosition(item, currentLast) > 0,
             );
       const next = mergeItemsById(append, options.getItems());
-      const nextCeiling = pagedNewestCursor(paged, append) ?? ceiling;
-      const nextOldest = previousOldest ?? oldestCursorFromItems(next);
+      const pageBounds = cursorsAfterItemUpserts(
+        pagedOldestCursor(paged, append), pagedNewestCursor(paged, append),
+        append, options.getItems(), currentThread.id,
+      );
+      let nextCeiling = pageBounds.newest ?? cloneCursor(newestLoadedCursor) ?? ceiling;
+      if (newestLoadedCursor && compareCursors(nextCeiling, newestLoadedCursor) < 0) {
+        nextCeiling = { ...newestLoadedCursor };
+      }
+      const nextOldest = cloneCursor(oldestLoadedCursor) ?? oldestCursorFromItems(next);
       const nextHasMoreNewer =
         append.length === 0 && compareCursors(nextCeiling, ceiling) <= 0
           ? false
@@ -1081,7 +1102,7 @@ export function createThreadTimelineWindow(
     resetForFreshThread,
     resetAfterLoadError,
     noteDroppedNewerItems,
-    refreshCursorsAfterTailAppend,
+    refreshCursorsAfterUpserts,
     pruneToRecentWindowIfNeeded,
     retryDeferredRecentWindowPrune,
     settleRecentWindowPrune,

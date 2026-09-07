@@ -301,6 +301,14 @@ remote browser alike. Protocol and authz rules:
   uses the sole attached computer; several computers require ownership
   evidence, and a known conflict always refuses.
 
+  Thread/project ownership maps are keyed reactive reads: a restored pane can
+  mount before its catalog teaches ownership, and controls must follow the
+  same answer as RPC routing without requiring another pane switch. Repeated
+  unchanged ownership does not invalidate readers. Keep those signals in the
+  canonical maps, never a second UI ownership cache. The other entity-family
+  maps remain plain routing indexes. `selectedBackendReactivity.svelte.test.ts`
+  covers late discovery, moves, forgetting and unrelated-key isolation.
+
   Which entity a list method's rows ARE is keyed on the METHOD, never
   sniffed from the row's shape. A shape-based walker is wrong the first
   time an unrelated payload carries an `id` and a `projectId`, and being

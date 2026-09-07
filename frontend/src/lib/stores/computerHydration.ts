@@ -1,3 +1,5 @@
+import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
+import { holdBackendRecovery } from './transportRecovery';
 import { iterPanes } from './panes.svelte';
 import { threadBackend } from '../transport/entityIndex';
 import { resyncDraftsForBackend } from './eventsDraftRows';
@@ -44,7 +46,15 @@ export function installComputerHydration(): () => void {
     mirrorFrontendPreferences(backend);
     resyncDraftsForBackend(backend);
     for (const pane of iterPanes()) {
-      if (pane.threadId && threadBackend(pane.threadId) === backend) void pane.retryHistoryLoad();
+      const threadId = pane.threadId;
+      if (!threadId || threadBackend(threadId) !== backend) continue;
+      void pane.retryHistoryLoad();
+      const generation = pane.switchGeneration;
+      holdBackendRecovery(backend, pane.refreshActiveTurn().catch((error: unknown) => {
+        if (pane.threadId === threadId && pane.switchGeneration === generation && !isPassiveConnectionFailure(error)) {
+          pane.setSessionError(`Could not refresh conversation activity: ${String(error)}`);
+        }
+      }));
     }
     if (backend === HOME_BACKEND && hasScope('settings:read', backend)) void resyncKeybindings();
     if (isWorkflowOverlayLoaded()) void resyncWorkflowEngineState(backend);

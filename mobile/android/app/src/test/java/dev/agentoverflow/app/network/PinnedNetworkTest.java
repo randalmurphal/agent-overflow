@@ -68,11 +68,16 @@ public class PinnedNetworkTest {
     @Test public void anEarlyFailureRemainsReadableByTheHeaderConsumer() throws Exception {
         HeldCertificate cert = new HeldCertificate.Builder().commonName("localhost").build();
         try (MockWebServer server = server(cert); PinnedClients clients = new PinnedClients(); HttpStreams http = new HttpStreams(clients)) {
-            var transfer = http.start("bad-pin", server.url("/auth/token").toString(), "sha256:" + "0".repeat(64), "POST", Map.of(), -1);
+            var transfer = http.start("bad-pin", server.url("/auth/token").toString(), "sha256:" + "0".repeat(64), "POST", Map.of(), 2);
             assertThrows(java.util.concurrent.ExecutionException.class, () -> transfer.headers.get(10, TimeUnit.SECONDS));
             // The request can fail before the bridge even asks for its headers.
             var failure = assertThrows(java.util.concurrent.ExecutionException.class, () -> http.get("bad-pin").headers.get());
             assertTrue(NetworkPlugin.failureMessage(failure).contains("certificate"));
+            // POST bodies cross the bridge before JS reads headers. A TLS
+            // refusal must survive that ordering too, not become "closed".
+            var writeFailure = assertThrows(java.io.IOException.class,
+                    () -> http.get("bad-pin").write(new byte[] {1, 2}, true));
+            assertTrue(NetworkPlugin.failureMessage(writeFailure).contains("certificate could not be verified"));
             assertEquals(0, server.getRequestCount());
             http.close("bad-pin");
             assertThrows(java.io.IOException.class, () -> http.get("bad-pin"));
@@ -135,7 +140,7 @@ public class PinnedNetworkTest {
             catch (java.io.IOException expected) { }
         });
         pipe.write(new byte[] {1}, false);
-        pipe.cancel();
+        pipe.cancel(new java.io.IOException("Transfer closed"));
         reader.get(2, TimeUnit.SECONDS);
         assertThrows(java.io.IOException.class, () -> pipe.write(new byte[] {2}, true));
     }

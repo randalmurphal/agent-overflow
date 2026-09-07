@@ -376,6 +376,7 @@ export interface PaneDoors {
  * not ingest, and it states its own `Pick`.
  */
 export interface ThreadPaneIngest {
+  readonly confirmOptimisticSend: (threadId: string, sendId: string | undefined, canonicalItemId?: string) => void;
   readonly paneId: string;
   readonly threadId: string | null;
   readonly thread: Thread | null;

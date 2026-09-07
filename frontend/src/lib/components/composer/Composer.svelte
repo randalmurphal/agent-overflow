@@ -539,9 +539,8 @@
       : [];
     const message = hasDraftContentForSend ? composedMessage : '';
     // Drafts seeded by "Implement plan in new thread" carry a persisted
-    // sourceProposedPlan ref. dispatchSend applies the revision-vs-source
-    // precedence rule, so we forward both fields and let composerSend
-    // pick the winner.
+    // sourceProposedPlan ref. buildSendOptions resolves revision-vs-source
+    // precedence for both the direct and queued paths.
     const draftSourcePlan = draft.sourceProposedPlan ?? null;
 
     // Mid-round path: backend owns the queue. Both providers go
@@ -634,9 +633,21 @@
     // so the fresh element mounts empty.
     surface?.recreateInput();
 
+    const sendOptions = buildSendOptions({
+      attachmentIds: snapshot.attachments.map((attachment) => attachment.id),
+      sourceProposedPlan: draftSourcePlan ?? undefined,
+      revisionSourceProposedPlan: sourceForSend && (hasDraftContentForSend || commentsForSend.length > 0)
+        ? sourceForSend
+        : undefined,
+      revisionSourceCommentIds: commentsForSend.length > 0 ? commentsForSend.map((comment) => comment.id) : undefined,
+      revisionSourceDiffReview: diffReviewSourceForSend ?? undefined,
+      revisionSourceDiffCommentIds: diffReviewCommentsForSend.length > 0
+        ? diffReviewCommentsForSend.map((comment) => comment.id)
+        : undefined,
+    });
     const lastItem = pane.items.length > 0 ? pane.items[pane.items.length - 1] : null;
     const nextTurn = lastItem ? lastItem.turnIndex + 1 : 0;
-    const optimisticId = `user:${nextTurn}`;
+    const optimisticId = `optimistic:${sendOptions.sendId}`;
     const now = Date.now();
     const optimisticItem: Item = {
       id: optimisticId,
@@ -647,6 +658,7 @@
       role: 'user',
       status: 'completed',
       summary: message,
+      meta: JSON.stringify({ sendId: sendOptions.sendId }),
       createdAt: now,
       updatedAt: now,
     };
@@ -665,16 +677,7 @@
       const sent = await dispatchSend({
         threadId,
         message,
-        attachmentIds: snapshot.attachments.map((attachment) => attachment.id),
-        sourceProposedPlan: draftSourcePlan ?? undefined,
-        revisionSourceProposedPlan: sourceForSend && (hasDraftContentForSend || commentsForSend.length > 0)
-          ? sourceForSend
-          : undefined,
-        revisionSourceCommentIds: commentsForSend.length > 0 ? commentsForSend.map((comment) => comment.id) : undefined,
-        revisionSourceDiffReview: diffReviewSourceForSend ?? undefined,
-        revisionSourceDiffCommentIds: diffReviewCommentsForSend.length > 0
-          ? diffReviewCommentsForSend.map((comment) => comment.id)
-          : undefined,
+        options: sendOptions,
         snapshot,
         restoreDraft: (tid, snap) => draft.restoreDraftFor(tid, snap),
         draftThreadId: () => draft.threadId,
@@ -682,8 +685,7 @@
       });
       // `dispatchSend` awaits, and the user can switch this pane to
       // another thread while it does. The optimistic row belongs to
-      // `threadId` — and `user:<n>` ids collide across threads by
-      // construction — so the rollback is gated on the pane still
+      // `threadId`, so the rollback is gated on the pane still
       // holding that thread. Without the gate the removal (and the
       // cached-window drop that rides it) would land on whatever
       // conversation is mounted now.

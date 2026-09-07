@@ -1487,7 +1487,7 @@ export function createThreadSwitchLoad(
             () => options.timelineWindow.applyWindowMetadataFromPaged(paged),
             () => {
               if (changedDuringFetch) {
-                options.timelineWindow.refreshCursorsAfterTailAppend();
+                options.timelineWindow.refreshCursorsAfterUpserts(next.items, true, snapshot);
               }
             },
           ]);

@@ -461,11 +461,12 @@ func TestFlushDispatch_CodexSteersTheMessageIntoTheRunningTurn(t *testing.T) {
 
 	// Placement: the RUNNING turn. A steered message is context for the turn
 	// already underway, so its row belongs above that turn's answer.
-	got, active, err := app.resolveFlushTurnPlacement(thread.ID, sess)
+	placement, err := app.resolveUserMessagePlacement(thread, messageFlush)
+	got := placement.responseTurn
 	if err != nil {
-		t.Fatalf("resolveFlushTurnPlacement: %v", err)
+		t.Fatalf("resolveUserMessagePlacement: %v", err)
 	}
-	if !active {
+	if placement.displayTurn != got || placement.persistence != messageDeferUntilEcho {
 		t.Error("activeAtResolution = false; a steered message joins the running turn")
 	}
 	if got != 7 {

@@ -15,6 +15,7 @@ import {
   projectTurnStarted,
   replaceInteractiveRequestsForThread,
   sameActiveTurn,
+  type ActiveTurn,
 } from './threadStatuses.svelte';
 import {
   getQueueRevisionForThread,
@@ -30,6 +31,7 @@ import { hydrateCompactingState } from './compactingState.svelte';
 
 export interface ThreadLiveStateHydrationOptions {
   getThread(): Thread | null;
+  confirmOptimisticSend(threadId: string, sendId: string | undefined, canonicalItemId?: string): void;
   /** Pane switch generation — captured at load start, compared after awaits. */
   getSwitchGeneration(): number;
   /** The pane's createThreadPendingInteractiveState instance. */
@@ -74,6 +76,8 @@ export interface LiveStateFetchResult {
 }
 
 export interface ThreadLiveStateHydration {
+  /** Reconcile provider activity on reconnect without reloading a healthy timeline. */
+  refreshActiveTurn(): Promise<void>;
   /**
    * Fetch the thread's live state (active turn, send queue, pending
    * interactive requests, live todos, deferred pending-send rows);
@@ -124,25 +128,48 @@ export function createThreadLiveStateHydration(
     return rows.filter((row) => row.threadId === threadID);
   }
 
+  function applyActiveTurnSnapshot(
+    snapshot: ThreadLiveState,
+    threadID: string,
+    activeTurnAtRequest: ActiveTurn | null,
+  ): void {
+    if (snapshot.threadId !== threadID) return;
+    const current = getActiveTurn(threadID);
+    if (!sameActiveTurn(current, activeTurnAtRequest)) return;
+    const active = snapshot.activeTurn;
+    if (active && active.threadId === threadID && active.turnId) {
+      projectTurnStarted(threadID, active.turnId, active.turnIndex, active.startedAt);
+    } else if (current) {
+      projectTurnCompleted(threadID, current.turnId);
+    }
+  }
+
+  let activityRequest = 0;
+  async function refreshActiveTurn(): Promise<void> {
+    const request = ++activityRequest;
+    const threadID = options.getThread()?.id;
+    if (!threadID || !threadHasScope('threads:operate', threadID)) return;
+    const gen = options.getSwitchGeneration();
+    const active = getActiveTurn(threadID);
+    const current = (): boolean => request === activityRequest
+      && gen === options.getSwitchGeneration() && options.getThread()?.id === threadID;
+    try {
+      const snapshot = await GetThreadLiveState(threadID) as ThreadLiveState;
+      if (current()) applyActiveTurnSnapshot(snapshot, threadID, active);
+    } catch (error) {
+      if (current()) throw error;
+    }
+  }
+
   function applyThreadLiveStateSnapshot(
     snapshot: ThreadLiveState,
     threadID: string,
     guard: LiveStateHydrationGuard,
+    activityRequestAtStart: number,
   ): void {
     if (snapshot.threadId !== threadID) return;
-    const current = getActiveTurn(threadID);
-    if (sameActiveTurn(current, guard.activeTurnAtRequest)) {
-      const active = snapshot.activeTurn;
-      if (active && active.threadId === threadID && active.turnId) {
-        projectTurnStarted(
-          threadID,
-          active.turnId,
-          active.turnIndex,
-          active.startedAt,
-        );
-      } else if (current) {
-        projectTurnCompleted(threadID, current.turnId);
-      }
+    if (activityRequestAtStart === activityRequest) {
+      applyActiveTurnSnapshot(snapshot, threadID, guard.activeTurnAtRequest);
     }
 
     if (getQueueRevisionForThread(threadID) === guard.queueRevisionAtRequest) {
@@ -153,12 +180,17 @@ export function createThreadLiveStateHydration(
       const flushedItems: FlushedItem[] = (snapshot.flushedItems ?? [])
         .filter((item) => item.userItemId && item.queueItemId)
         .map((item) => ({
+          sendId: item.sendId,
           queueItemId: item.queueItemId,
           userItemId: item.userItemId,
           message: item.message,
           flushedAt: Date.now(),
         }));
       replaceFlushedForThread(threadID, flushedItems);
+      for (const item of queueItems) options.confirmOptimisticSend(threadID, item.sendId);
+      for (const item of flushedItems) {
+        options.confirmOptimisticSend(threadID, item.sendId, item.userItemId);
+      }
     }
 
     applyPendingInteractiveSnapshot(
@@ -195,6 +227,7 @@ export function createThreadLiveStateHydration(
     gen: number,
     hydrationToken: number,
   ): Promise<LiveStateFetchResult> {
+    const activityRequestAtStart = ++activityRequest;
     // Guard values captured BEFORE the RPC leaves, exactly like the
     // single-phase form: apply-time comparisons against these detect
     // registries that moved while the snapshot was in flight.
@@ -260,7 +293,7 @@ export function createThreadLiveStateHydration(
             return;
           }
           if (snapshot) {
-            applyThreadLiveStateSnapshot(snapshot, threadID, guard);
+            applyThreadLiveStateSnapshot(snapshot, threadID, guard, activityRequestAtStart);
           } else if (fallbackInteractive) {
             applyPendingInteractiveSnapshot(threadID, fallbackInteractive);
           }
@@ -272,5 +305,5 @@ export function createThreadLiveStateHydration(
     };
   }
 
-  return { startLiveStateFetch };
+  return { startLiveStateFetch, refreshActiveTurn };
 }

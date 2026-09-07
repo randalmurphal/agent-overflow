@@ -32,7 +32,12 @@ function admit(signal: AbortSignal): Promise<() => void> {
  * must negotiate the native capability before using its WebPKI health path. */
 export function canVerifyComputerRoutes(): Promise<boolean> {
   if (!isNativeShell()) return Promise.resolve(false);
-  return support ??= networkPlugin().then(async (plugin) => (await plugin.getCapabilities?.())?.computerRoutes === true).catch(() => false);
+  return support ??= networkPlugin().then(async (plugin) => (await plugin.getCapabilities?.())?.computerRoutes === true).catch((error: unknown) => {
+    // Old APKs explicitly report an unimplemented method. A bridge startup
+    // failure is not capability negotiation and must be retried next time.
+    if (!(error && typeof error === 'object' && 'code' in error && error.code === 'UNIMPLEMENTED')) support = undefined;
+    return false;
+  });
 }
 
 /** Native TLS bypasses browser CORS, never certificate or identity checks.

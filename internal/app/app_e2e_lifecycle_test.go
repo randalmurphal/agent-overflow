@@ -526,6 +526,10 @@ func TestE2E_MultiTurnClaude(t *testing.T) {
 // still work.
 func TestE2E_InterruptMidTurn(t *testing.T) {
 	app, bus := setupE2EApp(t)
+	// The mock acknowledges interrupt without a terminal result. A subsequent
+	// public send therefore uses the production queue until provider consumption.
+	app.configureTriageQueueCallbacks()
+	t.Cleanup(func() { app.flushDispatch.wg.Wait() })
 	workspace := t.TempDir()
 	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
 	if err != nil {
@@ -564,7 +568,7 @@ func TestE2E_InterruptMidTurn(t *testing.T) {
 		t.Fatalf("StartSession: %v", err)
 	}
 
-	if err := app.SendMessage(thread.ID, "start", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(t.Context(), thread.ID, "start", SendMessageOptions{SendID: "interrupt-start", ReconcileBySendID: true}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
@@ -584,7 +588,7 @@ func TestE2E_InterruptMidTurn(t *testing.T) {
 		t.Fatal("session vanished after interrupt")
 	}
 
-	if err := app.SendMessage(thread.ID, "continue", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(t.Context(), thread.ID, "continue", SendMessageOptions{SendID: "interrupt-continue", ReconcileBySendID: true}); err != nil {
 		t.Fatalf("SendMessage after interrupt: %v", err)
 	}
 	after := bus.nextProviderEventOfKind(t, provider.EventTextDelta, 5*time.Second)
@@ -1715,8 +1719,8 @@ func TestE2E_ClaudeStoppedThreadPreInitErrorResultSurfaces(t *testing.T) {
 		t.Fatalf("retry user row missing; items = %+v", items)
 	}
 	// Exact attribution: the thread's first send lands on turn 0
-	// (nextSendTurnIndex returns LastTurnIndex unchanged for an empty
-	// thread), so the retry's dispatcher-stamped pending send — the
+	// (NextTurnIndex starts an empty thread at zero), so the retry's
+	// dispatcher-stamped pending send — the
 	// orphan branch's attribution source — is turn 1.
 	if errorItem.TurnIndex != 1 {
 		t.Fatalf("error item turn = %d, want the retry send's turn 1", errorItem.TurnIndex)

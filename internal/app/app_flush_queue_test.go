@@ -1078,9 +1078,10 @@ func TestDispatchFlush_ResolveTurnIndex_FallsBackToNextWhenNoActiveTurn(t *testi
 	}
 
 	// active turn check returns nothing → fallback path.
-	got, _, err := app.resolveFlushTurnPlacement(thread.ID, session{})
+	placement, err := app.resolveUserMessagePlacement(thread, messageFlush)
+	got := placement.responseTurn
 	if err != nil {
-		t.Fatalf("resolveFlushTurnPlacement: %v", err)
+		t.Fatalf("resolveUserMessagePlacement: %v", err)
 	}
 	if got != 1 {
 		t.Errorf("turn index: got %d, want 1 (next after settled turn 0)", got)
@@ -1110,25 +1111,23 @@ func TestDispatchFlush_ResolveTurnIndex_CodexPrefersActiveTurn(t *testing.T) {
 		t.Fatalf("InsertTurn: %v", err)
 	}
 
-	codexSess := installSteerTestSession(t, app, thread, "ok")
-	sess := session{Provider: string(provider.Codex), Codex: codexSess}
-	got, active, err := app.resolveFlushTurnPlacement(thread.ID, sess)
+	placement, err := app.resolveUserMessagePlacement(thread, messageFlush)
+	got := placement.responseTurn
 	if err != nil {
-		t.Fatalf("resolveFlushTurnPlacement: %v", err)
+		t.Fatalf("resolveUserMessagePlacement: %v", err)
 	}
 	if got != 7 {
 		t.Errorf("turn index: got %d, want 7 (active turn)", got)
 	}
-	if !active {
-		t.Errorf("activeAtResolution should be true for Codex active turn")
+	if placement.displayTurn != 7 || placement.persistence != messageDeferUntilEcho {
+		t.Errorf("Codex should defer the row within the active turn")
 	}
 }
 
 // TestDispatchFlush_ResolveTurnIndex_ClaudeSkipsActiveTurn verifies
 // that Claude flush dispatch always uses nextSendTurnIndex, never the
-// active turn's index. Claude processes stdin messages as new turns
-// (useQueueProcessor only dequeues between turns), so using the active
-// turn's index would cause setOpenTurn to reset id-allocating counters
+// active turn's index for the RESPONSE. Claude may consume mid-loop; AO
+// opens a new logical response turn so setOpenTurn cannot reset counters
 // and produce segment ID collisions.
 func TestDispatchFlush_ResolveTurnIndex_ClaudeSkipsActiveTurn(t *testing.T) {
 	app := newTestAppWithStore(t)
@@ -1164,16 +1163,16 @@ func TestDispatchFlush_ResolveTurnIndex_ClaudeSkipsActiveTurn(t *testing.T) {
 		t.Fatalf("InsertTurn: %v", err)
 	}
 
-	claudeSess := session{Provider: string(provider.Claude)}
-	got, active, err := app.resolveFlushTurnPlacement(thread.ID, claudeSess)
+	placement, err := app.resolveUserMessagePlacement(thread, messageFlush)
+	got := placement.responseTurn
 	if err != nil {
-		t.Fatalf("resolveFlushTurnPlacement: %v", err)
+		t.Fatalf("resolveUserMessagePlacement: %v", err)
 	}
 	if got != 1 {
 		t.Errorf("turn index: got %d, want 1 (next turn, not active turn 0)", got)
 	}
-	if active {
-		t.Errorf("activeAtResolution should be false for Claude")
+	if placement.displayTurn != 0 || placement.persistence != messagePersistQuiet {
+		t.Errorf("Claude should quietly persist in active turn 0")
 	}
 }
 
@@ -1218,10 +1217,10 @@ func TestDispatchFlush_ResolveTurnIndex_AccountsForInFlightPendingSends(t *testi
 	// Simulate first flush dispatch: registers pending send at turn 1.
 	app.triage.RegisterPendingFlushResendWithExpectation(thread.ID, "user:1:flush:1", 1, triage.PendingSendExpectation{})
 
-	claudeSess := session{Provider: string(provider.Claude)}
-	got, _, err := app.resolveFlushTurnPlacement(thread.ID, claudeSess)
+	placement, err := app.resolveUserMessagePlacement(thread, messageFlush)
+	got := placement.responseTurn
 	if err != nil {
-		t.Fatalf("resolveFlushTurnPlacement: %v", err)
+		t.Fatalf("resolveUserMessagePlacement: %v", err)
 	}
 	if got != 2 {
 		t.Fatalf("turn index: got %d, want 2 (must skip past in-flight pending send at turn 1)", got)

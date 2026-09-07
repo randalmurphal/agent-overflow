@@ -3573,6 +3573,7 @@ export class PushSenderStatus {
  */
 export class QueueFlushedItem {
     "queueItemId": string;
+    "sendId"?: string;
     "userItemId": string;
     "message": string;
 
@@ -3871,6 +3872,13 @@ export class SendMessageOptions {
      * older than the field.
      */
     "sendId"?: string;
+
+    /**
+     * ReconcileBySendID declares that the caller retires provisional rows by
+     * SendID, rather than predicting user:<turn>. Older callers still send
+     * SendID for idempotency, so its presence alone cannot negotiate this.
+     */
+    "reconcileBySendId"?: boolean;
 
     /** Creates a new SendMessageOptions instance. */
     constructor($$source: Partial<SendMessageOptions> = {}) {

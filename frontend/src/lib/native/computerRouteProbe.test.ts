@@ -51,3 +51,21 @@ it('bounds native health slots and waiting checks, and releases them after cance
   await verifyComputerRoute({ endpoint: 'https://gpu' }, 'gpu', new AbortController().signal);
   expect(mocks.fetch).toHaveBeenCalledTimes(9);
 });
+
+it('retries a transient capability failure without restarting the frontend', async () => {
+  mocks.capabilities.mockRejectedValueOnce(new Error('bridge temporarily unavailable'))
+    .mockResolvedValue({ computerRoutes: true });
+  const { canVerifyComputerRoutes } = await import('./computerRouteProbe');
+  expect(await canVerifyComputerRoutes()).toBe(false);
+  expect(await canVerifyComputerRoutes()).toBe(true);
+  expect(await canVerifyComputerRoutes()).toBe(true);
+  expect(mocks.capabilities).toHaveBeenCalledTimes(2);
+});
+
+it('caches explicit older-APK refusal rather than repeatedly invoking a missing method', async () => {
+  mocks.capabilities.mockRejectedValue({ code: 'UNIMPLEMENTED' });
+  const { canVerifyComputerRoutes } = await import('./computerRouteProbe');
+  expect(await canVerifyComputerRoutes()).toBe(false);
+  expect(await canVerifyComputerRoutes()).toBe(false);
+  expect(mocks.capabilities).toHaveBeenCalledOnce();
+});

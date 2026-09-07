@@ -38,6 +38,66 @@ export function cursorFromItem(item: Item): TimelineCursorLike {
   };
 }
 
+/** Reconcile page cuts before admission; moved outliers must not skip unloaded history. */
+export function cursorsAfterItemUpserts(
+  oldest: TimelineCursorLike | null | undefined,
+  newest: TimelineCursorLike | null | undefined,
+  current: readonly Item[],
+  incoming: readonly Item[],
+  threadId: string | null,
+): { oldest: TimelineCursorLike | null; newest: TimelineCursorLike | null } {
+  const result = { oldest: oldest ?? null, newest: newest ?? null };
+  if (!oldest || !newest) return result;
+  const movesAnchor = incoming.some((item) =>
+    (threadId === null || item.threadId === threadId)
+    && ((item.id === oldest.itemId && compareItemToCursor(item, oldest) !== 0)
+      || (item.id === newest.itemId && compareItemToCursor(item, newest) !== 0)));
+  if (!movesAnchor) return result;
+  const updates = new Map(incoming
+    .filter((item) => threadId === null || item.threadId === threadId)
+    .map((item) => [item.id, item]));
+  const covered = current.filter((item) => !item.parentId
+    && compareItemToCursor(item, oldest) >= 0 && compareItemToCursor(item, newest) <= 0);
+  const projected = covered.map((item) => updates.get(item.id) ?? item);
+  // A suffix insertion translates the entire loaded span. Check every row,
+  // not just the endpoints: an isolated moved prompt proves no such coverage.
+  const offset = covered.length > 1 ? projected[0].itemIndex - covered[0].itemIndex : 0;
+  const translated = offset !== 0 && covered.every((item, i) =>
+    projected[i].turnIndex === item.turnIndex && projected[i].itemIndex - item.itemIndex === offset);
+  function reconcile(cursor: TimelineCursorLike, direction: -1 | 1): TimelineCursorLike {
+    const anchor = cursor.itemId ? updates.get(cursor.itemId) : undefined;
+    if (!anchor || !covered.some((item) => item.id === anchor.id)) return cursor;
+    let next = cursorFromItem(anchor);
+    if (compareCursors(next, cursor) === 0 || translated) return next;
+    // Keep all surviving covered rows inside the cuts when an anchor moves
+    // inward. Rows that moved outside the old span are loaded outliers.
+    for (const item of projected) {
+      if (compareItemToCursor(item, oldest!) < 0 || compareItemToCursor(item, newest!) > 0) continue;
+      if (compareItemToCursor(item, next) * direction > 0) next = cursorFromItem(item);
+    }
+    if (compareCursors(next, cursor) * direction <= 0) return next;
+    // Extending into an unloaded gap needs every intervening coordinate in
+    // this batch. Otherwise retain a numeric cut, detached from the outlier.
+    const distance = (next.itemIndex - cursor.itemIndex) * direction;
+    if (next.turnIndex === cursor.turnIndex && distance <= updates.size) {
+      const positions = new Set([...updates.values()]
+        .filter((item) => !item.parentId && item.turnIndex === cursor.turnIndex)
+        .map((item) => item.itemIndex));
+      let step = 1;
+      while (step <= distance && positions.has(cursor.itemIndex + step * direction)) step++;
+      if (step > distance) return next;
+    }
+    return { turnIndex: cursor.turnIndex, itemIndex: cursor.itemIndex };
+  }
+  result.oldest = reconcile(oldest, -1);
+  result.newest = reconcile(newest, 1);
+  if (compareCursors(result.oldest, result.newest) > 0) {
+    result.oldest = { turnIndex: oldest.turnIndex, itemIndex: oldest.itemIndex };
+    result.newest = { turnIndex: newest.turnIndex, itemIndex: newest.itemIndex };
+  }
+  return result;
+}
+
 // Validity keys on turnIndex alone: turn indexes are never negative,
 // but item indexes can be (head-healed prompts persist at negative
 // indexes), and a page bounded by one must keep paging. The backend's
@@ -385,11 +445,17 @@ export function applyItemUpsertsToWindow({
   // indexes, so 0 is not the start of a turn — a fallback floor at 0
   // would misclassify those rows as below the loaded window (mirror of
   // the ceiling's MAX_SAFE_INTEGER).
-  const floorCursor = oldestLoadedCursor
+  // A batch can shift its loaded boundary and insert a row into the newly
+  // covered coordinates. Resolve anchors before admission, independently of
+  // event ordering, so that inserted row is not refused by the old bound.
+  const moved = cursorsAfterItemUpserts(
+    oldestLoadedCursor, newestLoadedCursor, current, incoming, currentThreadId,
+  );
+  const floorCursor = moved.oldest
     ?? (oldestLoadedTurnIndex === null || oldestLoadedTurnIndex === undefined
       ? null
       : { turnIndex: oldestLoadedTurnIndex, itemIndex: Number.MIN_SAFE_INTEGER });
-  const ceilingCursor = newestLoadedCursor
+  const ceilingCursor = moved.newest
     ?? (newestLoadedTurnIndex === null || newestLoadedTurnIndex === undefined
       ? null
       : { turnIndex: newestLoadedTurnIndex, itemIndex: Number.MAX_SAFE_INTEGER });

@@ -102,10 +102,12 @@ synchronous local clear, so a second Enter during it has nothing to send.
 
 `utils/sendOptions.ts#buildSendOptions` mints a `sendId` on every call,
 and it is the ONLY place one is minted. Every outgoing path builds its
-options there — the direct `SendMessageWithOptions`, the queueing
-`RegisterQueueItem`, and `utils/proposedPlanImplementation.ts`'s Implement
-button — so a message that queues carries the id on the same terms as one
-that dispatches, and no call site can ship without one by forgetting.
+options there. It also sets `reconcileBySendId: true`, declaring the provisional
+row ledger's capability; old servers ignore that additive field and old bundles
+without it retain numeric direct IDs on new servers. Never infer this capability
+from the existing idempotency `sendId`. Direct `SendMessageWithOptions`, queueing
+`RegisterQueueItem`, and the Implement button in `utils/proposedPlanImplementation.ts`
+all share that builder, so queued and dispatched messages carry the same fields.
 Rule 7 in `lib/architecture.test.ts` is what keeps that true: a module
 reaching either RPC has to build its options or take them already built.
 One call is one send: a retry must re-send the options it already built
@@ -113,6 +115,16 @@ rather than rebuild them, which is what the transport's retained frame
 does (`RETRY_ON_TRANSIENT_CLOSE` in `lib/transport/`).
 The backend answers a repeat from the first arrival's record, so a
 duplicated frame costs a duplicate answer and never a duplicate turn.
+
+The direct composer path builds these options before its optimistic row,
+uses `optimistic:<sendId>` as that row's temporary ID, and passes the SAME
+options into `dispatchSend`. Never predict a canonical `user:<turn>` ID:
+another client can own that turn, and stale idle state can cause the host
+to accept the message into its active turn's queue instead. The pane retires
+its placeholder only when a queue snapshot, flush acknowledgement, or user
+item identifies that send. RPC success alone is not enough; response and
+events can arrive in either order. Reconciliation walks only the optimistic
+ledger, is thread-guarded, and cannot delete an already confirmed row.
 
 That is what makes the ASK in `composerSend.ts` honest. A send whose
 socket died after the transport's own retry also failed is genuinely

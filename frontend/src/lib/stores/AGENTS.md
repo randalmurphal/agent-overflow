@@ -364,6 +364,9 @@ stops waking readers.
   gitStatusStore → transport` already exists. The picker that writes it is
   `components/composer/workspace/MachinePicker.svelte`. Draft switching captures
   the destination project/host; it remembers the new choice after success.
+  Both indexed ownership and per-pane overrides are reactive keyed reads, so
+  a mounted banner or picker cannot retain a different target from routing
+  when a catalog arrives or a draft's choice changes in place.
 - `systems.svelte.ts` owns the attached-machine list (`ListBackends`,
   `AddBackend`, `RemoveBackend`, `RenameBackend`) and the `backend:attach`
   reaction. Pairing is two RPCs apart in time — the verification number
@@ -926,3 +929,19 @@ Computer hydration retries only failed visible history reads on that computer's
 connection; it does not reload every healthy pane. Preserve any painted/live
 items on a failed retry. The connection banner owns offline failures, while
 actual history errors retain the pane's Retry affordance.
+
+Reconnect also refreshes each mounted thread's provider-authoritative active-turn
+snapshot, independently of history freshness and replay gaps. A history cache or
+successful item stream does not prove the turn-start event was seen. This bounded
+read changes only activity; it does not reload the timeline or merge deferred
+items outside the atomic history install. Captured activity, pane generation,
+request order, and completed-turn tombstones keep late snapshots from overwriting
+new events or reviving completed turns.
+
+Page cuts reconcile authoritative row reordering before batch admission and
+again at commit. Whole-span translations follow the loaded anchors; an isolated
+row moved across an unloaded gap must not advance the cut past unseen history.
+Preserve surviving covered rows and use conservative numeric cuts when coverage
+is unknown. Page replies preserve current opposite-edge cursors and reconcile
+stale returned anchors against live rows that win the merge. Never derive a
+paged boundary from a loaded outlier or blindly restore a pre-fetch cursor.

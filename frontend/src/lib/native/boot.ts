@@ -15,7 +15,7 @@ import { pairingEndpoint } from './networkTrust';
 
 import { applyNotificationActivated } from '../stores/eventsNotification';
 import { parseNotificationTarget } from '../stores/notificationActivationQueue';
-import { attachedBackends, duplicateLegacyHomeBackend, onBackendsChanged, restoreHomeBackend, setBackendSource, syncAttachedBackends } from '../transport/backends';
+import { HOME_BACKEND, attachedBackends, detachBackend, duplicateLegacyHomeBackend, onBackendsChanged, restoreHomeBackend, setBackendSource, syncAttachedBackends } from '../transport/backends';
 import { initializeSelectedBackend } from '../stores/selectedBackend.svelte';
 import { onBeforeBackendDetach } from '../transport/detachSteps';
 import type { PairingPayload } from '../transport/deviceSession';
@@ -67,6 +67,10 @@ export function prepareNativeShell(): ShellBoot {
   if (home !== '') {
     setHomeEndpoint(home);
     restoreHomeBackend();
+  } else {
+    // The registry may have initialized before the native bridge. A phone's
+    // execution catalog comes from pairings, never that provisional HOME.
+    detachBackend(HOME_BACKEND);
   }
   syncAttachedBackends();
   const computers = attachedBackends();

@@ -18,33 +18,16 @@ import {
   projectSendResolved,
   projectSendStarted,
 } from '../../stores/threadStatuses.svelte';
-import type { SourceDiffReview, SourceProposedPlan, Thread } from '../../types/models';
-import { buildSendOptions } from '../../utils/sendOptions';
+import type { SourceProposedPlan, Thread } from '../../types/models';
+import type { OutgoingSendOptions } from '../../utils/sendOptions';
 import { getThreadById } from '../../stores/threads.svelte';
 import { autoPinNewThread, shouldAutoPinFirstSend } from '../../stores/threadAutoPin';
 
 export interface SendOptions {
   threadId: string;
   message: string;
-  attachmentIds: string[];
-  /**
-   * "This turn implements the named plan." Used by the
-   * implement-in-new-thread flow: the draft carries the source-plan
-   * reference, the send forwards it, the backend marks the original plan
-   * Accepted. Distinct from revisionSourceProposedPlan, which means
-   * "this turn is a revision based on the plan + comments."
-   *
-   * Precedence rule: if BOTH revisionSourceProposedPlan and
-   * sourceProposedPlan are passed, the revision takes precedence and the
-   * source-plan ref is dropped — a turn cannot simultaneously revise and
-   * implement the same plan. Owned here (not at the call site) so every
-   * caller of dispatchSend gets the same resolution.
-   */
-  sourceProposedPlan?: SourceProposedPlan;
-  revisionSourceProposedPlan?: SourceProposedPlan;
-  revisionSourceCommentIds?: string[];
-  revisionSourceDiffReview?: SourceDiffReview;
-  revisionSourceDiffCommentIds?: string[];
+  /** Built once before the optimistic row; the same sendId reaches the wire. */
+  options: OutgoingSendOptions;
   /** Draft snapshot used to restore the composer on send failure. */
   snapshot: {
     content: string;
@@ -81,19 +64,7 @@ export async function dispatchSend(opts: SendOptions): Promise<boolean> {
     projectSendStarted(opts.threadId);
     sendStarted = true;
 
-    // Single source of truth for the wire payload — the queue's drain
-    // path runs through `buildSendOptions` too, so the precedence rule
-    // (revision wins over source-plan) stays aligned regardless of how
-    // the message reaches the backend.
-    const sendOptions = buildSendOptions({
-      attachmentIds: opts.attachmentIds,
-      sourceProposedPlan: opts.sourceProposedPlan,
-      revisionSourceProposedPlan: opts.revisionSourceProposedPlan,
-      revisionSourceCommentIds: opts.revisionSourceCommentIds,
-      revisionSourceDiffReview: opts.revisionSourceDiffReview,
-      revisionSourceDiffCommentIds: opts.revisionSourceDiffCommentIds,
-    });
-    let updated = (await SendMessageWithOptions(opts.threadId, opts.message, sendOptions)) as Thread;
+    let updated = (await SendMessageWithOptions(opts.threadId, opts.message, opts.options)) as Thread;
     if (autoPinAfterSend) updated = await autoPinNewThread(updated);
     syncThread(updated);
     return true;

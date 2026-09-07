@@ -10,6 +10,7 @@ describe('buildSendOptions', () => {
     })).toEqual({
       attachmentIds: [],
       sendId: expect.any(String),
+      reconcileBySendId: true,
       revisionSourceDiffReview: { threadId: 'thread-1', scope: 'workspace', sourceKey: 'fnv1a:abcd:10' },
       revisionSourceDiffCommentIds: ['comment-1', 'comment-2'],
     });
@@ -22,6 +23,8 @@ describe('buildSendOptions', () => {
     const first = buildSendOptions({ attachmentIds: [] });
     const second = buildSendOptions({ attachmentIds: [] });
     expect(first.sendId).not.toBe('');
+    expect(first.reconcileBySendId).toBe(true);
+    expect(second.reconcileBySendId).toBe(true);
     expect(second.sendId).not.toBe(first.sendId);
   });
 });

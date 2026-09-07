@@ -33,6 +33,11 @@ never used. Agents revert their own edits when asked.
 
 ## Anchor storage
 
+Visible placement and provider consumption can differ after interrupt. Their
+separate boundaries and retry rules are defined in
+[user-message-ordering.md](user-message-ordering.md); neither boundary is inferred
+from the user row's ID.
+
 SQLite only (`internal/store/message_anchors.go`). Primary key
 `(thread_id, user_item_id)`, `ON DELETE CASCADE` with `items`.
 Provider replay stamps `provider_user_message_id` and, for Claude,

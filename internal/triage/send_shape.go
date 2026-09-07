@@ -14,19 +14,11 @@ import (
 // AUTHORITATIVE flush classifier — the readers that used to sniff the
 // id for ":flush:" now branch on `Shape == sendShapeFlush`.
 //
-// The three shapes are the three id grammars the App layer allocates:
-//
-//	sendShapeDirect  user:<turn>                  (app_send.go)
-//	sendShapeFlush   user:<turn>:flush:<n>        (app_flush_queue.go)
-//	sendShapeSteer   user:<turn>:steer:<n>        (app_steer.go)
-//
-// The id grammar is minted in the App layer (`nextFlushUserItemID`, the
-// one `user:%d:flush:%d` allocator in app_flush_queue.go), so the stamp
-// and the grammar ship as one binary but could drift if a send path
-// registered through the wrong registrar. assertSendShapeMatchesID is
-// the permanent tripwire against that: it panics in any test binary,
-// and every production registration site is covered by the root suite,
-// so a mis-chosen registrar fails CI at the surface that chose it.
+// Modern App IDs are user:<identity>, user:flush:<identity>, and
+// user:steer:<identity>, independent of placement. Older clients retain
+// user:<turn>, user:<turn>:flush:<n>, and user:<turn>:steer:<n>.
+// assertSendShapeMatchesID checks both grammars in tests; never decode a turn
+// from either identity. The App admission boundary supplies placement.
 type sendShape uint8
 
 const (

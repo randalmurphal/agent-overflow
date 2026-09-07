@@ -9,14 +9,16 @@
 // get that fallback. Higher epochs supersede old cached rows and invalidate
 // thread history/read state through the ownership notification.
 //
-// Plain maps, bounded by the metadata rows already held by the frontend.
+// Bounded by the metadata rows already held by the frontend. Thread/project
+// ownership also drives mounted controls, so these two maps track keyed reads.
 
+import { SvelteMap } from 'svelte/reactivity';
 import { HOME_BACKEND, type BackendKey } from './backendKey';
 import type { IdFamily } from './methodFamilies';
 import type { WorkflowItemDetail, WorkflowRunMapView } from '../types/workflow';
 
 interface ThreadOwner { backend: BackendKey; epoch?: number; conflict?: boolean }
-const threads = new Map<string, ThreadOwner>();
+const threads = new SvelteMap<string, ThreadOwner>();
 // Ownership evidence only lives as long as the metadata requests it can
 // invalidate. A late list may contain an archived ID this frontend has never
 // indexed; forgetting the destination must not erase evidence for that read.
@@ -69,7 +71,7 @@ export function onThreadOwnershipChanged(listener: (threadId: string, previousBa
   ownershipListeners.add(listener);
   return () => { ownershipListeners.delete(listener); };
 }
-const projects = new Map<string, BackendKey>();
+const projects = new SvelteMap<string, BackendKey>();
 // The id families that are neither thread nor project and cannot be
 // resolved through one: a workflow item and an automation belong to a
 // project the caller may never have listed, a terminal is a live process

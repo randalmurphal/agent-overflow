@@ -25,6 +25,7 @@
 // Add per-thread runtime state to one of those (or a new one composed here),
 // never to a store beside the pane.
 
+import { parseUserMessageMeta } from '../utils/userMessageMeta';
 import type { Item, Thread } from '../types/models';
 import type {
   ApprovalRequest,
@@ -423,6 +424,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     getSwitchGeneration: () => switchGeneration,
     pendingInteractiveState,
     liveTodoState,
+    confirmOptimisticSend,
     getProviderSessionAccountRevision: () => providerSessionAccountRevision,
     hydrateProviderAccount: (account, expectedMutationRevision) => {
       if (providerSessionAccountRevision !== expectedMutationRevision) return;
@@ -571,6 +573,27 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     return removed;
   }
 
+  // A remote frontend can predict a new turn while the host is already
+  // active and queues that send. Retire only our own placeholder when the
+  // authoritative queue or user row identifies the SAME send elsewhere.
+  // Walking the tiny optimistic ledger avoids scanning history on events.
+  function confirmOptimisticSend(
+    threadId: string,
+    sendId: string | undefined,
+    canonicalItemId?: string,
+  ): void {
+    if (!sendId || thread?.id !== threadId) return;
+    for (const id of optimisticItemIds) {
+      if (id === canonicalItemId) continue;
+      const index = itemIndexById.get(id);
+      if (index === undefined) continue;
+      const item = getItems()[index];
+      if (parseUserMessageMeta(item.meta).sendId !== sendId) continue;
+      removeMatchedItems((candidate) => candidate.id === id);
+      optimisticItemIds.delete(id);
+    }
+  }
+
   // Thread-switch / window-sync / replica pipeline. Declared last
   // because the ctx captures the sub-factory handles BY VALUE — pane
   // fields it only reads through getters could be declared after it,
@@ -638,6 +661,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     stampLiveContent,
     armLiveContentAppendSpring,
     optimisticItemIds,
+    confirmOptimisticSend,
     timelineWindow,
     subagentMemory,
     streamingReveal,
@@ -1060,6 +1084,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       }
     },
 
+    refreshActiveTurn(): Promise<void> {
+      return liveStateHydration.refreshActiveTurn();
+    },
+
     retryHistoryLoad(): Promise<void> {
       return switchLoad.retryHistoryLoad();
     },
@@ -1472,6 +1500,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * mutation so the window is open when the flush delivers geometry.
      */
     armStructuralSpring,
+
+    confirmOptimisticSend,
 
     trackOptimisticItem(id: string): void {
       optimisticItemIds.add(id);

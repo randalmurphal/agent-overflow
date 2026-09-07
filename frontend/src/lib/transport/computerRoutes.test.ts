@@ -207,3 +207,40 @@ it.each(['removed', 'trust-replaced'])('rejects a delayed address repair after t
   expect(mocks.pinned).not.toHaveBeenCalled();
   expect(localStorage.getItem('agent-overflow:computerRoutes:gpu') ?? '').not.toContain(alternate.endpoint);
 });
+
+it('allows a cold VPN route to take several seconds without timing out every retry', async () => {
+  vi.useFakeTimers();
+  const routes = await import('./computerRoutes');
+  const ctx = context();
+  await routes.learnComputerRoutes(ctx, [publicRoute]);
+  routes.failComputerRoute(ctx, primary.endpoint);
+  mocks.probe.mockImplementation((route, _id, signal: AbortSignal) => new Promise<void>((resolve, reject) => {
+    const timer = route.endpoint === publicRoute.endpoint ? setTimeout(resolve, 3000) : undefined;
+    signal.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
+  }));
+  const send = vi.fn().mockResolvedValue(new Response('{}'));
+  vi.stubGlobal('fetch', send);
+  const requestResult = routes.fetchComputerRoute(ctx, vi.fn(), request).then(() => 'connected', () => 'failed');
+  await vi.advanceTimersByTimeAsync(3100);
+  expect(await requestResult).toBe('connected');
+  expect(send).toHaveBeenCalledOnce();
+  expect(mocks.probe.mock.calls.every((call) => call[2].aborted)).toBe(true);
+});
+
+it('bounds stalled route selection and cancels every probe without sending credentials', async () => {
+  vi.useFakeTimers();
+  const routes = await import('./computerRoutes');
+  const ctx = context();
+  await routes.learnComputerRoutes(ctx, [publicRoute]);
+  routes.failComputerRoute(ctx, primary.endpoint);
+  mocks.probe.mockImplementation((_route, _id, signal: AbortSignal) => new Promise<void>((_resolve, reject) => {
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+  }));
+  const send = vi.fn();
+  vi.stubGlobal('fetch', send);
+  const pending = routes.fetchComputerRoute(ctx, vi.fn(), request).then(() => 'connected', () => 'failed');
+  await vi.advanceTimersByTimeAsync(20_100);
+  expect(await pending).toBe('failed');
+  expect(send).not.toHaveBeenCalled();
+  expect(mocks.probe.mock.calls.every((call) => call[2].aborted)).toBe(true);
+});

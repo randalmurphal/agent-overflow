@@ -30,32 +30,13 @@ import (
 // EventUserText arrives. Bounded by user attention (typically 0-1
 // entries per thread); swept at CleanupThread as a safety net.
 //
-// Position contract for queued sends (DeferredItem != nil):
-// `item_index` is NOT captured here — persistDeferredUserText calls
-// the standard MAX+1 path at echo time so the queued message lands
-// AFTER any rows the model emitted between dispatch and echo.
-// Capturing the index at dispatch was the queued-message ordering
-// bug: streaming rows landed at MAX+1 in the captured slot, then
-// InsertItemAtIndex shifted them down and placed the queued message
-// ABOVE content that arrived first. See handle_user_text_test.go's
-// TestHandleUserText_DeferredFlush_LandsAfterContentThatArrivedFirst.
-//
-// TurnIndex mirrors DeferredItem.TurnIndex when DeferredItem is set
-// (the dispatcher writes the same value to both). It is also
-// populated for direct sends (DeferredItem == nil) so the FIFO
-// carries the dispatch-decided turn without forcing every consumer
-// to crack open the item.
-//
-// Load-bearing for handleTurnStart: when the wire init carries no
-// turn index (Claude system.init), resolveTurnIndexOnStart peeks the
-// FIFO head and reads this field as the authoritative answer.
-// Producers MUST stamp it before registering. The fallback in
-// persistDeferredUserText (`item.TurnIndex == 0 && pending.TurnIndex
-// != 0`) remains defensive against an item-level zero — it is not
-// the contract that keeps queue-dispatched turn rows from colliding
-// with the previous turn's id-allocating counters.
+// Placement is captured at the first consuming echo, never dispatch time.
+// Confirmation retains that stable predecessor through failed writes and
+// session-death repair. TurnIndex remains the dispatch-decided RESPONSE turn;
+// a Claude quiet row can belong to a different display turn. See
+// docs/architecture/user-message-ordering.md.
 type pendingSend struct {
-	AOItemID     string // "user:<turnIndex>"
+	AOItemID     string // opaque send-derived ID, or a legacy numeric ID
 	QueueItemID  string
 	TurnIndex    int
 	EnqueuedAt   int64
@@ -161,33 +142,6 @@ type pendingSend struct {
 	EchoProviderItemID string
 	EchoParentUUID     string
 
-	// EchoPromotedBoundary is the promoted-echo provider-order boundary
-	// (see itemmeta.MarkPromotedEchoBoundary) computed by
-	// attachProviderItemIDToUserRow before its fallible write, or -1.
-	// Stashed for the same reason as the ids above: the boundary is
-	// echo-time information — by session-death drain time the response
-	// rows have persisted and a recomputed MAX would misclassify them
-	// as interrupted tail, so the failed write's value is the only
-	// correct source (round-6, R6-1).
-	EchoPromotedBoundary int
-
-	// EchoTurnWasEmpty records whether the deferred prompt's turn had
-	// no rows when its FIRST echo arrived — true for the turn the echo
-	// itself opens (Claude mid-loop pickup), false for a steer into an
-	// occupied turn where pre-dispatch content correctly precedes the
-	// prompt. Stashed like the fields above because it is first-echo
-	// information: a replay retry or session-death self-heal after a
-	// failed first persist finds the RESPONSE occupying the turn and
-	// can no longer tell response rows (persist the prompt above them)
-	// from pre-dispatch content (persist below) (round-7, R7-4).
-	// Always populated before a reinsert can mark the entry
-	// EchoConsumed: when the first echo's row sample fails, the
-	// router's turn-open state substitutes — a turn nobody opened yet
-	// is the prompt's own — so the retry / self-heal never reads an
-	// unrecorded zero value and appends an empty-turn prompt below its
-	// own response (round-14, D14-1).
-	EchoTurnWasEmpty bool
-
 	// AnchorRecordedAtEcho marks an entry whose confirmed-hook message
 	// anchor was recorded on the FIRST echo's failure path (the row
 	// existed; only the stamp write failed). That first echo is the
@@ -197,22 +151,15 @@ type pendingSend struct {
 	// (round-10, R10-2).
 	AnchorRecordedAtEcho bool
 
-	// NeedsTailRebump marks an anchored quiet entry whose sibling
-	// re-bump failed after an earlier promoted echo drained rows past
-	// it (rebumpAnchoredQuietSiblings): its row sits below content
-	// that precedes it in provider order, and nothing else revisits
-	// the position — the entry's own echo skips the bump as
-	// already-anchored. attachProviderItemIDToUserRow treats the flag
-	// like rebumpOverDrained, so that echo forces the turn-tail bump
-	// and repairs both display order and the revert cut (round-11,
-	// R11-5).
-	NeedsTailRebump bool
+	Confirmation *userMessageConfirmation
 }
 
 type PendingFlushItemSnapshot struct {
 	QueueItemID string
 	UserItemID  string
 	Message     string
+	// UserMeta is decoded at the app boundary for the send identity.
+	UserMeta string
 }
 
 // PendingSendSnapshot is the test-visible projection of a pendingSend entry.
@@ -344,7 +291,6 @@ func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, q
 		ExpectedClientID:       expectedClientID,
 		Shape:                  shape,
 		InterruptedTurnIndex:   -1,
-		EchoPromotedBoundary:   -1,
 	})
 	r.mu.Unlock()
 }
@@ -938,69 +884,6 @@ func (r *Router) PromoteQuietFlushSends(threadID string, tok FlushStampToken) []
 		promoted = append(promoted, item)
 	}
 	return promoted
-}
-
-// rebumpAnchoredQuietSiblings restores FIFO order after a promoted
-// echo re-bumped its row over freshly drained content: later-FIFO
-// anchored quiet rows in the same turn were positioned below the
-// echoed row at promote time and now sit below the drained rows too —
-// both inversions of provider order (all interrupted-tail content
-// precedes every queued message's attachment, and the siblings'
-// echoes come after this one). Bumping each sibling in FIFO order
-// puts the layout back to drained-content < echoed row < siblings,
-// and lifts the siblings past the revert cut at the echoed message
-// (the user-row predicate cuts item_index >= anchor) to match the
-// session slice, which removes them (round-7, R7-2).
-//
-// WasDeferred entries are skipped: their rows live in their own fresh
-// turns, so same-turn drained content cannot reorder them. Per-sibling
-// failures log loudly, record the repair obligation on the entry
-// (pendingSend.NeedsTailRebump — the sibling's own echo forces the
-// tail bump an anchored row otherwise skips), and continue. Caller
-// holds the thread's flush anchor lock, so no promote or pop can
-// interleave.
-func (r *Router) rebumpAnchoredQuietSiblings(threadID, echoedItemID string, turnIndex int, now int64) {
-	r.mu.Lock()
-	var siblingIDs []string
-	for _, entry := range r.pendingSendsLocked(threadID) {
-		if entry.AOItemID == echoedItemID || entry.WasDeferred || !entry.AnchoredAtInterrupt {
-			continue
-		}
-		if entry.QuietItem == nil || entry.QuietItem.TurnIndex != turnIndex {
-			continue
-		}
-		if entry.Shape != sendShapeFlush {
-			continue
-		}
-		siblingIDs = append(siblingIDs, entry.AOItemID)
-	}
-	r.mu.Unlock()
-	for _, id := range siblingIDs {
-		item, err := r.store.BumpItemToTurnEnd(threadID, id, nil, now)
-		if err != nil {
-			log.Printf("triage: re-bump anchored flush sibling %s/%s over drained rows: %v", threadID, id, err)
-			r.markSiblingNeedsTailRebump(threadID, id)
-			continue
-		}
-		r.emitItemUpsert(item)
-	}
-}
-
-// markSiblingNeedsTailRebump records the repair obligation for a
-// sibling whose re-bump failed — see pendingSend.NeedsTailRebump.
-// Idempotent; a no-op when the entry was consumed in the meantime
-// (impossible while the caller holds the flush anchor lock, but the
-// scan is cheap insurance either way).
-func (r *Router) markSiblingNeedsTailRebump(threadID, aoItemID string) {
-	r.mu.Lock()
-	pending := r.pendingSendsLocked(threadID)
-	for i := range pending {
-		if pending[i].AOItemID == aoItemID {
-			pending[i].NeedsTailRebump = true
-			break
-		}
-	}
-	r.mu.Unlock()
 }
 
 // restorePendingSendDeferred undoes EagerPersistDeferredFlushSends'

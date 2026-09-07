@@ -16,11 +16,8 @@ import { backendKeyForOrigin } from '../transport/backends';
 import type { Thread } from '../types/models';
 import { iterPanes } from './panes.svelte';
 import { GetQueueState, GetThread } from './bindings';
-import {
-  getQueueRevisionForThread,
-  queueItemFromWire,
-  replaceQueueForThread,
-} from './sendQueue.svelte';
+import { applyQueueStateChanged } from './eventsQueue';
+import { getQueueRevisionForThread } from './sendQueue.svelte';
 import { refreshSidebarProjections, syncThreadRow } from './eventsThreadRows';
 import { clearLiveUsageSnapshot } from './threadContextWindow';
 import { fetchDiscussionChannelSnapshot } from './eventsDiscussion';
@@ -271,7 +268,7 @@ export function applyTransportGap(gap: { channel: string; seq: number }, origin?
         const revisionAtRequest = getQueueRevisionForThread(threadId);
         void GetQueueState(threadId).then((items) => {
           if (getQueueRevisionForThread(threadId) !== revisionAtRequest) return;
-          replaceQueueForThread(threadId, (items ?? []).map(queueItemFromWire));
+          applyQueueStateChanged({ threadId, items: items ?? [] });
         }).catch((err: unknown) => {
           console.warn(`events: refresh queue for ${threadId} after transport gap: ${err}`);
         });

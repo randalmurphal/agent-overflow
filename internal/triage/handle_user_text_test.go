@@ -1653,3 +1653,24 @@ func TestHandleUserText_FlushConfirmedHook_EagerQuietRows(t *testing.T) {
 		t.Fatalf("echo refresh must receive the STAMPED row (provider_item_id %v, want uuid-anchored) — the replacement checkpoint mirrors this id at capture", meta["provider_item_id"])
 	}
 }
+
+func TestHandleUserTextPrestampedDirectConfirmationDoesNotWriteOrEmit(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	row := store.Item{ID: "user:0", ThreadID: "t1", TurnIndex: 0, Kind: "user_text", Role: "user", Status: "completed", Summary: "sent", Meta: `{"provider_item_id":"echo-id"}`, CreatedAt: 10, UpdatedAt: 10}
+	if err := router.PersistItemQuiet(row, nil); err != nil {
+		t.Fatal(err)
+	}
+	router.RegisterPendingSendWithExpectation("t1", row.ID, 0, PendingSendExpectation{ProviderItemID: "echo-id"})
+	emissions.reset()
+	if err := router.Handle(provider.ProviderEvent{Kind: provider.EventUserText, ThreadID: "t1", Content: "sent", Meta: json.RawMessage(`{"provider_item_id":"echo-id"}`), Timestamp: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	after := mustGetItem(t, st, "t1", row.ID)
+	if after.UpdatedAt != 10 {
+		t.Fatalf("unchanged confirmation rewrote row: %+v", after)
+	}
+	if got := itemUpsertEmissionsForID(emissions.snapshot(), "t1", row.ID); len(got) != 0 {
+		t.Fatalf("unchanged confirmation emitted %d rows", len(got))
+	}
+}

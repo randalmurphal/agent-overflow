@@ -1,3 +1,4 @@
+import { parseUserMessageMeta } from '../utils/userMessageMeta';
 import type { Item, Thread } from '../types/models';
 import type {
   ItemDeltaEvent,
@@ -47,6 +48,7 @@ export interface ThreadItemStreamApplyOptions {
   armLiveContentAppendSpring(): void;
   /** The pane's optimistic-row ledger — discharged by a wire echo. */
   optimisticItemIds: Set<string>;
+  confirmOptimisticSend(threadId: string, sendId: string | undefined, canonicalItemId?: string): void;
   timelineWindow: ThreadTimelineWindow;
   subagentMemory: ThreadSubagentMemory;
   streamingReveal: ThreadStreamingReveal;
@@ -114,11 +116,12 @@ export function createThreadItemStreamApply(
    */
   function finishCommittedUpsert(
     next: ApplyItemUpsertsToWindowResult,
+    previousItems: readonly Item[],
   ): void {
     let errors: unknown[] | null = null;
-    if (next.appendedItems.length > 0) {
+    if (next.structureChanged) {
       try {
-        timelineWindow.refreshCursorsAfterTailAppend();
+        timelineWindow.refreshCursorsAfterUpserts(next.changedItems, next.appendedItems.length > 0, previousItems);
       } catch (error) {
         (errors ??= []).push(error);
       }
@@ -163,8 +166,9 @@ export function createThreadItemStreamApply(
 
     const thread = options.getThread();
     return streamingReveal.withReconciledItems(incoming, (incoming) => {
+      const previousItems = options.getItems();
       const next = applyItemUpsertsToWindow({
-        current: options.getItems(),
+        current: previousItems,
         incoming,
         itemIndexById,
         currentThreadId: thread?.id ?? null,
@@ -199,7 +203,7 @@ export function createThreadItemStreamApply(
       // recorded above and are not theirs to see.
       return next.droppedNewerItems ? next : null;
     }
-    options.commitUpsertResult(next, finishCommittedUpsert);
+    options.commitUpsertResult(next, (committed) => finishCommittedUpsert(committed, previousItems));
     return next;
     });
   }
@@ -207,6 +211,15 @@ export function createThreadItemStreamApply(
   function applyProviderItemUpserts(
     incoming: Item[],
   ): ApplyItemUpsertsToWindowResult | null {
+    if (options.optimisticItemIds.size > 0) {
+      for (const item of incoming) {
+        if (item.kind !== 'user_text') continue;
+        const sendId = parseUserMessageMeta(item.meta).sendId;
+        if (typeof sendId === 'string') {
+          options.confirmOptimisticSend(item.threadId, sendId, item.id);
+        }
+      }
+    }
     const applied = upsertItemsBatch(incoming);
     // Discharging an optimistic marker belongs HERE, not in
     // `upsertItemsBatch`: the marker means "this row exists only in

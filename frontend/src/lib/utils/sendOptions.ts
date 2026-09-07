@@ -32,6 +32,8 @@ export interface OutgoingSendOptions {
    * ship without one by forgetting.
    */
   sendId: string;
+  /** This frontend reconciles provisional rows by send ID, not a predicted turn. */
+  reconcileBySendId: true;
 }
 
 /**
@@ -68,6 +70,7 @@ export function buildSendOptions(input: SendOptionsInput): OutgoingSendOptions {
   const out: OutgoingSendOptions = {
     attachmentIds: input.attachmentIds,
     sendId: randomId(),
+    reconcileBySendId: true,
   };
   if (input.runtimeMode) out.runtimeMode = input.runtimeMode;
   if (input.revisionSourceProposedPlan) {

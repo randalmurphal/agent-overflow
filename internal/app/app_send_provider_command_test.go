@@ -151,6 +151,7 @@ func TestSendMessageWithOptions_CommandRoutingDoesNotDependOnDiscovery(t *testin
 		t.Fatalf("known command reached the CLI as %q, want %q", texts[0], "/usage")
 	}
 
+	acknowledgeMockClaudeSend(t, app, thread.ID)
 	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "/not-discovered argument", SendMessageOptions{}); err != nil {
 		t.Fatalf("unknown SendMessageWithOptions: %v", err)
 	}

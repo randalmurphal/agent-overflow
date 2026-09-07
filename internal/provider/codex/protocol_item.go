@@ -18,7 +18,7 @@ import (
 //     half has no UI signal); item/completed
 //     is special-cased to emit EventUserText
 //     so triage's pending-send correlator can
-//     stamp the AO-owned `user:<turnIndex>`
+//     stamp the AO-owned user-message
 //     row (mirrors Claude's `isReplay:true`
 //     promotion in parse_user.go).
 //   - agentMessage / assistantMessage: written by handleTextDelta from the
@@ -326,7 +326,7 @@ func classifyItemCompleted(threadID string, params json.RawMessage, now time.Tim
 	// userMessage is the other carve-out: every wire echo of an AO-initiated
 	// send (or a future cascade injection like the Codex-side equivalent of
 	// task_notification) is promoted to EventUserText so triage's
-	// pending-send correlator can stamp the AO-owned `user:<turnIndex>` row.
+	// pending-send correlator can stamp the AO-owned user-message row.
 	// This is the receive-side mirror of Claude's `isReplay:true` promotion
 	// in parse_user.go.
 	if itemType == "plan" {
@@ -378,7 +378,7 @@ func classifyItemCompleted(threadID string, params json.RawMessage, now time.Tim
 		// item.id is the Codex-assigned uuid for the user envelope. When
 		// present it lands in meta as `provider_item_id`; absent / empty
 		// omits the key entirely (never empty-string). Phase E reads
-		// this to stamp the AO-owned `user:<turnIndex>` row, so the
+		// this to stamp the AO-owned user-message row, so the
 		// meta key has to be the stable handle, not a synthesized id.
 		//
 		// `clientId` is the OTHER identity on this item and answers a

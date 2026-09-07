@@ -36,6 +36,7 @@ import { projectBackend, threadBackend } from '../transport/entityIndex';
 import type { Thread } from '../types/models';
 import { initialComputer } from '../transport/runMode';
 import { readFrontendValue, writeFrontendValue } from './frontendStorage';
+import { SvelteMap } from 'svelte/reactivity';
 
 const STORAGE_KEY = 'selected-computer';
 const remembered = readFrontendValue(STORAGE_KEY);
@@ -63,10 +64,9 @@ export function setFocusedThreadResolver(resolve: () => Pick<Thread, 'id' | 'pro
 }
 // Per-pane overrides: a draft placeholder staging a thread on another
 // machine. Keyed by pane id, dropped when the pane closes
-// (`stores/panes.svelte.ts`'s `destroyPane`). A plain Map, not a rune: it
-// is read on the RPC path and written by a picker, and nothing renders
-// from it in this wave.
-const byPane = new Map<string, BackendKey>();
+// (`stores/panes.svelte.ts`'s `destroyPane`). Routing and mounted controls
+// read the same keyed choice, including a picker change in an existing pane.
+const byPane = new SvelteMap<string, BackendKey>();
 // Which pane's override to prefer, as a RESOLVER rather than a value.
 //
 // The first shipped form was a setter somebody had to call on every focus

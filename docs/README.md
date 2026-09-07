@@ -39,6 +39,7 @@ How the app works today. Under [`architecture/`](architecture/).
 | [`schema.md`](architecture/schema.md) | SQLite schema summary. Tables, indexes, triggers, migration policy. |
 | [`triage-routing.md`](architecture/triage-routing.md) | Routing table: every `EventKind` → handler → destination. |
 | [`turn-lifecycle.md`](architecture/turn-lifecycle.md) | The three-lifecycle mental model (tool / task / turn). Read before touching provider, triage, or any turn-state UI. |
+| [`user-message-ordering.md`](architecture/user-message-ordering.md) | Send identity, backend admission, frozen confirmation placement, and recovery without moving prompts below their responses. |
 | [`root-decomposition.md`](architecture/root-decomposition.md) | Field-ownership and seam map of the `*App` root receiver, plus the wire-compat facts that make a split byte-identical on the wire. |
 | [`observability.md`](architecture/observability.md) | OpenTelemetry + per-thread NDJSON event log. |
 | [`transport.md`](architecture/transport.md) | Wire mechanism deep-dives: port pinning, the gap marker, scoped-token routes, coalescing, keepalive. |

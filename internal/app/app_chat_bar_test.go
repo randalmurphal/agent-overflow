@@ -253,6 +253,7 @@ func TestSendMessageExpandsComposerCommandOnTheWireOnly(t *testing.T) {
 	if err := app.SendMessage(thread.ID, commandText, nil); err != nil {
 		t.Fatalf("send command message: %v", err)
 	}
+	acknowledgeMockClaudeSend(t, app, thread.ID)
 	if err := app.SendMessage(thread.ID, plainText, nil); err != nil {
 		t.Fatalf("send plain message: %v", err)
 	}

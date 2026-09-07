@@ -107,7 +107,7 @@ func TestSendShapeStampDecides(t *testing.T) {
 	router.state("t1").pendingSends = []pendingSend{{
 		AOItemID: "user:4:flush:1", QueueItemID: "queue:q1", TurnIndex: 4,
 		DeferredItem: &item, Shape: sendShapeDirect,
-		InterruptedTurnIndex: -1, EchoPromotedBoundary: -1,
+		InterruptedTurnIndex: -1,
 	}}
 	router.mu.Unlock()
 

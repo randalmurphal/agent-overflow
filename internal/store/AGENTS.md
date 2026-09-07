@@ -2152,3 +2152,14 @@ retention; forgetting acceptance would let a delayed retry run a command twice.
 Only the latest 128 settled 128 KiB tails remain. Boot marks accepted unfinished
 work interrupted and never replays it. `beginDurableTx` is shared with transfer
 ownership so power loss cannot rewind an acknowledgement another host acted on.
+
+User-message confirmation captures a stable predecessor ID with
+`CaptureUserPlacementBoundary` and commits through
+`PlaceUserItemsAfterBoundary`. Retries resolve that predecessor inside the
+transaction, so later response rows cannot move the prompt to the current tail.
+Only top-level user messages may be placed; existing content stays canonical.
+Related moves/inserts, displaced suffix rows, numeric promotion-boundary rebases,
+and imported-row localization commit together. Emit every returned changed row
+only after success. Never loop over independent bumps for a related group, or
+recompute the first-echo boundary from a later tail. The empty predecessor denotes
+the head; capture excludes every row in the group being moved.

@@ -1281,32 +1281,6 @@ func (r *Router) persistItemQuietReturning(item store.Item, payload *store.Paylo
 	return r.persistItemWithEmit(item, payload, nil, false)
 }
 
-// persistUserPromptAtTurnHead persists a deferred flush prompt at the
-// HEAD of its turn (store.UpsertItemAtTurnHead) and emits the upsert.
-// Callers gate on the turn having been EMPTY at the prompt's first
-// echo (pendingSend.EchoTurnWasEmpty) — the turn is then the prompt's
-// own, so on the first echo head placement equals the normal append
-// (index 0), while a replay retry or session-death self-heal after a
-// failed first persist finds the RESPONSE at 0..n, where a MAX+1
-// append would sort the prompt after its own response and a revert at
-// the prompt would keep response rows the session slice removes
-// (round-7, R7-4). Steer-shape prompts sharing an occupied turn must
-// use the normal append instead.
-func (r *Router) persistUserPromptAtTurnHead(item store.Item) (store.Item, error) {
-	persisted, err := r.store.UpsertItemAtTurnHead(item)
-	if err != nil {
-		return store.Item{}, err
-	}
-	countsAsActivity := userTextCountsAsThreadActivity(item)
-	if countsAsActivity {
-		r.bumpThreadActivityForUserText(persisted.ThreadID, persisted.UpdatedAt)
-	}
-	r.emitItemUpsert(persisted)
-	r.metrics.ItemsPersisted.Add(context.Background(), 1,
-		metric.WithAttributes(attribute.String("kind", persisted.Kind)))
-	return persisted, nil
-}
-
 // persistItemWithInputPayload is the two-payload variant of persistItem used
 // by the tool-call lifecycle when applyToolMetaRule has promoted heavy
 // inputs out of items.meta into a sibling tool_call_input payload row.

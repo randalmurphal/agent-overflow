@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -340,6 +341,8 @@ func TestRevertAndResendStagedCrashCopyKeepsChipsAndPlanLink(t *testing.T) {
 // dangerous point in the sequence.
 func TestRevertAndResendSerializesConcurrentSendAfterReplacement(t *testing.T) {
 	app, bus := newResendTestApp(t)
+	app.configureTriageQueueCallbacks()
+	t.Cleanup(func() { app.flushDispatch.wg.Wait() })
 	thread, _ := seedResendThread(t, app, "t-resend-lock")
 
 	sendErr := make(chan error, 1)
@@ -350,7 +353,10 @@ func TestRevertAndResendSerializesConcurrentSendAfterReplacement(t *testing.T) {
 			return
 		}
 		once.Do(func() {
-			go func() { sendErr <- app.SendMessage(thread.ID, "concurrent follow-up", nil) }()
+			go func() {
+				_, err := app.SendMessageWithOptions(t.Context(), thread.ID, "concurrent follow-up", SendMessageOptions{SendID: "concurrent-follow-up", ReconcileBySendID: true})
+				sendErr <- err
+			}()
 			// Blocks until the racing send is provably parked on this
 			// thread's action lock.
 			waitForThreadLockRefs(t, app.threadLocks(), thread.ID, 2)
@@ -368,6 +374,38 @@ func TestRevertAndResendSerializesConcurrentSendAfterReplacement(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("concurrent send never completed after the saga released the thread lock")
+	}
+
+	// This fixture's provider is deliberately silent. The replacement is
+	// still awaiting turn/start, so the concurrent public send must use the
+	// queue rather than invent another direct turn. Its row appears only
+	// when the provider echoes it, after consuming the replacement.
+	for _, content := range []string{edited, "concurrent follow-up"} {
+		if content == "concurrent follow-up" {
+			flushed := bus.nextOfKind(t, "provider:queue_flushed", 10*time.Second)
+			flushEvent, ok := flushed.Data.(QueueFlushedEvent)
+			if !ok || len(flushEvent.Items) != 1 || flushEvent.Items[0].Message != content {
+				t.Fatalf("concurrent queued send = %#v", flushed.Data)
+			}
+		}
+		head, ok := app.triage.PeekPendingSendHeadForTest(thread.ID)
+		if !ok {
+			t.Fatalf("no pending send for %q", content)
+		}
+		meta, err := json.Marshal(map[string]string{"provider_item_id": head.ExpectedProviderItemID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, event := range []provider.ProviderEvent{
+			{Kind: provider.EventTurnStart, ThreadID: thread.ID, TurnIndex: head.TurnIndex},
+			{Kind: provider.EventUserText, ThreadID: thread.ID, TurnIndex: head.TurnIndex, ItemID: head.AOItemID, Content: content, Meta: meta},
+			{Kind: provider.EventTurnComplete, ThreadID: thread.ID, TurnIndex: head.TurnIndex, TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"}},
+		} {
+			event.Timestamp = time.Now()
+			if err := app.triage.Handle(event); err != nil {
+				t.Fatalf("provider event %s for %q: %v", event.Kind, content, err)
+			}
+		}
 	}
 
 	items, err := app.store.ListItems(thread.ID)

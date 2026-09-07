@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -399,54 +400,69 @@ func TestRegisterQueueItemAnswersARepeatedSendFromItsRow(t *testing.T) {
 // Idempotency, send path: the repeat is answered from the `user_text` row the
 // first frame persisted, and starts nothing.
 func TestSendMessageAnswersARepeatedSendFromItsItem(t *testing.T) {
-	app, _ := newAppForFlushQueueRPC(t)
+	for _, modern := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reconcile-by-send-id=%v", modern), func(t *testing.T) {
 
-	thread := testThread("durable-idempotent-send")
-	thread.Provider = string(provider.Claude)
-	thread.WorkspacePath = initGitRepo(t)
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-	sess, err := claude.NewSession(
-		context.Background(), thread.ID,
-		claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
-		func(provider.ProviderEvent) {},
-	)
-	if err != nil {
-		t.Fatalf("claude.NewSession: %v", err)
-	}
-	t.Cleanup(func() { _ = sess.Close() })
-	app.sessionManager().put(thread.ID, session{
-		Provider: string(provider.Claude),
-		Token:    "idempotent-tok",
-		Claude:   sess,
-		Liveness: newSessionLiveness(time.Now()),
-	})
+			app, _ := newAppForFlushQueueRPC(t)
 
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "one message", SendMessageOptions{
-		SendID: "send-once",
-	}); err != nil {
-		t.Fatalf("first send: %v", err)
-	}
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "one message", SendMessageOptions{
-		SendID: "send-once",
-	}); err != nil {
-		t.Fatalf("repeated send: %v", err)
-	}
+			thread := testThread("durable-idempotent-send")
+			thread.Provider = string(provider.Claude)
+			thread.WorkspacePath = initGitRepo(t)
+			if err := app.store.CreateThread(thread); err != nil {
+				t.Fatalf("CreateThread: %v", err)
+			}
+			sess, err := claude.NewSession(
+				context.Background(), thread.ID,
+				claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+				func(provider.ProviderEvent) {},
+			)
+			if err != nil {
+				t.Fatalf("claude.NewSession: %v", err)
+			}
+			t.Cleanup(func() { _ = sess.Close() })
+			app.sessionManager().put(thread.ID, session{
+				Provider: string(provider.Claude),
+				Token:    "idempotent-tok",
+				Claude:   sess,
+				Liveness: newSessionLiveness(time.Now()),
+			})
 
-	if got := userTextRowCount(t, app, thread.ID); got != 1 {
-		t.Fatalf("user_text rows: got %d, want 1 — the repeat started a second turn", got)
-	}
+			if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "one message", SendMessageOptions{
+				SendID: "send-once", ReconcileBySendID: modern,
+			}); err != nil {
+				t.Fatalf("first send: %v", err)
+			}
+			if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "one message", SendMessageOptions{
+				SendID: "send-once", ReconcileBySendID: modern,
+			}); err != nil {
+				t.Fatalf("repeated send: %v", err)
+			}
 
-	// A DIFFERENT id on the same text is a different message: somebody typed
-	// the same thing twice, which is theirs to do.
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "one message", SendMessageOptions{
-		SendID: "send-twice",
-	}); err != nil {
-		t.Fatalf("second distinct send: %v", err)
-	}
-	if got := userTextRowCount(t, app, thread.ID); got != 2 {
-		t.Fatalf("user_text rows: got %d, want 2", got)
+			if got := userTextRowCount(t, app, thread.ID); got != 1 {
+				t.Fatalf("user_text rows: got %d, want 1 — the repeat started a second turn", got)
+			}
+
+			item, found, err := app.store.FindUserTextItemBySendID(thread.ID, "send-once")
+			if err != nil || !found {
+				t.Fatalf("accepted message: %v, %v", found, err)
+			}
+			if (item.ID == "user:0") == modern {
+				t.Fatalf("wrong negotiated identity: %q (modern %v)", item.ID, modern)
+			}
+
+			acknowledgeMockClaudeSend(t, app, thread.ID)
+
+			// A DIFFERENT id on the same text is a different message: somebody typed
+			// the same thing twice, which is theirs to do.
+			if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "one message", SendMessageOptions{
+				SendID: "send-twice", ReconcileBySendID: modern,
+			}); err != nil {
+				t.Fatalf("second distinct send: %v", err)
+			}
+			if got := userTextRowCount(t, app, thread.ID); got != 2 {
+				t.Fatalf("user_text rows: got %d, want 2", got)
+			}
+		})
 	}
 }
 

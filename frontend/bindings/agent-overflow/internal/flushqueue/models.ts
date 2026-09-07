@@ -24,6 +24,7 @@ import * as store$0 from "../store/models.js";
  */
 export class QueuedItem {
     "id": string;
+    "sendId"?: string;
     "threadId": string;
     "message": string;
     "attachmentIds"?: string[];
@@ -56,30 +57,30 @@ export class QueuedItem {
      * Creates a new QueuedItem instance from a string or object.
      */
     static createFrom($$source: any = {}): QueuedItem {
-        const $$createField3_0 = $$createType0;
-        const $$createField4_0 = $$createType2;
+        const $$createField4_0 = $$createType0;
         const $$createField5_0 = $$createType2;
-        const $$createField6_0 = $$createType0;
-        const $$createField7_0 = $$createType4;
-        const $$createField8_0 = $$createType0;
+        const $$createField6_0 = $$createType2;
+        const $$createField7_0 = $$createType0;
+        const $$createField8_0 = $$createType4;
+        const $$createField9_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("attachmentIds" in $$parsedSource) {
-            $$parsedSource["attachmentIds"] = $$createField3_0($$parsedSource["attachmentIds"]);
+            $$parsedSource["attachmentIds"] = $$createField4_0($$parsedSource["attachmentIds"]);
         }
         if ("sourceProposedPlan" in $$parsedSource) {
-            $$parsedSource["sourceProposedPlan"] = $$createField4_0($$parsedSource["sourceProposedPlan"]);
+            $$parsedSource["sourceProposedPlan"] = $$createField5_0($$parsedSource["sourceProposedPlan"]);
         }
         if ("revisionSourceProposedPlan" in $$parsedSource) {
-            $$parsedSource["revisionSourceProposedPlan"] = $$createField5_0($$parsedSource["revisionSourceProposedPlan"]);
+            $$parsedSource["revisionSourceProposedPlan"] = $$createField6_0($$parsedSource["revisionSourceProposedPlan"]);
         }
         if ("revisionSourceCommentIds" in $$parsedSource) {
-            $$parsedSource["revisionSourceCommentIds"] = $$createField6_0($$parsedSource["revisionSourceCommentIds"]);
+            $$parsedSource["revisionSourceCommentIds"] = $$createField7_0($$parsedSource["revisionSourceCommentIds"]);
         }
         if ("revisionSourceDiffReview" in $$parsedSource) {
-            $$parsedSource["revisionSourceDiffReview"] = $$createField7_0($$parsedSource["revisionSourceDiffReview"]);
+            $$parsedSource["revisionSourceDiffReview"] = $$createField8_0($$parsedSource["revisionSourceDiffReview"]);
         }
         if ("revisionSourceDiffCommentIds" in $$parsedSource) {
-            $$parsedSource["revisionSourceDiffCommentIds"] = $$createField8_0($$parsedSource["revisionSourceDiffCommentIds"]);
+            $$parsedSource["revisionSourceDiffCommentIds"] = $$createField9_0($$parsedSource["revisionSourceDiffCommentIds"]);
         }
         return new QueuedItem($$parsedSource as Partial<QueuedItem>);
     }

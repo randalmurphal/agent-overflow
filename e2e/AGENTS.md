@@ -155,8 +155,12 @@ native HTTP bridge bypasses Playwright's request interception, so a browser
 route mock cannot stand in for this check.
 Removing `adb reverse` closes its listener but preserves established TCP
 streams. A WebView reload preserves the native HTTP connection pool too.
-The cold relaunch closes those sockets while retaining the pairing, so the
+Stop the app before removing the reverse listener, then cold-relaunch it. This
+closes those sockets while retaining the pairing and avoids ADB aborting when
+a reconnect races listener removal (`handle_packet disallowed connect`). The
 test actually loses the old route instead of sometimes renewing through it.
+After reload, cached thread rows can appear before session renewal finishes;
+wait on the renewed session itself rather than treating a visible row as proof.
 It then changes the backend's port, repairs the now-offline computer through
 Settings, and verifies that the same pairing and thread are usable afterwards.
 
@@ -173,6 +177,10 @@ paused, timers and all, for the next one), and the cases own
 and the pairing. It runs through
 `bin/ao-harness-e2e --config=playwright.android.config.ts`, which is what
 typechecks the tree and what lets `launchHarness` spawn at all.
+The page fixture depends on the harness so its teardown stops the app before
+the reverse listener is removed. Native retries must not survive a case and
+reach another test's reused port. Failure diagnostics run before that stop and
+collect only the selected computer, endpoint addresses and visible UI.
 
 **A real phone** runs the same suite with `AO_ANDROID_HUMAN_LOCK=1`
 (wireless adb included: pair and connect in developer options, then name

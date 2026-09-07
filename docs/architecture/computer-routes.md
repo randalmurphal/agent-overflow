@@ -53,9 +53,12 @@ health checks may race with bounded concurrency and an overall deadline; cancel
 losers and keep only the successful route. This work is independent per computer.
 
 Each computer retains at most four advertised alternatives plus its original
-pairing address. A selection has a two-second deadline and a short retry floor;
+pairing address. A selection has a 20-second deadline and a short retry floor;
 health bodies are capped at 64 KiB. Native checks also share eight bridge slots
 and a queue capped at 32, so simultaneous reconnects leave room for app traffic.
+The deadline allows DNS and a cold VPN path to establish; the first verified
+alternative still wins immediately. A shorter health deadline than ordinary
+connection establishment can reject a reachable route on every retry.
 The last-working address is a hint that must be verified again after reopening.
 
 Selection is separate from the request. A request that might have crossed the
@@ -65,6 +68,12 @@ and presents fresh proofs/tickets. Recoverable renewal retries the SAME saved
 operation on the newly verified route. Command execution, message sending and
 transfer acceptance retain their existing durable request identities and outcome
 recovery contracts. Route changes do not authorize retrying an arbitrary RPC.
+
+When replacing an origin in a WHATWG URL, assign its port explicitly as well
+as its host. Assigning `host` alone retains the previous explicit port when the
+new origin uses the default; LAN-to-tailnet would probe 443 but dial the LAN port.
+The production bootstrap/authentication/socket composition test covers both
+legacy HOME and per-computer pairings with distinct ports.
 
 Every HTTP operation and socket upgrade takes one route snapshot. Its URL and
 TLS verifier come from that same snapshot. Concurrent switching cannot combine

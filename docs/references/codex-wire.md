@@ -457,7 +457,7 @@ must NOT settle a tool_call row for it, but it is no longer silently
 dropped on `item/completed`. The classifier promotes the wire echo
 to `EventUserText` carrying `meta.provider_item_id = item.id`, so
 triage's pending-send correlator can stamp the AO-owned
-`user:<turnIndex>` row when an AO-initiated send round-trips,
+user-message row when an AO-initiated send round-trips,
 or when a future cascade injection (the Codex equivalent of
 Claude's `task_notification` echo, e.g. an MCP-injected user
 input) lands. The `item/started userMessage` half is still

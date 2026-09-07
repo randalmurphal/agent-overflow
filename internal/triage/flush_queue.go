@@ -9,9 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"agent-overflow/internal/itemmeta"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/usermessage"
 )
 
 // flush_queue.go owns the per-thread "queued user message awaiting provider
@@ -600,110 +598,11 @@ func (r *Router) DrainUnconfirmedFlushItems(threadID string) []UnconfirmedFlushI
 	return drained
 }
 
-// selfHealEchoConsumedFlushRow makes sure the timeline carries a flush
-// message whose provider consumption was proven by an echo that then
-// failed before its durable write (round-5, R5-3), and stamps the
-// echo's stashed wire identity onto the row and its message anchor
-// (round-6, R6-1): the entry is dropped after this, so an unstamped
-// row would permanently lack its slice anchor — a later revert would
-// ordinal-walk or full-clone while the provider transcript still
-// contains the message. When the row already exists (eager interrupt
-// persist committed; only the echo's stamp was lost) the stamp is the
-// heal; when it is missing, the retained copy persists with the ids
-// (and, for promoted rows, the echo-time boundary) already merged.
-// Caller MUST hold the thread's flush anchor lock. Session-death
-// path: failures are logged loudly rather than returned — the
-// retained copy is lost only if the store itself is failing.
+// selfHealEchoConsumedFlushRow retries the original confirmation, including
+// placement and provider identity. Caller holds flushAnchor after teardown has
+// claimed every pending entry; a consumed message never returns to the queue.
 func (r *Router) selfHealEchoConsumedFlushRow(threadID string, entry pendingSend) {
-	stampMeta := func(meta string) (string, error) {
-		merged, err := usermessage.MergeProviderIDs(meta, entry.EchoProviderItemID, entry.EchoParentUUID)
-		if err != nil {
-			return "", err
-		}
-		if entry.EchoPromotedBoundary >= 0 {
-			// Stashed at echo time for promoted rows (whose store meta
-			// already carries the marker) AND for unanchored eager rows
-			// whose tail bump then failed (round-10, R10-1) — the healed
-			// row sits at its dispatch-time index, so the marker+boundary
-			// pair is what keeps the revert cut on provider order.
-			// Written together so the boundary is never orphaned.
-			if merged, err = itemmeta.MarkPromotedAtInterrupt(merged); err != nil {
-				return "", err
-			}
-			if merged, err = itemmeta.MarkPromotedEchoBoundary(merged, entry.EchoPromotedBoundary); err != nil {
-				return "", err
-			}
-		}
-		return merged, nil
-	}
-	hasEchoIDs := entry.EchoProviderItemID != "" || entry.EchoParentUUID != ""
-
-	retained := entry.QuietItem
-	if retained == nil {
-		retained = entry.DeferredItem
-	}
-	_, found, err := r.store.GetThreadItem(threadID, entry.AOItemID)
-	if err != nil {
-		log.Printf("triage: self-heal lookup for echo-consumed flush row %s/%s: %v", threadID, entry.AOItemID, err)
-		return
-	}
-	switch {
-	case found:
-		if hasEchoIDs {
-			updated, _, err := r.store.UpdateItemMetaMerge(threadID, entry.AOItemID, stampMeta, time.Now().UnixMilli())
-			if err != nil {
-				log.Printf("triage: self-heal stamp for echo-consumed flush row %s/%s: %v", threadID, entry.AOItemID, err)
-			} else {
-				// A non-interrupt quiet row was never emitted (quiet
-				// persist at dispatch; the emitting echo bump failed) —
-				// without this upsert it stays invisible until a thread
-				// reload (round-7, R7-7). Idempotent for rows the
-				// promote path already emitted.
-				r.emitItemUpsert(updated)
-			}
-		}
-	case retained == nil:
-		log.Printf("triage: echo-consumed flush entry %s/%s has no retained copy — the message survives only in the provider transcript", threadID, entry.AOItemID)
-		return
-	default:
-		item := *retained
-		if stamped, stampErr := stampMeta(item.Meta); stampErr != nil {
-			// Content preservation trumps id enrichment: persist the
-			// retained copy as-is rather than lose the message.
-			log.Printf("triage: self-heal id merge for echo-consumed flush row %s/%s: %v — persisting the retained copy unstamped", threadID, entry.AOItemID, stampErr)
-		} else {
-			item.Meta = stamped
-		}
-		var persistErr error
-		if entry.QuietItem == nil && entry.EchoTurnWasEmpty {
-			// Deferred-origin retained copy whose turn was EMPTY at the
-			// first echo — the turn is the prompt's own, and the failed
-			// echo opened it (R6-3): response rows now occupy 0..n and
-			// an append would sort the prompt after its own response
-			// (round-7, R7-4). Steer-shape deferred rows
-			// (EchoTurnWasEmpty false) keep the append — pre-dispatch
-			// content correctly precedes them.
-			_, persistErr = r.persistUserPromptAtTurnHead(item)
-		} else {
-			persistErr = r.persistItem(item, nil)
-		}
-		if persistErr != nil {
-			log.Printf("triage: self-heal persist for echo-consumed flush row %s/%s: %v", threadID, entry.AOItemID, persistErr)
-			return
-		}
-		log.Printf("triage: echo-consumed flush row %s/%s was missing at session-death drain — re-persisted the retained copy", threadID, entry.AOItemID)
-	}
-	if hasEchoIDs {
-		// Fold the ids into the row's message anchor too — the anchor
-		// copy is the rollback path's first slice candidate. Rows that
-		// existed at the failed echo already hold an anchor recorded
-		// at the true consumption boundary (recordEchoBoundaryAnchor,
-		// round-10 R10-2). Rows healed from a never-persisted deferred
-		// copy have no anchor row (the upsert needs the row's FK); the
-		// update is then a no-op and rollback falls back to the
-		// item-meta synthesis.
-		if err := r.store.UpdateMessageAnchorProviderIDs(threadID, entry.AOItemID, entry.EchoProviderItemID, entry.EchoParentUUID); err != nil {
-			log.Printf("triage: self-heal anchor ids for echo-consumed flush row %s/%s: %v", threadID, entry.AOItemID, err)
-		}
+	if err := r.healUserConfirmation(threadID, &entry); err != nil {
+		log.Printf("triage: self-heal confirmation %s/%s: %v", threadID, entry.AOItemID, err)
 	}
 }

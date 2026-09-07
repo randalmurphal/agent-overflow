@@ -92,6 +92,7 @@ func (r *Router) LiveStateSnapshotForThread(threadID string) LiveStateSnapshot {
 			QueueItemID: queueItemID,
 			UserItemID:  pending.AOItemID,
 			Message:     pending.DeferredItem.Summary,
+			UserMeta:    pending.DeferredItem.Meta,
 		})
 	}
 

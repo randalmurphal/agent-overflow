@@ -40,7 +40,12 @@ Then only the UUID connection is active; the old slot's credentials and trust
 remain dormant until that computer is explicitly forgotten. Incomplete duplicate
 pairings never displace HOME, and delayed legacy identity discovery converges
 before catalog reads. Native boot needs any saved computer,
-not HOME. Pairing another computer cannot replace HOME's endpoint or credential,
+not HOME. It reconciles the provisional module-load registry with the saved
+pairings in both directions: without a legacy endpoint, remove HOME even if
+the native bridge became available after the registry initialized. Otherwise
+an empty installation can appear paired, or a UUID-only installation can retain
+an unconnected HOME target. `computerCatalogBoot.test.ts` covers both cases.
+Pairing another computer cannot replace HOME's endpoint or credential,
 and removing HOME preserves the other pairings and frontend preferences. The
 Android smoke restores a saved draft with duplicate legacy/UUID slots, then
 exercises a legacy slot alongside a different computer, removes the first host
@@ -70,11 +75,13 @@ An APK without Network shows an install instruction when LAN is attempted;
 bundle-only updates continue working with its existing Tailscale connection.
 
 `Network.getCapabilities().computerRoutes` negotiates native health verification.
-An older APK keeps its original connection without invoking this new capability.
+An older APK keeps its original connection. Cache successful negotiation and
+explicit UNIMPLEMENTED replies; retry a transient bridge failure on the next
+lookup instead of disabling failover for the entire frontend lifetime.
 For health probes, an explicitly empty pin selects Android's normal WebPKI;
 null or malformed pins still fail closed. Probes carry no credentials, reject
 redirects, check backend identity and bound responses to 64 KiB. At most eight
-probes use the bridge concurrently, with at most 32 queued and a two-second
+probes use the bridge concurrently, with at most 32 queued and a 20-second
 selection deadline, leaving bridge capacity for ordinary app traffic.
 
 Alternate addresses and the last-working hint live in a separate localStorage
@@ -729,3 +736,8 @@ consumes it or the idle sweep reclaims it. Removing the handle in OkHttp’s fai
 callback races the bridge and turns an actionable certificate failure into a
 misleading missing-transfer error. Re-pairing can repair damaged stored trust for
 one origin; other damaged origins must still fail closed.
+
+The first native HTTP failure also cancels its upload pipe with that same cause.
+JavaScript uploads a POST body before awaiting headers; replacing a TLS failure
+with generic cancellation there hides the certificate refusal. Explicit cleanup
+must not overwrite an earlier cause. The JVM TLS test exercises that late writer.

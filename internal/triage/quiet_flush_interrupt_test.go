@@ -624,8 +624,9 @@ func TestEchoConsumedEntries_DrainSelfHealsInsteadOfRestoring(t *testing.T) {
 	}
 	router.reinsertPendingSendHead("t1", pendingSend{
 		AOItemID: "user:1:flush:1", QueueItemID: "queue:q1", TurnIndex: 1,
-		Shape:     sendShapeFlush,
-		QuietItem: &quietRow, EchoPromotedBoundary: -1,
+		Shape:        sendShapeFlush,
+		QuietItem:    &quietRow,
+		Confirmation: testConfirmationPlan(quietRow, "", false),
 	})
 
 	// Deferred shape: the retained copy never reached the store (the
@@ -639,7 +640,8 @@ func TestEchoConsumedEntries_DrainSelfHealsInsteadOfRestoring(t *testing.T) {
 	router.reinsertPendingSendHead("t1", pendingSend{
 		AOItemID: "user:2:flush:1", QueueItemID: "queue:q2", TurnIndex: 2,
 		Shape:        sendShapeFlush,
-		DeferredItem: &deferredRow, EchoPromotedBoundary: -1,
+		DeferredItem: &deferredRow,
+		Confirmation: testConfirmationPlan(deferredRow, "", false),
 	})
 
 	drained := router.DrainUnconfirmedFlushItems("t1")
@@ -796,13 +798,17 @@ func TestEchoConsumedDrain_StampsStashedEchoIdentity(t *testing.T) {
 	}
 	router.reinsertPendingSendHead("t1", pendingSend{
 		AOItemID: "user:1:flush:1", QueueItemID: "queue:q1", TurnIndex: 1,
-		Shape:                sendShapeFlush,
-		QuietItem:            &quietRow,
-		EchoProviderItemID:   "uuid-echo-1",
-		EchoParentUUID:       "uuid-parent-1",
-		EchoPromotedBoundary: -1,
+		Shape:              sendShapeFlush,
+		QuietItem:          &quietRow,
+		EchoProviderItemID: "uuid-echo-1",
+		EchoParentUUID:     "uuid-parent-1",
+
+		Confirmation: testConfirmationPlan(quietRow, "", false),
 	})
 
+	if err := router.persistItem(store.Item{ID: "echo-prefix", ThreadID: "t1", TurnIndex: 2, Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: "prefix"}, nil); err != nil {
+		t.Fatal(err)
+	}
 	// Missing-row shape: the retained copy persists WITH the ids (and,
 	// for a promoted row, the echo-time boundary) already merged.
 	deferredRow := store.Item{
@@ -812,11 +818,12 @@ func TestEchoConsumedDrain_StampsStashedEchoIdentity(t *testing.T) {
 	}
 	router.reinsertPendingSendHead("t1", pendingSend{
 		AOItemID: "user:2:flush:1", QueueItemID: "queue:q2", TurnIndex: 2,
-		Shape:                sendShapeFlush,
-		DeferredItem:         &deferredRow,
-		EchoProviderItemID:   "uuid-echo-2",
-		EchoParentUUID:       "uuid-parent-2",
-		EchoPromotedBoundary: 4,
+		Shape:              sendShapeFlush,
+		DeferredItem:       &deferredRow,
+		EchoProviderItemID: "uuid-echo-2",
+		EchoParentUUID:     "uuid-parent-2",
+
+		Confirmation: testConfirmationPlan(deferredRow, "echo-prefix", true),
 	})
 
 	if drained := router.DrainUnconfirmedFlushItems("t1"); len(drained) != 0 {
@@ -848,7 +855,7 @@ func TestEchoConsumedDrain_StampsStashedEchoIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode healed promotion state: %v", err)
 	}
-	if !state.Promoted || !state.HasEchoBoundary || state.EchoBoundary != 4 {
+	if !state.Promoted || !state.HasEchoBoundary || state.EchoBoundary != 0 {
 		t.Errorf("healed promotion state = %+v, want promoted with the stashed echo-time boundary 4", state)
 	}
 }
@@ -1669,7 +1676,7 @@ func TestEchoBoundaryAnchor_RecordedOnFailureNotReplacedOnRetry(t *testing.T) {
 		AOItemID: "user:0:flush:1", QueueItemID: "queue:q1", TurnIndex: 0,
 		Shape:     sendShapeFlush,
 		QuietItem: &quietRow, ExpectedProviderItemID: "ao-uuid-1",
-		InterruptedTurnIndex: -1, EchoPromotedBoundary: -1,
+		InterruptedTurnIndex: -1,
 	}
 	router.recordEchoBoundaryAnchor("t1", &entry)
 	if len(hookRows) != 1 || hookRows[0].ID != "user:0:flush:1" {
@@ -1692,7 +1699,7 @@ func TestEchoBoundaryAnchor_RecordedOnFailureNotReplacedOnRetry(t *testing.T) {
 	deferredEntry := pendingSend{
 		AOItemID: "user:1:flush:1", QueueItemID: "queue:q2", TurnIndex: 1,
 		Shape:        sendShapeFlush,
-		DeferredItem: &deferredRow, InterruptedTurnIndex: -1, EchoPromotedBoundary: -1,
+		DeferredItem: &deferredRow, InterruptedTurnIndex: -1,
 	}
 	router.recordEchoBoundaryAnchor("t1", &deferredEntry)
 	if len(hookRows) != 1 || deferredEntry.AnchorRecordedAtEcho {
@@ -1811,14 +1818,9 @@ func TestUnanchoredEagerFlushEcho_DrainsDeferredRowsBelowBump(t *testing.T) {
 	}
 }
 
-// TestSelfHealUnanchoredBumpFailure_MarksBoundary pins the failure half
-// of R10-1 (round 10): when the unanchored eager echo's tail bump fails
-// and the session dies, the healed row stays at its dispatch-time index
-// — display position is unrecoverable — but the echo-time boundary
-// stashed on the entry lets the self-heal mark it promoted-with-
-// boundary, so a revert at the message keeps the provider-order prefix
-// (output emitted before consumption) and cuts only the response.
-func TestSelfHealUnanchoredBumpFailure_MarksBoundary(t *testing.T) {
+// A failed quiet confirmation retains its exact predecessor. Death repair
+// restores display placement as well as the matching provider-order cut.
+func TestSelfHealUnanchoredFailureRestoresFrozenPlacement(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	now := time.Now().UnixMilli()
@@ -1851,11 +1853,12 @@ func TestSelfHealUnanchoredBumpFailure_MarksBoundary(t *testing.T) {
 	// response then persists before the session dies.
 	router.reinsertPendingSendHead("t1", pendingSend{
 		AOItemID: "user:0:flush:1", QueueItemID: "queue:q1", TurnIndex: 0,
-		Shape:                sendShapeFlush,
-		QuietItem:            &quietRow,
-		EchoProviderItemID:   "uuid-echo-1",
-		EchoParentUUID:       "uuid-parent-1",
-		EchoPromotedBoundary: preEchoRow.ItemIndex,
+		Shape:              sendShapeFlush,
+		QuietItem:          &quietRow,
+		EchoProviderItemID: "uuid-echo-1",
+		EchoParentUUID:     "uuid-parent-1",
+
+		Confirmation: testConfirmationPlan(quietRow, preEchoRow.ID, false),
 	})
 	response := store.Item{
 		ID: "text:0:9", ThreadID: "t1", TurnIndex: 0,
@@ -1874,12 +1877,8 @@ func TestSelfHealUnanchoredBumpFailure_MarksBoundary(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("healed row after drain: found=%v err=%v", found, err)
 	}
-	state, err := itemmeta.DecodePromotionState(healed.Meta)
-	if err != nil {
-		t.Fatalf("decode healed promotion state: %v", err)
-	}
-	if !state.Promoted || !state.HasEchoBoundary || state.EchoBoundary != preEchoRow.ItemIndex {
-		t.Fatalf("healed promotion state = %+v, want promoted with boundary %d", state, preEchoRow.ItemIndex)
+	if healed.ItemIndex <= preEchoRow.ItemIndex {
+		t.Fatal("self-heal failed to restore captured display placement")
 	}
 
 	// End to end: revert at the healed message keeps the pre-echo output
@@ -1987,14 +1986,9 @@ func TestRebumpOverDrained_PreservesAnchoredSiblingFIFO(t *testing.T) {
 	}
 }
 
-// TestFailedSiblingRebump_RepairedBySiblingEcho pins R11-5 (round 11):
-// when a promoted echo's sibling re-bump fails (transient store
-// error), the sibling's row is left below the drained content and the
-// echoed row — and nothing revisited the position, because the
-// sibling's own echo skips the bump as already-anchored. The failure
-// must record a repair obligation on the entry so that echo forces
-// the turn-tail bump, restoring provider order and the revert cut.
-func TestFailedSiblingRebump_RepairedBySiblingEcho(t *testing.T) {
+// A sibling failure rolls back the whole group; the original echo retries
+// that frozen placement instead of leaving a separate sibling repair flag.
+func TestFailedSiblingPlacement_RetriesAtomicGroup(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
@@ -2041,24 +2035,14 @@ func TestFailedSiblingRebump_RepairedBySiblingEcho(t *testing.T) {
 		Summary: "pre-echo completion", CreatedAt: now + 2, UpdatedAt: now + 2,
 	}})
 	router.mu.Unlock()
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventUserText, ThreadID: "t1", Content: "first queued",
-		Meta:      json.RawMessage(`{"provider_item_id":"ao-uuid-1"}`),
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("q1 echo: %v", err)
+	before := mustGetItem(t, st, "t1", "user:0:flush:1")
+	echo := provider.ProviderEvent{Kind: provider.EventUserText, ThreadID: "t1", Content: "first queued", Meta: json.RawMessage(`{"provider_item_id":"ao-uuid-1"}`), Timestamp: time.Now()}
+	if err := router.Handle(echo); err == nil {
+		t.Fatal("missing sibling must refuse entire placement")
 	}
-
-	router.mu.Lock()
-	flagged := false
-	for _, entry := range router.state("t1").pendingSends {
-		if entry.AOItemID == "user:0:flush:2" && entry.NeedsTailRebump {
-			flagged = true
-		}
-	}
-	router.mu.Unlock()
-	if !flagged {
-		t.Fatal("failed sibling re-bump did not record the repair obligation")
+	after := mustGetItem(t, st, "t1", "user:0:flush:1")
+	if after.ItemIndex != before.ItemIndex || after.Meta != before.Meta {
+		t.Fatal("failed group moved or stamped first row")
 	}
 
 	// The transient failure clears: the row is back below both the
@@ -2071,12 +2055,8 @@ func TestFailedSiblingRebump_RepairedBySiblingEcho(t *testing.T) {
 	if err := st.InsertItem(q2Promoted); err != nil {
 		t.Fatalf("re-insert q2 row: %v", err)
 	}
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventUserText, ThreadID: "t1", Content: "second queued",
-		Meta:      json.RawMessage(`{"provider_item_id":"ao-uuid-2"}`),
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("q2 echo: %v", err)
+	if err := router.Handle(echo); err != nil {
+		t.Fatalf("retry q1 echo: %v", err)
 	}
 
 	completion := mustGetItem(t, st, "t1", "tool:0:1")
@@ -2189,7 +2169,7 @@ func TestPromotedEchoBoundary_WaitsForInFlightDrain(t *testing.T) {
 
 // TestSelfHealDeferredEcho_PersistsPromptAboveItsResponse pins R7-4
 // (round 7): a deferred prompt whose turn was EMPTY at its first echo
-// (EchoTurnWasEmpty stashed) owns that turn — when the first persist
+// (the empty predecessor was captured) owns that turn — when the first persist
 // failed, the turn opened anyway (R6-3) and response rows took 0..n by
 // the time the session-death self-heal re-persists the retained copy.
 // A MAX+1 append would sort the prompt AFTER its own response —
@@ -2216,13 +2196,14 @@ func TestSelfHealDeferredEcho_PersistsPromptAboveItsResponse(t *testing.T) {
 	}
 	router.reinsertPendingSendHead("t1", pendingSend{
 		AOItemID: "user:1:flush:1", QueueItemID: "queue:q1", TurnIndex: 1,
-		Shape:                sendShapeFlush,
-		DeferredItem:         &deferredRow,
-		EchoConsumed:         true,
-		EchoProviderItemID:   "uuid-echo-1",
-		EchoTurnWasEmpty:     true,
+		Shape:              sendShapeFlush,
+		DeferredItem:       &deferredRow,
+		EchoConsumed:       true,
+		EchoProviderItemID: "uuid-echo-1",
+
 		InterruptedTurnIndex: -1,
-		EchoPromotedBoundary: -1,
+
+		Confirmation: testConfirmationPlan(deferredRow, "", false),
 	})
 
 	if drained := router.DrainUnconfirmedFlushItems("t1"); len(drained) != 0 {
@@ -2239,7 +2220,7 @@ func TestSelfHealDeferredEcho_PersistsPromptAboveItsResponse(t *testing.T) {
 // TestDeferredEchoRetry_PersistsPromptAboveItsResponse is the replay
 // twin of the self-heal test above (round-7, R7-4): a re-delivered
 // echo retrying a reinserted EchoConsumed entry must honor the stashed
-// EchoTurnWasEmpty and persist the prompt at the turn head, above the
+// the captured empty predecessor and persist the prompt at the turn head, above the
 // response rows that filled the turn after the failed first attempt.
 func TestDeferredEchoRetry_PersistsPromptAboveItsResponse(t *testing.T) {
 	router, st, _ := newTestRouter(t)
@@ -2261,13 +2242,14 @@ func TestDeferredEchoRetry_PersistsPromptAboveItsResponse(t *testing.T) {
 	}
 	router.reinsertPendingSendHead("t1", pendingSend{
 		AOItemID: "user:1:flush:1", QueueItemID: "queue:q1", TurnIndex: 1,
-		Shape:                sendShapeFlush,
-		DeferredItem:         &deferredRow,
-		EchoConsumed:         true,
-		EchoProviderItemID:   "uuid-echo-1",
-		EchoTurnWasEmpty:     true,
+		Shape:              sendShapeFlush,
+		DeferredItem:       &deferredRow,
+		EchoConsumed:       true,
+		EchoProviderItemID: "uuid-echo-1",
+
 		InterruptedTurnIndex: -1,
-		EchoPromotedBoundary: -1,
+
+		Confirmation: testConfirmationPlan(deferredRow, "", false),
 	})
 
 	if err := router.Handle(provider.ProviderEvent{
@@ -2374,7 +2356,8 @@ func TestSelfHealFoundRow_EmitsUpsert(t *testing.T) {
 		EchoConsumed:         true,
 		EchoProviderItemID:   "uuid-echo-1",
 		InterruptedTurnIndex: -1,
-		EchoPromotedBoundary: -1,
+
+		Confirmation: testConfirmationPlan(quietRow, "", false),
 	})
 
 	emissions.reset()
@@ -2407,14 +2390,9 @@ func mustGetItem(t *testing.T, st *store.Store, threadID, itemID string) store.I
 	return item
 }
 
-// TestDeferredEchoSampleFailure_RecordsTurnOpenFallback pins R14-2
-// (round 14, D14-1): when the FIRST echo's occupancy sample fails, the
-// entry must still record EchoTurnWasEmpty — from the router's
-// turn-open state — before the reinsert marks it EchoConsumed. Without
-// the fallback the retry / self-heal reads the zero value and appends
-// an empty-turn prompt below its own response. A turn nobody opened is
-// the prompt's own: the fallback must record it as empty.
-func TestDeferredEchoSampleFailure_RecordsTurnOpenFallback(t *testing.T) {
+// A failed first-echo read is retained as an explicit failure. It must never
+// turn into a successful current-tail capture after the response arrives.
+func TestDeferredEchoCaptureFailureRemainsExplicitForUnopenedTurn(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
@@ -2449,17 +2427,14 @@ func TestDeferredEchoSampleFailure_RecordsTurnOpenFallback(t *testing.T) {
 	if !entry.EchoConsumed {
 		t.Fatal("entry not reinserted EchoConsumed after failed echo handling")
 	}
-	if !entry.EchoTurnWasEmpty {
-		t.Fatal("sample-failure fallback did not record the un-opened turn as empty — a retry would append the prompt below its own response")
+	if entry.Confirmation == nil || entry.Confirmation.CaptureError == nil {
+		t.Fatal("failed first-echo capture was not retained")
 	}
 }
 
-// TestDeferredEchoSampleFailure_OpenTurnFallsBackToSteerShape is the
-// occupied twin of the fallback test above (round 14, D14-1): when the
-// prompt's own turn is ALREADY open at the failed first echo, the
-// fallback records steer-shape occupancy (EchoTurnWasEmpty=false) so
-// the retry keeps the append that places pre-dispatch content first.
-func TestDeferredEchoSampleFailure_OpenTurnFallsBackToSteerShape(t *testing.T) {
+// Existing turn activity likewise cannot substitute for a missing first-echo
+// predecessor: retain the capture failure rather than inventing a position.
+func TestDeferredEchoCaptureFailureRemainsExplicitForOpenTurn(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 1)
@@ -2488,7 +2463,15 @@ func TestDeferredEchoSampleFailure_OpenTurnFallsBackToSteerShape(t *testing.T) {
 	if len(pending) != 1 {
 		t.Fatalf("pending entries = %d, want the reinserted echo-consumed entry", len(pending))
 	}
-	if pending[0].EchoTurnWasEmpty {
-		t.Fatal("fallback recorded an already-open turn as empty — a retry would head-place the prompt above pre-dispatch content")
+	if pending[0].Confirmation == nil || pending[0].Confirmation.CaptureError == nil {
+		t.Fatal("failed first-echo capture was not retained")
 	}
+}
+
+func testConfirmationPlan(row store.Item, boundary string, promoted bool) *userMessageConfirmation {
+	if row.CreatedAt == 0 {
+		row.CreatedAt = time.Now().UnixMilli()
+	}
+	row.UpdatedAt = row.CreatedAt
+	return &userMessageConfirmation{Row: row, Placement: true, Promoted: promoted, BoundaryID: boundary, Group: []store.Item{row}}
 }

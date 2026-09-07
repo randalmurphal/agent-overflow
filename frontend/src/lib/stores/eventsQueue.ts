@@ -29,7 +29,7 @@ export interface QueueStateChangedPayload {
 
 export interface QueueFlushedPayload {
   threadId: string;
-  items: Array<{ queueItemId: string; userItemId: string; message: string }>;
+  items: Array<{ queueItemId: string; userItemId: string; message: string; sendId?: string }>;
 }
 
 export interface QueueRestoredPayload {
@@ -68,11 +68,21 @@ export function applyQueueStateChanged(evt: QueueStateChangedPayload | undefined
   if (!evt || !evt.threadId) return;
   const items = (evt.items ?? []).map(queueItemFromWire);
   replaceQueueForThread(evt.threadId, items);
+  for (const pane of ingestPanes()) {
+    if (pane.threadId !== evt.threadId) continue;
+    for (const item of items) pane.confirmOptimisticSend(evt.threadId, item.sendId);
+  }
 }
 
 export function applyQueueFlushed(evt: QueueFlushedPayload | undefined): void {
   if (!evt || !evt.threadId || !evt.items || evt.items.length === 0) return;
   markItemsFlushed(evt.threadId, evt.items);
+  for (const pane of ingestPanes()) {
+    if (pane.threadId !== evt.threadId) continue;
+    for (const item of evt.items) {
+      pane.confirmOptimisticSend(evt.threadId, item.sendId, item.userItemId);
+    }
+  }
 }
 
 export function applyQueueRestored(evt: QueueRestoredPayload | undefined): void {

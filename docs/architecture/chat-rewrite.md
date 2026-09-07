@@ -126,7 +126,9 @@ payload renders specially (see Heavy Payloads).
 
 ### Item ID schemas
 
-Every item's `id` is deterministic given its kind + turn context. This
+Provider-rendered item IDs are deterministic given kind + turn context.
+Client-sent user messages instead derive an opaque identity from their send ID;
+placement can change without changing identity. This
 matters for two reasons: (a) upsert idempotency on Claude `--resume`
 replay, and (b) cross-references (`completion_of`, `parent_id`) are
 stable without a lookup table.
@@ -135,7 +137,7 @@ Top-level items (parent thread, `parent_id = ""`):
 
 | kind              | id format                                     | notes                                                                       |
 |-------------------|-----------------------------------------------|-----------------------------------------------------------------------------|
-| `user_text`       | `user:<turn_index>`                           | one per turn; keyed off the synthesized TurnStart's `turn_index` (int)      |
+| `user_text` | `user:<uuid>`, `user:flush:<uuid>`, `user:steer:<uuid>` | Client send-ID-derived UUID; legacy/imported rows retain numeric turn-based IDs. Position comes from row coordinates, never ID parsing. |
 | `assistant_text`  | `text:<turn_index>:<segment_index>`           | one per output segment; `segment_index` from `segmentIndexByScope` counter  |
 | `thinking`        | `think:<turn_index>:<block_index>`            | one per thinking block. `block_index` is MONOTONIC across the full turn (never resets per API cycle, even across tool_use → tool_result continuations) |
 | `tool_call`       | provider-native id (see adapter contract)     | Claude: `tool_use.id`. Codex: `item.id` from v2 notifications (see adapter) |

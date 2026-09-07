@@ -163,7 +163,7 @@ go-test:
 # timeout stays 1800s for deadlock protection on loaded hosts —
 # tighten only if you've measured headroom.
 test-race:
-	go test -race -timeout 1800s ./internal/transport/... ./internal/triage/... ./internal/provider/... ./internal/wsllauncher/... ./internal/clientmode/... ./internal/editor/... ./internal/browser/... ./internal/chromium/... ./internal/app/... .
+	go test -race -timeout 1800s ./internal/transport/... ./internal/triage/... ./internal/provider/... ./internal/wsllauncher/... ./internal/clientmode/... ./internal/editor/... ./internal/browser/... ./internal/app/... .
 
 # provider-smoke is the real-provider gate: it drives one trivial workflow
 # through the REAL `claude` and `codex` binaries (default PATH resolution — no

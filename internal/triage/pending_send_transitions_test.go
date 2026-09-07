@@ -25,13 +25,13 @@ func TestTakeUnconfirmedFlushSendsLocked_PartitionsAndIsTotal(t *testing.T) {
 	st := r.state("t1")
 	st.pendingSends = []pendingSend{
 		// A direct send: no queue item id, so the drain does not own it.
-		{AOItemID: "user:1", Shape: sendShapeDirect, InterruptedTurnIndex: -1, EchoPromotedBoundary: -1},
-		{AOItemID: "user:1:flush:1", QueueItemID: "queue:a", Shape: sendShapeFlush, DeferredItem: &deferredRow, InterruptedTurnIndex: -1, EchoPromotedBoundary: -1},
-		{AOItemID: "user:1:flush:2", QueueItemID: "queue:b", Shape: sendShapeFlush, QuietItem: &quietRow, EchoConsumed: true, InterruptedTurnIndex: -1, EchoPromotedBoundary: -1},
-		{AOItemID: "user:1:flush:3", QueueItemID: "queue:c", Shape: sendShapeFlush, InterruptedTurnIndex: -1, EchoPromotedBoundary: -1},
+		{AOItemID: "user:1", Shape: sendShapeDirect, InterruptedTurnIndex: -1},
+		{AOItemID: "user:1:flush:1", QueueItemID: "queue:a", Shape: sendShapeFlush, DeferredItem: &deferredRow, InterruptedTurnIndex: -1},
+		{AOItemID: "user:1:flush:2", QueueItemID: "queue:b", Shape: sendShapeFlush, QuietItem: &quietRow, EchoConsumed: true, InterruptedTurnIndex: -1},
+		{AOItemID: "user:1:flush:3", QueueItemID: "queue:c", Shape: sendShapeFlush, InterruptedTurnIndex: -1},
 		// The Codex post-interrupt re-send: flush-shaped, but no queue
 		// item id, so the interrupt's eager persist still owns the row.
-		{AOItemID: "user:1:flush:4", Shape: sendShapeFlush, InterruptedTurnIndex: -1, EchoPromotedBoundary: -1},
+		{AOItemID: "user:1:flush:4", Shape: sendShapeFlush, InterruptedTurnIndex: -1},
 	}
 	restorable, echoConsumed := r.takeUnconfirmedFlushSendsLocked("t1")
 	remaining := append([]pendingSend(nil), st.pendingSends...)
@@ -80,7 +80,7 @@ func TestPendingSendEchoStashes_AreCopyScopedAndIdempotent(t *testing.T) {
 	r := NewRouter(nil, func(eventchan.Channel, any) {})
 	r.mu.Lock()
 	r.state("t1").pendingSends = []pendingSend{
-		{AOItemID: "user:1:flush:1", QueueItemID: "queue:a", Shape: sendShapeFlush, InterruptedTurnIndex: -1, EchoPromotedBoundary: -1},
+		{AOItemID: "user:1:flush:1", QueueItemID: "queue:a", Shape: sendShapeFlush, InterruptedTurnIndex: -1},
 	}
 	r.mu.Unlock()
 
@@ -90,20 +90,18 @@ func TestPendingSendEchoStashes_AreCopyScopedAndIdempotent(t *testing.T) {
 	}
 
 	popped.stashEchoIdentity("uuid-1", "parent-1")
-	popped.recordFirstEchoTurnOccupancy(true)
-	popped.recordEchoPromotedBoundary(7)
+	popped.Confirmation = &userMessageConfirmation{Placement: true, BoundaryID: "first-echo-prefix"}
+
 	popped.markAnchorRecordedAtEcho()
 	popped.markAnchorRecordedAtEcho()
 
 	if popped.EchoProviderItemID != "uuid-1" || popped.EchoParentUUID != "parent-1" {
 		t.Errorf("echo identity = %q/%q, want uuid-1/parent-1", popped.EchoProviderItemID, popped.EchoParentUUID)
 	}
-	if !popped.EchoTurnWasEmpty {
-		t.Error("first-echo turn occupancy not recorded")
+	if popped.Confirmation == nil || popped.Confirmation.BoundaryID != "first-echo-prefix" {
+		t.Fatal("confirmation facts lost")
 	}
-	if popped.EchoPromotedBoundary != 7 {
-		t.Errorf("EchoPromotedBoundary = %d, want the echo-time sample 7", popped.EchoPromotedBoundary)
-	}
+
 	if !popped.AnchorRecordedAtEcho {
 		t.Error("AnchorRecordedAtEcho claim not held after two calls")
 	}
@@ -120,10 +118,25 @@ func TestPendingSendEchoStashes_AreCopyScopedAndIdempotent(t *testing.T) {
 	if len(back) != 1 {
 		t.Fatalf("registry holds %d entries after reinsert, want 1", len(back))
 	}
-	if back[0].EchoProviderItemID != "uuid-1" || back[0].EchoPromotedBoundary != 7 || !back[0].EchoTurnWasEmpty || !back[0].AnchorRecordedAtEcho {
+	if back[0].EchoProviderItemID != "uuid-1" || back[0].Confirmation != popped.Confirmation || !back[0].AnchorRecordedAtEcho {
 		t.Errorf("reinserted entry lost stashed echo state: %+v", back[0])
 	}
 	if !back[0].EchoConsumed {
 		t.Error("reinsert did not mark the entry EchoConsumed")
+	}
+}
+
+func TestStashEchoIdentityPreservesFirstKnownFields(t *testing.T) {
+	p := pendingSend{}
+	p.stashEchoIdentity("first", "")
+	p.stashEchoIdentity("other", "wrong-parent")
+	if p.EchoProviderItemID != "first" || p.EchoParentUUID != "" {
+		t.Fatalf("mixed identities: %+v", p)
+	}
+	p.stashEchoIdentity("first", "parent")
+	p.stashEchoIdentity("first", "")
+	p.stashEchoIdentity("first", "other-parent")
+	if p.EchoProviderItemID != "first" || p.EchoParentUUID != "parent" {
+		t.Fatalf("lost first known identity: %+v", p)
 	}
 }

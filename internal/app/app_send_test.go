@@ -464,6 +464,7 @@ func TestSendMessageWithOptionsImplementOnAlreadyImplementedPlanKeepsFirstAttrib
 	app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "test-token", Claude: sess})
 
 	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "Implement the plan.", SendMessageOptions{
+		SendID: "first-implementation", ReconcileBySendID: true,
 		SourceProposedPlan: &SourceProposedPlan{ItemID: "plan-item"},
 	}); err != nil {
 		t.Fatalf("first SendMessageWithOptions() error = %v", err)
@@ -477,10 +478,20 @@ func TestSendMessageWithOptionsImplementOnAlreadyImplementedPlanKeepsFirstAttrib
 		t.Fatalf("first send did not mark plan: %+v", first)
 	}
 
+	// The passthrough mock emits no echoes/results. Complete its first input
+	// so the second click exercises persisted plan attribution, not only
+	// queue admission while the first implementation is still pending.
+	acknowledgeMockClaudeSend(t, app, thread.ID)
+
 	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "Implement again.", SendMessageOptions{
+		SendID: "second-implementation", ReconcileBySendID: true,
 		SourceProposedPlan: &SourceProposedPlan{ItemID: "plan-item"},
 	}); err != nil {
 		t.Fatalf("second SendMessageWithOptions() error = %v", err)
+	}
+
+	if _, found, err := app.store.FindUserTextItemBySendID(thread.ID, "second-implementation"); err != nil || !found {
+		t.Fatalf("second implementation did not persist: found=%v err=%v", found, err)
 	}
 
 	second, found, err := app.store.GetProposedPlanState(thread.ID, "plan-item")
@@ -583,6 +594,7 @@ func TestSendMessageWithOptionsPersistsSourceProposedPlan(t *testing.T) {
 		t.Fatalf("plan meta = %v, want implemented by %s", plans, userItem.ID)
 	}
 
+	acknowledgeMockClaudeSend(t, app, thread.ID)
 	_, err = app.SendMessageWithOptions(context.Background(), thread.ID, "Implement the plan again.", SendMessageOptions{
 		SourceProposedPlan: &SourceProposedPlan{ItemID: "plan-item"},
 	})
@@ -852,6 +864,7 @@ func TestSendMessageRecordsMessageAnchorForEachUserMessage(t *testing.T) {
 		t.Fatalf("anchor for first user item missing after first send: ok=%v err=%v", ok, err)
 	}
 
+	acknowledgeMockClaudeSend(t, app, thread.ID)
 	if err := app.SendMessage(thread.ID, "second turn", nil); err != nil {
 		t.Fatalf("SendMessage(second) error = %v", err)
 	}
@@ -1626,7 +1639,7 @@ func TestStopSessionNoSessionIsNoOp(t *testing.T) {
 // per-thread mutex two sends could compute the same lastTurnIndex and
 // collide on the UNIQUE(turn_index, item_index) constraint, or silently
 // attribute the same user message to two different turns.
-func TestSendMessageSerialPerThread(t *testing.T) {
+func TestInternalSendMessageSerialPerThread(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-serial")
 	thread.Provider = string(provider.Claude)
@@ -1661,7 +1674,7 @@ func TestSendMessageSerialPerThread(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			if err := app.SendMessage(thread.ID, fmt.Sprintf("msg-%d", i), nil); err != nil {
+			if err := app.sendMessage(thread.ID, fmt.Sprintf("msg-%d", i), nil); err != nil {
 				errCh <- err
 			}
 		}(i)
@@ -1676,7 +1689,7 @@ func TestSendMessageSerialPerThread(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListItems: %v", err)
 	}
-	// Each SendMessage should have inserted exactly one user item with
+	// The internal new-turn primitive should insert exactly one user item with
 	// a unique turnIndex in [0..N-1]. A regression would produce either
 	// duplicate turnIndex (UNIQUE violation aborts the second insert),
 	// or a count mismatch.

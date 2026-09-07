@@ -22,6 +22,131 @@ import {
 describe('threadTimelineWindow', () => {
   beforeEach(installThreadPaneTestEnv);
 
+  describe('upserted page boundaries', () => {
+    async function pagedPane() {
+      const pane = createThreadPane();
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: [
+          makeItem({ id: 'floor', turnIndex: 2, itemIndex: 2 }),
+          makeItem({ id: 'ceiling', turnIndex: 2, itemIndex: 4 }),
+        ],
+        oldestTurnIndex: 2, newestTurnIndex: 2,
+        hasMoreOlder: true, hasMoreNewer: true,
+      }));
+      await pane.switchThread(makeThread());
+      return pane;
+    }
+
+    it.each([false, true])('follows shifted cursor anchors with appended rows=%s', async (append) => {
+      const pane = await pagedPane();
+      pane.applyProviderItemUpserts([
+        makeItem({ id: 'floor', turnIndex: 2, itemIndex: 4 }),
+        makeItem({ id: 'ceiling', turnIndex: 2, itemIndex: 6 }),
+        ...(append ? [makeItem({ id: 'added', turnIndex: 2, itemIndex: 4 })] : []),
+      ]);
+      expect(pane.oldestLoadedCursor).toEqual({ turnIndex: 2, itemIndex: 4, itemId: 'floor' });
+      expect(pane.newestLoadedCursor).toEqual({ turnIndex: 2, itemIndex: 6, itemId: 'ceiling' });
+      expect(pane.hasMoreHistory).toBe(true);
+      expect(pane.hasMoreNewer).toBe(true);
+      // Subsequent admission uses the new coordinates, without admitting
+      // rows from the still-unloaded history on either side.
+      pane.applyProviderItemUpserts([
+        makeItem({ id: 'older-gap', turnIndex: 2, itemIndex: 2 }),
+        makeItem({ id: 'inside', turnIndex: 2, itemIndex: 5 }),
+        makeItem({ id: 'newer-gap', turnIndex: 2, itemIndex: 7 }),
+      ]);
+      expect(pane.getItemById('inside')).toBeDefined();
+      expect(pane.getItemById('older-gap')).toBeUndefined();
+      expect(pane.getItemById('newer-gap')).toBeUndefined();
+      const older = setBindingMock('ListItemsBeforeCursor', async () => ({ items: [], hasMoreOlder: true }));
+      const newer = setBindingMock('ListItemsAfterCursor', async () => ({ items: [], hasMoreNewer: true }));
+      await pane.loadOlder();
+      await pane.loadNewer();
+      expect(older.mock.calls[0]?.[1]).toEqual({ turnIndex: 2, itemIndex: 4, itemId: 'floor' });
+      expect(newer.mock.calls[0]?.[1]).toEqual({ turnIndex: 2, itemIndex: 6, itemId: 'ceiling' });
+    });
+
+    it.each([false, true])('admits an insertion inside a shifted same-batch ceiling, insertion first=%s', async (first) => {
+      const pane = await pagedPane();
+      const shifted = makeItem({ id: 'ceiling', turnIndex: 2, itemIndex: 6 });
+      const inserted = makeItem({ id: 'inserted', turnIndex: 2, itemIndex: 5 });
+      pane.applyProviderItemUpserts(first ? [inserted, shifted] : [shifted, inserted]);
+      expect(pane.items.map((item) => item.id)).toEqual(['floor', 'inserted', 'ceiling']);
+      expect(pane.oldestLoadedCursor).toEqual({ turnIndex: 2, itemIndex: 2, itemId: 'floor' });
+      expect(pane.newestLoadedCursor).toEqual({ turnIndex: 2, itemIndex: 6, itemId: 'ceiling' });
+    });
+  });
+
+  describe('reordered page coverage', () => {
+    async function pagedPane() {
+      const pane = createThreadPane();
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: [10, 11, 12].map((itemIndex) => makeItem({ id: `row-${itemIndex}`, turnIndex: 2, itemIndex })),
+        oldestTurnIndex: 2, newestTurnIndex: 2, hasMoreOlder: true, hasMoreNewer: true,
+      }));
+      await pane.switchThread(makeThread());
+      return pane;
+    }
+
+    it.each([10, 12])('moving boundary %s to an unloaded tail cannot skip intervening history', async (boundary) => {
+      const pane = await pagedPane();
+      pane.applyProviderItemUpserts([makeItem({ id: `row-${boundary}`, turnIndex: 2, itemIndex: 20 })]);
+      expect(pane.oldestLoadedCursor?.itemIndex).toBe(boundary === 10 ? 11 : 10);
+      expect(pane.newestLoadedCursor?.itemIndex).toBe(12);
+      const newer = setBindingMock('ListItemsAfterCursor', async () => ({
+        items: Array.from({ length: 7 }, (_, index) => makeItem({ id: `gap-${index}`, turnIndex: 2, itemIndex: index + 13 })),
+        hasMoreNewer: true,
+      }));
+      await pane.loadNewer();
+      expect(newer.mock.calls[0]?.[1]).toMatchObject({ itemIndex: 12 });
+      for (let index = 0; index < 7; index++) expect(pane.getItemById(`gap-${index}`)).toBeDefined();
+      expect(pane.newestLoadedCursor?.itemIndex).toBe(19);
+    });
+
+    it('does not infer a whole-span translation from shifted endpoints', async () => {
+      const pane = await pagedPane();
+      pane.applyProviderItemUpserts([
+        makeItem({ id: 'row-10', turnIndex: 2, itemIndex: 20 }),
+        makeItem({ id: 'row-12', turnIndex: 2, itemIndex: 22 }),
+      ]);
+      expect(pane.oldestLoadedCursor?.itemIndex).toBe(11);
+      expect(pane.newestLoadedCursor?.itemIndex).toBe(12);
+    });
+
+    it('an inward floor cannot exclude a surviving covered row', async () => {
+      const pane = await pagedPane();
+      pane.applyProviderItemUpserts([makeItem({ id: 'row-10', turnIndex: 2, itemIndex: 12 })]);
+      expect(pane.oldestLoadedCursor).toEqual({ turnIndex: 2, itemIndex: 11, itemId: 'row-11' });
+      expect(pane.newestLoadedCursor?.itemIndex).toBe(12);
+    });
+
+    it.each(['older', 'newer'] as const)('an in-flight %s page preserves live opposite-boundary shifts', async (direction) => {
+      const pane = await pagedPane();
+      let release!: (value: { items: Item[]; hasMoreOlder: boolean; hasMoreNewer: boolean }) => void;
+      setBindingMock(direction === 'older' ? 'ListItemsBeforeCursor' : 'ListItemsAfterCursor',
+        () => new Promise((resolve) => { release = resolve; }));
+      const loading = direction === 'older' ? pane.loadOlder() : pane.loadNewer();
+      pane.applyProviderItemUpserts([10, 11, 12].map((original) =>
+        makeItem({ id: `row-${original}`, turnIndex: 2, itemIndex: original + 2 })));
+      release({ items: [], hasMoreOlder: true, hasMoreNewer: true });
+      await loading;
+      expect(pane.oldestLoadedCursor).toEqual({ turnIndex: 2, itemIndex: 12, itemId: 'row-10' });
+      expect(pane.newestLoadedCursor).toEqual({ turnIndex: 2, itemIndex: 14, itemId: 'row-12' });
+    });
+
+    it.each([false, true])('a stale page anchor preserves newer live coverage, full page=%s', async (fullPage) => {
+      const pane = await pagedPane();
+      let release!: (value: { items: Item[]; hasMoreNewer: boolean }) => void;
+      setBindingMock('ListItemsAfterCursor', () => new Promise((resolve) => { release = resolve; }));
+      const loading = pane.loadNewer();
+      pane.applyProviderItemUpserts([10, 11, 12].map((original) =>
+        makeItem({ id: `row-${original}`, turnIndex: 2, itemIndex: original + 2 })));
+      release({ items: (fullPage ? [10, 11, 12] : [12]).map((itemIndex) => makeItem({ id: `row-${itemIndex}`, turnIndex: 2, itemIndex })), hasMoreNewer: true });
+      await loading;
+      expect(pane.newestLoadedCursor).toEqual({ turnIndex: 2, itemIndex: 14, itemId: 'row-12' });
+    });
+  });
+
   describe('windowed history', () => {
     it('upsertItem drops new items below the window floor', async () => {
       const pane = createThreadPane();

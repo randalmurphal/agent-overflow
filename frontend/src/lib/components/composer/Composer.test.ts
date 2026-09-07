@@ -58,7 +58,7 @@ import { resetResendRevertMarkersForTest } from '../../stores/eventsMessageRever
  * be on the wire keeps failing the test.
  */
 function sentWith(options: Record<string, unknown>): Record<string, unknown> {
-  return { sendId: expect.any(String), ...options };
+  return { sendId: expect.any(String), reconcileBySendId: true, ...options };
 }
 
 function installDraftMocks() {
@@ -2615,6 +2615,7 @@ describe('<Composer>', () => {
     expect(register).toHaveBeenCalledWith('thread-1', 'queue me once', expect.objectContaining({
       attachmentIds: [],
       sendId: expect.any(String),
+      reconcileBySendId: true,
     }));
     expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['queue me once']);
   });
@@ -2684,6 +2685,11 @@ describe('<Composer>', () => {
 
     await waitFor(() => expect(send).toHaveBeenCalledWith('thread-1', 'idle send', sentWith({ attachmentIds: [] })));
     expect(getQueueForThread('thread-1')).toEqual([]);
+    const options = send.mock.calls[0][2] as { sendId: string };
+    const placeholder = pane.items.find((item) => item.summary === 'idle send');
+    expect(placeholder?.id).toBe(`optimistic:${options.sendId}`);
+    expect(JSON.parse(placeholder?.meta ?? '{}').sendId).toBe(options.sendId);
+    expect(pane.isOptimisticItem(placeholder!.id)).toBe(true);
   });
 
   // Runtime mode is persisted on the thread/defaults before send time.

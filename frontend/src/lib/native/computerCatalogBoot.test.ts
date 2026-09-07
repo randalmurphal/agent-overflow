@@ -5,7 +5,7 @@ import { prepareNativeShell } from './boot';
 import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
 import { makeThread } from '../../test/helpers/chat';
 import { setBindingMock } from '../../test/mocks/bindings-app';
-import { attachedBackends, backendById, __setHomeClientForTest } from '../transport/backends';
+import { attachedBackends, backendById, restoreHomeBackend, __setHomeClientForTest } from '../transport/backends';
 import { storeBackendEndpoint, __resetHomeEndpointForTest } from '../transport/homeEndpoint';
 import { Call } from '../transport/runtime';
 import { setBackendIdentityFromBootstrap } from '../transport/backendIdentity';
@@ -33,6 +33,22 @@ beforeEach(() => {
   localStorage.clear();
   __resetSelectedBackendForTest();
   vi.stubGlobal('Capacitor', { isNativePlatform: () => true });
+});
+
+it.each([false, true])('removes the provisional desktop HOME when the native bridge appears late (saved computer=%s)', (savedComputer) => {
+  vi.stubGlobal('Capacitor', { isNativePlatform: () => false });
+  // This is the registry state created at module evaluation before Capacitor
+  // reports a native platform. Native boot must establish its actual catalog.
+  restoreHomeBackend();
+  expect(backendById('')).toBeDefined();
+  if (savedComputer) {
+    savePairing(MAC, MAC, 'https://192.168.1.55:60522');
+    stageBackend({ id: MAC, backendId: MAC, name: 'Mac' });
+  }
+  vi.stubGlobal('Capacitor', { isNativePlatform: () => true });
+  expect(prepareNativeShell()).toEqual({ shell: true, paired: savedComputer });
+  expect(attachedBackends().map((entry) => entry.id)).toEqual(savedComputer ? [MAC] : []);
+  if (savedComputer) expect(selectedBackend()).toBe(MAC);
 });
 
 it('keeps the legacy computer selected when another saved host attaches before its canonical UUID', () => {

@@ -32,7 +32,7 @@ package triage
 // stashEchoIdentity records the consuming echo's wire identity on the
 // popped copy, before the fallible handlers run.
 //
-// WHEN: exactly once, on the entry handleUserText just popped, BEFORE
+// WHEN: on each matched echo, BEFORE
 // dispatching to persistDeferredUserText / attachProviderItemIDToUserRow.
 // The echo will not necessarily be re-delivered, so an entry reinserted
 // as EchoConsumed after a failed write is the only thing that still
@@ -44,46 +44,17 @@ package triage
 // does hold the thread's flush anchor lock, which is what orders the pop
 // against the interrupt paths, not what protects this write.
 func (p *pendingSend) stashEchoIdentity(providerItemID, parentUUID string) {
-	p.EchoProviderItemID = providerItemID
-	p.EchoParentUUID = parentUUID
-}
-
-// recordFirstEchoTurnOccupancy records whether the deferred prompt's
-// turn held any rows when its FIRST echo arrived.
-//
-// WHEN: only on an entry that has not been echo-consumed before
-// (!EchoConsumed). This is first-echo information: a retry or a
-// session-death self-heal running later finds the RESPONSE occupying the
-// turn and can no longer tell response rows (prompt goes above them)
-// from pre-dispatch content (prompt goes below) — round-7, R7-4. The
-// call is unconditional on that branch, including the failed-sample
-// fallback, so a reinserted entry never carries an unrecorded zero
-// value (round-14, D14-1).
-//
-// LOCKING: r.mu must NOT be held; the caller owns the copy. When the
-// value is derived from router turn-open state the caller samples that
-// under r.mu and releases before calling.
-func (p *pendingSend) recordFirstEchoTurnOccupancy(turnWasEmpty bool) {
-	p.EchoTurnWasEmpty = turnWasEmpty
-}
-
-// recordEchoPromotedBoundary stashes the provider-order boundary the
-// echo path computed for a promoted (or about-to-be-bumped eager) flush
-// row, so a failed write does not lose it.
-//
-// WHEN: after the boundary has been sampled under the thread's drain
-// lock and BEFORE the fallible store write it describes. The value is
-// echo-time information only: by session-death drain time the response
-// rows have persisted and a recomputed MAX would misclassify them as
-// interrupted tail, so the failed write's value is the only correct
-// source (round-6, R6-1; round-10, R10-1). -1 means "no boundary" and
-// is what registration already stamped, so a branch whose turn had no
-// rows to sample writes it back harmlessly; this is not a clear, and
-// there is no caller that needs one.
-//
-// LOCKING: r.mu must NOT be held; the caller owns the copy.
-func (p *pendingSend) recordEchoPromotedBoundary(boundary int) {
-	p.EchoPromotedBoundary = boundary
+	// A retry may omit known fields. A conflicting item ID cannot enrich
+	// the original record with another item's parent, even if clientId matched.
+	if p.EchoProviderItemID != "" && providerItemID != "" && p.EchoProviderItemID != providerItemID {
+		return
+	}
+	if p.EchoProviderItemID == "" {
+		p.EchoProviderItemID = providerItemID
+	}
+	if p.EchoParentUUID == "" {
+		p.EchoParentUUID = parentUUID
+	}
 }
 
 // markAnchorRecordedAtEcho claims that this entry's message anchor was

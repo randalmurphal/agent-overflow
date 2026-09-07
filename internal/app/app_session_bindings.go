@@ -55,6 +55,7 @@ func (a *App) SendMessage(threadID string, content string, attachmentIDs []strin
 	}
 	_, err := a.sendMessageWithOptions(context.Background(), threadID, content, sendMessageOptions{
 		AttachmentIDs: attachmentIDs,
+		QueueIfActive: true,
 		// Wire entry: this text was typed into a composer (D31). The internal
 		// a.sendMessage helper deliberately does NOT set this — its other
 		// caller (discussion drive) sends app-composed prompts.
@@ -75,6 +76,12 @@ func (a *App) SendMessageWithOptions(ctx context.Context, threadID string, conte
 	if err := a.requireAutonomyForThread(ctx, threadID, opts.RuntimeMode); err != nil {
 		return store.Thread{}, err
 	}
+	unlockAdmission, err := a.lockSendAdmission(ctx, threadID, opts.SendID)
+	if err != nil {
+		return store.Thread{}, err
+	}
+	defer unlockAdmission()
+
 	// The send runs on ctx's VALUES and not its cancel. ctx belongs to the
 	// caller's connection, and a client that drops mid-send must not cancel
 	// a turn the provider has already been told about; but the connection's
@@ -90,6 +97,8 @@ func (a *App) SendMessageWithOptions(ctx context.Context, threadID string, conte
 		RevisionSourceDiffReview:     opts.RevisionSourceDiffReview,
 		RevisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
 		SendID:                       opts.SendID,
+		ReconcileBySendID:            opts.ReconcileBySendID,
+		QueueIfActive:                true,
 		// Wire entry: this text was typed into a composer (D31).
 		ExpandComposerCommands: true,
 	}); err != nil {

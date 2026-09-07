@@ -16,7 +16,9 @@ import (
 	"agent-overflow/internal/computerroute"
 )
 
-const routeProbeTimeout = 2 * time.Second
+// Match native route selection: allow DNS and a cold VPN path to establish.
+// The first verified alternative wins immediately; this only bounds failures.
+const routeProbeTimeout = 20 * time.Second
 
 // A route and its verifier are immutable together. The carrier keeps its
 // original target URL; this transport selects before sending, never retries a
@@ -193,7 +195,7 @@ func (t *routeTransport) choose(ctx context.Context) (*dialRoute, error) {
 
 func (t *routeTransport) selectRoute(flight *routeSelection, candidates []*dialRoute, failed *dialRoute, revision uint64) {
 	// A cancelled waiter cannot cancel another request's selection. Work
-	// remains bounded to five credential-free probes and one short deadline.
+	// remains bounded to five credential-free probes and one connection deadline.
 	ctx, cancel := context.WithTimeout(context.Background(), routeProbeTimeout)
 	defer cancel()
 	t.owner.mu.Lock()
