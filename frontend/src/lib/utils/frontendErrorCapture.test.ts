@@ -230,7 +230,9 @@ describe('frontendErrorCapture', () => {
 
     for (let i = 0; i < 1_100; i++) {
       const message = `failed for item-${i}`;
-      dispatchError(message, { error: new Error(message) });
+      const error = new Error(message);
+      error.stack = `Error: ${message}\n    at varyingSite${i} (app.js:${i}:1)`;
+      dispatchError(message, { error });
     }
 
     // 1000 distinct signatures admitted, plus one shared overflow bucket
@@ -268,7 +270,7 @@ describe('frontendErrorCapture', () => {
     installFrontendErrorCapture();
 
     const error = new Error(
-      'ws connect failed: ws://host/ws?token=supersecret123&access_token=access456&api_key=key789&x=1',
+      'ws connect failed: ws://host/ws?token=supersecret123&access_token=access456&api_key=key789&ticket=ticketABC&proof=proofABC&x=1',
     );
     error.stack =
       'Error: boom\n    at ws://host/ws?refresh_token=refresh123&client_secret=secret456&id_token=id789:1:1';
@@ -276,11 +278,13 @@ describe('frontendErrorCapture', () => {
     await flushFrontendErrors();
 
     const record = JSON.parse(reportedLines()[0]);
-    expect(record.message).toContain('?token=[redacted]&access_token=[redacted]&api_key=[redacted]&x=1');
+    expect(record.message).toContain('?token=[redacted]&access_token=[redacted]&api_key=[redacted]&ticket=[redacted]&proof=[redacted]&x=1');
     expect(record.stack).toContain('?refresh_token=[redacted]&client_secret=[redacted]&id_token=[redacted]');
     expect(JSON.stringify(record)).not.toContain('supersecret123');
     expect(JSON.stringify(record)).not.toContain('access456');
     expect(JSON.stringify(record)).not.toContain('key789');
+    expect(JSON.stringify(record)).not.toContain('ticketABC');
+    expect(JSON.stringify(record)).not.toContain('proofABC');
     expect(JSON.stringify(record)).not.toContain('refresh123');
     expect(JSON.stringify(record)).not.toContain('secret456');
     expect(JSON.stringify(record)).not.toContain('id789');

@@ -45,7 +45,7 @@ import (
 //
 // DeviceID and ConnectionID name the screen that wrote it — a save, a clear,
 // or the send that consumed the row — and are empty when the backend wrote it
-// itself: a saga restoring a draft, a queue dispatch consuming one.
+// itself: a saga restoring a draft.
 // ConnectionID is the echo-suppression key, because it is
 // unique per page load; DeviceID is the durable one, carried for a future
 // "edited on <device>" affordance and deliberately NOT used for suppression
@@ -81,9 +81,18 @@ func (a *App) writeThreadDraft(who transport.ClientIdentity, draft store.ThreadD
 	return nil
 }
 
-// removeThreadDraft deletes a draft and announces it if there was one.
-func (a *App) removeThreadDraft(who transport.ClientIdentity, threadID string) error {
-	deleted, err := a.store.DeleteThreadDraft(threadID)
+// removeThreadDraft deletes and announces only the consumed snapshot. A nil
+// snapshot preserves unconditional deletion for explicit clears and legacy sends.
+func (a *App) removeThreadDraft(who transport.ClientIdentity, threadID string, snapshot *DraftSnapshot) error {
+	var expected *store.ThreadDraft
+	if snapshot != nil {
+		draft, err := encodeThreadDraft(threadID, *snapshot)
+		if err != nil {
+			return err
+		}
+		expected = &draft
+	}
+	deleted, err := a.store.DeleteThreadDraft(threadID, expected)
 	if err != nil {
 		return err
 	}

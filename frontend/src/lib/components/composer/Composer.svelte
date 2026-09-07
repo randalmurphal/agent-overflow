@@ -543,6 +543,28 @@
     // precedence for both the direct and queued paths.
     const draftSourcePlan = draft.sourceProposedPlan ?? null;
 
+    const snapshot = {
+      content: draft.content,
+      attachments: draft.attachments.slice(),
+      terminalChips: draft.terminalChips.slice(),
+      sourceProposedPlan: draftSourcePlan,
+    };
+    // Capture once before either path awaits. The raw draft is independent
+    // of expanded message text and the source-vs-revision send options.
+    const sendOptions = buildSendOptions({
+      attachmentIds: snapshot.attachments.map((attachment) => attachment.id),
+      consumeDraft: snapshot,
+      sourceProposedPlan: draftSourcePlan ?? undefined,
+      revisionSourceProposedPlan: sourceForSend && (hasDraftContentForSend || commentsForSend.length > 0)
+        ? sourceForSend
+        : undefined,
+      revisionSourceCommentIds: commentsForSend.length > 0 ? commentsForSend.map((comment) => comment.id) : undefined,
+      revisionSourceDiffReview: diffReviewSourceForSend ?? undefined,
+      revisionSourceDiffCommentIds: diffReviewCommentsForSend.length > 0
+        ? diffReviewCommentsForSend.map((comment) => comment.id)
+        : undefined,
+    });
+
     // Mid-round path: backend owns the queue. Both providers go
     // through the same `RegisterQueueItem` RPC; the backend keeps the
     // pending preview alive until the provider echo creates the chat row.
@@ -551,52 +573,22 @@
     // to choose between Steer and a frontend-side queue, but the
     // unified backend queue removes that choice.
     if (isTurnActive) {
-      const revisionPlanForMidTurn = sourceForSend && (hasDraftContentForSend || commentsForSend.length > 0)
-        ? sourceForSend
-        : undefined;
-      const revisionCommentIdsForMidTurn = commentsForSend.length > 0
-        ? commentsForSend.map((comment) => comment.id)
-        : undefined;
-      const revisionDiffCommentIdsForMidTurn = diffReviewCommentsForSend.length > 0
-        ? diffReviewCommentsForSend.map((comment) => comment.id)
-        : undefined;
       const midTurnThreadId = pane.threadId;
       if (!midTurnThreadId) return;
-      const queuedAttachmentIds = draft.attachments.map((attachment) => attachment.id);
-      const queuedDraftSnapshot = {
-        content: draft.content,
-        attachments: [...draft.attachments],
-        terminalChips: [...draft.terminalChips],
-        sourceProposedPlan: draft.sourceProposedPlan,
-      };
-      draft.clearLocalAfterQueue();
+      const draftReady = draft.prepareForSend();
+      draft.clearLocalForSend();
       resetTextareaHeight();
       surface?.recreateInput();
-      // RegisterQueueItem deletes the draft row; a save still in flight
-      // would land after it and bring the text back. Awaited AFTER the
-      // local clear, which is synchronous, so a second Enter during the
-      // wait finds an empty composer instead of queueing the text twice.
-      await draft.quiesceSaves();
-
       try {
-        // Same builder as the direct-send path, so a queued message and a
-        // dispatched one carry an identical payload — including the send's
-        // idempotency id, which is minted there.
-        await registerQueueItem(midTurnThreadId, message, buildSendOptions({
-          attachmentIds: queuedAttachmentIds,
-          sourceProposedPlan: draftSourcePlan ?? null,
-          revisionSourceProposedPlan: revisionPlanForMidTurn,
-          revisionSourceCommentIds: revisionCommentIdsForMidTurn,
-          revisionSourceDiffReview: diffReviewSourceForSend,
-          revisionSourceDiffCommentIds: revisionDiffCommentIdsForMidTurn,
-        }));
+        await draftReady;
+        await registerQueueItem(midTurnThreadId, message, sendOptions);
       } catch (err) {
         pane.setGeneralError(`Failed to queue message: ${String(err)}`);
         // Putting the message back is a second, independent operation: if
         // it fails too, the banner has to say so rather than let the queue
         // failure imply the text is safe in the composer.
         try {
-          await draft.restoreDraftFor(midTurnThreadId, queuedDraftSnapshot);
+          await draft.restoreUnsentDraftFor(midTurnThreadId, snapshot);
         } catch (restoreErr) {
           console.error('Failed to restore the draft after a failed queue:', restoreErr);
           pane.setGeneralError(
@@ -612,39 +604,14 @@
     if (!threadId) return;
     sending = true;
     pane.setSendInFlight(true);
-    // SendMessage deletes the draft row; a save still in flight would land
-    // after it and bring the text back. `sending` is already set, so a
-    // second Enter during this wait is refused by canSend.
-    await draft.quiesceSaves();
-    // Capture the pre-send draft contents bound to THIS thread. If the user
-    // switches threads before SendMessage resolves and the send rejects, we
-    // must not bleed the snapshot into the new pane's local composer.
-    const snapshot = {
-      content: draft.content,
-      attachments: draft.attachments.slice(),
-      terminalChips: draft.terminalChips.slice(),
-      sourceProposedPlan: draftSourcePlan,
-    };
-
-    draft.clearAfterSend();
+    const draftReady = draft.prepareForSend();
+    draft.clearLocalForSend();
     resetTextareaHeight();
     // Release the element's per-character Blink edit-command retention (see
     // recreateInput's contract in composerInputSurface.ts). After the clear,
     // so the fresh element mounts empty.
     surface?.recreateInput();
 
-    const sendOptions = buildSendOptions({
-      attachmentIds: snapshot.attachments.map((attachment) => attachment.id),
-      sourceProposedPlan: draftSourcePlan ?? undefined,
-      revisionSourceProposedPlan: sourceForSend && (hasDraftContentForSend || commentsForSend.length > 0)
-        ? sourceForSend
-        : undefined,
-      revisionSourceCommentIds: commentsForSend.length > 0 ? commentsForSend.map((comment) => comment.id) : undefined,
-      revisionSourceDiffReview: diffReviewSourceForSend ?? undefined,
-      revisionSourceDiffCommentIds: diffReviewCommentsForSend.length > 0
-        ? diffReviewCommentsForSend.map((comment) => comment.id)
-        : undefined,
-    });
     const lastItem = pane.items.length > 0 ? pane.items[pane.items.length - 1] : null;
     const nextTurn = lastItem ? lastItem.turnIndex + 1 : 0;
     const optimisticId = `optimistic:${sendOptions.sendId}`;
@@ -675,11 +642,12 @@
 
     try {
       const sent = await dispatchSend({
+        draftReady,
         threadId,
         message,
         options: sendOptions,
         snapshot,
-        restoreDraft: (tid, snap) => draft.restoreDraftFor(tid, snap),
+        restoreDraft: (tid, snap) => draft.restoreUnsentDraftFor(tid, snap),
         draftThreadId: () => draft.threadId,
         reportError: (msg) => sendPane.setGeneralError(msg),
       });

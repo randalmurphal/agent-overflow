@@ -1,6 +1,6 @@
 import { ReportFrontendErrorBatch } from '../stores/bindings';
 import { isMethodUnavailableError } from '../stores/transportStatus.svelte';
-import { wsClient } from '../transport/wsClient';
+import { installDiagnosticsSinkEverywhere } from '../transport/backends';
 import { UI_TRACE_MAX_LINE_BYTES } from './uiTraceLimits';
 import { redactDiagnosticText } from './diagnosticRedaction';
 import { setClipboardDiagnosticsSink } from './clipboard';
@@ -52,7 +52,7 @@ const SUPPRESSED_SAMPLE_EVERY = 100;
 // Messages that embed variable data (ids, URLs, timestamps) would mint a
 // fresh signature per event — unbounded map growth AND a bypass of the
 // per-signature cap. Past this many distinct signatures, new ones fold
-// into a coarse per-throw-site bucket that still obeys the cap.
+// into a coarse per-kind bucket that still obeys the cap.
 const MAX_DISTINCT_SIGNATURES = 1_000;
 // A batch is re-queued on flush failure (transport blip during startup is
 // exactly when mount-time errors happen). After this many consecutive
@@ -82,7 +82,7 @@ export function installFrontendErrorCapture(): void {
   // they're the after-the-fact evidence for "the UI stalled" reports.
   // Injected here rather than imported by the transport so wsClient
   // stays free of stores/bindings dependencies.
-  wsClient.setDiagnosticsSink(reportFrontendDiagnostic);
+  installDiagnosticsSinkEverywhere(reportFrontendDiagnostic);
   setClipboardDiagnosticsSink(reportFrontendDiagnostic);
 
   window.addEventListener('error', (event: ErrorEvent) => {
@@ -196,7 +196,7 @@ function capture(record: Omit<CapturedErrorRecord, 'at' | 'seen'>): void {
 
   let signature = `${record.kind}|${record.message}|${firstStackFrame(record.stack)}`;
   if (!signatureCounts.has(signature) && signatureCounts.size >= MAX_DISTINCT_SIGNATURES) {
-    signature = `overflow|${record.kind}|${firstStackFrame(record.stack)}`;
+    signature = `overflow|${record.kind}`;
   }
   const seen = (signatureCounts.get(signature) ?? 0) + 1;
   signatureCounts.set(signature, seen);
@@ -363,7 +363,7 @@ function isMethodUnavailable(err: unknown): boolean {
 
 /** Test hook: detach listeners and reset module state between cases. */
 export function resetFrontendErrorCaptureForTest(): void {
-  wsClient.setDiagnosticsSink(null);
+  installDiagnosticsSinkEverywhere(null);
   setClipboardDiagnosticsSink(null);
   signatureCounts.clear();
   pendingLines.length = 0;

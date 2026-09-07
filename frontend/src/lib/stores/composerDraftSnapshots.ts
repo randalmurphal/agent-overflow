@@ -14,10 +14,18 @@ export interface ComposerDraftSnapshot {
 // Unsaved local edits are kept here so a fast A -> B -> A switch can restore
 // immediately even before the debounce write reaches SQLite. Entries are
 // removed once their snapshot is durably saved, explicitly cleared, or evicted
-// from the bounded LRU. Active saves are tracked separately so external draft
-// replacement can wait for in-flight writes before it overwrites the backend.
+// from the bounded LRU. Writes share one per-thread tail so saves cannot overtake each other and
+// send/replacement operations can fence the writes admitted before them.
 const localDraftSnapshots = new Map<string, ComposerDraftSnapshot>();
-const activeSavePromises = new Map<string, Set<Promise<unknown>>>();
+interface DraftWrite {
+  write: () => Promise<unknown>;
+  replaceable: boolean;
+  promise: Promise<boolean>;
+  resolve: (written: boolean) => void;
+  reject: (error: unknown) => void;
+}
+interface DraftWriter { active?: DraftWrite; pending: DraftWrite[]; }
+const draftWriters = new Map<string, DraftWriter>();
 
 function cloneSourceProposedPlan(source: SourceProposedPlan | null): SourceProposedPlan | null {
   return source ? { ...source } : null;
@@ -108,33 +116,61 @@ export function forgetDraftSnapshotIfMatches(
   }
 }
 
-export function trackActiveDraftSave(threadId: string, promise: Promise<unknown>): void {
-  let saves = activeSavePromises.get(threadId);
-  if (!saves) {
-    saves = new Set();
-    activeSavePromises.set(threadId, saves);
-  }
-  saves.add(promise);
-  const cleanup = () => {
-    const current = activeSavePromises.get(threadId);
-    if (!current) return;
-    current.delete(promise);
-    if (current.size === 0) {
-      activeSavePromises.delete(threadId);
+function startDraftWrite(threadId: string, owner: DraftWriter, operation: DraftWrite): void {
+  owner.active = operation;
+  const finish = () => {
+    owner.active = undefined;
+    if (draftWriters.get(threadId) !== owner) {
+      for (const pending of owner.pending.splice(0)) pending.resolve(false);
+      return;
     }
+    const next = owner.pending.shift();
+    if (next) startDraftWrite(threadId, owner, next);
+    else draftWriters.delete(threadId);
   };
-  promise.then(cleanup, cleanup);
+  // Start the first write synchronously: send preparation admits its snapshot
+  // before clearing locally, so new typing always queues behind it.
+  let result: Promise<unknown>;
+  try { result = operation.write(); }
+  catch (error) { result = Promise.reject(error); }
+  void Promise.resolve(result).then(
+    () => { operation.resolve(true); finish(); },
+    (error) => { operation.reject(error); finish(); },
+  );
 }
 
-export async function waitForActiveDraftSaves(threadId: string): Promise<void> {
-  while (true) {
-    const saves = activeSavePromises.get(threadId);
-    if (!saves || saves.size === 0) return;
-    await Promise.allSettled([...saves]);
+/** Autosaves coalesce; captured send writes are ordering boundaries. */
+export function queueDraftSave(
+  threadId: string,
+  write: () => Promise<unknown>,
+  kind: 'autosave' | 'send' = 'autosave',
+): Promise<boolean> {
+  let resolve!: DraftWrite['resolve'];
+  let reject!: DraftWrite['reject'];
+  const promise = new Promise<boolean>((done, fail) => { resolve = done; reject = fail; });
+  const operation: DraftWrite = { write, replaceable: kind === 'autosave', promise, resolve, reject };
+  let owner = draftWriters.get(threadId);
+  if (!owner) { owner = { pending: [] }; draftWriters.set(threadId, owner); }
+  if (!owner.active) startDraftWrite(threadId, owner, operation);
+  else {
+    const previous = owner.pending.at(-1);
+    if (operation.replaceable && previous?.replaceable) {
+      owner.pending[owner.pending.length - 1] = operation;
+      previous.resolve(false);
+    } else owner.pending.push(operation);
   }
+  return promise;
+}
+
+/** A finite fence over writes already admitted, never extended by later typing. */
+export async function waitForActiveDraftSaves(threadId: string): Promise<void> {
+  const owner = draftWriters.get(threadId);
+  const through = owner?.pending.at(-1) ?? owner?.active;
+  if (through) through.replaceable = false;
+  await through?.promise.catch(() => {});
 }
 
 export function resetComposerDraftSnapshotStateForTest(): void {
   localDraftSnapshots.clear();
-  activeSavePromises.clear();
+  draftWriters.clear();
 }

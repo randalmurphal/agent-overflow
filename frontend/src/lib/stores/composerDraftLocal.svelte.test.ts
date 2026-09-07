@@ -137,7 +137,7 @@ describe('composerDraft store — persistence: none', () => {
     const editor = localStore();
     editor.seedLocalSnapshot('thread-1', snapshot({ content: 'a message being edited' }));
     editor.setContent('an edited message');
-    editor.clearAfterSend();
+    editor.clearLocalForSend();
     await settle();
 
     expect(composerDraft.content).toBe('what the user is typing');
@@ -164,14 +164,14 @@ describe('composerDraft store — persistence: none', () => {
   // The mode is fixed at construction, so the risk is not a flag flip but a
   // lifecycle call arriving on a store that has no backend behind it.
 
-  it('seed -> mutate -> clearAfterSend -> seed again', async () => {
+  it('seed -> mutate -> clearLocalForSend -> seed again', async () => {
     const store = localStore();
 
     store.seedLocalSnapshot('thread-1', snapshot({ content: 'first message' }));
     store.setContent('first message, edited');
     store.addAttachment(sampleAttachment('att-1'));
 
-    store.clearAfterSend();
+    store.clearLocalForSend();
     expect(store.content).toBe('');
     expect(store.attachments).toEqual([]);
     expect(store.terminalChips).toEqual([]);
@@ -267,17 +267,6 @@ describe('composerDraft store — persistence: none', () => {
     await store.flushPending();
 
     expect(store.content).toBe('unflushed');
-    expect(store.hasPendingSave).toBe(false);
-    expectSilent(bindings);
-  });
-
-  it('clearLocalAfterQueue clears local state only', async () => {
-    const store = localStore();
-    store.seedLocalSnapshot('thread-1', snapshot({ content: 'queued message' }));
-
-    store.clearLocalAfterQueue();
-
-    expect(store.content).toBe('');
     expect(store.hasPendingSave).toBe(false);
     expectSilent(bindings);
   });

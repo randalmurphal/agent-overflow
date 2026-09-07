@@ -512,9 +512,6 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		// Deferred: row persists at echo time via persistDeferredUserText.
 		a.triage.RegisterPendingFlushSendWithExpectation(threadID, item.ID, userItem, item.EnqueuedAt, sendExpect)
 	}
-	if draftErr := a.removeThreadDraft(transport.ClientIdentity{}, threadID); draftErr != nil {
-		log.Printf("flush queue: delete draft for thread %s: %v", threadID, draftErr)
-	}
 
 	sendOpts := provider.SendOptions{
 		InteractionMode: provider.NormalizeInteractionMode(thread.Mode),
@@ -943,7 +940,7 @@ func (a *App) registerQueueItem(
 		EnqueuedAt:                   enqueuedAt,
 	}
 	if !injected.preserveDraft {
-		if draftErr := a.removeThreadDraft(transport.ClientIdentity{}, threadID); draftErr != nil {
+		if draftErr := a.removeThreadDraft(transport.ClientIdentity{}, threadID, opts.ConsumeDraft); draftErr != nil {
 			log.Printf("register queue item: delete draft for thread %s: %v", threadID, draftErr)
 		}
 	}

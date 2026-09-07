@@ -1,4 +1,6 @@
 import type { SourceDiffReview, SourceProposedPlan } from '../types/models';
+import type { ComposerDraftSnapshot } from '../stores/composerDraftSnapshots';
+import type { DraftSnapshot } from '../types/draft';
 import { randomId } from './randomId';
 
 /**
@@ -10,6 +12,8 @@ import { randomId } from './randomId';
  */
 export interface OutgoingSendOptions {
   attachmentIds: string[];
+  /** Only this captured persisted draft may be consumed by acceptance. */
+  consumeDraft: DraftSnapshot;
   runtimeMode?: string;
   sourceProposedPlan?: SourceProposedPlan;
   revisionSourceProposedPlan?: SourceProposedPlan;
@@ -44,6 +48,8 @@ export interface OutgoingSendOptions {
  */
 export interface SendOptionsInput {
   attachmentIds: string[];
+  /** Omitted for generated prompts: preserve any nonempty composer draft. */
+  consumeDraft?: ComposerDraftSnapshot;
   runtimeMode?: string;
   sourceProposedPlan?: SourceProposedPlan | null;
   revisionSourceProposedPlan?: SourceProposedPlan | null;
@@ -69,6 +75,12 @@ export interface SendOptionsInput {
 export function buildSendOptions(input: SendOptionsInput): OutgoingSendOptions {
   const out: OutgoingSendOptions = {
     attachmentIds: input.attachmentIds,
+    consumeDraft: {
+      content: input.consumeDraft?.content ?? '',
+      attachmentIds: input.consumeDraft?.attachments.map((attachment) => attachment.id) ?? [],
+      terminalChips: input.consumeDraft?.terminalChips.map((chip) => ({ ...chip })) ?? [],
+      sourceProposedPlan: input.consumeDraft?.sourceProposedPlan ? { ...input.consumeDraft.sourceProposedPlan } : null,
+    },
     sendId: randomId(),
     reconcileBySendId: true,
   };

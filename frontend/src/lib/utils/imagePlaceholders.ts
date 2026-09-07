@@ -191,6 +191,11 @@ export function ensureImagePlaceholders(content: string, attachments: Attachment
   return next;
 }
 
+/** Preserve image identity when combining drafts with different attachment orders. */
+export function remapImagePlaceholders(content: string, from: Attachment[], to: Attachment[]): string {
+  return renumberKnownImagePlaceholders(content, findImagePlaceholderRanges(content, from), to);
+}
+
 function removeSelectedPlaceholders(
   content: string,
   attachments: Attachment[],

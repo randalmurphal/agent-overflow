@@ -312,7 +312,7 @@ func (a *App) settleRevertAndResendDraft(threadID string, staged stagedThreadDra
 		}
 		return
 	}
-	if err := a.removeThreadDraft(transport.ClientIdentity{}, threadID); err != nil {
+	if err := a.removeThreadDraft(transport.ClientIdentity{}, threadID, nil); err != nil {
 		log.Printf("app: revert and resend: clear staged draft for thread %s: %v", threadID, err)
 	}
 }

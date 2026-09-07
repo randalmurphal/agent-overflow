@@ -733,6 +733,8 @@ func (a *App) workflowSchemaForSession(thread store.Thread) (json.RawMessage, er
 // current attachment payload; RuntimeMode is an optional draft override applied
 // immediately before the provider turn starts.
 type SendMessageOptions struct {
+	// ConsumeDraft is captured before sending. Omission preserves legacy clearing.
+	ConsumeDraft                 *DraftSnapshot      `json:"consumeDraft,omitempty"`
 	AttachmentIDs                []string            `json:"attachmentIds"`
 	RuntimeMode                  string              `json:"runtimeMode,omitempty"`
 	SourceProposedPlan           *SourceProposedPlan `json:"sourceProposedPlan,omitempty"`

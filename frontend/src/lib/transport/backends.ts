@@ -187,6 +187,20 @@ const standing = new Set<StandingSubscription>();
 // (transport/AGENTS.md: there is one interception, not one per connection
 // somebody remembers to wire).
 let installedProver: StepUpProver | null = null;
+type DiagnosticsSink = (message: string, detail?: string) => void;
+let installedDiagnosticsSink: DiagnosticsSink | null = null;
+
+function installEntryDiagnostics(entry: Entry): void {
+  entry.client.setDiagnosticsSink(installedDiagnosticsSink === null ? null : (message, detail = '') => {
+    installedDiagnosticsSink?.(message, `backend=${entry.id || 'home'} ${detail}`);
+  });
+}
+
+/** One sink covers existing connections and every later attachment. */
+export function installDiagnosticsSinkEverywhere(sink: DiagnosticsSink | null): void {
+  installedDiagnosticsSink = sink;
+  for (const entry of entries) installEntryDiagnostics(entry);
+}
 
 // The client's foreground lifecycle, held here for the same reason the prover
 // is: "every attached backend, and every one attached afterwards" is a fact
@@ -288,6 +302,7 @@ function makeEntry(
     },
   };
   handle = createHandle(() => entry, id);
+  if (installedDiagnosticsSink !== null) installEntryDiagnostics(entry);
   // Its clock, for anything formatting a timestamp this backend minted.
   // A closure over the entry rather than a copied number: the reading
   // moves on every reconnect and wsClient does not publish a hello whose
@@ -325,6 +340,7 @@ export function restoreHomeBackend(): void {
   byId.set(HOME_BACKEND, homeEntry);
   refreshGrantedScopes(HOME_BACKEND);
   if (installedProver !== null) homeEntry.handle.installStepUpProver(installedProver);
+  if (installedDiagnosticsSink !== null) installEntryDiagnostics(homeEntry);
   homeEntry.handle.setLease(clientLease);
   sendWatchedThreads(homeEntry);
   sendScreenPresence(homeEntry);
@@ -501,6 +517,7 @@ export function detachBackend(id: string): void {
     sub.cancels.delete(entry);
   }
   entry.client.close();
+  if (installedDiagnosticsSink !== null) entry.client.setDiagnosticsSink(null);
   forgetGrantedScopes(entry.id);
   // Everything keyed on this backend goes with it. Leaving the entity
   // index populated would resolve a thread to a machine this client is no

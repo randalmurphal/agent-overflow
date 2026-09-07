@@ -118,10 +118,31 @@ func (s *Store) UpsertThreadDraft(d ThreadDraft) (bool, error) {
 // DeleteThreadDraft removes the draft for a thread and reports whether a row
 // was there to remove. Missing rows are not an error — clearing something that
 // was never there is a no-op, and it is one nothing needs to hear about.
-func (s *Store) DeleteThreadDraft(threadID string) (bool, error) {
+// A non-nil expected snapshot is compared atomically with deletion, so another
+// client saving while a send is in flight cannot lose its newer draft.
+func (s *Store) DeleteThreadDraft(threadID string, expected *ThreadDraft) (bool, error) {
+	query := `DELETE FROM thread_drafts WHERE thread_id = ?`
+	args := []any{threadID}
+	if expected != nil {
+		// Match the same nullable/empty-array representation as UpsertThreadDraft.
+		attachments, chips := expected.Attachments, expected.TerminalChips
+		if attachments == "" {
+			attachments = "[]"
+		}
+		if chips == "" {
+			chips = "[]"
+		}
+		var plan any
+		if expected.PendingPlanImplementation != "" {
+			plan = expected.PendingPlanImplementation
+		}
+		query += ` AND content = ? AND attachments = ? AND terminal_chips = ? AND pending_plan_implementation IS ?`
+		args = append(args, expected.Content, attachments, chips, plan)
+	}
+
 	var deleted string
 	err := s.db.QueryRow(
-		`DELETE FROM thread_drafts WHERE thread_id = ? RETURNING thread_id`, threadID,
+		query+` RETURNING thread_id`, args...,
 	).Scan(&deleted)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil

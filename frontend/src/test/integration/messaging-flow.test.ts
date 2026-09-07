@@ -80,6 +80,7 @@ describe('App integration — messaging flow', () => {
       // so the assertion names its presence.
       sendId: expect.any(String),
       reconcileBySendId: true,
+      consumeDraft: { content: 'hello agent', attachmentIds: [], terminalChips: [], sourceProposedPlan: null },
     });
     // The send schedules an idle-slot swap of the <textarea> element to
     // release Blink's per-keystroke edit-command retention (recreateInput),

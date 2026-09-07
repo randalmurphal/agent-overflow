@@ -26,6 +26,8 @@ import { autoPinNewThread, shouldAutoPinFirstSend } from '../../stores/threadAut
 export interface SendOptions {
   threadId: string;
   message: string;
+  /** Captured draft persistence must succeed before any send is issued. */
+  draftReady?: Promise<void>;
   /** Built once before the optimistic row; the same sendId reaches the wire. */
   options: OutgoingSendOptions;
   /** Draft snapshot used to restore the composer on send failure. */
@@ -53,6 +55,7 @@ export interface SendOptions {
 export async function dispatchSend(opts: SendOptions): Promise<boolean> {
   let sendStarted = false;
   try {
+    if (opts.draftReady) await opts.draftReady;
     const autoPinAfterSend = shouldAutoPinFirstSend(getThreadById(opts.threadId));
     // Optimistically flip the sidebar pill to Working the moment the
     // user clicks Send. Provider sessions for brand-new threads take
@@ -86,7 +89,7 @@ export async function dispatchSend(opts: SendOptions): Promise<boolean> {
     // "Leave it" discards the snapshot AND reports nothing further: the
     // person was shown the ambiguity and decided it, and a banner restating
     // the failure they just adjudicated would contradict their answer.
-    if (isUndeliveredSendError(err) && !(await confirmUnsentMessageRestore())) {
+    if (sendStarted && isUndeliveredSendError(err) && !(await confirmUnsentMessageRestore())) {
       return false;
     }
 

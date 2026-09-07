@@ -8,7 +8,7 @@ import {
   getRememberedDraftSnapshot,
   rememberDraftSnapshot,
   resetComposerDraftSnapshotStateForTest,
-  trackActiveDraftSave,
+  queueDraftSave,
   waitForActiveDraftSaves,
   type ComposerDraftSnapshot,
 } from './composerDraftSnapshots';
@@ -113,7 +113,7 @@ describe('composerDraftSnapshots', () => {
     const save = new Promise<void>((resolve) => {
       release = resolve;
     });
-    trackActiveDraftSave('thread-1', save);
+    queueDraftSave('thread-1', () => save);
 
     let settled = false;
     const waiting = waitForActiveDraftSaves('thread-1').then(() => {
@@ -126,4 +126,41 @@ describe('composerDraftSnapshots', () => {
     await waiting;
     expect(settled).toBe(true);
   });
+  it('coalesces autosaves without crossing send boundaries or blocking other threads', async () => {
+    let releaseFirst!: () => void;
+    let releaseLater!: () => void;
+    const order: string[] = [];
+    const first = queueDraftSave('a', () => new Promise<void>((resolve) => { order.push('first'); releaseFirst = resolve; }));
+    const obsolete = queueDraftSave('a', async () => { order.push('obsolete'); });
+    const latest = queueDraftSave('a', async () => { order.push('latest'); });
+    const send = queueDraftSave('a', async () => { order.push('send'); }, 'send');
+    const fence = waitForActiveDraftSaves('a');
+    const next = queueDraftSave('a', () => new Promise<void>((resolve) => { order.push('next'); releaseLater = resolve; }));
+    await queueDraftSave('b', async () => { order.push('other thread'); });
+    expect(await obsolete).toBe(false);
+    expect(order).toEqual(['first', 'other thread']);
+    releaseFirst();
+    await fence;
+    expect(await first).toBe(true);
+    expect(await latest).toBe(true);
+    expect(await send).toBe(true);
+    expect(order).toEqual(['first', 'other thread', 'latest', 'send', 'next']);
+    releaseLater();
+    await next;
+  });
+
+  it('a failed write releases later edits and a captured fence seals an autosave', async () => {
+    const order: string[] = [];
+    const first = queueDraftSave('a', () => { throw new Error('offline'); });
+    const failed = expect(first).rejects.toThrow('offline');
+    const captured = queueDraftSave('a', async () => { order.push('captured'); });
+    const fence = waitForActiveDraftSaves('a');
+    const next = queueDraftSave('a', async () => { order.push('next'); });
+    await failed;
+    await fence;
+    expect(await captured).toBe(true);
+    await next;
+    expect(order).toEqual(['captured', 'next']);
+  });
+
 });

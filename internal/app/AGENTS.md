@@ -898,6 +898,21 @@ transaction contract and no SendID.
 `app_send_receipt_test.go` enforce these boundaries, including rowless turns,
 late echoes, simultaneous cross-method retries and workflow preflight.
 
+## Composer draft consumption
+
+`SendMessageOptions.consumeDraft` names the persisted composer snapshot captured
+before sending. Direct admission and queue admission compare/delete that exact
+snapshot through `removeThreadDraft`; they share `encodeThreadDraft` with
+`SaveDraft`. Store comparison and deletion are one SQL operation, and only a
+removed row broadcasts. Equal-content saves already have no-op identity;
+`updatedAt` is not a revision. Omission preserves legacy unconditional clearing.
+
+Forward the snapshot through direct-to-queue admission, but never retain it in
+the durable queue payload or delete a draft when that queue later dispatches:
+it may now contain the next message from this or another frontend. Explicit
+ClearDraft and edit/resend deletion remain unconditional. The regression paths
+live in `app_draft_consumption_test.go`.
+
 ## The flush queue outlives the process
 
 The composer clears the moment `RegisterQueueItem` returns, so between the

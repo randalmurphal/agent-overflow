@@ -58,7 +58,7 @@ import { resetResendRevertMarkersForTest } from '../../stores/eventsMessageRever
  * be on the wire keeps failing the test.
  */
 function sentWith(options: Record<string, unknown>): Record<string, unknown> {
-  return { sendId: expect.any(String), reconcileBySendId: true, ...options };
+  return { sendId: expect.any(String), reconcileBySendId: true, consumeDraft: expect.any(Object), ...options };
 }
 
 function installDraftMocks() {
@@ -291,8 +291,8 @@ describe('<Composer>', () => {
       mode: 'chat',
       workspaceOverride: '/tmp/placeholder',
     }));
-    expect(save).not.toHaveBeenCalled();
-    await waitFor(() => expect(clear).toHaveBeenCalledWith('materialized-send'));
+    expect(save).toHaveBeenCalledWith('materialized-send', 'first send', [], [], null);
+    expect(clear).not.toHaveBeenCalled();
     expect(draft.threadId).toBe('materialized-send');
     expect(draft.content).toBe('');
   });
@@ -2014,37 +2014,34 @@ describe('<Composer>', () => {
     });
   });
 
-  it('keeps the send bound to the original thread if the pane switches while clearing the draft', async () => {
-    const threadOne = makeTestThread({ id: 'thread-1', runtimeMode: 'approval-required' });
-    const threadTwo = makeTestThread({ id: 'thread-2', runtimeMode: 'full-access' });
+  it('captures the send before a slow draft save allows switching threads', async () => {
+    const threadOne = makeTestThread({ id: 'thread-1' });
+    const threadTwo = makeTestThread({ id: 'thread-2' });
     const pane = await buildPane(threadOne);
     const draft = await buildDraft('thread-1');
-
-    let releaseClear!: () => void;
-    const clearStarted = vi.fn();
-    setBindingMock('ClearDraft', async () => {
-      clearStarted();
-      await new Promise<void>((resolve) => {
-        releaseClear = resolve;
-      });
-    });
-    const send = setBindingMock('SendMessageWithOptions', async () =>
-      makeTestThread({ id: 'thread-1' }));
-
-    const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
-    await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'race send' } });
-    void fireEvent.click(getByTestId('composer-send'));
-    await waitFor(() => expect(clearStarted).toHaveBeenCalled());
+    const pending = deferred<void>();
+    const save = setBindingMock('SaveDraft', () => pending.promise);
+    const clear = setBindingMock('ClearDraft', async () => {});
+    const send = setBindingMock('SendMessageWithOptions', async () => threadOne);
+    const { getByTestId } = render(Composer, { props: { pane, draft } });
+    draft.setContentAndAttachments('race send [Image #1]', [makeAttachment('att-1', 'first.png')]);
+    await waitFor(() => expect(save).toHaveBeenCalled());
+    await fireEvent.click(getByTestId('composer-send'));
+    expect(send).not.toHaveBeenCalled();
 
     await pane.switchThread(threadTwo);
-    releaseClear();
+    await draft.setThread('thread-2');
+    draft.setContentAndAttachments('keep this [Image #1]', [makeAttachment('att-2', 'second.png')]);
+    pending.resolve();
 
-    await waitFor(() => {
-      expect(send).toHaveBeenCalledWith('thread-1', 'race send', sentWith({
-        attachmentIds: [],
-      }));
-    });
+    await waitFor(() => expect(send).toHaveBeenCalledWith('thread-1', 'race send [Image #1]', sentWith({
+      attachmentIds: ['att-1'],
+    })));
+    expect(clear).not.toHaveBeenCalled();
     expect(pane.thread?.id).toBe('thread-2');
+    expect(draft.content).toBe('keep this [Image #1]');
+    expect(draft.attachments.map((attachment) => attachment.id)).toEqual(['att-2']);
+    expect(pane.items.some((item) => item.summary === 'race send [Image #1]')).toBe(false);
   });
 
   it('sends image-only drafts with a visible image placeholder and attachment ids', async () => {
@@ -2538,86 +2535,69 @@ describe('<Composer>', () => {
   // SaveDraft still on the wire can be served AFTER the send's delete of
   // the same row — and the text the user just sent comes back on the next
   // thread open. Both send paths quiesce the draft's saves first.
-  it('holds the send until an in-flight SaveDraft settles', async () => {
-    const pane = await buildPane();
-    const draft = await buildDraft();
-    const save = deferred<void>();
-    const saveMock = setBindingMock('SaveDraft', () => save.promise);
-    const send = setBindingMock('SendMessageWithOptions', async () =>
-      makeTestThread({ runtimeMode: 'full-access' }));
+  it.each(['direct', 'queued'] as const)('captures only the consumed draft while a slow save and new typing overlap a %s send', async (mode) => {
+    const thread = makeTestThread({ id: `consume-${mode}` });
+    const pane = await buildPane(thread);
+    if (mode === 'queued') pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
+    const draft = await buildDraft(thread.id);
+    const reply = deferred<void>();
+    let firstSave = true;
+    let savedContent = '';
+    setBindingMock('SaveDraft', async (id: string, content: string) => {
+      if (id !== thread.id) return;
+      savedContent = content;
+      if (firstSave) { firstSave = false; await reply.promise; }
+    });
+    const accept = mode === 'direct'
+      ? setBindingMock('SendMessageWithOptions', async () => thread)
+      : setBindingMock('RegisterQueueItem', async (threadId: string, message: string) => ({
+          id: 'q-captured', threadId, message, attachmentIds: ['att-1'], enqueuedAt: 1,
+        }));
+    const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
+    const chip = { id: 'chip-1', label: 'terminal', preview: 'pwd', content: '/workspace', createdAt: 1 };
+    draft.setContentAndAttachments('first [Image #1]', [makeAttachment('att-1', 'first.png')]);
+    draft.addTerminalChip(chip);
+    await waitFor(() => expect(savedContent).toBe('first [Image #1]'));
+    await fireEvent.click(getByTestId('composer-send'));
+    expect(accept).not.toHaveBeenCalled();
+    expect(draft.content).toBe('');
 
-    const { getByLabelText } = render(Composer, { props: { pane, draft } });
-    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
-
-    await fireEvent.input(textarea, { target: { value: 'do not resurrect me' } });
-    // buildDraft debounces at 0ms, so the save is on the wire — and stuck
-    // there — one macrotask after the keystroke.
-    await waitFor(() => expect(saveMock).toHaveBeenCalled());
-
-    await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
-    await tick();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(send).not.toHaveBeenCalled();
-
-    save.resolve();
-
-    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
-    expect(send).toHaveBeenCalledWith('thread-1', 'do not resurrect me', sentWith({
-      attachmentIds: [],
-    }));
+    // The first save reply is delayed. New typing stays allowed and queues
+    // behind captured preparation; it cannot be overwritten by that write.
+    await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'next draft' } });
+    expect(savedContent).toBe('first [Image #1]');
+    reply.resolve();
+    await waitFor(() => expect(accept).toHaveBeenCalledTimes(1));
+    const args = accept.mock.calls[0] as unknown as [string, string, { consumeDraft: unknown }];
+    expect(args[0]).toBe(thread.id);
+    expect(args[1]).toContain('```terminal terminal');
+    expect(args[2].consumeDraft).toEqual({
+      content: 'first [Image #1]', attachmentIds: ['att-1'], terminalChips: [chip], sourceProposedPlan: null,
+    });
+    await waitFor(() => expect(savedContent).toBe('next draft'));
+    expect(draft.content).toBe('next draft');
+    expect(draft.hasPendingSave).toBe(false);
   });
 
-  it('holds the mid-turn enqueue until an in-flight SaveDraft settles, composer already clear', async () => {
-    const pane = await buildPane();
-    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
-    const draft = await buildDraft();
-    const save = deferred<void>();
-    const saveMock = setBindingMock('SaveDraft', () => save.promise);
-    const register = setBindingMock('RegisterQueueItem', async (
-      threadId: string,
-      message: string,
-    ) => {
-      const wire = {
-        id: 'q-quiesce',
-        threadId,
-        message,
-        attachmentIds: [],
-        sourceProposedPlan: null,
-        revisionSourceProposedPlan: null,
-        enqueuedAt: 1,
-      };
-      replaceQueueForThread(threadId, [{ ...wire } as never]);
-      return wire;
+  it.each(['direct', 'queued'] as const)('restores the draft without a %s send when preparation fails', async (mode) => {
+    const thread = makeTestThread({ id: `failed-prepare-${mode}` });
+    const pane = await buildPane(thread);
+    if (mode === 'queued') pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
+    const draft = createComposerDraftStore({ debounceMs: 60_000 });
+    await draft.setThread(thread.id);
+    let failed = false;
+    const save = setBindingMock('SaveDraft', async (id: string) => {
+      if (id === thread.id && !failed) { failed = true; throw new Error('draft unavailable'); }
     });
-
-    const { getByLabelText } = render(Composer, { props: { pane, draft } });
-    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
-
-    await fireEvent.input(textarea, { target: { value: 'queue me once' } });
-    await waitFor(() => expect(saveMock).toHaveBeenCalled());
-
-    await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
-    await tick();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    expect(register).not.toHaveBeenCalled();
-    // The local clear is synchronous and runs BEFORE the wait, so a second
-    // Enter during it finds an empty composer instead of queueing the text
-    // twice — the user never sees the pause.
-    expect(draft.content).toBe('');
-    expect((getByLabelText('Message Input') as HTMLTextAreaElement).value).toBe('');
-
-    save.resolve();
-
-    await waitFor(() => expect(register).toHaveBeenCalledTimes(1));
-    // The wire options are a generated `SendMessageOptions` instance here,
-    // so this names the fields the wait is about rather than the shape.
-    expect(register).toHaveBeenCalledWith('thread-1', 'queue me once', expect.objectContaining({
-      attachmentIds: [],
-      sendId: expect.any(String),
-      reconcileBySendId: true,
-    }));
-    expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['queue me once']);
+    const direct = setBindingMock('SendMessageWithOptions', async () => thread);
+    const queue = setBindingMock('RegisterQueueItem', async () => ({}));
+    const { getByTestId, getByLabelText } = render(Composer, { props: { pane, draft } });
+    await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'preserve this' } });
+    await fireEvent.click(getByTestId('composer-send'));
+    await waitFor(() => expect(save.mock.calls.filter((call) => call[0] === thread.id)).toHaveLength(2));
+    expect(draft.content).toBe('preserve this');
+    expect(direct).not.toHaveBeenCalled();
+    expect(queue).not.toHaveBeenCalled();
   });
 
   it('captures attachments + plan-revision metadata on the queued item', async () => {

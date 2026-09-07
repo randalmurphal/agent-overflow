@@ -952,3 +952,18 @@ Preserve surviving covered rows and use conservative numeric cuts when coverage
 is unknown. Page replies preserve current opposite-edge cursors and reconcile
 stale returned anchors against live rows that win the merge. Never derive a
 paged boundary from a loaded outlier or blindly restore a pre-fetch cursor.
+
+## Draft write ordering
+
+`composerDraftSnapshots` owns per-thread draft writes. Keep one active write and
+coalesce ordinary pending autosaves; an explicitly prepared send is a fixed
+ordering boundary. Its snapshot is admitted before clearing the composer, and
+later edits enqueue behind it. Fences capture already-admitted work and must not
+wait for future typing. Failed preparation cannot dispatch a send. Only a write
+that actually ran and still matches may clear local pending state; superseded
+writes release their snapshots without claiming persistence.
+
+Draft hydration reconstructs attachments in saved ID order, never upload-list
+order. Missing records are an error, not permission to shift image labels onto
+different files. Every matching draft write, including restoration, marks the
+current snapshot pending until acknowledged so send preparation cannot skip it.

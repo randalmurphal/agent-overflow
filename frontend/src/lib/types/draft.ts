@@ -17,6 +17,8 @@ export interface Draft {
   updatedAt: number;
 }
 
+export type DraftSnapshot = Omit<Draft, 'threadId' | 'updatedAt'>;
+
 export function emptyDraft(threadId = ''): Draft {
   return {
     threadId,

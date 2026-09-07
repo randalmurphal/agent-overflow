@@ -98,6 +98,7 @@ func (a *App) SendMessageWithOptions(ctx context.Context, threadID string, conte
 		RevisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
 		SendID:                       opts.SendID,
 		ReconcileBySendID:            opts.ReconcileBySendID,
+		ConsumeDraft:                 opts.ConsumeDraft,
 		QueueIfActive:                true,
 		// Wire entry: this text was typed into a composer (D31).
 		ExpandComposerCommands: true,

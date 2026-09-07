@@ -25,6 +25,17 @@ never a base64 string in a WebSocket frame. `compressImageToFit` still
 runs first and is unchanged — a re-encode that fits beats a rejection,
 whatever carries the result.
 
+Direct and queued sends clear only their captured local composer snapshot.
+The accepting backend operation compares `consumeDraft` to the current saved
+row before consuming it; newer drafts from any frontend survive. Both send
+paths use the same captured raw snapshot (including terminal chips and plan
+source), independently of expanded message text. Queue dispatch does not
+consume drafts again. Never issue a separate `ClearDraft` around a send. Capture the thread, attachments,
+rollback snapshot and provisional row before awaiting draft-save settlement,
+so switching threads during a slow save cannot mix one thread's text with
+another's attachments or clear the newly opened composer. Unsaved snapshots
+are recorded before issuing a save, never reinserted by its delayed rejection.
+
 Empty-draft deletion holds `withEmptyDraftCleanup` through the RPC and local
 placeholder restoration. The deletion broadcast evicts every client's row and
 caches, but leaves that initiating pane for the cleanup result to restage;
@@ -89,14 +100,14 @@ A send awaits `waitForUploads()` before it snapshots `draft.attachments`
 in the air is not in the draft yet. Guarded on `uploading()` so the
 common send stays synchronous.
 
-A send also awaits `draft.quiesceSaves()` before the RPC that consumes
-the draft row (`SendMessageWithOptions`, `RegisterQueueItem`). The
-backend runs one connection's RPCs concurrently, so a debounced
-`SaveDraft` still on the wire can land AFTER the send's delete and put
-the sent text back in the row for every screen to re-read. The wait
-cancels the pending timer and joins the saves already issued; on the
-direct path it runs under `sending`, on the queue path after the
-synchronous local clear, so a second Enter during it has nothing to send.
+A send starts `draft.prepareForSend()` before clearing locally and awaits that
+captured write before admission. Dirty debounced edits must be persisted, or
+a saved `a` would mismatch the sent `ab` and reappear later. Clean hydrated
+drafts are never rewritten. The existing snapshot owner serializes writes per
+thread, coalescing ordinary autosaves while preserving send preparation
+boundaries; later typing cannot overtake the captured write or extend its wait.
+Preparation failure restores the draft without sending or asking whether an
+unissued message reached the agent.
 
 ## One send has one id, and a dead socket is not a verdict
 
@@ -194,3 +205,10 @@ An existing Claude/Codex conversation opens the shared Move/Copy dialog when
 another capable computer is selected. It never redirects that conversation's
 RPCs by changing the draft target. The transfer protocol and ownership epoch
 decide when its new home becomes usable; see `components/transfers/AGENTS.md`.
+
+Failed sends use `restoreUnsentDraftFor`: prepend submitted text to the latest
+local draft (or the persisted draft after switching threads), preserving both.
+Explicit editor replacement still uses `restoreDraftFor`, because edit/resend
+already merged its recovery text. Both merges use `prependDraftSnapshot`, which
+remaps image placeholders by attachment identity and retains terminal context.
+A completed save may clear pending state only if its snapshot still matches.

@@ -92,6 +92,16 @@ remote browser alike. Protocol and authz rules:
   release the buffer. Snapshot recovery starts after draining so buffered events
   cannot overwrite the snapshot that reconciles them.
 
+  **Replay completion has its own deadline.** The existing socket watchdog
+  allows `REPLAY_TIMEOUT_MS` (one RPC transfer budget) for the marker, including
+  first-connection notification replay. Pings, live events and RPC replies do
+  not extend it: none distinguishes replay progress from overtaking live traffic.
+  Document suspension and the native background lease defer verdicts; resume
+  grants a fresh window. Timeout retires the socket immediately through ordinary
+  close bookkeeping, discards buffered payloads and retries unchanged cursors;
+  it never repeats a mutation. Late close/frames cannot affect its successor.
+  A socket that never completed replay does not earn a backoff reset.
+
   **Replay has a presentation boundary.** `onReplay` reports start on a
   reconnect (never the first connection), complete after `replay-complete`,
   and cancel on socket loss or close. It carries no payloads and changes no

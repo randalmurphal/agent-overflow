@@ -5,6 +5,7 @@ import {
 } from './composerDraft.svelte';
 import type { Attachment } from '../types/attachment';
 import { getToasts } from './toast.svelte';
+import { getRememberedDraftSnapshot } from './composerDraftSnapshots';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 
 function installMocks(draft: {
@@ -59,6 +60,17 @@ describe('composerDraft store', () => {
     expect(store.content).toBe('hello [Image #1]');
     expect(store.attachments.map((a) => a.id)).toEqual(['att-1']);
     expect(store.terminalChips.map((c) => c.id)).toEqual(['chip-1']);
+  });
+
+  it('loads images in saved draft order and refuses missing images instead of renumbering them', async () => {
+    setBindingMock('GetDraft', async () => ({ content: 'second upload [Image #1], first upload [Image #2]', attachmentIds: ['b', 'a'], terminalChips: [] }));
+    setBindingMock('ListAttachments', async () => [sampleAttachment('a'), sampleAttachment('b')]);
+    const store = createComposerDraftStore();
+    const loaded = await store.loadPersistedSnapshot('thread-1');
+    expect(loaded.attachments.map((attachment) => attachment.id)).toEqual(['b', 'a']);
+    expect(loaded.content).toBe('second upload [Image #1], first upload [Image #2]');
+    setBindingMock('ListAttachments', async () => [sampleAttachment('a')]);
+    await expect(store.loadPersistedSnapshot('thread-1')).rejects.toThrow(/attachment is unavailable/);
   });
 
   it('does not carry local cleanup ownership into another thread or acquire it from remote refreshes', async () => {
@@ -234,16 +246,24 @@ describe('composerDraft store', () => {
     await store.flushPending();
   });
 
-  it('clearAfterSend resets state and calls ClearDraft', async () => {
-    const clearMock = setBindingMock('ClearDraft', async () => {});
+  it('retains the saved draft if the frontend closes before its send is accepted', async () => {
+    let persisted = { threadId: 'thread-1', content: 'send [Image #1]', attachmentIds: ['att-1'], terminalChips: [], updatedAt: 1 };
+    setBindingMock('GetDraft', async () => persisted);
+    setBindingMock('ListAttachments', async () => [sampleAttachment('att-1')]);
+    setBindingMock('ClearDraft', async () => { persisted = { ...persisted, content: '', attachmentIds: [] }; });
     const store = createComposerDraftStore({ debounceMs: 0 });
     await store.setThread('thread-1');
-    store.setContent('about to send');
-    store.setContentAndAttachments('about to send [Image #1]', [sampleAttachment('att-1')]);
-    await store.clearAfterSend();
+    store.clearLocalForSend();
     expect(store.content).toBe('');
     expect(store.attachments).toHaveLength(0);
-    expect(clearMock).toHaveBeenCalledWith('thread-1');
+
+    // The page dies before SendMessage reaches the host. A new store loads
+    // the saved draft rather than relying on the lost optimistic snapshot.
+    resetComposerDraftSnapshotsForTest();
+    const reopened = createComposerDraftStore({ debounceMs: 0 });
+    await reopened.setThread('thread-1');
+    expect(reopened.content).toBe('send [Image #1]');
+    expect(reopened.attachments.map((attachment) => attachment.id)).toEqual(['att-1']);
   });
 
   it('composeOutgoingMessage appends chips and keeps visible image placeholders structured', async () => {
@@ -464,6 +484,24 @@ describe('composerDraft store', () => {
     expect(saveMock.mock.calls.length).toBeGreaterThan(preFlushCalls);
   });
 
+  it.each(['edit', 'send'] as const)('does not restore an obsolete draft after a late save failure and %s', async (action) => {
+    let reject!: (error: Error) => void;
+    setBindingMock('SaveDraft', () => new Promise<void>((_, fail) => { reject = fail; }));
+    const store = createComposerDraftStore({ debounceMs: 60_000 });
+    await store.setThread('thread-1');
+    store.setContent('old text');
+    const saving = store.flush();
+    if (action === 'edit') store.setContent('new text');
+    else store.clearLocalForSend();
+    reject(new Error('connection lost'));
+    await saving;
+
+    expect(store.content).toBe(action === 'edit' ? 'new text' : '');
+    expect(getRememberedDraftSnapshot('thread-1')?.content).toBe(action === 'edit' ? 'new text' : undefined);
+    expect(store.hasPendingSave).toBe(action === 'edit');
+    store.clearLocalForSend();
+  });
+
   it('toasts once per failing streak when the debounced save rejects', async () => {
     // The debounced path swallows the rejection (the text is safe in the
     // remembered snapshot), so the toast is the only way the user learns
@@ -542,7 +580,7 @@ describe('composerDraft store', () => {
     });
   });
 
-  it('clearAfterSend resets sourceProposedPlan so subsequent turns are regular turns', async () => {
+  it('clearLocalForSend resets sourceProposedPlan so subsequent turns are regular turns', async () => {
     setBindingMock('GetDraft', async (id: string) => ({
       threadId: id,
       content: 'seed',
@@ -557,8 +595,38 @@ describe('composerDraft store', () => {
     await store.setThread('thread-impl');
     expect(store.sourceProposedPlan).not.toBeNull();
 
-    await store.clearAfterSend();
+    await store.clearLocalForSend();
     expect(store.sourceProposedPlan).toBeNull();
+  });
+
+  it.each(['visible', 'saved elsewhere'] as const)('restores an unsent message ahead of the %s next draft with correct image references', async (location) => {
+    const store = createComposerDraftStore({ debounceMs: 60_000 });
+    await store.setThread('thread-1');
+    const nextImage = sampleAttachment('next');
+    const oldImage = sampleAttachment('submitted');
+    const chip = { id: 'old-chip', label: 'sh', preview: '$ old', content: '$ old', createdAt: 1 };
+    if (location === 'visible') store.setContentAndAttachments('next [Image #1]', [nextImage]);
+    else {
+      await store.setThread('thread-2');
+      setBindingMock('GetDraft', async () => ({ content: 'next [Image #1]', attachmentIds: ['next'], terminalChips: [] }));
+      setBindingMock('ListAttachments', async () => [oldImage, nextImage]);
+    }
+    const save = setBindingMock('SaveDraft', async () => {});
+    await store.restoreUnsentDraftFor('thread-1', {
+      content: 'submitted [Image #1]', attachments: [oldImage], terminalChips: [chip], sourceProposedPlan: null,
+    });
+    expect(save).toHaveBeenLastCalledWith('thread-1', 'submitted [Image #1]\n\nnext [Image #2]', ['submitted', 'next'], [chip], null);
+    expect(store.content).toBe(location === 'visible' ? 'submitted [Image #1]\n\nnext [Image #2]' : '');
+  });
+
+  it('does not duplicate an unsent draft that is already saved on the previous thread', async () => {
+    const store = createComposerDraftStore();
+    await store.setThread('thread-2');
+    setBindingMock('GetDraft', async () => ({ content: 'same', attachmentIds: [], terminalChips: [] }));
+    const save = setBindingMock('SaveDraft', async () => {});
+    await store.restoreUnsentDraftFor('thread-1', { content: 'same', attachments: [], terminalChips: [] });
+    expect(save).toHaveBeenLastCalledWith('thread-1', 'same', [], [], null);
+    expect(store.content).toBe('');
   });
 
   it('restoreDraftFor preserves sourceProposedPlan from the snapshot', async () => {
@@ -576,24 +644,21 @@ describe('composerDraft store', () => {
     expect(store.sourceProposedPlan).toEqual({ threadId: 'src', itemId: 'plan-1' });
   });
 
-  it('restoreDraftFor paints the text before persisting, and rejects when the write fails', async () => {
-    // Paint-first: the write failing is precisely when the text has
-    // nowhere else to live, so it must already be on screen. The store is
-    // left in the ordinary unsaved-draft state (`hasPendingSave` + the
-    // remembered snapshot) that the retry machinery understands, and the
-    // rejection lets the caller say the restore is not durable.
-    setBindingMock('SaveDraft', async () => {
-      throw new Error('offline');
-    });
+  it('keeps restored text pending and refuses preparation if its save fails', async () => {
+    let reject!: (err: Error) => void;
+    const pending = new Promise<void>((_, fail) => { reject = fail; });
+    setBindingMock('SaveDraft', () => pending);
     const store = createComposerDraftStore({ debounceMs: 0 });
     await store.setThread('thread-1');
-
-    await expect(store.restoreDraftFor('thread-1', {
-      content: 'failed send',
-      attachments: [],
-      terminalChips: [],
-    })).rejects.toThrow(/offline/);
-
+    const restoration = store.restoreDraftFor('thread-1', {
+      content: 'failed send', attachments: [], terminalChips: [],
+    });
+    const restoreFailure = expect(restoration).rejects.toThrow(/offline/);
+    expect(store.content).toBe('failed send');
+    expect(store.hasPendingSave).toBe(true);
+    const preparationFailure = expect(store.prepareForSend()).rejects.toThrow(/offline/);
+    reject(new Error('offline'));
+    await Promise.all([restoreFailure, preparationFailure]);
     expect(store.content).toBe('failed send');
     expect(store.hasPendingSave).toBe(true);
   });
@@ -685,30 +750,26 @@ describe('composerDraft store', () => {
     expect(store.sourceProposedPlan).toBeNull();
   });
 
-  // quiesceSaves is what the send paths call before the row is deleted. The
+  // prepareForSend is what the send paths call before the row is deleted. The
   // backend runs a connection's RPCs concurrently, so a SaveDraft still on
   // the wire can land AFTER the send's delete and resurrect the text the
   // user just sent — a composer that will not clear.
-  it('quiesceSaves cancels a queued debounced save so it never reaches the backend', async () => {
-    const saveMock = setBindingMock('SaveDraft', async () => {});
-    // Own thread id: stores built by earlier cases in this file are never
-    // torn down, and one of them can still land a debounced save on
-    // 'thread-1' inside the wait below.
-    const savesHere = () => saveMock.mock.calls.filter((call) => call[0] === 'thread-quiesce');
-    const store = createComposerDraftStore({ debounceMs: 20 });
-    await store.setThread('thread-quiesce');
-
-    store.setContent('typed then sent');
-    await store.quiesceSaves();
-
-    expect(savesHere()).toEqual([]);
-    // Past the debounce window: the timer was cancelled, not merely
-    // outrun, so nothing lands after the caller's clear either.
-    await new Promise((r) => setTimeout(r, 40));
-    expect(savesHere()).toEqual([]);
+  it('prepareForSend persists the pending edit before consuming its captured draft', async () => {
+    installMocks({ content: 'a', attachmentIds: [], terminalChips: [] });
+    const writes = setBindingMock('SaveDraft', async () => {});
+    const store = createComposerDraftStore({ debounceMs: 60_000 });
+    await store.setThread('thread-consume');
+    await store.prepareForSend();
+    expect(writes).not.toHaveBeenCalled(); // A clean hydrated draft is not rewritten.
+    store.setContent('ab');
+    const ready = store.prepareForSend();
+    store.clearLocalForSend();
+    await ready;
+    expect(writes).toHaveBeenCalledOnce();
+    expect(writes.mock.calls[0].slice(0, 2)).toEqual(['thread-consume', 'ab']);
   });
 
-  it('quiesceSaves waits for a SaveDraft already on the wire', async () => {
+  it('prepareForSend waits for a SaveDraft already on the wire', async () => {
     let resolveSave: (() => void) | undefined;
     let resolveSaveStarted: (() => void) | undefined;
     const saveStarted = new Promise<void>((resolve) => {
@@ -728,7 +789,7 @@ describe('composerDraft store', () => {
     const flushing = store.flush();
     await saveStarted;
 
-    const quiesced = store.quiesceSaves().then(() => 'done');
+    const quiesced = store.prepareForSend().then(() => 'done');
     await expect(Promise.race([
       quiesced,
       new Promise<'waiting'>((resolve) => setTimeout(() => resolve('waiting'), 0)),
@@ -739,7 +800,7 @@ describe('composerDraft store', () => {
     await expect(quiesced).resolves.toBe('done');
   });
 
-  it('quiesceSaves resolves at once with no thread, and for a local store', async () => {
+  it('prepareForSend resolves at once with no thread, and for a local store', async () => {
     // A store with nothing to save has nothing to wait for. The local case
     // is the sharper one: it shares its thread with the real composer, so a
     // save IS in flight for that id — and it belongs to a row this store
@@ -758,7 +819,7 @@ describe('composerDraft store', () => {
 
     const unpointed = createComposerDraftStore({ debounceMs: 0 });
     await expect(Promise.race([
-      unpointed.quiesceSaves().then(() => 'quiesced'),
+      unpointed.prepareForSend().then(() => 'quiesced'),
       new Promise<'slow'>((resolve) => setTimeout(() => resolve('slow'), 0)),
     ])).resolves.toBe('quiesced');
 
@@ -776,7 +837,7 @@ describe('composerDraft store', () => {
       sourceProposedPlan: null,
     });
     await expect(Promise.race([
-      local.quiesceSaves().then(() => 'quiesced'),
+      local.prepareForSend().then(() => 'quiesced'),
       new Promise<'slow'>((resolve) => setTimeout(() => resolve('slow'), 0)),
     ])).resolves.toBe('quiesced');
 

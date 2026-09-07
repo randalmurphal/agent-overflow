@@ -596,8 +596,8 @@ func TestComposer_AttachmentNotLostOnDraftSave(t *testing.T) {
 }
 
 // TestComposer_SendMessageClearsDraft verifies the backend clears the draft
-// row after persisting the user message. The frontend fires a fire-and-forget
-// ClearDraft as defense-in-depth, but the backend is the authoritative cleanup.
+// row after persisting the user message. The frontend only clears its visible
+// composer; durable draft consumption belongs to this accepting operation.
 func TestComposer_SendMessageClearsDraft(t *testing.T) {
 	app, _ := newComposerTestApp(t)
 	thread := composerSeedThread(t, app, "thr-send-draft", "")

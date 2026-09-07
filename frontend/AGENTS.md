@@ -50,6 +50,14 @@ known failure class here, so extend the existing one instead.
 - Split a `.svelte` file once it passes roughly 300 lines and a clear
   component boundary exists. Derive in `<script>`, render in the template.
 
+## Error reporting
+
+Use the backend registry's diagnostic sink installer so existing and later
+attachments are covered, rather than wiring only the HOME singleton. Keep
+messages constant and details free of RPC/message payloads and credentials.
+The error-capture signature overflow uses fixed per-kind buckets; variable
+stack sites would make the supposed cap unbounded.
+
 ## Clipboard diagnostics
 
 Plain-text clipboard and copy-button failures must reach `utils/clipboard.ts#reportCopyFailure`,

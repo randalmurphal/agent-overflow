@@ -83,6 +83,7 @@ import {
   RECONNECT_INITIAL_MS,
   RECONNECT_MAX_LOCAL_MS,
   RECONNECT_MAX_REMOTE_MS,
+  REPLAY_TIMEOUT_MS,
   RETRY_ON_TRANSIENT_CLOSE,
   RPC_TIMEOUT_MS,
   STALE_TRAFFIC_THRESHOLD_MS,
@@ -1272,6 +1273,109 @@ describe('WSClient', () => {
     second.pushFrame({ type: 'event', channel: 'provider:item_event', seq: 5, data: 'after replay' });
     expect(items.at(-1)).toBe('after replay');
     client.close();
+  });
+
+  it('retires stalled replay despite live traffic and retries unchanged cursors without resending a mutation', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    const items: unknown[] = [];
+    const recovery: string[] = [];
+    const diagnostics = vi.fn();
+    client.setDiagnosticsSink(diagnostics);
+    client.onReplay((phase) => recovery.push(phase));
+    client.subscribe('provider:item_event', (item) => items.push(item));
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    first.pushFrame({ type: 'replay' });
+    first.pushFrame({ type: 'event', channel: 'provider:item_event', seq: 1, data: 'before' });
+    first.triggerClose();
+    await vi.advanceTimersByTimeAsync(125);
+    const second = MockWebSocket.instances[1]!;
+    second.acceptOpen();
+    second.deferClose = true;
+    // Neither overtaking events nor successful RPCs/heartbeats prove replay
+    // finished. A native bridge can also lose the marker without losing pings.
+    for (let elapsed = 0; elapsed < REPLAY_TIMEOUT_MS - STALE_CHECK_INTERVAL_MS; elapsed += STALE_CHECK_INTERVAL_MS) {
+      second.pushFrame({ type: 'ping' });
+      second.pushFrame({ type: 'event', channel: 'provider:item_event', seq: 3, data: 'live' });
+      await vi.advanceTimersByTimeAsync(STALE_CHECK_INTERVAL_MS);
+    }
+    const mutation = client.callByName('test.SendMessage', ['once']);
+    const rejected = expect(mutation).rejects.toBeInstanceOf(DisconnectedError);
+    await flushMicrotasks();
+    expect(second.sent.filter((frame) => frame.type === 'rpc')).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(STALE_CHECK_INTERVAL_MS);
+    await rejected;
+    expect(second.readyState).toBe(2); // close callback has not arrived
+    expect(client.getStatus().status).toBe('reconnecting');
+    expect(client.getStatus().nextAttemptAt! - Date.now()).toBe(250); // incomplete replay earned no backoff reset
+    expect(recovery).toEqual(['start', 'cancel']);
+    expect(items).toEqual(['before']);
+    expect(diagnostics).toHaveBeenCalledWith('transport: replay did not complete; forcing reconnect');
+    // No user action or close callback is required to restart recovery.
+    await vi.advanceTimersByTimeAsync(250);
+    const third = MockWebSocket.instances[2]!;
+    third.acceptOpen();
+    expect(third.sent.find((frame) => frame.type === 'replay')).toMatchObject({
+      lastSeqByChannel: { 'provider:item_event': 1 },
+    });
+    expect(third.sent.some((frame) => frame.type === 'rpc')).toBe(false);
+    second.pushFrame({ type: 'event', channel: 'provider:item_event', seq: 999, data: 'retired' });
+    second.pushFrame({ type: 'replay' });
+    second.flushClose();
+    third.pushFrame({ type: 'batch', events: [
+      { channel: 'provider:item_event', seq: 2, data: 'missed' },
+      { channel: 'provider:item_event', seq: 3, data: 'live' },
+    ] });
+    third.pushFrame({ type: 'replay' });
+    expect(items).toEqual(['before', 'missed', 'live']);
+    expect(recovery).toEqual(['start', 'cancel', 'start', 'complete']);
+    // Completing recovery disarms its deadline, including on legacy servers
+    // without heartbeats. There is no stale timer from the retired socket.
+    await vi.advanceTimersByTimeAsync(REPLAY_TIMEOUT_MS * 2);
+    expect(third.readyState).toBe(1);
+    expect(MockWebSocket.instances).toHaveLength(3);
+    client.close();
+  });
+
+  it.each(['document', 'native'] as const)('gives paused %s replay a full completion window after resume', async (lifecycle) => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const socket = MockWebSocket.instances[0]!;
+    socket.acceptOpen();
+    socket.pushFrame({ type: 'ping' });
+    let visibilityState: DocumentVisibilityState = 'visible';
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => visibilityState });
+    try {
+      await vi.advanceTimersByTimeAsync(REPLAY_TIMEOUT_MS - STALE_CHECK_INTERVAL_MS);
+      if (lifecycle === 'native') client.setLease('background');
+      else {
+        visibilityState = 'hidden';
+        document.dispatchEvent(new Event('visibilitychange'));
+      }
+      await vi.advanceTimersByTimeAsync(REPLAY_TIMEOUT_MS * 3);
+      expect(socket.readyState).toBe(1);
+      if (lifecycle === 'native') client.setLease('active');
+      else {
+        visibilityState = 'visible';
+        document.dispatchEvent(new Event('visibilitychange'));
+      }
+      await vi.advanceTimersByTimeAsync(REPLAY_TIMEOUT_MS - STALE_CHECK_INTERVAL_MS);
+      expect(socket.readyState).toBe(1);
+      // A slow but complete replay can use almost the whole transfer budget.
+      socket.pushFrame({ type: 'replay' });
+      await vi.advanceTimersByTimeAsync(STALE_CHECK_INTERVAL_MS);
+      expect(socket.readyState).toBe(1);
+    } finally {
+      delete (document as { visibilityState?: unknown }).visibilityState;
+      client.close();
+    }
   });
 
   it('does not charge ordinary first-connection traffic to notification replay', async () => {
@@ -2492,6 +2596,7 @@ describe('WSClient', () => {
     await vi.advanceTimersByTimeAsync(0);
     const first = MockWebSocket.instances[0]!;
     first.acceptOpen();
+    first.pushFrame({ type: 'replay' });
     await vi.advanceTimersByTimeAsync(0);
 
     // One heartbeat arms the watchdog; then the socket goes silent
@@ -2520,6 +2625,7 @@ describe('WSClient', () => {
     await vi.advanceTimersByTimeAsync(0);
     const first = MockWebSocket.instances[0]!;
     first.acceptOpen();
+    first.pushFrame({ type: 'replay' });
     await vi.advanceTimersByTimeAsync(0);
     first.pushFrame({ type: 'ping' });
 
@@ -2554,6 +2660,7 @@ describe('WSClient', () => {
     await vi.advanceTimersByTimeAsync(0);
     const first = MockWebSocket.instances[0]!;
     first.acceptOpen();
+    first.pushFrame({ type: 'replay' });
     await vi.advanceTimersByTimeAsync(0);
 
     for (let i = 0; i < 6; i++) {
@@ -2573,6 +2680,7 @@ describe('WSClient', () => {
     await vi.advanceTimersByTimeAsync(0);
     const first = MockWebSocket.instances[0]!;
     first.acceptOpen();
+    first.pushFrame({ type: 'replay' });
     await vi.advanceTimersByTimeAsync(0);
 
     // A heartbeat-less (older) server with an idle-but-healthy socket
@@ -2594,6 +2702,7 @@ describe('WSClient', () => {
     await vi.advanceTimersByTimeAsync(0);
     const first = MockWebSocket.instances[0]!;
     first.acceptOpen();
+    first.pushFrame({ type: 'replay' });
     await vi.advanceTimersByTimeAsync(0);
 
     // Socket #1 proves heartbeats, goes silent, and is force-closed.
@@ -2604,6 +2713,7 @@ describe('WSClient', () => {
     const second = MockWebSocket.instances.at(-1)!;
     expect(second).not.toBe(first);
     second.acceptOpen();
+    second.pushFrame({ type: 'replay' });
     await vi.advanceTimersByTimeAsync(0);
 
     // Socket #2 has NOT proven heartbeats — the proof is per
@@ -2634,6 +2744,7 @@ describe('WSClient', () => {
     await vi.advanceTimersByTimeAsync(0);
     const first = MockWebSocket.instances[0]!;
     first.acceptOpen();
+    first.pushFrame({ type: 'replay' });
     await vi.advanceTimersByTimeAsync(0);
     first.pushFrame({ type: 'ping' });
 
@@ -2675,6 +2786,7 @@ describe('WSClient', () => {
     await vi.advanceTimersByTimeAsync(0);
     const first = MockWebSocket.instances[0]!;
     first.acceptOpen();
+    first.pushFrame({ type: 'replay' });
     await vi.advanceTimersByTimeAsync(0);
     first.pushFrame({ type: 'ping' });
 
@@ -2702,6 +2814,7 @@ describe('WSClient', () => {
     await vi.advanceTimersByTimeAsync(0);
     const first = MockWebSocket.instances[0]!;
     first.acceptOpen();
+    first.pushFrame({ type: 'replay' });
     await vi.advanceTimersByTimeAsync(0);
     first.pushFrame({ type: 'ping' });
 
@@ -2898,6 +3011,7 @@ describe('WSClient', () => {
     await vi.advanceTimersByTimeAsync(RECONNECT_MAX_LOCAL_MS);
     const stable = MockWebSocket.instances.at(-1)!;
     stable.acceptOpen();
+    stable.pushFrame({ type: 'replay' });
     await vi.advanceTimersByTimeAsync(BACKOFF_RESET_AFTER_MS);
     stable.triggerClose();
 
@@ -3995,6 +4109,7 @@ describe('dormant reconnect ladder', () => {
     await vi.advanceTimersByTimeAsync(DORMANT_PROBE_MS + DORMANT_PROBE_JITTER_MS);
     const revived = MockWebSocket.instances.at(-1)!;
     revived.acceptOpen();
+    revived.pushFrame({ type: 'replay' });
     await vi.advanceTimersByTimeAsync(0);
     expect(client.getStatus().status).toBe('connected');
     // The open is the last moment bytes crossed on a socket that then sat

@@ -33,6 +33,7 @@ export {
     DiffContextRequest,
     DiffContextResult,
     Draft,
+    DraftSnapshot,
     EditDiffEntry,
     EditDiffList,
     EditDiffTurnLabel,

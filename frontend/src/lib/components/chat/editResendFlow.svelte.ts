@@ -36,6 +36,7 @@ import {
   createComposerDraftStore,
   type ComposerDraftStore,
 } from '../../stores/composerDraft.svelte';
+import { prependDraftSnapshot } from '../../utils/mergeDraftSnapshots';
 import type { ComposerDraftSnapshot } from '../../stores/composerDraftSnapshots';
 import { consumeResendRevertMarker } from '../../stores/eventsMessageRevert';
 import type { ThreadPane } from '../../stores/thread.svelte';
@@ -44,7 +45,6 @@ import {
   isTransportClassError,
   whenTransportConnected,
 } from '../../stores/transportStatus.svelte';
-import type { Attachment } from '../../types/attachment';
 import type { Item } from '../../types/models';
 import { restoredDraftSnapshotFromUserItem } from '../../utils/userMessageDraftSnapshot';
 import { userFacingError } from '../../utils/userFacingError';
@@ -148,30 +148,6 @@ export function resetEditResendExecutionForTest(): void {
 }
 
 // ---------------------------------------------------------------------------
-
-/**
- * Merge an edit AHEAD of whatever the target draft already holds, exactly
- * as the backend's own crash copy does (`internal/composerdraft`
- * `MergeParts`): edited text first, existing content after a blank line,
- * attachments deduped with the edit's first. One helper for both recovery
- * branches — a hand-copied second version is how the two would drift.
- */
-function mergeEditedAhead(
-  edited: { content: string; attachments: Attachment[] },
-  base: ComposerDraftSnapshot,
-): ComposerDraftSnapshot {
-  return {
-    content: base.content.trim() === ''
-      ? edited.content
-      : `${edited.content}\n\n${base.content}`,
-    attachments: [
-      ...edited.attachments,
-      ...base.attachments.filter((a) => !edited.attachments.some((e) => e.id === a.id)),
-    ],
-    terminalChips: [...base.terminalChips],
-    sourceProposedPlan: base.sourceProposedPlan,
-  };
-}
 
 export interface EditResendFlowOptions {
   /**
@@ -568,7 +544,7 @@ export function createEditResendFlow(opts: EditResendFlowOptions): EditResendFlo
     if (edited.content.trim() === '' && edited.attachments.length === 0) return;
     const composerDraft = opts.getComposerDraft();
     if (composerDraft.threadId === threadId) {
-      const recovered = mergeEditedAhead(edited, {
+      const recovered = prependDraftSnapshot(edited, {
         content: composerDraft.content,
         attachments: composerDraft.attachments,
         terminalChips: composerDraft.terminalChips,
@@ -592,7 +568,7 @@ export function createEditResendFlow(opts: EditResendFlowOptions): EditResendFlo
       // restoreDraftFor persists to the named thread and skips the local
       // paint when the store points elsewhere — exactly the cross-thread
       // semantics wanted here.
-      await composerDraft.restoreDraftFor(threadId, mergeEditedAhead(edited, row));
+      await composerDraft.restoreDraftFor(threadId, prependDraftSnapshot(edited, row));
     } catch (err) {
       // The edited text still lives in the flow's local store until GC,
       // but there is no durable home left to put it in — say so rather

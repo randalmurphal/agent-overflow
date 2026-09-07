@@ -42,6 +42,16 @@ type Draft struct {
 	UpdatedAt          int64               `json:"updatedAt"`
 }
 
+// DraftSnapshot names the exact persisted composer state a send may consume.
+// Equal-content saves are no-ops, so content identity is sufficient; timestamps
+// are not revisions and must not decide whether a newer edit is removed.
+type DraftSnapshot struct {
+	Content            string              `json:"content"`
+	AttachmentIDs      []string            `json:"attachmentIds"`
+	TerminalChips      []TerminalChip      `json:"terminalChips"`
+	SourceProposedPlan *SourceProposedPlan `json:"sourceProposedPlan,omitempty"`
+}
+
 // SaveDraft replaces the draft row for a thread.
 //
 // ctx carries the calling screen's identity so the broadcast can name it and
@@ -58,26 +68,37 @@ func (a *App) SaveDraft(ctx context.Context, threadID string, content string, at
 		return err
 	}
 	defer unlock()
-	attachmentsJSON, err := json.Marshal(slicesx.OrEmpty(attachmentIDs))
+	draft, err := encodeThreadDraft(threadID, DraftSnapshot{
+		Content: content, AttachmentIDs: attachmentIDs, TerminalChips: terminalChips, SourceProposedPlan: sourceProposedPlan,
+	})
 	if err != nil {
-		return fmt.Errorf("save draft: encode attachment ids: %w", err)
+		return err
 	}
-	chipsJSON, err := json.Marshal(slicesx.OrEmpty(terminalChips))
+	return a.writeThreadDraft(clientOf(ctx), draft)
+}
+
+// Save and conditional consumption must encode the same persisted representation.
+func encodeThreadDraft(threadID string, snapshot DraftSnapshot) (store.ThreadDraft, error) {
+	attachmentsJSON, err := json.Marshal(slicesx.OrEmpty(snapshot.AttachmentIDs))
 	if err != nil {
-		return fmt.Errorf("save draft: encode terminal chips: %w", err)
+		return store.ThreadDraft{}, fmt.Errorf("save draft: encode attachment ids: %w", err)
 	}
-	sourcePlanJSON, err := usermessage.EncodeDraftSource(sourceProposedPlan)
+	chipsJSON, err := json.Marshal(slicesx.OrEmpty(snapshot.TerminalChips))
 	if err != nil {
-		return fmt.Errorf("save draft: encode source proposed plan: %w", err)
+		return store.ThreadDraft{}, fmt.Errorf("save draft: encode terminal chips: %w", err)
 	}
-	return a.writeThreadDraft(clientOf(ctx), store.ThreadDraft{
+	sourcePlanJSON, err := usermessage.EncodeDraftSource(snapshot.SourceProposedPlan)
+	if err != nil {
+		return store.ThreadDraft{}, fmt.Errorf("save draft: encode source proposed plan: %w", err)
+	}
+	return store.ThreadDraft{
 		ThreadID:                  threadID,
-		Content:                   content,
+		Content:                   snapshot.Content,
 		Attachments:               string(attachmentsJSON),
 		TerminalChips:             string(chipsJSON),
 		PendingPlanImplementation: sourcePlanJSON,
 		UpdatedAt:                 time.Now().UnixMilli(),
-	})
+	}, nil
 }
 
 // GetDraft returns the draft for a thread. Missing drafts return a zero
@@ -140,7 +161,7 @@ func (a *App) ClearDraft(ctx context.Context, threadID string) error {
 		return err
 	}
 	defer unlock()
-	return a.removeThreadDraft(clientOf(ctx), threadID)
+	return a.removeThreadDraft(clientOf(ctx), threadID, nil)
 }
 
 // DeleteEmptyDraftThread removes a materialized chat/plan draft row after the

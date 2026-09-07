@@ -9,6 +9,7 @@ const { homeClient } = vi.hoisted(() => ({
     callByName: vi.fn<(name: string, args: unknown[]) => Promise<unknown>>(),
     subscribe: vi.fn<(channel: string, handler: (data: unknown) => void) => () => void>(),
     installStepUpProver: vi.fn(),
+    setDiagnosticsSink: vi.fn(),
     setWatchedThreads: vi.fn(),
     setLease: vi.fn(),
     getStatus: vi.fn(() => ({ status: 'connected', nextAttemptAt: null })),
@@ -38,6 +39,7 @@ import {
   detachBackend,
   homeBackend,
   installStepUpProverEverywhere,
+  installDiagnosticsSinkEverywhere,
   mergeBackendResults,
   setLeaseEverywhere,
   setWatchedThreadsEverywhere,
@@ -62,6 +64,7 @@ import {
 import { onBackendDetached, type BackendDetachment } from './backends';
 import { backendClockSkew, resetBackendClocksForTest } from './backendClock';
 import { Events } from './runtime';
+import type { WSClient } from './wsClient';
 
 type FakeClient = typeof homeClient;
 
@@ -71,6 +74,7 @@ function fakeClient(): FakeClient {
     callByName: vi.fn<(name: string, args: unknown[]) => Promise<unknown>>(),
     subscribe: vi.fn<(channel: string, handler: (data: unknown) => void) => () => void>(),
     installStepUpProver: vi.fn(),
+    setDiagnosticsSink: vi.fn(),
     setWatchedThreads: vi.fn(),
     setLease: vi.fn(),
     getStatus: vi.fn(() => ({ status: 'connected', nextAttemptAt: null })),
@@ -445,4 +449,26 @@ describe('detach forgets what the backend owned', () => {
     detachBackend('laptop');
     expect(listener).toHaveBeenCalledTimes(1);
   });
+});
+
+
+it('captures diagnostics from existing and later connections and releases detached sinks', () => {
+  const sink = vi.fn();
+  const remote = fakeClient();
+  installDiagnosticsSinkEverywhere(sink);
+  try {
+    const homeSink = homeClient.setDiagnosticsSink.mock.lastCall?.[0];
+    homeSink('transport: outage', 'duration=3');
+    __attachBackendForTest(descriptor(), remote as unknown as WSClient);
+    const remoteSink = remote.setDiagnosticsSink.mock.lastCall?.[0];
+    remoteSink('transport: outage', 'duration=4');
+    expect(sink.mock.calls).toEqual([
+      ['transport: outage', 'backend=home duration=3'],
+      ['transport: outage', 'backend=laptop duration=4'],
+    ]);
+    detachBackend('laptop');
+    expect(remote.setDiagnosticsSink).toHaveBeenLastCalledWith(null);
+  } finally {
+    installDiagnosticsSinkEverywhere(null);
+  }
 });

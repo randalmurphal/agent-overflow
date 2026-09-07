@@ -117,6 +117,17 @@ describe('dispatchSend', () => {
     expect(consoleErr).toHaveBeenCalled();
   });
 
+  it('restores without an ambiguous-send prompt when draft preparation loses its connection', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const send = setBindingMock('SendMessageWithOptions', async () => makeThread());
+    const options = sendOptions();
+    const sent = await dispatchSend({ ...options, draftReady: Promise.reject(new DisconnectedError('connection lost')) });
+    expect(sent).toBe(false);
+    expect(send).not.toHaveBeenCalled();
+    expect(hasPendingUnsentMessageConfirmation()).toBe(false);
+    expect(options.restoreDraft).toHaveBeenCalled();
+  });
+
   // A socket that died AFTER the frame reached the backend looks exactly like
   // one that died before it, and the transport has already spent its one
   // retry by the time this runs. The message may be with the agent, so

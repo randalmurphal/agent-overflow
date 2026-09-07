@@ -112,11 +112,11 @@ func TestThreadDraftDeleteIsIdempotent(t *testing.T) {
 	if _, err := s.UpsertThreadDraft(draft); err != nil {
 		t.Fatalf("UpsertThreadDraft: %v", err)
 	}
-	if _, err := s.DeleteThreadDraft(thread.ID); err != nil {
+	if _, err := s.DeleteThreadDraft(thread.ID, nil); err != nil {
 		t.Fatalf("DeleteThreadDraft: %v", err)
 	}
 	// Second delete must be a no-op, not an error.
-	if _, err := s.DeleteThreadDraft(thread.ID); err != nil {
+	if _, err := s.DeleteThreadDraft(thread.ID, nil); err != nil {
 		t.Fatalf("second DeleteThreadDraft: %v", err)
 	}
 

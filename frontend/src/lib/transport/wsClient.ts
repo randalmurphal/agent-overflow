@@ -112,6 +112,10 @@ export const RECONNECT_MAX_REMOTE_MS = 30_000;
 // coarse — precision is not the point.
 export const STALE_TRAFFIC_THRESHOLD_MS = 30_000;
 export const STALE_CHECK_INTERVAL_MS = 10_000;
+// Live events and heartbeats can overtake replay; only its completion marker
+// proves recovery finished. Bound that wait separately from socket traffic,
+// allowing the same full transfer budget as an RPC on a slow remote link.
+export const REPLAY_TIMEOUT_MS = RPC_TIMEOUT_MS;
 // Consecutive close-before-open failures that invalidate the cached
 // bootstrap (see preOpenFailures).
 export const BOOTSTRAP_INVALIDATE_AFTER_FAILURES = 2;
@@ -748,6 +752,7 @@ export class WSClient {
   // Connection state. `connectPromise` is the in-flight connect; it
   // resolves once the socket reaches OPEN. `ws` is the live socket.
   private ws: WSLike | null = null;
+  private socketAttempt: ConnectAttempt | null = null;
   private connectPromise: Promise<void> | null = null;
   // Whether `ws` named the PAIRED session on its upgrade (it dialed with
   // a ticket) rather than riding whatever cookie the browser had. Only
@@ -777,10 +782,9 @@ export class WSClient {
   // constructor; null in non-DOM environments.
   private readonly detachLifecycleListeners: (() => void) | null;
 
-  // Stale-socket watchdog state. lastFrameAt is refreshed on every
-  // inbound message (heartbeats included); the timer runs only while a
-  // socket is open, and only force-closes once serverSendsHeartbeats
-  // has proven the traffic floor exists (see STALE_TRAFFIC_THRESHOLD_MS).
+  // One open-socket watchdog checks both replay completion and traffic.
+  // Only the traffic verdict requires a proven heartbeat floor.
+  // lastFrameAt is refreshed on every inbound message.
   private lastFrameAt = 0;
   private staleTimer: ReturnType<typeof setInterval> | null = null;
   // Per-connection: set by the first ping frame, reset on close. Each
@@ -918,6 +922,7 @@ export class WSClient {
   // what was missed). See ChannelCursor.
   private connectionEpoch = 0;
   private replayBuffer: ReplayBuffer | null = null;
+  private replayStartedAt = 0;
   private notificationCheckpointScope: string | null = null;
   // The watched-thread set this client is DESIRING, sorted. `null` means
   // no set has ever been composed, which is the wildcard state the backend
@@ -1005,7 +1010,7 @@ export class WSClient {
       // The watchdog's interval clock froze with the page; judge
       // staleness from fresh post-thaw evidence, otherwise every thaw
       // whose socket survived suspension force-closes it spuriously.
-      this.lastFrameAt = Date.now();
+      this.resumeWatchdog();
     }
     this.wakeReconnectLadder();
   }
@@ -1158,12 +1163,13 @@ export class WSClient {
   setLease(state: LeaseState): void {
     if (this.lease === state) return;
     this.lease = state;
+    if (state === 'active') this.resumeWatchdog();
     this.sendFrame({ type: 'lease', state });
     this.applyLeaseToDormantLadder();
   }
 
-  // applyLeaseToDormantLadder is the lease's ONE effect on this client's
-  // own behaviour. The two directions are deliberately not symmetric.
+  // applyLeaseToDormantLadder controls probing while the native app is paused.
+  // The two directions are deliberately not symmetric.
   //
   // BACKGROUND touches only a DORMANT ladder: cancel the probe timer,
   // because a phone in a pocket has nothing to keep current. An ordinary
@@ -1434,6 +1440,8 @@ export class WSClient {
     const ws = this.ws;
     if (ws === null) return;
     this.ws = null;
+    this.socketAttempt = null;
+    this.replayBuffer = null;
     this.connectPromise = null;
     this.socketNamedPairedSession = false;
     this.stopStaleWatchdog();
@@ -1459,11 +1467,9 @@ export class WSClient {
     this.diagnosticsSink = sink;
   }
 
-  // The staleness watchdog runs only while a socket is open. It fires
-  // only after serverSendsHeartbeats — a server that heartbeats every
-  // 10s but has delivered nothing for STALE_TRAFFIC_THRESHOLD_MS is
-  // half-open (relay died without a FIN; no close event is coming), so
-  // force-closing is the only way the reconnect path ever runs.
+  // Both liveness verdicts share one coarse timer per open socket.
+  // A missing replay marker or a half-open socket cannot rely on the peer
+  // to close it and start recovery.
   private startStaleWatchdog(): void {
     this.lastFrameAt = Date.now();
     if (this.staleTimer !== null) return;
@@ -1495,13 +1501,27 @@ export class WSClient {
     return false;
   }
 
+  private resumeWatchdog(): void {
+    this.lastFrameAt = Date.now();
+    if (this.replayBuffer) this.replayStartedAt = this.lastFrameAt;
+  }
+
   private checkStaleness(): void {
-    if (this.closed || !this.serverSendsHeartbeats) return;
+    if (this.closed) return;
     // A hidden renderer may throttle both this interval and WebSocket message
     // delivery, so silence there says nothing about the socket. The visibility
     // resume path refreshes lastFrameAt before verdicts resume.
-    if (documentHidden()) return;
+    if (documentHidden() || this.lease === 'background') return;
     if (!this.ws || this.ws.readyState !== WS_OPEN) return;
+    if (this.replayBuffer && Date.now() - this.replayStartedAt >= REPLAY_TIMEOUT_MS) {
+      this.diagnosticsSink?.('transport: replay did not complete; forcing reconnect');
+      console.warn('wsClient: replay did not complete; forcing reconnect');
+      this.forceReconnect('replay did not complete');
+      return;
+    }
+    // Replay can itself be one large frame; let its full transfer budget
+    // arbitrate until completion instead of the shorter silence threshold.
+    if (this.replayBuffer || !this.serverSendsHeartbeats) return;
     // A single huge response frame on a slow remote link yields no
     // message event until fully received — and it blocks the
     // heartbeats queued behind it on the wire. So a RECENTLY issued RPC
@@ -1526,12 +1546,18 @@ export class WSClient {
       'transport: no traffic on an open socket; forcing reconnect',
       `idle ${idleSeconds}s`,
     );
-    try {
-      this.ws.close();
-    } catch {
-      // ignore — socket may already be closing; the close event still
-      // drives the reconnect path either way.
-    }
+    this.forceReconnect('no traffic on an open socket');
+  }
+
+  // A failed socket is retired immediately. Browser close handshakes can wait
+  // on the same broken peer; late frames and close callbacks belong to the
+  // retired socket and are ignored by the ordinary identity guards.
+  private forceReconnect(reason: string): void {
+    const ws = this.ws;
+    const attempt = this.socketAttempt;
+    if (!ws || !attempt) return;
+    this.handleSocketClose(ws, { code: 1006, reason }, attempt);
+    try { ws.close(); } catch { /* already retired */ }
   }
 
   // close shuts the client down permanently. After this returns, calls
@@ -1555,6 +1581,7 @@ export class WSClient {
         // ignore — socket may already be closed.
       }
       this.ws = null;
+      this.socketAttempt = null;
     }
     // Terminal by construction: a closed client runs no ladder, so a
     // call parked for a transient re-send is settled here alongside the
@@ -1911,6 +1938,7 @@ export class WSClient {
         return;
       }
       this.ws = ws;
+      this.socketAttempt = attempt;
       this.socketNamedPairedSession = dialTicket !== null;
       ws.addEventListener('open', () => this.handleSocketOpen(ws, bootstrap, attempt));
       ws.addEventListener('message', (ev: MessageEvent) => this.handleSocketMessage(ws, ev));
@@ -2019,6 +2047,7 @@ export class WSClient {
       this.notificationCheckpointScope = null;
     }
     this.replayBuffer = new ReplayBuffer();
+    this.replayStartedAt = Date.now();
     for (const [channel, cursor] of this.lastSeqByChannel) {
       replay[channel] = cursor.seq;
     }
@@ -2112,7 +2141,7 @@ export class WSClient {
   // attempt settlement, and the reconnect schedule. A superseded
   // socket's close only settles its own attempt — the live socket's
   // state is not its to touch.
-  private handleSocketClose(ws: WSLike, ev: CloseEvent, attempt: ConnectAttempt): void {
+  private handleSocketClose(ws: WSLike, ev: Pick<CloseEvent, 'code' | 'reason'>, attempt: ConnectAttempt): void {
     if (this.ws !== ws) {
       // Superseded: this socket is not the client's any more, so its
       // death settles its own attempt and nothing else. `connectPromise`
@@ -2143,7 +2172,7 @@ export class WSClient {
     // STALE_TRAFFIC_THRESHOLD_MS before this runs, and the close time would
     // tell the user the backend was there half a minute after it was not.
     this.connectedAt = 0;
-    if (connectedFor >= BACKOFF_RESET_AFTER_MS) {
+    if (connectedFor >= BACKOFF_RESET_AFTER_MS && this.replayBuffer === null) {
       this.reconnectAttempt = 0;
       // A connection that proved stable retires the ladder's age with its
       // height: the next outage is a NEW one and earns its own five
@@ -2177,6 +2206,7 @@ export class WSClient {
     }));
     this.replayBuffer = null;
     this.ws = null;
+    this.socketAttempt = null;
     this.socketNamedPairedSession = false;
     if (!attempt.settled) {
       this.outage.attempts += 1;

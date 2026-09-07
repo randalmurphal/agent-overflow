@@ -38,6 +38,23 @@ existing history row, durable queue row, or pending provider-echo entry answers
 duplicates; there is no separate receipt database. Lookup holds the echo anchor
 across those homes so echo pop/persist cannot create an acceptance gap.
 
+Frontend process death does not replay unacknowledged sends: accepted messages
+hydrate from their host-owned history/queue/live state. Draft consumption also
+belongs to the accepting backend operation. The frontend clears only its local
+composer and sends its captured raw `consumeDraft` snapshot; acceptance deletes
+only a still-matching persisted draft. New edits on any frontend survive, and
+queue dispatch never consumes the draft again. Dirty pending edits are saved
+before admission through the per-thread draft writer; ordinary autosaves
+coalesce, but cannot overtake a captured send preparation. Failure to prepare
+restores the draft without issuing a send. Clean hydrated drafts stay write-free.
+Matching uses the persisted
+fields, consistent with identical autosaves being no-ops. Generated prompts
+send an empty snapshot so they preserve unrelated composer content.
+
+The snapshot is additive: old clients without it retain legacy consumption,
+and old hosts ignore it. Both ends must be updated for matching-draft protection.
+Losing the client before acceptance must not erase an already saved draft.
+
 This does not promise exactly-once delivery across a host crash between the
 provider write and history persistence. Provider transcripts remain crash
 recovery's authority; an unconfirmed delivery must not be blindly resent.

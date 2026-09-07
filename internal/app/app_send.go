@@ -34,6 +34,7 @@ type SourceProposedPlan = store.ProposedPlanSourceRef
 type SourceDiffReview = store.DiffReviewSourceRef
 
 type sendMessageOptions struct {
+	ConsumeDraft                 *DraftSnapshot
 	AttachmentIDs                []string
 	RuntimeMode                  string
 	SourceProposedPlan           *SourceProposedPlan
@@ -400,6 +401,7 @@ func (a *App) sendMessageLocked(
 	}
 	if placement.queue {
 		_, err := a.registerQueueItem(threadID, content, SendMessageOptions{
+			ConsumeDraft:                 opts.ConsumeDraft,
 			AttachmentIDs:                opts.AttachmentIDs,
 			SourceProposedPlan:           opts.SourceProposedPlan,
 			RevisionSourceProposedPlan:   opts.RevisionSourceProposedPlan,
@@ -562,7 +564,7 @@ func (a *App) sendMessageLocked(
 		// composer, and an anonymous frame would make it re-read the row it
 		// just consumed. A saga or queue dispatch reaching here carries no
 		// identity, and every screen re-reads, as before.
-		if draftErr := a.removeThreadDraft(clientOf(ctx), threadID); draftErr != nil {
+		if draftErr := a.removeThreadDraft(clientOf(ctx), threadID, opts.ConsumeDraft); draftErr != nil {
 			log.Printf("send message: delete draft for thread %s: %v", threadID, draftErr)
 		}
 	}

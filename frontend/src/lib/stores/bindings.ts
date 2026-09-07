@@ -673,6 +673,7 @@ import {
   StartTerminalOptions as StartTerminalOptionsClass,
 } from '../../../bindings/agent-overflow/internal/app/models.js';
 import type { SourceDiffReview, SourceProposedPlan, Thread } from '../types/models';
+import type { DraftSnapshot } from '../types/draft';
 import type { ReasoningEffort } from '../types/settings';
 
 export interface CreateThreadOptions {
@@ -764,6 +765,7 @@ export function GetThreadDefaults(opts: CreateThreadOptions): Promise<ThreadDefa
 
 export interface SendMessageOptions {
   attachmentIds?: string[];
+  consumeDraft?: DraftSnapshot;
   /**
    * Idempotency id for this send, minted by
    * `utils/sendOptions.ts#buildSendOptions` and by nothing else. Optional

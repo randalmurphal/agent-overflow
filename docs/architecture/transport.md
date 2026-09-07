@@ -201,8 +201,10 @@ which is real data. Without it, a single drop on an edge-triggered channel
 change) leaves every consumer of that entity stale until the entity next
 changes. Both detection paths persist a diagnostic through
 `reportFrontendDiagnostic`, so a storm leaves evidence in
-`frontend-errors.jsonl` rather than only in a devtools console nobody has
-open.
+`frontend-errors.jsonl` when the host permits persistence. The backend registry
+installs the diagnostic sink on existing and later attachments, with the
+originating backend in the detail. Remote sessions that cannot write the host
+log retain the existing console fallback.
 
 ### Forward-skip detection is scoped to one connection
 
@@ -624,9 +626,9 @@ The SPA's stale-socket watchdog (`wsClient.ts STALE_TRAFFIC_THRESHOLD_MS`, three
 heartbeat periods) force-closes a connected socket that has received nothing for
 that long, because a half-open TCP connection with the peer gone and no FIN
 never fires a close event on its own. It makes no silence verdict while
-`document.hidden`, when browser scheduling may delay both its interval and
-WebSocket message delivery; becoming visible resets the traffic clock before
-verdicts resume. The watchdog arms per connection: the first ping frame proves
+`document.hidden` or the native background lease is active, when scheduling may
+delay its interval and WebSocket message delivery; resume resets the traffic
+clock before verdicts resume. The watchdog arms per connection: the first ping frame proves
 this server heartbeats, and the proof resets on close,
 so version skew in either direction cannot reconnect-loop an idle but healthy
 connection. It also stands down while a remote backend has a RECENTLY issued RPC
@@ -635,6 +637,14 @@ past the threshold. Recently, not merely outstanding: a call issued longer ago
 than the threshold is itself evidence of a dead socket, and suspending on any
 pending call meant a half-open connection whose calls all hung was the one case
 the watchdog never fired for, leaving their 60s timeouts as the only exit.
+
+The same timer independently bounds replay completion to `REPLAY_TIMEOUT_MS`
+(one RPC transfer budget). Live traffic cannot extend that deadline because it
+can overtake replay. Suspension defers this verdict too and resume grants a
+fresh window. Either failure retires the socket before requesting a graceful
+close, so a stalled close handshake cannot delay recovery. Normal close handling
+rejects pending mutations once, releases buffered events, and retries unchanged
+replay cursors. Only sockets that completed replay may reset the backoff.
 
 **Protocol-level pings**, on every third tick, with a pong timeout. These detect
 half-open connections server-side, where writes into a dead TCP window buffer
