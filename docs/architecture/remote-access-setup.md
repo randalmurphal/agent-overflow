@@ -15,7 +15,7 @@ to the same tailnet. A private LAN connection can work without Tailscale.
    enable MagicDNS and HTTPS certificates. HTTPS is required for the Android
    shell. Tailscale's confirmation explains that certificate names appear in
    public certificate-transparency logs; the app itself stays tailnet-only.
-3. In Agent Overflow → Settings → Remote access → Pairing & network → Tailscale, enable the node
+3. In Agent Overflow → Settings → Remote access → Allow device access → Tailscale, enable the node
    and save. Leave the coordination-server field empty for ordinary Tailscale.
    Open the sign-in link shown there and approve the node on your tailnet.
 4. Wait for `Running` and the `https://agent-overflow.…ts.net/` address.
@@ -40,7 +40,7 @@ and [HTTPS setup](https://tailscale.com/docs/how-to/set-up-https-certificates).
 2. Connect through the same LAN or the host's tailnet. Set up a phone
    screen lock: Agent Overflow uses Android's biometric/device-credential
    prompt when it opens.
-3. On the Mac, open Settings → Remote access → Pairing & network → Paired devices → Pair a device.
+3. On the Mac, open Settings → Remote access → Allow device access → Allow a device to connect.
    Choose **Local network** for a phone on the same LAN with Tailscale off, or
    **Tailscale** when the phone is connected to the tailnet, then **Phone or tablet**. Choose Full access to drive agents and answer approvals.
 4. Open Agent Overflow on the Pixel and use its **in-app QR scanner** to
@@ -87,7 +87,7 @@ refresh window. This is an inactivity limit, not monthly re-pairing.
 
 ## LAN access and changed addresses
 
-Enable LAN access on the host's Remote access → Pairing & network page, then pair through its invitation.
+Enable LAN access on the host's Remote access → Allow device access page, then pair through its invitation.
 Use an APK with the native Network plugin: the invitation carries the private
 certificate fingerprint, so Android verifies the host without installing a
 system-wide CA. An older APK can continue using its public HTTPS tailnet route.
@@ -98,7 +98,7 @@ Switching routes preserves the pairing, conversations and frontend preferences.
 It does not replay a failed command or upload automatically.
 
 If the host changes IP or port and every saved route is unreachable, open
-Settings → Remote access → Connections → the offline computer → Change address. Enter its new
+Settings → Remote access → Connect to a computer → the offline computer → Change address. Enter its new
 HTTPS address and choose Verify & reconnect. This reuses the saved pairing's
 trust. A replacement certificate or an unfamiliar public hostname may require
 a new pairing link. A healthy saved route can advertise updated addresses and
@@ -106,13 +106,13 @@ certificate pins without this manual step.
 
 ## Device names
 
-In **Remote access → Connections**, edit **Device name** to choose how this
+In **Remote access → Connect to a computer**, edit **Device name** to choose how this
 installation appears on other devices. A phone saves its name locally, including
 while offline. Connected computers receive changes immediately; offline ones
 receive them on reconnect. Older computers must be updated to accept name changes.
 
 To rename a host from your phone (including a headless host), select that computer
-in settings and open **Remote access → Pairing & network → Device name**.
+in settings and open **Remote access → Allow device access → Device name**.
 Renaming changes no addresses, pairing keys, or permissions. A **Nickname** on a
 connection remains an override visible only on the frontend where you set it.
 Clear the name field and save to use the default again.
@@ -303,10 +303,10 @@ Those still require the device checks above. A skipped device test is not a pass
 ## Connect two desktops
 
 1. On the computer you want to work on, open **Settings → Remote access →
-   Pairing & network**. Enable **Local network** for LAN or sign AO's Tailscale
+   Allow device access**. Enable **Local network** for LAN or sign AO's Tailscale
    node into your tailnet for remote access.
-2. Choose **Pair a device → Another computer** and leave that window open.
-3. On the other desktop, open **Remote access → Connections**, select the
+2. Choose **Allow a device to connect → Another computer** and leave that window open.
+3. On the other desktop, open **Remote access → Connect to a computer**, select the
    computer shown under discovery, and connect. If it does not appear, type
    the address shown in its pairing window; no invitation link is needed.
 4. Compare the six digits on both computers, then approve on the host.
@@ -327,7 +327,7 @@ survive. Older builds still use invitation links. Protocol and validation:
 ## Headless computers
 
 On a desktop client, `agent-overflow --frontend` opens your saved computers
-without starting a local execution host. Add a computer in Settings → Remote access → Connections,
+without starting a local execution host. Add a computer in Settings → Remote access → Connect to a computer,
 or use `agent-overflow --connect '<invitation>'` for terminal pairing. Subsequent
 frontend launches and updates work even when the originally paired host is off.
 

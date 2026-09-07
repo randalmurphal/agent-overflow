@@ -55,9 +55,12 @@ tasks:
       sneak into the embed. Release packaging must validate that this
       payload is a real ELF before shipping the launcher.
     cmds:
-      - task: build:wsl:linux-payload
+      # Every public entry point (including packaging) builds the SPA before
+      # Go embeds it. Make wrappers must not own a separate prerequisite.
+      - task: common:build:frontend
         vars:
-          ARCH: '{{.ARCH | default "amd64"}}'
+          BUILD_FLAGS: '-tags nogui'
+          DEV: '{{.DEV | default "false"}}'
       - task: build:wsl:windows-launcher
         vars:
           ARCH: '{{.ARCH | default "amd64"}}'
@@ -93,6 +96,9 @@ tasks:
       wanted again, musl-gcc with `-linkmode external -extldflags
       -static` is the documented path.
     internal: true
+    # Let Go track sources, embedded assets and build flags; Task glob caches
+    # can silently miss inputs and reuse an old backend or launcher.
+    method: none
     preconditions:
       - sh: command -v cc || command -v gcc || command -v clang
         msg: |
@@ -110,20 +116,6 @@ tasks:
       # follow-on consumer can read the real ELF after the build:wsl
       # task restores the embed-dir placeholder.
       - cp cmd/agent-overflow-windows/payload/agent-overflow-linux {{.BIN_DIR | default "bin"}}/agent-overflow-linux
-    sources:
-      - "main.go"
-      - "app*.go"
-      - "internal/**/*.go"
-      - "go.mod"
-      - "go.sum"
-      # frontend/dist is `//go:embed`-ed by main.go, so a stale embed
-      # links into the .exe even when SPA source changed. Watching the
-      # built artifacts (not src/) keeps this cheap — Vite produces
-      # exactly the files this rebuild needs as input.
-      - "frontend/dist/**/*"
-    generates:
-      - cmd/agent-overflow-windows/payload/agent-overflow-linux
-      - "{{.BIN_DIR | default \"bin\"}}/agent-overflow-linux"
 
   build:wsl:restore-payload-placeholder:
     desc: |
@@ -146,6 +138,9 @@ tasks:
   build:wsl:windows-launcher:
     summary: Cross-compile the Windows .exe launcher
     internal: true
+    # Let Go track sources, embedded assets and build flags; Task glob caches
+    # can silently miss inputs and reuse an old backend or launcher.
+    method: none
     deps:
       - task: build:wsl:linux-payload
         vars:
@@ -160,37 +155,10 @@ tasks:
         vars:
           ARCH: '{{.ARCH}}'
           WSL_LAUNCHER_SYSO: '{{.WSL_LAUNCHER_SYSO}}'
-      # Restore the real Linux ELF into the embed dir before linking.
-      # build:wsl:linux-payload's up-to-date check sees the placeholder
-      # file (written by build:wsl:restore-payload-placeholder at the
-      # tail of the prior build) and skips the cross-compile, so the
-      # embed dir would otherwise still hold the 68-byte placeholder
-      # when only cmd/agent-overflow-windows/**/* changed. //go:embed
-      # would then bake the placeholder into the .exe and the WSL-side
-      # spawn fails with "child closed" (exec format error). Copying
-      # from the bin/ stash, which linux-payload writes alongside the
-      # embed-dir copy and which never gets clobbered, is the cheap
-      # always-correct restore.
+      # Embed the payload built by our prerequisite, before the public task
+      # restores the checked-in placeholder.
       - cp {{.BIN_DIR | default "bin"}}/agent-overflow-linux cmd/agent-overflow-windows/payload/agent-overflow-linux
       - GOOS=windows GOARCH={{.ARCH}} CGO_ENABLED=0 go build -trimpath -ldflags "-H windowsgui -X main.payloadVersion={{.VERSION | default "dev"}} -X main.launcherMode={{.WSL_LAUNCHER_MODE | default "prod"}}" -o {{.BIN_DIR | default "bin"}}/{{.APP_NAME | default "agent-overflow"}}.exe ./cmd/agent-overflow-windows
-    sources:
-      - "cmd/agent-overflow-windows/**/*"
-      # Every internal package, not the handful the launcher happened to
-      # import when this list was written. It imports a dozen (appidentity,
-      # notify, selfupdate, uikeys, uiwindow, webview2host, wsldistro,
-      # wsllauncher, harness/governor, ...), and a name missing from here
-      # is not a slow rebuild but a SILENTLY STALE .exe. Same trade the
-      # linux-payload task above already takes.
-      - "internal/**/*.go"
-      - "{{.BIN_DIR | default \"bin\"}}/agent-overflow-linux"
-      - "{{.WINDOWS_ICON}}"
-      - "{{.WINDOWS_MANIFEST}}"
-      - "{{.WINDOWS_INFO}}"
-      - "build/appicon.png"
-      - "build/appicon.icon/**/*"
-      - "build/windows/Taskfile.yml"
-    generates:
-      - "{{.BIN_DIR | default \"bin\"}}/{{.APP_NAME | default \"agent-overflow\"}}.exe"
     vars:
       ARCH: '{{.ARCH | default "amd64"}}'
       WSL_LAUNCHER_SYSO: 'cmd/agent-overflow-windows/wails_windows_{{.ARCH}}.syso'

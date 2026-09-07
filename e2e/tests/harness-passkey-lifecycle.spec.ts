@@ -657,7 +657,7 @@ test.describe.serial('passkey lifecycle', () => {
     remoteSurfaced.refusals.length = 0;
     remoteSurfaced.errorToasts.length = 0;
 
-    await remotePage.getByRole('button', { name: 'Pair a device' }).click();
+    await remotePage.getByRole('button', { name: 'Allow a device to connect' }).click();
     await remotePage.getByRole('button', { name: 'Phone or tablet' }).click();
 
     // The mint LANDED: the modal is showing the link it answered with,
@@ -709,7 +709,7 @@ test.describe.serial('passkey lifecycle', () => {
     // work around.
     await expect(remotePage.getByTestId('pending-pairing')).toHaveCount(1);
     await remotePage
-      .getByRole('dialog', { name: 'Pair a device' })
+      .getByRole('dialog', { name: 'Allow a device to connect' })
       .getByRole('button', { name: 'Cancel link' })
       .click();
     await expect(remotePage.getByTestId('pending-pairing')).toHaveCount(0);

@@ -76,7 +76,7 @@ export function multihostRecoveryFlow(): void {
       frontend = await launchFrontendClient(join(root, 'profiles'), join(root, 'frontend'), '');
       await frontend.open(page);
       await page.getByRole('button', { name: 'Settings', exact: true }).click();
-      await page.getByRole('tab', { name: 'Connections', exact: true }).click();
+      await page.getByRole('tab', { name: 'Connect to a computer', exact: true }).click();
       for (const [index, host] of [first, second].entries()) {
         const pairing = baseline && host === first ? await baselinePairing(host) : await headlessPairing(host);
         try {

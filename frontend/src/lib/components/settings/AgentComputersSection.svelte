@@ -40,7 +40,7 @@
         <Button size="sm" variant="primary" disabled={computers.busy || !target} onclick={() => void connect()}>{computers.busy ? 'Connecting…' : 'Enable access'}</Button>
       </div>
     {:else if computers.loaded && computers.rows.length === 0}
-      <p class="text-sm text-fg-muted">Add another computer in Remote access → Connections to enable agent access.</p>
+      <p class="text-sm text-fg-muted">Add another computer in Remote access → Connect to a computer to enable agent access.</p>
     {/if}
   </section>
 {:else}

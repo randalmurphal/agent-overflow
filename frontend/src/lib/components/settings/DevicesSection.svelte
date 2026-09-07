@@ -270,11 +270,11 @@
       title="Paired devices"
       description={ungranted
           ? 'This connection cannot manage device access. Connect with full access to pair or revoke devices.'
-          : 'Pair a phone or desktop using a QR code or link. Confirm the matching number to allow access.'}
+          : 'Devices allowed to use this computer. Confirm matching numbers on both screens before granting access.'}
     />
     {#if !unavailable}
       <Button variant="primary" size="sm" class="shrink-0 whitespace-nowrap" onclick={openPairing}>
-        Pair a device
+        Allow a device to connect
       </Button>
     {/if}
   </div>
@@ -394,7 +394,7 @@
 
       {#if pairedCount === 0 && pending.length === 0}
         <p class="px-0.5 text-[0.71875rem] text-fg-muted">
-          No devices paired yet. Enable LAN or Tailscale, then choose Pair a device.
+          No other devices paired yet.
         </p>
       {/if}
 

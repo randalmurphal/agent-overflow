@@ -116,8 +116,11 @@ func exchange(ctx context.Context, hc *http.Client, endpoint string, body Reques
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return errors.New("This computer does not support direct pairing. Update Agent Overflow there, or use its pairing link")
+	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("Pairing request failed (HTTP %d); open Pair a device on the other computer and try again", resp.StatusCode)
+		return fmt.Errorf("Pairing request failed (HTTP %d). On the other computer, open Allow device access → Allow a device to connect, then try again", resp.StatusCode)
 	}
 	b, err = io.ReadAll(io.LimitReader(resp.Body, 16385))
 	if err != nil {

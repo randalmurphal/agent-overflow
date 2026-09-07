@@ -20,7 +20,7 @@
   // svelte-ignore state_referenced_locally
   const target = backend ?? HOME_BACKEND;
 
-  // Connections is this installation's page. The selected execution computer
+  // Connect to a computer is this installation's page. The selected execution computer
   // must never redirect this field to a different machine.
   // svelte-ignore state_referenced_locally
   const clientOwned = backend === undefined && (isNativeShell() || hasPairedSession(HOME_BACKEND));

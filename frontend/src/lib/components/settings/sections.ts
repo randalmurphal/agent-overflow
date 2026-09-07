@@ -137,17 +137,17 @@ export const SETTINGS_SECTIONS = [
   },
   {
     id: 'systems',
-    label: 'Connections',
+    label: 'Connect to a computer',
     group: 'Remote access',
     description:
-      "Computers you can work on from this app.",
+      "Open another computer’s projects and threads in this app.",
   },
   {
     id: 'remote',
-    label: 'Pairing & network',
+    label: 'Allow device access',
     group: 'Remote access',
     description:
-      "Pair a phone or desktop and choose how it reaches this computer.",
+      "Let your phone or another computer access this computer’s projects and threads.",
   },
   {
     id: 'accounts',

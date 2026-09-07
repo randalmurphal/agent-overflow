@@ -19,16 +19,22 @@ beforeEach(async () => {
 });
 afterEach(() => { cleanup(); host.remove(); resetStagedBackends(); setCompactLayoutForTest(false); });
 
-it('exposes every remote page in mobile navigation and opens pairing directly', async () => {
+it.each([360, 1280])('separates outgoing connections from incoming access at %ipx', async (width) => {
+  host.style.width = `${width}px`;
+  setCompactLayoutForTest(width < 600);
   showSettingsRail();
   const view = render(SettingsView, { target: host, props: { onClose() {} } });
-  for (const name of ['Connections', 'Pairing & network', 'Accounts', 'Agent access']) {
+  for (const name of ['Connect to a computer', 'Allow device access', 'Accounts', 'Agent access']) {
     expect(view.getByRole('tab', { name }).getBoundingClientRect().width).toBeGreaterThan(100);
   }
-  await fireEvent.click(view.getByRole('tab', { name: 'Pairing & network' }));
-  await waitFor(() => expect(view.getByRole('button', { name: 'Pair a device' })).toBeTruthy());
+  await fireEvent.click(view.getByRole('tab', { name: 'Connect to a computer' }));
+  await waitFor(() => expect(view.getByText('Connect another computer')).toBeTruthy());
+  expect(view.queryByRole('button', { name: 'Allow a device to connect' })).toBeNull();
+  if (width < 600) await fireEvent.click(view.getByRole('button', { name: 'All settings' }));
+  await fireEvent.click(view.getByRole('tab', { name: 'Allow device access' }));
+  await waitFor(() => expect(view.getByRole('button', { name: 'Allow a device to connect' })).toBeTruthy());
   expect(view.getByText('Advanced network settings').closest('details')?.open).toBe(false);
-  expect(host.scrollWidth).toBeLessThanOrEqual(361);
+  expect(host.scrollWidth).toBeLessThanOrEqual(width + 1);
 });
 
 it.each([320, 360, 412])('keeps connection setup and pairing inside %ipx', async (width) => {

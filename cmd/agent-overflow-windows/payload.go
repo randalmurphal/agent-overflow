@@ -3,7 +3,7 @@
 // payload.go owns embedded Linux backend management — installing the
 // payload into the chosen WSL distro and resolving paths inside the
 // distro. The picker / launcher main flow drives `ensurePayloadInstalled`
-// which handles version-skew checks.
+// which compares exact embedded payload identities.
 package main
 
 import (
@@ -15,6 +15,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -23,20 +24,25 @@ import (
 	"agent-overflow/internal/wsllauncher"
 )
 
+// Read once per launcher process with a fixed-size scratch buffer. Unlike a
+// build-time stamp, this also works for direct go build and cannot drift from
+// the bytes actually embedded in the executable.
+var embeddedPayloadFingerprint = sync.OnceValue(func() string {
+	return wsllauncher.PayloadFingerprint(linuxPayload)
+})
+
 // ensurePayloadInstalled writes the embedded Linux binary into the
 // distro if either (a) we've never installed in this distro or (b)
-// the embedded payload version has changed since the last install.
+// the embedded payload bytes have changed since the last install.
 // Returns the resolved bin path so the caller can pass it straight to
 // wsllauncher.Launch without paying for a second wsl.exe round-trip.
 //
-// We could also `--version` the on-disk binary and compare against
-// the embed, but the JSON-tracked version is simpler and matches
-// what the Phase D spec asks for.
+// Semantic versions are display labels: locally rebuilt installers often keep
+// the same version while changing backend code and embedded frontend assets.
 //
-// Persisting the install-success state is deferred to
-// persistSuccessfulLaunch so a fresh install followed by a Launch
-// failure doesn't trap the user on a saved-but-broken distro on next
-// boot.
+// Replacement invalidates the prior install record before touching WSL.
+// persistSuccessfulLaunch records the new identity and chosen distro only
+// after boot; a failed install or boot cannot preserve a stale cache entry.
 // The returned `cached` is true when the path came from wsl.json without
 // asking WSL, which is the case the caller must be ready to re-resolve
 // (see launchAndShow's stale-path retry).
@@ -56,8 +62,9 @@ func (a *launcherApp) ensurePayloadInstalled(ctx context.Context, distro string)
 		}
 	}
 	logBootPhase("launcher.payload.load_config", phaseStarted)
-	installed := activeProfile == "" && cfg.InstalledVer == payloadVersion && cfg.InstalledDistro == distro
-	if path := cachedPayloadPath(cfg, distro, payloadVersion, launcherRuntimeMode()); path != "" {
+	fingerprint := embeddedPayloadFingerprint()
+	installed := activeProfile == "" && cfg.HasPayload(distro, fingerprint)
+	if path := cachedPayloadPath(cfg, distro, fingerprint, launcherRuntimeMode()); path != "" {
 		// The common warm-restart case: nothing to install and the path is
 		// on record, so no wsl.exe process is spawned at all here.
 		log.Printf("boot: phase=launcher.payload.install skipped=true version=%q distro=%q path=recorded", payloadVersion, distro)
@@ -83,15 +90,15 @@ func (a *launcherApp) ensurePayloadInstalled(ctx context.Context, distro string)
 }
 
 // cachedPayloadPath returns the install path wsl.json recorded, when that
-// record is for exactly this payload version and distro. Anything else is
+// record is for exactly these payload bytes and distro. Anything else is
 // "" and the caller resolves the path through WSL.
-func cachedPayloadPath(cfg *wsldistro.Config, distro, version, mode string) string {
+func cachedPayloadPath(cfg *wsldistro.Config, distro, fingerprint, mode string) string {
 	// Only the normal installation owns wsl.json's record. A matching
-	// version must never let an isolated profile execute its recorded path.
+	// payload must never let an isolated profile execute its recorded path.
 	if appidentity.WSLBinaryDir(mode) != appidentity.WSLBinaryDir(appidentity.ModeProd) {
 		return ""
 	}
-	if cfg == nil || cfg.InstalledVer != version || cfg.InstalledDistro != distro {
+	if !cfg.HasPayload(distro, fingerprint) {
 		return ""
 	}
 	return strings.TrimSpace(cfg.InstalledBinPath)
@@ -108,6 +115,13 @@ func installPayload(ctx context.Context, distro, binPath string) error {
 	}
 	defer os.Remove(tmp)
 
+	if activeProfile == "" {
+		if dir, ok := wsldistro.WSLConfigDir(); ok {
+			if err := wsldistro.InvalidatePayload(dir); err != nil {
+				return fmt.Errorf("invalidate prior payload installation: %w", err)
+			}
+		}
+	}
 	phaseStarted = time.Now()
 	err = wsllauncher.InstallPayload(ctx, distro, tmp, binPath)
 	logBootPhase("launcher.payload.install", phaseStarted)

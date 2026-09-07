@@ -269,10 +269,10 @@ async function openCommandRow(page: Page): Promise<void> {
 async function openRemoteAccessPage(page: Page): Promise<void> {
   await page.getByTestId('sidebar-settings-button').click();
   await expect(page.getByRole('tablist', { name: 'Settings Sections' })).toBeVisible();
-  await page.getByRole('tab', { name: 'Pairing & network', exact: true }).click();
+  await page.getByRole('tab', { name: 'Allow device access', exact: true }).click();
   // Selecting drills into the page; on compact the rail (and its tab)
   // leaves the screen, so the arrival assertion is the page header.
-  await expect(page.getByTestId('settings-page-header')).toContainText('Pairing & network');
+  await expect(page.getByTestId('settings-page-header')).toContainText('Allow device access');
   await page.getByText('Advanced network settings', { exact: true }).click();
 }
 

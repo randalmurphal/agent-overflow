@@ -82,8 +82,8 @@ toggle; there is no "enable it first" gate.
 
 ## Device pairing
 
-`DeviceNameField` is shared by Connections (this installation's own name) and
-Pairing & network (the captured settings computer, editable remotely). Phone
+`DeviceNameField` is shared by Connect to a computer (this installation's own name) and
+Allow device access (the captured settings computer, editable remotely). Phone
 names persist in frontend storage; desktop names persist in the Go installation
 identity shared with frontend-only mode. Nicknames remain frontend-local
 overrides. Live updates refresh pristine fields, never overwrite an unsaved
@@ -101,7 +101,7 @@ Older hosts retain their automatic mint RPC. Never label an automatically
 selected tailnet URL as a LAN invitation.
 
 `pairing.nearby.v1` adds desktop address/discovery pairing. Another computer
-opens a short-lived `ComputerPairingWindow` on the captured host; Connections
+opens a short-lived `ComputerPairingWindow` on the captured host; Connect to a computer
 discovers on the frontend's own local service, once per open or explicit Refresh.
 Its capability gate reads the controller hello (`backendHasCapability`); a
 frontend-only controller is deliberately absent from the execution registry.
@@ -112,7 +112,11 @@ the number, but approval requires `ready` with its redeemed link ID. Polls are
 serial, stop on expiry/unmount, and hide stale approval after a failed read.
 Closing cancels even a late open response; a confirmation already dispatched
 must not be revoked on an ambiguous response. Phones keep native QR/link pairing,
-and older hosts keep their invitation flow without discovery RPCs.
+and known unsupported hosts offer a separately selected invitation fallback without discovery RPCs.
+An unknown hello keeps pairing disabled until connected; it never implies an old
+host. Another computer must never silently open the phone QR/link flow. The
+captured HOME target reads the controller hello directly, since frontend-only
+controllers are absent from the execution registry.
 
 Windows-backed LAN settings include a live `lan` status: show its forwarding
 error beside the LAN toggle and refresh while LAN is enabled and this page is
@@ -122,18 +126,21 @@ Read failures stay in one inline callout with Retry, including the first load;
 background polling must not produce repeated error toasts. A current successful
 read clears the callout, while an obsolete read cannot replace newer state.
 
-Remote access has four visible navigation pages: Connections, Pairing & network,
+Remote access has four visible navigation pages: Connect to a computer, Allow device access,
 Accounts, and Agent access. Accounts owns both providers' sign-in controls;
 provider configuration pages keep model and runtime settings. Account-switcher
 management links open Accounts on the captured computer.
 
-Pairing & network puts pairing first, followed by LAN and Tailscale cards.
+Allow device access puts pairing first, followed by LAN and Tailscale cards.
 Ports, domains and certificates stay under Advanced network settings; passkeys
-and individual connection sessions are collapsed separately. Connections groups
+and individual connection sessions are collapsed separately. Connect to a computer groups
 existing computers before setup and exposes hostname-based labels and an explicit
 nickname editor. Nicknames belong to this frontend, use stable backend identity,
 and never rename the host or alter its connection address. Save/Cancel is explicit.
 Setup help includes the destination page and headless service commands.
+Keep these directions distinct: Connect to a computer is outgoing; Allow device
+access grants incoming access. Do not add incoming pairing actions to the outgoing
+page. Setup instructions name the destination computer and its exact page labels.
 
 An offline saved connection exposes `ComputerAddress`. Its repair belongs to
 the frontend's pairing, not settings on the selected computer. Go's host-only

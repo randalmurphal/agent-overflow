@@ -1,8 +1,8 @@
 # Computer pairing
 
 Desktop setup starts on the computer granting access: **Remote access →
-Pairing & network → Pair a device → Another computer**. On the other desktop,
-**Remote access → Connections** discovers that open window. A hostname or
+Allow device access → Allow a device to connect → Another computer**. On the other desktop,
+**Remote access → Connect to a computer** discovers that open window. A hostname or
 HTTPS address is the fallback; no invitation needs to cross clipboards.
 The owner compares the six digits on both screens before approving.
 Phone QR codes and explicit invitation links retain their existing flow.

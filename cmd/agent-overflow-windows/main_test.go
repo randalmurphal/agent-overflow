@@ -1015,27 +1015,29 @@ func TestProbeBootstrapBacksOffFromTheInitialInterval(t *testing.T) {
 	}
 }
 
-func TestCachedPayloadPathRequiresAnExactVersionAndDistroMatch(t *testing.T) {
+func TestCachedPayloadPathRequiresExactPayloadAndDistro(t *testing.T) {
+	fingerprint := strings.Repeat("a", 64)
 	recorded := &wsldistro.Config{
-		InstalledVer: "v1", InstalledDistro: "Ubuntu",
+		InstalledVer: "v1", InstalledSHA256: fingerprint, InstalledDistro: "Ubuntu",
 		InstalledBinPath: "/home/alice/.local/bin/agent-overflow",
 	}
-	if got := cachedPayloadPath(recorded, "Ubuntu", "v1", "dev"); got != recorded.InstalledBinPath {
+	if got := cachedPayloadPath(recorded, "Ubuntu", fingerprint, "dev"); got != recorded.InstalledBinPath {
 		t.Fatalf("matching record: got %q, want the recorded path", got)
 	}
 	for name, cfg := range map[string]*wsldistro.Config{
-		"nil config":       nil,
-		"other version":    {InstalledVer: "v2", InstalledDistro: "Ubuntu", InstalledBinPath: "/x"},
-		"other distro":     {InstalledVer: "v1", InstalledDistro: "Debian", InstalledBinPath: "/x"},
-		"no path recorded": {InstalledVer: "v1", InstalledDistro: "Ubuntu"},
-		"whitespace path":  {InstalledVer: "v1", InstalledDistro: "Ubuntu", InstalledBinPath: "  "},
+		"nil config":             nil,
+		"same version new bytes": {InstalledVer: "v1", InstalledSHA256: strings.Repeat("b", 64), InstalledDistro: "Ubuntu", InstalledBinPath: "/x"},
+		"legacy record":          {InstalledVer: "v1", InstalledDistro: "Ubuntu", InstalledBinPath: "/x"},
+		"other distro":           {InstalledVer: "v1", InstalledSHA256: fingerprint, InstalledDistro: "Debian", InstalledBinPath: "/x"},
+		"no path recorded":       {InstalledVer: "v1", InstalledSHA256: fingerprint, InstalledDistro: "Ubuntu"},
+		"whitespace path":        {InstalledVer: "v1", InstalledSHA256: fingerprint, InstalledDistro: "Ubuntu", InstalledBinPath: "  "},
 	} {
-		if got := cachedPayloadPath(cfg, "Ubuntu", "v1", "prod"); got != "" {
+		if got := cachedPayloadPath(cfg, "Ubuntu", fingerprint, "prod"); got != "" {
 			t.Errorf("%s: got %q, want no cached path", name, got)
 		}
 	}
 	for _, mode := range []string{"harness", "soak", "perf", "dev", "perf", "prod"} {
-		got := cachedPayloadPath(recorded, "Ubuntu", "v1", mode)
+		got := cachedPayloadPath(recorded, "Ubuntu", fingerprint, mode)
 		want := ""
 		if mode == "dev" || mode == "prod" {
 			want = recorded.InstalledBinPath
@@ -1043,5 +1045,37 @@ func TestCachedPayloadPathRequiresAnExactVersionAndDistroMatch(t *testing.T) {
 		if got != want {
 			t.Fatalf("mode %s reused wrong installation: got %q, want %q", mode, got, want)
 		}
+	}
+}
+
+func TestTransientLaunchRecordsPayloadWithoutChangingDefaultDistro(t *testing.T) {
+	t.Setenv("APPDATA", t.TempDir())
+	originalProfile := activeProfile
+	activeProfile = ""
+	t.Cleanup(func() { activeProfile = originalProfile })
+	if err := saveConfig(&wsldistro.Config{Distro: "Ubuntu", InstalledVer: payloadVersion, InstalledDistro: "Ubuntu", InstalledSHA256: strings.Repeat("f", 64)}); err != nil {
+		t.Fatal(err)
+	}
+	app := &launcherApp{}
+	if err := app.persistSuccessfulLaunch("Debian", "/home/user/.local/bin/agent-overflow", false); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Distro != "Ubuntu" || !cfg.HasPayload("Debian", embeddedPayloadFingerprint()) || cfg.InstalledBinPath != "/home/user/.local/bin/agent-overflow" {
+		t.Fatalf("transient launch must preserve default but record actual installed bytes: %+v", cfg)
+	}
+	activeProfile = "harness"
+	if err := app.persistSuccessfulLaunch("Other", "/isolated/bin/agent-overflow", true); err != nil {
+		t.Fatal(err)
+	}
+	isolated, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *isolated != *cfg {
+		t.Fatalf("isolated launch overwrote ordinary install record: %+v", isolated)
 	}
 }

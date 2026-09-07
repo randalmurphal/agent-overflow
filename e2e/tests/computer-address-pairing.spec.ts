@@ -1,5 +1,5 @@
 // Real desktop pairing across isolated host/frontend processes, using only an
-// address typed into the shipped Connections UI. Both screens independently
+// address typed into the shipped Connect to a computer UI. Both screens independently
 // display the bootstrap comparison and the host explicitly approves or denies.
 // LAN binding persists, so this spec owns its host. Address entry deliberately
 // avoids depending on multicast availability in CI; discovery has its own tests.
@@ -21,8 +21,8 @@ async function settings(page: Page, name: string): Promise<void> {
 }
 
 async function openPairing(hostPage: Page): Promise<string> {
-  await hostPage.getByRole('button', { name: 'Pair a device', exact: true }).click();
-  const dialog = hostPage.getByRole('dialog', { name: 'Pair a device' });
+  await hostPage.getByRole('button', { name: 'Allow a device to connect', exact: true }).click();
+  const dialog = hostPage.getByRole('dialog', { name: 'Allow a device to connect' });
   await expect(dialog.getByRole('radio', { name: 'Local network' })).toBeVisible();
   await dialog.getByRole('button', { name: /^Another computer/ }).click();
   await dialog.getByText('Can’t find this computer?', { exact: true }).click();
@@ -44,7 +44,7 @@ async function connect(page: Page, address: string): Promise<void> {
 }
 
 async function compare(hostPage: Page, client: Page): Promise<void> {
-  const hostDialog = hostPage.getByRole('dialog', { name: 'Pair a device' });
+  const hostDialog = hostPage.getByRole('dialog', { name: 'Allow a device to connect' });
   const clientNumber = client.getByTestId('pending-attachment').getByLabel('Verification number');
   await expect(clientNumber).toBeVisible();
   const number = (await clientNumber.textContent())!.trim();
@@ -73,17 +73,17 @@ test('desktop address pairing requires matching-number approval and preserves ex
     await host.rpc('SetNetworkSettings', { bindAll: true });
     await seedAgentThread(host, 'address-pairing-project', THREAD);
     await host.open(owner);
-    await settings(owner, 'Pairing & network');
+    await settings(owner, 'Allow device access');
     frontend = await launchFrontendClient(join(root, 'profiles'), join(root, 'frontend'), '');
     await frontend.open(page);
-    await settings(page, 'Connections');
+    await settings(page, 'Connect to a computer');
 
     await test.step('rejecting the comparison leaves no attached computer or usable session', async () => {
       const address = await openPairing(owner);
       await connect(page, address);
       await compare(owner, page);
       await owner.getByRole('button', { name: 'It doesn’t match', exact: true }).click();
-      await expect(owner.getByRole('dialog', { name: 'Pair a device' })).toHaveCount(0);
+      await expect(owner.getByRole('dialog', { name: 'Allow a device to connect' })).toHaveCount(0);
       await expect(page.getByTestId('pending-attachment')).toHaveCount(0);
       await expect(page.getByTestId('attached-system')).toHaveCount(0);
       expect((await pairedDevices(host!)).flatMap(device => device.sessions ?? [])).toHaveLength(0);
@@ -104,7 +104,7 @@ test('desktop address pairing requires matching-number approval and preserves ex
       await page.getByTestId('thread-row').filter({ hasText: THREAD }).click();
       await expect(page.getByTestId('chat-header-title')).toHaveText(THREAD);
       await expect(page.getByText('Ready.', { exact: true })).toBeVisible();
-      await settings(page, 'Connections');
+      await settings(page, 'Connect to a computer');
     });
 
     await test.step('typing an already-connected address keeps its saved connection intact', async () => {
@@ -115,7 +115,7 @@ test('desktop address pairing requires matching-number approval and preserves ex
       await expect(page.getByTestId('attached-system')).toContainText('Connected');
       await expect(page.getByTestId('pending-attachment')).toHaveCount(0);
       await owner.keyboard.press('Escape');
-      await expect(owner.getByRole('dialog', { name: 'Pair a device' })).toHaveCount(0);
+      await expect(owner.getByRole('dialog', { name: 'Allow a device to connect' })).toHaveCount(0);
     });
     await test.step('a computer cannot enroll itself by entering its own address', async () => {
       await openPairing(owner);
@@ -123,7 +123,7 @@ test('desktop address pairing requires matching-number approval and preserves ex
       local.setDefaultTimeout(10_000);
       local.on('pageerror', error => pageErrors.push(error.message));
       await host!.open(local);
-      await settings(local, 'Connections');
+      await settings(local, 'Connect to a computer');
       await connect(local, address);
       await expect(local.getByRole('alert').filter({ hasText: 'already using' })).toBeVisible();
       await expect(local.getByTestId('attached-system')).toHaveCount(0);

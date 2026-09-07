@@ -11,9 +11,15 @@ switcher (writes when the user changes the picker).
 - `wsldistro.go` holds the `Config` struct + `Load(dir)` / `Save(dir, c)`.
   Cross-platform: only the on-disk shape lives here, not platform
   path resolution.
-  `InstalledBinPath` rides with `InstalledVer`: it is what lets a warm
-  boot skip the wsl.exe `$HOME` resolution, and both writers must keep it
-  (the backend's Settings switch is load-mutate-save, so it does).
+  `InstalledBinPath` rides with `InstalledSHA256` and `InstalledDistro`:
+  the exact embedded bytes identify an installation, never its semantic
+  version. Matching records skip the wsl.exe `$HOME` resolution; legacy
+  records without a digest reinstall once. `InvalidatePayload` clears the
+  prior digest before replacement, so failed installs/boots never leave a
+  reusable record over different bytes. Both writers preserve install
+  fields (the backend's Settings switch is load-mutate-save). Transient
+  launcher distro overrides update installation fields without changing
+  the saved default; isolated profiles never write this shared record.
 - In `path.go` (`!windows`), `WSLConfigDir()` resolves the WSL-side
   path to the launcher's wsl.json directory by reading the
   `AGENT_OVERFLOW_WIN_APPDATA` env var (translated from `%APPDATA%`

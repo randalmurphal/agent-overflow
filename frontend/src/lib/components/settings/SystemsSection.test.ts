@@ -60,8 +60,9 @@ describe('<SystemsSection>', () => {
 
   it('shows the empty state once the list has answered', async () => {
     setBindingMock('ListBackends', async () => []);
-    const { findByTestId } = render(SystemsSection);
+    const { findByTestId, queryByRole } = render(SystemsSection);
     expect(await findByTestId('systems-empty')).toBeTruthy();
+    expect(queryByRole('button', { name: 'Allow a device to connect' })).toBeNull();
   });
 
   it('starts a pairing from a link and shows the verification number until confirmed', async () => {
@@ -82,12 +83,12 @@ describe('<SystemsSection>', () => {
     __setTransportHelloForTest({ backendId: 'mac', backendName: 'Mac', capabilities: ['pairing.nearby.v1'], protocolVersion: 1, serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 });
     setBindingMock('DiscoverComputers', async () => []);
     setBindingMock('ListBackends', async () => []);
-    const add = setBindingMock('AddBackend', async () => { throw new Error('Open Pair a device on this computer first.'); });
+    const add = setBindingMock('AddBackend', async () => { throw new Error('Open Allow a device to connect on this computer first.'); });
     const view = render(SystemsSection);
     const input = view.getByLabelText('Computer address or pairing link');
     await fireEvent.input(input, { target: { value: 'workstation.ts.net' } });
     await fireEvent.submit(input.closest('form')!);
-    expect(await view.findByRole('alert')).toHaveTextContent('Open Pair a device');
+    expect(await view.findByRole('alert')).toHaveTextContent('Open Allow a device to connect');
     expect(input).toBeEnabled();
     expect(input).toHaveValue('workstation.ts.net');
     add.mockResolvedValue({ id: 'laptop', name: 'Laptop', endpoint: LAPTOP.endpoint, verificationNumber: '73' });

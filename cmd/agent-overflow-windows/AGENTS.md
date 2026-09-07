@@ -28,8 +28,8 @@ precedence, both unit-tested.
 
 - `--distro <name>` skips the picker and launches in that WSL distro, used by
   `make dev-wsl`. The override is TRANSIENT: a successful launch does not
-  write `wsl.json`, so a dev invocation cannot overwrite the user's saved
-  pick. An invalid value warns to `launcher.log` and falls through to the
+  change the saved distro pick. It does record the installed payload's
+  identity, since dev and production launchers replace the same backend. An invalid value warns to `launcher.log` and falls through to the
   picker rather than to saved config, so the mismatch surfaces.
 - `--profile harness|soak|perf` (or `AGENT_OVERFLOW_PROFILE=...`) runs an
   isolated instance beside the developer's own. This one flag is THE axis
@@ -84,9 +84,14 @@ cost every boot ~250 ms of sleep after the backend was already ready.
 ## Payload path: recorded, not re-resolved
 
 For the normal dev/prod installation, `ensurePayloadInstalled` returns the path wsl.json recorded
-(`InstalledBinPath`, written with `InstalledVer` after a successful boot)
-whenever version and distro match, and spawns no wsl.exe at all on that
-path. Resolving `$HOME` through wsl.exe costs ~440 ms per boot and only
+(`InstalledBinPath`, written with `InstalledSHA256` after a successful boot)
+whenever the exact embedded payload digest and distro match, and spawns no
+wsl.exe at all on that path. The SHA-256 is computed once from the actual
+embedded bytes with bounded scratch space; a version string cannot identify
+locally rebuilt binaries. Legacy records without a digest reinstall once.
+Every replacement clears the previous digest before writing WSL bytes. A failed
+install/boot or a rollback therefore cannot reuse an old record over new bytes;
+only a successful boot records the new identity. Resolving `$HOME` through wsl.exe costs ~440 ms per boot and only
 matters when something has to be installed. The record is the one thing a
 warm boot trusts without asking WSL, so `launchAndShow` treats
 `errLaunchFailed` on a recorded path as "maybe stale": it re-resolves once,
@@ -310,3 +315,13 @@ clients, proxy remote traffic through localhost, or inject local credentials.
 The backend receives external endpoints and errors over the same owner RPC.
 See [nativenetwork](../../internal/nativenetwork/AGENTS.md) for admission, pairing
 advertisements, mirrored mode, cancellation, and firewall/testing boundaries.
+
+## Build freshness
+
+The public `windows:build:wsl` task owns frontend + binding generation before
+building the Linux payload and embedding it in the launcher. `make build-wsl`
+only forwards mode/version flags. Both Go tasks use `method: none`: Go's cache
+understands imported source, embedded files and linker flags; Task source globs
+can miss any of them (and silently swallow traversal errors). Never put a
+second freshness cache in front of Go. The portable build-contract test pins
+this ordering and the launcher's payload-digest test covers same-version builds.

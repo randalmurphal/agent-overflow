@@ -100,7 +100,7 @@
     <p class="text-center text-sm font-medium text-fg">Computer paired</p>
     <Button variant="primary" onclick={onClose}>Done</Button>
   {:else if expired || status?.state === 'expired'}
-    <p class="text-sm text-fg-muted">Pairing expired. Close this dialog and choose Pair a device to try again.</p>
+    <p class="text-sm text-fg-muted">Pairing expired. Close this dialog and choose Allow a device to connect to try again.</p>
     <Button onclick={onClose}>Close</Button>
   {:else}
     {#if status?.verificationNumber}
@@ -115,12 +115,12 @@
         <Button variant="primary" disabled={deciding || status.state !== 'ready'} onclick={() => void confirm()}>It matches — allow</Button>
       </div>
     {:else}
-      <p class="text-sm leading-relaxed text-fg-muted">On the other computer, open <span class="text-fg">Remote access → Connections</span> and choose <span class="font-medium text-fg">{name}</span>.</p>
+      <p class="text-sm leading-relaxed text-fg-muted">On the other computer, open <span class="text-fg">Remote access → Connect to a computer</span> and choose <span class="font-medium text-fg">{name}</span>.</p>
       {#if window}
         <p class="text-xs text-fg-muted" role="status">Waiting for a computer{networkChoice === 'tailnet' ? ' on Tailscale' : ' on your local network'}…</p>
         <details class="text-xs text-fg-muted">
           <summary class="cursor-pointer py-1">Can’t find this computer?</summary>
-          <p class="mt-2">Enter this address in Connections on the other computer:</p>
+          <p class="mt-2">Enter this address under Connect to a computer on the other computer:</p>
           <p class="mt-2 select-text break-all rounded-lg bg-surface-1 p-3 font-mono text-fg" aria-label="Computer address">{window.address}</p>
         </details>
       {:else if !error}<p class="text-xs text-fg-muted" role="status">Starting pairing…</p>{/if}

@@ -24,7 +24,7 @@ it.each([360, 1280])('keeps the network choice and QR inside a %ipx viewport', a
   const view = render(PairDeviceModal, { open: true, remoteReachable: true, onClose() {}, onChanged() {} });
   const lan = await view.findByRole('radio', { name: 'Local network' });
   const tailnet = await view.findByRole('radio', { name: 'Tailscale' });
-  const dialog = await view.findByRole('dialog', { name: 'Pair a device' });
+  const dialog = await view.findByRole('dialog', { name: 'Allow a device to connect' });
   await waitFor(() => {
     for (const element of [dialog, lan, tailnet]) {
       const rect = element.getBoundingClientRect();

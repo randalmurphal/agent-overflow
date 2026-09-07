@@ -54,6 +54,6 @@
   {#if error}
     <p class="text-xs text-error" role="alert">{error}</p>
   {:else if !searching && available.length === 0}
-    <p class="text-xs text-fg-muted">No new computers found. Open Pair a device → Another computer on the computer you want to connect.</p>
+    <p class="text-xs text-fg-muted">No new computers found. Open Allow a device to connect → Another computer on the computer you want to connect.</p>
   {/if}
 </div>

@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Settings → Remote access → Connections: the other machines this installation is attached
+  // Settings → Remote access → Connect to a computer: the other machines this installation is attached
   // to. Desktop discovery and address entry enroll the same profile as an
   // invitation. The other machine opens pairing and confirms the number.
   //
@@ -26,7 +26,6 @@
   import ComputerNickname from './ComputerNickname.svelte';
   import NearbyComputers from './NearbyComputers.svelte';
   import DeviceNameField from './DeviceNameField.svelte';
-  import { openSettingsOverlay } from '../../stores/settingsOverlay.svelte';
   import SSHConnectModal from './SSHConnectModal.svelte';
   import { HOME_BACKEND } from '../../transport/backendKey';
   import { selectedBackend, setSelectedBackend } from '../../stores/selectedBackend.svelte';
@@ -74,7 +73,7 @@
   let hostList = $derived((!clientMode || isFrontendOnly()) && !offHost);
   let unavailable = $derived(!hostList && !nativeShell);
   let canAdd = $derived(hostList || nativeShell);
-  // Connections belongs to the local controller, which is not an execution
+  // Connect to a computer belongs to the local controller, which is not an execution
   // backend entry in frontend-only mode.
   let nearbyPairing = $derived(hostList && backendHasCapability('pairing.nearby.v1'));
 
@@ -326,16 +325,12 @@
       {/if}
     </div>
   {/if}
-  <div class="mt-4 rounded-xl border border-border-subtle bg-surface-0 p-4">
-    <SettingsHeader title="Pair another device" description="Choose the computer, enable a network, then pair your device." />
-    <Button variant="secondary" size="sm" onclick={() => openSettingsOverlay('remote', selectedBackend())}>Pair a device</Button>
-  </div>
   <div class="mt-5 rounded-xl border border-border-subtle bg-surface-0 p-4">
     <SettingsHeader title="Connect another computer" description={nativeShell
-      ? 'On that computer, open Remote access → Pairing & network and choose Pair a device → Phone or tablet. Scan its QR code here.'
+      ? 'On that computer, open Remote access → Allow device access and choose Allow a device to connect → Phone or tablet. Scan its QR code here.'
       : nearbyPairing
-        ? 'On that computer, open Remote access → Pairing & network and choose Pair a device → Another computer.'
-        : 'On that computer, open Remote access → Pairing & network and choose Pair a device. Paste its pairing link here.'} />
+        ? 'On that computer, open Remote access → Allow device access and choose Allow a device to connect → Another computer.'
+        : 'On that computer, open Remote access → Allow device access and choose Allow a device to connect. Paste its pairing link here.'} />
 
     {#if canAdd}
       {#if nearbyPairing}<NearbyComputers connecting={adding} onConnect={submitLink} />{/if}

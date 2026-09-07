@@ -61,7 +61,7 @@
       <MicroLabel as="p" class="text-fg-hint">Agent Overflow</MicroLabel>
       <h1 class="text-lg font-semibold text-text-primary">Connect to your computer</h1>
       <p class="text-sm text-text-secondary">
-        On your computer, open Settings → Remote access → Pairing &amp; network and choose Pair a device. Scan its code or paste the link.
+        On your computer, open Settings → Remote access → Allow device access and choose Allow a device to connect. Scan its code or paste the link.
       </p>
     </div>
 

@@ -55,7 +55,7 @@ export function connectedComputersFlow(): void {
       await expect(second.getByRole('button', { name: 'Settings', exact: true })).toBeVisible();
       const initialFont = await second.evaluate(() => getComputedStyle(document.documentElement).fontSize);
 
-      await settingsPage(page, 'Connections');
+      await settingsPage(page, 'Connect to a computer');
       pairing = await headlessPairing(remote);
       const invite = pairing.invite;
       await page.getByRole('textbox', { name: /^(Computer address or pairing link|Pairing link)$/ }).fill(invite.url);
@@ -153,7 +153,7 @@ export function connectedComputersFlow(): void {
       const network = await remote.rpc<Record<string, unknown>>('GetNetworkSettings');
       await remote.rpc('SetNetworkSettings', { ...network, listenPort: port });
       await page.reload();
-      await settingsPage(page, 'Connections');
+      await settingsPage(page, 'Connect to a computer');
       await expect(computerRow).toContainText('Unreachable');
       await computerRow.getByRole('button', { name: 'Change address' }).click();
       await computerRow.getByLabel('New computer address').fill(`127.0.0.1:${port}`);

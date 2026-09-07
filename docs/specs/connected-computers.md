@@ -22,7 +22,7 @@ authority to execute there.
 
 ## Minimal UI
 
-- Remote access → Connections is the connection destination. Desktop discovery/address pairing compares numbers on both screens;
+- Remote access → Connect to a computer is the connection destination. Desktop discovery/address pairing compares numbers on both screens;
   invitation/QR and SSH setup remain available. See
   [computer pairing](../architecture/computer-pairing.md). Each named computer exposes status, configuration, access, and updates.
   Ports, certificate files, and troubleshooting belong in expanded details.

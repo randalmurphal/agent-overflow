@@ -9,6 +9,10 @@ const INVITE = {
   url: 'http://192.168.1.20:54321/?t=tik#pair=abc',
   expiresAtMs: Date.now() + 300_000,
 };
+const LEGACY_HELLO = {
+  backendId: 'mac', backendName: 'Mac', capabilities: [], protocolVersion: 1,
+  serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0,
+};
 
 function renderModal(props: Partial<{ remoteReachable: boolean; onClose: () => void; onChanged: () => void }> = {}) {
   return render(PairDeviceModal, {
@@ -25,7 +29,7 @@ function renderModal(props: Partial<{ remoteReachable: boolean; onClose: () => v
 describe('<PairDeviceModal>', () => {
   beforeEach(() => {
     resetBindingMocks();
-    __setTransportHelloForTest(null);
+    __setTransportHelloForTest(LEGACY_HELLO);
   });
 
   afterEach(() => {
@@ -68,7 +72,25 @@ describe('<PairDeviceModal>', () => {
 
     await fireEvent.click(viewOnly);
     await fireEvent.click(await findByRole('button', { name: /Another computer/ }));
+    expect(minted).not.toHaveBeenCalled();
+    await findByRole('button', { name: 'Use a pairing link instead' });
+    await fireEvent.click(await findByRole('button', { name: 'Use a pairing link instead' }));
     expect(minted).toHaveBeenCalledWith('browser', 'view-only');
+  });
+
+  it('waits for a hello instead of treating unknown support as a legacy host', async () => {
+    __setTransportHelloForTest(null);
+    const minted = setBindingMock('MintDevicePairing', async () => INVITE);
+    const view = renderModal();
+    expect(view.getByRole('button', { name: /Another computer/ })).toBeDisabled();
+    expect(view.getByText(/Connecting to this computer/)).toBeTruthy();
+    expect(view.queryByText('Direct computer pairing is unavailable')).toBeNull();
+    __setTransportHelloForTest(LEGACY_HELLO);
+    await waitFor(() => expect(view.getByRole('button', { name: /Another computer/ })).toBeEnabled());
+    await fireEvent.click(view.getByRole('button', { name: /Another computer/ }));
+    expect(view.getByText('Direct computer pairing is unavailable')).toBeTruthy();
+    expect(view.queryByLabelText('Pairing QR code')).toBeNull();
+    expect(minted).not.toHaveBeenCalled();
   });
 
   it('shows the loopback note when the server only listens on this machine', async () => {

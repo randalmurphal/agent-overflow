@@ -7,7 +7,7 @@ workspace through the separate conversation-transfer protocol.
 
 ## Setup
 
-Connect both computers in Settings → Remote access → Connections. Open
+Connect both computers in Settings → Remote access → Connect to a computer. Open
 Remote access → Agent access and select the originating computer.
 Choose the destination and enable access. The frontend mints a destination
 invitation, enrolls the originating computer, compares both verification

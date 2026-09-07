@@ -264,12 +264,14 @@ func TestSetWSLDistroPreference_PersistsAndPreservesInstallFields(t *testing.T) 
 	app := &App{}
 	dir := t.TempDir()
 	// Seed a config with launcher-owned fields populated; the setter
-	// must update only Distro and leave InstalledVer / InstalledDistro
+	// must update only Distro and leave all install metadata
 	// alone — those track what the launcher last installed and where.
 	if err := wsldistro.Save(dir, &wsldistro.Config{
-		Distro:          "Ubuntu-24.04",
-		InstalledVer:    "v0.1.0",
-		InstalledDistro: "Ubuntu-24.04",
+		Distro:           "Ubuntu-24.04",
+		InstalledVer:     "v0.1.0",
+		InstalledSHA256:  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		InstalledBinPath: "/home/user/.local/bin/agent-overflow",
+		InstalledDistro:  "Ubuntu-24.04",
 	}); err != nil {
 		t.Fatalf("seed config: %v", err)
 	}
@@ -306,6 +308,12 @@ func TestSetWSLDistroPreference_PersistsAndPreservesInstallFields(t *testing.T) 
 	}
 	if cfg.InstalledVer != "v0.1.0" {
 		t.Errorf("InstalledVer = %q, want v0.1.0 (must be preserved)", cfg.InstalledVer)
+	}
+	if cfg.InstalledSHA256 != "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" {
+		t.Errorf("InstalledSHA256 = %q (must be preserved)", cfg.InstalledSHA256)
+	}
+	if cfg.InstalledBinPath != "/home/user/.local/bin/agent-overflow" {
+		t.Errorf("InstalledBinPath = %q (must be preserved)", cfg.InstalledBinPath)
 	}
 	if cfg.InstalledDistro != "Ubuntu-24.04" {
 		t.Errorf("InstalledDistro = %q, want Ubuntu-24.04 (must be preserved)", cfg.InstalledDistro)

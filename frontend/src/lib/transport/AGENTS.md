@@ -845,7 +845,7 @@ remote browser alike. Protocol and authz rules:
   identities or weaken conversation ownership conflicts. `native/computerCatalogBoot.test.ts`
   exercises actual boot, catalog ownership and draft routing together.
   Validating a new invitation must never repoint HOME. The
-  phone's "Pair again" opens Remote access → Connections, where another invitation repairs its
+  phone's "Pair again" opens Remote access → Connect to a computer, where another invitation repairs its
   own connection without discarding other computers or frontend preferences.
   Passkeys remain limited to their own browser origin.
 - `backendAttach.ts` is how a client with no local process attaches,

@@ -94,11 +94,9 @@ var pickerHTML string
 //go:embed payload/agent-overflow-linux
 var linuxPayload string
 
-// payloadVersion identifies the embedded payload. The launcher writes
-// this into wsl.json so a future upgrade can compare against the
-// freshly-embedded version and decide whether to reinstall. We use
-// a build-time-injectable variable so the Taskfile can stamp it via
-// `-ldflags="-X main.payloadVersion=..."`.
+// payloadVersion is build-time display metadata recorded in wsl.json.
+// embeddedPayloadFingerprint determines installation freshness. The Taskfile
+// stamps the version with `-ldflags="-X main.payloadVersion=..."`.
 var payloadVersion = "dev"
 
 // launcherMode is stamped by the WSL build task as "dev" for
@@ -712,21 +710,17 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 		log.Printf("notifications: start launcher bridge: %v", err)
 	}
 
-	// Persist the chosen distro + installed version only after the
+	// Persist the chosen distro + installed payload identity only after the
 	// backend has booted successfully. This pairs with PickDistro's
 	// deliberate non-persistence on failure: a saved distro short-
 	// circuits the picker on next launch, so we only commit it after
 	// we've proven the install + launch path works end-to-end.
 	//
-	// transient runs (the --distro override) skip persistence so a dev
-	// invocation doesn't redirect the user's saved pick. The install
-	// step still runs and the next non-override launch reuses the
-	// freshly-installed binary in that distro — we just don't change
-	// which distro the launcher boots into by default.
-	if !transient {
-		if err := a.persistSuccessfulLaunch(distro, binPath); err != nil {
-			log.Printf("save config after launch: %v", err)
-		}
+	// A transient --distro override preserves the chosen default but records
+	// the payload it installed. Otherwise a later normal launch could trust an
+	// old digest over a binary replaced by the transient launch.
+	if err := a.persistSuccessfulLaunch(distro, binPath, !transient); err != nil {
+		log.Printf("save config after launch: %v", err)
 	}
 
 	// The backend assembles the page URL (main.go webviewPageURL): the
@@ -1386,7 +1380,7 @@ func validateBootstrapResponse(body []byte, port int) error {
 	return nil
 }
 
-// persistSuccessfulLaunch writes the {distro, installed_version} pair
+// persistSuccessfulLaunch records the installed payload digest, path and version
 // to wsl.json once the backend has booted. Called only after a
 // successful Launch so a half-broken launcher doesn't trap the user
 // on the next boot with a saved-but-broken distro choice.
@@ -1394,13 +1388,13 @@ func validateBootstrapResponse(body []byte, port int) error {
 // We re-read wsl.json before mutating so any field the WSL backend
 // wrote during the previous session (notably Distro, when the user
 // switched via the Settings UI) doesn't get clobbered. The launcher
-// owns InstalledVer + InstalledDistro; the backend owns Distro from
+// owns the installed-payload fields; the backend owns Distro from
 // the moment the user picks a different one.
-func (a *launcherApp) persistSuccessfulLaunch(distro, binPath string) error {
+func (a *launcherApp) persistSuccessfulLaunch(distro, binPath string, rememberDistro bool) error {
 	if activeProfile != "" {
 		// wsl.json is shared with the real instance (and co-written by
 		// the WSL backend's Settings distro switch). A profiled launch
-		// reads it but never writes it: its InstalledVer would make the
+		// reads it but never writes it: its install record would make the
 		// developer's next real launch skip a payload reinstall it
 		// actually needed. This is the choke point rather than the
 		// transient flag because the picker path passes transient=false.
@@ -1411,7 +1405,10 @@ func (a *launcherApp) persistSuccessfulLaunch(distro, binPath string) error {
 	if cfg == nil {
 		cfg = &wsldistro.Config{}
 	}
-	cfg.Distro = distro
+	if rememberDistro {
+		cfg.Distro = distro
+	}
+	cfg.InstalledSHA256 = embeddedPayloadFingerprint()
 	cfg.InstalledVer = payloadVersion
 	cfg.InstalledDistro = distro
 	cfg.InstalledBinPath = binPath

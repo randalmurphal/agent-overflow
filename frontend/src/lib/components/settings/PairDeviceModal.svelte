@@ -34,7 +34,8 @@
     type PairingInvite,
     type PairingStatusView,
   } from '../../stores/bindings';
-  import { getTransportHelloFor } from '../../stores/transportStatus.svelte';
+  import { getTransportHello, getTransportHelloFor } from '../../stores/transportStatus.svelte';
+  import { HOME_BACKEND } from '../../transport/backendKey';
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import SettingsCallout from './SettingsCallout.svelte';
@@ -56,6 +57,7 @@
   type Stage =
     | { at: 'choose' }
     | { at: 'computer' }
+    | { at: 'legacy-computer' }
     | { at: 'share'; invite: PairingInvite }
     | { at: 'verify'; linkId: string; number: string; deviceLabel: string }
     | { at: 'done' }
@@ -80,9 +82,10 @@
   let loadingNetworks = $state(false);
   let networkError = $state('');
   let networkGeneration = 0;
-  const explicitNetworks = $derived(getTransportHelloFor(backend)?.capabilities.includes('pairing.networks.v1') ?? false);
-  const nearbyPairing = $derived(getTransportHelloFor(backend)?.capabilities.includes('pairing.nearby.v1') ?? false);
-  const cannotMint = $derived(minting !== null || (explicitNetworks && (loadingNetworks || networkOptions.length === 0)));
+  const hello = $derived(backend === HOME_BACKEND ? getTransportHello() : getTransportHelloFor(backend));
+  const explicitNetworks = $derived(hello?.capabilities.includes('pairing.networks.v1') ?? false);
+  const nearbyPairing = $derived(hello?.capabilities.includes('pairing.nearby.v1') ?? false);
+  const cannotMint = $derived(!hello || minting !== null || (explicitNetworks && (loadingNetworks || networkOptions.length === 0)));
   let deciding = $state(false);
   let copyState = $state<'idle' | 'copied' | 'failed'>('idle');
   let nowMs = $state(Date.now());
@@ -148,10 +151,10 @@
     return () => { ++networkGeneration; stopTimers(); };
   });
 
-  async function mint(deviceClass: 'phone' | 'browser'): Promise<void> {
+  async function mint(deviceClass: 'phone' | 'browser', legacy = false): Promise<void> {
     if (cannotMint) return;
-    if (deviceClass === 'browser' && nearbyPairing) {
-      stage = { at: 'computer' };
+    if (deviceClass === 'browser' && !legacy) {
+      stage = { at: nearbyPairing ? 'computer' : 'legacy-computer' };
       return;
     }
     minting = deviceClass;
@@ -278,19 +281,32 @@
   });
 </script>
 
-<Modal {open} title="Pair a device" {onClose} width="sm">
+<Modal {open} title="Allow a device to connect" {onClose} width="sm">
   {#if stage.at === 'computer'}
     {#if open}<ComputerPairingWindow {networkChoice} {access} {onChanged} {onClose} />{/if}
+  {:else if stage.at === 'legacy-computer'}
+    <div class="flex flex-col gap-3">
+      <p class="font-medium text-fg">Direct computer pairing is unavailable</p>
+      <p class="text-sm leading-relaxed text-fg-muted">Update Agent Overflow on this computer to connect by name or address, or use a pairing link.</p>
+      <p class="text-xs text-fg-muted">Using a pairing link requires transferring the link to the other computer.</p>
+      <div class="flex flex-wrap justify-end gap-2">
+        <Button onclick={() => (stage = { at: 'choose' })}>Back</Button>
+        <Button onclick={() => void mint('browser', true)} disabled={cannotMint}>Use a pairing link instead</Button>
+      </div>
+    </div>
   {:else if stage.at === 'choose'}
     <div class="flex flex-col gap-3">
       <p class="text-[0.75rem] leading-snug text-fg-muted">
         Choose a device, then compare the verification numbers on both screens
         before allowing access. You can revoke the device later.
       </p>
+      {#if !hello}
+        <p class="text-xs text-fg-muted" role="status">Connecting to this computer…</p>
+      {/if}
       {#if !remoteReachable}
         <SettingsCallout tone="warn">
           This link currently reaches this computer only. Enable local network access or Tailscale
-          in Remote access → Pairing & network before pairing a phone.
+          in Remote access → Allow device access before pairing a phone.
         </SettingsCallout>
       {/if}
       {#if explicitNetworks}
@@ -312,7 +328,7 @@
             After pairing, it can use either available network.
           </p>
         {:else if remoteReachable}
-          <SettingsCallout tone="warn">Enable local network access or Tailscale in Remote access → Pairing &amp; network before pairing.</SettingsCallout>
+          <SettingsCallout tone="warn">Enable local network access or Tailscale in Remote access → Allow device access before pairing.</SettingsCallout>
         {/if}
       {/if}
       <div class="flex items-center justify-between gap-3">
@@ -344,7 +360,7 @@
         >
           <Laptop size={22} strokeWidth={1.75} />
           <span class="text-[0.75rem] font-medium text-fg">Another computer</span>
-          <span class="text-[0.6875rem] leading-snug text-fg-hint">{nearbyPairing ? 'Choose this device in Connections' : 'Open a link in its browser'}</span>
+          <span class="text-[0.6875rem] leading-snug text-fg-hint">{nearbyPairing ? 'Connect by name or address' : 'Check connection options'}</span>
         </button>
       </div>
     </div>

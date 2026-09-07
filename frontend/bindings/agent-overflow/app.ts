@@ -4328,8 +4328,7 @@ export function SetUIState(entries: { [_ in string]?: string }): $CancellablePro
  * 
  * Validates `name` against the live wsl.exe distro list so a typo or
  * stale reference can't trap the user with an unbootable saved pick.
- * InstalledVer / InstalledDistro are preserved by load-mutate-save —
- * those fields are owned by the launcher's install path.
+ * Install metadata is preserved by load-mutate-save; the launcher owns it.
  */
 export function SetWSLDistroPreference(name: string): $CancellablePromise<string> {
     return $Call.ByID(3978807241, name);

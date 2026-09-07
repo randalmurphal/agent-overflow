@@ -303,7 +303,7 @@ describe('<DevicesSection>', () => {
     setRunMode('client');
     const read = setBindingMock('GetAccessOverview', async () => overview());
     const { findByRole } = render(DevicesSection);
-    expect(await findByRole('button', { name: 'Pair a device' })).toBeVisible();
+    expect(await findByRole('button', { name: 'Allow a device to connect' })).toBeVisible();
     await waitFor(() => expect(read).toHaveBeenCalledTimes(1));
   });
 
@@ -316,7 +316,7 @@ describe('<DevicesSection>', () => {
     const { findByRole, queryByText } = render(DevicesSection);
     await waitFor(() => expect(network).toHaveBeenCalled());
     running = true;
-    await fireEvent.click(await findByRole('button', { name: /Pair a device/i }));
+    await fireEvent.click(await findByRole('button', { name: /Allow a device to connect/i }));
     await findByRole('button', { name: /Phone or tablet/ });
     await waitFor(() => expect(network).toHaveBeenCalledTimes(2));
     expect(queryByText(/currently reaches this computer only/)).toBeNull();

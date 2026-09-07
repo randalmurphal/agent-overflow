@@ -19,7 +19,7 @@ import (
 const Version = 1
 
 var (
-	ErrClosed  = errors.New("Open Pair a device on the other computer, then try again")
+	ErrClosed  = errors.New("On the other computer, open Remote access → Allow device access → Allow a device to connect, then try again")
 	ErrBusy    = errors.New("Another device is pairing; finish or cancel it on the other computer")
 	ErrInvalid = errors.New("Pairing verification failed; cancel and try again")
 )
