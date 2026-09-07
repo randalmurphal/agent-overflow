@@ -5,7 +5,10 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -23,6 +26,22 @@ const KeyFileName = "device-key.pem"
 // keyPEMType is the block label. The standard one for PKCS#8, so
 // `openssl pkey -in device-key.pem -text` works on it unaided.
 const keyPEMType = "PRIVATE KEY"
+
+// KeyThumbprint is the RFC 7638 identity already presented in device proofs.
+// It reads an existing key; only an explicit enrollment may create one.
+func KeyThumbprint(dir string) (string, error) {
+	key, err := DeviceKey(dir)
+	if err != nil {
+		return "", err
+	}
+	encoded, err := json.Marshal(proofJWK{Crv: proofCurve, Kty: proofKeyType,
+		X: coordinate(key.X.Bytes()), Y: coordinate(key.Y.Bytes())})
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(encoded)
+	return base64.RawURLEncoding.EncodeToString(digest[:]), nil
+}
 
 // ErrNoDeviceKey means this profile holds no device key. Distinct from an
 // unreadable one: nothing has enrolled here yet, which is a state and not

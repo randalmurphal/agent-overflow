@@ -42,7 +42,8 @@ and [HTTPS setup](https://tailscale.com/docs/how-to/set-up-https-certificates).
    prompt when it opens.
 3. On the Mac, open Settings → Remote access → Allow device access → Allow a device to connect.
    Choose **Local network** for a phone on the same LAN with Tailscale off, or
-   **Tailscale** when the phone is connected to the tailnet, then **Phone or tablet**. Choose Full access to drive agents and answer approvals.
+   **Tailscale** when the phone is connected to the tailnet, then **Phone or tablet**. Choose **My device** to drive agents, answer approvals, and join your personal
+   devices. Use **View only** for limited access without joining the group.
 4. Open Agent Overflow on the Pixel and use its **in-app QR scanner** to
    scan the desktop's code (or paste the pairing link). Verify that both
    screens show the same number, then allow the device on the Mac.
@@ -323,6 +324,26 @@ WSL networking settings. Forwarding errors appear in the LAN settings.
 Closing or restarting the host cancels unfinished setup; completed pairings
 survive. Older builds still use invitation links. Protocol and validation:
 [computer pairing](computer-pairing.md).
+
+## Personal devices
+
+Personal pairing (including `agent-overflow pair --lan` and first-run headless
+setup) joins the devices' existing personal groups. Machines connect directly
+with independent keys and sessions; one initial machine need not remain online.
+Joining a desktop enables its LAN listener for reciprocal access. Existing
+Tailscale settings are retained; a remote-only return connection still needs
+that computer's Tailscale node to be configured. Removing a local connection
+keeps it excluded on that frontend; revoking a personal device removes its group
+membership as the other machines reconnect. Removing a computer from the group
+withdraws its personal inbound sessions too; ordinary limited shares remain
+independent. Offline computers cannot learn a removal until connectivity returns.
+
+A phone paired with two previously separate computers joins their personal
+catalogs and helps establish direct connections between them. It does not need
+to remain open after those independent connections exist. Existing ordinary or
+older full-access pairings do not automatically join the group: use a new
+personal pairing to enroll them. Limited thread sharing never joins personal
+devices, and agent remote-command permissions remain opt-in.
 
 ## Headless computers
 

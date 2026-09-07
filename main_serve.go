@@ -247,7 +247,7 @@ func (e appEnrollment) Enrolled() (bool, error) {
 // to enroll a second one. Narrowing a later device is offered per-device
 // in Settings → Access, which is where that choice belongs.
 func (e appEnrollment) Mint() (appservice.PairingInvite, error) {
-	return e.app.MintDevicePairing(serveEnrollmentDeviceClass, serveEnrollmentAccess)
+	return e.app.MintOwnDevicePairing(context.Background(), serveEnrollmentDeviceClass)
 }
 
 func (e appEnrollment) Status(linkID string) (appservice.PairingStatusView, error) {

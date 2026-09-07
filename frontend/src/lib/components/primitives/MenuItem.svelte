@@ -2,8 +2,8 @@
   // A single row inside a <Menu>. Consumes roving tabindex from Menu —
   // the parent sets `tabindex` on these via the DOM, so we don't render
   // a baseline tabindex here (Menu takes care of it on mount + keyboard
-  // nav). We DO render `role="menuitem"` so Menu's querySelector finds
-  // us.
+  // nav). Checkbox items expose aria-checked and participate in the same
+  // keyboard navigation as ordinary actions.
   //
   // The `onSelect` callback is what Menu consumers actually care about;
   // after firing it we also bubble a `menuitem-select` CustomEvent so an
@@ -20,6 +20,7 @@
     kbd?: string;
     suffix?: string;
     checked?: boolean;
+    checkbox?: boolean;
     disabled?: boolean;
     title?: string;
     onSelect?: () => void;
@@ -49,6 +50,7 @@
     kbd,
     suffix,
     checked = false,
+    checkbox = false,
     disabled = false,
     title,
     onSelect,
@@ -146,7 +148,8 @@
   this={hasAction ? 'div' : 'button'}
   bind:this={buttonEl}
   type={hasAction ? undefined : 'button'}
-  role="menuitem"
+  role={checkbox ? "menuitemcheckbox" : "menuitem"}
+  aria-checked={checkbox ? checked : undefined}
   aria-disabled={disabled ? 'true' : undefined}
   data-menuitem
   data-disabled={disabled ? 'true' : undefined}

@@ -41,6 +41,7 @@ type MethodMeta struct {
 // dispatcher allow-list from this set; the Scope column is what
 // AuthorizeSessionMethod compares a session's grants against.
 var GeneratedMethods = []MethodMeta{
+	{Name: "AcceptOwnDeviceIntroduction", ID: 2097968437, Scope: "session", Route: "home"},                           // main.App.AcceptOwnDeviceIntroduction
 	{Name: "AddBackend", ID: 2629313140, Scope: "host", Route: "home"},                                               // main.App.AddBackend
 	{Name: "AgentRemoteCancel", ID: 1158138718, Scope: "terminal:operate", Route: "selected"},                        // main.App.AgentRemoteCancel
 	{Name: "AgentRemoteComputers", ID: 925837602, Scope: "terminal:operate", Route: "selected"},                      // main.App.AgentRemoteComputers
@@ -213,6 +214,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ImportThreadUpdates", ID: 535929682, Scope: "threads:operate", Route: "thread"},                          // main.App.ImportThreadUpdates
 	{Name: "InterruptAndRevertIfClean", ID: 753394581, Scope: "threads:operate", Route: "thread"},                    // main.App.InterruptAndRevertIfClean
 	{Name: "InterruptTurn", ID: 850013031, Scope: "threads:operate", Route: "thread"},                                // main.App.InterruptTurn
+	{Name: "IntroduceOwnDevice", ID: 2219602920, Scope: "session", Route: "home"},                                    // main.App.IntroduceOwnDevice
 	{Name: "IsWSL", ID: 2789068977, Scope: "threads:read", Route: "home"},                                            // main.App.IsWSL
 	{Name: "ListAgentComputers", ID: 2526318276, Scope: "terminal:operate", Route: "selected"},                       // main.App.ListAgentComputers
 	{Name: "ListArchivedThreads", ID: 2451527188, Scope: "threads:read", Route: "all"},                               // main.App.ListArchivedThreads
@@ -230,6 +232,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ListItemsBeforeCursor", ID: 162135710, Scope: "threads:read", Route: "thread"},                           // main.App.ListItemsBeforeCursor
 	{Name: "ListLiveBackgroundTasks", ID: 320784263, Scope: "threads:read", Route: "thread"},                         // main.App.ListLiveBackgroundTasks
 	{Name: "ListMcpServerStatuses", ID: 2582096622, Scope: "settings:write", Route: "home"},                          // main.App.ListMcpServerStatuses
+	{Name: "ListOwnDevices", ID: 2775087950, Scope: "session", Route: "home"},                                        // main.App.ListOwnDevices
 	{Name: "ListPRCommits", ID: 4110818691, Scope: "git:operate", Route: "workspace"},                                // main.App.ListPRCommits
 	{Name: "ListPRReviewThreads", ID: 763649720, Scope: "git:operate", Route: "selected"},                            // main.App.ListPRReviewThreads
 	{Name: "ListPasskeys", ID: 3860831272, Scope: "access:admin", Route: "home"},                                     // main.App.ListPasskeys
@@ -260,12 +263,16 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "MintDevicePairing", ID: 400809065, Scope: "access:admin", Route: "home", StepUp: true},                   // main.App.MintDevicePairing
 	{Name: "MintDevicePairingOnNetwork", ID: 355445930, Scope: "access:admin", Route: "home", StepUp: true},          // main.App.MintDevicePairingOnNetwork
 	{Name: "MintFilePreviewURL", ID: 310779922, Scope: "preview:open", Route: "selected"},                            // main.App.MintFilePreviewURL
+	{Name: "MintOwnDeviceIntroduction", ID: 1417567029, Scope: "session", Route: "home"},                             // main.App.MintOwnDeviceIntroduction
+	{Name: "MintOwnDevicePairing", ID: 939299731, Scope: "access:admin", Route: "home", StepUp: true},                // main.App.MintOwnDevicePairing
+	{Name: "MintOwnDevicePairingOnNetwork", ID: 1802705420, Scope: "access:admin", Route: "home", StepUp: true},      // main.App.MintOwnDevicePairingOnNetwork
 	{Name: "MintPreviewURL", ID: 1471520668, Scope: "preview:open", Route: "thread"},                                 // main.App.MintPreviewURL
 	{Name: "MoveThreadTerminals", ID: 3013708277, Scope: "terminal:operate", Route: "thread"},                        // main.App.MoveThreadTerminals
 	{Name: "NotificationActivated", ID: 2831503793, Scope: "host", Route: "home"},                                    // main.App.NotificationActivated
 	{Name: "OpenComputerPairing", ID: 3980787304, Scope: "access:admin", Route: "home", StepUp: true},                // main.App.OpenComputerPairing
 	{Name: "OpenExternalURL", ID: 3362740399, Scope: "host", Route: "home"},                                          // main.App.OpenExternalURL
 	{Name: "OpenInEditor", ID: 3994295523, Scope: "host", Route: "home"},                                             // main.App.OpenInEditor
+	{Name: "OpenOwnComputerPairing", ID: 767864574, Scope: "access:admin", Route: "home", StepUp: true},              // main.App.OpenOwnComputerPairing
 	{Name: "OpenTerminal", ID: 2247958725, Scope: "terminal:operate", Route: "thread"},                               // main.App.OpenTerminal
 	{Name: "PairAgentComputer", ID: 3436727647, Scope: "access:admin", Route: "selected", StepUp: true},              // main.App.PairAgentComputer
 	{Name: "PinThread", ID: 1748405812, Scope: "threads:operate", Route: "thread"},                                   // main.App.PinThread
@@ -292,6 +299,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "RefreshProviderAccountUsage", ID: 2539237007, Scope: "access:admin", Route: "home"},                      // main.App.RefreshProviderAccountUsage
 	{Name: "RefreshTerminal", ID: 2618043580, Scope: "terminal:operate", Route: "home"},                              // main.App.RefreshTerminal
 	{Name: "RegenerateThreadTitle", ID: 3682640111, Scope: "threads:operate", Route: "thread"},                       // main.App.RegenerateThreadTitle
+	{Name: "RegisterOwnDevice", ID: 111779378, Scope: "session", Route: "home"},                                      // main.App.RegisterOwnDevice
 	{Name: "RegisterPushToken", ID: 2641306153, Scope: "session", Route: "home"},                                     // main.App.RegisterPushToken
 	{Name: "RegisterQueueItem", ID: 1034543696, Scope: "threads:operate", Route: "thread"},                           // main.App.RegisterQueueItem
 	{Name: "RemoteCommandCancel", ID: 235246962, Scope: "terminal:operate", Route: "selected"},                       // main.App.RemoteCommandCancel
@@ -300,6 +308,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "RemoteCommandStatus", ID: 3021549306, Scope: "terminal:operate", Route: "selected"},                      // main.App.RemoteCommandStatus
 	{Name: "RemoveBackend", ID: 3005272623, Scope: "host", Route: "home"},                                            // main.App.RemoveBackend
 	{Name: "RemoveOtherWorktree", ID: 2899196344, Scope: "git:operate", Route: "workspace"},                          // main.App.RemoveOtherWorktree
+	{Name: "RemoveOwnDevice", ID: 3065006869, Scope: "access:admin", Route: "home"},                                  // main.App.RemoveOwnDevice
 	{Name: "RemoveProviderAccount", ID: 684418419, Scope: "access:admin", Route: "home"},                             // main.App.RemoveProviderAccount
 	{Name: "RenameBackend", ID: 1528076361, Scope: "host", Route: "home"},                                            // main.App.RenameBackend
 	{Name: "RenameProject", ID: 3728890856, Scope: "threads:operate", Route: "project"},                              // main.App.RenameProject
@@ -372,6 +381,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SubscribePRUpdates", ID: 3272491649, Scope: "git:operate", Route: "selected"},                            // main.App.SubscribePRUpdates
 	{Name: "SwitchProviderAccount", ID: 1249964095, Scope: "access:admin", Route: "home"},                            // main.App.SwitchProviderAccount
 	{Name: "SwitchThread", ID: 3897387725, Scope: "threads:operate", Route: "thread"},                                // main.App.SwitchThread
+	{Name: "SyncOwnDevices", ID: 1289411773, Scope: "session", Route: "home"},                                        // main.App.SyncOwnDevices
 	{Name: "SyncThreadWindow", ID: 3841902986, Scope: "threads:read", Route: "thread"},                               // main.App.SyncThreadWindow
 	{Name: "TerminateCodexBackgroundTerminal", ID: 870653875, Scope: "threads:operate", Route: "thread"},             // main.App.TerminateCodexBackgroundTerminal
 	{Name: "TriggerMcpAuth", ID: 1291217507, Scope: "settings:write", Route: "thread"},                               // main.App.TriggerMcpAuth

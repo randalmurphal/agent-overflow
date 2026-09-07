@@ -77,6 +77,10 @@ func (a *App) initIdentity(backendID string) {
 		log.Printf("identity: session core unavailable: %v", err)
 		return
 	}
+	if err := sessions.RecoverOwnAdmissions(); err != nil {
+		log.Printf("identity: own-device recovery failed: %v", err)
+		return
+	}
 	state := &identityState{sessions: sessions, owner: result.Owner}
 	if len(result.RecoveryCodes) > 0 {
 		// The codes themselves are shown once, by the surface that asks

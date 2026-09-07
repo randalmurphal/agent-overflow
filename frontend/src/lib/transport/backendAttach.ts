@@ -1,7 +1,10 @@
-import { pairingEndpoint } from '../native/networkTrust';
+import { preparePairingTrust } from '../native/networkTrust';
+import { canVerifyComputerRoutes, verifyComputerRoute } from '../native/computerRouteProbe';
+import { mergeComputerRoutes, type ComputerRoute } from './computerRoute';
 import { isNativeShell } from '../native/platform';
 import { networkFetch } from './networkFetch';
 import { clientDeviceName } from '../stores/clientDeviceName.svelte';
+import { ownDeviceConnectionExcluded, setOwnDeviceConnectionExcluded } from './ownDeviceConnections';
 // Attaching, listing and detaching a second machine from a client that IS
 // the client.
 //
@@ -37,7 +40,9 @@ import { HOME_BACKEND, type BackendKey } from './backendKey';
 import { attachedBackends, backendById, detachBackend, duplicateLegacyHomeBackend, syncAttachedBackends } from './backends';
 import {
   clearPairedSession,
+  hasOwnDeviceSession,
   pairedComputerId,
+  pairedSessionId,
   parsePairingFragment,
   probeActivation,
   redeemPairing,
@@ -49,7 +54,6 @@ import {
   endpointHost,
   setHomeEndpoint,
   forgetBackendEndpoint,
-  storeBackendEndpoint,
   storedBackendEndpoints,
 } from './homeEndpoint';
 
@@ -107,14 +111,52 @@ export function pairingBackendKey(payload: PairingPayload): BackendKey {
  */
 export async function attachBackendFromLink(link: string): Promise<AttachedPairing> {
   const payload = payloadFromLink(link);
+  setOwnDeviceConnectionExcluded(payload.backendId, false);
+  return attachPairing(payload);
+}
+
+/** Introductions obey local removal and the sponsoring connection's lifetime. */
+export async function attachIntroducedBackend(link: string, current: () => boolean, routes: readonly ComputerRoute[]): Promise<AttachedPairing> {
+  const payload = payloadFromLink(link);
+  if (payload.purpose !== 'own-introduction') throw new Error('This is not a device introduction.');
+  const admitted = () => current() && !ownDeviceConnectionExcluded(payload.backendId);
+  const assertCurrent = () => {
+    if (!admitted()) throw new DOMException('Pairing was canceled.', 'AbortError');
+  };
+  assertCurrent();
+  if (!await canVerifyComputerRoutes()) throw new Error('Update the phone app to connect your devices automatically.');
+  assertCurrent();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20_000);
+  let selected: ComputerRoute;
+  try {
+    // Probe only authenticated catalog addresses, before spending the token.
+    // The shared probe owns native concurrency bounds and verifies TLS + UUID.
+    selected = await Promise.any(mergeComputerRoutes([], routes).map(async (route) => {
+      await verifyComputerRoute(route, payload.backendId, controller.signal);
+      assertCurrent();
+      return route;
+    }));
+  } catch {
+    assertCurrent();
+    throw new Error('No verified address for this computer is reachable.');
+  } finally {
+    clearTimeout(timer);
+    controller.abort();
+  }
+  assertCurrent();
+  // One redemption only. A lost POST reply is never replayed on another route.
+  return attachPairing({ ...payload, endpoint: selected.endpoint, certFingerprint: selected.certFingerprint }, admitted);
+}
+
+async function attachPairing(payload: PairingPayload, current: () => boolean = () => true): Promise<AttachedPairing> {
+  if (!current()) throw new DOMException('Pairing was canceled.', 'AbortError');
   const id = pairingBackendKey(payload);
   const name = payload.backendName || endpointHost(payload.endpoint);
-  // Stored before the credential, so a session can never outlive the
-  // knowledge of where to present it.
-  const endpoint = pairingEndpoint(payload);
-  storeBackendEndpoint(id, endpoint);
+  const trust = preparePairingTrust(payload);
+  const endpoint = trust.endpoint;
+  const outcome = await redeemPairing(payload, clientDeviceName(), networkFetch, id, { current, endpoint, trust });
   if (id === HOME_BACKEND && isNativeShell()) setHomeEndpoint(endpoint);
-  const outcome = await redeemPairing(payload, clientDeviceName(), networkFetch, id);
   setPendingAttachment({
     id,
     name,
@@ -139,17 +181,22 @@ export async function awaitAttachedActivation(
   intervalMs = 3_000,
   deadlineMs = 10 * 60_000,
 ): Promise<boolean> {
+  const attachment = pending.get(id);
+  const session = pairedSessionId(id);
+  const current = () => !!attachment && pending.get(id) === attachment && pairedSessionId(id) === session;
   const deadline = Date.now() + deadlineMs;
   for (;;) {
-    if (!pending.has(id)) return false;
-    if (await probeActivation(networkFetch, id)) {
+    if (!current()) return false;
+    const active = await probeActivation(networkFetch, id);
+    if (!current()) return false;
+    if (active) {
       forgetPendingAttachment(id);
       // The descriptor is rebuilt from the stored endpoint map, so this
       // is the same sync a shell boot performs — one code path for "these
       // are the machines I am attached to".
       syncAttachedBackends();
       await backendById(id)?.client.redialAfterPairing();
-      return true;
+      return pairedSessionId(id) === session;
     }
     if (Date.now() >= deadline) {
       forgetPendingAttachment(id);
@@ -193,9 +240,19 @@ export async function awaitAttachedActivation(
  */
 export function detachAttachedBackend(id: BackendKey): void {
   if (id === HOME_BACKEND && !isNativeShell()) return;
+  setOwnDeviceConnectionExcluded(pairedComputerId(id) || backendById(id)?.backendId || id, true);
+  detachConnection(id);
+}
+
+/** Membership removals retire only group credentials, without recording a local opt-out. */
+export function retireOwnDeviceBackend(id: BackendKey): void {
+  if (hasOwnDeviceSession(id)) detachConnection(id);
+}
+
+function detachConnection(id: BackendKey): void {
   // Forgetting the canonical computer also retires its dormant old slot;
   // otherwise the next launch would resurrect the removed connection.
-  if (id !== HOME_BACKEND && duplicateLegacyHomeBackend() === id) detachAttachedBackend(HOME_BACKEND);
+  if (id !== HOME_BACKEND && duplicateLegacyHomeBackend() === id) detachConnection(HOME_BACKEND);
   runBeforeBackendDetach(id);
   forgetPendingAttachment(id);
   detachBackend(id);

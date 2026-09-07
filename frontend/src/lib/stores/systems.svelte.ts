@@ -40,6 +40,8 @@ import {
   descriptorForAttachedId,
   publishAttachedBackend,
   publishDetachedBackend,
+  publishManifestBackends,
+  manifestBackendDescriptors,
 } from '../transport/manifestBackends';
 
 /** What the `backend:attach` channel carries (internal/app BackendAttachOutcome). */
@@ -55,7 +57,7 @@ export interface BackendAttachEvent {
  * ceremony ending.
  */
 export interface BackendSetChangeEvent {
-  action: 'removed' | 'renamed' | 'device-name-sync';
+  action: 'removed' | 'renamed' | 'device-name-sync' | 'membership';
   id: string;
   nickname?: string;
 }
@@ -107,7 +109,11 @@ export function loadSystems(): Promise<void> {
         systems = rows;
         break;
       }
-      for (const system of systems) publishAttachedBackend(descriptorForAttachedId(system.id, systemLabel(system), '', system.nickname ?? ''));
+      const ids = new Set(systems.map((system) => system.id));
+      for (const removed of manifestBackendDescriptors()) {
+        if (!ids.has(removed.id)) { detachBackend(removed.id); purgeClientState(removed.id); }
+      }
+      publishManifestBackends(systems.map((system) => descriptorForAttachedId(system.id, systemLabel(system), '', system.nickname ?? '')));
       loaded = true;
     } finally {
       loadInFlight = null;
@@ -194,7 +200,13 @@ export function applyBackendSetChange(
   evt: BackendSetChangeEvent,
   origin: BackendKey = HOME_BACKEND,
 ): void {
-  if (origin !== HOME_BACKEND || !evt?.id) return;
+  if (origin !== HOME_BACKEND || !evt) return;
+  if (evt.action === 'membership') {
+    revision++;
+    void loadSystems().catch((err) => addToast('error', `Could not refresh device connections: ${errString(err)}`));
+    return;
+  }
+  if (!evt.id) return;
   if (evt.action === 'removed') {
     forgetSystem(evt.id);
     return;

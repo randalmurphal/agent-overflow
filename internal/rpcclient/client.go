@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sync"
 
 	"agent-overflow/internal/transport"
@@ -78,6 +79,15 @@ func (c *Client) Call(ctx context.Context, method string, result any, params ...
 		if result == nil {
 			return nil
 		}
-		return json.Unmarshal(frame.Result, result)
+		destination := reflect.ValueOf(result)
+		if destination.Kind() != reflect.Pointer || destination.IsNil() {
+			return &json.InvalidUnmarshalError{Type: reflect.TypeOf(result)}
+		}
+		fresh := reflect.New(destination.Elem().Type())
+		if err := json.Unmarshal(frame.Result, fresh.Interface()); err != nil {
+			return err
+		}
+		destination.Elem().Set(fresh.Elem())
+		return nil
 	}
 }

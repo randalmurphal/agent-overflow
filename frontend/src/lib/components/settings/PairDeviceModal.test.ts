@@ -38,6 +38,28 @@ describe('<PairDeviceModal>', () => {
     vi.useRealTimers();
   });
 
+  it('defaults capable hosts to personal-device pairing while view-only remains restricted', async () => {
+    __setTransportHelloForTest({ ...LEGACY_HELLO, capabilities: ['own-devices.v1', 'pairing.networks.v1'] });
+    setBindingMock('GetNetworkSettings', async () => ({ bindAll: true }));
+    setBindingMock('DevicePairingStatus', async () => ({ state: 'pending', expiresAtMs: INVITE.expiresAtMs }));
+    const personal = setBindingMock('MintOwnDevicePairingOnNetwork', async () => INVITE);
+    const restricted = setBindingMock('MintDevicePairingOnNetwork', async () => INVITE);
+    const view = renderModal();
+    expect(await view.findByRole('radio', { name: 'My device' })).toBeChecked();
+    expect(view.getByText(/including devices already connected/)).toBeTruthy();
+    await waitFor(() => expect(view.getByRole('button', { name: /Phone or tablet/ })).toBeEnabled());
+    await fireEvent.click(view.getByRole('button', { name: /Phone or tablet/ }));
+    expect(personal).toHaveBeenCalledExactlyOnceWith('phone', 'lan');
+    expect(restricted).not.toHaveBeenCalled();
+    view.unmount();
+    const second = renderModal();
+    await fireEvent.click(await second.findByRole('radio', { name: 'View only' }));
+    await waitFor(() => expect(second.getByRole('button', { name: /Phone or tablet/ })).toBeEnabled());
+    await fireEvent.click(second.getByRole('button', { name: /Phone or tablet/ }));
+    expect(restricted).toHaveBeenCalledExactlyOnceWith('phone', 'view-only', 'lan');
+    expect(personal).toHaveBeenCalledOnce();
+  });
+
   it('mints for the chosen device class and shows the link to share', async () => {
     const minted = setBindingMock('MintDevicePairing', async () => INVITE);
     setBindingMock('DevicePairingStatus', async () => ({

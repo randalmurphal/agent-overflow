@@ -1,6 +1,6 @@
 # Connected computers
 
-Approved product direction, 2026-09-05. This document supersedes conflicting
+Approved product direction, 2026-09-05; personal-device defaults updated 2026-09-07. This document supersedes conflicting
 home-only settings, fixed thread ownership, phone tailnet-only access, and
 machine-label decisions in `remote-access.md`. Implementation status is tracked
 below; a requirement is not evidence that it has shipped.
@@ -20,6 +20,13 @@ Discovery suggests a computer; pairing grants access; the receiving computer
 checks authorization on every operation. Knowing another host's name is not an
 authority to execute there.
 
+Pairing your own devices joins their existing personal groups and establishes
+independent connections among their available execution hosts and frontends.
+This is shared access, not database or filesystem synchronization. A personal
+device is trusted with full UI access across the group; sharing an individual
+thread remains a separate, limited grant. Existing ordinary/full-access pairs
+require explicit personal pairing to join and are never silently promoted.
+
 ## Minimal UI
 
 - Remote access → Connect to a computer is the connection destination. Desktop discovery/address pairing compares numbers on both screens;
@@ -37,6 +44,10 @@ authority to execute there.
 - Sidebar machine names share the existing worktree metadata line. Remote
   desktop threads identify their host even if the repository exists only there.
   A phone with several hosts identifies all of them. No new attention feed.
+- The **Projects** heading opens a device filter with **All devices** and named
+  checkboxes. It persists on this frontend, defaults new hosts to visible, and
+  hides empty project groups. Filtering never disconnects a host, stops work,
+  changes the execution target, or closes an already open conversation.
 - Dev-server and generated HTML links open a preview on the owning host with
   its related assets. No separate artifact dashboard or model-written work log.
 - Agent remote tools are optional. Advertise them only when enabled and usable
@@ -50,6 +61,25 @@ are routes to that identity, never duplicate computers. Route changes preserve
 pairing, thread state, and queued request identity. Plain LAN access on Android
 must work without weakening all WebView origins or bypassing transport auth.
 Private certificates need explicit trust bound to the paired host.
+
+Personal membership uses `own-devices.v1` and a bounded public catalog of device
+keys, backend identities, routes and generations (128 records, including removal
+records). It never distributes credentials or private keys. Each destination
+issues its own key-bound session after explicit personal approval or an
+introduction restricted to an already approved recipient. A phone may introduce
+two of its own hosts without becoming their permanent relay. Host reconciliation
+runs without a window; a frontend-only desktop does not acquire an execution
+backend merely by joining.
+
+An execution host joining the group enables LAN hosting through the existing
+network lifecycle and preserves Tailscale settings. Off-site reciprocal access
+still requires a configured reachable Tailscale route. Removing a connection
+excludes it locally until explicit pairing; revoking a personal device propagates
+a membership removal. Equal-generation removal wins, stale catalogs cannot
+restore it, and a later explicit approval is required to rejoin. Offline hosts
+enforce removal after receiving it. Agent remote-command permissions remain
+separate from personal UI access. Protocol details and evidence live in
+[computer pairing](../architecture/computer-pairing.md).
 
 An occasional GPU host can start with one command or a saved desktop SSH
 connection. Persistent hosting is offered during setup; disconnecting a setup
@@ -119,6 +149,8 @@ and mocked providers. No automated test uses live provider credentials.
 | Preferences | Separate clients differ; switching/removing/offlining the first host preserves preferences; reload restores them. |
 | Host configuration | Two hosts with different settings/accounts; edits and event echoes stay on the captured host; denied/offline hosts cannot redirect a write. |
 | Selection | Per-project remembered targets survive restart; remote-only projects identify host; offline targets do not fail over. |
+| Sidebar filter | Per-frontend device selections survive reload; new hosts remain visible; filtering preserves active threads, target selection and search behavior. |
+| Own devices | Reciprocal pairing, three-host/controller direct access without the original host, merging existing groups, phone introductions, offline retry, ordinary-pair isolation, removal propagation and headless shutdown. |
 | LAN/tailnet | Signed APK on private LAN and trusted HTTPS; route changes, address changes, expired sessions, revocation, and blocked routes. |
 | Startup | Fresh headless setup, existing service adoption, SSH disconnect/reconnect, platform service behavior. |
 | Transfer | Claude/Codex move and copy; divergent checkout, attachments, provider mismatch; failures before/after ownership commit and repeated requests. |
@@ -134,6 +166,9 @@ computers and mocked providers. Platform release acceptance remains separate.
 
 - [x] Frontend preference persistence and per-host settings/accounts/usage.
 - [x] Connections UI, host labels, and remembered project targets.
+- [x] Personal-device group connections and per-frontend sidebar device filtering,
+  with composed TLS, browser and focused state coverage. Physical cross-platform
+  acceptance remains part of the platform checks below.
 - [x] LAN trust/routes and simple headless/SSH onboarding.
 - [x] Provider-native conversation move/copy and optional peer tools.
 - [ ] Mixed-version gates, remote update coverage, previews, and failure testing.

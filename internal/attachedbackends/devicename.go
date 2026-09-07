@@ -2,19 +2,15 @@ package attachedbackends
 
 import (
 	"context"
-	"errors"
-	"net/http"
-	"slices"
 	"time"
 
-	"agent-overflow/internal/rpcclient"
 	"agent-overflow/internal/transport"
-	"github.com/coder/websocket"
 )
 
 // SyncDeviceName updates connected peers without delaying ordinary traffic.
 // Unreachable peers retry when their next carried connection opens.
 func (m *Manager) SyncDeviceName() {
+	m.WakeOwnDevices()
 	for _, profile := range m.Attached() {
 		if held, err := m.carrier(profile.ID); err == nil {
 			held.syncDeviceName()
@@ -61,31 +57,11 @@ func (c *carrier) syncDeviceName() {
 }
 
 func (c *carrier) sendDeviceName(ctx context.Context, name string) error {
-	ticket, err := c.client.Ticket(ctx)
+	rpc, err := c.openRPC(ctx, transport.CapabilityDeviceName)
 	if err != nil {
 		return err
 	}
-	address, err := c.client.DialURL(ticket)
-	if err != nil {
-		return err
-	}
-	client := &http.Client{Transport: c.client.RoundTripper(), CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("computer redirects are refused") }}
-	conn, _, err := websocket.Dial(ctx, address, &websocket.DialOptions{HTTPClient: client})
-	if err != nil {
-		return err
-	}
-	rpc := rpcclient.New(conn)
 	defer rpc.Close()
-	hello, err := rpc.Hello(ctx)
-	if err != nil {
-		return err
-	}
-	if hello.BackendID != c.client.Session().BackendID || hello.ProtocolVersion != transport.ProtocolVersion {
-		return errors.New("paired computer identity or protocol changed")
-	}
-	if !slices.Contains(hello.Capabilities, transport.CapabilityDeviceName) {
-		return errors.New("paired computer needs an update to synchronize device names")
-	}
 	if err := rpc.Call(ctx, "UpdateClientDeviceName", nil, name, c.platform); err != nil {
 		return err
 	}

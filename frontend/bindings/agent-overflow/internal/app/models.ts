@@ -31,6 +31,9 @@ import * as highlight$0 from "../highlight/models.js";
 import * as highlightapp$0 from "../highlightapp/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as owndevices$0 from "../owndevices/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as provider$0 from "../provider/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -2751,6 +2754,12 @@ export class NewThreadDefaultsUpdate {
         return new NewThreadDefaultsUpdate($$parsedSource as Partial<NewThreadDefaultsUpdate>);
     }
 }
+
+export const OwnDeviceList = owndevices$0.List;
+export type OwnDeviceList = owndevices$0.List;
+
+export const OwnDeviceMember = owndevices$0.Member;
+export type OwnDeviceMember = owndevices$0.Member;
 
 export class PRCIJobLogResult {
     "text": string;

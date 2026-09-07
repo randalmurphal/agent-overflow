@@ -49,3 +49,14 @@ func lockProfile(ctx context.Context, dir, name string) (func(), error) {
 		}
 	}
 }
+
+// WithProfileLock serializes a short catalog transaction across controllers
+// sharing an installation. Network work must finish before entering it.
+func WithProfileLock(ctx context.Context, dir, name string, transaction func() error) error {
+	release, err := lockProfile(ctx, dir, name)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return transaction()
+}

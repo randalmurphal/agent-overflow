@@ -35,6 +35,8 @@ var ErrNoSession = errors.New("deviceclient: this profile holds no session for t
 // Persisted as additive JSON. Unknown fields survive changes made by this
 // build, so an older client cannot erase a newer build's route or profile data.
 type Session struct {
+	// OwnDevice records enrollment intent; the server remains authoritative.
+	OwnDevice   bool `json:"ownDevice,omitempty"`
 	extraFields map[string]json.RawMessage
 	// PendingNextSecret is saved before a recoverable renewal reaches the wire.
 	PendingNextSecret string `json:"pendingNextSecret,omitempty"`

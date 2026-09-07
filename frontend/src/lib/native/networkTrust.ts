@@ -23,21 +23,38 @@ function pins(repair = false): Record<string, string> {
   throw new Error('Saved computer trust is damaged. Pair the computer again.');
 }
 
-/** Resolve a scanned endpoint before storing it or sending any credential. */
-export function pairingEndpoint(payload: PairingPayload): string {
+export interface PairingTrust {
+  readonly endpoint: string;
+  /** null keeps browser policy; a string selects native trust for this request. */
+  readonly pin: string | null;
+  commit(): void;
+}
+
+/** Validate candidate trust without changing any existing connection. */
+export function preparePairingTrust(payload: PairingPayload): PairingTrust {
   const url = new URL(payload.endpoint);
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password
     || url.pathname !== '/' || url.search || url.hash) throw new Error('Invalid computer address in pairing link.');
-  if (!isNativeShell()) return url.origin;
-  if (payload.certFingerprint && !PIN.test(payload.certFingerprint)) throw new Error('Invalid certificate fingerprint in pairing link.');
-  if (payload.certFingerprint) url.protocol = 'https:';
-  const known = pins(true);
-  delete known[url.origin];
-  known[url.origin] = payload.certFingerprint || WEB_PKI;
-  const entries = Object.entries(known);
-  if (entries.length > 64) throw new Error('Too many saved computer addresses. Remove an unused computer first.');
-  localStorage.setItem(KEY, JSON.stringify(known));
-  return url.origin;
+  const native = isNativeShell();
+  if (native && payload.certFingerprint && !PIN.test(payload.certFingerprint)) throw new Error('Invalid certificate fingerprint in pairing link.');
+  if (native && payload.certFingerprint) url.protocol = 'https:';
+  const endpoint = url.origin;
+  const pin = native ? payload.certFingerprint || '' : null;
+  return { endpoint, pin, commit() {
+    if (!native) return;
+    // Read at commit time so another computer's successful pairing survives.
+    const known = pins(true);
+    known[endpoint] = pin || WEB_PKI;
+    if (Object.keys(known).length > 64) throw new Error('Too many saved computer addresses. Remove an unused computer first.');
+    localStorage.setItem(KEY, JSON.stringify(known));
+  } };
+}
+
+/** Explicit initial pairing adopts trust before booting its first connection. */
+export function pairingEndpoint(payload: PairingPayload): string {
+  const trust = preparePairingTrust(payload);
+  trust.commit();
+  return trust.endpoint;
 }
 
 export function certificatePin(url: string): string | null {

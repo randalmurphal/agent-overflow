@@ -116,6 +116,7 @@ func (s *service) close() {
 	s.mu.Unlock()
 	s.ssh.Close()
 	s.jobs.Wait()
+	s.computers.WaitOwnDevices()
 	_ = s.nameWatch.Close()
 	_ = s.themeWatch.Close()
 	_ = s.spinnerWatch.Close()
@@ -149,6 +150,9 @@ func (s *service) AddBackend(link string) (attachedbackends.Attachment, error) {
 		}{ID: attachment.ID, Attached: err == nil}
 		if err != nil {
 			outcome.Error = err.Error()
+		}
+		if outcome.Attached {
+			s.computers.WakeOwnDevices()
 		}
 		s.emit(eventchan.BackendAttach, outcome)
 	})

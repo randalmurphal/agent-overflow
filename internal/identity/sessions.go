@@ -44,6 +44,7 @@ type LiveConns interface {
 // the wire onto this core; until then nothing routes through it, which is
 // why nothing here reaches into the transport package.
 type Sessions struct {
+	ownMu     sync.Mutex
 	store     *store.Store
 	backendID string
 	now       func() time.Time

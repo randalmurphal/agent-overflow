@@ -607,3 +607,31 @@ database restored under a re-minted backend id therefore refuses every
 session it imported, which is the re-pairing recovery the spec already
 states (§12) rather than a second mechanism. The backend id is captured
 once at `NewSessions`, so a restore takes effect on the next boot.
+
+## Personal devices and restricted introductions
+
+Personal membership is explicit (`purpose=own-device`), never inferred from full
+scopes or from an ordinary/legacy pairing. Only signed device keys may enroll.
+Confirmed personal invitations record the approved generation, so boot can
+finish a crashed membership write without restoring a later removal.
+
+Introductions reuse the existing pairing and session machinery. The target
+mints `own-introduction` only for an active sponsor and active recipient
+membership, bound to that recipient's exact key and generation. Redemption
+checks the signed key before spending the invitation and checks membership
+again; only that path confirms automatically. The generic pairing constructor
+cannot mint introductions. Each target issues an independent device session;
+no sponsor credential or private key is copied.
+
+Replacement retires unacknowledged introduction sessions in a transaction before
+minting another invitation. A consumed refresh secret proves the requester
+acknowledged enrollment; replacement must preserve that completed session.
+Removal commits the tombstone and group-derived session revocations together,
+then invalidates cached admissions before closing connections. Ordinary limited
+pairings are not silently promoted into personal membership.
+
+Sponsored catalog and metadata mutations recheck the caller's membership
+generation under the same lock as revocation. Reading a live caller before
+waiting on that lock does not authorize a later write. Removing the serving
+host withdraws all of its group-derived inbound sessions and pending personal
+invitations; independent ordinary shares remain intact.

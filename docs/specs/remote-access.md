@@ -210,6 +210,24 @@ remain a separate, narrower credential class, unchanged.
 
 ## 4. Authentication
 
+### Personal-device enrollment
+
+Hosts advertising `own-devices.v1` default **My device** to an explicit personal
+group join. `MintOwnDevicePairing`, `MintOwnDevicePairingOnNetwork`, and
+`OpenOwnComputerPairing` carry the same access-admin and step-up requirements as
+ordinary invitation minting. **View only** retains ordinary restricted pairing.
+Previously issued full-access sessions do not gain membership implicitly.
+
+Membership RPCs (`ListOwnDevices`, `RegisterOwnDevice`, `SyncOwnDevices`,
+`MintOwnDeviceIntroduction`, `IntroduceOwnDevice`, `AcceptOwnDeviceIntroduction`)
+use §6's session floor because their additional authority comes from the
+caller's independently recorded, active personal membership. Registration is
+limited to its proven key; mutations fence the sponsor's generation. An
+introduction names an active target, fixes its trusted routes, and admits only
+the exact recipient key. No ordinary session can sponsor enrollment simply by
+holding full UI grants. The bounded catalog, direct-connection lifecycle and
+revocation rules are specified in [computer-pairing.md](../architecture/computer-pairing.md).
+
 ### Pairing (universal; works where passkeys cannot)
 
 1. Owner requests a pairing link from an authenticated admin surface

@@ -306,7 +306,4 @@ func TestServeEnrollmentUsesDeclaredIdentityVocabulary(t *testing.T) {
 	if serveEnrollmentDeviceClass != "browser" {
 		t.Fatalf("serve enrolls device class %q, want browser", serveEnrollmentDeviceClass)
 	}
-	if serveEnrollmentAccess != "full" {
-		t.Fatalf("serve enrolls with access %q, want full", serveEnrollmentAccess)
-	}
 }

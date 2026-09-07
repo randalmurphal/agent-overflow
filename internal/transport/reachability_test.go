@@ -197,18 +197,21 @@ func TestEveryGeneratedMethodCarriesADeclaredScope(t *testing.T) {
 // nothing else in the tree would notice.
 func TestStepUpMethodsAreTheSpecSet(t *testing.T) {
 	want := map[string]string{
-		"OpenComputerPairing":          "opening a nearby/address pairing window that may mint one invitation",
-		"MintDevicePairing":            "minting a pairing link",
-		"MintDevicePairingOnNetwork":   "minting a pairing link on an explicitly selected network",
-		"PairAgentComputer":            "enrolling this computer with another computer for agent commands",
-		"SetNetworkSettings":           "network bind / exposure change",
-		"SetProviderCustomEnvVar":      "provider custom-env write",
-		"DeleteProviderCustomEnvVar":   "provider custom-env write",
-		"SetThreadMcpServerEnabled":    "MCP config write",
-		"SetWorkspaceMcpServerEnabled": "MCP config write",
-		"SetWSLDistroPreference":       "WSL distro preference",
-		"SetProjectWorktreeSetup":      "worktree-setup recipe write: stores argv that runs unattended on every worktree cut",
-		"BeginPasskeyRegistration":     "registering a credential that admits a future caller, on the same argument as minting a pairing link",
+		"OpenComputerPairing":           "opening a nearby/address pairing window that may mint one invitation",
+		"MintDevicePairing":             "minting a pairing link",
+		"MintOwnDevicePairing":          "personal group enrollment from a console",
+		"MintOwnDevicePairingOnNetwork": "personal group enrollment on a selected network",
+		"OpenOwnComputerPairing":        "nearby personal group enrollment",
+		"MintDevicePairingOnNetwork":    "minting a pairing link on an explicitly selected network",
+		"PairAgentComputer":             "enrolling this computer with another computer for agent commands",
+		"SetNetworkSettings":            "network bind / exposure change",
+		"SetProviderCustomEnvVar":       "provider custom-env write",
+		"DeleteProviderCustomEnvVar":    "provider custom-env write",
+		"SetThreadMcpServerEnabled":     "MCP config write",
+		"SetWorkspaceMcpServerEnabled":  "MCP config write",
+		"SetWSLDistroPreference":        "WSL distro preference",
+		"SetProjectWorktreeSetup":       "worktree-setup recipe write: stores argv that runs unattended on every worktree cut",
+		"BeginPasskeyRegistration":      "registering a credential that admits a future caller, on the same argument as minting a pairing link",
 		"RequestServiceUpdate": "replacing the code this machine runs: §7's remote update trigger, " +
 			"which the spec admits precisely on the condition that it rides step-up",
 		"SetPushSenderCredential":   "installing the service-account key this backend wakes phones with",
@@ -291,10 +294,16 @@ func TestSessionFloorMethodsAreTheSpecSet(t *testing.T) {
 		// reaches the CALLING session's own device row and no other, because
 		// the device is derived from the session rather than named by a
 		// parameter. A session granted nothing still owns its own phone.
-		"RegisterPushToken":      "writes the calling session's own device registration and no other",
-		"UnregisterPushToken":    "deletes the calling session's own device registration and no other",
-		"GetDeviceName":          "reads display metadata already advertised in bootstrap and hello",
-		"UpdateClientDeviceName": "changes only the calling session's device label and platform, never its identity or grants",
+		"RegisterPushToken":           "writes the calling session's own device registration and no other",
+		"UnregisterPushToken":         "deletes the calling session's own device registration and no other",
+		"GetDeviceName":               "reads display metadata already advertised in bootstrap and hello",
+		"UpdateClientDeviceName":      "changes only the calling session's device label and platform, never its identity or grants",
+		"ListOwnDevices":              "returns public membership only for an admitted personal session",
+		"RegisterOwnDevice":           "registers only the caller's own proven key with active-generation fencing",
+		"SyncOwnDevices":              "requires the caller's independently recorded active personal membership under the mutation lock",
+		"MintOwnDeviceIntroduction":   "requires active sponsor and target generations, binds redemption to the target key",
+		"IntroduceOwnDevice":          "derives the recipient key from the admitted caller and uses only an active group destination",
+		"AcceptOwnDeviceIntroduction": "requires personal membership and catalog-bound target identity/address/pin; target verifies this host's key",
 	}
 	got := map[string]bool{}
 	for _, method := range GeneratedMethods {

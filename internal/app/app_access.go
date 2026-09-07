@@ -9,6 +9,7 @@ import (
 
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/network"
+	"agent-overflow/internal/owndevices"
 	"agent-overflow/internal/slicesx"
 	"agent-overflow/internal/store"
 )
@@ -159,6 +160,9 @@ func (a *App) MintDevicePairingOnNetwork(deviceClass, access, networkChoice stri
 }
 
 func (a *App) mintDevicePairing(deviceClass, access, networkChoice string) (PairingInvite, error) {
+	return a.mintDevicePairingPurpose(deviceClass, access, networkChoice, "")
+}
+func (a *App) mintDevicePairingPurpose(deviceClass, access, networkChoice, purpose string) (PairingInvite, error) {
 	state, err := a.accessState()
 	if err != nil {
 		return PairingInvite{}, err
@@ -190,6 +194,7 @@ func (a *App) mintDevicePairing(deviceClass, access, networkChoice string) (Pair
 	}
 
 	link, err := state.sessions.MintPairingLink(identity.PairingRequest{
+		Purpose:     purpose,
 		UserID:      state.owner.ID,
 		DeviceClass: class,
 		// Device-bound on every class this surface mints. The link's whole
@@ -212,6 +217,7 @@ func (a *App) mintDevicePairing(deviceClass, access, networkChoice string) (Pair
 	}
 
 	payload, err := identity.PairingPayload{
+		Purpose:     purpose,
 		Version:     identity.PairingPayloadVersion,
 		BackendID:   backendID,
 		BackendName: a.backendDisplayName(),
@@ -272,6 +278,9 @@ func (a *App) ConfirmDevicePairing(linkID string) error {
 		return err
 	}
 	_, err = state.sessions.ConfirmPairing(linkID)
+	if err == nil {
+		NotifyOwnDevices(a)
+	}
 	return err
 }
 
@@ -322,6 +331,12 @@ func (a *App) RevokeAccessDevice(deviceID string) (DeviceRevocationResult, error
 		return DeviceRevocationResult{}, fmt.Errorf(
 			"access: %q is this app's own page channel, not a paired device; revoking it would sign this window out",
 			device.Label)
+	}
+	if member, lookupErr := a.store.OwnDevice(device.KeyThumbprint); lookupErr == nil && !member.Removed {
+		member.Removed = true
+		if _, err := MergeOwnDevices(a, []owndevices.Member{member}); err != nil {
+			return DeviceRevocationResult{}, err
+		}
 	}
 	revoked, err := state.sessions.RevokeDevice(deviceID)
 	if err != nil {

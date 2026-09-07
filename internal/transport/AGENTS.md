@@ -1961,3 +1961,14 @@ Attached profile manifests carry `nickname` separately from their display `name`
 including an explicit empty string. New clients can follow live host renames
 without discarding a Go profile's local override. Missing `nickname` means an
 older combined-name manifest, whose non-address label remains the legacy override.
+
+
+### Personal membership RPCs
+
+`own-devices.v1` advertises explicit own-device enrollment. Public catalog pulls
+are session-scoped but return disabled/empty for an ordinary pairing; mutation
+RPCs recheck the caller's durable personal session and active generation.
+`own-devices:changed` carries no device data, only an invalidation. All catalog
+content remains behind that checked pull. Nearby and QR personal invitations
+are separate APIs from ordinary sharing; the invitation's displayed `purpose`
+is a hint, while its stored purpose and recipient-key restriction authorize it.

@@ -18,7 +18,7 @@ type pairingScript struct {
 func (s *pairingScript) Call(_ context.Context, method string, result any, _ ...any) error {
 	s.methods = append(s.methods, method)
 	switch method {
-	case "MintDevicePairing":
+	case "MintOwnDevicePairing":
 		*(result.(*consoleInvite)) = consoleInvite{LinkID: "test-link", URL: "https://example.test/#pair=one-time"}
 	case "DevicePairingStatus":
 		state := "redeemed"

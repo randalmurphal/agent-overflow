@@ -12,6 +12,7 @@
 
   interface Props {
     projects: readonly ProjectWithCounts[];
+    emptyMessage?: string;
     /** Map of project id -> visible threads for that project. */
     threadsByProject: Map<string, Thread[]>;
     /** Map of project id -> visible thread groups for that project. */
@@ -26,6 +27,7 @@
 
   let {
     projects,
+    emptyMessage = 'No projects yet. Click + to add one.',
     threadsByProject,
     groupsByProject,
     pane,
@@ -42,7 +44,7 @@
     class="px-3 pt-4 text-center text-xs text-fg-muted"
     data-testid="sidebar-projects-empty"
   >
-    No projects yet. Click + to add one.
+    {emptyMessage}
   </div>
 {:else}
   <div

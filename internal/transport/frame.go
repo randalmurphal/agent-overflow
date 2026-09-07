@@ -74,6 +74,7 @@ var serverCapabilities = []string{
 	CapabilityRemoteCommands,
 	CapabilityPairingNetworks,
 	CapabilityNearbyPairing,
+	CapabilityOwnDevices,
 	CapabilityDeviceName,
 }
 
@@ -547,3 +548,6 @@ const batchFramePrefix = `{"type":"` + frameTypeBatch + `","events":[`
 
 // CapabilityNearbyPairing supports discovering and pairing computers without transferring a link.
 const CapabilityNearbyPairing = "pairing.nearby.v1"
+
+// CapabilityOwnDevices supports explicit personal membership and independent introductions.
+const CapabilityOwnDevices = "own-devices.v1"

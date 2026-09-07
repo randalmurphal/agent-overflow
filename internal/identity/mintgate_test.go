@@ -39,7 +39,7 @@ import (
 func TestEveryCredentialProducingCallGoesThroughAChokepoint(t *testing.T) {
 	chokepoints := map[string][]string{
 		"CreateSession":       {"Sessions.Mint"},
-		"ActivateSession":     {"Sessions.ConfirmPairing"},
+		"ActivateSession":     {"Sessions.confirmPairing"},
 		"RotateRefreshSecret": {"Sessions.Refresh"},
 		"ExtendSession":       {"Sessions.EnsureLocalChannelSession"},
 		"signClaims":          {"Sessions.Mint", "Sessions.accessTokensFor"},

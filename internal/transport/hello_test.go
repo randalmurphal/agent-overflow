@@ -182,6 +182,7 @@ func TestServer_AdvertisedCapabilitiesAreFrozen(t *testing.T) {
 		"commands.remote.v1",
 		"pairing.networks.v1",
 		"pairing.nearby.v1",
+		"own-devices.v1",
 		"device-name.v1",
 	}
 	assertCapabilities(t, serverCapabilities, want)

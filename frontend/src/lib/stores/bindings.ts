@@ -11,6 +11,13 @@
 // singleton, so a second attached backend is a change to that resolution
 // and not to this file (docs/specs/remote-access.md §10).
 export {
+  MintOwnDevicePairingOnNetwork,
+  OpenOwnComputerPairing,
+  ListOwnDevices,
+  SyncOwnDevices,
+  IntroduceOwnDevice,
+  MintOwnDeviceIntroduction,
+  AcceptOwnDeviceIntroduction,
   GetDeviceName,
   SetDeviceName,
   UpdateClientDeviceName,

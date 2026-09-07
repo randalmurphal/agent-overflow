@@ -1,5 +1,13 @@
 # lib/transport/
 
+Personal introductions use the same pairing redemption path as explicit links.
+Admission is checked after asynchronous work and before storing trust, endpoint
+or credentials. An activation probe belongs to its pending object and session;
+a late success cannot reactivate a removed connection or consume a replacement
+pairing. Local connection exclusions and generation-stamped removal hints are
+bounded and durable (`ownDeviceConnections.ts`); never evict tombstones or
+erase unreadable membership to make automatic enrollment succeed.
+
 A renewal response retires a pairing only when HTTP 401 carries a known,
 permanent refusal. Unknown future reasons, pending confirmation, spent proofs,
 clock-window failures and superseded operations keep the pairing. A proxy's

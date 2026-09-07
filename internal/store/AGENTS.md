@@ -2163,3 +2163,20 @@ and imported-row localization commit together. Emit every returned changed row
 only after success. Never loop over independent bumps for a related group, or
 recompute the first-echo boundary from a later tail. The empty predecessor denotes
 the head; capture excludes every row in the group being moved.
+
+## Personal membership (v90)
+
+`own_devices` and `own_device_sessions` are security authority, not a disposable
+history cache. The first stores bounded public member records and permanent
+removal tombstones; the second attributes independent sessions to their admitted
+membership generation. `MergeOwnDevices` commits changed membership and stale
+session revocations in one transaction. Identity invalidates its cache only
+after that commit, and closes sockets outside the membership lock. Withdrawing
+the serving backend revokes all group-derived inbound sessions in that same
+transaction; ordinary shares are independent.
+
+Pairing links carry explicit purpose, expected recipient key, membership
+generation and sponsor key. Confirmation freezes a personal admission's
+generation; a restart may finish that exact approval but must not reinterpret
+it as permission to restore a newer removal. Introductions retire unacknowledged
+orphan sessions on replacement; already-renewed sessions survive.

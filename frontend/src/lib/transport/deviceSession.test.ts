@@ -15,6 +15,7 @@ import {
   endpointMatchesOrigin,
   hasPairedSession,
   mintDialTicket,
+  pairedSessionId,
   parsePairingFragment,
   probeActivation,
   redeemPairing,
@@ -64,6 +65,36 @@ function refusal(reason: string): Response {
 
 beforeEach(() => {
   localStorage.clear();
+});
+
+describe('pairing admission', () => {
+  it.each(['removed', 'replaced', 'sponsor disconnected'] as const)('does not install a late credential after %s', async (reason) => {
+    let finish!: (response: Response) => void;
+    let current = true;
+    const fetcher = vi.fn(() => new Promise<Response>((resolve) => { finish = resolve; }));
+    const attempt = redeemPairing(PAYLOAD, 'Phone', fetcher, 'introduced', {
+      endpoint: PAYLOAD.endpoint, current: () => current,
+    });
+    const rejected = expect(attempt).rejects.toMatchObject({ name: 'AbortError' });
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+    expect(storedBackendEndpoint('introduced')).toBe('');
+    if (reason === 'removed') clearPairedSession('introduced');
+    else if (reason === 'sponsor disconnected') current = false;
+    else await redeemPairing(PAYLOAD, 'Phone', async () => grantResponse({ sessionId: 'replacement' }), 'introduced');
+    finish(grantResponse());
+    await rejected;
+    expect(pairedSessionId('introduced')).toBe(reason === 'replaced' ? 'replacement' : null);
+    expect(storedBackendEndpoint('introduced')).toBe('');
+  });
+
+  it('remembers an introduced address only when its credential is admitted', async () => {
+    const admission = { endpoint: PAYLOAD.endpoint, current: () => true };
+    await expect(redeemPairing(PAYLOAD, 'Phone', async () => refusal('revoked_device'), 'introduced', admission)).rejects.toThrow();
+    expect(storedBackendEndpoint('introduced')).toBe('');
+    await redeemPairing(PAYLOAD, 'Phone', async () => grantResponse(), 'introduced', admission);
+    expect(storedBackendEndpoint('introduced')).toBe(PAYLOAD.endpoint);
+    expect(pairedSessionId('introduced')).toBe('sess-1');
+  });
 });
 
 describe('parsePairingFragment', () => {

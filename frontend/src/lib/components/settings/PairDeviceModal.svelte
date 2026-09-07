@@ -27,6 +27,7 @@
   import {
     MintDevicePairing,
     MintDevicePairingOnNetwork,
+    MintOwnDevicePairingOnNetwork,
     GetNetworkSettings,
     DevicePairingStatus,
     ConfirmDevicePairing,
@@ -85,6 +86,7 @@
   const hello = $derived(backend === HOME_BACKEND ? getTransportHello() : getTransportHelloFor(backend));
   const explicitNetworks = $derived(hello?.capabilities.includes('pairing.networks.v1') ?? false);
   const nearbyPairing = $derived(hello?.capabilities.includes('pairing.nearby.v1') ?? false);
+  const ownDevices = $derived(hello?.capabilities.includes('own-devices.v1') ?? false);
   const cannotMint = $derived(!hello || minting !== null || (explicitNetworks && (loadingNetworks || networkOptions.length === 0)));
   let deciding = $state(false);
   let copyState = $state<'idle' | 'copied' | 'failed'>('idle');
@@ -159,7 +161,9 @@
     }
     minting = deviceClass;
     try {
-      const invite = await call(() => explicitNetworks
+      const invite = await call(() => ownDevices && access === 'full'
+        ? MintOwnDevicePairingOnNetwork(deviceClass, networkChoice)
+        : explicitNetworks
         ? MintDevicePairingOnNetwork(deviceClass, access, networkChoice)
         : MintDevicePairing(deviceClass, access));
       stage = { at: 'share', invite };
@@ -297,8 +301,13 @@
   {:else if stage.at === 'choose'}
     <div class="flex flex-col gap-3">
       <p class="text-[0.75rem] leading-snug text-fg-muted">
-        Choose a device, then compare the verification numbers on both screens
-        before allowing access. You can revoke the device later.
+        {#if ownDevices && access === 'full'}
+          Add one of your devices. Your devices will connect to each other automatically,
+          including devices already connected to the other computer.
+        {:else}
+          Choose a device, then compare the verification numbers on both screens
+          before allowing access. You can revoke the device later.
+        {/if}
       </p>
       {#if !hello}
         <p class="text-xs text-fg-muted" role="status">Connecting to this computer…</p>
@@ -334,7 +343,7 @@
       <div class="flex items-center justify-between gap-3">
         <MicroLabel>Access</MicroLabel>
         <Segmented
-          options={ACCESS_OPTIONS}
+          options={ownDevices ? [{ value: 'full', label: 'My device' }, { value: 'view-only', label: 'View only' }] : ACCESS_OPTIONS}
           value={access}
           onChange={(next) => (access = next)}
           ariaLabel="Access"

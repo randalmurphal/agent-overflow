@@ -3,16 +3,12 @@ package attachedbackends
 import (
 	"context"
 	"errors"
-	"net/http"
 	"path/filepath"
-	"slices"
 
 	"agent-overflow/internal/atomicfile"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/entityid"
-	"agent-overflow/internal/rpcclient"
 	"agent-overflow/internal/transport"
-	"github.com/coder/websocket"
 )
 
 const MaxAgentComputers = 16
@@ -110,30 +106,10 @@ func (m *Manager) callAgentPeer(ctx context.Context, id, method string, result a
 	if err != nil {
 		return errors.New("this computer is no longer paired")
 	}
-	ticket, err := held.client.Ticket(ctx)
-	if err != nil {
-		return errors.New("the computer is unavailable or its pairing needs attention")
-	}
-	address, err := held.client.DialURL(ticket)
+	rpc, err := held.openRPC(ctx, transport.CapabilityRemoteCommands)
 	if err != nil {
 		return err
 	}
-	client := &http.Client{Transport: held.client.RoundTripper(), CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("computer redirects are refused") }}
-	conn, _, err := websocket.Dial(ctx, address, &websocket.DialOptions{HTTPClient: client})
-	if err != nil {
-		return errors.New("could not connect to the computer")
-	}
-	rpc := rpcclient.New(conn)
 	defer rpc.Close()
-	hello, err := rpc.Hello(ctx)
-	if err != nil {
-		return err
-	}
-	if hello.BackendID != id || hello.ProtocolVersion != transport.ProtocolVersion {
-		return errors.New("the computer identity or protocol changed; reconnect from Computers")
-	}
-	if !slices.Contains(hello.Capabilities, transport.CapabilityRemoteCommands) {
-		return errors.New("update this computer to enable remote agent commands")
-	}
 	return rpc.Call(ctx, method, result, params...)
 }

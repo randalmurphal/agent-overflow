@@ -24,6 +24,9 @@ func TestDeviceKey_ReadNeverGenerates(t *testing.T) {
 	if _, err := DeviceKey(dir); !errors.Is(err, ErrNoDeviceKey) {
 		t.Fatalf("DeviceKey on an empty profile = %v, want ErrNoDeviceKey", err)
 	}
+	if _, err := KeyThumbprint(dir); !errors.Is(err, ErrNoDeviceKey) {
+		t.Fatalf("membership identity on an empty profile = %v, want ErrNoDeviceKey", err)
+	}
 	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
 		t.Fatalf("the read created %v (err %v); it must create nothing", entries, err)
 	}

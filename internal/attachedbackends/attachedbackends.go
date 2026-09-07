@@ -48,6 +48,7 @@ import (
 // one for the same backend would mean two processes rotating one refresh
 // secret against each other.
 type Manager struct {
+	own       ownDeviceReconciler
 	dir       string
 	dial      deviceclient.DialContextFunc
 	selfID    func() string
@@ -167,6 +168,7 @@ type Attached struct {
 	// answer anyway.
 	LastReachedMs       int64  `json:"lastReachedMs,omitempty"`
 	DeviceNameSyncError string `json:"deviceNameSyncError,omitempty"`
+	OwnDeviceSyncError  string `json:"ownDeviceSyncError,omitempty"`
 }
 
 // List reads every attached machine.
@@ -188,6 +190,7 @@ func (m *Manager) List() ([]Attached, error) {
 		if held, ok := m.carriers[session.BackendID]; ok {
 			row.LastReachedMs = held.lastReachedMs.Load()
 			row.DeviceNameSyncError = held.nameError()
+			row.OwnDeviceSyncError = held.ownError()
 		}
 		m.mu.Unlock()
 		out = append(out, row)
@@ -259,6 +262,21 @@ func (m *Manager) Add(ctx context.Context, pairingLink string) (Attachment, erro
 			return Attachment{}, errors.New("this computer is already connected; use its existing connection")
 		}
 	}
+	attachment, err := m.addLinkLocked(ctx, link)
+	if err != nil {
+		return Attachment{}, err
+	}
+	if err := m.excludeOwnDevice(link.BackendID, false); err != nil {
+		return Attachment{}, err
+	}
+	if comparison != "" {
+		attachment.VerificationNumber = comparison
+	}
+	return attachment, nil
+}
+
+// Caller holds the destination profile lock across one enrollment.
+func (m *Manager) addLinkLocked(ctx context.Context, link deviceclient.Link) (Attachment, error) {
 	// Pairing is a new grant. Do not revive an old agent opt-in after
 	// revocation or an incomplete pairing; the explicit enable follows it.
 	if err := m.writeAgentAccess(link.BackendID, false); err != nil {
@@ -291,9 +309,6 @@ func (m *Manager) Add(ctx context.Context, pairingLink string) (Attachment, erro
 	}
 	m.carriers[link.BackendID] = built
 	m.mu.Unlock()
-	if comparison != "" {
-		pairing.VerificationNumber = comparison
-	}
 	return Attachment{
 		ID:                 link.BackendID,
 		Name:               displayName(client.Session()),
@@ -329,6 +344,13 @@ func (m *Manager) Await(ctx context.Context, id string) error {
 func (m *Manager) Remove(id string) error {
 	unlock := m.profiles.Lock(id)
 	defer unlock()
+	if err := m.excludeOwnDevice(id, true); err != nil {
+		return err
+	}
+	return m.forgetLocked(id)
+}
+
+func (m *Manager) forgetLocked(id string) error {
 	if err := m.writeAgentAccess(id, false); err != nil {
 		return err
 	}
@@ -377,6 +399,7 @@ type carrier struct {
 	nameSyncChanged func()
 	nameErrorMu     sync.Mutex
 	nameSyncError   string
+	ownSyncError    string
 	client          *deviceclient.Client
 	proxy           *backendproxy.Carrier
 

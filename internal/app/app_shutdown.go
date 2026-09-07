@@ -334,6 +334,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 		record("close remote commands", nil)
 	}
 	a.remotePeers.wg.Wait()
+	if a.backends != nil {
+		a.backends.WaitOwnDevices()
+	}
 
 	a.browser.applyWG.Wait()
 	if a.browser.manager != nil {

@@ -26,6 +26,7 @@ the package's whole documentation, so they carry more.
 | `rpcclient/` | Small serialized wire RPC client for local owner commands and paired peers. Has its own subarea guide. |
 | `localcontrol/` | Private loopback owner-console discovery, RPC and desktop-page adoption for headless pairing and installed services. Has its own subarea guide. |
 | `sshsetup/` | Bounded OpenSSH onboarding and service-start operations; preserves SSH host-key and credential-agent authority. Has its own subarea guide. |
+| `owndevices/` | Bounded public personal-device catalog and deterministic removal/generation merge; credentials remain independent per target in `identity` and `deviceclient`. |
 | `identity/` | The session core: mints session credentials, verifies a presentation against BOTH halves of a session (signed claims and a live database row — where "live" is itself the conjunction of the session row and its device's, spec §2), answers the per-RPC liveness question through an in-memory table invalidated synchronously on revoke, and owns recovery codes. Runs pairing (single-use link, proof-of-possession, owner-confirmed verification number), rotating refresh with reuse detection, the implicit local page channel, and passkeys (`github.com/go-webauthn/webauthn`) — which pairing bootstraps and which then buy the three things pairing cannot: a browser this backend has never seen signing in with no code to type, a browser re-authenticating after its session family ended, and the step-up proof a REMOTE owner can produce, where before it was host presence and nothing else. The single use, the expiry, the relying party and the ceremony's purpose are this package's, not the library's, and its guide says why each is a hole if left to the default. Declares the identity vocabulary (device class, binding class, the grantable scope names, audit events, the closed `Reason` set) and cross-checks it against the real schema CHECKs. Imports `internal/store`; `internal/transport` must NOT import it, and it must not import transport — the two meet through interfaces each declares for itself, with `internal/app` adapting the two. Scope ENFORCEMENT reads this vocabulary but lives in `internal/transport` (the per-RPC gate and the event filter) and `internal/app` (the argument-dependent rechecks), reached through the `SessionScopes` hook. Has its own subarea guide. |
 | `store/storetest/` | Test-only: one migrated template DB per package (`Run` in `TestMain`), byte-copied per test by `Clone` / `ClonePath`, so a store-backed test does not replay the migration chain. |
 | `usageledger/` | The one pricing rule the `usage_ledger` is read through: `Spend` folds a `store.UsageDetailRow` group into `{WireUSD, EstimatedUSD, UnpricedRows}` and `PriceGroups` folds a whole aggregation, composing wire-reported cost with `usagecost` estimates for token-only rows. Every dollar surface (usage dashboard, workflow run cost, workflow budget enforcement) goes through it, so a budget is enforced against the number a human is shown. An unrecognized `cost_source` is an error, never a silently skipped group. |
@@ -204,6 +205,20 @@ before dropping its carrier. Renewal performs network I/O without its mutex,
 then checks retirement and writes under the same lock as nickname/removal.
 Late success or refusal must neither resurrect a forgotten credential nor
 overwrite/delete its replacement. A rename during renewal keeps the new name.
+
+Own-device connections reuse those same carriers. The host's identity store owns
+membership; a frontend-only controller persists only its bounded public catalog.
+One lifecycle-owned worker reconciles up to four peers at once, with bounded
+requests and offline retries; it never requires a window or permanent hub.
+Ordinary/full-access and thread-sharing sessions do not become membership merely
+because their scopes permit UI access. Only explicit own-device approval and
+recipient-key-bound introductions enroll group sessions. Local removal persists
+an exclusion, while membership tombstones retire own-device profiles; neither
+re-enables agent commands. New direct profiles invalidate the frontend catalog,
+and per-computer enrollment errors stay in connection state instead of toasts.
+Report failed introductions with their target, continue independent targets,
+and clear pending errors after convergence; a successful catalog read alone
+does not mean every direct connection is ready.
 
 Installation display names live in `appidentity.DeviceName`, persisted separately
 from host settings so backend and frontend-only modes share one name. Advertise

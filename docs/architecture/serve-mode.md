@@ -120,7 +120,7 @@ Details worth knowing:
 - The offer happens **once per boot**, on a goroutine, while the backend
   serves. Ctrl-C during it shuts the backend down normally.
 - Nothing here is a new identity rule. The console calls
-  `MintDevicePairing`, `DevicePairingStatus` and `ConfirmDevicePairing` —
+  `MintOwnDevicePairing`, `DevicePairingStatus` and `ConfirmDevicePairing` —
   the same methods the settings screen calls, in the same order — and the
   session core applies its own single-use link, proof of possession,
   expiry and confirmation window to each. Minting requires step-up, and an
@@ -680,3 +680,11 @@ This verifies the production executable and bundle layout. Download checksum
 failures, interrupted trials and rollback have separate deterministic tests.
 Release signing, platform service-manager integration and physical-device
 acceptance still need their platform release checks.
+
+The console's owner enrollment joins personal devices, including an existing
+personal group on the joining device. Each computer obtains its own direct
+key-bound sessions; the console never copies a peer's credentials. Ordinary
+limited sharing remains a separate settings flow. When a desktop first joins,
+its LAN listener is enabled through the same lifecycle as Remote access settings,
+so reciprocal connections can work. Tailnet-only return paths still require that
+computer's Tailscale node to be configured and reachable.

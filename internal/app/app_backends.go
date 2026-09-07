@@ -150,6 +150,9 @@ func (a *App) awaitAttachment(id string) {
 			outcome.Attached = false
 			outcome.Error = err.Error()
 		}
+		if outcome.Attached {
+			a.backends.WakeOwnDevices()
+		}
 		a.emit(eventchan.BackendAttach, outcome)
 		a.signalRemotePeers()
 		a.emit(eventchan.AgentComputersChanged, struct{}{})

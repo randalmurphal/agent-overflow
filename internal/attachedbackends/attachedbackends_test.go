@@ -129,6 +129,13 @@ func TestRemoveForgetsTheSessionAndKeepsTheDeviceKey(t *testing.T) {
 	if _, err := deviceclient.DeviceKey(dir); err != nil {
 		t.Errorf("the device key did not survive the removal: %v", err)
 	}
+	reopened, err := New(dir, "this-machine", "linux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if excluded, err := reopened.ownDeviceExcluded("aaa"); err != nil || !excluded {
+		t.Fatalf("removed computer can be automatically restored after restart: excluded=%v, err=%v", excluded, err)
+	}
 }
 
 // TestCarrierIsNilForAnUnknownBackend — nil is an ordinary answer, and it

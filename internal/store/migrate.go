@@ -1621,6 +1621,7 @@ CREATE INDEX idx_import_history_items_send_id
 CREATE INDEX idx_flush_queue_send_id ON flush_queue_items(thread_id, send_id)
  WHERE send_id <> '';`,
 	},
+	{Version: 90, Name: "own_devices", SQL: ownDevicesV90SQL},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

@@ -192,6 +192,7 @@ func Pair(ctx context.Context, dir string, link Link, label, platform string, op
 	}
 
 	session := Session{
+		OwnDevice:          link.Purpose == "own-device" || link.Purpose == "own-introduction",
 		RefreshRecovery:    &issued.refreshRecovery,
 		BackendID:          link.BackendID,
 		BackendName:        link.BackendName,

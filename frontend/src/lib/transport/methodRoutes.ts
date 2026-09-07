@@ -12,6 +12,7 @@
 export type MethodRoute = 'thread' | 'project' | 'workspace' | 'home' | 'selected' | 'all';
 
 export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
+	2097968437: 'home', // AcceptOwnDeviceIntroduction
 	2629313140: 'home', // AddBackend
 	1158138718: 'selected', // AgentRemoteCancel
 	925837602: 'selected', // AgentRemoteComputers
@@ -184,6 +185,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	535929682: 'thread', // ImportThreadUpdates
 	753394581: 'thread', // InterruptAndRevertIfClean
 	850013031: 'thread', // InterruptTurn
+	2219602920: 'home', // IntroduceOwnDevice
 	2789068977: 'home', // IsWSL
 	2526318276: 'selected', // ListAgentComputers
 	2451527188: 'all', // ListArchivedThreads
@@ -201,6 +203,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	162135710: 'thread', // ListItemsBeforeCursor
 	320784263: 'thread', // ListLiveBackgroundTasks
 	2582096622: 'home', // ListMcpServerStatuses
+	2775087950: 'home', // ListOwnDevices
 	4110818691: 'workspace', // ListPRCommits
 	763649720: 'selected', // ListPRReviewThreads
 	3860831272: 'home', // ListPasskeys
@@ -231,12 +234,16 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	400809065: 'home', // MintDevicePairing
 	355445930: 'home', // MintDevicePairingOnNetwork
 	310779922: 'selected', // MintFilePreviewURL
+	1417567029: 'home', // MintOwnDeviceIntroduction
+	939299731: 'home', // MintOwnDevicePairing
+	1802705420: 'home', // MintOwnDevicePairingOnNetwork
 	1471520668: 'thread', // MintPreviewURL
 	3013708277: 'thread', // MoveThreadTerminals
 	2831503793: 'home', // NotificationActivated
 	3980787304: 'home', // OpenComputerPairing
 	3362740399: 'home', // OpenExternalURL
 	3994295523: 'home', // OpenInEditor
+	767864574: 'home', // OpenOwnComputerPairing
 	2247958725: 'thread', // OpenTerminal
 	3436727647: 'selected', // PairAgentComputer
 	1748405812: 'thread', // PinThread
@@ -263,6 +270,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2539237007: 'home', // RefreshProviderAccountUsage
 	2618043580: 'home', // RefreshTerminal
 	3682640111: 'thread', // RegenerateThreadTitle
+	111779378: 'home', // RegisterOwnDevice
 	2641306153: 'home', // RegisterPushToken
 	1034543696: 'thread', // RegisterQueueItem
 	235246962: 'selected', // RemoteCommandCancel
@@ -271,6 +279,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3021549306: 'selected', // RemoteCommandStatus
 	3005272623: 'home', // RemoveBackend
 	2899196344: 'workspace', // RemoveOtherWorktree
+	3065006869: 'home', // RemoveOwnDevice
 	684418419: 'home', // RemoveProviderAccount
 	1528076361: 'home', // RenameBackend
 	3728890856: 'project', // RenameProject
@@ -343,6 +352,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3272491649: 'selected', // SubscribePRUpdates
 	1249964095: 'home', // SwitchProviderAccount
 	3897387725: 'thread', // SwitchThread
+	1289411773: 'home', // SyncOwnDevices
 	3841902986: 'thread', // SyncThreadWindow
 	870653875: 'thread', // TerminateCodexBackgroundTerminal
 	1291217507: 'thread', // TriggerMcpAuth

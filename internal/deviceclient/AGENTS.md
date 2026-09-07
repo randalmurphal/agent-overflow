@@ -45,3 +45,18 @@ clients, learned alternatives and address-repair probes alike. It bypasses
 environment proxies but never changes TLS pinning, destination authority or
 credential rules. The owner can route tailnet destinations through its tsnet
 node and ordinary LAN destinations through the OS without a global dialer.
+
+`Session.OwnDevice` records the invitation's intent so a confirmed own-device
+introduction can replace an older limited profile without repeatedly replacing
+an existing group session. It is not authorization: every membership RPC checks
+its durable session admission on the destination. `KeyThumbprint` reads the same
+RFC 7638 key identity used in proofs and never generates a key. Public catalog
+transactions sharing a profile use `WithProfileLock`; keep network work outside
+that short cross-process lock.
+
+Automatic introductions select among the target member's bounded trusted routes
+before redemption. Credential-free health probes verify both TLS trust and
+backend identity; the first verified route wins without waiting for a dead LAN
+or cold VPN alternative. Selection never sends the invitation token or a device
+proof. Pair then performs one redemption only: a lost reply cannot safely retry
+an invitation that may already have been spent.

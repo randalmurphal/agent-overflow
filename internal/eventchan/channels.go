@@ -187,6 +187,7 @@ const (
 	BackendAttach         Channel = "backend:attach"
 	BackendSetChanged     Channel = "backend:set-changed"
 	AgentComputersChanged Channel = "agent-computers:changed"
+	OwnDevicesChanged     Channel = "own-devices:changed"
 	// ThreadTransfer carries bounded public operation status; never grants,
 	// activation secrets or private installation recipes.
 	ThreadTransfer Channel = "thread:transfer"

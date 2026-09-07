@@ -170,7 +170,7 @@ highlight the moment the pointer crosses a child element.
 
 ## Persisted UI state
 
-`stores/sidebar.svelte.ts` owns the localStorage keys. Two of them are
+`stores/sidebar.svelte.ts` owns expansion and sorting keys. Two of them are
 inverses, deliberately:
 
 | Key | Holds |
@@ -215,3 +215,16 @@ the shared store; interleaved samples from two machines never share one slot.
 Directory browsing distinguishes `exists: false` (an incomplete/missing path,
 which may use parent-prefix filtering) from a failed RPC (a visible connection
 or access error). Typing must not turn network failures into “No Matches”.
+
+The Projects header's device menu filters this sidebar only. Its bounded
+excluded-computer UUID set lives in `stores/sidebarDevices.svelte.ts` through
+frontendStorage, so route changes and nicknames cannot reset it, and new hosts
+remain visible. Removed hosts leave the menu without making an inactive exclusion
+look like an active filter; re-pairing the same identity retains the preference.
+Never filter transport subscriptions, execution targets, or mounted panes here.
+
+Apply visibility before search/group membership: group-name search may restore
+only visible-host threads. With a device filter active, groups with no surviving
+members disappear; All devices preserves ordinary empty-group behavior. A merged
+repository stays one stable entry while any visible checkout remains. Its hidden
+representative must not hide another computer's visible checkout.

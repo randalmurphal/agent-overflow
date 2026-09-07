@@ -1175,3 +1175,25 @@ ID query argument). Source provenance comes from CallerScope. The source checks
 that status/cancel belongs to that conversation. Workflow phases additionally
 need remote-commands. Context cancellation of a source RPC does not cancel the
 accepted destination process. Stop the job manager before closing SQLite.
+
+## Personal device connections
+
+`app_own_devices.go` binds explicit personal pairing to the public membership
+catalog (`internal/owndevices`). A real session is attributed before considering
+local presence: a paired connection over loopback is still its paired device,
+not the host's own key. Only the actual local page channel or an in-process
+call acts as the host identity. Legacy/full-access sessions receive an empty,
+disabled membership list and cannot introduce or register devices.
+
+Registration changes only the authenticated caller's descriptor. Introductions
+resolve the requesting key from the session and the destination from active
+membership, then use existing independent carriers. A reciprocal invitation is
+accepted only from an active personal member, and only when its target backend,
+normalized address and TLS pin match an active catalog member. A phone can relay
+introductions between its computers without creating a new trust anchor.
+Agent command opt-ins remain separate. Forgetting a local connection persists
+an exclusion; revoking a personal device distributes a removal tombstone.
+
+Offline revocation is eventual: connected peers apply removals before creating
+connections, and isolated hosts learn them when connectivity returns. There is
+no online central authority and no claim of instant revocation across partitions.

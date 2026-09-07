@@ -1,5 +1,6 @@
 <script lang="ts">
   import { installDeviceNameSync } from './lib/stores/deviceNames';
+  import { installOwnDeviceSync } from './lib/stores/ownDevices.svelte';
   import { onBackendStatusChange } from './lib/stores/transportStatus.svelte';
   import { isPassiveConnectionFailure } from './lib/transport/passiveReadFailure';
   import { onMount, onDestroy } from 'svelte';
@@ -515,6 +516,7 @@
     const cleanupZoomKeys = installZoomKeybindings();
     const cleanupScreenPresence = installScreenPresence();
     const cleanupDeviceNames = installDeviceNameSync();
+    const cleanupOwnDevices = installOwnDeviceSync();
 
     // Register the built-in commands. The hooks close over stable references
     // so commands see the live pane state each time they run.
@@ -592,6 +594,7 @@
       cleanupZoomKeys();
       cleanupScreenPresence();
       cleanupDeviceNames();
+      cleanupOwnDevices();
       cleanupLoafTrace();
       cleanupHarnessBridge();
       window.removeEventListener('pagehide', flushPaneLayout);

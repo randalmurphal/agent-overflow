@@ -24,7 +24,7 @@ import (
 // terminal, and nothing else.
 //
 // So the terminal becomes it, on exactly the same terms. Nothing here
-// decides anything about identity: the flow calls MintDevicePairing,
+// decides anything about identity: the flow calls MintOwnDevicePairing,
 // DevicePairingStatus and ConfirmDevicePairing — the same four methods the
 // settings screen calls, in the same order — and identity applies its own
 // rules to each. The single-use link, the proof of possession, the
@@ -43,11 +43,10 @@ import (
 // with no PTY anywhere.
 
 const (
-	// serveEnrollmentDeviceClass and serveEnrollmentAccess are argued at
+	// serveEnrollmentDeviceClass is argued at
 	// appEnrollment.Mint. Spelled through identity's own constants so the
 	// class this mode enrolls cannot drift from the declared vocabulary.
 	serveEnrollmentDeviceClass = string(identity.DeviceBrowser)
-	serveEnrollmentAccess      = string(identity.PairingAccessFull)
 )
 
 // serveEnrollment is the slice of the owner surface the console drives.

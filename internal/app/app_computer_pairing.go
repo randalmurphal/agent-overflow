@@ -49,6 +49,9 @@ type computerPairingState struct {
 //ao:route home
 //ao:stepup
 func (a *App) OpenComputerPairing(ctx context.Context, networkChoice, access string) (ComputerPairingWindow, error) {
+	return a.openComputerPairing(ctx, networkChoice, access, "")
+}
+func (a *App) openComputerPairing(ctx context.Context, networkChoice, access, purpose string) (ComputerPairingWindow, error) {
 	if networkChoice != "lan" && networkChoice != "tailnet" {
 		return ComputerPairingWindow{}, errors.New("choose Local network or Tailscale")
 	}
@@ -85,7 +88,7 @@ func (a *App) OpenComputerPairing(ctx context.Context, networkChoice, access str
 	view := state.book.Open(func() (pairbootstrap.Invitation, error) {
 		// The HTTP adapter chooses the listener actually used for the reveal.
 		// Both enabled routes enroll the same host; no pin crosses listeners.
-		invite, err := a.mintDevicePairing("desktop", access, state.network)
+		invite, err := a.mintDevicePairingPurpose("desktop", access, state.network, purpose)
 		return pairbootstrap.Invitation{LinkID: invite.LinkID, URL: invite.URL}, err
 	})
 	state.windowID, state.linkID = view.WindowID, ""

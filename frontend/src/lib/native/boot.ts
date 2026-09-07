@@ -1,4 +1,4 @@
-import { pairingEndpoint } from './networkTrust';
+import { preparePairingTrust } from './networkTrust';
 // What the shell does before anything mounts.
 //
 // `main.ts` calls `prepareNativeShell()` first and reads the answer to
@@ -90,7 +90,7 @@ export function adoptPairingEndpoint(payload: PairingPayload): string {
   try {
     // Validate without repointing an existing connection. PairingScreen
     // stores the endpoint in the computer's own slot when pairing begins.
-    pairingEndpoint(payload);
+    preparePairingTrust(payload);
   } catch (error) {
     if (error instanceof Error && !(error instanceof TypeError)) return error.message;
     return 'That pairing link does not say where the app is. Ask for a new one.';

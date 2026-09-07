@@ -47,8 +47,9 @@ describe('ProjectsSection import trigger', () => {
 
     const header = button.parentElement;
     const buttons = [...(header?.querySelectorAll('button') ?? [])];
-    expect(buttons.indexOf(button)).toBe(1);
-    expect(buttons[2]).toHaveAttribute('aria-label', 'Add Project');
+    const position = buttons.indexOf(button);
+    expect(buttons[position - 1]).toHaveAttribute('aria-label', expect.stringContaining('Sort Projects'));
+    expect(buttons[position + 1]).toHaveAttribute('aria-label', 'Add Project');
   });
 
   it('raises the store flag and mounts nothing of its own', async () => {

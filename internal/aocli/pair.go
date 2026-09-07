@@ -115,7 +115,7 @@ func runPairingConsole(ctx context.Context, client pairingCaller, class string, 
 		}
 	}
 	var invite consoleInvite
-	if err := call("MintDevicePairing", &invite, class, "full"); err != nil {
+	if err := call("MintOwnDevicePairing", &invite, class); err != nil {
 		return err
 	}
 	confirmed := false

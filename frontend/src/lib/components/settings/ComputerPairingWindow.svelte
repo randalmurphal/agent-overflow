@@ -2,8 +2,9 @@
   import { onMount } from 'svelte';
   import Button from '../primitives/Button.svelte';
   import MicroLabel from '../primitives/MicroLabel.svelte';
-  import { OpenComputerPairing, ComputerPairingStatus, CloseComputerPairing, ConfirmDevicePairing } from '../../stores/bindings';
-  import { getTransportHelloFor } from '../../stores/transportStatus.svelte';
+  import { OpenComputerPairing, OpenOwnComputerPairing, ComputerPairingStatus, CloseComputerPairing, ConfirmDevicePairing } from '../../stores/bindings';
+  import { getTransportHello, getTransportHelloFor } from '../../stores/transportStatus.svelte';
+  import { HOME_BACKEND } from '../../transport/backendKey';
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { backendNow } from '../../transport/backendClock';
@@ -59,7 +60,9 @@
   onMount(() => {
     void (async () => {
       try {
-        const opened = await call(() => OpenComputerPairing(networkChoice, access));
+        const hello = backend === HOME_BACKEND ? getTransportHello() : getTransportHelloFor(backend);
+        const ownDevices = access === 'full' && hello?.capabilities.includes('own-devices.v1');
+        const opened = await call(() => ownDevices ? OpenOwnComputerPairing(networkChoice) : OpenComputerPairing(networkChoice, access));
         if (disposed) { await closeWindow(opened.id); return; }
         window = opened;
         onChanged();
@@ -112,7 +115,7 @@
       {#if status.state !== 'ready'}<p class="text-xs text-fg-muted" role="status">Finishing the connection…</p>{/if}
       <div class="flex flex-wrap justify-end gap-2">
         <Button variant="danger-outline" disabled={deciding} onclick={onClose}>It doesn’t match</Button>
-        <Button variant="primary" disabled={deciding || status.state !== 'ready'} onclick={() => void confirm()}>It matches — allow</Button>
+        <Button variant="primary" disabled={deciding || status?.state !== 'ready'} onclick={() => void confirm()}>It matches — allow</Button>
       </div>
     {:else}
       <p class="text-sm leading-relaxed text-fg-muted">On the other computer, open <span class="text-fg">Remote access → Connect to a computer</span> and choose <span class="font-medium text-fg">{name}</span>.</p>

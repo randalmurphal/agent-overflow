@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
+import { __setTransportHelloForTest } from '../../stores/transportStatus.svelte';
 import ComputerPairingWindow from './ComputerPairingWindow.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 
@@ -19,7 +20,18 @@ describe('computer pairing window', () => {
     setBindingMock('OpenComputerPairing', async () => WINDOW);
     setBindingMock('CloseComputerPairing', async () => {});
   });
-  afterEach(() => { cleanup(); vi.useRealTimers(); resetBindingMocks(); });
+  afterEach(() => { __setTransportHelloForTest(null); cleanup(); vi.useRealTimers(); resetBindingMocks(); });
+
+  it('opens personal pairing using the home controller capability', async () => {
+    __setTransportHelloForTest({ backendId: '', backendName: 'My computers', capabilities: ['own-devices.v1'], protocolVersion: 1,
+      serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 });
+    const own = setBindingMock('OpenOwnComputerPairing', async () => WINDOW);
+    const ordinary = setBindingMock('OpenComputerPairing', async () => WINDOW);
+    setBindingMock('ComputerPairingStatus', async () => WAITING);
+    render(ComputerPairingWindow, { networkChoice: 'lan', access: 'full', onClose: vi.fn(), onChanged: vi.fn() });
+    await vi.waitFor(() => expect(own).toHaveBeenCalledExactlyOnceWith('lan'));
+    expect(ordinary).not.toHaveBeenCalled();
+  });
 
   it('shows the independently derived number but permits approval only once the credential is ready', async () => {
     const open = setBindingMock('OpenComputerPairing', async () => WINDOW);

@@ -193,8 +193,13 @@
       </h1>
       {#if stage.at === 'intro'}
         <p class="text-sm text-text-secondary">
-          This device will get its own access to <span class="font-medium">{backendName}</span>,
-          which you can review or revoke there at any time.
+          {#if payload?.purpose === 'own-device'}
+            Join your devices through <span class="font-medium">{backendName}</span>.
+            Your devices will connect to each other automatically, including computers already in the group.
+          {:else}
+            This device will get its own access to <span class="font-medium">{backendName}</span>,
+            which you can review or revoke there at any time.
+          {/if}
         </p>
       {/if}
     </div>

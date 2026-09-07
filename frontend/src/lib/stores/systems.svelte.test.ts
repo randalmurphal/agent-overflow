@@ -58,6 +58,19 @@ describe('systems store', () => {
     expect(backendById('laptop')).toBeUndefined();
   });
 
+  it('replaces the catalog for membership changes only from its own controller', async () => {
+    const list = setBindingMock('ListBackends', async () => [LAPTOP]);
+    await loadSystems();
+    expect(backendById('laptop')).toBeDefined();
+    list.mockResolvedValue([]);
+    applyBackendSetChange({ action: 'membership', id: '' }, 'laptop');
+    expect(list).toHaveBeenCalledOnce();
+    applyBackendSetChange({ action: 'membership', id: '' });
+    await loadSystems();
+    expect(backendById('laptop')).toBeUndefined();
+    expect(manifestBackendDescriptors()).toEqual([]);
+  });
+
   it('loads the list once, and not at all for a session without host', async () => {
     const list = setBindingMock('ListBackends', async () => [LAPTOP]);
     await Promise.all([loadSystems(), loadSystems()]);

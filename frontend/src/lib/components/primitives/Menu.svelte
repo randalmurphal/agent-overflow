@@ -42,7 +42,7 @@
   function getItems(): HTMLElement[] {
     if (!containerEl) return [];
     const all = Array.from(
-      containerEl.querySelectorAll<HTMLElement>('[role="menuitem"]'),
+      containerEl.querySelectorAll<HTMLElement>('[role="menuitem"], [role="menuitemcheckbox"]'),
     );
     return all.filter((el) => el.getAttribute('aria-disabled') !== 'true');
   }

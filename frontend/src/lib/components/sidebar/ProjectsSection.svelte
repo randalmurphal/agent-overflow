@@ -38,7 +38,10 @@
   import Plus from '@lucide/svelte/icons/plus';
   import IconButton from '../primitives/IconButton.svelte';
   import Icon from '../primitives/Icon.svelte';
-  import MicroLabel from '../primitives/MicroLabel.svelte';
+  import SidebarDeviceFilter from './SidebarDeviceFilter.svelte';
+  import { sidebarBackendVisible, sidebarDeviceFilterActive } from '../../stores/sidebarDevices.svelte';
+  import { projectBackend } from '../../transport/entityIndex';
+  import { threadMachine } from '../../stores/attachedBackends.svelte';
   import ProjectList from './ProjectList.svelte';
   import { threadGroupMatchesQuery, threadMatchesQuery } from './threadSearch';
   import type {
@@ -82,6 +85,7 @@
   // ProjectThreadList) are what keep a streaming beat off the DOM.
   let searchBuckets = $derived.by(() => {
     const groups = getThreadGroups();
+    const filterDevices = sidebarDeviceFilterActive();
     const nameMatchedGroupIds = new Set<string>();
     if (query) {
       for (const group of groups) {
@@ -92,7 +96,7 @@
     const threadsByProject = new Map<string, Thread[]>();
     const populatedGroupIds = new Set<string>();
     for (const t of getThreads()) {
-      if (t.archived) continue;
+      if (t.archived || (filterDevices && !sidebarBackendVisible(threadMachine(t.id, t.projectId)))) continue;
       const key = t.projectId ? entryIdFor(t.projectId) : '';
       if (!key) continue;
       const groupId = t.groupId ?? '';
@@ -111,6 +115,7 @@
     const groupsByProject = new Map<string, ThreadGroup[]>();
     for (const group of groups) {
       if (!group.projectId) continue;
+      if (filterDevices && !populatedGroupIds.has(group.id)) continue;
       if (query && !nameMatchedGroupIds.has(group.id) && !populatedGroupIds.has(group.id)) {
         continue;
       }
@@ -139,11 +144,22 @@
   // when the re-sort lands in the same order the PREVIOUS array is
   // returned and the animated project each-block (FLIP measure = forced
   // layout) never reconciles for a beat that changed no ordering.
+  const deviceProjectIds = $derived.by(() => {
+    if (!sidebarDeviceFilterActive()) return null;
+    const visible = new Set<string>();
+    for (const row of getProjects()) {
+      if (!row.project.archived && sidebarBackendVisible(projectBackend(row.project.id))) {
+        visible.add(entryIdFor(row.project.id));
+      }
+    }
+    return visible;
+  });
   let prevVisibleProjects: ProjectWithCounts[] = [];
   let visibleProjects = $derived.by(() => {
     const mode = getProjectSortMode();
     const entries = projectEntries()
       .filter((p) => !p.project.archived)
+      .filter((p) => deviceProjectIds === null || deviceProjectIds.has(p.project.id))
       .filter((p) => {
         if (!query) return true;
         if (p.project.name.toLowerCase().includes(query)) return true;
@@ -314,7 +330,7 @@
   data-testid="sidebar-projects-section"
 >
   <header class="flex items-center gap-1 px-3 pt-2 pb-1.5">
-    <MicroLabel as="h2" class="flex-1 select-none">Projects</MicroLabel>
+    <h2 class="flex-1 min-w-0"><SidebarDeviceFilter /></h2>
     <ProjectSortMenu />
     <IconButton
       label="Import Sessions"
@@ -352,6 +368,7 @@
   >
     <ProjectList
       projects={visibleProjects}
+      emptyMessage={sidebarDeviceFilterActive() ? 'No projects on the selected devices.' : undefined}
       {threadsByProject}
       {groupsByProject}
       {pane}

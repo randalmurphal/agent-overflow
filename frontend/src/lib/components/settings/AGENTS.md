@@ -3,6 +3,12 @@
 The Settings overlay: a nav rail of pages, one page component per topic,
 and a search box over every control.
 
+Personal pairing is capability-gated: **My device** uses the explicit
+`own-devices.v1` enrollment APIs, while **View only** retains ordinary restricted
+pairing. A frontend-only controller's own capability comes from the raw HOME
+hello, not the selected computer. Pairing copy must explain the group join;
+existing ordinary sessions never gain personal membership automatically.
+
 ## Adding or moving a control
 
 Three files describe a control, and a test ties them together.

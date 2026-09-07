@@ -90,6 +90,7 @@ var ErrPairingRefused = errors.New("identity: pairing refused")
 // Additive-only, like every other shape on this wire. A field may be
 // appended; none may change meaning.
 type PairingPayload struct {
+	Purpose string `json:"purpose,omitempty"`
 	// Version is PairingPayloadVersion. A device that does not recognise
 	// it refuses rather than guessing at the rest.
 	Version int `json:"v"`
@@ -157,6 +158,11 @@ func DecodePairingPayload(encoded string) (PairingPayload, error) {
 
 // PairingRequest describes a link to mint.
 type PairingRequest struct {
+	Purpose           string
+	ExpectedKey       string
+	MemberGeneration  int64
+	SponsorKey        string
+	SponsorGeneration int64
 	// UserID is the account the redeemed device binds to. Explicit, never
 	// "the owner": a hub deployment mints links for many accounts (§11).
 	UserID string
@@ -191,6 +197,12 @@ type PairingLink struct {
 // authenticated admin surface in this process, and the step-up requirement
 // on that call is phase 3's (§4 "Step-up").
 func (s *Sessions) MintPairingLink(req PairingRequest) (PairingLink, error) {
+	if req.Purpose != "" && req.Purpose != "own-device" {
+		return PairingLink{}, errors.New("restricted introductions require member authorization")
+	}
+	return s.mintPairingLink(req)
+}
+func (s *Sessions) mintPairingLink(req PairingRequest) (PairingLink, error) {
 	if strings.TrimSpace(req.UserID) == "" {
 		return PairingLink{}, fmt.Errorf("identity: mint pairing link: user id is required")
 	}
@@ -210,6 +222,7 @@ func (s *Sessions) MintPairingLink(req PairingRequest) (PairingLink, error) {
 	}
 	now := s.now().UnixMilli()
 	link := store.PairingLink{
+		Purpose: req.Purpose, ExpectedKey: req.ExpectedKey, MemberGeneration: req.MemberGeneration, SponsorKey: req.SponsorKey,
 		ID:              uuid.NewString(),
 		UserID:          req.UserID,
 		Scopes:          scopes,
@@ -296,6 +309,8 @@ type Redemption struct {
 // deliberate answer to "I want that device back" is to remove the
 // revocation on the device surface.
 func (s *Sessions) RedeemPairing(req RedemptionRequest) (Redemption, Reason) {
+	s.ownMu.Lock()
+	defer s.ownMu.Unlock()
 	if req.Token == "" || req.Proof.Value == "" {
 		return Redemption{}, ReasonMissingProof
 	}
@@ -310,6 +325,23 @@ func (s *Sessions) RedeemPairing(req RedemptionRequest) (Redemption, Reason) {
 	}
 	digest := hashPairingToken(req.Token)
 	now := s.now().UnixMilli()
+	checked, err := s.store.PairingLinkByTokenHash(digest[:])
+	if err != nil {
+		s.auditPairingRefusal(ReasonUnknownCredential, req.Peer, "")
+		return Redemption{}, ReasonUnknownCredential
+	}
+	if checked.Purpose != "" && enrollment.kind != ProofSignedKey {
+		s.auditPairingRefusal(ReasonMissingProof, req.Peer, checked.ID)
+		return Redemption{}, ReasonMissingProof
+	}
+	if checked.ExpectedKey != "" && checked.ExpectedKey != enrollment.thumbprint {
+		s.auditPairingRefusal(ReasonKeyMismatch, req.Peer, checked.ID)
+		return Redemption{}, ReasonKeyMismatch
+	}
+	if checked.Purpose == "own-introduction" && !s.ownIntroductionLive(checked) {
+		s.auditPairingRefusal(ReasonUnknownCredential, req.Peer, checked.ID)
+		return Redemption{}, ReasonUnknownCredential
+	}
 
 	// Spend the link FIRST. Everything after this point can still refuse
 	// the redemption, and a refusal settles the link (cancelRedeemedLink)
@@ -352,6 +384,14 @@ func (s *Sessions) RedeemPairing(req RedemptionRequest) (Redemption, Reason) {
 		s.cancelRedeemedLink(pending.ID)
 		return Redemption{}, ReasonUnknownCredential
 	}
+	if pending.Purpose == "own-introduction" {
+		if _, err := s.confirmPairing(pending.ID); err != nil {
+			s.RevokeSession(session.ID)
+			return Redemption{}, ReasonUnknownCredential
+		}
+		tokens.AwaitingConfirmation = false
+	}
+
 	number, err := s.VerificationNumber(pending.ID, enrollment.thumbprint)
 	if err != nil {
 		log.Printf("identity: derive verification number for %s: %v", pending.ID, err)
@@ -510,6 +550,14 @@ func (s *Sessions) cancelRedeemedLink(linkID string) {
 // class's real access window: until this moment the credential's only job
 // was to exist, and its expiry was the deadline on the owner's decision.
 func (s *Sessions) ConfirmPairing(linkID string) (store.PairingLink, error) {
+	s.ownMu.Lock()
+	defer s.ownMu.Unlock()
+	return s.confirmPairing(linkID)
+}
+func (s *Sessions) confirmPairing(linkID string) (store.PairingLink, error) {
+	if e := s.store.PrepareOwnPairing(linkID); e != nil {
+		return store.PairingLink{}, e
+	}
 	now := s.now().UnixMilli()
 	link, err := s.store.ConfirmPairingLink(linkID, now)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -536,6 +584,11 @@ func (s *Sessions) ConfirmPairing(linkID string) (store.PairingLink, error) {
 		// reporting a pairing that admits nothing as complete.
 		return store.PairingLink{}, ErrPairingRefused
 	}
+	if err := s.store.AdmitOwnPairing(link); err != nil {
+		s.RevokeSession(link.SessionID)
+		return store.PairingLink{}, err
+	}
+
 	s.audit(store.AuthAuditEntry{
 		Event: string(AuditPairingConfirmed), Outcome: store.AuthAuditOutcomeAllowed,
 		UserID: link.UserID, DeviceID: link.DeviceID, SessionID: link.SessionID,

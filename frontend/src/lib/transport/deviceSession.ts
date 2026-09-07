@@ -1,7 +1,8 @@
 import { isAuthReasonCode, presentAuthReason } from './authReason';
-import { certificatePin, pairingEndpoint } from '../native/networkTrust';
+import { certificatePin, pairingEndpoint, type PairingTrust } from '../native/networkTrust';
 import { isNativeShell } from '../native/platform';
 import { networkFetch } from './networkFetch';
+import { pinnedFetch } from '../native/networkHttp';
 import { devicePlatform } from '../utils/deviceLabel';
 import { computerSocketRoute, failComputerRoute, fetchComputerRoute, forgetComputerRoutes, learnComputerRoutes, repairComputerAddress, type ComputerRouteContext } from './computerRoutes';
 // The paired-device session client: the browser half of pairing
@@ -113,6 +114,7 @@ const RENEW_MARGIN_MS = 60_000;
 // (internal/identity/pairing.go). Additive-only on the Go side; unknown
 // fields are ignored here for the same reason.
 export interface PairingPayload {
+  purpose?: 'own-device' | 'own-introduction';
   v: number;
   backendId: string;
   backendName?: string;
@@ -127,6 +129,7 @@ const PAIRING_PAYLOAD_VERSION = 1;
 // One credential pair as /auth/pair and /auth/token grant it
 // (transport.TokenGrant).
 interface StoredSession {
+  ownDevice?: boolean;
   backendId?: string;
   refreshRecovery?: boolean;
   pendingNextSecret?: string;
@@ -338,6 +341,10 @@ export function hasPairedSession(backend: BackendKey = HOME_BACKEND): boolean {
   return readStoredSession(backend) !== null;
 }
 
+export function hasOwnDeviceSession(backend: BackendKey): boolean {
+  return readStoredSession(backend)?.ownDevice === true;
+}
+
 /**
  * The device-key header for ONE request, or null when this device holds a
  * key-bound session it can no longer sign for.
@@ -441,6 +448,7 @@ export function pairedSessionScopes(
 
 /** Drop the stored session. The device key survives — it names the device, not the session. */
 export function clearPairedSession(backend: BackendKey = HOME_BACKEND): void {
+  pairingAttempts.delete(backend);
   forgetComputerRoutes(backend);
   storeSession(null, backend);
 }
@@ -562,11 +570,37 @@ export interface RedemptionOutcome {
  * Spend the pairing link: mint/reuse the device identifier, present it
  * with the link token, store the (still unactivated) credential pair.
  */
+const pairingAttempts = new Map<BackendKey, object>();
+
 export async function redeemPairing(
   payload: PairingPayload,
   label: string,
   fetcher: typeof fetch = networkFetch,
   backend: BackendKey = HOME_BACKEND,
+  admission: { current: () => boolean; endpoint: string; trust?: PairingTrust } | undefined = undefined,
+): Promise<RedemptionOutcome> {
+  const attempt = {};
+  pairingAttempts.set(backend, attempt);
+  const admit = () => {
+    if (pairingAttempts.get(backend) !== attempt || (admission && !admission.current())) {
+      throw new DOMException('Pairing was canceled or replaced.', 'AbortError');
+    }
+  };
+  try {
+    return await redeemPairingIntoSlot(payload, label, fetcher, backend, admit, admission?.endpoint, admission?.trust);
+  } finally {
+    if (pairingAttempts.get(backend) === attempt) pairingAttempts.delete(backend);
+  }
+}
+
+async function redeemPairingIntoSlot(
+  payload: PairingPayload,
+  label: string,
+  fetcher: typeof fetch,
+  backend: BackendKey,
+  admit: () => void,
+  endpoint?: string,
+  trust?: PairingTrust,
 ): Promise<RedemptionOutcome> {
   // The one moment a device chooses its kind, and it chooses by what it
   // can do. A page that can sign generates its keypair here and proves it
@@ -579,9 +613,14 @@ export async function redeemPairing(
   // still bound to the old one. It persists before returning, which is
   // what lets the mint below read it back.
   const proof = (await enrollDeviceKey()) ? await mintDeviceProof('POST', AUTH_PAIR_PATH) : null;
+  admit();
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (proof !== null) headers[DEVICE_KEY_HEADER] = proof;
-  const res = await fetcher(authUrl(AUTH_PAIR_PATH, backend), {
+  // Candidate trust belongs only to this request until the response is admitted.
+  const send: typeof fetch = trust?.pin != null
+    ? (input, init) => trust.pin ? pinnedFetch(input, init, trust.pin) : globalThis.fetch(input, init)
+    : fetcher;
+  const res = await send(endpoint ? endpoint + AUTH_PAIR_PATH : authUrl(AUTH_PAIR_PATH, backend), {
     method: 'POST',
     redirect: 'error', credentials: authCredentials(backend),
     headers,
@@ -597,11 +636,17 @@ export async function redeemPairing(
     }),
   });
   const body = await readGrant(res);
+  admit();
   if (!res.ok || !body.sessionId || !body.credential) {
     throw new PairingRefusedError(res.status, body.reason ?? '');
   }
+  // An automatic introduction must not leave a remembered connection after
+  // a failed redemption. Commit its address with the admitted credential.
+  trust?.commit();
+  if (endpoint) storeBackendEndpoint(backend, endpoint);
   storeSession({
     backendId: payload.backendId,
+    ownDevice: payload.purpose === 'own-device' || payload.purpose === 'own-introduction',
     refreshRecovery: res.headers.get(REFRESH_RECOVERY_HEADER) === '1',
     sessionId: body.sessionId,
     credential: body.credential,

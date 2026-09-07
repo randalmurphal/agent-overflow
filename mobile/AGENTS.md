@@ -71,6 +71,16 @@ on the only trusted route fails closed and asks for pairing again; there is
 no fallback to unverified TLS, ordinary CA verification, or HTTP. Removing the
 last connection using an origin also removes its pin. This matches Go's
 `internal/deviceclient/pin.go`. Existing public HTTPS pairings need no plugin.
+
+Candidate attachment trust is request-scoped until redemption passes its
+session/lifetime admission check; failed or superseded introductions never
+replace a working connection's pin. Scanning only validates. Do not temporarily
+write candidate pins and roll them back: a late rollback can overwrite a newer
+successful pairing. Automatic introductions select from the authenticated member's
+bounded route catalog using credential-free TLS + backend-ID probes before
+spending the invitation once. The minting computer's first LAN address is not
+a promise that the recipient is on that LAN; never retry redemption after a
+lost POST response.
 An APK without Network shows an install instruction when LAN is attempted;
 bundle-only updates continue working with its existing Tailscale connection.
 

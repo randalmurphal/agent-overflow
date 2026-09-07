@@ -53,6 +53,7 @@ export class Attached {
      */
     "lastReachedMs"?: number;
     "deviceNameSyncError"?: string;
+    "ownDeviceSyncError"?: string;
 
     /** Creates a new Attached instance. */
     constructor($$source: Partial<Attached> = {}) {

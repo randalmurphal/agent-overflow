@@ -61,6 +61,13 @@ function dispatch(name: string) {
 export const GetDeviceName = dispatch('GetDeviceName');
 export const SetDeviceName = dispatch('SetDeviceName');
 export const UpdateClientDeviceName = dispatch('UpdateClientDeviceName');
+export const MintOwnDevicePairingOnNetwork = dispatch('MintOwnDevicePairingOnNetwork');
+export const OpenOwnComputerPairing = dispatch('OpenOwnComputerPairing');
+export const ListOwnDevices = dispatch('ListOwnDevices');
+export const SyncOwnDevices = dispatch('SyncOwnDevices');
+export const IntroduceOwnDevice = dispatch('IntroduceOwnDevice');
+export const MintOwnDeviceIntroduction = dispatch('MintOwnDeviceIntroduction');
+export const AcceptOwnDeviceIntroduction = dispatch('AcceptOwnDeviceIntroduction');
 
 // Every binding re-exported from `lib/stores/bindings.ts`.
 // Keep this list in sync with that file.
@@ -716,3 +723,13 @@ export const GetServiceUpdateStatus = dispatch('GetServiceUpdateStatus');
 export const ListServiceReleases = dispatch('ListServiceReleases');
 export const RequestServiceUpdate = dispatch('RequestServiceUpdate');
 export const CancelServiceUpdate = dispatch('CancelServiceUpdate');
+
+export const GetNativeNetworkConfig = dispatch('GetNativeNetworkConfig');
+
+export const MintOwnDevicePairing = dispatch('MintOwnDevicePairing');
+
+export const RegisterOwnDevice = dispatch('RegisterOwnDevice');
+
+export const RemoveOwnDevice = dispatch('RemoveOwnDevice');
+
+export const ReportNativeNetworkState = dispatch('ReportNativeNetworkState');

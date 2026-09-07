@@ -116,7 +116,8 @@ func TestMintedProofVerifiesAgainstIdentitysOwnVerifier(t *testing.T) {
 		t.Fatalf("MintPairingLink: %v", err)
 	}
 
-	key, err := EnrollDeviceKey(t.TempDir())
+	dir := t.TempDir()
+	key, err := EnrollDeviceKey(dir)
 	if err != nil {
 		t.Fatalf("EnrollDeviceKey: %v", err)
 	}
@@ -156,6 +157,9 @@ func TestMintedProofVerifiesAgainstIdentitysOwnVerifier(t *testing.T) {
 	}
 	if device.ProofKind != string(identity.ProofSignedKey) {
 		t.Fatalf("device enrolled as %q, want a key-bound row", device.ProofKind)
+	}
+	if thumbprint, err := KeyThumbprint(dir); err != nil || thumbprint != device.KeyThumbprint {
+		t.Fatalf("public membership identity %q differs from proof identity %q: %v", thumbprint, device.KeyThumbprint, err)
 	}
 
 	// And the number the owner's screen shows is derived from the key this

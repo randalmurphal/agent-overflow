@@ -28,6 +28,7 @@ const LinkFragmentPrefix = "pair="
 // encoder produced through this decoder so a field added there without a
 // field here is a failing test rather than a value silently dropped.
 type Link struct {
+	Purpose string `json:"purpose,omitempty"`
 	// Version is LinkVersion.
 	Version int `json:"v"`
 	// BackendID names the backend that minted this link. It is the key

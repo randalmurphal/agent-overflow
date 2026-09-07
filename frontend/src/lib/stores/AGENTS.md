@@ -22,6 +22,18 @@ Reset helpers cannot catch a validator declared after its module-level read:
 the guarded read catches that initialization error and silently chooses defaults
 (`appearanceColdStart.test.ts`; desktop's later file load used to hide it).
 
+## Personal-device connections
+
+`ownDevices.svelte.ts` is the native shell's bounded membership coordinator;
+Go owns the equivalent worker for desktops and headless clients. Only explicitly
+personal sessions sponsor introductions. A pass merges public catalogs through
+a host, applies removal knowledge before enrollment, and obtains independent
+sessions for missing computers. It never copies credentials or conversation data.
+Async catalog and introduction results belong to the captured client and session;
+disconnect, replacement, teardown, or local removal cancels their admission.
+Sleeping computers retry without a settings screen. Failures stay in the existing
+connection settings status, rather than generating startup toasts.
+
 ## Store boundaries
 
 Every wire subscription and every entity-owned RPC lives here, and

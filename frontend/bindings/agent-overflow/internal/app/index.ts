@@ -66,6 +66,8 @@ export {
     MCPAuthInitResult,
     ManagedProviderAccount,
     NewThreadDefaultsUpdate,
+    OwnDeviceList,
+    OwnDeviceMember,
     PRCIJobLogResult,
     PRMergeConflictsResult,
     PRUpdateSubscriptionResult,

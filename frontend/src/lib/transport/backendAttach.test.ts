@@ -27,6 +27,7 @@ import {
   duplicateLegacyHomeBackend,
   type BackendDescriptor,
 } from './backends';
+import * as deviceSession from './deviceSession';
 import { clearPairedSession, hasPairedSession, pairedComputerId } from './deviceSession';
 import { __resetDetachStepsForTest, onBeforeBackendDetach } from './detachSteps';
 import {
@@ -387,6 +388,26 @@ describe('backendAttach', () => {
       userAgent.mockRestore();
       rawPlatform.mockRestore();
     }
+  });
+
+  it.each(['removed', 'replaced'])('ignores activation from a pairing that was %s during its probe', async (change) => {
+    const payload = { v: 1, backendId: LAPTOP, endpoint: ENDPOINT, token: 'invitation' };
+    const link = `${ENDPOINT}/#pair=${btoa(JSON.stringify(payload))}`;
+    let serial = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ sessionId: `s-${++serial}`, credential: 'c', verificationNumber: '123456' }))));
+    let finish!: (active: boolean) => void;
+    const probe = vi.spyOn(deviceSession, 'probeActivation').mockImplementation(() => new Promise<boolean>((resolve) => { finish = resolve; }));
+    try {
+      await attachBackendFromLink(link);
+      const activation = awaitAttachedActivation(LAPTOP, 1, 50);
+      expect(probe).toHaveBeenCalledOnce();
+      if (change === 'removed') detachAttachedBackend(LAPTOP);
+      else await attachBackendFromLink(link);
+      finish(true);
+      await expect(activation).resolves.toBe(false);
+      expect(backendById(LAPTOP)).toBeUndefined();
+      expect(pendingAttachments()).toHaveLength(change === 'removed' ? 0 : 1);
+    } finally { probe.mockRestore(); vi.unstubAllGlobals(); }
   });
 
   describe('the pending list', () => {

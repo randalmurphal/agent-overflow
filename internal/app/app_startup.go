@@ -164,6 +164,7 @@ func (a *App) Start(ctx context.Context) (startErr error) {
 // is the SQLite triple; provider credentials, attachment files, git objects,
 // ACME rate limits and tailnet state are all outside it.
 func (a *App) startUnattendedWork() error {
+	a.startOwnDeviceConnections()
 	a.startRemotePeerDiscovery()
 	if err := a.startThreadTransfers(); err != nil {
 		return err

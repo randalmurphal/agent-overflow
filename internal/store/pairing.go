@@ -27,8 +27,12 @@ import (
 // that reaches neither of the last two just expires; the window is minutes
 // (docs/specs/remote-access.md §4).
 type PairingLink struct {
-	ID     string `json:"id"`
-	UserID string `json:"userId"`
+	Purpose          string `json:"purpose,omitempty"`
+	ExpectedKey      string `json:"expectedKey,omitempty"`
+	MemberGeneration int64  `json:"memberGeneration,omitempty"`
+	SponsorKey       string `json:"sponsorKey,omitempty"`
+	ID               string `json:"id"`
+	UserID           string `json:"userId"`
 	// Scopes is the subset this link grants — a viewer link, a peer
 	// invitation, or the full set an owner device gets.
 	Scopes []string `json:"scopes"`
@@ -91,7 +95,7 @@ func (r RefreshSecret) Spent() bool { return r.ConsumedAt != 0 }
 
 const pairingLinkColumns = `id, user_id, scopes, binding_class, device_class,
 	cert_fingerprint, created_at, expires_at, redeemed_at, device_id,
-	key_thumbprint, session_id, confirmed_at, canceled_at`
+	key_thumbprint, session_id, confirmed_at, canceled_at, purpose, expected_key, member_generation, sponsor_key`
 
 const refreshSecretColumns = `id, session_id, created_at, expires_at,
 	consumed_at, consumed_by, next_secret_hash`
@@ -122,10 +126,10 @@ func (s *Store) CreatePairingLink(link PairingLink, tokenHash []byte) error {
 	if _, err := s.db.Exec(
 		`INSERT INTO pairing_links (id, user_id, token_hash, scopes, binding_class,
 			device_class, cert_fingerprint, created_at, expires_at, redeemed_at,
-			device_id, key_thumbprint, session_id, confirmed_at, canceled_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '', '', '', NULL, NULL)`,
+			device_id, key_thumbprint, session_id, confirmed_at, canceled_at, purpose, expected_key, member_generation, sponsor_key)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '', '', '', NULL, NULL, ?, ?, ?, ?)`,
 		link.ID, link.UserID, tokenHash, scopes, link.BindingClass, link.DeviceClass,
-		link.CertFingerprint, link.CreatedAt, link.ExpiresAt,
+		link.CertFingerprint, link.CreatedAt, link.ExpiresAt, link.Purpose, link.ExpectedKey, link.MemberGeneration, link.SponsorKey,
 	); err != nil {
 		return fmt.Errorf("store: create pairing link: %w", err)
 	}
@@ -310,6 +314,7 @@ func scanPairingLink(sc interface{ Scan(...any) error }) (PairingLink, error) {
 		&link.ID, &link.UserID, &scopes, &link.BindingClass, &link.DeviceClass,
 		&link.CertFingerprint, &link.CreatedAt, &link.ExpiresAt, &redeemedAt,
 		&link.DeviceID, &link.KeyThumbprint, &link.SessionID, &confirmedAt, &canceledAt,
+		&link.Purpose, &link.ExpectedKey, &link.MemberGeneration, &link.SponsorKey,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return PairingLink{}, err

@@ -26,6 +26,7 @@
   import ComputerNickname from './ComputerNickname.svelte';
   import NearbyComputers from './NearbyComputers.svelte';
   import DeviceNameField from './DeviceNameField.svelte';
+  import { ownDeviceConnectionsWaiting } from '../../stores/ownDevices.svelte';
   import SSHConnectModal from './SSHConnectModal.svelte';
   import { HOME_BACKEND } from '../../transport/backendKey';
   import { selectedBackend, setSelectedBackend } from '../../stores/selectedBackend.svelte';
@@ -76,6 +77,7 @@
   // Connect to a computer belongs to the local controller, which is not an execution
   // backend entry in frontend-only mode.
   let nearbyPairing = $derived(hostList && backendHasCapability('pairing.nearby.v1'));
+  let ownDevices = $derived(hostList && backendHasCapability('own-devices.v1'));
 
   let home = $derived(getAttachedBackends().find((entry) => entry.home));
   let systems = $derived(getSystems());
@@ -221,6 +223,9 @@
 
 <section data-testid={unavailable ? 'systems-section-unavailable' : 'systems-section'}>
   <div class="mb-4"><DeviceNameField /></div>
+  {#if nativeShell && ownDeviceConnectionsWaiting().length}
+    <p class="mb-4 text-xs text-fg-muted" role="status">Waiting to connect your devices: {ownDeviceConnectionsWaiting().join(', ')}. Retrying automatically.</p>
+  {/if}
   {#if home}
     <div data-testid="home-computer" class="rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-3 py-3 mb-4">
       <div class="flex min-w-0 items-center gap-3">
@@ -314,6 +319,9 @@
           {#if system.deviceNameSyncError}
             <p class="mt-2 text-xs text-fg-muted">Device name update pending: {system.deviceNameSyncError}</p>
           {/if}
+          {#if system.ownDeviceSyncError}
+            <p class="mt-2 text-xs text-fg-muted" role="status">Device connections pending: {system.ownDeviceSyncError}</p>
+          {/if}
           <ComputerActions backend={system.id} />
         </div>
       {/each}
@@ -334,6 +342,7 @@
 
     {#if canAdd}
       {#if nearbyPairing}<NearbyComputers connecting={adding} onConnect={submitLink} />{/if}
+      {#if ownDevices}<p class="mb-3 text-xs text-fg-muted">Pair your own computers once to connect them in both directions. Their existing devices join too.</p>{/if}
       <form
         class="mt-3 flex flex-wrap items-center gap-2"
         onsubmit={(e) => {
