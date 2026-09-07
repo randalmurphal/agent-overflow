@@ -1,9 +1,13 @@
 package wsllauncher
 
 import (
+	"bytes"
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -31,6 +35,7 @@ func TestWSLBuildOwnsFrontendAndLeavesGoInputTrackingToGo(t *testing.T) {
 		t.Fatal(err)
 	}
 	var ordered []string
+	var bindingFlags string
 	for _, command := range file.Tasks["build:wsl"].Cmds {
 		if command.Kind != yaml.MappingNode {
 			continue
@@ -42,8 +47,8 @@ func TestWSLBuildOwnsFrontendAndLeavesGoInputTrackingToGo(t *testing.T) {
 		if err := command.Decode(&call); err != nil {
 			t.Fatal(err)
 		}
-		if call.Task == "common:build:frontend" && call.Vars["BUILD_FLAGS"] != "-tags nogui" {
-			t.Fatal("WSL binding generation must not require Linux desktop libraries")
+		if call.Task == "common:build:frontend" {
+			bindingFlags = call.Vars["BUILD_FLAGS"]
 		}
 		if call.Task != "" {
 			ordered = append(ordered, call.Task)
@@ -65,5 +70,43 @@ func TestWSLBuildOwnsFrontendAndLeavesGoInputTrackingToGo(t *testing.T) {
 		if task.Method != "none" || len(task.Sources) != 0 || len(task.Generates) != 0 {
 			t.Errorf("%s must always invoke Go so changes in imported code, embeds and flags cannot reuse stale bytes", name)
 		}
+	}
+	// A successful generator exit is insufficient: nogui once emitted zero
+	// services and erased every App import. Exercise the configured flags and
+	// compare the real generated contract with the bindings the frontend uses.
+	output := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "go", "tool", "wails3", "generate", "bindings", "-ts", "-f", bindingFlags, "-d", output)
+	cmd.Dir = filepath.Join("..", "..")
+	if log, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("generate WSL frontend bindings: %v\n%s", err, log)
+	}
+	expected := filepath.Join("..", "..", "frontend", "bindings")
+	if _, err := os.Stat(filepath.Join(expected, "agent-overflow", "app.ts")); err != nil {
+		t.Fatalf("frontend App bindings missing; regenerate before validating: %v", err)
+	}
+	err = filepath.WalkDir(expected, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || filepath.Ext(path) != ".ts" {
+			return err
+		}
+		relative, err := filepath.Rel(expected, path)
+		if err != nil {
+			return err
+		}
+		want, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		got, err := os.ReadFile(filepath.Join(output, relative))
+		if err != nil {
+			t.Errorf("WSL generation omitted frontend binding %s: %v", relative, err)
+		} else if !bytes.Equal(bytes.ReplaceAll(got, []byte("\r\n"), []byte("\n")), bytes.ReplaceAll(want, []byte("\r\n"), []byte("\n"))) {
+			t.Errorf("WSL generation differs from frontend binding %s", relative)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

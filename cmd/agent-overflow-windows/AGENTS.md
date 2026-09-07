@@ -324,4 +324,8 @@ only forwards mode/version flags. Both Go tasks use `method: none`: Go's cache
 understands imported source, embedded files and linker flags; Task source globs
 can miss any of them (and silently swallow traversal errors). Never put a
 second freshness cache in front of Go. The portable build-contract test pins
-this ordering and the launcher's payload-digest test covers same-version builds.
+this ordering, runs the real binding generator with the configured flags, and
+compares its output with the frontend's generated contract. Use Wails' `server`
+tag for generation: AO's `nogui` excludes the App service registration and
+silently generates zero services. Only the payload compiler uses `nogui`.
+The launcher's payload-digest test covers same-version builds.

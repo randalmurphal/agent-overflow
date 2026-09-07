@@ -59,7 +59,9 @@ tasks:
       # Go embeds it. Make wrappers must not own a separate prerequisite.
       - task: common:build:frontend
         vars:
-          BUILD_FLAGS: '-tags nogui'
+          # Keep service declarations visible without linking a desktop shell.
+          # The payload itself still builds with nogui below.
+          BUILD_FLAGS: '-tags server'
           DEV: '{{.DEV | default "false"}}'
       - task: build:wsl:windows-launcher
         vars:
