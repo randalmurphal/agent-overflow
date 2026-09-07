@@ -22,8 +22,8 @@ carries the port, so a stable port also means a stable cookie name.
 `main_transport_port.go` (`pinTransportPort`) owns it, not this package.
 `transport.Config.Port` is injected and the package never reads a config file.
 
-Whenever the resolved port would be 0, which covers the desktop default and an
-explicit `--listen host:0` (what the Windows WSL launcher passes), the boot path
+Whenever the resolved port would be 0, which covers the desktop/WSL default and
+an explicit `--listen host:0`, the boot path
 reads `transport-port.json` from the boot settings dir, beside `client-id.json`
 and using the same `atomicfile` pattern, and injects it as `Config.Port`. After
 `Start`, `transportPortPin.adopt` re-reads `Server.Addr()` and persists whatever
@@ -59,6 +59,18 @@ Windows launcher's headless backend. Only the isolated harness opts out through
 injecting a `--listen` override; an explicitly supplied CLI bind still wins over
 saved LAN preferences. Restoring a Windows host must bind the WSL backend before
 the native LAN relay can reach it; a listener on loopback alone cannot do that.
+
+An explicit IPv4 bind, including `0.0.0.0`, uses `tcp4` at the shared
+`bindListener` boundary for startup, fallback and rebind. Go's generic `tcp`
+can turn that wildcard into one IPv6 dual-stack socket. Linux can then accept
+IPv4 locally, but WSL's localhost relay preserves the socket family and binds
+Windows `::1` only, while the launcher uses `127.0.0.1`. An isolated Linux
+socket spike confirmed the family mismatch; the real transport suite checks
+that LAN rebinds retain an IPv4 wildcard. Explicit IPv6 binds keep their existing
+behavior. This is socket-family selection, never a reason to relax peer-based
+authorization. See Microsoft's [relay implementation](https://github.com/microsoft/WSL/blob/master/src/windows/wslrelay/localhost.cpp)
+(`BindRelayListener`) and [guest connection](https://github.com/microsoft/WSL/blob/master/src/linux/init/localhost.cpp)
+(`RunLocalHostRelay`).
 
 ### Bind failure: `Config.EphemeralPortFallback`
 
@@ -113,9 +125,10 @@ normally: ephemeral bind, then adopt.
 
 A reset with no pin is an ordinary boot. A reset alongside an explicit
 `--listen host:port` leaves the file alone, because that boot never consults it.
-One retry only: a fresh port costs the user every origin-scoped browser store,
-and a second unreachable port means the forwarding path itself is broken, which
-is what the error page covers.
+One retry only: a fresh port costs the user every origin-scoped browser store.
+A second unreachable port ends the attempt; it does not establish whether
+forwarding, a socket-family mismatch, or another port restriction caused it.
+Error pages report the observed failure without asserting an OS diagnosis.
 
 ## Replay rings and gap markers
 

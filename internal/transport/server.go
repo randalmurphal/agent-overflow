@@ -796,7 +796,14 @@ func (s *Server) listen() (net.Listener, error) {
 // that as the backend disappearing, and only on the paths a user reaches
 // by toggling LAN access.
 func (s *Server) bindListener(addr string) (net.Listener, error) {
-	inner, err := net.Listen("tcp", addr)
+	network := "tcp"
+	host, _, _ := net.SplitHostPort(addr)
+	if net.ParseIP(host).To4() != nil {
+		// Go may promote 0.0.0.0 to an IPv6 dual-stack socket. WSL
+		// forwards that family to Windows ::1, stranding IPv4 clients.
+		network = "tcp4"
+	}
+	inner, err := net.Listen(network, addr)
 	if err != nil {
 		return nil, err
 	}

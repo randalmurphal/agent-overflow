@@ -71,10 +71,19 @@ Windows re-seeds every reboot. The WSL side sees a successful bind, so
 nothing there can clear the pin, and the user would get
 `/connectivity-error` identically on every launch.
 
-Anything the backend ANSWERED (500 to `/startup-error`, 404, a never-ready
-503) is not retried. The port is demonstrably reachable, and a fresh one
+Anything the local service ANSWERED (500, 404, invalid bootstrap data, or a
+never-ready 503) is not retried. The port is demonstrably reachable, and a fresh one
 would churn the webview origin, wiping localStorage and the IndexedDB thread
 replica, for nothing.
+
+Startup error pages report the observed failure: process launch, no HTTP
+response, rejected HTTP status, invalid bootstrap data, or readiness timeout.
+Only no-response failures offer localhost-forwarding guidance. A failed probe
+may already have stopped its backend; never claim it is still running or that a
+fresh-port retry occurred without evidence. The page snapshot contains fixed
+copy and a bounded HTTP status, never raw errors, response bodies, or URLs.
+Wrapped errors stay in launcher.log. Both existing error routes render that
+same immutable snapshot rather than choosing explanations from the route name.
 
 The probe gap starts at `bootstrapProbeInitialPollInterval` (25 ms) and
 doubles up to `bootstrapProbePollInterval` (250 ms). A miss is an instant

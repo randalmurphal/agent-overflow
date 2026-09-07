@@ -82,79 +82,13 @@ const wslNotInstalledPage = `<!doctype html>
 </body>
 </html>`
 
-// connectivityErrorPage is shown when the WSL backend booted (we got
-// the bootstrap line back) but the Windows host can't reach
-// localhost:<port> over the WSL2 vEthernet bridge. The actionable
-// mitigation is fixing localhostForwarding — we name it explicitly so
-// the user has a search term that maps to a one-line config change.
-const connectivityErrorPage = `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <title>Agent Overflow — connection failed</title>
-  <style>
-    html, body { margin: 0; padding: 0; height: 100%; background: #16161e; color: #fff; }
-    body { display: flex; align-items: center; justify-content: center; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; padding: 32px; box-sizing: border-box; }
-    .card { max-width: 640px; }
-    .title { font-size: 18px; font-weight: 600; color: #f7768e; margin-bottom: 16px; }
-    .body { font-size: 14px; line-height: 1.6; color: #c0caf5; }
-    code { background: #1a1b26; color: #7dcfff; padding: 1px 6px; border-radius: 4px; font-size: 13px; }
-    pre { background: #1a1b26; color: #c0caf5; padding: 12px 16px; border-radius: 6px; font-size: 12px; line-height: 1.5; overflow-x: auto; }
-    a { color: #7aa2f7; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <div class="title">Backend is running, but Windows can't reach it.</div>
-    <div class="body">
-      <p>The agent-overflow backend booted inside WSL successfully, but the Windows host failed to connect to it over <code>localhost</code>. Agent Overflow already retried once on a fresh port, so the port itself is not the problem — two common causes remain.</p>
-      <p><strong>1. WSL2's <code>localhostForwarding</code> is disabled.</strong> Add the following to <code>%USERPROFILE%\.wslconfig</code> on Windows (create the file if it doesn't exist):</p>
-      <pre>[wsl2]
-localhostForwarding=true</pre>
-      <p>Then restart WSL with <code>wsl --shutdown</code> in PowerShell, and relaunch Agent Overflow.</p>
-      <p><strong>2. Windows has reserved the port range.</strong> Hyper-V and WSL2 reserve blocks of ports for themselves, and the blocks are re-picked on every Windows reboot — so a port that worked yesterday can be unreachable today. List them in an elevated PowerShell with <code>netsh interface ipv4 show excludedportrange protocol=tcp</code>. Relaunching picks another port; if it keeps landing inside a reserved block, <code>wsl --shutdown</code> and relaunch, which re-seeds the reservations.</p>
-      <p>See the WSL docs on <a href="https://learn.microsoft.com/en-us/windows/wsl/wsl-config">wsl-config</a> for more. The full log is at <code>%APPDATA%\agent-overflow\launcher.log</code>.</p>
-    </div>
-  </div>
-</body>
-</html>`
-
-// startupErrorPage is shown when the WSL backend published its
-// bootstrap port but failed before ServiceStartup completed. This is
-// distinct from connectivity-error: localhost forwarding works, but
-// the backend itself failed and the actionable artifact is the log.
-const startupErrorPage = `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <title>Agent Overflow — backend failed</title>
-  <style>
-    html, body { margin: 0; padding: 0; height: 100%; background: #16161e; color: #fff; }
-    body { display: flex; align-items: center; justify-content: center; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; padding: 32px; box-sizing: border-box; }
-    .card { max-width: 640px; }
-    .title { font-size: 18px; font-weight: 600; color: #f7768e; margin-bottom: 16px; }
-    .body { font-size: 14px; line-height: 1.6; color: #c0caf5; }
-    code { background: #1a1b26; color: #7dcfff; padding: 1px 6px; border-radius: 4px; font-size: 13px; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <div class="title">Backend failed while starting.</div>
-    <div class="body">
-      <p>Windows reached the backend inside WSL, but the backend failed before it was ready to serve the app.</p>
-      <p>Open <code>%APPDATA%\agent-overflow\launcher.log</code> for the startup phase timings and the backend error.</p>
-    </div>
-  </div>
-</body>
-</html>`
-
 // pickerAssetHandler serves the static picker HTML for /picker, the
 // loading HTML for /loading, the WSL-not-installed page for
 // /wsl-not-installed, and the startup/connectivity error pages. Anything
 // else falls back to the picker so a stale URL doesn't blank-screen the
 // WebView. The distro list is template-injected into a global JS variable
 // so the page renders without an RPC round-trip.
-func pickerAssetHandler(distros []wsllauncher.Distro) http.Handler {
+func pickerAssetHandler(distros []wsllauncher.Distro, failurePage func() []byte) http.Handler {
 	rendered, err := renderPicker(distros)
 	if err != nil {
 		log.Printf("render picker: %v", err)
@@ -164,8 +98,6 @@ func pickerAssetHandler(distros []wsllauncher.Distro) http.Handler {
 		))
 	}
 	loadingHTML := []byte(loadingPage)
-	connectivityHTML := []byte(connectivityErrorPage)
-	startupErrorHTML := []byte(startupErrorPage)
 	wslMissingHTML := []byte(wslNotInstalledPage)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -174,10 +106,8 @@ func pickerAssetHandler(distros []wsllauncher.Distro) http.Handler {
 		switch r.URL.Path {
 		case "/loading":
 			_, _ = w.Write(loadingHTML)
-		case "/connectivity-error":
-			_, _ = w.Write(connectivityHTML)
-		case "/startup-error":
-			_, _ = w.Write(startupErrorHTML)
+		case "/connectivity-error", "/startup-error":
+			_, _ = w.Write(failurePage())
 		case "/wsl-not-installed":
 			_, _ = w.Write(wslMissingHTML)
 		default:

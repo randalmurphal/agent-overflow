@@ -549,7 +549,8 @@ type launcherApp struct {
 	// re-navigates with a credential instead of reloading the SPA's
 	// scrubbed URL. atomic.Pointer because the writer is launchAndShow
 	// (goroutine) and the reader is the Wails event loop.
-	backendURL atomic.Pointer[string]
+	backendURL     atomic.Pointer[string]
+	startupFailure atomic.Pointer[[]byte]
 }
 
 type launcherExit struct {
@@ -675,24 +676,14 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 		}
 	}
 	if err != nil {
-		var httpErr bootstrapHTTPError
-		switch {
-		case errors.Is(err, errLaunchFailed):
-			// The spawn itself died (child exited before the bootstrap
-			// line). The distro choice is fine — re-showing the picker
-			// reads as "pick again" and hides that anything failed
-			// (observed 2026-08-30: a broken backend spawn presented as
-			// the first-run distro picker). The actionable artifact is
-			// launcher.log, which is what /startup-error points at.
-			w.SetURL("/startup-error")
-			return err
-		case errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusInternalServerError:
-			w.SetURL("/startup-error")
-			return fmt.Errorf("backend failed during startup: %w", err)
-		default:
+		page := startupFailureHTML(err)
+		a.startupFailure.Store(&page)
+		if errors.Is(err, errBackendUnreachable) {
 			w.SetURL("/connectivity-error")
-			return fmt.Errorf("backend booted but unreachable from Windows: %w", err)
+		} else {
+			w.SetURL("/startup-error")
 		}
+		return fmt.Errorf("backend startup failed: %w", err)
 	}
 	a.mu.Lock()
 	a.backendBootstrap = bs
@@ -744,12 +735,6 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 	logBootPhase("launcher.window_set_url", phaseStarted)
 	return nil
 }
-
-// errLaunchFailed marks "we never got a backend at all" — wsl.exe
-// refused, the child died before its bootstrap line, the distro is
-// broken. launchAndShow routes this class back to the picker, since
-// there is nothing to connect to and possibly another distro to try.
-var errLaunchFailed = errors.New("launch backend")
 
 // resetTransportPortArg is the backend flag that discards this
 // install's pinned listen port before binding (the backend declares the
@@ -1195,28 +1180,6 @@ type bootstrapProbeConfig struct {
 	InitialPollInterval time.Duration
 }
 
-type bootstrapHTTPError struct {
-	StatusCode int
-	URL        string
-}
-
-func (e bootstrapHTTPError) Error() string {
-	return fmt.Sprintf("GET %s: status %d", e.URL, e.StatusCode)
-}
-
-// errBackendUnreachable marks a probe that never received a single HTTP
-// response from the WSL backend: every attempt inside the deadline was
-// refused, reset, or timed out at the transport layer. That is the
-// signature of the Windows→WSL localhost path not carrying this port —
-// either localhostForwarding is off, or (the case the retry below
-// exists for) the port sits inside a Hyper-V/WSL2 excluded range, which
-// Windows re-seeds on every reboot and which routinely covers the
-// ephemeral range our pinned port is adopted from.
-//
-// A probe that got ANY HTTP response never carries this: the localhost
-// path demonstrably works, and the failure is server-side.
-var errBackendUnreachable = errors.New("no HTTP response from the WSL backend over Windows localhost")
-
 // retryWithFreshTransportPort decides whether a failed connectivity
 // probe is worth one relaunch on a fresh transport port. Only the
 // unreachable class qualifies — a startup failure, a refused
@@ -1299,7 +1262,7 @@ func probeBootstrapWithConfig(port int, token string, cfg bootstrapProbeConfig) 
 			if resp.StatusCode == http.StatusOK {
 				if err := validateBootstrapResponse(body, port); err != nil {
 					log.Printf("probe: invalid bootstrap response: %v", err)
-					return err
+					return fmt.Errorf("%w: %w", errInvalidBootstrap, err)
 				}
 				if attempt > 1 {
 					log.Printf("probe: ok after %d attempts", attempt)
@@ -1331,7 +1294,7 @@ func probeBootstrapWithConfig(port int, token string, cfg bootstrapProbeConfig) 
 	if !sawHTTPResponse {
 		return fmt.Errorf("GET %s: %w after %d attempts: %w", redacted, errBackendUnreachable, attempt, lastErr)
 	}
-	return fmt.Errorf("GET %s: timed out after %d attempts: %w", redacted, attempt, lastErr)
+	return fmt.Errorf("%w: GET %s timed out after %d attempts: %w", errBackendNotReady, redacted, attempt, lastErr)
 }
 
 // getWithToken issues one probe request carrying the session token in
@@ -1482,7 +1445,12 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 			application.NewService(a),
 		},
 		Assets: application.AssetOptions{
-			Handler: pickerAssetHandler(distros),
+			Handler: pickerAssetHandler(distros, func() []byte {
+				if page := a.startupFailure.Load(); page != nil {
+					return *page
+				}
+				return startupFailureHTML(nil)
+			}),
 		},
 		Windows: webviewBrowserOptions(mode, webviewDataDir(mode), diagnosticsDir),
 		// Cancel app shutdown until the user explicitly closes the

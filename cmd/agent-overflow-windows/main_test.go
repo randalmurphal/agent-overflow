@@ -431,8 +431,8 @@ func TestProbeBootstrapRejectsInvalidSuccessBody(t *testing.T) {
 		Deadline:       time.Second,
 		PollInterval:   time.Millisecond,
 	})
-	if err == nil {
-		t.Fatal("probeBootstrapWithConfig accepted invalid success body, want error")
+	if !errors.Is(err, errInvalidBootstrap) {
+		t.Fatalf("probeBootstrapWithConfig error = %v, want invalid bootstrap failure", err)
 	}
 	if got := attempts.Load(); got != 1 {
 		t.Fatalf("attempts = %d, want invalid 200 to be terminal", got)
@@ -943,6 +943,9 @@ func TestProbeBootstrapAnsweredFailuresAreNotRetryable(t *testing.T) {
 			}
 			if retryWithFreshTransportPort(err) {
 				t.Fatalf("error %v was classified as unreachable; a fresh port cannot fix an answered failure", err)
+			}
+			if tc.name == "never becomes ready" && !errors.Is(err, errBackendNotReady) {
+				t.Fatalf("error = %v, want readiness timeout", err)
 			}
 		})
 	}

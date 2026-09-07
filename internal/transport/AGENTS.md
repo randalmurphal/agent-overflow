@@ -47,6 +47,11 @@ cookie names and the origin allow-list all derive from.
   sniff wrapper — argued in the next section.
 - **Uniform on every bind.** Loopback and LAN behave identically; no mode decides
   when TLS is available.
+- **Explicit IPv4 stays IPv4.** `bindListener` uses `tcp4` for IPv4 literals,
+  including `0.0.0.0`. Go's `tcp` wildcard may create only an IPv6 socket;
+  Linux accepts IPv4 through it, but WSL forwards that socket to Windows
+  `::1`, while the launcher uses `127.0.0.1`. Boot and rebind tests must
+  check the bound family, not just successful requests inside Linux.
 - **Classification runs off the accept loop**, one goroutine per connection,
   bounded by `HTTPReadHeaderTimeout` — the same budget net/http would have given
   the first byte of that request. Inline, one peer that connected and said

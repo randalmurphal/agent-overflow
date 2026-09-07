@@ -87,7 +87,7 @@ func TestTransportBootRestoresLANAndPreservesExplicitAndIsolatedBinds(t *testing
 				}
 				ip := net.ParseIP(host)
 				wantLAN := tc.lan && !tc.explicit && !tc.isolated
-				if ip == nil || (wantLAN && !ip.IsUnspecified()) || (!wantLAN && !ip.IsLoopback()) {
+				if ip == nil || ip.To4() == nil || (wantLAN && !ip.IsUnspecified()) || (!wantLAN && !ip.IsLoopback()) {
 					t.Fatalf("listener %s does not match saved/explicit bind policy (LAN=%v)", srv.Addr(), wantLAN)
 				}
 				port := portFromAddr(srv.Addr())

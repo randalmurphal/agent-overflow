@@ -186,12 +186,12 @@ here is the launcher's half:
 
 ## WSL2 localhost forwarding
 
-WSL2 forwards `127.0.0.1:<port>` from inside the distro to the Windows
-host's localhost via the vEthernet bridge.
-`localhostForwarding=true` is the default in modern WSL2, but a user
-can disable it in `/etc/wsl.conf` or `%USERPROFILE%/.wslconfig`. When
-disabled the Windows-side WebView2 cannot reach the WSL backend; the
-Wails window would otherwise blank-screen.
+WSL2 NAT mode forwards guest listening sockets through its localhost relay.
+The socket family matters: an IPv6 listener becomes Windows `::1`, while the
+launcher uses `127.0.0.1`. The shared transport bind keeps IPv4 literals on
+`tcp4`, including the LAN wildcard. See the socket-family invariant in
+`docs/architecture/transport.md`. `localhostForwarding=true` is the NAT-mode
+default and can be disabled in `%USERPROFILE%/.wslconfig`.
 
 A port Windows has RESERVED breaks the same hop: Hyper-V / WSL2
 excluded port ranges (re-seeded on every Windows reboot, routinely
@@ -203,20 +203,14 @@ listen port so it adopts a reachable one. The flag name lives in this
 package because both binaries need the same spelling.
 
 `cmd/agent-overflow-windows/main.go::launchAndProbe` runs a
-deadline-bounded HTTP probe against `http://localhost:<port>/bootstrap.json`
+deadline-bounded HTTP probe against `http://127.0.0.1:<port>/bootstrap.json`
 after `Launch` returns, presenting `Bootstrap.Token` as an
-`Authorization: Bearer` header, and drives that single retry. If the retry also
-fails, it routes the WebView to a `/connectivity-error` page that names
-the actionable mitigation explicitly:
-
-```
-[wsl2]
-localhostForwarding=true
-```
-
-Set in `%USERPROFILE%/.wslconfig`, then `wsl --shutdown` from
-PowerShell to apply. The launcher's Job Object hook still tears the
-WSL child down on parent exit regardless of this failure mode.
+`Authorization: Bearer` header, and drives that single retry only when no HTTP
+response arrives. Error pages distinguish that outcome from an HTTP refusal,
+invalid bootstrap data, a readiness timeout, or a process that failed to start.
+Only no-response failures suggest checking localhost forwarding; they cannot
+establish which OS setting or port condition caused the failure. The launcher's
+Job Object hook still tears the WSL child down on parent exit.
 
 ## Job Object lifetime
 

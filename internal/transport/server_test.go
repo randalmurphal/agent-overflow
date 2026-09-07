@@ -1721,6 +1721,9 @@ func TestServer_BootstrapAcceptsAnyHostInLANMode(t *testing.T) {
 	if err := f.srv.Rebind("0.0.0.0:"+port, nil); err != nil {
 		t.Fatalf("rebind to the LAN bind: %v", err)
 	}
+	if got := f.srv.Addr(); got != "0.0.0.0:"+port {
+		t.Fatalf("explicit IPv4 rebind changed socket family: %s", got)
+	}
 	if got := get(t); got != http.StatusOK {
 		t.Fatalf("LAN bind: Host %q got %d, want 200", "10.0.0.5", got)
 	}

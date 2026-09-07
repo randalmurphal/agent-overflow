@@ -5,6 +5,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -125,4 +126,20 @@ func injectionExcerpt(body string) string {
 		return body[i:tail]
 	}
 	return body[i : i+end+9]
+}
+
+func TestPickerErrorRoutesServeTheCurrentFailure(t *testing.T) {
+	page := startupFailureHTML(errLaunchFailed)
+	handler := pickerAssetHandler(nil, func() []byte { return page })
+	for _, path := range []string{"/startup-error", "/connectivity-error"} {
+		page = startupFailureHTML(bootstrapHTTPError{StatusCode: 404})
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest("GET", path, nil))
+		if !strings.Contains(response.Body.String(), "HTTP 404") || strings.Contains(response.Body.String(), "localhostForwarding") {
+			t.Fatalf("%s served unrelated guidance: %s", path, response.Body.String())
+		}
+		if response.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("failure page can be cached")
+		}
+	}
 }
