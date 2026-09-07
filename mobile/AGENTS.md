@@ -274,7 +274,14 @@ forward is what makes the test address a trustworthy one.
 The composer attachment button offers Photos (`image/*`) and Files (any type)
 through the WebView's file input and Capacitor's native chooser. Both upload
 through the shared composer path; no camera/media-library permission is needed
-for selecting files. The emulator smoke opens and cancels both native pickers,
+for selecting files. Take photo uses Capacitor's existing WebView capture path
+and the system camera, then returns through that same upload path. The manifest
+must query `android.media.action.IMAGE_CAPTURE`: Capacitor resolves the camera
+activity before launching it. Bundle compatibility requires shell build 10 so
+an older APK cannot silently turn Take photo into the file picker.
+The existing QR scanner declares CAMERA, so
+Capacitor requests that permission when necessary; no new camera plugin is used.
+The emulator smoke opens and cancels the camera and both native pickers,
 then verifies Back during a live turn navigates without interrupting it.
 
 The APK ships with the SPA it was built with and runs it until the
@@ -672,7 +679,6 @@ never resolves a Capacitor module at runtime:
 | `native/lifecycle.ts` | pause/resume to `setClientLease`, hardware back as one stack (`answerBackPress`: Escape, terminal drawer, on-screen companion, list, exit) |
 | `native/lock.ts` | the app-lock gate: covers on PAUSE, prompts on cold start and on a resume past the window |
 | `native/qr.ts` | `scanPairingQr()` |
-| `native/pickers.ts` | a documented stub |
 | `native/boot.ts` | what runs before anything mounts; `adoptPairingEndpoint` is the one place pairing entry (scanned code, pasted invitation, `#pair=` hash) points the shell at a backend |
 | `native/keybindings.ts` | frontend-local shortcut persistence, installed before startup reads; generated shipped defaults work without any computer, and stable-ID chord overrides survive removing or switching hosts |
 | `native/bundleSync.ts` | the one door for downloading a newer bundle from an attached backend, and for reporting this launch healthy (§ The bundle plugin) |
@@ -745,9 +751,8 @@ unit suites could not reach, all fixed in that pass, and green since.
 
 Named here so nobody reads their absence as an oversight:
 
-- **`pickers.ts` answers `null`.** Dedicated camera and share-target plugins
-  remain deferred. The composer's Photos and Files choices already open
-  Android's native chooser through the WebView file input.
+- **Share target.** Receiving files from another app's Share menu remains
+  deferred. Camera capture and Photos/Files use the WebView file input.
 - **iOS.** Only `npx cap add android` was run. The seams are written
   against Capacitor rather than against Android, so an iOS target is
   another platform folder and a signing story, not a second frontend.

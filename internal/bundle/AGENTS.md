@@ -92,10 +92,10 @@ plugin never saw).
 installed APK was never built with does not degrade; it answers null
 forever or throws where nothing catches it. So the bundle states a floor
 and the shell compares its own build against it before downloading
-anything. The current floor is 9, which includes native release ordering and
-pending-bundle cancellation.
+anything. The current floor is 10, which adds the Android camera-intent visibility
+declaration needed by Take photo.
 
-**Bump it in the same change that adds a seam needing a new plugin, and
+**Bump it in the same change that needs new native code or manifest support, and
 never for a web-only change.** A bump costs every phone below it its
 updates until the person installs a new APK.
 

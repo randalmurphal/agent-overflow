@@ -199,11 +199,14 @@
     return blockAttachment?.(event, notify) ?? false;
   }
 
-  function chooseAttachments(accept: string): void {
+  function chooseAttachments(accept: string, capture = false): void {
     if (!fileInput || disabled || refuseAttachment(new Event('pick'))) return;
     pickerGeneration = pane.switchGeneration;
     pickerInsertion = imagePlaceholders.currentUploadInsertion();
     fileInput.accept = accept;
+    fileInput.multiple = !capture;
+    if (capture) fileInput.setAttribute('capture', 'environment');
+    else fileInput.removeAttribute('capture');
     fileInput.value = '';
     fileInput.click();
   }

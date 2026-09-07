@@ -626,21 +626,48 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
   await page.getByTestId('review-close').click();
   await expect(page.getByTestId('chat-header-title')).toBeVisible();
 
-  // Both attachment choices must open Android's picker, not a web-only UI.
-  for (const choice of ['Photos', 'Files']) {
+  // CAMERA is already declared by the QR scanner. Grant it here so resolving
+  // the actual camera activity, rather than merely a permission dialog, is tested.
+  await device.shell(`pm grant ${SHELL_PACKAGE} android.permission.CAMERA`);
+  const camera = (await device.shell('cmd package resolve-activity --brief -a android.media.action.IMAGE_CAPTURE'))
+    .toString().trim().split('\n').at(-1)?.split('/')[0];
+  expect(camera, 'the test device needs a camera app').toMatch(/^[a-z][\w.]+$/);
+  if (!HUMAN_LOCK) await device.shell(`am force-stop ${camera}`);
+  for (const choice of ['Take photo', 'Photos', 'Files']) {
+    const input = page.getByLabel('Choose attachments');
+    await input.evaluate((element) => {
+      element.removeAttribute('data-picker-canceled');
+      element.addEventListener('cancel', () => element.setAttribute('data-picker-canceled', 'true'), { once: true });
+    });
     await page.getByTestId('composer-attach').click();
     await page.getByRole('menuitem', { name: choice, exact: true }).click();
     await expect.poll(async () => {
       const focus = await focusedWindow(device);
       return focus !== '' && !focus.includes(SHELL_PACKAGE);
     }, { message: `${choice} must open the platform file picker` }).toBe(true);
+    if (choice === 'Take photo') await expect.poll(() => focusedWindow(device)).toContain(camera!);
     // Dismiss the picker with one Back. pressBack is for APP navigation:
     // its keyboard preflight can count the paused composer's stale IME and
     // send a second Back after the picker has already returned to the app.
     await device.shell('input keyevent 4');
     await expect.poll(() => focusedWindow(device), { message: `${choice} cancellation must return to the app` })
       .toContain(SHELL_PACKAGE);
+    await expect(input).toHaveAttribute('data-picker-canceled', 'true');
     await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'thread');
+  }
+
+  // The stock emulator camera must return a real JPEG through Capacitor's
+  // content URI and the same private-TLS upload as selected files.
+  if (!HUMAN_LOCK) {
+    await page.getByTestId('composer-attach').click();
+    await page.getByRole('menuitem', { name: 'Take photo', exact: true }).click();
+    await expect.poll(() => focusedWindow(device)).toContain(camera!);
+    await device.tap({ desc: 'Shutter' });
+    await device.tap({ desc: 'Done' });
+    const captured = page.getByRole('button', { name: /^Remove JPEG_.*\.jpg$/ });
+    await expect(captured).toBeVisible();
+    await expect(page.getByRole('textbox', { name: 'Message Input', exact: true })).toHaveValue(/\[Image #1\]/);
+    await captured.click();
   }
 
   // Bytes must cross the native private-TLS bridge, not just open a chooser.
@@ -741,7 +768,7 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
   await passCredentialPrompt(device, lock);
   await expect(row).toBeVisible({ timeout: PAIRED_MOUNT_MS });
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('tab', { name: 'Connections', exact: true }).click();
+  await page.getByRole('tab', { name: 'Connect to a computer', exact: true }).click();
   const computer = page.getByTestId('attached-machine');
   await computer.getByRole('button', { name: 'Change address' }).click();
   await computer.getByLabel('New computer address').fill(repairedOrigin);

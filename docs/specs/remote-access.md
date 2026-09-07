@@ -2453,13 +2453,13 @@ text above was deviated from:
   `setClientLease`, hardware back as one stack — a marked dismissal Escape
   that cannot invoke turn interruption, the terminal drawer, the companion on screen, the
   list screen, exit), lock (biometric on cold start and on resume,
-  the app root marked `inert` underneath), QR scan, a documented picker
-  stub, and `boot.ts` whose `adoptPairingEndpoint` is the one place
+  the app root marked `inert` underneath), QR scan, WebView attachment/camera
+  inputs, and `boot.ts` whose `adoptPairingEndpoint` is the one place
   scanned codes, pasted invitations and pairing hashes point the shell at a backend. Deviations from the
   text above: `minSdkVersion` 26 (the scanner's native library declares
-  it); dictation is the keyboard's, as ruled; dedicated picker plugins
-  answer `null` while the composer's Photos and Files choices use the
-  WebView's native chooser; iOS is not added. Signed distribution now uses
+  it); dictation is the keyboard's, as ruled; the composer's Take photo, Photos
+  and Files choices use the WebView's native capture/chooser; no dedicated
+  picker plugin is needed. iOS is not added. Signed distribution now uses
   `make apk-release` and a persistent keystore (see
   [remote-access-setup.md](../architecture/remote-access-setup.md)).
   An `http://` pairing link fails at the fetch on a device
@@ -2494,7 +2494,7 @@ the review fixes that follow them):
   built from that manifest's own list and re-verified as it compresses.
   Walked lazily on first use; `*.map` and `bundle-id.txt` excluded;
   every path must pass `CleanPath` or the tree is refused;
-  `MinShellBuild = 9` is the native compatibility floor, separate from
+  `MinShellBuild = 10` is the native compatibility floor, separate from
   strictly newer release ordering. `frontend/scripts/bundleId.ts` stamps
   `dist/bundle-release.json` from the frontend package version before
   hashing, then stamps `dist/bundle-id.txt`, the APK's own answer to "what am I running";

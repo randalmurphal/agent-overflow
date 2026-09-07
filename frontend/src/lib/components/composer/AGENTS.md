@@ -74,10 +74,12 @@ more: an unrecognised one is a `file`. The caps differ (10 MiB image,
   file per mount.
 
 Paste stays image-only (`extractClipboardImages`); drag/drop and the attachment
-picker take any file. `AttachmentPicker` exposes Files and Photos on Android;
+picker take any file. `AttachmentPicker` exposes Take photo, Photos and Files on Android;
 the shared input surface owns the file inputs and calls the same `uploadFiles`
 path as drop/paste. Capture the pane generation when opening the system picker
-and discard a selection returned after a thread switch. Keep scope/provider/
+and discard a selection returned after a thread switch. Camera capture uses
+`accept="image/*" capture="environment"` with one file; clear capture and restore
+multiple selection before opening Photos or Files. Keep scope/provider/
 prompt gates on both opening and accepting a selection.
 
 On compact layouts the workspace strip combines branch and worktree into one

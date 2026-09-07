@@ -23,6 +23,9 @@ import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 import type { Attachment } from '../../types/attachment';
 import type { ThreadPane } from '../../stores/thread.svelte';
 
+const platform = vi.hoisted(() => ({ native: false }));
+vi.mock('../../native/platform', () => ({ isNativeShell: () => platform.native }));
+
 function makeAttachment(id: string): Attachment {
   return {
     id,
@@ -174,6 +177,7 @@ async function mountSurface(options: MountOptions = {}) {
 
 describe('<ComposerInputSurface>', () => {
   beforeEach(() => {
+    platform.native = false;
     resetBindingMocks();
     resetComposerDraftSnapshotsForTest();
     resetPanesForTest();
@@ -333,6 +337,29 @@ describe('<ComposerInputSurface>', () => {
     await fireEvent.change(input);
     await waitFor(() => expect(upload).toHaveBeenCalled());
     await waitFor(() => expect(draft.attachments.map((a) => a.id)).toEqual(['att-picked']));
+  });
+
+  it('captures one photo through the shared upload path and restores ordinary pickers afterward', async () => {
+    platform.native = true;
+    const upload = mockAttachmentUpload(async () => makeAttachment('att-camera'));
+    const { getByTestId, getByLabelText, getByRole, draft } = await mountSurface();
+    await fireEvent.click(getByTestId('composer-attach'));
+    await fireEvent.click(getByRole('menuitem', { name: 'Take photo' }));
+    const input = getByLabelText('Choose attachments') as HTMLInputElement;
+    expect(input.accept).toBe('image/*');
+    expect(input.getAttribute('capture')).toBe('environment');
+    expect(input.multiple).toBe(false);
+    Object.defineProperty(input, 'files', { value: [new File(['x'], 'camera.jpg', { type: 'image/jpeg' })], configurable: true });
+    await fireEvent.change(input);
+    await waitFor(() => expect(draft.attachments.map((a) => a.id)).toEqual(['att-camera']));
+    expect(upload).toHaveBeenCalledOnce();
+    for (const [choice, accept] of [['Photos', 'image/*'], ['Files', '']] as const) {
+      await fireEvent.click(getByTestId('composer-attach'));
+      await fireEvent.click(getByRole('menuitem', { name: choice }));
+      expect(input.accept).toBe(accept);
+      expect(input.hasAttribute('capture')).toBe(false);
+      expect(input.multiple).toBe(true);
+    }
   });
 
   it('discards a picker selection returned after switching threads', async () => {

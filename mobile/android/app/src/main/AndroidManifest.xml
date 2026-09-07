@@ -17,6 +17,13 @@
         `@xml/data_extraction_rules` turns off (it excludes every domain
         from both halves).
     -->
+    <!-- Capacitor checks for a camera activity before launching file-input capture. -->
+    <queries>
+        <intent>
+            <action android:name="android.media.action.IMAGE_CAPTURE" />
+        </intent>
+    </queries>
+
     <application
         android:allowBackup="false"
         android:fullBackupContent="false"

@@ -12,7 +12,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { installNativeLifecycle } from './lifecycle';
 import { DEFAULT_LOCK_WINDOW_MS, installAppLock, lockWindowMs, shouldLock } from './lock';
-import { captureImage, pickFile } from './pickers';
 import { isNativeShell, nativePlatform } from './platform';
 import { appPlugin, biometricPlugin, bundlePlugin, scannerPlugin, unthenable } from './plugins';
 import {
@@ -70,10 +69,8 @@ describe('the web fallbacks', () => {
     stopBundleSync();
   });
 
-  it('scan nothing and pick nothing', async () => {
+  it('scans nothing without a native shell', async () => {
     await expect(scanPairingQr()).resolves.toBeNull();
-    await expect(pickFile()).resolves.toBeNull();
-    await expect(captureImage()).resolves.toBeNull();
   });
 
   it('install a lifecycle that listens to nothing and a lock that is open', async () => {

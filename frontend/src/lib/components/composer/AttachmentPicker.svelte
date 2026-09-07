@@ -8,13 +8,13 @@
 
   let { disabled = false, onChoose }: {
     disabled?: boolean;
-    onChoose: (accept: string) => void;
+    onChoose: (accept: string, capture?: boolean) => void;
   } = $props();
   let anchor: HTMLButtonElement | undefined = $state();
   let open = $state(false);
-  function choose(accept: string): void {
+  function choose(accept: string, capture = false): void {
     open = false;
-    onChoose(accept);
+    onChoose(accept, capture);
   }
 </script>
 
@@ -32,6 +32,7 @@
 </button>
 <Popover {anchor} {open} onClose={() => (open = false)} placement="top-end" role="none">
   <Menu ariaLabel="Add attachments" onClose={() => (open = false)}>
+    <MenuItem label="Take photo" onSelect={() => choose('image/*', true)} />
     <MenuItem label="Photos" onSelect={() => choose('image/*')} />
     <MenuItem label="Files" onSelect={() => choose('')} />
   </Menu>

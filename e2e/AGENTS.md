@@ -233,10 +233,14 @@ keyboard first, by the same key.
 That helper is for app navigation only. Cancel a native picker with one
 Back and verify focus returns to the app: the paused composer's stale IME
 state can otherwise make the helper send another Back into the app itself.
+Before opening another picker, wait for the input's `cancel` event too;
+activity focus can return before WebView receives the chooser result.
 
-The first case also opens and cancels the composer's Photos and Files
-choosers, then presses Back during a gated mock turn and verifies that the
-list opens while the provider keeps running. The same turn then advances
+The first case also opens and cancels the composer's Take photo, Photos and Files
+choosers (camera capture must resolve the camera activity, not a permission dialog).
+The emulator also takes and accepts a real JPEG, verifies its uploaded attachment
+and image marker, then removes it. The case then presses Back during a gated
+mock turn and verifies that the list opens while the provider keeps running. The same turn then advances
 through real Android pause/resume and, on the emulator, disabled Wi-Fi and
 mobile data. It finishes while backgrounded and offline; restoring the radios
 must render the answer and clear Stop in the same process, without reloading.

@@ -61,10 +61,11 @@ import (
 // and says, once, that the phone's app needs an APK update. This floor is
 // separate from release ordering: native code cannot ship over this channel.
 //
-// **Bump it when a seam needs a plugin an older APK lacks**, in the same
+// **Bump it when a seam needs native code or manifest support an older APK lacks**, in the same
 // change that adds the seam. Never for a web-only change: a bump costs
 // every phone below it its updates until the person installs a new APK.
-const MinShellBuild = 9
+// Build 10 makes the system camera visible to WebView image capture.
+const MinShellBuild = 10
 
 // ReleaseFileName binds release ordering to the exact files being installed.
 // Unlike IDFileName it is included in the manifest, content hash and archive.
