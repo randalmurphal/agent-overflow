@@ -311,18 +311,24 @@ func (c *Client) ObserveBootstrap(ctx context.Context, body []byte) error {
 	if err := json.Unmarshal(body, &manifest); err != nil {
 		return err
 	}
+	return c.ObserveComputerRoutes(ctx, manifest.BackendID, manifest.Routes)
+}
+
+// ObserveComputerRoutes accepts snapshots only from this client's authenticated
+// bootstrap or hello, after the caller has verified the serving backend.
+func (c *Client) ObserveComputerRoutes(ctx context.Context, backendID string, advertised []computerroute.Route) error {
 	c.mu.Lock()
-	backendID := c.session.BackendID
+	expectedID := c.session.BackendID
 	c.mu.Unlock()
-	if manifest.BackendID != backendID {
+	if backendID != expectedID {
 		return errors.New("deviceclient: manifest belongs to a different computer")
 	}
-	if len(manifest.Routes) == 0 {
+	if len(advertised) == 0 {
 		return nil
 	}
 	var routes []computerroute.Route
 	if err := c.sessionTransaction(ctx, func(path string, latest *Session) error {
-		routes = computerroute.Merge(latest.Routes, manifest.Routes)
+		routes = computerroute.Merge(latest.Routes, advertised)
 		if slices.Equal(routes, latest.Routes) {
 			return nil
 		}

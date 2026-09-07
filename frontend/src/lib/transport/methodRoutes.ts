@@ -100,6 +100,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1110466608: 'home', // GetCodexAccountUsage
 	1018032480: 'selected', // GetCodexSkills
 	3399370629: 'workspace', // GetCommitDiff
+	873893084: 'selected', // GetComputerRoutes
 	3416004963: 'home', // GetContextSettings
 	139818238: 'selected', // GetDevServers
 	1370118726: 'home', // GetDeviceName

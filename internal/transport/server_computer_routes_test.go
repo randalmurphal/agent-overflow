@@ -41,3 +41,24 @@ func TestBootstrapAdvertisesCurrentComputerRoutesOnlyAfterAdmission(t *testing.T
 		current.Store([]computerroute.Route(nil))
 	}
 }
+
+func TestHelloResnapshotsComputerRoutesForEveryAuthenticatedConnection(t *testing.T) {
+	var current atomic.Value
+	current.Store([]computerroute.Route{{Endpoint: "https://initial.test.ts.net"}})
+	f := newServerFixtureWith(t, func(cfg *Config) {
+		cfg.BackendIdentity = func() (string, string) { return "backend-1", "gen-1" }
+		cfg.ComputerRoutes = func() []computerroute.Route { return current.Load().([]computerroute.Route) }
+	})
+	for _, routes := range [][]computerroute.Route{{{Endpoint: "https://later.test.ts.net"}}, nil} {
+		current.Store(routes)
+		conn := f.dial(t)
+		var hello helloFrame
+		if err := json.Unmarshal(readFirstFrame(t, conn), &hello); err != nil {
+			t.Fatal(err)
+		}
+		conn.CloseNow()
+		if !reflect.DeepEqual(hello.Routes, routes) {
+			t.Fatalf("hello reused stale route snapshot: %v want %v", hello.Routes, routes)
+		}
+	}
+}

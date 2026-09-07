@@ -410,6 +410,11 @@ export function requireEntityBackend(owner: BackendKey | undefined): BackendKey 
  * stamp carries). `undefined` when nothing answers to it. An explicit
  * target must never fall back to another computer when it is absent.
  */
+/** The immutable addressing snapshot used for this connection's bootstrap. */
+export function backendDescriptor(id: BackendKey): BackendDescriptor | undefined {
+  return byId.get(id)?.descriptor;
+}
+
 export function backendById(id: string): BackendEntry | undefined {
   return byId.get(id);
 }

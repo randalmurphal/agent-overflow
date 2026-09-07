@@ -27,6 +27,7 @@ func eventChannelConstants() []eventchan.Channel {
 		eventchan.AgentComputersChanged,
 		eventchan.AccessDevicesChanged,
 		eventchan.OwnDevicesChanged,
+		eventchan.ComputerRoutesChanged,
 		eventchan.BackendNameChanged,
 		eventchan.BackendAttach,
 		eventchan.BackendSetChanged,

@@ -58,6 +58,7 @@ function dispatch(name: string) {
   };
 }
 
+export const GetComputerRoutes = dispatch('GetComputerRoutes');
 export const GetDeviceName = dispatch('GetDeviceName');
 export const SetDeviceName = dispatch('SetDeviceName');
 export const UpdateClientDeviceName = dispatch('UpdateClientDeviceName');

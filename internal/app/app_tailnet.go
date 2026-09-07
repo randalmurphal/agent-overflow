@@ -207,6 +207,7 @@ func (a *App) tailnetEvents() <-chan struct{} {
 // reconcileTailnet makes the live node match the persisted preference and
 // answers how long to wait before looking again.
 func (a *App) reconcileTailnet() time.Duration {
+	defer a.publishComputerRoutes()
 	a.tailnet.lifecycle.Lock()
 	defer a.tailnet.lifecycle.Unlock()
 
@@ -443,6 +444,7 @@ func (a *App) releaseTailnetSlot(slot *tailnetSlot) (_ *transport.AuxListener, r
 // shared serve-error channel, so a tailnet that stopped accepting can
 // never read as the app's own transport dying.
 func (a *App) tailnetListenerFailed(slot *tailnetSlot, cause error) {
+	defer a.publishComputerRoutes()
 	aux, remaining := a.releaseTailnetSlot(slot)
 	if aux == nil {
 		// The attach has not recorded its handle yet. It reads slot.failed,
@@ -463,6 +465,7 @@ func (a *App) tailnetListenerFailed(slot *tailnetSlot, cause error) {
 // stopTailnetNode detaches the listeners and closes the node. Safe on a
 // state with neither.
 func (a *App) stopTailnetNode() {
+	defer a.publishComputerRoutes()
 	a.dropTailnetListeners()
 
 	a.tailnet.mu.Lock()
@@ -483,6 +486,7 @@ func (a *App) stopTailnetNode() {
 // names the Host guard was admitting for it. A name that stays admitted
 // after the listener behind it is gone is an admission nobody can reach.
 func (a *App) dropTailnetListeners() {
+	defer a.publishComputerRoutes()
 	a.tailnet.mu.Lock()
 	var handles []*transport.AuxListener
 	for _, slot := range []*tailnetSlot{a.tailnet.plain, a.tailnet.secure} {

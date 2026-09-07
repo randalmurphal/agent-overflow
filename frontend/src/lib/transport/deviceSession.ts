@@ -481,8 +481,8 @@ export function fetchPairedComputer(backend: BackendKey, fetcher: typeof fetch, 
   return fetchComputerRoute(context, fetcher, input, init);
 }
 
-export async function observePairedComputerBootstrap(backend: BackendKey, backendId: unknown, routes: unknown): Promise<void> {
-  if (!isNativeShell() || typeof backendId !== 'string' || !backendId) return;
+export async function observePairedComputerBootstrap(backend: BackendKey, backendId: unknown, routes: unknown, current: () => boolean = () => true): Promise<void> {
+  if (!current() || !isNativeShell() || typeof backendId !== 'string' || !backendId) return;
   const held = readStoredSession(backend);
   if (!held) return;
   if ((held.backendId && held.backendId !== backendId) || (backend !== HOME_BACKEND && backend !== backendId)) throw new Error('This address belongs to a different computer.');
@@ -490,7 +490,7 @@ export async function observePairedComputerBootstrap(backend: BackendKey, backen
   // manifest at their original paired origin supplies it before route use.
   if (!held.backendId) storeSession({ ...held, backendId }, backend);
   const context = pairedRouteContext(backend);
-  if (context) await learnComputerRoutes(context, routes);
+  if (context) await learnComputerRoutes({ ...context, current: () => current() && context.current() }, routes);
 }
 
 export function pairedComputerSocketRoute(backend: BackendKey, url: string): { url: string; pin?: string; failed(): void } | null {

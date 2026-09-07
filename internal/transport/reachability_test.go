@@ -297,6 +297,7 @@ func TestSessionFloorMethodsAreTheSpecSet(t *testing.T) {
 		"RegisterPushToken":           "writes the calling session's own device registration and no other",
 		"UnregisterPushToken":         "deletes the calling session's own device registration and no other",
 		"GetDeviceName":               "reads display metadata already advertised in bootstrap and hello",
+		"GetComputerRoutes":           "reads the public route snapshot already advertised in authenticated bootstrap and hello",
 		"UpdateClientDeviceName":      "changes only the calling session's device label and platform, never its identity or grants",
 		"ListOwnDevices":              "returns public membership only for an admitted personal session",
 		"RegisterOwnDevice":           "registers only the caller's own proven key with active-generation fencing",

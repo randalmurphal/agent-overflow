@@ -129,6 +129,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetCodexAccountUsage", ID: 1110466608, Scope: "access:admin", Route: "home"},                             // main.App.GetCodexAccountUsage
 	{Name: "GetCodexSkills", ID: 1018032480, Scope: "threads:operate", Route: "selected"},                            // main.App.GetCodexSkills
 	{Name: "GetCommitDiff", ID: 3399370629, Scope: "files:read", Route: "workspace"},                                 // main.App.GetCommitDiff
+	{Name: "GetComputerRoutes", ID: 873893084, Scope: "session", Route: "selected"},                                  // main.App.GetComputerRoutes
 	{Name: "GetContextSettings", ID: 3416004963, Scope: "settings:read", Route: "home"},                              // main.App.GetContextSettings
 	{Name: "GetDevServers", ID: 139818238, Scope: "preview:open", Route: "selected"},                                 // main.App.GetDevServers
 	{Name: "GetDeviceName", ID: 1370118726, Scope: "session", Route: "home"},                                         // main.App.GetDeviceName

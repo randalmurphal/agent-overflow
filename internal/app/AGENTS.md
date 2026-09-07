@@ -1197,3 +1197,16 @@ an exclusion; revoking a personal device distributes a removal tombstone.
 Offline revocation is eventual: connected peers apply removals before creating
 connections, and isolated hosts learn them when connectivity returns. There is
 no online central authority and no claim of instant revocation across partitions.
+
+
+Route publications sample `ComputerRoutes` only after network-state locks are
+released, and emit `computer-routes:changed` only when usable candidates change.
+The bounded last-publication comparison is coordination, not a second route
+authority. Tailnet listener/status transitions, main listener rebinding,
+certificate publication, and native relay reports/retirement use this boundary.
+The empty event asks for current authenticated bootstrap; `GetComputerRoutes`
+is the same session-floor observation over a surviving socket after rebind.
+
+Native relay generations change only when the main listener's binding/actual
+port or the launcher owner changes. Tailscale and canonical-domain settings
+must not retire a working Windows LAN relay or terminate its active sockets.

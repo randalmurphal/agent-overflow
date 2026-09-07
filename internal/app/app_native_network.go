@@ -58,6 +58,7 @@ func (s *nativeNetworkState) invalidate() {
 }
 
 func (a *App) invalidateNativeNetwork() {
+	defer a.publishComputerRoutes()
 	s := &a.nativeNetwork
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -70,6 +71,7 @@ func (a *App) invalidateNativeNetwork() {
 //ao:scope host
 //ao:route home
 func (a *App) GetNativeNetworkConfig(ctx context.Context) (nativenetwork.Config, error) {
+	defer a.publishComputerRoutes()
 	srv := a.transportServer.Load()
 	if srv == nil {
 		return nativenetwork.Config{}, errors.New("network listener is unavailable")
@@ -97,6 +99,7 @@ func (a *App) GetNativeNetworkConfig(ctx context.Context) (nativenetwork.Config,
 	s.mu.Unlock()
 	if arm {
 		cleanup := func() {
+			defer a.publishComputerRoutes()
 			s.mu.Lock()
 			defer s.mu.Unlock()
 			delete(s.armed, conn)
@@ -130,6 +133,7 @@ func (a *App) GetNativeNetworkConfig(ctx context.Context) (nativenetwork.Config,
 //ao:scope host
 //ao:route home
 func (a *App) ReportNativeNetworkState(ctx context.Context, report nativenetwork.State) error {
+	defer a.publishComputerRoutes()
 	srv := a.transportServer.Load()
 	if srv == nil {
 		return errors.New("network listener is unavailable")

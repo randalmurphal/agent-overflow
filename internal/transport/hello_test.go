@@ -184,6 +184,7 @@ func TestServer_AdvertisedCapabilitiesAreFrozen(t *testing.T) {
 		"pairing.nearby.v1",
 		"own-devices.v1",
 		"device-name.v1",
+		"computer-routes.v1",
 	}
 	assertCapabilities(t, serverCapabilities, want)
 	assertCapabilities(t, serverCapabilitiesWithBrowser, append(append([]string{}, want...), "browser"))

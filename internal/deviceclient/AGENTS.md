@@ -60,3 +60,10 @@ backend identity; the first verified route wins without waiting for a dead LAN
 or cold VPN alternative. Selection never sends the invitation token or a device
 proof. Pair then performs one redemption only: a lost reply cannot safely retry
 an invitation that may already have been spent.
+
+
+`ObserveComputerRoutes` is shared by authenticated bootstrap and verified hello
+snapshots. Identity must match this client's backend, and the profile transaction
+fences retired/replaced pairings before saving trust. A live route invalidation
+causes a bootstrap refresh through the existing desktop proxy, which feeds this
+same owner; do not parse opaque WebSocket bytes in the reverse proxy.

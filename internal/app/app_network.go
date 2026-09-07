@@ -109,6 +109,7 @@ func (a *App) GetNetworkSettings(ctx context.Context) (network.Settings, error) 
 //ao:route home
 //ao:stepup
 func (a *App) SetNetworkSettings(ctx context.Context, s network.Settings) (network.Settings, error) {
+	defer a.publishComputerRoutes()
 	if a.settings == nil {
 		return network.Settings{}, fmt.Errorf("settings service unavailable")
 	}
@@ -225,6 +226,10 @@ func (a *App) SetNetworkSettings(ctx context.Context, s network.Settings) (netwo
 	// A changed listener invalidates the open invitation and its advertisement.
 	if prev.BindAll != stored.BindAll || prev.ListenPort != stored.ListenPort || prev.TailnetEnabled != stored.TailnetEnabled || prev.TailnetControlURL != stored.TailnetControlURL || prev.CanonicalDomain != stored.CanonicalDomain {
 		a.closeComputerPairing()
+	}
+	// The native relay forwards the main listener. Tailnet/domain changes only
+	// affect separate listeners; retiring the relay would kill healthy LAN sockets.
+	if prev.BindAll != stored.BindAll || currentPort != portFromAddr(srv.Addr()) {
 		a.invalidateNativeNetwork()
 	}
 

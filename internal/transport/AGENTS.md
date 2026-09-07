@@ -108,6 +108,10 @@ repeated toggles with an existing WebSocket.
 
 Bootstrap may carry bounded `routes` from the boot-injected `ComputerRoutes`
 getter, only after ordinary manifest admission and once backend identity exists.
+Each authenticated WebSocket hello resamples the same getter. The session-floor
+`computer-routes:changed` channel is an empty invalidation: replay must never
+carry old route trust. `GetComputerRoutes` permits recovery through a surviving
+socket when the old HTTP listener has already closed.
 These are credential-free HTTPS candidates, not new authorities. The client
 verifies their TLS trust and `/healthz` backend ID before sending any credential.
 No listener or browser-origin policy changes merely because a route is advertised.

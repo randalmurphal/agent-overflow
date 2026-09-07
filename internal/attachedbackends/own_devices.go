@@ -82,6 +82,9 @@ func (c *carrier) openRPC(ctx context.Context, capability string) (*rpcclient.Cl
 	if err == nil && !slices.Contains(hello.Capabilities, capability) {
 		err = errUnsupportedPeerOperation
 	}
+	if err == nil {
+		err = c.client.ObserveComputerRoutes(ctx, hello.BackendID, hello.Routes)
+	}
 	if err != nil {
 		rpc.Close()
 		return nil, err

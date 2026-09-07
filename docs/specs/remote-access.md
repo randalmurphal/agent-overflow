@@ -907,6 +907,9 @@ waves:
   keys require step-up. A view-only device changing its own font size
   is the case the floor exists for. `GetDeviceName` also sits at this floor:
   it reads the display name already advertised by bootstrap and hello.
+  `GetComputerRoutes` reads the same public route candidates as authenticated
+  bootstrap/hello, including from a surviving socket after its HTTP listener
+  moves; it changes no trust, session, or network configuration.
   `UpdateClientDeviceName` changes only the authenticated caller's own
   device label/platform, deriving the device ID from its session. It cannot
   rename another device or change keys/grants. Renaming the host itself

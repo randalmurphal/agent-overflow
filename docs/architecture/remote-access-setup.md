@@ -95,6 +95,10 @@ system-wide CA. An older APK can continue using its public HTTPS tailnet route.
 
 A reachable host advertises its enabled LAN and tailnet routes. Installed
 clients remember a bounded set and verify the computer before changing routes.
+Enabling and signing into Tailscale later updates connected clients automatically;
+you do not need to pair again or restart them. Let the devices connect once while
+a saved route still works so they can learn the new address. A device that was
+offline cannot learn a new address after every address it knows becomes unreachable.
 Switching routes preserves the pairing, conversations and frontend preferences.
 It does not replay a failed command or upload automatically.
 

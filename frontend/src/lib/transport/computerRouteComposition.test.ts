@@ -12,7 +12,7 @@ const ID = '11111111-2222-4333-8444-555555555555';
 const LAN = 'https://192.168.1.55:60522';
 const TAIL = 'https://agent-overflow.example.ts.net';
 const PIN = `sha256:${'a'.repeat(64)}`;
-const routes = [{ endpoint: LAN, certFingerprint: PIN }, { endpoint: TAIL }];
+let routes = [{ endpoint: LAN, certFingerprint: PIN }, { endpoint: TAIL }];
 const requests: { origin: string; path: string; native: boolean; pin?: string; headers: Headers }[] = [];
 const sockets: { url: string; pin?: string }[] = [];
 let lanUp = true;
@@ -60,6 +60,7 @@ async function respond(url: string, method: string, headers: Headers, body: stri
 beforeEach(() => {
   vi.resetModules(); localStorage.clear(); requests.length = sockets.length = 0;
   lanUp = true; tailUp = true; expired = false; renewals = 0; credential = 'original';
+  routes = [{ endpoint: LAN, certFingerprint: PIN }];
   const transfers = new Map<string, { url: string; method: string; headers: Headers; pin: string; body: string; response?: Response; read: boolean }>();
   boundary.plugin = {
     getCapabilities: async () => ({ computerRoutes: true }),
@@ -92,7 +93,7 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); localStorage.clear(); });
 
 for (const backend of ['', ID]) {
-  it(`keeps LAN-learned tailnet routes through reload and renewal (${backend ? 'attached' : 'home'})`, async () => {
+  it(`learns Tailscale enabled after LAN pairing without reconnecting, then survives reload and renewal (${backend ? 'attached' : 'home'})`, async () => {
     const trust = await import('../native/networkTrust');
     const endpoint = await import('./homeEndpoint');
     const sessionKey = `agent-overflow:deviceSession${backend ? `:${backend}` : ''}`;
@@ -114,6 +115,13 @@ for (const backend of ['', ID]) {
     const initialNetwork = await import('./networkSocket');
     const initialSocket = initialNetwork.createNetworkSocket(`${initial.wsUrl}?ticket=${initialTicket}`, backend);
     await vi.waitFor(() => expect(sockets.at(-1)).toEqual({ url: `${LAN.replace('https:', 'wss:')}/ws?ticket=fresh-ticket`, pin: PIN }));
+    expect(localStorage.getItem(`agent-overflow:computerRoutes:${encodeURIComponent(backend)}`)).not.toContain(TAIL);
+    routes = [{ endpoint: LAN, certFingerprint: PIN }, { endpoint: TAIL }];
+    const { refreshComputerRoutes } = await import('./bootstrap');
+    const descriptor = backend ? { id: backend, backendId: ID, name: 'Mac', wsUrl: initial.wsUrl, bootstrapUrl: `${LAN}/bootstrap.json` } : undefined;
+    await refreshComputerRoutes(descriptor, ID, () => true, new AbortController().signal);
+    expect(sockets).toHaveLength(1);
+    expect(JSON.parse(localStorage.getItem(sessionKey)!).credential).toBe('original');
     initialSocket.close();
     expect(localStorage.getItem(`agent-overflow:computerRoutes:${encodeURIComponent(backend)}`)).toContain(TAIL);
     vi.resetModules(); lanUp = false;
@@ -153,3 +161,32 @@ for (const backend of ['', ID]) {
     expect(JSON.parse(localStorage.getItem(sessionKey)!).sessionId).toBe('same-session');
   });
 }
+
+it('uses the surviving native socket to learn routes when the old HTTP listener has already closed', async () => {
+  const trust = await import('../native/networkTrust');
+  const endpoint = await import('./homeEndpoint');
+  trust.pairingEndpoint({ v: 1, backendId: ID, endpoint: LAN, certFingerprint: PIN, token: 'used' });
+  endpoint.storeBackendEndpoint(ID, LAN);
+  localStorage.setItem(`agent-overflow:deviceSession:${ID}`, JSON.stringify({ backendId: ID, sessionId: 'same-session', credential,
+    expiresAtMs: Date.now() + 3600000, refreshSecret: 'refresh-original', refreshRecovery: true, proofKind: 'bearer' }));
+  const descriptor = { id: ID, backendId: ID, name: 'Mac', nickname: '', wsUrl: `${LAN.replace('https:', 'wss:')}/ws`, bootstrapUrl: `${LAN}/bootstrap.json` };
+  await import('./bootstrap');
+  const { fetchBackendManifest } = await import('./manifestBackends');
+  await fetchBackendManifest(descriptor);
+  const { stageBackend, resetStagedBackends } = await import('../../test/helpers/backends');
+  const { resetBindingMocks, setBindingMock } = await import('../../test/mocks/bindings-app');
+  resetBindingMocks();
+  const snapshot = setBindingMock('GetComputerRoutes', async () => [{ endpoint: TAIL }]);
+  const backend = stageBackend({ ...descriptor, hello: { backendId: ID, backendName: 'Mac', capabilities: ['computer-routes.v1'],
+    protocolVersion: 1, serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 } });
+  lanUp = false; routes = [{ endpoint: TAIL }];
+  const { installComputerRouteUpdates } = await import('../stores/computerRouteUpdates');
+  const stop = installComputerRouteUpdates();
+  try {
+    await vi.waitFor(() => expect(localStorage.getItem(`agent-overflow:computerRoutes:${ID}`)).toContain(TAIL));
+    expect(snapshot).toHaveBeenCalledOnce(); expect(backend.reconnect).not.toHaveBeenCalled();
+    await expect(fetchBackendManifest(descriptor)).resolves.toMatchObject({ wsUrl: `${TAIL.replace('https:', 'wss:')}/ws` });
+    expect(JSON.parse(localStorage.getItem(`agent-overflow:deviceSession:${ID}`)!).sessionId).toBe('same-session');
+    expect(renewals).toBe(0);
+  } finally { stop(); resetStagedBackends(); resetBindingMocks(); }
+});

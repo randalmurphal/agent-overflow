@@ -937,6 +937,7 @@ var channelPolicies = []ChannelPolicy{
 			"global event would lose another conversation's completion. Grants and " +
 			"activation secrets are excluded by the store status JSON shape.",
 	},
+	{Channel: eventchan.ComputerRoutesChanged, Audience: AudienceAny, Retention: RetentionDefault, Scope: ScopeSession, Why: "Empty invalidation; authenticated bootstrap returns current public routes for this computer."},
 	{Channel: eventchan.OwnDevicesChanged, Audience: AudienceAny, Retention: RetentionDefault, Scope: ScopeSession, Why: "Empty membership invalidation; the pull checks the caller's durable personal enrollment."},
 	{
 		Channel:   eventchan.AgentComputersChanged,

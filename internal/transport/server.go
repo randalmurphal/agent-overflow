@@ -1706,10 +1706,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	if pageAuthed && loopback.PeerAddress(r.RemoteAddr) {
 		attached = s.attachedBackendEntries(r)
 	}
-	var routes []computerroute.Route
-	if s.cfg.ComputerRoutes != nil && backendID != "" {
-		routes = computerroute.Merge(nil, s.cfg.ComputerRoutes())
-	}
+	routes := s.computerRoutes(backendID)
 	_ = json.NewEncoder(w).Encode(Bootstrap{
 		// Build the wsUrl from the request's Host header so a LAN
 		// client gets a LAN-reachable URL even though the server's
@@ -2086,6 +2083,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		sessionRecheck:    s.cfg.SessionRecheckInterval,
 		maxLifetime:       s.cfg.MaxRemoteConnLifetime,
 		hello: helloFrame{
+			Routes: s.computerRoutes(backendID),
 			// Resolved per accept, not at boot: the browser Manager picks
 			// its engine during the App's startup, which runs after this
 			// Config is built.
@@ -2114,4 +2112,11 @@ func (s *Server) backendName() string {
 		return s.cfg.BackendNameGetter()
 	}
 	return s.cfg.BackendName
+}
+
+func (s *Server) computerRoutes(backendID string) []computerroute.Route {
+	if backendID == "" || s.cfg.ComputerRoutes == nil {
+		return nil
+	}
+	return computerroute.Merge(nil, s.cfg.ComputerRoutes())
 }

@@ -11,7 +11,7 @@ import (
 	"agent-overflow/internal/computerroute"
 )
 
-// RepairAddress verifies an explicitly entered address with existing computer
+// RepairAddress verifies a replacement address with existing computer
 // trust, without exposing a credential or replacing the pairing. The caller
 // receives success only after the verified alternative has been saved.
 func (c *Client) RepairAddress(ctx context.Context, endpoint string) (computerroute.Route, error) {

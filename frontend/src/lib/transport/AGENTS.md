@@ -1253,7 +1253,7 @@ including the standalone frontend controller's local administrative authority.
 ## Native LAN and attachment routing
 
 `computerRoutes.ts` selects among bounded addresses learned from an authenticated
-bootstrap, only after the APK advertises native health verification. Keep route
+bootstrap or current route RPC over the existing verified socket, only after the APK advertises native health verification. Keep route
 metadata separate from credential renewal, bind it to the pairing, and check that
 binding again after network waits. Every request captures one URL/TLS pair;
 failed outbound requests are surfaced once, never replayed during selection.

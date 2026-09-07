@@ -313,6 +313,7 @@ func (a *App) publishDomainCertificate(
 	cert tls.Certificate,
 	notAfter time.Time,
 ) {
+	defer a.publishComputerRoutes()
 	var published *tls.Certificate
 	if kind == "" {
 		domain = ""

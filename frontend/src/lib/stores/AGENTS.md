@@ -34,6 +34,16 @@ disconnect, replacement, teardown, or local removal cancels their admission.
 Sleeping computers retry without a settings screen. Failures stay in the existing
 connection settings status, rather than generating startup toasts.
 
+`computerRouteUpdates.ts` owns live route invalidations for ordinary and personal
+pairings alike. Coalesce each computer's invalidations, refresh authenticated
+bootstrap without restarting its socket, and retry transient reads with bounded
+backoff. Replay/gaps carry no trust snapshot: read the current configuration.
+If a rebind retired HTTP while WS survives, read `GetComputerRoutes` on that
+socket; native clients learn it under the captured pairing, while desktop
+proxies use existing certificate-verified address repair before refreshing HTTP.
+Connection replacement, session replacement, disconnect and teardown fence late
+reads. Missing capability means an older host, not a startup error.
+
 ## Store boundaries
 
 Every wire subscription and every entity-owned RPC lives here, and

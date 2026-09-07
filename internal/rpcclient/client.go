@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"sync"
 
+	"agent-overflow/internal/computerroute"
 	"agent-overflow/internal/transport"
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
@@ -26,10 +27,11 @@ func (c *Client) Close()               { _ = c.conn.CloseNow() }
 // Hello is read before any remote mutation, so identity and feature support
 // can be verified on the authenticated connection actually used for the call.
 type Hello struct {
-	Type            string   `json:"type"`
-	BackendID       string   `json:"backendId"`
-	ProtocolVersion int      `json:"protocolVersion"`
-	Capabilities    []string `json:"capabilities"`
+	Routes          []computerroute.Route `json:"routes"`
+	Type            string                `json:"type"`
+	BackendID       string                `json:"backendId"`
+	ProtocolVersion int                   `json:"protocolVersion"`
+	Capabilities    []string              `json:"capabilities"`
 }
 
 func (c *Client) Hello(ctx context.Context) (Hello, error) {

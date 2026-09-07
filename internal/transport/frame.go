@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"agent-overflow/internal/computerroute"
 	"encoding/json"
 	"errors"
 	"slices"
@@ -68,6 +69,9 @@ const ProtocolVersion = 1
 // CapabilityDeviceName supports installation names and authenticated client self-name updates.
 const CapabilityDeviceName = "device-name.v1"
 
+// CapabilityComputerRoutes supports live invalidation and authenticated route snapshots.
+const CapabilityComputerRoutes = "computer-routes.v1"
+
 var serverCapabilities = []string{
 	CapabilityRemoteNotifications,
 	CapabilityPasskeys,
@@ -76,6 +80,7 @@ var serverCapabilities = []string{
 	CapabilityNearbyPairing,
 	CapabilityOwnDevices,
 	CapabilityDeviceName,
+	CapabilityComputerRoutes,
 }
 
 // serverCapabilitiesWithBrowser is that list plus the one flag whose
@@ -186,7 +191,9 @@ const CapabilityBrowser = "browser"
 // it must ignore fields it does not recognise. Both are exercised by the
 // future-dialect fixture in the TS suite.
 type helloFrame struct {
-	Type string `json:"type"`
+	// Routes is the current public route snapshot for the authenticated backend.
+	Routes []computerroute.Route `json:"routes,omitempty"`
+	Type   string                `json:"type"`
 	// ReplayBaseline names every visible registered channel, including heads
 	// at zero, at this connection's subscription boundary. Clients seed only
 	// missing cursors: an existing cursor still names an outage to recover.

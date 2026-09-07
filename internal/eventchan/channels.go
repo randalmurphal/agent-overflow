@@ -338,3 +338,6 @@ const (
 const (
 	WorktreeSetup Channel = "worktree:setup"
 )
+
+// ComputerRoutesChanged invalidates the authenticated bootstrap route snapshot.
+const ComputerRoutesChanged Channel = "computer-routes:changed"

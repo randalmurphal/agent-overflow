@@ -483,9 +483,10 @@ type App struct {
 	// Zero value is an App with no reconciler and no node, which is every
 	// fixture that never calls Start and every install that leaves the
 	// feature off. See app_tailnet.go.
-	tailnet         tailnetState
-	computerPairing computerPairingState
-	nativeNetwork   nativeNetworkState
+	tailnet                 tailnetState
+	computerPairing         computerPairingState
+	nativeNetwork           nativeNetworkState
+	computerRoutesPublished computerRoutesPublication
 	// preview owns this machine's dev-server list: the scanner, the one
 	// goroutine that polls it while somebody off-machine is watching, and
 	// the platform refusal once a platform has given one. Zero value is

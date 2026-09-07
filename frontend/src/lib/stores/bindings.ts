@@ -18,6 +18,7 @@ export {
   IntroduceOwnDevice,
   MintOwnDeviceIntroduction,
   AcceptOwnDeviceIntroduction,
+  GetComputerRoutes,
   GetDeviceName,
   SetDeviceName,
   UpdateClientDeviceName,

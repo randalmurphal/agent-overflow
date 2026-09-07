@@ -13,7 +13,7 @@ change a thread's owner, or mint a different request ID.
 ## Trust and discovery
 
 A reachable, trusted backend advertises its available endpoints in its bootstrap
-manifest. Advertisements contain normalized HTTPS origins and, for its private
+manifest and every authenticated WebSocket hello. Advertisements contain normalized HTTPS origins and, for its private
 listener, the self-signed certificate fingerprint. They contain no page ticket,
 credential, refresh secret, or device proof. LAN addresses are advertised only
 when the main listener accepts LAN connections; tailnet HTTPS is advertised only
@@ -43,6 +43,35 @@ claims a known backend ID. A replacement pin advertised for the original origin
 supersedes its old pin during repair too. Recheck current trust and the pairing
 after verification, then persist before reporting success. No health request
 presents a credential, and no repair changes the original pairing endpoint.
+
+## Learning changes while connected
+
+`computer-routes.v1` adds an empty `computer-routes:changed` invalidation at
+the session floor. After listener rebinding, tailnet status/listener changes,
+domain certificate publication or Windows relay changes, the app compares its
+current usable routes with its last publication and emits only when they differ.
+It releases network-state locks before publishing. Existing lifecycle backstops
+can also observe LAN address changes; no new polling loop is added.
+
+Connected clients coalesce invalidations and replay recovery into an authenticated
+bootstrap refresh without reconnecting a healthy socket. Empty events cannot
+replay obsolete addresses or certificate pins over newer trust. Bootstrap is
+already the shared learning boundary: native clients persist their route metadata,
+and desktop/`--connect` proxies call the Go credential owner's bootstrap observer.
+Go computer RPC clients also observe the verified hello snapshot on each new
+connection, including ordinary pairings without personal-group membership.
+
+If a listener move has already retired the old HTTP address, the surviving
+socket can answer `GetComputerRoutes`. Native clients learn that snapshot through
+their existing session-bound observer. Desktop clients verify its candidate
+endpoints using the existing address-repair rule and then refetch bootstrap.
+That fallback does not authorize a new certificate or public hostname outside
+saved trust; a completely unreachable host or simultaneous untrusted replacement
+still needs another working trusted route or a fresh pairing.
+The Windows relay closes forwarded streams when its actual target/port changes;
+that case has no surviving socket. Without another remembered route, use verified
+address repair. Enabling Tailscale alone does not change its target and must keep
+the existing Windows LAN relay intact.
 
 ## Selection and failure
 

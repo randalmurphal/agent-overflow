@@ -380,7 +380,7 @@ func (m *Manager) Rename(id, nickname string) error {
 	return held.client.SetNickname(nickname)
 }
 
-// RepairAddress adds an explicitly entered, verified alternative to an
+// RepairAddress adds a verified replacement address to an
 // existing pairing. The live client owns the profile write and route change.
 func (m *Manager) RepairAddress(ctx context.Context, id, endpoint string) (string, error) {
 	held, err := m.carrier(id)

@@ -30,6 +30,7 @@ import { setPasskeysAvailableFromBootstrap } from './passkey';
 import { setBackendIdentityFromBootstrap } from './backendIdentity';
 import { clampString } from './frames';
 import { fetchPairedComputer, hasPairedSession, observePairedComputerBootstrap, pairedSessionHeaders, renewPairedSession } from './deviceSession';
+import type { BackendDescriptor } from './backends';
 import { computerResponseURL } from './computerRoutes';
 import type { ComputerRoute } from './computerRoute';
 import { awaitInjectedPageTicket, clearInjectedPageTicket, isWebviewHosted } from './pageHost';
@@ -228,7 +229,7 @@ export async function defaultBootstrap(): Promise<Bootstrap> {
 // Snapshot pairing before header generation: a missing device key can clear
 // storage, but the remedy is still pairing rather than a new page ticket.
 async function fetchAuthenticatedManifest(
-  url: string, path: string, credentials: RequestCredentials, backend: BackendKey = HOME_BACKEND,
+  url: string, path: string, credentials: RequestCredentials, backend: BackendKey = HOME_BACKEND, signal?: AbortSignal,
 ): Promise<Response> {
   const paired = hasPairedSession(backend);
   // same-origin credentials is the default for a same-origin request,
@@ -239,7 +240,7 @@ async function fetchAuthenticatedManifest(
   // backend launch that planted it, so after a restart the session
   // credential is the only thing that still names this page.
   let resp = await fetchPairedComputer(backend, networkFetch, url, {
-    credentials,
+    credentials, signal,
     // The PATH, never the absolute URL: a device proof binds
     // (method, path) and the backend compares `r.URL.Path`
     // (internal/identity/deviceproof.go), so a cross-origin fetch signs
@@ -251,9 +252,10 @@ async function fetchAuthenticatedManifest(
     // visits; the refresh exchange decides whether the session is dead.
     // One renewal, one retry. A definitive refusal clears the store and
     // asks for pairing; an inconclusive exchange stays retryable.
+    signal?.throwIfAborted();
     if (await renewPairedSession(networkFetch, backend)) {
       resp = await fetchPairedComputer(backend, networkFetch, url, {
-        credentials,
+        credentials, signal,
         // A fresh proof: proofs are single-use, so the one the first
         // attempt carried is spent.
         headers: await pairedSessionHeaders('GET', path, backend),
@@ -275,6 +277,21 @@ async function fetchAuthenticatedManifest(
     throw new BootstrapRejectedError(resp.status, paired);
   }
   return resp;
+}
+
+/** Refresh route hints only; never reconfigure a healthy socket or page state.
+ * On a desktop proxy the same GET updates its Go-owned paired profile. */
+export async function refreshComputerRoutes(descriptor: BackendDescriptor | undefined, backendId: string, current: () => boolean, signal: AbortSignal): Promise<void> {
+  if (!current()) return;
+  const backend = descriptor?.id ?? HOME_BACKEND;
+  const url = descriptor?.bootstrapUrl ?? homeUrl('/bootstrap.json');
+  const path = new URL(url, window.location.href).pathname;
+  const credentials = descriptor ? (originPartsOf(url) === null ? 'same-origin' : 'omit') : homeCredentials();
+  const response = await fetchAuthenticatedManifest(url, path, credentials, backend, signal);
+  const data = await response.json() as Partial<Bootstrap>;
+  if (!current()) return;
+  if (data.backendId !== backendId) throw new Error('Connection addresses belong to another computer.');
+  await observePairedComputerBootstrap(backend, data.backendId, data.routes, current);
 }
 
 // fetchManifest is the one /bootstrap.json fetch + validation path.
