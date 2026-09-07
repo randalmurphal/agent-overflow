@@ -304,31 +304,15 @@
   }
 </script>
 
-<!-- Overlay pattern: the banner is absolutely positioned at the top of the
-     app shell, so it reserves NO layout height. On the happy path nothing
-     renders here and the chat header sits flush with the top of the window;
-     when the transport drops the banner floats over the top edge of the
-     content without changing the panes' clientHeight. A clientHeight change
-     would fight the scroll controller (see
-     docs/architecture/frontend-scroll.md), which is why the old reserved-slot version permanently
-     held ~28px — but this banner spans the whole shell and a transport
-     reconnect is rare, so overlaying beats reserving that space forever.
-     z-30 keeps it above pane content but below Settings/Workflows (z-40)
-     and modals (z-[60]+). A warning must not block an overlay's close button
-     when its full-height compact header shares the top edge.
-     transition:fade animates opacity only, so entrance/exit never shifts
-     layout either. (ProviderStatusBanner stays a reserved slot: it sits
-     between the header and the timeline, a narrower surface where a stable
-     slot is the simpler win.) -->
+<!-- Desktop overlays avoid resizing panes during reconnect. Compact must
+     keep its only Back control reachable, so the banner occupies a row
+     while visible; the timeline's normal viewport-resize handling owns that
+     height change. Neither layout reserves space while connected. -->
 {#if visible}
-  <!-- The outer layer is a solid surface: the strip floats over arbitrary
-       content (on compact, over the thread header), and a translucent
-       tint alone rendered as two surfaces z-mixed into an unreadable
-       jumble on a real phone. The tinted look stays; it just gets an
-       opaque ground first. -->
+  <!-- An opaque ground keeps the tint readable over desktop pane content. -->
   <div
     transition:fade={{ duration: 150 }}
-    class="absolute inset-x-0 top-0 z-30 bg-surface-1"
+    class="absolute inset-x-0 top-0 z-30 bg-surface-1 compact:static compact:shrink-0"
   >
   <div
     role="alert"

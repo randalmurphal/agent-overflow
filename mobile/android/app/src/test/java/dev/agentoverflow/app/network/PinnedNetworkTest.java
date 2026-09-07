@@ -133,6 +133,80 @@ public class PinnedNetworkTest {
         }
     }
 
+    @Test public void cancellationLeavesBodyDisposalWithItsActiveReader() throws Exception {
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var closes = new java.util.concurrent.atomic.AtomicInteger();
+        var source = okio.Okio.buffer(new okio.Source() {
+            public long read(okio.Buffer sink, long count) throws java.io.IOException {
+                entered.countDown();
+                try { if (!release.await(2, TimeUnit.SECONDS)) throw new java.io.IOException("reader gate timed out"); }
+                catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new java.io.IOException(e); }
+                return -1;
+            }
+            public okio.Timeout timeout() { return okio.Timeout.NONE; }
+            public void close() { closes.incrementAndGet(); }
+        });
+        try (PinnedClients clients = new PinnedClients()) {
+            var call = clients.forPin("").newCall(new Request.Builder().url("https://localhost/body").build());
+            var transfer = new HttpStreams.Transfer(call, null);
+            transfer.received(new Response.Builder().request(call.request()).protocol(okhttp3.Protocol.HTTP_1_1)
+                    .code(200).message("OK").body(new okhttp3.ResponseBody() {
+                        public okhttp3.MediaType contentType() { return null; }
+                        public long contentLength() { return -1; }
+                        public okio.BufferedSource source() { return source; }
+                    }).build());
+            var read = CompletableFuture.supplyAsync(() -> {
+                try { return transfer.read(); }
+                catch (java.io.IOException e) { throw new java.util.concurrent.CompletionException(e); }
+            });
+            try {
+                assertTrue(entered.await(2, TimeUnit.SECONDS));
+                assertThrows(java.io.IOException.class, transfer::read);
+                transfer.close();
+                assertTrue(call.isCanceled());
+                assertEquals("closing must not touch a body still being read", 0, closes.get());
+                assertThrows(java.io.IOException.class, transfer::read);
+            } finally { release.countDown(); }
+            assertEquals(0, read.get(2, TimeUnit.SECONDS).length);
+            assertEquals(1, closes.get());
+            transfer.close();
+            assertEquals(1, closes.get());
+        }
+    }
+
+    @Test public void cancellationUnblocksAResponseRead() throws Exception {
+        HeldCertificate cert = new HeldCertificate.Builder().commonName("test").build();
+        var started = new java.util.concurrent.CountDownLatch(1);
+        try (MockWebServer server = server(cert); PinnedClients clients = new PinnedClients()) {
+            server.enqueue(new MockResponse.Builder().body("delayed").bodyDelay(5, TimeUnit.SECONDS).build());
+            var client = clients.forPin(pin(cert)).newBuilder().addNetworkInterceptor(chain -> {
+                Response response = chain.proceed(chain.request());
+                var body = response.body();
+                var source = okio.Okio.buffer(new okio.ForwardingSource(body.source()) {
+                    @Override public long read(okio.Buffer sink, long count) throws java.io.IOException {
+                        started.countDown();
+                        return super.read(sink, count);
+                    }
+                });
+                return response.newBuilder().body(new okhttp3.ResponseBody() {
+                    public okhttp3.MediaType contentType() { return body.contentType(); }
+                    public long contentLength() { return body.contentLength(); }
+                    public okio.BufferedSource source() { return source; }
+                }).build();
+            }).build();
+            var call = client.newCall(new Request.Builder().url(server.url("/body")).build());
+            var transfer = new HttpStreams.Transfer(call, null);
+            transfer.received(call.execute());
+            var read = CompletableFuture.runAsync(() -> assertThrows(java.io.IOException.class, transfer::read));
+            try {
+                assertTrue(started.await(2, TimeUnit.SECONDS));
+                transfer.close();
+                read.get(2, TimeUnit.SECONDS);
+            } finally { transfer.close(); }
+        }
+    }
+
     @Test public void cancellationUnblocksAnUploadWaitingForTheBridge() throws Exception {
         UploadPipe pipe = new UploadPipe(2, "text/plain");
         var reader = CompletableFuture.runAsync(() -> {

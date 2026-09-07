@@ -33,6 +33,19 @@ directory.
   and no execution backend. Its `open(page)` obtains a fresh local page ticket;
   execution hosts still come from `launchHarness`. The desktop and compact
   specs stop the original host before cold-starting that same frontend.
+  The multihost recovery flow instead keeps the frontend alive while a host
+  restarts during a turn and another host accepts work. Set
+  `AO_E2E_RECOVERY_BASELINE=/absolute/path/to/saved-release-binary` to run that
+  same flow with an actual older first host and current second host. It uses
+  the current mock provider explicitly and disposable homes/data; a changed
+  version label is not evidence of release compatibility.
+  Current hosts exercise abrupt loss. The optional saved-release leg stops
+  normally: the saved 0.0.14 harness retains its lifetime lock after SIGKILL,
+  so its graceful-restart result must not be reported as crash recovery.
+  Harness boot intentionally ignores persisted network settings; the older
+  desktop pairing flow uses LAN, so this fixture reapplies its LAN listener
+  after restart without re-pairing. This validates saved sessions and wire
+  recovery, not the release app's listener startup configuration.
 - `ssh-computer.spec.ts` normally replaces only the SSH transport. Its manual
   `AO_E2E_SSH_CONFIG=/absolute/isolated/config` mode instead uses real OpenSSH.
   Supply an owned loopback sshd and a `gpu-test` alias with temporary identity
@@ -217,10 +230,35 @@ state can otherwise make the helper send another Back into the app itself.
 
 The first case also opens and cancels the composer's Photos and Files
 choosers, then presses Back during a gated mock turn and verifies that the
-list opens while the provider keeps running. Keep this native check beside
+list opens while the provider keeps running. The same turn then advances
+through real Android pause/resume and, on the emulator, disabled Wi-Fi and
+mobile data. It finishes while backgrounded and offline; restoring the radios
+must render the answer and clear Stop in the same process, without reloading.
+The outage is on the private LAN route after the loopback reverse was removed,
+so a surviving reverse connection cannot accidentally satisfy the check. Keep this native check beside
 the browser regressions (`compact-composer-polish.spec.ts` and
 `compact-reconnect-turn-completion.spec.ts`): a browser cannot prove that
 the platform picker or Android Back reaches the right app path.
+
+For a **signed release APK**, set `AO_ANDROID_RELEASE_APK` to its absolute
+path when running `make e2e-android`. The same runner verifies its signature,
+refuses a debuggable manifest, and selects `android/release-recovery.spec.ts`.
+An explicitly requested release run fails if the SDK or emulator is missing.
+The APK and host bundles must differ for the adoption check; `make e2e-android`
+builds the host with `UI_TRACE=1` to differ from an ordinary release APK.
+That case drives Android accessibility directly: it never attaches CDP or adds
+debug flags to the app. Chromium forces WebView debugging on `userdebug` Android
+regardless of the app flag, so a runtime no-socket assertion applies only to a
+nondebuggable OS; APK signature, manifest and Capacitor configuration checks
+always apply. Poll node reads before acting: the Android driver can report a
+not-yet-present node as a null-node exception, and retrying mutations could send
+twice. Native taps also need enabled, stable bounds after the IME moves a form;
+they do not provide Page locator actionability. The case pairs over private
+HTTPS, adopts the current host's bundle, sends through the real composer, and
+proves active and completed turn recovery across pause/resume, screen locking
+and a real radio outage. The release case refuses physical phones, even with `AO_ANDROID_HUMAN_LOCK=1`, because it changes radios.
+The runner can replace incompatible debug/release signatures only on the
+emulator; all cases already clear their disposable app data.
 
 **The backend is reached at `127.0.0.1` over `adb reverse`, not at
 `10.0.2.2`.** Two independent walls make the emulator's host alias

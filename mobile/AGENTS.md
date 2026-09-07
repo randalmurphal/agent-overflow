@@ -108,10 +108,13 @@ Never include network exception URLs in JS errors; they can contain tickets.
 `HttpStreams` permits 16 HTTP transfers, 64 KiB bridge chunks, one upload
 chunk of backpressure, and a two-minute idle cleanup. Blob uploads keep the
 original file-backed Blob. Responses are pulled through ReadableStream, never
-assembled into a whole-file base64 string. Cancellation closes the native body,
-call, and bridge handles. Small JSON numbers arrive as Integer in Capacitor;
-read the bounded byte length with getInt, never getLong (which returns its
-default for an Integer). A bodyless POST still needs an empty native RequestBody
+assembled into a whole-file base64 string. Cancellation immediately cancels the
+call and releases the bridge handle. An active reader owns body disposal until
+its read returns: Okio buffers cannot be closed concurrently with a read. Never
+hold the transfer monitor around blocking IO; cancellation must unblock it.
+`PinnedNetworkTest` enforces both disposal ownership and interrupted network IO.
+Small JSON numbers arrive as Integer in Capacitor; read the bounded byte length
+with getInt, never getLong (which returns its default for an Integer). A bodyless POST still needs an empty native RequestBody
 for the ticket endpoint. Blocking IO uses a bounded executor, never Capacitor's
 single plugin thread. Socket messages acknowledge delivery before Java queues
 another; a suspended WebView therefore backpressures the socket instead of
@@ -206,6 +209,15 @@ version, so release metadata has one source. Bundle compatibility still uses
 `internal/bundle.MinShellBuild`; raise that only when the bundle requires a
 new native capability. `TestAndroidShellBuildMeetsBundleFloor` refuses an
 APK build number below that floor.
+
+A signed APK can be exercised without enabling WebView debugging:
+`AO_ANDROID_RELEASE_APK=/absolute/candidate.apk make e2e-android` selects
+Android accessibility automation against that artifact on a disposable emulator.
+It validates pairing, bundle adoption, composer send, native pause/resume,
+screen locking and turn completion during a radio outage. The ordinary debug
+smoke still owns WebView/plugin inspection. Both use mocked providers; neither
+replaces a real carrier/VPN or OEM power-management acceptance check. See
+`e2e/AGENTS.md`.
 
 ## Cleartext, and why only the debug build has any
 

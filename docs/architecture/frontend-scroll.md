@@ -1013,6 +1013,12 @@ Two consumers, neither of them the physics choice:
    viewport pin (2026-09-04). Idle keyboard/window resizing still pins;
    escaped and paused readers remain untouched.
 
+   Viewport-only samples also classify their native scroll clamps as layout,
+   even when a pause prevents an authored pin. Without that evidence, removing
+   a compact reconnect banner during replay looked like reader input and
+   canceled catch-up. The reconnect cases in `utils/scroll/index.svelte.test.ts`
+   cover the clamp with and without a concurrent real wheel gesture.
+
 Getting liveness wrong is cheap by construction: the worst outcome is a
 sentinel restart or one extra rAF, never a teleport. The 500ms hold is
 pure tuning, and unlike the latch it replaced it is not load-bearing for
@@ -1284,8 +1290,10 @@ and below. The activity-run clip suppresses its native bar the same way
 and renders the same overlay thumb. See
 [Nested scrollers](#the-activity-run-a-nested-scroller-with-the-panes-physics).
 
-Status banners are absolute overlays, not reserved layout slots. They
-must not change the scroll surface height on mount/unmount.
+Desktop transport banners overlay without resizing the scroll surface.
+Compact transport banners occupy a row while visible so the only Back control
+stays reachable during an outage; normal viewport-resize handling preserves
+the timeline's follow/escape intent. No space is reserved while healthy.
 
 ## Nested Scrollers And Gesture Attribution
 

@@ -1542,6 +1542,41 @@ describe('WSClient', () => {
     client.close();
   });
 
+  it('normalizes a legacy omitted-zero gap before ordering replay against live events', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    const gaps: unknown[] = [];
+    const received: unknown[] = [];
+    client.subscribe(transportGapChannel, data => gaps.push(data));
+    client.subscribe('provider:item_event', data => received.push(data));
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await flushMicrotasks();
+    first.pushFrame({ type: 'event', channel: 'provider:item_event', seq: 4200, data: 'old' });
+    first.triggerClose();
+    await vi.advanceTimersByTimeAsync(125);
+    const second = MockWebSocket.instances[1]!;
+    second.acceptOpen();
+    await flushMicrotasks();
+
+    // The old Go envelope's omitempty removed seq:0 from ring-absent
+    // markers. Live data can overtake that replay response on the socket.
+    second.pushFrame({ type: 'event', channel: 'provider:item_event', seq: 1, data: 'fresh' });
+    second.pushFrame({ type: 'batch', events: [
+      { channel: 'provider:item_event', gap: true, data: null },
+      { channel: 'provider:item_event', data: 'malformed ordinary event' },
+    ] });
+    expect(received).toEqual(['old']);
+    second.pushFrame({ type: 'replay' });
+    expect(gaps).toEqual([{ channel: 'provider:item_event', seq: 0 }]);
+    expect(received).toEqual(['old', null, 'fresh']);
+    expect(client.getUnknownInputStats().kinds).toEqual({ 'event-shape': 1 });
+    client.close();
+  });
+
   // A gap-flagged event that is genuinely stale still resyncs: gap is an
   // instruction, and the marker's seq is authoritative in both
   // directions. This is the same code path as above driven from the

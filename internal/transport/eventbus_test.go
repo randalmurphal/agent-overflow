@@ -314,8 +314,14 @@ func TestEventBus_Replay_AbsentRingWithStaleCursorGaps(t *testing.T) {
 	if out[0].Seq != 0 {
 		t.Fatalf("gap marker seq = %d, want 0 so the next live seq passes the client's cursor", out[0].Seq)
 	}
-	if len(out[0].WireBytes) == 0 {
-		t.Fatal("gap marker must be pre-encoded like every other replay frame")
+	// Inspect the JSON field itself: unmarshalling into uint64 would hide
+	// an omitted zero, but JavaScript rejects that absent sequence.
+	var wire map[string]json.RawMessage
+	if err := json.Unmarshal(out[0].WireBytes, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if string(wire["seq"]) != "0" {
+		t.Fatalf("restart marker must carry explicit seq:0: %s", out[0].WireBytes)
 	}
 
 	// And the very next frame this bus mints must sit ABOVE the marker,
@@ -663,8 +669,8 @@ func TestEventBus_SlowSubscriberDropsButRingPersists(t *testing.T) {
 //
 // We round-trip WireBytes through json.Unmarshal into ServerFrame and
 // compare every field against what Emit reported and the original
-// payload. Deep-equality on the parsed struct catches both extra and
-// missing fields.
+// payload. The restart-marker test separately checks field presence:
+// decoding into a Go zero value cannot detect an omitted field.
 func TestEventBus_PreEncodedWireBytesMatchEnvelope(t *testing.T) {
 	bus := NewEventBus(10)
 	defer bus.Close()

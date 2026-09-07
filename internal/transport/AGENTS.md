@@ -1652,6 +1652,11 @@ bus can mint (`Emit` pre-increments), so the marker resets the cursor and the
 next live frame passes. A ZERO cursor still gets nothing: it asks for nothing.
 The general rule for anything answering a replay: a cursor this process cannot
 place is answered with a reset, never with silence.
+`encodeEventFrame` owns event serialization, including single-event fallback
+and batch entries. Sequence zero must be present on the wire: RPC union-field
+omission rules cannot define event encoding.
+`TestEventBus_Replay_AbsentRingWithStaleCursorGaps` inspects the actual JSON
+field because decoding into a Go integer hides an omitted zero.
 
 ## Code generation
 

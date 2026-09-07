@@ -132,8 +132,9 @@ C1..C27.
 - **C24.** Scroll-to-bottom chip lives outside the scroll container; shown
   iff escaped AND not at bottom; never stranded over a draft/empty pane.
 - **C25.** `overflow-anchor: none` and symmetric scrollbar-gutter
-  reservation on the timeline scroller; banners overlay without reserving
-  height (no reflow on appearance).
+  reservation on the timeline scroller; desktop transport banners overlay
+  without reserving height. Compact warnings occupy a row while visible to
+  keep navigation reachable; viewport resizing preserves scroll intent.
 - **C26.** Load-older: one batch per explicit gesture, never an
   auto-cascade, no request loops on null/in-flight/exhausted cursors (both
   edges). Window pruning is invisible: vetoed if it would drop the visible

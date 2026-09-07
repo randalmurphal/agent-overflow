@@ -169,6 +169,10 @@ What compact changes, and where:
   clipped the panel's controls off a phone's right edge. The compact
   spec's Settings case asserts the drill-in and that no control on a
   page extends past the viewport.
+- **Transport warnings keep navigation reachable.** The desktop banner
+  overlays the pane edge; compact gives the visible banner its own row.
+  Overlaying the compact header covers its only Back button and strands the
+  screen on an offline computer. Neither mode reserves space while healthy.
 - **One pane per screen.** `PaneHost` sizes every pane to the strip and
   drops the dividers; companions still open and the existing reveal
   glide is the switch between a thread and its companion. No pane close

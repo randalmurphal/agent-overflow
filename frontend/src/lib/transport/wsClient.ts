@@ -2632,8 +2632,7 @@ export class WSClient {
       return;
     }
     if (frame.type === 'event') {
-      if (this.bufferReplayEvent(frame)) return;
-      this.handleEventEntry(frame);
+      this.receiveEventEntry(frame);
       return;
     }
     if (frame.type === 'batch') {
@@ -2646,8 +2645,7 @@ export class WSClient {
         return;
       }
       for (const evt of frame.events) {
-        if (this.bufferReplayEvent(evt)) continue;
-        this.handleEventEntry(evt);
+        this.receiveEventEntry(evt);
       }
       return;
     }
@@ -2686,11 +2684,24 @@ export class WSClient {
     this.noteUnknownInput((frame as { type: string }).type);
   }
 
-  private bufferReplayEvent(event: Omit<ServerEventFrame, 'type'>): boolean {
-    if (!this.replayBuffer || !this.shouldBufferReplayChannel(event?.channel)) return false;
-    if (!event || typeof event.channel !== 'string' || !Number.isSafeInteger(event.seq) || event.seq < 0) return false;
-    this.replayBuffer.push(event);
-    return true;
+  private receiveEventEntry(event: Omit<ServerEventFrame, 'type'>): void {
+    if (!event || typeof event !== 'object' || typeof event.channel !== 'string') {
+      this.noteUnknownInput('event-shape');
+      return;
+    }
+    // Older Go envelopes omitted zero-valued seq even on a ring-absent gap.
+    // Normalize only that legacy reset marker before buffering/sorting; a
+    // missing sequence on an ordinary event remains malformed remote input.
+    if (event.seq === undefined && event.gap === true) event.seq = 0;
+    if (!Number.isSafeInteger(event.seq) || event.seq < 0) {
+      this.noteUnknownInput('event-shape');
+      return;
+    }
+    if (this.replayBuffer && this.shouldBufferReplayChannel(event.channel)) {
+      this.replayBuffer.push(event);
+    } else {
+      this.handleEventEntry(event);
+    }
   }
 
   private shouldBufferReplayChannel(channel: unknown): boolean {
@@ -2813,7 +2824,7 @@ export class WSClient {
   // handleEventEntry processes a single event entry — used by both
   // the regular event path and the batch iteration path.
   //
-  // The shape check is not defensive padding. Everything below writes
+  // receiveEventEntry validates before buffering. Everything below writes
   // into `lastSeqByChannel`, and that map is echoed back to the server as
   // the replay cursor on the next reconnect: an entry keyed `undefined`
   // with a NaN seq serializes as `{"undefined": null}`, which the server
@@ -2832,16 +2843,6 @@ export class WSClient {
     data: unknown;
     gap?: boolean;
   }): void {
-    if (
-      typeof evt !== 'object'
-      || evt === null
-      || typeof evt.channel !== 'string'
-      || !Number.isSafeInteger(evt.seq)
-      || evt.seq < 0
-    ) {
-      this.noteUnknownInput('event-shape');
-      return;
-    }
     if (evt.gap === true) {
       // A gap marker is a resync instruction, not a data event, so it
       // is honoured BEFORE the dedup check and its seq is adopted in

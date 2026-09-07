@@ -166,6 +166,12 @@ client's cursor. Clients must therefore honour `gap:true` before their own dedup
 check, and reset the channel cursor to the marker's seq in both directions
 (`wsClient.handleEventEntry`).
 
+Event encoding always includes `seq`, including zero. Older hosts omitted
+zero on gap markers through Go's `omitempty`; the client normalizes only
+`gap:true` with an absent sequence to zero before replay ordering. Ordinary
+events with no sequence remain malformed. The wire regression inspects JSON
+field presence rather than decoding into a Go integer, which hides omission.
+
 It is also why the latest-only newest-frame substitution applies to the eviction
 side only: to an ahead cursor the newest frame's seq would read as a duplicate.
 

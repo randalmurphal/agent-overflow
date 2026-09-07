@@ -20,15 +20,15 @@ public final class HttpStreams implements AutoCloseable {
     public static final class Transfer {
         public final CompletableFuture<Response> headers = new CompletableFuture<>();
         private final UploadPipe upload;
-        private final AtomicBoolean reading = new AtomicBoolean();
+        private boolean reading;
         private final AtomicBoolean writing = new AtomicBoolean();
         private volatile long touched = System.nanoTime();
-        private volatile Response response;
-        private Call call;
+        private Response response;
+        private final Call call;
         private long received;
         private boolean closed;
 
-        Transfer(UploadPipe upload) { this.upload = upload; }
+        Transfer(Call call, UploadPipe upload) { this.call = call; this.upload = upload; }
 
         synchronized void received(Response response) {
             if (closed) { response.close(); return; }
@@ -46,9 +46,14 @@ public final class HttpStreams implements AutoCloseable {
         }
 
         public byte[] read() throws IOException {
-            Response reply = response;
-            if (reply == null) throw new IOException("Response headers have not arrived");
-            if (!reading.compareAndSet(false, true)) throw new IOException("Download read already pending");
+            Response reply;
+            synchronized (this) {
+                if (closed) throw new IOException("Transfer closed");
+                reply = response;
+                if (reply == null) throw new IOException("Response headers have not arrived");
+                if (reading) throw new IOException("Download read already pending");
+                reading = true;
+            }
             touched = System.nanoTime();
             try {
                 byte[] buffer = new byte[UploadPipe.CHUNK_BYTES];
@@ -57,7 +62,13 @@ public final class HttpStreams implements AutoCloseable {
                 received += count;
                 if (received > 128L * 1024 * 1024) throw new IOException("Download exceeds the size limit");
                 return count == buffer.length ? buffer : java.util.Arrays.copyOf(buffer, count);
-            } finally { touched = System.nanoTime(); reading.set(false); }
+            } finally {
+                synchronized (this) {
+                    touched = System.nanoTime();
+                    reading = false;
+                    if (closed) closeResponse();
+                }
+            }
         }
 
         void close() { close(new IOException("Transfer closed")); }
@@ -67,8 +78,14 @@ public final class HttpStreams implements AutoCloseable {
             closed = true;
             if (upload != null) upload.cancel(failure);
             call.cancel();
-            if (response != null) response.close();
+            // Call cancellation interrupts blocking IO. Okio's buffered body
+            // is not thread-safe: its reader owns disposal until read exits.
+            if (!reading) closeResponse();
             headers.completeExceptionally(failure);
+        }
+
+        private void closeResponse() {
+            if (response != null) { response.close(); response = null; }
         }
     }
 
@@ -89,8 +106,7 @@ public final class HttpStreams implements AutoCloseable {
             request.header(name, header.getValue());
         }
         request.header("Origin", "https://shell.agent-overflow.invalid");
-        Transfer transfer = new Transfer(body);
-        transfer.call = clients.forPin(pin).newCall(request.build());
+        Transfer transfer = new Transfer(clients.forPin(pin).newCall(request.build()), body);
         transfers.put(id, transfer);
         transfer.call.enqueue(new Callback() {
             public void onFailure(Call call, IOException failure) {

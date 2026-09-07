@@ -1103,21 +1103,20 @@ func spliceBatchFrame(events []Event) []byte {
 // re-marshals the envelope so a future code path that produces an
 // Event without pre-encoding still gets a valid wire frame.
 func (h *connHandler) writeEventFrame(ctx context.Context, e Event) {
-	if len(e.WireBytes) > 0 {
-		if err := h.writeRaw(ctx, e.WireBytes); err != nil {
-			if !isClosedError(err) {
-				log.Printf("transport: ws write: %v", err)
-			}
+	wire := e.WireBytes
+	if len(wire) == 0 {
+		var err error
+		wire, err = encodeEventFrame(e)
+		if err != nil {
+			log.Printf("transport: marshal event frame: %v", err)
+			return
 		}
-		return
 	}
-	h.writeFrame(ctx, ServerFrame{
-		Type:    frameTypeEvent,
-		Channel: e.Channel,
-		Seq:     e.Seq,
-		Data:    e.Data,
-		Gap:     e.Gap,
-	})
+	if err := h.writeRaw(ctx, wire); err != nil {
+		if !isClosedError(err) {
+			log.Printf("transport: ws write: %v", err)
+		}
+	}
 }
 
 // writeFrame marshals + writes a frame. Errors from the WS are logged

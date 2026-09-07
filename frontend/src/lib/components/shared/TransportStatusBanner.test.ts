@@ -74,16 +74,14 @@ describe('<TransportStatusBanner>', () => {
     expect(container.querySelector('.min-h-7')).toBeNull();
   });
 
-  it('renders as an absolute overlay (no layout shift) when disconnected', async () => {
+  it('keeps the desktop overlay positioning when disconnected', async () => {
     h.snapshot = { status: 'disconnected', nextAttemptAt: null };
     const { getByTestId, queryByTestId } = render(TransportStatusBanner);
     await settleBootGrace();
 
     const banner = getByTestId('transport-status-banner');
-    // Overlay, not a flow element: absolute + pinned to the top, and NOT a
-    // height-reserving slot. This is what keeps the panes from shifting
-    // down when the transport drops. The positioning lives on the wrapper,
-    // whose solid surface keeps the strip legible over whatever it covers.
+    // Compact overrides positioning to keep its Back button reachable;
+    // the multihost browser flow proves hit testing in both layouts.
     const wrapper = banner.parentElement!;
     expect(wrapper.className).toContain('absolute');
     expect(wrapper.className).toContain('top-0');

@@ -278,15 +278,27 @@ optional real-push smoke.
 | Android says the app cannot update | Check signing-key continuity and APK version code; debug-to-release needs a one-time uninstall/re-pair. |
 | Threads work, background notifications do not | Check Android permission, Firebase configuration in the APK, and backend Phone push status separately. |
 
-Verification is layered: Go tests cover identity, revocation, TLS/listeners and
-a local fake tailnet; client tests cover renewal/reconnect; browser harness
-specs cover off-host pairing and live state; `make e2e-android` covers the real
-WebView and native seams on an emulator, including actual pinned HTTPS,
-removal of the original connection, LAN recovery, renewal and attachment upload.
-It uses a debug APK and does not prove the signed release APK on a real phone. Real
-Tailscale sign-in, public
-certificate issuance, Pixel biometrics, and cellular/DERP reach still require
-the device checks above. A green local suite alone does not prove those paths.
+Verification is layered. Go tests cover identity, revocation, TLS/listeners and
+a local fake tailnet; client tests cover the connection state machine and
+compatibility contracts. Recovery also needs these composed checks:
+
+| Failure boundary | Required observable result | Exercised by |
+|---|---|---|
+| A replay disconnects, then another replay stalls despite traffic; the user switches threads and sends | The new watched thread recovers its timeline and running state, the send appears once, and its next draft survives | Compact interrupted-recovery browser test |
+| One execution host crashes during a turn while another remains up | Navigation and sends on the surviving host work; the restarted host restores history and accepts work without reloading or pairing again | Desktop/compact multihost recovery flow; the optional older-artifact mode separately checks graceful restart compatibility |
+| Android pauses the app, loses LAN, and the provider finishes offline | The same app process restores the answer and idle state after resume and network recovery | Android lifecycle cases, including the signed APK through native accessibility |
+
+The test files own their scenarios; [the harness guide](../../e2e/AGENTS.md)
+owns commands and artifact selection. A connection badge, visible cached rows,
+or successful RPC alone is insufficient recovery evidence: check the rendered
+answer, active/idle state, and message/draft ownership after the fault resolves.
+
+The ordinary `make e2e-android` uses a debug APK and additionally checks native
+pickers, pinned HTTPS, renewal, attachments, and frontend bundle updates. Its
+signed-release mode exercises a non-debuggable APK without a WebView debug
+connection. Both use an emulator; neither proves Pixel-specific biometrics,
+real Tailscale sign-in, public certificate issuance, or cellular/DERP reach.
+Those still require the device checks above. A skipped device test is not a pass.
 
 ## Headless computers
 

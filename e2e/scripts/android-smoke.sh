@@ -43,6 +43,7 @@ pin="1234"
 
 if [[ ! -x "$adb" ]]; then
   echo "no adb at $adb — install platform-tools, then: make e2e-android"
+  if [[ -n "${AO_ANDROID_RELEASE_APK:-}" ]]; then exit 1; fi
   exit 0
 fi
 
@@ -52,6 +53,10 @@ fi
 # on the app.
 devices="$("$adb" devices | tail -n +2 | awk '$2 == "device" { print $1 }')"
 if [[ -z "$devices" ]]; then
+  if [[ -n "${AO_ANDROID_RELEASE_APK:-}" ]]; then
+    echo "Explicit release validation requires an attached emulator." >&2
+    exit 1
+  fi
   # The system image must match the host: the emulator runs an arm64
   # guest on Apple Silicon and an x86_64 one everywhere else, and the
   # other one either fails to install or boots at a crawl.
@@ -90,17 +95,55 @@ if [[ "$("$adb" -s "$serial" shell getprop ro.kernel.qemu | tr -d '\r')" != 1 &&
   echo "A real phone requires AO_ANDROID_HUMAN_LOCK=1; the smoke clears Agent Overflow app data and waits for you to unlock it." >&2
   exit 1
 fi
+if [[ -n "${AO_ANDROID_RELEASE_APK:-}" && "$("$adb" -s "$serial" shell getprop ro.kernel.qemu | tr -d '\r')" != 1 ]]; then
+  echo "The release lifecycle test changes network radios and requires an emulator." >&2
+  exit 1
+fi
 echo "==> device $serial"
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-apk="$repo/mobile/android/app/build/outputs/apk/debug/app-debug.apk"
+apk="${AO_ANDROID_RELEASE_APK:-$repo/mobile/android/app/build/outputs/apk/debug/app-debug.apk}"
 if [[ ! -f "$apk" ]]; then
-  echo "no APK at $apk — run 'make apk' first" >&2
+  echo "no APK at $apk — build the requested APK first" >&2
   exit 1
+fi
+if [[ -n "${AO_ANDROID_RELEASE_APK:-}" ]]; then
+  export JAVA_HOME="${JAVA_HOME:-$HOME/.jdks/temurin-21}"
+  "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify "$apk"
+  manifest="$("$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk")"
+  if [[ "$manifest" != "package: name='dev.agentoverflow.app'"* ]]; then
+    echo "AO_ANDROID_RELEASE_APK must be an Agent Overflow APK." >&2
+    exit 1
+  fi
+  if [[ "$manifest" == *application-debuggable* ]]; then
+    echo "AO_ANDROID_RELEASE_APK must be a non-debuggable signed release APK." >&2
+    exit 1
+  fi
+  # Capacitor can override the manifest default; inspect the artifact's config,
+  # not the source tree that may have changed since the candidate was built.
+  unzip -p "$apk" assets/capacitor.config.json | node -e '
+    let input = "";
+    process.stdin.on("data", chunk => input += chunk);
+    process.stdin.on("end", () => {
+      const value = JSON.parse(input).android?.webContentsDebuggingEnabled;
+      if (value !== undefined && value !== false) {
+        throw new Error("The release APK must not enable WebView debugging.");
+      }
+    });
+  '
 fi
 
 echo "==> installing"
-"$adb" -s "$serial" install -r "$apk"
+if ! install_output="$("$adb" -s "$serial" install -r "$apk" 2>&1)"; then
+  # Release and debug signatures differ. Only the disposable emulator may
+  # replace that installation; every case clears its app data anyway.
+  if [[ "$install_output" != *INSTALL_FAILED_UPDATE_INCOMPATIBLE* || "$("$adb" -s "$serial" shell getprop ro.kernel.qemu | tr -d '\r')" != 1 ]]; then
+    echo "$install_output" >&2
+    exit 1
+  fi
+  "$adb" -s "$serial" uninstall dev.agentoverflow.app
+  "$adb" -s "$serial" install "$apk"
+fi
 
 # The app's data, the notification permission and the launch itself are
 # the spec's `page` fixture's to do, before EVERY case: a phone that has

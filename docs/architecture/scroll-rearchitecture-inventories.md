@@ -811,7 +811,7 @@ Imports that couple tests to the implementation (lines 1–9): `resetUseStickToB
 | load older (691) | one batch per click, never auto-cascade | MIXED | auto-load-gate cascade regression |
 | scroll to item (749) | loads item first; missing → toast; flash highlight | OUTCOME | |
 | composer height (798–1046) | composer growth re-pins **synchronously in RO callback** (no 1-frame gap, 816–889); `overflow-anchor:none` (1006); `scrollbar-gutter: stable both-edges` (1025, WebKitGTK ~5px column jump) | MIXED; the two CSS opt-outs OUTCOME/durable | "appears then settles", 200–400px chip flicker; note 891–902: **width-oscillation fix deliberately NOT tested here** ("coverage theater" in happy-dom). The discriminating guard lives in timelineRowGeometry.test.ts |
-| banner overlay (1048) | banners never reserve height → no timeline reflow | OUTCOME | |
+| banner overlay (1048) | desktop banners never reserve height → no timeline reflow; compact transport warnings now occupy a row to preserve navigation | OUTCOME | |
 | auto-follow + button (1068–1390) | 1px wheel-up escapes; layout-only movement doesn't; chip lives outside scroll container; **Bug A re-stick under 60Hz streaming cadence** (1319) | MIXED (intent OUTCOME, asserted via internal controller state) | chip rode off-screen; gentle-mango Bug A |
 | mid-list inserts (1392) | late tool_completions land in `(turnIndex,itemIndex)` order; tail stays resolvable | OUTCOME (data contract) | |
 | auto-load gates (1495–1640) | no request loop on null cursors/in-flight/exhausted, both edges | MIXED (drives via happy-dom+ssrCount scroll seam) | positive triggers live in timelineScroll.test.ts |
@@ -881,7 +881,7 @@ Pins the seam: MessageTimeline wires controller `onBeforeScrollTopWrite` → pat
 **Host/UX invariants**
 23. Composer growth re-pins in the same frame (no 200–400px flash); live-capable path during active output.
 24. Chip outside the scroll container; shown iff escaped ∧ not-at-bottom; never stranded on draft panes.
-25. `overflow-anchor: none` + symmetric scrollbar-gutter on the timeline scroller; banners overlay without reserving height.
+25. `overflow-anchor: none` + symmetric scrollbar-gutter on the timeline scroller; desktop transport banners overlay without reserving height, compact warnings preserve navigation with a visible row.
 26. Load-older: one batch per gesture, no auto-cascade, no request loops (both edges); window pruning invisible (anchor veto / restore / markAtBottom re-pin); disclosure toggles anchor escaped users, pause releases after DOM flush; pause lease depth-counted, never strands.
 27. Items stay `(turnIndex,itemIndex)`-ordered under late arrivals so anchors/last-index resolve.
 

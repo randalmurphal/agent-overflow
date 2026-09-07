@@ -14,6 +14,9 @@ import { defineConfig } from '@playwright/test';
 // screen is, which is the point: the compact layout is chosen from the
 // viewport (frontend/AGENTS.md § Compact), so the phone picks it itself.
 //
+// The signed release case uses Android accessibility instead of a Page;
+// it cannot and must not attach to a non-debuggable WebView.
+//
 // **One worker, no retries.** There is one device, one app install and one
 // device PIN, all of them global to the emulator; a second worker would be
 // two suites driving one phone. A retry would re-run against an app that
@@ -24,6 +27,7 @@ import { defineConfig } from '@playwright/test';
 // prompt all sit inside the single test.
 export default defineConfig({
   testDir: './android',
+  testMatch: process.env.AO_ANDROID_RELEASE_APK ? 'release-recovery.spec.ts' : 'shell-boot.spec.ts',
   timeout: 300_000,
   expect: { timeout: 30_000 },
   fullyParallel: false,

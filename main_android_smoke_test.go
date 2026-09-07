@@ -14,13 +14,15 @@ func TestAndroidSmokeSelectsOnlyAnExplicitPhone(t *testing.T) {
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash unavailable")
 	}
-	for _, tc := range []struct{ name, devices, serial, human, want string }{
-		{"phone alone", "pixel device", "", "", "Select one test device"},
-		{"explicit phone without human", "pixel device", "pixel", "", "A real phone requires"},
-		{"unknown serial", "pixel device", "missing", "1", "does not name an attached"},
-		{"two emulators", "emulator-5554 device\nemulator-5556 device", "", "", "Select one test device"},
-		{"phone beside emulator", "pixel device\nemulator-5554 device", "", "", "==> device emulator-5554"},
-		{"explicit phone with human", "pixel device", "pixel", "1", "==> device pixel"},
+	for _, tc := range []struct{ name, devices, serial, human, release, want string }{
+		{"phone alone", "pixel device", "", "", "", "Select one test device"},
+		{"explicit phone without human", "pixel device", "pixel", "", "", "A real phone requires"},
+		{"unknown serial", "pixel device", "missing", "1", "", "does not name an attached"},
+		{"two emulators", "emulator-5554 device\nemulator-5556 device", "", "", "", "Select one test device"},
+		{"phone beside emulator", "pixel device\nemulator-5554 device", "", "", "", "==> device emulator-5554"},
+		{"explicit phone with human", "pixel device", "pixel", "1", "", "==> device pixel"},
+		{"release needs emulator", "", "", "", "/candidate.apk", "requires an attached emulator"},
+		{"release refuses phone", "pixel device", "pixel", "1", "/candidate.apk", "requires an emulator"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -47,6 +49,7 @@ fi
 			t.Setenv("ANDROID_HOME", dir)
 			t.Setenv("AO_ANDROID_SERIAL", tc.serial)
 			t.Setenv("AO_ANDROID_HUMAN_LOCK", tc.human)
+			t.Setenv("AO_ANDROID_RELEASE_APK", tc.release)
 			t.Setenv("AO_TEST_ADB_DEVICES", tc.devices)
 			out, err := cmd.CombinedOutput()
 			if err == nil {

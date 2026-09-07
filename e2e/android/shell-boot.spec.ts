@@ -433,6 +433,7 @@ const test = base.extend<ShellFixtures>({
           const state = await page.evaluate(() => ({
             selected: localStorage.getItem('agent-overflow:frontend:selected-computer'),
             endpoints: localStorage.getItem('agent-overflow:backendEndpoints'),
+            routes: Object.fromEntries(Object.keys(localStorage).filter((key) => key.startsWith('agent-overflow:computerRoutes:')).map((key) => [key, localStorage.getItem(key)])),
           }));
           await testInfo.attach('connection-selection', { body: JSON.stringify(state, null, 2), contentType: 'application/json' });
           await testInfo.attach('failed-shell-screen', { body: await page.locator('body').ariaSnapshot(), contentType: 'text/plain' });
@@ -654,7 +655,9 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
     scenario: claudeScenario('back-keeps-working', [
       emit(textLines('msg-working', 'Keep working while I navigate.')),
       { waitSignal: { name: 'finish-after-back' } },
-      emit([RESULT_LINE]),
+      emit(textLines('msg-background', 'Progress while the app was backgrounded.')),
+      { waitSignal: { name: 'finish-while-offline' } },
+      emit([...textLines('msg-offline', 'Finished while the phone was offline.'), RESULT_LINE]),
     ]),
   });
   const mockId = await startMock(harness, threadId);
@@ -671,8 +674,55 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
   await pressBack(device);
   await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'list');
   expect((await harness.rpc<{ activeTurn?: unknown }>('GetThreadLiveState', threadId)).activeTurn).toBeTruthy();
+  // Reuse the live turn to exercise Android pause/resume through the real
+  // bridge. A connected banner alone cannot prove that its watch recovered.
+  await row.click();
+  const stop = page.getByRole('button', { name: 'Interrupt current turn', exact: true });
+  const pidBeforePause = (await device.shell(`pidof ${SHELL_PACKAGE}`)).toString().trim();
+  await device.shell('input keyevent KEYCODE_HOME');
+  await expect(lock).toBeAttached(); // The native pause event covered the app.
   await advance(harness, mockId, 'finish-after-back');
-  await harness.waitForEvent('provider:turn_completed');
+  await waitForGate(harness, 'finish-while-offline');
+  await device.shell(`am start -n ${SHELL_ACTIVITY}`);
+  await expect(lock).toBeHidden(); // A short trip does not require another PIN.
+  await expect(page.getByText('Progress while the app was backgrounded.', { exact: true })).toBeVisible();
+  await expect(stop).toBeVisible();
+
+  // Only the disposable emulator's radios are ours to change. Unlike browser
+  // route interception, this disconnects the native pinned OkHttp socket too.
+  // The old reverse listener was removed above, so no loopback route survives.
+  if (!HUMAN_LOCK) {
+    const wifi = (await device.shell('settings get global wifi_on')).toString().trim() === '1';
+    const data = (await device.shell('settings get global mobile_data')).toString().trim() === '1';
+    const banner = page.getByTestId('transport-status-banner');
+    try {
+      await device.shell('svc wifi disable');
+      await device.shell('svc data disable');
+      await expect(banner).toHaveAttribute('data-status', 'reconnecting', { timeout: PAIRED_MOUNT_MS });
+      await device.shell('input keyevent KEYCODE_HOME');
+      await expect(lock).toBeAttached();
+      await advance(harness, mockId, 'finish-while-offline');
+      await harness.waitForEvent('provider:turn_completed');
+      expect((await harness.rpc<{ activeTurn?: unknown }>('GetThreadLiveState', threadId)).activeTurn).toBeFalsy();
+      await device.shell(`am start -n ${SHELL_ACTIVITY}`);
+      await expect(lock).toBeHidden();
+      await expect(banner).toHaveAttribute('data-status', 'reconnecting');
+      await expect(page.getByText('Finished while the phone was offline.', { exact: true })).toHaveCount(0);
+    } finally {
+      if (wifi) await device.shell('svc wifi enable');
+      if (data) await device.shell('svc data enable');
+    }
+  } else {
+    await advance(harness, mockId, 'finish-while-offline');
+    await harness.waitForEvent('provider:turn_completed');
+  }
+  await expect(page.getByText('Finished while the phone was offline.', { exact: true })).toBeVisible({ timeout: PAIRED_MOUNT_MS });
+  await expect(page.getByText('Progress while the app was backgrounded.', { exact: true })).toHaveCount(1);
+  await expect(stop).toHaveCount(0);
+  await expect(page.getByLabel('Message Input')).toBeEnabled();
+  expect((await device.shell(`pidof ${SHELL_PACKAGE}`)).toString().trim(), 'recovery must not require restarting the app').toBe(pidBeforePause);
+  await pressBack(device);
+  await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'list');
 
   // Retire every saved route by changing the host's port. The offline
   // computer's address repair must retain its native pairing and thread.

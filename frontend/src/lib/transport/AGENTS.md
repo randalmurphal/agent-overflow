@@ -82,6 +82,12 @@ remote browser alike. Protocol and authz rules:
   launch ID preserves legacy gap-based recovery; a route switch within one
   launch preserves its cursors.
 
+  **Legacy zero gaps omit `seq`.** Older Go event envelopes serialized a
+  ring-absent reset with `gap:true` and no sequence field. Normalize that
+  specific marker to zero at event ingestion, before replay buffering and
+  sorting. An ordinary event missing its sequence is still invalid. Testing
+  only fabricated `seq:0` frames missed the actual cross-language wire shape.
+
   **Live traffic can overtake replay.** The server pump and replay writes can
   interleave, including before the replay request reaches the server. During
   reconnect, `replayBuffer.ts` orders each channel through the completion marker

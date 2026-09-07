@@ -177,6 +177,33 @@ describe('createUseStickToBottomController', () => {
       recovery.finish();
       expect(geom.scrollTop).toBe(400);
     });
+
+    it.each([false, true])('a viewport clamp during recovery preserves explicit reader intent (wheel=%s)', (wheel) => {
+      controller.detach();
+      controller = createUseStickToBottomController({ externalContentGeometry: true });
+      controller.attach(scrollEl, contentEl);
+      const sample = () => controller.deliverContentGeometry({
+        height: geom.contentHeight, width: 400,
+        viewportHeight: geom.clientHeight - 200,
+        windowMeasured: true, maxFirstMeasureCorrectionPx: 0,
+      });
+      sample();
+      controller.skipWarmup();
+      const recovery = controller.beginReconnectRecovery();
+      if (wheel) fireWheel(scrollEl, -100);
+      // A disappearing banner grows the viewport. Chromium clamps the old
+      // bottom before replay adds content; the pause deliberately prevents
+      // authored scroll writes that could otherwise tag this event.
+      geom.clientHeight += 32;
+      geom.scrollTop -= 32;
+      sample();
+      fireScroll(scrollEl);
+      geom.contentHeight += 1200;
+      geom.scrollHeight += 1200;
+      sample();
+      recovery.finish();
+      expect(geom.scrollTop).toBe(wheel ? 368 : 1568);
+    });
   });
 
   function getRO(): MockResizeObserver {

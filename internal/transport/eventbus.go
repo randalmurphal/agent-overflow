@@ -209,11 +209,11 @@ func (r *ring) replayAfter(lastSeq uint64) (events []Event, hadGap bool) {
 	return out, false
 }
 
-// Event is one frame on the wire (encoded as ServerFrame{Type:"event"}).
+// Event is one frame on the wire (encoded by encodeEventFrame).
 // Data is kept as json.RawMessage so the bus can store the encoded
 // bytes once and broadcast them to N subscribers without re-marshalling.
 //
-// WireBytes is the pre-encoded ServerFrame envelope (type="event",
+// WireBytes is the pre-encoded event envelope (type="event",
 // channel, seq, data, gap?) assembled once at Emit time. The conn
 // event-pump writes WireBytes verbatim — single events and spliced
 // batch frames alike — so a multi-subscriber LAN bind doesn't pay
@@ -376,14 +376,23 @@ func (b *EventBus) EmitEntity(typedChannel eventchan.Channel, entityKey string, 
 	return evt, nil
 }
 
-// encodeEventFrame marshals the ServerFrame{type:"event", ...} envelope
+// encodeEventFrame marshals the event envelope
 // for evt. Replay's gap markers (which carry Gap:true and null Data —
 // shapes appendEventWire deliberately doesn't handle) pre-encode
 // through here, and it doubles as the reference encoding the
 // appendEventWire fast path is pinned against
 // (see TestEventBus_PreEncodedWireBytesMatchEnvelope).
 func encodeEventFrame(evt Event) ([]byte, error) {
-	frame := ServerFrame{
+	// Event sequences are required, including a restart marker's zero.
+	// ServerFrame is a shared RPC/event union; its optional fields must
+	// not decide what an event omits on the wire.
+	frame := struct {
+		Type    string          `json:"type"`
+		Channel string          `json:"channel"`
+		Seq     uint64          `json:"seq"`
+		Data    json.RawMessage `json:"data,omitempty"`
+		Gap     bool            `json:"gap,omitempty"`
+	}{
 		Type:    frameTypeEvent,
 		Channel: evt.Channel,
 		Seq:     evt.Seq,

@@ -525,9 +525,8 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
     const prevViewportHeight = previousViewportHeight;
     const viewportStable = nextViewportHeight !== undefined
       && nextViewportHeight === prevViewportHeight;
-    const viewportChanged = nextViewportHeight !== undefined
-      && prevViewportHeight !== undefined
-      && nextViewportHeight !== prevViewportHeight;
+    const viewportDelta = nextViewportHeight === undefined || prevViewportHeight === undefined
+      ? 0 : nextViewportHeight - prevViewportHeight;
     previousViewportHeight = nextViewportHeight;
     const widthChanged = prevWidth !== undefined
       && Math.abs(nextWidth - prevWidth) > CONTENT_REFLOW_WIDTH_EPSILON_PX;
@@ -614,15 +613,21 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
       pinnedRemeasureSettleUntil > nowMs() || coldLoadSettleActive;
     // Common cases include a virtualizer remeasuring a same-height row,
     // padding-bottom changes, or a CSS variable resolves to the same value.
-    // No virtual content change means there is nothing to chase and no
-    // scroll-event tagging is needed.
+    // No virtual content change means there is nothing to chase, but a
+    // viewport resize can still produce a native scroll clamp.
     if (delta === 0) {
       // A padding-only composer resize changes the content-box viewport
       // without changing virtual content height. Refresh cached scrollTop
       // now so the next stable read-free delivery cannot inherit a browser
       // clamp from the old viewport. The target itself is carried by the
       // next sample and needs no mutable offset to rebase.
-      if (viewportChanged) {
+      if (viewportDelta !== 0) {
+        // Classify the native clamp even when a recovery/anchor pause
+        // prevents an authored pin. Otherwise its untagged scroll event
+        // looks like reader input and cancels the pending catch-up.
+        resizeDifference = viewportDelta;
+        resizeCorrelatedUntaggedScrollBudget = 1;
+        scheduleResizeDifferenceClear(viewportDelta);
         deps.refreshIsNearBottom();
         // Keyboard/window changes pin an idle reader, but must not land
         // an active send glide. The same observation also arrives through
