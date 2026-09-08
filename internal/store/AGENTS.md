@@ -2183,6 +2183,13 @@ orphan sessions on replacement; already-renewed sessions survive.
 
 ## Remote completion ownership (v91)
 
+Remote watch observations are monotonic: an accepted receipt cannot become
+unknown, and the first terminal receipt cannot become running or a different
+terminal outcome. Reject stale observations as a whole, including their error
+and next-check deadline; preserving only the receipt would still postpone a
+known completion after a late network failure. Notification ownership remains
+independent and changes only through its durable queue handoff or dismissal.
+
 `remote_watches` is source-side coordination, independent of destination
 `remote_jobs`. Registration precedes sending a command and freezes source
 thread/computer/request fingerprint. The `pending` index bounds due monitoring;

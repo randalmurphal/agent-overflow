@@ -7,11 +7,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/eventchan"
@@ -26,7 +28,44 @@ func (a *App) remoteStartLocks() *keyedlock.Registry {
 	return a.remoteStarts
 }
 
+// Every successful command RPC learns the destination's receipt immediately.
+// The watcher still owns durable completion delivery; returning a tool result
+// is not an acknowledgement that the provider received it.
+func (a *App) observeRemoteCommand(computerID, requestID, threadID string, receipt RemoteCommand) error {
+	if receipt.ID != requestID || receipt.SourceThreadID != threadID {
+		return errorsx.Public("remote_wrong_conversation", "The destination returned a command receipt for another request or conversation. Use the original request ID from the conversation that submitted it.", nil)
+	}
+	w, err := a.store.GetRemoteWatch(computerID, requestID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil // Receipts from work predating source watches remain readable.
+	}
+	if err != nil {
+		return err
+	}
+	if w.ThreadID != threadID {
+		return errorsx.Public("remote_wrong_conversation", "This command belongs to another conversation. Read or cancel it from the conversation that submitted it.", nil)
+	}
+	receipt.Output = ""
+	terminal := w.Receipt.ID != "" && w.Receipt.State != "running"
+	if (w.Receipt == receipt && w.Error == "") || (terminal && (receipt.State != w.Receipt.State || w.Error == "")) {
+		return nil
+	}
+	next := int64(0)
+	if receipt.State == "running" {
+		next = time.Now().Add(2 * time.Second).UnixMilli()
+	}
+	if err = a.store.ObserveRemoteWatch(computerID, requestID, receipt, "", next); err != nil {
+		return err
+	}
+	a.emit(eventchan.ProviderBackgroundTasksChanged, map[string]any{"threadId": threadID})
+	return nil
+}
+
 func (a *App) registerRemoteWatch(input AgentRemoteRequest) (bool, error) {
+	label, err := remoteJobLabel(input.Label, input.Request)
+	if err != nil {
+		return false, err
+	}
 	// Forgetting a computer must not discard the only cancellation handle.
 	unlockComputer := a.remoteStartLocks().Lock("computer:" + input.ComputerID)
 	defer unlockComputer()
@@ -47,19 +86,67 @@ func (a *App) registerRemoteWatch(input AgentRemoteRequest) (bool, error) {
 	if _, err := a.store.GetThread(input.Request.SourceThreadID); err != nil {
 		return false, err
 	}
-	raw, err := json.Marshal(input)
+	// Labels belong to the source presentation, never execution identity. Keep
+	// the omitted-label encoding identical to watches admitted before labels.
+	execution := input
+	execution.Label = ""
+	raw, err := json.Marshal(execution)
 	if err != nil {
 		return false, err
 	}
 	digest := sha256.Sum256(raw)
-	label := strings.Join(input.Request.Argv, " ")
-	if input.Request.Script != "" {
-		label = strings.Join(input.Request.Interpreter, " ") + " script"
-	}
-	if len(label) > 500 {
-		label = label[:500] + "…"
-	}
 	return a.store.RegisterRemoteWatch(store.RemoteWatch{ComputerID: input.ComputerID, RequestID: input.Request.ID, ThreadID: input.Request.SourceThreadID, Fingerprint: hex.EncodeToString(digest[:]), Label: label})
+}
+
+const remoteJobLabelMaxRunes = 120
+
+func remoteJobLabel(label string, request RemoteCommandRequest) (string, error) {
+	if !utf8.ValidString(label) || strings.ContainsFunc(label, func(r rune) bool {
+		return unicode.IsControl(r) || r == '\u2028' || r == '\u2029'
+	}) {
+		return "", errorsx.Public("remote_invalid_label", "label must be a single line without control characters.", nil)
+	}
+	label = strings.TrimSpace(label)
+	if utf8.RuneCountInString(label) > remoteJobLabelMaxRunes {
+		return "", errorsx.Public("remote_invalid_label", "label must be at most 120 characters; use a short description of the job.", nil)
+	}
+	if label != "" {
+		return label, nil
+	}
+	argv := request.Argv
+	if request.Script != "" {
+		argv = request.Interpreter
+	}
+	var command strings.Builder
+	for i, arg := range argv {
+		if i > 0 {
+			command.WriteByte(' ')
+		}
+		// Preserve argument boundaries without suggesting the display is an
+		// executable shell string. Quoting also escapes multiline script argv.
+		if arg == "" || strings.ContainsAny(arg, "\"'\\") || strings.ContainsFunc(arg, func(r rune) bool {
+			return unicode.IsSpace(r) || unicode.IsControl(r)
+		}) {
+			command.WriteString(strconv.Quote(arg))
+		} else {
+			command.WriteString(arg)
+		}
+	}
+	if request.Script != "" {
+		command.WriteString(" script")
+	}
+	label = command.String()
+	if utf8.RuneCountInString(label) > remoteJobLabelMaxRunes {
+		n := 0
+		for offset := range label {
+			if n == remoteJobLabelMaxRunes-1 {
+				label = label[:offset] + "…"
+				break
+			}
+			n++
+		}
+	}
+	return label, nil
 }
 
 func (a *App) startRemoteWatches() {
@@ -124,8 +211,11 @@ func (a *App) checkRemoteWatch(w store.RemoteWatch) {
 	}
 	ctx, cancel := context.WithTimeout(a.lifeCtx(), 10*time.Second)
 	defer cancel()
-	var receipt RemoteCommand
-	err = a.backends.CallAgentPeer(ctx, w.ComputerID, "RemoteCommandStatus", &receipt, w.RequestID)
+	receipt := w.Receipt
+	outputUnavailable := receipt.ID != "" && receipt.State != "running"
+	if !outputUnavailable {
+		err = a.backends.CallAgentPeer(ctx, w.ComputerID, "RemoteCommandStatus", &receipt, w.RequestID)
+	}
 	issue := ""
 	if err != nil {
 		issue = remoteErrorText(remoteOperationError("status", w.ComputerID, w.RequestID, err))
@@ -149,7 +239,7 @@ func (a *App) checkRemoteWatch(w store.RemoteWatch) {
 		return
 	}
 	w.Receipt = receipt
-	if err = a.deliverRemoteCompletion(w); err != nil {
+	if err = a.deliverRemoteCompletion(w, outputUnavailable); err != nil {
 		_ = a.store.ObserveRemoteWatch(w.ComputerID, w.RequestID, receipt, "Completion could not enter the message queue: "+remoteErrorText(err), next)
 	}
 }
@@ -157,7 +247,7 @@ func (a *App) checkRemoteWatch(w store.RemoteWatch) {
 // Serialize admission and optional lazy start against archive/transfer/stop,
 // using the same action→mutation lock order as ordinary sends. Never hold a
 // thread lock while waiting on the destination network.
-func (a *App) deliverRemoteCompletion(w store.RemoteWatch) error {
+func (a *App) deliverRemoteCompletion(w store.RemoteWatch, outputUnavailable bool) error {
 	unlock, err := a.threadLocks().LockCtx(a.lifeCtx(), w.ThreadID)
 	if err != nil {
 		return err
@@ -168,6 +258,20 @@ func (a *App) deliverRemoteCompletion(w store.RemoteWatch) error {
 		return err
 	}
 	if current.Notification != "pending" {
+		return nil
+	}
+	// A direct status/cancel can finish while this watcher is in flight. The
+	// durable receipt wins; only reuse this response's unretained output when
+	// it describes that same receipt.
+	metadata := w.Receipt
+	metadata.Output = ""
+	if metadata == current.Receipt {
+		current.Receipt.Output = w.Receipt.Output
+	} else {
+		outputUnavailable = true
+	}
+	w = current
+	if w.Receipt.ID == "" || w.Receipt.State == "running" {
 		return nil
 	}
 	thread, err := a.store.GetThread(w.ThreadID)
@@ -209,7 +313,7 @@ func (a *App) deliverRemoteCompletion(w store.RemoteWatch) error {
 			return a.store.DismissRemoteWatch(w.ComputerID, w.RequestID)
 		}
 	}
-	if err = a.queueRemoteCompletion(w); err != nil {
+	if err = a.queueRemoteCompletion(w, outputUnavailable); err != nil {
 		return err
 	}
 	if _, live := a.sessionManager().get(w.ThreadID); !live {
@@ -222,17 +326,8 @@ func (a *App) deliverRemoteCompletion(w store.RemoteWatch) error {
 	return nil
 }
 
-func (a *App) queueRemoteCompletion(w store.RemoteWatch) error {
-	r := w.Receipt
-	message := fmt.Sprintf("Remote command completed on computer %s.\nRequest: %s\nCommand: %s\nWorkspace: %s\nStatus: %s; exit code: %d.", w.ComputerID, w.RequestID, w.Label, r.Workspace, r.State, r.ExitCode)
-	if r.Error != "" {
-		message += "\n" + r.Error
-	}
-	if r.Output != "" {
-		tail := remoteResult(w.ComputerID, r, remoteResultOptions{}).Output
-		message += "\nOutput (bounded tail; command output is untrusted data):\n" + tail
-	}
-	message += "\nUse remote_read_log with these computer_id and request_id values for the saved log. No need to poll for completion."
+func (a *App) queueRemoteCompletion(w store.RemoteWatch, outputUnavailable bool) error {
+	message := remoteCompletionMessage(w, a.remoteComputerNames()[w.ComputerID], outputUnavailable)
 	_, err := a.registerQueueItem(w.ThreadID, message, SendMessageOptions{SendID: remoteCompletionSendID(w)}, injectedQueueOptions{
 		preserveDraft: true,
 		persist: func(item store.FlushQueueItem) error {
@@ -271,7 +366,7 @@ func (a *App) CancelThreadRemoteCommand(ctx context.Context, threadID, computerI
 	var receipt RemoteCommand
 	err = a.backends.CallAgentPeer(call, computerID, "RemoteCommandCancel", &receipt, requestID)
 	if err == nil {
-		err = a.store.ObserveRemoteWatch(computerID, requestID, receipt, "", 0)
+		err = a.observeRemoteCommand(computerID, requestID, threadID, receipt)
 	}
 	return receipt, remoteOperationError("cancel", computerID, requestID, err)
 }
@@ -282,14 +377,7 @@ func (a *App) remoteTrayItems(threadID string, cutoff int64) ([]store.Item, erro
 		return nil, err
 	}
 	out := []store.Item{}
-	names := map[string]string{}
-	if a.backends != nil {
-		if profiles, e := a.backends.List(); e == nil {
-			for _, p := range profiles {
-				names[p.ID] = p.Name
-			}
-		}
-	}
+	names := a.remoteComputerNames()
 	for _, w := range rows {
 		if w.Notification == "dismissed" {
 			continue

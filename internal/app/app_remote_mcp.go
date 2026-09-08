@@ -114,6 +114,7 @@ func (a *App) callRemoteMCP(w http.ResponseWriter, ctx context.Context, req thre
 			ProjectID      string   `json:"project_id"`
 			WorkspacePath  string   `json:"workspace_path"`
 			RequestID      string   `json:"request_id"`
+			Label          string   `json:"label"`
 			Argv           []string `json:"argv"`
 			TimeoutSeconds int      `json:"timeout_seconds"`
 			Script         string   `json:"script"`
@@ -134,6 +135,7 @@ func (a *App) callRemoteMCP(w http.ResponseWriter, ctx context.Context, req thre
 			var command RemoteCommand
 			command, err = a.AgentRemoteStart(ctx, AgentRemoteRequest{
 				ComputerID: args.ComputerID,
+				Label:      args.Label,
 				Workspace:  gitapp.WorkspaceRef{ProjectID: args.ProjectID, WorkspacePath: args.WorkspacePath},
 				Request:    remotejobs.Request{ID: args.RequestID, Argv: args.Argv, TimeoutSeconds: args.TimeoutSeconds, Script: args.Script, Interpreter: args.Interpreter, Unlimited: args.Unlimited},
 			})
@@ -170,7 +172,14 @@ func (a *App) callRemoteMCP(w http.ResponseWriter, ctx context.Context, req thre
 	case "remote_jobs":
 		var args struct{}
 		if err = threadmcp.DecodeArgs(call.Arguments, &args); err == nil {
-			result, err = a.ListThreadRemoteCommands(access.ThreadID)
+			var watches []store.RemoteWatch
+			watches, err = a.ListThreadRemoteCommands(access.ThreadID)
+			names := a.remoteComputerNames()
+			rows := make([]remoteMCPWatch, 0, len(watches))
+			for _, watch := range watches {
+				rows = append(rows, remoteMCPWatch{RemoteWatch: watch, ComputerName: names[watch.ComputerID]})
+			}
+			result = rows
 		}
 	case "remote_read_log", "remote_search_log":
 		var args struct {
@@ -227,11 +236,12 @@ func remoteTool(name, description string, properties map[string]any, required ..
 
 var remoteToolDefinitions = []map[string]any{
 	remoteTool("remote_computers", "List explicitly enabled computers, execution OS/architecture (including Windows host versus Linux WSL), available executable paths, and registered projects/worktrees. No automatic version or GPU probes. Offline computers return an error; never substitute another destination.", map[string]any{}),
-	remoteTool("remote_run", "Run exact argv in a project on an enabled computer. The destination has its own files and environment; no shell interpolation occurs unless argv explicitly invokes a shell. Returns a durable receipt, not necessarily a finished result. AO tracks accepted jobs and queues one completion message to this conversation; do not poll just to learn when it finishes. Use remote_jobs to recover IDs. Run the destination process in the foreground: do not use &, nohup or shell detachment; AO owns background execution and cancellation. No checkout or file synchronization occurs; explicitly push/pull and optionally create a worktree before using it. The job survives client disconnects. Choose request_id BEFORE calling; after a lost reply, query that ID or retry identical arguments with the SAME ID to avoid duplicate execution. Up to four commands per computer; logs are saved on the destination (up to 4 GiB/job, 20 GiB total); replies show a bounded tail. Read/search logs or fetch artifacts without putting whole files in context. Jobs stop on destination restart and are never automatically rerun.", map[string]any{
+	remoteTool("remote_run", "Execute exact argv or a script in the selected computer's project/workspace. Files and environment belong to that computer: explicitly sync changes and verify the checkout before testing; worktrees are optional. Shell syntax is literal unless you invoke a shell. Choose request_id before calling; after a lost reply, use remote_status or retry identical execution arguments with the SAME ID. Returns a durable running or finished receipt. AO queues a completion notification even if the finished result was returned here, covering lost replies; do not poll just for completion. Use remote_jobs to recover IDs. Keep the process in the foreground: no &, nohup, or shell detachment. AO manages background execution and cancellation, with four active jobs per computer. Jobs survive client disconnects, stop on destination restart, and never automatically rerun. Output is saved; use remote_read_log/remote_search_log for omitted output and remote_fetch_artifact to inspect generated files locally.", map[string]any{
 		"computer_id":     map[string]any{"type": "string", "description": "Destination ID from remote_computers."},
 		"project_id":      map[string]any{"type": "string", "description": "Registered project ID on that destination."},
 		"workspace_path":  map[string]any{"type": "string", "description": "Optional registered workspace on the destination; defaults to the project checkout."},
 		"request_id":      map[string]any{"type": "string", "format": "uuid", "description": "New UUID for this command; reuse for retries."},
+		"label":           map[string]any{"type": "string", "maxLength": remoteJobLabelMaxRunes, "description": "Optional concise single-line job name, e.g. Windows integration tests. Defaults to the command. Presentation only: retries retain the original label."},
 		"argv":            map[string]any{"type": "array", "minItems": 1, "maxItems": 256, "description": "Executable plus arguments, at most 64 KiB total. For larger commands use script with an explicit interpreter.", "items": map[string]any{"type": "string"}},
 		"script":          map[string]any{"type": "string", "description": "Alternative to argv: exact script text up to 1 MiB, written privately on the destination and removed after execution. Requires interpreter; no automatic shell selection."},
 		"interpreter":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Executable plus interpreter flags, e.g. [bash, -e] or [python3, -u]. AO appends the script file path."},
@@ -240,8 +250,8 @@ var remoteToolDefinitions = []map[string]any{
 	}, "computer_id", "project_id", "request_id"),
 	remoteTool("remote_status", "Read a remote command receipt and retained output. Use the original computer and request IDs after a disconnect or lost reply. Only this conversation's commands are accessible, including after destination opt-out.", map[string]any{"computer_id": map[string]any{"type": "string"}, "request_id": map[string]any{"type": "string", "format": "uuid"}}, "computer_id", "request_id"),
 	remoteTool("remote_cancel", "Cancel this conversation's remote command by its original computer and request IDs. Cancellation remains available after destination opt-out.", map[string]any{"computer_id": map[string]any{"type": "string"}, "request_id": map[string]any{"type": "string", "format": "uuid"}}, "computer_id", "request_id"),
-	remoteTool("remote_jobs", "List this conversation’s tracked remote jobs, pending first, up to 256 recent jobs, including completed jobs. Recovers original computer/request IDs after context loss. notification=queued means the normal message queue owns delivery/recovery, not proof the agent read it. Connectivity errors do not mean the destination process stopped.", map[string]any{}),
-	remoteTool("remote_read_log", "Read a bounded log range, or its tail (offset=-1, default). Offsets are absolute output byte offsets; nextOffset resumes reading. startOffset identifies expired/discarded prefix; expired means the log is no longer retained. Never load a large log into context; search or fetch an artifact instead.", remoteLogProperties(false), "computer_id", "request_id"),
+	remoteTool("remote_jobs", "List this conversation’s tracked remote jobs, pending first, up to 256 recent jobs, including completed jobs. Recovers original computer/request IDs after context loss. notification=queued means the normal message queue owns delivery/recovery, not proof the agent read it. Receipts reflect the latest observation; use remote_status for a fresh check when needed. Connectivity errors do not mean the destination process stopped.", map[string]any{}),
+	remoteTool("remote_read_log", "Read a bounded log range, or its tail (offset=-1, default). Output is retained on the destination up to 4 GiB/job and 20 GiB total. Offsets are absolute output byte offsets; nextOffset resumes reading. startOffset identifies expired/discarded prefix; expired means the log is no longer retained. Never load a large log into context; search or fetch an artifact instead.", remoteLogProperties(false), "computer_id", "request_id"),
 	remoteTool("remote_search_log", "Search literal case-sensitive text in a bounded log page, with bounded match context. Continue at nextOffset until done. Search is not a regular expression.", remoteLogProperties(true), "computer_id", "request_id", "query"),
 	remoteTool("remote_fetch_artifact", "Copy one file from the job’s original workspace to this computer, returning a local path, size and SHA-256 (no inline bytes). Use for images, HTML, reports and large outputs, then inspect the returned local file with normal tools. Relative path only; symlinks escaping the workspace and special files are refused. Maximum 1 GiB/file. Partial or changing transfers fail without publishing a mixed file. This does not sync checkouts or execute the artifact.", map[string]any{"computer_id": map[string]any{"type": "string"}, "request_id": map[string]any{"type": "string", "format": "uuid"}, "path": map[string]any{"type": "string", "description": "Relative file path within the original job workspace."}}, "computer_id", "request_id", "path"),
 }

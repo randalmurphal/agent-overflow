@@ -39,7 +39,7 @@ Workflow phases must declare `remote-commands` in their frozen definition.
 | Tool | Use |
 |---|---|
 | `remote_computers` | Enabled computers, execution OS/architecture, Windows host versus WSL, executable paths, registered projects and worktrees. |
-| `remote_run` | Exact `argv`, or exact `script` plus explicit `interpreter`; destination project/workspace and a caller-chosen UUID `request_id`. |
+| `remote_run` | Exact `argv`, or exact `script` plus explicit `interpreter`; destination project/workspace, a caller-chosen UUID `request_id`, and an optional short `label`. |
 | `remote_jobs` | Recover this conversation's job IDs, receipts and completion-queue state (pending first, latest 256 maximum). |
 | `remote_status` / `remote_cancel` | Inspect or cancel the original job without interrupting its source conversation. |
 | `remote_read_log` / `remote_search_log` | Bounded byte ranges/tails or literal searches of saved output. |
@@ -67,6 +67,12 @@ The command timeout defaults to one hour, up to seven days. Explicit
 `unlimited: true` with no timeout removes that duration limit for training or
 services. It does not add reboot survival or automatic restart.
 
+Use a short job label such as “Windows integration tests” or “Train image model”.
+Labels accept at most 120 Unicode characters on one line. They are source-only
+presentation metadata: the first label is retained and changing or omitting it
+on a retry does not alter command identity. Without one, AO displays quoted argv
+or the interpreter plus “script”, bounded without splitting Unicode characters.
+
 Choose the request UUID before calling. After a lost reply, inspect the same
 ID or retry exactly the same arguments with it. Changing the ID can run twice;
 changing arguments under an accepted ID is refused. Scripts accept up to 1 MiB,
@@ -78,7 +84,10 @@ The background tray shows jobs and offers Stop plus an on-demand bounded log
 view. The source backend tracks outstanding jobs across frontend disconnects
 and source restarts. It polls only outstanding jobs, four checks at a time,
 with a slower retry after connection errors. An unreachable host is not an
-exited process. The agent need not poll merely to discover completion.
+exited process. Successful run/status/cancel replies update the same durable observation immediately,
+so the tray and `remote_jobs` do not wait for the next polling tick. Older running
+observations cannot replace a terminal receipt. The agent need not poll merely
+to discover completion.
 
 A completed job enters the **ordinary message queue**, including normal
 interrupt behavior and queued-message presentation. Idle conversations lazily
@@ -87,6 +96,12 @@ the network mutation; one durable transaction inserts the completion message
 and transfers notification responsibility to the queue. Stable send identity
 and this handoff prevent repeated observations from injecting duplicates.
 `notification: queued` means queue ownership, not proof the agent read it.
+The notification remains even when a tool returned the finished result: writing
+an HTTP response is not an acknowledgement from the provider, and suppressing
+notification then could lose the only completion after a dropped reply. Notices
+name the computer and job, retain the exact routing IDs, and include at most
+2 KiB of untrusted output. Log-tool guidance appears only when output is omitted;
+general usage instructions stay in tool descriptions.
 After handoff, normal queue crash recovery applies: undelivered text is recovered
 into the composer, never independently sent again by the remote-job watcher.
 Archived/deleted/moved conversations and finished workflow phases are not
@@ -118,7 +133,9 @@ Completed logs expire oldest first when reserving space for new jobs; receipt
 identity survives log expiry. Memory remains a bounded 128 KiB inline tail per
 active job. SQLite keeps 128 recent inline tails for old-client compatibility.
 
-Replies default to 8 KiB of output; `max_output_bytes: 0` requests metadata,
+Command replies include the saved computer name and job label. An `outputHint`
+appears only for omitted, discarded or expired output, distinguishing what the
+log tools can still recover. Replies default to 8 KiB of output; `max_output_bytes: 0` requests metadata,
 and the maximum is 128 KiB. `omittedOutputBytes` counts retained bytes omitted
 from that reply; `truncated` identifies discarded destination output. New peers
 also return `log` metadata with absolute `startOffset`, `totalBytes`, and

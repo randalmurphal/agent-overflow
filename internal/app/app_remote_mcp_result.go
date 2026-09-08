@@ -31,6 +31,9 @@ func (o remoteResultOptions) validate() error {
 type remoteMCPResult struct {
 	RemoteCommand
 	ComputerID          string              `json:"computerId"`
+	ComputerName        string              `json:"computerName,omitempty"`
+	Label               string              `json:"label,omitempty"`
+	OutputHint          string              `json:"outputHint,omitempty"`
 	RetainedOutputBytes int64               `json:"retainedOutputBytes"`
 	OmittedOutputBytes  int64               `json:"omittedOutputBytes"`
 	Log                 *remotejobs.LogInfo `json:"log,omitempty"`
@@ -86,10 +89,13 @@ func (a *App) waitRemoteResult(ctx context.Context, computerID string, command R
 
 // Old peers keep their inline tail. Disk metadata is additive and a log read
 // failure must never turn successful command acceptance into a run failure.
-func (a *App) remoteResultWithLog(ctx context.Context, computerID string, command RemoteCommand, options remoteResultOptions) remoteMCPResult {
-	result := remoteResult(computerID, command, options)
+func (a *App) remoteResultWithLog(ctx context.Context, computerID string, command RemoteCommand, options remoteResultOptions) (result remoteMCPResult) {
+	result = remoteResult(computerID, command, options)
+	result.ComputerName = a.remoteComputerNames()[computerID]
+	defer func() { result.OutputHint = remoteOutputHint(result) }()
 	if w, err := a.store.GetRemoteWatch(computerID, command.ID); err == nil {
 		result.Notification = w.Notification
+		result.Label = w.Label
 	}
 	if a.backends == nil {
 		return result

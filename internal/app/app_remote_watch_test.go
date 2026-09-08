@@ -68,7 +68,7 @@ func TestRemoteCompletionQueueHandoffDraftAndRestartRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		if err := a.queueRemoteCompletion(w); err != nil {
+		if err := a.queueRemoteCompletion(w, false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -106,7 +106,7 @@ func TestRemoteCompletionQueueHandoffDraftAndRestartRecovery(t *testing.T) {
 	}
 	// A stale in-memory observer is also unable to insert a second message after
 	// recovery removed the normal queue row and its send identity.
-	_ = a.queueRemoteCompletion(w)
+	_ = a.queueRemoteCompletion(w, false)
 	if len(durableQueueRows(t, a, thread.ID)) != 0 {
 		t.Fatal("stale observer re-enqueued recovered completion")
 	}
@@ -128,7 +128,7 @@ func TestRemoteCompletionUsesBusyProviderQueueForBothProviders(t *testing.T) {
 				t.Fatal(err)
 			}
 			w := completedRemoteWatch(t, a, thread)
-			if err := a.queueRemoteCompletion(w); err != nil {
+			if err := a.queueRemoteCompletion(w, false); err != nil {
 				t.Fatal(err)
 			}
 			flushed := waitForAtLeastQueueFlushed(t, rec, 1)
@@ -141,7 +141,7 @@ func TestRemoteCompletionUsesBusyProviderQueueForBothProviders(t *testing.T) {
 					t.Fatalf("provider input=%q", texts)
 				}
 			}
-			if err := a.queueRemoteCompletion(w); err != nil {
+			if err := a.queueRemoteCompletion(w, false); err != nil {
 				t.Fatal(err)
 			}
 			if count := len(waitForAtLeastQueueFlushed(t, rec, 1)); count != 1 {
@@ -413,7 +413,7 @@ func TestRemoteOnlyWorkRemainsVisibleAndPreventsConversationTransfer(t *testing.
 	if err := a.checkTransferIdle(thread); err == nil {
 		t.Fatal("transfer orphaned pending completion")
 	}
-	if err := a.queueRemoteCompletion(watch); err != nil {
+	if err := a.queueRemoteCompletion(watch, false); err != nil {
 		t.Fatal(err)
 	}
 	if pending, err := a.store.HasPendingRemoteWatches(thread.ID); err != nil || pending {

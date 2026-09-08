@@ -102,6 +102,7 @@ func (s *Store) RegisterRemoteWatch(w RemoteWatch) (bool, error) {
 }
 
 // Update only the observed receipt; never overwrite notification ownership.
+// A stale reply must not defer a known completion or replace its error either.
 func (s *Store) ObserveRemoteWatch(computerID, requestID string, receipt RemoteJob, issue string, next int64) error {
 	receipt.Output = "" // Output is fetched on demand; the monitor never retains logs.
 	raw, err := json.Marshal(receipt)
@@ -110,8 +111,10 @@ func (s *Store) ObserveRemoteWatch(computerID, requestID string, receipt RemoteJ
 	}
 	_, err = s.db.Exec(`UPDATE remote_watches SET
  notification=CASE WHEN notification='dismissed' AND coalesce(json_extract(receipt,'$.id'),'')='' AND ?<>'' THEN 'pending' ELSE notification END,
- receipt=CASE WHEN coalesce(json_extract(receipt,'$.id'),'')<>'' AND (?='' OR (json_extract(receipt,'$.state')<>'running' AND ?='running')) THEN receipt ELSE ? END,
- error=?,next_check=? WHERE computer_id=? AND request_id=?`, receipt.ID, receipt.ID, receipt.State, string(raw), issue, next, computerID, requestID)
+ receipt=CASE WHEN coalesce(json_extract(receipt,'$.id'),'')<>'' AND json_extract(receipt,'$.state')<>'running' THEN receipt ELSE ? END,
+ error=?,next_check=? WHERE computer_id=? AND request_id=?
+ AND (coalesce(json_extract(receipt,'$.id'),'')='' OR
+ (?<>'' AND (json_extract(receipt,'$.state')='running' OR ?=json_extract(receipt,'$.state'))))`, receipt.ID, string(raw), issue, next, computerID, requestID, receipt.ID, receipt.State)
 	return err
 }
 

@@ -85,12 +85,12 @@ func TestRemoteWatchObservationCannotRegressAcceptedCompletion(t *testing.T) {
 	if err := s.ObserveRemoteWatch(w.ComputerID, w.RequestID, done, "", 0); err != nil {
 		t.Fatal(err)
 	}
-	for _, stale := range []RemoteJob{{}, {ID: w.RequestID, State: "running"}} {
-		if err := s.ObserveRemoteWatch(w.ComputerID, w.RequestID, stale, "", 0); err != nil {
+	for _, stale := range []RemoteJob{{}, {ID: w.RequestID, State: "running"}, {ID: w.RequestID, State: "failed"}} {
+		if err := s.ObserveRemoteWatch(w.ComputerID, w.RequestID, stale, "old network failure", 30000); err != nil {
 			t.Fatal(err)
 		}
 		got, err := s.GetRemoteWatch(w.ComputerID, w.RequestID)
-		if err != nil || got.Receipt.State != "succeeded" || got.Receipt.Output != "" || got.Notification != "pending" {
+		if err != nil || got.Receipt.State != "succeeded" || got.Receipt.Output != "" || got.Notification != "pending" || got.Error != "" || got.NextCheck != 0 {
 			t.Fatalf("late reply lost accepted completion: %+v %v", got, err)
 		}
 	}

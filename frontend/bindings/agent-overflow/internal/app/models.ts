@@ -327,6 +327,7 @@ export class AgentRemoteRequest {
     "computerId": string;
     "workspace": gitapp$0.WorkspaceRef;
     "request": RemoteCommandRequest;
+    "label"?: string;
 
     /** Creates a new AgentRemoteRequest instance. */
     constructor($$source: Partial<AgentRemoteRequest> = {}) {

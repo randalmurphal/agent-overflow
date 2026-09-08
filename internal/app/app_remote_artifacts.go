@@ -71,8 +71,11 @@ func readRemoteArtifactChunk(ctx context.Context, workspace string, request Remo
 			return fail("remote_artifact_path", "Choose a file inside the command's original workspace.", err)
 		}
 	}
-	if !filepath.IsLocal(name) || name == "." || strings.ContainsRune(name, 0) || len(name) > 32768 || request.Offset < 0 || request.Offset > remoteArtifactMaxBytes || (request.Offset > 0 && request.Stamp == "") {
-		return fail("remote_artifact_path", "Choose a file inside the command's original workspace, with a nonnegative offset and the stamp from its first chunk.", nil)
+	if !filepath.IsLocal(name) || name == "." || strings.ContainsRune(name, 0) || len(name) > 32768 {
+		return fail("remote_artifact_path", "Choose a relative file path inside the command's original workspace.", nil)
+	}
+	if request.Offset < 0 || request.Offset > remoteArtifactMaxBytes || (request.Offset > 0 && request.Stamp == "") {
+		return fail("remote_artifact_transfer", "Artifact retrieval lost its transfer position. Retry remote_fetch_artifact for the same file; if this repeats, update both computers.", nil)
 	}
 	root, err := os.OpenRoot(workspace)
 	if err != nil {

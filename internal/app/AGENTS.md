@@ -1176,6 +1176,14 @@ no periodic peer probes. Refresh only registered, enabled live servers; a
 configuration change during provider startup schedules a refresh after Put.
 Remote jobs use durable request IDs selected before execution. MCP responses
 bound wait and output independently of the job lifetime and retained log tail.
+Optional job labels are source-only presentation metadata (120 Unicode characters,
+single line); exclude them from execution fingerprints and retain the first label
+on retries. Result and completion naming uses saved profiles without peer probes.
+Keep usage rules in descriptions; result guidance is conditional on omitted,
+discarded or expired output. Completion messages keep routing IDs and a 2 KiB
+untrusted tail, not repeated polling instructions. Never suppress their durable
+queue handoff merely because an HTTP tool result was written: that is not provider
+acknowledgement and may be the lost reply the notification must recover.
 Validate response options before starting a command. `app_remote_errors.go`
 adds operation/computer/request context and preserves public wire refusals.
 Unknown network outcomes always retain the request ID and explain same-ID
@@ -1209,6 +1217,12 @@ Remote completion watches register durably before a peer mutation. They never
 rerun a command on reconnect. Per-request locks serialize retry/refusal admission;
 only definite refusals of previously unaccepted attempts release a watch. Late
 status replies cannot regress accepted completion or erase notification ownership.
+Start, status, bounded waits and cancellation observe successful receipts in the
+same durable watch before returning and invalidate the background tray when it
+changes. Older running replies cannot replace a completed receipt, its error or
+its next delivery check. Completion delivery uses the canonical stored receipt;
+a returned tool result is not provider delivery acknowledgement and never
+suppresses the ordinary durable completion notification.
 Registration shares a short computer fence with forgetting, then the thread
 mutation fence with deletion/transfer; no thread lock spans remote I/O.
 Forgetting waits for pending jobs/notifications so cancellation credentials

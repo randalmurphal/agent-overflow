@@ -91,7 +91,13 @@ func TestRemoteMCPExtendedToolsCrossPairedTLS(t *testing.T) {
 	id := uuid.NewString()
 	run := map[string]any{"computer_id": peer.ID, "project_id": project.ID, "request_id": id,
 		"script": script, "interpreter": []string{"test-interpreter", "--literal flag"}, "unlimited": true,
-		"wait_seconds": 1, "max_output_bytes": 32}
+		"wait_seconds": 1, "max_output_bytes": 32, "label": "Training checkpoints"}
+	run["label"] = "Training\ncheckpoints"
+	remoteMCPCall(t, endpoint, "remote_run", run, true)
+	if starts.Load() != 0 {
+		t.Fatal("invalid label reached command execution")
+	}
+	run["label"] = "Training checkpoints"
 	var receipt remoteMCPResult
 	if err = json.Unmarshal(remoteMCPCall(t, endpoint, "remote_run", run, false), &receipt); err != nil {
 		t.Fatal(err)
@@ -99,11 +105,28 @@ func TestRemoteMCPExtendedToolsCrossPairedTLS(t *testing.T) {
 	if receipt.State != "succeeded" || receipt.SourceThreadID != thread.ID || !strings.HasSuffix(output, receipt.Output) || len(receipt.Output) > 32 {
 		t.Fatalf("unexpected receipt: %+v", receipt)
 	}
+	if receipt.ComputerName == "" || receipt.Label != "Training checkpoints" || !strings.Contains(receipt.OutputHint, "remote_read_log") || !strings.Contains(receipt.OutputHint, "remote_search_log") {
+		t.Fatalf("receipt lacks durable presentation and output guidance: %+v", receipt)
+	}
 	scriptPath := <-scriptPaths
 	if _, err = os.Stat(scriptPath); !os.IsNotExist(err) {
 		t.Fatalf("settled job retained temporary script: %v", err)
 	}
-	remoteMCPCall(t, endpoint, "remote_run", run, false)
+	// Presentation changes do not change execution identity or overwrite the
+	// accepted job name; an omitted label on a retry is equally harmless.
+	for _, label := range []string{"Changed description", ""} {
+		if label == "" {
+			delete(run, "label")
+		} else {
+			run["label"] = label
+		}
+		if err = json.Unmarshal(remoteMCPCall(t, endpoint, "remote_run", run, false), &receipt); err != nil {
+			t.Fatal(err)
+		}
+		if receipt.Label != "Training checkpoints" {
+			t.Fatalf("retry overwrote the original label: %+v", receipt)
+		}
+	}
 	if starts.Load() != 1 {
 		t.Fatal("same request executed more than once")
 	}
@@ -139,11 +162,11 @@ func TestRemoteMCPExtendedToolsCrossPairedTLS(t *testing.T) {
 		t.Fatalf("search: %+v", search)
 	}
 
-	var watches []store.RemoteWatch
+	var watches []remoteMCPWatch
 	if err = json.Unmarshal(remoteMCPCall(t, endpoint, "remote_jobs", map[string]any{}, false), &watches); err != nil {
 		t.Fatal(err)
 	}
-	if len(watches) != 1 || watches[0].ComputerID != peer.ID || watches[0].RequestID != id || watches[0].ThreadID != thread.ID {
+	if len(watches) != 1 || watches[0].ComputerID != peer.ID || watches[0].RequestID != id || watches[0].ThreadID != thread.ID || watches[0].Label != "Training checkpoints" || watches[0].ComputerName != receipt.ComputerName {
 		t.Fatalf("jobs: %+v", watches)
 	}
 	other, otherToken := remoteMCPThread(t, source, "claude")

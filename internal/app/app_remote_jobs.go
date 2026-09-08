@@ -314,6 +314,7 @@ type AgentRemoteRequest struct {
 	ComputerID string               `json:"computerId"`
 	Workspace  gitapp.WorkspaceRef  `json:"workspace"`
 	Request    RemoteCommandRequest `json:"request"`
+	Label      string               `json:"label,omitempty"`
 }
 
 //ao:scope terminal:operate
@@ -350,13 +351,9 @@ func (a *App) AgentRemoteStart(ctx context.Context, input AgentRemoteRequest) (R
 	var result RemoteCommand
 	err = a.backends.CallAgentPeer(call, input.ComputerID, "RemoteCommandStart", &result, input.Workspace, input.Request)
 	if err == nil {
-		if result.ID != input.Request.ID || result.SourceThreadID != scope.ThreadID {
-			return RemoteCommand{}, errorsx.Public("remote_wrong_conversation", "The destination returned a mismatched command receipt; keep the original request ID and check status.", nil)
-		}
-		if saveErr := a.store.ObserveRemoteWatch(input.ComputerID, input.Request.ID, result, "", time.Now().Add(2*time.Second).UnixMilli()); saveErr != nil {
+		if saveErr := a.observeRemoteCommand(input.ComputerID, input.Request.ID, scope.ThreadID, result); saveErr != nil {
 			return result, saveErr
 		}
-		a.emit(eventchan.ProviderBackgroundTasksChanged, map[string]any{"threadId": scope.ThreadID})
 	}
 	if err != nil {
 		publicErr := remoteOperationError("run", input.ComputerID, input.Request.ID, err)
@@ -403,11 +400,14 @@ func (a *App) agentRemoteResult(ctx context.Context, computerID, id string, canc
 	if err = a.backends.CallAgentPeer(call, computerID, "RemoteCommandStatus", &result, id); err != nil {
 		return result, remoteOperationError(action, computerID, id, err)
 	}
-	if result.SourceThreadID != scope.ThreadID {
-		return RemoteCommand{}, errorsx.Public("remote_wrong_conversation", "This command belongs to another conversation. Read or cancel it from the conversation that submitted it.", nil)
+	if err = a.observeRemoteCommand(computerID, id, scope.ThreadID, result); err != nil {
+		return RemoteCommand{}, err
 	}
 	if cancelJob {
 		err = a.backends.CallAgentPeer(call, computerID, "RemoteCommandCancel", &result, id)
+		if err == nil {
+			err = a.observeRemoteCommand(computerID, id, scope.ThreadID, result)
+		}
 	}
 	return result, remoteOperationError(action, computerID, id, err)
 }
