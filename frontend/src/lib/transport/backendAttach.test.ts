@@ -11,7 +11,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   __resetPendingAttachmentsForTest,
-  attachedMachines,
   attachBackendFromLink,
   awaitAttachedActivation,
   detachAttachedBackend,
@@ -27,7 +26,7 @@ import {
 } from './backends';
 import { HOME_DESCRIPTOR, duplicateLegacyHomeBackend } from './manifestBackends';
 import * as deviceSession from './deviceSession';
-import { clearPairedSession, hasPairedSession, pairedComputerId } from './deviceSession';
+import { clearPairedSession, hasPairedSession, pairedComputerId, redeemPairing, type PairingPayload } from './deviceSession';
 import { __resetDetachStepsForTest, onBeforeBackendDetach } from './detachSteps';
 import {
   __resetHomeEndpointForTest,
@@ -349,23 +348,6 @@ describe('backendAttach', () => {
     });
   });
 
-  describe('attachedMachines', () => {
-    it('joins the registry with the stored addresses, home excluded', () => {
-      storeBackendEndpoint('', 'https://home.example');
-      storeBackendEndpoint(LAPTOP, ENDPOINT);
-      stageMachine();
-      expect(attachedMachines()).toEqual([
-        { id: LAPTOP, name: 'Laptop', host: 'laptop.example:8123' },
-      ]);
-    });
-
-    it('falls back to the address for a machine whose name is not known yet', () => {
-      storeBackendEndpoint(LAPTOP, ENDPOINT);
-      stageMachine({ name: '' });
-      expect(attachedMachines()[0].name).toBe('laptop.example:8123');
-    });
-  });
-
   it.each([
     ['Mozilla/5.0 (Linux; Android 16; Pixel 9)', 'Android phone', 'Android'],
     ['Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', 'Mac browser', 'macOS'],
@@ -430,6 +412,7 @@ describe('storedBackendDescriptors', () => {
 
   it('names a machine by its address until its manifest says otherwise', () => {
     storeBackendEndpoint(LAPTOP, ENDPOINT);
+    storeSessionFor(LAPTOP);
     // An empty name here would leave the machine picker and the sidebar
     // showing a blank label for a backend that has never been reachable.
     expect(storedBackendDescriptors()).toEqual([
@@ -442,5 +425,26 @@ describe('storedBackendDescriptors', () => {
         bootstrapUrl: `${ENDPOINT}/bootstrap.json`,
       },
     ]);
+  });
+
+  // Bug 4: a failed redemption stores an address before `/auth/pair`
+  // answers, and a session cleared later leaves the same shape. An address
+  // with no credential to present at it must not attach — it made the next
+  // boot show an Offline computer nothing could ever reach.
+  it('skips an address holding no session and no redemption under way', () => {
+    storeBackendEndpoint(LAPTOP, ENDPOINT);
+    expect(storedBackendDescriptors()).toEqual([]);
+  });
+
+  it('keeps an address whose redemption is still in flight, and drops it once that fails', async () => {
+    storeBackendEndpoint(LAPTOP, ENDPOINT);
+    const payload = { v: 1, backendId: '99999999-8888-4777-8666-555555555555', endpoint: ENDPOINT, token: 't' } as PairingPayload;
+    const fetcher = (async () => { throw new Error('refused'); }) as unknown as typeof fetch;
+    const pending = redeemPairing(payload, 'label', fetcher, LAPTOP);
+    // Mid-redemption is the one legitimate moment the credential is
+    // missing: its own sync re-asks once the session stores.
+    expect(storedBackendDescriptors().map((row) => row.id)).toEqual([LAPTOP]);
+    await expect(pending).rejects.toThrow();
+    expect(storedBackendDescriptors()).toEqual([]);
   });
 });

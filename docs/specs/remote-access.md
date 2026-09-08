@@ -2846,7 +2846,9 @@ several are attached. Settings → Systems (Workspace group) lists the
 attached machines with live reachability, renames inline, detaches on a
 second press, and starts a pairing from a pasted link, holding the
 verification number until `backend:attach` retires it; the store
-(`stores/systems.svelte.ts`) owns the four `host` RPCs and publishes the
+(`stores/systems.svelte.ts`) owns the three `host` RPCs, publishes every
+`ListBackends` answer into the transport registry — which is the one
+list the rows render from, on both realizations — and publishes the
 confirmed descriptor to the registry itself. "Local" is "Base" in both
 pickers. Deferred to 7d, where a project first spans machines: the
 machine chip in the worktree-chip slot and the sticky per-project

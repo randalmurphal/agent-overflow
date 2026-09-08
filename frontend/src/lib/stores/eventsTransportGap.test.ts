@@ -47,11 +47,11 @@ import type { ThreadItemSnapshot } from './threadItemCache';
 import type { ThreadHistoryStamp } from './threadHistoryStamps';
 import { itemEventQueued, itemEventsSettled } from './itemEventSettlement';
 
-import { __resetSystemsForTest, getSystems, loadSystems } from './systems.svelte';
+import { __resetSystemsForTest, loadSystems } from './systems.svelte';
 import { resetToLocalPage, pairViewOnly } from '../../test/helpers/scopes';
 import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
 import { backendById } from '../transport/backends';
-import { __resetManifestBackendsForTest } from '../transport/manifestBackends';
+import { __resetManifestBackendsForTest, manifestBackendDescriptors } from '../transport/manifestBackends';
 
 it('starts a gap snapshot after older queued replay mutations settle', async () => {
   resetPanesForTest();
@@ -435,8 +435,8 @@ describe('transport gap — computer membership', () => {
     reply([]);
     await loading;
     expect(list).toHaveBeenCalledTimes(2);
-    expect(getSystems()).toEqual([LAPTOP]);
-    expect(backendById('laptop')).toBeDefined();
+    expect(manifestBackendDescriptors().map((row) => row.id)).toEqual(['laptop']);
+    expect(backendById('laptop')?.backendId).toBe(LAPTOP.backendId);
 
     // Another computer's profile directory must never replace HOME's set,
     // nor may a paired/view-only client call its upstream host-only RPC.

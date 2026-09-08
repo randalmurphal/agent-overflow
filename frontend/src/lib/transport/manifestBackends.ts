@@ -22,7 +22,7 @@ import type { BackendDescriptor } from './backends';
 import { HOME_BACKEND, type BackendKey } from './backendKey';
 import { getBackendIdentity } from './backendIdentity';
 import { endpointHost, storedBackendEndpoint, storedBackendEndpoints } from './homeEndpoint';
-import { hasPairedSession, pairedComputerId } from './deviceSession';
+import { hasPairedSession, pairedComputerId, redemptionInFlight } from './deviceSession';
 import { rememberedIdentity } from './rememberedIdentity';
 import { isNativeShell } from '../native/platform';
 
@@ -93,6 +93,9 @@ function sameDescriptors(
       a[i].id !== b[i].id ||
       a[i].backendId !== b[i].backendId ||
       a[i].name !== b[i].name ||
+      // Normalized: an older manifest omits the field where the list the
+      // page rebuilds itself spells the same absence as ''.
+      (a[i].nickname ?? '') !== (b[i].nickname ?? '') ||
       a[i].wsUrl !== b[i].wsUrl ||
       a[i].bootstrapUrl !== b[i].bootstrapUrl
     ) {
@@ -219,12 +222,19 @@ const ATTACHED_BOOTSTRAP_SUFFIX = '.json';
  *     the same routes home is reached at, because from the phone's side
  *     there is nothing structurally different about it. Its legacy home
  *     slot is built by the same call, under `HOME_BACKEND`.
+ *
+ * A shell's registry id IS the machine's UUID, so the endpoint branch
+ * needs no separate `backendId`; a desktop's caller passes the UUID the
+ * `ListBackends` row carries, so the entry answers to it before that
+ * machine's manifest ever resolves — the same fact the manifest's own
+ * rows publish.
  */
 export function descriptorForAttachedId(
   id: string,
   name: string,
   endpoint = '',
   nickname?: string,
+  backendId = '',
 ): BackendDescriptor {
   if (endpoint !== '') {
     const base = new URL(endpoint);
@@ -241,7 +251,7 @@ export function descriptorForAttachedId(
   const scheme = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
   return {
     id,
-    backendId: '',
+    backendId,
     name,
     ...(nickname !== undefined ? { nickname } : {}),
     wsUrl: scheme + window.location.host + ATTACHED_WS_PREFIX + id,
@@ -283,8 +293,16 @@ export function storedBackendDescriptors(): BackendDescriptor[] {
     ? pairedComputerId(HOME_BACKEND) || rememberedIdentity(HOME_BACKEND)?.backendId : undefined;
   for (const [id, endpoint] of Object.entries(endpoints)) {
     if (id === HOME_BACKEND) continue;
-    // A failed redemption can leave an endpoint without a credential. It
-    // must not create a second catalog owner beside its valid legacy slot.
+    // A failed redemption can leave an endpoint without a credential (the
+    // pairing screen stores the address before `/auth/pair` answers). An
+    // address with no session to present at it is not a machine this
+    // client is attached to: attaching it anyway made the next boot show
+    // an Offline computer nothing could ever reach. A redemption still in
+    // flight is the one legitimate moment the credential is missing, and
+    // its own `syncAttachedBackends` re-asks once the session stores.
+    if (!hasPairedSession(id) && !redemptionInFlight(id)) continue;
+    // It also must not create a second catalog owner beside its valid
+    // legacy slot.
     if (id === homeId && pairedComputerId(id) !== id) continue;
     out.push(descriptorForAttachedId(id, endpointHost(endpoint), endpoint));
   }

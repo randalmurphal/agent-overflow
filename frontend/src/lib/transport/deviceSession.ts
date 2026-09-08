@@ -572,6 +572,16 @@ export interface RedemptionOutcome {
  */
 const pairingAttempts = new Map<BackendKey, object>();
 
+/**
+ * Whether a pairing redemption for `backend` is still in flight on this
+ * page. The one reader is `manifestBackends.storedBackendDescriptors`,
+ * which must not judge a slot mid-redemption by the credential it has not
+ * stored yet.
+ */
+export function redemptionInFlight(backend: BackendKey = HOME_BACKEND): boolean {
+  return pairingAttempts.has(backend);
+}
+
 export async function redeemPairing(
   payload: PairingPayload,
   label: string,

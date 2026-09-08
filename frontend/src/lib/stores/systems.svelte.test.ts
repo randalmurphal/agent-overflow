@@ -10,11 +10,11 @@ import {
   applyBackendAttach,
   applyBackendSetChange,
   getPendingAttachments,
-  getSystems,
   loadSystems,
   removeSystem,
   systemLabel,
   systemsLoaded,
+  systemStatus,
 } from './systems.svelte';
 import { getToasts, removeToast } from './toast.svelte';
 
@@ -26,6 +26,11 @@ const LAPTOP = {
   endpoint: 'https://laptop.example:8123',
   lastReachedMs: 0,
 };
+
+/** The published rows, as [id, folded name, nickname]. */
+function publishedRows(): [string, string, string | undefined][] {
+  return manifestBackendDescriptors().map((row) => [row.id, row.name, row.nickname]);
+}
 
 describe('systems store', () => {
   beforeEach(() => {
@@ -52,7 +57,7 @@ describe('systems store', () => {
     await removeSystem('laptop');
     reply([LAPTOP]);
     await loading;
-    expect(getSystems()).toEqual([]);
+    expect(manifestBackendDescriptors()).toEqual([]);
     expect(backendById('laptop')).toBeUndefined();
     applyBackendAttach({ id: 'laptop', attached: true });
     await loadSystems();
@@ -76,7 +81,7 @@ describe('systems store', () => {
     const list = setBindingMock('ListBackends', async () => [LAPTOP]);
     await Promise.all([loadSystems(), loadSystems()]);
     expect(list).toHaveBeenCalledTimes(1);
-    expect(getSystems()).toEqual([LAPTOP]);
+    expect(publishedRows()).toEqual([['laptop', 'Laptop', '']]);
     expect(systemsLoaded()).toBe(true);
 
     __resetSystemsForTest();
@@ -84,6 +89,31 @@ describe('systems store', () => {
     await loadSystems();
     expect(list).toHaveBeenCalledTimes(1);
     expect(systemsLoaded()).toBe(false);
+  });
+
+  // Bug 1: the descriptor used to publish an empty backendId, so the entry
+  // answered to its registry id alone and every UUID-keyed consumer (event
+  // origins, nicknames, the nearby-computer filter) drew a blank.
+  it('publishes the profile UUID so the registry entry answers to it', async () => {
+    setBindingMock('ListBackends', async () => [LAPTOP]);
+    await loadSystems();
+    expect(backendById('laptop')?.backendId).toBe(LAPTOP.backendId);
+    expect(backendById(LAPTOP.backendId)?.id).toBe('laptop');
+  });
+
+  // The descriptor has no field for reachability or sync errors; the side
+  // map is where the section reads them, and a removal drops its entry.
+  it('keeps the status fields the descriptor has no room for', async () => {
+    setBindingMock('ListBackends', async () => [
+      { ...LAPTOP, lastReachedMs: 123, deviceNameSyncError: 'x', ownDeviceSyncError: 'y' },
+    ]);
+    await loadSystems();
+    expect(systemStatus('laptop')).toEqual({
+      lastReachedMs: 123, deviceNameSyncError: 'x', ownDeviceSyncError: 'y',
+    });
+    setBindingMock('RemoveBackend', async () => {});
+    await removeSystem('laptop');
+    expect(systemStatus('laptop')).toBeUndefined();
   });
 
   it('holds a pairing as pending until backend:attach retires it, then opens the door', async () => {
@@ -107,7 +137,7 @@ describe('systems store', () => {
 
   // The event hub subscribes EVERY attached backend, so this handler is
   // reachable from a machine that is not the one whose profile directory
-  // the four system RPCs act on, and the descriptor it would build names
+  // the three system RPCs act on, and the descriptor it would build names
   // this machine's own proxy path. A frame from anywhere but home would
   // register a door home does not serve.
   it('says nothing about a frame that arrived on another backend', async () => {
@@ -155,17 +185,14 @@ describe('systems store', () => {
     const remove = setBindingMock('RemoveBackend', async () => {});
     await removeSystem('laptop');
     expect(remove).toHaveBeenCalledWith('laptop');
-    expect(getSystems()).toEqual([]);
+    expect(manifestBackendDescriptors()).toEqual([]);
     expect(attachedBackends().some((b) => b.id === 'laptop')).toBe(false);
   });
 
-  it('renames in place and labels by nickname first', async () => {
-    setBindingMock('ListBackends', async () => [LAPTOP]);
+  it('folds the nickname into the published name, nickname first', async () => {
+    setBindingMock('ListBackends', async () => [{ ...LAPTOP, nickname: 'Work laptop' }]);
     await loadSystems();
-    expect(manifestBackendDescriptors().find((row) => row.id === 'laptop')?.nickname).toBe('');
-    applyBackendSetChange({ action: 'renamed', id: 'laptop', nickname: 'Work laptop' });
-    expect(manifestBackendDescriptors().find((row) => row.id === 'laptop')?.nickname).toBe('Work laptop');
-    expect(systemLabel(getSystems()[0])).toBe('Work laptop');
+    expect(publishedRows()).toEqual([['laptop', 'Work laptop', 'Work laptop']]);
     expect(systemLabel({ id: 'x', name: 'Named', nickname: '' })).toBe('Named');
     expect(systemLabel({ id: 'x', name: '', nickname: '' })).toBe('x');
   });
@@ -180,7 +207,7 @@ describe('systems store', () => {
 
     applyBackendSetChange({ action: 'removed', id: 'laptop' });
 
-    expect(getSystems()).toEqual([]);
+    expect(manifestBackendDescriptors()).toEqual([]);
     // The same purge a local removeSystem does: the door is closed too, not
     // just the row forgotten.
     expect(attachedBackends().some((b) => b.id === 'laptop')).toBe(false);
@@ -201,7 +228,7 @@ describe('systems store', () => {
     expect(getToasts().map((t) => [t.type, t.message])).toEqual([[
       'warning', "Work laptop ended this computer's access. Pair again from Connect to a computer.",
     ]]);
-    expect(getSystems()).toEqual([]);
+    expect(manifestBackendDescriptors()).toEqual([]);
     expect(attachedBackends().some((b) => b.id === 'laptop')).toBe(false);
   });
 
@@ -226,28 +253,49 @@ describe('systems store', () => {
     applyBackendSetChange({ action: 'removed', id: 'laptop' });
 
     expect(getToasts()).toEqual([]);
-    expect(getSystems()).toEqual([]);
+    expect(manifestBackendDescriptors()).toEqual([]);
   });
 
-  it('takes a rename another page made', async () => {
-    setBindingMock('ListBackends', async () => [LAPTOP]);
+  // A rename lands in fields only the authoritative list holds — the folded
+  // label, and on a device-name-sync change the error text — so both re-read
+  // it rather than patching a mirror that no longer exists.
+  it('re-reads and republishes on a rename another page made', async () => {
+    const list = setBindingMock('ListBackends', async () => [LAPTOP]);
+    await loadSystems();
+    expect(publishedRows()).toEqual([['laptop', 'Laptop', '']]);
+
+    list.mockResolvedValue([{ ...LAPTOP, nickname: 'Work laptop' }]);
+    applyBackendSetChange({ action: 'renamed', id: 'laptop', nickname: 'Work laptop' });
     await loadSystems();
 
-    applyBackendSetChange({ action: 'renamed', id: 'laptop', nickname: 'Work laptop' });
-
-    expect(systemLabel(getSystems()[0])).toBe('Work laptop');
+    expect(publishedRows()).toEqual([['laptop', 'Work laptop', 'Work laptop']]);
+    expect(backendById('laptop')?.name).toBe('Work laptop');
   });
 
   it('clears a nickname a rename emptied', async () => {
-    setBindingMock('ListBackends', async () => [{ ...LAPTOP, nickname: 'Old' }]);
+    const list = setBindingMock('ListBackends', async () => [{ ...LAPTOP, nickname: 'Old' }]);
     await loadSystems();
 
+    list.mockResolvedValue([LAPTOP]);
     applyBackendSetChange({ action: 'renamed', id: 'laptop' });
+    await loadSystems();
 
-    expect(systemLabel(getSystems()[0])).toBe('Laptop');
+    expect(publishedRows()).toEqual([['laptop', 'Laptop', '']]);
   });
 
-  // The event hub subscribes EVERY attached backend, and these four RPCs act
+  it('re-reads the list when device name sync state changes', async () => {
+    const list = setBindingMock('ListBackends', async () => [LAPTOP]);
+    await loadSystems();
+    expect(systemStatus('laptop')?.deviceNameSyncError).toBe('');
+
+    list.mockResolvedValue([{ ...LAPTOP, deviceNameSyncError: 'pending' }]);
+    applyBackendSetChange({ action: 'device-name-sync', id: 'laptop' });
+    await loadSystems();
+
+    expect(systemStatus('laptop')?.deviceNameSyncError).toBe('pending');
+  });
+
+  // The event hub subscribes EVERY attached backend, and these three RPCs act
   // on THIS machine's profile directory: another backend's frame names an id
   // in its own directory, which would drop the wrong row here.
   it('refuses a frame that did not come from home', async () => {
@@ -256,7 +304,7 @@ describe('systems store', () => {
 
     applyBackendSetChange({ action: 'removed', id: 'laptop' }, 'desktop');
 
-    expect(getSystems().map((s) => s.id)).toEqual(['laptop']);
+    expect(publishedRows().map((row) => row[0])).toEqual(['laptop']);
   });
 
   it('ignores an unnamed row and an action it does not know', async () => {
@@ -266,6 +314,6 @@ describe('systems store', () => {
     applyBackendSetChange({ action: 'removed', id: '' });
     applyBackendSetChange({ action: 'attached' as never, id: 'laptop' });
 
-    expect(getSystems().map((s) => s.id)).toEqual(['laptop']);
+    expect(publishedRows().map((row) => row[0])).toEqual(['laptop']);
   });
 });

@@ -3,7 +3,7 @@
   import Button from '../primitives/Button.svelte';
   import { DiscoverComputers } from '../../stores/bindings';
   import { getAttachedBackends } from '../../stores/attachedBackends.svelte';
-  import { getSystems, getPendingAttachments } from '../../stores/systems.svelte';
+  import { getPendingAttachments } from '../../stores/systems.svelte';
   import { errString } from '../../utils/errors';
 
   let { connecting, onConnect }: { connecting: boolean; onConnect: (address: string) => Promise<void> } = $props();
@@ -12,7 +12,7 @@
   let error = $state('');
   let disposed = false;
   let available = $derived.by(() => {
-    const known = new Set([...getAttachedBackends().map((entry) => entry.backendId), ...getSystems().map((entry) => entry.backendId)]);
+    const known = new Set(getAttachedBackends().map((entry) => entry.backendId));
     const pending = new Set(getPendingAttachments().map((entry) => entry.endpoint));
     return results.filter((row) => !known.has(row.backendId) && !pending.has(row.address));
   });

@@ -278,63 +278,6 @@ function detachConnection(id: BackendKey): void {
 }
 
 // ---------------------------------------------------------------------------
-// The machines this client attached, as a list
-// ---------------------------------------------------------------------------
-
-/** One attached machine, as a surface shows it. */
-export interface AttachedMachine {
-  /** Registry id. The `backendId` its pairing payload named. */
-  id: string;
-  /** Its descriptor's name, else the endpoint host it was paired at. */
-  name: string;
-  /** The host part of its endpoint, which is the address a person typed. */
-  host: string;
-}
-
-/**
- * The registry fields this join reads, and no others.
- *
- * A `BackendEntry` parameter would put `status` — a live getter — within
- * reach of a snapshot that has no way to stay current with it. Naming the
- * three fields keeps that mistake from compiling.
- */
-type NamedBackend = { id: string; home: boolean; name: string };
-
-/**
- * Every machine this client attached itself, home excluded.
- *
- * The registry is the source rather than an RPC: on a phone there is no
- * local process holding profiles to ask, and the sockets the registry
- * already holds ARE the machines. The stored endpoint map supplies the
- * address the registry has no field for.
- *
- * REACHABILITY IS DELIBERATELY NOT HERE. An entry's `status` is a getter
- * onto its client and moves without the list moving, so a row that read
- * it through this snapshot would show whatever was true when the list was
- * last rebuilt. It is `stores/transportStatus.svelte.ts`'s signal, read
- * per row through `backendReachable(id)`, which is the same answer the
- * composer's machine picker dims on.
- *
- * `entries` defaults to the registry's own array, which is plain on
- * purpose (./backends.ts: the fan-out walks it). A Svelte surface passes
- * the reactive mirror instead, so its list re-derives on attach and
- * detach without an implicit reactive dependency inside this module.
- */
-export function attachedMachines(
-  entries: readonly NamedBackend[] = attachedBackends(),
-): AttachedMachine[] {
-  // A render path: an unreadable map attached nothing, so it lists nothing.
-  const endpoints = storedBackendEndpoints() ?? {};
-  const out: AttachedMachine[] = [];
-  for (const entry of entries) {
-    if (entry.home) continue;
-    const host = endpointHost(endpoints[entry.id] ?? '');
-    out.push({ id: entry.id, name: entry.name || host || entry.id, host });
-  }
-  return out;
-}
-
-// ---------------------------------------------------------------------------
 // Pairings this client started and is waiting on
 // ---------------------------------------------------------------------------
 
