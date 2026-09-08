@@ -3,16 +3,19 @@
   import Button from '../primitives/Button.svelte';
   import MicroLabel from '../primitives/MicroLabel.svelte';
   import { OpenComputerPairing, OpenOwnComputerPairing, ComputerPairingStatus, CloseComputerPairing, ConfirmDevicePairing } from '../../stores/bindings';
-  import { getTransportHello, getTransportHelloFor } from '../../stores/transportStatus.svelte';
-  import { HOME_BACKEND } from '../../transport/backendKey';
+  import { getTransportHelloFor } from '../../stores/transportStatus.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { backendNow } from '../../transport/backendClock';
   import { settingsComputer } from './settingsComputer';
 
-  let { networkChoice, access, onChanged, onClose }: {
+  let { networkChoice, access, ownEnroll, onChanged, onClose }: {
     networkChoice: string;
     access: string;
+    /** Full access means a personal join only where the modal established
+     * this caller may make one (PairDeviceModal's `ownEnroll`); otherwise
+     * full is the ordinary computer pairing the backend does honour. */
+    ownEnroll: boolean;
     onChanged: () => void;
     onClose: () => void;
   } = $props();
@@ -74,9 +77,7 @@
     expired = false;
     if (previous) void closeWindow(previous.id);
     try {
-      const hello = backend === HOME_BACKEND ? getTransportHello() : getTransportHelloFor(backend);
-      const ownDevices = access === 'full' && hello?.capabilities.includes('own-devices.v1');
-      const opened = await call(() => ownDevices ? OpenOwnComputerPairing(networkChoice) : OpenComputerPairing(networkChoice, access));
+      const opened = await call(() => access === 'full' && ownEnroll ? OpenOwnComputerPairing(networkChoice) : OpenComputerPairing(networkChoice, access));
       if (disposed) { await closeWindow(opened.id); return; }
       window = opened;
       onChanged();

@@ -4,7 +4,7 @@ import DevicesSection from './DevicesSection.svelte';
 import { setBindingMock, getBindingMock, resetBindingMocks } from '../../../test/mocks/bindings-app';
 import { setRunMode, resetRunMode } from '../../../test/runMode';
 import { getToasts } from '../../stores/toast.svelte';
-import { __setTransportStatusForTest } from '../../stores/transportStatus.svelte';
+import { __setTransportHelloForTest, __setTransportStatusForTest } from '../../stores/transportStatus.svelte';
 import type { TransportStatusSnapshot } from '../../transport/wsClient';
 
 interface MockDevice {
@@ -86,6 +86,25 @@ describe('<DevicesSection>', () => {
   afterEach(() => {
     resetBindingMocks();
     resetRunMode();
+    __setTransportHelloForTest(null);
+  });
+
+  it('opens pairing with the backend’s verdict on whether this caller may add a personal device', async () => {
+    // Read ahead of the modal, so it opens showing ordinary Full access
+    // rather than a "My device" that swaps out a round trip later.
+    __setTransportHelloForTest({
+      backendId: 'mac', backendName: 'Mac', capabilities: ['own-devices.v1', 'pairing.networks.v1'], protocolVersion: 1,
+      serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0,
+    });
+    setBindingMock('GetAccessOverview', async () => overview({ devices: [LOCAL_DEVICE] }));
+    const verdict = setBindingMock('ListOwnDevices', async () => ({
+      connectedBackendIds: [], excludedBackendIds: [], enabled: false, selfKeyThumbprint: '', members: [], canEnroll: false,
+    }));
+    const view = render(DevicesSection);
+    await waitFor(() => expect(verdict).toHaveBeenCalled());
+    await fireEvent.click(await view.findByRole('button', { name: 'Allow a device to connect' }));
+    expect(await view.findByRole('radio', { name: 'Full access' })).toBeChecked();
+    expect(view.queryByRole('radio', { name: 'My device' })).toBeNull();
   });
 
   it('renders the local channel as this computer, with no revoke control', async () => {

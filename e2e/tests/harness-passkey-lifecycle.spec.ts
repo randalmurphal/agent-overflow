@@ -660,12 +660,14 @@ test.describe.serial('passkey lifecycle', () => {
     // is a DIFFERENT scope (`access:admin` rather than the passkey
     // block's own), it is `//ao:stepup`, and `PairDeviceModal.svelte`
     // calls it plainly — there is no passkey code anywhere in that
-    // component. The mint has to be VIEW-ONLY: with `own-devices.v1`
-    // advertised, the modal's full arm mints an OWN-device pairing, and
-    // `ownPairingAdmin` refuses that for any caller that is not itself
-    // local or an own device — which this passkey-signed browser is not.
-    // View-only drives the identical step-up gate without that second
-    // refusal in the way.
+    // component. This browser is passkey-signed and NOT an own device,
+    // and `ownPairingAdmin` refuses personal enrollment from any caller
+    // that is neither local nor a member — so the modal must not offer
+    // "My device" here at all (it used to, and the option always failed
+    // with a toast: the 2026-09-08 ruling). It offers ordinary Full
+    // access / View only, both of which this backend honours; view-only
+    // is driven below because it is the same step-up gate with the
+    // smaller grant.
     const beforeAudit = ((await harness.rpc<AccessOverview>('GetAccessOverview')).audit ?? [])
       .filter((entry) => entry.event === 'passkey-step-up').length;
 
@@ -675,6 +677,12 @@ test.describe.serial('passkey lifecycle', () => {
     remoteSurfaced.errorToasts.length = 0;
 
     await remotePage.getByRole('button', { name: 'Allow a device to connect' }).click();
+    await expect(remotePage.getByRole('radio', { name: 'Full access' })).toBeVisible();
+    await expect(
+      remotePage.getByRole('radio', { name: 'My device' }),
+      'a non-member is not offered the personal join the backend would refuse',
+    ).toHaveCount(0);
+    await expect(remotePage.getByText('“My device” pairing is available from your own devices, or at the computer.')).toBeVisible();
     await remotePage.getByRole('radio', { name: 'View only' }).check();
     await remotePage.getByRole('button', { name: 'Phone or tablet' }).click();
 

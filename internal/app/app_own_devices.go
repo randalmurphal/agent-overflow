@@ -211,17 +211,23 @@ func (a *App) ownCaller(ctx context.Context) (OwnDeviceMember, error) {
 //ao:scope session
 //ao:route home
 func (a *App) ListOwnDevices(ctx context.Context) (OwnDeviceList, error) {
+	// The verdict rides every answer, including the empty ones: the host's
+	// own window may enroll before this computer holds any membership at
+	// all, and that is exactly when the modal needs to offer it.
+	canEnroll := a.ownPairingAdmin(ctx) == nil
 	caller, e := a.ownCaller(ctx)
 	if errors.Is(e, sql.ErrNoRows) || errors.Is(e, deviceclient.ErrNoDeviceKey) || e == errNoBackendProfiles {
-		return OwnDeviceList{Members: []OwnDeviceMember{}}, nil
+		return OwnDeviceList{Members: []OwnDeviceMember{}, CanEnroll: canEnroll}, nil
 	}
 	if e != nil {
 		return OwnDeviceList{}, e
 	}
 	if caller.Removed {
-		return OwnDeviceList{Members: []OwnDeviceMember{}}, nil
+		return OwnDeviceList{Members: []OwnDeviceMember{}, CanEnroll: canEnroll}, nil
 	}
-	return OwnDeviceSnapshot(a)
+	out, e := OwnDeviceSnapshot(a)
+	out.CanEnroll = canEnroll
+	return out, e
 }
 
 //ao:scope session

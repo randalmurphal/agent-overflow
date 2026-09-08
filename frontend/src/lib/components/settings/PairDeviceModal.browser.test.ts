@@ -21,7 +21,7 @@ it.each([360, 1280])('keeps the network choice and QR inside a %ipx viewport', a
     linkId: 'test-link', url: 'http://192.168.1.20:54321/?t=test#pair=test', expiresAtMs: Date.now() + 300_000,
   }));
   setBindingMock('DevicePairingStatus', async () => ({ state: 'pending' }));
-  const view = render(PairDeviceModal, { open: true, remoteReachable: true, onClose() {}, onChanged() {} });
+  const view = render(PairDeviceModal, { open: true, remoteReachable: true, canEnrollOwnDevice: true, onClose() {}, onChanged() {} });
   const lan = await view.findByRole('radio', { name: 'Local network' });
   const tailnet = await view.findByRole('radio', { name: 'Tailscale' });
   const dialog = await view.findByRole('dialog', { name: 'Allow a device to connect' });

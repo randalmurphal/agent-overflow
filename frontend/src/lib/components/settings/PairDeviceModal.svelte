@@ -51,9 +51,16 @@
     /** Fired on every state change another surface may care about:
      * mint, confirm, cancel. DevicesSection reloads its overview on it. */
     onChanged: () => void;
+    /** Whether this surface may mint a "My device" pairing — the
+     * backend's own verdict (`ListOwnDevices().canEnroll`), read by
+     * DevicesSection before this opens so the choice stage never swaps
+     * its labels a round trip in. False replaces the option with
+     * ordinary pairing and says where it lives; null is unknown and
+     * keeps today's offer. */
+    canEnrollOwnDevice: boolean | null;
   }
 
-  let { open, remoteReachable, onClose, onChanged }: Props = $props();
+  let { open, remoteReachable, onClose, onChanged, canEnrollOwnDevice }: Props = $props();
 
   type Stage =
     | { at: 'choose' }
@@ -87,6 +94,13 @@
   const explicitNetworks = $derived(hello?.capabilities.includes('pairing.networks.v1') ?? false);
   const nearbyPairing = $derived(hello?.capabilities.includes('pairing.nearby.v1') ?? false);
   const ownDevices = $derived(hello?.capabilities.includes('own-devices.v1') ?? false);
+  // The host allows personal enrollment only from its own window or an
+  // active member (`ownPairingAdmin`); a passkey-signed browser or an
+  // ordinary full-access device is neither, and used to be offered a
+  // "My device" that always failed with a toast. It gets the ordinary
+  // Full access / View only pair instead, which the backend does honour
+  // for it, plus one line saying where the personal option lives.
+  const ownEnroll = $derived(ownDevices && canEnrollOwnDevice !== false);
   const cannotMint = $derived(!hello || minting !== null || (explicitNetworks && (loadingNetworks || networkOptions.length === 0)));
   let deciding = $state(false);
   let copyState = $state<'idle' | 'copied' | 'failed'>('idle');
@@ -167,7 +181,7 @@
     }
     minting = deviceClass;
     try {
-      const invite = await call(() => ownDevices && access === 'full'
+      const invite = await call(() => ownEnroll && access === 'full'
         ? MintOwnDevicePairingOnNetwork(deviceClass, networkChoice)
         : explicitNetworks
         ? MintDevicePairingOnNetwork(deviceClass, access, networkChoice)
@@ -293,7 +307,7 @@
 
 <Modal {open} title="Allow a device to connect" {onClose} width="sm">
   {#if stage.at === 'computer'}
-    {#if open}<ComputerPairingWindow {networkChoice} {access} {onChanged} {onClose} />{/if}
+    {#if open}<ComputerPairingWindow {networkChoice} {access} {ownEnroll} {onChanged} {onClose} />{/if}
   {:else if stage.at === 'legacy-computer'}
     <div class="flex flex-col gap-3">
       <p class="font-medium text-fg">Direct computer pairing is unavailable</p>
@@ -307,7 +321,7 @@
   {:else if stage.at === 'choose'}
     <div class="flex flex-col gap-3">
       <p class="text-[0.75rem] leading-snug text-fg-muted">
-        {#if ownDevices && access === 'full'}
+        {#if ownEnroll && access === 'full'}
           Add one of your devices. Your devices will connect to each other automatically,
           including devices already connected to the other computer.
         {:else}
@@ -349,13 +363,18 @@
       <div class="flex items-center justify-between gap-3">
         <MicroLabel>Access</MicroLabel>
         <Segmented
-          options={ownDevices ? [{ value: 'full', label: 'My device' }, { value: 'view-only', label: 'View only' }] : ACCESS_OPTIONS}
+          options={ownEnroll ? [{ value: 'full', label: 'My device' }, { value: 'view-only', label: 'View only' }] : ACCESS_OPTIONS}
           value={access}
           onChange={(next) => (access = next)}
           ariaLabel="Access"
           disabled={minting !== null}
         />
       </div>
+      {#if ownDevices && !ownEnroll}
+        <p class="text-[0.6875rem] leading-snug text-fg-hint">
+          “My device” pairing is available from your own devices, or at the computer.
+        </p>
+      {/if}
       <div class="grid grid-cols-2 gap-2">
         <button
           type="button"

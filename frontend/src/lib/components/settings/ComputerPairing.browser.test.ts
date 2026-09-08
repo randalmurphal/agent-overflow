@@ -19,7 +19,7 @@ it.each([360, 1280])('keeps computer verification readable and approval reachabl
   setBindingMock('CloseComputerPairing', async () => {});
   setBindingMock('ComputerPairingStatus', async () => ({ state: 'ready', verificationNumber: '135 791', deviceLabel: 'My other development workstation', linkId: 'link', expiresAtMs: Date.now() + 300_000 }));
   const confirm = setBindingMock('ConfirmDevicePairing', async () => {});
-  const view = render(PairDeviceModal, { open: true, remoteReachable: true, onClose: () => {}, onChanged: () => {} });
+  const view = render(PairDeviceModal, { open: true, remoteReachable: true, canEnrollOwnDevice: true, onClose: () => {}, onChanged: () => {} });
   await view.findByRole('radio', { name: 'Tailscale' });
   await fireEvent.click(view.getByRole('button', { name: /Another computer/ }));
   const number = await view.findByLabelText('Verification number');

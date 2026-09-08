@@ -16,6 +16,17 @@ export class List {
     "selfKeyThumbprint": string;
     "members": Member[];
 
+    /**
+     * CanEnroll is about the CALLER of ListOwnDevices, not the catalog:
+     * whether that session may mint a personal ("My device") pairing on
+     * this computer, which the host allows only from its own window or an
+     * active member. A surface offers the option only when this is true;
+     * a passkey-signed browser or an ordinary full-access device gets
+     * ordinary pairing instead of an option that always fails. Peers
+     * exchanging catalogs ignore it.
+     */
+    "canEnroll": boolean;
+
     /** Creates a new List instance. */
     constructor($$source: Partial<List> = {}) {
         if (!("connectedBackendIds" in $$source)) {
@@ -32,6 +43,9 @@ export class List {
         }
         if (!("members" in $$source)) {
             this["members"] = [];
+        }
+        if (!("canEnroll" in $$source)) {
+            this["canEnroll"] = false;
         }
 
         Object.assign(this, $$source);

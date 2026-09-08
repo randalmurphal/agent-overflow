@@ -24,6 +24,7 @@
   import {
     GetAccessOverview,
     GetNetworkSettings,
+    ListOwnDevices,
     ConfirmDevicePairing,
     CancelDevicePairing,
     RevokeAccessDevice,
@@ -41,6 +42,8 @@
   import { relativeTime } from '../../utils/format';
   import { isViewOnlyGrantSet } from '../../transport/scopes';
   import { backendReachable } from '../../stores/attachedBackends.svelte';
+  import { getTransportHello, getTransportHelloFor } from '../../stores/transportStatus.svelte';
+  import { HOME_BACKEND } from '../../transport/backendKey';
   import PairDeviceModal from './PairDeviceModal.svelte';
   import PasskeysBlock from './PasskeysBlock.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
@@ -119,12 +122,31 @@
     }
   }
 
+  // Whether this surface may mint a "My device" pairing. The backend
+  // allows personal enrollment only from its own window or an active
+  // member, so a passkey-signed browser or an ordinary full-access device
+  // is offered ordinary pairing instead of an option that always fails.
+  // Read here, ahead of the modal, so it opens with the answer; unknown
+  // (an old backend, a failed read) keeps the modal's default offer.
+  let canEnrollOwnDevice = $state<boolean | null>(null);
+  const ownDevicesCapable = $derived(
+    (backend === HOME_BACKEND ? getTransportHello() : getTransportHelloFor(backend))?.capabilities.includes('own-devices.v1') ?? false,
+  );
+  async function loadOwnEnrollment(): Promise<void> {
+    try {
+      canEnrollOwnDevice = (await call(() => ListOwnDevices())).canEnroll ?? null;
+    } catch {
+      canEnrollOwnDevice = null;
+    }
+  }
+
   function openPairing(): void {
     // Tailnet may have joined since this section mounted beside Network.
     // Open immediately and withhold a stale warning while refreshing.
     remoteReachable = true;
     pairOpen = true;
     void loadReachability();
+    if (ownDevicesCapable) void loadOwnEnrollment();
   }
 
   function armOrRun(id: string, run: () => Promise<void>): void {
@@ -259,6 +281,11 @@
   function minutesLeft(atMs: number): number {
     return Math.max(0, Math.ceil((atMs - Date.now()) / 60_000));
   }
+
+  // The capability can land after mount; the verdict follows it.
+  $effect(() => {
+    if (!unavailable && ownDevicesCapable) untrack(() => void loadOwnEnrollment());
+  });
 
   $effect(() => {
     if (!unavailable) untrack(() => void load());
@@ -538,5 +565,5 @@
 </section>
 
 {#if !unavailable}
-  <PairDeviceModal open={pairOpen} {remoteReachable} onClose={() => (pairOpen = false)} onChanged={() => void load()} />
+  <PairDeviceModal open={pairOpen} {remoteReachable} {canEnrollOwnDevice} onClose={() => (pairOpen = false)} onChanged={() => void load()} />
 {/if}

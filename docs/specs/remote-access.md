@@ -215,8 +215,12 @@ remain a separate, narrower credential class, unchanged.
 Hosts advertising `own-devices.v1` default **My device** to an explicit personal
 group join. `MintOwnDevicePairing`, `MintOwnDevicePairingOnNetwork`, and
 `OpenOwnComputerPairing` carry the same access-admin and step-up requirements as
-ordinary invitation minting. **View only** retains ordinary restricted pairing.
-Previously issued full-access sessions do not gain membership implicitly.
+ordinary invitation minting, and additionally admit only the host's own window
+or an active member as the caller. `ListOwnDevices` reports that verdict about
+its caller as `canEnroll`; a surface offers **My device** only when it is true
+and otherwise offers ordinary full or view-only pairing, which such a caller may
+still mint. **View only** retains ordinary restricted pairing. Previously issued
+full-access sessions do not gain membership implicitly.
 
 Membership RPCs (`ListOwnDevices`, `RegisterOwnDevice`, `SyncOwnDevices`,
 `MintOwnDeviceIntroduction`, `IntroduceOwnDevice`, `AcceptOwnDeviceIntroduction`)

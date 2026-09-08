@@ -31,6 +31,14 @@ type List struct {
 	Enabled             bool     `json:"enabled"`
 	SelfKeyThumbprint   string   `json:"selfKeyThumbprint"`
 	Members             []Member `json:"members"`
+	// CanEnroll is about the CALLER of ListOwnDevices, not the catalog:
+	// whether that session may mint a personal ("My device") pairing on
+	// this computer, which the host allows only from its own window or an
+	// active member. A surface offers the option only when this is true;
+	// a passkey-signed browser or an ordinary full-access device gets
+	// ordinary pairing instead of an option that always fails. Peers
+	// exchanging catalogs ignore it.
+	CanEnroll bool `json:"canEnroll"`
 }
 
 func ValidKey(key string) bool {

@@ -14,11 +14,12 @@ const LEGACY_HELLO = {
   serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0,
 };
 
-function renderModal(props: Partial<{ remoteReachable: boolean; onClose: () => void; onChanged: () => void }> = {}) {
+function renderModal(props: Partial<{ remoteReachable: boolean; canEnrollOwnDevice: boolean | null; onClose: () => void; onChanged: () => void }> = {}) {
   return render(PairDeviceModal, {
     props: {
       open: true,
       remoteReachable: true,
+      canEnrollOwnDevice: true,
       onClose: () => {},
       onChanged: () => {},
       ...props,
@@ -58,6 +59,28 @@ describe('<PairDeviceModal>', () => {
     await fireEvent.click(second.getByRole('button', { name: /Phone or tablet/ }));
     expect(restricted).toHaveBeenCalledExactlyOnceWith('phone', 'view-only', 'lan');
     expect(personal).toHaveBeenCalledOnce();
+  });
+
+  it('offers ordinary pairing, and says where My device lives, when the backend refuses this caller a personal join', async () => {
+    // A passkey-signed browser or an ordinary full-access device sees
+    // `own-devices.v1` advertised and is still refused by `ownPairingAdmin`.
+    // DevicesSection reads that verdict off `ListOwnDevices().canEnroll`
+    // and hands it in; the modal must not offer the option that always
+    // failed with a toast (found by harness-passkey-lifecycle case 4).
+    __setTransportHelloForTest({ ...LEGACY_HELLO, capabilities: ['own-devices.v1', 'pairing.networks.v1'] });
+    setBindingMock('GetNetworkSettings', async () => ({ bindAll: true }));
+    setBindingMock('DevicePairingStatus', async () => ({ state: 'pending', expiresAtMs: INVITE.expiresAtMs }));
+    const personal = setBindingMock('MintOwnDevicePairingOnNetwork', async () => INVITE);
+    const ordinary = setBindingMock('MintDevicePairingOnNetwork', async () => INVITE);
+    const view = renderModal({ canEnrollOwnDevice: false });
+    expect(await view.findByRole('radio', { name: 'Full access' })).toBeChecked();
+    expect(view.queryByRole('radio', { name: 'My device' })).toBeNull();
+    expect(view.getByText(/“My device” pairing is available from your own devices/)).toBeTruthy();
+    expect(view.queryByText(/including devices already connected/)).toBeNull();
+    await waitFor(() => expect(view.getByRole('button', { name: /Phone or tablet/ })).toBeEnabled());
+    await fireEvent.click(view.getByRole('button', { name: /Phone or tablet/ }));
+    expect(ordinary).toHaveBeenCalledExactlyOnceWith('phone', 'full', 'lan');
+    expect(personal).not.toHaveBeenCalled();
   });
 
   it('mints for the chosen device class and shows the link to share', async () => {

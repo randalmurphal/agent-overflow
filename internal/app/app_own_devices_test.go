@@ -22,8 +22,14 @@ func TestLegacyFullSessionCannotJoinOrIntroduceOwnDevices(t *testing.T) {
 	session := pairSessionWithScopes(t, b.app, "legacy-full", grants)
 	ctx := callFrom(session.ID, true)
 	list, e := b.app.ListOwnDevices(ctx)
-	if e != nil || list.Enabled || len(list.Members) > 0 {
+	if e != nil || list.Enabled || len(list.Members) > 0 || list.CanEnroll {
 		t.Fatal(list, e)
+	}
+	// The host's own window may enroll before any membership exists; that
+	// verdict is what lets the modal offer "My device" there and withhold
+	// it from the legacy session above (settings/AGENTS.md).
+	if local, e := b.app.ListOwnDevices(context.Background()); e != nil || !local.CanEnroll {
+		t.Fatal("local window refused enrollment", local, e)
 	}
 	if _, e = b.app.MintOwnDevicePairingOnNetwork(ctx, "phone", "lan"); e == nil {
 		t.Fatal("legacy admin could create group")
