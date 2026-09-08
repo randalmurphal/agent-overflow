@@ -656,10 +656,16 @@ test.describe.serial('passkey lifecycle', () => {
     // invisible from the owner's own screen, where host presence
     // satisfies the gate and no ceremony ever runs.
     //
-    // `MintDevicePairing` is the surface driven here because it is a
-    // DIFFERENT scope (`access:admin` rather than the passkey block's
-    // own), it is `//ao:stepup`, and `PairDeviceModal.svelte` calls it
-    // plainly — there is no passkey code anywhere in that component.
+    // `MintDevicePairingOnNetwork` is the surface driven here because it
+    // is a DIFFERENT scope (`access:admin` rather than the passkey
+    // block's own), it is `//ao:stepup`, and `PairDeviceModal.svelte`
+    // calls it plainly — there is no passkey code anywhere in that
+    // component. The mint has to be VIEW-ONLY: with `own-devices.v1`
+    // advertised, the modal's full arm mints an OWN-device pairing, and
+    // `ownPairingAdmin` refuses that for any caller that is not itself
+    // local or an own device — which this passkey-signed browser is not.
+    // View-only drives the identical step-up gate without that second
+    // refusal in the way.
     const beforeAudit = ((await harness.rpc<AccessOverview>('GetAccessOverview')).audit ?? [])
       .filter((entry) => entry.event === 'passkey-step-up').length;
 
@@ -669,6 +675,7 @@ test.describe.serial('passkey lifecycle', () => {
     remoteSurfaced.errorToasts.length = 0;
 
     await remotePage.getByRole('button', { name: 'Allow a device to connect' }).click();
+    await remotePage.getByRole('radio', { name: 'View only' }).check();
     await remotePage.getByRole('button', { name: 'Phone or tablet' }).click();
 
     // The mint LANDED: the modal is showing the link it answered with,
@@ -682,9 +689,9 @@ test.describe.serial('passkey lifecycle', () => {
     // The mechanism, off the wire: refused for want of a proof, one
     // ceremony verified by this backend, the same call accepted.
     expect(
-      remoteSurfaced.rpcReplies.filter((name) => name === 'MintDevicePairing'),
+      remoteSurfaced.rpcReplies.filter((name) => name === 'MintDevicePairingOnNetwork'),
       'one button press, two replies: the refusal and the retry that carried the proof',
-    ).toEqual(['MintDevicePairing', 'MintDevicePairing']);
+    ).toEqual(['MintDevicePairingOnNetwork', 'MintDevicePairingOnNetwork']);
     expect(
       remoteSurfaced.rpcReplies.filter((name) => name === 'FinishPasskeyStepUp'),
       'the proof is a ceremony this backend verified, not a flag the client set',
@@ -692,7 +699,7 @@ test.describe.serial('passkey lifecycle', () => {
     expect(
       appRefusals(remoteSurfaced),
       'exactly one refusal: a second would mean the retry went out unarmed',
-    ).toEqual(['MintDevicePairing step_up_required:']);
+    ).toEqual(['MintDevicePairingOnNetwork step_up_required:']);
     expect(
       remoteSurfaced.errorToasts,
       'a call that went through on the retry surfaces nothing',
