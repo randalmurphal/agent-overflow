@@ -179,8 +179,8 @@ func TestDiscoverLocalLANIP_DeterministicOrder(t *testing.T) {
 		// Reverse order on purpose. A sort by Index ascending must
 		// override this so the result is stable.
 		return []net.Interface{
-			{Index: 2, Name: "eth1", Flags: net.FlagUp},
-			{Index: 1, Name: "eth0", Flags: net.FlagUp},
+			{Index: 2, Name: "eth1", Flags: net.FlagUp | net.FlagRunning},
+			{Index: 1, Name: "eth0", Flags: net.FlagUp | net.FlagRunning},
 		}, nil
 	}
 	InterfaceAddrs = func(iface net.Interface) ([]net.Addr, error) {
@@ -212,7 +212,7 @@ func TestDiscoverLocalLANIP_TailscalePreference(t *testing.T) {
 
 	Interfaces = func() ([]net.Interface, error) {
 		return []net.Interface{
-			{Index: 1, Name: "tailscale0", Flags: net.FlagUp},
+			{Index: 1, Name: "tailscale0", Flags: net.FlagUp | net.FlagRunning},
 		}, nil
 	}
 	InterfaceAddrs = func(iface net.Interface) ([]net.Addr, error) {
@@ -247,8 +247,8 @@ func TestDiscoverLocalLANIP_RFC1918BeatsTailscale(t *testing.T) {
 			// scan we'd return it first. With preference, the
 			// 192.168 address must win even though it's on a
 			// higher-index iface.
-			{Index: 1, Name: "tailscale0", Flags: net.FlagUp},
-			{Index: 2, Name: "en0", Flags: net.FlagUp},
+			{Index: 1, Name: "tailscale0", Flags: net.FlagUp | net.FlagRunning},
+			{Index: 2, Name: "en0", Flags: net.FlagUp | net.FlagRunning},
 		}, nil
 	}
 	InterfaceAddrs = func(iface net.Interface) ([]net.Addr, error) {
@@ -279,7 +279,7 @@ func TestDiscoverLocalLANIP_SkipsLoopbackAndDown(t *testing.T) {
 
 	Interfaces = func() ([]net.Interface, error) {
 		return []net.Interface{
-			{Index: 1, Name: "lo", Flags: net.FlagUp | net.FlagLoopback},
+			{Index: 1, Name: "lo", Flags: net.FlagUp | net.FlagRunning | net.FlagLoopback},
 			{Index: 2, Name: "down0", Flags: 0}, // not up
 		}, nil
 	}
@@ -535,7 +535,7 @@ func TestPairingURLOnNetwork(t *testing.T) {
 	previousInterfaces, previousAddrs := Interfaces, InterfaceAddrs
 	t.Cleanup(func() { Interfaces, InterfaceAddrs = previousInterfaces, previousAddrs })
 	Interfaces = func() ([]net.Interface, error) {
-		return []net.Interface{{Index: 1, Name: "lan", Flags: net.FlagUp}}, nil
+		return []net.Interface{{Index: 1, Name: "lan", Flags: net.FlagUp | net.FlagRunning}}, nil
 	}
 	address := "192.168.1.20"
 	InterfaceAddrs = func(net.Interface) ([]net.Addr, error) {
@@ -585,5 +585,34 @@ func TestPairingURLOnNetwork(t *testing.T) {
 				t.Fatalf("unavailable choice returned %q, %q, %v", link, pin, err)
 			}
 		})
+	}
+}
+
+// TestDiscoverLocalLANIP_SkipsBridgesAndCarrierlessInterfaces: a Docker
+// bridge sits at a low index with a private subnet and no LAN behind it,
+// and an interface that is up without carrier reaches nobody. The real NIC
+// behind both must win, or the share URL names an address no peer routes to.
+func TestDiscoverLocalLANIP_SkipsBridgesAndCarrierlessInterfaces(t *testing.T) {
+	prevIfaces, prevAddrs := Interfaces, InterfaceAddrs
+	t.Cleanup(func() { Interfaces, InterfaceAddrs = prevIfaces, prevAddrs })
+	addrsByIndex := map[int][]net.Addr{
+		1: {&net.IPNet{IP: net.IPv4(172, 17, 0, 1), Mask: net.CIDRMask(16, 32)}},
+		2: {&net.IPNet{IP: net.IPv4(10, 0, 0, 5), Mask: net.CIDRMask(8, 32)}},
+		3: {&net.IPNet{IP: net.IPv4(172, 18, 0, 1), Mask: net.CIDRMask(16, 32)}},
+		4: {&net.IPNet{IP: net.IPv4(192, 168, 122, 1), Mask: net.CIDRMask(24, 32)}},
+		5: {&net.IPNet{IP: net.IPv4(192, 168, 1, 10), Mask: net.CIDRMask(24, 32)}},
+	}
+	Interfaces = func() ([]net.Interface, error) {
+		return []net.Interface{
+			{Index: 1, Name: "docker0", Flags: net.FlagUp | net.FlagRunning},
+			{Index: 2, Name: "eth0", Flags: net.FlagUp}, // no carrier
+			{Index: 3, Name: "br-3f2a9c1d", Flags: net.FlagUp | net.FlagRunning},
+			{Index: 4, Name: "virbr0", Flags: net.FlagUp | net.FlagRunning},
+			{Index: 5, Name: "wlan0", Flags: net.FlagUp | net.FlagRunning},
+		}, nil
+	}
+	InterfaceAddrs = func(iface net.Interface) ([]net.Addr, error) { return addrsByIndex[iface.Index], nil }
+	if got := DiscoverLocalLANIP(); got != "192.168.1.10" {
+		t.Fatalf("DiscoverLocalLANIP = %q, want the running NIC behind the bridges and the carrier-less port", got)
 	}
 }

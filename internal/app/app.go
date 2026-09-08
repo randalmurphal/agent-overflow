@@ -490,6 +490,10 @@ type App struct {
 	computerPairing         computerPairingState
 	nativeNetwork           nativeNetworkState
 	computerRoutesPublished computerRoutesPublication
+	// networkApply serializes every apply of the network preferences (the
+	// settings write, the rebind and the reconciler kicks are one act) across
+	// the settings screen and the own-devices worker. See app_network.go.
+	networkApply sync.Mutex
 	// preview owns this machine's dev-server list: the scanner, the one
 	// goroutine that polls it while somebody off-machine is watching, and
 	// the platform refusal once a platform has given one. Zero value is

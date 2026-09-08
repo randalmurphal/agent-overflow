@@ -14,7 +14,7 @@ func TestForwardedWindowsIngressDrivesPairingAndRouteTrust(t *testing.T) {
 	previousInterfaces, previousAddrs := Interfaces, InterfaceAddrs
 	t.Cleanup(func() { Interfaces, InterfaceAddrs = previousInterfaces, previousAddrs })
 	Interfaces = func() ([]net.Interface, error) {
-		return []net.Interface{{Index: 1, Name: "wsl", Flags: net.FlagUp}}, nil
+		return []net.Interface{{Index: 1, Name: "wsl", Flags: net.FlagUp | net.FlagRunning}}, nil
 	}
 	const wsl = "172.20.0.2"
 	InterfaceAddrs = func(net.Interface) ([]net.Addr, error) {

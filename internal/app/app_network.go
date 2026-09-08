@@ -109,6 +109,19 @@ func (a *App) GetNetworkSettings(ctx context.Context) (network.Settings, error) 
 //ao:route home
 //ao:stepup
 func (a *App) SetNetworkSettings(ctx context.Context, s network.Settings) (network.Settings, error) {
+	a.networkApply.Lock()
+	defer a.networkApply.Unlock()
+	return a.applyNetworkSettings(ctx, s)
+}
+
+// applyNetworkSettings is the one apply, and it runs only under
+// networkApply. The settings write, the rebind, the allow-list rotation and
+// the reconciler kicks read `prev` once and act on it, so two applies that
+// interleaved would each rebind against a listener the other was moving and
+// kick reconcilers against a file the other was still writing. The
+// settings screen and the own-devices worker (ensureOwnDeviceHosting) both
+// reach here, and only through the lock.
+func (a *App) applyNetworkSettings(ctx context.Context, s network.Settings) (network.Settings, error) {
 	defer a.publishComputerRoutes()
 	if a.settings == nil {
 		return network.Settings{}, fmt.Errorf("settings service unavailable")

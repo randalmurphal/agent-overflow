@@ -1012,6 +1012,15 @@ export class ComputerPairingView {
     "linkId": string;
     "expiresAtMs": number;
 
+    /**
+     * DiscoveryError says why this window is not advertised on the local
+     * network, so the owner can be told to type the address rather than wait
+     * for a discovery that cannot happen. Empty while advertising, and for a
+     * window this process does not advertise (LAN sharing off, or the
+     * Windows launcher's own LAN listener).
+     */
+    "discoveryError": string;
+
     /** Creates a new ComputerPairingView instance. */
     constructor($$source: Partial<ComputerPairingView> = {}) {
         if (!("state" in $$source)) {
@@ -1028,6 +1037,9 @@ export class ComputerPairingView {
         }
         if (!("expiresAtMs" in $$source)) {
             this["expiresAtMs"] = 0;
+        }
+        if (!("discoveryError" in $$source)) {
+            this["discoveryError"] = "";
         }
 
         Object.assign(this, $$source);

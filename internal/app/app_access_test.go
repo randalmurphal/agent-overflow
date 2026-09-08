@@ -843,7 +843,7 @@ func TestMintDevicePairingOnNetworkKeepsLANTrustInPayloadAndRecord(t *testing.T)
 	previousInterfaces, previousAddrs := network.Interfaces, network.InterfaceAddrs
 	t.Cleanup(func() { network.Interfaces, network.InterfaceAddrs = previousInterfaces, previousAddrs })
 	network.Interfaces = func() ([]net.Interface, error) {
-		return []net.Interface{{Index: 1, Name: "lan", Flags: net.FlagUp}}, nil
+		return []net.Interface{{Index: 1, Name: "lan", Flags: net.FlagUp | net.FlagRunning}}, nil
 	}
 	network.InterfaceAddrs = func(net.Interface) ([]net.Addr, error) {
 		return []net.Addr{&net.IPNet{IP: net.ParseIP("192.168.1.20"), Mask: net.CIDRMask(24, 32)}}, nil

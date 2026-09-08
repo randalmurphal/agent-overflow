@@ -267,10 +267,13 @@ func (a *App) DevicePairingStatus(linkID string) (PairingStatusView, error) {
 //ao:scope access:admin
 //ao:route home
 func (a *App) ConfirmDevicePairing(linkID string) error {
+	// A fenced link whose bootstrap window is gone is refused here; the
+	// store's own settled-state guard decides every interleaving after that.
 	pairing := &a.computerPairing
 	pairing.mu.Lock()
-	defer pairing.mu.Unlock()
-	if pairing.linkID == linkID && linkID != "" && (pairing.book == nil || pairing.book.Snapshot("").LinkID != linkID) {
+	fenced, book := pairing.linkID == linkID && linkID != "", pairing.book
+	pairing.mu.Unlock()
+	if fenced && (book == nil || book.Snapshot("").LinkID != linkID) {
 		return identity.ErrPairingRefused
 	}
 	state, err := a.accessState()

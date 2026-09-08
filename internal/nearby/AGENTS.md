@@ -1,10 +1,17 @@
 # internal/nearby
 
 Untrusted LAN DNS-SD hints, separate from pairing and all credentials.
-`Start` owns per-interface mDNS responders while LAN sharing is enabled;
-`Discover` owns a bounded two-second scan with no persistent cache. Root
-composition closes/recreates responders on listener or network changes.
-Name is a getter and is read per query so renames do not leave stale labels.
+`Start` owns per-interface mDNS responders on the interfaces present when
+it runs; `Discover` owns a bounded two-second scan with no persistent cache.
+Root composition starts responders when a pairing window opens on a host
+sharing on the LAN and closes them when that window is closed, replaced,
+loses its owner connection, or a listener-affecting setting changes. Nothing
+observes interface changes: a network that appears later is advertised by
+the next window. A start failure is the window's user-facing state
+(`ComputerPairingView.DiscoveryError`), never only a log line. Name is a
+getter so renames do not leave stale labels; the responder reads it only for
+an answer that carries the TXT record, because the library asks the zone
+about every question on the LAN and the getter stats a file.
 
 Only protocol version, backend ID, name, port and private IPv4 addresses are
 advertised. Hints confer no identity, reachability or authorization: callers

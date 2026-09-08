@@ -456,13 +456,17 @@ func (a *App) RemoveOwnDevice(ctx context.Context, keyThumbprint string) error {
 
 // Personal enrollment authorizes the joining computer to host reciprocal
 // connections. Use the same listener/native relay lifecycle as the settings UI.
+// The read and the apply sit under one hold of networkApply, so a save from
+// the settings screen cannot land between them and be overwritten.
 func (a *App) ensureOwnDeviceHosting() error {
+	a.networkApply.Lock()
+	defer a.networkApply.Unlock()
 	settings := a.persistedNetworkSettings()
 	if settings.BindAll {
 		return nil
 	}
 	settings.BindAll = true
-	_, err := a.SetNetworkSettings(context.Background(), settings)
+	_, err := a.applyNetworkSettings(context.Background(), settings)
 	return err
 }
 

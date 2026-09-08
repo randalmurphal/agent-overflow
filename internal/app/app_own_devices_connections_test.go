@@ -255,7 +255,7 @@ func ownConnectionNetwork(t *testing.T) {
 	interfaces, addresses := network.Interfaces, network.InterfaceAddrs
 	t.Cleanup(func() { network.Interfaces, network.InterfaceAddrs = interfaces, addresses })
 	network.Interfaces = func() ([]net.Interface, error) {
-		return []net.Interface{{Index: 1, Name: "test-lan", Flags: net.FlagUp}}, nil
+		return []net.Interface{{Index: 1, Name: "test-lan", Flags: net.FlagUp | net.FlagRunning}}, nil
 	}
 	network.InterfaceAddrs = func(net.Interface) ([]net.Addr, error) {
 		return []net.Addr{&net.IPNet{IP: net.ParseIP("192.168.50.5"), Mask: net.CIDRMask(24, 32)}}, nil
