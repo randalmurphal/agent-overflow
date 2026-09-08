@@ -39,6 +39,7 @@ checksum_dir() {
 }
 
 copy_file "$ROOT_DIR/scripts/install.sh" "$OUT_DIR/install.sh"
+copy_file "$ROOT_DIR/scripts/macos-bundle.sh" "$OUT_DIR/macos-bundle.sh"
 copy_file "$ROOT_DIR/build/appicon.png" "$OUT_DIR/appicon.png"
 chmod +x "$OUT_DIR/install.sh"
 checksum_dir "$OUT_DIR"

@@ -305,6 +305,11 @@ prepare_download_artifact() {
 		verify_checksum "$DOWNLOAD_DIR/appicon.png" appicon.png "$DOWNLOAD_DIR/SHASUMS256"
 	fi
 
+	if [ "$MODE" = macos ]; then
+		copy_release_file macos-bundle.sh "$DOWNLOAD_DIR/macos-bundle.sh"
+		verify_checksum "$DOWNLOAD_DIR/macos-bundle.sh" macos-bundle.sh "$DOWNLOAD_DIR/SHASUMS256"
+	fi
+
 	ASSET_DIR=$DOWNLOAD_DIR
 	ARTIFACT=$DOWNLOAD_DIR/$release_artifact_name
 }
@@ -409,33 +414,30 @@ install_macos() {
 	fi
 
 	[ -n "$ARTIFACT" ] || { echo "ERROR: --macos requires an .app/.zip path or --download" >&2; exit 2; }
+	. "$(asset_path macos-bundle.sh)"
 	run mkdir -p "$apps_dir"
+	if [ "$DRY_RUN" -eq 1 ]; then
+		printf 'Prepare %s and replace %s, retaining any running version\n' "$ARTIFACT" "$dest"
+		return
+	fi
+	tmp=$(mktemp -d "$apps_dir/.ao-bundle.XXXXXX")
+	register_cleanup_path "$tmp"
 	case "$ARTIFACT" in
 		*.app)
-			run rm -rf "$dest"
-			run cp -R "$ARTIFACT" "$dest"
+			app=$tmp/Agent\ Overflow.app
+			cp -R "$ARTIFACT" "$app"
 			;;
 		*.zip)
-			if [ "$DRY_RUN" -eq 1 ]; then
-				printf '%s\n' "unzip -q $ARTIFACT -d <tempdir>"
-				printf '%s\n' "rm -rf $dest"
-				printf '%s\n' "cp -R <tempdir>/Agent Overflow.app $dest"
-				printf 'Installed Agent Overflow to %s\n' "$dest"
-				return
-			fi
-			tmp=$(mktemp -d)
-			register_cleanup_path "$tmp"
-			run unzip -q "$ARTIFACT" -d "$tmp"
+			unzip -q "$ARTIFACT" -d "$tmp"
 			app=$(find "$tmp" -maxdepth 2 -name '*.app' -type d | head -n 1)
 			[ -n "$app" ] || { echo "ERROR: zip did not contain an .app bundle" >&2; exit 1; }
-			run rm -rf "$dest"
-			run cp -R "$app" "$dest"
 			;;
 		*)
 			echo "ERROR: --macos artifact must be an .app directory or .zip" >&2
 			exit 2
 			;;
 	esac
+	publish_macos_bundle "$app" "$dest"
 	printf 'Installed Agent Overflow to %s\n' "$dest"
 }
 

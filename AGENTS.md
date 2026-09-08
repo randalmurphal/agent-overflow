@@ -213,6 +213,11 @@ See [docs/references/spike-policy.md](docs/references/spike-policy.md).
 
 ## Permanent invariants
 
+- **Never rewrite a running macOS bundle.** Build and install through the
+  shared bundle publisher, which preserves the previous bundle while in use.
+  See [conventions.md](docs/architecture/conventions.md) for the
+  lifecycle and its real code-signature regression test.
+
 - **Instance locks never cross exec.** Backend and harness lifetime locks use
   atomic close-on-exec on Unix. A provider or orphan-reaper child may outlive
   its parent; inheriting the lock would prevent the next app version from

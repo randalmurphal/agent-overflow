@@ -192,6 +192,16 @@ happens through stable sibling ids in triage.
   2026-09-03 that shipped a pre-merge page inside a post-merge backend,
   and the app booted to nothing but HTTP 404 toasts. Don't reintroduce
   `sources:` on a task whose output is embedded in the binary.
+- **macOS bundles are replaced whole, never edited in place.** The build
+  packager and installer share `scripts/macos-bundle.sh`: prepare and sign
+  a fresh bundle, rename the previous bundle aside, then publish the new one.
+  Keep retired bundles while `lsof` finds users (or cannot inspect them); later
+  builds/installs reclaim them after exit. Deleting the old bundle immediately
+  also invalidates its running process. `TestMacOSBundleReplacementPreservesRunningCode`
+  checks the real macOS signature before and after repeated build/install
+  replacements, new launches, failed publication, and cleanup after exit.
+  This protects bundle integrity; it does not guarantee ad-hoc signatures retain
+  macOS privacy grants across versions.
 - **Heavy content on demand.** Fetch diffs, command output, and thinking
   via a Wails binding when the user expands. Don't preload. The `items`
   list the frontend receives already omits `payload.data`; fetching it

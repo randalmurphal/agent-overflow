@@ -145,7 +145,7 @@ eventually be published:
    ```
 
    Run this from the extracted directory. It detects the platform and verifies
-   the packaged checksums. Quit the installed app before replacing it.
+   the packaged checksums. Restart the app after installing to run the new version.
 4. On the phone, download the smaller `android-raw` artifact from the same run,
    extract it in Files, and open the APK to install/update it. No USB or wireless
    debugging is needed. Allow installs from that browser or file manager if
@@ -180,8 +180,22 @@ mkdir -p dist/local-test
 ./scripts/install.sh --macos ./dist/local-test/agent-overflow-darwin-arm64.zip
 ```
 
-Quit the previous production app before installing/reopening it. Development
-and harness instances have their own identities; configuring a harness does
+Building or installing on macOS can leave the current app running: the new
+bundle replaces its path, while the original signed bundle is retained in a
+hidden sibling directory until no process uses it. Later builds/installs clean
+up those retired copies. Fully quit and reopen to run the new version; building
+alone does not update a separate installed copy. The macOS installer needs the
+packaged `macos-bundle.sh` asset beside `install.sh` for local artifacts;
+`--download` fetches and checksum-verifies it automatically.
+
+Ad-hoc signing does not guarantee stable local-network permission identity
+across builds. Apple recommends an Apple-issued signing identity for that:
+[local network privacy](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy).
+If LAN access fails after changing builds, check System Settings → Privacy &
+Security → Local Network for Agent Overflow. Preserving bundles avoids invalid
+running code; it cannot override a denied OS permission.
+
+Development and harness instances have their own identities; configuring a harness does
 not configure your production host. `make release-macos` is the formal
 clean-tree release path after changes and release metadata are committed.
 

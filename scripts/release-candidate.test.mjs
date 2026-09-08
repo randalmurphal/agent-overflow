@@ -13,7 +13,7 @@ const run = { id: 42, run_attempt: 1, event: 'workflow_dispatch', status: 'compl
   head_sha: expected.commit, repository: { full_name: expected.repository }, html_url: 'https://example.invalid/run/42' };
 const hash = data => createHash('sha256').update(data).digest('hex');
 const names = ['agent-overflow-linux-amd64', 'agent-overflow-headless-linux-amd64', 'agent-overflow-wsl-amd64.exe',
-  'agent-overflow-darwin-arm64.zip', 'agent-overflow-android.apk', 'install.sh', 'appicon.png', 'CANDIDATE.json'];
+  'agent-overflow-darwin-arm64.zip', 'agent-overflow-android.apk', 'install.sh', 'macos-bundle.sh', 'appicon.png', 'CANDIDATE.json'];
 function fixture(t) {
   const dir = mkdtempSync(resolve(tmpdir(), 'ao-candidate-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
