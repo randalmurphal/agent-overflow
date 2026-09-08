@@ -626,7 +626,7 @@ parameters:
 | | subject | deadline |
 |---|---|---|
 | page ticket (`Credential.tickets`) | none — a launch has one page credential, so the ticket only decides who receives it | none — a URL ticket is produced for a person to open, and a launcher's fixed `?t=` URL must still work an hour later |
-| WS ticket (`Server.wsTickets`) | the session id it names | `wsTicketTTL` (30s) — a client mints one immediately before it dials |
+| WS ticket (`Server.wsTickets`) | the session id it names — and the one book with a PER-SUBJECT bound (`maxWSTicketsPerSession`), because every session on the backend shares it and a client that mints without dialling would otherwise evict other devices' tickets before its own | `wsTicketTTL` (30s) — a client mints one immediately before it dials |
 | attachment download (`Server.attachmentDownloadTickets`) | the `(thread, attachment)` pair it admits | `attachmentTicketTTL` (30s) — same reason as the WS ticket |
 | attachment upload (`Server.attachmentUploadTickets`) | the thread, filename, content type and exact byte count the stored row will carry | `attachmentTicketTTL` (30s) |
 

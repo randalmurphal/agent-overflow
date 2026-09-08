@@ -994,8 +994,8 @@ tailnet, and every listener must enforce the credential's binding class;
 a different network path cannot relax its presentation requirements.
 
 Cross-origin defense is explicit: strict Host allow-list (canonical
-domain + known loopback names), Origin / `Sec-Fetch-Site` checks on
-`/ws` and every auth endpoint, DNS-rebinding rejection.
+domain + known loopback names), Origin checks on `/ws` and every auth
+endpoint, DNS-rebinding rejection.
 
 Listener and endpoint-advertisement init is **per-listener isolated**:
 one integration failing to start (a broken `tailscale` binary on

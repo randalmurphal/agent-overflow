@@ -128,10 +128,10 @@ func (c *SessionConns) CountForSession(sessionID string) int {
 	return len(c.bySession[sessionID])
 }
 
-// Sessions reports how many distinct sessions currently hold at least one
+// sessions reports how many distinct sessions currently hold at least one
 // connection. The registry's own bound, readable so a test can assert it
 // returns to zero.
-func (c *SessionConns) Sessions() int {
+func (c *SessionConns) sessions() int {
 	if c == nil {
 		return 0
 	}

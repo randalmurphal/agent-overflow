@@ -315,3 +315,28 @@ func assertNothingLiveForDevice(t *testing.T, sessions *Sessions, st *store.Stor
 		}
 	}
 }
+
+// TestAnEntryExpiringInPlaceLeavesTheGenerationAlone — expiry is not a
+// revocation. Nothing about the row changed, so a slow path in flight
+// elsewhere holds a copy at least as current as the one being dropped;
+// moving the generation would only make every such read decline to
+// install, and on a busy backend that turned one expiry into a burst of
+// uncached lookups.
+func TestAnEntryExpiringInPlaceLeavesTheGenerationAlone(t *testing.T) {
+	sessions, _, c, owner, device := newFixture(t)
+	session, _ := mustMint(t, sessions, owner, device, time.Minute)
+	if _, reason := sessions.Live(session.ID); reason.Refused() {
+		t.Fatalf("Live refused a fresh session: %s", reason)
+	}
+	before := sessions.generationNow()
+	c.advance(2 * time.Minute)
+	if _, reason := sessions.Live(session.ID); reason != ReasonExpiredSession {
+		t.Fatalf("expired session = %s", reason)
+	}
+	if _, hit := sessions.live[session.ID]; hit {
+		t.Fatal("the expired entry was left in the fast path")
+	}
+	if sessions.generationNow() != before {
+		t.Fatal("an expiry moved the generation")
+	}
+}

@@ -107,8 +107,13 @@ const wsTicketTTL = 30 * time.Second
 
 // maxOutstandingWSTickets bounds the ticket book. A reconnect ladder mints
 // one per attempt and spends or abandons it within the TTL, so the bound
-// is reached only by a client that mints without ever dialling.
-const maxOutstandingWSTickets = 64
+// is reached only by a client that mints without ever dialling — and
+// maxWSTicketsPerSession is what keeps such a client's evictions inside
+// its own session rather than un-ticketing every other device.
+const (
+	maxOutstandingWSTickets = 64
+	maxWSTicketsPerSession  = 8
+)
 
 // PairingRedemption is what a device presents to spend a pairing link.
 // A dumb DTO: this package neither validates nor interprets any field.

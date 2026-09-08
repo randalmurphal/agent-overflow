@@ -39,7 +39,7 @@ func TestSessionConnsClosesEveryConnectionOnOneSession(t *testing.T) {
 	first()
 	second()
 	other()
-	if got := registry.Sessions(); got != 0 {
+	if got := registry.sessions(); got != 0 {
 		t.Fatalf("registry holds %d sessions after every detach, want 0", got)
 	}
 }
@@ -118,7 +118,7 @@ func TestSessionConnsDetachIsIdempotent(t *testing.T) {
 func TestSessionConnsIgnoresConnectionsThatNameNoSession(t *testing.T) {
 	registry := newSessionConns()
 	detach := registry.attach("", func() { t.Fatal("a session-less connection was closed by a revocation") })
-	if got := registry.Sessions(); got != 0 {
+	if got := registry.sessions(); got != 0 {
 		t.Fatalf("registry holds %d sessions for a session-less connection", got)
 	}
 	if got := registry.CloseSession(""); got != 0 {
@@ -134,7 +134,7 @@ func TestSessionConnsNilRegistryIsUsable(t *testing.T) {
 	if got := registry.CloseSession("sess"); got != 0 {
 		t.Fatalf("nil registry closed %d connections", got)
 	}
-	if registry.CountForSession("sess") != 0 || registry.Sessions() != 0 {
+	if registry.CountForSession("sess") != 0 || registry.sessions() != 0 {
 		t.Fatal("nil registry reported connections")
 	}
 }
@@ -181,7 +181,7 @@ func TestSessionConnsUnderConcurrentAttachDetachAndClose(t *testing.T) {
 	}
 	wg.Wait()
 	registry.CloseSession("sess")
-	if got := registry.Sessions(); got != 0 {
+	if got := registry.sessions(); got != 0 {
 		t.Fatalf("registry holds %d sessions after every connection detached", got)
 	}
 }
@@ -353,7 +353,7 @@ func TestConnectionCloseDeregistersThroughTheOrdinaryCleanupPass(t *testing.T) {
 
 	_ = conn.Close(websocket.StatusNormalClosure, "")
 	waitForSessionConns(t, registry, "sess-1", 0)
-	if got := registry.Sessions(); got != 0 {
+	if got := registry.sessions(); got != 0 {
 		t.Fatalf("registry holds %d sessions after the only client left", got)
 	}
 	// A revocation after the fact is a no-op rather than an error.
@@ -368,7 +368,7 @@ func TestConnectionCloseDeregistersThroughTheOrdinaryCleanupPass(t *testing.T) {
 func TestConnectionsThatNameNoSessionAreNotTracked(t *testing.T) {
 	f := newIntegrationFixture(t)
 	f.dial(t)
-	if got := f.srv.SessionConns().Sessions(); got != 0 {
+	if got := f.srv.SessionConns().sessions(); got != 0 {
 		t.Fatalf("registry tracked %d sessions with no session hook wired", got)
 	}
 }

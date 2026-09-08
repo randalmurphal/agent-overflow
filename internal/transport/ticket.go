@@ -48,11 +48,15 @@ type ticketEntry struct {
 // ticketBook holds the minted-but-unspent tickets of one kind, oldest
 // first.
 //
-// Bounded twice over: by max, so a producer that mints without ever
-// spending cannot grow it, and (when ttl is set) by the deadline, so an
+// Bounded three times over: by max, so a producer that mints without ever
+// spending cannot grow it; by perSubject, so one subject minting without
+// spending evicts its OWN oldest and never another subject's (a session
+// caught in a mint-without-dial loop must not un-ticket every other
+// device on the backend); and (when ttl is set) by the deadline, so an
 // unspent ticket stops occupying a slot on its own. Eviction keeps the
 // NEWEST — the ticket a caller just minted is the one about to be
-// presented.
+// presented. A book whose tickets carry no subject has only the global
+// bound.
 //
 // The zero value is not usable; construct with newTicketBook. A slice
 // rather than a map because max is small and the lookup must be a
@@ -62,6 +66,9 @@ type ticketEntry struct {
 type ticketBook struct {
 	max int
 	ttl time.Duration
+	// perSubject bounds how many unspent tickets one subject may hold;
+	// 0 leaves only the global bound.
+	perSubject int
 	// now is injectable so tests move time instead of sleeping.
 	now func() time.Time
 
@@ -71,6 +78,13 @@ type ticketBook struct {
 
 func newTicketBook(max int, ttl time.Duration) *ticketBook {
 	return &ticketBook{max: max, ttl: ttl, now: time.Now, entries: make([]ticketEntry, 0, 4)}
+}
+
+// newSubjectTicketBook is newTicketBook with a per-subject bound.
+func newSubjectTicketBook(max, perSubject int, ttl time.Duration) *ticketBook {
+	b := newTicketBook(max, ttl)
+	b.perSubject = perSubject
+	return b
 }
 
 // mint returns a fresh ticket for subject and records it as outstanding.
@@ -87,6 +101,20 @@ func (b *ticketBook) mint(subject string) (string, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.dropLapsed(now.UnixNano())
+	if b.perSubject > 0 && subject != "" {
+		held, oldest := 0, -1
+		for i := range b.entries {
+			if b.entries[i].subject == subject {
+				held++
+				if oldest < 0 {
+					oldest = i
+				}
+			}
+		}
+		if held >= b.perSubject {
+			b.entries = append(b.entries[:oldest], b.entries[oldest+1:]...)
+		}
+	}
 	if len(b.entries) >= b.max {
 		// Drop the oldest. Copying forward rather than reslicing keeps
 		// the backing array at its cap instead of walking off the end.

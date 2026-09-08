@@ -121,3 +121,36 @@ func TestTicketBookRefusesTheEmptyToken(t *testing.T) {
 		t.Fatal("an empty presentation matched an outstanding ticket")
 	}
 }
+
+// TestOneSubjectCannotEvictAnothersTickets — the WS book is shared by
+// every session on the backend. A session minting without ever dialling
+// used to evict the OLDEST ticket of any session once the global bound was
+// reached, so one looping client un-ticketed every other device. The
+// per-subject bound keeps its evictions inside its own session.
+func TestOneSubjectCannotEvictAnothersTickets(t *testing.T) {
+	book := newSubjectTicketBook(64, 4, time.Minute)
+	other, err := book.mint("session-b")
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	var own []string
+	for range 40 {
+		ticket, err := book.mint("session-a")
+		if err != nil {
+			t.Fatalf("mint: %v", err)
+		}
+		own = append(own, ticket)
+	}
+	if got := book.outstanding(); got != 5 {
+		t.Fatalf("%d tickets outstanding, want 4 for the looper plus 1 for the other session", got)
+	}
+	if _, ok := book.consume(other); !ok {
+		t.Fatal("the other session's ticket was evicted by a subject that is not it")
+	}
+	if _, ok := book.consume(own[0]); ok {
+		t.Fatal("the looper's oldest ticket survived its own bound")
+	}
+	if _, ok := book.consume(own[len(own)-1]); !ok {
+		t.Fatal("the looper's newest ticket was evicted")
+	}
+}

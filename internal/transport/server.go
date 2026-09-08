@@ -711,7 +711,7 @@ func New(cfg Config) (*Server, error) {
 		scopedRPCLimit: newRateLimiter(ScopedRPCPath, scopedRPCRateLimit),
 		authLimit:      newRateLimiter("/auth", authRateLimit),
 		transferLimit:  newRateLimiter("/transfers", rateLimit{burst: 240, perSecond: 64}),
-		wsTickets:      newTicketBook(maxOutstandingWSTickets, wsTicketTTL),
+		wsTickets:      newSubjectTicketBook(maxOutstandingWSTickets, maxWSTicketsPerSession, wsTicketTTL),
 
 		attachmentDownloadTickets: newTicketBook(maxOutstandingAttachmentTickets, attachmentTicketTTL),
 		attachmentUploadTickets:   newTicketBook(maxOutstandingAttachmentTickets, attachmentTicketTTL),
@@ -1132,9 +1132,9 @@ func (s *Server) SetAuxiliaryHosts(names []string) {
 	s.auxHosts = normalized
 }
 
-// AuxiliaryHosts returns the live extra Host names, for a caller that
-// reports what this listener currently answers to.
-func (s *Server) AuxiliaryHosts() []string {
+// auxiliaryHosts returns the live extra Host names, for the tests that
+// pin what this listener currently answers to.
+func (s *Server) auxiliaryHosts() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.auxHosts...)

@@ -341,8 +341,11 @@ func (s *Sessions) Live(sessionID string) (store.Session, Reason) {
 			return cached, ReasonNone
 		}
 		// Expired in place. Drop it and fall through to the row, which may
-		// have been extended.
-		s.forget(sessionID)
+		// have been extended. Deliberately NOT forget(): nothing about the
+		// row changed, so a slow path in flight elsewhere holds a copy at
+		// least as current as this one, and moving the generation would
+		// only make it throw that copy away.
+		s.dropExpired(sessionID, cached.ExpiresAt)
 	}
 
 	session, reason := s.confirmedSession(sessionID, now)
@@ -602,6 +605,17 @@ func (s *Sessions) RecordRefusal(reason Reason, peer, sessionID string) {
 
 // forget drops one session from the fast path and moves the generation, so
 // a slow-path read already in flight declines to install what it fetched.
+// dropExpired removes a fast-path entry that expired in place, leaving
+// the generation alone. Guarded on the expiry it saw, so an entry a
+// concurrent renewal already replaced with a later one survives.
+func (s *Sessions) dropExpired(sessionID string, expiresAt int64) {
+	s.mu.Lock()
+	if cached, ok := s.live[sessionID]; ok && cached.ExpiresAt == expiresAt {
+		delete(s.live, sessionID)
+	}
+	s.mu.Unlock()
+}
+
 func (s *Sessions) forget(sessionID string) {
 	s.mu.Lock()
 	delete(s.live, sessionID)
