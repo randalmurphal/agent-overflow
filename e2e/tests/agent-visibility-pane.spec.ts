@@ -42,8 +42,8 @@ test.beforeEach(async ({ harness }) => {
   await harness.rpc('UpdateSettings', { activityRunDefault: 'expanded' });
 });
 
-/** localStorage key the appStorage bucket cache lives under. */
-const CLIENT_ID_CACHE_KEY = 'agent-overflow:uistate:clientId';
+/** localStorage key this context's appStorage bucket lives under. */
+const APP_STORAGE_BUCKET_KEY = 'agent-overflow:uistate:bucket';
 
 /**
  * One awaited agent (`tu-survey`) that thinks, narrates, reads a file, and
@@ -146,23 +146,18 @@ test('an agent card opens as a scoped, read-only thread view that survives reloa
   await expect(pane.getByTestId('agent-pane-stop')).toHaveCount(0);
 
   // --- Reload restores the pane at the scope it was left on ---------
-  // The scope rides the pane-layout snapshot, which flushes to the
-  // backend's ui_state through a debounce. Wait for the durable copy
-  // rather than the local cache: hydration lets the SERVER value win for
-  // any key with no pending local write, so reloading before the flush
-  // would restore whatever the server still had.
-  //
-  // GetUIState takes no bucket name: the backend scopes it by the calling
-  // connection. The harness socket declares the instance's durable client
-  // id, which is also the `&cid=` the page URL carries, so both sides land
-  // on one bucket — assert that they agree rather than assuming it.
-  const pageClientId = await page.evaluate((key) => localStorage.getItem(key), CLIENT_ID_CACHE_KEY);
-  expect(pageClientId).toBe(harness.bootstrap.clientId);
+  // The scope rides the pane-layout snapshot, which `appStorage` writes
+  // to this browser context's OWN localStorage bucket after a debounce.
+  // That bucket is the durable copy — the backend's `ui_state` bucket is
+  // read once for migration and never written (e2e/AGENTS.md § Writing
+  // specs), so a `GetUIState` poll here would never see the pane. Wait
+  // for the local write before reloading, or the reload restores the
+  // snapshot from before the pane opened.
   await expect
-    .poll(async () => {
-      const state = await harness.rpc<Record<string, string>>('GetUIState');
-      return state?.paneLayout ?? '';
-    })
+    .poll(() => page.evaluate((key) => {
+      const bucket = JSON.parse(localStorage.getItem(key) ?? '{}') as Record<string, string>;
+      return bucket.paneLayout ?? '';
+    }, APP_STORAGE_BUCKET_KEY))
     .toContain('tu-survey');
 
   await page.reload();

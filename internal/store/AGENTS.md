@@ -502,10 +502,12 @@ transactions.
   frontend view-state value OR a settings value; the difference is
   `internal/settings`' business, and nothing here inspects a key. `DeleteUIStateScope` drops a whole bucket, which is how
   revoking a device drops its state. The justified carve-out from "transient
-  UI state belongs to frontend `$state`": these rows are the
-  restart-surviving copy behind the frontend `appStorage` module,
-  needed because webview localStorage resets every launch (ephemeral
-  transport port = new origin). `GetUIState` returns a whole scope;
+  UI state belongs to frontend `$state`": these rows hold the settings
+  tiers plus the legacy view-state copy the frontend `appStorage` module
+  migrates out once. The frontend's layout itself now lives in webview
+  localStorage, which survives launches because the transport port is
+  pinned per install (`docs/architecture/transport.md` § Listen-port
+  pinning); the write RPCs remain for older clients. `GetUIState` returns a whole scope;
   `SetUIState` batch-upserts; `DeleteUIState` is idempotent.
 - `migrate_fixups.go` — Go-side data fixups referenced by `Fix`
   migrations in `migrate.go`, built on the shared `rewriteItemMetas`
@@ -2098,8 +2100,8 @@ SQLite can state about them. If a tempting SELECT grows a
 WHEN/CASE, the behavior belongs in Go. Workflow state-machine validation
 and scheduling belong to `internal/workflow`. This package holds bare
 run-record CRUD. `ui_state` is the one justified carve-out from the
-transient-UI rule: webview localStorage resets every launch, because the
-ephemeral transport port makes a new origin. Before adding a table, check
+transient-UI rule: it holds the user and device settings tiers and the
+legacy view-state buckets older frontends still write. Before adding a table, check
 whether the provider session already has the answer.
 
 ## Anti-patterns
