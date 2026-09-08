@@ -81,7 +81,7 @@ provider with no page rather than guessing.
 ## Provider pages
 
 `ProviderSettingsPage.svelte` renders one provider's whole page (setup,
-environment, context window, system prompt, tools, and the
+environment, accounts, context window, system prompt, tools, and the
 Claude-only session sections). `ClaudeSettings` / `CodexSettings` are the
 two instantiations. Every section renders regardless of the Enabled
 toggle; there is no "enable it first" gate.
@@ -132,10 +132,11 @@ Read failures stay in one inline callout with Retry, including the first load;
 background polling must not produce repeated error toasts. A current successful
 read clears the callout, while an obsolete read cannot replace newer state.
 
-Remote access has four visible navigation pages: Connect to a computer, Allow device access,
-Accounts, and Agent access. Accounts owns both providers' sign-in controls;
-provider configuration pages keep model and runtime settings. Account-switcher
-management links open Accounts on the captured computer.
+Remote access has three visible navigation pages: Connect to a computer, Allow
+device access, and Agent access. Provider accounts are NOT a remote-access
+page: each provider's sign-in and account cards live on its own page
+(`ProviderAccountsSettings` inside `ProviderSettingsPage`), and the
+account-switcher's management link opens that page on the captured computer.
 
 Allow device access puts pairing first, followed by LAN and Tailscale cards.
 Ports, domains and certificates stay under Advanced network settings; passkeys
