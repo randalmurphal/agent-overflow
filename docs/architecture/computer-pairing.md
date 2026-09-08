@@ -79,7 +79,9 @@ to 128 records including removal records. Credentials and private keys never
 travel in it. Each installation retains its own device key; every destination
 issues an independent session tied to that key and its admitted generation.
 Forwarded metadata cannot replace an established host's endpoint trust; direct
-self-registration updates that host's current metadata.
+self-registration updates that host's current metadata. A host's OWN stored row
+carries no routes: its routes are read from its live listeners on every catalog
+read, so the copy a peer holds is the only persisted one, and it is the peer's.
 
 After approval, members exchange catalogs and issue single-use introductions
 restricted to the recipient's key. The destination requires an active sponsor

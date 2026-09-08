@@ -1290,6 +1290,15 @@ Offline revocation is eventual: connected peers apply removals before creating
 connections, and isolated hosts learn them when connectivity returns. There is
 no online central authority and no claim of instant revocation across partitions.
 
+This computer's own advertised routes have ONE source: the live listeners,
+read through `ComputerRoutes`. `ownSelf` persists the self row with no routes,
+and `OwnDeviceSnapshot` fills them in on every read, so a rebind, a tailnet
+transition or a native relay report changes what the next catalog read says
+with no write. Peers receive the filled snapshot and store what they were told;
+that stored copy is the endpoint trust they pin introductions to, and it is
+theirs, never ours. `TestOwnDeviceSelfRowPersistsWithoutRoutesAndReadsLiveOnes`
+pins all three halves.
+
 
 Route publications sample `ComputerRoutes` only after network-state locks are
 released, and emit `computer-routes:changed` only when usable candidates change

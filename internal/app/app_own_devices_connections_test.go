@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"net"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/attachedbackends"
+	"agent-overflow/internal/computerroute"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/network"
@@ -314,4 +316,73 @@ func TestOwnDeviceConnectionsReconcileWithoutAWindowAndStopWithHost(t *testing.T
 	cancel()
 	a.app.backends.WaitOwnDevices()
 	b.app.backends.WaitOwnDevices()
+}
+
+// TestOwnDeviceSelfRowPersistsWithoutRoutesAndReadsLiveOnes pins the one
+// source of "my advertised routes": the live listeners. The stored self row
+// carries none, every read of the catalog fills them from ComputerRoutes,
+// and a peer that received our row stored what it was told. Moving the
+// listener then changes what the next read says with no write at all.
+func TestOwnDeviceSelfRowPersistsWithoutRoutesAndReadsLiveOnes(t *testing.T) {
+	ownConnectionNetwork(t)
+	a, b := ownConnectionBackend(t), ownConnectionBackend(t)
+	pairOwnConnection(t, b, a.app.backends, true)
+	reconcileOwnConnection(t, a)
+
+	selfRoutes := func(t *testing.T, host ownConnectionHost) []computerroute.Route {
+		t.Helper()
+		snapshot, err := OwnDeviceSnapshot(host.app)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range snapshot.Members {
+			if m.KeyThumbprint == snapshot.SelfKeyThumbprint {
+				return m.Routes
+			}
+		}
+		t.Fatalf("host %s is missing from its own catalog", host.id)
+		return nil
+	}
+	ownKey := func(t *testing.T, host ownConnectionHost) string {
+		t.Helper()
+		key, err := host.app.backends.OwnIdentity()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return key
+	}
+	for _, pair := range [][2]ownConnectionHost{{a, b}, {b, a}} {
+		own, peer := pair[0], pair[1]
+		live := ComputerRoutes(own.app)
+		if len(live) == 0 {
+			t.Fatalf("host %s advertises no live route", own.id)
+		}
+		key := ownKey(t, own)
+		if stored, err := own.app.store.OwnDevice(key); err != nil || len(stored.Routes) != 0 {
+			t.Fatalf("host %s persisted its own routes %v: %v", own.id, stored.Routes, err)
+		}
+		if got := selfRoutes(t, own); !slices.Equal(got, live) {
+			t.Fatalf("host %s catalog read %v, live listeners %v", own.id, got, live)
+		}
+		if remote, err := peer.app.store.OwnDevice(key); err != nil || !slices.Equal(remote.Routes, live) {
+			t.Fatalf("peer %s stored %v for %s, want %v: %v", peer.id, remote.Routes, own.id, live, err)
+		}
+	}
+
+	// Move b's listener. The catalog read follows the live listener while
+	// the stored row stays exactly as it was.
+	before := ComputerRoutes(b.app)
+	if _, err := b.app.SetNetworkSettings(atTheMachine(), network.Settings{BindAll: true, ListenPort: freeLoopbackPort(t)}); err != nil {
+		t.Fatal(err)
+	}
+	after := ComputerRoutes(b.app)
+	if len(after) == 0 || slices.Equal(after, before) {
+		t.Fatalf("listener did not move: before %v after %v", before, after)
+	}
+	if got := selfRoutes(t, b); !slices.Equal(got, after) {
+		t.Fatalf("catalog read %v after the move, live listeners %v", got, after)
+	}
+	if stored, err := b.app.store.OwnDevice(ownKey(t, b)); err != nil || len(stored.Routes) != 0 {
+		t.Fatalf("the move wrote routes into the self row %v: %v", stored.Routes, err)
+	}
 }
