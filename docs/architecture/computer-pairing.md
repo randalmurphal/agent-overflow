@@ -79,7 +79,9 @@ to 128 records including removal records. Credentials and private keys never
 travel in it. Each installation retains its own device key; every destination
 issues an independent session tied to that key and its admitted generation.
 Forwarded metadata cannot replace an established host's endpoint trust; direct
-self-registration updates that host's current metadata.
+self-registration updates that host's current metadata. A host's OWN stored row
+carries no routes: its routes are read from its live listeners on every catalog
+read, so the copy a peer holds is the only persisted one, and it is the peer's.
 
 After approval, members exchange catalogs and issue single-use introductions
 restricted to the recipient's key. The destination requires an active sponsor
@@ -112,8 +114,11 @@ existing authenticated owner RPC bridge. For default WSL NAT it forwards raw
 TLS to the backend's **non-loopback** WSL interface, so clients remain remote
 at the authorization boundary. Mirrored networking uses its exposed address
 directly. QR addresses, discovery and authenticated alternate routes use these
-published endpoints, never the inaccessible WSL NAT address once the native
-bridge is known. Owner/configuration generations discard stale reports.
+published endpoints, never the inaccessible WSL NAT address: a launcher-hosted
+WSL boot expects the bridge from the start (`app.ExpectNativeNetwork`) and
+advertises nothing on the LAN until the first report, rather than the NAT
+address for the seconds before it. Owner/configuration generations discard
+stale reports.
 See [the native network guide](../../internal/nativenetwork/AGENTS.md) for the
 relay bounds and lifecycle. Windows Firewall remains under the user's control.
 

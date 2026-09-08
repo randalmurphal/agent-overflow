@@ -30,7 +30,7 @@ import {
   type AttachedBackend,
 } from './bindings';
 import { hasScope } from '../transport/scopes';
-import { detachBackend } from '../transport/backends';
+import { backendById, detachBackend } from '../transport/backends';
 import { purgeClientState } from '../transport/clientPurge';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { addToast } from './toast.svelte';
@@ -51,14 +51,24 @@ export interface BackendAttachEvent {
 }
 
 /**
- * What the `backend:set-changed` channel carries (internal/app
- * BackendSetChange): every mutation of the set that is not a pairing
- * ceremony ending.
+ * What the `backend:set-changed` channel carries
+ * (internal/attachedbackends SetChange, emitted by both the desktop with
+ * a backend and the frontend-only one): every mutation of the set that is
+ * not a pairing ceremony ending. The action union is pinned against the
+ * Go constants by internal/app's backend_set_change_vocabulary_test.go.
  */
 export interface BackendSetChangeEvent {
   action: 'removed' | 'renamed' | 'device-name-sync' | 'membership';
   id: string;
   nickname?: string;
+  /**
+   * Who ended a `removed` machine's pairing. Absent when this installation
+   * forgot it — the page asked, so there is nothing to explain — and
+   * `ended-by-computer` when the far machine refused this device's renewal
+   * with a verdict that ends the session, which is the one removal nobody
+   * here asked for and the one that gets a toast.
+   */
+  reason?: 'ended-by-computer';
 }
 
 /** A pairing this page started and is waiting on. */
@@ -202,6 +212,11 @@ export function applyBackendSetChange(
   }
   if (!evt.id) return;
   if (evt.action === 'removed') {
+    // The label is read BEFORE the row goes: after forgetSystem there is
+    // nothing left on this side that knows what the machine was called.
+    if (evt.reason === 'ended-by-computer') {
+      addToast('warning', `${removedSystemLabel(evt.id)} ended this computer's access. Pair again from Connect to a computer.`);
+    }
     forgetSystem(evt.id);
     return;
   }
@@ -214,6 +229,19 @@ export function applyBackendSetChange(
 /** The name a person sees for a system: their nickname, else the machine's own. */
 export function systemLabel(system: Pick<AttachedBackend, 'name' | 'nickname' | 'id'>): string {
   return system.nickname || system.name || system.id;
+}
+
+/**
+ * The label for a machine that is about to be forgotten: the list's row
+ * when this page has loaded it, else the transport registry's descriptor
+ * (a page that never opened Settings still carries every attached door),
+ * else the id.
+ */
+function removedSystemLabel(id: string): string {
+  const system = systems.find((s) => s.id === id);
+  if (system) return systemLabel(system);
+  const entry = backendById(id);
+  return entry?.nickname || entry?.name || id;
 }
 
 /**

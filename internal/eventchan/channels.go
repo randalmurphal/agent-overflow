@@ -178,12 +178,16 @@ const (
 // channel is the other half, and carries at most one frame per attach.
 //
 // BackendSetChanged is every OTHER mutation of that set — a removal (by
-// this installation or by the far side ending the session), a rename, the
-// far side's answer to this installation's device name, an own-device
-// membership change — so two pages open on this host do not diverge. Its
-// own channel rather than a second meaning on backend:attach: one says how
-// a pairing ceremony ended, the other says the list changed. The action
-// vocabulary is internal/app's BackendSet* constants.
+// this installation or by the far side ending the session), a rename, a
+// name synchronization, an own-device membership edge — so two pages open
+// on this host do not diverge. Its own channel rather than a second
+// meaning on backend:attach: one says how a pairing ceremony ended, the
+// other says the list changed. The frame is
+// internal/attachedbackends.SetChange, whichever desktop emits it, and
+// internal/app's backend_set_change_vocabulary_test.go pins its action and
+// reason sets against the frontend mirror. A removal names who ended it:
+// no reason for one this installation made, "ended-by-computer" for the
+// far owner's revocation, which is the one the page explains.
 const (
 	AccessDevicesChanged  Channel = "access:devices-changed"
 	BackendNameChanged    Channel = "backend:name-changed"

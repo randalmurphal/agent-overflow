@@ -487,6 +487,33 @@ nil interface in that case (`attachedBackendsSeam` in `main.go` — a typed
 nil in an interface is not nil), so the carried routes are absent rather
 than serving 404s from an empty set.
 
+**`backend:set-changed` has one emitter, and it is not this file.** The
+frame (`attachedbackends.SetChange`, aliased here as `BackendSetChange` so
+the binding generator's output is unchanged) and its action vocabulary
+live in `internal/attachedbackends`, and the manager announces every
+mutation of the set through the observer `SetAttachedBackends` registers:
+the removal and rename this surface asks for, the profile the own-device
+reconciler adds or prunes, the name synchronization a carrier completes.
+`RemoveBackend` and `RenameBackend` therefore emit nothing themselves. The
+frontend-only desktop (`internal/frontendclient`) registers the same
+observer over the same type, which is what makes the TS mirror
+(`systems.svelte.ts` `BackendSetChangeEvent`) one shape;
+`backend_set_change_vocabulary_test.go` pins the vocabulary against that
+mirror in both directions and refuses an emit that spells the frame by
+hand.
+
+**A removal says who ended it.** The far owner revoking this installation
+arrives as a renewal refusal that ends the session; `deviceclient` forgets
+the profile and retires the owner, and the manager's `endSession` drops the
+cached carrier (compared by carrier, so a verdict that reaches one already
+replaced by a re-pairing drops nothing), clears its agent opt-in and
+announces `SetRemoved` with `Reason: RemovedByComputer`. A removal this
+installation made carries no reason — the page asked, and the field is
+omitted so an older page reads the frame as it always did. The reason is
+the only thing that tells the two apart on a screen, and `systems.svelte.ts`
+raises its one toast on it; `TestAFarSideRevocationRemovesTheProfileAndSaysWho`
+pins both frames.
+
 Desktop discovery/address setup is specified in
 [computer-pairing.md](../../docs/architecture/computer-pairing.md).
 `app_computer_pairing.go` owns the short-lived window and approval mapping.
@@ -500,7 +527,18 @@ responder start failure is the window's `DiscoveryError`, not a log line.
 `app_computer_discovery.go` selects candidate sources and outbound networks.
 `app_native_network.go` accepts only current launcher/configuration observations:
 never derive local authorization from the Windows forwarding path or publish
-WSL NAT addresses in place of unavailable native ingress.
+WSL NAT addresses in place of unavailable native ingress. That rule holds from
+boot, not from the first poll: `ExpectNativeNetwork` (bootstrap boundary,
+called by the headless entry point inside WSL) marks native ingress as coming
+before the transport binds, so `nativeLANStatus` answers the starting state
+rather than nil — and nil is what makes `ComputerRoutes` fall back to the WSL
+NAT address, which no other machine can reach and which the first peer to read
+the catalog would have pinned (C7). The launcher and the WSL payload ship as
+one artifact and the launcher's bridge always runs the poll, so there is no
+launcher-hosted boot the state is wrong for; a `serve` or `supervise` boot
+inside WSL has no launcher, never reaches the headless entry point, and keeps
+its own LAN ingress. `TestAWSLBootAdvertisesNoAddressBeforeItsLauncherReports`
+pins both boots.
 
 ## The canonical domain's certificate
 
@@ -1289,6 +1327,15 @@ an exclusion; revoking a personal device distributes a removal tombstone.
 Offline revocation is eventual: connected peers apply removals before creating
 connections, and isolated hosts learn them when connectivity returns. There is
 no online central authority and no claim of instant revocation across partitions.
+
+This computer's own advertised routes have ONE source: the live listeners,
+read through `ComputerRoutes`. `ownSelf` persists the self row with no routes,
+and `OwnDeviceSnapshot` fills them in on every read, so a rebind, a tailnet
+transition or a native relay report changes what the next catalog read says
+with no write. Peers receive the filled snapshot and store what they were told;
+that stored copy is the endpoint trust they pin introductions to, and it is
+theirs, never ours. `TestOwnDeviceSelfRowPersistsWithoutRoutesAndReadsLiveOnes`
+pins all three halves.
 
 
 Route publications sample `ComputerRoutes` only after network-state locks are

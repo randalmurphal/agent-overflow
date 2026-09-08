@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"agent-overflow/internal/attachedbackends"
-	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/owndevices"
 )
 
@@ -23,6 +22,5 @@ func (a *App) ownDeviceHooks() attachedbackends.OwnDeviceHooks {
 			invite, err := MintLocalOwnDeviceIntroduction(a, key)
 			return invite.URL, err
 		},
-		Changed: func() { a.emit(eventchan.BackendSetChanged, BackendSetChange{Action: BackendSetMembership}) },
 	}
 }

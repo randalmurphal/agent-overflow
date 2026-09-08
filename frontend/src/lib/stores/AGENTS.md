@@ -414,6 +414,14 @@ stops waking readers.
   publishes the descriptor to the transport registry itself
   (`publishAttachedBackend`) rather than waiting on a manifest re-fetch,
   and a removal detaches the socket as well as forgetting the descriptor.
+  A `backend:set-changed` removal carrying `reason: 'ended-by-computer'`
+  is the far owner revoking this installation — the one removal nobody
+  here asked for — and gets exactly one `warning` toast naming the machine
+  ("<label> ended this computer's access. Pair again from Connect to a
+  computer."). The label is read BEFORE `forgetSystem` runs (the list row,
+  else the transport registry's descriptor for a page that never opened
+  Settings), because afterwards nothing on this side knows the name. A
+  removal with no reason is this installation's own and says nothing.
   Desktop frontends manage profiles through their local controller. Phones
   own their profiles locally; neither requires the first host to be online.
 - `serviceUpdate.svelte.ts` owns updating a SUPERVISED machine over the

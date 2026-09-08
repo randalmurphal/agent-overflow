@@ -51,6 +51,9 @@ func OwnDeviceSnapshot(a *App) (OwnDeviceList, error) {
 			for i, m := range out.Members {
 				if m.KeyThumbprint == key && !m.Removed {
 					current.Generation = m.Generation
+					// The live listeners are the one source of this
+					// computer's routes; the stored row carries none.
+					current.Routes = ComputerRoutes(a)
 					out.Members[i] = current
 				}
 			}
@@ -58,6 +61,13 @@ func OwnDeviceSnapshot(a *App) (OwnDeviceList, error) {
 	}
 	return out, e
 }
+
+// ownSelf is this computer's own catalog row as it is PERSISTED: identity
+// and display metadata, and deliberately no routes. Routes are observed
+// from the live listeners (ComputerRoutes) and filled in by
+// OwnDeviceSnapshot on every read, so a stored copy could only ever be a
+// stale second source. Peers receive the filled snapshot and store what
+// they were told, which is the trust they later pin introductions to.
 func (a *App) ownSelf() (OwnDeviceMember, error) {
 	if a.backends == nil {
 		return OwnDeviceMember{}, errNoBackendProfiles
@@ -67,7 +77,7 @@ func (a *App) ownSelf() (OwnDeviceMember, error) {
 		return OwnDeviceMember{}, e
 	}
 	id, _ := a.backendIdentity()
-	return OwnDeviceMember{DeviceClass: "desktop", KeyThumbprint: key, BackendID: id, Name: a.backendDisplayName(), Routes: ComputerRoutes(a), Generation: 1}, nil
+	return OwnDeviceMember{DeviceClass: "desktop", KeyThumbprint: key, BackendID: id, Name: a.backendDisplayName(), Generation: 1}, nil
 }
 func (a *App) enableOwnDevices() error {
 	if a.backends == nil {
@@ -392,11 +402,10 @@ func (a *App) AcceptOwnDeviceIntroduction(ctx context.Context, link string) erro
 	}
 	// The session and key remain owned by the local manager. The target enforces
 	// the exact recipient key before spending the invitation.
+	// The manager publishes the new profile on backend:set-changed itself,
+	// before reconciliation sees it as present.
 	added, e := a.backends.AcceptOwnDeviceIntroduction(ctx, link, routes)
 	if e == nil && added {
-		// Desktop clients watch the profile set, not the public membership
-		// catalog. Publish this edge before reconciliation sees it as present.
-		a.emit(eventchan.BackendSetChanged, BackendSetChange{Action: BackendSetMembership})
 		NotifyOwnDevices(a)
 	}
 	return e

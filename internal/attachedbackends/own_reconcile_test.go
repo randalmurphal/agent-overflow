@@ -151,10 +151,14 @@ func TestATombstoneForThisDeviceRetiresThePeerProfile(t *testing.T) {
 	}}
 	var accepted []owndevices.List
 	changed := 0
+	manager.SetChanged(func(change SetChange) {
+		if change.Action == SetMembership {
+			changed++
+		}
+	})
 	hooks := OwnDeviceHooks{
 		Snapshot: func() (owndevices.List, error) { return local, nil },
 		Accept:   func(source owndevices.List) (bool, error) { accepted = append(accepted, source); return true, nil },
-		Changed:  func() { changed++ },
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -185,8 +189,12 @@ func TestASessionThePeerEndedRetiresItsOwnDeviceProfile(t *testing.T) {
 	p := newPeer(t)
 	p.revoke()
 	seedPeer(t, dir, p, true)
-	var ended []string
-	manager.SetSessionEnded(func(id string) { ended = append(ended, id) })
+	var ended []SetChange
+	manager.SetChanged(func(change SetChange) {
+		if change.Action == SetRemoved {
+			ended = append(ended, change)
+		}
+	})
 	hooks := OwnDeviceHooks{Snapshot: func() (owndevices.List, error) { return owndevices.List{}, nil }}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -197,8 +205,8 @@ func TestASessionThePeerEndedRetiresItsOwnDeviceProfile(t *testing.T) {
 	if ids, err := manager.ConnectedOwnDeviceIDs(); err != nil || len(ids) != 0 {
 		t.Errorf("own devices after the verdict = %v (%v), want none", ids, err)
 	}
-	if len(ended) != 1 || ended[0] != "peer" {
-		t.Errorf("observer told %v, want the one ended pairing", ended)
+	if len(ended) != 1 || ended[0].ID != "peer" || ended[0].Reason != RemovedByComputer {
+		t.Errorf("observer told %v, want the one ended pairing with its reason", ended)
 	}
 	if manager.Carrier("peer") != nil {
 		t.Error("a revoked own-device pairing still has a carrier")

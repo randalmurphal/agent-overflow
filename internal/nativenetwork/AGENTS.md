@@ -43,7 +43,11 @@ Pairing-window mDNS advertises only addresses whose native listeners bound.
 Closing the pairing window stops advertising while established pairing routes
 remain available. Name changes replace the advertisement. The bridge publishes
 actual external endpoints so pairing QR codes and authenticated alternate-route
-bootstrap do not advertise an unreachable WSL NAT address.
+bootstrap do not advertise an unreachable WSL NAT address — including before
+the first report: the backend's headless WSL boot marks native ingress as
+expected (`app.ExpectNativeNetwork`) so its routes carry no LAN address until
+`Run` has reported one, rather than the NAT address the desktop fallback would
+discover.
 
 Connection count is capped at 64; upstream dialing is bounded to five seconds.
 The latest upstream dial failure

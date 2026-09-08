@@ -16,11 +16,17 @@ import (
 // OwnDeviceHooks keep durable membership authority with the host identity
 // service (or the frontend-only public catalog). The manager owns only direct
 // paired connections and a bounded retry worker, never a second group model.
+// A profile the reconciler adds, prunes or marks errored is announced
+// through the manager's own SetChanged observer as SetMembership, so the
+// hooks carry no notification seam of their own.
 type OwnDeviceHooks struct {
 	Snapshot func() (owndevices.List, error)
 	Accept   func(owndevices.List) (bool, error)
 	Mint     func(context.Context, string) (string, error)
-	Changed  func()
+}
+
+func (m *Manager) notifyMembershipChanged() {
+	m.notifyChanged(SetChange{Action: SetMembership})
 }
 
 type ownDeviceReconciler struct {
@@ -97,8 +103,8 @@ func (m *Manager) ReconcileOwnDevices(ctx context.Context, hooks OwnDeviceHooks)
 	if stateErr == nil {
 		var changed bool
 		changed, stateErr = m.pruneOwnProfiles(snapshot)
-		if changed && hooks.Changed != nil {
-			hooks.Changed()
+		if changed {
+			m.notifyMembershipChanged()
 		}
 	}
 	profiles, err := m.ConnectedOwnDeviceIDs()
@@ -126,8 +132,8 @@ func (m *Manager) ReconcileOwnDevices(ctx context.Context, hooks OwnDeviceHooks)
 					failures.Add(1)
 				}
 				if held, getErr := m.carrier(id); getErr == nil {
-					if held.setOwnError(message) && hooks.Changed != nil {
-						hooks.Changed()
+					if held.setOwnError(message) {
+						m.notifyMembershipChanged()
 					}
 				}
 			}
@@ -187,8 +193,8 @@ func (m *Manager) reconcileOwnPeer(ctx context.Context, id string, hooks OwnDevi
 	}
 	if changed, err := m.pruneOwnProfiles(local); err != nil {
 		return err
-	} else if changed && hooks.Changed != nil {
-		hooks.Changed()
+	} else if changed {
+		m.notifyMembershipChanged()
 	}
 	self, ok := ownMember(local.Members, key)
 	if !local.Enabled || !ok || self.Removed {
@@ -244,13 +250,8 @@ func (m *Manager) reconcileOwnPeer(ctx context.Context, id string, hooks OwnDevi
 			introductionErrors = append(introductionErrors, fmt.Errorf("connect computer %s: invalid own-device invitation", member.BackendID))
 			continue
 		}
-		added, err := m.AcceptOwnDeviceIntroduction(ctx, invitation.URL, member.Routes)
-		if err != nil {
+		if _, err := m.AcceptOwnDeviceIntroduction(ctx, invitation.URL, member.Routes); err != nil {
 			introductionErrors = append(introductionErrors, fmt.Errorf("connect computer %s: %w", member.BackendID, err))
-			continue
-		}
-		if added && hooks.Changed != nil {
-			hooks.Changed()
 		}
 	}
 	return errors.Join(introductionErrors...)
@@ -299,8 +300,8 @@ func (m *Manager) removedBy(id string, remote owndevices.List, hooks OwnDeviceHo
 	if err != nil {
 		return err
 	}
-	if (pruned || dropped) && hooks.Changed != nil {
-		hooks.Changed()
+	if pruned || dropped {
+		m.notifyMembershipChanged()
 	}
 	return nil
 }

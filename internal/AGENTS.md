@@ -213,11 +213,11 @@ lock as nickname/removal, with every lock wait bounded by `profileWriteTimeout`.
 Late success or refusal must neither resurrect a forgotten credential nor
 overwrite/delete its replacement. A rename during renewal keeps the new name.
 A terminal refusal is a verdict, not an outage: `deviceclient` has dropped the
-file and retired the owner, `attachedbackends` evicts the carrier, clears its
-agent opt-in and tells `SetSessionEnded` (the App announces the removal), and
-a carried manifest answers `transport.ErrAttachedSessionEnded` — 404 on the
-wire, which the SPA latches as terminal — instead of the 503 every outage
-answers.
+file and retired the owner, `attachedbackends` evicts the carrier (only if it
+still holds that one), clears its agent opt-in and announces the removal on
+its `SetChanged` observer with reason `ended-by-computer`, and a carried
+manifest answers `transport.ErrAttachedSessionEnded` — 404 on the wire, which
+the SPA latches as terminal — instead of the 503 every outage answers.
 
 Own-device connections reuse those same carriers. The host's identity store owns
 membership; a frontend-only controller persists only its bounded public catalog.

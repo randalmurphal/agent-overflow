@@ -19,6 +19,20 @@ import (
 
 func nativeNetworkBackend(t *testing.T) (*pairedBackend, context.Context, *transport.ConnState, nativenetwork.Config) {
 	t.Helper()
+	b := newNativeNetworkBackend(t)
+	ctx, conn := transport.WithConnState(context.Background(), transport.ConnPrincipal{})
+	t.Cleanup(conn.RunCleanups)
+	cfg, err := b.app.GetNativeNetworkConfig(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b, ctx, conn, cfg
+}
+
+// newNativeNetworkBackend is a LAN-enabled backend whose only interface is
+// the WSL NAT address, before any launcher has spoken to it.
+func newNativeNetworkBackend(t *testing.T) *pairedBackend {
+	t.Helper()
 	oldInterfaces, oldAddrs := network.Interfaces, network.InterfaceAddrs
 	network.Interfaces = func() ([]net.Interface, error) {
 		return []net.Interface{{Index: 1, Name: "wsl", Flags: net.FlagUp | net.FlagRunning}}, nil
@@ -31,13 +45,47 @@ func nativeNetworkBackend(t *testing.T) (*pairedBackend, context.Context, *trans
 	if _, err := b.app.settings.SetNetwork(settings.NetworkSettings{BindAll: true}); err != nil {
 		t.Fatal(err)
 	}
+	return b
+}
+
+// TestAWSLBootAdvertisesNoAddressBeforeItsLauncherReports is C7: a
+// launcher-hosted WSL backend used to answer nil from nativeLANStatus until
+// the launcher's first poll, and nil means "this backend owns LAN ingress",
+// so every route publication in those seconds carried the WSL NAT address
+// — reachable from no other machine — and the first peer to read the
+// catalog pinned it. ExpectNativeNetwork is the boot saying the poll is
+// coming; the desktop boot, which never calls it, keeps its own address.
+func TestAWSLBootAdvertisesNoAddressBeforeItsLauncherReports(t *testing.T) {
+	desktop := newNativeNetworkBackend(t)
+	if desktop.app.nativeLANStatus() != nil {
+		t.Fatal("a boot with no launcher reported native ingress")
+	}
+	if routes := ComputerRoutes(desktop.app); len(routes) != 1 || !strings.HasPrefix(routes[0].Endpoint, "https://172.20.0.2:") {
+		t.Fatalf("a desktop boot advertises its own LAN address: %+v", routes)
+	}
+
+	wsl := newNativeNetworkBackend(t)
+	ExpectNativeNetwork(wsl.app)
+	status := wsl.app.nativeLANStatus()
+	if status == nil || len(status.Addresses) != 0 || status.Error != "Starting local network access…" {
+		t.Fatalf("before the first poll the WSL boot reports %+v, want the starting state", status)
+	}
+	if routes := ComputerRoutes(wsl.app); len(routes) != 0 {
+		t.Fatalf("the WSL boot advertised %+v before its launcher reported", routes)
+	}
 	ctx, conn := transport.WithConnState(context.Background(), transport.ConnPrincipal{})
-	t.Cleanup(conn.RunCleanups)
-	cfg, err := b.app.GetNativeNetworkConfig(ctx)
+	defer conn.RunCleanups()
+	cfg, err := wsl.app.GetNativeNetworkConfig(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return b, ctx, conn, cfg
+	report := nativeReport(wsl, cfg)
+	if err := wsl.app.ReportNativeNetworkState(ctx, report); err != nil {
+		t.Fatal(err)
+	}
+	if routes := ComputerRoutes(wsl.app); len(routes) != 1 || routes[0].Endpoint != report.Addresses[0] {
+		t.Fatalf("the first report did not replace the starting state: %+v", routes)
+	}
 }
 
 func nativeReport(b *pairedBackend, cfg nativenetwork.Config) nativenetwork.State {

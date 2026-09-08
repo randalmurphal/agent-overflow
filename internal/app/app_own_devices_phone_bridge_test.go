@@ -23,7 +23,7 @@ func TestOwnDevicePhoneBridgesTwoPreviouslySeparateHosts(t *testing.T) {
 	var changes [2]atomic.Int32
 	for i, host := range []ownConnectionHost{a, b} {
 		host.app.testEmitHook = func(name string, data any) {
-			if name == "backend:set-changed" && data.(BackendSetChange).Action == "membership" {
+			if name == "backend:set-changed" && data.(BackendSetChange).Action == attachedbackends.SetMembership {
 				changes[i].Add(1)
 			}
 		}

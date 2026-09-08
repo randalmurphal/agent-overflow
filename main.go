@@ -673,6 +673,14 @@ func runHeadless(listenAddr string, printURLFD int) {
 	// fully wired App.updater.handle / App.updater.wsl without a race. Gated at runtime
 	// on the Windows launcher having spawned us; a no-op otherwise.
 	appservice.InitWSLUpdater(appService.App, bootSettingsDir())
+	// Inside WSL the launcher that started us also runs nativenetwork.Run,
+	// which reports the physical Windows LAN endpoints; the payload and the
+	// launcher ship as one artifact, so there is no launcher without the
+	// poll. Say so before the transport binds, or the first route
+	// publication advertises the WSL NAT address the poll exists to replace.
+	if platform.IsWSL() {
+		appservice.ExpectNativeNetwork(appService.App)
+	}
 	// This is the Windows launcher's backend and the owner of its embedded SPA.
 	// It shares ordinary desktop network preferences; the launcher does not
 	// inject a loopback --listen override that would undo saved LAN hosting.
