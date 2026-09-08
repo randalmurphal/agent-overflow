@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { createSpringChase, __resetSpringFrameBatcherForTest } from './spring';
 import { documentScrollGrid } from './grid';
-import { quantizedFloorStep } from './cadence';
+import { SpringMotion } from './motion';
 
 const originalZoom = document.documentElement.style.zoom;
 afterEach(() => {
@@ -12,8 +12,8 @@ afterEach(() => {
 });
 
 it.each([1, 1.25, 1.5, 2, 0.8].flatMap((zoom) =>
-  [30, 60, 120, 165, 220, 240].map((hz) => ({ zoom, hz })),
-))('a real scroller at $zoom scale / $hz Hz lands with an even cradle', ({ zoom, hz }) => {
+  [30, 60, 90, 120, 144, 165, 220, 240, 360, 480].map((hz) => ({ zoom, hz })),
+))('a real scroller at $zoom scale / $hz Hz samples the continuous path within its measured grid', ({ zoom, hz }) => {
   document.documentElement.style.zoom = String(zoom);
   window.dispatchEvent(new Event('resize'));
   const scroller = document.createElement('div');
@@ -30,23 +30,24 @@ it.each([1, 1.25, 1.5, 2, 0.8].flatMap((zoom) =>
   vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => { frames.set(++nextFrameId, cb); return nextFrameId; });
   vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => { frames.delete(id); });
   __resetSpringFrameBatcherForTest();
-  const events: number[] = [];
+  const reference = new SpringMotion();
+  let referenceTop = 96;
+  const continuousGrid = { quantum: 1e-8, writeOffset: 0, readbackError: 0 };
+  const accept = (_: number, position: number) => position;
   const grid = documentScrollGrid(document);
   const target = 160;
   scroller.scrollTop = 96;
+  referenceTop = scroller.scrollTop;
   const spring = createSpringChase({
     getScrollEl: () => scroller, isPaused: () => false, isAtBottom: () => true,
     isEscaped: () => false, selectionActive: () => false,
     targetScrollTop: () => target, currentScrollTop: () => scroller.scrollTop,
-    scrollTopIsAtTarget: (top) => Math.abs(top - scroller.scrollTop) <= 1,
     arrival: {
       matches: () => false, record: () => {}, shouldWriteExact: (top) => scroller.scrollTop !== top,
       writeExact: (_, top) => { scroller.scrollTop = top; }, clear: () => {}, invalidateStale: () => {},
     },
     writeScrollTop: (_, top) => {
-      const before = scroller.scrollTop;
       scroller.scrollTop = top;
-      if (scroller.scrollTop !== before) events.push(frameIndex);
       return scroller.scrollTop;
     },
     liveContentActive: () => true, prefersReducedMotion: () => false,
@@ -61,11 +62,11 @@ it.each([1, 1.25, 1.5, 2, 0.8].flatMap((zoom) =>
       const callbacks = [...frames.values()];
       frames.clear();
       for (const callback of callbacks) callback(now);
+      referenceTop = reference.step(referenceTop, target, frameIndex === 0 ? 1 : 60 / hz, continuousGrid, accept);
+      expect(Math.abs(scroller.scrollTop - referenceTop), `frame ${frameIndex}`).toBeLessThanOrEqual(grid.quantum / 2 + grid.readbackError + 1e-3);
     }
     expect(scroller.scrollTop).toBe(target);
-    const k = Math.max(1, Math.round(1 / quantizedFloorStep(1 / grid.quantum, 60 / hz)));
-    const tail = events.slice(-5);
-    expect(tail.slice(1).map((event, index) => event - tail[index])).toEqual([k, k, 2 * k, 3 * k]);
+
   } finally {
     spring.cancel();
     scroller.remove();

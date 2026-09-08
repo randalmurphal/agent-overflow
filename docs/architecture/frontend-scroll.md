@@ -82,7 +82,7 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     A permanent content layer caused stale WebView2 pixels while state,
     DOM, and input remained live (bug-report-20260823T224631Z). Earlier
     promote/demote leases also caused three raster-transition flickers.
-    The spring instead authors whole grid pixels in its motion model
+    The spring samples its continuous motion onto accepted grid positions
     (below). Real-Chromium coverage pins CSS-pixel quantization at DPR
     1, 1.25, 1.5, and 2 at default browser zoom. `grid.ts` measures the
     actual scroll lattice when scale changes; DPR alone is insufficient. It
@@ -100,7 +100,8 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     scrolling, browser clamps, and authored writes can coalesce into one event,
     so the write readback may no longer describe the surface when the event is
     dispatched.
-  - `spring.ts` + `retarget.ts` own chase kinematics. They define HOW a spring
+  - `spring.ts` owns chase lifecycle; `motion.ts`, `position.ts`, and
+    `retarget.ts` own chase kinematics. They define HOW a spring
     advances scrollTop frame to frame once the controller decides one runs. Speed each
     step is capped by three ceilings recomputed from live geometry
     (below all three, the spring's own decay governs): the
@@ -121,43 +122,43 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     large-glide jerk scales from the endpoint accelerations so a
     cap-speed handoff does not nearly stop. Repeated streamed-line tests
     pin the bridge at 60, 120, and 165Hz.
-    What the spring WRITES is whole pixels on the engine's grid (owner
-    ruling 2026-09-04: no jitter; where constant motion cannot avoid
-    it, stop instead). Each tick's displacement snaps to a ladder of
-    even cadences — `n` grid pixels a tick, or one every `k` ticks, the
-    nearest rung held through a small hysteresis — so a deceleration
-    steps 3, 2, 1 once and a slow rate is a steady cadence, never the
-    1,2,1,2 or 1,0,1,1,0 mix that rounding a fractional model paints;
-    only at cruise (8+ pixels a tick) is the residue carried for an
-    exact average rate. The **motion floor** is a rung of that ladder,
-    derived per tick from the grid and the measured frame cadence
-    (`cadence.ts#quantizedFloorStep`: closest in ratio to 60px/s, never under 45
-    changes a second — 1 CSS px per 60Hz frame at DPR 1 and 2, one per
-    two frames at 120Hz DPR 1, one per three at 165Hz DPR 1 (55px/s),
-    one device pixel per frame on a 2.625× 120Hz phone), and once a
-    glide has run above it the floor holds through to the landing.
-    There is no sub-pixel tail; the landing **cradle** is on the grid
-    instead — the last `SPRING_LANDING_CRADLE_EVENTS` (3) pixel events
-    run at k, 2k, 3k ticks, the ritardando of the 2026-07-04 feedback
-    made even, and 0 is a flat stop. `grid.ts` measures both the accepted
-    position increment and the interior write offset on a private scroller,
-    cached per document and invalidated by resize or DPR change. The reader's
-    scroller never moves for calibration. A 2x monitor at 125% browser zoom
-    reports DPR 2.5 but accepts 0.8 CSS px increments, not 0.4; treating every
-    fractional readback as a device grid froze the old spring near arrival.
-    Floor-based engines receive interior writes centered in their accepted
-    interval so floating-point error cannot discard a pixel. Exact target
-    writes remain exact. Scale changes reset the cadence residue and floor
-    latch. The scalar floor calculation allocates nothing per tick; refusal
-    backoff skips grid calibration and the floor calculation too. Browser tests cover
-    real engine scaling, and unit tests cover floor/round engines, limited
-    readback precision, 30–480Hz (including 165, 220, and 240Hz), and scale
-    changes in either direction. The cadence estimator accepts 20–1000Hz
-    samples, rejects suspension gaps, and requires three consistent samples
-    before accepting a large slowdown; one dropped frame cannot select a
-    different motion floor. The old 3–21ms sample window never learned 30Hz
-    or 360/480Hz.
-    Native macOS and Android 120Hz validation remains a device test tier.
+    Motion is integrated in CSS pixels and elapsed 60Hz-equivalent time.
+    Browser quantization never selects a speed: `position.ts` samples the
+    continuous position on the measured engine grid, and `motion.ts` retains
+    modeled minus accepted position on every interior write. This bounds
+    interior spatial error to half a grid quantum plus readback precision.
+    There is no displacement ladder, cadence-dependent floor, or frame-count
+    landing delay. A glide that exceeds 60 CSS px/s retains that floor until
+    the last three CSS pixels, then uses a square-root speed floor
+    (constant-deceleration braking in distance space) so landing does not become an asymptotic crawl.
+    Exact endpoint requests are selected by modeled proximity, not rounded
+    readback proximity; a fractional endpoint can add one grid quantum of
+    terminal error because the engine chooses its accepted endpoint.
+
+    `grid.ts` measures the accepted increment and interior write offset on a
+    private scroller, cached per document and invalidated by resize or DPR
+    change. The reader's scroller never moves for calibration. DPR alone is
+    not a scroll grid: a 2x display at 125% browser zoom can accept 0.8 CSS px
+    increments. Flooring engines receive interior requests centered in their
+    acceptance interval; target writes stay exact. Unexpected readbacks,
+    clamping, and scale changes discard incompatible position residual.
+    Retargeting preserves compatible residual and the acceleration bridge.
+
+    The motion step allocates nothing and adds no DOM measurements. Cadence
+    estimation remains diagnostic only. At 60 CSS px/s on a one-CSS-pixel
+    grid, a 240Hz panel repeats native scroll positions; the controller must
+    not add velocity plateaus or scheduled pauses to that constraint. This is
+    a limit of the native scroll path, not of all rendering: fractional
+    composited transforms can blend intermediate positions. They are not a
+    drop-in replacement for scrolling; the content-layer failures described
+    above must be resolved before adopting that rendering path. A readback
+    measurement alone does not prove rendered precision: compare content
+    geometry and rendered pixels as well.
+    Regression tests compare the quantized and continuous paths at 30–480Hz,
+    including 144, 165, and 240Hz, fractional grids, flooring, precision loss,
+    retargets, reversals, and rate/scale transitions. Real Chromium tests
+    exercise browser zoom and accepted readbacks. Native macOS, Android,
+    and physical high-refresh visual acceptance remain separate test tiers.
     Carried momentum decays by the slew factor per real elapsed frame while
     parked, so a brief inter-quantum catch-up resumes at speed while a
     longer pause re-enters at the base ramp. Also owns the

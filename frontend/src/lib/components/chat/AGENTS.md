@@ -3,6 +3,15 @@
 `MessageTimeline.svelte` owns the virtualized timeline, and row
 components render stable transcript records.
 
+Scroll motion must integrate distance in CSS space and elapsed time, then
+sample positions on the measured browser grid. Do not quantize velocity into
+per-frame steps or schedule the final pixels by frame count: those change the
+glide on high-refresh displays. Preserve fractional progress across readbacks
+and test the continuous path separately from native raster quantization.
+A chase whose element disappears must retire its active token so reattachment
+can restart it; stale callbacks must not alter a newer chase. See
+[frontend-scroll.md](../../../../../docs/architecture/frontend-scroll.md).
+
 ## Scroll contract
 
 Read

@@ -34,10 +34,7 @@ import {
 } from './index.svelte';
 import { SCROLL_WRITE_CALLER_PHYSICS, type ScrollWriteCaller } from './types';
 import { resetScrollIntentModuleStateForTest } from './intent';
-import {
-  SPRING_MAX_CATCHUP_STEPS,
-  SPRING_MAX_VELOCITY_PX_PER_FRAME,
-} from './spring';
+import { SPRING_MAX_CATCHUP_STEPS, SPRING_MAX_VELOCITY_PX_PER_FRAME } from './motion';
 import {
   clearUiRenderTrace,
   getUiRenderTraceRecords,

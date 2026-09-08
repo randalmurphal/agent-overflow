@@ -34,7 +34,7 @@ import {
   type ContentDeltaObservation,
   type ResolverState,
 } from './resolver';
-import type { SpringChase } from './spring';
+import type { SpringChase } from './springTypes';
 import { nowMs } from './time';
 import { trace } from './trace';
 import type { ScrollWriteCaller, WarmReason } from './types';

@@ -26,7 +26,7 @@
 
 import { isUiRenderTraceEnabled } from '../uiRenderTrace';
 import { withinArrivalBand } from './resolver';
-import type { ArrivalReadback } from './spring';
+import type { ArrivalReadback } from './springTypes';
 import { trace } from './trace';
 import type { ScrollWriteCaller } from './types';
 

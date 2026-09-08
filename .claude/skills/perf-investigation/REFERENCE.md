@@ -162,6 +162,12 @@ hashes are for `git show`, not for the numbers in them.
   `PlaneRootTransform` re-allocation on every property-tree generation
   bump (`GeometryMapperTransformCache::Update`, no reuse). Removed the
   `will-change` promotion (`7b29f9d6`); motion goes through `scrollTop`.
+- A glide can step while rAF stays at display cadence: quantizing displacement
+  into fixed per-frame speeds and scheduling final pixels by frame count adds
+  motion plateaus (`scroll/motion.ts`, `position.ts`). Integrate CSS-space
+  motion, retain fractional readback error, and sample positions on the measured
+  engine grid. Prove overflow and actual moving frames in the native fixture;
+  a streaming benchmark that fits in the viewport does not test tail-follow.
 - Pane and activity-run scrollers without a composited scrolling layer
   ran a full main-frame lifecycle per scroll offset write (JS or wheel
   alike). `.pane-scroll-surface` with `will-change: scroll-position`

@@ -16,7 +16,7 @@
 // one-shot restore consent.
 
 import { AUTO_FOLLOW_BOTTOM_EPSILON_PX } from './resolver';
-import type { SpringChase } from './spring';
+import type { SpringChase } from './springTypes';
 import { nowMs } from './time';
 import { trace } from './trace';
 import { isUiRenderTraceEnabled } from '../uiRenderTrace';

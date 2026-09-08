@@ -75,7 +75,8 @@ import {
   type ResolverState,
 } from './resolver';
 import { createWriteChokepoint } from './chokepoint';
-import { createSpringChase, type SpringWriteRefusalEvent } from './spring';
+import { createSpringChase } from './spring';
+import type { SpringWriteRefusalEvent } from './springTypes';
 import { nowMs } from './time';
 import { trace } from './trace';
 import type {
@@ -490,7 +491,6 @@ export function createUseStickToBottomController(
     selectionActive: () => (scrollEl ? isSelectingInside(scrollEl) : false),
     targetScrollTop: springTargetScrollTop,
     currentScrollTop: springCurrentScrollTop,
-    scrollTopIsAtTarget,
     arrival: arrivalReadback,
     writeScrollTop,
     liveContentActive: liveContentActiveNow,
