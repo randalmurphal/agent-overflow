@@ -262,6 +262,14 @@ func (m *Manager) Add(ctx context.Context, pairingLink string) (Attachment, erro
 			return Attachment{}, errors.New("this computer is already connected; use its existing connection")
 		}
 	}
+	// An explicit pairing is a new grant. Do not revive an old agent opt-in
+	// after revocation or an incomplete pairing; the explicit enable follows
+	// it. This clearing belongs to THIS path only — own-device enrollment
+	// shares addLinkLocked and must not clobber a live opt-in when it upgrades
+	// an already-paired computer to a group session.
+	if err := m.writeAgentAccess(link.BackendID, false); err != nil {
+		return Attachment{}, err
+	}
 	attachment, err := m.addLinkLocked(ctx, link)
 	if err != nil {
 		return Attachment{}, err
@@ -275,13 +283,10 @@ func (m *Manager) Add(ctx context.Context, pairingLink string) (Attachment, erro
 	return attachment, nil
 }
 
-// Caller holds the destination profile lock across one enrollment.
+// Caller holds the destination profile lock across one enrollment. It installs
+// the pairing session and nothing more — the agent-command opt-in is a separate
+// grant this primitive never touches, so own-device re-enrollment preserves it.
 func (m *Manager) addLinkLocked(ctx context.Context, link deviceclient.Link) (Attachment, error) {
-	// Pairing is a new grant. Do not revive an old agent opt-in after
-	// revocation or an incomplete pairing; the explicit enable follows it.
-	if err := m.writeAgentAccess(link.BackendID, false); err != nil {
-		return Attachment{}, err
-	}
 	m.mu.Lock()
 	if old := m.carriers[link.BackendID]; old != nil {
 		old.client.Retire()
