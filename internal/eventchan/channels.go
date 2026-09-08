@@ -184,8 +184,10 @@ const (
 // meaning on backend:attach: one says how a pairing ceremony ended, the
 // other says the list changed. The frame is
 // internal/attachedbackends.SetChange, whichever desktop emits it, and
-// internal/app's backend_set_change_vocabulary_test.go pins its action set
-// against the frontend mirror.
+// internal/app's backend_set_change_vocabulary_test.go pins its action and
+// reason sets against the frontend mirror. A removal names who ended it:
+// no reason for one this installation made, "ended-by-computer" for the
+// far owner's revocation, which is the one the page explains.
 const (
 	AccessDevicesChanged  Channel = "access:devices-changed"
 	BackendNameChanged    Channel = "backend:name-changed"

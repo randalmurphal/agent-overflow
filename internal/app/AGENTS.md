@@ -502,6 +502,18 @@ observer over the same type, which is what makes the TS mirror
 mirror in both directions and refuses an emit that spells the frame by
 hand.
 
+**A removal says who ended it.** The far owner revoking this installation
+arrives as a renewal refusal that ends the session; `deviceclient` forgets
+the profile and retires the owner, and the manager's `endSession` drops the
+cached carrier (compared by carrier, so a verdict that reaches one already
+replaced by a re-pairing drops nothing), clears its agent opt-in and
+announces `SetRemoved` with `Reason: RemovedByComputer`. A removal this
+installation made carries no reason — the page asked, and the field is
+omitted so an older page reads the frame as it always did. The reason is
+the only thing that tells the two apart on a screen, and `systems.svelte.ts`
+raises its one toast on it; `TestAFarSideRevocationRemovesTheProfileAndSaysWho`
+pins both frames.
+
 Desktop discovery/address setup is specified in
 [computer-pairing.md](../../docs/architecture/computer-pairing.md).
 `app_computer_pairing.go` owns the short-lived window and approval mapping.

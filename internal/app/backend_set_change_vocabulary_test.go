@@ -50,8 +50,12 @@ var setChangeTypeSpellings = map[string]bool{
 func TestBackendSetChangeVocabularyMatchesTheFrontend(t *testing.T) {
 	for _, pair := range []struct{ goType, tsField string }{
 		{"SetAction", "action"},
+		{"RemovalReason", "reason"},
 	} {
 		declared := setChangeConstants(t, pair.goType)
+		// The empty constant is the omitted optional field, which the TS
+		// side spells as `?:` rather than as a member of the union.
+		delete(declared, "")
 		mirrored := setChangeMirrorUnion(t, pair.tsField)
 		if len(declared) == 0 || len(mirrored) == 0 {
 			t.Fatalf("%s/%s: declared=%v mirrored=%v; one side is empty", pair.goType, pair.tsField, declared, mirrored)

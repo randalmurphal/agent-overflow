@@ -16,6 +16,7 @@ import {
   systemLabel,
   systemsLoaded,
 } from './systems.svelte';
+import { getToasts, removeToast } from './toast.svelte';
 
 const LAPTOP = {
   id: 'laptop',
@@ -38,6 +39,7 @@ describe('systems store', () => {
     resetToLocalPage();
     resetStagedBackends();
     __resetManifestBackendsForTest();
+    for (const toast of getToasts()) removeToast(toast.id);
   });
 
   it('does not resurrect a removed computer from a stale list or attachment result', async () => {
@@ -182,6 +184,49 @@ describe('systems store', () => {
     // The same purge a local removeSystem does: the door is closed too, not
     // just the row forgotten.
     expect(attachedBackends().some((b) => b.id === 'laptop')).toBe(false);
+  });
+
+  // A removal nobody here asked for — the far owner revoked this device —
+  // used to look exactly like one this page made: the row vanished. The
+  // reason on the frame is what tells the two apart, and the label is read
+  // before the row goes, since afterwards nothing on this side knows the
+  // machine's name.
+  it('says which computer ended access, before forgetting its row', async () => {
+    stageBackend();
+    setBindingMock('ListBackends', async () => [{ ...LAPTOP, nickname: 'Work laptop' }]);
+    await loadSystems();
+
+    applyBackendSetChange({ action: 'removed', id: 'laptop', reason: 'ended-by-computer' });
+
+    expect(getToasts().map((t) => [t.type, t.message])).toEqual([[
+      'warning', "Work laptop ended this computer's access. Pair again from Connect to a computer.",
+    ]]);
+    expect(getSystems()).toEqual([]);
+    expect(attachedBackends().some((b) => b.id === 'laptop')).toBe(false);
+  });
+
+  // A page that never opened Settings holds no list row, but its transport
+  // registry carries every attached door, which is enough for a name.
+  it('names the computer from the registry when the list was never loaded', () => {
+    stageBackend();
+
+    applyBackendSetChange({ action: 'removed', id: 'laptop', reason: 'ended-by-computer' });
+
+    expect(getToasts().map((t) => t.message)).toEqual([
+      "Laptop ended this computer's access. Pair again from Connect to a computer.",
+    ]);
+    expect(attachedBackends().some((b) => b.id === 'laptop')).toBe(false);
+  });
+
+  it('says nothing about a removal this installation made', async () => {
+    stageBackend();
+    setBindingMock('ListBackends', async () => [LAPTOP]);
+    await loadSystems();
+
+    applyBackendSetChange({ action: 'removed', id: 'laptop' });
+
+    expect(getToasts()).toEqual([]);
+    expect(getSystems()).toEqual([]);
   });
 
   it('takes a rename another page made', async () => {

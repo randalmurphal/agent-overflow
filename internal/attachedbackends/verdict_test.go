@@ -113,8 +113,12 @@ func TestManifestRotatesAnAgedCredentialAndRetiresARevokedSession(t *testing.T) 
 	manager, dir := newManager(t)
 	p := newPeer(t)
 	seedPeer(t, dir, p, false)
-	var ended []string
-	manager.SetSessionEnded(func(id string) { ended = append(ended, id) })
+	var ended []SetChange
+	manager.SetChanged(func(change SetChange) {
+		if change.Action == SetRemoved {
+			ended = append(ended, change)
+		}
+	})
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -141,8 +145,8 @@ func TestManifestRotatesAnAgedCredentialAndRetiresARevokedSession(t *testing.T) 
 	if !errors.Is(err, transport.ErrAttachedSessionEnded) || !errors.Is(err, deviceclient.ErrSessionEnded) {
 		t.Fatalf("manifest after revocation = %v, want the typed verdict", err)
 	}
-	if len(ended) != 1 || ended[0] != "peer" {
-		t.Errorf("observer told %v, want the one ended pairing", ended)
+	if len(ended) != 1 || ended[0].ID != "peer" || ended[0].Reason != RemovedByComputer {
+		t.Errorf("observer told %v, want the one ended pairing with its reason", ended)
 	}
 	if manager.Carrier("peer") != nil {
 		t.Error("a revoked pairing still has a carrier")

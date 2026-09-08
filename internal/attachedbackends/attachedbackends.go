@@ -172,7 +172,7 @@ func (m *Manager) endSession(id string, held *carrier) {
 		return
 	}
 	_ = m.writeAgentAccess(id, false)
-	m.notifyChanged(SetChange{Action: SetRemoved, ID: id})
+	m.notifyChanged(SetChange{Action: SetRemoved, ID: id, Reason: RemovedByComputer})
 }
 
 // Attached is one attached machine as the desktop's own admin surface

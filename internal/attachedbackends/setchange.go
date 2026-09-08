@@ -22,7 +22,26 @@ type SetChange struct {
 	// Nickname is what this installation now calls the machine, empty when
 	// the name was cleared or the row was removed.
 	Nickname string `json:"nickname,omitempty"`
+	// Reason says who ended a SetRemoved machine's pairing. Absent for the
+	// removal this installation made itself, which is every removal there
+	// was before the field existed, so an older page reads the frame as it
+	// always did.
+	Reason RemovalReason `json:"reason,omitempty"`
 }
+
+// RemovalReason is who ended a removed machine's pairing.
+type RemovalReason string
+
+const (
+	// RemovedHere: this installation forgot the machine (Remove). The zero
+	// value, and omitted from the frame.
+	RemovedHere RemovalReason = ""
+	// RemovedByComputer: the far machine refused this installation's
+	// renewal with a verdict that ends the session — its owner revoked this
+	// device — and the client forgot its own profile. The page says so,
+	// because nothing else will: this installation asked for nothing.
+	RemovedByComputer RemovalReason = "ended-by-computer"
+)
 
 // SetAction is what happened to the set.
 type SetAction string
