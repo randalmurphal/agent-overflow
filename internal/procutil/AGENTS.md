@@ -21,7 +21,9 @@ process-group kill configuration and a bounded output tail. Stdlib-only.
   unbounded and its useful end is the tail. `Truncated()` reports whether
   anything was dropped, so a narrative can say so. Writes are mutex-guarded
   because one buffer is wired to both stdout and stderr, which os/exec pumps
-  from two goroutines.
+  from two goroutines. It is a ring: a write past capacity overwrites the
+  oldest bytes in place and costs its own length, never the window's (a
+  sliding linear buffer moved 128 KiB per line of a chatty command).
 
 Callers pass the tail buffer as the command's only output sink. A streaming
 consumer wraps it rather than replacing it: the tail is what the failure

@@ -12,16 +12,18 @@ type TailBuffer struct {
 	mu    sync.Mutex
 	limit int
 	total int64
+	// A ring: once full, `start` is the oldest retained byte and a write
+	// overwrites the oldest bytes in place. Sliding a linear buffer moved the
+	// whole retained window on every write past capacity, which for a chatty
+	// command is the window's size again per line of output.
 	data  []byte
+	start int
 }
 
 // NewTailBuffer returns a buffer retaining at most limit bytes. A limit of zero
 // or less retains nothing while still counting what passed through.
 func NewTailBuffer(limit int) *TailBuffer {
-	capacity := limit
-	if capacity < 0 {
-		capacity = 0
-	}
+	capacity := max(limit, 0)
 	return &TailBuffer{limit: limit, data: make([]byte, 0, capacity)}
 }
 
@@ -33,16 +35,25 @@ func (b *TailBuffer) Write(payload []byte) (int, error) {
 	if b.limit <= 0 {
 		return written, nil
 	}
-	if len(payload) >= b.limit {
-		b.data = append(b.data[:0], payload[len(payload)-b.limit:]...)
+	if written >= b.limit {
+		b.data = append(b.data[:0], payload[written-b.limit:]...)
+		b.start = 0
 		return written, nil
 	}
-	overflow := len(b.data) + len(payload) - b.limit
-	if overflow > 0 {
-		copy(b.data, b.data[overflow:])
-		b.data = b.data[:len(b.data)-overflow]
+	// Fill the linear part first; nothing is overwritten until it is full.
+	if room := b.limit - len(b.data); room > 0 {
+		n := min(room, written)
+		b.data = append(b.data, payload[:n]...)
+		payload = payload[n:]
+		if len(payload) == 0 {
+			return written, nil
+		}
 	}
-	b.data = append(b.data, payload...)
+	// Full: overwrite from the oldest byte on, wrapping once at most since
+	// the payload is shorter than the ring.
+	n := copy(b.data[b.start:], payload)
+	copy(b.data, payload[n:])
+	b.start = (b.start + len(payload)) % b.limit
 	return written, nil
 }
 
@@ -50,7 +61,13 @@ func (b *TailBuffer) Write(payload []byte) (int, error) {
 func (b *TailBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return string(b.data)
+	if b.start == 0 {
+		return string(b.data)
+	}
+	out := make([]byte, 0, len(b.data))
+	out = append(out, b.data[b.start:]...)
+	out = append(out, b.data[:b.start]...)
+	return string(out)
 }
 
 // Truncated reports whether writes exceeded the retained tail.

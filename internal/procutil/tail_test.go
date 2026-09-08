@@ -79,3 +79,34 @@ func TestTailBufferConcurrentWrites(t *testing.T) {
 		t.Fatal("concurrent overflow did not report truncation")
 	}
 }
+
+// The ring is exercised past several wraps with writes of every length
+// short of the limit, against the reference "last N bytes of everything
+// written" — the property the linear slide had and the ring must keep.
+func TestTailBufferWrapsLikeASlidingWindow(t *testing.T) {
+	const limit = 7
+	buffer := NewTailBuffer(limit)
+	var all []byte
+	for i := range 40 {
+		chunk := []byte(strings.Repeat(string(rune('a'+i%26)), 1+i%(limit-1)))
+		all = append(all, chunk...)
+		if _, err := buffer.Write(chunk); err != nil {
+			t.Fatal(err)
+		}
+		want := string(all[max(0, len(all)-limit):])
+		if got := buffer.String(); got != want {
+			t.Fatalf("after write %d: tail = %q, want %q", i, got, want)
+		}
+	}
+	if !buffer.Truncated() {
+		t.Fatal("a stream longer than the limit was not reported truncated")
+	}
+}
+
+func BenchmarkTailBufferWrite(b *testing.B) {
+	buffer := NewTailBuffer(128 << 10)
+	line := []byte(strings.Repeat("x", 80) + "\n")
+	for b.Loop() {
+		buffer.Write(line)
+	}
+}
