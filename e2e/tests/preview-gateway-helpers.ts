@@ -243,7 +243,7 @@ export interface PreviewSurface {
   readonly name: string;
   /** Show the thread whose transcript the cases read. */
   openThread(page: Page, title: string): Promise<void>;
-  /** Open Settings on the Remote access page. */
+  /** Open Settings on the Allow device access page, advanced fold opened. */
   openSettingsRemote(page: Page): Promise<void>;
   /** Close Settings and come back to the thread. */
   returnToThread(page: Page, title: string): Promise<void>;
