@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -246,6 +247,51 @@ func TestRemoteMCPCommandsCrossPairedTLSAndRespectOwnership(t *testing.T) {
 	}
 	if status, _ := remoteMCPRequest(t, replacement, "tools/list", nil); status != 200 {
 		t.Fatal("old teardown revoked replacement")
+	}
+}
+
+// Every tool refusal leaves through one wrapper: a private cause reaches the
+// model only as a reference, argument errors carry a public code, and a call
+// that already named its operation is never prefixed twice.
+func TestRemoteMCPToolErrorsNeverLeakPrivateCauses(t *testing.T) {
+	a := identityApp(t)
+	dir := t.TempDir()
+	var err error
+	if a.backends, err = attachedbackends.New(dir, "source", "test"); err != nil {
+		t.Fatal(err)
+	}
+	access := filepath.Join(dir, "agent-access.json")
+	if err = os.WriteFile(access, []byte("{corrupt"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, private := a.backends.AgentAccess()
+	if private == nil {
+		t.Fatal("corrupt access configuration was accepted")
+	}
+	thread, token := remoteMCPThread(t, a, string(provider.Codex))
+	endpoint := remoteMCPEndpoint(t, a, thread, token)
+	computerID, requestID := uuid.NewString(), uuid.NewString()
+	run := map[string]any{"computer_id": computerID, "project_id": uuid.NewString(), "request_id": requestID, "argv": []string{"test-helper"}}
+	text := string(remoteMCPCall(t, endpoint, "remote_run", run, true))
+	if !strings.HasPrefix(text, "[remote_internal_error] Remote run on computer "+computerID+" for request "+requestID+":") || !strings.Contains(text, "Reference:") || strings.Contains(text, private.Error()) || strings.Contains(text, dir) {
+		t.Fatalf("private cause reached the model: %s", text)
+	}
+	text = string(remoteMCPCall(t, endpoint, "remote_status", map[string]any{"computer_id": 5}, true))
+	if text != `[remote_invalid_request] Remote status: Argument "computer_id" must be a string. Check the tool schema.` {
+		t.Fatalf("argument error: %s", text)
+	}
+	if err = os.Remove(access); err != nil {
+		t.Fatal(err)
+	}
+	status := map[string]any{"computer_id": computerID, "request_id": requestID}
+	text = string(remoteMCPCall(t, endpoint, "remote_status", status, true))
+	if strings.Count(text, "Remote status") != 1 || !strings.HasPrefix(text, "[remote_not_paired] Remote status on computer "+computerID) || strings.Contains(text, dir) {
+		t.Fatalf("unknown computer: %s", text)
+	}
+	a.sessionManager().take(thread.ID)
+	text = string(remoteMCPCall(t, endpoint, "remote_status", status, true))
+	if !strings.HasPrefix(text, "[remote_session_inactive] Remote authorize: The agent session is no longer active.") {
+		t.Fatalf("inactive session: %s", text)
 	}
 }
 

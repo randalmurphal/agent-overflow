@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -84,10 +83,15 @@ func (a *App) remoteMCPContext(ctx context.Context, threadID string) (context.Co
 	return transport.WithCallerScope(ctx, scope), nil
 }
 
+var remoteToolActions = map[string]string{"remote_computers": "discover", "remote_run": "run", "remote_status": "status", "remote_cancel": "cancel", "remote_fetch_artifact": "fetch artifact", "remote_jobs": "list jobs", "remote_read_log": "read", "remote_search_log": "read"}
+
+// Every tool refusal leaves through remoteOperationError: reviewed public
+// codes keep their prose, and any other cause stays in host logs behind a
+// reference. Curated argument errors are public by construction.
 func (a *App) callRemoteMCP(w http.ResponseWriter, ctx context.Context, req threadmcp.Request, access remoteMCPAccess) {
 	live, ok := a.sessionManager().get(access.ThreadID)
 	if !ok || live.Token != access.SessionToken {
-		threadmcp.WriteToolError(w, req.ID, errors.New("The agent session is no longer active. Resume the conversation before using remote tools. Accepted remote jobs keep running."))
+		threadmcp.WriteToolError(w, req.ID, remoteOperationError("authorize", "", "", errorsx.Public("remote_session_inactive", "The agent session is no longer active. Resume the conversation before using remote tools. Accepted remote jobs keep running.", nil)))
 		return
 	}
 	ctx, err := a.remoteMCPContext(ctx, access.ThreadID)
@@ -101,19 +105,32 @@ func (a *App) callRemoteMCP(w http.ResponseWriter, ctx context.Context, req thre
 		return
 	}
 	var result any
+	// Every refusal names the computer and request it addressed, so the model
+	// can inspect or retry the right job.
+	var computerID, requestID string
+	decode := func(args any) bool {
+		if err = threadmcp.DecodeArgs(call.Arguments, args); err == nil {
+			if options, ok := args.(interface{ validate() error }); ok {
+				err = options.validate()
+			}
+		}
+		if err != nil {
+			err = errorsx.Public("remote_invalid_request", err.Error(), nil)
+		}
+		return err == nil
+	}
 	switch call.Name {
 	case "remote_computers":
-		var args struct{}
-		if err = threadmcp.DecodeArgs(call.Arguments, &args); err == nil {
+		if decode(&struct{}{}) {
 			result, err = a.AgentRemoteComputers(ctx)
 		}
 	case "remote_run":
 		var args struct {
 			remoteResultOptions
 			ComputerID     string   `json:"computer_id"`
+			RequestID      string   `json:"request_id"`
 			ProjectID      string   `json:"project_id"`
 			WorkspacePath  string   `json:"workspace_path"`
-			RequestID      string   `json:"request_id"`
 			Label          string   `json:"label"`
 			Argv           []string `json:"argv"`
 			TimeoutSeconds int      `json:"timeout_seconds"`
@@ -121,10 +138,8 @@ func (a *App) callRemoteMCP(w http.ResponseWriter, ctx context.Context, req thre
 			Interpreter    []string `json:"interpreter"`
 			Unlimited      bool     `json:"unlimited"`
 		}
-		if err = threadmcp.DecodeArgs(call.Arguments, &args); err == nil {
-			if err = args.remoteResultOptions.validate(); err != nil {
-				break
-			}
+		if decode(&args) {
+			computerID, requestID = args.ComputerID, args.RequestID
 			if args.WaitSeconds == nil {
 				wait := 1.0
 				args.WaitSeconds = &wait
@@ -142,7 +157,6 @@ func (a *App) callRemoteMCP(w http.ResponseWriter, ctx context.Context, req thre
 			if err == nil {
 				result, err = a.waitRemoteResult(ctx, args.ComputerID, command, args.remoteResultOptions)
 			}
-
 		}
 	case "remote_status", "remote_cancel":
 		var args struct {
@@ -150,10 +164,8 @@ func (a *App) callRemoteMCP(w http.ResponseWriter, ctx context.Context, req thre
 			ComputerID string `json:"computer_id"`
 			RequestID  string `json:"request_id"`
 		}
-		if err = threadmcp.DecodeArgs(call.Arguments, &args); err == nil {
-			if err = args.remoteResultOptions.validate(); err != nil {
-				break
-			}
+		if decode(&args) {
+			computerID, requestID = args.ComputerID, args.RequestID
 			var command RemoteCommand
 			command, err = a.agentRemoteResult(ctx, args.ComputerID, args.RequestID, call.Name == "remote_cancel")
 			if err == nil {
@@ -166,12 +178,12 @@ func (a *App) callRemoteMCP(w http.ResponseWriter, ctx context.Context, req thre
 			RequestID  string `json:"request_id"`
 			Path       string `json:"path"`
 		}
-		if err = threadmcp.DecodeArgs(call.Arguments, &args); err == nil {
+		if decode(&args) {
+			computerID, requestID = args.ComputerID, args.RequestID
 			result, err = a.AgentRemoteFetchArtifact(ctx, args.ComputerID, args.RequestID, args.Path)
 		}
 	case "remote_jobs":
-		var args struct{}
-		if err = threadmcp.DecodeArgs(call.Arguments, &args); err == nil {
+		if decode(&struct{}{}) {
 			var watches []store.RemoteWatch
 			watches, err = a.ListThreadRemoteCommands(access.ThreadID)
 			names := a.remoteComputerNames()
@@ -189,7 +201,8 @@ func (a *App) callRemoteMCP(w http.ResponseWriter, ctx context.Context, req thre
 			MaxBytes   int    `json:"max_bytes"`
 			Query      string `json:"query"`
 		}
-		if err = threadmcp.DecodeArgs(call.Arguments, &args); err == nil {
+		if decode(&args) {
+			computerID, requestID = args.ComputerID, args.RequestID
 			if args.MaxBytes == 0 {
 				args.MaxBytes = 16384
 			}
@@ -213,7 +226,7 @@ func (a *App) callRemoteMCP(w http.ResponseWriter, ctx context.Context, req thre
 		return
 	}
 	if err != nil {
-		threadmcp.WriteToolError(w, req.ID, err)
+		threadmcp.WriteToolError(w, req.ID, remoteOperationError(remoteToolActions[call.Name], computerID, requestID, err))
 		return
 	}
 	threadmcp.WriteToolJSON(w, req.ID, result)

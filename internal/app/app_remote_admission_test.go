@@ -2,6 +2,11 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"sync/atomic"
@@ -19,8 +24,8 @@ import (
 
 type remoteAdmissionReceiver struct {
 	*App
-	calls   atomic.Int32
-	refusal error
+	calls, statusCalls atomic.Int32
+	refusal            error
 }
 
 func (r *remoteAdmissionReceiver) RemoteCommandStart(ctx context.Context, workspace gitapp.WorkspaceRef, request RemoteCommandRequest) (RemoteCommand, error) {
@@ -29,6 +34,11 @@ func (r *remoteAdmissionReceiver) RemoteCommandStart(ctx context.Context, worksp
 		return RemoteCommand{}, r.refusal
 	}
 	return r.App.RemoteCommandStart(ctx, workspace, request)
+}
+
+func (r *remoteAdmissionReceiver) RemoteCommandStatus(ctx context.Context, id string) (RemoteCommand, error) {
+	r.statusCalls.Add(1)
+	return r.App.RemoteCommandStatus(ctx, id)
 }
 
 func remoteAdmissionFixture(t *testing.T) (*App, *remoteAdmissionReceiver, context.Context, AgentRemoteRequest) {
@@ -113,6 +123,155 @@ func TestRemoteAdmissionRepeatedRefusalDoesNotRetainPendingWatch(t *testing.T) {
 	}
 	if watch.Notification != "pending" || watch.Receipt.ID != receipt.ID {
 		t.Fatalf("successful retry did not restore completion tracking: %#v", watch)
+	}
+}
+
+// Every refusal a destination answers before accepting releases the fresh
+// watch, so a never-accepted request cannot block deletion, transfer or
+// forgetting the computer forever. The same ID then admits an identical retry.
+func TestRemoteAdmissionPreAcceptanceRefusalsReleaseTheWatch(t *testing.T) {
+	source, receiver, ctx, input := remoteAdmissionFixture(t)
+	scope, _ := transport.CallerScopeFrom(ctx)
+	for _, code := range []string{"remote_not_ready", "remote_shutting_down", "remote_not_accepted", transport.ErrCodeScopeRequired} {
+		receiver.refusal = errorsx.Public(code, "refused before acceptance", nil)
+		_, err := source.AgentRemoteStart(ctx, input)
+		if got, _, _ := errorsx.PublicDetails(err); got != code {
+			t.Fatalf("%s: %v", code, err)
+		}
+		watch, err := source.store.GetRemoteWatch(input.ComputerID, input.Request.ID)
+		if err != nil || watch.Notification != "dismissed" || watch.Receipt.ID != "" {
+			t.Fatalf("%s retained work: %#v %v", code, watch, err)
+		}
+		if pending, err := source.store.HasUnfinishedRemoteWatches(scope.ThreadID); err != nil || pending {
+			t.Fatalf("%s blocks the conversation: %v %v", code, pending, err)
+		}
+	}
+	receiver.refusal = nil
+	if _, err := source.AgentRemoteStart(ctx, input); err != nil {
+		t.Fatal(err)
+	}
+	if watch, err := source.store.GetRemoteWatch(input.ComputerID, input.Request.ID); err != nil || watch.Notification != "pending" || watch.Receipt.ID != input.Request.ID {
+		t.Fatalf("retry after refusal lost completion tracking: %#v %v", watch, err)
+	}
+}
+
+// A start whose reply was lost leaves a receipt-less pending watch. The poller
+// settles it against the destination: no receipt there means the request was
+// never accepted, and the watch is released. While a retry holds the attempt
+// lock the poll defers instead, so it can never refuse a request that is
+// about to be accepted.
+func TestRemoteWatchProbeReleasesUnacceptedRequestUnlessStartIsInFlight(t *testing.T) {
+	source, receiver, ctx, input := remoteAdmissionFixture(t)
+	scope, _ := transport.CallerScopeFrom(ctx)
+	input.Request.SourceThreadID = scope.ThreadID
+	if fresh, err := source.registerRemoteWatch(input); err != nil || !fresh {
+		t.Fatalf("register: %v %v", fresh, err)
+	}
+	lost, err := source.store.GetRemoteWatch(input.ComputerID, input.Request.ID)
+	if err != nil || lost.Notification != "pending" || lost.Receipt.ID != "" {
+		t.Fatalf("lost reply watch: %#v %v", lost, err)
+	}
+	if pending, err := source.store.HasUnfinishedRemoteWatches(scope.ThreadID); err != nil || !pending {
+		t.Fatalf("watch not pending: %v %v", pending, err)
+	}
+	unlock := source.remoteStartLocks().Lock(input.ComputerID + ":" + input.Request.ID)
+	bounded, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	receipt := lost.Receipt
+	settled, err := source.probeUnacceptedRemoteWatch(bounded, lost, &receipt)
+	cancel()
+	if !settled || err != nil || receiver.statusCalls.Load() != 0 {
+		t.Fatalf("in-flight start was probed: settled=%v err=%v status calls=%d", settled, err, receiver.statusCalls.Load())
+	}
+	if watch, err := source.store.GetRemoteWatch(input.ComputerID, input.Request.ID); err != nil || watch.Notification != "pending" || watch.NextCheck == 0 {
+		t.Fatalf("deferred poll changed the watch: %#v %v", watch, err)
+	}
+	unlock()
+	source.checkRemoteWatch(lost)
+	if receiver.statusCalls.Load() != 1 {
+		t.Fatalf("destination not asked: %d", receiver.statusCalls.Load())
+	}
+	watch, err := source.store.GetRemoteWatch(input.ComputerID, input.Request.ID)
+	if err != nil || watch.Notification != "dismissed" || watch.Receipt.ID != "" || !strings.Contains(watch.Error, "remote_job_not_found") {
+		t.Fatalf("unaccepted request retained: %#v %v", watch, err)
+	}
+	if pending, err := source.store.HasUnfinishedRemoteWatches(scope.ThreadID); err != nil || pending {
+		t.Fatalf("released watch still blocks the conversation: %v %v", pending, err)
+	}
+	if _, err := source.AgentRemoteStart(ctx, input); err != nil {
+		t.Fatal(err)
+	}
+	if watch, err = source.store.GetRemoteWatch(input.ComputerID, input.Request.ID); err != nil || watch.Notification != "pending" || watch.Receipt.ID != input.Request.ID {
+		t.Fatalf("identical retry not tracked: %#v %v", watch, err)
+	}
+}
+
+// Admission rederives execution ownership under the mutation fence: a
+// conversation reserved for transfer neither registers a watch nor reaches
+// the destination.
+func TestRemoteAdmissionRefusesConversationReservedForTransfer(t *testing.T) {
+	source, receiver, ctx, input := remoteAdmissionFixture(t)
+	scope, _ := transport.CallerScopeFrom(ctx)
+	digest := sha256.Sum256([]byte("activation"))
+	if _, err := source.store.CreateThreadTransfer(store.ThreadTransfer{ID: uuid.NewString(), ThreadID: scope.ThreadID, PeerBackendID: uuid.NewString(), Kind: "move", Direction: "outgoing", ActivationHash: hex.EncodeToString(digest[:]), PrivateState: json.RawMessage(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+	var fenced *store.ThreadTransferError
+	if _, err := source.AgentRemoteStart(ctx, input); !errors.As(err, &fenced) {
+		t.Fatalf("reserved conversation started work: %v", err)
+	}
+	if receiver.calls.Load() != 0 {
+		t.Fatal("fenced conversation reached destination")
+	}
+	if _, err := source.store.GetRemoteWatch(input.ComputerID, input.Request.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("fenced conversation registered a watch: %v", err)
+	}
+}
+
+// A direct status reply settles the canonical receipt without its output. The
+// completion then reads the saved log tail, so the notification carries the
+// last lines instead of claiming nothing was retrieved.
+func TestRemoteCompletionRecoversSavedLogTailAfterDirectStatus(t *testing.T) {
+	source, receiver, ctx, input := remoteAdmissionFixture(t)
+	receiver.remoteJobs.Close()
+	manager, err := remotejobs.New(ctx, receiver.store, func(_ context.Context, _ string, _ []string, out io.Writer) (int, error) {
+		_, _ = io.WriteString(out, strings.Repeat("x", 3000)+"\nfinal line\n")
+		return 0, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiver.remoteJobs = manager
+	t.Cleanup(manager.Close)
+	started, err := source.AgentRemoteStart(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		result, err := source.AgentRemoteStatus(ctx, input.ComputerID, input.Request.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.State != "running" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("destination did not settle")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	watch, err := source.store.GetRemoteWatch(input.ComputerID, input.Request.ID)
+	if err != nil || watch.Receipt.State != "succeeded" || watch.Receipt.Output != "" {
+		t.Fatalf("direct status should settle the receipt without output: %+v %v", watch, err)
+	}
+	source.checkRemoteWatch(watch)
+	rows := durableQueueRows(t, source, started.SourceThreadID)
+	if len(rows) != 1 {
+		t.Fatalf("completion queue: %+v", rows)
+	}
+	message := rows[0].Message
+	if !strings.Contains(message, "final line") || !strings.Contains(message, "Output omitted") || strings.Contains(message, "Output was not retrieved") || len(message) > 4<<10 {
+		t.Fatalf("completion lost the saved tail: %s", message)
 	}
 }
 

@@ -26,7 +26,9 @@ reserves active writers' full capacities and expires completed logs oldest-first
 it never evicts an active writer. Disk failures always drain the process, record
 lost output, and resume capture when storage recovers. A partial ring overwrite
 is explicitly unreadable after a crash, never silently presented at stale byte
-offsets. Logs sync at completion; power loss can still lose recent writes.
+offsets; that verdict and a damaged header are terminal public refusals, and
+only an unclassified I/O failure advises a retry. Logs sync at completion;
+power loss can still lose recent writes.
 
 Inline output retains a 128 KiB memory tail and SQLite retains the latest 128
 settled tails for older peers. Disk log metadata distinguishes truncation from
@@ -42,7 +44,9 @@ Scripts are at most 1 MiB, stored with private permissions and passed as a file
 argument to the caller-selected interpreter, never interpolated into another
 shell string. Temporary scripts are removed after execution and at boot. Explicit
 unlimited jobs still stop on cancellation or destination shutdown; they are not
-autorestarted or automatically detached with `&`/`nohup`.
+autorestarted or automatically detached with `&`/`nohup`. A cancellation or
+deadline that lands after a clean exit changes nothing: the receipt keeps the
+success the process reported.
 
 Shutdown cancels process groups and joins them before SQLite closes. A failed
 completion write keeps the result and its bounded slot until persistence works

@@ -104,7 +104,7 @@ type destinationFixture struct {
 
 func TestDestinationStatusReportsAttentionWithoutPrivateError(t *testing.T) {
 	f := newDestinationFixture(t)
-	if err := f.d.store.SetThreadTransferError(f.row.ID, "private/path secret diagnostic"); err != nil {
+	if err := f.d.store.FinishThreadTransferAttempt(f.row.ID, 0, 0, "private/path secret diagnostic"); err != nil {
 		t.Fatal(err)
 	}
 	state, err := f.d.Status(context.Background(), f.row.ID)

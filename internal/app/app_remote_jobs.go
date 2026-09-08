@@ -358,16 +358,19 @@ func (a *App) AgentRemoteStart(ctx context.Context, input AgentRemoteRequest) (R
 	if err != nil {
 		publicErr := remoteOperationError("run", input.ComputerID, input.Request.ID, err)
 		code, _, _ := errorsx.PublicDetails(publicErr)
+		// Every code here is answered before the destination accepts anything,
+		// so a fresh attempt refused this way never started. A lost reply keeps
+		// the watch, which the poller verifies against the destination instead.
 		switch code {
-		case "remote_invalid_request", "remote_invalid_project", "remote_project_not_found", "workspace_not_registered", "remote_capacity", "remote_request_conflict", "remote_log_unavailable":
+		case "remote_invalid_request", "remote_invalid_project", "remote_project_not_found", "workspace_not_registered", "remote_capacity", "remote_request_conflict", "remote_log_unavailable",
+			"remote_not_ready", "remote_shutting_down", "remote_not_accepted", transport.ErrCodeScopeRequired, transport.ErrCodeAuthFailed, transport.ErrCodeMethodNotFound:
 			if freshWatch {
-				_ = a.store.RefuseRemoteWatch(input.ComputerID, input.Request.ID, remoteErrorText(publicErr))
+				_ = a.refuseRemoteWatch(input.ComputerID, input.Request.ID, scope.ThreadID, publicErr)
 			}
 		}
 		return result, publicErr
 	}
-
-	return result, remoteOperationError("run", input.ComputerID, input.Request.ID, err)
+	return result, nil
 }
 
 //ao:scope terminal:operate

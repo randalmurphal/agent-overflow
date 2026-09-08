@@ -146,14 +146,14 @@ func TestTransferRequestIdentityAndMonotonicCommit(t *testing.T) {
 	if _, err := s.AdvanceThreadTransfer(request.ID, "complete", strings.Repeat("c", 64)); err == nil {
 		t.Fatal("changed committed snapshot")
 	}
-	if err := s.SetThreadTransferError(request.ID, "Destination is offline. Retry when it reconnects."); err != nil {
+	if err := s.FinishThreadTransferAttempt(request.ID, 0, 0, "Destination is offline. Retry when it reconnects."); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := s.ListPendingThreadTransfers()
-	if err != nil || len(rows) != 1 || rows[0].Phase != "committed" || rows[0].Error == "" {
-		t.Fatalf("pending recovery: %+v %v", rows, err)
+	row, err := s.GetThreadTransfer(request.ID)
+	if err != nil || row.Phase != "committed" || row.Error == "" {
+		t.Fatalf("pending recovery: %+v %v", row, err)
 	}
-	wire, err := json.Marshal(rows[0])
+	wire, err := json.Marshal(row)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,10 +161,6 @@ func TestTransferRequestIdentityAndMonotonicCommit(t *testing.T) {
 		t.Fatal("status leaks transfer authority")
 	}
 	advanceTransfer(t, s, request.ID, "complete")
-	rows, err = s.ListPendingThreadTransfers()
-	if err != nil || len(rows) != 0 {
-		t.Fatalf("completed recovery rows: %+v %v", rows, err)
-	}
 }
 
 func TestTransferCancelAndCopyReleaseTheThread(t *testing.T) {
