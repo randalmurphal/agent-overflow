@@ -396,7 +396,7 @@ func (a *App) AcceptOwnDeviceIntroduction(ctx context.Context, link string) erro
 	if e == nil && added {
 		// Desktop clients watch the profile set, not the public membership
 		// catalog. Publish this edge before reconciliation sees it as present.
-		a.emit(eventchan.BackendSetChanged, BackendSetChange{Action: "membership"})
+		a.emit(eventchan.BackendSetChanged, BackendSetChange{Action: BackendSetMembership})
 		NotifyOwnDevices(a)
 	}
 	return e

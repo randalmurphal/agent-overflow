@@ -147,7 +147,29 @@ func openAgainst(t *testing.T, be *backend, mutate func(*Session)) (*Client, str
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
+	// Registered after the TempDir, so it runs before that directory is
+	// removed from under a rotation still in flight.
+	t.Cleanup(func() { settled(t, client) })
 	return client, dir
+}
+
+// settled waits for a rotation a cancelled caller left in flight. A
+// rotation outlives the caller that started it (Client.renew), and a
+// fixture that removed the profile directory first would race its lock
+// files.
+func settled(t *testing.T, c *Client) {
+	t.Helper()
+	c.mu.Lock()
+	flight := c.renewing
+	c.mu.Unlock()
+	if flight == nil {
+		return
+	}
+	select {
+	case <-flight.done:
+	case <-time.After(15 * time.Second):
+		t.Error("a rotation left in flight did not settle")
+	}
 }
 
 // TestAuthorize_MintsAProofForTheRequestItRidesOn — a proof binds the
@@ -305,6 +327,9 @@ func TestRenew_ReuseEvidenceClearsTheSessionAndKeepsTheKey(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "refresh_reused") {
 		t.Errorf("the error drops the reason the audit log keeps: %v", err)
+	}
+	if !client.Retired() {
+		t.Error("a refused session left its owner live; a cache would keep answering for it")
 	}
 	if _, err := LoadSession(dir, "backend-a"); !errors.Is(err, ErrNoSession) {
 		t.Fatalf("the refused session survived: %v", err)

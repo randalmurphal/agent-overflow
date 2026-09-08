@@ -20,32 +20,21 @@ func (c *Client) refreshRecoverySupport(ctx context.Context, held Session) (bool
 	if held.RefreshRecovery != nil {
 		return *held.RefreshRecovery, nil
 	}
-	req, err := c.request(ctx, http.MethodGet, "/healthz", nil)
-	if err != nil {
-		return false, err
-	}
-	resp, err := c.http.Do(req)
+	status, header, body, err := healthProbe(ctx, c.http, c.base)
 	if err != nil {
 		return false, fmt.Errorf("deviceclient: check renewal support: %w", err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
+	if status == http.StatusNotFound {
 		return false, nil
 	}
-	if resp.StatusCode != http.StatusOK {
-		return false, fmt.Errorf("deviceclient: check renewal support (HTTP %d)", resp.StatusCode)
+	if status != http.StatusOK {
+		return false, fmt.Errorf("deviceclient: check renewal support (HTTP %d)", status)
 	}
-	if resp.Header.Get(RefreshRecoveryHeader) != "1" {
+	if header.Get(RefreshRecoveryHeader) != "1" {
 		return false, nil
 	}
-	var health struct {
-		BackendID string `json:"backendId"`
-	}
-	if err := decodeBody(resp.Body, &health); err != nil {
-		return false, err
-	}
-	if health.BackendID != held.BackendID {
-		return false, errors.New("deviceclient: renewal endpoint belongs to a different computer")
+	if err := healthIdentity(body, held.BackendID); err != nil {
+		return false, fmt.Errorf("deviceclient: check renewal support: %w", err)
 	}
 	return true, nil
 }

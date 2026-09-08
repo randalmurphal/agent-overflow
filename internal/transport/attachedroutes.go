@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -119,10 +120,22 @@ type AttachedProfile struct {
 	Nickname string
 }
 
+// ErrAttachedSessionEnded is the one manifest failure that is a verdict
+// rather than an outage: the attached machine no longer honours this
+// installation's session, and no retry will change that. Declared here and
+// wrapped by internal/attachedbackends, the same direction as the
+// interfaces above. handleAttachedBootstrap answers it with the credential
+// channel's 404 — the same one a removed profile gets — so the page's
+// ladder stops and the row retires, instead of the transient 503 that
+// keeps it reconnecting.
+var ErrAttachedSessionEnded = errors.New("transport: the attached backend no longer honours this installation's session")
+
 // BackendCarrier is one attached machine's hop.
 type BackendCarrier interface {
 	// Manifest asks that backend what it says about itself, with the
-	// credential this installation holds for it.
+	// credential this installation holds for it. An error wrapping
+	// ErrAttachedSessionEnded is the far side's verdict; any other is an
+	// outage.
 	Manifest(ctx context.Context) (AttachedManifest, error)
 
 	// CarryUpgrade and CarryTransfer carry one already-admitted request.
@@ -294,9 +307,16 @@ func (s *Server) handleAttachedBootstrap(w http.ResponseWriter, r *http.Request)
 	h.Set("Cache-Control", "no-store, max-age=0")
 	WriteSecurityHeaders(h, s.csp)
 	manifest, err := carrier.Manifest(r.Context())
+	if errors.Is(err, ErrAttachedSessionEnded) {
+		// The verdict: that machine has forgotten this device. The same
+		// unfingerprintable 404 a removed profile gets, which the SPA
+		// latches on instead of retrying.
+		http.NotFound(w, r)
+		return
+	}
 	if err != nil {
-		// Unreachable, or a credential that machine no longer honours.
-		// Both are transient in shape here: the SPA's per-backend
+		// Unreachable, or a refusal the carrier could not yet call a
+		// verdict. Transient in shape here: the SPA's per-backend
 		// reconnect ladder owns the retry, and a machine that is simply
 		// asleep must not read as one that has forgotten this device.
 		h.Set("Content-Type", "text/plain; charset=utf-8")

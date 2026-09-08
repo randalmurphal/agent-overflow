@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -158,6 +159,20 @@ func TestAttachedBootstrapReportsAnUnreachableMachineAsTransient(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", resp.StatusCode)
+	}
+}
+
+// TestAttachedBootstrapReportsAnEndedSessionAsAVerdict — the far side
+// refused the rotation that disambiguates a refused manifest, so this is
+// the one manifest failure the page must stop retrying on: the same 404 a
+// removed profile gets, never the transient 503.
+func TestAttachedBootstrapReportsAnEndedSessionAsAVerdict(t *testing.T) {
+	f, carrier := newAttachedFixture(t)
+	carrier.manifestErr = fmt.Errorf("%w: revoked_session", ErrAttachedSessionEnded)
+	resp := do(t, attachedRequest(t, http.MethodGet, "http://"+f.srv.Addr()+"/bootstrap/mini.json"))
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
 	}
 }
 

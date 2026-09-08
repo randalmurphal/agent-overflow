@@ -52,6 +52,10 @@ func (m *Manager) CallOwnDevice(ctx context.Context, id, method string, result a
 func (c *carrier) openRPC(ctx context.Context, capability string) (*rpcclient.Client, error) {
 	ticket, err := c.client.Ticket(ctx)
 	if err != nil {
+		// The mint is where a revoked session is found out: its rotation
+		// refuses, and that verdict retires the row the way a manifest's
+		// does, so no loop keeps dialling a pairing that is gone.
+		c.ended(err)
 		return nil, err
 	}
 	address, err := c.client.DialURL(ticket)

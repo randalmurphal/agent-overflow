@@ -177,10 +177,13 @@ const (
 // owner of the far machine to match it: that window is ten minutes. This
 // channel is the other half, and carries at most one frame per attach.
 //
-// BackendSetChanged is every OTHER mutation of that set — a removal, a
-// rename — so two pages open on this host do not diverge. Its own channel
-// rather than a second meaning on backend:attach: one says how a pairing
-// ceremony ended, the other says the list changed.
+// BackendSetChanged is every OTHER mutation of that set — a removal (by
+// this installation or by the far side ending the session), a rename, the
+// far side's answer to this installation's device name, an own-device
+// membership change — so two pages open on this host do not diverge. Its
+// own channel rather than a second meaning on backend:attach: one says how
+// a pairing ceremony ended, the other says the list changed. The action
+// vocabulary is internal/app's BackendSet* constants.
 const (
 	AccessDevicesChanged  Channel = "access:devices-changed"
 	BackendNameChanged    Channel = "backend:name-changed"

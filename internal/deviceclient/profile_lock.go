@@ -8,7 +8,9 @@ import (
 	"time"
 )
 
-const profileWriteTimeout = 5 * time.Second
+// profileWriteTimeout bounds every wait for a profile lock. A variable so a
+// test can shorten it; nothing else assigns it.
+var profileWriteTimeout = 5 * time.Second
 
 // lockProfile provides OS ownership across processes. Session/key file locks
 // cover short transactions only; a separate legacy-renewal lock serializes

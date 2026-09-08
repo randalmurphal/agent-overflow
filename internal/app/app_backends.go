@@ -55,18 +55,26 @@ type BackendAttachOutcome struct {
 // pending row on a rename. Two pages open on this host, and the same page
 // after a reload, converge on it.
 type BackendSetChange struct {
-	// Action is `removed` or `renamed`.
+	// Action is one of the BackendSet* constants below.
 	Action string `json:"action"`
-	ID     string `json:"id"`
+	// ID names the row, and is empty for a membership change, which moves
+	// several rows at once and is answered by re-reading the list.
+	ID string `json:"id"`
 	// Nickname is what this installation now calls the machine, empty when
 	// the name was cleared or the row was removed.
 	Nickname string `json:"nickname,omitempty"`
 }
 
-// Backend set actions.
+// Backend set actions: a removal (by this installation, or by the far side
+// ending the session — either way the row is gone), a rename, the far side
+// accepting or refusing this installation's device name, and an own-device
+// membership change (frontend/src/lib/stores/systems.svelte.ts mirrors the
+// set).
 const (
-	BackendSetRemoved = "removed"
-	BackendSetRenamed = "renamed"
+	BackendSetRemoved        = "removed"
+	BackendSetRenamed        = "renamed"
+	BackendSetDeviceNameSync = "device-name-sync"
+	BackendSetMembership     = "membership"
 )
 
 // errNoBackendProfiles is what every method here answers when this boot
@@ -179,10 +187,17 @@ func (a *App) RemoveBackend(id string) error {
 	if err := a.backends.Remove(id); err != nil {
 		return err
 	}
+	a.backendRemoved(id)
+	return nil
+}
+
+// backendRemoved announces that one attached row is gone, whether this
+// installation forgot it or the far side ended the session: the page drops
+// the row either way, and the remote peers learn the set moved.
+func (a *App) backendRemoved(id string) {
 	a.emit(eventchan.BackendSetChanged, BackendSetChange{Action: BackendSetRemoved, ID: id})
 	a.signalRemotePeers()
 	a.emit(eventchan.AgentComputersChanged, struct{}{})
-	return nil
 }
 
 // RenameBackend sets what this installation calls one machine, or clears
@@ -219,5 +234,6 @@ func SetAttachedBackends(a *App, manager *attachedbackends.Manager) {
 	a.backends = manager
 	if manager != nil {
 		manager.SetNetwork(func() string { id, _ := a.backendIdentity(); return id }, a.dialComputer)
+		manager.SetSessionEnded(a.backendRemoved)
 	}
 }

@@ -28,6 +28,11 @@ func (a *App) publishComputerRoutes() {
 	state.mu.Unlock()
 	if changed {
 		a.emit(eventchan.ComputerRoutesChanged, struct{}{})
+		// The own-device reconciler runs on demand, not on a timer: a peer
+		// that was unreachable from the old addresses may be reachable now.
+		if a.backends != nil {
+			a.backends.WakeOwnDevices()
+		}
 	}
 }
 

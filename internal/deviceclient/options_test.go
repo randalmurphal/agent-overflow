@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
 
 	"agent-overflow/internal/servercert"
@@ -72,5 +74,26 @@ func TestCustomNetworkDialSurvivesPairOpenAndRouteRepairWithoutChangingTLS(t *te
 	}
 	if !errors.Is(err, ErrCertificateMismatch) {
 		t.Fatalf("custom dial bypassed pin: %v", err)
+	}
+}
+
+// A consumer that brings no dialer gets the bounded one, not net/http's
+// thirty-second default: `--connect` and a transfer client wait the same
+// five seconds the desktop's own computer dialer does.
+func TestPinnedTransportDialsThroughTheBoundedDialerByDefault(t *testing.T) {
+	be := newBackend(t)
+	saved := pinnedDialer
+	t.Cleanup(func() { pinnedDialer = saved })
+	var dials atomic.Int32
+	pinnedDialer = &net.Dialer{Timeout: dialTimeout, Control: func(string, string, syscall.RawConn) error { dials.Add(1); return nil }}
+	transport := NewPinnedTransport("")
+	defer transport.CloseIdleConnections()
+	response, err := (&http.Client{Transport: transport}).Get(be.URL + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if dials.Load() != 1 || saved.Timeout != dialTimeout {
+		t.Fatalf("dials through the bounded dialer = %d, default timeout %v", dials.Load(), saved.Timeout)
 	}
 }

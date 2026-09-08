@@ -1264,7 +1264,9 @@ no online central authority and no claim of instant revocation across partitions
 
 
 Route publications sample `ComputerRoutes` only after network-state locks are
-released, and emit `computer-routes:changed` only when usable candidates change.
+released, and emit `computer-routes:changed` only when usable candidates change
+— and then wake the own-device reconciler, which otherwise runs only at boot,
+on a wake, and on backoff after a failed pass.
 The bounded last-publication comparison is coordination, not a second route
 authority. Tailnet listener/status transitions, main listener rebinding,
 certificate publication, and native relay reports/retirement use this boundary.

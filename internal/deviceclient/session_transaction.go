@@ -10,6 +10,11 @@ import (
 // sessionTransaction reloads under the OS lock before changing a profile. The
 // in-memory owner and the file must still name the same pairing and endpoint.
 // Never perform network work inside change.
+//
+// The lock wait is bounded by profileWriteTimeout whatever the caller's
+// context says: c.mu is held throughout, so a lock another process sits on
+// would otherwise wedge every method of this client for as long as a
+// deadline-free caller (a route observation, a detached renewal) waits.
 func (c *Client) sessionTransaction(ctx context.Context, change func(string, *Session) error) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -20,7 +25,9 @@ func (c *Client) sessionTransaction(ctx context.Context, change func(string, *Se
 	if err != nil {
 		return err
 	}
-	release, err := lockProfile(ctx, c.dir, filepath.Base(path))
+	wait, cancel := context.WithTimeout(ctx, profileWriteTimeout)
+	release, err := lockProfile(wait, c.dir, filepath.Base(path))
+	cancel()
 	if err != nil {
 		return err
 	}

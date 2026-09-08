@@ -38,11 +38,13 @@
 // to the transport's own constant — the same arrangement, for the same
 // reason, as `internal/relaysession`.
 //
-// The one first-party import is `internal/servercert`, for `Fingerprint`.
-// That package is stdlib plus `internal/atomicfile`, and the value a
-// device pins has to be the same spelling of the same digest the backend
-// published; two implementations of "sha256 over the leaf DER" agree only
-// until one of them is edited.
+// The first-party imports are leaf packages with no server or store in
+// them: `internal/servercert` for `Fingerprint` (the value a device pins
+// has to be the same spelling of the same digest the backend published;
+// two implementations of "sha256 over the leaf DER" agree only until one
+// of them is edited), `internal/atomicfile` for the session files,
+// `internal/computerroute` for the route shape a bootstrap advertises, and
+// `internal/appidentity` for the rule a device label must satisfy.
 //
 // # What a paired device may present
 //

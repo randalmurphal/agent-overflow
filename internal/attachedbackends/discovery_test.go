@@ -37,6 +37,21 @@ func discoveryServer(t *testing.T, handle func(http.ResponseWriter, *http.Reques
 	return server
 }
 
+// TestDiscoveryKeyTellsHintSetsApartAndIgnoresNames — overlapping scans
+// share one flight only when they brought the same addresses. The name is
+// the probe's to replace, so it never splits a flight.
+func TestDiscoveryKeyTellsHintSetsApartAndIgnoresNames(t *testing.T) {
+	a := []DiscoveredComputer{{BackendID: "id", Name: "one", Address: "10.0.0.1:8443", Network: "tailnet"}}
+	renamed := []DiscoveredComputer{{BackendID: "id", Name: "two", Address: "10.0.0.1:8443", Network: "tailnet"}}
+	moved := []DiscoveredComputer{{BackendID: "id", Name: "one", Address: "10.0.0.2:8443", Network: "tailnet"}}
+	if discoveryKey(a) != discoveryKey(renamed) {
+		t.Error("a hint's name split the flight")
+	}
+	if discoveryKey(a) == discoveryKey(moved) || discoveryKey(a) == discoveryKey(nil) {
+		t.Error("a different hint set shared the flight")
+	}
+}
+
 func TestDiscoveryProbesRealTLSWithoutCredentialsAndAggregatesReachableRoutes(t *testing.T) {
 	manager, _ := newManager(t)
 	id := entityid.New()

@@ -23,6 +23,6 @@ func (a *App) ownDeviceHooks() attachedbackends.OwnDeviceHooks {
 			invite, err := MintLocalOwnDeviceIntroduction(a, key)
 			return invite.URL, err
 		},
-		Changed: func() { a.emit(eventchan.BackendSetChanged, BackendSetChange{Action: "membership"}) },
+		Changed: func() { a.emit(eventchan.BackendSetChanged, BackendSetChange{Action: BackendSetMembership}) },
 	}
 }

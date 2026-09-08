@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"agent-overflow/internal/deviceclient"
@@ -27,7 +28,21 @@ type ownDeviceReconciler struct {
 	startOnce sync.Once
 	wake      chan struct{}
 	wg        sync.WaitGroup
+	// after schedules the retry that follows a failed pass. Nil is
+	// time.After; a test replaces it to watch what gets scheduled.
+	after func(time.Duration) <-chan time.Time
 }
+
+// A pass in which some peer failed is retried, doubling from ownRetryMin
+// to ownRetryMax until a pass succeeds or a wake resets it. A pass in which
+// every peer answered schedules nothing at all: propagation is push-driven
+// (NotifyOwnDevices wakes this loop), so a healthy set costs no traffic —
+// each pass per peer is a ticket mint, a socket dial, a hello and several
+// RPCs, which is not a price to pay every thirty seconds for no change.
+const (
+	ownRetryMin = 30 * time.Second
+	ownRetryMax = 5 * time.Minute
+)
 
 func (m *Manager) ownWake() chan struct{} {
 	m.own.wakeOnce.Do(func() { m.own.wake = make(chan struct{}, 1) })
@@ -41,27 +56,31 @@ func (m *Manager) WakeOwnDevices() {
 	}
 }
 
-// StartOwnDevices reconciles at boot and on changes. Offline members retry
-// without a frontend or a permanently running hub. At most four bounded peer
+// StartOwnDevices reconciles at boot and on every wake, and retries with
+// backoff after a pass some peer failed. Offline members retry without a
+// frontend or a permanently running hub. At most four bounded peer
 // exchanges run together, so an unavailable host cannot block healthy ones.
 func (m *Manager) StartOwnDevices(ctx context.Context, hooks OwnDeviceHooks) {
 	m.own.startOnce.Do(func() {
+		after := m.own.after
+		if after == nil {
+			after = time.After
+		}
 		m.own.wg.Go(func() {
+			var backoff time.Duration
 			for ctx.Err() == nil {
-				m.ReconcileOwnDevices(ctx, hooks)
-				var timer *time.Timer
-				var tick <-chan time.Time
-				if connected, _ := m.ConnectedOwnDeviceIDs(); len(connected) > 0 {
-					timer = time.NewTimer(30 * time.Second)
-					tick = timer.C
+				var retry <-chan time.Time
+				if m.ReconcileOwnDevices(ctx, hooks) {
+					backoff = min(max(2*backoff, ownRetryMin), ownRetryMax)
+					retry = after(backoff)
+				} else {
+					backoff = 0
 				}
 				select {
 				case <-ctx.Done():
 				case <-m.ownWake():
-				case <-tick:
-				}
-				if timer != nil {
-					timer.Stop()
+					backoff = 0
+				case <-retry:
 				}
 			}
 		})
@@ -70,9 +89,10 @@ func (m *Manager) StartOwnDevices(ctx context.Context, hooks OwnDeviceHooks) {
 
 func (m *Manager) WaitOwnDevices() { m.own.wg.Wait() }
 
-// ReconcileOwnDevices executes one pass. Per-peer errors are retained on its
-// existing carrier for the settings surface; outages never delete pairings.
-func (m *Manager) ReconcileOwnDevices(ctx context.Context, hooks OwnDeviceHooks) {
+// ReconcileOwnDevices executes one pass and reports whether any peer failed.
+// Per-peer errors are retained on its existing carrier for the settings
+// surface; outages never delete pairings.
+func (m *Manager) ReconcileOwnDevices(ctx context.Context, hooks OwnDeviceHooks) (failed bool) {
 	snapshot, stateErr := hooks.Snapshot()
 	if stateErr == nil {
 		var changed bool
@@ -83,11 +103,12 @@ func (m *Manager) ReconcileOwnDevices(ctx context.Context, hooks OwnDeviceHooks)
 	}
 	profiles, err := m.ConnectedOwnDeviceIDs()
 	if err != nil {
-		return
+		return true
 	}
 	if len(profiles) > owndevices.MaxMembers {
 		profiles = profiles[:owndevices.MaxMembers]
 	}
+	var failures atomic.Int32
 	jobs := make(chan string)
 	var workers sync.WaitGroup
 	for range min(4, len(profiles)) {
@@ -99,11 +120,12 @@ func (m *Manager) ReconcileOwnDevices(ctx context.Context, hooks OwnDeviceHooks)
 					err = m.reconcileOwnPeer(peerCtx, id, hooks)
 				}
 				cancel()
+				message := ""
+				if err != nil && ctx.Err() == nil {
+					message = err.Error()
+					failures.Add(1)
+				}
 				if held, getErr := m.carrier(id); getErr == nil {
-					message := ""
-					if err != nil && ctx.Err() == nil {
-						message = err.Error()
-					}
 					if held.setOwnError(message) && hooks.Changed != nil {
 						hooks.Changed()
 					}
@@ -122,6 +144,7 @@ func (m *Manager) ReconcileOwnDevices(ctx context.Context, hooks OwnDeviceHooks)
 	}
 	close(jobs)
 	workers.Wait()
+	return stateErr != nil || failures.Load() > 0
 }
 
 func (m *Manager) reconcileOwnPeer(ctx context.Context, id string, hooks OwnDeviceHooks) error {
@@ -131,6 +154,11 @@ func (m *Manager) reconcileOwnPeer(ctx context.Context, id string, hooks OwnDevi
 	}
 	rpc, err := held.openRPC(ctx, owndevices.Capability)
 	if err != nil {
+		if held.client.Retired() {
+			// The far side ended this session: openRPC retired the row,
+			// and its profile is gone. Not an outage to retry.
+			return nil
+		}
 		return err
 	}
 	defer rpc.Close()
@@ -145,7 +173,9 @@ func (m *Manager) reconcileOwnPeer(ctx context.Context, id string, hooks OwnDevi
 	if err != nil {
 		return err
 	}
-	if err = validateOwnSource(remote, id, key); err != nil {
+	if err = validateOwnSource(remote, id, key); errors.Is(err, errOwnDeviceRemoved) {
+		return m.removedBy(id, remote, hooks)
+	} else if err != nil {
 		return err
 	}
 	if _, err = hooks.Accept(remote); err != nil {
@@ -170,7 +200,9 @@ func (m *Manager) reconcileOwnPeer(ctx context.Context, id string, hooks OwnDevi
 	if err = rpc.Call(ctx, "SyncOwnDevices", &remote, local.Members); err != nil {
 		return err
 	}
-	if err = validateOwnSource(remote, id, key); err != nil {
+	if err = validateOwnSource(remote, id, key); errors.Is(err, errOwnDeviceRemoved) {
+		return m.removedBy(id, remote, hooks)
+	} else if err != nil {
 		return err
 	}
 	if _, err = hooks.Accept(remote); err != nil {
@@ -224,6 +256,10 @@ func (m *Manager) reconcileOwnPeer(ctx context.Context, id string, hooks OwnDevi
 	return errors.Join(introductionErrors...)
 }
 
+// errOwnDeviceRemoved is a catalog in which the caller itself is a tombstone:
+// the far side's notice that this device was removed from the group.
+var errOwnDeviceRemoved = errors.New("this device was removed from that computer's group")
+
 func validateOwnSource(source owndevices.List, backendID, key string) error {
 	if !source.Enabled || len(source.Members) > owndevices.MaxMembers {
 		return errors.New("invalid own-device membership response")
@@ -233,8 +269,38 @@ func validateOwnSource(source owndevices.List, backendID, key string) error {
 		return errors.New("own-device membership does not match the paired computer")
 	}
 	caller, ok := ownMember(source.Members, key)
-	if !ok || caller.Removed {
+	if !ok {
 		return errors.New("this device is not a member of that computer's group")
+	}
+	if caller.Removed {
+		return errOwnDeviceRemoved
+	}
+	return nil
+}
+
+// removedBy absorbs the far side's tombstone for this device. The catalog is
+// accepted like any other — removal wins the merge, and pruning then retires
+// every own-device profile — and should a stale local generation keep this
+// device active, that peer's own-device profile still retires: rejoining
+// takes a fresh approval on the far side, never a retry from here.
+func (m *Manager) removedBy(id string, remote owndevices.List, hooks OwnDeviceHooks) error {
+	if _, err := hooks.Accept(remote); err != nil {
+		return err
+	}
+	local, err := hooks.Snapshot()
+	if err != nil {
+		return err
+	}
+	pruned, err := m.pruneOwnProfiles(local)
+	if err != nil {
+		return err
+	}
+	dropped, err := m.retireOwnProfile(id, "")
+	if err != nil {
+		return err
+	}
+	if (pruned || dropped) && hooks.Changed != nil {
+		hooks.Changed()
 	}
 	return nil
 }
@@ -281,16 +347,33 @@ func (m *Manager) pruneOwnProfiles(snapshot owndevices.List) (bool, error) {
 		if !session.OwnDevice || !(removed[session.BackendID] || (known && self.Removed)) {
 			continue
 		}
-		unlock := m.profiles.Lock(session.BackendID)
-		current, err := deviceclient.LoadSession(m.dir, session.BackendID)
-		if err == nil && current.OwnDevice && current.SessionID == session.SessionID {
-			err = m.forgetLocked(session.BackendID)
-			changed = changed || err == nil
-		}
-		unlock()
-		if err != nil && !errors.Is(err, deviceclient.ErrNoSession) {
+		dropped, err := m.retireOwnProfile(session.BackendID, session.SessionID)
+		changed = changed || dropped
+		if err != nil {
 			return changed, err
 		}
 	}
 	return changed, nil
+}
+
+// retireOwnProfile forgets one own-device profile the way a tombstone does,
+// if it still holds the session named (any session when sessionID is empty).
+// Ordinary limited shares are separate grants and are never touched.
+func (m *Manager) retireOwnProfile(id, sessionID string) (bool, error) {
+	unlock := m.profiles.Lock(id)
+	defer unlock()
+	current, err := deviceclient.LoadSession(m.dir, id)
+	if err != nil {
+		if errors.Is(err, deviceclient.ErrNoSession) {
+			err = nil
+		}
+		return false, err
+	}
+	if !current.OwnDevice || (sessionID != "" && current.SessionID != sessionID) {
+		return false, nil
+	}
+	if err := m.forgetLocked(id); err != nil {
+		return false, err
+	}
+	return true, nil
 }
