@@ -1,8 +1,3 @@
-import { rememberedIdentity, forgetRememberedIdentity } from './rememberedIdentity';
-import { isNativeShell } from '../native/platform';
-import { isFrontendOnly } from './runMode';
-import { storedBackendEndpoint } from './homeEndpoint';
-import { pairedComputerId } from './deviceSession';
 // The backends this client is attached to, one `TransportHandle` each.
 //
 // Phase 7 of the remote-access spec (§10, "One seam, two realizations")
@@ -12,21 +7,28 @@ import { pairedComputerId } from './deviceSession';
 // cursors, its watch set, its status. What changes is that there can be
 // more than one of them.
 //
-// **The home entry wraps the `wsClient` singleton rather than replacing
-// it.** The page's own backend is the one this document was served by, it
-// is the one every existing import of that singleton means, and its
-// behaviour has to stay identical to the day before this file existed. So
-// it is registered here as an ordinary entry over the existing client,
-// and `wsClient` stays exported for the transition.
+// **The page's own backend is an ordinary entry.** Its descriptor carries
+// the registry id `HOME_BACKEND` and comes from the same source as every
+// other backend's (./manifestBackends.ts, `defaultBackendDescriptors`).
+// The one thing `attachBackend` does differently for it is hand it the
+// `wsClient` singleton as its client instead of constructing one, because
+// that singleton is what every remaining external import of it means and
+// its behaviour has to stay identical to the day before this file
+// existed. Attach, detach, the `all` fan-out, the standing subscriptions
+// and every "everywhere" fan-out treat it exactly as they treat a machine
+// attached from Settings: there is one wiring path, and home goes through
+// it.
 //
-// **The list's SOURCE is one injectable function.** Today it is the
-// bootstrap manifest's `backends` array: backends the local Go process
-// proxies at same-origin paths (`/ws/backend/<id>` + `/bootstrap/<id>.json`,
-// the `clientmode` proxy of spec §10). On a phone the same array comes
-// from client-local storage with remote `wss://` URLs and no proxy in
-// sight. Neither of those facts belongs in the registry, so the registry
-// asks a function for the list and `setBackendSource` is how the phone
-// wave supplies a different one — not a second attach path.
+// **The list's SOURCE is one function, and it decides the client class
+// once.** On a desktop it answers home plus the bootstrap manifest's
+// `backends` array: backends the local Go process proxies at same-origin
+// paths (`/ws/backend/<id>` + `/bootstrap/<id>.json`, the `clientmode`
+// proxy of spec §10). On a phone it answers the endpoint map the shell
+// persisted — home included only while its legacy slot is stored — with
+// remote `wss://` URLs and no proxy in sight. Neither fact belongs in the
+// registry, which only ever asks the source and reconciles against it: at
+// module load, whenever the manifest's list moves, on every native boot,
+// and when a shell's home learns which computer it is.
 //
 // **Attachment is EAGER, not lazy.** The unified sidebar's list calls fan
 // out over every attached backend at boot (the `all` route below), so a
@@ -37,9 +39,14 @@ import { pairedComputerId } from './deviceSession';
 // pane position: it is attached or it is not.
 //
 // Cost: `backendById` is one Map lookup and no allocation; a client with
-// one backend never enters the fan-out path at all (./runtime.ts
-// dispatches straight to the home handle), so it pays what it paid before.
+// one backend never fans out (`callEveryBackend` dispatches its single
+// target directly), so it pays what it paid before.
 
+import { rememberedIdentity, forgetRememberedIdentity } from './rememberedIdentity';
+import { isNativeShell } from '../native/platform';
+import { isFrontendOnly } from './runMode';
+import { storedBackendEndpoint } from './homeEndpoint';
+import { pairedComputerId } from './deviceSession';
 import type { LeaseState } from './frames';
 import type { EventOrigin, TransportHandle } from './handle';
 import { HOME_BACKEND, type BackendKey } from './backendKey';
@@ -52,8 +59,9 @@ import { captureThreadMetadataRead, forgetBackendEntities, onThreadOwnershipChan
 import { forgetBackendClock, registerBackendClock } from './backendClock';
 import { grantedScopes, refreshGrantedScopes, forgetGrantedScopes, type ScopeSnapshot } from './scopes';
 import {
+  __resetManifestBackendsForTest,
+  defaultBackendDescriptors,
   fetchBackendManifest,
-  manifestBackendDescriptors,
   onManifestBackendsChanged,
 } from './manifestBackends';
 import {
@@ -121,7 +129,15 @@ export interface BackendEntry {
 // A registry entry: the public view plus what only this module writes.
 interface Entry extends BackendEntry {
   name: string;
-  descriptor?: BackendDescriptor;
+  /** The addressing snapshot this backend was attached under; replaced
+   *  whole when the source names the same id with new fields. */
+  descriptor: BackendDescriptor;
+  /** The UUID a descriptor named for this backend. A later snapshot may
+   *  name one an earlier did not (a manifest resolving); none blanks it. */
+  pairedBackendId: string;
+  /** Writable for one reason: a suite re-points a held entry at a fake
+   *  (`__attachBackendForTest`). Production never reassigns it. */
+  client: WSClient;
   /** Cached origin object, rebuilt only when this backend's identity
    *  moves. Events stamp it by reference; a fresh object per frame would
    *  be pure garbage on the busiest path in the app. */
@@ -262,34 +278,24 @@ function createHandle(entry: () => Entry, id: string): TransportHandle {
   };
 }
 
-// The home entry's client, held in a variable rather than captured, so a
-// suite can stage the page's own connection without a socket
-// (`__setHomeClientForTest`). Production writes it exactly once, here.
-let homeClient: WSClient = wsClient;
-
-function makeEntry(
-  id: string,
-  home: boolean,
-  client: WSClient,
-  name: string,
-  pairedBackendId = '',
-): Entry {
+function makeEntry(descriptor: BackendDescriptor, client: WSClient): Entry {
+  const id = descriptor.id;
   let handle: TransportHandle;
   const entry: Entry = {
     id,
-    home,
-    name,
-    get nickname(): string | undefined { return entry.descriptor?.nickname; },
-    get client(): WSClient {
-      return home ? homeClient : client;
-    },
+    home: id === HOME_BACKEND,
+    name: descriptor.name,
+    descriptor,
+    pairedBackendId: descriptor.backendId,
+    client,
+    get nickname(): string | undefined { return entry.descriptor.nickname; },
     origin: { backendId: '' },
     lastFanoutError: null,
     get handle(): TransportHandle {
       return handle;
     },
     get backendId(): string {
-      return getBackendIdentity(id).backendId || pairedBackendId || pairedComputerId(id) || rememberedIdentity(id)?.backendId || '';
+      return getBackendIdentity(id).backendId || entry.pairedBackendId || pairedComputerId(id) || rememberedIdentity(id)?.backendId || '';
     },
     get generation(): string {
       return getBackendIdentity(id).generation;
@@ -311,50 +317,28 @@ function makeEntry(
   return entry;
 }
 
-// The page's own backend, registered at module load over the existing
-// singleton. Nothing is CALLED on the client here: construction must not
-// open a socket, because the boot sequence decides when that happens.
-const homeEntry = makeEntry(HOME_BACKEND, true, wsClient, '');
-if (!isNativeShell() || (storedBackendEndpoint() !== '' && duplicateLegacyHomeBackend() === null)) {
-  entries.push(homeEntry);
-  byId.set(HOME_BACKEND, homeEntry);
-}
+// Clients a suite staged per registry id, consulted before one would be
+// constructed (`__attachBackendForTest`). Empty in production.
+const stagedClients = new Map<string, WSClient>();
 
-/** A newer UUID pairing supersedes only a proven duplicate legacy phone
- * slot. Leave its credentials/endpoints untouched until explicit removal. */
-export function duplicateLegacyHomeBackend(): BackendKey | null {
-  if (!isNativeShell() || !storedBackendEndpoint()) return null;
-  const id = pairedComputerId() || getBackendIdentity().backendId || rememberedIdentity(HOME_BACKEND)?.backendId;
-  return id && storedBackendEndpoint(id) && pairedComputerId(id) === id ? id : null;
-}
-
-/** Restore the legacy phone slot after pairing, before the app mounts. New
- * phone pairings use computer IDs; an absent legacy slot is not a computer. */
-export function restoreHomeBackend(): void {
-  if (duplicateLegacyHomeBackend() !== null) {
-    detachBackend(HOME_BACKEND);
-    return;
-  }
-  if (byId.has(HOME_BACKEND)) return;
-  // A WSClient closes for good (`close()` runs no ladder afterwards), and
-  // the shell's boot closes this one when no home pairing is stored.
-  // Registering it again would hand every home call a socket that can
-  // never open, with nothing on screen to say so.
-  if (homeClient.isClosed()) throw new Error('The home connection was closed; a new document is needed to restore it.');
-  registerHomeEntry();
-}
-
-function registerHomeEntry(): void {
-  entries.unshift(homeEntry);
-  byId.set(HOME_BACKEND, homeEntry);
-  refreshGrantedScopes(HOME_BACKEND);
-  if (installedProver !== null) homeEntry.handle.installStepUpProver(installedProver);
-  if (installedDiagnosticsSink !== null) installEntryDiagnostics(homeEntry);
-  homeEntry.handle.setLease(clientLease);
-  sendWatchedThreads(homeEntry);
-  sendScreenPresence(homeEntry);
-  for (const sub of standing) attachStanding(sub, homeEntry);
-  notifyBackendsChanged();
+// The client an entry is attached over. The page's own backend keeps the
+// `wsClient` singleton — what every remaining external import of it means,
+// and the one thing about home this file does differently (see the
+// header). Every other backend gets a connection of its own, bootstrapped
+// through the manifest fetcher ./bootstrap.ts installed. Nothing is CALLED
+// on the client here: construction must not open a socket, because the
+// boot sequence decides when that happens.
+function clientFor(id: string, descriptor: () => BackendDescriptor): WSClient {
+  const staged = stagedClients.get(id);
+  if (staged !== undefined) return staged;
+  if (id === HOME_BACKEND) return wsClient;
+  return new WSClient({
+    bootstrap: () => fetchBackendManifest(descriptor()),
+    // Its own credential slot. Empty on a desktop, where the local
+    // process holds the profile and proxies same-origin; a phone's
+    // slot per machine is what makes its dial name the right session.
+    backend: id,
+  });
 }
 
 // A backend's live UUID becomes a second key onto its entry the moment its
@@ -364,15 +348,13 @@ function registerHomeEntry(): void {
 // fact about a connection, and the registry is a fact about the app.
 onBackendIdentity((identity, backendKey) => {
   if (identity.backendId === '') return;
-  // Very old HOME sessions learn their computer ID only from bootstrap.
-  // Retire that duplicate before its ready promise can issue catalog reads.
-  if (duplicateLegacyHomeBackend() !== null && byId.has(HOME_BACKEND)) {
-    detachBackend(HOME_BACKEND);
-  } else if (backendKey === HOME_BACKEND && isNativeShell()
-    && entries.some((entry) => !entry.home && entry.id === identity.backendId)
-    && pairedComputerId(identity.backendId) !== identity.backendId) {
-    // A legacy session with no saved ID can discover an incomplete duplicate
-    // only now. Reconcile before choosing which entry owns the UUID alias.
+  // A shell's stored legacy home slot learns which computer it is only from
+  // an authenticated manifest, and the stored source's answer moves with
+  // that fact alone: a slot proven to duplicate a UUID pairing retires, and
+  // a UUID sibling whose own pairing is incomplete folds into the slot.
+  // Reconcile BEFORE choosing which entry owns the UUID alias below — and
+  // only for that slot's own identity, so no other backend's pays the sweep.
+  if (backendKey === HOME_BACKEND && isNativeShell() && storedBackendEndpoint() !== '') {
     syncAttachedBackends();
   }
   const entry = byId.get(backendKey);
@@ -383,11 +365,6 @@ onBackendIdentity((identity, backendKey) => {
   // somebody's threads to the wrong machine.
   if (existing === undefined) byId.set(identity.backendId, entry);
 });
-
-/** The local administrative connection (also an execution host on ordinary boots). */
-export function homeBackend(): BackendEntry {
-  return homeEntry;
-}
 
 /**
  * Execution computers in attach order, home first when it executes work.
@@ -456,35 +433,31 @@ export function backendKeyForOrigin(backendId: string): BackendKey {
  * subscription is what opens a `WSClient`'s socket.
  */
 export function attachBackend(descriptor: BackendDescriptor): BackendEntry {
-  if (descriptor.id === HOME_BACKEND) return homeEntry;
   const held = byId.get(descriptor.id);
   if (held !== undefined) {
     // A nickname change arrives as a NAME change (`systems.systemLabel`
     // folds it in), and `manifestBackends.sameDescriptors` dedups the
     // publish on the same fields, so the name is the one diff here.
     held.descriptor = descriptor;
+    if (descriptor.backendId !== '') {
+      held.pairedBackendId = descriptor.backendId;
+      if (!byId.has(descriptor.backendId)) byId.set(descriptor.backendId, held);
+    }
     if (held.name !== descriptor.name) {
       held.name = descriptor.name;
       notifyBackendsChanged();
     }
     return held;
   }
-  const entry = makeEntry(
-    descriptor.id,
-    false,
-    new WSClient({
-      bootstrap: () => fetchBackendManifest(entry.descriptor ?? descriptor),
-      // Its own credential slot. Empty on a desktop, where the local
-      // process holds the profile and proxies same-origin; a phone's
-      // slot per machine is what makes its dial name the right session.
-      backend: descriptor.id,
-    }),
-    descriptor.name,
-    descriptor.backendId,
-  );
-  entry.descriptor = descriptor;
-  entries.push(entry);
-  if (computers !== entries) computers.push(entry);
+  const entry = makeEntry(descriptor, clientFor(descriptor.id, () => entry.descriptor));
+  // Home first, then attach order. The fan-out concatenates shares and the
+  // machine list renders in this order, and a shell re-pairing its legacy
+  // home after other machines are up must not move it to the end.
+  if (entry.home) entries.unshift(entry);
+  else entries.push(entry);
+  // The frontend-only controller's home is a local administrative
+  // connection, not an execution computer.
+  if (computers !== entries && !entry.home) computers.push(entry);
   byId.set(descriptor.id, entry);
   if (descriptor.backendId !== '' && !byId.has(descriptor.backendId)) {
     byId.set(descriptor.backendId, entry);
@@ -512,13 +485,15 @@ export function attachBackend(descriptor: BackendDescriptor): BackendEntry {
 }
 
 /**
- * Detach a backend and close its socket. A desktop's local backend owns
- * the page and cannot detach. A phone's legacy first pairing is ordinary
- * remote access and can be removed independently of its other computers.
+ * Detach a backend and close its socket. Home is no exception here. A
+ * desktop's is never asked to leave — `backendAttach.detachAttachedBackend`
+ * refuses it, and its source always names it, so a sync keeps it — and a
+ * phone's legacy first pairing is ordinary remote access that goes when
+ * its stored slot does.
  */
 export function detachBackend(id: string): void {
   const entry = byId.get(id);
-  if (entry === undefined || (entry.home && !isNativeShell())) return;
+  if (entry === undefined) return;
   const at = entries.indexOf(entry);
   if (at >= 0) entries.splice(at, 1);
   if (computers !== entries) {
@@ -807,6 +782,13 @@ function mergeBackendResults(shares: readonly unknown[], homeShare: unknown): un
 /**
  * Dispatch an `all`-routed call to every attached backend and merge.
  *
+ * ONE attached computer — every desktop with nothing attached, and a phone
+ * with one machine — is dispatched directly. The fan-out with one member
+ * is that member's call and the merge of one share is the share, so the
+ * shortcut changes nothing but the allocations on the app's busiest RPC
+ * path. It is the same rule for whichever computer that is: home holds no
+ * privilege here.
+ *
  * A backend that fails supplies no share: the failure is recorded on its
  * entry (`lastFanoutError`) and the merge proceeds, because one
  * unreachable machine must not blank the sidebar of the ones that are
@@ -823,6 +805,7 @@ export async function callEveryBackend(
   args: unknown[],
   observe?: (result: unknown, backendId: string) => void,
 ): Promise<unknown> {
+  if (computers.length === 1) return callOneBackend(computers[0], methodId, args, observe);
   const targets = computers.slice();
   // No computer attached is an EMPTY answer, not a failed one: a frontend
   // that has let go of its last computer still lists nothing rather than
@@ -858,6 +841,36 @@ export async function callEveryBackend(
     if (!anyFulfilled) throw homeError ?? firstError ?? new Error('no backend answered');
     return mergeBackendResults(shares, homeShare);
   } finally { for (const read of verify) read?.release(); }
+}
+
+// The fan-out with one member, without the settled-array walk.
+async function callOneBackend(
+  entry: Entry,
+  methodId: number,
+  args: unknown[],
+  observe?: (result: unknown, backendId: string) => void,
+): Promise<unknown> {
+  const verify = captureThreadMetadataRead(methodId, entry.id);
+  try {
+    const result = await entry.client.callByID(methodId, args);
+    // Removed while its reply was pending: the share is dropped exactly as
+    // the fan-out drops it, and nothing may index rows to a machine this
+    // client is no longer attached to.
+    if (byId.get(entry.id) !== entry) throw removedDuringCall();
+    verify?.verify(result);
+    entry.lastFanoutError = null;
+    observe?.(result, entry.id);
+    return result;
+  } catch (reason) {
+    entry.lastFanoutError = reason;
+    throw reason;
+  } finally { verify?.release(); }
+}
+
+/** The rejection every dispatch path issues for a reply from a computer
+ *  detached while that reply was pending. */
+export function removedDuringCall(): Error {
+  return new Error('The computer was removed while waiting for its reply. Check its state before retrying.');
 }
 
 // ---------------------------------------------------------------------------
@@ -904,41 +917,24 @@ export function takePinnedBackend(): BackendKey | null {
 // Where the list comes from
 // ---------------------------------------------------------------------------
 
-/**
- * The source of the attached-backend list. ONE function, replaced rather
- * than branched on.
- *
- * The default answers nothing, and ./bootstrap.ts installs the manifest
- * reader at boot: the desktop's local process publishes the backends it
- * proxies in the manifest's `backends` array. A phone shell replaces this
- * with a reader over client-local storage whose entries carry remote
- * `wss://` URLs. Nothing else about attachment differs between the two,
- * which is why there is one seam here and no client-class branch below it.
- */
-export type BackendSource = () => readonly BackendDescriptor[];
-
-// The default source is what the bootstrap manifest published
-// (./manifestBackends.ts, a leaf so `bootstrap → backends` never closes a
-// ring around the `wsClient` singleton). Re-swept whenever that list moves,
+// The source is `manifestBackends.defaultBackendDescriptors`: the page's
+// own backend plus what the bootstrap manifest published on a desktop, the
+// stored endpoint map on a shell. It lives in that leaf so `bootstrap →
+// backends` never closes a ring around the `wsClient` singleton, and it is
+// asked afresh on every sync. Re-swept whenever the manifest's list moves,
 // which is when somebody adds or removes a machine.
-let backendSource: BackendSource = manifestBackendDescriptors;
-
-onManifestBackendsChanged(() => {
-  syncAttachedBackends();
-});
-
-export function setBackendSource(source: BackendSource): void {
-  backendSource = source;
-}
+onManifestBackendsChanged(syncAttachedBackends);
 
 /**
  * Attach everything the source names, and detach anything held that it no
- * longer does. Idempotent; safe to call again when the source changes.
+ * longer does. Idempotent; safe to call again whenever the answer may have
+ * moved: the native bridge reporting, a pairing landing, a shell's home
+ * learning its identity.
  */
 export function syncAttachedBackends(): void {
   let wanted: readonly BackendDescriptor[];
   try {
-    wanted = backendSource();
+    wanted = defaultBackendDescriptors();
   } catch (err) {
     // A source that cannot answer names nothing to attach AND nothing to
     // detach. Sweeping on it would forget every computer this client is
@@ -948,9 +944,9 @@ export function syncAttachedBackends(): void {
     console.warn('transport: keeping the attached computers; their saved addresses could not be read', err);
     return;
   }
-  const keep = new Set<string>([HOME_BACKEND]);
+  const keep = new Set<string>();
   for (const descriptor of wanted) {
-    if (typeof descriptor?.id !== 'string' || descriptor.id === HOME_BACKEND) continue;
+    if (typeof descriptor?.id !== 'string') continue;
     keep.add(descriptor.id);
     attachBackend(descriptor);
   }
@@ -960,64 +956,60 @@ export function syncAttachedBackends(): void {
 }
 
 /**
- * Test seam: stage the page's own connection.
+ * Test seam: attach `descriptor` over a caller-supplied client, or re-point
+ * an id already held at that client, so a suite can stage connections
+ * without a socket or a manifest fetch. The re-point swaps the client in
+ * place and rewires nothing: a later subscription or call reads the entry's
+ * client at that moment, which is all a fake needs.
  *
- * The home entry normally wraps the `wsClient` singleton, which a suite
- * cannot replace by mocking that module alone — `src/test/setup.ts` loads
- * the real one before any test file's `vi.mock` registers. This is how a
- * transport test points the home handle at its own fake.
- */
-export function __setHomeClientForTest(client: WSClient): void {
-  homeClient = client;
-}
-
-/** Test seam: drop every attached backend, leaving only home. */
-export function __resetBackendsForTest(): void {
-  for (const entry of entries.slice()) {
-    if (!entry.home) detachBackend(entry.id);
-  }
-  homeEntry.lastFanoutError = null;
-  // Past the closed-client guard on purpose: a shell-boot test closes the
-  // real singleton, and the next test still needs a home entry to read.
-  if (!byId.has(HOME_BACKEND)) registerHomeEntry();
-  installedProver = null;
-  clientLease = 'active';
-  watchedThreadIds = [];
-  screenPresence = null;
-  backendSource = manifestBackendDescriptors;
-}
-
-/**
- * Test seam: attach a backend over a caller-supplied client, so a suite
- * can stage two connections without a socket or a manifest fetch. The one
- * thing production attach does that this skips is constructing the client.
+ * The page's own backend is staged the same way, under
+ * `manifestBackends.HOME_DESCRIPTOR`: `src/test/setup.ts` loads the real
+ * `wsClient` before any test file's `vi.mock` registers, so mocking that
+ * module alone never reaches the registry. What is staged for home is KEPT
+ * across `__resetBackendsForTest` — the reset re-attaches home over it —
+ * because a file stages it once at module level and expects it for every
+ * test; every other staged client is forgotten by the reset.
  */
 export function __attachBackendForTest(
   descriptor: BackendDescriptor,
   client: WSClient,
 ): BackendEntry {
-  const entry = makeEntry(descriptor.id, false, client, descriptor.name, descriptor.backendId);
-  entry.descriptor = descriptor;
-  entries.push(entry);
-  if (computers !== entries) computers.push(entry);
-  byId.set(descriptor.id, entry);
-  if (descriptor.backendId !== '' && !byId.has(descriptor.backendId)) {
-    byId.set(descriptor.backendId, entry);
-  }
-  if (installedProver !== null) entry.handle.installStepUpProver(installedProver);
-  // A backend attached while the client is asleep is told so now, not at
-  // the next resume: it would otherwise stream at full rate to a paused app.
-  if (clientLease !== 'active') entry.handle.setLease(clientLease);
-  // And the watched set, for the same reason: a machine attached while
-  // panes are already open would otherwise push nothing for them until
-  // the next composition change, which on a settled screen is never.
-  if (watchedThreadIds.length > 0) sendWatchedThreads(entry);
-  // And this screen's presence, which a backend attached mid-session would
-  // otherwise read as unattended until the next focus change — on a settled
-  // screen, never.
-  sendScreenPresence(entry);
-  refreshGrantedScopes(entry.id);
-  for (const sub of standing) attachStanding(sub, entry);
-  notifyBackendsChanged();
-  return entry;
+  stagedClients.set(descriptor.id, client);
+  const held = byId.get(descriptor.id);
+  if (held !== undefined) held.client = client;
+  // The ordinary attach from here: a held id takes the staged descriptor
+  // the way it takes a re-published one (name, nickname, UUID alias).
+  return attachBackend(descriptor);
 }
+
+/**
+ * Test seam: back to what the default source names — home alone, on a
+ * desktop suite — with every "everywhere" fact cleared and the manifest's
+ * published list forgotten, so nothing a test published is re-attached over
+ * a real connection by the sync below.
+ */
+export function __resetBackendsForTest(): void {
+  for (const entry of entries.slice()) {
+    if (!entry.home) detachBackend(entry.id);
+  }
+  for (const id of [...stagedClients.keys()]) {
+    if (id !== HOME_BACKEND) stagedClients.delete(id);
+  }
+  installedProver = null;
+  clientLease = 'active';
+  watchedThreadIds = [];
+  screenPresence = null;
+  __resetManifestBackendsForTest();
+  syncAttachedBackends();
+  const home = byId.get(HOME_BACKEND);
+  if (home !== undefined) home.lastFanoutError = null;
+}
+
+// The page's own backend attaches HERE, at module evaluation, and that is
+// deliberate: stores subscribe through `Events.On` while THEY evaluate, a
+// standing subscription is what opens a socket, and the boot sequence is
+// what decides when that happens — so home has to be attached before the
+// first store runs, as it always was. The source answers for this client
+// class (a shell without a stored legacy slot attaches nothing here), and
+// every later sync reconciles from the same answer.
+syncAttachedBackends();

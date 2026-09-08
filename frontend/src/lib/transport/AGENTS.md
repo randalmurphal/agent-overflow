@@ -32,42 +32,71 @@ pane can substitute for that project's owner.
   cursors, watch set, status — and what phase 7 changed is that there can be
   more than one of them (spec §10, "One seam, two realizations").
 
-  **The HOME entry wraps the `wsClient` singleton rather than replacing
-  it.** The page's own backend is the one this document was served by and
-  the one every existing import of that singleton means, so it is an
-  ordinary entry over the existing client and the singleton stays exported.
-  Its registry id is `HOME_BACKEND` — the empty string, declared in the
-  leaf `backendKey.ts` — which is what every per-backend API defaults to,
-  and is why not one existing call site had to change. It is deliberately
-  NOT the backend's UUID: that arrives with a manifest and is unknown at
-  module load, which is exactly why it cannot key a map that must exist
-  before the first fetch resolves. Once a manifest names one, the UUID
-  becomes a SECOND key onto the same entry, so `backendById` resolves the
-  registry id and an event's origin stamp alike in one lookup.
+  **The page's own backend is an ORDINARY entry.** Its descriptor
+  (`manifestBackends.HOME_DESCRIPTOR` on a desktop, the stored legacy slot
+  on a phone) carries the registry id `HOME_BACKEND` — the empty string,
+  declared in the leaf `backendKey.ts` — which is what every per-backend
+  API defaults to. The one thing `attachBackend` does differently for it
+  is hand it the `wsClient` singleton as its client instead of
+  constructing one, because that singleton is what every remaining
+  external import of it means; attach, detach, the `all` fan-out, the
+  standing subscriptions and every "everywhere" fan-out treat it as they
+  treat a machine attached from Settings. There is one wiring path and
+  home goes through it, so there is no second copy of that wiring to
+  drift, no "restore home" door, and no guard that keeps home in place —
+  a desktop's home stays attached because its source always names it and
+  `backendAttach.detachAttachedBackend` refuses to remove it, not because
+  the registry special-cases the id. The id is deliberately NOT the
+  backend's UUID: that arrives with a manifest and is unknown at module
+  load, which is exactly why it cannot key a map that must exist before
+  the first fetch resolves. Once a manifest names one, the UUID becomes a
+  SECOND key onto the same entry, so `backendById` resolves the registry
+  id and an event's origin stamp alike in one lookup.
 
-  **The list's source is one injectable function.** `setBackendSource`
-  replaces it whole; the default reads what the bootstrap manifest
-  published (`manifestBackends.ts`), which on the desktop is the set of
-  backends the local process proxies at same-origin `/ws/backend/<id>` +
-  `/bootstrap/<id>.json`. The phone supplies the same shape from
-  client-local storage with remote `wss://` URLs. Nothing else about
-  attaching differs between the two, which is why there is one seam and no
-  client-class branch below it.
+  **The list's source is one function, and it decides the client class
+  once.** `manifestBackends.defaultBackendDescriptors()` answers home plus
+  what the bootstrap manifest published on a desktop — the backends the
+  local process proxies at same-origin `/ws/backend/<id>` +
+  `/bootstrap/<id>.json` — and the endpoint map the shell persisted on a
+  phone (`storedBackendDescriptors()`, home first while its legacy slot is
+  stored, remote `wss://` URLs, no proxy in sight). The registry only ever
+  asks it and reconciles against the answer (`syncAttachedBackends`): at
+  module load, whenever the manifest's list moves, on every native boot
+  (`native/boot.ts`), and when a phone's stored home slot learns which
+  computer it is. Nothing below that seam branches on which client it is.
 
   **Attachment is EAGER.** The unified sidebar's list calls fan out over
   every attached backend at boot, so a lazily-connecting entry would be
   connected by the first thing the app does anyway — one round trip later,
   and with a "which backend was slow" failure mode nobody can read. Eager
   also keeps the rule that a backend's connection depends on NOTHING about
-  visibility, focus, or pane position.
+  visibility, focus, or pane position. Home attaches at `backends.ts`'s
+  module evaluation for the same reason it always did: stores subscribe
+  through `Events.On` while THEY evaluate, and a standing subscription is
+  what opens a socket, so the boot sequence keeps deciding when that
+  happens.
+
+  **One computer never fans out.** `callEveryBackend` dispatches a single
+  attached computer directly — the fan-out with one member is that
+  member's call, and the merge of one share is the share — for whichever
+  computer that is. Home holds no privilege there, and `runtime.ts` has no
+  client-count branch: `Call.ByID` resolves an explicit target in one
+  lookup and hands an `all` route to the fan-out.
 
   `manifestBackends.ts` exists to keep one import direction. `bootstrap.ts`
   is imported by `wsClient.ts`, which is imported by `backends.ts`, so a
   `bootstrap → backends` edge would close a ring around two module-level
-  side effects (the singleton, the home entry) and whichever module the
-  bundler entered first would decide whether the app booted. The manifest
-  therefore PUBLISHES into that leaf, exactly as it publishes grants,
-  harness mode, passkey availability and backend identity into theirs.
+  side effects (the singleton, the registry's module-load sync) and
+  whichever module the bundler entered first would decide whether the app
+  booted. The manifest therefore PUBLISHES into that leaf, exactly as it
+  publishes grants, harness mode, passkey availability and backend
+  identity into theirs — and the source lives there for the same reason.
+
+  Tests stage a connection with `__attachBackendForTest(descriptor,
+  client)`, home included under `HOME_DESCRIPTOR`: a held id is re-pointed
+  at the fake in place, which is what a file that stages home once at
+  module level needs. `__resetBackendsForTest` re-syncs from the default
+  source and keeps only home's staged client.
 - `wsClient.ts` owns ONE WebSocket — one per attached backend, and the
   singleton is the page's own. It tracks in-flight RPCs by id
   and keeps a per-channel last-seen seq that does three jobs at once: the
@@ -163,7 +192,13 @@ pane can substitute for that project's owner.
   at the backend as an off-host peer while this browser holds no paired
   session to name on the upgrade, which that backend refuses
   (`internal/transport/AGENTS.md` § the launch credential and the
-  upgrade). Neither is self-clearing — no timer un-sets a latch, because
+  upgrade). The pairing latch has a second cause with the same remedy: a
+  phone whose SAVED TRUST for the computer is unreadable
+  (`native/networkTrust.DamagedTrustError`, thrown before any request is
+  addressed at it), which nothing but pairing again rewrites — so the
+  ladder stops there instead of showing "Reconnecting…" forever, and the
+  cause rides on the latch so an awaiting caller's rejection names it.
+  Neither state is self-clearing — no timer un-sets a latch, because
   nothing about waiting mints a per-launch credential or pairs a device
   — and both clear only on evidence: a user-initiated
   `triggerReconnect`, or a connect attempt that gets past the condition.
@@ -343,8 +378,8 @@ pane can substitute for that project's owner.
 
   **An explicit detached target fails closed.** Unknown entity ownership resolves only when exactly one computer is
   attached; otherwise it refuses. Explicit, indexed and selected targets
-  never fall back. An unknown method keeps its legacy HOME route. HOME itself can be absent on a phone. The single-backend
-  fast path requires an actual HOME entry, not merely one remaining computer.
+  never fall back. An unknown method keeps its legacy HOME route. HOME itself can be absent on a phone,
+  and an explicit HOME route then fails closed like any other missing target.
   A moved conversation's epoch excludes older catalog rows and conflicting
   equal-epoch claims from admission. Its ownership notification carries the
   former computer so the thread store invalidates pending reads and rewrites
@@ -859,11 +894,11 @@ pane can substitute for that project's owner.
   with home under `''` — the same convention `deviceSession.sessionStoreKey`
   uses, so "the page's own backend" is spelled once in this app. A phone
   with N backends holds N session slots and N endpoints; the shell reads
-  the map at boot to set the home endpoint and to rebuild the attached
-  descriptors through `manifestBackends.storedBackendDescriptors()`, which
-  it installs as `backends.setBackendSource`. Entries are validated per
-  entry and a damaged one is DROPPED rather than coerced, the same rule
-  `readBackendDescriptors` states.
+  the map at boot to set the home endpoint, and the registry's source
+  (`manifestBackends.defaultBackendDescriptors`) rebuilds every descriptor
+  from it through `storedBackendDescriptors()`, home first. Entries are
+  validated per entry and a damaged one is DROPPED rather than coerced,
+  the same rule `readBackendDescriptors` states.
 
   **Unreadable is not empty.** A map that cannot be read at all (storage
   throwing, a blob that is not a JSON object) answers `null` from the
@@ -957,8 +992,8 @@ pane can substitute for that project's owner.
   seam inside the transport or close a cycle with `deviceSession.ts`, so
   the shell INSTALLS a step through `onBeforeBackendDetach` and the two
   doors call `runBeforeBackendDetach`. Same shape and same reason as
-  `backends.setBackendSource`: one function, replaced rather than
-  branched on. Steps are fire-and-forget and MUST NOT be allowed to fail
+  `manifestBackends.setBackendManifestFetcher`: one function, installed
+  rather than branched on. Steps are fire-and-forget and MUST NOT be allowed to fail
   the removal — a backend that is unreachable at the moment it is
   detached cannot be told anything, and a machine somebody cannot get rid
   of is the worse failure, so a throw is logged and the next step still
@@ -1285,7 +1320,8 @@ device, which is not what happened.
 
 A `mode=frontend` desktop has a local administrative HOME handle but no HOME
 execution computer. Keep its handle in lifecycle/event wiring and out of the
-computer catalog, single-computer optimization and all-computer fan-out. Read
+computer catalog and the all-computer fan-out (including its one-computer
+direct dispatch). Read
 the local bootstrap catalog before mount loaders resolve the launch selection;
 never wait for an execution host there. `frontendController.test.ts` covers
 fan-out, local administration and removal of the original launch computer.
@@ -1295,8 +1331,8 @@ fan-out, local administration and removal of the original launch computer.
 not authority to attach a computer or repeat the operation on another host.
 
 A missing explicit target is a rejected RPC, including when only HOME remains.
-The single-connection fast path may bypass fan-out for HOME/all; it must never
-bypass an explicit pin or a selected route naming a removed computer.
+The fan-out's one-computer direct dispatch applies to `all` routes alone; it
+must never bypass an explicit pin or a selected route naming a removed computer.
 resolveTransport refuses missing targets. Pin one synchronously dispatched call
 with withBackendTarget, and capture that target again for every follow-up RPC
 across an await. runtime.test.ts covers absent pins on ByID and ByName.
@@ -1341,8 +1377,9 @@ full access inferred from a same-origin URL. The backend enforces every call.
 
 ListThreads, ListArchivedThreads, SearchThreadMessages and GetThread retain
 newer ownership claims for the lifetime of their pending RPC. Detachment
-invalidates that computer's reads. Every runtime dispatch path (single HOME,
-pinned and all-computer fan-out) checks before exposing an older row, including
+invalidates that computer's reads. Every runtime dispatch path (explicit
+target, and the all-computer fan-out with one member or many) checks before
+exposing an older row, including
 archived IDs that were not indexed before the request. Evidence survives removal
 of the destination until these reads settle, then is released. Mutation RPCs do
 not use this read-only cancellation rule.

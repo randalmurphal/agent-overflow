@@ -29,12 +29,11 @@
 
 import { resolveTransport, type EventOrigin } from './handle';
 import {
-  attachedBackendCount,
   requireEntityBackend,
   backendById,
   backendKeyForOrigin,
   callEveryBackend,
-  homeBackend,
+  removedDuringCall,
   subscribeEveryBackend,
   takePinnedBackend,
 } from './backends';
@@ -50,7 +49,6 @@ import {
 import { METHOD_ROUTES, type MethodRoute } from './methodRoutes';
 import { familyBackend, ROUTE_BY_ID_FAMILY } from './methodFamilies';
 import { selectedBackend } from '../stores/selectedBackend.svelte';
-import { isFrontendOnly } from './runMode';
 
 // CancellablePromise is the wrapper Wails-generated bindings always
 // return. The real runtime ships a complex implementation (see
@@ -237,27 +235,21 @@ export const Call = {
     let verify: ThreadMetadataRead | undefined;
     try {
       const target = pinned ?? resolveRoute(methodId, args);
-      // Keep the ordinary single-computer path cheap, but never bypass an
-      // explicit target just because that computer was removed meanwhile.
-      if (!isFrontendOnly() && attachedBackendCount() === 1 && backendById(HOME_BACKEND) && (target === null || target === HOME_BACKEND)) {
-        verify = captureThreadMetadataRead(methodId, HOME_BACKEND);
-        const call = homeBackend().handle.callByID(methodId, args);
-        return wrap(call.then((result) => {
-          verify?.verify(result);
-          noteRowsFromCall(methodId, result, HOME_BACKEND);
-          return result;
-        }).finally(() => verify?.release()));
-      }
+      // An `all` route with one computer attached is that computer's call;
+      // the fan-out takes the shortcut itself, so this door has no
+      // client-count branch and never bypasses an explicit target just
+      // because its computer was removed meanwhile.
       if (target === null) {
         return wrap(callEveryBackend(methodId, args, (result, backendId) => {
           noteRowsFromCall(methodId, result, backendId);
         }));
       }
-      const entry = backendById(target);
-      const transport = resolveTransport(target);
+      // One lookup: the handle is the entry's identity for the removed
+      // check below, and a missing target is `resolveTransport`'s refusal.
+      const transport = backendById(target)?.handle ?? resolveTransport(target);
       verify = captureThreadMetadataRead(methodId, target);
       return wrap(transport.callByID(methodId, args).then((result) => {
-        if (backendById(target) !== entry) throw removedDuringCall();
+        if (backendById(target)?.handle !== transport) throw removedDuringCall();
         verify?.verify(result);
         // Index returned entities before the caller can issue its next RPC.
         noteRowsFromCall(methodId, result, target);
@@ -282,18 +274,16 @@ export const Call = {
   ByName(method: string, ...args: unknown[]): CancellablePromise<unknown> {
     const pinned = takePinnedBackend();
     const target = pinned ?? HOME_BACKEND;
-    const entry = backendById(target);
-    try { return wrap(resolveTransport(target).callByName(method, args).then((result) => {
-      if (backendById(target) !== entry) throw removedDuringCall();
-      return result;
-    })); }
+    try {
+      const transport = backendById(target)?.handle ?? resolveTransport(target);
+      return wrap(transport.callByName(method, args).then((result) => {
+        if (backendById(target)?.handle !== transport) throw removedDuringCall();
+        return result;
+      }));
+    }
     catch (error) { return wrap(Promise.reject(error)); }
   },
 };
-
-function removedDuringCall(): Error {
-  return new Error('The computer was removed while waiting for its reply. Check its state before retrying.');
-}
 
 // Create.* are identity-like factories the binding generator emits.
 // The real Wails runtime uses these to build typed payload converters

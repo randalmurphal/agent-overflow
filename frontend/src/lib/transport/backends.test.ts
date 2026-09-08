@@ -32,21 +32,20 @@ vi.mock('./wsClient', () => ({
 import {
   __attachBackendForTest,
   __resetBackendsForTest,
-  __setHomeClientForTest,
+  HOME_BACKEND,
   attachedBackends,
   backendById,
   callEveryBackend,
   detachBackend,
-  homeBackend,
   installStepUpProverEverywhere,
   installDiagnosticsSinkEverywhere,
-  setBackendSource,
   setLeaseEverywhere,
-  syncAttachedBackends,
   setWatchedThreadsEverywhere,
   subscribeEveryBackend,
+  syncAttachedBackends,
   type BackendDescriptor,
 } from './backends';
+import { HOME_DESCRIPTOR } from './manifestBackends';
 import {
   __resetBackendIdentityForTest,
   setBackendIdentityFromBootstrap,
@@ -134,7 +133,7 @@ function deliverHome(channel: string, data: unknown): void {
 }
 
 beforeEach(() => {
-  __setHomeClientForTest(homeClient as never);
+  __attachBackendForTest(HOME_DESCRIPTOR, homeClient as never);
   __resetBackendsForTest();
   __resetBackendIdentityForTest();
   __resetEntityIndexForTest();
@@ -160,11 +159,24 @@ afterEach(() => {
 });
 
 describe('the registry', () => {
-  it('holds the page own backend from module load and never detaches it', () => {
+  it('attaches the page own backend from module load through the ordinary path', () => {
     expect(attachedBackends()).toHaveLength(1);
-    expect(homeBackend().home).toBe(true);
-    detachBackend(homeBackend().id);
+    const home = backendById(HOME_BACKEND)!;
+    expect(home.home).toBe(true);
+    expect(home.client).toBe(homeClient);
+    // The source names it, so a sync keeps the very same entry...
+    syncAttachedBackends();
+    expect(backendById(HOME_BACKEND)).toBe(home);
+    // ...and a detach is the detach every backend gets — socket closed,
+    // entry gone — with the next sync re-attaching what the source names.
+    // No special case holds it in place.
+    detachBackend(HOME_BACKEND);
+    expect(attachedBackends()).toHaveLength(0);
+    expect(homeClient.close).toHaveBeenCalledTimes(1);
+    syncAttachedBackends();
     expect(attachedBackends()).toHaveLength(1);
+    expect(backendById(HOME_BACKEND)?.home).toBe(true);
+    expect(backendById(HOME_BACKEND)).not.toBe(home);
   });
 
   it('answers a backend by its registry id and by its live UUID', () => {
@@ -173,7 +185,7 @@ describe('the registry', () => {
     expect(backendById(REMOTE_UUID)?.id).toBe('laptop');
     // The home backend answers to its UUID once a manifest names one.
     setBackendIdentityFromBootstrap(HOME_UUID, 'gen-1');
-    expect(backendById(HOME_UUID)).toBe(homeBackend());
+    expect(backendById(HOME_UUID)).toBe(backendById(HOME_BACKEND));
   });
 
   it('detaching drops every id it answered to and closes its socket', () => {
@@ -367,20 +379,6 @@ describe('the fan-out merges by shape', () => {
   });
 });
 
-describe('syncAttachedBackends', () => {
-  it('keeps the attached set when the saved addresses cannot be read', () => {
-    attachFake();
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    setBackendSource(() => {
-      throw new Error('Saved computer addresses could not be read.');
-    });
-    // An unreadable map is not an empty one: nothing is detached for it.
-    syncAttachedBackends();
-    expect(backendById('laptop')).toBeDefined();
-    expect(warn).toHaveBeenCalledTimes(1);
-  });
-});
-
 describe('callEveryBackend', () => {
   it('drops a failed backend share, records it, and answers with the rest', async () => {
     const remote = attachFake();
@@ -390,7 +388,7 @@ describe('callEveryBackend', () => {
 
     await expect(callEveryBackend(1, [])).resolves.toEqual([{ id: 'home-thread' }]);
     expect(backendById('laptop')?.lastFanoutError).toBe(boom);
-    expect(homeBackend().lastFanoutError).toBeNull();
+    expect(backendById(HOME_BACKEND)?.lastFanoutError).toBeNull();
   });
 
   it('rejects with the home backend own error only when every backend failed', async () => {
@@ -460,14 +458,15 @@ describe('detach forgets what the backend owned', () => {
     expect([...seen[0].threadGroupIds]).toEqual(['g1']);
   });
 
-  it('says nothing when the id names no attached backend, or names home', () => {
+  it('says nothing when the id names no attached backend, and announces home like any other', () => {
     const seen: BackendDetachment[] = [];
     onBackendDetached((detachment) => seen.push(detachment));
 
     detachBackend('never-attached');
-    detachBackend('');
-
     expect(seen).toEqual([]);
+
+    detachBackend('');
+    expect(seen.map((detachment) => detachment.backendId)).toEqual(['']);
   });
 
   it('stops calling a listener once its remover runs', () => {

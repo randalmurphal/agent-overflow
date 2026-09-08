@@ -3,8 +3,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Call } from '../transport/runtime';
 import { wsClient, type WSClient } from '../transport/wsClient';
-import { __attachBackendForTest, __resetBackendsForTest, __setHomeClientForTest } from '../transport/backends';
+import { __attachBackendForTest, __resetBackendsForTest } from '../transport/backends';
 import { HOME_BACKEND } from '../transport/backendKey';
+import { HOME_DESCRIPTOR } from '../transport/manifestBackends';
 import { __resetEntityIndexForTest, forgetProject, noteProject, threadBackend } from '../transport/entityIndex';
 import { createThreadPane } from './thread.svelte';
 import { focusPane, registerPaneForTest, resetPanesForTest } from './panes.svelte';
@@ -47,7 +48,7 @@ afterEach(() => {
   resetPanesForTest();
   __resetBackendsForTest();
   __resetEntityIndexForTest();
-  __setHomeClientForTest(wsClient);
+  __attachBackendForTest(HOME_DESCRIPTOR, wsClient);
 });
 
 function fixture(owner: string) {
@@ -73,7 +74,7 @@ function fixture(owner: string) {
     throw new Error(`Unexpected method ${method}`);
   });
   const home = dispatch(HOME_BACKEND), remote = dispatch(REMOTE);
-  __setHomeClientForTest(client(home));
+  __attachBackendForTest(HOME_DESCRIPTOR, client(home));
   __attachBackendForTest({ id: REMOTE, backendId: '99887766-5544-4333-8222-111111111111', name: 'Mac', wsUrl: '/ws/mac', bootstrapUrl: '/bootstrap/mac' }, client(remote));
   // Focus another computer: ownership must come from the control's project,
   // not the foreground pane or a remembered new-thread destination.

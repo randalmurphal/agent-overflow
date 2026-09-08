@@ -10,8 +10,8 @@ const CHANNEL = 'computer-routes:changed';
 
 async function refreshRoutes(entry: BackendEntry, backendId: string, current: () => boolean, signal: AbortSignal): Promise<void> {
   const descriptor = backendDescriptor(entry.id);
-  if (!entry.home && !descriptor) return;
-  async function bootstrap(): Promise<void> {
+  if (!descriptor) return;
+  const bootstrap = async (): Promise<void> => {
     signal.throwIfAborted();
     const request = new AbortController();
     const abort = () => request.abort(signal.reason);
@@ -21,7 +21,7 @@ async function refreshRoutes(entry: BackendEntry, backendId: string, current: ()
       await refreshComputerRoutes(descriptor, backendId, () => current() && !request.signal.aborted, request.signal);
       request.signal.throwIfAborted();
     } finally { clearTimeout(timeout); signal.removeEventListener('abort', abort); }
-  }
+  };
   try { await bootstrap(); return; }
   catch (error) {
     if (!current()) return;

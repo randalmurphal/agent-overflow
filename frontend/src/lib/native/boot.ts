@@ -15,12 +15,12 @@ import { preparePairingTrust } from './networkTrust';
 
 import { applyNotificationActivated } from '../stores/eventsNotification';
 import { parseNotificationTarget } from '../stores/notificationActivationQueue';
-import { HOME_BACKEND, attachedBackends, detachBackend, duplicateLegacyHomeBackend, onBackendsChanged, restoreHomeBackend, setBackendSource, syncAttachedBackends } from '../transport/backends';
+import { attachedBackends, onBackendsChanged, syncAttachedBackends } from '../transport/backends';
 import { initializeSelectedBackend } from '../stores/selectedBackend.svelte';
 import { onBeforeBackendDetach } from '../transport/detachSteps';
 import type { PairingPayload } from '../transport/deviceSession';
 import { setHomeEndpoint, storedBackendEndpoint } from '../transport/homeEndpoint';
-import { storedBackendDescriptors } from '../transport/manifestBackends';
+import { duplicateLegacyHomeBackend } from '../transport/manifestBackends';
 import { setPageGrantsFromBootstrap } from '../transport/scopes';
 import type { AppLock } from './lock';
 import { isNativeShell } from './platform';
@@ -51,10 +51,12 @@ onBackendsChanged(() => { if (isNativeShell()) initializeComputerSelection(); })
  * `main.ts` should show.
  *
  * The attached list comes from client-local storage rather than from the
- * home manifest, through the one injectable `BackendSource` that exists
- * for exactly this (`transport/backends.ts`): a desktop reads the list
- * its local process proxies, a phone reads the machines it paired with
- * itself, and nothing below that seam branches on which client it is.
+ * home manifest: the registry's one source
+ * (`transport/manifestBackends.defaultBackendDescriptors`) answers the
+ * stored endpoint map on a shell, legacy home slot included, and the list
+ * a desktop's local process proxies everywhere else. Nothing below that
+ * seam branches on which client it is; this function only makes sure the
+ * home endpoint is set before the sync attaches anything that dials it.
  */
 export function prepareNativeShell(): ShellBoot {
   if (!isNativeShell()) return { shell: false, paired: false };
@@ -63,19 +65,12 @@ export function prepareNativeShell(): ShellBoot {
   setPageGrantsFromBootstrap(true);
   installNativeKeybindings();
 
-  // Installed before the endpoint is set, so a manifest that resolves
-  // early cannot publish the desktop-shaped list over it.
-  setBackendSource(storedBackendDescriptors);
-
   const home = storedBackendEndpoint();
-  if (home !== '') {
-    setHomeEndpoint(home);
-    restoreHomeBackend();
-  } else {
-    // The registry may have initialized before the native bridge. A phone's
-    // execution catalog comes from pairings, never that provisional HOME.
-    detachBackend(HOME_BACKEND);
-  }
+  if (home !== '') setHomeEndpoint(home);
+  // The registry may have synced before the native bridge reported, and
+  // it reads this shell's stored map only through that bridge: sync again
+  // now that the answer is real, which attaches the legacy slot when one
+  // is stored and drops a provisional home when none is.
   syncAttachedBackends();
   const computers = attachedBackends();
   initializeComputerSelection();

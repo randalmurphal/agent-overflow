@@ -281,10 +281,13 @@ async function fetchAuthenticatedManifest(
 
 /** Refresh route hints only; never reconfigure a healthy socket or page state.
  * On a desktop proxy the same GET updates its Go-owned paired profile. */
-export async function refreshComputerRoutes(descriptor: BackendDescriptor | undefined, backendId: string, current: () => boolean, signal: AbortSignal): Promise<void> {
+export async function refreshComputerRoutes(descriptor: BackendDescriptor, backendId: string, current: () => boolean, signal: AbortSignal): Promise<void> {
   if (!current()) return;
-  const backend = descriptor?.id ?? HOME_BACKEND;
-  const url = descriptor?.bootstrapUrl ?? homeUrl('/bootstrap.json');
+  // Home's descriptor addresses what `homeUrl` / `homeCredentials` answer:
+  // a same-origin `/bootstrap.json` on a desktop, the stored endpoint's
+  // origin with credentials omitted on a phone.
+  const backend = descriptor.id;
+  const url = descriptor.bootstrapUrl;
   const path = new URL(url, window.location.href).pathname;
   const response = await fetchAuthenticatedManifest(url, path, credentialsForUrl(url), backend, signal);
   const data = await response.json() as Partial<Bootstrap>;

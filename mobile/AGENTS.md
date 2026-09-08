@@ -41,7 +41,8 @@ remain dormant until that computer is explicitly forgotten. Incomplete duplicate
 pairings never displace HOME, and delayed legacy identity discovery converges
 before catalog reads. Native boot needs any saved computer,
 not HOME. It reconciles the provisional module-load registry with the saved
-pairings in both directions: without a legacy endpoint, remove HOME even if
+pairings in both directions by re-syncing the registry from its stored source
+(`manifestBackends.storedBackendDescriptors`): without a legacy endpoint, remove HOME even if
 the native bridge became available after the registry initialized. Otherwise
 an empty installation can appear paired, or a UUID-only installation can retain
 an unconnected HOME target. `computerCatalogBoot.test.ts` covers both cases.

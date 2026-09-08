@@ -12,6 +12,20 @@ const PIN = /^sha256:[0-9a-f]{64}$/;
 // repair one origin without silently removing the trust requirement for others.
 const DAMAGED = '!damaged';
 const WEB_PKI = 'webpki';
+
+/**
+ * Saved trust this device cannot read. Its own class because it is the one
+ * pre-request failure no retry resolves: nothing rewrites the store but the
+ * explicit pairing action, so `wsClient` stops its ladder on the pairing
+ * latch when this is what a connect attempt threw.
+ */
+export class DamagedTrustError extends Error {
+  constructor() {
+    super('Saved computer trust is damaged. Pair the computer again.');
+    this.name = 'DamagedTrustError';
+  }
+}
+
 function pins(repair = false): Record<string, string> {
   try {
     const raw = localStorage.getItem(KEY);
@@ -20,7 +34,7 @@ function pins(repair = false): Record<string, string> {
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, string>;
   } catch { /* The explicit pairing action below is the only repair door. */ }
   if (repair) return { [DAMAGED]: 'true' };
-  throw new Error('Saved computer trust is damaged. Pair the computer again.');
+  throw new DamagedTrustError();
 }
 
 export interface PairingTrust {
@@ -64,9 +78,7 @@ export function certificatePin(url: string): string | null {
   const known = pins();
   const value = known[address.origin];
   if (value === WEB_PKI || (value === undefined && !known[DAMAGED])) return null;
-  if (address.protocol !== 'https:' || !PIN.test(value)) {
-    throw new Error('Saved computer trust is damaged. Pair the computer again.');
-  }
+  if (address.protocol !== 'https:' || !PIN.test(value)) throw new DamagedTrustError();
   return value;
 }
 

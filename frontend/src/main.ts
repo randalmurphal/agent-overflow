@@ -5,7 +5,7 @@ import { installBrowserHistoryGuard } from './lib/utils/browserHistoryGuard';
 import { installFrontendErrorCapture } from './lib/utils/frontendErrorCapture';
 import { installStepUpProof } from './lib/transport/stepUp';
 import { isFrontendOnly } from './lib/transport/runMode';
-import { attachedBackends, homeBackend, syncAttachedBackends } from './lib/transport/backends';
+import { HOME_BACKEND, attachedBackends, backendById, syncAttachedBackends } from './lib/transport/backends';
 import { initializeSelectedBackend } from './lib/stores/selectedBackend.svelte';
 import { loadSystems } from './lib/stores/systems.svelte';
 import {
@@ -122,7 +122,7 @@ async function mountApp(): Promise<void> {
     // Enter through the existing RPC client so concurrent startup consumers
     // share its one bootstrap exchange and cannot spend the page ticket twice.
     try {
-      await homeBackend().client.ready();
+      await backendById(HOME_BACKEND)?.client.ready();
       await loadSystems();
       syncAttachedBackends();
       initializeSelectedBackend(attachedBackends());
