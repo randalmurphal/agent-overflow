@@ -122,6 +122,15 @@ pane can substitute for that project's owner.
   it never repeats a mutation. Late close/frames cannot affect its successor.
   A socket that never completed replay does not earn a backoff reset.
 
+  **A resume onto an open socket owes one frame.** The stale-socket verdict
+  stands down for a RECENTLY issued RPC on a remote backend (a single large
+  reply blocks the heartbeats behind it). It does not stand down between a
+  resume (page thaw, native `active` lease, connectivity returning) and the
+  first frame after it: a phone that slept through a network change wakes onto
+  a socket only the browser calls open, its screen re-issues RPCs at once, and
+  every one of them would otherwise be the half-open socket's alibi while each
+  ran out its own timeout. `awaitingFrameSinceResume` in `wsClient.ts`.
+
   **Replay has a presentation boundary.** `onReplay` reports start on a
   reconnect (never the first connection), complete after `replay-complete`,
   and cancel on socket loss or close. It carries no payloads and changes no

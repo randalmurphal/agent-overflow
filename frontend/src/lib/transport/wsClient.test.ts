@@ -2863,6 +2863,64 @@ describe('WSClient', () => {
     client.close();
   });
 
+  // A phone that slept through a network change wakes onto a socket the
+  // browser still calls open. The screen re-issues its RPCs at once, and
+  // every one of them is "recent" for as long as it keeps asking — so the
+  // mid-transfer guard used to stand the verdict down indefinitely, and
+  // each call ran out its own 60s timeout against a socket nothing would
+  // ever close. A resume onto an open socket now demands one frame before
+  // the guard applies again.
+  it('convicts a half-open remote socket after a resume even under RPC load', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: async () => ({ wsUrl: 'ws://example/ws', token: 't', remote: true }),
+    });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    first.pushFrame({ type: 'replay' });
+    await vi.advanceTimersByTimeAsync(0);
+    first.pushFrame({ type: 'ping' });
+
+    client.setLease('background');
+    await vi.advanceTimersByTimeAsync(STALE_TRAFFIC_THRESHOLD_MS * 4);
+    expect(first.readyState).toBe(1);
+    client.setLease('active');
+    // The waking screen keeps a call in flight inside every silence window.
+    const calls: Promise<unknown>[] = [];
+    for (let i = 0; i < 4; i++) {
+      calls.push(client.callByID(5, []).catch(() => {}));
+      await vi.advanceTimersByTimeAsync(STALE_CHECK_INTERVAL_MS);
+    }
+    expect(first.readyState).toBe(3);
+
+    // The same load on a socket that DID answer after the resume is the
+    // ordinary mid-transfer case and stands the verdict down as before.
+    await vi.advanceTimersByTimeAsync(RECONNECT_MAX_REMOTE_MS);
+    const second = MockWebSocket.instances.at(-1)!;
+    expect(second).not.toBe(first);
+    second.acceptOpen();
+    second.pushFrame({ type: 'replay' });
+    await vi.advanceTimersByTimeAsync(0);
+    second.pushFrame({ type: 'ping' });
+    client.setLease('background');
+    client.setLease('active');
+    second.pushFrame({ type: 'ping' });
+    for (let i = 0; i < 4; i++) {
+      calls.push(client.callByID(5, []).catch(() => {}));
+      await vi.advanceTimersByTimeAsync(STALE_CHECK_INTERVAL_MS);
+    }
+    expect(second.readyState).toBe(1);
+
+    client.close();
+    await Promise.all(calls);
+  });
+
   // The other side of that guard, and the reason it is a WINDOW rather
   // than "is anything pending". A half-open remote socket keeps its
   // in-flight calls pending forever (no response is coming and no close

@@ -787,6 +787,14 @@ export class WSClient {
   // lastFrameAt is refreshed on every inbound message.
   private lastFrameAt = 0;
   private staleTimer: ReturnType<typeof setInterval> | null = null;
+  // True from a resume onto an OPEN socket until the first frame after it.
+  // A socket that survived a phone's sleep only in the browser's opinion
+  // (the network moved underneath it) delivers nothing, ever, and the
+  // screen that just woke re-issues its RPCs at once — so the mid-transfer
+  // guard below, which stands the verdict down for a recently issued
+  // call, would stand it down for as long as the screen kept asking. The
+  // guard applies only once the socket has proven itself since the resume.
+  private awaitingFrameSinceResume = false;
   // Per-connection: set by the first ping frame, reset on close. Each
   // connection re-proves the traffic floor within one heartbeat period,
   // so a backend rollback to a heartbeat-less build can't leave the
@@ -990,9 +998,14 @@ export class WSClient {
     };
     document.addEventListener('visibilitychange', onLifecycleResume);
     document.addEventListener('resume', onLifecycleResume);
+    // Connectivity returning is the same signal from the network's side:
+    // a queued attempt should fire now, and an open socket that predates
+    // the change has to prove itself (see awaitingFrameSinceResume).
+    window.addEventListener('online', onLifecycleResume);
     return () => {
       document.removeEventListener('visibilitychange', onLifecycleResume);
       document.removeEventListener('resume', onLifecycleResume);
+      window.removeEventListener('online', onLifecycleResume);
     };
   }
 
@@ -1472,6 +1485,7 @@ export class WSClient {
   // to close it and start recovery.
   private startStaleWatchdog(): void {
     this.lastFrameAt = Date.now();
+    this.awaitingFrameSinceResume = false;
     if (this.staleTimer !== null) return;
     this.staleTimer = setInterval(() => {
       this.checkStaleness();
@@ -1504,6 +1518,7 @@ export class WSClient {
   private resumeWatchdog(): void {
     this.lastFrameAt = Date.now();
     if (this.replayBuffer) this.replayStartedAt = this.lastFrameAt;
+    this.awaitingFrameSinceResume = this.ws !== null && this.ws.readyState === WS_OPEN;
   }
 
   private checkStaleness(): void {
@@ -1537,7 +1552,11 @@ export class WSClient {
     // silence threshold cannot be the transfer holding the heartbeats
     // back: a transfer that had not delivered a byte in that window is
     // the stall itself.
-    if (this.remoteBackend && this.hasRecentlyIssuedRPC()) return;
+    //
+    // And not at all until a socket a resume found open has delivered one
+    // frame since: the calls a waking screen issues are the ones a
+    // half-open socket swallows, and they must not be its alibi.
+    if (this.remoteBackend && !this.awaitingFrameSinceResume && this.hasRecentlyIssuedRPC()) return;
     const idleMs = Date.now() - this.lastFrameAt;
     if (idleMs <= STALE_TRAFFIC_THRESHOLD_MS) return;
     const idleSeconds = Math.round(idleMs / 1000);
@@ -2078,6 +2097,7 @@ export class WSClient {
     // what "last seen" is measured from.
     this.lastFrameAt = Date.now();
     this.lastConnectedAt = this.lastFrameAt;
+    this.awaitingFrameSinceResume = false;
     const text = typeof ev.data === 'string' ? ev.data : '';
     if (!text) return;
     if (text.length > this.maxFrameBytes) {
