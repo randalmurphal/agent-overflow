@@ -33,7 +33,12 @@ import {
   resetPaneLayoutPersistenceForTest,
   waitForPaneLayoutPersistenceForTest,
 } from './paneLayoutPersistence';
-import { appStorageGet, hydrateAppStorage, resetAppStorageForTest } from './appStorage';
+import {
+  appStorageGet,
+  hydrateAppStorage,
+  reinitAppStorageForTest,
+  resetAppStorageForTest,
+} from './appStorage';
 import { installPaneMocks, makeItem } from '../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 
@@ -335,6 +340,51 @@ describe('pane layout persistence', () => {
         { itemId: '', label: 'main' },
         { itemId: 'launch-1', label: 'code-review' },
         { itemId: 'launch-2', label: 'Angle B' },
+      ],
+    });
+  });
+
+  it('restores an agent pane from the local bucket alone on a same-origin reload', async () => {
+    const left = makeThread({ id: 'left-thread' });
+    installPaneMocks();
+    seedPane('left', left);
+    setPaneLayoutItemsForTest([
+      { id: 'left', paneId: 'left', kind: 'thread', widthPx: 660 },
+    ]);
+    openAgentCompanion('left', 'left-thread', 'launch-1', 'code-review');
+    await waitForPaneLayoutPersistenceForTest();
+
+    // A reload keeps localStorage and drops every module-level store. The
+    // host bucket is never written and must not be read again either: a
+    // server copy still holding the pre-pane layout would otherwise win,
+    // and the reload would land on the wrong scope (agent-visibility-pane
+    // e2e). Companion registry first — clearing a pane cascades a close,
+    // and a close persists.
+    const read = setBindingMock('GetUIState', async () => ({
+      paneLayout: JSON.stringify(makeSavedLayout([{ paneId: 'left', threadId: 'left-thread', widthPx: 660 }], 'left')),
+    }));
+    resetCompanionPanesForTest();
+    __resetAgentPaneStateForTest();
+    resetPanesForTest();
+    setPaneLayoutItemsForTest([]);
+    resetPaneLayoutPersistenceForTest();
+    installPaneLayoutPersistence();
+    reinitAppStorageForTest();
+
+    expect(await hydrateAppStorage()).toBe(true);
+    expect(read).not.toHaveBeenCalled();
+    await loadPersistedPaneLayout([left]);
+
+    expect(getCompanionPane('agent-left')).toEqual({
+      paneId: 'agent-left',
+      kind: 'agent',
+      sourcePaneId: 'left',
+    });
+    expect(agentScopeForPane('left', 'left-thread')).toEqual({
+      scopeItemId: 'launch-1',
+      breadcrumb: [
+        { itemId: '', label: 'main' },
+        { itemId: 'launch-1', label: 'code-review' },
       ],
     });
   });

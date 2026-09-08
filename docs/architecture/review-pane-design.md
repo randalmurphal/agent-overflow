@@ -55,7 +55,8 @@ read/write APIs and per-PR-key polling.
 
 - **Panes get kinds; RHS dies.** `PaneHost` learns pane kinds (`thread`,
   `review`, `plan`) with draggable splits persisted via
-  per-client `ui_state` (not localStorage; see 036580a2). `RhsSidebarShell`,
+  `appStorage` (server-side `ui_state` in 036580a2; this frontend's own
+  localStorage since 26fd27dca, on the pinned transport port). `RhsSidebarShell`,
   `rhsPanelSlot`, and both RHS diff surfaces are deleted when the review
   pane absorbs them. Rationale: one layout system; the RHS width constraint
   was the root complaint.
@@ -228,5 +229,5 @@ read/write APIs and per-PR-key polling.
   `internal/diffreview`.
 - **Frontend:** vitest for tree↔scroll mapping, scope switching, draft
   lifecycle (persist, orphan flagging, clear-on-success only).
-- **Integration:** pane split persistence across restart via `ui_state`;
+- **Integration:** pane split persistence across restart via `appStorage`;
   end-to-end local-scope review → agent message content.

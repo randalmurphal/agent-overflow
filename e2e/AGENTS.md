@@ -401,6 +401,11 @@ missing value over one that skips. Two rules keep the evidence real:
   A fresh context can therefore inherit a seeded legacy layout, but later
   changes stay in that context's local storage. An isolated context is the
   boundary for frontend-independence tests; a reload preserves its cache.
+  So a spec that must see a layout write become durable before it reloads
+  polls the page's `agent-overflow:uistate:bucket` localStorage key, never
+  `GetUIState`: the backend bucket is never written, and that poll times
+  out (`agent-visibility-pane.spec.ts` was stranded exactly so when
+  26fd27dca moved the layout local; fixed 2026-09-08).
 
 - **A spec boots its OWN backend only for state `harness.reset()` cannot
   undo**, and then owns everything downstream of it. The LAN bind and the
