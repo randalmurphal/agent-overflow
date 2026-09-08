@@ -19,6 +19,7 @@
   import ProviderIcon from '../shared/ProviderIcon.svelte';
   import ProviderAccountLimits from '../shared/ProviderAccountLimits.svelte';
   import ProviderLoginFlow from './ProviderLoginFlow.svelte';
+  import { SETTINGS_PROVIDERS } from '../settings/fields';
   import type { ManagedProviderAccount } from '../../stores/bindings';
   import {
     getProviderAccountActions,
@@ -187,7 +188,7 @@
 
   function openProviderSettings(): void {
     onClose();
-    openSettingsOverlay('accounts', backend);
+    openSettingsOverlay(SETTINGS_PROVIDERS[0], backend);
   }
 </script>
 

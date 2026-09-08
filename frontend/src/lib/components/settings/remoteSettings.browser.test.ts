@@ -24,7 +24,7 @@ it.each([360, 1280])('separates outgoing connections from incoming access at %ip
   setCompactLayoutForTest(width < 600);
   showSettingsRail();
   const view = render(SettingsView, { target: host, props: { onClose() {} } });
-  for (const name of ['Connect to a computer', 'Allow device access', 'Accounts', 'Agent access']) {
+  for (const name of ['Connect to a computer', 'Allow device access', 'Agent access']) {
     expect(view.getByRole('tab', { name }).getBoundingClientRect().width).toBeGreaterThan(100);
   }
   await fireEvent.click(view.getByRole('tab', { name: 'Connect to a computer' }));

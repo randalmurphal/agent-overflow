@@ -150,12 +150,6 @@ export const SETTINGS_SECTIONS = [
       "Let your phone or another computer access this computer’s projects and threads.",
   },
   {
-    id: 'accounts',
-    label: 'Accounts',
-    group: 'Remote access',
-    description: 'Sign in or switch agent accounts on the selected computer.',
-  },
-  {
     id: 'agent-access',
     label: 'Agent access',
     group: 'Remote access',
@@ -226,6 +220,6 @@ export function providerSettingsSection(provider: ProviderID): 'claude' | 'codex
 /** Pages that configure execution on a computer, rather than this frontend. */
 export function settingsUsesComputer(section: SettingsSection): boolean {
   return ['performance', 'notifications', 'claude', 'codex', 'commit-messages',
-    'browser', 'discussions', 'projects', 'git', 'editor', 'remote', 'accounts', 'agent-access',
+    'browser', 'discussions', 'projects', 'git', 'editor', 'remote', 'agent-access',
     'observability', 'storage'].includes(section);
 }

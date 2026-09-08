@@ -7,10 +7,11 @@ function keys(query: string): string[] {
 }
 
 describe('searchSettings', () => {
-  it('distinguishes provider accounts on the shared Accounts page', () => {
-    const accounts = searchSettings('accounts').filter((hit) => hit.kind === 'field' && hit.page.id === 'accounts');
-    expect(accounts).toHaveLength(2);
-    expect(new Set(accounts.map((hit) => hit.kind === 'field' && hit.field.heading)).size).toBe(2);
+  it("lists each provider's accounts under its own page", () => {
+    const pages = searchSettings('accounts')
+      .filter((hit) => hit.kind === 'field' && hit.field.label === 'Accounts')
+      .map((hit) => hit.page.id);
+    expect(pages).toEqual(['claude', 'codex']);
     expect(keys('codex accounts')).toContain('codex.accounts');
   });
 

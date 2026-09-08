@@ -57,7 +57,7 @@ describe('settings section map', () => {
       ['threads', 'performance', 'keybindings', 'notifications', 'updates'],
       ['claude', 'codex', 'commit-messages', 'browser', 'discussions'],
       ['projects', 'git', 'editor'],
-      ['systems', 'remote', 'accounts', 'agent-access'],
+      ['systems', 'remote', 'agent-access'],
       ['observability', 'storage'],
     ]);
   });

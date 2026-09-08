@@ -22,7 +22,6 @@
 // is computed from state.
 
 import type { SettingsSection } from './sections';
-import { providerLabel } from '../../stores/providerAccountLabels';
 
 export interface SettingsFieldDef {
   readonly id: string;
@@ -794,8 +793,8 @@ export const SETTINGS_FIELDS: readonly SettingsFieldDef[] = [
   ...SETTINGS_PROVIDERS.flatMap((provider) => [
     ...PROVIDER_FIELDS.map((f) => ({
       id: providerFieldId(provider, f.slug),
-      section: f.slug === 'accounts' ? 'accounts' as const : provider,
-      heading: f.slug === 'accounts' ? providerLabel(provider) : f.heading,
+      section: provider,
+      heading: f.heading,
       label: f.label,
       hint: 'hint' in f ? f.hint : undefined,
       keywords: [...f.keywords, PROVIDER_LABELS[provider]],
