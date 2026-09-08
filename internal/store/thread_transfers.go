@@ -258,35 +258,6 @@ func (s *Store) AdvanceThreadTransfer(id, phase, manifestHash string) (ThreadTra
 	return row, nil
 }
 
-// SetThreadTransferError preserves the recovery phase. A failed network request
-// is neither permission to repeat activation nor permission to restore source
-// execution. The coordinator publishes a sanitized user-facing error here.
-func (s *Store) SetThreadTransferError(id, message string) error {
-	if len(message) > 4096 {
-		return errors.New("transfer: error message too long")
-	}
-	_, err := s.db.Exec(`UPDATE thread_transfers SET error = ?, updated_at = ? WHERE id = ? AND phase NOT IN ('complete', 'canceled')`, message, time.Now().UnixMilli(), id)
-	return err
-}
-
-// ListPendingThreadTransfers is restart recovery, not an in-memory read model.
-func (s *Store) ListPendingThreadTransfers() ([]ThreadTransfer, error) {
-	rows, err := s.reader().Query(`SELECT ` + transferColumns + ` FROM thread_transfers WHERE phase NOT IN ('complete', 'canceled') ORDER BY created_at, id`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var result []ThreadTransfer
-	for rows.Next() {
-		row, err := scanThreadTransfer(rows)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, row)
-	}
-	return result, rows.Err()
-}
-
 // ThreadTransferError carries enough identity for a stale client to find the
 // operation/new owner. No credential or source-local path belongs in this error.
 type ThreadTransferError struct {

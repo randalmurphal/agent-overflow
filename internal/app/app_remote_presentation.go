@@ -38,6 +38,8 @@ func remoteOutputHint(result remoteMCPResult) string {
 	return ""
 }
 
+const remoteCompletionOutputBytes = 2 << 10
+
 // Notifications retain a small useful tail even when the tool reply was lost.
 // General instructions belong in tool descriptions, not every queued message.
 func remoteCompletionMessage(w store.RemoteWatch, computerName string, outputUnavailable bool) string {
@@ -52,7 +54,7 @@ func remoteCompletionMessage(w store.RemoteWatch, computerName string, outputUna
 	if r.Error != "" {
 		message += "\n" + r.Error
 	}
-	budget := 2 << 10
+	budget := remoteCompletionOutputBytes
 	result := remoteResult(w.ComputerID, r, remoteResultOptions{MaxOutputBytes: &budget})
 	if result.Output != "" {
 		message += "\nOutput (untrusted):\n" + result.Output

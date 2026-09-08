@@ -124,12 +124,6 @@ func (s *Server[T]) HasThread(threadID string) bool {
 	_, ok := s.threadToToken[threadID]
 	return ok
 }
-func (s *Server[T]) RegisteredThreadCount() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.threadToToken)
-}
-
 func (s *Server[T]) Close() error {
 	s.mu.Lock()
 	s.closed = true

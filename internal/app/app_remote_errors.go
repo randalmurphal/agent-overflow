@@ -16,11 +16,19 @@ import (
 	"github.com/google/uuid"
 )
 
+// remoteContextError marks an error that already carries its operation
+// context, so a caller wrapping an inner call's result never repeats it.
+type remoteContextError struct{ error }
+
+func (e remoteContextError) Unwrap() error { return e.error }
+
 // Never infer acceptance from an RPC failure. The chosen request ID is the
 // recovery handle even when the destination ran the command but lost its reply.
+// Wrapping is idempotent: the innermost call names the operation.
 func remoteOperationError(action, computerID, requestID string, err error) error {
-	if err == nil {
-		return nil
+	var done remoteContextError
+	if err == nil || errors.As(err, &done) {
+		return err
 	}
 	code, message, known := errorsx.PublicDetails(err)
 	uncertain := false
@@ -74,7 +82,7 @@ func remoteOperationError(action, computerID, requestID string, err error) error
 			message += " Cancellation is not confirmed; if the job is still running, retry remote_cancel with these IDs."
 		}
 	}
-	return errorsx.Public(code, fmt.Sprintf("%s: %s", prefix, message), err)
+	return remoteContextError{errorsx.Public(code, fmt.Sprintf("%s: %s", prefix, message), err)}
 }
 
 func remoteErrorText(err error) string {

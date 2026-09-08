@@ -95,6 +95,26 @@ func TestAcceptedCommandSurvivesCallerLossAndDuplicateRequests(t *testing.T) {
 	}
 }
 
+// A cancellation that lands after the process already exited cleanly changed
+// nothing: the receipt keeps the success the process reported.
+func TestCancelAfterCleanExitReportsSuccess(t *testing.T) {
+	m, _ := manager(t, func(ctx context.Context, _ string, _ []string, out io.Writer) (int, error) {
+		<-ctx.Done()
+		_, _ = io.WriteString(out, "done")
+		return 0, nil
+	})
+	r := request()
+	if _, err := m.Start("owner", uuid.NewString(), t.TempDir(), r); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Cancel("owner", r.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := settled(t, m, r.ID); got.State != "succeeded" || got.ExitCode != 0 || got.Error != "" || got.Output != "done" {
+		t.Fatalf("late cancel overrode a clean exit: %#v", got)
+	}
+}
+
 func TestCancellationAndShutdownKeepReceipts(t *testing.T) {
 	m, st := manager(t, func(ctx context.Context, _ string, _ []string, out io.Writer) (int, error) {
 		_, _ = io.WriteString(out, "partial")

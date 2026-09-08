@@ -188,7 +188,7 @@ func (m *Manager) Start(ownerID, projectID, workspace string, request Request) (
 		SourceThreadID: request.SourceThreadID, ProjectID: projectID, Workspace: workspace})
 	if err != nil || !fresh {
 		m.logs.finish(request.ID)
-		_ = os.Remove(filepath.Join(m.logs.options.LogDir, request.ID+".log"))
+		_ = os.Remove(m.logs.path(request.ID))
 		return receipt, err
 	}
 	var ctx context.Context
@@ -238,7 +238,9 @@ func (m *Manager) execute(ctx context.Context, job *liveJob, request Request) {
 			receipt.Error = "The command could not start or was terminated by the destination. Check the executable, workspace availability, and destination logs."
 		}
 	}
-	if ctx.Err() != nil {
+	// A cancellation or deadline that lands after a clean exit changed nothing:
+	// the process already reported success, and that remains the truth.
+	if ctx.Err() != nil && (err != nil || code != 0) {
 		receipt.State, receipt.Error = "canceled", "The command was canceled."
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			receipt.State, receipt.Error = "failed", "The command exceeded its time limit."

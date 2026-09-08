@@ -140,7 +140,7 @@ func (s *logStore) create(id string) (*jobLog, error) {
 	defer s.mu.Unlock()
 	// Start calls create only after SQLite proved this ID unaccepted. A log
 	// left by a crash between file creation and acceptance is safe to replace.
-	if err := os.Remove(filepath.Join(s.options.LogDir, id+".log")); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := os.Remove(s.path(id)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
 	entries, err := os.ReadDir(s.options.LogDir)
@@ -193,7 +193,7 @@ func (s *logStore) create(id string) (*jobLog, error) {
 	if free < s.options.MinFreeBytes {
 		return nil, errors.New("remote logs: insufficient free disk space")
 	}
-	file, err := os.OpenFile(filepath.Join(s.options.LogDir, id+".log"), os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
+	file, err := os.OpenFile(s.path(id), os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
 	if err != nil {
 		return nil, err
 	}
@@ -318,7 +318,7 @@ func (s *logStore) withLog(id string, fn func(*jobLog) error) error {
 		defer writer.mu.Unlock()
 		return fn(writer)
 	}
-	file, err := os.Open(filepath.Join(s.options.LogDir, id+".log"))
+	file, err := os.Open(s.path(id))
 	if err != nil {
 		return err
 	}
@@ -328,16 +328,24 @@ func (s *logStore) withLog(id string, fn func(*jobLog) error) error {
 		return err
 	}
 	l := &jobLog{file: file, capacity: int64(binary.LittleEndian.Uint64(h[8:16])), total: int64(binary.LittleEndian.Uint64(h[16:24])), retained: int64(binary.LittleEndian.Uint64(h[24:32])), lost: h[32] != 0}
+	// Both refusals are permanent facts about the file: no retry answers them.
 	if h[33] != 0 {
-		return errors.New("remote logs: process stopped during a log overwrite")
+		return errorsx.Public("remote_log_unavailable", "This job's log cannot be read: the destination stopped during a log overwrite, so its byte offsets are unreliable. The output is unrecoverable; do not rerun the command to recover it.", nil)
 	}
 	if string(h[:8]) != "AOLOG001" || l.capacity < 1 || l.capacity > DefaultMaxJobBytes || l.total < 0 || l.retained < 0 || l.retained > l.capacity || l.retained > l.total {
-		return errors.New("remote logs: invalid header")
+		return errorsx.Public("remote_log_unavailable", "This job's log cannot be read: its saved file is damaged. The output is unrecoverable; do not rerun the command to recover it.", nil)
 	}
 	return fn(l)
 }
 
+func (s *logStore) path(id string) string { return filepath.Join(s.options.LogDir, id+".log") }
+
+// logReadError leaves a public verdict alone; only an unclassified I/O failure
+// earns the retry advice.
 func logReadError(err error) error {
+	if _, _, public := errorsx.PublicDetails(err); public {
+		return err
+	}
 	return errorsx.Public("remote_log_unavailable", "The destination could not read this job's log. Retry after checking destination storage; do not rerun the command to recover output.", err)
 }
 

@@ -1200,7 +1200,9 @@ untrusted tail, not repeated polling instructions. Never suppress their durable
 queue handoff merely because an HTTP tool result was written: that is not provider
 acknowledgement and may be the lost reply the notification must recover.
 Validate response options before starting a command. `app_remote_errors.go`
-adds operation/computer/request context and preserves public wire refusals.
+adds operation/computer/request context and preserves public wire refusals;
+wrapping is idempotent, and every MCP tool refusal leaves through it, so a
+non-public cause reaches the model only as a logged reference.
 Unknown network outcomes always retain the request ID and explain same-ID
 recovery; never suggest a new ID merely because a reply was lost. A larger requested output
 budget can reveal retained bytes, never recover output discarded by retention.
@@ -1230,7 +1232,14 @@ it must never create, switch, sync, or substitute a checkout.
 
 Remote completion watches register durably before a peer mutation. They never
 rerun a command on reconnect. Per-request locks serialize retry/refusal admission;
-only definite refusals of previously unaccepted attempts release a watch. Late
+only definite refusals of previously unaccepted attempts release a watch. Every
+refusal a destination answers before accepting (invalid request, capacity, not
+ready, shutting down, scope or credential refusals) is definite; a lost reply is
+not. The poller settles a receipt-less watch under the same attempt lock: a
+destination holding no receipt for it never accepted the request, so the watch
+is released and an identical retry registers it again, while a retry holding
+the lock defers that poll. An unaccepted request therefore never blocks
+deletion, transfer or forgetting the computer forever. Late
 status replies cannot regress accepted completion or erase notification ownership.
 Start, status, bounded waits and cancellation observe successful receipts in the
 same durable watch before returning and invalidate the background tray when it
@@ -1245,7 +1254,11 @@ remain available. `QueueRemoteCompletion` atomically inserts a normal
 flush-queue message and transfers delivery ownership; after that, ordinary
 interrupt, provider echo, draft recovery and rollback rules apply. Never add an
 independent notification resend after queue handoff. Delivery and lazy startup
-share the thread action lock with archive/transfer; finished workflow phases
+share the thread action lock with archive/transfer; the wait is bounded by the
+check context, so a held lock costs that watch one poll, never the watcher
+tick. A receipt settled by a direct reply carries no output: completion reads
+the saved log tail from the destination when reachable and otherwise says the
+output was not retrieved. Finished workflow phases
 cannot restart. The background tray projects watches, not fake transcript rows,
 and refreshes on its owning backend’s reconnect/replay gap. Source-only remote
 jobs count in the running inventory even without a provider session. Transfer

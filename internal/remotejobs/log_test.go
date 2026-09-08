@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
 	"github.com/google/uuid"
@@ -269,8 +270,25 @@ func TestLogIncompleteOverwriteAndAdmissionFailureAreExplicit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = m.ReadLog("owner", id, 0, 16); err == nil {
-		t.Fatal("read log interrupted during ring overwrite")
+	// Both header verdicts are permanent, so neither may advise a retry.
+	_, err = m.ReadLog("owner", id, 0, 16)
+	if code, message, _ := errorsx.PublicDetails(err); code != "remote_log_unavailable" || !strings.Contains(message, "overwrite") || strings.Contains(message, "Retry") {
+		t.Fatalf("interrupted overwrite: %v", err)
+	}
+	if file, err = os.OpenFile(filepath.Join(o.LogDir, id+".log"), os.O_RDWR, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = file.WriteAt([]byte{0}, 33); err != nil {
+		t.Fatal(err)
+	}
+	_, err = file.WriteAt([]byte("BADMAGIC"), 0)
+	file.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = m.Log("owner", id)
+	if code, message, _ := errorsx.PublicDetails(err); code != "remote_log_unavailable" || !strings.Contains(message, "damaged") || strings.Contains(message, "Retry") {
+		t.Fatalf("damaged header: %v", err)
 	}
 	// Refuse before acceptance/spawn when no log can be reserved. The identical
 	// ID is still usable once space is available; no phantom running receipt.

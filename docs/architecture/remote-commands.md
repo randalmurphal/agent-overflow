@@ -84,7 +84,10 @@ The background tray shows jobs and offers Stop plus an on-demand bounded log
 view. The source backend tracks outstanding jobs across frontend disconnects
 and source restarts. It polls only outstanding jobs, four checks at a time,
 with a slower retry after connection errors. An unreachable host is not an
-exited process. Successful run/status/cancel replies update the same durable observation immediately,
+exited process. A start whose reply was lost is checked against the destination
+once no retry is in flight: a host holding no receipt for it never accepted the
+request, and that job is released rather than watched forever.
+Successful run/status/cancel replies update the same durable observation immediately,
 so the tray and `remote_jobs` do not wait for the next polling tick. Older running
 observations cannot replace a terminal receipt. The agent need not poll merely
 to discover completion.

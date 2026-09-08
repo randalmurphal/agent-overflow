@@ -18,6 +18,7 @@ import (
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/keyedlock"
+	"agent-overflow/internal/rpcclient"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/transport"
@@ -61,6 +62,16 @@ func (a *App) observeRemoteCommand(computerID, requestID, threadID string, recei
 	return nil
 }
 
+// Only a definite refusal of a still-unaccepted attempt releases a watch; the
+// store keeps an accepted receipt over any late refusal.
+func (a *App) refuseRemoteWatch(computerID, requestID, threadID string, refusal error) error {
+	if err := a.store.RefuseRemoteWatch(computerID, requestID, remoteErrorText(refusal)); err != nil {
+		return err
+	}
+	a.emit(eventchan.ProviderBackgroundTasksChanged, map[string]any{"threadId": threadID})
+	return nil
+}
+
 func (a *App) registerRemoteWatch(input AgentRemoteRequest) (bool, error) {
 	label, err := remoteJobLabel(input.Label, input.Request)
 	if err != nil {
@@ -76,8 +87,10 @@ func (a *App) registerRemoteWatch(input AgentRemoteRequest) (bool, error) {
 	if !enabled[input.ComputerID] {
 		return false, errorsx.Public("remote_access_disabled", "Agent commands are not enabled for this computer. Enable it in Remote access → Agent access.", nil)
 	}
-	// Admission and final deletion/transfer share the short mutation fence.
-	// A destination must never accept a job after its source has disappeared.
+	// Admission and final deletion/transfer share the short mutation fence,
+	// which also rederives execution ownership (a moved or fenced conversation
+	// is refused here). A destination must never accept a job after its
+	// source has disappeared.
 	unlock, err := a.threadApplication().LockMutable(a.lifeCtx(), input.Request.SourceThreadID)
 	if err != nil {
 		return false, err
@@ -209,12 +222,32 @@ func (a *App) checkRemoteWatch(w store.RemoteWatch) {
 		_ = a.store.ObserveRemoteWatch(w.ComputerID, w.RequestID, w.Receipt, "Completion is waiting for this conversation’s execution ownership.", time.Now().Add(30*time.Second).UnixMilli())
 		return
 	}
+	// One bounded context covers every wait below: the attempt lock, the peer
+	// call and the thread action lock. A lock another action holds costs this
+	// watch one poll; it never stalls the other jobs' checks.
 	ctx, cancel := context.WithTimeout(a.lifeCtx(), 10*time.Second)
 	defer cancel()
 	receipt := w.Receipt
 	outputUnavailable := receipt.ID != "" && receipt.State != "running"
-	if !outputUnavailable {
+	switch {
+	case outputUnavailable:
+		// A direct reply settled the canonical receipt without retaining its
+		// tail. The saved log supplies one when reachable; delivery never waits
+		// on it, and an older destination simply omits it.
+		var chunk RemoteLogChunk
+		if a.backends != nil && a.backends.CallAgentPeer(ctx, w.ComputerID, "RemoteCommandReadLog", &chunk, w.RequestID, int64(-1), 2*remoteCompletionOutputBytes) == nil && !chunk.Expired {
+			receipt.Output, outputUnavailable = chunk.Text, false
+		}
+	case receipt.ID != "":
 		err = a.backends.CallAgentPeer(ctx, w.ComputerID, "RemoteCommandStatus", &receipt, w.RequestID)
+	default:
+		var settled bool
+		if settled, err = a.probeUnacceptedRemoteWatch(ctx, w, &receipt); settled {
+			if err != nil {
+				log.Printf("remote job observation: %v", err)
+			}
+			return
+		}
 	}
 	issue := ""
 	if err != nil {
@@ -239,16 +272,37 @@ func (a *App) checkRemoteWatch(w store.RemoteWatch) {
 		return
 	}
 	w.Receipt = receipt
-	if err = a.deliverRemoteCompletion(w, outputUnavailable); err != nil {
+	// An expired context means the action lock stayed busy; the scheduled
+	// recheck above retries without reporting a transient wait as an error.
+	if err = a.deliverRemoteCompletion(ctx, w, outputUnavailable); err != nil && ctx.Err() == nil {
 		_ = a.store.ObserveRemoteWatch(w.ComputerID, w.RequestID, receipt, "Completion could not enter the message queue: "+remoteErrorText(err), next)
 	}
 }
 
+// An unacknowledged start settles under its attempt lock. Once no retry is in
+// flight, a destination holding no receipt never accepted the request, so the
+// watch is released and an identical retry registers it again. A lock held by
+// an in-flight attempt defers this poll; that attempt records its own outcome.
+func (a *App) probeUnacceptedRemoteWatch(ctx context.Context, w store.RemoteWatch, receipt *RemoteCommand) (settled bool, err error) {
+	unlock, err := a.remoteStartLocks().LockCtx(ctx, w.ComputerID+":"+w.RequestID)
+	if err != nil {
+		return true, a.store.ObserveRemoteWatch(w.ComputerID, w.RequestID, w.Receipt, w.Error, time.Now().Add(5*time.Second).UnixMilli())
+	}
+	defer unlock()
+	err = a.backends.CallAgentPeer(ctx, w.ComputerID, "RemoteCommandStatus", receipt, w.RequestID)
+	var remote *rpcclient.Error
+	if !errors.As(err, &remote) || remote.Code != "remote_job_not_found" {
+		return false, err
+	}
+	return true, a.refuseRemoteWatch(w.ComputerID, w.RequestID, w.ThreadID, remoteOperationError("status", w.ComputerID, w.RequestID, err))
+}
+
 // Serialize admission and optional lazy start against archive/transfer/stop,
 // using the same action→mutation lock order as ordinary sends. Never hold a
-// thread lock while waiting on the destination network.
-func (a *App) deliverRemoteCompletion(w store.RemoteWatch, outputUnavailable bool) error {
-	unlock, err := a.threadLocks().LockCtx(a.lifeCtx(), w.ThreadID)
+// thread lock while waiting on the destination network. ctx bounds only the
+// lock wait; admitted work runs on the app lifetime.
+func (a *App) deliverRemoteCompletion(ctx context.Context, w store.RemoteWatch, outputUnavailable bool) error {
+	unlock, err := a.threadLocks().LockCtx(ctx, w.ThreadID)
 	if err != nil {
 		return err
 	}
