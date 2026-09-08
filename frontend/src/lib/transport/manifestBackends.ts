@@ -1,26 +1,30 @@
-// The attached-backend list as the bootstrap manifest published it, and
-// the per-backend manifest fetcher, held in a LEAF.
+// The attached-backend list as the bootstrap manifest published it, the
+// descriptor the page's own backend attaches under, and the per-backend
+// manifest fetcher, held in a LEAF.
 //
 // Why a leaf and not a direct call: ./bootstrap.ts is imported by
 // ./wsClient.ts, which is imported by ./backends.ts. A `bootstrap →
 // backends` import would close that ring, and the ring has module-level
-// side effects at both ends (the `wsClient` singleton, the home registry
-// entry), so whichever module the bundler happened to enter first would
-// decide whether the app booted. That is not a hypothetical: `backends.ts`
-// reads `wsClient` during its own evaluation, which is a ReferenceError
-// while `wsClient.ts` is still initialising.
+// side effects at both ends (the `wsClient` singleton, the registry's
+// module-load sync), so whichever module the bundler happened to enter
+// first would decide whether the app booted. That is not a hypothetical:
+// `backends.ts` reads `wsClient` during its own evaluation, which is a
+// ReferenceError while `wsClient.ts` is still initialising.
 //
 // So the manifest PUBLISHES here, the same way it publishes grants,
 // harness mode, passkey availability and backend identity into their own
-// leaves, and ./backends.ts reads. One direction, no ring, and the
-// registry's source stays the single injectable function it is meant to
-// be — this module is simply the default one's backing store.
+// leaves, and ./backends.ts reads. One direction, no ring. The registry's
+// source is `defaultBackendDescriptors` below — one function, and the ONE
+// place the client class is decided.
 
 import type { Bootstrap } from './bootstrap';
 import type { BackendDescriptor } from './backends';
-import { endpointHost, storedBackendEndpoints } from './homeEndpoint';
+import { HOME_BACKEND, type BackendKey } from './backendKey';
+import { getBackendIdentity } from './backendIdentity';
+import { endpointHost, storedBackendEndpoint, storedBackendEndpoints } from './homeEndpoint';
 import { hasPairedSession, pairedComputerId } from './deviceSession';
 import { rememberedIdentity } from './rememberedIdentity';
+import { isNativeShell } from '../native/platform';
 
 let descriptors: readonly BackendDescriptor[] = [];
 const listeners = new Set<() => void>();
@@ -133,6 +137,57 @@ export function __resetManifestBackendsForTest(): void {
 }
 
 // ---------------------------------------------------------------------------
+// The page's own backend
+// ---------------------------------------------------------------------------
+
+/**
+ * The page's own backend, as a desktop attaches it.
+ *
+ * An ordinary descriptor under the registry id `HOME_BACKEND`: the source
+ * below names it first, `backends.attachBackend` hands it the `wsClient`
+ * singleton as its client, and nothing else about it is special. Its
+ * socket and manifest addresses are the home endpoint's (./homeEndpoint.ts),
+ * which that singleton's own default bootstrap resolves — so the
+ * descriptor carries the manifest path a paired browser's route refresh
+ * fetches (`bootstrap.refreshComputerRoutes`) and no socket address of its
+ * own; nothing dials from it. A shell's home is built by
+ * `storedBackendDescriptors` from its stored endpoint instead, the way
+ * every other machine it holds is.
+ */
+export const HOME_DESCRIPTOR: BackendDescriptor = {
+  id: HOME_BACKEND,
+  backendId: '',
+  name: '',
+  wsUrl: '',
+  bootstrapUrl: '/bootstrap.json',
+};
+
+/**
+ * What the registry attaches: the one source, and the one place the client
+ * class is decided.
+ *
+ * A desktop answers the page's own backend first and then whatever the
+ * manifest published — the machines its local process proxies. A shell
+ * answers what its endpoint map holds: its legacy home slot first, when one
+ * is stored and is not a proven duplicate of a UUID pairing, then every
+ * machine it paired with itself. Asked per sync rather than captured, so a
+ * native bridge that reports late (the registry evaluates before
+ * `prepareNativeShell` runs) is answered correctly by the next sync.
+ */
+export function defaultBackendDescriptors(): readonly BackendDescriptor[] {
+  if (isNativeShell()) return storedBackendDescriptors();
+  return [HOME_DESCRIPTOR, ...descriptors];
+}
+
+/** A newer UUID pairing supersedes only a proven duplicate legacy phone
+ * slot. Leave its credentials/endpoints untouched until explicit removal. */
+export function duplicateLegacyHomeBackend(): BackendKey | null {
+  if (!isNativeShell() || !storedBackendEndpoint()) return null;
+  const id = pairedComputerId() || getBackendIdentity().backendId || rememberedIdentity(HOME_BACKEND)?.backendId;
+  return id && storedBackendEndpoint(id) && pairedComputerId(id) === id ? id : null;
+}
+
+// ---------------------------------------------------------------------------
 // A backend attached after boot
 // ---------------------------------------------------------------------------
 
@@ -162,7 +217,8 @@ const ATTACHED_BOOTSTRAP_SUFFIX = '.json';
  *     absolute and neither carries the attached prefixes — a phone's
  *     second machine is reached at its own `/ws` and `/bootstrap.json`,
  *     the same routes home is reached at, because from the phone's side
- *     there is nothing structurally different about it.
+ *     there is nothing structurally different about it. Its legacy home
+ *     slot is built by the same call, under `HOME_BACKEND`.
  */
 export function descriptorForAttachedId(
   id: string,
@@ -194,29 +250,36 @@ export function descriptorForAttachedId(
 }
 
 /**
- * Every attached backend a shell client holds, rebuilt from the endpoint
- * map it persisted (./homeEndpoint.ts). This is the `BackendSource` a
- * shell installs at boot: same shape, different backing store, which is
- * the whole reason `backends.setBackendSource` is one injectable function
- * rather than a client-class branch.
+ * Every backend a shell client holds, rebuilt from the endpoint map it
+ * persisted (./homeEndpoint.ts). What `defaultBackendDescriptors` answers
+ * on a shell: same shape as the manifest's list, different backing store,
+ * which is the whole reason the registry's source is one function rather
+ * than a client-class branch inside the registry.
  *
- * Home is excluded — it is the registry's own entry and is addressed by
- * `setHomeEndpoint`, not by a descriptor.
+ * Home comes FIRST, and only while its legacy slot is stored and is still a
+ * computer of its own: a slot proven to duplicate a UUID pairing stays
+ * dormant — credentials, endpoint and trust untouched — until explicit
+ * removal, and a new phone has no such slot at all. Its name is empty, as
+ * a desktop's is, so the same "This machine" placeholder applies.
  *
- * The name is the ENDPOINT HOST, which is what `attachBackendFromLink`
- * already writes for a payload that published no `backendName`. An empty
- * one here would leave every surface that labels a machine — the machine
- * picker, Settings → Systems, the sidebar's row — showing a blank until
- * that backend's manifest resolves, which on an unreachable machine is
- * never. An address is the one thing this client is sure of.
+ * Every other machine's name is the ENDPOINT HOST, which is what
+ * `attachBackendFromLink` already writes for a payload that published no
+ * `backendName`. An empty one here would leave every surface that labels a
+ * machine — the machine picker, Settings → Systems, the sidebar's row —
+ * showing a blank until that backend's manifest resolves, which on an
+ * unreachable machine is never. An address is the one thing this client is
+ * sure of.
  */
 export function storedBackendDescriptors(): BackendDescriptor[] {
   const out: BackendDescriptor[] = [];
   const endpoints = storedBackendEndpoints();
-  const homeId = endpoints[''] && hasPairedSession('')
-    ? pairedComputerId('') || rememberedIdentity('')?.backendId : undefined;
+  if (endpoints[HOME_BACKEND] && duplicateLegacyHomeBackend() === null) {
+    out.push(descriptorForAttachedId(HOME_BACKEND, '', endpoints[HOME_BACKEND]));
+  }
+  const homeId = endpoints[HOME_BACKEND] && hasPairedSession(HOME_BACKEND)
+    ? pairedComputerId(HOME_BACKEND) || rememberedIdentity(HOME_BACKEND)?.backendId : undefined;
   for (const [id, endpoint] of Object.entries(endpoints)) {
-    if (id === '') continue;
+    if (id === HOME_BACKEND) continue;
     // A failed redemption can leave an endpoint without a credential. It
     // must not create a second catalog owner beside its valid legacy slot.
     if (id === homeId && pairedComputerId(id) !== id) continue;

@@ -26,13 +26,14 @@ vi.mock('./wsClient', () => ({
 }));
 
 import { resolveTransport } from './handle';
-import { __setHomeClientForTest } from './backends';
+import { __attachBackendForTest } from './backends';
+import { HOME_DESCRIPTOR } from './manifestBackends';
 import { setBackendIdentityFromBootstrap } from './backendIdentity';
 
 // `src/test/setup.ts` loads the real `wsClient` before this file's
-// `vi.mock` registers, so the registry's home entry captured it. Point it
-// at the fake instead — the seam exists for exactly this ordering.
-__setHomeClientForTest(mockClient as unknown as Parameters<typeof __setHomeClientForTest>[0]);
+// `vi.mock` registers, so the registry attached home over it. Re-point the
+// held entry at the fake instead — the seam exists for exactly this ordering.
+__attachBackendForTest(HOME_DESCRIPTOR, mockClient as unknown as Parameters<typeof __attachBackendForTest>[1]);
 
 const BACKEND_A = '62c8a1de-0a3f-4f4b-9d0a-2b6b1a5b0f11';
 const BACKEND_B = 'f0f7b0c4-6d0e-4a4a-8a3f-9c2f1a7d4e55';

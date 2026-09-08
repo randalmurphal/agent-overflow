@@ -2807,11 +2807,15 @@ confirmation wait announces itself on `backend:attach`. The
 `remoteEndpoints` list and its plaintext token RPC are deleted.
 
 **7b LANDED 2026-09-01.** `transport/backends.ts` holds one entry per
-attached backend (the home entry wraps the existing `wsClient`;
-attachment is eager, and the list's source is one injectable function
-fed by the manifest today and by client-local storage on the phone).
-`resolveTransport(backendId?)` is one Map lookup; a client with one
-connection takes a fast path in `Call.ByID` and pays nothing. Route
+attached backend, the page's own included: home is an ordinary
+descriptor from the same source as every other backend, whose client
+happens to be the existing `wsClient` singleton (reworked 2026-09-08;
+before that the home entry wrapped the singleton and was special-cased
+throughout). Attachment is eager, and the list's source is one function
+that answers the manifest's list plus home on a desktop and client-local
+storage on the phone. `resolveTransport(backendId?)` is one Map lookup;
+an `all` route with one attached computer is dispatched to it directly
+by the fan-out, whichever computer that is. Route
 resolution: a one-call pin (`withBackendTarget`, drained at dispatch)
 for path-argument and subscription calls, then the id-family index for
 workflow items, automations and terminals, then the generated table;

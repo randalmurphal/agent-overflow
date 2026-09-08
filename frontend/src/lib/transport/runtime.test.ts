@@ -40,9 +40,9 @@ import { Call, CancellablePromise, Create, Events } from './runtime';
 import {
   __attachBackendForTest,
   __resetBackendsForTest,
-  __setHomeClientForTest,
   withBackendTarget,
 } from './backends';
+import { HOME_DESCRIPTOR } from './manifestBackends';
 import {
   __resetEntityIndexForTest,
   subscriptionBackend,
@@ -54,9 +54,9 @@ import {
 import { setBackendIdentityFromBootstrap } from './backendIdentity';
 
 // `src/test/setup.ts` loads the real `wsClient` before this file's
-// `vi.mock` registers, so the registry's home entry captured it. Point it
-// at the fake instead — the seam exists for exactly this ordering.
-__setHomeClientForTest(mockClient as unknown as Parameters<typeof __setHomeClientForTest>[0]);
+// `vi.mock` registers, so the registry attached home over it. Re-point the
+// held entry at the fake instead — the seam exists for exactly this ordering.
+__attachBackendForTest(HOME_DESCRIPTOR, mockClient as unknown as Parameters<typeof __attachBackendForTest>[1]);
 import { CancellablePromise as MockCancellablePromise } from '../../test/mocks/wailsio-runtime';
 
 beforeEach(() => {
@@ -329,7 +329,7 @@ describe('Call.ByID indexes what a pinned call answers with', () => {
   }
 
   beforeEach(() => {
-    __setHomeClientForTest(mockClient as unknown as Parameters<typeof __setHomeClientForTest>[0]);
+    __attachBackendForTest(HOME_DESCRIPTOR, mockClient as unknown as Parameters<typeof __attachBackendForTest>[1]);
     __resetBackendsForTest();
     __resetEntityIndexForTest();
   });

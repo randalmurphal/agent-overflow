@@ -35,10 +35,10 @@ vi.mock('./wsClient', () => ({
 import {
   __attachBackendForTest,
   __resetBackendsForTest,
-  __setHomeClientForTest,
+  HOME_BACKEND,
   backendById,
-  homeBackend,
 } from './backends';
+import { HOME_DESCRIPTOR } from './manifestBackends';
 import {
   __resetEntityIndexForTest,
   projectBackend,
@@ -84,7 +84,7 @@ function attachRemote(): FakeClient {
 }
 
 beforeEach(() => {
-  __setHomeClientForTest(homeClient as never);
+  __attachBackendForTest(HOME_DESCRIPTOR, homeClient as never);
   __resetBackendsForTest();
   __resetEntityIndexForTest();
   for (const fn of Object.values(homeClient)) (fn as { mockReset?: () => void }).mockReset?.();
@@ -114,7 +114,7 @@ describe('the unified sidebar list', () => {
     expect(rows.map((r) => r.id)).toEqual(['thread-home', 'thread-laptop']);
     // The index is what routes the NEXT call about either row. Without it
     // a message sent to `thread-laptop` would go to the wrong machine.
-    expect(threadBackend('thread-home')).toBe(homeBackend().id);
+    expect(threadBackend('thread-home')).toBe(HOME_BACKEND);
     expect(threadBackend('thread-laptop')).toBe(REMOTE);
   });
 
@@ -126,7 +126,7 @@ describe('the unified sidebar list', () => {
     const rows = (await Call.ByID(LIST_PROJECTS)) as Array<{ id: string }>;
 
     expect(rows.map((r) => r.id)).toEqual(['project-home', 'project-laptop']);
-    expect(projectBackend('project-home')).toBe(homeBackend().id);
+    expect(projectBackend('project-home')).toBe(HOME_BACKEND);
     expect(projectBackend('project-laptop')).toBe(REMOTE);
     // Two machines holding the same repo stay two rows in this wave —
     // merging by repo identity is remote-access §10's wave 7d.

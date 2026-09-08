@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
-import { attachedBackends, attachedBackendCount, backendById, detachBackend, homeBackend, requireEntityBackend, subscribeEveryBackend } from './backends';
+import { attachedBackends, attachedBackendCount, backendById, detachBackend, requireEntityBackend, subscribeEveryBackend } from './backends';
 import { Call } from './runtime';
 import { HOME_BACKEND } from './backendKey';
 import { selectedBackend, setSelectedBackend } from '../stores/selectedBackend.svelte';
@@ -24,8 +24,8 @@ it('uses the sole execution computer for unknown-item permissions, never the con
 });
 
 it('keeps local administration outside the computer catalog and every-computer calls', async () => {
-  const controller = vi.spyOn(homeBackend().client, 'callByID').mockResolvedValue([]);
-  expect(backendById(HOME_BACKEND)).toBe(homeBackend());
+  const controller = vi.spyOn(backendById(HOME_BACKEND)!.client, 'callByID').mockResolvedValue([]);
+  expect(backendById(HOME_BACKEND)?.home).toBe(true);
   expect(attachedBackends()).toEqual([]);
   expect(selectedBackend()).toBe('first');
   stageBackend({ id: 'first', backendId: 'first' });
@@ -42,8 +42,8 @@ it('keeps local administration outside the computer catalog and every-computer c
 });
 
 it('forgets the launch computer without losing local administration or another computer', async () => {
-  const controller = vi.spyOn(homeBackend().client, 'callByID').mockResolvedValue([]);
-  const events = vi.spyOn(homeBackend().client, 'subscribe').mockReturnValue(() => {});
+  const controller = vi.spyOn(backendById(HOME_BACKEND)!.client, 'callByID').mockResolvedValue([]);
+  const events = vi.spyOn(backendById(HOME_BACKEND)!.client, 'subscribe').mockReturnValue(() => {});
   stageBackend({ id: 'first', backendId: 'first' });
   stageBackend({ id: 'second', backendId: 'second' });
   const other = vi.mocked(backendById('second')!.client.callByID).mockResolvedValue([]);
@@ -51,7 +51,7 @@ it('forgets the launch computer without losing local administration or another c
   expect(events).toHaveBeenCalledWith('backend:attach', expect.any(Function));
   detachBackend('first');
   expect(attachedBackends().map((entry) => entry.id)).toEqual(['second']);
-  expect(backendById(HOME_BACKEND)).toBe(homeBackend());
+  expect(backendById(HOME_BACKEND)?.home).toBe(true);
   // An explicit selection of the removed computer cannot land on another.
   await expect(Call.ByID(320967638, '/project')).rejects.toThrow(); // BrowseDirectory
   expect(other).not.toHaveBeenCalled();

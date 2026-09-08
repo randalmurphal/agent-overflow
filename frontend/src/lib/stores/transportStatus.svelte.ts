@@ -24,7 +24,7 @@
 
 import {
   attachedBackends,
-  homeBackend,
+  backendById,
   onBackendsChanged,
 } from '../transport/backends';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
@@ -110,8 +110,7 @@ function publishHello(id: BackendKey, next: TransportHello | null): void {
 
 function watchBackendStatus(id: BackendKey): void {
   if (backendStatusSubscriptions.has(id)) return;
-  const entry = id === HOME_BACKEND ? homeBackend() : undefined;
-  const client = entry?.client ?? attachedBackends().find((b) => b.id === id)?.client;
+  const client = backendById(id)?.client;
   if (client === undefined) return;
   const cancelStatus = client.onStatusChange((next) => {
     publishBackendStatus(id, next);

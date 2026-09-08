@@ -37,7 +37,8 @@ import { ownDeviceConnectionExcluded, setOwnDeviceConnectionExcluded } from './o
 // minutes and a row that vanished on a re-render.
 
 import { HOME_BACKEND, type BackendKey } from './backendKey';
-import { attachedBackends, backendById, detachBackend, duplicateLegacyHomeBackend, syncAttachedBackends } from './backends';
+import { attachedBackends, backendById, detachBackend, syncAttachedBackends } from './backends';
+import { duplicateLegacyHomeBackend } from './manifestBackends';
 import {
   clearPairedSession,
   hasOwnDeviceSession,

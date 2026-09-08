@@ -9,9 +9,9 @@
 // cycle between two modules that already import each other, so the shell
 // INSTALLS its step here and the two doors call it.
 //
-// Same shape and same reason as `backends.setBackendSource`: one
-// function, replaced rather than branched on, so nothing below it has to
-// know which kind of client it is running in.
+// Same shape and same reason as `manifestBackends.setBackendManifestFetcher`:
+// one function, installed rather than branched on, so nothing below it has
+// to know which kind of client it is running in.
 //
 // **Steps are fire-and-forget and must not throw.** A backend that is
 // unreachable at the moment it is detached cannot be told anything, and

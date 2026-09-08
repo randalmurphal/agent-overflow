@@ -21,12 +21,11 @@ import {
 import {
   __attachBackendForTest,
   __resetBackendsForTest,
-  __setHomeClientForTest,
   attachedBackends,
   backendById,
-  duplicateLegacyHomeBackend,
   type BackendDescriptor,
 } from './backends';
+import { HOME_DESCRIPTOR, duplicateLegacyHomeBackend } from './manifestBackends';
 import * as deviceSession from './deviceSession';
 import { clearPairedSession, hasPairedSession, pairedComputerId } from './deviceSession';
 import { __resetDetachStepsForTest, onBeforeBackendDetach } from './detachSteps';
@@ -136,7 +135,9 @@ describe('backendAttach', () => {
         storeSessionFor(LAPTOP);
         stageMachine();
         const remaining = backendById(LAPTOP)!;
-        __setHomeClientForTest(remaining.client);
+        // Home is held over the real singleton here; point it at a fake so
+        // the removal closes that and not the socket every later test dials.
+        __attachBackendForTest(HOME_DESCRIPTOR, remaining.client);
         const credential = localStorage.getItem(`agent-overflow:deviceSession:${LAPTOP}`);
         detachAttachedBackend('');
         expect(purged).toEqual(['']);
@@ -153,7 +154,7 @@ describe('backendAttach', () => {
         stopPurge();
         if (capacitor) Object.defineProperty(window, 'Capacitor', capacitor);
         else Reflect.deleteProperty(window, 'Capacitor');
-        __setHomeClientForTest(wsClient);
+        __attachBackendForTest(HOME_DESCRIPTOR, wsClient);
       }
     });
 
@@ -270,8 +271,9 @@ describe('backendAttach', () => {
 
       detachAttachedBackend(LAPTOP);
 
-      // `storedBackendDescriptors` is the shell's `BackendSource`, so an
-      // entry left here is a machine `syncAttachedBackends()` re-opens.
+      // `storedBackendDescriptors` is what the registry's source answers on
+      // a shell, so an entry left here is a machine `syncAttachedBackends()`
+      // re-opens.
       expect(storedBackendDescriptors()).toEqual([]);
     });
 

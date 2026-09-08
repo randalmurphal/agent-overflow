@@ -118,7 +118,8 @@ for (const backend of ['', ID]) {
     expect(localStorage.getItem(`agent-overflow:computerRoutes:${encodeURIComponent(backend)}`)).not.toContain(TAIL);
     routes = [{ endpoint: LAN, certFingerprint: PIN }, { endpoint: TAIL }];
     const { refreshComputerRoutes } = await import('./bootstrap');
-    const descriptor = backend ? { id: backend, backendId: ID, name: 'Mac', wsUrl: initial.wsUrl, bootstrapUrl: `${LAN}/bootstrap.json` } : undefined;
+    // Home's descriptor addresses the same origin `homeUrl` answers for it.
+    const descriptor = { id: backend, backendId: ID, name: 'Mac', wsUrl: initial.wsUrl, bootstrapUrl: `${LAN}/bootstrap.json` };
     await refreshComputerRoutes(descriptor, ID, () => true, new AbortController().signal);
     expect(sockets).toHaveLength(1);
     expect(JSON.parse(localStorage.getItem(sessionKey)!).credential).toBe('original');
