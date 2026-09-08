@@ -221,26 +221,30 @@ test.describe.serial('remote device lifecycle', () => {
   });
 
   // -------------------------------------------------------------------
-  // 1b. Settings → Remote access from the phone. Second in EXECUTION order
+  // 1b. Settings → Allow device access from the phone. Second in EXECUTION order
   //     because it needs the device the case above paired, still full
   //     access and still attached — the case below revokes it.
   // -------------------------------------------------------------------
   test('a full-access device manages the backend’s exposure, without being handed its credentials', async () => {
     await phone.getByTestId('sidebar-settings-button').click();
     await expect(phone.getByRole('tablist', { name: 'Settings Sections' })).toBeVisible();
-    await phone.getByRole('tab', { name: 'Remote access' }).click();
+    await phone.getByRole('tab', { name: 'Allow device access', exact: true }).click();
 
     // It LOADS, which is the whole widening: read as `host`, this section
     // drew its unavailable arm for every paired device — the owner's own
-    // phone included — and Settings → Remote access was reachable from nowhere
-    // but the machine. `access:admin` is what it answers now.
+    // phone included — and this page was reachable from nowhere but the
+    // machine. `access:admin` is what it answers now.
     await expect(phone.getByRole('switch', { name: 'Toggle remote access' })).toBeVisible();
     await expect(phone.getByTestId('network-section-local-only')).toHaveCount(0);
 
     // And the credential half is not in what it loaded: no share URL field
     // and no Copy beside it, one sentence saying where they are. The wire
     // form of the same claim — that the bytes never left the machine — is
-    // harness-offhost-authz.spec.ts; this is what the person sees.
+    // harness-offhost-authz.spec.ts; this is what the person sees. The
+    // share URL lives under the "Advanced network settings" fold with the
+    // port and domain, and a closed fold lays out nothing, so it is opened
+    // first.
+    await phone.getByText('Advanced network settings', { exact: true }).click();
     await expect(phone.getByTestId('share-url-host-only')).toBeVisible();
     await expect(phone.getByLabel('Application URL')).toHaveCount(0);
     await expect(phone.getByTestId('insecure-url-warning')).toHaveCount(0);
@@ -355,11 +359,9 @@ test.describe.serial('remote device lifecycle', () => {
     await expect(phone.getByLabel('Message Input')).toBeDisabled();
     await phone.getByTestId('sidebar-settings-button').click();
     await expect(phone.getByRole('tablist', { name: 'Settings Sections' })).toBeVisible();
-    await phone.getByRole('tab', { name: 'Remote access' }).click();
-    await expect(phone.getByRole('tab', { name: 'Remote access' })).toHaveAttribute(
-      'aria-selected',
-      'true',
-    );
+    const tab = phone.getByRole('tab', { name: 'Allow device access', exact: true });
+    await tab.click();
+    await expect(tab).toHaveAttribute('aria-selected', 'true');
 
     // Both of that tab's sections settled, and settled is a RENDERED state
     // rather than a moment in time — without waiting on it, the assertion
@@ -473,7 +475,7 @@ test.describe.serial('remote device lifecycle', () => {
     try {
       await harness.open(host);
       await host.getByTestId('sidebar-settings-button').click();
-      await host.getByRole('tab', { name: 'Remote access' }).click();
+      await host.getByRole('tab', { name: 'Allow device access', exact: true }).click();
 
       const deviceRows = host.getByTestId('access-device');
       const localRow = deviceRows.filter({ hasText: 'This computer' });
