@@ -57,15 +57,13 @@ type Manager struct {
 	selfID    func() string
 	discovery singleflight.Group
 
+	// changed is the one observer of set mutations (SetChanged).
+	changed func(SetChange)
 	// labelGetter reads this installation's current name; label is the static
 	// fallback for embedders. Platform describes this process, not a pairing.
-	nameSyncChanged func(string)
-	// sessionEnded learns that the far side stopped honouring one pairing
-	// for good, so the owner can retire the row everywhere it is shown.
-	sessionEnded func(string)
-	labelGetter  func() (string, error)
-	label        string
-	platform     string
+	labelGetter func() (string, error)
+	label       string
+	platform    string
 
 	mu       sync.Mutex
 	carriers map[string]*carrier
@@ -152,7 +150,7 @@ func (m *Manager) carrier(id string) (*carrier, error) {
 // wire attaches this manager's hooks to a freshly built carrier.
 func (m *Manager) wire(built *carrier, id string) {
 	built.labelGetter, built.platform = m.localLabel, m.platform
-	built.nameSyncChanged = func() { m.notifyNameSyncChanged(id) }
+	built.nameSyncChanged = func() { m.notifyChanged(SetChange{Action: SetDeviceNameSync, ID: id}) }
 	built.onEnded = func() { m.endSession(id, built) }
 }
 
@@ -169,22 +167,12 @@ func (m *Manager) endSession(id string, held *carrier) {
 	if current {
 		delete(m.carriers, id)
 	}
-	ended := m.sessionEnded
 	m.mu.Unlock()
 	if !current {
 		return
 	}
 	_ = m.writeAgentAccess(id, false)
-	if ended != nil {
-		ended(id)
-	}
-}
-
-// SetSessionEnded registers the observer of a pairing the far side ended.
-func (m *Manager) SetSessionEnded(ended func(string)) {
-	m.mu.Lock()
-	m.sessionEnded = ended
-	m.mu.Unlock()
+	m.notifyChanged(SetChange{Action: SetRemoved, ID: id})
 }
 
 // Attached is one attached machine as the desktop's own admin surface
@@ -392,7 +380,11 @@ func (m *Manager) Remove(id string) error {
 	if err := m.excludeOwnDevice(id, true); err != nil {
 		return err
 	}
-	return m.forgetLocked(id)
+	if err := m.forgetLocked(id); err != nil {
+		return err
+	}
+	m.notifyChanged(SetChange{Action: SetRemoved, ID: id})
+	return nil
 }
 
 // forgetLocked drops one profile; the caller holds its profile lock. The
@@ -433,7 +425,11 @@ func (m *Manager) Rename(id, nickname string) error {
 	if err != nil {
 		return err
 	}
-	return held.client.SetNickname(nickname)
+	if err := held.client.SetNickname(nickname); err != nil {
+		return err
+	}
+	m.notifyChanged(SetChange{Action: SetRenamed, ID: id, Nickname: nickname})
+	return nil
 }
 
 // RepairAddress adds a verified replacement address to an
@@ -591,20 +587,4 @@ func (m *Manager) localLabel() (string, error) {
 		return m.labelGetter()
 	}
 	return m.label, nil
-}
-
-// SetNameSyncChanged registers a display-state invalidation before serving.
-func (m *Manager) SetNameSyncChanged(changed func(string)) {
-	m.mu.Lock()
-	m.nameSyncChanged = changed
-	m.mu.Unlock()
-}
-
-func (m *Manager) notifyNameSyncChanged(id string) {
-	m.mu.Lock()
-	changed := m.nameSyncChanged
-	m.mu.Unlock()
-	if changed != nil {
-		changed(id)
-	}
 }

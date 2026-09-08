@@ -45,37 +45,15 @@ type BackendAttachOutcome struct {
 	Error string `json:"error,omitempty"`
 }
 
-// BackendSetChange is the frame the backend:set-changed channel carries:
-// every mutation of the attached-machine SET that is not the end of a
-// pairing ceremony.
-//
-// Its own channel rather than a second meaning on backend:attach, because
-// the two answer different questions — "how did the pairing I started end"
-// and "the list moved" — and a receiver that conflated them would retire a
-// pending row on a rename. Two pages open on this host, and the same page
-// after a reload, converge on it.
-type BackendSetChange struct {
-	// Action is one of the BackendSet* constants below.
-	Action string `json:"action"`
-	// ID names the row, and is empty for a membership change, which moves
-	// several rows at once and is answered by re-reading the list.
-	ID string `json:"id"`
-	// Nickname is what this installation now calls the machine, empty when
-	// the name was cleared or the row was removed.
-	Nickname string `json:"nickname,omitempty"`
-}
-
-// Backend set actions: a removal (by this installation, or by the far side
-// ending the session — either way the row is gone), a rename, the far side
-// accepting or refusing this installation's device name, and an own-device
-// membership change (frontend/src/lib/stores/systems.svelte.ts mirrors the
-// set).
-const (
-	BackendSetRemoved        = "removed"
-	BackendSetRenamed        = "renamed"
-	BackendSetDeviceNameSync = "device-name-sync"
-	BackendSetMembership     = "membership"
-)
+// BackendSetChange is the frame the backend:set-changed channel carries.
+// The shape and its action vocabulary live in internal/attachedbackends,
+// because the manager is the one emitter — every mutation of the set, the
+// ones this surface asks for and the ones the reconciler and name
+// synchronization make on their own, reaches the page through the
+// observer SetAttachedBackends registers. The frontend-only desktop
+// (internal/frontendclient) registers the same observer over the same
+// type, so there is one wire shape and one TS mirror.
+type BackendSetChange = attachedbackends.SetChange
 
 // errNoBackendProfiles is what every method here answers when this boot
 // keeps no device profile directory.
@@ -187,17 +165,9 @@ func (a *App) RemoveBackend(id string) error {
 	if err := a.backends.Remove(id); err != nil {
 		return err
 	}
-	a.backendRemoved(id)
-	return nil
-}
-
-// backendRemoved announces that one attached row is gone, whether this
-// installation forgot it or the far side ended the session: the page drops
-// the row either way, and the remote peers learn the set moved.
-func (a *App) backendRemoved(id string) {
-	a.emit(eventchan.BackendSetChanged, BackendSetChange{Action: BackendSetRemoved, ID: id})
 	a.signalRemotePeers()
 	a.emit(eventchan.AgentComputersChanged, struct{}{})
+	return nil
 }
 
 // RenameBackend sets what this installation calls one machine, or clears
@@ -210,15 +180,7 @@ func (a *App) RenameBackend(id, nickname string) error {
 	if a.backends == nil {
 		return errNoBackendProfiles
 	}
-	if err := a.backends.Rename(id, nickname); err != nil {
-		return err
-	}
-	a.emit(eventchan.BackendSetChanged, BackendSetChange{
-		Action:   BackendSetRenamed,
-		ID:       id,
-		Nickname: nickname,
-	})
-	return nil
+	return a.backends.Rename(id, nickname)
 }
 
 // AttachedBackends exposes the manager to the transport, which serves one
@@ -234,6 +196,8 @@ func SetAttachedBackends(a *App, manager *attachedbackends.Manager) {
 	a.backends = manager
 	if manager != nil {
 		manager.SetNetwork(func() string { id, _ := a.backendIdentity(); return id }, a.dialComputer)
-		manager.SetSessionEnded(a.backendRemoved)
+		manager.SetChanged(func(change attachedbackends.SetChange) {
+			a.emit(eventchan.BackendSetChanged, change)
+		})
 	}
 }

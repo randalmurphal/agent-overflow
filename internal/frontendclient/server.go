@@ -15,7 +15,6 @@ import (
 	"agent-overflow/internal/appidentity"
 	"agent-overflow/internal/appupdate"
 	"agent-overflow/internal/attachedbackends"
-	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/transport"
 )
 
@@ -94,9 +93,7 @@ func Serve(cfg Config) (*Server, error) {
 		services.close()
 		return nil, err
 	}
-	computers.StartOwnDevices(ctx, computers.FrontendOwnDeviceHooks(func() {
-		services.emit(eventchan.BackendSetChanged, map[string]string{"action": "membership"})
-	}))
+	computers.StartOwnDevices(ctx, computers.FrontendOwnDeviceHooks())
 	return &Server{transport: server, service: services, decorate: decorate}, nil
 }
 

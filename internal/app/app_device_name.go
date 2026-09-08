@@ -51,12 +51,6 @@ func (a *App) deviceNameChanged(name string) {
 	a.emit(eventchan.BackendNameChanged, map[string]string{"name": name})
 }
 func (a *App) startDeviceNameWatcher() {
-	if a.backends != nil {
-		a.backends.SetNameSyncChanged(func(id string) {
-			a.emit(eventchan.BackendSetChanged, BackendSetChange{Action: BackendSetDeviceNameSync, ID: id})
-		})
-	}
-
 	if a.deviceName == nil {
 		a.deviceName = appidentity.NewDeviceName(a.configDir)
 	}

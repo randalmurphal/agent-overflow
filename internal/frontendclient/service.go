@@ -91,8 +91,10 @@ func newService(ctx context.Context, cancel context.CancelFunc, cfg Config, comp
 	if err != nil {
 		log.Printf("device name watcher: %v", err)
 	}
-	computers.SetNameSyncChanged(func(id string) {
-		s.emit(eventchan.BackendSetChanged, map[string]string{"action": "device-name-sync", "id": id})
+	// One observer for every mutation of the set, the same shape the
+	// desktop with a backend emits (attachedbackends.SetChange).
+	computers.SetChanged(func(change attachedbackends.SetChange) {
+		s.emit(eventchan.BackendSetChanged, change)
 	})
 	if cfg.ConfigureUpdater != nil {
 		cfg.ConfigureUpdater(s.updater)
@@ -162,20 +164,8 @@ func (s *service) AddBackend(link string) (attachedbackends.Attachment, error) {
 func (s *service) RepairBackendAddress(ctx context.Context, id, endpoint string) (string, error) {
 	return s.computers.RepairAddress(ctx, id, endpoint)
 }
-func (s *service) RemoveBackend(id string) error {
-	if err := s.computers.Remove(id); err != nil {
-		return err
-	}
-	s.emit(eventchan.BackendSetChanged, map[string]string{"action": "removed", "id": id})
-	return nil
-}
-func (s *service) RenameBackend(id, nickname string) error {
-	if err := s.computers.Rename(id, nickname); err != nil {
-		return err
-	}
-	s.emit(eventchan.BackendSetChanged, map[string]string{"action": "renamed", "id": id, "nickname": nickname})
-	return nil
-}
+func (s *service) RemoveBackend(id string) error           { return s.computers.Remove(id) }
+func (s *service) RenameBackend(id, nickname string) error { return s.computers.Rename(id, nickname) }
 func (s *service) StartSSHConnection(request sshsetup.Request) (sshsetup.Status, error) {
 	return s.ssh.Begin(s.ctx, request)
 }

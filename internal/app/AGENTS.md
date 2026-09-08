@@ -487,6 +487,21 @@ nil interface in that case (`attachedBackendsSeam` in `main.go` — a typed
 nil in an interface is not nil), so the carried routes are absent rather
 than serving 404s from an empty set.
 
+**`backend:set-changed` has one emitter, and it is not this file.** The
+frame (`attachedbackends.SetChange`, aliased here as `BackendSetChange` so
+the binding generator's output is unchanged) and its action vocabulary
+live in `internal/attachedbackends`, and the manager announces every
+mutation of the set through the observer `SetAttachedBackends` registers:
+the removal and rename this surface asks for, the profile the own-device
+reconciler adds or prunes, the name synchronization a carrier completes.
+`RemoveBackend` and `RenameBackend` therefore emit nothing themselves. The
+frontend-only desktop (`internal/frontendclient`) registers the same
+observer over the same type, which is what makes the TS mirror
+(`systems.svelte.ts` `BackendSetChangeEvent`) one shape;
+`backend_set_change_vocabulary_test.go` pins the vocabulary against that
+mirror in both directions and refuses an emit that spells the frame by
+hand.
+
 Desktop discovery/address setup is specified in
 [computer-pairing.md](../../docs/architecture/computer-pairing.md).
 `app_computer_pairing.go` owns the short-lived window and approval mapping.

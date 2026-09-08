@@ -15,8 +15,8 @@ import (
 // FrontendOwnDeviceHooks keeps only public membership metadata for a desktop
 // controller with no execution database. Its device key and direct sessions are
 // still the installation's existing deviceclient profile, shared with --connect.
-func (m *Manager) FrontendOwnDeviceHooks(changed func()) OwnDeviceHooks {
-	return OwnDeviceHooks{Snapshot: m.frontendOwnSnapshot, Accept: m.acceptFrontendOwnSource, Changed: changed}
+func (m *Manager) FrontendOwnDeviceHooks() OwnDeviceHooks {
+	return OwnDeviceHooks{Snapshot: m.frontendOwnSnapshot, Accept: m.acceptFrontendOwnSource}
 }
 
 func (m *Manager) frontendOwnSnapshot() (owndevices.List, error) {

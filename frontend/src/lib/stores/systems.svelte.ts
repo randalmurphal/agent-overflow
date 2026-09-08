@@ -51,9 +51,11 @@ export interface BackendAttachEvent {
 }
 
 /**
- * What the `backend:set-changed` channel carries (internal/app
- * BackendSetChange): every mutation of the set that is not a pairing
- * ceremony ending.
+ * What the `backend:set-changed` channel carries
+ * (internal/attachedbackends SetChange, emitted by both the desktop with
+ * a backend and the frontend-only one): every mutation of the set that is
+ * not a pairing ceremony ending. The action union is pinned against the
+ * Go constants by internal/app's backend_set_change_vocabulary_test.go.
  */
 export interface BackendSetChangeEvent {
   action: 'removed' | 'renamed' | 'device-name-sync' | 'membership';

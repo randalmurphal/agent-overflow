@@ -145,6 +145,9 @@ func (m *Manager) AcceptOwnDeviceIntroduction(ctx context.Context, raw string, r
 	if err := held.client.AwaitActivation(ctx); err != nil {
 		return false, err
 	}
+	// Desktop clients watch the profile set, not the public membership
+	// catalog. Publish this edge before reconciliation sees it as present.
+	m.notifyMembershipChanged()
 	m.WakeOwnDevices()
 	return true, nil
 }

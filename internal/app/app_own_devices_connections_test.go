@@ -115,7 +115,7 @@ func TestOwnDeviceConnectionsJoinThreeHostsAndControllerWithoutPermanentHub(t *t
 	pairOwnConnection(t, a, controller, true)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	hooks := controller.FrontendOwnDeviceHooks(nil)
+	hooks := controller.FrontendOwnDeviceHooks()
 	controller.ReconcileOwnDevices(ctx, hooks)
 	if profiles, err := controller.ConnectedOwnDeviceIDs(); err != nil || len(profiles) != 3 {
 		t.Fatalf("controller did not learn all hosts: %v %v", profiles, err)
