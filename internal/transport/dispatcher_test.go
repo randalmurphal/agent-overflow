@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"agent-overflow/internal/errorsx"
 	"context"
 	"encoding/json"
 	"errors"
@@ -736,5 +737,24 @@ func TestDispatcher_ResolveForOrigin_ConcurrentLoopbackAndNonLoopback(t *testing
 	case err := <-nonLoopbackErr:
 		t.Fatalf("non-loopback path: %v", err)
 	default:
+	}
+}
+
+type publicFailureApp struct{ err error }
+
+func (a *publicFailureApp) Fail() error { return fmt.Errorf("private wrapper: %w", a.err) }
+
+func TestDispatcherPublicErrorKeepsCodeAndHidesCauseOnEveryOrigin(t *testing.T) {
+	cause := errors.New("secret /private/path?ticket=private-token")
+	d := NewDispatcher()
+	if _, err := d.Register(&publicFailureApp{errorsx.Public("remote_capacity", "All command slots are busy. Wait and retry.", cause)}, RegisterOptions{Package: "main", TypeName: "App"}); err != nil {
+		t.Fatal(err)
+	}
+	method, _ := resolveLoopback(d, 0, "Fail")
+	for _, local := range []bool{false, true} {
+		_, frame := d.InvokeForOrigin(context.Background(), method, nil, local)
+		if frame == nil || frame.Code != "remote_capacity" || frame.Message != "All command slots are busy. Wait and retry." {
+			t.Fatalf("origin %v: %+v", local, frame)
+		}
 	}
 }

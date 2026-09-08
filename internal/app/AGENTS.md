@@ -1176,7 +1176,10 @@ no periodic peer probes. Refresh only registered, enabled live servers; a
 configuration change during provider startup schedules a refresh after Put.
 Remote jobs use durable request IDs selected before execution. MCP responses
 bound wait and output independently of the job lifetime and retained log tail.
-Validate response options before starting a command. A larger requested output
+Validate response options before starting a command. `app_remote_errors.go`
+adds operation/computer/request context and preserves public wire refusals.
+Unknown network outcomes always retain the request ID and explain same-ID
+recovery; never suggest a new ID merely because a reply was lost. A larger requested output
 budget can reveal retained bytes, never recover output discarded by retention.
 
 Enabling first verifies the authenticated peer's identity, protocol, command

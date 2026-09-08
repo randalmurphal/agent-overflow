@@ -705,9 +705,13 @@ become a 404, or a client that is merely early gets told its credential is dead.
 See `frontend/src/lib/transport/bootstrap.ts` (`BootstrapRejectedError`) and
 `wsClient.ts` (`enterCredentialDead`).
 
-**A method error's TEXT does not survive the wire for a non-loopback
-caller** — it is replaced with `method failed (id: <cid>)` and the prose
-goes to the server log. So a client-side check that reads an error
+**Unclassified method-error text is private for non-loopback callers** —
+it is replaced with `method failed (id: <cid>)` and the prose goes to the
+server log. Expected refusals use `errorsx.Public(code, message, cause)`:
+only the reviewed code/message crosses the wire, including through wrappers;
+the cause remains available to `errors.Is/As`. Never mark raw filesystem,
+network, database, or credential errors public. Public messages must explain
+recovery without implying a failed reply means a command did not execute. So a client-side check that reads an error
 MESSAGE to classify a failure works on the desktop and silently does
 nothing over the network. Anything a client must branch on gets a stable
 CODE instead (`frame.go`), and the method wraps the matching sentinel:

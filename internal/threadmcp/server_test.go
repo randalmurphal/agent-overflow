@@ -2,6 +2,7 @@ package threadmcp
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -67,5 +68,23 @@ func TestCapabilitiesRotateAndCloseCannotReopen(t *testing.T) {
 	}
 	if _, err := server.RegisterThread("thread", "third"); err == nil {
 		t.Fatal("closed server reopened")
+	}
+}
+
+func TestArgumentErrorsNameTheFieldWithoutEchoingValues(t *testing.T) {
+	for _, tc := range []struct{ raw, want string }{
+		{`{"count":"secret-value"}`, `"count" must be an integer`},
+		{`{"typo":"secret-value"}`, `Unknown argument "typo"`},
+		{`null`, `must be a JSON object`},
+		{`{"count":`, `Invalid argument JSON`},
+		{`{} {}`, `extra JSON`},
+	} {
+		var args struct {
+			Count int `json:"count"`
+		}
+		err := DecodeArgs(json.RawMessage(tc.raw), &args)
+		if err == nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "secret-value") {
+			t.Fatalf("%s: %v", tc.raw, err)
+		}
 	}
 }

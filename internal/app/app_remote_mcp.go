@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/gitapp"
 	"agent-overflow/internal/mcpapp"
 	"agent-overflow/internal/mcpstatus"
@@ -78,7 +79,7 @@ func (a *App) remoteMCPContext(ctx context.Context, threadID string) (context.Co
 		return nil, err
 	}
 	if !ok || (scope.IsPhase() && !scope.HasGrant("remote-commands")) {
-		return nil, errors.New("this conversation cannot use remote commands")
+		return nil, errorsx.Public("remote_permission_required", "This conversation does not have permission to use remote commands. Check its workflow grants and enable ao-remote-tools in the MCP menu.", nil)
 	}
 	return transport.WithCallerScope(ctx, scope), nil
 }
@@ -86,12 +87,12 @@ func (a *App) remoteMCPContext(ctx context.Context, threadID string) (context.Co
 func (a *App) callRemoteMCP(w http.ResponseWriter, ctx context.Context, req threadmcp.Request, access remoteMCPAccess) {
 	live, ok := a.sessionManager().get(access.ThreadID)
 	if !ok || live.Token != access.SessionToken {
-		threadmcp.WriteToolError(w, req.ID, errors.New("agent session is no longer active"))
+		threadmcp.WriteToolError(w, req.ID, errors.New("The agent session is no longer active. Resume the conversation before using remote tools. Accepted remote jobs keep running."))
 		return
 	}
 	ctx, err := a.remoteMCPContext(ctx, access.ThreadID)
 	if err != nil {
-		threadmcp.WriteToolError(w, req.ID, err)
+		threadmcp.WriteToolError(w, req.ID, remoteOperationError("authorize", "", "", err))
 		return
 	}
 	call, err := threadmcp.DecodeToolCall(req.Params)
@@ -187,7 +188,7 @@ var remoteToolDefinitions = []map[string]any{
 		"project_id":      map[string]any{"type": "string", "description": "Registered project ID on that destination."},
 		"workspace_path":  map[string]any{"type": "string", "description": "Optional registered workspace on the destination; defaults to the project checkout."},
 		"request_id":      map[string]any{"type": "string", "format": "uuid", "description": "New UUID for this command; reuse for retries."},
-		"argv":            map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string"}},
+		"argv":            map[string]any{"type": "array", "minItems": 1, "maxItems": 256, "description": "Executable plus arguments, at most 64 KiB total. For larger commands, save and invoke a script on the destination.", "items": map[string]any{"type": "string"}},
 		"timeout_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": remotejobs.MaxTimeoutSeconds, "default": 3600},
 	}, "computer_id", "project_id", "request_id", "argv"),
 	remoteTool("remote_status", "Read a remote command receipt and retained output. Use the original computer and request IDs after a disconnect or lost reply. Only this conversation's commands are accessible, including after destination opt-out.", map[string]any{"computer_id": map[string]any{"type": "string"}, "request_id": map[string]any{"type": "string", "format": "uuid"}}, "computer_id", "request_id"),

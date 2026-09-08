@@ -1,6 +1,7 @@
 package gitapp
 
 import (
+	"agent-overflow/internal/errorsx"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -48,7 +49,7 @@ func (s *Service) ResolveWorkspace(ref WorkspaceRef) (project string, workspace 
 		return project, project, nil
 	}
 	if !isCheckoutOf(workspace, project) {
-		return "", "", fmt.Errorf("resolve workspace: %q is not a workspace of project %s", workspace, project)
+		return "", "", errorsx.Public("workspace_not_registered", "The selected path is not the project root or one of its worktrees. Choose a workspace registered with this project on the destination.", fmt.Errorf("resolve workspace: %q is not a workspace of project %s", workspace, project))
 	}
 	return project, gitops.CanonicalPath(workspace), nil
 }

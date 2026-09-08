@@ -5,15 +5,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/loopback"
 	"github.com/google/uuid"
 )
@@ -316,13 +319,43 @@ func DecodeArgs(raw json.RawMessage, target any) error {
 	if len(raw) == 0 {
 		raw = []byte("{}")
 	}
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || raw[0] != '{' {
+		return fmt.Errorf("Tool arguments must be a JSON object with the fields listed in the tool schema.")
+	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
-		return fmt.Errorf("invalid tool arguments")
+		var mismatch *json.UnmarshalTypeError
+		if errors.As(err, &mismatch) {
+			kind := mismatch.Type.Kind()
+			expected := kind.String()
+			switch kind {
+			case reflect.Int, reflect.Int64:
+				expected = "an integer"
+			case reflect.Float64:
+				expected = "a number"
+			case reflect.String:
+				expected = "a string"
+			case reflect.Bool:
+				expected = "a boolean"
+			case reflect.Slice, reflect.Array:
+				expected = "an array"
+			case reflect.Struct, reflect.Map:
+				expected = "an object"
+			}
+			return fmt.Errorf("Argument %q must be %s. Check the tool schema.", mismatch.Field, expected)
+		}
+		if field, ok := strings.CutPrefix(err.Error(), "json: unknown field "); ok {
+			if len(field) > 128 {
+				field = field[:128] + "…"
+			}
+			return fmt.Errorf("Unknown argument %s. Use only fields listed in the tool schema.", field)
+		}
+		return fmt.Errorf("Invalid argument JSON. Supply one object matching the tool schema.")
 	}
 	if err := ensureJSONEOF(decoder); err != nil {
-		return fmt.Errorf("invalid tool arguments")
+		return fmt.Errorf("Tool arguments contain extra JSON. Supply exactly one object.")
 	}
 	return nil
 }
@@ -348,7 +381,11 @@ func writeRPC(w http.ResponseWriter, status int, value any) {
 }
 
 func WriteToolError(w http.ResponseWriter, id json.RawMessage, err error) {
-	WriteResult(w, id, map[string]any{"isError": true, "content": []map[string]any{{"type": "text", "text": err.Error()}}})
+	message := err.Error()
+	if code, safe, ok := errorsx.PublicDetails(err); ok {
+		message = "[" + code + "] " + safe
+	}
+	WriteResult(w, id, map[string]any{"isError": true, "content": []map[string]any{{"type": "text", "text": message}}})
 }
 func WriteToolJSON(w http.ResponseWriter, id json.RawMessage, value any) {
 	data, err := json.Marshal(value)

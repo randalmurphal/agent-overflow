@@ -10,12 +10,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
 	"time"
 
 	"agent-overflow/internal/entityid"
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/store"
 )
@@ -83,23 +86,40 @@ func ProcessRunner(environment func() []string) Run {
 	}
 }
 
-func validate(request Request) error {
-	if !entityid.Valid(request.ID) || !entityid.Valid(request.SourceThreadID) || len(request.Argv) == 0 || len(request.Argv) > 256 ||
-		request.Argv[0] == "" || request.TimeoutSeconds < 1 || request.TimeoutSeconds > MaxTimeoutSeconds {
-		return errors.New("remote command: provide request and thread UUIDs, argv, and a timeout between 1 second and 7 days")
+// Validate is shared by the source and destination; malformed requests never
+// need a network round trip, and a destination still validates every caller.
+func Validate(request Request) error {
+	message := ""
+	switch {
+	case !entityid.Valid(request.ID):
+		message = "request_id must be a UUID chosen before calling remote_run. Reuse it only for an identical retry."
+	case !entityid.Valid(request.SourceThreadID):
+		message = "The source conversation identity is invalid. Reopen the conversation before running a command."
+	case len(request.Argv) == 0 || request.Argv[0] == "":
+		message = "argv must contain an executable followed by its arguments. Shell syntax requires an explicit shell such as sh -c."
+	case len(request.Argv) > 256:
+		message = "argv allows at most 256 entries. Put a larger command in a script on the destination."
+	case request.TimeoutSeconds < 1 || request.TimeoutSeconds > MaxTimeoutSeconds:
+		message = "timeout_seconds must be between 1 and 604800 (seven days). It limits the job, independently of wait_seconds."
+	}
+	if message != "" {
+		return errorsx.Public("remote_invalid_request", message, nil)
 	}
 	bytes := 0
 	for _, arg := range request.Argv {
 		bytes += len(arg)
-		if strings.ContainsRune(arg, 0) || bytes > 64<<10 {
-			return errors.New("remote command: argv exceeds 64 KiB or contains a NUL byte")
+		if strings.ContainsRune(arg, 0) {
+			return errorsx.Public("remote_invalid_request", "argv cannot contain NUL bytes. Remove them before retrying.", nil)
+		}
+		if bytes > 64<<10 {
+			return errorsx.Public("remote_invalid_request", "argv exceeds 64 KiB. Save a script on the destination and invoke its path instead.", nil)
 		}
 	}
 	return nil
 }
 
 func (m *Manager) Start(ownerID, projectID, workspace string, request Request) (store.RemoteJob, error) {
-	if err := validate(request); err != nil {
+	if err := Validate(request); err != nil {
 		return store.RemoteJob{}, err
 	}
 	request.Argv = append([]string(nil), request.Argv...)
@@ -112,14 +132,14 @@ func (m *Manager) Start(ownerID, projectID, workspace string, request Request) (
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed || m.ctx.Err() != nil {
-		return store.RemoteJob{}, errors.New("remote command: this computer is shutting down")
+		return store.RemoteJob{}, errorsx.Public("remote_shutting_down", "The destination is shutting down. Check the existing receipt after it reconnects, then retry with the same request_id if needed.", nil)
 	}
 	// Capacity refuses NEW work only. Retrying an accepted command always
 	// resolves its receipt, even when all process slots are occupied.
 	previous, err := m.store.GetRemoteJob(request.ID)
 	if err == nil {
 		if previous.OwnerID != ownerID || previous.Fingerprint != fingerprint {
-			return store.RemoteJob{}, errors.New("remote command: request ID already belongs to another command")
+			return store.RemoteJob{}, errorsx.Public("remote_request_conflict", "This request_id already belongs to a different command. Check its status; retry only with the original project, workspace, argv and timeout. Use a new ID only for intentionally separate work.", nil)
 		}
 		return m.snapshotLocked(previous), nil
 	}
@@ -127,7 +147,7 @@ func (m *Manager) Start(ownerID, projectID, workspace string, request Request) (
 		return store.RemoteJob{}, err
 	}
 	if len(m.jobs) >= MaxActive {
-		return store.RemoteJob{}, fmt.Errorf("remote command: all %d command slots are busy", MaxActive)
+		return store.RemoteJob{}, errorsx.Public("remote_capacity", fmt.Sprintf("All %d remote command slots are busy. Wait for a job to finish or cancel one of this conversation’s jobs, then retry with the same request_id.", MaxActive), nil)
 	}
 	receipt, fresh, err := m.store.AcceptRemoteJob(store.RemoteJob{ID: request.ID, OwnerID: ownerID, Fingerprint: fingerprint,
 		SourceThreadID: request.SourceThreadID, ProjectID: projectID, Workspace: workspace})
@@ -146,16 +166,27 @@ func (m *Manager) execute(ctx context.Context, job *liveJob, argv []string) {
 	defer m.wg.Done()
 	defer job.cancel()
 	code, err := m.run(ctx, job.receipt.Workspace, argv, job.tail)
+	if err != nil {
+		log.Printf("remote command %s failed: %v", job.receipt.ID, err)
+	}
 	m.mu.Lock()
 	receipt := job.receipt
 	receipt.State, receipt.ExitCode, receipt.FinishedAt = "succeeded", code, time.Now().UnixMilli()
 	if err != nil || code != 0 {
 		receipt.State = "failed"
 	}
-	if err != nil {
-		receipt.Error = err.Error()
-		if len(receipt.Error) > 4096 {
-			receipt.Error = receipt.Error[:4096]
+	if receipt.State == "failed" {
+		switch {
+		case errors.Is(err, exec.ErrNotFound):
+			receipt.Error = "The executable was not found on the destination's PATH. Install it there or use its absolute path."
+		case errors.Is(err, os.ErrNotExist):
+			receipt.Error = "The executable or workspace no longer exists on the destination. Check its path and registered project before retrying."
+		case errors.Is(err, os.ErrPermission):
+			receipt.Error = "The destination denied permission to start the command. Check executable and workspace permissions."
+		case code >= 0:
+			receipt.Error = fmt.Sprintf("The command exited with code %d. Inspect its output for the failure details.", code)
+		default:
+			receipt.Error = "The command could not start or was terminated by the destination. Check the executable, workspace availability, and destination logs."
 		}
 	}
 	if ctx.Err() != nil {
@@ -172,6 +203,7 @@ func (m *Manager) execute(ctx context.Context, job *liveJob, argv []string) {
 	m.mu.Unlock()
 	// A transient writer failure retains the completed result and its slot.
 	// It must never leave a process reported as running or lose its receipt.
+	reportedSaveFailure := false
 	for {
 		err := m.store.FinishRemoteJob(receipt)
 		if err == nil {
@@ -181,8 +213,12 @@ func (m *Manager) execute(ctx context.Context, job *liveJob, argv []string) {
 			return
 		}
 		m.mu.Lock()
-		job.receipt.Error = "Could not save command result: " + err.Error()
+		job.receipt.Error = "The command finished, but the destination could not save its result and is retrying. Keep the request_id and check status; do not run the command again."
 		m.mu.Unlock()
+		if !reportedSaveFailure {
+			log.Printf("remote command %s result persistence failed: %v", receipt.ID, err)
+			reportedSaveFailure = true
+		}
 		select {
 		case <-m.ctx.Done():
 			return
@@ -203,11 +239,14 @@ func (m *Manager) Get(ownerID, id string) (store.RemoteJob, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	receipt, err := m.store.GetRemoteJob(id)
+	if errors.Is(err, store.ErrRemoteJobNotFound) {
+		return store.RemoteJob{}, errorsx.Public("remote_job_not_found", "No command receipt was found for this request_id on this computer. Check the original computer and request ID. After a lost reply, retry only the identical request with that same ID.", err)
+	}
 	if err != nil {
 		return store.RemoteJob{}, err
 	}
 	if receipt.OwnerID != ownerID {
-		return store.RemoteJob{}, errors.New("remote command: this command belongs to another device")
+		return store.RemoteJob{}, errorsx.Public("remote_wrong_owner", "This command belongs to another paired device. Read or cancel it from the device that submitted it.", nil)
 	}
 	return m.snapshotLocked(receipt), nil
 }
@@ -216,11 +255,14 @@ func (m *Manager) Cancel(ownerID, id string) (store.RemoteJob, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	receipt, err := m.store.GetRemoteJob(id)
+	if errors.Is(err, store.ErrRemoteJobNotFound) {
+		return store.RemoteJob{}, errorsx.Public("remote_job_not_found", "No command receipt was found for this request_id on this computer. Check the original computer and request ID. After a lost reply, retry only the identical request with that same ID.", err)
+	}
 	if err != nil {
 		return store.RemoteJob{}, err
 	}
 	if receipt.OwnerID != ownerID {
-		return store.RemoteJob{}, errors.New("remote command: this command belongs to another device")
+		return store.RemoteJob{}, errorsx.Public("remote_wrong_owner", "This command belongs to another paired device. Read or cancel it from the device that submitted it.", nil)
 	}
 	if live := m.jobs[id]; live != nil && !live.finished {
 		live.cancel()

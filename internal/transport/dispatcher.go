@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"agent-overflow/internal/errorsx"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -469,6 +470,9 @@ func (d *Dispatcher) processResults(m *Method, results []reflect.Value, exposeEr
 				// and a remote caller told "method failed" here would be
 				// told nothing it could act on.
 				return nil, frame
+			}
+			if code, message, ok := errorsx.PublicDetails(methodErr); ok {
+				return nil, &FrameError{Code: code, Message: message}
 			}
 			if errors.Is(methodErr, sql.ErrNoRows) {
 				// Missing history is ordinary application state. Preserve that

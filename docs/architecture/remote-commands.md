@@ -79,6 +79,22 @@ After a destination restart, unfinished receipts say interrupted and are never
 automatically rerun. Buffered output may be lost in a crash; the acceptance
 receipt survives. Old output can expire while its receipt remains.
 
+## Errors and recovery
+
+Expected refusals carry stable codes and actionable prose across the paired
+connection: invalid requests, access/ownership refusals, unavailable projects
+or workspaces, missing receipts, occupied command slots, and conflicting IDs.
+MCP replies include the operation and valid computer/request IDs. Argument
+errors identify the field without echoing its value. Raw internal errors stay
+in host logs behind a reference; they are never marked as public failures.
+
+A failed network reply does not establish whether a command ran. Inspect its
+original receipt, then retry identical arguments with the same ID if needed.
+A cancellation reply lost in transit likewise requires status verification.
+An older destination may still redact its errors; the source explains that
+limitation and preserves the destination's reference instead of guessing why
+it refused. Detailed destination errors require updating that destination.
+
 ## Maintenance and verification
 
 `internal/remotejobs` owns processes and durable receipts; `attachedbackends`

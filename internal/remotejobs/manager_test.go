@@ -2,8 +2,10 @@ package remotejobs
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -196,5 +198,31 @@ func TestInvalidRequestsNeverExecute(t *testing.T) {
 		if _, err := m.Start("owner", uuid.NewString(), t.TempDir(), r); err == nil {
 			t.Fatal("invalid request accepted")
 		}
+	}
+}
+
+func TestCommandFailureMessagesDescribeRecoveryWithoutPrivateCauses(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		code int
+		err  error
+		want string
+	}{
+		{"missing executable", -1, &exec.Error{Name: "private-name", Err: exec.ErrNotFound}, "destination's PATH"},
+		{"permissions", -1, &os.PathError{Op: "exec", Path: "/private/path", Err: os.ErrPermission}, "permissions"},
+		{"exit", 7, errors.New("private process detail"), "code 7"},
+		{"start failure", -1, errors.New("private process detail"), "workspace availability"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, _ := manager(t, func(context.Context, string, []string, io.Writer) (int, error) { return tc.code, tc.err })
+			r := request()
+			if _, err := m.Start("owner", uuid.NewString(), t.TempDir(), r); err != nil {
+				t.Fatal(err)
+			}
+			result := settled(t, m, r.ID)
+			if result.State != "failed" || !strings.Contains(result.Error, tc.want) || strings.Contains(result.Error, "private") {
+				t.Fatalf("%+v", result)
+			}
+		})
 	}
 }

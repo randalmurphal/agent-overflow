@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -9,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/entityid"
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/gitapp"
 	"agent-overflow/internal/remotejobs"
@@ -62,14 +65,20 @@ func (a *App) remoteCommandOwner(ctx context.Context) (string, error) {
 func (a *App) RemoteCommandStart(ctx context.Context, workspace gitapp.WorkspaceRef, request RemoteCommandRequest) (RemoteCommand, error) {
 	endAdmission, admitErr := a.workAdmission.begin(ctx)
 	if admitErr != nil {
-		return RemoteCommand{}, admitErr
+		return RemoteCommand{}, errorsx.Public("remote_not_accepted", "The destination could not process this attempt because it stopped or the request ended. Check status, then retry the identical request with the same request_id when connected.", admitErr)
 	}
 	defer endAdmission()
 
 	if a.remoteJobs == nil {
-		return RemoteCommand{}, errors.New("remote commands are not ready")
+		return RemoteCommand{}, errorsx.Public("remote_not_ready", "Remote commands are not ready on this computer. Wait for startup to finish and retry with the same request_id.", nil)
+	}
+	if !entityid.Valid(workspace.ProjectID) {
+		return RemoteCommand{}, errorsx.Public("remote_invalid_project", "project_id must be a destination project UUID from remote_computers.", nil)
 	}
 	_, cwd, err := a.gitApplication().ResolveWorkspace(workspace)
+	if errors.Is(err, sql.ErrNoRows) {
+		return RemoteCommand{}, errorsx.Public("remote_project_not_found", "The project no longer exists on the destination. Refresh remote_computers and choose one of its registered projects.", err)
+	}
 	if err != nil {
 		return RemoteCommand{}, err
 	}
@@ -84,7 +93,7 @@ func (a *App) RemoteCommandStart(ctx context.Context, workspace gitapp.Workspace
 //ao:route selected
 func (a *App) RemoteCommandStatus(ctx context.Context, id string) (RemoteCommand, error) {
 	if a.remoteJobs == nil {
-		return RemoteCommand{}, errors.New("remote commands are not ready")
+		return RemoteCommand{}, errorsx.Public("remote_not_ready", "Remote commands are not ready on this computer. Wait for startup to finish and retry with the same request_id.", nil)
 	}
 	owner, err := a.remoteCommandOwner(ctx)
 	if err != nil {
@@ -97,7 +106,7 @@ func (a *App) RemoteCommandStatus(ctx context.Context, id string) (RemoteCommand
 //ao:route selected
 func (a *App) RemoteCommandCancel(ctx context.Context, id string) (RemoteCommand, error) {
 	if a.remoteJobs == nil {
-		return RemoteCommand{}, errors.New("remote commands are not ready")
+		return RemoteCommand{}, errorsx.Public("remote_not_ready", "Remote commands are not ready on this computer. Wait for startup to finish and retry with the same request_id.", nil)
 	}
 	owner, err := a.remoteCommandOwner(ctx)
 	if err != nil {
@@ -199,13 +208,13 @@ func (a *App) SetAgentComputerEnabled(ctx context.Context, id string, enabled bo
 func (a *App) remoteAgentScope(ctx context.Context) (transport.CallerScope, error) {
 	scope, ok := transport.CallerScopeFrom(ctx)
 	if !ok {
-		return scope, errors.New("this command must originate in an Agent Overflow agent session")
+		return scope, errorsx.Public("remote_session_required", "Remote tools require an active Agent Overflow agent session. Reopen the conversation and try again.", nil)
 	}
 	if scope.IsPhase() && !scope.HasGrant("remote-commands") {
-		return scope, errors.New("remote-commands grant required")
+		return scope, errorsx.Public("remote_grant_required", "This workflow phase does not grant remote-commands. Ask the user to update the workflow definition before starting a new phase.", nil)
 	}
 	if !a.remoteMCPServer().ThreadEnabled(scope.ThreadID) {
-		return scope, errors.New("remote tools are disabled for this conversation")
+		return scope, errorsx.Public("remote_tools_disabled", "Remote tools are disabled for this conversation. The user can enable ao-remote-tools in the composer’s MCP menu.", nil)
 	}
 	if a.backends == nil {
 		return scope, errNoBackendProfiles
@@ -225,7 +234,7 @@ func (a *App) AgentRemoteComputers(ctx context.Context) ([]AgentComputer, error)
 	}
 	rows, err := a.ListAgentComputers()
 	if err != nil {
-		return nil, err
+		return nil, remoteOperationError("discover", "", "", err)
 	}
 	return a.probeAgentComputers(ctx, rows), nil
 }
@@ -253,7 +262,7 @@ func (a *App) probeAgentComputers(ctx context.Context, rows []AgentComputer) []A
 			probe, cancel := context.WithTimeout(ctx, 3*time.Second)
 			defer cancel()
 			if err := a.backends.CallAgentPeer(probe, out[i].ID, "RemoteCommandProjects", &out[i].Projects); err != nil {
-				out[i].Error = err.Error()
+				out[i].Error = remoteErrorText(remoteOperationError("discover", out[i].ID, "", err))
 			}
 		}()
 	}
@@ -276,11 +285,17 @@ func (a *App) AgentRemoteStart(ctx context.Context, input AgentRemoteRequest) (R
 	}
 	// The authenticated source session owns this provenance, not argv/JSON.
 	input.Request.SourceThreadID = scope.ThreadID
+	if err := remotejobs.Validate(input.Request); err != nil {
+		return RemoteCommand{}, remoteOperationError("run", input.ComputerID, input.Request.ID, err)
+	}
+	if !entityid.Valid(input.Workspace.ProjectID) {
+		return RemoteCommand{}, errorsx.Public("remote_invalid_project", "project_id must be a destination project UUID from remote_computers.", nil)
+	}
 	call, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	var result RemoteCommand
 	err = a.backends.CallAgentPeer(call, input.ComputerID, "RemoteCommandStart", &result, input.Workspace, input.Request)
-	return result, err
+	return result, remoteOperationError("run", input.ComputerID, input.Request.ID, err)
 }
 
 //ao:scope terminal:operate
@@ -300,17 +315,24 @@ func (a *App) agentRemoteResult(ctx context.Context, computerID, id string, canc
 	if err != nil {
 		return RemoteCommand{}, err
 	}
+	if !entityid.Valid(id) {
+		return RemoteCommand{}, errorsx.Public("remote_invalid_request", "request_id must be the UUID returned for the original command.", nil)
+	}
+	action := "status"
+	if cancelJob {
+		action = "cancel"
+	}
 	call, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	var result RemoteCommand
 	if err = a.backends.CallAgentPeer(call, computerID, "RemoteCommandStatus", &result, id); err != nil {
-		return result, err
+		return result, remoteOperationError(action, computerID, id, err)
 	}
 	if result.SourceThreadID != scope.ThreadID {
-		return RemoteCommand{}, errors.New("this command belongs to another conversation")
+		return RemoteCommand{}, errorsx.Public("remote_wrong_conversation", "This command belongs to another conversation. Read or cancel it from the conversation that submitted it.", nil)
 	}
 	if cancelJob {
 		err = a.backends.CallAgentPeer(call, computerID, "RemoteCommandCancel", &result, id)
 	}
-	return result, err
+	return result, remoteOperationError(action, computerID, id, err)
 }

@@ -24,3 +24,6 @@ execution permission check. Empty tool lists serialize as arrays, never null.
 Browser protocol/security tests exercise this transport through its real
 adapter. Remote application tests additionally cross it and a real paired TLS
 connection, with isolated stores and injected command runners. No real providers.
+
+Argument errors identify the field/type without echoing supplied values.
+WriteToolError preserves errorsx.Public code/message and never its private cause.

@@ -8,6 +8,7 @@ import (
 	"agent-overflow/internal/atomicfile"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/entityid"
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/transport"
 )
 
@@ -80,6 +81,9 @@ func (m *Manager) writeAgentAccess(id string, enabled bool) error {
 // EXISTING rotating credential owner. It neither retries mutations nor copies
 // a frontend credential. Each call rechecks opt-in, identity and capability.
 func (m *Manager) CallAgentPeer(ctx context.Context, id, method string, result any, params ...any) error {
+	if !entityid.Valid(id) {
+		return errorsx.Public("remote_invalid_computer", "computer_id must be a computer UUID from remote_computers.", nil)
+	}
 	switch method {
 	case "RemoteCommandStart", "RemoteCommandStatus", "RemoteCommandCancel", "RemoteCommandProjects":
 	default:
@@ -90,7 +94,7 @@ func (m *Manager) CallAgentPeer(ctx context.Context, id, method string, result a
 		return err
 	}
 	if !access[id] && method != "RemoteCommandStatus" && method != "RemoteCommandCancel" {
-		return errors.New("agent commands are not enabled for this computer")
+		return errorsx.Public("remote_access_disabled", "Agent commands are not enabled for this computer. Ask the user to enable the destination in Remote access → Agent access on the originating computer.", nil)
 	}
 	return m.callAgentPeer(ctx, id, method, result, params...)
 }
@@ -104,10 +108,21 @@ func (m *Manager) CheckAgentPeer(ctx context.Context, id string) error {
 func (m *Manager) callAgentPeer(ctx context.Context, id, method string, result any, params ...any) error {
 	held, err := m.carrier(id)
 	if err != nil {
-		return errors.New("this computer is no longer paired")
+		if errors.Is(err, deviceclient.ErrNoSession) {
+			return errorsx.Public("remote_not_paired", "This computer is no longer paired. Reconnect it in Remote access before retrying; keep existing request IDs.", err)
+		}
+		return errorsx.Public("remote_pairing_unavailable", "The originating computer could not load this pairing. Check its Remote access settings and local configuration file permissions before retrying.", err)
 	}
 	rpc, err := held.openRPC(ctx, transport.CapabilityRemoteCommands)
 	if err != nil {
+		switch {
+		case errors.Is(err, errUnsupportedPeerOperation):
+			return errorsx.Public("remote_unsupported", "This destination version does not support remote commands. Update Agent Overflow on that computer.", err)
+		case errors.Is(err, deviceclient.ErrAwaitingConfirmation):
+			return errorsx.Public("remote_pairing_pending", "Pairing is waiting for approval. Confirm the matching verification number on the destination computer.", err)
+		case errors.Is(err, deviceclient.ErrSessionEnded), errors.Is(err, deviceclient.ErrNoSession):
+			return errorsx.Public("remote_pairing_expired", "The destination no longer accepts this pairing. Reconnect it in Remote access; keep existing request IDs.", err)
+		}
 		return err
 	}
 	defer rpc.Close()

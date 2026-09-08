@@ -24,3 +24,8 @@ record cannot be. A lost frontend never cancels the process.
 Shutdown cancels process groups and joins them before SQLite closes. A failed
 completion write keeps the result and its bounded slot until persistence works
 or the backend stops. Remote updates must count these slots as active work.
+
+Expected refusals use errorsx.Public with stable remote_* codes and recovery
+instructions, so paired callers receive actionable errors. Process/persistence
+failures retain private causes only in host logs; receipts explain the outcome
+and safe next action. A failed completion write must not suggest rerunning.

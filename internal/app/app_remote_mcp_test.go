@@ -181,6 +181,21 @@ func TestRemoteMCPCommandsCrossPairedTLSAndRespectOwnership(t *testing.T) {
 	if starts.Load() != 1 {
 		t.Fatal("retry executed twice")
 	}
+	// Refusals must survive the real paired wire with useful public prose.
+	conflict := map[string]any{"computer_id": peer.ID, "project_id": project.ID, "request_id": id, "argv": []string{"changed-command"}}
+	failure := string(remoteMCPCall(t, endpoint, "remote_run", conflict, true))
+	if !strings.Contains(failure, "remote_request_conflict") || !strings.Contains(failure, "original project") {
+		t.Fatal(failure)
+	}
+	missing := string(remoteMCPCall(t, endpoint, "remote_status", map[string]any{"computer_id": peer.ID, "request_id": uuid.NewString()}, true))
+	if !strings.Contains(missing, "remote_job_not_found") || !strings.Contains(missing, "same ID") {
+		t.Fatal(missing)
+	}
+	badWorkspace := map[string]any{"computer_id": peer.ID, "project_id": project.ID, "request_id": uuid.NewString(), "argv": []string{"test-helper"}, "workspace_path": t.TempDir()}
+	failure = string(remoteMCPCall(t, endpoint, "remote_run", badWorkspace, true))
+	if !strings.Contains(failure, "workspace_not_registered") || strings.Contains(failure, badWorkspace["workspace_path"].(string)) {
+		t.Fatal(failure)
+	}
 	other, otherToken := remoteMCPThread(t, source, string(provider.Claude))
 	otherEndpoint := remoteMCPEndpoint(t, source, other, otherToken)
 	remoteMCPCall(t, otherEndpoint, "remote_cancel", args, true)
