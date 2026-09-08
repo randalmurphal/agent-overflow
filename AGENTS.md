@@ -285,3 +285,19 @@ scope conversation first.
   surfaces, though core functionality has diverged) doesn't implement
   one either. If a "course-correct mid-turn" primitive is wanted, it
   becomes its own feature with its own design.
+
+- **Where a computer's nickname lives.** Two nickname systems exist for
+  an attached computer: the Go profile nickname (`RenameBackend`, carried
+  host-wide by the bootstrap manifest; today written only over the wire,
+  the harness e2e among its callers) and the per-frontend
+  `computer-nicknames` map (the only one the UI writes, via
+  `ComputerNickname`). Deleting the profile one is the clean cut, but
+  the spec says both "visible only on the frontend where you set it" and
+  "existing desktop profile nicknames remain readable", so whether a
+  legacy profile nickname must stay visible to `--connect` windows and
+  other webviews on that host after an upgrade is an owner ruling nobody
+  has made. Until it is made, neither system is removed. Held with it,
+  for the same reason: showing the Device name field once (on Allow
+  device access only) and relabeling the per-row "Nickname on this
+  device" control to "Rename", which reads wrong while two nicknames can
+  apply to one row.
