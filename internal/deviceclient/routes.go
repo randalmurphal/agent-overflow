@@ -142,10 +142,13 @@ func (t *routeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	out.URL.Scheme, out.URL.Host, out.Host = route.target.Scheme, route.target.Host, ""
 	response, err := route.transport.RoundTrip(out)
 	// A proxy can serve HTTP while dropping the socket upgrade. Authentication
-	// refusals still belong to renewal; other failed upgrades invalidate this
-	// route so a reconnect can use a healthy listener for the same computer.
+	// refusals still belong to renewal — and the upgrade's own refusal is the
+	// unfingerprintable 404 a spent ticket or a dead session gets, which is
+	// not a broken route either. Other failed upgrades invalidate this route
+	// so a reconnect can use a healthy listener for the same computer.
 	badUpgrade := response != nil && strings.EqualFold(req.Header.Get("Upgrade"), "websocket") &&
-		response.StatusCode != http.StatusSwitchingProtocols && response.StatusCode != http.StatusUnauthorized && response.StatusCode != http.StatusForbidden
+		response.StatusCode != http.StatusSwitchingProtocols && response.StatusCode != http.StatusUnauthorized &&
+		response.StatusCode != http.StatusForbidden && response.StatusCode != http.StatusNotFound
 	if (err != nil && !errors.Is(req.Context().Err(), context.Canceled)) || (response != nil && response.StatusCode >= 500) || badUpgrade {
 		t.mu.Lock()
 		if t.current == route {
@@ -193,6 +196,14 @@ func (t *routeTransport) choose(ctx context.Context) (*dialRoute, error) {
 	}
 }
 
+// invalidate makes the next request select a route again, at once: a repair
+// just added an address worth preferring over whatever is current.
+func (t *routeTransport) invalidate() {
+	t.mu.Lock()
+	t.failed, t.retryAt = true, time.Time{}
+	t.mu.Unlock()
+}
+
 func (t *routeTransport) selectRoute(flight *routeSelection, candidates []*dialRoute, failed *dialRoute, revision uint64) {
 	// A cancelled waiter cannot cancel another request's selection. Work
 	// remains bounded to five credential-free probes and one connection deadline.
@@ -201,35 +212,7 @@ func (t *routeTransport) selectRoute(flight *routeSelection, candidates []*dialR
 	t.owner.mu.Lock()
 	backendID := t.owner.session.BackendID
 	t.owner.mu.Unlock()
-	results := make(chan *dialRoute, len(candidates))
-	for _, candidate := range candidates {
-		go func() {
-			if verifyComputerRoute(ctx, candidate, backendID) != nil {
-				results <- nil
-			} else {
-				results <- candidate
-			}
-		}()
-	}
-	var fallback *dialRoute
-	for remaining := len(candidates); remaining > 0; remaining-- {
-		select {
-		case route := <-results:
-			if route == failed {
-				fallback = route
-			} else if route != nil {
-				flight.route = route
-			}
-		case <-ctx.Done():
-			remaining = 1
-		}
-		if flight.route != nil {
-			break
-		}
-	}
-	if flight.route == nil {
-		flight.route = fallback
-	}
+	flight.route = firstVerifiedRoute(ctx, candidates, backendID, failed)
 	if flight.route == nil {
 		flight.err = errors.New("deviceclient: no verified route to this computer is reachable")
 	}
@@ -265,30 +248,81 @@ func (t *routeTransport) selectRoute(flight *routeSelection, candidates []*dialR
 	t.mu.Unlock()
 }
 
+// firstVerifiedRoute probes every candidate at once and answers the first
+// that verifies, without waiting for a dead LAN or a cold VPN alternative.
+// `avoid` is the route that just failed: it is answered only as the fallback
+// when nothing else verifies. Nil when none does, or the context ends first.
+func firstVerifiedRoute(ctx context.Context, candidates []*dialRoute, backendID string, avoid *dialRoute) *dialRoute {
+	results := make(chan *dialRoute, len(candidates))
+	for _, candidate := range candidates {
+		go func() {
+			if verifyComputerRoute(ctx, candidate, backendID) != nil {
+				results <- nil
+			} else {
+				results <- candidate
+			}
+		}()
+	}
+	var fallback *dialRoute
+	for remaining := len(candidates); remaining > 0; remaining-- {
+		select {
+		case route := <-results:
+			if route == nil {
+				continue
+			}
+			if route != avoid {
+				return route
+			}
+			fallback = route
+		case <-ctx.Done():
+			return fallback
+		}
+	}
+	return fallback
+}
+
+func noRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
 func verifyComputerRoute(ctx context.Context, route *dialRoute, backendID string) error {
 	if backendID == "" {
 		return errors.New("computer identity is unavailable")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, route.Endpoint+"/healthz", nil)
+	status, _, body, err := healthProbe(ctx, &http.Client{Transport: route.transport, CheckRedirect: noRedirect}, route.Endpoint)
 	if err != nil {
 		return err
 	}
-	client := &http.Client{Transport: route.transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	if status != http.StatusOK {
+		return fmt.Errorf("computer health answered HTTP %d", status)
+	}
+	return healthIdentity(body, backendID)
+}
+
+// healthProbe is the one credential-free GET /healthz: TLS trust is verified
+// on the way and the bounded body comes back with the status and headers.
+// Route verification and the renewal-support check are both this probe, so
+// neither can send something the other would not.
+func healthProbe(ctx context.Context, client *http.Client, endpoint string) (int, http.Header, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/healthz", nil)
+	if err != nil {
+		return 0, nil, nil, err
+	}
 	response, err := client.Do(req)
 	if err != nil {
-		return err
+		return 0, nil, nil, err
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("computer health answered HTTP %d", response.StatusCode)
-	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, 64*1024+1))
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if err != nil {
-		return err
+		return 0, nil, nil, err
 	}
-	if len(body) > 64*1024 {
-		return errors.New("computer health response is too large")
+	if len(body) > maxResponseBytes {
+		return 0, nil, nil, errors.New("computer health response is too large")
 	}
+	return response.StatusCode, response.Header, body, nil
+}
+
+// healthIdentity checks that a health body names the paired computer.
+func healthIdentity(body []byte, backendID string) error {
 	var health struct {
 		BackendID string `json:"backendId"`
 	}

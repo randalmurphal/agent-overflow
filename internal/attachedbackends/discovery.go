@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,8 +26,12 @@ type DiscoveredComputer struct {
 
 // Discover checks public hints only. No credential, certificate pin or profile
 // is persisted until the separately approved pairing ceremony completes.
+//
+// Overlapping calls share one scan only when they brought the same hints:
+// a tailnet scan can add or drop a candidate between two requests, and the
+// later caller must not be answered from the earlier caller's hints.
 func (m *Manager) Discover(ctx context.Context, extra []DiscoveredComputer) ([]DiscoveredComputer, error) {
-	result := m.discovery.DoChan("nearby", func() (any, error) { return m.discover(context.WithoutCancel(ctx), extra) })
+	result := m.discovery.DoChan(discoveryKey(extra), func() (any, error) { return m.discover(context.WithoutCancel(ctx), extra) })
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -36,6 +41,21 @@ func (m *Manager) Discover(ctx context.Context, extra []DiscoveredComputer) ([]D
 		}
 		return r.Val.([]DiscoveredComputer), nil
 	}
+}
+
+// discoveryKey names a hint set by what the probe reads off it. The name is
+// left out: the probe replaces it with what the computer calls itself.
+func discoveryKey(extra []DiscoveredComputer) string {
+	var key strings.Builder
+	for _, hint := range extra {
+		key.WriteString(hint.BackendID)
+		key.WriteByte(0)
+		key.WriteString(hint.Address)
+		key.WriteByte(0)
+		key.WriteString(hint.Network)
+		key.WriteByte(0)
+	}
+	return key.String()
 }
 
 func (m *Manager) discover(ctx context.Context, extra []DiscoveredComputer) ([]DiscoveredComputer, error) {

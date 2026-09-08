@@ -29,25 +29,11 @@ func SelectPairingRoute(ctx context.Context, backendID string, candidates []comp
 			closeIdleRoute(route)
 		}
 	}()
-	results := make(chan *dialRoute, len(routes))
-	for _, route := range routes {
-		go func() {
-			if verifyComputerRoute(ctx, route, backendID) != nil {
-				results <- nil
-			} else {
-				results <- route
-			}
-		}()
+	if route := firstVerifiedRoute(ctx, routes, backendID, nil); route != nil {
+		return route.Route, nil
 	}
-	for range routes {
-		select {
-		case route := <-results:
-			if route != nil {
-				return route.Route, nil
-			}
-		case <-ctx.Done():
-			return computerroute.Route{}, ctx.Err()
-		}
+	if err := ctx.Err(); err != nil {
+		return computerroute.Route{}, err
 	}
 	return computerroute.Route{}, errors.New("deviceclient: no verified route to this computer is reachable")
 }

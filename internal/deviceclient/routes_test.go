@@ -104,7 +104,9 @@ func TestComputerRoutesDistinguishBrokenUpgradeFromAuthentication(t *testing.T) 
 			if err := routeRequest(client, http.MethodGet, "/next"); err != nil {
 				t.Fatal(err)
 			}
-			wantAlternate := status != http.StatusUnauthorized && status != http.StatusForbidden
+			// A spent ticket and a dead session both answer 404 on the
+			// upgrade; neither is a broken route.
+			wantAlternate := status != http.StatusUnauthorized && status != http.StatusForbidden && status != http.StatusNotFound
 			if (alternateCalls.Load() == 1) != wantAlternate || originalCalls.Load()+alternateCalls.Load() != 1 {
 				t.Fatalf("wrong route after HTTP %d: original %d, alternate %d", status, originalCalls.Load(), alternateCalls.Load())
 			}

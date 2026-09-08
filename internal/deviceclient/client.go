@@ -305,10 +305,6 @@ func (c *Client) Authorize(req *http.Request) error {
 	return nil
 }
 
-// BootstrapURL is the backend's manifest, which a paired device reaches
-// with its own credential rather than with a launch token.
-func (c *Client) BootstrapURL() string { return c.base + bootstrapPath }
-
 // Ticket mints the single-use ticket the WebSocket upgrade names this
 // session with, and is the one call that both rotates and retries.
 //
@@ -433,6 +429,15 @@ func (c *Client) Forget() error {
 	return err
 }
 
+// Retired reports whether this owner can never authorize or write again:
+// the backend refused its session for good, or a replacement now owns the
+// profile. A cache holding one has a miss, not a client.
+func (c *Client) Retired() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.retired
+}
+
 // Retire closes this in-memory owner before a replacement writes the same
 // profile. It preserves the file so a failed new pairing can still recover.
 func (c *Client) Retire() {
@@ -511,35 +516,48 @@ func (c *Client) renewIfStale(ctx context.Context) error {
 	return c.renew(ctx)
 }
 
+// Renew rotates the session once, coalesced with any rotation in flight.
+// A refused manifest is ambiguous the same way a refused ticket is, and
+// this is how a caller that fetched one tells an aged credential from a
+// dead session: a live session rotates and the retried fetch serves, a
+// dead one refuses the rotation and answers ErrSessionEnded.
+func (c *Client) Renew(ctx context.Context) error { return c.renew(ctx) }
+
 // renew coalesces callers in this process. The profile transaction and saved
 // successor also coordinate independent processes; see refresh_recovery.go.
+//
+// The exchange runs detached from the caller that started it. A leader
+// whose own request was cancelled mid-rotation must not abort an exchange
+// the backend may already have committed: every waiter would fail, and the
+// next rotation would present a secret the backend has already spent. The
+// HTTP client's timeout and the profile lock waits keep it finite, and a
+// cancelled caller returns at once while the rotation finishes for the rest.
 func (c *Client) renew(ctx context.Context) error {
 	c.mu.Lock()
 	if c.retired {
 		c.mu.Unlock()
 		return ErrSessionEnded
 	}
-	if flight := c.renewing; flight != nil {
-		c.mu.Unlock()
-		select {
-		case <-flight.done:
-			return flight.err
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+	flight := c.renewing
+	if flight == nil {
+		held := c.session
+		flight = &renewal{done: make(chan struct{})}
+		c.renewing = flight
+		go func() {
+			flight.err = c.rotate(context.WithoutCancel(ctx), held)
+			c.mu.Lock()
+			c.renewing = nil
+			c.mu.Unlock()
+			close(flight.done)
+		}()
 	}
-	held := c.session
-	flight := &renewal{done: make(chan struct{})}
-	c.renewing = flight
 	c.mu.Unlock()
-
-	flight.err = c.rotate(ctx, held)
-
-	c.mu.Lock()
-	c.renewing = nil
-	c.mu.Unlock()
-	close(flight.done)
-	return flight.err
+	select {
+	case <-flight.done:
+		return flight.err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // maxResponseBytes bounds one credential response. These bodies carry a

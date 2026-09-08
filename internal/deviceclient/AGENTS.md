@@ -24,14 +24,22 @@ owns the cross-platform design.
 rechecks the pairing and its current trust inside the profile transaction. A
 delayed check must not restore a certificate replaced by a newer bootstrap.
 Retain a pending renewal unchanged. Failed socket upgrades invalidate a route
-even if that proxy still answers ordinary HTTP; 401/403 remain auth handling.
+even if that proxy still answers ordinary HTTP; 401/403 remain auth handling,
+and so does 404, the upgrade's own answer for a spent ticket or a dead session.
 
 Renewal's shared contract is [session-renewal.md](../../docs/architecture/session-renewal.md).
 Save the proposed successor before sending to `/auth/token/recover`. Never
 fall back to the legacy endpoint with a pending operation. Transient HTTP or
-proof failures and unknown future refusal codes preserve pairing. Session/key file locks cover short local
-transactions; only the separate legacy-renewal lock spans bounded network
-work. Reload profiles under their OS lock and compare the current pairing
+proof failures and unknown future refusal codes preserve pairing. The exchange
+runs detached from the caller that started it: a cancelled caller returns at
+once while the rotation completes for every waiter, bounded by the HTTP
+timeout and the lock waits. So a rotation can outlive the test that cancelled
+it, still touching the profile directory's lock files: `openAgainst` registers
+a cleanup that waits for it before the TempDir is removed, and a fixture that
+builds a client another way owes the same wait. Session/key file locks cover short local
+transactions and their wait is bounded by `profileWriteTimeout` even for a
+caller with no deadline; only the separate legacy-renewal lock spans bounded
+network work. Reload profiles under their OS lock and compare the current pairing
 and refresh generation after the response. A late reply/refusal cannot
 replace/delete a newer generation, rename or re-pairing. Unknown JSON fields
 survive every update. Retired clients never write again.

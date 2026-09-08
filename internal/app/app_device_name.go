@@ -53,7 +53,7 @@ func (a *App) deviceNameChanged(name string) {
 func (a *App) startDeviceNameWatcher() {
 	if a.backends != nil {
 		a.backends.SetNameSyncChanged(func(id string) {
-			a.emit(eventchan.BackendSetChanged, map[string]string{"action": "device-name-sync", "id": id})
+			a.emit(eventchan.BackendSetChanged, BackendSetChange{Action: BackendSetDeviceNameSync, ID: id})
 		})
 	}
 

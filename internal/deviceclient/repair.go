@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/url"
 	"slices"
-	"time"
 
 	"agent-overflow/internal/computerroute"
 )
@@ -55,9 +54,6 @@ func (c *Client) RepairAddress(ctx context.Context, endpoint string) (computerro
 		return computerroute.Route{}, err
 	}
 	c.routes.update(routes)
-	c.routes.mu.Lock()
-	c.routes.failed = true
-	c.routes.retryAt = time.Time{}
-	c.routes.mu.Unlock()
+	c.routes.invalidate()
 	return verified, nil
 }

@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"time"
 
@@ -29,6 +30,16 @@ var ErrCertificateMismatch = errors.New(
 // all: a stalled mint must fail fast enough for the page's reconnect
 // ladder to own the retry.
 const pinTimeout = 10 * time.Second
+
+// dialTimeout bounds one TCP connect for every consumer that brings no
+// dialer of its own: `--connect`, a one-operation transfer client, a route
+// probe. The desktop's computer dialer uses the same number, so the policy
+// does not depend on who built the transport; net/http's own default is
+// thirty seconds, longer than any reconnect ladder waits.
+const dialTimeout = 5 * time.Second
+
+// pinnedDialer is that default. A variable so a test can watch it dial.
+var pinnedDialer = &net.Dialer{Timeout: dialTimeout, KeepAlive: 30 * time.Second}
 
 // pinnedTLSConfig is what a Go-native client does with the fingerprint the
 // pairing payload handed it.
@@ -83,6 +94,7 @@ func NewPinnedTransport(certFingerprint string, opts ...Option) *http.Transport 
 	if base, ok := http.DefaultTransport.(*http.Transport); ok {
 		cloned = base.Clone()
 	}
+	cloned.DialContext = pinnedDialer.DialContext
 	if dial := resolveOptions(opts).dial; dial != nil {
 		cloned.DialContext = dial
 		cloned.DialTLSContext, cloned.DialTLS = nil, nil

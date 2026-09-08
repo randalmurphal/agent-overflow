@@ -201,21 +201,38 @@ the package's whole documentation, so they carry more.
 existing SSH credentials and strict host-key checks. Each has its own guide.
 
 Desktop attached-profile mutation is serialized per backend. Retire the old
-`deviceclient.Client` before replacing its file; remove through the live client
-before dropping its carrier. Renewal performs network I/O without its mutex,
-then checks retirement and writes under the same lock as nickname/removal.
+`deviceclient.Client` before replacing its file. A removal takes the carrier
+out of the cache and then forgets through that live client, never holding the
+manager mutex across the profile's OS lock; the caller's per-backend profile
+lock is what keeps a second owner from being built from the file meanwhile,
+and a removal that failed retires the old owner all the same. A retired owner
+is a cache miss, reopened from disk. Renewal performs network I/O without its
+mutex — detached from the caller's context, so a cancelled leader still
+finishes for its waiters — then checks retirement and writes under the same
+lock as nickname/removal, with every lock wait bounded by `profileWriteTimeout`.
 Late success or refusal must neither resurrect a forgotten credential nor
 overwrite/delete its replacement. A rename during renewal keeps the new name.
+A terminal refusal is a verdict, not an outage: `deviceclient` has dropped the
+file and retired the owner, `attachedbackends` evicts the carrier, clears its
+agent opt-in and tells `SetSessionEnded` (the App announces the removal), and
+a carried manifest answers `transport.ErrAttachedSessionEnded` — 404 on the
+wire, which the SPA latches as terminal — instead of the 503 every outage
+answers.
 
 Own-device connections reuse those same carriers. The host's identity store owns
 membership; a frontend-only controller persists only its bounded public catalog.
-One lifecycle-owned worker reconciles up to four peers at once, with bounded
-requests and offline retries; it never requires a window or permanent hub.
+One lifecycle-owned worker reconciles up to four peers at once with bounded
+requests. It runs at boot and on a wake (a new profile, a confirmed attach,
+this computer's routes changing), retries a pass in which some peer failed on
+a ladder from 30s doubling to 5min, and schedules nothing after a pass in
+which every peer answered; it never requires a window or permanent hub.
 Ordinary/full-access and thread-sharing sessions do not become membership merely
 because their scopes permit UI access. Only explicit own-device approval and
 recipient-key-bound introductions enroll group sessions. Local removal persists
-an exclusion, while membership tombstones retire own-device profiles; neither
-re-enables agent commands. New direct profiles invalidate the frontend catalog,
+an exclusion, while membership tombstones retire own-device profiles — the far
+side's tombstone for this device, carried in its catalog, is its removal
+notice, and a session the far side ended retires that peer's profile the same
+way; neither re-enables agent commands. New direct profiles invalidate the frontend catalog,
 and per-computer enrollment errors stay in connection state instead of toasts.
 Report failed introductions with their target, continue independent targets,
 and clear pending errors after convergence; a successful catalog read alone
