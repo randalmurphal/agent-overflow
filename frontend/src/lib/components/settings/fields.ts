@@ -722,7 +722,7 @@ const STATIC_FIELDS = [
     section: 'notifications',
     heading: 'Phone push',
     label: 'Phone push',
-    hint: 'Wakes a paired phone that is not connected. The message says what happened and which machine, never the thread.',
+    hint: 'Wakes a paired phone that is not connected. The message says what happened and which computer, never the thread.',
     keywords: ['fcm', 'firebase', 'mobile', 'android', 'wake'],
     conditional: true,
   },

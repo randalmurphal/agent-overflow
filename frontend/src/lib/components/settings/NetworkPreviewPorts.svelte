@@ -76,12 +76,12 @@
 <section data-testid="network-preview-ports">
   <SettingsHeader
     title="Preview ports"
-    description="Ports on this machine your other devices can open. A device has to be paired and signed in; nothing else on the network can reach them."
+    description="Ports on this computer your other devices can open. A device has to be paired and signed in; nothing else on the network can reach them."
   />
 
   {#if answered && previewHost === ''}
     <p class={SECTION_PROSE_CLASS} data-testid="preview-ports-no-address">
-      This machine has no address to serve previews on. Turn on remote access above,
+      This computer has no address to serve previews on. Turn on remote access above,
       or join a tailnet, and these ports become reachable.
     </p>
   {/if}

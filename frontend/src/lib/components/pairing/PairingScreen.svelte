@@ -19,9 +19,12 @@
   import { clientDeviceName, saveClientDeviceName } from '../../stores/clientDeviceName.svelte';
   import { HOME_BACKEND, type BackendKey } from '../../transport/backendKey';
   import { networkFetch } from '../../transport/networkFetch';
+  import { isNativeShell } from '../../native/platform';
+  import { detachAttachedBackend } from '../../transport/backendAttach';
   import {
     PairingRefusedError,
     acceptPairingEndpoint,
+    hasPairedSession,
     probeActivation,
     redeemPairing,
     signInWithPasskey,
@@ -51,7 +54,10 @@
     | { at: 'redeeming' }
     | { at: 'waiting'; verificationNumber: string }
     | { at: 'ready' }
-    | { at: 'failed'; title: string; hint: string };
+    // `retryable` is whether the same link can still work: a request that
+    // never reached the computer can be sent again, a link that was spent,
+    // expired, unreadable or never confirmed needs a new one.
+    | { at: 'failed'; title: string; hint: string; retryable: boolean };
 
   // The props are set once by main.ts and never change; capturing their
   // initial value is the point.
@@ -62,9 +68,18 @@
           at: 'failed',
           title: parseError || 'This pairing link could not be read.',
           hint: 'Ask for a new pairing link from the app on your computer.',
+          retryable: false,
         }
       : { at: 'intro' },
   );
+  // The shell's way out of a link that cannot work: back to the scan
+  // screen. A slot this attempt opened is closed first so the next boot
+  // does not attach a computer that never confirmed; a computer already
+  // paired before this screen keeps its credential, which the failure
+  // never touched. A browser has no scan screen to go back to.
+  const startOverOffered = isNativeShell();
+  // svelte-ignore state_referenced_locally
+  const pairedBefore = hasPairedSession(backend);
   let label = $state(clientDeviceName());
   let probeTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -83,6 +98,7 @@
         at: 'failed',
         title: 'This link belongs to a different address.',
         hint: 'Open the pairing link exactly as it was shared, without editing it.',
+        retryable: false,
       };
       return;
     }
@@ -95,12 +111,14 @@
     } catch (err) {
       if (err instanceof PairingRefusedError) {
         const shown = presentAuthReason(err.reason);
-        stage = { at: 'failed', title: shown.title, hint: shown.hint };
+        stage = { at: 'failed', title: shown.title, hint: shown.hint, retryable: shown.retryable };
       } else {
+        // Nothing was spent: the request never got an answer.
         stage = {
           at: 'failed',
           title: 'Pairing did not go through.',
           hint: userFacingError(err) || 'Check that this device is on the same network, then try again.',
+          retryable: true,
         };
       }
     }
@@ -136,13 +154,14 @@
       }
       if (err instanceof PairingRefusedError) {
         const shown = presentAuthReason(err.reason);
-        stage = { at: 'failed', title: shown.title, hint: shown.hint };
+        stage = { at: 'failed', title: shown.title, hint: shown.hint, retryable: shown.retryable };
         return;
       }
       stage = {
         at: 'failed',
         title: 'Signing in did not go through.',
         hint: userFacingError(err) || 'Check that this device is on the same network, then try again.',
+        retryable: true,
       };
     }
   }
@@ -164,11 +183,24 @@
           at: 'failed',
           title: 'This pairing was not confirmed in time.',
           hint: 'Ask for a new pairing link from the app on your computer.',
+          retryable: false,
         };
         return;
       }
       scheduleProbe(deadline);
     }, PROBE_INTERVAL_MS);
+  }
+
+  // Back to the intro with the same payload: the link is still good, and
+  // the name field keeps what was typed.
+  function tryAgain(): void {
+    if (stage.at === 'failed' && stage.retryable) stage = { at: 'intro' };
+  }
+
+  function startOver(): void {
+    if (!pairedBefore) detachAttachedBackend(backend);
+    history.replaceState(null, '', location.pathname + location.search);
+    location.reload();
   }
 
   onDestroy(() => {
@@ -257,7 +289,14 @@
     {:else if stage.at === 'ready'}
       <p class="text-sm text-text-secondary">Opening…</p>
     {:else if stage.at === 'failed'}
-      <p class="max-w-72 text-sm text-text-secondary">{stage.hint}</p>
+      <div class="flex w-full flex-col items-center gap-4">
+        <p class="max-w-72 text-sm text-text-secondary">{stage.hint}</p>
+        {#if stage.retryable}
+          <Button variant="primary" size="md" onclick={tryAgain}>Try again</Button>
+        {:else if startOverOffered}
+          <Button variant="primary" size="md" onclick={startOver}>Start over</Button>
+        {/if}
+      </div>
     {/if}
   </div>
 </div>

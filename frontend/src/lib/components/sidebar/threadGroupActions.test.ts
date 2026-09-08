@@ -257,7 +257,7 @@ describe('threadGroupActions', () => {
     // FIRST id to route it, so a batch spanning two machines would post
     // every id to one of them. No door in the sidebar builds one, but this
     // module is the seam they all share, so the refusal lives here.
-    it('refuses a batch whose threads live on different machines', async () => {
+    it('refuses a batch whose threads live on different computers', async () => {
       setBindingMock('SetThreadGroup', async () => [mkThread('t1', { groupId: 'g1' })]);
       prependThread(mkThread('t1'));
       prependThread(mkThread('t2'));

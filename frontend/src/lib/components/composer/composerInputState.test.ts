@@ -84,7 +84,7 @@ describe('deriveComposerInputState — an unreachable machine', () => {
     expect(deriveComposerInputState(input({ unreachableTarget: 'Laptop', hasBlockingPrompt: true }))).toEqual({
       disabled: true,
       value: 'draft text',
-      placeholder: 'Laptop is unreachable',
+      placeholder: 'Laptop is offline',
     });
     expect(
       deriveComposerInputState(input({ unreachableTarget: 'Laptop', sendUngranted: true })).placeholder,
@@ -103,7 +103,7 @@ describe('deriveComposerInputState, the page own backend being down', () => {
     // wins because it says more.
     expect(
       deriveComposerInputState(input({ offline: true, unreachableTarget: 'Laptop' })).placeholder,
-    ).toBe('Laptop is unreachable');
+    ).toBe('Laptop is offline');
     // Read-only outranks both: a session that cannot send says why once.
     expect(
       deriveComposerInputState(input({ offline: true, sendUngranted: true })).placeholder,

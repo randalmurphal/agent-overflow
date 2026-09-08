@@ -28,9 +28,9 @@ it('shares the modal multi-computer selection with footer totals and names separ
   await fireEvent.click(within(dialog).getByRole('radio', { name: 'Codex' }));
   await waitFor(() => expect(within(dialog).getAllByTestId('usage-codex-account')).toHaveLength(2));
   expect(within(dialog).getByText('Codex Account · Nexus')).toBeInTheDocument();
-  expect(within(dialog).getByText('Codex Account · This machine')).toBeInTheDocument();
+  expect(within(dialog).getByText('Codex Account · This computer')).toBeInTheDocument();
   await fireEvent.click(within(dialog).getByRole('button', { name: 'Computers included in usage' }));
-  await fireEvent.click(await view.findByRole('menuitemcheckbox', { name: 'This machine' }));
+  await fireEvent.click(await view.findByRole('menuitemcheckbox', { name: 'This computer' }));
   await waitFor(() => expect(view.getByTestId('usage-footer-row')).toHaveTextContent('200 · $2.00'));
   await waitFor(() => expect(within(dialog).getAllByTestId('usage-codex-account')).toHaveLength(1));
   expect(view.getByTestId('sidebar-usage-footer')).toHaveTextContent('Nexus');

@@ -87,7 +87,7 @@ export function payloadFromLink(link: string): PairingPayload {
  * pairing. New computers never replace the first computer's credential. */
 export function pairingBackendKey(payload: PairingPayload): BackendKey {
   if (!payload.backendId || payload.backendId.includes(' ')) {
-    throw new Error('That pairing link does not name a machine this app can attach.');
+    throw new Error('That pairing link does not name a computer this app can attach.');
   }
   if (duplicateLegacyHomeBackend() === payload.backendId) return payload.backendId;
   // An unreadable map cannot name a slot to repair; the fresh one below is
@@ -178,19 +178,27 @@ async function attachPairing(payload: PairingPayload, current: () => boolean = (
  * probing a credential that has been cleared for the rest of the window.
  * Either ending retires the row, so nothing has to remember to.
  */
+/**
+ * How one pairing wait ended. `withdrawn` is a choice made on this client
+ * — the row cancelled, the computer detached, or a second link for the
+ * same computer replacing the wait — and is the one outcome that is not
+ * news to the person who made it.
+ */
+export type AttachmentOutcome = 'attached' | 'timed-out' | 'withdrawn';
+
 export async function awaitAttachedActivation(
   id: string,
   intervalMs = 3_000,
   deadlineMs = 10 * 60_000,
-): Promise<boolean> {
+): Promise<AttachmentOutcome> {
   const attachment = pending.get(id);
   const session = pairedSessionId(id);
   const current = () => !!attachment && pending.get(id) === attachment && pairedSessionId(id) === session;
   const deadline = Date.now() + deadlineMs;
   for (;;) {
-    if (!current()) return false;
+    if (!current()) return 'withdrawn';
     const active = await probeActivation(networkFetch, id);
-    if (!current()) return false;
+    if (!current()) return 'withdrawn';
     if (active) {
       forgetPendingAttachment(id);
       // The descriptor is rebuilt from the stored endpoint map, so this
@@ -198,11 +206,11 @@ export async function awaitAttachedActivation(
       // are the machines I am attached to".
       syncAttachedBackends();
       await backendById(id)?.client.redialAfterPairing();
-      return pairedSessionId(id) === session;
+      return pairedSessionId(id) === session ? 'attached' : 'withdrawn';
     }
     if (Date.now() >= deadline) {
       forgetPendingAttachment(id);
-      return false;
+      return 'timed-out';
     }
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }

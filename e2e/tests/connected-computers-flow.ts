@@ -200,7 +200,7 @@ export function connectedComputersFlow(): void {
       await remote.rpc('SetNetworkSettings', { ...network, listenPort: port });
       await page.reload();
       await settingsPage(page, 'Connect to a computer');
-      await expect(computerRow).toContainText('Unreachable');
+      await expect(computerRow).toContainText('Offline');
       await computerRow.getByRole('button', { name: 'Change address' }).click();
       await computerRow.getByLabel('New computer address').fill(`127.0.0.1:${port}`);
       await computerRow.getByRole('button', { name: 'Verify & reconnect' }).click();

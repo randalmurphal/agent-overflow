@@ -2,6 +2,7 @@
   import { tick } from 'svelte';
   import type { BackendKey } from '../../transport/backendKey';
   import { repairComputerConnection } from '../../stores/computerConnections';
+  import { backendReachable } from '../../stores/attachedBackends.svelte';
   import { errString } from '../../utils/errors';
   import { INPUT_CLASS } from './styles';
   import Button from '../primitives/Button.svelte';
@@ -13,6 +14,11 @@
   let verified = $state('');
   let form: HTMLFormElement | undefined = $state();
   let input: HTMLInputElement | undefined = $state();
+  // "Reconnecting…" is a promise the socket keeps: once the computer is
+  // back, the sentence has nothing left to say.
+  $effect(() => {
+    if (verified && backendReachable(backend)) verified = '';
+  });
   async function show(): Promise<void> {
     open = true;
     error = '';

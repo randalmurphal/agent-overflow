@@ -38,7 +38,6 @@
   import { INPUT_CLASS } from './styles';
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
-  import { relativeTime } from '../../utils/format';
   import { isClientMode, isFrontendOnly } from '../../transport/runMode';
   import { hasScope } from '../../transport/scopes';
   import { backendHasCapability } from '../../stores/transportStatus.svelte';
@@ -53,7 +52,7 @@
     type PendingAttachedBackend,
   } from '../../transport/backendAttach';
   import { scanPairingQr } from '../../native/qr';
-  import { backendReachable, getAttachedBackends } from '../../stores/attachedBackends.svelte';
+  import { backendOfflineLabel, backendReachable, getAttachedBackends } from '../../stores/attachedBackends.svelte';
   import {
     addSystem,
     getPendingAttachments,
@@ -123,10 +122,14 @@
         // to compare is on the row rather than in a toast that scrolls
         // away before they get there.
         void awaitAttachedActivation(attached.id)
-          .then((admitted) => {
+          .then((outcome) => {
+            // A pairing withdrawn from this page (Cancel below, or a
+            // second link for the same computer) ended by a choice, and a
+            // choice gets no warning.
+            if (outcome === 'withdrawn') return;
             addToast(
-              admitted ? 'success' : 'warning',
-              admitted
+              outcome === 'attached' ? 'success' : 'warning',
+              outcome === 'attached'
                 ? `${attached.name} is attached.`
                 : `${attached.name} was not confirmed in time. Ask for a new pairing link.`,
             );
@@ -194,14 +197,35 @@
     if (id === HOME_BACKEND || getAttachedBackends().length === 0) location.reload();
   }
 
+  /**
+   * A pairing nobody is going to confirm. No arming step: nothing has
+   * been granted yet, so a slip costs nothing. The desktop's row is a
+   * profile the host already holds (`RemoveBackend` takes a pending one
+   * and the store retires the row); the shell's is a slot the transport
+   * opened, and the same detach that removes a computer closes it.
+   */
+  async function cancelPending(id: string): Promise<void> {
+    if (nativeShell) {
+      detachAttachedBackend(id);
+      return;
+    }
+    acting = true;
+    try {
+      await removeSystem(id);
+    } catch (err) {
+      addToast('error', errString(err));
+    } finally {
+      acting = false;
+    }
+  }
+
   function displayName(id: string, fallback: string): string {
     const entry = attachedBackendEntry(id);
     return entry ? backendDisplayName(entry) : fallback;
   }
 
-  function statusText(id: string, lastReachedMs: number | undefined): string {
-    if (backendReachable(id)) return 'Connected';
-    return lastReachedMs ? `Unreachable · last seen ${relativeTime(lastReachedMs)}` : 'Unreachable';
+  function statusText(id: string, lastReachedMs = 0): string {
+    return backendReachable(id) ? 'Connected' : backendOfflineLabel(id, lastReachedMs);
   }
 
   // One row shape for both realizations. The desktop's pending pairing
@@ -229,7 +253,7 @@
           </Button>
         {/if}
       </div>
-      <p class="text-xs text-fg-muted">{backendReachable(HOME_BACKEND) ? 'Connected' : 'Offline'}{hostList ? ' · This computer' : ''}</p>
+      <p class="text-xs text-fg-muted">{statusText(HOME_BACKEND)}{hostList ? ' · This computer' : ''}</p>
       <ComputerNickname backend={HOME_BACKEND} />
       <ComputerActions backend={HOME_BACKEND} />
     </div>
@@ -247,15 +271,20 @@
                 Waiting for {row.name || row.endpoint} to confirm
               </p>
               <p class="text-[0.71875rem] leading-snug text-fg-muted">
-                On that machine, allow this device only if it shows this exact number.
+                On that computer, allow this device only if it shows this exact number.
               </p>
             </div>
-            <p
-              class="text-2xl font-semibold tracking-[0.2em] tabular-nums text-fg"
-              aria-label="Verification number"
-            >
-              {row.verificationNumber}
-            </p>
+            <div class="flex items-center gap-3">
+              <p
+                class="text-2xl font-semibold tracking-[0.2em] tabular-nums text-fg"
+                aria-label="Verification number"
+              >
+                {row.verificationNumber}
+              </p>
+              <Button variant="ghost" size="xs" disabled={acting} onclick={() => void cancelPending(row.id)}>
+                Cancel
+              </Button>
+            </div>
           </div>
         </div>
       {/each}
@@ -270,7 +299,7 @@
             <div class="flex min-w-0 flex-1 flex-col gap-0.5">
               <p class="truncate text-[0.75rem] font-medium text-fg">{displayName(machine.id, machine.name)}</p>
               <p class="truncate text-[0.6875rem] text-fg-hint">
-                {backendReachable(machine.id) ? 'Connected' : 'Offline'}
+                {statusText(machine.id)}
               </p>
             </div>
             <Button
@@ -368,6 +397,9 @@
           Connect
         </Button>
       </form>
+      {#if nearbyPairing}
+        <p class="mt-2 text-xs text-fg-muted">An address works while that computer has Allow a device to connect open. A pairing link works any time.</p>
+      {/if}
       {#if connectionError}<p class="mt-2 text-xs text-error" role="alert">{connectionError}</p>{/if}
       {#if hostList}
         <Button variant="ghost" size="sm" class="mt-2" onclick={() => { sshOpen = true; }}>Connect over SSH…</Button>

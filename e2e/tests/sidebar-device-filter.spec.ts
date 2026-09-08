@@ -18,7 +18,7 @@ for (const compact of [false, true]) {
       await harness.rpc('SetThreadGroup', threadIds, group.id);
       await harness.open(page);
       await expect(page.getByTestId('thread-group-row')).toBeVisible();
-      const trigger = page.getByRole('button', { name: 'Filter projects by device' });
+      const trigger = page.getByRole('button', { name: 'Filter projects by computer' });
       await trigger.click();
       const checkbox = page.getByRole('menuitemcheckbox', { name: 'Sidebar test computer' });
       await expect(checkbox).toBeChecked();
@@ -26,13 +26,13 @@ for (const compact of [false, true]) {
       await expect(checkbox).not.toBeChecked();
       await page.keyboard.press('Escape');
       await expect(page.getByTestId('thread-group-row')).toHaveCount(0);
-      await expect(page.getByText('No projects on the selected devices.')).toBeVisible();
+      await expect(page.getByText('No projects on the selected computers.')).toBeVisible();
       await page.reload();
-      await expect(page.getByText('No projects on the selected devices.')).toBeVisible();
+      await expect(page.getByText('No projects on the selected computers.')).toBeVisible();
       await trigger.click();
       await expect(checkbox).not.toBeChecked();
       await testInfo.attach('device-filter', { body: await page.screenshot(), contentType: 'image/png' });
-      await page.getByRole('menuitem', { name: 'All devices' }).click();
+      await page.getByRole('menuitem', { name: 'All computers' }).click();
       await page.keyboard.press('Escape');
       await expect(page.getByTestId('thread-group-row')).toBeVisible();
       await expect(page.getByTestId('thread-row').filter({ hasText: 'Kept conversation' })).toBeVisible();

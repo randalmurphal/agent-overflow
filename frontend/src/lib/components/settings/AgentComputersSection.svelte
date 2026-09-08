@@ -44,5 +44,5 @@
     {/if}
   </section>
 {:else}
-  <p class="text-sm text-fg-muted">Agent access is unavailable on this connection. Use an updated host with permission to run commands.</p>
+  <p class="text-sm text-fg-muted">Agent access is unavailable on this connection. Update the app on this computer and connect with permission to run commands.</p>
 {/if}

@@ -242,7 +242,7 @@
   // afterwards.
   function forgetDevice(device: AccessDevice): void {
     armOrRun(`forget:${device.id}`, () =>
-      act('Failed to remove the device', () => call(() => ForgetAccessDevice(device.id))),
+      act('Failed to forget the device', () => call(() => ForgetAccessDevice(device.id))),
     );
   }
 
@@ -452,7 +452,7 @@
                 <p class="text-[0.6875rem] text-fg-hint">
                   Access removed {device.revokedAtMs ? relativeTime(device.revokedAtMs) : ''}. Restoring
                   lets it pair again with a fresh link — nothing signs in until you confirm the number.
-                  Removing it forgets the device entirely.
+                  Forgetting it removes the device entirely.
                 </p>
               {/if}
             </div>
@@ -465,7 +465,7 @@
               disabled={acting}
               onclick={() => forgetDevice(device)}
             >
-              {armedRevoke === `forget:${device.id}` ? 'Confirm remove' : 'Remove'}
+              {armedRevoke === `forget:${device.id}` ? 'Confirm forget' : 'Forget'}
             </Button>
           </div>
           {#if standing.length > 0}

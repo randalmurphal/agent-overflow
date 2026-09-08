@@ -113,7 +113,8 @@ describe('<MachinePicker>', () => {
     expect(home.textContent ?? '').toMatch(/\u2713/);
     expect(laptop.textContent ?? '').not.toMatch(/\u2713/);
     expect(laptop).toHaveAttribute('aria-disabled', 'true');
-    expect(laptop.textContent ?? '').toMatch(/Unreachable/);
+    expect(laptop.textContent ?? '').toMatch(/Offline/);
+    expect(laptop.getAttribute('title')).toBe('This computer is offline right now.');
     expect(laptop.textContent ?? '').not.toMatch(/No browser/);
   });
 

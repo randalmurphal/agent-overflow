@@ -132,6 +132,20 @@ describe('systems store', () => {
     expect(backendById('laptop')).toBeUndefined();
   });
 
+  // A cancelled pairing ends the host's wait, which arrives here as a
+  // refusal for a row this page already dropped. The person who cancelled
+  // it is not owed a "could not attach" toast about it.
+  it('says nothing about a refusal for a pairing this page no longer holds', async () => {
+    setBindingMock('AddBackend', async () => ({
+      id: 'laptop', name: 'Laptop', endpoint: LAPTOP.endpoint, verificationNumber: '42',
+    }));
+    await addSystem('link');
+    setBindingMock('RemoveBackend', async () => {});
+    await removeSystem('laptop');
+    expect(applyBackendAttach({ id: 'laptop', attached: false, error: 'forgotten' })).toBeNull();
+    expect(getPendingAttachments()).toEqual([]);
+  });
+
   it('detaches the registry entry when a system is removed', async () => {
     stageBackend();
     setBindingMock('ListBackends', async () => [LAPTOP]);

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { untrack } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import { GetDeviceName, SetDeviceName } from '../../stores/bindings';
   import { clientDeviceName, clientDeviceNameStatus, saveClientDeviceName } from '../../stores/clientDeviceName.svelte';
   import { isNativeShell } from '../../native/platform';
@@ -30,6 +30,21 @@
   let busy = $state(false);
   let message = $state('');
   let error = $state('');
+  // "Saved" is a moment, not a state: it clears on its own or on the next
+  // keystroke, whichever comes first, so a later edit is not sitting
+  // under a claim about an earlier one.
+  const SAVED_MESSAGE_MS = 3_000;
+  let messageTimer: ReturnType<typeof setTimeout> | undefined;
+  function clearMessage(): void {
+    clearTimeout(messageTimer);
+    message = '';
+  }
+  function showSaved(): void {
+    clearTimeout(messageTimer);
+    message = 'Device name saved.';
+    messageTimer = setTimeout(clearMessage, SAVED_MESSAGE_MS);
+  }
+  onDestroy(() => clearTimeout(messageTimer));
   let supported = $derived(clientOwned || (target === HOME_BACKEND ? backendHasCapability('device-name.v1') : getTransportHelloFor(target)?.capabilities.includes('device-name.v1')));
   let canEdit = $derived(clientOwned || hasScope('access:admin', target));
 
@@ -64,7 +79,8 @@
   async function save(): Promise<void> {
     if (busy || !loaded || !supported || !canEdit) return;
     busy = true;
-    error = message = '';
+    error = '';
+    clearMessage();
     try {
       if (clientOwned) {
         saveClientDeviceName(name);
@@ -74,7 +90,7 @@
         name = await withBackendTarget(target, () => GetDeviceName());
       }
       baseline = name;
-      message = 'Device name saved.';
+      showSaved();
     } catch (err) { error = errString(err); }
     finally { busy = false; }
   }
@@ -83,7 +99,7 @@
 <div class="rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-3 py-3">
   <SettingsField id={fieldId} label="Device name" hint="The name this device shares with other computers and phones." htmlFor={fieldId} stacked>
     <form class="flex gap-2" onsubmit={(event) => { event.preventDefault(); void save(); }}>
-      <input id={fieldId} class={`${INPUT_CLASS} min-w-0 flex-1`} bind:value={name} disabled={!loaded || !supported || busy || !canEdit} placeholder="Use the default name" />
+      <input id={fieldId} class={`${INPUT_CLASS} min-w-0 flex-1`} bind:value={name} oninput={clearMessage} disabled={!loaded || !supported || busy || !canEdit} placeholder="Use the default name" />
       <Button type="submit" variant="primary" size="sm" disabled={!loaded || !supported || busy || !canEdit}>Save</Button>
     </form>
     {#if error}<p class="mt-2 text-xs text-error" role="alert">{error}</p>

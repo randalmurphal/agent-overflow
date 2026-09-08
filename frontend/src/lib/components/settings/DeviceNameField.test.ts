@@ -27,6 +27,28 @@ describe('Device name field', () => {
     expect(view.getByRole('status')).toHaveTextContent('Device name saved.');
   });
 
+  it('clears the saved message after a moment, or on the next keystroke', async () => {
+    vi.useFakeTimers();
+    try {
+      phone();
+      const view = render(DeviceNameField);
+      const input = view.getByLabelText('Device name');
+      await fireEvent.input(input, { target: { value: 'Pixel' } });
+      await fireEvent.click(view.getByRole('button', { name: 'Save' }));
+      expect(view.getByRole('status')).toHaveTextContent('Device name saved.');
+      await vi.advanceTimersByTimeAsync(2_900);
+      expect(view.getByRole('status')).toHaveTextContent('Device name saved.');
+      await vi.advanceTimersByTimeAsync(200);
+      expect(view.queryByRole('status')).toBeNull();
+      await fireEvent.click(view.getByRole('button', { name: 'Save' }));
+      expect(view.getByRole('status')).toHaveTextContent('Device name saved.');
+      await fireEvent.input(input, { target: { value: 'Pixel 9' } });
+      expect(view.queryByRole('status')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('refreshes pristine phone fields while preserving unsaved edits', async () => {
     phone();
     saveClientDeviceName('First');

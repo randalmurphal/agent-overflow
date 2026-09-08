@@ -113,7 +113,7 @@
   <SettingsHeader title="Domain and HTTPS">
     {#snippet details()}
       Give this backend a domain name and it answers to that name. Point the
-      domain at this machine in DNS, then either let Agent Overflow obtain a
+      domain at this computer in DNS, then either let Agent Overflow obtain a
       certificate from Let's Encrypt, or point it at one you already have.
       Without either, the name still works and the connection is encrypted only
       by whatever sits in front.

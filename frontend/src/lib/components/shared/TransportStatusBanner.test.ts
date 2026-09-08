@@ -36,6 +36,11 @@ import {
   storeBackendEndpoint,
   storedBackendEndpoint,
 } from '../../transport/homeEndpoint';
+import {
+  getSettingsSection,
+  isSettingsOpen,
+  resetSettingsOverlayForTest,
+} from '../../stores/settingsOverlay.svelte';
 
 // The banner is gated behind a 1s boot grace (so a momentary pre-handshake
 // disconnect doesn't flash on mount). Trip it with fake timers.
@@ -57,10 +62,17 @@ describe('<TransportStatusBanner>', () => {
   });
 
   it('explains a removed target without offering a retry that cannot run', async () => {
+    resetSettingsOverlayForTest();
     const view = render(ComputerTransportStatus, { backend: 'removed-computer' });
     await settleBootGrace();
     expect(view.getByTestId('transport-status-banner')).toHaveTextContent('This computer was removed. Choose another computer.');
     expect(view.queryByTestId('transport-status-retry')).toBeNull();
+    // The one action a removed computer has: the page where another one
+    // is chosen — the same destination the shell's Pair again opens.
+    await fireEvent.click(view.getByTestId('transport-status-choose-computer'));
+    expect(isSettingsOpen()).toBe(true);
+    expect(getSettingsSection()).toBe('systems');
+    resetSettingsOverlayForTest();
   });
 
   it('reserves no layout height on the happy path (connected)', async () => {
@@ -150,7 +162,7 @@ describe('<TransportStatusBanner>', () => {
 
     const banner = getByTestId('transport-status-banner');
     expect(banner.dataset.status).toBe('reconnecting');
-    expect(banner.textContent).toContain('Not reachable. Last seen 12m ago. Checking every 5 minutes.');
+    expect(banner.textContent).toContain('Offline. Last seen 12m ago. Checking every 5 minutes.');
     // No countdown may leak out beside it: the two sentences answer the same
     // question and one of them would be wrong.
     expect(banner.textContent).not.toContain('Reconnecting in');
@@ -190,7 +202,7 @@ describe('<TransportStatusBanner>', () => {
     await settleBootGrace();
 
     const banner = getByTestId('transport-status-banner');
-    expect(banner.textContent).toContain('Not reachable. Checking every 5 minutes.');
+    expect(banner.textContent).toContain('Offline. Checking every 5 minutes.');
     expect(banner.textContent).not.toContain('Last seen');
     expect(banner.textContent).not.toContain('Reconnecting in');
   });

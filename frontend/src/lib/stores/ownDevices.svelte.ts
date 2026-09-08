@@ -128,7 +128,7 @@ export function installOwnDeviceSync(): () => void {
             if (!admission() || ownDeviceConnectionExcluded(id)) continue;
             if (payloadFromLink(invite.url).backendId !== id) throw new Error('The introduction names a different computer.');
             const paired = await attachIntroducedBackend(invite.url, admission, member.routes);
-            if (!stopped && !await awaitAttachedActivation(paired.id, 1_000, 10_000)) failed.add(member.name || 'A computer');
+            if (!stopped && await awaitAttachedActivation(paired.id, 1_000, 10_000) !== 'attached') failed.add(member.name || 'A computer');
           } catch {
             if (sponsor.current() && !ownDeviceConnectionExcluded(id)) failed.add(member.name || 'A computer');
           }

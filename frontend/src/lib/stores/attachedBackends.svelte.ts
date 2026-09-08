@@ -22,6 +22,7 @@ import { rememberedIdentity } from '../transport/rememberedIdentity';
 import { endpointHost, storedBackendEndpoint } from '../transport/homeEndpoint';
 import { projectBackend, threadBackend } from '../transport/entityIndex';
 import { hasScope } from '../transport/scopes';
+import { relativeTime } from '../utils/format';
 import { getTransportStatusFor } from './transportStatus.svelte';
 import { onFrontendValueChanged, readFrontendValue, writeFrontendValue } from './frontendStorage';
 
@@ -113,12 +114,12 @@ function resolveDisplayName(entry: BackendEntry): string {
   // name. Preserve that legacy override, except a phone's address fallback.
   if (current.nickname === undefined && name && (!endpoint || name !== endpointHost(endpoint))) return name;
   return getBackendIdentity(entry.id).name || rememberedIdentity(entry.id)?.name
-    || name || (entry.home ? 'This machine' : entry.id);
+    || name || (entry.home ? 'This computer' : entry.id);
 }
 
 /** Resolve once per connection/identity/nickname change, not per sidebar row. */
 export function backendDisplayName(entry: BackendEntry): string {
-  return displayNames.get(entry.id) || entry.name || (entry.home ? 'This machine' : entry.id);
+  return displayNames.get(entry.id) || entry.name || (entry.home ? 'This computer' : entry.id);
 }
 
 /** Test seam: clear both in-memory and persisted frontend nicknames. */
@@ -130,6 +131,18 @@ export function __resetBackendNicknamesForTest(): void {
 /** Whether this backend's socket is open and serving. */
 export function backendReachable(key: BackendKey): boolean {
   return getTransportStatusFor(key).status === 'connected';
+}
+
+/**
+ * The one word for a down socket, with when it was last up if anything
+ * knows. `lastReachedMs` is what a saved profile recorded (the desktop's
+ * `ListBackends`); the transport's own `lastConnectedAt` is this page's
+ * memory of the same fact, and the later of the two is the truth. Neither
+ * known says "Offline" alone rather than inventing a time.
+ */
+export function backendOfflineLabel(key: BackendKey, lastReachedMs = 0): string {
+  const at = Math.max(lastReachedMs, getTransportStatusFor(key).lastConnectedAt ?? 0);
+  return at > 0 ? `Offline · last seen ${relativeTime(at)}` : 'Offline';
 }
 
 /**

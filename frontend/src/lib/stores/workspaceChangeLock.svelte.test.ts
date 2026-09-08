@@ -454,7 +454,7 @@ describe('createWorkspaceChangeLockState', () => {
     await waitFor(() => {
       expect(state).toHaveAttribute('data-locked', 'true');
       expect(state.getAttribute('data-reason') ?? '')
-        .toBe('Workspace changes are only available on the local machine.');
+        .toBe('Workspace changes are only available on this computer.');
     });
   });
 

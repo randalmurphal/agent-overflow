@@ -248,6 +248,11 @@ export function applyBackendAttach(
     if (hasScope('host')) void loadSystems().catch((err) => addToast('error', errString(err)));
     return { name, error: '' };
   }
+  // A failure for a row this page no longer holds is not this page's to
+  // report: it cancelled the pairing (RemoveBackend ends the wait, which
+  // arrives here as a refusal), or another window started it and will hear
+  // the answer itself.
+  if (!row) return null;
   return { name, error: evt.error || 'the pairing was not confirmed' };
 }
 

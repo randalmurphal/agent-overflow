@@ -295,9 +295,9 @@ describe('<DevicesSection>', () => {
 
     // Arming only. Deleting a row is destructive, so it takes the same
     // two steps a revoke does.
-    await fireEvent.click(await findByRole('button', { name: 'Remove' }));
+    await fireEvent.click(await findByRole('button', { name: 'Forget' }));
     expect(forget).not.toHaveBeenCalled();
-    await fireEvent.click(await findByRole('button', { name: 'Confirm remove' }));
+    await fireEvent.click(await findByRole('button', { name: 'Confirm forget' }));
     await waitFor(() => expect(forget).toHaveBeenCalledWith('dev-phone'));
   });
 

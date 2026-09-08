@@ -233,7 +233,7 @@ pane can substitute for that project's owner.
 
   `lastConnectedAt` is the last moment BYTES crossed, on this device's
   own clock, and it is what `TransportStatusBanner.svelte` renders as
-  "Last seen 12m ago" — through `utils/format.ts`'s `relativeTime` with
+  "Offline. Last seen 12m ago." — through `utils/format.ts`'s `relativeTime` with
   no backend id, since correcting a local reading by a backend's skew
   would be measuring one clock against another's offset. It is stamped on
   open and by every inbound frame, one integer store beside the watchdog's
@@ -923,7 +923,11 @@ pane can substitute for that project's owner.
   hosts keep working and the settings field explains the pending update.
   `awaitAttachedActivation` then polls that slot's `probeActivation` until
   the owner confirms on the other machine, and publishes the new
-  descriptor through `syncAttachedBackends()`.
+  descriptor through `syncAttachedBackends()`. It answers how the wait
+  ended — `attached`, `timed-out`, or `withdrawn` — and the last is the
+  one a caller stays quiet about: the row was cancelled, the computer
+  detached, or a second link for the same computer replaced the wait,
+  each a choice made on this client rather than news to report.
 
   **Removing is ONE door, `detachAttachedBackend`, and its order is the
   reason.** Such a machine is held in three places this directory owns —

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import PairingScreen from './PairingScreen.svelte';
 import type { PairingPayload } from '../../transport/deviceSession';
+import { __resetHomeEndpointForTest, storedBackendEndpoint } from '../../transport/homeEndpoint';
 
 // Driven through the REAL deviceSession module with a stubbed global
 // fetch, not a module mock: the screen's contract is the flow those two
@@ -35,7 +36,9 @@ beforeEach(() => {
 
 afterEach(() => {
   localStorage.clear();
+  __resetHomeEndpointForTest();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   vi.useRealTimers();
 });
 
@@ -110,6 +113,68 @@ describe('PairingScreen', () => {
     await waitFor(() => getByText('This pairing could not be completed.'));
     getByText('Start a new pairing from the app on your computer.');
     expect(queryByLabelText('Verification number')).toBeNull();
+  });
+
+  it('offers Try again when the request never reached the computer, keeping the same link', async () => {
+    let attempts = 0;
+    const fetchMock = vi.fn(async (path: string) => {
+      if (++attempts === 1) throw new TypeError('Failed to fetch');
+      return path === '/auth/pair' ? grant() : new Response('not found', { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { getByRole, getByText, findByText, getByLabelText, queryByRole } = render(PairingScreen, {
+      props: { payload: PAYLOAD, onDone: () => {} },
+    });
+    await fireEvent.click(getByRole('button', { name: 'Pair' }));
+    await findByText('Pairing did not go through.');
+    // A browser has no scan screen to start over from; the link is still
+    // good, so the way forward is the same link again.
+    expect(queryByRole('button', { name: 'Start over' })).toBeNull();
+    await fireEvent.click(getByRole('button', { name: 'Try again' }));
+    getByText('Pair this device');
+    await fireEvent.click(getByRole('button', { name: 'Pair' }));
+    await waitFor(() => getByLabelText('Verification number'));
+    expect(attempts).toBe(2);
+    const [, init] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
+    expect((JSON.parse(init.body as string) as Record<string, string>).token).toBe('link-token');
+  });
+
+  it('offers no retry for a link that cannot work again', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ reason: 'unknown_credential' }), { status: 401 })),
+    );
+    const { getByRole, findByText, queryByRole } = render(PairingScreen, {
+      props: { payload: PAYLOAD, onDone: () => {} },
+    });
+    await fireEvent.click(getByRole('button', { name: 'Pair' }));
+    await findByText('This pairing could not be completed.');
+    expect(queryByRole('button', { name: 'Try again' })).toBeNull();
+    expect(queryByRole('button', { name: 'Start over' })).toBeNull();
+  });
+
+  it('starts over on the shell by closing the slot the failed link opened and reloading to the scan screen', async () => {
+    vi.stubGlobal('Capacitor', { isNativePlatform: () => true, getPlatform: () => 'android' });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ reason: 'unknown_credential' }), { status: 401 })),
+    );
+    const reload = vi.spyOn(location, 'reload').mockImplementation(() => {});
+    location.hash = '#pair=abc';
+    const { getByRole, findByText, queryByRole } = render(PairingScreen, {
+      props: { payload: PAYLOAD, backend: 'backend-1', onDone: () => {} },
+    });
+    await fireEvent.click(getByRole('button', { name: 'Pair' }));
+    await findByText('This pairing could not be completed.');
+    expect(queryByRole('button', { name: 'Try again' })).toBeNull();
+    // The shell adopted the link's address into a slot of its own before
+    // the refusal; a boot that finds it would attach a computer that
+    // never confirmed instead of showing the scan screen.
+    expect(storedBackendEndpoint('backend-1')).toBe('http://localhost:3000');
+    await fireEvent.click(getByRole('button', { name: 'Start over' }));
+    expect(storedBackendEndpoint('backend-1')).toBe('');
+    expect(location.hash).toBe('');
+    expect(reload).toHaveBeenCalledTimes(1);
   });
 
   it('refuses a payload for a different address without spending anything', async () => {

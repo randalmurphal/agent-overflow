@@ -204,7 +204,7 @@ export async function removeThreadsFromGroupAction(
  * project and a project to one machine, so there is no group that could
  * hold them and nothing to do but say so. */
 export const CROSS_MACHINE_GROUP_REFUSAL =
-  'Threads on different machines cannot share a group. Select threads from one machine and try again.';
+  'Threads on different computers cannot share a group. Select threads from one computer and try again.';
 
 /**
  * Whether this batch names threads on more than one machine.

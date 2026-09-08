@@ -16,7 +16,7 @@
 <button
   bind:this={anchor}
   type="button"
-  aria-label="Filter projects by device"
+  aria-label="Filter projects by computer"
   aria-haspopup="menu"
   aria-expanded={open}
   onclick={() => { open = !open; }}
@@ -26,8 +26,8 @@
   <Icon icon={ChevronDown} size={12} />
 </button>
 <Popover {anchor} {open} onClose={() => { open = false; }} placement="bottom-start" role="none">
-  <Menu ariaLabel="Devices shown in sidebar" onClose={() => { open = false; }}>
-    <MenuItem label="All devices" checked={!filtered} onSelect={showAllSidebarDevices} />
+  <Menu ariaLabel="Computers shown in sidebar" onClose={() => { open = false; }}>
+    <MenuItem label="All computers" checked={!filtered} onSelect={showAllSidebarDevices} />
     <MenuDivider />
     {#each devices as device (device.key)}
       <MenuItem
@@ -35,7 +35,7 @@
         checkbox
         checked={device.visible}
         disabled={!device.id}
-        title={!device.id ? 'Connect to this device once to filter it.' : undefined}
+        title={!device.id ? 'Connect to this computer once to filter it.' : undefined}
         onSelect={() => setSidebarDeviceVisible(device.id, !device.visible)}
       />
     {/each}
