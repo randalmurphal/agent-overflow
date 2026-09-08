@@ -75,7 +75,7 @@ func (a *App) applyRuntimeModeLocked(threadID string, mode provider.RuntimeMode)
 	// deferred while the thread is busy. The reconciler never takes the
 	// per-thread action lock this caller holds — its deferred restarts run
 	// on a watcher goroutine that acquires the lock itself.
-	a.reconcileSessionConfig(threadID)
+	a.reconcileSessionConfig(threadID, false)
 	a.emitRuntimeModeChanged(threadID, mode)
 	return nil
 }

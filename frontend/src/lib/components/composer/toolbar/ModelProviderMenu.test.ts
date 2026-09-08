@@ -93,6 +93,7 @@ describe('<ModelProviderMenu>', () => {
       ];
     });
     const reconnect = setBindingMock('ReconnectSession', async () => {});
+    const update = setBindingMock('UpdateThreadModelSelection', async () => pane.thread);
 
     const { getByTestId, findByRole } = render(ModelProviderMenu, { props: { pane } });
     expect(getByTestId('composer-model-menu-trigger').textContent).toContain('Opus 4.8');
@@ -101,10 +102,14 @@ describe('<ModelProviderMenu>', () => {
     await fireEvent.click(await findByRole('menuitem', { name: /^Claude$/ }));
     await fireEvent.click(await findByRole('menuitem', { name: /Fable 5/i }));
 
-    await waitFor(() => expect(reconnect).toHaveBeenCalledWith('thread-1'));
+    await waitFor(() => expect(update).toHaveBeenCalledWith('thread-1', 'claude', 'claude-fable-5'));
+    expect(reconnect).not.toHaveBeenCalled();
+    // The server's model projection, not an optimistic local reset, confirms it.
+    expect(pane.activeModel).toBe('claude-opus-4-8');
+    pane.applyEffectiveModel('', 1);
     expect(pane.thread?.model).toBe('claude-fable-5');
     expect(pane.activeModel).toBe('claude-fable-5');
-    expect(getBindingMock('UpdateThreadModelSelection')?.mock.calls.length ?? 0).toBe(0);
+    expect(update).toHaveBeenCalledTimes(1);
   });
 
   // Per-picker provider brand glyph: Claude uses the Anthropic mark

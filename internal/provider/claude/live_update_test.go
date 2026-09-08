@@ -92,14 +92,17 @@ func TestPlanLiveUpdate(t *testing.T) {
 			wantUpdate: LiveUpdate{Model: "claude-fable-5", Effort: "xhigh"},
 		},
 		{
-			name: "switch to an effortless model needs restart",
-			mutate: func(o *provider.SessionOptions) {
-				// Haiku declares no reasoning effort, so the target config
-				// carries no effort flag at all — and there is no /effort
-				// argument that restores "send no effort".
-				o.Model = "claude-haiku-4-5"
-			},
-			wantOK: false,
+			name:       "switch to a model without effort is live",
+			mutate:     func(o *provider.SessionOptions) { o.Model = "claude-haiku-4-5" },
+			wantOK:     true,
+			wantUpdate: LiveUpdate{Model: "claude-haiku-4-5"},
+		},
+		{
+			name:       "switch back from a model without effort reasserts the tier",
+			mutatePrev: func(o *provider.SessionOptions) { o.Model = "claude-haiku-4-5" },
+			mutate:     func(o *provider.SessionOptions) { o.ReasoningEffort = provider.EffortLow },
+			wantOK:     true,
+			wantUpdate: LiveUpdate{Model: "claude-sonnet-5", Effort: "low"},
 		},
 		{
 			name: "fast mode enable is live with the spawn opt-in question deferred to apply",

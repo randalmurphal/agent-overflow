@@ -149,7 +149,7 @@
 
   // The selection itself lives in threadModelControls — shared with the
   // composer's `/model` command, so the placeholder branch and the
-  // reconnect-on-reselect rule cannot drift between the two entry points.
+  // live retry on reselect cannot drift between the two entry points.
   async function handleSelectModel(
     provider: ProviderID,
     slug: string,

@@ -4,15 +4,14 @@
 // `/model`, `/effort`, and `/fast` commands drive the exact same code —
 // including the parts that are easy to forget: a draft placeholder updates its
 // defaults instead of a thread row, and re-selecting the model a fallback
-// displaced means "try my preferred model again", which is a session
-// reconnect rather than a no-op write.
+// displaced means "try my preferred model again" through the same live
+// model-selection binding.
 //
 // Each function reports its own failure as a string instead of raising a
 // toast: the pickers want a toast, the composer wants composer-local state
 // next to the text the user typed, and only the caller knows which.
 
 import {
-  ReconnectSession,
   UpdateThreadContextWindow,
   UpdateThreadFastMode,
   UpdateThreadModelSelection,
@@ -42,9 +41,8 @@ function failure(action: string, err: unknown): ThreadControlResult {
  * Point the thread at `provider`/`slug`.
  *
  * Selecting the model the thread already requested while a classifier
- * fallback is serving it restarts the session rather than issuing a write the
- * backend would treat as a no-op — the durable selection is already correct
- * and what the user wants is another attempt at it.
+ * fallback is serving it asks the backend to reassert the model on the live
+ * session. The backend owns both the retry and its effective-model projection.
  */
 export async function applyThreadModelSelection(
   pane: ThreadPane,
@@ -64,11 +62,6 @@ export async function applyThreadModelSelection(
     }
     const threadId = pane.threadId;
     if (!threadId) return { ok: false, error: 'Start the thread first' };
-    if (provider === currentProvider && slug === currentModel) {
-      await ReconnectSession(threadId);
-      pane.setEffectiveModel('');
-      return OK;
-    }
     const updated = (await UpdateThreadModelSelection(threadId, provider, slug)) as Thread;
     syncThread(updated);
     return OK;

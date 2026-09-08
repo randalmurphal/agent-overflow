@@ -298,3 +298,30 @@ func TestModelConsentFallbackForwardsItsConsentFields(t *testing.T) {
 		t.Fatalf("session-only consent recorded persistedAsDefault: %s", item2.Meta)
 	}
 }
+
+func TestModelApplyDoesNotClearANewerFallback(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	fallback := func(id string) {
+		t.Helper()
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventModelFallback, ThreadID: "t1", ItemID: id,
+			Meta: json.RawMessage(`{"fallbackModel":"claude-opus-4-8"}`),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fallback("first")
+	beforeApply := router.LiveStateSnapshotForThread("t1").EffectiveModelRevision
+	fallback("second")
+	if router.ClearEffectiveModelAtRevision("t1", beforeApply) {
+		t.Fatal("old model ack cleared newer fallback")
+	}
+	snapshot := router.LiveStateSnapshotForThread("t1")
+	if snapshot.EffectiveModel == "" {
+		t.Fatal("new fallback disappeared")
+	}
+	if !router.ClearEffectiveModelAtRevision("t1", snapshot.EffectiveModelRevision) {
+		t.Fatal("matching model ack did not clear fallback")
+	}
+}

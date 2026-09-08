@@ -215,3 +215,19 @@ func TestCommitLiveUpdateCoversEveryLiveAppliableAxis(t *testing.T) {
 		})
 	}
 }
+
+func TestModelSwitchFromHaikuRetriesEffortAfterPartialApply(t *testing.T) {
+	prev := liveUpdateBaseOptions()
+	prev.Model = "claude-haiku-4-5"
+	next := liveUpdateBaseOptions()
+	committed := CommitLiveUpdate(prev, next, LiveApplyOutcome{Model: true})
+	retry, ok := PlanLiveUpdate(committed, next)
+	if !ok || retry != (LiveUpdate{Effort: "high"}) {
+		t.Fatalf("retry = %+v, live = %v; must apply the unconfirmed tier", retry, ok)
+	}
+	committed = CommitLiveUpdate(prev, next, LiveApplyOutcome{Model: true, Effort: true})
+	retry, ok = PlanLiveUpdate(committed, next)
+	if !ok || !retry.Empty() {
+		t.Fatalf("fully applied switch did not converge: %+v, %v", retry, ok)
+	}
+}

@@ -43,8 +43,8 @@ func isModelFallbackNotificationKind(kind string) bool {
 }
 
 // ModelFallbackEvent is the live wire projection for an automatic provider
-// fallback. EffectiveModel is empty when the provider session ended and the
-// frontend should return to the requested threads.model value.
+// fallback. EffectiveModel is empty when the provider session ended or the
+// requested model was reapplied, returning the UI to threads.model.
 type ModelFallbackEvent struct {
 	ThreadID       string `json:"threadId"`
 	RequestedModel string `json:"requestedModel,omitempty"`
@@ -143,15 +143,49 @@ const (
 	maxModelFallbackIDRunes          = 128
 )
 
+// EffectiveModelSnapshot reads the model projection without copying queues or
+// interactive requests from the full live-state snapshot.
+func (r *Router) EffectiveModelSnapshot(threadID string) (model string, revision uint64) {
+	if r == nil {
+		return "", 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if id := r.identityIfPresent(threadID); id != nil {
+		revision = id.effectiveModelRevision
+	}
+	if st := r.threadStateIfPresent(threadID); st != nil {
+		model = st.effectiveModel
+	}
+	return model, revision
+}
+
 // ClearEffectiveModel drops the session-scoped model override and tells live
 // panes to return to the durable requested model. It is intentionally narrower
 // than CleanupThread so a provider self-exit can clear this projection without
 // sweeping final-frame triage state owned by the normal teardown path.
 func (r *Router) ClearEffectiveModel(threadID string) bool {
+	return r.clearEffectiveModel(threadID, nil)
+}
+
+// ClearEffectiveModelAtRevision clears only the fallback observed before a
+// live model apply. A newer fallback or session must survive the older ack.
+func (r *Router) ClearEffectiveModelAtRevision(threadID string, revision uint64) bool {
+	return r.clearEffectiveModel(threadID, &revision)
+}
+
+func (r *Router) clearEffectiveModel(threadID string, expectedRevision *uint64) bool {
 	if r == nil || strings.TrimSpace(threadID) == "" {
 		return false
 	}
 	r.mu.Lock()
+	if expectedRevision != nil {
+		id := r.identityIfPresent(threadID)
+		if id == nil || id.effectiveModelRevision != *expectedRevision {
+			r.mu.Unlock()
+			return false
+		}
+	}
 	existed := false
 	if st := r.threadStateIfPresent(threadID); st != nil {
 		existed = st.effectiveModelSet

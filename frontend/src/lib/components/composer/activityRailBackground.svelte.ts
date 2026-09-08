@@ -142,7 +142,8 @@ export function createBackgroundController(
       } catch (err) {
         if (!token.isCurrent() || id !== threadId) return;
         console.error('ActivityRail: ListLiveBackgroundTasks failed:', err);
-        backgroundItems = [];
+        // A failed read says nothing about task lifetime. Keep the last
+        // snapshot until a successful refresh or a switch to another thread.
       }
     },
   });

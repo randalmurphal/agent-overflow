@@ -1029,8 +1029,7 @@ func TestE2E_DiffItemPersistsWithPayload(t *testing.T) {
 }
 
 // TestE2E_ThreadModelSwitchMidSession: updating a thread's model while the
-// session is active restarts the session. After restart, the new model is what
-// the thread stores.
+// session is active applies the selection without replacing its process.
 func TestE2E_ThreadModelSwitchMidSession(t *testing.T) {
 	app, _ := setupE2EApp(t)
 	workspace := t.TempDir()
@@ -1039,9 +1038,9 @@ func TestE2E_ThreadModelSwitchMidSession(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 
-	// Binary that stays alive until stdin closes. No events needed for this
-	// test — we only care about the restart path and the DB write.
-	binary := testutil.WriteMockClaudeScript(t, t.TempDir(), [][]string{{}})
+	// Acknowledge live controls so an unanswered set_model cannot pass
+	// merely because its deferred reconnect still holds a session entry.
+	binary, _ := modelSwitchMockBinary(t)
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatalf("set binary: %v", err)
 	}
@@ -1050,16 +1049,16 @@ func TestE2E_ThreadModelSwitchMidSession(t *testing.T) {
 		t.Fatalf("StartSession: %v", err)
 	}
 
-	_, active := app.sessionManager().get(thread.ID)
+	before, active := app.sessionManager().get(thread.ID)
 	if !active {
 		t.Fatal("session not registered after StartSession")
 	}
 
-	updated, err := app.UpdateThreadModel(thread.ID, "claude-sonnet")
+	updated, err := app.UpdateThreadModel(thread.ID, "claude-fable-5")
 	if err != nil {
 		t.Fatalf("UpdateThreadModel: %v", err)
 	}
-	if updated.Model != "claude-sonnet" {
+	if updated.Model != "claude-fable-5" {
 		t.Fatalf("updated model = %q", updated.Model)
 	}
 
@@ -1067,15 +1066,18 @@ func TestE2E_ThreadModelSwitchMidSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetThread: %v", err)
 	}
-	if stored.Model != "claude-sonnet" {
+	if stored.Model != "claude-fable-5" {
 		t.Fatalf("stored model = %q", stored.Model)
 	}
 
-	// UpdateThreadModel restarts the session; the map should still hold a
-	// session after the call returns.
-	_, stillActive := app.sessionManager().get(thread.ID)
-	if !stillActive {
-		t.Fatal("session not re-registered after model switch")
+	// Preserve the process identity, not just a populated session map.
+	after, stillActive := app.sessionManager().get(thread.ID)
+	if !stillActive || after.Token != before.Token || after.Claude != before.Claude {
+		t.Fatal("model switch replaced the session")
+	}
+
+	if app.sessionManager().runtime.PendingConfigReconnect(thread.ID) {
+		t.Fatal("model switch scheduled a restart")
 	}
 
 	_ = app.StopSession(thread.ID)

@@ -5089,9 +5089,8 @@ export function UpdateThreadContextWindow(id: string, tokens: number): $Cancella
 
 /**
  * UpdateThreadFastMode persists the fast-mode boolean and reconciles a
- * live session (Codex maps it to the per-turn serviceTier override; the
- * Claude CLI only reads fast mode from launch settings, so a Claude
- * session restarts — deferred until the thread is quiet).
+ * live session (Codex maps it to the per-turn serviceTier override;
+ * Claude applies /fast when the session supports it and has the SDK opt-in).
  */
 export function UpdateThreadFastMode(id: string, on: boolean): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(4175109385, id, on).then(($result: any) => {
@@ -5116,9 +5115,9 @@ export function UpdateThreadMode(threadID: string, mode: string): $CancellablePr
 }
 
 /**
- * UpdateThreadModel changes a thread's model and restarts an active provider
- * session so the new model takes effect immediately. Threads without an active
- * session are updated in place and will use the new model on the next start.
+ * UpdateThreadModel changes a thread's model through live provider controls.
+ * Launch-only profile changes wait for the session to be quiet before restart.
+ * Threads without an active session use the new model on their next start.
  */
 export function UpdateThreadModel(threadID: string, model: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(4179686417, threadID, model).then(($result: any) => {
@@ -5130,7 +5129,8 @@ export function UpdateThreadModel(threadID: string, model: string): $Cancellable
  * UpdateThreadModelSelection changes provider + model as one atomic model-menu
  * selection. The selected provider/model's remembered profile is applied before
  * the thread row is persisted, so SQLite never sees an invalid intermediate
- * provider/effort pair such as codex + max.
+ * provider/effort pair such as codex + max. Reselecting after a fallback
+ * reasserts the requested model on the live session.
  */
 export function UpdateThreadModelSelection(threadID: string, providerName: string, model: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(3140398729, threadID, providerName, model).then(($result: any) => {
@@ -5160,7 +5160,7 @@ export function UpdateThreadProvider(id: string, providerName: string): $Cancell
 /**
  * UpdateThreadReasoningEffort persists the effort tier and reconciles a
  * live session (Codex applies it on the next turn without a restart;
- * Claude needs a restart, deferred until the thread is quiet).
+ * Claude applies it through /effort when available).
  */
 export function UpdateThreadReasoningEffort(id: string, effort: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(892204206, id, effort).then(($result: any) => {

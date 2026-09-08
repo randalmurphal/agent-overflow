@@ -1304,3 +1304,16 @@ is the same session-floor observation over a surviving socket after rebind.
 Native relay generations change only when the main listener's binding/actual
 port or the launcher owner changes. Tailscale and canonical-domain settings
 must not retire a working Windows LAN relay or terminate its active sockets.
+
+## Model changes preserve live work
+
+All model-selection bindings use the live config reconciler, including a
+reselection after a fallback. The durable model can already match while the
+provider is running a fallback, so that action reasserts the model and clears
+only its observed effective-model revision after acceptance; newer fallback
+events survive an older control acknowledgment. Never route a model
+picker through `ReconnectSession` or broad triage cleanup. Ordinary effort or
+fast-mode edits do not implicitly retry a fallback. A deferred restart checks
+busy state again after provider I/O, since work can arrive during that wait.
+`TestModelSelectionPreservesSessionAndBackgroundWork` pins both bindings and
+both providers with live mock processes and retained tray rows.

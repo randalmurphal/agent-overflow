@@ -56,6 +56,37 @@ describe('background tray recovery', () => {
     expect(newRead).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps running rows through model edits and failed refreshes until a successful removal', async () => {
+    attachOwner();
+    const pane = await buildPane();
+    noteThread(pane.threadId!, remote, 2);
+    const read = setBindingMock('ListLiveBackgroundTasks', async () => [launch('running')]);
+    let controller!: ReturnType<typeof createBackgroundController>;
+    release = $effect.root(() => {
+      controller = createBackgroundController(() => pane, Date.now);
+      return controller.mount();
+    });
+    await flush();
+    expect(controller.runningCount).toBe(1);
+    pane.replaceThread({ ...pane.thread!, model: 'changed-model' });
+    await flush();
+    expect(controller.tasks.map((task) => task.rowId)).toEqual(['running']);
+    expect(read).toHaveBeenCalledTimes(1);
+
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      setBindingMock('ListLiveBackgroundTasks', async () => { throw new Error('read failed'); });
+      emitWailsEvent('transport:gap', { channel: 'provider:background_tasks_changed' }, remote);
+      await flush();
+      expect(log).toHaveBeenCalled();
+      expect(controller.tasks.map((task) => task.rowId)).toEqual(['running']);
+      setBindingMock('ListLiveBackgroundTasks', async () => []);
+      emitWailsEvent('transport:gap', { channel: 'provider:background_tasks_changed' }, remote);
+      await flush();
+      expect(controller.tasks).toEqual([]);
+    } finally { log.mockRestore(); }
+  });
+
   it('recovers only relevant owner gaps and removes all recovery listeners on unmount', async () => {
     attachOwner();
     const pane = await buildPane();

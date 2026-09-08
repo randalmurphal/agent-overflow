@@ -162,7 +162,7 @@ func (a *App) restartSessionIfAffected(threadID, changedField string) (store.Thr
 		}
 		return a.store.GetThread(threadID)
 	}
-	a.reconcileSessionConfig(threadID)
+	a.reconcileSessionConfig(threadID, false)
 	return refreshed, nil
 }
 

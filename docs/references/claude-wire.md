@@ -2879,6 +2879,14 @@ CLI binary; the subtypes we use or plan to use:
   user envelope containing
   `<local-command-stdout>Set model to ...</local-command-stdout>`.
 
+  Models without effort need no process reset when switching: the CLI's
+  request builder suppresses `output_config.effort` for unsupported models,
+  even if the session retains an effort preference. Source:
+  `src/services/api/claude.ts#configureEffortParams`; installed bundle checked
+  2026-09-08 (`if(!lh(d)){delete t.effort;return}`). Switching back applies
+  the selected tier through `/effort`. Reselecting a preferred model after a
+  fallback likewise uses `set_model`, not session teardown.
+
   **`system_prompt` (bundle-read 2.1.214 / 2.1.219 / 2.1.237, NOT
   spiked against a live CLI).** The field is `@internal` and appears in
   no changelog entry, so everything here is `rg -a -o -N` over the

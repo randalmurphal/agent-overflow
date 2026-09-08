@@ -345,7 +345,7 @@ func TestSettingsSaveReachesTheWireOfASessionThatWasStillStarting(t *testing.T) 
 	dispatched := make(chan string, 8)
 	app.sessionManager().runtime.SetReconcileSessionConfigStep(func(id string) {
 		dispatched <- id
-		app.reconcileSessionConfig(id)
+		app.reconcileSessionConfig(id, false)
 	})
 
 	const housePrompt = "Answer in the house style."

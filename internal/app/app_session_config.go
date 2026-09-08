@@ -67,9 +67,10 @@ func (a *App) configReconnectQuietWindow() time.Duration {
 // the thread row's current config: live-apply when possible, deferred
 // restart otherwise. Safe to call with or without the per-thread action
 // lock held — it never takes it; restarts happen on the watcher goroutine,
-// which does.
-func (a *App) reconcileSessionConfig(threadID string) {
-	if a.liveApplySessionConfig(threadID) {
+// which does. reassertModel is used when the user retries the same selected
+// model after a provider fallback; launch options alone cannot see that delta.
+func (a *App) reconcileSessionConfig(threadID string, reassertModel bool) {
+	if a.liveApplySessionConfig(threadID, reassertModel) {
 		return
 	}
 	a.schedulePendingConfigReconnect(threadID)
@@ -86,7 +87,7 @@ func (a *App) reconcileSessionConfig(threadID string) {
 // — a duplicate zero-cost command at best, an out-of-order launchOpts
 // commit at worst. Serialization also fixes the commit order: whoever
 // sends last also commits last.
-func (a *App) liveApplySessionConfig(threadID string) bool {
+func (a *App) liveApplySessionConfig(threadID string, reassertModel bool) bool {
 	unlock := a.configApplyLocks().Lock(threadID)
 	defer unlock()
 	// A start already in flight read the thread row at some point before
@@ -127,11 +128,15 @@ func (a *App) liveApplySessionConfig(threadID string) bool {
 	// for the spawn half of the pair.
 	promptOverride := a.reconcileSettingsOwnedAxes(thread, sess.Token, &opts, sess.LaunchOptions)
 
+	_, fallbackRevision := a.triage.EffectiveModelSnapshot(threadID)
 	switch {
 	case sess.Claude != nil:
 		update, ok := claude.PlanLiveUpdate(sess.LaunchOptions, opts)
 		if !ok {
 			return false
+		}
+		if reassertModel {
+			update.Model = claude.ConfigFromOptions(opts).Model
 		}
 		// A session that already answered a live-config command with
 		// something other than the expected state change is not asked
@@ -164,6 +169,9 @@ func (a *App) liveApplySessionConfig(threadID string) bool {
 					claude.CommitLiveUpdate(sess.LaunchOptions, opts, applied), receipt)
 			}
 		})
+		if applied.Model {
+			a.clearAppliedModelFallback(threadID, sess.Token, fallbackRevision)
+		}
 		if err != nil {
 			if unwind != nil {
 				unwind(applied)
@@ -219,8 +227,12 @@ func (a *App) liveApplySessionConfig(threadID string) bool {
 			return false
 		}
 		push := codex.PlanThreadSettingsPush(sess.LaunchOptions, opts)
+		push.Model = push.Model || reassertModel
 		sess.Codex.ApplyLiveUpdate(update)
 		a.pushCodexThreadSettings(threadID, sess.Codex, push)
+		if push.Model {
+			a.clearAppliedModelFallback(threadID, sess.Token, fallbackRevision)
+		}
 	default:
 		// claudetui has no live-update surface; restart is the only path.
 		return false
@@ -320,7 +332,7 @@ func (a *App) reconcileSessionConfigStep(threadID string) {
 		step(threadID)
 		return
 	}
-	a.reconcileSessionConfig(threadID)
+	a.reconcileSessionConfig(threadID, false)
 }
 
 // codexSettingsPushTimeout bounds the `thread/settings/update` round trip.
@@ -450,8 +462,13 @@ func (a *App) fireDeferredConfigReconnectLocked(threadID string) bool {
 	// The world may have moved while we waited: the session may have been
 	// replaced (new launch config already matches) or the remaining delta
 	// may have become live-appliable. Re-check before killing anything.
-	if a.liveApplySessionConfig(threadID) {
+	if a.liveApplySessionConfig(threadID, a.hasModelFallback(threadID)) {
 		return true
+	}
+	// Provider I/O above can take seconds. A background notification or turn
+	// may have arrived meanwhile without acquiring the thread action lock.
+	if a.threadConfigBusy(threadID) {
+		return false
 	}
 	if err := a.startSession(context.Background(), threadID); err != nil {
 		log.Printf("thread %s: deferred config reconnect failed: %v", threadID, err)
@@ -496,4 +513,22 @@ func (a *App) threadConfigBusy(threadID string) bool {
 		return true
 	}
 	return running
+}
+
+// A fallback does not change the durable selection or launch options. Explicit
+// re-selection must therefore reassert the model even when the config diff is
+// empty. Keep its projection until an apply succeeds so a deferred retry still
+// sees the request; never use session teardown to clear a model override.
+func (a *App) hasModelFallback(threadID string) bool {
+	model, _ := a.triage.EffectiveModelSnapshot(threadID)
+	return model != ""
+}
+
+func (a *App) clearAppliedModelFallback(threadID, token string, revision uint64) {
+	if a.triage == nil {
+		return
+	}
+	if current, ok := a.sessionManager().get(threadID); ok && current.Token == token {
+		a.triage.ClearEffectiveModelAtRevision(threadID, revision)
+	}
 }

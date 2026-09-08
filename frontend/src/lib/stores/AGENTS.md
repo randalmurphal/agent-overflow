@@ -1009,3 +1009,11 @@ Draft hydration reconstructs attachments in saved ID order, never upload-list
 order. Missing records are an error, not permission to shift image labels onto
 different files. Every matching draft write, including restoration, marks the
 current snapshot pending until acknowledged so send preparation cannot skip it.
+
+## Model selection
+
+`threadModelControls.ts` owns picker and slash-command model changes. Retrying
+the selected model after a fallback uses `UpdateThreadModelSelection`, never
+`ReconnectSession`. The backend reasserts it live and owns confirmation through
+the effective-model event; a returned unchanged thread row is not confirmation.
+Model/profile changes must not clear background-task state.

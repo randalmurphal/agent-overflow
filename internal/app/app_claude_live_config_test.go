@@ -550,11 +550,11 @@ func TestLiveApplySessionConfigSerializesPerThread(t *testing.T) {
 	sameDone := make(chan struct{})
 	otherDone := make(chan struct{})
 	go func() {
-		app.liveApplySessionConfig(idA)
+		app.liveApplySessionConfig(idA, false)
 		close(sameDone)
 	}()
 	go func() {
-		app.liveApplySessionConfig(idB)
+		app.liveApplySessionConfig(idB, false)
 		close(otherDone)
 	}()
 

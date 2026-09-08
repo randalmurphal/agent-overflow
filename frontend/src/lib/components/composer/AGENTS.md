@@ -185,6 +185,11 @@ row whenever a background task outlived its turn.
 Call `createActivityRailHost` from component init (the clock uses runes),
 `mount()` from `onMount`, and dispose its return value in `onDestroy`.
 
+Background snapshots survive model/profile edits and failed list reads. Only a
+successful snapshot or a switch to another thread can remove rows; a transport
+error is not evidence that work stopped. The controller regression test covers
+a model edit, failed refresh, and authoritative removal.
+
 ## Remote jobs share the background tray
 
 `remote_command` rows are receipt projections from `ListLiveBackgroundTasks`,

@@ -86,6 +86,11 @@ not a preference.
   carrying that uuid (`app_claude_live_config.go` settles those).
   Context-window changes ride the `[1m]` marker on `set_model`. Extended
   thinking rides `set_max_thinking_tokens`.
+- Models without reasoning effort (Haiku) need no restart: the CLI removes
+  `output_config.effort` when the selected model does not support it. Switching
+  back reasserts the target tier with `/effort`; a partial apply must leave
+  the unconfirmed tier pending. Never infer an active tier from options the
+  previous model ignored.
 - `ApplyLiveUpdate` validates EVERY axis before ANY side effect,
   including refusing the command axes while the transcript still needs
   the resume-at repair, so a restart-bound update never half-applies. Its

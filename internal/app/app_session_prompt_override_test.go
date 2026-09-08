@@ -692,10 +692,10 @@ func TestFeatureOwnedPromptChangeStillConvergesThroughTheReconciler(t *testing.T
 	app.setThreadSystemPrompt(id, "deliberation prompt v2")
 
 	// Only a restart can converge a system-prompt change on either provider.
-	if app.liveApplySessionConfig(id) {
+	if app.liveApplySessionConfig(id, false) {
 		t.Fatal("liveApplySessionConfig() = true; a feature-prompt edit must fall through to a restart")
 	}
-	app.reconcileSessionConfig(id)
+	app.reconcileSessionConfig(id, false)
 	select {
 	case got := <-restarted:
 		if got != id {

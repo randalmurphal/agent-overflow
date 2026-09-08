@@ -164,9 +164,9 @@ func IsLiveEffortTier(tier string) bool {
 //     CLAUDE_CODE_AUTO_COMPACT_WINDOW must match the live window),
 //   - the output schema and workdir.
 //
-// An effort transition where either side is empty (a model that declares no
-// reasoning effort) is NOT live-appliable: there is no /effort argument that
-// restores "send no effort at all". The system prompt has HALF that hole:
+// A model that declares no reasoning effort suppresses effort in the CLI
+// request builder, so switching to it needs only set_model. Switching back
+// reasserts the target effort through /effort. The system prompt has a hole:
 // `set_model.system_prompt` must be non-empty, so turning an override OFF is
 // a restart — but its setter assigns unconditionally onto the slot
 // `--system-prompt-file` fills, so turning one ON is live, exactly like
@@ -192,12 +192,14 @@ func PlanLiveUpdate(prev, next provider.SessionOptions) (LiveUpdate, bool) {
 	if prevCfg.BasePermissionMode != nextCfg.BasePermissionMode {
 		update.BasePermissionMode = nextCfg.BasePermissionMode
 	}
-	if prevCfg.ReasoningEffort != nextCfg.ReasoningEffort &&
-		prevCfg.ReasoningEffort != "" && nextCfg.ReasoningEffort != "" {
+	if provider.ModelDeclaresNoReasoningEffort(string(provider.Claude), nextCfg.Model) {
+		// Claude removes output_config.effort for unsupported models, even
+		// when the session retains a tier. No reset or restart is needed.
+		prevCfg.ReasoningEffort, nextCfg.ReasoningEffort = "", ""
+	} else if prevCfg.ReasoningEffort != nextCfg.ReasoningEffort && nextCfg.ReasoningEffort != "" {
 		update.Effort = nextCfg.ReasoningEffort
 		// Carried by the update — take the axis out of the equality check.
-		// An empty-sided transition is deliberately NOT blanked, so it
-		// falls through to the DeepEqual below and demands a restart.
+		// This also reasserts effort after leaving a model without effort.
 		prevCfg.ReasoningEffort, nextCfg.ReasoningEffort = "", ""
 	}
 	// The prompt swap rides update.Model's set_model (or a re-send of the
@@ -545,6 +547,12 @@ func CommitLiveUpdate(prev, next provider.SessionOptions, applied LiveApplyOutco
 		// leave behind here.
 		committed.Model = next.Model
 		committed.ContextWindow = next.ContextWindow
+		if provider.ModelDeclaresNoReasoningEffort(string(provider.Claude), prev.Model) {
+			// The source model had no active tier. If the model write landed
+			// but /effort did not, keep that tier unknown so the retry still
+			// sends /effort, even when prev's ignored option named a tier.
+			committed.ReasoningEffort = ""
+		}
 	}
 	if applied.SystemPrompt {
 		committed.SystemPrompt = next.SystemPrompt

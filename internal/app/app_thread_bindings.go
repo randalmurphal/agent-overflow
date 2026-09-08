@@ -394,9 +394,9 @@ func (a *App) UpdateThreadProvider(id, providerName string) (store.Thread, error
 	return a.finishThreadModelUpdate(update)
 }
 
-// UpdateThreadModel changes a thread's model and restarts an active provider
-// session so the new model takes effect immediately. Threads without an active
-// session are updated in place and will use the new model on the next start.
+// UpdateThreadModel changes a thread's model through live provider controls.
+// Launch-only profile changes wait for the session to be quiet before restart.
+// Threads without an active session use the new model on their next start.
 //
 //ao:scope threads:operate
 func (a *App) UpdateThreadModel(threadID string, model string) (store.Thread, error) {
@@ -415,7 +415,8 @@ func (a *App) UpdateThreadModel(threadID string, model string) (store.Thread, er
 // UpdateThreadModelSelection changes provider + model as one atomic model-menu
 // selection. The selected provider/model's remembered profile is applied before
 // the thread row is persisted, so SQLite never sees an invalid intermediate
-// provider/effort pair such as codex + max.
+// provider/effort pair such as codex + max. Reselecting after a fallback
+// reasserts the requested model on the live session.
 //
 //ao:scope threads:operate
 func (a *App) UpdateThreadModelSelection(threadID string, providerName string, model string) (store.Thread, error) {
@@ -433,7 +434,7 @@ func (a *App) UpdateThreadModelSelection(threadID string, providerName string, m
 
 // UpdateThreadReasoningEffort persists the effort tier and reconciles a
 // live session (Codex applies it on the next turn without a restart;
-// Claude needs a restart, deferred until the thread is quiet).
+// Claude applies it through /effort when available).
 //
 //ao:scope threads:operate
 //ao:route thread
@@ -460,9 +461,8 @@ func (a *App) UpdateThreadReasoningEffort(id, effort string) (store.Thread, erro
 }
 
 // UpdateThreadFastMode persists the fast-mode boolean and reconciles a
-// live session (Codex maps it to the per-turn serviceTier override; the
-// Claude CLI only reads fast mode from launch settings, so a Claude
-// session restarts — deferred until the thread is quiet).
+// live session (Codex maps it to the per-turn serviceTier override;
+// Claude applies /fast when the session supports it and has the SDK opt-in).
 //
 //ao:scope threads:operate
 //ao:route thread
@@ -719,10 +719,11 @@ func (a *App) RegenerateThreadTitle(threadID string) error {
 
 // finishThreadModelUpdate is the shared tail of the three model-selection
 // bindings: reconcile the live session, then broadcast the row those bindings
-// return. `SelectionChanged` is the no-change test, so re-selecting the model
-// a thread already carries reconciles nothing and broadcasts nothing.
+// return. Re-selecting after a fallback reasserts the requested model through
+// the same live path, even though the durable selection did not change.
 func (a *App) finishThreadModelUpdate(update threadapp.ModelUpdate) (store.Thread, error) {
-	if !update.SelectionChanged() {
+	reassertModel := !update.SelectionChanged() && a.hasModelFallback(update.Thread.ID)
+	if !update.SelectionChanged() && !reassertModel {
 		a.rememberChatModelProfile(update.Thread)
 		return update.Thread, nil
 	}
@@ -731,12 +732,12 @@ func (a *App) finishThreadModelUpdate(update threadapp.ModelUpdate) (store.Threa
 			log.Printf("thread %s: reset todo list on provider switch: %v", update.Thread.ID, err)
 		}
 	}
-	a.reconcileSessionConfig(update.Thread.ID)
+	a.reconcileSessionConfig(update.Thread.ID, reassertModel)
 	updated, err := a.threadApplication().Get(update.Thread.ID)
 	if err != nil {
 		return store.Thread{}, err
 	}
 	a.rememberChatModelProfile(updated)
-	a.broadcastThreadRow(triage.ThreadActionFull, updated)
+	a.broadcastThreadRowIfChanged(triage.ThreadActionFull, updated, update.SelectionChanged())
 	return updated, nil
 }
