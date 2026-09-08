@@ -387,6 +387,10 @@ func TestRevertAndResendSerializesConcurrentSendAfterReplacement(t *testing.T) {
 			if !ok || len(flushEvent.Items) != 1 || flushEvent.Items[0].Message != content {
 				t.Fatalf("concurrent queued send = %#v", flushed.Data)
 			}
+			// Claude's eager path emits the UI transition before registering
+			// the pending send. Simulated provider echoes must wait until the
+			// worker has actually dispatched it, just as the real provider does.
+			app.flushDispatch.wg.Wait()
 		}
 		head, ok := app.triage.PeekPendingSendHeadForTest(thread.ID)
 		if !ok {

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +18,16 @@ import (
 func TestOwnDevicePhoneBridgesTwoPreviouslySeparateHosts(t *testing.T) {
 	ownConnectionNetwork(t)
 	a, b := ownConnectionBackend(t), ownConnectionBackend(t)
+	// Observe the production emit funnel on both receiving hosts. An outgoing
+	// profile that exists only on disk leaves each already-open desktop blind.
+	var changes [2]atomic.Int32
+	for i, host := range []ownConnectionHost{a, b} {
+		host.app.testEmitHook = func(name string, data any) {
+			if name == "backend:set-changed" && data.(BackendSetChange).Action == "membership" {
+				changes[i].Add(1)
+			}
+		}
+	}
 	phone, err := attachedbackends.New(t.TempDir(), "Phone", "android")
 	if err != nil {
 		t.Fatal(err)
@@ -78,6 +89,11 @@ func TestOwnDevicePhoneBridgesTwoPreviouslySeparateHosts(t *testing.T) {
 			}
 		})
 	}
+	for i := range changes {
+		if changes[i].Load() != 0 {
+			t.Fatal("refused introduction published a profile change")
+		}
+	}
 	if err := phone.CallOwnDevice(ctx, a.id, "AcceptOwnDeviceIntroduction", nil, invite.URL); err != nil {
 		t.Fatal(err)
 	}
@@ -86,6 +102,18 @@ func TestOwnDevicePhoneBridgesTwoPreviouslySeparateHosts(t *testing.T) {
 	}
 	if err := phone.CallOwnDevice(ctx, b.id, "AcceptOwnDeviceIntroduction", nil, invite.URL); err != nil {
 		t.Fatal(err)
+	}
+	for i := range changes {
+		if got := changes[i].Load(); got != 1 {
+			t.Fatalf("host %d published %d profile changes, want 1", i, got)
+		}
+	}
+	// A repeated introduction is idempotent and must not churn subscriptions.
+	if err := phone.CallOwnDevice(ctx, b.id, "AcceptOwnDeviceIntroduction", nil, invite.URL); err != nil {
+		t.Fatal(err)
+	}
+	if changes[1].Load() != 1 {
+		t.Fatal("existing connection was republished")
 	}
 	for _, edge := range []struct{ from, to ownConnectionHost }{{a, b}, {b, a}} {
 		var list owndevices.List

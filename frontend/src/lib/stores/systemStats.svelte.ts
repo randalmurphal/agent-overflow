@@ -8,6 +8,7 @@
 import type { SystemStatsEvent } from '../types/events';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { onBackendDetached } from '../transport/backends';
+import { onBackendStatusChange } from './transportStatus.svelte';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 
 const stats = createKeyedSignalRegistry<SystemStatsEvent | null>(null);
@@ -27,3 +28,6 @@ export function resetForTest(): void {
 }
 
 onBackendDetached(({ backendId }) => stats.drop(backendId));
+onBackendStatusChange((backend, status) => {
+  if (status.status !== 'connected') stats.drop(backend);
+});

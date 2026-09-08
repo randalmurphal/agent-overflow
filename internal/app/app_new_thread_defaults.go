@@ -32,6 +32,8 @@ type NewThreadDefaultsUpdate struct {
 // UpdateNewThreadDefaults updates the provider/model profile used to seed
 // future draft placeholders and newly-created threads. It intentionally does
 // not mutate any existing thread row.
+// The project ID is inside the input object; the frontend's methodFamilies
+// routes this home-parked signature to that project's execution computer.
 //
 //ao:scope threads:operate
 //ao:route home

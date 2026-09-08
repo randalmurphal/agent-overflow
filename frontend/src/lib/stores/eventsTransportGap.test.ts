@@ -2,7 +2,7 @@
 // §3.4). A gap carries no entity key, so the only safe answer is to
 // forget what we claimed to know about the backend's counters — in every
 // tier that holds a stamp, not just the registry.
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyTransportGap } from './eventsTransportGap';
 import { resetPanesForTest } from './panes.svelte';
 import {
@@ -46,6 +46,12 @@ import {
 import type { ThreadItemSnapshot } from './threadItemCache';
 import type { ThreadHistoryStamp } from './threadHistoryStamps';
 import { itemEventQueued, itemEventsSettled } from './itemEventSettlement';
+
+import { __resetSystemsForTest, getSystems, loadSystems } from './systems.svelte';
+import { resetToLocalPage, pairViewOnly } from '../../test/helpers/scopes';
+import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
+import { backendById } from '../transport/backends';
+import { __resetManifestBackendsForTest } from '../transport/manifestBackends';
 
 it('starts a gap snapshot after older queued replay mutations settle', async () => {
   resetPanesForTest();
@@ -398,5 +404,47 @@ describe('transport gap — draft:updated', () => {
     applyTransportGap({ channel: 'draft:updated', seq: 9 });
 
     expect(reload).not.toHaveBeenCalled();
+  });
+});
+
+// Membership gaps restore the connection set before thread catalog reads can
+// possibly discover the computers whose attachment events were lost.
+describe('transport gap — computer membership', () => {
+  const LAPTOP = {
+    id: 'laptop', backendId: '99999999-8888-4777-8666-555555555555',
+    name: 'Laptop', nickname: '', endpoint: 'https://laptop.example:8123', lastReachedMs: 0,
+  };
+  beforeEach(() => {
+    __resetSystemsForTest();
+    resetStagedBackends();
+    __resetManifestBackendsForTest();
+    resetToLocalPage();
+  });
+  afterEach(() => {
+    resetToLocalPage();
+    resetStagedBackends();
+    __resetManifestBackendsForTest();
+    __resetSystemsForTest();
+  });
+  it.each(['backend:attach', 'backend:set-changed'])('repairs a %s gap and supersedes a list started before it', async (channel) => {
+    let reply!: (rows: typeof LAPTOP[]) => void;
+    const list = setBindingMock('ListBackends', () => new Promise<typeof LAPTOP[]>((resolve) => { reply = resolve; }));
+    const loading = loadSystems();
+    list.mockResolvedValue([LAPTOP]);
+    applyTransportGap({ channel, seq: 4 });
+    reply([]);
+    await loading;
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(getSystems()).toEqual([LAPTOP]);
+    expect(backendById('laptop')).toBeDefined();
+
+    // Another computer's profile directory must never replace HOME's set,
+    // nor may a paired/view-only client call its upstream host-only RPC.
+    stageBackend();
+    applyTransportGap({ channel, seq: 8 }, { backendId: LAPTOP.backendId });
+    expect(list).toHaveBeenCalledTimes(2);
+    await pairViewOnly();
+    applyTransportGap({ channel, seq: 9 });
+    expect(list).toHaveBeenCalledTimes(2);
   });
 });

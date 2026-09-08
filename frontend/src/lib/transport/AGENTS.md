@@ -20,6 +20,12 @@ pushed event, for the embedded webview, `agent-overflow --connect`, and a
 remote browser alike. Protocol and authz rules:
 [`internal/transport/AGENTS.md`](../../../../internal/transport/AGENTS.md).
 
+Placeholder defaults belong to the input project's execution computer.
+`UpdateNewThreadDefaults` uses the structured `projectId` family route for every
+model, provider, effort, context-window, fast-mode and access-mode caller. A
+synthetic draft has no thread row to route by; neither HOME nor the focused
+pane can substitute for that project's owner.
+
 - `backends.ts` is the registry: which backends this client is attached to,
   and the one `WSClient` + `TransportHandle` each of them owns. Everything a
   connection owns stays per socket and unchanged — hello, session, replay
@@ -137,6 +143,10 @@ remote browser alike. Protocol and authz rules:
   and the message must not contain `": "`, which `utils/userFacingError.ts`
   reads as Go-style error wrapping and truncates to the last segment.
   Structured detail goes in parentheses, comma-separated.
+  One pre-socket failure boundary owns manifest loading, ticket minting, URL
+  construction and the socket constructor. Every rejection clears the pending
+  attempt and rejoins the reconnect ladder unless closed or terminal; an
+  event-only connection must recover without another RPC or subscription.
 
   **The reconnect ladder stops on exactly two conditions, and one latch
   holds both.** `unauthorized` is a refused credential this session
@@ -369,7 +379,11 @@ remote browser alike. Protocol and authz rules:
   subscriptions, groups and thread batches that the generator cannot infer
   from string parameters. Route resolution checks this table first. Unknown
   IDs require a sole attached computer, instead of falling through to HOME.
-  List and creation results teach family ownership by their declared method
+  Every typed Thread/Project result teaches ownership before its RPC resolves,
+  including creation/fork responses on pinned and ordinary routes. Immediate
+  edits must not depend on a sidebar push winning the race. The generated API
+  coverage test in `entityIndex.test.ts` keeps new producers in this contract.
+  List and creation results teach other family ownership by their declared method
   shape; `methodFamilies.test.ts` pins each method against the generated table.
   Device, passkey and backend-profile administration stays on its explicitly
   selected configuration computer rather than using an entity family.
@@ -957,7 +971,12 @@ remote browser alike. Protocol and authz rules:
   bootstrap-failure UI rather than a page that waits forever. Only a
   backend REFUSAL clears the stored ticket (`clearInjectedPageTicket`), so
   a retry waits for a fresh injection instead of re-presenting a token the
-  server already rejected.
+  server already rejected. Native bridge methods must be invoked on their
+  owning objects: WebView2 and WKWebView reject detached `postMessage` calls.
+  Receiver-sensitive tests cover both platform bridges. Each ticket wait owns
+  its retry timer, deadline and bridge-ready listener; delivery, timeout and
+  bridge exceptions all release them, including errors on later retry/event
+  callbacks. Never leave a module-global listener alive after a wait settles.
 
 - `deviceSession.ts` is the deliberate exception to "nothing readable by
   script", for exactly one credential class: a PAIRED device's session

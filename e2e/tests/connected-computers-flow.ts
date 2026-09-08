@@ -1,7 +1,7 @@
 // Two independently booted computers, real pairing/proxy/RPC and production
 // frontend. Profiles and network identities outlive HarnessReset, so this
 // flow owns both backends and all of its browser contexts.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page, type WebSocketRoute } from '@playwright/test';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
 import { instrument } from './offhost-helpers.js';
@@ -27,8 +27,16 @@ export function connectedComputersFlow(): void {
     let remote: HarnessApp | undefined;
     let pairing: Awaited<ReturnType<typeof headlessPairing>> | undefined;
     const other = await browser.newContext();
+    const reciprocal = await browser.newContext();
     const errors: string[] = [];
     const surfaced = await instrument(page);
+    let remoteOnline = true;
+    let remoteSocket: { page: WebSocketRoute; server: WebSocketRoute } | undefined;
+    await page.routeWebSocket(/\/ws\/backend\//, (socket) => {
+      if (!remoteOnline) { void socket.close({ code: 1012 }); return; }
+      const server = socket.connectToServer();
+      remoteSocket = { page: socket, server };
+    });
     page.on('pageerror', (error) => errors.push(error.message));
     try {
       home = await launchHarness();
@@ -54,6 +62,15 @@ export function connectedComputersFlow(): void {
       await home.open(second);
       await expect(second.getByRole('button', { name: 'Settings', exact: true })).toBeVisible();
       const initialFont = await second.evaluate(() => getComputedStyle(document.documentElement).fontSize);
+      // The receiving computer's desktop is already open when another
+      // computer enrolls. Reciprocal enrollment must publish its new profile
+      // to that live page, not wait for another bootstrap/restart.
+      const remotePage = await reciprocal.newPage();
+      const remoteSurfaced = await instrument(remotePage);
+      remotePage.on('pageerror', (error) => errors.push(error.message));
+      await remote.open(remotePage);
+      await expect(remotePage.getByTestId('thread-row').filter({ hasText: 'GPU conversation' })).toBeVisible();
+      await expect(remotePage.getByTestId('thread-row').filter({ hasText: 'Mac conversation' })).toHaveCount(0);
 
       await settingsPage(page, 'Connect to a computer');
       pairing = await headlessPairing(remote);
@@ -70,6 +87,35 @@ export function connectedComputersFlow(): void {
       const remoteId = systems[0].id;
       await home.rpc('RenameBackend', remoteId, 'GPU workstation');
       await expect(computerRow).toContainText('GPU workstation');
+      await expect(remotePage.getByTestId('thread-row').filter({ hasText: 'Mac conversation' })).toBeVisible();
+      const homeDraft = await home.rpc<{ id: string }>('CreateThread', {
+        projectId: homeSeed.projects[0].projectId, title: 'Pushed after reciprocal pairing', provider: 'claude',
+      });
+      await home.rpc('SaveDraft', homeDraft.id, 'Not sent yet', [], [], null);
+      await expect(remotePage.getByTestId('thread-row').filter({ hasText: 'Pushed after reciprocal pairing' })).toBeVisible();
+
+      // The remote computer has never been opened in a pane. Its sidebar
+      // must still receive new rows live, across replay, and after replay.
+      // Keep home online throughout so a home restart cannot hide a missing
+      // subscription or accidentally repair the remote catalog.
+      await page.getByRole('button', { name: 'Close Settings', exact: true }).click();
+      const createRemoteDraft = async (title: string) => {
+        const thread = await remote!.rpc<{ id: string }>('CreateThread', {
+          projectId: remoteSeed.projects[0].projectId, title, provider: 'codex',
+        });
+        await remote!.rpc('SaveDraft', thread.id, 'Not sent yet', [], [], null);
+      };
+      await createRemoteDraft('Created before outage');
+      await expect(page.getByTestId('thread-row').filter({ hasText: 'Created before outage' })).toBeVisible();
+      expect(remoteSocket).toBeDefined();
+      remoteOnline = false;
+      await remoteSocket!.page.close({ code: 1012, reason: 'attached computer outage' });
+      await remoteSocket!.server.close();
+      await createRemoteDraft('Created during outage');
+      remoteOnline = true;
+      await expect(page.getByTestId('thread-row').filter({ hasText: 'Created during outage' })).toBeVisible();
+      await createRemoteDraft('Created after outage');
+      await expect(page.getByTestId('thread-row').filter({ hasText: 'Created after outage' })).toBeVisible();
 
       // Backend pairing alone does not allow model commands. Toggle the real
       // originating host's opt-in, then exercise the CLI with the credential
@@ -171,8 +217,10 @@ export function connectedComputersFlow(): void {
       await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).fontSize)).toBe(changedFont);
       expect(errors).toEqual([]);
       expect(surfaced.errorToasts).toEqual([]);
+      expect(remoteSurfaced.errorToasts).toEqual([]);
     } finally {
       pairing?.close();
+      await reciprocal.close();
       await other.close();
       await page.close();
       await remote?.close();

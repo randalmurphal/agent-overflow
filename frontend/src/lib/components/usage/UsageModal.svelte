@@ -17,6 +17,8 @@
 
   import Modal from '../primitives/Modal.svelte';
   import Segmented from '../primitives/Segmented.svelte';
+  import TelemetryComputerPicker from './TelemetryComputerPicker.svelte';
+  import { selectedTelemetryComputers, telemetrySelection } from '../../stores/telemetryComputers.svelte';
   import UsageHeatmap from './UsageHeatmap.svelte';
   import UsageTotalsRow from './UsageTotalsRow.svelte';
   import UsageModelTable from './UsageModelTable.svelte';
@@ -38,6 +40,9 @@
 
   let providerFilter: ProviderFilter = $state('');
   let projectFilter = $state('');
+  const computers = $derived(selectedTelemetryComputers('usage'));
+  const onlineComputers = $derived(computers.filter((computer) => computer.connected));
+  $effect(() => { telemetrySelection('usage'); projectFilter = ''; });
 
   const PROVIDER_OPTIONS: Array<{ value: ProviderFilter; label: string }> = [
     { value: '', label: 'All' },
@@ -93,6 +98,10 @@
 <Modal {open} title="Usage" {onClose} width="md">
   {#snippet children()}
     <div class="flex flex-col gap-4">
+      <TelemetryComputerPicker kind="usage" />
+      {#if projectStats.unavailable.length > 0}
+        <p class="text-xs text-fg-muted" role="status">Partial totals — unavailable: {projectStats.unavailable.join(', ')}.</p>
+      {/if}
       <Segmented
         options={PROVIDER_OPTIONS}
         value={providerFilter}
@@ -127,7 +136,9 @@
            so under "All" it would read as part of the combined totals,
            and it is unaffected by the project filter by nature. It takes
            no filter props for the same reason. -->
-      <UsageCodexAccount enabled={providerFilter === 'codex'} />
+      {#each onlineComputers as computer (computer.key)}
+        <UsageCodexAccount enabled={providerFilter === 'codex'} backend={computer.key} computerName={computers.length > 1 ? computer.name : ''} />
+      {/each}
     </div>
   {/snippet}
 </Modal>

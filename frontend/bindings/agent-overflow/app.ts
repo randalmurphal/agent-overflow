@@ -4963,6 +4963,8 @@ export function UpdateKeybindings(bindings: keybindings$0.Keybinding[]): $Cancel
  * UpdateNewThreadDefaults updates the provider/model profile used to seed
  * future draft placeholders and newly-created threads. It intentionally does
  * not mutate any existing thread row.
+ * The project ID is inside the input object; the frontend's methodFamilies
+ * routes this home-parked signature to that project's execution computer.
  */
 export function UpdateNewThreadDefaults(update: app$0.NewThreadDefaultsUpdate): $CancellablePromise<app$0.ThreadDefaults> {
     return $Call.ByID(595194384, update).then(($result: any) => {

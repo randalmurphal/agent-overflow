@@ -394,6 +394,9 @@ func (a *App) AcceptOwnDeviceIntroduction(ctx context.Context, link string) erro
 	// the exact recipient key before spending the invitation.
 	added, e := a.backends.AcceptOwnDeviceIntroduction(ctx, link, routes)
 	if e == nil && added {
+		// Desktop clients watch the profile set, not the public membership
+		// catalog. Publish this edge before reconciliation sees it as present.
+		a.emit(eventchan.BackendSetChanged, BackendSetChange{Action: "membership"})
 		NotifyOwnDevices(a)
 	}
 	return e

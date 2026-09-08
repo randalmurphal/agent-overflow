@@ -14,6 +14,7 @@
   import { getUsageRefreshVersion } from '../../stores/usageRefresh.svelte';
   import { cycleUsagePeriod, getUsagePeriod, periodFromMillis } from '../../stores/usagePeriod.svelte';
   import { createUsageStats, localTzOffsetMinutes } from '../../stores/usageQuery.svelte';
+  import { telemetrySelection, telemetrySelectionLabel } from '../../stores/telemetryComputers.svelte';
   import { formatTokens } from '../../utils/format';
   import { formatUsageCostOrNull } from '../../utils/usageDisplay';
   import LazyOverlay from '../primitives/LazyOverlay.svelte';
@@ -74,7 +75,7 @@
   }
 </script>
 
-{#if rows.length > 0}
+{#if rows.length > 0 || stats.unavailable.length > 0 || telemetrySelection('usage') !== null}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="border-t border-border-subtle px-3 py-1.5 shrink-0 flex items-center justify-between gap-3 text-[0.6875rem] leading-tight text-fg-muted cursor-pointer hover:text-fg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
@@ -88,6 +89,15 @@
          fixed label column keeps the centered values on a shared axis
          across lines. -->
     <span class="flex flex-col gap-1.5 flex-1 min-w-0">
+      {#if telemetrySelection('usage') !== null}
+        <span class="truncate text-fg-subtle">{telemetrySelectionLabel('usage')}</span>
+      {/if}
+      {#if stats.unavailable.length > 0}
+        <span class="truncate text-fg-subtle" title={`Unavailable: ${stats.unavailable.join(', ')}`}>{rows.length > 0 ? 'Partial usage' : 'Usage unavailable'}</span>
+      {/if}
+      {#if rows.length === 0 && stats.unavailable.length === 0}
+        <span class="text-fg-subtle">{stats.loading ? 'Loading usage…' : 'No usage in this selection'}</span>
+      {/if}
       {#each rows as row (row.provider)}
         <span class="grid grid-cols-[3.5rem_1fr] items-center gap-2" data-testid="usage-footer-row">
           <span class="text-fg-subtle uppercase tracking-[0.12em]">{row.provider}</span>

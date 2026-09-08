@@ -342,6 +342,12 @@ stops waking readers.
   | Named set, no rows | `review:comments-changed` | re-reads that set THROUGH its own RPC, and only where already held |
   | Nothing but the fact | `keybindings:updated`, `discussion:definitions-changed`, `provider:accounts_changed` | re-reads wholesale |
 
+  A gap on `backend:attach` or `backend:set-changed` re-reads HOME's
+  connection profiles through `loadSystems`, subject to its host grant.
+  Refreshing thread rows cannot discover a computer whose attachment was
+  missed. Treat the gap as a membership invalidation so an older in-flight
+  profile read cannot erase the repaired connection set.
+
   Which shape is not a taste call. A frame carries rows only when the
   writer's own apply is exactly reproducible from them: a delete that is
   really a delete-OR-RESOLVE, a rename that moves a definition between names,

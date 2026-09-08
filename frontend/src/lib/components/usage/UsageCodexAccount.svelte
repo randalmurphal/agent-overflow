@@ -18,6 +18,8 @@
   // the report cannot deliver.
 
   import { GetCodexAccountUsage, type CodexAccountUsage } from '../../stores/bindings';
+  import { withBackendTarget } from '../../transport/backends';
+  import type { BackendKey } from '../../transport/backendKey';
   import { formatTokens } from '../../utils/format';
   import UsageHeatmapGrid from './UsageHeatmapGrid.svelte';
   import { buildHeatmapGrid, type HeatmapCell, type UsageDayBucket } from './heatmapGrid';
@@ -25,9 +27,11 @@
   interface Props {
     /** Fetch only while the section is actually shown. */
     enabled: boolean;
+    backend?: BackendKey;
+    computerName?: string;
   }
 
-  let { enabled }: Props = $props();
+  let { enabled, backend, computerName = '' }: Props = $props();
 
   // Same window as the modal's ledger heatmap directly above, so the two
   // grids are read against each other rather than as separate spans.
@@ -45,10 +49,11 @@
       error = null;
       return;
     }
+    const target = backend;
     let cancelled = false;
     (async () => {
       try {
-        const result = await GetCodexAccountUsage();
+        const result = await (target === undefined ? GetCodexAccountUsage() : withBackendTarget(target, () => GetCodexAccountUsage()));
         if (cancelled) return;
         nowMs = Date.now();
         usage = result;
@@ -135,7 +140,7 @@
 {#if usage || error}
   <div class="flex flex-col gap-1.5" data-testid="usage-codex-account">
     <div class="flex items-baseline justify-between gap-3">
-      <h3 class="text-[0.625rem] uppercase tracking-[0.12em] text-fg-subtle">Codex Account</h3>
+      <h3 class="text-[0.625rem] uppercase tracking-[0.12em] text-fg-subtle">Codex Account{computerName ? ` · ${computerName}` : ''}</h3>
       {#if usage?.accountEmail}
         <span class="text-[0.625rem] text-fg-subtle truncate">{usage.accountEmail}</span>
       {/if}

@@ -42,7 +42,6 @@ import { HOME_BACKEND, type BackendKey } from './backendKey';
 import {
   captureThreadMetadataRead,
   type ThreadMetadataRead,
-  noteFamilyRowsFromCall,
   noteRowsFromCall,
   projectBackend,
   resolveThreadBackend,
@@ -260,10 +259,8 @@ export const Call = {
       return wrap(transport.callByID(methodId, args).then((result) => {
         if (backendById(target) !== entry) throw removedDuringCall();
         verify?.verify(result);
-        // A pinned ALL call still teaches us who owns its project/thread
-        // rows; the caller deliberately requested one computer's share.
-        if (pinned !== null) noteRowsFromCall(methodId, result, target);
-        else noteFamilyRowsFromCall(methodId, result, target);
+        // Index returned entities before the caller can issue its next RPC.
+        noteRowsFromCall(methodId, result, target);
         return result;
       }).finally(() => verify?.release()));
     } catch (error) {

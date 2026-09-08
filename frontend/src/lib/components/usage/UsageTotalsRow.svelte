@@ -56,11 +56,10 @@
   });
 </script>
 
-<!-- One line, tiles at their natural width: equal grid columns at the
-     modal's md width force the longer labels (CACHE WRITE) to wrap
-     mid-label, while the natural widths sum well under the modal. -->
+<!-- Natural-width tiles on desktop; three columns on narrow screens keep
+     labels and amounts intact without widening the dialog. -->
 <div
-  class="flex items-start justify-between gap-3"
+  class="grid grid-cols-3 items-start gap-3 sm:flex sm:justify-between"
   data-testid="usage-totals-row"
 >
   {#each tiles as tile (tile.label)}

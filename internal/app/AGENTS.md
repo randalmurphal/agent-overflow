@@ -1237,6 +1237,10 @@ membership, then use existing independent carriers. A reciprocal invitation is
 accepted only from an active personal member, and only when its target backend,
 normalized address and TLS pin match an active catalog member. A phone can relay
 introductions between its computers without creating a new trust anchor.
+Installing an introduced profile publishes `backend:set-changed` with action
+`membership`, just like reconciler-created profiles. `own-devices:changed` alone
+updates public membership and cannot attach an already-open desktop frontend.
+The phone-bridge integration test checks both receiving hosts and idempotence.
 Agent command opt-ins remain separate. Forgetting a local connection persists
 an exclusion; revoking a personal device distributes a removal tombstone.
 

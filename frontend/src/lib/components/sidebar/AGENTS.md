@@ -208,9 +208,25 @@ Index the returned thread/project before publishing the row, including a reply
 after the dialog closes. A dismissed dialog or changed target pane must not
 navigate on that late success.
 
-SystemStatsFooter follows the selected computer, names it when several are
-attached, and hides offline samples. `system:stats` is keyed by event origin in
-the shared store; interleaved samples from two machines never share one slot.
+SystemStatsFooter defaults to the local execution host (the remembered remote
+on a standalone frontend), independent of thread focus. Its computer picker
+can select several named hosts. `system:stats` is keyed by event origin and
+cleared on disconnect; reconnect waits for a fresh sample.
+
+UsageFooter and UsageModal share a frontend-only, multi-computer selection,
+defaulting to all attached computers. `telemetryComputers` persists stable host
+identities, not nicknames or the selected thread's route. Offline/removed hosts
+remain explicit unavailable selections. `usageQuery` pins each online host read
+and combines equal bucket keys through `usageBuckets`, including all token,
+cost and unpriced-row fields. Never concatenate provider buckets into keyed
+rows or present cached offline usage as current complete totals. Thread usage
+pins its indexed owner independently of global filters; known project filters
+only query that project's host. Codex account reports remain separately named
+host/account reports, never summed as if they were host-local usage.
+
+The shared telemetry picker bounds its menu to the viewport. Compact usage
+totals use a grid, and the fixed-width heatmap scrolls inside the modal; neither
+may widen the mobile dialog.
 
 Directory browsing distinguishes `exists: false` (an incomplete/missing path,
 which may use parent-prefix filtering) from a failed RPC (a visible connection

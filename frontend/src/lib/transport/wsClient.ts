@@ -1803,7 +1803,7 @@ export class WSClient {
   // connect performs one connection attempt. On open it resolves the
   // outer promise; on close it triggers the reconnect schedule.
   //
-  // Failure paths (bootstrap throws, constructor throws, close-before-open)
+  // Pre-socket failures (bootstrap, ticket mint, URL or constructor throws)
   // null `this.connectPromise` on the way out so a fresh ensureConnected
   // call after the failure starts a new attempt rather than re-awaiting
   // a permanently-rejected Promise. A bootstrap failure also schedules a
@@ -1813,8 +1813,82 @@ export class WSClient {
   private async connect(): Promise<void> {
     this.lastAttemptStartedAt = Date.now();
     let bootstrap: Bootstrap;
+    let dialTicket: string | null = null;
+    let ws: WSLike;
     try {
       bootstrap = await this.getBootstrap();
+      // Both terminal conditions are decided here, against the manifest
+      // that just landed, and in this order. The pairing rule is asked
+      // FIRST so a page that is going to latch on it never publishes a
+      // moment of 'reconnecting' on the way: clearTerminal below is
+      // evidence that a latched condition has lifted, and for an unpaired
+      // networked page it has not.
+      if (this.pairingRequired(bootstrap.remote === true)) {
+        this.enterPairingRequired();
+        throw new DisconnectedError('this backend admits paired devices only', {
+          terminal: true,
+        });
+      }
+      // A manifest in hand means the credential was accepted, and the
+      // pairing rule just answered no, so a latched refusal is history.
+      // Republishing here rather than at socket-open means the banner stops
+      // naming a cause that no longer holds as soon as we have the
+      // evidence.
+      this.clearTerminal();
+      // A PAIRED device holds its session credential in script (it arrived
+      // in the /auth/pair response body, not as a cookie), so the upgrade
+      // names its session through the single-use ticket instead
+      // (docs/specs/remote-access.md §4). Minted fresh per attempt — a
+      // ticket lives seconds and is spent whether or not the upgrade
+      // succeeds. Runs before the closed check so a close() during the
+      // mint still stops the attempt. The unpaired path (every embedded
+      // and local page: their cookie rides the upgrade by itself) stays
+      // fully synchronous — no awaited microtask is added to every
+      // ordinary dial.
+      if (hasPairedSession(this.backend)) {
+        dialTicket = await mintDialTicket(networkFetch, this.backend);
+        if (dialTicket === null && hasPairedSession(this.backend)) {
+          // No ticket, session still held: the mint could not prove the
+          // stored session right now (endpoint unreachable, or the owner
+          // has not confirmed the pairing yet) and did NOT conclude it is
+          // dead — that verdict clears the store, and the next attempt
+          // dials unpaired. Dialing anyway would let a page cookie this
+          // browser may also hold ride the upgrade and admit this screen
+          // as the LOCAL channel — a socket that revoking this device
+          // never reaches. Fail the attempt instead; the ladder retries.
+          throw new DisconnectedError('paired session has no dial ticket');
+        }
+      }
+      if (this.closed) {
+        throw new DisconnectedError('client closed', { terminal: true });
+      }
+      // No credential is appended: the upgrade is same-origin, so the
+      // browser attaches the session cookie itself. Non-browser clients
+      // (the harness client, the e2e suite) present the session token as
+      // a query parameter against the same validation instead.
+      //
+      // What IS appended is this screen's identity, so bound methods can
+      // attribute a write and so this client can recognize the echo of its own
+      // change. It rides the URL rather than a post-open frame because it has to
+      // be in place before the first RPC lands: a draft saved in the window
+      // before a handshake completed would echo back into the composer that
+      // typed it. Both ids are opaque and the backend re-validates their shape.
+      // The manifest's wsUrl, carried onto the home endpoint when this
+      // client's page is not its backend's (./homeEndpoint.ts). The
+      // identity for every same-origin client, and for an ATTACHED
+      // backend's socket in every client — homeWsUrl leaves an absolute
+      // url naming another host exactly as it found it.
+      let url = withClientIdentity(homeWsUrl(bootstrap.wsUrl));
+      if (dialTicket !== null) {
+        const withTicket = new URL(url);
+        withTicket.searchParams.set('ticket', dialTicket);
+        url = withTicket.toString();
+      }
+
+      // Each attempt starts with no known socket-level cause; a stale one
+      // from the previous socket must never be attributed to this close.
+      this.lastSocketError = null;
+      ws = this.createSocket(url);
     } catch (err) {
       this.connectPromise = null;
       // A refused credential is not a transient failure. For a session
@@ -1825,8 +1899,8 @@ export class WSClient {
         if (err.paired) this.enterPairingRequired();
         else this.enterCredentialDead(err);
       }
-      console.warn('wsClient: bootstrap failed', err);
-      // Bootstrap-stage failures count toward the outage's attempt
+      console.warn('wsClient: connection preparation failed', err);
+      // Pre-socket failures count toward the outage's attempt
       // tally too (when one is open), so the reconnect summary reflects
       // server-unreachable retries and not just WS-stage deaths.
       if (this.outage !== null) this.outage.attempts += 1;
@@ -1841,102 +1915,14 @@ export class WSClient {
       // "nothing happened" when the request may in fact never have been
       // sent. Wrapping puts every connect-stage failure in the one class
       // callers classify on, with the original preserved as `cause`.
+      if (err instanceof DisconnectedError) throw err;
       throw new DisconnectedError('transport unreachable', {
         cause: err,
         terminal: this.terminal !== null,
       });
     }
-    // Both terminal conditions are decided here, against the manifest
-    // that just landed, and in this order. The pairing rule is asked
-    // FIRST so a page that is going to latch on it never publishes a
-    // moment of 'reconnecting' on the way: clearTerminal below is
-    // evidence that a latched condition has lifted, and for an unpaired
-    // networked page it has not.
-    if (this.pairingRequired(bootstrap.remote === true)) {
-      this.connectPromise = null;
-      this.enterPairingRequired();
-      throw new DisconnectedError('this backend admits paired devices only', {
-        terminal: true,
-      });
-    }
-    // A manifest in hand means the credential was accepted, and the
-    // pairing rule just answered no, so a latched refusal is history.
-    // Republishing here rather than at socket-open means the banner stops
-    // naming a cause that no longer holds as soon as we have the
-    // evidence.
-    this.clearTerminal();
-    // A PAIRED device holds its session credential in script (it arrived
-    // in the /auth/pair response body, not as a cookie), so the upgrade
-    // names its session through the single-use ticket instead
-    // (docs/specs/remote-access.md §4). Minted fresh per attempt — a
-    // ticket lives seconds and is spent whether or not the upgrade
-    // succeeds. Runs before the closed check so a close() during the
-    // mint still stops the attempt. The unpaired path (every embedded
-    // and local page: their cookie rides the upgrade by itself) stays
-    // fully synchronous — no awaited microtask is added to every
-    // ordinary dial.
-    let dialTicket: string | null = null;
-    if (hasPairedSession(this.backend)) {
-      dialTicket = await mintDialTicket(networkFetch, this.backend);
-      if (dialTicket === null && hasPairedSession(this.backend)) {
-        // No ticket, session still held: the mint could not prove the
-        // stored session right now (endpoint unreachable, or the owner
-        // has not confirmed the pairing yet) and did NOT conclude it is
-        // dead — that verdict clears the store, and the next attempt
-        // dials unpaired. Dialing anyway would let a page cookie this
-        // browser may also hold ride the upgrade and admit this screen
-        // as the LOCAL channel — a socket that revoking this device
-        // never reaches. Fail the attempt instead; the ladder retries.
-        this.connectPromise = null;
-        if (this.outage !== null) this.outage.attempts += 1;
-        this.scheduleReconnect();
-        throw new DisconnectedError('paired session has no dial ticket');
-      }
-    }
-    if (this.closed) {
-      this.connectPromise = null;
-      throw new DisconnectedError('client closed', { terminal: true });
-    }
-    // No credential is appended: the upgrade is same-origin, so the
-    // browser attaches the session cookie itself. Non-browser clients
-    // (the harness client, the e2e suite) present the session token as
-    // a query parameter against the same validation instead.
-    //
-    // What IS appended is this screen's identity, so bound methods can
-    // attribute a write and so this client can recognize the echo of its own
-    // change. It rides the URL rather than a post-open frame because it has to
-    // be in place before the first RPC lands: a draft saved in the window
-    // before a handshake completed would echo back into the composer that
-    // typed it. Both ids are opaque and the backend re-validates their shape.
-    // The manifest's wsUrl, carried onto the home endpoint when this
-    // client's page is not its backend's (./homeEndpoint.ts). The
-    // identity for every same-origin client, and for an ATTACHED
-    // backend's socket in every client — homeWsUrl leaves an absolute
-    // url naming another host exactly as it found it.
-    let url = withClientIdentity(homeWsUrl(bootstrap.wsUrl));
-    if (dialTicket !== null) {
-      const withTicket = new URL(url);
-      withTicket.searchParams.set('ticket', dialTicket);
-      url = withTicket.toString();
-    }
-
-    // Each attempt starts with no known socket-level cause; a stale one
-    // from the previous socket must never be attributed to this close.
-    this.lastSocketError = null;
-
     return await new Promise<void>((resolve, reject) => {
       const attempt: ConnectAttempt = { settled: false, resolve, reject };
-      let ws: WSLike;
-      try {
-        ws = this.createSocket(url);
-      } catch (err) {
-        this.connectPromise = null;
-        // Same wrapping rationale as the bootstrap path: a thrown
-        // constructor (a malformed URL, a blocked scheme) is a transport
-        // failure and must classify as one.
-        reject(new DisconnectedError('socket could not be opened', { cause: err }));
-        return;
-      }
       this.ws = ws;
       this.socketAttempt = attempt;
       this.socketNamedPairedSession = dialTicket !== null;

@@ -283,27 +283,55 @@ function takeOwned(map: Map<string, BackendKey>, backendId: BackendKey): string[
 }
 
 // ---------------------------------------------------------------------------
-// Population from the `all` fan-out
+// Population from typed RPC results
 // ---------------------------------------------------------------------------
 
-/**
- * Which entity a list method's rows are, keyed by the numeric method id.
- *
- * Hand-written, closed, and SHORT on purpose. The alternative considered
- * and rejected was sniffing each row's shape: a shape-based walker is
- * wrong the first time an unrelated payload happens to carry an `id` and a
- * `projectId`, and here being wrong means routing somebody's next message
- * to the wrong machine. Keying on the METHOD is keying on what was asked,
- * which cannot be ambiguous.
- *
- * `methodFamilies.test.ts` pins every id here against the generated route
- * table, so a regeneration that moves an id fails the suite rather than
- * quietly emptying the index.
- */
+// Explicit result contracts: learn ownership before resolving the RPC, so an
+// immediate follow-up never depends on a sidebar event arriving first. Do not
+// infer ownership from arbitrary payloads that happen to contain an `id`.
+// entityIndex.test.ts checks these contracts against every generated Thread /
+// Project result, including producers added later.
+const SINGLE_ENTITY_BY_METHOD: Readonly<Record<number, 'thread' | 'project'>> = {
+  2367642633: 'thread', // AttachThreadWorktree
+  969543070: 'project', // CreateProject
+  2579322833: 'thread', // CreateThread
+  1716017387: 'thread', // CreateThreadFromPR
+  4063914461: 'thread', // ForkThread
+  3977213964: 'thread', // ForkThreadFromMessage
+  1098302047: 'thread', // GetThread
+  1748405812: 'thread', // PinThread
+  2870364785: 'thread', // PrepareThreadWorktree
+  3728890856: 'project', // RenameProject
+  2317109106: 'thread', // SendDiffReviewComments
+  3632185196: 'thread', // SendMessageWithOptions
+  1407159655: 'thread', // SendPlanRevisionComments
+  3112222989: 'thread', // SetThreadPinGroup
+  3009548683: 'thread', // StartTerminal
+  1698485705: 'thread', // SteerMessageWithOptions
+  3897387725: 'thread', // SwitchThread
+  2561521885: 'project', // UnarchiveProject
+  3655125512: 'thread', // UnarchiveThread
+  3175043037: 'thread', // UnpinThread
+  2621473242: 'thread', // UpdateThreadContextSettings
+  2456875639: 'thread', // UpdateThreadContextWindow
+  4175109385: 'thread', // UpdateThreadFastMode
+  3609479719: 'thread', // UpdateThreadMode
+  4179686417: 'thread', // UpdateThreadModel
+  3140398729: 'thread', // UpdateThreadModelSelection
+  665741969: 'thread', // UpdateThreadProvider
+  892204206: 'thread', // UpdateThreadReasoningEffort
+  325190827: 'thread', // UpdateThreadRuntimeMode
+  3875142865: 'thread', // UpdateThreadWorkspace
+  1236472344: 'thread', // WorkflowDiscussPR
+  1172404443: 'thread', // WorkflowSendPRReviewCommentsToThread
+};
+
 const ROW_ENTITY_BY_METHOD: Readonly<Record<number, 'thread' | 'project'>> = {
   1090132042: 'thread', // ListThreads
   2451527188: 'thread', // ListArchivedThreads
   2721360259: 'project', // ListProjects
+  2514763466: 'thread', // SetThreadGroup
+  2929723500: 'thread', // UpdateThreadBranch
 };
 
 /**
@@ -316,27 +344,19 @@ const ROW_THREAD_REF_BY_METHOD: Readonly<Record<number, string>> = {
   3644945077: 'threadId', // SearchThreadMessages
 };
 
-/**
- * Record which backend a list call's rows came from.
- *
- * Called by the `all` fan-out with each backend's OWN share, before the
- * shares are merged — the merged value can no longer say which machine
- * each row belongs to, which is the whole reason the fan-out hands the
- * shares out one at a time.
- *
- * A method with no entry does nothing at all: most `all` methods answer
- * something that is not a row list, and guessing would be worse than
- * knowing nothing.
- */
+/** Record declared result ownership before returning to the caller. Fan-out
+ * calls pass each computer's share before merging loses its origin. */
 export function noteRowsFromCall(
   methodId: number,
   result: unknown,
   backendId: BackendKey,
 ): void {
-  const kind = ROW_ENTITY_BY_METHOD[methodId];
-  if (kind !== undefined && Array.isArray(result)) {
-    if (kind === 'thread') noteThreadRows(result, backendId);
-    else noteProjectRows(result, backendId);
+  const single = SINGLE_ENTITY_BY_METHOD[methodId];
+  const kind = single ?? ROW_ENTITY_BY_METHOD[methodId];
+  const rows = single ? [result] : result;
+  if (kind !== undefined && Array.isArray(rows)) {
+    if (kind === 'thread') noteThreadRows(rows, backendId);
+    else noteProjectRows(rows, backendId);
   }
   const ref = ROW_THREAD_REF_BY_METHOD[methodId];
   if (ref !== undefined && Array.isArray(result)) {

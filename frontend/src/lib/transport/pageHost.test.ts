@@ -47,6 +47,7 @@ afterEach(() => {
   setPageSearch('');
   delete hostGlobals()._wails;
   delete hostGlobals().chrome;
+  delete hostGlobals().webkit;
   vi.useRealTimers();
 });
 
@@ -138,16 +139,61 @@ describe('announcing to the host', () => {
     await pending;
   });
 
-  it('falls back to the platform bridge, which exists before the page loads', async () => {
-    // The Wails bridge is installed at load-finished; the engine's own
-    // channel is there from document creation, so reaching it directly
-    // is what lets the connection start without waiting for `load`.
-    const postMessage = vi.fn();
-    hostGlobals().chrome = { webview: { postMessage } };
-    const pending = awaitInjectedPageTicket();
-    expect(postMessage).toHaveBeenCalledWith(HOST_READY_MESSAGE);
-    deliver('ticket-1');
-    await pending;
+  it.each(['Windows WebView2', 'macOS WKWebView'])('preserves the native receiver on %s before Wails loads', async (platform) => {
+    vi.useFakeTimers();
+    const bridge = {
+      postMessage: vi.fn(function (this: unknown, message: string) {
+        // Native engines check the receiver; an ordinary vi.fn() mock accepts
+        // the unbound call that failed in the installed WKWebView.
+        if (this !== bridge) throw new TypeError('invalid native bridge receiver');
+        expect(message).toBe(HOST_READY_MESSAGE);
+        deliver('native-ticket');
+      }),
+    };
+    if (platform === 'Windows WebView2') hostGlobals().chrome = { webview: bridge };
+    else hostGlobals().webkit = { messageHandlers: { external: bridge } };
+    await expect(awaitInjectedPageTicket()).resolves.toBe('native-ticket');
+    expect(bridge.postMessage).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(['initial', 'retry', 'bridge-ready'])('cleans the ticket wait when the %s announcement throws', async (phase) => {
+    vi.useFakeTimers();
+    const failure = new Error('native bridge unavailable');
+    const invoke = vi.fn((): void => { throw failure; });
+    if (phase === 'retry') invoke.mockImplementationOnce(() => undefined);
+    if (phase !== 'bridge-ready') hostGlobals()._wails = { invoke };
+    const caught = awaitInjectedPageTicket(1_000).catch((error: unknown) => error);
+    if (phase === 'retry') await vi.advanceTimersByTimeAsync(300);
+    if (phase === 'bridge-ready') {
+      hostGlobals()._wails = { invoke };
+      window.dispatchEvent(new Event('wails:runtime-config-ready'));
+    }
+    expect(await caught).toBe(failure);
+    expect(vi.getTimerCount()).toBe(0);
+    const laterInvoke = vi.fn();
+    hostGlobals()._wails = { invoke: laterInvoke };
+    window.dispatchEvent(new Event('wails:runtime-config-ready'));
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(laterInvoke).not.toHaveBeenCalled();
+    // A failed attempt must not poison the next attempt or consume its ticket.
+    const retried = awaitInjectedPageTicket();
+    expect(laterInvoke).toHaveBeenCalledTimes(1);
+    deliver('recovered-ticket');
+    await expect(retried).resolves.toBe('recovered-ticket');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('removes a pending bridge-ready listener when the ticket wait expires', async () => {
+    vi.useFakeTimers();
+    const caught = awaitInjectedPageTicket(1_000).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(await caught).toBeInstanceOf(PageTicketUndeliveredError);
+    const invoke = vi.fn();
+    hostGlobals()._wails = { invoke };
+    window.dispatchEvent(new Event('wails:runtime-config-ready'));
+    expect(invoke).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('waits for the host bridge when neither carrier exists yet', async () => {

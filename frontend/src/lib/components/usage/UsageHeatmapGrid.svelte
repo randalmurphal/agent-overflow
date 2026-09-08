@@ -38,43 +38,45 @@
      items-center centers it in whatever width the modal gives it; the
      legend sits centered underneath on the same axis. -->
 <div class="flex flex-col items-center gap-1.5">
-  <div class="flex flex-col gap-1.5">
-    <div class="flex" style="padding-left: {LABEL_WIDTH_PX + GAP_PX}px; gap: {GAP_PX}px">
-      {#each columns as column (column.weekStartKey)}
-        <div
-          class="text-[0.625rem] leading-none text-fg-subtle whitespace-nowrap"
-          style="width: {CELL_PX}px"
-        >
-          {column.monthLabel ?? ''}
-        </div>
-      {/each}
-    </div>
-    <div class="flex" style="gap: {GAP_PX}px">
-      <div class="flex flex-col shrink-0" style="gap: {GAP_PX}px; width: {LABEL_WIDTH_PX}px">
-        {#each WEEKDAY_LABELS as label, i (i)}
+  <div class="w-full max-w-full overflow-x-auto">
+    <div class="mx-auto flex w-max flex-col gap-1.5">
+      <div class="flex" style="padding-left: {LABEL_WIDTH_PX + GAP_PX}px; gap: {GAP_PX}px">
+        {#each columns as column (column.weekStartKey)}
           <div
-            class="flex items-center text-[0.625rem] leading-none text-fg-subtle"
-            style="height: {CELL_PX}px"
+            class="text-[0.625rem] leading-none text-fg-subtle whitespace-nowrap"
+            style="width: {CELL_PX}px"
           >
-            {label}
+            {column.monthLabel ?? ''}
           </div>
         {/each}
       </div>
       <div class="flex" style="gap: {GAP_PX}px">
-        {#each columns as column (column.weekStartKey)}
-          <div class="flex flex-col" style="gap: {GAP_PX}px">
-            {#each column.cells as cell (cell.dateKey)}
-              <div
-                class="rounded-[3px] {heatClass(cell.level)} {cell.isFuture ? 'invisible' : ''}"
-                style="width: {CELL_PX}px; height: {CELL_PX}px"
-                title={cell.isFuture ? undefined : tooltip(cell)}
-                data-testid={cellTestId}
-                data-date={cell.dateKey}
-                data-level={cell.level}
-              ></div>
-            {/each}
-          </div>
-        {/each}
+        <div class="flex flex-col shrink-0" style="gap: {GAP_PX}px; width: {LABEL_WIDTH_PX}px">
+          {#each WEEKDAY_LABELS as label, i (i)}
+            <div
+              class="flex items-center text-[0.625rem] leading-none text-fg-subtle"
+              style="height: {CELL_PX}px"
+            >
+              {label}
+            </div>
+          {/each}
+        </div>
+        <div class="flex" style="gap: {GAP_PX}px">
+          {#each columns as column (column.weekStartKey)}
+            <div class="flex flex-col" style="gap: {GAP_PX}px">
+              {#each column.cells as cell (cell.dateKey)}
+                <div
+                  class="rounded-[3px] {heatClass(cell.level)} {cell.isFuture ? 'invisible' : ''}"
+                  style="width: {CELL_PX}px; height: {CELL_PX}px"
+                  title={cell.isFuture ? undefined : tooltip(cell)}
+                  data-testid={cellTestId}
+                  data-date={cell.dateKey}
+                  data-level={cell.level}
+                ></div>
+              {/each}
+            </div>
+          {/each}
+        </div>
       </div>
     </div>
   </div>

@@ -1835,6 +1835,68 @@ describe('WSClient', () => {
     client.close();
   });
 
+  it.each(['ticket JSON', 'socket constructor'] as const)(
+    'recovers a failed %s with only its standing subscription', async (failure) => {
+      localStorage.clear();
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      let client: ReturnType<typeof createWSClient> | undefined;
+      try {
+        if (failure === 'ticket JSON') {
+          await redeemPairing(
+            { v: 1, backendId: 'b', endpoint: 'http://example', token: 'link-token' },
+            'Test browser',
+            (async () => new Response(JSON.stringify({
+              sessionId: 'sess-1', credential: 'cred-1', expiresAtMs: Date.now() + 900_000,
+            }))) as typeof fetch,
+          );
+        }
+        vi.useFakeTimers();
+        vi.spyOn(Math, 'random').mockReturnValue(0.5);
+        const failureCause = new SyntaxError('incomplete dial ticket');
+        const ticketFetch = vi.fn()
+          .mockResolvedValueOnce({ ok: true, headers: new Headers(), json: async () => { throw failureCause; } })
+          .mockImplementation(async () => new Response(JSON.stringify({ ticket: 'recovered-ticket' })));
+        vi.stubGlobal('fetch', ticketFetch);
+        let constructions = 0;
+        class RecoveringSocket extends MockWebSocket {
+          constructor(url: string) {
+            constructions++;
+            if (failure === 'socket constructor' && constructions === 1) throw failureCause;
+            super(url);
+          }
+        }
+        client = createWSClient({ WebSocketCtor: RecoveringSocket as unknown as typeof WebSocket, bootstrap });
+        const seen: unknown[] = [];
+        client.subscribe('thread:updated', (data) => seen.push(data));
+        const firstAttempt = client.ready();
+        const rejected = expect(firstAttempt).rejects.toMatchObject({ name: 'DisconnectedError', cause: failureCause });
+        await vi.advanceTimersByTimeAsync(0);
+        await rejected;
+        expect(client.getStatus()).toMatchObject({ status: 'reconnecting' });
+        expect(MockWebSocket.instances).toHaveLength(0);
+
+        // No new call, subscription, focus event, or manual retry drives recovery.
+        await vi.advanceTimersByTimeAsync(150);
+        expect(MockWebSocket.instances).toHaveLength(1);
+        const socket = MockWebSocket.instances[0]!;
+        socket.acceptOpen();
+        socket.pushFrame({ type: 'event', channel: 'thread:updated', seq: 1, data: { id: 'new-thread' } });
+        await flushMicrotasks();
+        expect(seen).toEqual([{ id: 'new-thread' }]);
+        expect(client.getStatus()).toMatchObject({ status: 'connected' });
+        await expect(client.ready()).resolves.toBeUndefined();
+        if (failure === 'ticket JSON') {
+          expect(ticketFetch).toHaveBeenCalledTimes(2);
+          expect(new URL(socket.url).searchParams.get('ticket')).toBe('recovered-ticket');
+        }
+      } finally {
+        client?.close();
+        clearPairedSession();
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
   it('wraps a malformed-bootstrap failure as a transport error and keeps the cause', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     // Stub global fetch with a response that returns invalid JSON.

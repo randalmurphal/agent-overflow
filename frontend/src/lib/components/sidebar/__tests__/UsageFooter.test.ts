@@ -67,6 +67,18 @@ describe('<UsageFooter>', () => {
     expect(rows[1].textContent).toContain('500');
   });
 
+  it('combines repeated provider buckets instead of rendering duplicate keyed rows', async () => {
+    setBindingMock('GetUsageStats', async () => [
+      providerBucket('claude', { outputTokens: 100, costUsd: 1 }),
+      providerBucket('claude', { outputTokens: 200, costUsd: 2, unpricedRows: 1 }),
+    ]);
+    const { findAllByTestId } = render(UsageFooter);
+    const rows = await findAllByTestId('usage-footer-row');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].textContent).toContain('300');
+    expect(rows[0].textContent).toContain('3.00');
+  });
+
   it('is hidden entirely when there is no usage', async () => {
     setBindingMock('GetUsageStats', async () => []);
     const { queryByTestId } = render(UsageFooter, { props: {} });

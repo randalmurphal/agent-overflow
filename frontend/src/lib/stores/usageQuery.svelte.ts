@@ -18,28 +18,64 @@
 // returns null until its popover is open.
 
 import { GetUsageStats, type UsageBucket, type UsageQuery } from './bindings';
+import { selectedTelemetryComputers, missingTelemetrySelection } from './telemetryComputers.svelte';
+import { resolveThreadBackend, projectBackend } from '../transport/entityIndex';
+import { requireEntityBackend, withBackendTarget } from '../transport/backends';
+import { combineUsageBuckets } from '../utils/usageBuckets';
 
 export interface UsageStats {
   readonly buckets: UsageBucket[] | null;
+  readonly unavailable: readonly string[];
+  readonly loading: boolean;
 }
 
 export function createUsageStats(getQuery: () => UsageQuery | null): UsageStats {
   let buckets = $state<UsageBucket[] | null>(null);
+  let unavailable = $state<string[]>([]);
+  let loading = $state(false);
+  let previousKey = '';
 
   $effect(() => {
     const query = getQuery();
     if (!query) {
       buckets = null;
+      unavailable = [];
+      loading = false;
       return;
     }
+    const projectOwner = query.projectId ? projectBackend(query.projectId) : undefined;
+    const computers = query.threadId ? null : selectedTelemetryComputers('usage').filter((computer) => projectOwner === undefined || computer.key === projectOwner);
+    const online = computers?.filter((computer) => computer.connected);
+    unavailable = computers?.filter((computer) => !computer.connected).map((computer) => computer.name) ?? [];
+    if (computers && missingTelemetrySelection('usage') > 0) unavailable.push('Removed computer selection');
+    const key = JSON.stringify([query, online?.map((computer) => computer.key)]);
+    if (key !== previousKey) buckets = null;
+    previousKey = key;
+    loading = true;
     let cancelled = false;
     (async () => {
       try {
-        const result = await GetUsageStats(query);
-        if (!cancelled) buckets = result;
+        if (online) {
+          const results = await Promise.allSettled(online.map((computer) => withBackendTarget(computer.key, () => GetUsageStats(query))));
+          if (cancelled) return;
+          const rows: UsageBucket[] = [];
+          const failed: string[] = [];
+          results.forEach((result, i) => {
+            if (result.status === 'fulfilled') rows.push(...(result.value ?? []));
+            else failed.push(online[i].name);
+          });
+          buckets = combineUsageBuckets(rows);
+          unavailable = [...unavailable, ...failed];
+        } else {
+          const owner = requireEntityBackend(resolveThreadBackend(query.threadId));
+          const result = await withBackendTarget(owner, () => GetUsageStats(query));
+          if (!cancelled) buckets = combineUsageBuckets(result ?? []);
+        }
       } catch (err) {
         console.error('usage stats fetch failed', err);
         if (!cancelled) buckets = [];
+      } finally {
+        if (!cancelled) loading = false;
       }
     })();
     return () => {
@@ -48,6 +84,8 @@ export function createUsageStats(getQuery: () => UsageQuery | null): UsageStats 
   });
 
   return {
+    get unavailable() { return unavailable; },
+    get loading() { return loading; },
     get buckets() {
       return buckets;
     },

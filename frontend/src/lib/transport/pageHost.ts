@@ -122,8 +122,6 @@ export class PageTicketUndeliveredError extends Error {
   }
 }
 
-let awaitingHostBridge = false;
-
 // announceToHost tells the hosting window this document is live and can
 // receive injected script, which is also the request for a ticket.
 //
@@ -131,31 +129,29 @@ let awaitingHostBridge = false;
 // every document it loads, but only once that document has finished
 // loading; the two platform bridges underneath it exist from document
 // creation, so reaching them directly is what lets the connection start
-// before `load` rather than after. When none of the three is there yet,
-// arm the bridge-ready event once and announce when it fires.
-function announceToHost(): void {
+// before `load` rather than after. The pending ticket wait owns retries and
+// bridge-ready listeners, so every terminal outcome releases them together.
+function announceToHost(): boolean {
   const w = hostWindow();
-  if (!w) return;
+  if (!w) return false;
   const bridge = w._wails;
   if (bridge && typeof bridge.invoke === 'function') {
     bridge.invoke(HOST_READY_MESSAGE);
-    return;
+    return true;
   }
-  const post = w.chrome?.webview?.postMessage ?? w.webkit?.messageHandlers?.external?.postMessage;
-  if (typeof post === 'function') {
-    post(HOST_READY_MESSAGE);
-    return;
+  // Native bridge methods require their owning receiver (WebView2/WKWebView).
+  // Extracting postMessage into a function loses that receiver in production.
+  const webview = w.chrome?.webview;
+  if (typeof webview?.postMessage === 'function') {
+    webview.postMessage(HOST_READY_MESSAGE);
+    return true;
   }
-  if (awaitingHostBridge) return;
-  awaitingHostBridge = true;
-  w.addEventListener(
-    HOST_BRIDGE_READY_EVENT,
-    () => {
-      awaitingHostBridge = false;
-      announceToHost();
-    },
-    { once: true },
-  );
+  const external = w.webkit?.messageHandlers?.external;
+  if (typeof external?.postMessage === 'function') {
+    external.postMessage(HOST_READY_MESSAGE);
+    return true;
+  }
+  return false;
 }
 
 // awaitInjectedPageTicket resolves with the ticket this document's host
@@ -174,12 +170,33 @@ export function awaitInjectedPageTicket(
   if (!w) return Promise.reject(new PageTicketUndeliveredError(timeoutMs));
 
   return new Promise<string>((resolve, reject) => {
+    let settled = false;
+    let awaitingBridge = false;
     let retry: ReturnType<typeof setInterval> | undefined;
     let deadline: ReturnType<typeof setTimeout> | undefined;
     const stop = () => {
+      settled = true;
       w.removeEventListener(TICKET_EVENT, onDelivered);
+      w.removeEventListener(HOST_BRIDGE_READY_EVENT, announce);
       if (retry !== undefined) clearInterval(retry);
       if (deadline !== undefined) clearTimeout(deadline);
+    };
+    const announce = (): void => {
+      if (settled) return;
+      try {
+        if (announceToHost()) {
+          w.removeEventListener(HOST_BRIDGE_READY_EVENT, announce);
+          awaitingBridge = false;
+        } else if (!awaitingBridge) {
+          awaitingBridge = true;
+          w.addEventListener(HOST_BRIDGE_READY_EVENT, announce);
+        }
+      } catch (error) {
+        // Exceptions from native bridges can happen on the first call, a
+        // retry, or the ready event. All three settle the same bounded wait.
+        stop();
+        reject(error);
+      }
     };
     function onDelivered(): void {
       const ticket = readInjectedPageTicket();
@@ -198,8 +215,8 @@ export function awaitInjectedPageTicket(
     // cover on its own: a document that finished loading before its host
     // subscribed to the announcement. It costs one postMessage per lap
     // and only ever runs while a boot is already failing.
-    retry = setInterval(announceToHost, TICKET_RETRY_MS);
-    announceToHost();
+    retry = setInterval(announce, TICKET_RETRY_MS);
+    announce();
   });
 }
 
@@ -207,7 +224,6 @@ export function awaitInjectedPageTicket(
 // runMode.ts's. Production code never calls it.
 export function __resetPageHostForTest(): void {
   cachedWebviewHosted = null;
-  awaitingHostBridge = false;
   const w = hostWindow();
   if (w) delete w[TICKET_GLOBAL];
 }

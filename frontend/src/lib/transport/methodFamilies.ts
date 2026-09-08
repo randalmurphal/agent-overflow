@@ -30,6 +30,7 @@ export type IdFamily =
   | 'threadList';
 
 export const ROUTE_BY_ID_FAMILY: Readonly<Record<number, IdFamily | { family: IdFamily; field: string }>> = {
+  595194384: { family: 'project', field: 'projectId' }, // UpdateNewThreadDefaults
   4000394635: { family: 'workflowItem', field: 'itemId' }, // WorkflowAgentAddMemory
   4273669366: { family: 'workflowItem', field: 'itemId' }, // WorkflowAgentAmendSeeds
   76499272: { family: 'workflowItem', field: 'itemId' }, // WorkflowAgentGuideRun

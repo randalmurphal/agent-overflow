@@ -46,6 +46,7 @@ import { threadItemCache } from './threadItemCache';
 import type { ThreadPaneIngest } from './threadPaneRoles';
 import { holdBackendRecovery } from './transportRecovery';
 import { threadMachine, getAttachedBackends } from './attachedBackends.svelte';
+import { applyBackendSetChange } from './systems.svelte';
 
 // The registry hands out whole ThreadPanes; this module narrows them to
 // the ingest surface at the one acquisition point, so a new pane member
@@ -146,6 +147,12 @@ function applySettledTransportGap(gap: { channel: string; seq: number }, origin?
     return;
   }
   switch (gap.channel) {
+    case 'backend:attach':
+    case 'backend:set-changed':
+      // A missing membership event cannot be repaired by reading thread
+      // rows: the new computer does not have a connection to read through.
+      applyBackendSetChange({ action: 'membership', id: '' }, backendKeyForOrigin(origin?.backendId ?? ''));
+      return;
     case 'provider:item_event':
     case 'provider:turn_started':
     case 'provider:turn_completed':

@@ -1,5 +1,6 @@
+import generatedAPI from '../../../bindings/agent-overflow/app.ts?raw';
 import { beforeEach, expect, it } from 'vitest';
-import { __resetEntityIndexForTest, captureThreadMetadataRead, currentThreadRow, forgetBackendEntities, noteRowsFromCall, noteThread, onThreadOwnershipChanged, resolveThreadBackend, threadBackend } from './entityIndex';
+import { __resetEntityIndexForTest, captureThreadMetadataRead, currentThreadRow, forgetBackendEntities, noteRowsFromCall, noteThread, onThreadOwnershipChanged, resolveThreadBackend, projectBackend, threadBackend } from './entityIndex';
 
 beforeEach(__resetEntityIndexForTest);
 
@@ -91,4 +92,24 @@ it.each([1090132042, 2451527188, 3644945077, 1098302047])('guards pending metada
     expect(() => fresh.verify(shape(1))).toThrow('removed');
     expect(captureThreadMetadataRead(42, 'mac')).toBeUndefined();
   } finally { old.release(); fresh.release(); }
+});
+
+// Every typed producer must publish ownership before its promise can resolve.
+// Reading the generated API makes newly added create/fork paths join this test.
+it('indexes every generated Thread and Project result without waiting for events', () => {
+  const methods = [...generatedAPI.matchAll(/export function (\w+)\([^\n]*\): \$CancellablePromise<[^\n]*\.(Thread|Project)(\[\])?> \{\n[^}]*?ByID\((\d+)/g)];
+  expect(methods.length).toBeGreaterThan(30);
+  for (const [, name, kind, list, id] of methods) {
+    const row = { id: name, ownershipEpoch: 0 };
+    noteRowsFromCall(Number(id), list ? [row] : row, 'remote');
+    expect(kind === 'Thread' ? threadBackend(name) : projectBackend(name), name).toBe('remote');
+  }
+  noteRowsFromCall(0, { id: 'unrelated', ownershipEpoch: 0 }, 'remote');
+  expect(threadBackend('unrelated')).toBeUndefined();
+});
+
+it('does not let a late mutation response reclaim a transferred conversation', () => {
+  noteThread('thread', 'destination', 2);
+  noteRowsFromCall(3140398729, { id: 'thread', ownershipEpoch: 1 }, 'source');
+  expect(resolveThreadBackend('thread')).toBe('destination');
 });
