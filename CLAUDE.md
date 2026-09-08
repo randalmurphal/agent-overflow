@@ -268,3 +268,16 @@ scope conversation first.
   device access only) and relabeling the per-row "Nickname on this
   device" control to "Rename", which reads wrong while two nicknames can
   apply to one row.
+
+- **"My device" pairing from a remote browser.** `PairDeviceModal`
+  defaults Access to "My device" wherever the backend advertises
+  `own-devices.v1`, but `ownPairingAdmin`
+  (`internal/attachedbackends`/`internal/app/app_own_devices.go`)
+  refuses an own-device mint from any caller that is not local or
+  already an own device — so a passkey-signed or merely-paired
+  full-access browser is offered an option that always fails with a
+  toast. Whether to hide/disable the option for such callers, or let a
+  step-up-proven owner mint own-device pairings remotely, is an owner
+  ruling. Until it is made, the surface stays as is (found 2026-09-08 by
+  `harness-passkey-lifecycle.spec.ts` case 4, which now drives the gate
+  through the view-only mint instead).
