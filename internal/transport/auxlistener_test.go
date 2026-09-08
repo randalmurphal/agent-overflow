@@ -142,7 +142,7 @@ func TestAuxiliaryHostsAdmitANodeNameAndAreWithdrawn(t *testing.T) {
 	if status, _ := getWithHost(t, addr, HealthPath, "somewhere.else.example", nil); status != http.StatusNotFound {
 		t.Errorf("an unrelated Host = %d, want 404", status)
 	}
-	if got := fixture.srv.auxiliaryHosts(); len(got) != 2 {
+	if got := fixture.srv.AuxiliaryHosts(); len(got) != 2 {
 		t.Errorf("AuxiliaryHosts() = %v, want the two names that were set", got)
 	}
 

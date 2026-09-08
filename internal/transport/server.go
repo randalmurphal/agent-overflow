@@ -1132,9 +1132,9 @@ func (s *Server) SetAuxiliaryHosts(names []string) {
 	s.auxHosts = normalized
 }
 
-// auxiliaryHosts returns the live extra Host names, for the tests that
-// pin what this listener currently answers to.
-func (s *Server) auxiliaryHosts() []string {
+// AuxiliaryHosts returns the live extra Host names, for the tests (here
+// and in internal/app) that pin what this listener currently answers to.
+func (s *Server) AuxiliaryHosts() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.auxHosts...)
