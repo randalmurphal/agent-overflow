@@ -545,9 +545,11 @@ pane can substitute for that project's owner.
   absolute time is read against the watch on the reader's wrist.
 - `lease.ts` is the ONE door for the client's foreground lifecycle, and it
   is a NATIVE signal: the phone shell's pause/resume, arriving through a
-  Capacitor plugin in wave 6f-c. Nothing in the SPA calls it today, on
-  purpose — the wire, the fan-out and the door ship together so nobody
-  wires the capability by reaching past the seam. `setClientLease(state)`
+  Capacitor plugin. The shell's `native/lifecycle.ts` is its one caller
+  (pause → `background`, resume → `active`); no browser or desktop client
+  calls it, so nobody wires the capability by reaching past the seam.
+  `setClientLease(state)` dedups BEFORE the fan-out — an unchanged state
+  reaches no connection and no listener — and
   states it to EVERY attached backend (`backends.setLeaseEverywhere`, and
   to every backend attached afterwards), because one OS pausing one app is
   not a per-connection fact. Each `wsClient.setLease` dedups, drops the
@@ -801,7 +803,9 @@ pane can substitute for that project's owner.
 
   **Empty is the identity, and that is the desktop's answer forever.**
   `homeUrl` returns its argument unchanged, `homeWsUrl` is the identity,
-  `homeCredentials()` answers `same-origin`. The embedded webview,
+  `homeCredentials()` answers `same-origin` (`credentialsForUrl` is the
+  same rule for any url: relative → `same-origin`, absolute → `omit`, and
+  the one place `bootstrap.ts` asks it). The embedded webview,
   `--connect` and a paired browser issue byte-identical requests to the
   ones they issued before the file existed, which is why no call site
   branches on a client class. What routes through it: `bootstrap.ts`'s
@@ -851,6 +855,16 @@ pane can substitute for that project's owner.
   it installs as `backends.setBackendSource`. Entries are validated per
   entry and a damaged one is DROPPED rather than coerced, the same rule
   `readBackendDescriptors` states.
+
+  **Unreadable is not empty.** A map that cannot be read at all (storage
+  throwing, a blob that is not a JSON object) answers `null` from the
+  plural `storedBackendEndpoints()`, `storedBackendDescriptors()` throws
+  on it, and `syncAttachedBackends` then KEEPS the attached set (one
+  `console.warn`) rather than detaching every computer for what an empty
+  list would mean. The singular `storedBackendEndpoint()` stays lenient
+  and answers `''`. Writes REPLACE an unreadable map — unlike the
+  membership store in `ownDeviceConnections.ts`, it holds addresses and no
+  tombstones, so nothing readable is lost and pairing again is the repair.
 
   `acceptPairingEndpoint` (in `deviceSession.ts`) is where the two client
   classes ask genuinely different questions rather than one with an
@@ -951,7 +965,8 @@ pane can substitute for that project's owner.
   **An attached machine is never nameless.** `attachedMachines()` joins
   the registry with the endpoint map and falls back to the endpoint HOST,
   and `storedBackendDescriptors()` writes the same placeholder. An empty
-  name would leave the machine picker and Settings → Systems blank for a
+  name would leave the machine picker and Settings → Remote access →
+  Connect to a computer blank for a
   backend whose manifest has not resolved, which on an unreachable machine
   is never. Reachability is deliberately NOT in that join: an entry's
   `status` is a getter that moves without the list moving, so a row reads
@@ -1020,7 +1035,11 @@ pane can substitute for that project's owner.
   `renewalLease.ts`: `navigator.locks` where it exists, and a short-TTL
   localStorage lease where it does not, since a plain-HTTP LAN
   page (spec §15 constraint 6) has no Web Locks any more than it has
-  `crypto.subtle`. Three rules it depends on, and any future exchange with
+  `crypto.subtle`. Both waits are bounded by the same TTL — the Web Locks
+  request carries `AbortSignal.timeout` — and a wait that runs out runs
+  the work UNHELD, where the caller's own re-read declines the exchange;
+  a holder wedged inside a fetch must not queue every later tab forever.
+  Three rules it depends on, and any future exchange with
   the same single-use property inherits all three: the lease EXPIRES
   rather than being released, because a tab killed mid-exchange releases
   nothing; the winner is decided by RE-READING the entry, because two

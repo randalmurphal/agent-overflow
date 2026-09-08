@@ -150,7 +150,6 @@ const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   ListBackends: owned(SYSTEMS_STORE, 'loadSystems()'),
   AddBackend: owned(SYSTEMS_STORE, 'addSystem()'),
   RemoveBackend: owned(SYSTEMS_STORE, 'removeSystem()'),
-  RenameBackend: owned(SYSTEMS_STORE, 'renameSystem()'),
   // Updating a supervised machine is one status box per backend fed by two
   // channels and one request. A card calling RequestServiceUpdate itself
   // would start a flow the box the card renders from never marked as its

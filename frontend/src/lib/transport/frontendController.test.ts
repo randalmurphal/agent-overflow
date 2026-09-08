@@ -1,9 +1,9 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
-import { attachedBackends, attachedBackendCount, backendById, detachBackend, homeBackend, requireEntityBackend, subscribeEveryBackend } from './backends';
+import { attachedBackends, attachedBackendCount, backendById, callEveryBackend, detachBackend, homeBackend, requireEntityBackend, subscribeEveryBackend } from './backends';
 import { Call } from './runtime';
 import { HOME_BACKEND } from './backendKey';
-import { selectedBackend, setSelectedBackend } from '../stores/selectedBackend.svelte';
+import { __resetSelectedBackendForTest, initializeSelectedBackend, selectedBackend, setSelectedBackend } from '../stores/selectedBackend.svelte';
 import { setCarriedSessionScopes } from './scopes';
 import { workflowItemHasScope } from './entityScopes';
 
@@ -60,4 +60,25 @@ it('forgets the launch computer without losing local administration or another c
   await expect(Call.ByID(320967638, '/project')).resolves.toEqual([]);
   expect(other).toHaveBeenCalledTimes(1);
   cancel();
+});
+
+it('answers an every-computer call with nothing when no computer is attached', async () => {
+  const controller = vi.spyOn(homeBackend().client, 'callByID').mockResolvedValue([]);
+  expect(attachedBackends()).toEqual([]);
+  await expect(callEveryBackend(1090132042, [])).resolves.toBeUndefined(); // ListThreads
+  await expect(Call.ByID(1090132042)).resolves.toBeUndefined();
+  expect(controller).not.toHaveBeenCalled();
+});
+
+it('moves the app-wide choice off a removed computer to the first remaining one', () => {
+  stageBackend({ id: 'first', backendId: 'first' });
+  stageBackend({ id: 'second', backendId: 'second' });
+  // What the frontend-only boot does once its catalog is read.
+  initializeSelectedBackend(attachedBackends());
+  setSelectedBackend('second');
+  detachBackend('second');
+  expect(selectedBackend()).toBe('first');
+  detachBackend('first');
+  expect(selectedBackend()).toBe(HOME_BACKEND);
+  __resetSelectedBackendForTest();
 });

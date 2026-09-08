@@ -110,18 +110,25 @@ export function homeUrl(path: string): string {
 }
 
 /**
- * The credentials mode a home-backend fetch uses.
+ * The credentials mode a fetch of `url` uses — the ONE spelling of the
+ * rule, which every backend fetch reads through.
  *
- * `same-origin` is today's answer and stays it: the `--connect` stub
- * checks its own page cookie before relaying, so a request that dropped
- * credentials would be refused there while working everywhere else. With
- * an endpoint set there is no cookie to send — the session rides
- * `X-AO-Session` and the device-key proof — and asking for one would only
- * teach the backend's CORS answer to carry a credentials flag it should
- * never carry.
+ * A relative URL is the page's own origin and rides its cookie:
+ * `same-origin` is today's answer and stays it, because the `--connect`
+ * stub checks its own page cookie before relaying, so a request that
+ * dropped credentials would be refused there while working everywhere
+ * else. An absolute URL is another origin, for which there is no cookie
+ * to send — the session rides `X-AO-Session` and the device-key proof —
+ * and asking for one would only teach that backend's CORS answer to carry
+ * a credentials flag it should never carry.
  */
+export function credentialsForUrl(url: string): RequestCredentials {
+  return originPartsOf(url) === null ? 'same-origin' : 'omit';
+}
+
+/** The credentials mode a home-backend fetch uses; see credentialsForUrl(). */
 export function homeCredentials(): RequestCredentials {
-  return endpoint === '' ? 'same-origin' : 'omit';
+  return credentialsForUrl(endpoint);
 }
 
 /**
@@ -158,10 +165,10 @@ export function backendTransferUrl(path: string, backend: BackendKey = HOME_BACK
   return `/backend/${encodeURIComponent(backend)}${path}`;
 }
 
-/** The credentials mode a fetch to `backend` uses; see homeCredentials(). */
+/** The credentials mode a fetch to `backend` uses; see credentialsForUrl(). */
 export function backendCredentials(backend: BackendKey = HOME_BACKEND): RequestCredentials {
   if (backend === HOME_BACKEND) return homeCredentials();
-  return storedBackendEndpoint(backend) === '' ? 'same-origin' : 'omit';
+  return credentialsForUrl(storedBackendEndpoint(backend));
 }
 
 /**
@@ -236,36 +243,44 @@ export function homeWsUrl(wsUrl: string): string {
 // set the home endpoint and to rebuild the attached descriptors; nothing
 // polls it.
 
-function readEndpointMap(): Record<string, string> {
+// Null when the map cannot be READ — storage refused the read, or the blob
+// is not a JSON object — as distinct from an absent or empty map, which is
+// `{}`. The two are different facts to the boot sync: an empty map names
+// no computers, an unreadable one names an unknown number of them, and a
+// sweep on the strength of the second would detach every computer this
+// app knows over a storage hiccup (the policy `ownDeviceConnections.ts`
+// states for membership). Damaged ENTRIES still drop individually.
+function readEndpointMap(): Record<string, string> | null {
   if (typeof localStorage === 'undefined') return {};
   let raw: string | null;
   try {
     raw = localStorage.getItem(ENDPOINTS_STORE_KEY);
   } catch {
-    return {};
+    return null;
   }
   if (!raw) return {};
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
-    const out: Record<string, string> = {};
-    for (const [id, value] of Object.entries(parsed as Record<string, unknown>)) {
-      // Validated rather than trusted, the same rule
-      // `manifestBackends.readBackendDescriptors` states: an entry this
-      // build cannot read is dropped, never coerced into a connection to
-      // somewhere unintended. A registry id may hold no space — it is the
-      // prefix of every path-keyed composite key.
-      if (typeof value !== 'string' || id.includes(' ')) continue;
-      try {
-        out[id] = normaliseEndpoint(value);
-      } catch {
-        // A damaged entry drops out; the rest of the map still works.
-      }
-    }
-    return out;
+    parsed = JSON.parse(raw);
   } catch {
-    return {};
+    return null;
   }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const out: Record<string, string> = {};
+  for (const [id, value] of Object.entries(parsed as Record<string, unknown>)) {
+    // Validated rather than trusted, the same rule
+    // `manifestBackends.readBackendDescriptors` states: an entry this
+    // build cannot read is dropped, never coerced into a connection to
+    // somewhere unintended. A registry id may hold no space — it is the
+    // prefix of every path-keyed composite key.
+    if (typeof value !== 'string' || id.includes(' ')) continue;
+    try {
+      out[id] = normaliseEndpoint(value);
+    } catch {
+      // A damaged entry drops out; the rest of the map still works.
+    }
+  }
+  return out;
 }
 
 function writeEndpointMap(map: Record<string, string>): void {
@@ -278,14 +293,19 @@ function writeEndpointMap(map: Record<string, string>): void {
   }
 }
 
-/** Every backend endpoint this client has stored, home under `''`. */
-export function storedBackendEndpoints(): Record<string, string> {
+/**
+ * Every backend endpoint this client has stored, home under `''`, or NULL
+ * when the map cannot be read. A reader that would act on the whole set
+ * (the boot sync, the pairing slot lookup) must tell the two apart;
+ * `storedBackendEndpoint` is the lenient single-address read.
+ */
+export function storedBackendEndpoints(): Record<string, string> | null {
   return readEndpointMap();
 }
 
-/** The stored endpoint for one backend, or `''` when there is none. */
+/** The stored endpoint for one backend, or `''` when there is none — or none can be read. */
 export function storedBackendEndpoint(backend: BackendKey = HOME_BACKEND): string {
-  return readEndpointMap()[backend] ?? '';
+  return readEndpointMap()?.[backend] ?? '';
 }
 
 /**
@@ -293,9 +313,13 @@ export function storedBackendEndpoint(backend: BackendKey = HOME_BACKEND): strin
  * Written by the pairing paths at the moment the endpoint is known and
  * before the credential is stored, so a stored session can never outlive
  * the knowledge of where to present it.
+ *
+ * An unreadable map is REPLACED here, unlike a membership store: it holds
+ * addresses and no tombstones, so nothing readable is lost, and pairing
+ * again is how a person repairs it.
  */
 export function storeBackendEndpoint(backend: BackendKey, origin: string): void {
-  const map = readEndpointMap();
+  const map = readEndpointMap() ?? {};
   map[backend] = normaliseEndpoint(origin);
   writeEndpointMap(map);
 }
@@ -317,10 +341,12 @@ export function endpointHost(endpoint: string): string {
   }
 }
 
-/** Forget one backend's endpoint. Detaching a machine's last step. */
+/** Forget one backend's endpoint. Detaching a machine's last step. An
+ * unreadable map holds nothing readable to forget and is left for the next
+ * `storeBackendEndpoint` to replace. */
 export function forgetBackendEndpoint(backend: BackendKey): void {
   const map = readEndpointMap();
-  if (!(backend in map)) return;
+  if (map === null || !(backend in map)) return;
   const origin = map[backend];
   delete map[backend];
   writeEndpointMap(map);
@@ -350,7 +376,7 @@ try {
 // served by its backend, and the stored home would only re-spell the
 // origin it is already on.
 if (endpoint === '' && isNativeShell()) {
-  endpoint = readEndpointMap()[HOME_BACKEND] ?? '';
+  endpoint = readEndpointMap()?.[HOME_BACKEND] ?? '';
 }
 
 /** Test seam: forget the endpoint this module read or was told. */

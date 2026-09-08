@@ -336,6 +336,15 @@ export function restoreHomeBackend(): void {
     return;
   }
   if (byId.has(HOME_BACKEND)) return;
+  // A WSClient closes for good (`close()` runs no ladder afterwards), and
+  // the shell's boot closes this one when no home pairing is stored.
+  // Registering it again would hand every home call a socket that can
+  // never open, with nothing on screen to say so.
+  if (homeClient.isClosed()) throw new Error('The home connection was closed; a new document is needed to restore it.');
+  registerHomeEntry();
+}
+
+function registerHomeEntry(): void {
   entries.unshift(homeEntry);
   byId.set(HOME_BACKEND, homeEntry);
   refreshGrantedScopes(HOME_BACKEND);
@@ -450,9 +459,11 @@ export function attachBackend(descriptor: BackendDescriptor): BackendEntry {
   if (descriptor.id === HOME_BACKEND) return homeEntry;
   const held = byId.get(descriptor.id);
   if (held !== undefined) {
-    const nicknameChanged = held.nickname !== descriptor.nickname;
+    // A nickname change arrives as a NAME change (`systems.systemLabel`
+    // folds it in), and `manifestBackends.sameDescriptors` dedups the
+    // publish on the same fields, so the name is the one diff here.
     held.descriptor = descriptor;
-    if (held.name !== descriptor.name || nicknameChanged) {
+    if (held.name !== descriptor.name) {
       held.name = descriptor.name;
       notifyBackendsChanged();
     }
@@ -726,11 +737,11 @@ function sendWatchedThreads(entry: Entry): void {
 }
 
 /**
- * The share of the watched set one backend is sent. Exported for the
- * tests that pin the split rule above; every caller in the app goes
- * through `setWatchedThreadsEverywhere`.
+ * The share of the watched set one backend is sent. Every caller goes
+ * through `setWatchedThreadsEverywhere`, and the tests pin the split rule
+ * above through it, on each fake client's `setWatchedThreads`.
  */
-export function watchedThreadsFor(backendId: BackendKey): string[] {
+function watchedThreadsFor(backendId: BackendKey): string[] {
   // The common case is one backend, where the split is the whole set and
   // walking it to prove that is pure cost.
   if (entries.length <= 1) return [...watchedThreadIds];
@@ -770,7 +781,7 @@ export function watchedThreadsFor(backendId: BackendKey): string[] {
  * backend that legitimately answers "nothing" must not demote the merge to
  * the scalar arm.
  */
-export function mergeBackendResults(shares: readonly unknown[], homeShare: unknown): unknown {
+function mergeBackendResults(shares: readonly unknown[], homeShare: unknown): unknown {
   const present: unknown[] = [];
   for (const share of shares) {
     if (share !== null && share !== undefined) present.push(share);
@@ -813,6 +824,10 @@ export async function callEveryBackend(
   observe?: (result: unknown, backendId: string) => void,
 ): Promise<unknown> {
   const targets = computers.slice();
+  // No computer attached is an EMPTY answer, not a failed one: a frontend
+  // that has let go of its last computer still lists nothing rather than
+  // toasting that nothing answered. An explicit target is refused elsewhere.
+  if (targets.length === 0) return mergeBackendResults([], undefined);
   const verify = targets.map((entry) => captureThreadMetadataRead(methodId, entry.id));
   try {
     const settled = await Promise.allSettled(
@@ -921,7 +936,18 @@ export function setBackendSource(source: BackendSource): void {
  * longer does. Idempotent; safe to call again when the source changes.
  */
 export function syncAttachedBackends(): void {
-  const wanted = backendSource();
+  let wanted: readonly BackendDescriptor[];
+  try {
+    wanted = backendSource();
+  } catch (err) {
+    // A source that cannot answer names nothing to attach AND nothing to
+    // detach. Sweeping on it would forget every computer this client is
+    // attached to over a storage hiccup (`homeEndpoint.readEndpointMap`
+    // says why the two are different facts), so the registry keeps what it
+    // holds until the source can answer again.
+    console.warn('transport: keeping the attached computers; their saved addresses could not be read', err);
+    return;
+  }
   const keep = new Set<string>([HOME_BACKEND]);
   for (const descriptor of wanted) {
     if (typeof descriptor?.id !== 'string' || descriptor.id === HOME_BACKEND) continue;
@@ -951,7 +977,9 @@ export function __resetBackendsForTest(): void {
     if (!entry.home) detachBackend(entry.id);
   }
   homeEntry.lastFanoutError = null;
-  restoreHomeBackend();
+  // Past the closed-client guard on purpose: a shell-boot test closes the
+  // real singleton, and the next test still needs a home entry to read.
+  if (!byId.has(HOME_BACKEND)) registerHomeEntry();
   installedProver = null;
   clientLease = 'active';
   watchedThreadIds = [];

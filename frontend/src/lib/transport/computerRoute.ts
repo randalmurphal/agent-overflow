@@ -4,7 +4,7 @@ export interface ComputerRoute { endpoint: string; certFingerprint?: string }
 export const MAX_COMPUTER_ROUTES = 4;
 const PIN = /^sha256:[0-9a-f]{64}$/;
 
-export function normalizeComputerRoute(value: unknown): ComputerRoute | null {
+function normalizeComputerRoute(value: unknown): ComputerRoute | null {
   if (!value || typeof value !== 'object') return null;
   const route = value as Record<string, unknown>;
   if (typeof route.endpoint !== 'string' || route.endpoint.length > 2048 || route.endpoint.includes('\\')) return null;

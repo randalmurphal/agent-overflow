@@ -34,7 +34,7 @@ import type { BackendDescriptor } from './backends';
 import { computerResponseURL } from './computerRoutes';
 import type { ComputerRoute } from './computerRoute';
 import { awaitInjectedPageTicket, clearInjectedPageTicket, isWebviewHosted } from './pageHost';
-import { homeCredentials, homeOriginParts, homeUrl, originPartsOf } from './homeEndpoint';
+import { credentialsForUrl, homeOriginParts, homeUrl, originPartsOf } from './homeEndpoint';
 import { HOME_BACKEND, type BackendKey } from './backendKey';
 import { isNativeShell } from '../native/platform';
 import { hasHomeEndpoint } from './homeEndpoint';
@@ -286,8 +286,7 @@ export async function refreshComputerRoutes(descriptor: BackendDescriptor | unde
   const backend = descriptor?.id ?? HOME_BACKEND;
   const url = descriptor?.bootstrapUrl ?? homeUrl('/bootstrap.json');
   const path = new URL(url, window.location.href).pathname;
-  const credentials = descriptor ? (originPartsOf(url) === null ? 'same-origin' : 'omit') : homeCredentials();
-  const response = await fetchAuthenticatedManifest(url, path, credentials, backend, signal);
+  const response = await fetchAuthenticatedManifest(url, path, credentialsForUrl(url), backend, signal);
   const data = await response.json() as Partial<Bootstrap>;
   if (!current()) return;
   if (data.backendId !== backendId) throw new Error('Connection addresses belong to another computer.');
@@ -310,7 +309,7 @@ async function fetchManifest(ticket: string): Promise<Bootstrap> {
   const url = homeUrl(ticket === ''
     ? '/bootstrap.json'
     : `/bootstrap.json?${PAGE_TICKET_PARAM}=${encodeURIComponent(ticket)}`);
-  const resp = await fetchAuthenticatedManifest(url, '/bootstrap.json', homeCredentials());
+  const resp = await fetchAuthenticatedManifest(url, '/bootstrap.json', credentialsForUrl(url));
   const contentType = resp.headers.get('content-type') ?? '';
   if (!contentType.toLowerCase().startsWith('application/json')) {
     throw new Error(`bootstrap response not JSON: content-type ${clampString(contentType)}`);
@@ -374,9 +373,9 @@ async function fetchManifest(ticket: string): Promise<Bootstrap> {
 }
 
 // wsUrlMatchesPageOrigin reports whether wsUrl addresses the same origin
-// the page was served from. Pure and exported so the comparison is
-// testable against origins this document will never have — the same
-// split as isLoopbackHostname / pageServedOverLoopback above.
+// the page was served from. Pure, and reached by tests through
+// `validateWsUrl`'s `expected` parameter, which is how the comparison is
+// pinned against origins this document will never have.
 //
 // Origin here is scheme + host + PORT, with ws:/wss: mapped onto their
 // http:/https: counterparts. Host alone would not do: a second listener
@@ -387,7 +386,7 @@ async function fetchManifest(ticket: string): Promise<Bootstrap> {
 // TLS-fronted page being moved onto a cleartext socket. Explicit default
 // ports normalise away on both sides (ws:/http: share 80, wss:/https:
 // share 443), so the two spellings still match.
-export function wsUrlMatchesPageOrigin(
+function wsUrlMatchesPageOrigin(
   wsUrl: string,
   page: { protocol: string; host: string },
 ): boolean {
@@ -478,7 +477,7 @@ setBackendManifestFetcher(async (descriptor) => {
   const remote = originPartsOf(descriptor.bootstrapUrl);
   const path = new URL(descriptor.bootstrapUrl, window.location.href).pathname;
   const resp = await fetchAuthenticatedManifest(
-    descriptor.bootstrapUrl, path, remote === null ? 'same-origin' : 'omit', descriptor.id,
+    descriptor.bootstrapUrl, path, credentialsForUrl(descriptor.bootstrapUrl), descriptor.id,
   );
   const data = (await resp.json()) as Partial<Bootstrap>;
   const wsUrl = typeof data.wsUrl === 'string' ? data.wsUrl : descriptor.wsUrl;

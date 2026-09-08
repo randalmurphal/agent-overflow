@@ -461,7 +461,7 @@ interface Pending {
   reject: (reason: unknown) => void;
   timer: ReturnType<typeof setTimeout>;
   // The frame to re-send if a TRANSIENT close kills this call, or null —
-  // which is every call under the empty production allowlist. Holding it
+  // which is every call outside the two-entry production allowlist. Holding it
   // costs a reference to the params the caller already owns, so it is
   // populated only for allowlisted calls: an ordinary RPC's arguments
   // (a full prompt, an attachment manifest) stay collectable the moment
@@ -681,10 +681,10 @@ interface WSClientOptions {
   // exercised without allocating tens of MiB per run.
   maxFrameBytes?: number;
   // For tests: override the retry-on-transient-close allowlist. The
-  // production list is empty by design (RETRY_ON_TRANSIENT_CLOSE), so
-  // the retry path would otherwise be unreachable and untestable — and
-  // an untested seam will not work the day someone needs it. Production
-  // code MUST NOT pass this.
+  // production list holds exactly two send methods
+  // (RETRY_ON_TRANSIENT_CLOSE), so a test of the retry path itself
+  // names a method of its own here rather than staging a real send.
+  // Production code MUST NOT pass this.
   retryOnTransientClose?: readonly RetryOnTransientCloseEntry[];
 }
 
@@ -1561,8 +1561,10 @@ export class WSClient {
   }
 
   // close shuts the client down permanently. After this returns, calls
-  // and subscribes reject / no-op. Used by tests; the production
-  // singleton is never closed during normal operation.
+  // and subscribes reject / no-op, and nothing reopens it: the phone
+  // shell closes the singleton at boot when no home pairing is stored
+  // (`native/boot.ts`), and a registry asked to restore a closed home
+  // client throws instead (`backends.restoreHomeBackend`).
   close(): void {
     this.publishReplay('cancel');
     this.replayBuffer = null;
@@ -1594,6 +1596,12 @@ export class WSClient {
     }
     this.pending.clear();
     this.subscribers.clear();
+  }
+
+  /** Whether `close()` has run. A closed client never reconnects, so a
+   * registry must not re-register it. */
+  isClosed(): boolean {
+    return this.closed;
   }
 
   // dispatchRPC is the single path both callByID and callByName route

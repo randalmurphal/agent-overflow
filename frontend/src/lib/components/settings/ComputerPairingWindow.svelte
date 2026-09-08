@@ -17,7 +17,8 @@
     onClose: () => void;
   } = $props();
   const { call, backend } = settingsComputer();
-  const name = getTransportHelloFor(backend)?.backendName || 'this computer';
+  // Derived, not captured: the hello can land after this window mounts.
+  const name = $derived(getTransportHelloFor(backend)?.backendName || 'this computer');
   let window = $state<Awaited<ReturnType<typeof OpenComputerPairing>> | null>(null);
   let status = $state<Awaited<ReturnType<typeof ComputerPairingStatus>> | null>(null);
   let error = $state('');

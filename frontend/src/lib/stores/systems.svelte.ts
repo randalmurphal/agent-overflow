@@ -1,15 +1,15 @@
 // The other machines this installation is attached to, as Settings →
-// Systems manages them.
+// Remote access → Connect to a computer manages them.
 //
-// One store owns the four profile RPCs (`ListBackends`, `AddBackend`,
-// `RemoveBackend`, `RenameBackend`) and the `backend:attach` reaction,
+// One store owns the three profile RPCs (`ListBackends`, `AddBackend`,
+// `RemoveBackend`) and the `backend:attach` reaction,
 // because they share one fact: the list the local backend holds. A section
 // calling `AddBackend` itself would show a verification number the
 // confirmation event has no way to retire, and a removal made anywhere
 // else would leave the transport registry holding a socket to a profile
 // that no longer exists.
 //
-// All four are `host`-scoped and `home`-routed (internal/app/app_backends.go):
+// All three are `host`-scoped and `home`-routed (internal/app/app_backends.go):
 // they act on THIS machine's profile directory, never on an attached one.
 // A standalone frontend owns these operations locally. A legacy relay or
 // paired browser cannot administer its upstream profiles; the passive load asks
@@ -27,7 +27,6 @@ import {
   AddBackend,
   ListBackends,
   RemoveBackend,
-  RenameBackend,
   type AttachedBackend,
 } from './bindings';
 import { hasScope } from '../transport/scopes';
@@ -168,11 +167,6 @@ function forgetSystem(id: string): void {
   // purge has to be stated here too or a detach from Settings leaves the
   // replica a detach from a phone removes.
   purgeClientState(id);
-}
-
-export async function renameSystem(id: string, nickname: string): Promise<void> {
-  await RenameBackend(id, nickname);
-  applySystemNickname(id, nickname);
 }
 
 function applySystemNickname(id: string, nickname: string): void {

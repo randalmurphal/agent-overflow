@@ -129,16 +129,49 @@ describe('the stored endpoint map', () => {
     expect(storedBackendEndpoints()).toEqual({ '': ENDPOINT });
   });
 
-  it('survives a storage that is not there at all', () => {
-    localStorage.setItem('agent-overflow:backendEndpoints', '{ not json');
-    expect(storedBackendEndpoints()).toEqual({});
-  });
-
   it('forgets one machine without touching the others', () => {
     storeBackendEndpoint('', ENDPOINT);
     storeBackendEndpoint('b-1', 'https://laptop.test:7777');
     forgetBackendEndpoint('b-1');
     expect(storedBackendEndpoints()).toEqual({ '': ENDPOINT });
+  });
+});
+
+describe('an unreadable endpoint map', () => {
+  const KEY = 'agent-overflow:backendEndpoints';
+
+  it('is null from the plural read and empty from the singular one', () => {
+    localStorage.setItem(KEY, '[not json');
+    expect(storedBackendEndpoints()).toBeNull();
+    expect(storedBackendEndpoint('laptop')).toBe('');
+    localStorage.setItem(KEY, '"a string"');
+    expect(storedBackendEndpoints()).toBeNull();
+  });
+
+  it('is null when storage itself refuses to answer', () => {
+    vi.stubGlobal('localStorage', {
+      getItem() {
+        throw new Error('storage closed');
+      },
+    });
+    try {
+      expect(storedBackendEndpoints()).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('is not what an empty store answers', () => {
+    expect(storedBackendEndpoints()).toEqual({});
+  });
+
+  it('is left alone by forgetting and replaced by storing', () => {
+    localStorage.setItem(KEY, '[not json');
+    forgetBackendEndpoint('laptop');
+    expect(localStorage.getItem(KEY)).toBe('[not json');
+    // Addresses and no tombstones: pairing again is how it is repaired.
+    storeBackendEndpoint('laptop', 'https://laptop.test:7777');
+    expect(storedBackendEndpoints()).toEqual({ laptop: 'https://laptop.test:7777' });
   });
 });
 

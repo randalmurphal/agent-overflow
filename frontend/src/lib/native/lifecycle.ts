@@ -110,10 +110,10 @@ export function answerBackPress(): boolean {
 
 /**
  * Subscribe the shell's lifecycle. No-op off the shell, which is what
- * makes this safe to call unconditionally from `main.ts`. Answers a
- * disposer; nothing in the app calls it today, and it exists so a test
- * can install and remove the subscription without leaking a listener into
- * the next case.
+ * makes this safe to call unconditionally; `native/boot.ts` awaits it once
+ * per document. Answers a disposer that the app itself never calls — it
+ * exists so a test can install and remove the subscription without leaking
+ * a listener into the next case.
  */
 export async function installNativeLifecycle(): Promise<() => void> {
   if (!isNativeShell()) return () => {};

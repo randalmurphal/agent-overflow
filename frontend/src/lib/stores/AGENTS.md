@@ -394,7 +394,11 @@ stops waking readers.
   preference. A removed or offline choice stays selected until the user
   changes it; dispatch must never silently reroute to home. A frontend without
   a local execution host initially chooses its first saved computer only when
-  no launch or remembered choice exists. `stores/panes.svelte.ts` arms the focused-pane resolver at its
+  no launch or remembered choice exists, and — having said so at boot through
+  `initializeSelectedBackend` — follows a removal made while it runs to the
+  first remaining computer, since its picker mounts only with several
+  attached. That is the store's own `onBackendDetached` hook and the ONE
+  place the rule lives; no settings section reroutes. `stores/panes.svelte.ts` arms the focused-pane resolver at its
   own load — a function, not an import, because `panes → thread →
   gitStatusStore → transport` already exists. The picker that writes it is
   `components/composer/workspace/MachinePicker.svelte`. Draft switching captures
@@ -403,7 +407,7 @@ stops waking readers.
   a mounted banner or picker cannot retain a different target from routing
   when a catalog arrives or a draft's choice changes in place.
 - `systems.svelte.ts` owns the attached-machine list (`ListBackends`,
-  `AddBackend`, `RemoveBackend`, `RenameBackend`) and the `backend:attach`
+  `AddBackend`, `RemoveBackend`) and the `backend:attach`
   reaction. Pairing is two RPCs apart in time — the verification number
   comes back at once, the far owner confirms minutes later — so the pending
   row and its retirement have to share one owner. A confirmed attach

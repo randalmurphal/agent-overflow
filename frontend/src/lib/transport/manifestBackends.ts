@@ -206,13 +206,16 @@ export function descriptorForAttachedId(
  * The name is the ENDPOINT HOST, which is what `attachBackendFromLink`
  * already writes for a payload that published no `backendName`. An empty
  * one here would leave every surface that labels a machine — the machine
- * picker, Settings → Systems, the sidebar's row — showing a blank until
+ * picker, Settings → Remote access → Connect to a computer, the sidebar's row — showing a blank until
  * that backend's manifest resolves, which on an unreachable machine is
  * never. An address is the one thing this client is sure of.
  */
 export function storedBackendDescriptors(): BackendDescriptor[] {
   const out: BackendDescriptor[] = [];
   const endpoints = storedBackendEndpoints();
+  // Refused rather than read as empty: the sync this feeds detaches what
+  // the source no longer names, and an unreadable map names nothing.
+  if (endpoints === null) throw new Error('Saved computer addresses could not be read.');
   const homeId = endpoints[''] && hasPairedSession('')
     ? pairedComputerId('') || rememberedIdentity('')?.backendId : undefined;
   for (const [id, endpoint] of Object.entries(endpoints)) {

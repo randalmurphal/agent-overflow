@@ -1,7 +1,10 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 
 const launch = vi.hoisted(() => ({ computer: '' }));
-vi.mock('../transport/runMode', () => ({ initialComputer: () => launch.computer }));
+vi.mock('../transport/runMode', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../transport/runMode')>()),
+  initialComputer: () => launch.computer,
+}));
 
 beforeEach(() => {
   vi.resetModules();

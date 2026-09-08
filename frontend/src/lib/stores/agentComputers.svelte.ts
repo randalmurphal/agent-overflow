@@ -72,7 +72,15 @@ export function createAgentComputers(backend: BackendKey) {
       confirmed = true;
       await call(() => SetAgentComputerEnabled(peer.id, true));
       await load(); return true;
-    } catch (err) { error = errString(err); repair = target; return false; }
+    } catch (err) {
+      // A confirmed pairing already exists on the backend: reload so its
+      // row appears, with the toggle as the retry. Offering the pairing
+      // again would mint a second one. `load` clears `error` on success,
+      // so the message is set after it.
+      if (confirmed) await load(); else repair = target;
+      error = errString(err);
+      return false;
+    }
     finally {
       if (invitation && !confirmed) {
         try { await withBackendTarget(destinationKey, () => CancelDevicePairing(invitation!)); }

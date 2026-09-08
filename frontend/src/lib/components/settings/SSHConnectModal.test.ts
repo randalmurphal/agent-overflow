@@ -72,3 +72,50 @@ it('shows a failed remote startup and allows correction', async () => {
   expect(view.getByText('Try again')).toBeTruthy();
   expect(add).not.toHaveBeenCalled();
 });
+
+const verifying = { ...status, state: 'verification', verificationNumber: '123456' };
+function stageVerification() {
+  setBindingMock('StartSSHConnection', async () => status);
+  setBindingMock('GetSSHConnection', async () => verifying);
+  setBindingMock('AddBackend', async () => ({ id: 'gpu-id', name: 'GPU', endpoint: 'https://gpu.test', verificationNumber: '123456' }));
+  return { cancel: setBindingMock('CancelSSHConnection', async () => {}), remove: setBindingMock('RemoveBackend', async () => {}) };
+}
+
+it('treats a refused confirmation as unconfirmed: the failure shows and nothing is retired', async () => {
+  const { cancel, remove } = stageVerification();
+  setBindingMock('ConfirmSSHConnection', async () => { throw new Error('the remote declined'); });
+  const view = await start();
+  await fireEvent.click(await view.findByText('Connect this computer'));
+  expect((await view.findByRole('alert')).textContent).toContain('the remote declined');
+  // Not confirmed, so the dialog still offers Cancel rather than Close, and
+  // the pending connection stays the dialog's own to cancel.
+  expect(view.getByText('Cancel')).toBeTruthy();
+  expect(cancel).not.toHaveBeenCalled();
+  expect(remove).not.toHaveBeenCalled();
+});
+
+it('does not cancel a confirmation the remote is still answering when the dialog closes', async () => {
+  const { cancel, remove } = stageVerification();
+  let answer!: () => void;
+  setBindingMock('ConfirmSSHConnection', () => new Promise<void>((resolve) => { answer = resolve; }));
+  const view = await start();
+  await fireEvent.click(await view.findByText('Connect this computer'));
+  expect(view.getByText('Connecting…')).toBeTruthy();
+  await fireEvent.click(view.getByText('Close'));
+  answer();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(cancel).not.toHaveBeenCalled();
+  expect(remove).not.toHaveBeenCalled();
+});
+
+it('retires a connection whose confirmation is refused after the dialog closed', async () => {
+  const { cancel, remove } = stageVerification();
+  let refuse!: (reason: Error) => void;
+  setBindingMock('ConfirmSSHConnection', () => new Promise<void>((_, reject) => { refuse = reject; }));
+  const view = await start();
+  await fireEvent.click(await view.findByText('Connect this computer'));
+  await fireEvent.click(view.getByText('Close'));
+  refuse(new Error('declined'));
+  await waitFor(() => expect(cancel).toHaveBeenCalledWith('console'));
+  expect(remove).toHaveBeenCalledWith('gpu-id');
+});

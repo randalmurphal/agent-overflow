@@ -33,19 +33,28 @@
 //
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { projectBackend, threadBackend } from '../transport/entityIndex';
+import { attachedBackends, onBackendDetached } from '../transport/backends';
 import type { Thread } from '../types/models';
 import { initialComputer } from '../transport/runMode';
 import { readFrontendValue, writeFrontendValue } from './frontendStorage';
 import { SvelteMap } from 'svelte/reactivity';
 
-const STORAGE_KEY = 'selected-computer';
-const remembered = readFrontendValue(STORAGE_KEY);
+/** The frontend-storage key the app-wide choice is remembered under. */
+export const SELECTED_BACKEND_KEY = 'selected-computer';
+const remembered = readFrontendValue(SELECTED_BACKEND_KEY);
 const initial = initialComputer() || (typeof remembered === 'string' && remembered.length <= 128 ? remembered : HOME_BACKEND);
 let selected = $state<BackendKey>(initial);
 
+// Whether this frontend FOLLOWS the attached set. Told at boot by the two
+// boots without a local execution host (the native shell, the frontend-only
+// controller), never by a desktop whose page was served by its own backend.
+let followsAttached = false;
+
 /** Boot only: a frontend without a local computer starts on its first saved one.
- * Explicit launch and remembered choices survive outages and removal. */
+ * Explicit launch and remembered choices survive outages, and a removal made
+ * while this frontend was closed; one made while it runs moves them (below). */
 export function initializeSelectedBackend(computers: readonly { id: BackendKey }[], preferred?: BackendKey): void {
+  followsAttached = true;
   if (selected === HOME_BACKEND && !computers.some((computer) => computer.id === HOME_BACKEND)) {
     selected = computers.find((computer) => computer.id === preferred)?.id ?? computers[0]?.id ?? HOME_BACKEND;
   }
@@ -103,8 +112,21 @@ export function selectedBackend(): BackendKey {
 /** Set the app-wide choice. The picker's write. */
 export function setSelectedBackend(backendId: BackendKey): void {
   selected = backendId;
-  writeFrontendValue(STORAGE_KEY, backendId);
+  writeFrontendValue(SELECTED_BACKEND_KEY, backendId);
 }
+
+// The one exception to the rule above: a frontend that FOLLOWS the attached
+// set moves to the first remaining computer, the answer it boots on and the
+// only way it can be re-pointed, since the machine picker mounts only while
+// several computers are attached. The raw choice is compared, never
+// `selectedBackend()`: a focused thread's owner is its own and moves nothing.
+// HOME leaving is the shell retiring a legacy slot for its canonical entry, or
+// a removal that reloads the document: both are `initializeSelectedBackend`'s
+// to answer, which is why a HOME choice is left for it.
+onBackendDetached(({ backendId }) => {
+  if (!followsAttached || backendId === HOME_BACKEND || selected !== backendId) return;
+  setSelectedBackend(attachedBackends()[0]?.id ?? HOME_BACKEND);
+});
 
 /** Stage a pane's own choice — a draft placeholder's machine. */
 export function setPaneBackend(paneId: string, backendId: BackendKey | null): void {
@@ -123,6 +145,7 @@ export function setActiveBackendPaneResolver(resolve: () => string | null): void
 /** Test seam: back to the single-backend answer. */
 export function __resetSelectedBackendForTest(): void {
   selected = HOME_BACKEND;
+  followsAttached = false;
   byPane.clear();
   // Neither resolver is cleared. Both are module wiring armed by
   // stores/panes.svelte at ITS load, not per-test state, and clearing them

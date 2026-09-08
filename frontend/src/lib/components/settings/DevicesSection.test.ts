@@ -1,9 +1,11 @@
-import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import DevicesSection from './DevicesSection.svelte';
 import { setBindingMock, getBindingMock, resetBindingMocks } from '../../../test/mocks/bindings-app';
 import { setRunMode, resetRunMode } from '../../../test/runMode';
 import { getToasts } from '../../stores/toast.svelte';
+import { __setTransportStatusForTest } from '../../stores/transportStatus.svelte';
+import type { TransportStatusSnapshot } from '../../transport/wsClient';
 
 interface MockDevice {
   id: string;
@@ -320,5 +322,54 @@ describe('<DevicesSection>', () => {
     await findByRole('button', { name: /Phone or tablet/ });
     await waitFor(() => expect(network).toHaveBeenCalledTimes(2));
     expect(queryByText(/currently reaches this computer only/)).toBeNull();
+  });
+});
+
+describe('<DevicesSection> pending-pairing poll', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    resetBindingMocks();
+    resetRunMode();
+    setBindingMock('GetNetworkSettings', async () => ({ bindAll: false, url: '', token: '' }));
+    setBindingMock('ListPasskeys', async () => []);
+  });
+
+  afterEach(() => {
+    __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null } as TransportStatusSnapshot);
+    resetBindingMocks();
+    resetRunMode();
+    vi.useRealTimers();
+  });
+
+  it('asks quietly: one request at a time, none while offline, and no toast for a tick that fails', async () => {
+    const pending = overview({
+      pendingPairings: [{ linkId: 'link-3', createdAtMs: 1000, expiresAtMs: Date.now() + 240_000, redeemed: false }],
+    });
+    const read = setBindingMock('GetAccessOverview', async () => pending);
+    const toasts = getToasts().length;
+    const view = render(DevicesSection);
+    await vi.waitFor(() => expect(view.getByRole('button', { name: 'Cancel link' })).toBeTruthy());
+    expect(read).toHaveBeenCalledTimes(1);
+
+    let refuse!: (reason: Error) => void;
+    read.mockImplementation(() => new Promise((_, reject) => { refuse = reject; }));
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(read).toHaveBeenCalledTimes(2);
+    // In flight: the next tick joins nothing rather than stacking a request.
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(read).toHaveBeenCalledTimes(2);
+    refuse(new Error('backend restarting'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getToasts()).toHaveLength(toasts);
+
+    // Offline: a tick asks nothing of a backend that cannot answer.
+    __setTransportStatusForTest({ status: 'reconnecting', nextAttemptAt: null } as TransportStatusSnapshot);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(read).toHaveBeenCalledTimes(2);
+
+    __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null } as TransportStatusSnapshot);
+    read.mockImplementation(async () => pending);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(read).toHaveBeenCalledTimes(3);
   });
 });

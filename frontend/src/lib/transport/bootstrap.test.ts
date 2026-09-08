@@ -14,7 +14,6 @@ import {
   isLoopbackHostname,
   pageServedOverLoopback,
   validateWsUrl,
-  wsUrlMatchesPageOrigin,
 } from './bootstrap';
 import { clearPairedSession, redeemPairing } from './deviceSession';
 import { __resetPageHostForTest } from './pageHost';
@@ -74,48 +73,50 @@ describe('pageServedOverLoopback', () => {
 // the Go server's) — the answer names the exact authority the page was
 // loaded from. Anything else in that manifest is a manifest that was
 // tampered with in flight.
-describe('wsUrlMatchesPageOrigin', () => {
+describe('validateWsUrl against the page origin', () => {
   const httpPage = { protocol: 'http:', host: '127.0.0.1:34567' };
   const httpsPage = { protocol: 'https:', host: 'desktop.tailnet.ts.net' };
+  const accepts = (url: string, page: { protocol: string; host: string }) =>
+    expect(() => validateWsUrl(url, page)).not.toThrow();
+  const rejects = (url: string, page: { protocol: string; host: string }) =>
+    expect(() => validateWsUrl(url, page)).toThrow(/not same-origin/);
 
   it('accepts the URL the transport derives from the page Host header', () => {
-    expect(wsUrlMatchesPageOrigin('ws://127.0.0.1:34567/ws', httpPage)).toBe(true);
-    expect(wsUrlMatchesPageOrigin('wss://desktop.tailnet.ts.net/ws', httpsPage)).toBe(true);
+    accepts('ws://127.0.0.1:34567/ws', httpPage);
+    accepts('wss://desktop.tailnet.ts.net/ws', httpsPage);
   });
 
   it('rejects a different host', () => {
-    expect(wsUrlMatchesPageOrigin('ws://untrusted.example.com/ws', httpPage)).toBe(false);
-    expect(wsUrlMatchesPageOrigin('ws://127.0.0.2:34567/ws', httpPage)).toBe(false);
+    rejects('ws://untrusted.example.com/ws', httpPage);
+    rejects('ws://127.0.0.2:34567/ws', httpPage);
   });
 
   // Host alone is not the origin: a second server on the same machine is
   // a different security principal, and on a LAN bind it may not even be
   // ours.
   it('rejects a different port on the same host', () => {
-    expect(wsUrlMatchesPageOrigin('ws://127.0.0.1:34568/ws', httpPage)).toBe(false);
-    expect(wsUrlMatchesPageOrigin('ws://127.0.0.1/ws', httpPage)).toBe(false);
+    rejects('ws://127.0.0.1:34568/ws', httpPage);
+    rejects('ws://127.0.0.1/ws', httpPage);
   });
 
   // A TLS-fronted page must not be downgraded to a cleartext socket, and
   // a plain-http page has no wss listener to reach.
   it('pairs the ws scheme with the page scheme', () => {
-    expect(wsUrlMatchesPageOrigin('wss://127.0.0.1:34567/ws', httpPage)).toBe(false);
-    expect(wsUrlMatchesPageOrigin('ws://desktop.tailnet.ts.net/ws', httpsPage)).toBe(false);
+    rejects('wss://127.0.0.1:34567/ws', httpPage);
+    rejects('ws://desktop.tailnet.ts.net/ws', httpsPage);
   });
 
   // ws:/http: and wss:/https: share default ports, so the URL parser
   // normalises an explicit default away on both sides and the two
   // spellings must still match.
   it('treats an explicit default port as the default port', () => {
-    expect(wsUrlMatchesPageOrigin('ws://localhost:80/ws', { protocol: 'http:', host: 'localhost' })).toBe(true);
-    expect(
-      wsUrlMatchesPageOrigin('wss://example.com:443/ws', { protocol: 'https:', host: 'example.com' }),
-    ).toBe(true);
+    accepts('ws://localhost:80/ws', { protocol: 'http:', host: 'localhost' });
+    accepts('wss://example.com:443/ws', { protocol: 'https:', host: 'example.com' });
   });
 
   it('rejects an unparseable url', () => {
-    expect(wsUrlMatchesPageOrigin('not a url', httpPage)).toBe(false);
-    expect(wsUrlMatchesPageOrigin('/ws', httpPage)).toBe(false);
+    expect(() => validateWsUrl('not a url', httpPage)).toThrow(/invalid/);
+    expect(() => validateWsUrl('/ws', httpPage)).toThrow(/invalid/);
   });
 });
 
