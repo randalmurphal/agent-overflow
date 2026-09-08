@@ -114,8 +114,11 @@ existing authenticated owner RPC bridge. For default WSL NAT it forwards raw
 TLS to the backend's **non-loopback** WSL interface, so clients remain remote
 at the authorization boundary. Mirrored networking uses its exposed address
 directly. QR addresses, discovery and authenticated alternate routes use these
-published endpoints, never the inaccessible WSL NAT address once the native
-bridge is known. Owner/configuration generations discard stale reports.
+published endpoints, never the inaccessible WSL NAT address: a launcher-hosted
+WSL boot expects the bridge from the start (`app.ExpectNativeNetwork`) and
+advertises nothing on the LAN until the first report, rather than the NAT
+address for the seconds before it. Owner/configuration generations discard
+stale reports.
 See [the native network guide](../../internal/nativenetwork/AGENTS.md) for the
 relay bounds and lifecycle. Windows Firewall remains under the user's control.
 

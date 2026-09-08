@@ -57,6 +57,21 @@ func (s *nativeNetworkState) invalidate() {
 	s.finishScan(nil)
 }
 
+// ExpectNativeNetwork tells a launcher-hosted WSL backend, before its
+// launcher has polled once, that native ingress is coming: nativeLANStatus
+// reports the starting state from boot rather than nil, so ComputerRoutes,
+// the settings screen and the pairing window never fall back to the WSL NAT
+// address — which no other machine can reach — in the seconds before the
+// first report. Bootstrap boundary, called from the headless entry point
+// only where a launcher exists; a boot with no launcher keeps nil, which is
+// the desktop's own LAN ingress.
+func ExpectNativeNetwork(a *App) {
+	s := &a.nativeNetwork
+	s.mu.Lock()
+	s.seen = true
+	s.mu.Unlock()
+}
+
 // invalidateNativeNetwork runs inside the network settings apply, which
 // publishes the routes once for the whole change.
 func (a *App) invalidateNativeNetwork() {

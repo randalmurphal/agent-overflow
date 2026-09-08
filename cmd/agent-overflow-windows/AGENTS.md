@@ -324,7 +324,13 @@ restores persisted LAN/port/domain settings just like desktop and serve boots;
 isolated harnesses opt out explicitly. Existing localhost forwarding
 is only for this desktop window. Do not advertise WSL NAT addresses to external
 clients, proxy remote traffic through localhost, or inject local credentials.
-The backend receives external endpoints and errors over the same owner RPC.
+The backend receives external endpoints and errors over the same owner RPC, and
+because this launcher ALWAYS runs that poll beside the bridge, the backend's
+headless boot inside WSL expects it from the start (`app.ExpectNativeNetwork`)
+and advertises no LAN address until the first report. A launcher that stopped
+running `nativenetwork.Run` would leave the backend saying "Starting local
+network access…" forever, which is the honest state, not a fallback to the NAT
+address.
 See [nativenetwork](../../internal/nativenetwork/AGENTS.md) for admission, pairing
 advertisements, mirrored mode, cancellation, and firewall/testing boundaries.
 

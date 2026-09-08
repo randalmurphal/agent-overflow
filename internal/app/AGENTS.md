@@ -527,7 +527,18 @@ responder start failure is the window's `DiscoveryError`, not a log line.
 `app_computer_discovery.go` selects candidate sources and outbound networks.
 `app_native_network.go` accepts only current launcher/configuration observations:
 never derive local authorization from the Windows forwarding path or publish
-WSL NAT addresses in place of unavailable native ingress.
+WSL NAT addresses in place of unavailable native ingress. That rule holds from
+boot, not from the first poll: `ExpectNativeNetwork` (bootstrap boundary,
+called by the headless entry point inside WSL) marks native ingress as coming
+before the transport binds, so `nativeLANStatus` answers the starting state
+rather than nil — and nil is what makes `ComputerRoutes` fall back to the WSL
+NAT address, which no other machine can reach and which the first peer to read
+the catalog would have pinned (C7). The launcher and the WSL payload ship as
+one artifact and the launcher's bridge always runs the poll, so there is no
+launcher-hosted boot the state is wrong for; a `serve` or `supervise` boot
+inside WSL has no launcher, never reaches the headless entry point, and keeps
+its own LAN ingress. `TestAWSLBootAdvertisesNoAddressBeforeItsLauncherReports`
+pins both boots.
 
 ## The canonical domain's certificate
 
