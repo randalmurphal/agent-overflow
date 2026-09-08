@@ -38,13 +38,18 @@ export function frontendClientFlow(): void {
       test.setTimeout(90_000);
       page.setDefaultTimeout(10_000);
       const root = await mkdtemp(join(tmpdir(), 'ao-frontend-client-'));
+      let desktop: HarnessApp | undefined;
       let first: HarnessApp | undefined;
       let second: HarnessApp | undefined;
       let frontend: Awaited<ReturnType<typeof launchFrontendClient>> | undefined;
       const errors: string[] = [];
       page.on('pageerror', (error) => errors.push(error.message));
       try {
-        first = await launchHarness({ dataDir: join(root, 'first') });
+        // The installation launching the frontend is a third desktop: it pairs
+        // with both execution hosts through the production AddBackend path,
+        // since a computer refuses to pair with itself.
+        desktop = await launchHarness({ dataDir: join(root, 'desktop') });
+        first = await launchHarness();
         second = await launchHarness();
         await first.rpc('HarnessSeed', { projects: [{ name: 'First computer project', repo: { commits: [{ files: { 'README.md': 'First project' } }] }, threads: [{ title: 'First computer conversation', turns: [{ userText: 'First host', items: [{ kind: 'assistant_text', summary: 'First host is ready.' }] }] }] }] });
         await second.rpc('HarnessSeed', { projects: [{ name: 'Second computer project', repo: { commits: [{ files: { 'README.md': sharedRepo ? 'First project' : 'Second project' } }] }, threads: [{ title: 'Second computer conversation', turns: [{ userText: 'Second host', items: [{ kind: 'assistant_text', summary: 'Second host is ready.' }] }] }] }] });
@@ -52,13 +57,16 @@ export function frontendClientFlow(): void {
         for (const [host, name] of [[first, 'First computer'], [second, 'Second computer']] as const) {
           const pairing = await headlessPairing(host);
           try {
-            const result = await first.rpc<{ id: string; verificationNumber: string }>('AddBackend', pairing.invite.url);
+            const result = await desktop.rpc<{ id: string; verificationNumber: string }>('AddBackend', pairing.invite.url);
             await pairing.confirm(result.verificationNumber);
-            await first.rpc('RenameBackend', result.id, name);
+            await desktop.rpc('RenameBackend', result.id, name);
             if (host === first) firstID = result.id;
           } finally { pairing.close(); }
         }
-        const profiles = join(first.bootstrap.dataDir, 'device');
+        // As `--connect <computer>` does after the desktop window has closed:
+        // the frontend reuses the installation's device profiles by itself.
+        const profiles = join(desktop.bootstrap.dataDir, 'device');
+        await desktop.close(); desktop = undefined;
         const config = join(root, 'frontend');
         frontend = await launchFrontendClient(profiles, config, firstID);
         await frontend.open(page);
@@ -112,7 +120,7 @@ export function frontendClientFlow(): void {
         await expect(page.getByText('Second host is ready.', { exact: true })).toBeVisible();
         expect(errors).toEqual([]);
       } finally {
-        try { await page.close(); await frontend?.close(); await second?.close(); await first?.close(); }
+        try { await page.close(); await frontend?.close(); await second?.close(); await first?.close(); await desktop?.close(); }
         finally { await rm(root, { recursive: true, force: true }); }
       }
     });

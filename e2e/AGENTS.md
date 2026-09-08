@@ -32,7 +32,11 @@ directory.
   under the same containment boundary. It owns a production frontend controller
   and no execution backend. Its `open(page)` obtains a fresh local page ticket;
   execution hosts still come from `launchHarness`. The desktop and compact
-  specs stop the original host before cold-starting that same frontend.
+  specs pair both hosts from a third, throwaway harness standing in for the
+  installation's own desktop (`AddBackend` into its `device/` profile dir),
+  because a computer refuses to pair with itself; the frontend then reuses
+  that dir the way `--connect <computer>` reuses `deviceProfileDir()`. They
+  stop the original host before cold-starting that same frontend.
   The multihost recovery flow instead keeps the frontend alive while a host
   restarts during a turn and another host accepts work. Set
   `AO_E2E_RECOVERY_BASELINE=/absolute/path/to/saved-release-binary` to run that
