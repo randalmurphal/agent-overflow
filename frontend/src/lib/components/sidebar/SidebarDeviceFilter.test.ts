@@ -44,8 +44,8 @@ for (const compact of [false, true]) it(`filters merged projects and search with
   const view = render(ProjectsSection, { props: { pane } });
   await tick();
   expect(view.container.querySelectorAll('[data-testid="project-item"]')).toHaveLength(1);
-  await fireEvent.click(view.getByRole('button', { name: 'Filter projects by device' }));
-  await fireEvent.keyDown(view.getByRole('menuitem', { name: 'All devices' }), { key: 'ArrowDown' });
+  await fireEvent.click(view.getByRole('button', { name: 'Filter projects by computer' }));
+  await fireEvent.keyDown(view.getByRole('menuitem', { name: 'All computers' }), { key: 'ArrowDown' });
   expect(document.activeElement).toBe(view.getByRole('menuitemcheckbox', { name: 'Mac' }));
   const checkbox = view.getByRole('menuitemcheckbox', { name: 'GPU' });
   expect(checkbox).toHaveAttribute('aria-checked', 'true');
@@ -61,8 +61,8 @@ for (const compact of [false, true]) it(`filters merged projects and search with
   expect(view.queryByText('GPU work')).not.toBeInTheDocument();
   setThreadFilterQuery('');
   await fireEvent.click(view.getByRole('menuitemcheckbox', { name: 'Mac' })); await tick();
-  expect(view.getByText('No projects on the selected devices.')).toBeInTheDocument();
+  expect(view.getByText('No projects on the selected computers.')).toBeInTheDocument();
   expect(pane.thread?.id).toBe(elsewhere.id);
-  await fireEvent.click(view.getByRole('menuitem', { name: 'All devices' })); await tick();
+  await fireEvent.click(view.getByRole('menuitem', { name: 'All computers' })); await tick();
   expect(view.getByText('GPU work')).toBeInTheDocument();
 });

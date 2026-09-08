@@ -18,6 +18,7 @@
   import {
     attachedBackendEntry,
     backendDisplayName,
+    backendOfflineLabel,
     backendReachable,
     getAttachedBackends,
     threadMachine,
@@ -55,7 +56,7 @@
   });
   let activeLabel = $derived.by(() => {
     const entry = attachedBackendEntry(activeKey);
-    return entry ? backendDisplayName(entry) : 'Machine';
+    return entry ? backendDisplayName(entry) : 'Computer';
   });
   let canTransfer = $derived(Boolean(pane.thread && isLocked && canOfferConversationTransfer(pane.thread) && hasScope('threads:operate', activeKey)));
   let selectable = $derived(!isLocked || canTransfer);
@@ -87,7 +88,7 @@
     switching = true;
     try {
       const entry = attachedBackendEntry(key);
-      if (!entry) throw new Error('That machine is no longer attached');
+      if (!entry) throw new Error('That computer is no longer attached');
       const project = thread.projectId ? projectSiblingOn(thread.projectId, key)?.project : undefined;
       if (!project) {
         addForThread = thread.id;
@@ -160,18 +161,18 @@
       placement="top-start"
       role="none"
     >
-      <Menu ariaLabel="Machine" onClose={closeMenu}>
+      <Menu ariaLabel="Computer" onClose={closeMenu}>
         {#each backends as entry (entry.id)}
           {@const reachable = backendReachable(entry.id)}
           {@const viewOnly = !hasScope('threads:operate', entry.id)}
           {@const transferUnavailable = isLocked && entry.id !== activeKey && (!supportsConversationTransfer(entry.id) || !hasScope('threads:operate', entry.id))}
           <MenuItem
             label={backendDisplayName(entry)}
-            description={!reachable ? 'Unreachable' : viewOnly ? 'View only' : transferUnavailable ? 'Update required' : isLocked && entry.id !== activeKey ? 'Move or copy conversation…' : undefined}
+            description={!reachable ? backendOfflineLabel(entry.id) : viewOnly ? 'View only' : transferUnavailable ? 'Update required' : isLocked && entry.id !== activeKey ? 'Move or copy conversation…' : undefined}
             checked={entry.id === activeKey}
             disabled={!reachable || viewOnly || transferUnavailable}
             title={!reachable
-              ? 'This machine cannot be reached right now'
+              ? 'This computer is offline right now.'
               : viewOnly
                 ? 'This connection can view threads but cannot create or move them'
                 : undefined}

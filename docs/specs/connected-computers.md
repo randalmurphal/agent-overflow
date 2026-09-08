@@ -44,7 +44,7 @@ require explicit personal pairing to join and are never silently promoted.
 - Sidebar machine names share the existing worktree metadata line. Remote
   desktop threads identify their host even if the repository exists only there.
   A phone with several hosts identifies all of them. No new attention feed.
-- The **Projects** heading opens a device filter with **All devices** and named
+- The **Projects** heading opens a computer filter with **All computers** and named
   checkboxes. It persists on this frontend, defaults new hosts to visible, and
   hides empty project groups. Filtering never disconnects a host, stops work,
   changes the execution target, or closes an already open conversation.

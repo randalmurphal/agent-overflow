@@ -127,7 +127,7 @@
     const thread = pane.thread;
     if (!thread || !threadMachineUnreachable(thread.id, thread.projectId)) return '';
     const entry = attachedBackendEntry(threadMachine(thread.id, thread.projectId));
-    return entry ? backendDisplayName(entry) : 'That machine';
+    return entry ? backendDisplayName(entry) : 'That computer';
   });
   // This client cannot reach the machine the thread runs on, and there is
   // no local process to fall back on. There is deliberately no

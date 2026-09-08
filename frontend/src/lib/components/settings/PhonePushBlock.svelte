@@ -35,7 +35,7 @@
 
   const COPY = {
     label: 'Phone push',
-    hint: 'Wakes a paired phone that is not connected. The message says what happened and which machine, never the thread.',
+    hint: 'Wakes a paired phone that is not connected. The message says what happened and which computer, never the thread.',
     gatedByToggles: "Each phone's own notification toggles decide what it is woken for.",
     notConfigured: 'Not set up. Phones are not woken.',
     credentialLabel: 'Firebase service account key',

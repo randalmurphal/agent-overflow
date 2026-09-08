@@ -188,7 +188,7 @@ let hasExpandableBody = $derived(
     const threadId = pane?.threadId ?? '';
     if (!threadId || !previewRouted(threadId)) return '';
     const entry = attachedBackendEntry(threadMachine(threadId, null));
-    return entry ? backendDisplayName(entry) : 'that machine';
+    return entry ? backendDisplayName(entry) : 'that computer';
   });
   let browsingLabel = $derived(
     browserMachine ? `Browsing on ${browserMachine}. The page is only visible there.` : '',

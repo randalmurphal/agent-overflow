@@ -13,7 +13,7 @@ vi.mock('../native/platform', () => ({ isNativeShell: () => true, nativePlatform
 vi.mock('../transport/backendAttach', async (original) => ({
   ...await original<typeof import('../transport/backendAttach')>(),
   attachIntroducedBackend: vi.fn(),
-  awaitAttachedActivation: vi.fn(async () => true),
+  awaitAttachedActivation: vi.fn(async () => 'attached' as const),
 }));
 const A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -31,7 +31,7 @@ let stop = () => {};
 beforeEach(() => {
   resetStagedBackends(); resetBindingMocks(); localStorage.clear();
   vi.mocked(attachIntroducedBackend).mockReset();
-  vi.mocked(awaitAttachedActivation).mockResolvedValue(true);
+  vi.mocked(awaitAttachedActivation).mockResolvedValue('attached');
   vi.mocked(attachIntroducedBackend).mockImplementation(async (link, current) => {
     if (!current()) throw new Error('superseded');
     const id = payloadFromLink(link).backendId;

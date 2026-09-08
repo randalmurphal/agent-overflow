@@ -105,6 +105,49 @@ describe('computer pairing window', () => {
     expect(close).not.toHaveBeenCalled();
   });
 
+  it('reopens a window in place, with the same network choice, after the first one expires', async () => {
+    const open = setBindingMock('OpenComputerPairing', async () => WINDOW);
+    open.mockResolvedValueOnce({ ...WINDOW, id: 'window-0', expiresAtMs: Date.now() + 3_000 });
+    const close = setBindingMock('CloseComputerPairing', async () => {});
+    setBindingMock('ComputerPairingStatus', async () => WAITING);
+    const view = show();
+    await vi.waitFor(() => expect(view.getByRole('status')).toHaveTextContent('Waiting for a computer on Tailscale'));
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(view.getByText('Pairing expired.')).toBeTruthy();
+    await fireEvent.click(view.getByRole('button', { name: 'Try again' }));
+    await vi.waitFor(() => expect(view.getByRole('status')).toHaveTextContent('Waiting for a computer on Tailscale'));
+    expect(view.queryByText('Pairing expired.')).toBeNull();
+    expect(open).toHaveBeenCalledTimes(2);
+    expect(open).toHaveBeenLastCalledWith('tailnet', 'view-only');
+    // The expired window is closed on the host rather than left to lapse.
+    expect(close).toHaveBeenCalledExactlyOnceWith('window-0');
+  });
+
+  it('offers Try again when the window could not be opened', async () => {
+    const open = setBindingMock('OpenComputerPairing', async () => WINDOW);
+    open.mockRejectedValueOnce(new Error('host offline'));
+    setBindingMock('ComputerPairingStatus', async () => WAITING);
+    const view = show();
+    await vi.waitFor(() => expect(view.getByRole('alert')).toHaveTextContent('Could not start pairing: host offline'));
+    await fireEvent.click(view.getByRole('button', { name: 'Try again' }));
+    await vi.waitFor(() => expect(view.getByRole('status')).toHaveTextContent('Waiting for a computer'));
+    expect(view.queryByRole('alert')).toBeNull();
+    expect(open).toHaveBeenCalledTimes(2);
+  });
+
+  it('says when this computer is not discoverable and opens its address by default', async () => {
+    const poll = setBindingMock('ComputerPairingStatus', async () => WAITING);
+    const view = show();
+    await vi.waitFor(() => expect(view.getByRole('status')).toHaveTextContent('Waiting for a computer'));
+    const details = () => view.getByLabelText('Computer address').closest('details') as HTMLDetailsElement;
+    expect(details().open).toBe(false);
+    expect(view.queryByText(/Not discoverable/)).toBeNull();
+    poll.mockResolvedValue({ ...WAITING, discoveryError: 'mDNS is unavailable' });
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(view.getByText('Not discoverable on this network: mDNS is unavailable. Enter the address on the other computer.')).toBeTruthy();
+    expect(details().open).toBe(true);
+  });
+
   it('stops retrying when the pairing expires during a host outage', async () => {
     setBindingMock('OpenComputerPairing', async () => ({ ...WINDOW, expiresAtMs: Date.now() + 3_000 }));
     const poll = setBindingMock('ComputerPairingStatus', async () => { throw new Error('offline'); });

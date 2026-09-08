@@ -197,6 +197,12 @@ connection edges and relevant transport gaps; retiring a connection invalidates
 its pending read without clearing the last snapshot. No full-log hydration or
 per-row polling. Completions
 follow ordinary queue/chat presentation and the tray's existing retention.
+A row names its computer once — the desktop's receipt already leads with the
+profile name, so the frontend appends `· <display name>` only when the summary
+does not — and holds Stop with `title="Offline"` while that computer's socket
+is down. Both read the attached entry for `job.computerId`; a phone reading a
+desktop's receipt knows no such entry and keeps the desktop's label and a live
+Stop, which the desktop relays.
 
 ## The working indicator is stepped, not animated
 

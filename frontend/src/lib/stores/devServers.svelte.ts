@@ -322,7 +322,7 @@ export function previewLinkTargetFor(threadId: string): PreviewLinkTarget | null
     if (server.allowed) allowed.add(server.port);
   }
   const entry = attachedBackendEntry(backend);
-  const machine = entry ? backendDisplayName(entry) : 'that machine';
+  const machine = entry ? backendDisplayName(entry) : 'that computer';
   const canAllow = hasScope('access:admin', backend);
   return {
     threadId,
@@ -349,7 +349,7 @@ export function previewRewriteKey(threadId: string): string {
   return previewRewriteKeyFrom(
     threadId,
     backend,
-    entry ? backendDisplayName(entry) : 'that machine',
+    entry ? backendDisplayName(entry) : 'that computer',
     hasScope('access:admin', backend),
     signature,
   );
@@ -457,7 +457,7 @@ export function previewChipFor(threadId: string, url: string): PreviewChip | nul
     threadId,
     port: parsed.port,
     path: parsed.path,
-    machine: entry ? backendDisplayName(entry) : 'that machine',
+    machine: entry ? backendDisplayName(entry) : 'that computer',
   };
 }
 

@@ -117,7 +117,12 @@ derived verification number before host approval. A `verifying` status may show
 the number, but approval requires `ready` with its redeemed link ID. Polls are
 serial, stop on expiry/unmount, and hide stale approval after a failed read.
 Closing cancels even a late open response; a confirmation already dispatched
-must not be revoked on an ambiguous response. Phones keep native QR/link pairing,
+must not be revoked on an ambiguous response. An expired or unopenable window
+offers Try again, which closes the previous window on the host and opens
+another with the same network choice; a status read still in flight for the
+old window is dropped by id. A `discoveryError` on the status is rendered
+under the waiting line and opens the address disclosure by default, since the
+address is then the only way the other computer finds this one. Phones keep native QR/link pairing,
 and known unsupported hosts offer a separately selected invitation fallback without discovery RPCs.
 An unknown hello keeps pairing disabled until connected; it never implies an old
 host. Another computer must never silently open the phone QR/link flow. The
@@ -153,7 +158,19 @@ An offline saved connection exposes `ComputerAddress`. Its repair belongs to
 the frontend's pairing, not settings on the selected computer. Go's host-only
 `RepairBackendAddress` and the native route controller verify existing trust
 before saving. Keep errors beside the entered address, leave failed input
-editable, and reconnect only the captured connection if it still exists.
+editable, and reconnect only the captured connection if it still exists. Its
+"Verified … Reconnecting…" note clears itself once the computer is reachable.
+
+A down socket is one word everywhere in Settings: **Offline**, with
+"· last seen <time>" when either the saved profile or the transport remembers
+one (`stores/attachedBackends.backendOfflineLabel`). A pending pairing row
+carries Cancel with no arming step — nothing has been granted yet — through
+the same removal the computer row uses (`RemoveBackend` on the desktop,
+`detachAttachedBackend` on the shell), and a cancelled wait reports nothing.
+On Allow device access a revoked device's destructive action is **Forget**;
+"Remove" stays the word for a connected computer under Connect to a computer.
+`DeviceNameField`'s "Device name saved." clears after three seconds or on the
+next keystroke.
 
 ## Computer ownership
 

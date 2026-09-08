@@ -234,8 +234,8 @@
     if (snapshot.status === 'reconnecting') {
       if (dormant) {
         return lastSeen === null
-          ? 'Not reachable. Checking every 5 minutes.'
-          : `Not reachable. Last seen ${lastSeen}. Checking every 5 minutes.`;
+          ? 'Offline. Checking every 5 minutes.'
+          : `Offline. Last seen ${lastSeen}. Checking every 5 minutes.`;
       }
       if (countdown !== null) {
         return `Reconnecting in ${countdown}s…`;
@@ -283,6 +283,14 @@
     }
     unpairHome();
     location.reload();
+  }
+
+  // The removed state's one action: Settings → Remote access → Connect to
+  // a computer, the same page the shell's Pair again opens. No computer is
+  // named, because the one this banner is about is exactly the one that no
+  // longer exists to be a settings target.
+  function handleChooseComputer(): void {
+    openSettingsOverlay('systems');
   }
 
   async function handleSignIn(): Promise<void> {
@@ -346,6 +354,16 @@
         class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
       >
         Pair again
+      </button>
+    {/if}
+    {#if removed}
+      <button
+        type="button"
+        onclick={handleChooseComputer}
+        data-testid="transport-status-choose-computer"
+        class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+      >
+        Choose computer
       </button>
     {/if}
     {#if snapshot.status !== 'connected' && !removed}

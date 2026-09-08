@@ -91,7 +91,7 @@ const CHECKING_REASON = 'Checking workspace availability...';
 // no longer the ordinary remote answer: the per-method origin partition is
 // gone, so a session that simply lacks `git:operate` is answered by the
 // scope check in the refresh below and never reaches this sentence.
-const LOCAL_ONLY_REASON = 'Workspace changes are only available on the local machine.';
+const LOCAL_ONLY_REASON = 'Workspace changes are only available on this computer.';
 
 function activityError(err: unknown): unknown {
   return isMethodUnavailableError(err) ? new Error(LOCAL_ONLY_REASON) : err;

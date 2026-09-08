@@ -372,8 +372,8 @@
     machineName === ''
       ? ''
       : backendHasBrowser(threadMachine(thread.id, thread.projectId))
-        ? `Machine: ${machineName}`
-        : `Machine: ${machineName}. No browser on this machine.`,
+        ? `Computer: ${machineName}`
+        : `Computer: ${machineName}. No browser on this computer.`,
   );
   let showWorktreeMeta = $derived(
     !editing && (Boolean(thread.worktreePath && worktreeName) || machineName !== ''),
@@ -591,7 +591,7 @@
       class="relative -mt-1.5 flex h-3.5 items-center text-[0.625rem] leading-none text-fg-hint"
       style="padding-left: {worktreeIndentPx}px; padding-right: {worktreeRightPaddingPx}px"
       title={worktreeName ? `Worktree: ${thread.worktreePath}` : machineTitle}
-      aria-label={worktreeName ? `Worktree ${worktreeName}` : `Machine ${machineName}`}
+      aria-label={worktreeName ? `Worktree ${worktreeName}` : `Computer ${machineName}`}
       data-testid="thread-row-worktree"
     >
       {#if machineName}

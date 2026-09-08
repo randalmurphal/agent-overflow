@@ -404,7 +404,7 @@ describe('backendAttach', () => {
       if (change === 'removed') detachAttachedBackend(LAPTOP);
       else await attachBackendFromLink(link);
       finish(true);
-      await expect(activation).resolves.toBe(false);
+      await expect(activation).resolves.toBe('withdrawn');
       expect(backendById(LAPTOP)).toBeUndefined();
       expect(pendingAttachments()).toHaveLength(change === 'removed' ? 0 : 1);
     } finally { probe.mockRestore(); vi.unstubAllGlobals(); }
@@ -416,7 +416,7 @@ describe('backendAttach', () => {
       // removal during the window ends it the same way, on the next tick,
       // rather than probing a cleared credential for ten minutes.
       expect(pendingAttachments()).toEqual([]);
-      await expect(awaitAttachedActivation(LAPTOP, 1, 50)).resolves.toBe(false);
+      await expect(awaitAttachedActivation(LAPTOP, 1, 50)).resolves.toBe('withdrawn');
     });
   });
 });

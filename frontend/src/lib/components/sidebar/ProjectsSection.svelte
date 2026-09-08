@@ -368,7 +368,7 @@
   >
     <ProjectList
       projects={visibleProjects}
-      emptyMessage={sidebarDeviceFilterActive() ? 'No projects on the selected devices.' : undefined}
+      emptyMessage={sidebarDeviceFilterActive() ? 'No projects on the selected computers.' : undefined}
       {threadsByProject}
       {groupsByProject}
       {pane}

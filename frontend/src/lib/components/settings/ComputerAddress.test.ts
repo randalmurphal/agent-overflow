@@ -27,6 +27,19 @@ it('verifies the captured computer and keeps a failed address editable', async (
   expect(remote.reconnect).toHaveBeenCalledTimes(1);
 });
 
+it('drops the reconnecting note once the computer is reachable again', async () => {
+  const remote = stageBackend({ status: 'reconnecting' });
+  setBindingMock('RepairBackendAddress', async () => 'https://192.168.1.55:9443');
+  const view = render(ComputerAddress, { backend: 'laptop' });
+  await fireEvent.click(view.getByRole('button', { name: 'Change address' }));
+  const input = view.getByLabelText('New computer address');
+  await fireEvent.input(input, { target: { value: '192.168.1.55:9443' } });
+  await fireEvent.submit(input.closest('form')!);
+  await waitFor(() => expect(view.getByRole('status')).toHaveTextContent('Reconnecting…'));
+  remote.setStatus('connected');
+  await waitFor(() => expect(view.queryByRole('status')).toBeNull());
+});
+
 it('does not send a repair to a removed computer or redirect it to home', async () => {
   stageBackend({ status: 'reconnecting' });
   const repair = setBindingMock('RepairBackendAddress', async () => 'https://gpu');

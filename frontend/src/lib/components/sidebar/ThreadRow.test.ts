@@ -1343,7 +1343,7 @@ describe('<ThreadRow> machine chip', () => {
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
     expect(getByTestId('thread-row-machine').getAttribute('title')).toBe(
-      'Machine: Laptop. No browser on this machine.',
+      'Computer: Laptop. No browser on this computer.',
     );
   });
 
@@ -1372,7 +1372,7 @@ describe('<ThreadRow> machine chip', () => {
     const thread = makeThread({ projectId: 'p-laptop' });
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
-    expect(getByTestId('thread-row-machine').getAttribute('title')).toBe('Machine: Laptop');
+    expect(getByTestId('thread-row-machine').getAttribute('title')).toBe('Computer: Laptop');
   });
 
   it('shows nothing when the project lives on one machine', async () => {

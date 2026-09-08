@@ -38,7 +38,7 @@ it('persists UUIDs locally and reacts to this frontend’s other windows without
   resetStagedBackends();
 });
 
-it('keeps the previous filter if saving fails and All devices also reveals future hosts', async () => {
+it('keeps the previous filter if saving fails and All computers also reveals future hosts', async () => {
   const store = await import('./sidebarDevices.svelte');
   const { stageBackend, resetStagedBackends } = await import('../../test/helpers/backends');
   stageBackend({ id: 'remote', backendId: 'stable-id' });

@@ -3834,8 +3834,8 @@ in the composer?"; "Leave it" discards and reports nothing further) while
 a definite failure restores silently as before. (8) A reconnect ladder
 failing for five minutes goes dormant: one probe every five minutes with
 jitter, none at all under a `background` lease, `dormant` and
-`lastConnectedAt` on the status snapshot, and the banner reads "Not
-reachable. Last seen 12m ago. Checking every 5 minutes." Every demand
+`lastConnectedAt` on the status snapshot, and the banner reads "Offline.
+Last seen 12m ago. Checking every 5 minutes." Every demand
 path still probes at once; Retry, a page resume and the foreground
 transition also reset the ladder's age, an RPC or a fresh subscribe
 deliberately does not. Dormancy changes what is DIALED and nothing

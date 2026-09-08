@@ -18,6 +18,7 @@ import {
   storedBackendEndpoint,
 } from '../../transport/homeEndpoint';
 import { __resetSystemsForTest } from '../../stores/systems.svelte';
+import { getToasts } from '../../stores/toast.svelte';
 
 const LAPTOP = {
   id: 'laptop',
@@ -53,7 +54,7 @@ describe('<SystemsSection>', () => {
     const { findByTestId, getByTestId } = render(SystemsSection);
     const row = await findByTestId('attached-system');
     expect(row.textContent).toMatch(/Laptop/);
-    expect(row.textContent).toMatch(/Unreachable/);
+    expect(row.textContent).toMatch(/Offline/);
     staged.setStatus('connected');
     await waitFor(() => expect(getByTestId('attached-system').textContent).toMatch(/Connected/));
   });
@@ -77,6 +78,21 @@ describe('<SystemsSection>', () => {
     const pending = await findByTestId('pending-attachment');
     expect(pending.textContent).toMatch(/Waiting for Laptop/);
     expect(pending.textContent).toMatch(/73/);
+  });
+
+  it('cancels a pending pairing without arming, through the same removal path', async () => {
+    setBindingMock('ListBackends', async () => []);
+    setBindingMock('AddBackend', async () => ({
+      id: 'laptop', name: 'Laptop', endpoint: LAPTOP.endpoint, verificationNumber: '73',
+    }));
+    const remove = setBindingMock('RemoveBackend', async () => {});
+    const { getByLabelText, getByText, findByTestId, queryByTestId } = render(SystemsSection);
+    await fireEvent.input(getByLabelText('Pairing link'), { target: { value: 'https://laptop.example/pair#t' } });
+    await fireEvent.click(getByText('Connect'));
+    const pending = await findByTestId('pending-attachment');
+    await fireEvent.click(within(pending).getByText('Cancel'));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith('laptop'));
+    await waitFor(() => expect(queryByTestId('pending-attachment')).toBeNull());
   });
 
   it('keeps a failed address editable and clears its inline error after retry', async () => {
@@ -186,6 +202,34 @@ describe('<SystemsSection>', () => {
       // The host list is the desktop's profiles. A phone asking for it
       // would spend one refusal per open.
       expect(list).not.toHaveBeenCalled();
+    });
+
+    it('cancels a pending pairing by closing its slot, and says nothing about it', async () => {
+      vi.useFakeTimers();
+      try {
+        const payload = { v: 1, backendId: 'laptop', backendName: 'Laptop', endpoint: LAPTOP.endpoint, token: 'invitation' };
+        vi.stubGlobal('fetch', vi.fn(async (url: string) => String(url).endsWith('/auth/pair')
+          ? new Response(JSON.stringify({ sessionId: 's-1', credential: 'c', verificationNumber: '123456' }))
+          : new Response('not found', { status: 404 })));
+        const { getByLabelText, getByText, queryByTestId, getByTestId } = render(SystemsSection);
+        await fireEvent.input(getByLabelText('Pairing link'), {
+          target: { value: `${LAPTOP.endpoint}/#pair=${btoa(JSON.stringify(payload)).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '')}` },
+        });
+        await fireEvent.click(getByText('Connect'));
+        await vi.waitFor(() => expect(queryByTestId('pending-attachment')).not.toBeNull());
+        expect(getByTestId('pending-attachment').textContent).toMatch(/123456/);
+        expect(hasPairedSession('laptop')).toBe(true);
+        await fireEvent.click(within(getByTestId('pending-attachment')).getByText('Cancel'));
+        await vi.waitFor(() => expect(queryByTestId('pending-attachment')).toBeNull());
+        expect(hasPairedSession('laptop')).toBe(false);
+        expect(storedBackendEndpoint('laptop')).toBe('');
+        // The activation wait wakes on its next tick and finds the pairing
+        // withdrawn: a choice made here, not a confirmation that ran out.
+        await vi.advanceTimersByTimeAsync(3_500);
+        expect(getToasts().some((toast) => /not confirmed/.test(toast.message))).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('detaches on the second press, taking the socket, the credential and the address', async () => {

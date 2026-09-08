@@ -1,20 +1,41 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import RemoteJobTrayRow from './RemoteJobTrayRow.svelte';
 import ActivityRailBackgroundBody from './ActivityRailBackgroundBody.svelte';
 import { makeItem } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { deriveTrayTasks, trayRemoteJob } from '../../utils/backgroundTray';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 
 const job = { computerId: 'nexus', requestId: 'job-1', workspace: '/workspace', error: '', notification: '' };
-function remoteTask() {
+function remoteTask(summary = 'Nexus · python train.py') {
   return deriveTrayTasks([makeItem({ id: 'remote-job:nexus:job-1', toolName: 'remote_command', isBackground: true,
-    status: 'running', summary: 'Nexus · python train.py', meta: JSON.stringify({ remoteJob: job }) })], Date.now(), 200)[0];
+    status: 'running', summary, meta: JSON.stringify({ remoteJob: job }) })], Date.now(), 200)[0];
 }
 const chunk = { text: 'epoch 10 complete', error: '', offset: 100, nextOffset: 117, expired: false };
 
 describe('remote jobs in the background tray', () => {
   beforeEach(resetBindingMocks);
+  afterEach(resetStagedBackends);
+
+  it('names the attached computer and holds Stop while it is offline', async () => {
+    const staged = stageBackend({ id: 'nexus', name: 'Nexus', status: 'reconnecting' });
+    const view = render(RemoteJobTrayRow, { task: remoteTask('python train.py'), job, threadId: 'thread', isStopping: false, onStop: vi.fn() });
+    expect(view.getByTitle('python train.py · Nexus')).toBeInTheDocument();
+    const stop = view.getByRole('button', { name: 'Stop Remote Job' });
+    expect(stop).toBeDisabled();
+    expect(stop).toHaveAttribute('title', 'Offline');
+    staged.setStatus('connected');
+    await waitFor(() => expect(stop).toBeEnabled());
+    expect(stop).not.toHaveAttribute('title');
+  });
+
+  it('does not repeat a computer the receipt already names', () => {
+    stageBackend({ id: 'nexus', name: 'Nexus' });
+    const view = render(RemoteJobTrayRow, { task: remoteTask(), job, threadId: 'thread', isStopping: false, onStop: vi.fn() });
+    expect(view.getByTitle('Nexus · python train.py')).toBeInTheDocument();
+    expect(view.getByRole('button', { name: 'Stop Remote Job' })).toBeEnabled();
+  });
 
   it('loads only a bounded tail on expansion and discards a read closed before completion', async () => {
     let finish!: (value: typeof chunk) => void;

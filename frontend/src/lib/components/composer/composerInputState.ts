@@ -64,10 +64,11 @@ function inputPlaceholder(input: ComposerInputStateInput): string {
   // Read before the prompt cases: a session that cannot send also cannot
   // answer, so offering the prompt's instructions would be a dead end.
   if (input.sendUngranted) return 'This device has read-only access';
-  // Named machine first: "<name> is unreachable" says more than "offline"
-  // and both are true at once when another machine's socket is the one
-  // that dropped.
-  if (input.unreachableTarget) return `${input.unreachableTarget} is unreachable`;
+  // Named computer first: "<name> is offline" says more than "disconnected"
+  // and both are true at once when another computer's socket is the one
+  // that dropped. "Offline" is the one word every surface uses for a down
+  // socket (Settings, the computer picker, the transport banner).
+  if (input.unreachableTarget) return `${input.unreachableTarget} is offline`;
   if (input.offline) return 'Disconnected from the agent backend';
   if (input.hasBlockingPrompt) return 'Respond to the approval request to continue';
   if (input.hasUserInputPrompt) return 'Type a custom answer, or choose an option above';

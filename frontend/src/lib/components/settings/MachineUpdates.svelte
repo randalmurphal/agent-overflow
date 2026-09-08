@@ -17,9 +17,9 @@
 {#if machines.length > 0}
   <section class="flex flex-col gap-3" data-testid="machine-updates">
     <div class="flex flex-col gap-0.5">
-      <span class="text-[0.8125rem] font-semibold text-fg">Machines</span>
+      <span class="text-[0.8125rem] font-semibold text-fg">Computers</span>
       <p class="text-[0.71875rem] text-fg-muted">
-        A machine running as a service installs the version you pick and restarts into it. One
+        A computer running as a service installs the version you pick and restarts into it. One
         that fails to come back up is rolled back.
       </p>
     </div>
