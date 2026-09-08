@@ -829,6 +829,16 @@ queue. User-tier defaults such as hidden models or archive confirmation never
 write through to a host. Mirrors coalesce while a request is pending and refresh
 on hello; an unavailable computer cannot hold a frontend control’s save open.
 
+Appearance file reads/imports await `pageGrantsResolved()` before choosing the
+desktop directory or browser asset library. Bootstrap starts after mount; its
+unresolved scope is not evidence that this is a remote frontend. Otherwise a
+cached library (which intentionally contains no selection) can land after the
+desktop grant and replace a saved theme with defaults, then persist that reset
+through window-background synchronization. Early theme choices stay optimistic
+but await locality before deciding whether to persist the desktop copy. Keep
+the delayed-bootstrap regressions in `appearanceBootstrap.test.ts` and
+`appearanceFiles.test.ts`; ordinary fixtures with resolved grants miss this race.
+
 Pane-layout restore captures `paneLayoutMutationRevision` before startup awaits.
 A user opening or closing a pane while the host is loading supersedes the saved
 layout. Restore checks the revision again after its asynchronous boundaries;

@@ -404,7 +404,8 @@ export function isViewOnlyGrantSet(scopes: Iterable<string>): boolean {
 }
 
 /**
- * Called only by ./bootstrap.ts once it has validated a manifest.
+ * Called by ./bootstrap.ts once it has validated a manifest, or native/boot.ts
+ * with true: the phone shell is never a local host and may have no HOME at all.
  * `remote` is the manifest's own word for "this request did not come
  * from this machine"; its negation is host presence.
  *

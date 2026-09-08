@@ -624,7 +624,12 @@ pane can substitute for that project's owner.
   explicit computer in TypeScript; entity controls resolve it through
   `entityScopes.ts`. Only local shell presence checks may omit HOME.
 
-  The home answer RESOLVES LATE. `setPageGrantsFromBootstrap` runs from
+  Native shell boot resolves page locality as remote before mount: the phone
+  has no local host, and its own appearance storage must work with no paired
+  or reachable computer. Grants for attached computers still come from their
+  individual sessions.
+
+  The desktop home answer RESOLVES LATE. `setPageGrantsFromBootstrap` runs from
   the manifest fetch owned by `wsClient`, normally after App mounts, so anything armed from `onMount` or a launch-time call sees
   the placeholder ("not on host, granted nothing") if it reads then. A
   reactive reader (`$derived`, `$effect`, a template) is fine, it re-runs

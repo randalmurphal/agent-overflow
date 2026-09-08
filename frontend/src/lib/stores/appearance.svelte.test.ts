@@ -459,6 +459,7 @@ describe('setAppearance', () => {
 
     // A code-theme write goes out and will fail…
     const first = setAppearance({ codeTheme: 'monokai' });
+    await vi.waitFor(() => expect(failFirst).toBeTypeOf('function'));
     // …and a mode change lands (and persists) while it is still in flight.
     setBindingMock('SetAppearance', async () => undefined);
     await setAppearance({ mode: 'light' });

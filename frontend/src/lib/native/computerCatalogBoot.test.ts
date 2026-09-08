@@ -1,6 +1,7 @@
 // Boot through the real multi-computer catalog and RPC ownership pipeline.
 // Two saved addresses of one Mac must not become two conversation owners.
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { IDBFactory } from 'fake-indexeddb';
 import { prepareNativeShell } from './boot';
 import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
 import { makeThread } from '../../test/helpers/chat';
@@ -15,6 +16,10 @@ import { loadThreads, getThreads } from '../stores/threads.svelte';
 import { refreshProjects, getProjects } from '../stores/projects.svelte';
 import type { ProjectWithCounts } from '../types/models';
 import { __resetSelectedBackendForTest, selectedBackend, setSelectedBackend } from '../stores/selectedBackend.svelte';
+import { __resetScopesForTest, hasScope } from '../transport/scopes';
+import { saveFrontendAssets } from '../stores/frontendAssets';
+import { readAppearanceFiles } from '../stores/appearanceFiles';
+import { getAppearance, resetAppearanceForTest, setAppearance } from '../stores/appearance.svelte';
 
 const MAC = '11111111-2222-4333-8444-555555555555';
 const GPU = '66666666-7777-4888-8999-aaaaaaaaaaaa';
@@ -33,6 +38,22 @@ beforeEach(() => {
   localStorage.clear();
   __resetSelectedBackendForTest();
   vi.stubGlobal('Capacitor', { isNativePlatform: () => true });
+});
+
+it('loads and changes its own appearance with no HOME or reachable computer', async () => {
+  vi.stubGlobal('indexedDB', new IDBFactory());
+  await saveFrontendAssets('themes', { themes: [{ id: 'offline-theme', raw: '{}' }], warnings: [] });
+  resetAppearanceForTest();
+  __resetScopesForTest();
+  expect(prepareNativeShell()).toEqual({ shell: true, paired: false });
+  expect(hasScope('host')).toBe(false);
+  expect((await readAppearanceFiles()).themes[0].id).toBe('offline-theme');
+  const persist = vi.fn();
+  setBindingMock('SetAppearance', persist);
+  await setAppearance({ uiTheme: 'offline-theme' });
+  expect(getAppearance().uiTheme).toBe('offline-theme');
+  expect(persist).not.toHaveBeenCalled();
+  resetAppearanceForTest();
 });
 
 it.each([false, true])('removes the provisional desktop HOME when the native bridge appears late (saved computer=%s)', (savedComputer) => {

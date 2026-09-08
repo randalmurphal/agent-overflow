@@ -55,7 +55,7 @@ import {
   type ParsedTheme,
   type ThemeWarning,
 } from '../theme/themeParse';
-import { hasScope } from '../transport/scopes';
+import { hasScope, pageGrantsResolved } from '../transport/scopes';
 import { errString } from '../utils/errors';
 import { SetAppearance, SetWindowBackgroundColor, ThemeAppearance } from './bindings';
 import { readAppearanceFiles, usesFrontendAssetLibrary } from './appearanceFiles';
@@ -479,6 +479,7 @@ export async function setAppearance(patch: Partial<AppearanceSelection>): Promis
   writeGeneration += 1;
   setSelection(next);
 
+  await pageGrantsResolved();
   if (writesBlocked()) return;
   try {
     await SetAppearance(toWire(next));

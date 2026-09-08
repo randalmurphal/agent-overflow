@@ -4,8 +4,11 @@ import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
 import { copyAppearanceFiles, readAppearanceFiles, readSpinnerFiles } from './appearanceFiles';
 import { getAppearance, loadAppearance, resetAppearanceForTest, setAppearance } from './appearance.svelte';
 
-const context = vi.hoisted(() => ({ local: false, home: true, targets: [] as string[] }));
-vi.mock('../transport/scopes', () => ({ hasScope: (scope: string) => scope === 'host' ? context.local : true }));
+const context = vi.hoisted(() => ({ local: false, home: true, targets: [] as string[], grants: Promise.resolve() }));
+vi.mock('../transport/scopes', () => ({
+  hasScope: (scope: string) => scope === 'host' ? context.local : true,
+  pageGrantsResolved: () => context.grants,
+}));
 vi.mock('../transport/backends', async (original) => ({
   ...await original<typeof import('../transport/backends')>(),
   backendById: () => context.home ? {} : undefined,
@@ -17,6 +20,7 @@ beforeEach(() => {
   context.local = false;
   context.home = true;
   context.targets = [];
+  context.grants = Promise.resolve();
   localStorage.clear();
   resetAppearanceForTest();
   setBindingMock('GetThemeFiles', () => ({ dir: '/mac/themes', themes: [{ id: 'nord', raw: '{}' }], warnings: [], appearance: { mode: 'dark', uiTheme: 'nord', codeTheme: 'nord' } }));
@@ -25,6 +29,24 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); resetAppearanceForTest(); });
 
 describe('appearance file residency', () => {
+  it('does not adopt a cached browser library as the desktop selection during bootstrap', async () => {
+    // A prior unresolved boot may have populated this origin's browser
+    // library. That library contains files only, never a desktop selection.
+    await readAppearanceFiles();
+    let resolve!: () => void;
+    context.grants = new Promise<void>(done => { resolve = done; });
+    setBindingMock('GetThemeFiles', () => ({
+      dir: '/local/themes', themes: [], warnings: [],
+      appearance: { mode: 'dark', uiTheme: 'blacklight', codeTheme: 'github' },
+    }));
+    const loading = loadAppearance();
+    context.local = true;
+    resolve();
+    await loading;
+    expect(getAppearance()).toMatchObject({ mode: 'dark', uiTheme: 'blacklight' });
+    expect(getBindingMock('GetThemeFiles')).toHaveBeenCalledOnce();
+  });
+
   it('migrates legacy files once and survives removal of the original computer', async () => {
     expect((await readAppearanceFiles()).themes.map((file) => file.id)).toEqual(['nord']);
     expect(context.targets).toEqual(['']);

@@ -45,6 +45,10 @@ pairings in both directions: without a legacy endpoint, remove HOME even if
 the native bridge became available after the registry initialized. Otherwise
 an empty installation can appear paired, or a UUID-only installation can retain
 an unconnected HOME target. `computerCatalogBoot.test.ts` covers both cases.
+Before mount, native boot also settles page locality as remote: appearance
+and spinner storage must initialize offline without awaiting a HOME manifest
+that may never exist. This grants no access to any computer; each connection
+still uses its own authenticated scopes.
 Pairing another computer cannot replace HOME's endpoint or credential,
 and removing HOME preserves the other pairings and frontend preferences. The
 Android smoke restores a saved draft with duplicate legacy/UUID slots, then

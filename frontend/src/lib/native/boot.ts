@@ -21,6 +21,7 @@ import { onBeforeBackendDetach } from '../transport/detachSteps';
 import type { PairingPayload } from '../transport/deviceSession';
 import { setHomeEndpoint, storedBackendEndpoint } from '../transport/homeEndpoint';
 import { storedBackendDescriptors } from '../transport/manifestBackends';
+import { setPageGrantsFromBootstrap } from '../transport/scopes';
 import type { AppLock } from './lock';
 import { isNativeShell } from './platform';
 import { installNativeKeybindings } from './keybindings';
@@ -57,6 +58,9 @@ onBackendsChanged(() => { if (isNativeShell()) initializeComputerSelection(); })
  */
 export function prepareNativeShell(): ShellBoot {
   if (!isNativeShell()) return { shell: false, paired: false };
+  // This shell has no local host. Its presentation storage must work before
+  // pairing or while every computer is offline; no HOME manifest will settle it.
+  setPageGrantsFromBootstrap(true);
   installNativeKeybindings();
 
   // Installed before the endpoint is set, so a manifest that resolves

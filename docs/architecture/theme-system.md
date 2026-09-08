@@ -685,6 +685,13 @@ read):
 - **`loadError`**: a transient read failure. It surfaces, keeps writes
   enabled, and keeps the themes already loaded. Nothing latches.
 
+File residency is chosen only after `pageGrantsResolved()`: before bootstrap,
+the scope placeholder does not distinguish a desktop from a browser. A cached
+browser library has no desktop selection and must never be adopted as one when
+the grant arrives during a read. The same boundary covers spinner files and
+explicit imports. An early theme choice paints immediately, then waits for the
+grant before deciding whether to save a desktop copy.
+
 localStorage is also the first-paint cache and is written on every
 selection change even when the RPCs ARE available, because the boot
 script reads it before the bundle loads.
