@@ -1322,7 +1322,12 @@ Installing an introduced profile publishes `backend:set-changed` with action
 updates public membership and cannot attach an already-open desktop frontend.
 The phone-bridge integration test checks both receiving hosts and idempotence.
 Agent command opt-ins remain separate. Forgetting a local connection persists
-an exclusion; revoking a personal device distributes a removal tombstone.
+an exclusion; revoking a personal device distributes a removal tombstone. The
+opt-in is cleared only by an EXPLICIT re-pairing (`Manager.Add`), never by
+own-device enrollment: both share `addLinkLocked`, so when reconciliation
+upgrades an already-paired computer to a group session it must leave a live
+`agent-access.json` opt-in untouched. Clearing it there once silently disabled
+a just-enabled peer (the agent-computers e2e).
 
 Offline revocation is eventual: connected peers apply removals before creating
 connections, and isolated hosts learn them when connectivity returns. There is
