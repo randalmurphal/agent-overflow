@@ -161,8 +161,16 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 	}
 
 	// Sibling first — see the ordering note in the function comment.
-	if err := r.drainTaskNotificationStash(evt, meta, launch); err != nil {
+	// Unless the stop is a PAUSE: a parked agent keeps its stash, and the
+	// wake that follows drops it (persistWakePromptRow).
+	parked, err := r.launchIsParked(evt.ThreadID, launch)
+	if err != nil {
 		return err
+	}
+	if !parked {
+		if err := r.drainTaskNotificationStash(evt, meta, launch); err != nil {
+			return err
+		}
 	}
 
 	now := eventTimestampMillis(evt)
@@ -185,12 +193,16 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 
 	// Q11 (docs/specs/agent-visibility.md): notifications fire for
 	// TOP-LEVEL nodes only; a nested completion updates its card
-	// silently. This row IS the thread's bell — the frontend's
-	// notification surface and the toast both hang off it — so a nested
-	// launch simply does not get one. Everything else on this path still
-	// runs for a nested launch: the stash drains, the output file is
-	// read, and the completion sibling is enriched with the payload and
-	// output state, which is what its card renders.
+	// silently. This row IS the thread's bell — the one timeline row the
+	// frontend's notification surface hangs off — so a nested launch
+	// simply does not get one. Everything else on this path still runs
+	// for a nested launch: the stash drains, the output file is read,
+	// and the completion sibling is enriched with the payload and output
+	// state, which is what its card renders.
+	//
+	// A parked agent rings it at every stop (each envelope has its own
+	// uuid, so each stop is its own row) and the frontend hides all of
+	// them together once the completion sibling finally lands.
 	//
 	// A watch task is exempt regardless of depth. Its notification rows
 	// are not a bell at all: they ARE its event history (claude-wire.md
@@ -280,6 +292,43 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 	}
 
 	return r.enrichExistingBackgroundCompletionFromNotification(evt, launch, meta, notificationPayload, outputState, readErrorString)
+}
+
+// launchIsParked reports whether a background agent's stop is a PAUSE. An
+// async agent that stops while one of its OWNED background shells is still
+// running goes idle, and the CLI wakes it when the shell reports
+// (claude-wire.md §E6b); its `task_updated{completed}` and
+// `task_notification` are indistinguishable from a final stop's, so the
+// live children are the only evidence. The stash written at the stop is
+// left standing for the wake to drop, and no completion sibling is
+// written: settling here is what put every later round's rows under a
+// card the reader had been told was done (2026-09-08).
+//
+// Children are read at the transcript ROOT, because that is where every
+// round's rows are parented (a carrier has no subtree). A shell or a
+// watch task counts; a nested async AGENT does not — it is a top-level
+// task of its own and never wakes its parent (spike D, 2026-09-08). A
+// foreground agent never parks (its exit kills its shells), which the
+// caller's `IsBackground` gate already excludes; a background shell has
+// no children and is excluded before the store is asked.
+func (r *Router) launchIsParked(threadID string, launch store.Item) (bool, error) {
+	if !isSubagentTranscriptLaunch(launch) || launchIsWatchTask(launch) {
+		return false, nil
+	}
+	root, err := r.transcriptRootOrSelf(threadID, launch)
+	if err != nil {
+		return false, err
+	}
+	children, err := r.store.ListLiveBackgroundChildLaunches(threadID, root.ID)
+	if err != nil {
+		return false, err
+	}
+	for _, child := range children {
+		if isCommandOutputLaunch(child) || launchIsWatchTask(child) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // maybeBackfillSubagentTranscript completes an agent's transcript from

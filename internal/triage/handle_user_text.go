@@ -66,6 +66,12 @@ func (r *Router) handleUserText(evt provider.ProviderEvent) error {
 	if meta.flag(provider.MetaSubagentResumePromptKey) {
 		return r.persistResumePromptRow(evt, meta)
 	}
+	// The §E6b wake prompt: same provenance (a `system/task_started`, no
+	// uuid, not an AO send), same placement (the transcript root), and
+	// the one event that says a parked agent is live again.
+	if meta.flag(provider.MetaSubagentWakePromptKey) {
+		return r.persistWakePromptRow(evt, meta)
+	}
 
 	// The FIFO is only consulted for an echo that could BE one of this app's
 	// sends. Two provenance flags say positively that it is not — the Codex

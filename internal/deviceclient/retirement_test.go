@@ -25,6 +25,7 @@ func (h heldRotationTransport) RoundTrip(request *http.Request) (*http.Response,
 	}
 	return response, err
 }
+
 // gatedRotationTransport holds the rotation BEFORE it reaches the wire, so
 // a cancellation lands mid-exchange rather than after the reply.
 type gatedRotationTransport struct {

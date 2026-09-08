@@ -318,6 +318,45 @@ is undetectable from that instance's state alone and the round is
 reaper-unprotected. Not engineered around. See the parser's
 `task_started` case comment.
 
+### Parking: an async agent whose owned shell outlives its stop
+
+An async agent that launches a backgrounded Bash and stops before it
+reports is PARKED by the CLI, not done: it stops with the ordinary
+`task_updated{completed}` + `task_notification` pair, and when the
+shell reports the CLI wakes it with a `task_started` carrying the SAME
+`task_id`, the shell's `<task-notification>` as `prompt`, and NO
+`tool_use_id`
+([claude-wire.md §E6b](../references/claude-wire.md#e6b-waking-a-parked-async-agent-task_started-without-tool_use_id)).
+The wire cannot tell a pause from a final stop; AO decides from what it
+already knows.
+
+- `launchIsParked` (`background_task_notifications.go`): the launch is
+  a background agent launch (not a watch task) whose transcript ROOT
+  has a live backgrounded direct child that is a shell or a watch task
+  (`Store.ListLiveBackgroundChildLaunches`). A nested async AGENT does
+  not park its parent; the CLI never wakes for one.
+- A parked stop keeps the stash and writes no sibling. The bell row is
+  still written (one per stop; the frontend hides them all once the
+  completed sibling lands), usage still folds onto the launch, and the
+  output_file backfill still runs, so the woken round starts from a
+  transcript that is already current.
+- The wake is one `EventUserText` from the parser
+  (`user:subagent-wake:<shell tool_use_id>`, meta
+  `subagent_wake_prompt`). `persistWakePromptRow` drops the stash and
+  files the row under the ROOT on the launch's turn. It is not
+  provisional (no transcript row will ever bind it) and it carries no
+  `subagent_resume_prompt`, so it never cuts the §E6 round slicing.
+- Settlement: the first stop with no live owned shell, a
+  `task_updated{killed}`, a §E6 rebind onto a parked agent
+  (`settleParkedLaunchForRebind`: the bound row settles from its stash
+  before the carrier takes over, and the carrier then parks and wakes
+  by the same rules), and session end. A `TaskOutput` observation of a
+  parked agent settles nothing (`observeBackgroundTaskTerminal`).
+
+Before this (2026-09-08) the first stop settled the launch and the
+parser dropped the wake, so every woken round's rows, bells and
+progress landed under a card already rendered as completed.
+
 ### Merge rule
 
 `task_updated` and TaskOutput can arrive for the same `task_id`.
@@ -358,7 +397,8 @@ Implementation:
    sees the queued attachment on the next iteration) or a
    `TaskOutput` `tool_result` (the model explicitly polled), drains
    the stash via `TakePendingBackgroundTerminal` and, **only when the
-   launch is actually backgrounded** (`launch.IsBackground`), writes
+   launch is actually backgrounded** (`launch.IsBackground`) **and not
+   parked** (§Parking above), writes
    the `tool_completion` sibling at the current write head and emits
    `provider:background_task_state{state:"drained"}`. An INLINE launch
    (see above) still drains the stash (the drain is the load-bearing

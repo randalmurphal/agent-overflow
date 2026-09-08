@@ -23,6 +23,40 @@ behavior. These back parser replay tests and the reference docs in
   fields (prompts, SendMessage `input.message`/`input.content`)
   truncated to placeholders; every other key/value byte-identical to
   the capture.
+- `local_agent_owned_shell_wake_20260908.ndjson`: an E5 async agent
+  on 2.1.261 that launches a backgrounded Bash (`owned_by_subagent`),
+  stops with the shell still running, and is WOKEN by the CLI when the
+  shell reports (claude-wire.md §E6b). Twice over: the second shell
+  fails with exit code 3. Shows the stop-and-wake pair: at every stop
+  the agent's `task_updated{completed}` + `task_notification` (three
+  of each here for one launch), then a `system/task_started` with the
+  SAME `task_id`, `task_type:"local_agent"`, `is_backgrounded:true`,
+  `spawn_depth`, a `prompt` holding the shell's `<task-notification>`
+  XML, and NO `tool_use_id`. Backs the parser's
+  `parse_task_wake_test.go` replay. `stream_event`s and `system/init`
+  dropped; launch prompts and user text truncated.
+- `local_agent_owned_shell_stop_wake_20260908.ndjson`: the same shape
+  when the main session kills the owned shell (`stop_task`): the shell
+  settles `killed` + `task_notification{stopped}`, and the parked agent
+  still wakes, with `<status>stopped</status>` and the "was stopped by
+  main session" summary in the wake prompt.
+- `local_agent_parked_send_message_20260908.ndjson`: a §E6 SendMessage
+  onto a PARKED agent. The rebind `task_started` lands on the
+  SendMessage `tool_use_id` immediately, that carrier round parks in
+  turn (the shell is still live), and the later wake `task_started`
+  again carries no `tool_use_id`: the wake binds to whichever call the
+  lifecycle last named, here the carrier.
+- `local_agent_nested_async_child_no_wake_20260908.ndjson`: an async
+  agent that launches a nested async agent and stops. No wake, ever:
+  the child is a top-level task of its own (its `task_started` has no
+  `owned_by_subagent`), so a parent whose only live child is an agent
+  is done at its stop. The park predicate keys on shells and watch
+  tasks only because of this capture.
+- `local_agent_parked_stop_task_20260908.ndjson`: `stop_task` on the
+  parked agent itself. The agent gets `task_updated{killed}` with no
+  further notification, `background_tasks_changed` empties, and its
+  owned shell is killed with it (`killed` + `task_notification{stopped}`).
+  Nothing wakes.
 - `send_message_ack_20260904.ndjson`: two `SendMessage` round-trips on
   2.1.257, a refusal (`to: "A"`, no such agent) and a queued send to a
   live agent by id. Proves the `tool_result` block is `is_error:false`

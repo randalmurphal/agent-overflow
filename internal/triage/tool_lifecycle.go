@@ -131,6 +131,13 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 	}
 
 	if metaUpdateOnly {
+		// A §E6 rebind is the end of the PREVIOUS binding's last round:
+		// a parked agent (launchIsParked) settles onto the row it was
+		// bound to before the carrier takes over. Before the row work,
+		// and regardless of whether the carrier row exists yet.
+		if meta.TaskID != "" && isResumeCarrierMeta(meta) {
+			r.settleParkedLaunchForRebind(evt, itemID, meta.TaskID)
+		}
 		if !found {
 			// No existing row to annotate YET. For a subagent-owned
 			// backgrounded shell, `system/task_started` arrives on the
@@ -1184,6 +1191,25 @@ func (r *Router) observeBackgroundTaskTerminal(evt provider.ProviderEvent, meta 
 		}
 		if !found || launch.Kind != itemKindToolCall {
 			return r.stashBackgroundTaskTerminal(evt, meta)
+		}
+	}
+	// An agent OBSERVATION (TaskOutput) of a parked agent reads a pause,
+	// not the end: the agent still wakes when its shell reports. Keep the
+	// stash for the wake and write nothing, as the notification path does
+	// (launchIsParked). A kill is never a pause.
+	if meta.Source != "task_updated" && meta.Status != statusKilled {
+		launch, found, err := r.resolveBackgroundTaskLaunch(evt.ThreadID, evt.ItemID, meta.ToolUseID, meta.TaskID)
+		if err != nil {
+			return err
+		}
+		if found && launch.Kind == itemKindToolCall && launch.IsBackground {
+			parked, err := r.launchIsParked(evt.ThreadID, launch)
+			if err != nil {
+				return err
+			}
+			if parked {
+				return nil
+			}
 		}
 	}
 	stash, stashFound, err := r.store.TakePendingBackgroundTerminal(evt.ThreadID, meta.TaskID)
@@ -2258,6 +2284,35 @@ func (r *Router) settleStashedTerminalForLateLaunch(evt provider.ProviderEvent, 
 	if err := r.writeBackgroundCompletionSibling(evt, meta, true); err != nil {
 		log.Printf("triage: settle stashed terminal for late launch %s/%s: %v", evt.ThreadID, toolUseID, err)
 	}
+}
+
+// settleParkedLaunchForRebind closes a PARKED agent's round when a §E6
+// rebind moves its lifecycle onto a new carrier. A parked agent
+// (launchIsParked) still holds the completed terminal of its last stop in
+// the stash, because that stop was read as a pause. The rebind says the
+// next round belongs to the carrier, so for the row the stash names the
+// pause WAS the end: settle it now, the way a late launch settles against
+// its stash, and the row's card renders at that stop. A stash naming the
+// carrier itself (a re-delivered rebind) or no stash at all (the agent
+// had settled, or was never parked) is left alone. A stash with no
+// tool_use_id is left for the session-end settle: resolving it by task_id
+// would find the ORIGINAL launch, which on a third round is not the row
+// that parked.
+func (r *Router) settleParkedLaunchForRebind(evt provider.ProviderEvent, carrierID, taskID string) {
+	stash, found, err := r.store.GetPendingBackgroundTerminal(evt.ThreadID, taskID)
+	if err != nil {
+		log.Printf("triage: inspect parked terminal on rebind %s/%s: %v", evt.ThreadID, taskID, err)
+		return
+	}
+	boundID := strings.TrimSpace(stash.ToolUseID)
+	if !found || boundID == "" || boundID == carrierID {
+		return
+	}
+	r.settleStashedTerminalForLateLaunch(provider.ProviderEvent{
+		ThreadID:  evt.ThreadID,
+		ItemID:    boundID,
+		Timestamp: evt.Timestamp,
+	}, boundID, taskID)
 }
 
 // setStringFieldIfChanged writes value into parsed[key] when the

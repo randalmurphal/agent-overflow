@@ -339,10 +339,38 @@ const MetaResumeCarrierIDKey = "resume_carrier_id"
 // transcript root".
 const MetaTranscriptRootIDKey = "transcript_root_id"
 
+// MetaSubagentWakePromptKey marks the user-role row that opens a WOKEN
+// round of one async agent (Claude §E6b): the `<task-notification>` the CLI
+// resumed a PARKED agent with when one of its owned background shells
+// reported. It opens a round the way the §E6 resume prompt does, but it is
+// deliberately a different marker: no carrier exists (the wake
+// `task_started` names no tool_use, so the lifecycle stays where it was),
+// which means it must not cut the store's carrier-keyed round slicing, and
+// no transcript row ever binds it (the sidechain records the wake as an
+// `isMeta` row, which the converter drops), so it is never provisional.
+const MetaSubagentWakePromptKey = "subagent_wake_prompt"
+
+// MetaWakeTaskIDKey, MetaWakeToolUseIDKey and MetaWakeStatusKey name the
+// shell whose terminal woke the agent, lifted from the `<task-notification>`
+// block the wake prompt carried. The row's content is that block's
+// `<summary>`; these keep the correlation the summary does not spell out.
+const (
+	MetaWakeTaskIDKey    = "wake_task_id"
+	MetaWakeToolUseIDKey = "wake_tool_use_id"
+	MetaWakeStatusKey    = "wake_status"
+)
+
 // SubagentOpeningPromptItemID is shared by live triage and session import so
 // refresh converges on the prompt row created when the agent launched.
 func SubagentOpeningPromptItemID(scope string) string {
 	return "user:subagent-prompt:" + scope
+}
+
+// SubagentWakePromptItemID is the row identity of a §E6b wake prompt, keyed
+// by the shell that woke the agent (its tool_use_id, else its task_id): one
+// terminal wakes the agent once, so a re-delivered wake is a no-op.
+func SubagentWakePromptItemID(shellRef string) string {
+	return "user:subagent-wake:" + shellRef
 }
 
 type FailureClass string

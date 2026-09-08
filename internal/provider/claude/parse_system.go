@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -804,11 +805,19 @@ func (p *Parser) parseTaskStartedEvent(
 	now time.Time,
 ) ([]provider.ProviderEvent, error) {
 	taskID := readRawString(raw["task_id"])
-	toolUseID := firstNonEmpty(readRawString(raw["tool_use_id"]), readRawString(raw["toolUseId"]))
-	if taskID == "" || toolUseID == "" {
+	if taskID == "" {
 		return nil, nil
 	}
 	taskType := readRawString(raw["task_type"])
+	toolUseID := firstNonEmpty(readRawString(raw["tool_use_id"]), readRawString(raw["toolUseId"]))
+	if toolUseID == "" {
+		// The one shape that names no tool_use is a parked agent's wake
+		// (claude-wire.md §E6b). Nothing else on this wire omits it.
+		if taskType != "local_agent" {
+			return nil, nil
+		}
+		return p.parseTaskWakeEvent(threadID, taskID, raw, now), nil
+	}
 
 	// Resume-rebind detection (local_agent only). Claude's harness
 	// lets the model resume an idle async agent via a follow-up
@@ -974,6 +983,99 @@ func (p *Parser) parseTaskStartedEvent(
 		}
 	}
 	return events, nil
+}
+
+// parseTaskWakeEvent handles a parked async agent being WOKEN
+// (claude-wire.md §E6b). An async agent that stops while one of its owned
+// background shells is still running goes idle — its stop reports
+// `task_updated{completed}` + `task_notification` exactly like a final
+// stop — and when the shell reports, the CLI resumes the agent from its
+// transcript with the shell's `<task-notification>` as the prompt. That
+// resume is a `task_started` with the SAME task_id, `task_type:
+// "local_agent"` and NO tool_use_id: unlike a §E6 SendMessage resume,
+// nothing rebinds, the lifecycle stays on the tool_use the task is bound
+// to, and every sidechain row of the woken round keeps naming the
+// transcript root.
+//
+// This envelope is the only record of what woke the agent and the only
+// wire signal that it is live again, so it becomes ONE EventUserText: a
+// user-role row under the transcript root, the way the §E6 resume message
+// does, whose arrival tells triage to drop (not settle) the completed
+// terminal it stashed at the stop. Dropping the envelope here — the
+// pre-2026-09-08 behavior — left the launch settled at its first stop,
+// with every later round's rows, bells and counters landing under a card
+// the reader had been told was done.
+//
+// Row content is the notification's `<summary>` (the CLI wraps the block
+// in a "[SYSTEM NOTIFICATION - NOT USER INPUT]" preamble on the sidechain;
+// the summary is the line a reader wants), falling back to the raw prompt.
+// A coalesced wake carrying several blocks lists every summary. Identity
+// is the waking shell's tool_use_id (else its task_id): one terminal wakes
+// the agent once, so a re-delivered envelope is a no-op. An unknown
+// task_id (this parser never saw the binding) produces nothing: there is
+// no row to place the wake under, and the round's terminal still resolves
+// through items.meta.task_id in triage.
+func (p *Parser) parseTaskWakeEvent(threadID, taskID string, raw map[string]json.RawMessage, now time.Time) []provider.ProviderEvent {
+	bound := p.taskToolUseRef(taskID)
+	if bound.ToolUseID == "" {
+		return nil
+	}
+	// The wake re-arms the agent's liveness exactly as a launch or a
+	// rebind does; the woken round's terminal clears it again.
+	p.markLiveAgentTask(bound.ToolUseID)
+
+	prompt := readRawString(raw["prompt"])
+	content := strings.TrimSpace(prompt)
+	shellRef := ""
+	fields := map[string]any{
+		"wire_only":                        true,
+		provider.MetaSubagentWakePromptKey: true,
+		"task_id":                          taskID,
+	}
+	if blocks := ExtractAllTaskNotificationFields(prompt); len(blocks) > 0 {
+		first := blocks[0]
+		shellRef = firstNonEmpty(first.ToolUseID, first.TaskID)
+		if first.TaskID != "" {
+			fields[provider.MetaWakeTaskIDKey] = first.TaskID
+		}
+		if first.ToolUseID != "" {
+			fields[provider.MetaWakeToolUseIDKey] = first.ToolUseID
+		}
+		if first.Status != "" {
+			fields[provider.MetaWakeStatusKey] = first.Status
+		}
+		summaries := make([]string, 0, len(blocks))
+		for _, block := range blocks {
+			if summary := strings.TrimSpace(block.Summary); summary != "" {
+				summaries = append(summaries, summary)
+			}
+		}
+		if len(summaries) > 0 {
+			content = strings.Join(summaries, "\n")
+		}
+	}
+	if shellRef == "" {
+		shellRef = taskID + ":" + strconv.FormatInt(now.UnixMilli(), 10)
+	}
+	if root := p.taskTranscriptRoot(taskID); root != "" && root != bound.ToolUseID {
+		fields[provider.MetaTranscriptRootIDKey] = root
+	}
+	meta, err := json.Marshal(fields)
+	if err != nil {
+		log.Printf("claude: encode wake prompt meta for %s: %v", taskID, err)
+		return nil
+	}
+	return []provider.ProviderEvent{{
+		Kind:            provider.EventUserText,
+		ThreadID:        threadID,
+		ItemID:          provider.SubagentWakePromptItemID(shellRef),
+		Role:            "user",
+		Content:         content,
+		ContentPresent:  true,
+		Meta:            meta,
+		ParentToolUseID: bound.ToolUseID,
+		Timestamp:       now,
+	}}
 }
 
 // resumePromptEvent builds the row that says WHAT the model asked a

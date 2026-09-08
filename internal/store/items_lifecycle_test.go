@@ -2623,6 +2623,20 @@ func TestCompletionSiblingProbesUseIndex(t *testing.T) {
 			args: []any{"thread-plan"},
 		},
 		{
+			// ListLiveBackgroundChildLaunches.
+			name: "direct children of one launch",
+			query: `SELECT ` + itemColumnsSansPayload + `
+			   FROM items
+			  WHERE items.thread_id = ?
+			    AND items.parent_id = ?
+			    AND items.parent_id <> ''
+			    AND items.kind = 'tool_call'
+			    AND items.status = 'running'
+			    AND items.is_background = 1
+			    AND ` + noCompletionSiblingSQL,
+			args: []any{"thread-plan", "root-plan"},
+		},
+		{
 			// ListIncompleteCodexSubagentOwnerships.
 			name: "compact ownership list",
 			query: `SELECT items.id, items.meta
@@ -2716,4 +2730,60 @@ func TestCompletionSiblingProbesAreNotSpelledInline(t *testing.T) {
 		t.Errorf("items_lifecycle.go spells the live background launch predicate %d times, want 1 "+
 			"(the liveBackgroundLaunchSQL declaration)", got)
 	}
+}
+
+// TestListLiveBackgroundChildLaunchesListsOnlyLiveDirectChildren pins the
+// park predicate's input (triage launchIsParked): the backgrounded
+// tool_call rows still running DIRECTLY under one launch with no
+// completion sibling. A settled child, a foreground child, a grandchild
+// and another launch's child are all out; the plan probes the parent
+// index rather than the thread's ordering index.
+func TestListLiveBackgroundChildLaunchesListsOnlyLiveDirectChildren(t *testing.T) {
+	s := newTestStore(t)
+	now := int64(1)
+	if err := s.CreateThread(Thread{
+		ID: "t-park", ProjectID: defaultTestProjectID, Title: "T", Provider: "claude", WorkspacePath: "/tmp",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	seed := func(it Item) {
+		t.Helper()
+		it.ThreadID, it.TurnIndex, it.Role, it.CreatedAt, it.UpdatedAt = "t-park", 1, "assistant", now, now
+		if it.Kind == "" {
+			it.Kind = "tool_call"
+		}
+		if _, err := s.AppendItem(it); err != nil {
+			t.Fatalf("seed %s: %v", it.ID, err)
+		}
+	}
+	seed(Item{ID: "root", Status: "running", IsBackground: true, ToolName: "Agent", Summary: "Agent: park"})
+	seed(Item{ID: "other-root", Status: "running", IsBackground: true, ToolName: "Agent", Summary: "Agent: other"})
+	seed(Item{ID: "live-shell", ParentID: "root", Status: "running", IsBackground: true, ToolName: "Bash", Summary: "Bash: sleep 60"})
+	seed(Item{ID: "settled-shell", ParentID: "root", Status: "running", IsBackground: true, ToolName: "Bash", Summary: "Bash: sleep 12"})
+	seed(Item{ID: "complete:settled-shell", ParentID: "root", Kind: "tool_completion", Status: "completed", IsBackground: true, CompletionOf: "settled-shell", ToolName: "Bash"})
+	seed(Item{ID: "fg-read", ParentID: "root", Status: "running", IsBackground: false, ToolName: "Read", Summary: "Read: x"})
+	seed(Item{ID: "grandchild-shell", ParentID: "live-shell", Status: "running", IsBackground: true, ToolName: "Bash", Summary: "Bash: nested"})
+	seed(Item{ID: "other-shell", ParentID: "other-root", Status: "running", IsBackground: true, ToolName: "Bash", Summary: "Bash: elsewhere"})
+
+	got, err := s.ListLiveBackgroundChildLaunches("t-park", "root")
+	if err != nil {
+		t.Fatalf("ListLiveBackgroundChildLaunches: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "live-shell" || got[0].ToolName != "Bash" {
+		t.Fatalf("got %+v, want exactly live-shell", got)
+	}
+	if got, err := s.ListLiveBackgroundChildLaunches("t-park", ""); err != nil || got != nil {
+		t.Fatalf("empty parent: got %v, %v; want nil, nil", got, err)
+	}
+
+	assertPlanUses(t, s.db, "idx_items_parent", `EXPLAIN QUERY PLAN SELECT `+itemColumnsSansPayload+`
+	   FROM items
+	  WHERE items.thread_id = ?
+	    AND items.parent_id = ?
+	    AND items.parent_id <> ''
+	    AND items.kind = 'tool_call'
+	    AND items.status = 'running'
+	    AND items.is_background = 1
+	    AND `+noCompletionSiblingSQL, "t-park", "root")
 }

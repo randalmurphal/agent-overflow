@@ -686,11 +686,28 @@ correlation rather than requiring the row to exist.
 For `task_type: "local_agent"`, the envelope also carries:
 - `prompt`: the subagent's initial prompt (non-SDK, observed on the wire)
 
+### Wake shape: no `tool_use_id`
+
+A third `task_started` shape, for `local_agent` only, carries NO
+`tool_use_id` at all. It is the CLI WAKING a parked async agent (an
+agent that stopped while a backgrounded shell it launched was still
+running; §E6b): same `task_id` as the launch, `is_backgrounded:true`,
+`spawn_depth`, and a `prompt` holding the shell's `<task-notification>`
+XML. Nothing rebinds; the lifecycle stays on whichever tool_use it was
+last bound to (the launch, or a §E6 carrier). Captured on 2.1.261
+(2026-09-08).
+
 ### Parser action
 The adapter emits a meta-update `EventToolStart` carrying
 `task_id` in meta so triage can persist the
 `task_id ↔ tool_use_id` mapping onto the existing `tool_call` row, which
-is needed for reconnect correlation.
+is needed for reconnect correlation. The wake shape instead emits ONE
+`EventUserText` (`parseTaskWakeEvent`): id
+`user:subagent-wake:<waking shell tool_use_id>`, parent = the bound
+tool_use, content = the notification `<summary>` text, meta
+`subagent_wake_prompt` (never `subagent_resume_prompt`, which is the
+§E6 round-cutting key). A wake for an unbound task, or one that names
+a non-agent task type, is dropped.
 
 ---
 
@@ -798,11 +815,15 @@ months-old source mirror disagreed on the async case, the wire won):
   (`killShellTasksForAgent` in the CLI's `runAgent` finally block).
   The orphaned shells' terminals — `task_updated{killed}` +
   `task_notification{stopped}` — are emitted on the main wire.
-- An ASYNC (backgrounded) agent's exit does NOT kill its shells. They
-  keep running until the session closes (observed 125+s past agent
-  completion), and their eventual terminals arrive on the main wire.
-  A tray row for such a shell showing "running" after its agent
-  finished is truthful.
+- An ASYNC (backgrounded) agent's stop does NOT kill its shells. They
+  keep running (observed 125+s past the stop), their eventual
+  terminals arrive on the main wire, and a tray row for such a shell
+  showing "running" after its agent stopped is truthful. But the agent
+  is not done either: the CLI PARKS it and WAKES it when the shell
+  reports, and its stop is indistinguishable on the wire from a final
+  stop (`task_updated{completed}` + `task_notification` fire at EVERY
+  stop). See §E6b for the wake, the stop-of-a-parked-agent behaviors,
+  and AO's park model. Confirmed on 2.1.261 (2026-09-08).
 - Session close kills every remaining shell and, on a graceful stdin
   close, emits their killed terminals before exit. AO tears the thread
   down first, so those frames are dropped by design; the app-side
@@ -2040,6 +2061,84 @@ for the full captured 10-line two-round sequence (assistant tool_use /
 task_started / ack / task_updated / task_notification, twice, where the
 second round's `task_started` and `tool_use_id`s are the resuming
 tool's own).
+
+### E6b: Waking a parked async agent (`task_started` without `tool_use_id`)
+
+Confirmed by five live spikes against claude 2.1.261 (2026-09-08),
+each checked in under `fixtures/claude/local_agent_*_20260908.ndjson`
+(the README names which is which).
+
+**The wire.** An async agent (§E5) that launches a backgrounded Bash
+(`owned_by_subagent:true` on the shell's `task_started`) and then
+stops gets the ordinary stop pair, exactly as if it were done:
+
+```json
+{"type":"system","subtype":"task_updated","task_id":"ac1bb517c3154d44b","tool_use_id":"toolu_01RBwwkzBxziR7C1gV2rGxPp","patch":{"status":"completed"}}
+{"type":"system","subtype":"task_notification","task_id":"ac1bb517c3154d44b","tool_use_id":"toolu_01RBwwkzBxziR7C1gV2rGxPp","status":"completed","output_file":".../tasks/ac1bb517c3154d44b.output","summary":"WAITING","usage":{"total_tokens":30873,"tool_uses":2,"duration_ms":2951},"uuid":"d7dfe1ad-…"}
+```
+
+`background_tasks_changed` drops the agent from the level set. Then,
+when the owned shell reports (its own `task_updated` +
+`task_notification`), the CLI resumes the agent from its transcript
+with the shell's notification as the prompt:
+
+```json
+{"type":"system","subtype":"task_started","task_id":"ac1bb517c3154d44b","description":"Spike A","subagent_type":"general-purpose","is_backgrounded":true,"spawn_depth":1,"task_type":"local_agent","prompt":"<task-notification>\n<task-id>b2ken8z52</task-id>\n<tool-use-id>toolu_01C1sBpMABwBJ4cT5J1PhGqR</tool-use-id>\n<output-file>…/tasks/b2ken8z52.output</output-file>\n<status>completed</status>\n<summary>Background command \"sleep 12; echo ONE\" completed (exit code 0)</summary>\n</task-notification>","uuid":"19b80e0f-…"}
+```
+
+No `tool_use_id`. The level set re-adds the agent. The woken round's
+sidechain rows carry `parent_tool_use_id` = the ORIGINAL launch (the
+transcript root, as in §E6), its `task_progress` ticks name the
+launch, and its closing `task_updated` / `task_notification` again
+carry the bound tool_use. This repeats for every owned shell that
+outlives a stop: fixture A wakes twice. The sidechain JSONL records
+the wake as a `type:user, isMeta:true, origin:{kind:"task-notification"}`
+row whose content is `[SYSTEM NOTIFICATION - NOT USER INPUT]` plus the
+same XML; the importer drops isMeta user rows, so no transcript row
+ever binds the wake prompt.
+
+**Variants, all captured:**
+
+- `stop_task` on the SHELL (fixture B): the shell settles
+  `killed` + `task_notification{stopped}`, and the agent still wakes,
+  the prompt carrying `<status>stopped</status>` and the summary
+  `Task "…" was stopped by main session`.
+- `SendMessage` to a PARKED agent (fixture C): the §E6 rebind fires
+  immediately on the SendMessage tool_use, that carrier round parks in
+  turn if the shell is still live, and the later wake `task_started`
+  binds to the carrier (whichever call the lifecycle last named).
+- A nested ASYNC AGENT child (fixture D) does NOT park its parent. The
+  child's `task_started` carries no `owned_by_subagent` (only
+  `local_bash` ever does): it is a top-level task of its own, and the
+  parent's stop is final.
+- `stop_task` on the PARKED AGENT (fixture E): the agent gets
+  `task_updated{killed}` and nothing else (no notification), the level
+  set empties, and its owned shells are killed with it (`killed` +
+  `task_notification{stopped}`). Nothing wakes.
+- A FOREGROUND agent is unchanged: its exit kills its shells (§Background
+  task ownership), so there is nothing to park.
+
+**AO's park model (triage).** A background agent launch is PARKED when
+its transcript root has a live backgrounded direct child that is a
+shell or a watch task (`launchIsParked`, over
+`Store.ListLiveBackgroundChildLaunches`). A parked agent's stop keeps
+the stash (`pending_background_task_terminals`), writes NO
+`tool_completion` sibling, still writes the `notification` row (the
+bell; the frontend hides every bell for the task once the completed
+sibling lands), still persists usage, and still runs the output_file
+backfill. The wake drops the stash and persists the parser's wake row
+under the ROOT on the launch's turn, opening the woken round. The
+launch settles (sibling written) on the first stop with no live owned
+shell, on `task_updated{killed}`, on a §E6 rebind (the parked bound
+row settles from its stash before the carrier takes over), and on
+session end. A `TaskOutput` observation of a parked agent settles
+nothing. Timeline rows therefore stay immutable (a "completed" card
+never grows), the tray keeps the agent for as long as the CLI's level
+set does, and every woken round's rows land under the launch that is
+still open. Before this (2026-09-08), the first stop settled the
+launch and the wake `task_started` was dropped at the parser's
+`tool_use_id` guard, so each woken round's tools, bells and progress
+piled onto a card that read "completed".
 
 ### E7: Monitor watch-task launch ack
 

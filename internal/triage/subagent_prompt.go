@@ -3,6 +3,7 @@ package triage
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 
 	"agent-overflow/internal/provider"
@@ -138,6 +139,101 @@ func (r *Router) persistResumePromptRow(evt provider.ProviderEvent, meta userTex
 		Status:    statusCompleted,
 		Summary:   prompt,
 		ParentID:  parentID,
+		Meta:      string(metaBytes),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}, nil)
+}
+
+// persistWakePromptRow records a PARKED agent being woken (claude-wire.md
+// §E6b): the `<task-notification>` the CLI resumed it with when one of
+// its owned background shells reported. Two effects, in this order:
+//
+//  1. The completed terminal stashed at the agent's stop is DROPPED. That
+//     stop was a pause, not the end; settling the stash would put the
+//     agent's card at a stop the wake just undid, and leaving it would
+//     let the next terminal's drain read a stale end time. The round's
+//     own terminal stashes afresh.
+//  2. The prompt lands as a user-role row under the transcript ROOT, the
+//     way the §E6 resume message does, so the woken round opens with what
+//     the agent was told rather than with its answer. Placement resolves
+//     like persistResumePromptRow: the parser's `transcript_root_id`
+//     stamp first, else the parent row through transcriptRoot. Nothing
+//     ever binds a provider uuid onto this row (the sidechain records the
+//     wake as an `isMeta` row the converter drops), so it is not
+//     provisional, and it carries the wake marker rather than the resume
+//     one because the store's round slicing keys resume rows on a
+//     carrier this round does not have.
+//
+// The stash drop runs even when the prompt is empty: liveness is the
+// load-bearing half. An existing row (a re-delivered envelope) is left
+// alone.
+func (r *Router) persistWakePromptRow(evt provider.ProviderEvent, meta userTextMeta) error {
+	if taskID := strings.TrimSpace(meta.text("task_id")); taskID != "" {
+		if _, dropped, err := r.store.TakePendingBackgroundTerminal(evt.ThreadID, taskID); err != nil {
+			log.Printf("triage: drop parked terminal on wake %s/%s: %v", evt.ThreadID, taskID, err)
+		} else if dropped {
+			// The reaper and the workspace lock read the stash; tell
+			// them the answer changed.
+			r.emitBackgroundTasksChangedNudge(evt.ThreadID)
+		}
+	}
+
+	prompt := strings.TrimSpace(evt.Content)
+	itemID := strings.TrimSpace(evt.ItemID)
+	parentID := eventParentID(evt)
+	if prompt == "" || itemID == "" || parentID == "" {
+		return nil
+	}
+	if _, found, err := r.store.GetThreadItem(evt.ThreadID, itemID); err != nil {
+		return fmt.Errorf("triage: inspect wake prompt %s/%s: %w", evt.ThreadID, itemID, err)
+	} else if found {
+		return nil
+	}
+
+	rootID := strings.TrimSpace(meta.text(provider.MetaTranscriptRootIDKey))
+	if rootID == "" {
+		rootID = parentID
+		bound, found, err := r.store.GetThreadItem(evt.ThreadID, parentID)
+		if err != nil {
+			return fmt.Errorf("triage: wake prompt bound row lookup %s/%s: %w", evt.ThreadID, parentID, err)
+		}
+		if found {
+			root, err := r.transcriptRootOrSelf(evt.ThreadID, bound)
+			if err != nil {
+				return err
+			}
+			rootID = root.ID
+		}
+	}
+	turnIndex, err := r.turnIndexForScope(evt.ThreadID, rootID)
+	if err != nil {
+		return fmt.Errorf("triage: wake prompt turn index %s/%s: %w", evt.ThreadID, rootID, err)
+	}
+
+	fields := map[string]any{
+		"wire_only":                        true,
+		provider.MetaSubagentWakePromptKey: true,
+	}
+	for _, key := range []string{"task_id", provider.MetaWakeTaskIDKey, provider.MetaWakeToolUseIDKey, provider.MetaWakeStatusKey} {
+		if value := strings.TrimSpace(meta.text(key)); value != "" {
+			fields[key] = value
+		}
+	}
+	metaBytes, err := json.Marshal(fields)
+	if err != nil {
+		return fmt.Errorf("triage: encode wake prompt meta: %w", err)
+	}
+	now := eventTimestampMillis(evt)
+	return r.persistItem(store.Item{
+		ID:        itemID,
+		ThreadID:  evt.ThreadID,
+		TurnIndex: turnIndex,
+		Kind:      itemKindUserText,
+		Role:      "user",
+		Status:    statusCompleted,
+		Summary:   prompt,
+		ParentID:  rootID,
 		Meta:      string(metaBytes),
 		CreatedAt: now,
 		UpdatedAt: now,

@@ -434,6 +434,60 @@ func (s *Store) ListRunningBackgroundToolCalls(threadID string) ([]Item, error) 
 	return items, rows.Err()
 }
 
+// ListLiveBackgroundChildLaunches lists the backgrounded `tool_call` rows
+// still running directly under one launch: the owned background shells an
+// async agent may be PARKED on. An async agent that stops while one of
+// those is still running is idle, not done — the CLI wakes it when the
+// shell reports (claude-wire.md §E6b) — and the rows returned here are the
+// only evidence, because the agent's own terminal and notification look
+// exactly like a final stop's. Triage decides which children count
+// (shells and watch tasks; a nested agent never wakes its parent).
+//
+// A stashed child (exited, terminal not yet observed) is still listed: on
+// the wire its notification follows its terminal immediately and the
+// parent's wake follows both, so the transient state resolves inside the
+// same flush either way.
+//
+// Direct children only: everything an agent produces, in every resumed
+// round, is parented to its transcript ROOT (transcript_root.go), so the
+// caller passes the root. Served by the partial `idx_items_parent`, which
+// is why the empty-parent guard is repeated beside the bound parameter — and
+// why there is no ORDER BY: an `ORDER BY turn_index, item_index` makes the
+// planner walk the thread's whole ordering index instead of probing the
+// parent index (the subagentResumeRounds lesson), and the one caller asks
+// whether ANY child counts.
+func (s *Store) ListLiveBackgroundChildLaunches(threadID, parentID string) ([]Item, error) {
+	if parentID == "" {
+		return nil, nil
+	}
+	rows, err := s.reader().Query(
+		`SELECT `+itemColumnsSansPayload+`
+		   FROM items
+		  WHERE items.thread_id = ?
+		    AND items.parent_id = ?
+		    AND items.parent_id <> ''
+		    AND items.kind = 'tool_call'
+		    AND items.status = 'running'
+		    AND items.is_background = 1
+		    AND `+noCompletionSiblingSQL,
+		threadID, parentID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list live background child launches for %s/%s: %w", threadID, parentID, err)
+	}
+	defer rows.Close()
+
+	var items []Item
+	for rows.Next() {
+		it, err := scanItemRowSansPayload(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: scan live background child launch row: %w", err)
+		}
+		items = append(items, it)
+	}
+	return items, rows.Err()
+}
+
 func (s *Store) ListIncompleteCodexSubagentLaunches(threadID string) ([]Item, error) {
 	rows, err := s.reader().Query(
 		`SELECT `+itemColumns+`

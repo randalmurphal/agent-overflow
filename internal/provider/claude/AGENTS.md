@@ -262,6 +262,16 @@ dispatches. Parser state is single-goroutine, driven by the read loop.
   so triage can place the round's rows without guessing. The rebind is
   also the ONE envelope carrying the resume message (`prompt`), which is
   why `parseTaskStartedEvent` returns TWO events on that path.
+- **A `task_started` with NO `tool_use_id` is a WAKE, never a rebind.**
+  The CLI re-fires it for a parked async agent (a `local_agent` whose
+  owned shell outlived its stop, claude-wire.md §E6b) with the same
+  `task_id` and the shell's `<task-notification>` as `prompt`.
+  `parseTaskWakeEvent` emits ONE `EventUserText`
+  (`user:subagent-wake:<shell tool_use_id>`, parent = the task's bound
+  tool_use, meta `subagent_wake_prompt`) and touches no binding; an
+  unbound task or a non-agent task type is dropped. Before 2026-09-08
+  the `tool_use_id` guard dropped the wake outright, so the woken
+  round streamed under a settled launch.
 - `run_in_background: true` on a tool_use input is a HINT
   (`backgroundHintInput`), never a verdict. The completion classifies
   from `tool_use_result.backgroundTaskId` or, on a sidechain where

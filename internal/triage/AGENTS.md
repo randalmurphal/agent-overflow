@@ -114,6 +114,20 @@ subagent-aware path as guilty until it proves scope containment.
   scope-resolving path joins them. Treating the carrier as a scope
   reparented 474 already-delivered round-1 rows onto it and duplicated
   220 more on one live thread (2026-09-03).
+- **An async agent's stop is a pause while it owns a live shell.** The
+  CLI parks such an agent and wakes it when the shell reports, and the
+  pause is wire-identical to a final stop (claude-wire.md §E6b).
+  `launchIsParked` decides from the ROOT's live backgrounded shell and
+  watch-task children (never from a nested agent child): a parked stop
+  keeps the stash and writes no completion sibling, the wake row
+  (`persistWakePromptRow`, meta `subagent_wake_prompt`, never
+  `subagent_resume_prompt`) drops the stash and opens the woken round
+  under the root, and the launch settles on the first stop with no live
+  shell, on `killed`, on a §E6 rebind (`settleParkedLaunchForRebind`),
+  or at session end. A `TaskOutput` observation of a parked agent
+  settles nothing. Settling at the first stop put every woken round's
+  rows, bells and counters under a card already rendered as completed
+  (2026-09-08). A new settle path checks the park state first.
 - Tray membership and lifecycle gates must not share a filter.
   `Store.ListLiveBackgroundTasks` lists by backgrounded ancestry at any
   depth, while the reaper and queue gates beside it in

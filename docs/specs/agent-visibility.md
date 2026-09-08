@@ -116,8 +116,11 @@ launch, how do progress and terminal signals arrive, which controls exist
   approval itself shows ONLY in the composer's approval UI, with no pill
   on the card, awaited or background (user ruling 2026-08-23 reverses
   Q10b).
-- Notifications (bell/toast) fire for top-level nodes only; nested
-  completions update their card silently (Q11).
+- The bell is the timeline `notification` row and nothing else (no
+  toast, no OS notification), and it fires for top-level nodes only;
+  nested completions update their card silently (Q11). A parked async
+  agent (claude-wire.md §E6b) rings it at every stop, and the frontend
+  hides all of them together once the completed sibling lands.
 - A DETACHED launch (async ack, `run_in_background`, a Codex spawn, a
   SendMessage resume carrier, or backgrounded mid-flight:
   `launchRunsDetached`) keeps the launch row it had before this feature,
