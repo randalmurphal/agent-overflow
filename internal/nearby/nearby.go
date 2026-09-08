@@ -119,15 +119,29 @@ type advertisementZone struct {
 	ad      Advertisement
 }
 
+// Records answers the library's per-question callback, which sees every
+// question on the LAN. The name is read only for an answer that carries it:
+// the library mints a fresh TXT record per call, filled in here.
 func (z *advertisementZone) Records(q dns.Question) []dns.RR {
-	// Build a query-local copy: the library invokes Zone concurrently for IPv4/6.
-	copy := *z.service
+	records := z.service.Records(q)
+	var txt []string
+	for _, rr := range records {
+		if rr, ok := rr.(*dns.TXT); ok {
+			if txt == nil {
+				txt = z.txt()
+			}
+			rr.Txt = txt
+		}
+	}
+	return records
+}
+
+func (z *advertisementZone) txt() []string {
 	name := z.ad.Name()
 	if !validText(name, 200) {
 		name = "Agent Overflow"
 	}
-	copy.TXT = []string{"v=1", "id=" + strings.ReplaceAll(z.ad.BackendID, `\`, `\\`), "name=" + strings.ReplaceAll(name, `\`, `\\`)}
-	return copy.Records(q)
+	return []string{"v=1", "id=" + strings.ReplaceAll(z.ad.BackendID, `\`, `\\`), "name=" + strings.ReplaceAll(name, `\`, `\\`)}
 }
 
 // Discover performs one bounded scan, returning no retained/background cache.
@@ -341,8 +355,12 @@ func validText(value string, limit int) bool {
 	return !strings.ContainsFunc(value, unicode.IsControl)
 }
 
+// Interfaces enumerates the host's interfaces; a test seam, as in
+// internal/network, so a fixture can advertise on none.
+var Interfaces = net.Interfaces
+
 func lanInterfaces() ([]net.Interface, error) {
-	interfaces, err := net.Interfaces()
+	interfaces, err := Interfaces()
 	if err != nil {
 		return nil, err
 	}

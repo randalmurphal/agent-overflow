@@ -292,6 +292,9 @@ func (a *App) startTailnetNode(cfg settings.NetworkSettings) (*tailnet.Node, err
 func (a *App) attachTailnetListeners(node *tailnet.Node) error {
 	status := node.Status()
 	if !status.Running() {
+		// A node that left Running has nothing reachable behind its
+		// listeners, and the status must not keep claiming HTTPS for it.
+		a.dropTailnetListeners()
 		return nil
 	}
 	srv := a.transportServer.Load()
@@ -486,7 +489,6 @@ func (a *App) stopTailnetNode() {
 // names the Host guard was admitting for it. A name that stays admitted
 // after the listener behind it is gone is an admission nobody can reach.
 func (a *App) dropTailnetListeners() {
-	defer a.publishComputerRoutes()
 	a.tailnet.mu.Lock()
 	var handles []*transport.AuxListener
 	for _, slot := range []*tailnetSlot{a.tailnet.plain, a.tailnet.secure} {

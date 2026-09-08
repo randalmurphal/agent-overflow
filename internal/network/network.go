@@ -598,11 +598,13 @@ func DiscoverLocalLANIP() string {
 
 	var tailscaleFallback string
 	for _, iface := range sorted {
-		// Skip down / loopback interfaces — neither helps a LAN peer.
-		if iface.Flags&net.FlagUp == 0 {
+		// Skip down, carrier-less, loopback and container-bridge interfaces:
+		// none helps a LAN peer, and a Docker or libvirt bridge carries a
+		// private address at a low index that would win over the real NIC.
+		if iface.Flags&(net.FlagUp|net.FlagRunning) != net.FlagUp|net.FlagRunning {
 			continue
 		}
-		if iface.Flags&net.FlagLoopback != 0 {
+		if iface.Flags&net.FlagLoopback != 0 || isVirtualBridge(iface.Name) {
 			continue
 		}
 		addrs, err := InterfaceAddrs(iface)
@@ -632,6 +634,18 @@ func DiscoverLocalLANIP() string {
 		}
 	}
 	return tailscaleFallback
+}
+
+// isVirtualBridge names the Linux container and VM bridges (Docker's
+// docker0 and br-<network>, libvirt's virbr0) and their veth ends, whose
+// private subnets reach no LAN peer.
+func isVirtualBridge(name string) bool {
+	for _, prefix := range [...]string{"docker", "br-", "veth", "virbr"} {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // isTailscaleCGNAT reports whether the IPv4 falls inside the

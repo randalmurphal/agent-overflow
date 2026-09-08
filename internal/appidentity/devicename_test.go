@@ -54,3 +54,41 @@ func TestDeviceNameCorruptionAndFailedWriteAreErrors(t *testing.T) {
 		t.Fatal("write failure ignored")
 	}
 }
+
+// TestDeviceNameReadsTheFileOnlyWhenItChanges: the getter runs per LAN
+// query, so an unchanged file must cost a stat and nothing more. Making the
+// file unreadable without touching its size or mtime proves the cached name
+// answers; another process's rewrite and a removal are both seen again.
+func TestDeviceNameReadsTheFileOnlyWhenItChanges(t *testing.T) {
+	dir := t.TempDir()
+	n := NewDeviceName(dir)
+	if err := n.Set("Studio"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := n.Get(); err != nil || got != "Studio" {
+		t.Fatalf("first read=%q,%v", got, err)
+	}
+	path := filepath.Join(dir, "device-name.json")
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+	if got, err := n.Get(); err != nil || got != "Studio" {
+		t.Fatalf("unchanged file was re-read: %q,%v", got, err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewDeviceName(dir).Set("Lab"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := n.Get(); err != nil || got != "Lab" {
+		t.Fatalf("another process's rename was not seen: %q,%v", got, err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := n.Get(); err != nil || got != HostDisplayName() {
+		t.Fatalf("removal was not seen: %q,%v", got, err)
+	}
+}

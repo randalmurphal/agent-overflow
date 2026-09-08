@@ -196,6 +196,12 @@ that happened may CARRY BACK, from the same per-call proof.
   `network.PairingURL` to mint only the invitation being returned.
 - **The withholding itself lives in `internal/network`**, not here, and it
   works by never minting rather than by blanking — see that package's guide.
+- **Every apply runs under `networkApply`.** `applyNetworkSettings` is the
+  one apply (the settings write, the rebind and the reconciler kicks are one
+  act), and both of its callers hold the mutex for the whole of it: the
+  screen's `SetNetworkSettings`, and the own-devices worker's
+  `ensureOwnDeviceHosting`, whose read-modify-write would otherwise land on
+  top of a save from the screen.
 
 ## Settings answer per caller
 
@@ -483,7 +489,14 @@ than serving 404s from an empty set.
 
 Desktop discovery/address setup is specified in
 [computer-pairing.md](../../docs/architecture/computer-pairing.md).
-`app_computer_pairing.go` owns the short-lived window and approval mapping;
+`app_computer_pairing.go` owns the short-lived window and approval mapping.
+Its `mu` guards fields and is never held across I/O: the store cancellation,
+the multicast responders and the bootstrap book's own lock all run with it
+released, because the book's cancel callback writes to the store and the
+owner connection's cleanup runs on the transport's goroutine; `ops`
+serializes opens, the one multi-step act. Expiry is the book's timer, the
+link fence (`linkID`) is cleared only by a durable cancellation, and a
+responder start failure is the window's `DiscoveryError`, not a log line.
 `app_computer_discovery.go` selects candidate sources and outbound networks.
 `app_native_network.go` accepts only current launcher/configuration observations:
 never derive local authorization from the Windows forwarding path or publish
@@ -556,10 +569,12 @@ while the feature is enabled and the node is not yet Running.
 - **The loop's wake-ups include the NODE's own event channel**, re-read
   every pass rather than captured once. A closed node's channel is closed,
   and a closed channel selected on forever is a spin.
-- **Listeners are attached only while the node is Running**, and the
-  numeric port is the SAME one the main bind uses. One port for one
-  backend keeps the share URL, the cookie name and the origin rule
-  deriving from the same authority they always did.
+- **Listeners are attached only while the node is Running**, and dropped
+  by the same pass when it stops being Running, so the status never
+  reports HTTPS for a node nothing can reach and the Host guard never
+  admits its names. The numeric port is the SAME one the main bind uses.
+  One port for one backend keeps the share URL, the cookie name and the
+  origin rule deriving from the same authority they always did.
 - **`SetAuxiliaryHosts` is set after a listener exists and cleared when
   one goes away**, so the Host guard never admits a name nothing serves.
   Cleared only when NOTHING is left answering: HTTPS failing while

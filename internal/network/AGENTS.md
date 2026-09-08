@@ -189,6 +189,12 @@ page ticket and it is not ours to mint.
   flipping LAN-bind shouldn't auto-publish its public address.
   Without TLS, that invites a user to publish a cleartext endpoint
   on an open port. RFC1918 / link-local / Tailscale CGNAT only.
+- Do NOT let `DiscoverLocalLANIP` pick an interface no LAN peer routes
+  to. It skips interfaces that are not both up and running (no carrier)
+  and the Linux container/VM bridges by name (`docker*`, `br-*`, `veth*`,
+  `virbr*`): those carry a private subnet at a low index and would win
+  over the real NIC. A fake interface in a test carries
+  `net.FlagUp | net.FlagRunning`, or it is skipped as carrier-less.
 - Do NOT call `DiscoverLocalLANIP` more than once per Set flow. The
   origin allow-list and the URL must use the *same* discovered IP
   or the user can see a URL their browser can't reach without an

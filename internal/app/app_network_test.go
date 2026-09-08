@@ -646,3 +646,54 @@ func TestEveryNetworkSettingsAnswerGoesThroughThePick(t *testing.T) {
 		t.Fatalf("the answer lost the settings beside them: %+v", forgotten)
 	}
 }
+
+// TestNetworkSettingsApplyIsSerializedWithOwnDeviceHosting: the own-devices
+// worker turns LAN sharing on behind the screen (ensureOwnDeviceHosting)
+// while the screen saves the whole record. One apply parked mid-rebind must
+// hold the other back, or the worker's read-modify-write lands on top of
+// the save and the port the operator chose is gone.
+func TestNetworkSettingsApplyIsSerializedWithOwnDeviceHosting(t *testing.T) {
+	app, srv := newNetworkTestApp(t)
+	chosen := freeLoopbackPort(t)
+	if chosen == portFromAddr(srv.Addr()) {
+		t.Skip("the probe port collided with the bound one; nothing to move")
+	}
+	entered, release := make(chan struct{}, 1), make(chan struct{})
+	app.boundPortRecorder = func(int) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-release
+	}
+	saved := make(chan error, 1)
+	go func() {
+		_, err := app.SetNetworkSettings(atTheMachine(), network.Settings{ListenPort: chosen})
+		saved <- err
+	}()
+	<-entered
+	hosted := make(chan error, 1)
+	go func() { hosted <- app.ensureOwnDeviceHosting() }()
+	select {
+	case err := <-hosted:
+		t.Fatalf("ensureOwnDeviceHosting ran inside the screen's apply: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if app.settings.Get().Network.BindAll {
+		t.Fatal("the worker wrote BindAll while the screen's apply was still in flight")
+	}
+	close(release)
+	if err := <-saved; err != nil {
+		t.Fatalf("SetNetworkSettings: %v", err)
+	}
+	if err := <-hosted; err != nil {
+		t.Fatalf("ensureOwnDeviceHosting: %v", err)
+	}
+	got := app.settings.Get().Network
+	if !got.BindAll || got.ListenPort != chosen {
+		t.Fatalf("settings after both applies = %+v, want BindAll on the port the screen chose (%d)", got, chosen)
+	}
+	if addr := srv.Addr(); addr != net.JoinHostPort(network.BindHost(true), strconv.Itoa(chosen)) {
+		t.Fatalf("listener at %q, want every interface on port %d", addr, chosen)
+	}
+}

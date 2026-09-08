@@ -135,3 +135,23 @@ func TestDiscoveryRejectsUnrelatedMalformedOrUnsafeAnnouncements(t *testing.T) {
 		t.Fatal("accepted oversized packet")
 	}
 }
+
+// TestAdvertisementReadsTheNameOnlyForAnswersThatCarryIt: the responder is
+// asked about every name on the LAN, and the name getter reaches a file.
+// Only an answer that carries the TXT record may read it.
+func TestAdvertisementReadsTheNameOnlyForAnswersThatCarryIt(t *testing.T) {
+	service, err := mdns.NewMDNSService("test", service, "local.", "test.local.", 4242, []net.IP{net.IPv4(192, 168, 1, 10)}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zone := advertisementZone{service, Advertisement{BackendID: "backend", Name: func() string {
+		t.Fatal("name read for an answer without a TXT record")
+		return ""
+	}, Port: 4242}}
+	if records := zone.Records(dns.Question{Name: "test.local.", Qtype: dns.TypeA, Qclass: dns.ClassINET}); len(records) == 0 {
+		t.Fatal("address query answered nothing")
+	}
+	if records := zone.Records(dns.Question{Name: "printer.local.", Qtype: dns.TypeANY, Qclass: dns.ClassINET}); len(records) != 0 {
+		t.Fatalf("unrelated query answered %v", records)
+	}
+}

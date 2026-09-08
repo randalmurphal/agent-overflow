@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -302,5 +303,52 @@ func TestTailnetRetiresOnlyListenersWhoseConfigurationChanged(t *testing.T) {
 	app.retireTailnetListeners(34116, false)
 	if app.tailnet.secure != nil || !secure.failed {
 		t.Fatal("withdrawn HTTPS remained advertised")
+	}
+}
+
+// TestTailnetNodeLeavingRunningRetiresListeners: listeners are attached only
+// while the node is Running, and the reconcile pass that finds it no longer
+// Running has to take them back, or the status keeps reporting HTTPS for a
+// node nothing can reach and the Host guard keeps admitting its names.
+func TestTailnetNodeLeavingRunningRetiresListeners(t *testing.T) {
+	app, root := newTailnetTestApp(t)
+	srv := app.transportServer.Load()
+	for _, slot := range []**tailnetSlot{&app.tailnet.plain, &app.tailnet.secure} {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		attached, err := app.attachAuxListener(srv, ln)
+		if err != nil {
+			t.Fatalf("attach a listener: %v", err)
+		}
+		app.tailnet.mu.Lock()
+		*slot = attached
+		app.tailnet.mu.Unlock()
+	}
+	srv.SetAuxiliaryHosts([]string{"node.example.ts.net"})
+	if !app.tailnetStatus().HTTPS {
+		t.Fatal("fixture: the secure slot is not live")
+	}
+	// Never started, so its status is the zero one: not Running.
+	node, err := tailnet.New(tailnet.Options{Dir: tailnet.StateDir(root)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.attachTailnetListeners(node); err != nil {
+		t.Fatalf("attachTailnetListeners on a node that is not Running: %v", err)
+	}
+	status := app.tailnetStatus()
+	if status.HTTPS || status.Running {
+		t.Fatalf("a node that is not Running still reports HTTPS=%v Running=%v", status.HTTPS, status.Running)
+	}
+	app.tailnet.mu.Lock()
+	plain, secure := app.tailnet.plain, app.tailnet.secure
+	app.tailnet.mu.Unlock()
+	if plain != nil || secure != nil {
+		t.Fatal("listeners survived the node leaving Running")
+	}
+	if hosts := srv.AuxiliaryHosts(); len(hosts) != 0 {
+		t.Fatalf("the Host guard still admits %v", hosts)
 	}
 }

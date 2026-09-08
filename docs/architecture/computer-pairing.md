@@ -51,8 +51,11 @@ independently matching digits. There is no new session type or alternate
 authorization path. One requester may occupy a window; replacing it requires
 an explicit owner action, preventing silent replacement or unlimited guesses.
 
-Owner connection loss, expiry, cancellation and network changes retire the
-window and unfinished invitation. Startup retires unfinished pairings in one
+Owner connection loss, cancellation and listener-affecting network settings
+changes retire the window and its unfinished invitation. Expiry is the
+bootstrap book's own timer, which cancels the invitation; the LAN
+advertisement lingers only until the dialog closes, and an expired window
+answers `open:false`, which discovery discards. Startup retires unfinished pairings in one
 store transaction because an ephemeral comparison cannot survive a restart.
 Confirmed devices retain their existing sessions and renewal policy.
 

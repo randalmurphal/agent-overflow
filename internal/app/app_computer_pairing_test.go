@@ -13,6 +13,8 @@ import (
 
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/identity"
+	"agent-overflow/internal/nearby"
+	"agent-overflow/internal/network"
 	"agent-overflow/internal/pairbootstrap"
 	"agent-overflow/internal/settings"
 )
@@ -24,7 +26,7 @@ func computerPairingBackend(t *testing.T) (*pairedBackend, pairbootstrap.Snapsho
 	t.Helper()
 	b := newPairedBackend(t)
 	s := &b.app.computerPairing
-	s.book = pairbootstrap.NewBook(func(id string) { _ = b.app.CancelDevicePairing(id) })
+	s.book = pairbootstrap.NewBook(b.app.cancelComputerPairingLink)
 	view := s.book.Open(func() (pairbootstrap.Invitation, error) {
 		invite, err := b.app.mintDevicePairing("browser", "full", "")
 		return pairbootstrap.Invitation{LinkID: invite.LinkID, URL: invite.URL}, err
@@ -313,5 +315,114 @@ func TestComputerPairingReplacementRequiresDurableCancellation(t *testing.T) {
 	old, err := a.store.GetPairingLink(invite.LinkID)
 	if err != nil || old.CanceledAt == 0 || next.ID == w.WindowID {
 		t.Fatal("replacement did not durably retire old invitation", err)
+	}
+}
+
+// TestComputerPairingCloseRetiresTheLinkOnceAndIsIdempotent: closing the
+// window cancels its invitation through the book exactly once and clears
+// the fence; closing the same window again is a no-op, never a second
+// write or an error.
+func TestComputerPairingCloseRetiresTheLinkOnceAndIsIdempotent(t *testing.T) {
+	b, window := computerPairingBackend(t)
+	invite, _ := exchangeComputerPairing(t, b)
+	redeemComputerInvitation(t, b, invite)
+	s := &b.app.computerPairing
+	s.mu.Lock()
+	fenced := s.linkID
+	s.mu.Unlock()
+	if fenced != invite.LinkID {
+		t.Fatalf("minted link %q is not fenced (%q)", invite.LinkID, fenced)
+	}
+	for i := range 2 {
+		if err := b.app.CloseComputerPairing(window.WindowID); err != nil {
+			t.Fatalf("close %d: %v", i, err)
+		}
+	}
+	s.mu.Lock()
+	fenced = s.linkID
+	s.mu.Unlock()
+	if fenced != "" {
+		t.Fatalf("durable cancellation left %q fenced", fenced)
+	}
+	link, err := b.app.store.GetPairingLink(invite.LinkID)
+	if err != nil || link.CanceledAt == 0 {
+		t.Fatal("close did not retire the invitation", err)
+	}
+	entries, err := b.app.store.ListRecentAuthAudit(100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var canceled int
+	for _, entry := range entries {
+		if entry.Event == string(identity.AuditPairingCanceled) && entry.Detail == invite.LinkID {
+			canceled++
+		}
+	}
+	if canceled != 1 {
+		t.Fatalf("the invitation was canceled %d times, want once", canceled)
+	}
+	if err := b.app.ConfirmDevicePairing(invite.LinkID); err == nil {
+		t.Fatal("closed window's invitation remained confirmable")
+	}
+}
+
+// TestComputerPairingReportsDiscoveryFailureOnTheWindow: a host sharing on
+// the LAN whose multicast responders cannot start still opens the window,
+// since typed-address pairing works without them, and the window says why
+// nobody will find it instead of leaving the owner waiting.
+func TestComputerPairingReportsDiscoveryFailureOnTheWindow(t *testing.T) {
+	a := identityApp(t)
+	stored, err := a.store.Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.storeIdentity.Store(&stored)
+	srv := startTestTransportServer(t)
+	if err := srv.Rebind(net.JoinHostPort("0.0.0.0", strconv.Itoa(portFromAddr(srv.Addr()))), nil); err != nil {
+		t.Fatal(err)
+	}
+	a.SetTransportServer(srv)
+	if _, err := a.settings.SetNetwork(settings.NetworkSettings{BindAll: true}); err != nil {
+		t.Fatal(err)
+	}
+	previousInterfaces, previousAddrs, previousNearby := network.Interfaces, network.InterfaceAddrs, nearby.Interfaces
+	t.Cleanup(func() {
+		network.Interfaces, network.InterfaceAddrs, nearby.Interfaces = previousInterfaces, previousAddrs, previousNearby
+	})
+	network.Interfaces = func() ([]net.Interface, error) {
+		return []net.Interface{{Index: 1, Name: "lan", Flags: net.FlagUp | net.FlagRunning}}, nil
+	}
+	network.InterfaceAddrs = func(net.Interface) ([]net.Addr, error) {
+		return []net.Addr{&net.IPNet{IP: net.ParseIP("192.168.1.20"), Mask: net.CIDRMask(24, 32)}}, nil
+	}
+	// No multicast-capable interface: the responders cannot start.
+	nearby.Interfaces = func() ([]net.Interface, error) { return nil, nil }
+	w, err := a.OpenComputerPairing(context.Background(), "lan", "full")
+	if err != nil {
+		t.Fatalf("a discovery failure closed the typed-address path: %v", err)
+	}
+	defer a.CloseComputerPairing(w.ID)
+	if w.Address == "" {
+		t.Fatal("window carries no address to type")
+	}
+	status, err := a.ComputerPairingStatus(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.State != "waiting" || !strings.Contains(status.DiscoveryError, "nearby discovery unavailable") {
+		t.Fatalf("status = %+v, want an open window carrying the discovery failure", status)
+	}
+	s := &a.computerPairing
+	s.mu.Lock()
+	adv := s.advertiser
+	s.mu.Unlock()
+	if adv != nil {
+		t.Fatal("a failed start left an advertiser attached")
+	}
+	if err := a.CloseComputerPairing(w.ID); err != nil {
+		t.Fatal(err)
+	}
+	if status, _ := a.ComputerPairingStatus(w.ID); status.State != "expired" || status.DiscoveryError != "" {
+		t.Fatalf("closed window reports %+v", status)
 	}
 }

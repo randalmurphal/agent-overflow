@@ -57,8 +57,9 @@ func (s *nativeNetworkState) invalidate() {
 	s.finishScan(nil)
 }
 
+// invalidateNativeNetwork runs inside the network settings apply, which
+// publishes the routes once for the whole change.
 func (a *App) invalidateNativeNetwork() {
-	defer a.publishComputerRoutes()
 	s := &a.nativeNetwork
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -120,10 +121,7 @@ func (a *App) GetNativeNetworkConfig(ctx context.Context) (nativenetwork.Config,
 	if cfg.Enabled {
 		cfg.Target = "https://" + net.JoinHostPort(network.DiscoverLocalLANIP(), strconv.Itoa(portFromAddr(srv.Addr())))
 	}
-	p := &a.computerPairing
-	p.mu.Lock()
-	cfg.PairingOpen = p.book != nil && p.book.Snapshot("").Open
-	p.mu.Unlock()
+	cfg.PairingOpen = a.computerPairingOpen()
 	return cfg, nil
 }
 

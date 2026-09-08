@@ -21,7 +21,7 @@ func nativeNetworkBackend(t *testing.T) (*pairedBackend, context.Context, *trans
 	t.Helper()
 	oldInterfaces, oldAddrs := network.Interfaces, network.InterfaceAddrs
 	network.Interfaces = func() ([]net.Interface, error) {
-		return []net.Interface{{Index: 1, Name: "wsl", Flags: net.FlagUp}}, nil
+		return []net.Interface{{Index: 1, Name: "wsl", Flags: net.FlagUp | net.FlagRunning}}, nil
 	}
 	network.InterfaceAddrs = func(net.Interface) ([]net.Addr, error) {
 		return []net.Addr{&net.IPNet{IP: net.ParseIP("172.20.0.2"), Mask: net.CIDRMask(16, 32)}}, nil
