@@ -6,6 +6,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"agent-overflow/internal/remotejobs"
 	"agent-overflow/internal/store"
 )
 
@@ -29,9 +30,11 @@ func (o remoteResultOptions) validate() error {
 
 type remoteMCPResult struct {
 	RemoteCommand
-	ComputerID          string `json:"computerId"`
-	RetainedOutputBytes int    `json:"retainedOutputBytes"`
-	OmittedOutputBytes  int    `json:"omittedOutputBytes"`
+	ComputerID          string              `json:"computerId"`
+	RetainedOutputBytes int64               `json:"retainedOutputBytes"`
+	OmittedOutputBytes  int64               `json:"omittedOutputBytes"`
+	Log                 *remotejobs.LogInfo `json:"log,omitempty"`
+	Notification        string              `json:"notification,omitempty"`
 }
 
 func remoteResult(computerID string, command RemoteCommand, options remoteResultOptions) remoteMCPResult {
@@ -46,7 +49,7 @@ func remoteResult(computerID string, command RemoteCommand, options remoteResult
 		start++
 	}
 	command.Output = command.Output[start:]
-	return remoteMCPResult{RemoteCommand: command, ComputerID: computerID, RetainedOutputBytes: retained, OmittedOutputBytes: start}
+	return remoteMCPResult{RemoteCommand: command, ComputerID: computerID, RetainedOutputBytes: int64(retained), OmittedOutputBytes: int64(start)}
 }
 
 func (a *App) waitRemoteResult(ctx context.Context, computerID string, command RemoteCommand, options remoteResultOptions) (remoteMCPResult, error) {
@@ -62,13 +65,13 @@ func (a *App) waitRemoteResult(ctx context.Context, computerID string, command R
 				if ctx.Err() != nil {
 					return remoteMCPResult{}, ctx.Err()
 				}
-				return remoteResult(computerID, command, options), nil
+				return a.remoteResultWithLog(ctx, computerID, command, options), nil
 			case <-timer.C:
 				next, err := a.AgentRemoteStatus(wait, computerID, command.ID)
 				if err != nil {
 					// A bounded wait ending is not failure of the accepted command.
 					if wait.Err() != nil && ctx.Err() == nil {
-						return remoteResult(computerID, command, options), nil
+						return a.remoteResultWithLog(ctx, computerID, command, options), nil
 					}
 					return remoteMCPResult{}, err
 				}
@@ -78,5 +81,37 @@ func (a *App) waitRemoteResult(ctx context.Context, computerID string, command R
 			}
 		}
 	}
-	return remoteResult(computerID, command, options), nil
+	return a.remoteResultWithLog(ctx, computerID, command, options), nil
+}
+
+// Old peers keep their inline tail. Disk metadata is additive and a log read
+// failure must never turn successful command acceptance into a run failure.
+func (a *App) remoteResultWithLog(ctx context.Context, computerID string, command RemoteCommand, options remoteResultOptions) remoteMCPResult {
+	result := remoteResult(computerID, command, options)
+	if w, err := a.store.GetRemoteWatch(computerID, command.ID); err == nil {
+		result.Notification = w.Notification
+	}
+	if a.backends == nil {
+		return result
+	}
+	budget := defaultRemoteOutputBytes
+	if options.MaxOutputBytes != nil {
+		budget = *options.MaxOutputBytes
+	}
+	call, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	var chunk RemoteLogChunk
+	if err := a.backends.CallAgentPeer(call, computerID, "RemoteCommandReadLog", &chunk, command.ID, int64(-1), max(1, budget)); err != nil {
+		return result
+	}
+	result.Log = &chunk.LogInfo
+	if !chunk.Expired {
+		// JSON replaces incomplete/binary UTF-8 bytes, which can expand the
+		// decoded text. Apply the reply budget after that wire conversion too.
+		result.Output = remoteResult(computerID, RemoteCommand{Output: chunk.Text}, options).Output
+		result.Truncated = chunk.Truncated
+		result.RetainedOutputBytes = chunk.RetainedBytes
+		result.OmittedOutputBytes = max(0, chunk.RetainedBytes-int64(len(result.Output)))
+	}
+	return result
 }

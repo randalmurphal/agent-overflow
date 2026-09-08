@@ -16,6 +16,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2629313140: 'home', // AddBackend
 	1158138718: 'selected', // AgentRemoteCancel
 	925837602: 'selected', // AgentRemoteComputers
+	2421300190: 'selected', // AgentRemoteFetchArtifact
 	1273975760: 'selected', // AgentRemoteStart
 	1365876070: 'selected', // AgentRemoteStatus
 	4007046465: 'selected', // AllowPreviewPort
@@ -43,6 +44,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	812773075: 'home', // CancelSSHConnection
 	3773103567: 'selected', // CancelServiceUpdate
 	2562316972: 'selected', // CancelSessionImport
+	378941854: 'thread', // CancelThreadRemoteCommand
 	930267104: 'thread', // CancelThreadTransfer
 	2347956003: 'home', // CheckForUpdate
 	2932719708: 'thread', // CheckThreadImportUpdates
@@ -223,6 +225,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2176447381: 'all', // ListThreadGroups
 	245278513: 'thread', // ListThreadMcpServers
 	2485050629: 'thread', // ListThreadProposedPlans
+	1165681857: 'thread', // ListThreadRemoteCommands
 	4176102096: 'thread', // ListThreadSliceAround
 	1090132042: 'all', // ListThreads
 	2332614075: 'home', // ListWSLDistros
@@ -262,6 +265,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	907422467: 'thread', // ProviderTerminalReplay
 	2998028796: 'thread', // ProviderTerminalResize
 	1382066673: 'thread', // ProviderTerminalSetControl
+	2424974671: 'thread', // ReadThreadRemoteLog
 	2274850917: 'home', // RecheckClaudeAccount
 	227978482: 'home', // RecheckCodexAccount
 	225050321: 'home', // ReconfigureObservability
@@ -274,8 +278,12 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	111779378: 'home', // RegisterOwnDevice
 	2641306153: 'home', // RegisterPushToken
 	1034543696: 'thread', // RegisterQueueItem
+	3940492954: 'selected', // RemoteCommandArtifact
 	235246962: 'selected', // RemoteCommandCancel
+	753690041: 'selected', // RemoteCommandEnvironment
 	3924589370: 'selected', // RemoteCommandProjects
+	859245422: 'selected', // RemoteCommandReadLog
+	2470913686: 'selected', // RemoteCommandSearchLog
 	419612356: 'workspace', // RemoteCommandStart
 	3021549306: 'selected', // RemoteCommandStatus
 	3005272623: 'home', // RemoveBackend

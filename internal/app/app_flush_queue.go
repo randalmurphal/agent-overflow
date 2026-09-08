@@ -752,6 +752,9 @@ type injectedQueueOptions struct {
 	// injector whose bookkeeping outlives the message must settle here rather
 	// than at register time because the queues in between are process memory.
 	onDurable func()
+	// persist atomically transfers an injector’s delivery responsibility to the
+	// ordinary durable queue. Nil uses the standard queue insert.
+	persist func(store.FlushQueueItem) error
 }
 
 // flushQueueSettlement is the dispatch-or-restore hook every queued message
@@ -926,7 +929,11 @@ func (a *App) registerQueueItem(
 	// a visible refusal to queue rather than a message that quietly is not
 	// there tomorrow morning.
 	enqueuedAt := time.Now().UnixMilli()
-	if err := a.store.InsertFlushQueueItem(store.FlushQueueItem{
+	persist := injected.persist
+	if persist == nil {
+		persist = a.store.InsertFlushQueueItem
+	}
+	if err := persist(store.FlushQueueItem{
 		ID:         id,
 		ThreadID:   threadID,
 		SendID:     opts.SendID,

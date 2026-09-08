@@ -65,6 +65,9 @@ func TestAgentRemoteCommandUsesItsOwnPairedIdentityAndSurvivesSourceLoss(t *test
 	}
 	t.Cleanup(backend.app.remoteJobs.Close)
 	thread := uuid.NewString()
+	if err := source.store.CreateThread(store.Thread{ID: thread, Provider: "codex"}); err != nil {
+		t.Fatal(err)
+	}
 	caller := transport.WithCallerScope(ctx, transport.CallerScope{Kind: transport.ScopeKindInteractive, ThreadID: thread, ProjectID: uuid.NewString()})
 	input := AgentRemoteRequest{ComputerID: attached.ID, Workspace: gitapp.WorkspaceRef{ProjectID: project.ID}, Request: remotejobs.Request{ID: uuid.NewString(), SourceThreadID: uuid.NewString(), Argv: []string{"train", "--gpu"}, TimeoutSeconds: 60}}
 	if _, err := source.AgentRemoteStart(caller, input); err == nil {

@@ -9,6 +9,7 @@
   // turn by launch id (`StopCodexSubagent`). Stop All fans out across both.
 
   import {
+    CancelThreadRemoteCommand,
     CleanCodexBackgroundTerminals,
     StopClaudeTask,
     StopCodexSubagent,
@@ -23,6 +24,7 @@
   import {
     isCodexStoppableTask,
     isCodexSubagentTask,
+    trayRemoteJob,
     trayRowStopTarget,
     trayTaskAgentInfo,
     trayTaskLabel,
@@ -32,6 +34,7 @@
   import { openAgentCompanion } from '../../stores/agentPane.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { errString } from '../../utils/errors';
+  import RemoteJobTrayRow from './RemoteJobTrayRow.svelte';
   import BackgroundTaskTrayRow from './BackgroundTaskTrayRow.svelte';
 
   interface Props {
@@ -105,7 +108,8 @@
       ),
   );
   let hasCodexStoppable = $derived(codexSubagentLaunchIDs.length > 0 || hasCodexBackgroundTerminals);
-  let canStopAll = $derived(claudeStoppableTaskIDs.length > 0 || hasCodexStoppable);
+  let remoteTasks = $derived(tasks.filter((task) => task.status === 'running' && trayRemoteJob(task)));
+  let canStopAll = $derived(claudeStoppableTaskIDs.length > 0 || hasCodexStoppable || remoteTasks.length > 0);
 
   let stoppingRows = $state<Set<string>>(new Set());
   let stopAllInFlight = $state(false);
@@ -121,11 +125,15 @@
     if (!threadId) return;
     markStopping(rowId, true);
     try {
-      if (backgroundStop === 'claude-task') {
+      const task = tasks.find((task) => task.rowId === rowId);
+      const remote = task ? trayRemoteJob(task) : null;
+      if (!task) return;
+      if (remote) {
+        await CancelThreadRemoteCommand(threadId, remote.computerId, remote.requestId);
+      } else if (backgroundStop === 'claude-task') {
         await StopClaudeTask(threadId, stopTarget);
       } else if (backgroundStop === 'codex-background-terminals') {
-        const task = tasks.find((candidate) => candidate.rowId === rowId);
-        if (task && isCodexSubagentTask(task)) {
+        if (isCodexSubagentTask(task)) {
           const stopped = await StopCodexSubagent(threadId, stopTarget);
           if (!stopped) addToast('info', 'That subagent had already stopped.');
           return;
@@ -150,29 +158,23 @@
     if (!threadId) return;
     stopAllInFlight = true;
     try {
+      const stops: Promise<unknown>[] = remoteTasks.map((task) => {
+        const remote = trayRemoteJob(task)!;
+        return CancelThreadRemoteCommand(threadId!, remote.computerId, remote.requestId);
+      });
       if (backgroundStop === 'claude-task') {
-        const results = await Promise.allSettled(
-          claudeStoppableTaskIDs.map((id) => StopClaudeTask(threadId!, id)),
-        );
-        for (const r of results) {
-          if (r.status === 'rejected') {
-            addToast('error', `Failed to stop task: ${errString(r.reason)}`);
-          }
-        }
+        stops.push(...claudeStoppableTaskIDs.map((id) => StopClaudeTask(threadId!, id)));
       } else if (backgroundStop === 'codex-background-terminals') {
-        const stops: Promise<unknown>[] = codexSubagentLaunchIDs.map((launchID) =>
+        stops.push(...codexSubagentLaunchIDs.map((launchID) =>
           StopCodexSubagent(threadId!, launchID).then((stopped) => {
             if (!stopped) addToast('info', 'A subagent had already stopped.');
           }),
-        );
-        if (hasCodexBackgroundTerminals) {
-          stops.push(CleanCodexBackgroundTerminals(threadId));
-        }
-        const results = await Promise.allSettled(stops);
-        for (const result of results) {
-          if (result.status === 'rejected') {
-            addToast('error', `Failed to stop task: ${errString(result.reason)}`);
-          }
+        ));
+        if (hasCodexBackgroundTerminals) stops.push(CleanCodexBackgroundTerminals(threadId));
+      }
+      for (const result of await Promise.allSettled(stops)) {
+        if (result.status === 'rejected') {
+          addToast('error', `Failed to stop task: ${errString(result.reason)}`);
         }
       }
     } catch (err) {
@@ -207,16 +209,27 @@
   </div>
   <ul class="flex max-h-56 flex-col gap-1 overflow-y-auto">
     {#each tasks as task (task.rowId)}
+      {@const remote = trayRemoteJob(task)}
       <li>
-        <BackgroundTaskTrayRow
-          {task}
-          {provider}
-          stopTarget={trayRowStopTarget(task, backgroundStop)}
-          isStopping={stoppingRows.has(task.rowId)}
-          onStop={onStopRow}
-          onOpen={pane ? onOpenRow : undefined}
-          onOpenPane={pane ? onOpenPane : undefined}
-        />
+        {#if remote && threadId}
+          <RemoteJobTrayRow
+            {task}
+            job={remote}
+            {threadId}
+            isStopping={stoppingRows.has(task.rowId) || stopAllInFlight}
+            onStop={() => onStopRow(task.rowId, remote.requestId)}
+          />
+        {:else}
+          <BackgroundTaskTrayRow
+            {task}
+            {provider}
+            stopTarget={trayRowStopTarget(task, backgroundStop)}
+            isStopping={stoppingRows.has(task.rowId)}
+            onStop={onStopRow}
+            onOpen={pane ? onOpenRow : undefined}
+            onOpenPane={pane ? onOpenPane : undefined}
+          />
+        {/if}
       </li>
     {/each}
   </ul>

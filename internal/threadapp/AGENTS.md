@@ -69,6 +69,10 @@ What stays in `internal/app`:
   mutation ordering; a partial upload must not delay draft/queue edits or
   publish after deletion. Empty draft deletion uses the same final boundary
   and rechecks emptiness there.
+- `DeletePorts.CheckDelete` runs before cleanup and again under the final
+  mutation lock. Remote-command admission takes that same mutation lock and
+  requires a live, owned thread, so deletion cannot orphan a newly accepted
+  command. Recursive deletion applies the guard to every child.
 - Public metadata reads use `GetOwnedThread`, the same SQL ownership view as
   lists. Internal `Store.GetThread` can still read a retained transfer cache;
   exposing that row would restore a retired owner on reconnect.

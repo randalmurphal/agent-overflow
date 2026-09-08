@@ -180,6 +180,11 @@ func (a *App) ListLiveBackgroundTasks(threadID string) ([]store.Item, error) {
 	if a.triage != nil {
 		items = append(items, a.triage.ListLiveCodexBackgroundTasks(threadID, now, cutoff)...)
 	}
+	remoteItems, err := a.remoteTrayItems(threadID, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	items = append(items, remoteItems...)
 	// Running launches, so no completed diff previews to weigh: the
 	// projection is here to keep the "no item reaches a client
 	// unprojected" rule total, not for the bytes.

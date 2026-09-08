@@ -169,6 +169,13 @@ func (a *App) RemoveBackend(id string) error {
 	if a.backends == nil {
 		return errNoBackendProfiles
 	}
+	unlock := a.remoteStartLocks().Lock("computer:" + id)
+	defer unlock()
+	if pending, err := a.store.HasPendingRemoteWatchesForComputer(id); err != nil {
+		return err
+	} else if pending {
+		return errors.New("This computer has remote commands awaiting completion or confirmation. Stop them from their conversations and wait for confirmation before forgetting the computer. If it is offline, reconnect it first so cancellation remains available.")
+	}
 	if err := a.backends.Remove(id); err != nil {
 		return err
 	}

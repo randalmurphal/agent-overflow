@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/gitapp"
 	"agent-overflow/internal/remotejobs"
+	"agent-overflow/internal/rpcclient"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
 )
@@ -22,7 +24,7 @@ import (
 type RemoteCommandRequest = remotejobs.Request
 type RemoteCommand = store.RemoteJob
 
-func (a *App) initRemoteJobs(st *store.Store) error {
+func (a *App) initRemoteJobs(st *store.Store, dataDir string) error {
 	manager, err := remotejobs.New(a.lifeCtx(), st, remotejobs.ProcessRunner(func() []string {
 		env := os.Environ()
 		out := make([]string, 0, len(env))
@@ -32,7 +34,7 @@ func (a *App) initRemoteJobs(st *store.Store) error {
 			}
 		}
 		return out
-	}))
+	}), remotejobs.Options{LogDir: filepath.Join(dataDir, "remote-jobs")})
 	if err == nil {
 		a.remoteJobs = manager
 	}
@@ -120,30 +122,58 @@ func (a *App) RemoteCommandCancel(ctx context.Context, id string) (RemoteCommand
 //
 //ao:scope terminal:operate
 //ao:route selected
-func (a *App) RemoteCommandProjects() ([]RemoteCommandProject, error) {
+func (a *App) RemoteCommandProjects(ctx context.Context) ([]RemoteCommandProject, error) {
 	rows, err := a.store.ListProjects()
 	if err != nil {
 		return nil, err
 	}
 	out := make([]RemoteCommandProject, 0, len(rows))
+	scan, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
 	for _, row := range rows {
-		out = append(out, RemoteCommandProject{ID: row.ID, Name: row.Name, Path: row.Path})
+		project := RemoteCommandProject{ID: row.ID, Name: row.Name, Path: row.Path}
+		if _, err := os.Lstat(filepath.Join(row.Path, ".git")); err == nil {
+			worktrees, err := a.gitCore().ListWorktreesContext(scan, row.Path)
+			if err != nil {
+				project.WorktreesError = remoteErrorText(remoteOperationError("inspect project worktrees", "", "", err))
+			}
+			for _, worktree := range worktrees {
+				if info, err := os.Stat(worktree.Path); err != nil || !info.IsDir() {
+					continue
+				}
+				_, path, err := a.gitApplication().ResolveWorkspace(gitapp.WorkspaceRef{ProjectID: row.ID, WorkspacePath: worktree.Path})
+				if err == nil {
+					project.Worktrees = append(project.Worktrees, RemoteCommandWorktree{Path: path, Branch: worktree.Branch, HEAD: worktree.HEAD})
+				}
+			}
+		}
+		out = append(out, project)
 	}
 	return out, nil
 }
 
 type RemoteCommandProject struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Path string `json:"path"`
+	ID             string                  `json:"id"`
+	Name           string                  `json:"name"`
+	Path           string                  `json:"path"`
+	Worktrees      []RemoteCommandWorktree `json:"worktrees,omitempty"`
+	WorktreesError string                  `json:"worktreesError,omitempty"`
+}
+
+type RemoteCommandWorktree struct {
+	Path   string `json:"path"`
+	Branch string `json:"branch,omitempty"`
+	HEAD   string `json:"head,omitempty"`
 }
 
 type AgentComputer struct {
-	ID       string                 `json:"id"`
-	Name     string                 `json:"name"`
-	Enabled  bool                   `json:"enabled"`
-	Projects []RemoteCommandProject `json:"projects"`
-	Error    string                 `json:"error,omitempty"`
+	ID               string                    `json:"id"`
+	Name             string                    `json:"name"`
+	Enabled          bool                      `json:"enabled"`
+	Projects         []RemoteCommandProject    `json:"projects"`
+	Error            string                    `json:"error,omitempty"`
+	Environment      *RemoteCommandEnvironment `json:"environment,omitempty"`
+	EnvironmentError string                    `json:"environmentError,omitempty"`
 }
 
 // PairAgentComputer enrolls the selected originating computer with a peer.
@@ -263,6 +293,16 @@ func (a *App) probeAgentComputers(ctx context.Context, rows []AgentComputer) []A
 			defer cancel()
 			if err := a.backends.CallAgentPeer(probe, out[i].ID, "RemoteCommandProjects", &out[i].Projects); err != nil {
 				out[i].Error = remoteErrorText(remoteOperationError("discover", out[i].ID, "", err))
+				return
+			}
+			var environment RemoteCommandEnvironment
+			if err := a.backends.CallAgentPeer(probe, out[i].ID, "RemoteCommandEnvironment", &environment); err == nil {
+				out[i].Environment = &environment
+			} else {
+				var remote *rpcclient.Error
+				if !errors.As(err, &remote) || remote.Code != transport.ErrCodeMethodNotFound {
+					out[i].EnvironmentError = remoteErrorText(remoteOperationError("inspect environment", out[i].ID, "", err))
+				}
 			}
 		}()
 	}
@@ -291,10 +331,45 @@ func (a *App) AgentRemoteStart(ctx context.Context, input AgentRemoteRequest) (R
 	if !entityid.Valid(input.Workspace.ProjectID) {
 		return RemoteCommand{}, errorsx.Public("remote_invalid_project", "project_id must be a destination project UUID from remote_computers.", nil)
 	}
+	if !entityid.Valid(input.ComputerID) {
+		return RemoteCommand{}, errorsx.Public("remote_invalid_computer", "computer_id must be a UUID from remote_computers.", nil)
+	}
+	// Serialize identical network attempts, not threads: a refused attempt must
+	// settle before a retry can become uncertain or accepted under the same ID.
+	unlock, err := a.remoteStartLocks().LockCtx(ctx, input.ComputerID+":"+input.Request.ID)
+	if err != nil {
+		return RemoteCommand{}, err
+	}
+	defer unlock()
+	freshWatch, err := a.registerRemoteWatch(input)
+	if err != nil {
+		return RemoteCommand{}, err
+	}
 	call, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	var result RemoteCommand
 	err = a.backends.CallAgentPeer(call, input.ComputerID, "RemoteCommandStart", &result, input.Workspace, input.Request)
+	if err == nil {
+		if result.ID != input.Request.ID || result.SourceThreadID != scope.ThreadID {
+			return RemoteCommand{}, errorsx.Public("remote_wrong_conversation", "The destination returned a mismatched command receipt; keep the original request ID and check status.", nil)
+		}
+		if saveErr := a.store.ObserveRemoteWatch(input.ComputerID, input.Request.ID, result, "", time.Now().Add(2*time.Second).UnixMilli()); saveErr != nil {
+			return result, saveErr
+		}
+		a.emit(eventchan.ProviderBackgroundTasksChanged, map[string]any{"threadId": scope.ThreadID})
+	}
+	if err != nil {
+		publicErr := remoteOperationError("run", input.ComputerID, input.Request.ID, err)
+		code, _, _ := errorsx.PublicDetails(publicErr)
+		switch code {
+		case "remote_invalid_request", "remote_invalid_project", "remote_project_not_found", "workspace_not_registered", "remote_capacity", "remote_request_conflict", "remote_log_unavailable":
+			if freshWatch {
+				_ = a.store.RefuseRemoteWatch(input.ComputerID, input.Request.ID, remoteErrorText(publicErr))
+			}
+		}
+		return result, publicErr
+	}
+
 	return result, remoteOperationError("run", input.ComputerID, input.Request.ID, err)
 }
 

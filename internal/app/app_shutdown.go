@@ -228,6 +228,7 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// is racing in — close a session the Shutdown closer doesn't know
 	// about. stopIdleSessionReaper is idempotent and blocks until the
 	// goroutine returns.
+	a.remoteWatchWG.Wait()
 	a.stopIdleSessionReaper()
 	record("stop idle session reaper", nil)
 

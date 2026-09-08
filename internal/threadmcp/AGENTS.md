@@ -6,6 +6,8 @@ listener lifecycle; callers own tool definitions, arguments and authorization.
 
 Every POST requires a loopback socket peer, no Origin and application/json.
 OPTIONS receives no CORS permission. Bound bodies and reject trailing JSON.
+The 8 MiB envelope bound includes JSON escaping of a remote tool's 1 MiB
+script; decoded tool arguments retain their own smaller limits.
 Neither tokens nor endpoint URLs belong in errors or logs.
 
 Decode tools/call envelopes with DecodeToolCall, which accepts MCP metadata

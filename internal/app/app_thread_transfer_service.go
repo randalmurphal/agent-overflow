@@ -107,6 +107,11 @@ func (a *App) checkTransferIdle(thread store.Thread) error {
 			return errors.New("Cancel the scheduled wakeup before transferring this conversation.")
 		}
 	}
+	if pending, err := a.store.HasPendingRemoteWatches(thread.ID); err != nil {
+		return err
+	} else if pending {
+		return errors.New("Let remote commands finish and their completion messages reach this conversation before transferring it. Their execution and notification ownership stay on this computer.")
+	}
 	running, err := a.store.ListRunningBackgroundToolCalls(thread.ID)
 	if err != nil {
 		return err

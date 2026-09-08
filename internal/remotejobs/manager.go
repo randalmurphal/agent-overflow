@@ -13,6 +13,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +34,9 @@ type Request struct {
 	SourceThreadID string   `json:"sourceThreadId"`
 	Argv           []string `json:"argv"`
 	TimeoutSeconds int      `json:"timeoutSeconds"`
+	Script         string   `json:"script,omitempty"`
+	Interpreter    []string `json:"interpreter,omitempty"`
+	Unlimited      bool     `json:"unlimited,omitempty"`
 }
 
 type Run func(context.Context, string, []string, io.Writer) (int, error)
@@ -40,12 +44,14 @@ type Run func(context.Context, string, []string, io.Writer) (int, error)
 type liveJob struct {
 	receipt  store.RemoteJob
 	tail     *procutil.TailBuffer
+	output   *jobLog
 	cancel   context.CancelFunc
 	finished bool
 }
 
 type Manager struct {
 	store  *store.Store
+	logs   *logStore
 	ctx    context.Context
 	cancel context.CancelFunc
 	run    Run
@@ -58,15 +64,26 @@ type Manager struct {
 // New repairs previous accepted work before accepting anything. The owner
 // calls Close before closing SQLite. run is mandatory so test fixtures cannot
 // accidentally select a real executable from the developer's PATH.
-func New(parent context.Context, st *store.Store, run Run) (*Manager, error) {
+func New(parent context.Context, st *store.Store, run Run, options ...Options) (*Manager, error) {
 	if st == nil || run == nil {
 		return nil, errors.New("remote command: store and process runner are required")
 	}
 	if err := st.RecoverRemoteJobs(); err != nil {
 		return nil, err
 	}
+	var option Options
+	if len(options) > 1 {
+		return nil, errors.New("remote command: only one options value is allowed")
+	}
+	if len(options) == 1 {
+		option = options[0]
+	}
+	logs, err := newLogStore(option)
+	if err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithCancel(parent)
-	return &Manager{store: st, ctx: ctx, cancel: cancel, run: run, jobs: make(map[string]*liveJob)}, nil
+	return &Manager{store: st, logs: logs, ctx: ctx, cancel: cancel, run: run, jobs: make(map[string]*liveJob)}, nil
 }
 
 // ProcessRunner uses the same process-group and bounded-output primitives as
@@ -95,24 +112,37 @@ func Validate(request Request) error {
 		message = "request_id must be a UUID chosen before calling remote_run. Reuse it only for an identical retry."
 	case !entityid.Valid(request.SourceThreadID):
 		message = "The source conversation identity is invalid. Reopen the conversation before running a command."
-	case len(request.Argv) == 0 || request.Argv[0] == "":
-		message = "argv must contain an executable followed by its arguments. Shell syntax requires an explicit shell such as sh -c."
-	case len(request.Argv) > 256:
-		message = "argv allows at most 256 entries. Put a larger command in a script on the destination."
-	case request.TimeoutSeconds < 1 || request.TimeoutSeconds > MaxTimeoutSeconds:
-		message = "timeout_seconds must be between 1 and 604800 (seven days). It limits the job, independently of wait_seconds."
+	case request.Unlimited && request.TimeoutSeconds != 0:
+		message = "unlimited requires timeout_seconds: 0. Otherwise use a bounded timeout without unlimited."
+	case !request.Unlimited && (request.TimeoutSeconds < 1 || request.TimeoutSeconds > MaxTimeoutSeconds):
+		message = "timeout_seconds must be between 1 and 604800 (seven days), or use unlimited with timeout_seconds: 0. It limits the job independently of wait_seconds."
+	case request.Script != "" && (len(request.Argv) > 0 || len(request.Interpreter) == 0 || request.Interpreter[0] == ""):
+		message = "script requires an explicit interpreter argv and cannot be combined with argv. The script file path is appended to the interpreter arguments."
+	case request.Script == "" && len(request.Interpreter) > 0:
+		message = "interpreter requires script. Use argv for ordinary executable arguments."
+	case request.Script == "" && (len(request.Argv) == 0 || request.Argv[0] == ""):
+		message = "argv must contain an executable followed by its arguments, or provide script and interpreter. Shell syntax requires an explicit shell such as sh -c."
+	case len(request.Script) > 1<<20 || strings.ContainsRune(request.Script, 0):
+		message = "script must be at most 1 MiB and cannot contain NUL bytes."
 	}
 	if message != "" {
 		return errorsx.Public("remote_invalid_request", message, nil)
 	}
+	argv := request.Argv
+	if request.Script != "" {
+		argv = request.Interpreter
+	}
+	if len(argv) > 256 {
+		return errorsx.Public("remote_invalid_request", "argv or interpreter allows at most 256 entries. Use script for a longer command.", nil)
+	}
 	bytes := 0
-	for _, arg := range request.Argv {
+	for _, arg := range argv {
 		bytes += len(arg)
 		if strings.ContainsRune(arg, 0) {
-			return errorsx.Public("remote_invalid_request", "argv cannot contain NUL bytes. Remove them before retrying.", nil)
+			return errorsx.Public("remote_invalid_request", "argv and interpreter cannot contain NUL bytes. Remove them before retrying.", nil)
 		}
 		if bytes > 64<<10 {
-			return errorsx.Public("remote_invalid_request", "argv exceeds 64 KiB. Save a script on the destination and invoke its path instead.", nil)
+			return errorsx.Public("remote_invalid_request", "argv or interpreter exceeds 64 KiB. Use script and interpreter for long commands.", nil)
 		}
 	}
 	return nil
@@ -123,6 +153,7 @@ func (m *Manager) Start(ownerID, projectID, workspace string, request Request) (
 		return store.RemoteJob{}, err
 	}
 	request.Argv = append([]string(nil), request.Argv...)
+	request.Interpreter = append([]string(nil), request.Interpreter...)
 	encoded, _ := json.Marshal(struct {
 		Request            Request
 		Project, Workspace string
@@ -149,23 +180,41 @@ func (m *Manager) Start(ownerID, projectID, workspace string, request Request) (
 	if len(m.jobs) >= MaxActive {
 		return store.RemoteJob{}, errorsx.Public("remote_capacity", fmt.Sprintf("All %d remote command slots are busy. Wait for a job to finish or cancel one of this conversation’s jobs, then retry with the same request_id.", MaxActive), nil)
 	}
+	output, err := m.logs.create(request.ID)
+	if err != nil {
+		return store.RemoteJob{}, errorsx.Public("remote_log_unavailable", "The destination could not reserve command log storage. No command was started. Free disk space or wait for active jobs, then retry with the same request_id.", err)
+	}
 	receipt, fresh, err := m.store.AcceptRemoteJob(store.RemoteJob{ID: request.ID, OwnerID: ownerID, Fingerprint: fingerprint,
 		SourceThreadID: request.SourceThreadID, ProjectID: projectID, Workspace: workspace})
 	if err != nil || !fresh {
+		m.logs.finish(request.ID)
+		_ = os.Remove(filepath.Join(m.logs.options.LogDir, request.ID+".log"))
 		return receipt, err
 	}
-	ctx, cancel := context.WithTimeout(m.ctx, time.Duration(request.TimeoutSeconds)*time.Second)
-	job := &liveJob{receipt: receipt, tail: procutil.NewTailBuffer(store.RemoteJobOutputLimit), cancel: cancel}
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if request.Unlimited {
+		ctx, cancel = context.WithCancel(m.ctx)
+	} else {
+		ctx, cancel = context.WithTimeout(m.ctx, time.Duration(request.TimeoutSeconds)*time.Second)
+	}
+	job := &liveJob{receipt: receipt, tail: procutil.NewTailBuffer(store.RemoteJobOutputLimit), output: output, cancel: cancel}
 	m.jobs[request.ID] = job
 	m.wg.Add(1)
-	go m.execute(ctx, job, request.Argv)
+	go m.execute(ctx, job, request)
 	return receipt, nil
 }
 
-func (m *Manager) execute(ctx context.Context, job *liveJob, argv []string) {
+func (m *Manager) execute(ctx context.Context, job *liveJob, request Request) {
 	defer m.wg.Done()
 	defer job.cancel()
-	code, err := m.run(ctx, job.receipt.Workspace, argv, job.tail)
+	argv, cleanup, err := m.command(request)
+	code := -1
+	if err == nil {
+		code, err = m.run(ctx, job.receipt.Workspace, argv, io.MultiWriter(job.tail, job.output))
+		cleanup()
+	}
+	m.logs.finish(job.receipt.ID)
 	if err != nil {
 		log.Printf("remote command %s failed: %v", job.receipt.ID, err)
 	}
@@ -198,7 +247,10 @@ func (m *Manager) execute(ctx context.Context, job *liveJob, argv []string) {
 			receipt.State, receipt.Error = "interrupted", "The computer stopped before this command finished."
 		}
 	}
-	receipt.Output, receipt.Truncated = job.tail.String(), job.tail.Truncated()
+	receipt.Output = job.tail.String()
+	job.output.mu.Lock()
+	receipt.Truncated = job.output.info(receipt.ID).Truncated
+	job.output.mu.Unlock()
 	job.receipt, job.finished = receipt, true
 	m.mu.Unlock()
 	// A transient writer failure retains the completed result and its slot.
@@ -230,7 +282,10 @@ func (m *Manager) execute(ctx context.Context, job *liveJob, argv []string) {
 func (m *Manager) snapshotLocked(receipt store.RemoteJob) store.RemoteJob {
 	if live := m.jobs[receipt.ID]; live != nil {
 		receipt = live.receipt
-		receipt.Output, receipt.Truncated = live.tail.String(), live.tail.Truncated()
+		receipt.Output = live.tail.String()
+		live.output.mu.Lock()
+		receipt.Truncated = live.output.info(receipt.ID).Truncated
+		live.output.mu.Unlock()
 	}
 	return receipt
 }
@@ -278,4 +333,38 @@ func (m *Manager) Close() {
 	m.cancel()
 	m.mu.Unlock()
 	m.wg.Wait()
+	if m.logs.temporary {
+		_ = os.RemoveAll(m.logs.options.LogDir)
+	}
+}
+
+// Scripts remain exact bytes in a private temporary file. The caller chooses
+// the interpreter and its options; no nested shell interpolation is introduced.
+func (m *Manager) command(request Request) ([]string, func(), error) {
+	if request.Script == "" {
+		return request.Argv, func() {}, nil
+	}
+	pattern := "script-*"
+	switch strings.ToLower(strings.TrimSuffix(filepath.Base(request.Interpreter[0]), ".exe")) {
+	case "pwsh", "powershell":
+		pattern += ".ps1"
+	case "cmd":
+		pattern += ".cmd"
+	}
+	file, err := os.CreateTemp(m.logs.options.LogDir, pattern)
+	if err != nil {
+		return nil, nil, err
+	}
+	cleanup := func() { _ = os.Remove(file.Name()) }
+	_, err = file.WriteString(request.Script)
+	closeErr := file.Close()
+	if err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		cleanup()
+		return nil, nil, err
+	}
+	argv := append(append([]string(nil), request.Interpreter...), file.Name())
+	return argv, cleanup, nil
 }

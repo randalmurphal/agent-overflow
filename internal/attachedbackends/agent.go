@@ -85,7 +85,7 @@ func (m *Manager) CallAgentPeer(ctx context.Context, id, method string, result a
 		return errorsx.Public("remote_invalid_computer", "computer_id must be a computer UUID from remote_computers.", nil)
 	}
 	switch method {
-	case "RemoteCommandStart", "RemoteCommandStatus", "RemoteCommandCancel", "RemoteCommandProjects":
+	case "RemoteCommandStart", "RemoteCommandStatus", "RemoteCommandCancel", "RemoteCommandProjects", "RemoteCommandEnvironment", "RemoteCommandReadLog", "RemoteCommandSearchLog", "RemoteCommandArtifact":
 	default:
 		return errors.New("this method is not available to agent commands")
 	}
@@ -93,7 +93,7 @@ func (m *Manager) CallAgentPeer(ctx context.Context, id, method string, result a
 	if err != nil {
 		return err
 	}
-	if !access[id] && method != "RemoteCommandStatus" && method != "RemoteCommandCancel" {
+	if !access[id] && method != "RemoteCommandStatus" && method != "RemoteCommandCancel" && method != "RemoteCommandReadLog" && method != "RemoteCommandSearchLog" && method != "RemoteCommandArtifact" {
 		return errorsx.Public("remote_access_disabled", "Agent commands are not enabled for this computer. Ask the user to enable the destination in Remote access → Agent access on the originating computer.", nil)
 	}
 	return m.callAgentPeer(ctx, id, method, result, params...)

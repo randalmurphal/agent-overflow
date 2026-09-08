@@ -79,3 +79,32 @@ func TestDeleteTreeContinuesCleanupButPreservesRowOnFailure(t *testing.T) {
 		t.Fatalf("row deleted after failed cleanup: %v", err)
 	}
 }
+
+func TestDeleteTreeRechecksAdmissionBeforeRemovingFiles(t *testing.T) {
+	service, database, _ := newServiceFixture(t)
+	thread, err := service.Create(CreateOptions{ProjectID: "project"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admitted := false
+	busy := errors.New("remote command admitted during cleanup")
+	err = service.DeleteTree(thread.ID, false, DeletePorts{
+		CheckDelete: func(string) error {
+			if admitted {
+				return busy
+			}
+			return nil
+		},
+		StopSession: func(string) error { admitted = true; return nil },
+		CleanupAttachments: func(string) error {
+			t.Fatal("removed files belonging to newly admitted remote work")
+			return nil
+		},
+	})
+	if !errors.Is(err, busy) {
+		t.Fatalf("deletion error: %v", err)
+	}
+	if _, err := database.GetThread(thread.ID); err != nil {
+		t.Fatalf("deleted source of newly admitted remote work: %v", err)
+	}
+}

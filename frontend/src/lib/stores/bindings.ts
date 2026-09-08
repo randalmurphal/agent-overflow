@@ -474,6 +474,8 @@ export {
   UnsubscribePRUpdates,
   SetPRUpdatesActive,
   ListLiveBackgroundTasks,
+  CancelThreadRemoteCommand,
+  ReadThreadRemoteLog,
   GetWorkspaceActivity,
   GetThreadItem,
   GetThreadUserMessageTicks,

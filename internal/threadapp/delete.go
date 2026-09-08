@@ -13,6 +13,7 @@ import (
 // root-owned live processes and filesystem resources. Each callback is one
 // capability; there is no App-shaped host hidden behind the service.
 type DeletePorts struct {
+	CheckDelete             func(threadID string) error
 	CleanProviderBackground func(store.Thread) error
 	StopSession             func(threadID string) error
 	CancelWorktreeSetup     func(threadID string)
@@ -49,6 +50,11 @@ func (s *Service) DeleteTree(threadID string, subtreeLocksHeld bool, ports Delet
 	}
 	threadFound := threadErr == nil
 
+	if ports.CheckDelete != nil {
+		if err := ports.CheckDelete(threadID); err != nil {
+			return err
+		}
+	}
 	var errs []error
 	children, err := database.ListChildThreads(threadID)
 	if err != nil {
@@ -99,6 +105,11 @@ func (s *Service) DeleteTree(threadID string, subtreeLocksHeld bool, ports Delet
 	// and final deletion, after provider/process cleanup has finished.
 	unlockMutation := s.mutations.Lock(threadID)
 	defer unlockMutation()
+	if ports.CheckDelete != nil {
+		if err := ports.CheckDelete(threadID); err != nil {
+			return err
+		}
+	}
 	if ports.CleanupAttachments != nil {
 		if err := ports.CleanupAttachments(threadID); err != nil {
 			errs = append(errs, fmt.Errorf("cleanup attachments: %w", err))

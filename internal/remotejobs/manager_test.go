@@ -158,7 +158,7 @@ func TestBoundedSlotsAndOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Output) != store.RemoteJobOutputLimit || !strings.HasSuffix(got.Output, "tail") || !got.Truncated {
+	if len(got.Output) != store.RemoteJobOutputLimit || !strings.HasSuffix(got.Output, "tail") || got.Truncated {
 		t.Fatalf("tail: %d %v", len(got.Output), got.Truncated)
 	}
 }

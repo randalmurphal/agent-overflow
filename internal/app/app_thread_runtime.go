@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -185,6 +186,16 @@ func (a *App) deleteThreadTreeWithSubtreeLocksHeld(threadID string) error {
 
 func (a *App) threadDeletePorts() threadapp.DeletePorts {
 	return threadapp.DeletePorts{
+		CheckDelete: func(threadID string) error {
+			active, err := a.store.HasUnfinishedRemoteWatches(threadID)
+			if err != nil {
+				return err
+			}
+			if active {
+				return errors.New("Stop this conversation’s remote commands and wait for confirmation before deleting it. They run independently on the other computer.")
+			}
+			return nil
+		},
 		CleanProviderBackground: a.cleanThreadProviderBackground,
 		StopSession:             a.stopSession,
 		CancelWorktreeSetup:     a.cancelThreadWorktreeSetup,

@@ -317,3 +317,14 @@ keep their identity and provenance with output cleared and truncation marked.
 Personal enrollment indexes (v90): `idx_own_device_sessions_key` indexes member
 revocation, and `idx_pairing_introduction_key` finds restricted invitations for
 bounded replacement without scanning unrelated pairing history.
+
+## Remote completion watches (v91)
+
+`remote_watches` keys `(computer_id, request_id)` on the source, with immutable
+`thread_id`, request `fingerprint`, label and creation time; bounded receipt
+metadata (no output), connection error, `next_check`, and notification ownership
+(`pending`, `queued`, `dismissed`). `idx_remote_watches_pending` schedules only
+outstanding jobs; `idx_remote_watches_thread` supports conversation discovery.
+Acceptance tracking precedes the network call. Completion handoff atomically
+inserts `flush_queue_items` and marks the watch queued. It is excluded from
+history restore so snapshots cannot revive notification delivery.

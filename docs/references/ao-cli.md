@@ -117,5 +117,7 @@ reuse the same ID and exact arguments. `remote cancel` takes the same selectors.
 Agent access is opt-in at the originating computer, and phases also need the
 `remote-commands` grant. Status/cancel belongs to the initiating conversation.
 Jobs outlive frontend loss. Backend shutdown interrupts them; restart never
-reruns them. Output is the last 128 KiB; retention keeps 128 finished tails,
+reruns them. The compatibility CLI output is the last 128 KiB; SQLite keeps 128 finished tails,
 while accepted IDs remain to prevent old retries from executing again.
+
+Remote MCP agents additionally have durable disk-log read/search and artifact tools; see [remote-commands.md](../architecture/remote-commands.md).

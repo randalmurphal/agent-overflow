@@ -185,6 +185,19 @@ row whenever a background task outlived its turn.
 Call `createActivityRailHost` from component init (the clock uses runes),
 `mount()` from `onMount`, and dispose its return value in `onDestroy`.
 
+## Remote jobs share the background tray
+
+`remote_command` rows are receipt projections from `ListLiveBackgroundTasks`,
+not provider tools or timeline items. `trayRemoteJob` separates their ownership:
+per-row Stop and Stop All call `CancelThreadRemoteCommand` with the source
+thread and destination receipt, never provider terminal/task controls. Opening
+one reads a bounded log tail lazily; closing/unmounting releases its text and
+invalidates late reads. The tray snapshot rehydrates on its owning backend’s
+connection edges and relevant transport gaps; retiring a connection invalidates
+its pending read without clearing the last snapshot. No full-log hydration or
+per-row polling. Completions
+follow ordinary queue/chat presentation and the tray's existing retention.
+
 ## The working indicator is stepped, not animated
 
 `WorkingSprite.svelte` translates a horizontal strip PNG inside a

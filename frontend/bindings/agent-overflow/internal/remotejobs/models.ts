@@ -5,6 +5,143 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
+export class LogChunk {
+    "requestId": string;
+    "totalBytes": number;
+    "startOffset": number;
+    "retainedBytes": number;
+    "truncated": boolean;
+    "expired": boolean;
+    "error"?: string;
+    "offset": number;
+    "nextOffset": number;
+    "text": string;
+
+    /** Creates a new LogChunk instance. */
+    constructor($$source: Partial<LogChunk> = {}) {
+        if (!("requestId" in $$source)) {
+            this["requestId"] = "";
+        }
+        if (!("totalBytes" in $$source)) {
+            this["totalBytes"] = 0;
+        }
+        if (!("startOffset" in $$source)) {
+            this["startOffset"] = 0;
+        }
+        if (!("retainedBytes" in $$source)) {
+            this["retainedBytes"] = 0;
+        }
+        if (!("truncated" in $$source)) {
+            this["truncated"] = false;
+        }
+        if (!("expired" in $$source)) {
+            this["expired"] = false;
+        }
+        if (!("offset" in $$source)) {
+            this["offset"] = 0;
+        }
+        if (!("nextOffset" in $$source)) {
+            this["nextOffset"] = 0;
+        }
+        if (!("text" in $$source)) {
+            this["text"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new LogChunk instance from a string or object.
+     */
+    static createFrom($$source: any = {}): LogChunk {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new LogChunk($$parsedSource as Partial<LogChunk>);
+    }
+}
+
+export class LogMatch {
+    "offset": number;
+    "text": string;
+
+    /** Creates a new LogMatch instance. */
+    constructor($$source: Partial<LogMatch> = {}) {
+        if (!("offset" in $$source)) {
+            this["offset"] = 0;
+        }
+        if (!("text" in $$source)) {
+            this["text"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new LogMatch instance from a string or object.
+     */
+    static createFrom($$source: any = {}): LogMatch {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new LogMatch($$parsedSource as Partial<LogMatch>);
+    }
+}
+
+export class LogSearch {
+    "requestId": string;
+    "totalBytes": number;
+    "startOffset": number;
+    "retainedBytes": number;
+    "truncated": boolean;
+    "expired": boolean;
+    "error"?: string;
+    "matches": LogMatch[];
+    "nextOffset": number;
+    "done": boolean;
+
+    /** Creates a new LogSearch instance. */
+    constructor($$source: Partial<LogSearch> = {}) {
+        if (!("requestId" in $$source)) {
+            this["requestId"] = "";
+        }
+        if (!("totalBytes" in $$source)) {
+            this["totalBytes"] = 0;
+        }
+        if (!("startOffset" in $$source)) {
+            this["startOffset"] = 0;
+        }
+        if (!("retainedBytes" in $$source)) {
+            this["retainedBytes"] = 0;
+        }
+        if (!("truncated" in $$source)) {
+            this["truncated"] = false;
+        }
+        if (!("expired" in $$source)) {
+            this["expired"] = false;
+        }
+        if (!("matches" in $$source)) {
+            this["matches"] = [];
+        }
+        if (!("nextOffset" in $$source)) {
+            this["nextOffset"] = 0;
+        }
+        if (!("done" in $$source)) {
+            this["done"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new LogSearch instance from a string or object.
+     */
+    static createFrom($$source: any = {}): LogSearch {
+        const $$createField7_0 = $$createType1;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("matches" in $$parsedSource) {
+            $$parsedSource["matches"] = $$createField7_0($$parsedSource["matches"]);
+        }
+        return new LogSearch($$parsedSource as Partial<LogSearch>);
+    }
+}
+
 /**
  * Request names exact argv, never shell text to interpolate. Explicitly using
  * a shell is possible (e.g. bash -lc), with the same destination authority.
@@ -14,6 +151,9 @@ export class Request {
     "sourceThreadId": string;
     "argv": string[];
     "timeoutSeconds": number;
+    "script"?: string;
+    "interpreter"?: string[];
+    "unlimited"?: boolean;
 
     /** Creates a new Request instance. */
     constructor($$source: Partial<Request> = {}) {
@@ -37,14 +177,20 @@ export class Request {
      * Creates a new Request instance from a string or object.
      */
     static createFrom($$source: any = {}): Request {
-        const $$createField2_0 = $$createType0;
+        const $$createField2_0 = $$createType2;
+        const $$createField5_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("argv" in $$parsedSource) {
             $$parsedSource["argv"] = $$createField2_0($$parsedSource["argv"]);
+        }
+        if ("interpreter" in $$parsedSource) {
+            $$parsedSource["interpreter"] = $$createField5_0($$parsedSource["interpreter"]);
         }
         return new Request($$parsedSource as Partial<Request>);
     }
 }
 
 // Private type creation functions
-const $$createType0 = $Create.Array($Create.Any);
+const $$createType0 = LogMatch.createFrom;
+const $$createType1 = $Create.Array($$createType0);
+const $$createType2 = $Create.Array($Create.Any);

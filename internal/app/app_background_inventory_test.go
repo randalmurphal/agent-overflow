@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -335,7 +336,7 @@ func TestStopThreadBackgroundWorkRoutesThroughTheProviderStopRPC(t *testing.T) {
 		return err == nil && len(inv.Rows) == 1 && inv.Rows[0].StopID == "task-inv-1"
 	})
 
-	stopped, err := app.StopThreadBackgroundWork(thread.ID)
+	stopped, err := app.StopThreadBackgroundWork(context.Background(), thread.ID)
 	if err != nil {
 		t.Fatalf("StopThreadBackgroundWork: %v", err)
 	}
@@ -437,7 +438,7 @@ func TestBackgroundWorkHandleSelectsTheProviderStopTarget(t *testing.T) {
 // rather than silently reporting that nothing was running.
 func TestStopBackgroundWorkItemRefusesAnUnknownKind(t *testing.T) {
 	app := newTestAppWithStore(t)
-	stopped, err := app.stopBackgroundWorkItem(RunningBackgroundWork{
+	stopped, err := app.stopBackgroundWorkItem(context.Background(), RunningBackgroundWork{
 		ThreadID: "t1",
 		Kind:     "somethingElse",
 		StopID:   "handle-1",

@@ -167,7 +167,7 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 	for _, table := range tables {
 		// A history restore cannot revoke a transfer commit. Keep local
 		// ownership/recovery records, including tombstones for deleted rows.
-		if table == "thread_transfers" || table == "thread_transfer_sessions" || table == "remote_jobs" {
+		if table == "thread_transfers" || table == "thread_transfer_sessions" || table == "remote_jobs" || table == "remote_watches" {
 			continue
 		}
 		if _, err := tx.Exec(`DELETE FROM main."` + table + `"`); err != nil {
@@ -175,7 +175,7 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 		}
 	}
 	for _, table := range tables {
-		if table == "thread_transfers" || table == "thread_transfer_sessions" || table == "remote_jobs" {
+		if table == "thread_transfers" || table == "thread_transfer_sessions" || table == "remote_jobs" || table == "remote_watches" {
 			continue
 		}
 		if !srcTables[table] {

@@ -149,7 +149,7 @@ func TestRemoteMCPCommandsCrossPairedTLSAndRespectOwnership(t *testing.T) {
 			Name string `json:"name"`
 		} `json:"tools"`
 	}
-	if err := json.Unmarshal(reply["result"], &tools); err != nil || len(tools.Tools) != 4 {
+	if err := json.Unmarshal(reply["result"], &tools); err != nil || len(tools.Tools) != len(remoteToolDefinitions) {
 		t.Fatalf("tools: %s, %v", reply, err)
 	}
 	id := uuid.NewString()
@@ -281,7 +281,7 @@ func TestRemoteMCPRegistrationAndRowsKeepProvidersAndBrowserSeparate(t *testing.
 func TestRemoteMCPResultBudgetIsExplicitAndUTF8Safe(t *testing.T) {
 	for _, budget := range []int{0, 1, 2, 3, 100} {
 		got := remoteResult("target", RemoteCommand{Output: "aé界z", Truncated: true}, remoteResultOptions{MaxOutputBytes: &budget})
-		if len(got.Output) > budget || !utf8.ValidString(got.Output) || got.RetainedOutputBytes != 7 || got.OmittedOutputBytes+len(got.Output) != 7 || !got.Truncated {
+		if len(got.Output) > budget || !utf8.ValidString(got.Output) || got.RetainedOutputBytes != 7 || got.OmittedOutputBytes+int64(len(got.Output)) != 7 || !got.Truncated {
 			t.Fatalf("budget %d: %#v", budget, got)
 		}
 	}

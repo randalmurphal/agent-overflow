@@ -32,6 +32,12 @@ type FlushQueueItem struct {
 // in-memory register, so a failure here fails the whole enqueue visibly
 // rather than leaving a message whose only copy is process memory.
 func (s *Store) InsertFlushQueueItem(item FlushQueueItem) error {
+	return insertFlushQueueItem(s.db, item)
+}
+
+func insertFlushQueueItem(db interface {
+	Exec(string, ...any) (sql.Result, error)
+}, item FlushQueueItem) error {
 	if strings.TrimSpace(item.ID) == "" {
 		return fmt.Errorf("store: insert flush queue item: id is required")
 	}
@@ -42,7 +48,7 @@ func (s *Store) InsertFlushQueueItem(item FlushQueueItem) error {
 	if len(item.Payload) > 0 {
 		payload = []byte(item.Payload)
 	}
-	if _, err := s.db.Exec(
+	if _, err := db.Exec(
 		`INSERT INTO flush_queue_items (id, thread_id, send_id, message, payload, enqueued_at)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
 		item.ID, item.ThreadID, item.SendID, item.Message, payload, item.EnqueuedAt,

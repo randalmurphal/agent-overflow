@@ -5,6 +5,7 @@
 
 import type { ProviderBackgroundStop } from '../providers/catalog';
 import type { Item } from '../types/models';
+import { parseJsonObject } from './parseJsonObject';
 import { extractClaudeTaskID } from './claudeTaskMeta';
 import { extractCodexProcessID } from './codexProcessMeta';
 import {
@@ -39,6 +40,32 @@ export interface TrayTask {
    * the set (accepted deviation: the tray lists backgrounded ancestry,
    * and a foreground parent is the timeline's to show). */
   depth: number;
+}
+
+export interface RemoteTrayJob {
+  computerId: string;
+  requestId: string;
+  notification: string;
+  error: string;
+  workspace: string;
+}
+
+/** Remote receipts are tray projections, never provider tasks or timeline rows. */
+export function trayRemoteJob(task: TrayTask): RemoteTrayJob | null {
+  const item = task.completion ?? task.launch ?? task.anchor;
+  if (item.toolName !== 'remote_command') return null;
+  const value = parseJsonObject(item.meta)?.remoteJob;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const meta = value as Record<string, unknown>;
+  if (typeof meta.computerId !== 'string' || !meta.computerId
+    || typeof meta.requestId !== 'string' || !meta.requestId) return null;
+  return {
+    computerId: meta.computerId,
+    requestId: meta.requestId,
+    notification: typeof meta.notification === 'string' ? meta.notification : '',
+    error: typeof meta.error === 'string' ? meta.error : '',
+    workspace: typeof meta.workspace === 'string' ? meta.workspace : '',
+  };
 }
 
 /**
@@ -84,6 +111,7 @@ export function isCodexSubagentTask(task: TrayTask): boolean {
  * primitive targets them yet.
  */
 export function isCodexStoppableTask(task: TrayTask): boolean {
+  if (trayRemoteJob(task)) return false;
   if (isCodexSubagentTask(task)) return task.launch !== null;
   return task.launch?.isBackground === true;
 }
@@ -103,7 +131,7 @@ export function trayRowStopTarget(
   task: TrayTask,
   backgroundStop: ProviderBackgroundStop,
 ): string | null {
-  if (task.status !== 'running' || task.launch === null) return null;
+  if (task.status !== 'running' || task.launch === null || trayRemoteJob(task)) return null;
   switch (backgroundStop) {
     case 'claude-task':
       return extractClaudeTaskID(task.launch);

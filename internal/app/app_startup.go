@@ -166,6 +166,7 @@ func (a *App) Start(ctx context.Context) (startErr error) {
 func (a *App) startUnattendedWork() error {
 	a.startOwnDeviceConnections()
 	a.startRemoteMCPRefresh()
+	a.startRemoteWatches()
 	if err := a.startThreadTransfers(); err != nil {
 		return err
 	}
@@ -687,7 +688,7 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	}
 	a.browser.liveEnabled.Store(browserSettings.BrowserEnabled)
 	a.terminals = terminal.NewManager(a.terminalOutputCallback, a.terminalExitCallback)
-	if err := a.initRemoteJobs(st); err != nil {
+	if err := a.initRemoteJobs(st, dbDir); err != nil {
 		return err
 	}
 	attachmentStore, err := attachment.NewStore(attachment.Config{

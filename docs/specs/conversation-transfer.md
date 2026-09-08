@@ -248,3 +248,5 @@ loss; [SQLite documents the distinction](https://sqlite.org/pragma.html#pragma_s
 Unit tests check connection exclusivity and restoration, not physical power-cut
 behavior. Native files, archives and operation markers have their own file and
 directory flush boundaries.
+
+Pending remote-command watches also block transfer: execution remains on the destination and notification ownership remains on the originating computer until handed to the ordinary message queue. The existing queued-work check then applies.

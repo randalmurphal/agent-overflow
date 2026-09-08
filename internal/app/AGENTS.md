@@ -1168,7 +1168,7 @@ provider session and rederive its frozen workflow grant and execution ownership.
 Session close/failure/exit revokes only its own capability; replacement and
 thread-disabled state survive stale cleanup. Destination opt-out refuses starts,
 while status/cancel remain usable for accepted work. The composer MCP toggle
-disables all four tools for that thread. Provider descriptions carry usage;
+disables all remote tools for that thread. Provider descriptions carry usage;
 never append remote CLI guidance to system/developer instructions.
 
 Configuration invalidations coalesce through one lifecycle-owned worker with
@@ -1195,6 +1195,32 @@ ID query argument). Source provenance comes from CallerScope. The source checks
 that status/cancel belongs to that conversation. Workflow phases additionally
 need remote-commands. Context cancellation of a source RPC does not cancel the
 accepted destination process. Stop the job manager before closing SQLite.
+
+Remote discovery reports the execution environment separately from the host OS:
+the Windows launcher executes commands in Linux/WSL. Environment discovery only
+looks up executables; it never launches version probes, initializes GPU drivers,
+or reads provider credentials. Old peers without that optional RPC still return
+projects. Worktree discovery is read-only, bounded by one scan deadline, and
+checks every returned checkout through the same workspace admission boundary as
+execution. A failed optional scan preserves the project and reports its error;
+it must never create, switch, sync, or substitute a checkout.
+
+Remote completion watches register durably before a peer mutation. They never
+rerun a command on reconnect. Per-request locks serialize retry/refusal admission;
+only definite refusals of previously unaccepted attempts release a watch. Late
+status replies cannot regress accepted completion or erase notification ownership.
+Registration shares a short computer fence with forgetting, then the thread
+mutation fence with deletion/transfer; no thread lock spans remote I/O.
+Forgetting waits for pending jobs/notifications so cancellation credentials
+remain available. `QueueRemoteCompletion` atomically inserts a normal
+flush-queue message and transfers delivery ownership; after that, ordinary
+interrupt, provider echo, draft recovery and rollback rules apply. Never add an
+independent notification resend after queue handoff. Delivery and lazy startup
+share the thread action lock with archive/transfer; finished workflow phases
+cannot restart. The background tray projects watches, not fake transcript rows,
+and refreshes on its owning backend’s reconnect/replay gap. Source-only remote
+jobs count in the running inventory even without a provider session. Transfer
+waits for pending remote watches so it cannot abandon notification ownership.
 
 ## Personal device connections
 

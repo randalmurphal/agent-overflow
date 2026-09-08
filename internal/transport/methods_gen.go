@@ -45,6 +45,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "AddBackend", ID: 2629313140, Scope: "host", Route: "home"},                                               // main.App.AddBackend
 	{Name: "AgentRemoteCancel", ID: 1158138718, Scope: "terminal:operate", Route: "selected"},                        // main.App.AgentRemoteCancel
 	{Name: "AgentRemoteComputers", ID: 925837602, Scope: "terminal:operate", Route: "selected"},                      // main.App.AgentRemoteComputers
+	{Name: "AgentRemoteFetchArtifact", ID: 2421300190, Scope: "terminal:operate", Route: "selected"},                 // main.App.AgentRemoteFetchArtifact
 	{Name: "AgentRemoteStart", ID: 1273975760, Scope: "terminal:operate", Route: "selected"},                         // main.App.AgentRemoteStart
 	{Name: "AgentRemoteStatus", ID: 1365876070, Scope: "terminal:operate", Route: "selected"},                        // main.App.AgentRemoteStatus
 	{Name: "AllowPreviewPort", ID: 4007046465, Scope: "access:admin", Route: "selected"},                             // main.App.AllowPreviewPort
@@ -72,6 +73,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "CancelSSHConnection", ID: 812773075, Scope: "host", Route: "home"},                                       // main.App.CancelSSHConnection
 	{Name: "CancelServiceUpdate", ID: 3773103567, Scope: "access:admin", Route: "selected"},                          // main.App.CancelServiceUpdate
 	{Name: "CancelSessionImport", ID: 2562316972, Scope: "threads:operate", Route: "selected"},                       // main.App.CancelSessionImport
+	{Name: "CancelThreadRemoteCommand", ID: 378941854, Scope: "terminal:operate", Route: "thread"},                   // main.App.CancelThreadRemoteCommand
 	{Name: "CancelThreadTransfer", ID: 930267104, Scope: "threads:operate", Route: "thread"},                         // main.App.CancelThreadTransfer
 	{Name: "CheckForUpdate", ID: 2347956003, Scope: "host", Route: "home"},                                           // main.App.CheckForUpdate
 	{Name: "CheckThreadImportUpdates", ID: 2932719708, Scope: "threads:operate", Route: "thread"},                    // main.App.CheckThreadImportUpdates
@@ -252,6 +254,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ListThreadGroups", ID: 2176447381, Scope: "threads:read", Route: "all"},                                  // main.App.ListThreadGroups
 	{Name: "ListThreadMcpServers", ID: 245278513, Scope: "settings:write", Route: "thread"},                          // main.App.ListThreadMcpServers
 	{Name: "ListThreadProposedPlans", ID: 2485050629, Scope: "threads:read", Route: "thread"},                        // main.App.ListThreadProposedPlans
+	{Name: "ListThreadRemoteCommands", ID: 1165681857, Scope: "threads:read", Route: "thread"},                       // main.App.ListThreadRemoteCommands
 	{Name: "ListThreadSliceAround", ID: 4176102096, Scope: "threads:read", Route: "thread"},                          // main.App.ListThreadSliceAround
 	{Name: "ListThreads", ID: 1090132042, Scope: "threads:read", Route: "all"},                                       // main.App.ListThreads
 	{Name: "ListWSLDistros", ID: 2332614075, Scope: "host", Route: "home"},                                           // main.App.ListWSLDistros
@@ -291,6 +294,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ProviderTerminalReplay", ID: 907422467, Scope: "terminal:operate", Route: "thread"},                      // main.App.ProviderTerminalReplay
 	{Name: "ProviderTerminalResize", ID: 2998028796, Scope: "terminal:operate", Route: "thread"},                     // main.App.ProviderTerminalResize
 	{Name: "ProviderTerminalSetControl", ID: 1382066673, Scope: "terminal:operate", Route: "thread"},                 // main.App.ProviderTerminalSetControl
+	{Name: "ReadThreadRemoteLog", ID: 2424974671, Scope: "terminal:operate", Route: "thread"},                        // main.App.ReadThreadRemoteLog
 	{Name: "RecheckClaudeAccount", ID: 2274850917, Scope: "access:admin", Route: "home"},                             // main.App.RecheckClaudeAccount
 	{Name: "RecheckCodexAccount", ID: 227978482, Scope: "access:admin", Route: "home"},                               // main.App.RecheckCodexAccount
 	{Name: "ReconfigureObservability", ID: 225050321, Scope: "host", Route: "home"},                                  // main.App.ReconfigureObservability
@@ -303,8 +307,12 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "RegisterOwnDevice", ID: 111779378, Scope: "session", Route: "home"},                                      // main.App.RegisterOwnDevice
 	{Name: "RegisterPushToken", ID: 2641306153, Scope: "session", Route: "home"},                                     // main.App.RegisterPushToken
 	{Name: "RegisterQueueItem", ID: 1034543696, Scope: "threads:operate", Route: "thread"},                           // main.App.RegisterQueueItem
+	{Name: "RemoteCommandArtifact", ID: 3940492954, Scope: "terminal:operate", Route: "selected"},                    // main.App.RemoteCommandArtifact
 	{Name: "RemoteCommandCancel", ID: 235246962, Scope: "terminal:operate", Route: "selected"},                       // main.App.RemoteCommandCancel
+	{Name: "RemoteCommandEnvironment", ID: 753690041, Scope: "terminal:operate", Route: "selected"},                  // main.App.RemoteCommandEnvironment
 	{Name: "RemoteCommandProjects", ID: 3924589370, Scope: "terminal:operate", Route: "selected"},                    // main.App.RemoteCommandProjects
+	{Name: "RemoteCommandReadLog", ID: 859245422, Scope: "terminal:operate", Route: "selected"},                      // main.App.RemoteCommandReadLog
+	{Name: "RemoteCommandSearchLog", ID: 2470913686, Scope: "terminal:operate", Route: "selected"},                   // main.App.RemoteCommandSearchLog
 	{Name: "RemoteCommandStart", ID: 419612356, Scope: "terminal:operate", Route: "workspace"},                       // main.App.RemoteCommandStart
 	{Name: "RemoteCommandStatus", ID: 3021549306, Scope: "terminal:operate", Route: "selected"},                      // main.App.RemoteCommandStatus
 	{Name: "RemoveBackend", ID: 3005272623, Scope: "host", Route: "home"},                                            // main.App.RemoveBackend

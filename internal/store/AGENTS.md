@@ -2180,3 +2180,17 @@ generation and sponsor key. Confirmation freezes a personal admission's
 generation; a restart may finish that exact approval but must not reinterpret
 it as permission to restore a newer removal. Introductions retire unacknowledged
 orphan sessions on replacement; already-renewed sessions survive.
+
+## Remote completion ownership (v91)
+
+`remote_watches` is source-side coordination, independent of destination
+`remote_jobs`. Registration precedes sending a command and freezes source
+thread/computer/request fingerprint. The `pending` index bounds due monitoring;
+the thread index serves bounded discovery/tray queries. No output is cached here.
+`QueueRemoteCompletion` changes `notification` to `queued` and inserts the ordinary
+flush queue row in one durable transaction. A failed insert rolls both back.
+`queued` means delivery/recovery belongs to the existing queue, not that a model
+read the message. Preserve this table during history restore, like remote job
+acceptance, or an old snapshot can inject completed notifications again.
+Destination full logs live on disk; SQLite's 128 recent inline tails are backward
+compatibility cache, not the full log or its retention authority.

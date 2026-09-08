@@ -20,6 +20,10 @@ import type { ThreadPane } from '../../stores/thread.svelte';
 import { ListLiveBackgroundTasks } from '../../stores/bindings';
 import { onItemUpsert } from '../../stores/eventsItemStream';
 import { wailsEventOn } from '../../stores/wailsEvents';
+import { getTransportStatusFor, onBackendStatusChange } from '../../stores/transportStatus.svelte';
+import { threadBackend } from '../../transport/entityIndex';
+import { backendKeyForOrigin } from '../../transport/backends';
+import { transportGapChannel } from '../../transport/wsClient';
 import type {
   BackgroundTaskStateEvent,
   BackgroundTasksChangedEvent,
@@ -129,6 +133,8 @@ export function createBackgroundController(
         backgroundItems = [];
         return;
       }
+      const owner = threadBackend(id);
+      if (owner !== undefined && getTransportStatusFor(owner).status !== 'connected') return;
       try {
         const items = (await ListLiveBackgroundTasks(id)) as Item[] | null;
         if (!token.isCurrent() || id !== threadId) return;
@@ -208,7 +214,25 @@ export function createBackgroundController(
           refresh.request();
         },
       );
+      // Remote jobs have no timeline rows to incidentally repair this tray.
+      // Recover its own snapshot when its computer reconnects or loses a
+      // relevant event, using the same scheduler and ownership index as RPCs.
+      const cancelStatus = onBackendStatusChange((backend, status) => {
+        if (!threadId || threadBackend(threadId) !== backend) return;
+        refresh.reset();
+        if (status.status === 'connected') refresh.request({ immediate: true });
+      });
+      const cancelGap = wailsEventOn<{ channel: string }>(transportGapChannel, (gap, origin) => {
+        if (!threadId || threadBackend(threadId) !== backendKeyForOrigin(origin.backendId)) return;
+        if (gap?.channel !== 'provider:item_event'
+          && gap?.channel !== 'provider:background_tasks_changed'
+          && gap?.channel !== 'provider:background_task_state') return;
+        refresh.reset();
+        refresh.request({ immediate: true });
+      });
       return () => {
+        cancelStatus();
+        cancelGap();
         cancelItemUpsert();
         cancelBackgroundTasksChanged();
         cancelBackgroundTaskState();

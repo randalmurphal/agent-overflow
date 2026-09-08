@@ -460,7 +460,12 @@ func (c *Core) RemoveWorktreeForce(cwd, path string, force bool) error {
 
 // ListWorktrees returns all worktrees attached to the repository.
 func (c *Core) ListWorktrees(cwd string) ([]Worktree, error) {
-	result, err := c.run(cwd, "worktree", "list", "--porcelain")
+	return c.ListWorktreesContext(context.Background(), cwd)
+}
+
+// ListWorktreesContext allows discovery callers to bound the complete scan.
+func (c *Core) ListWorktreesContext(ctx context.Context, cwd string) ([]Worktree, error) {
+	result, err := c.runSpec(commandSpec{ctx: ctx, binary: "git", cwd: cwd, args: []string{"worktree", "list", "--porcelain"}})
 	if err != nil {
 		return nil, err
 	}

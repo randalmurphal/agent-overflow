@@ -1,11 +1,13 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"sort"
+	"strings"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/slicesx"
@@ -27,6 +29,9 @@ import (
 // terminate anything; the ids are handles into the stop paths that
 // already exist.
 const (
+	// BackgroundWorkRemoteCommand — CancelThreadRemoteCommand; stopId contains
+	// computerId:requestId. Its process belongs to the destination computer.
+	BackgroundWorkRemoteCommand = "remoteCommand"
 	// BackgroundWorkClaudeTask — StopClaudeTask(threadId, stopId),
 	// where stopId is the Claude `task_id`. Empty on claude-tui
 	// launches: that provider never reconstructs `system/task_started`,
@@ -59,9 +64,8 @@ type RunningBackgroundWork struct {
 	// it goes through StopThreadBackgroundWork or the session itself.
 	Kind   string `json:"kind"`
 	StopID string `json:"stopId,omitempty"`
-	// ItemID is the timeline row, so a client can navigate to the task
-	// rather than only stop it. ParentItemID carries the nesting the
-	// tray indents by.
+	// ItemID identifies the task row. Remote commands are tray-only; provider
+	// tasks also have timeline rows. ParentItemID carries the tray nesting.
 	ItemID       string `json:"itemId"`
 	ParentItemID string `json:"parentItemId,omitempty"`
 	ToolName     string `json:"toolName,omitempty"`
@@ -92,15 +96,9 @@ type BackgroundWorkInventory struct {
 // now, across every thread, oldest first — the answer to "what is this
 // host still carrying" from a client that cannot look at the machine.
 //
-// Scope is the set of threads with a LIVE provider session, and that is
-// the honest domain rather than a shortcut. All three sources of
-// background work are session-bound: a Claude task dies with its
-// process group, a Codex background terminal and a spawned child belong
-// to that thread's app-server, and the transient unified-exec trackers
-// live in the triage router and are dropped when the session ends. A
-// `running` row on a thread with no session is a residue the boot sweep
-// settles, not work in progress; listing it would invite a client to
-// stop something that is not there.
+// Provider-owned tasks are scoped to live provider sessions. Durable remote
+// jobs are independent: their source threads join this set through pending
+// completion watches, even when the source provider is idle or closed.
 //
 // Per thread it calls ListLiveBackgroundTasks — the SAME composition
 // the tray reads, which is the point. That method already unions the
@@ -124,6 +122,20 @@ func (a *App) ListRunningBackgroundWork() (BackgroundWorkInventory, error) {
 	threadIDs := make([]string, 0, len(live))
 	for threadID := range live {
 		threadIDs = append(threadIDs, threadID)
+	}
+	remoteThreads, err := a.store.RemoteWatchThreadIDs()
+	if err != nil {
+		return BackgroundWorkInventory{}, err
+	}
+	seenThreads := make(map[string]bool, len(threadIDs))
+	for _, id := range threadIDs {
+		seenThreads[id] = true
+	}
+	for _, id := range remoteThreads {
+		if !seenThreads[id] {
+			threadIDs = append(threadIDs, id)
+			seenThreads[id] = true
+		}
 	}
 	sort.Strings(threadIDs)
 
@@ -170,7 +182,7 @@ func (a *App) ListRunningBackgroundWork() (BackgroundWorkInventory, error) {
 // not keep the rest alive.
 //
 //ao:scope threads:operate
-func (a *App) StopThreadBackgroundWork(threadID string) (int, error) {
+func (a *App) StopThreadBackgroundWork(ctx context.Context, threadID string) (int, error) {
 	if a.shuttingDown.Load() {
 		return 0, ErrShuttingDown
 	}
@@ -186,7 +198,7 @@ func (a *App) StopThreadBackgroundWork(threadID string) (int, error) {
 	stopped := 0
 	var errs []error
 	for _, row := range rows {
-		ok, err := a.stopBackgroundWorkItem(row)
+		ok, err := a.stopBackgroundWorkItem(ctx, row)
 		if err != nil {
 			errs = append(errs, err)
 			continue
@@ -205,11 +217,18 @@ func (a *App) StopThreadBackgroundWork(threadID string) (int, error) {
 // kind names. Reports whether a task was actually terminated — a row
 // with no handle, or a handle the provider no longer recognizes,
 // stopped nothing and must not be counted as if it had.
-func (a *App) stopBackgroundWorkItem(row RunningBackgroundWork) (bool, error) {
+func (a *App) stopBackgroundWorkItem(ctx context.Context, row RunningBackgroundWork) (bool, error) {
 	if row.StopID == "" {
 		return false, nil
 	}
 	switch row.Kind {
+	case BackgroundWorkRemoteCommand:
+		computerID, requestID, ok := strings.Cut(row.StopID, ":")
+		if !ok {
+			return false, fmt.Errorf("invalid remote job handle")
+		}
+		_, err := a.CancelThreadRemoteCommand(ctx, row.ThreadID, computerID, requestID)
+		return err == nil, err
 	case BackgroundWorkClaudeTask:
 		if err := a.StopClaudeTask(row.ThreadID, row.StopID); err != nil {
 			return false, err
@@ -314,6 +333,18 @@ const statusRunningBackgroundWork = "running"
 // launch id — which is the same branch every existing caller of those
 // RPCs has to make.
 func backgroundWorkHandle(providerName string, item store.Item) (kind, stopID string) {
+	if item.ToolName == "remote_command" {
+		var meta struct {
+			RemoteJob struct {
+				ComputerID string `json:"computerId"`
+				RequestID  string `json:"requestId"`
+			} `json:"remoteJob"`
+		}
+		if json.Unmarshal([]byte(item.Meta), &meta) == nil && meta.RemoteJob.ComputerID != "" && meta.RemoteJob.RequestID != "" {
+			return BackgroundWorkRemoteCommand, meta.RemoteJob.ComputerID + ":" + meta.RemoteJob.RequestID
+		}
+		return BackgroundWorkRemoteCommand, ""
+	}
 	switch providerName {
 	case string(provider.Codex):
 		if item.ToolName == codexSubagentToolName {

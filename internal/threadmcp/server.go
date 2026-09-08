@@ -22,7 +22,10 @@ import (
 )
 
 const mcpProtocolVersion = "2025-03-26"
-const maxMCPRequestBytes = 1 << 20
+
+// A 1 MiB script can expand sixfold in JSON (for example HTML escapes).
+// Tool argument validation still enforces the smaller decoded limits.
+const maxMCPRequestBytes = 8 << 20
 
 type Server[T comparable] struct {
 	name         string
