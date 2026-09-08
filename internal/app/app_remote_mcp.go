@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"sync"
@@ -95,11 +94,8 @@ func (a *App) callRemoteMCP(w http.ResponseWriter, ctx context.Context, req thre
 		threadmcp.WriteToolError(w, req.ID, err)
 		return
 	}
-	var call struct {
-		Name      string          `json:"name"`
-		Arguments json.RawMessage `json:"arguments"`
-	}
-	if err = threadmcp.DecodeArgs(req.Params, &call); err != nil {
+	call, err := threadmcp.DecodeToolCall(req.Params)
+	if err != nil {
 		threadmcp.WriteError(w, req.ID, http.StatusOK, -32602, "invalid tools/call params")
 		return
 	}

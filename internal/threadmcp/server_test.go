@@ -1,6 +1,30 @@
 package threadmcp
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestToolCallEnvelopeAllowsMetadataButArgumentsStayStrict(t *testing.T) {
+	call, err := DecodeToolCall(json.RawMessage(`{"name":"test","arguments":{"path":"file"},"_meta":{"progressToken":3,"callId":"call"},"extension":{"value":true}}`))
+	if err != nil || call.Name != "test" {
+		t.Fatalf("metadata-bearing call: %+v, %v", call, err)
+	}
+	var args struct {
+		Path string `json:"path"`
+	}
+	if err := DecodeArgs(call.Arguments, &args); err != nil || args.Path != "file" {
+		t.Fatalf("arguments: %+v, %v", args, err)
+	}
+	if err := DecodeArgs(json.RawMessage(`{"path":"file","_meta":{}}`), &args); err == nil {
+		t.Fatal("metadata inside tool arguments bypassed the closed schema")
+	}
+	for _, invalid := range []string{`null`, `{}`, `[]`, `{"name":3}`, `{"name":"test"} {}`} {
+		if _, err := DecodeToolCall(json.RawMessage(invalid)); err == nil {
+			t.Errorf("accepted invalid envelope: %s", invalid)
+		}
+	}
+}
 
 func TestJSONContentTypeAllowsParametersAndCasing(t *testing.T) {
 	for _, accepted := range []string{"application/json", "application/json; charset=utf-8", "Application/JSON", " application/json "} {

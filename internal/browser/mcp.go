@@ -49,11 +49,8 @@ func (s *MCPServer) UnregisterThread(threadID string) {
 }
 func (s *MCPServer) handle(w http.ResponseWriter, r *http.Request) { s.ServeHTTP(w, r) }
 func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, req threadmcp.Request, access Access) {
-	var call struct {
-		Name      string          `json:"name"`
-		Arguments json.RawMessage `json:"arguments"`
-	}
-	if err := json.Unmarshal(req.Params, &call); err != nil {
+	call, err := threadmcp.DecodeToolCall(req.Params)
+	if err != nil {
 		threadmcp.WriteError(w, req.ID, http.StatusOK, -32602, "invalid tools/call params")
 		return
 	}
@@ -62,7 +59,6 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 	// JSON payload — never instead of it, so the payload's shape is the same
 	// on every engine.
 	var note string
-	var err error
 	switch call.Name {
 	case "browser_open":
 		var a struct {

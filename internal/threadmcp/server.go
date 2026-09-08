@@ -297,6 +297,21 @@ type Request struct {
 	Params  json.RawMessage `json:"params"`
 }
 
+type ToolCall struct {
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments"`
+}
+
+// MCP envelopes may carry client metadata and protocol extensions. Only the
+// tool's arguments use the closed schema enforced by DecodeArgs.
+func DecodeToolCall(raw json.RawMessage) (ToolCall, error) {
+	var call ToolCall
+	if err := json.Unmarshal(raw, &call); err != nil || call.Name == "" {
+		return ToolCall{}, fmt.Errorf("invalid tools/call params")
+	}
+	return call, nil
+}
+
 func DecodeArgs(raw json.RawMessage, target any) error {
 	if len(raw) == 0 {
 		raw = []byte("{}")

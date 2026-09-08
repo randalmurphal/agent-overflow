@@ -71,7 +71,10 @@ func remoteMCPRequest(t *testing.T, endpoint, method string, params any) (int, m
 
 func remoteMCPCall(t *testing.T, endpoint, name string, args any, wantError bool) json.RawMessage {
 	t.Helper()
-	status, reply := remoteMCPRequest(t, endpoint, "tools/call", map[string]any{"name": name, "arguments": args})
+	status, reply := remoteMCPRequest(t, endpoint, "tools/call", map[string]any{
+		"name": name, "arguments": args,
+		"_meta": map[string]any{"progressToken": 1, "callId": "test-call", "threadId": "provider-thread"},
+	})
 	if status != http.StatusOK || reply["error"] != nil {
 		t.Fatalf("tool response: %d %s", status, reply)
 	}
