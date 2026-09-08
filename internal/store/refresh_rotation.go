@@ -13,6 +13,12 @@ import (
 var (
 	ErrRefreshReuse      = errors.New("store: refresh secret reused for a different renewal")
 	ErrRefreshSuperseded = errors.New("store: refresh renewal already superseded")
+	// ErrRefreshSuccessorTaken: the proposed successor already names a
+	// secret. A client that persisted one successor and presents it beside
+	// an UNSPENT predecessor is proposing a secret that exists, which no
+	// retry of the same pair can ever fix — so it is a refusal, not the
+	// temporary failure a constraint violation would otherwise read as.
+	ErrRefreshSuccessorTaken = errors.New("store: proposed refresh successor already exists")
 )
 
 // RefreshRotation carries digests only. Recoverable means the client chose and
@@ -56,22 +62,32 @@ func (s *Store) RotateRefreshSecret(ctx context.Context, in RefreshRotation) (Re
 	if err != nil {
 		return out, err
 	}
+	// The predecessor must exist, spent or not. A recovery is proven by the
+	// spent predecessor's RECORDED successor matching the proposed one;
+	// without the predecessor there is no receipt, and accepting the
+	// proposed successor on its own would let any copy of the live head
+	// mint access without ever spending it, which is exactly what reuse
+	// detection exists to catch. The pruner keeps a spent predecessor for
+	// as long as its successor is unspent (DeleteRefreshSecretsExpiredBefore).
 	old, err := scanRefreshSecret(tx.QueryRowContext(ctx, `SELECT `+refreshSecretColumns+` FROM refresh_secrets WHERE secret_hash = ?`, in.OldHash))
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err != nil {
 		return out, err
 	}
-	missing := errors.Is(err, sql.ErrNoRows)
-	if !missing && old.SessionID != session.ID {
+	if old.SessionID != session.ID {
 		return out, sql.ErrNoRows
 	}
-	if missing || old.Spent() || old.ExpiresAt <= in.Now {
+	if old.Spent() || old.ExpiresAt <= in.Now {
 		if !in.Recoverable {
-			if !missing && old.Spent() {
+			if old.Spent() {
 				return out, ErrRefreshReuse
 			}
 			return out, sql.ErrNoRows
 		}
-		if !missing && old.Spent() && subtle.ConstantTimeCompare(old.NextSecretHash, in.NextHash) != 1 {
+		if !old.Spent() {
+			// Expired before it was ever spent: nothing to recover.
+			return out, sql.ErrNoRows
+		}
+		if subtle.ConstantTimeCompare(old.NextSecretHash, in.NextHash) != 1 {
 			return out, ErrRefreshReuse
 		}
 		next, err := scanRefreshSecret(tx.QueryRowContext(ctx, `SELECT `+refreshSecretColumns+` FROM refresh_secrets WHERE secret_hash = ?`, in.NextHash))
@@ -95,6 +111,13 @@ func (s *Store) RotateRefreshSecret(ctx context.Context, in RefreshRotation) (Re
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE refresh_secrets SET consumed_at = ?, consumed_by = ?, next_secret_hash = ? WHERE id = ?`, in.Now, in.DeviceID, recorded, old.ID); err != nil {
 			return out, err
+		}
+		var taken int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM refresh_secrets WHERE secret_hash = ?`, in.NextHash).Scan(&taken); err != nil {
+			return out, err
+		}
+		if taken > 0 {
+			return out, ErrRefreshSuccessorTaken
 		}
 		out.Secret = RefreshSecret{ID: uuid.NewString(), SessionID: session.ID, CreatedAt: in.Now, ExpiresAt: in.RefreshUntil}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO refresh_secrets

@@ -44,14 +44,57 @@ func TestRefreshRotationRecoversTheSameCommittedOperation(t *testing.T) {
 	if err != nil || len(secrets) != 2 {
 		t.Fatalf("retry created a generation: %d, %v", len(secrets), err)
 	}
+	// The predecessor has expired, but it is the receipt the recovery is
+	// proven against, so the pruner keeps it while its successor is unspent.
+	if _, err := s.DeleteRefreshSecretsExpiredBefore(in.Now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetRefreshSecretByHash(in.OldHash); err != nil {
+		t.Fatalf("predecessor pruned under a live successor: %v", err)
+	}
+	if recovered, err := s.RotateRefreshSecret(context.Background(), in); err != nil || !recovered.Replayed {
+		t.Fatalf("after prune: %+v, %v", recovered, err)
+	}
+	// Once the successor is spent the receipt has nothing left to prove.
+	next := in
+	next.OldHash, next.NextHash = in.NextHash, bytes.Repeat([]byte{3}, 32)
+	if _, err := s.RotateRefreshSecret(context.Background(), next); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.DeleteRefreshSecretsExpiredBefore(in.Now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.GetRefreshSecretByHash(in.OldHash); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("predecessor not pruned: %v", err)
+		t.Fatalf("predecessor kept after its successor was spent: %v", err)
 	}
-	if recovered, err := s.RotateRefreshSecret(context.Background(), in); err != nil || !recovered.Replayed {
-		t.Fatalf("pruned predecessor: %+v, %v", recovered, err)
+}
+
+// A copy of the live head, presented as the SUCCESSOR beside a predecessor
+// nothing knows, must not recover anything: recovery is proven by the spent
+// predecessor's receipt, never by possession of the successor alone.
+func TestRefreshRotationRefusesAnUnknownPredecessorWhateverTheSuccessor(t *testing.T) {
+	s, in := refreshRotationFixture(t)
+	if _, err := s.RotateRefreshSecret(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	forged := in
+	forged.OldHash = bytes.Repeat([]byte{9}, 32)
+	if _, err := s.RotateRefreshSecret(context.Background(), forged); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("unknown predecessor: %v", err)
+	}
+	head, err := s.GetRefreshSecretByHash(in.NextHash)
+	if err != nil || head.Spent() {
+		t.Fatalf("forged recovery touched the head: %+v, %v", head, err)
+	}
+}
+
+func TestRefreshRotationRefusesATakenSuccessorTerminally(t *testing.T) {
+	s, in := refreshRotationFixture(t)
+	if _, err := s.CreateRefreshSecret(in.SessionID, in.NextHash, 1000, 2000000); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RotateRefreshSecret(context.Background(), in); !errors.Is(err, ErrRefreshSuccessorTaken) {
+		t.Fatalf("taken successor: %v", err)
 	}
 }
 

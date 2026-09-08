@@ -447,9 +447,18 @@ func (s *Store) ListRefreshSecretsForSession(sessionID string) ([]RefreshSecret,
 // Keyed on expiry, never on "consumed": a spent secret inside its window is
 // the reuse detector's only evidence, and deleting it would turn a detected
 // reuse into an unknown credential. Past its expiry it detects nothing a
-// dead credential would not already refuse.
+// dead credential would not already refuse — with one exception. A spent
+// secret whose recorded successor is still unspent is the receipt a
+// recoverable renewal is recovered against (RotateRefreshSecret), and it is
+// the ONLY thing that distinguishes "the device that chose that successor,
+// retrying a lost reply" from "somebody holding a copy of the live head".
+// It stays until the successor is spent or gone; then it goes.
 func (s *Store) DeleteRefreshSecretsExpiredBefore(before int64) (int64, error) {
-	result, err := s.db.Exec(`DELETE FROM refresh_secrets WHERE expires_at < ?`, before)
+	result, err := s.db.Exec(`DELETE FROM refresh_secrets
+        WHERE expires_at < ?
+          AND NOT EXISTS (SELECT 1 FROM refresh_secrets n
+                          WHERE n.secret_hash = refresh_secrets.next_secret_hash
+                            AND n.consumed_at IS NULL)`, before)
 	if err != nil {
 		return 0, fmt.Errorf("store: delete expired refresh secrets: %w", err)
 	}

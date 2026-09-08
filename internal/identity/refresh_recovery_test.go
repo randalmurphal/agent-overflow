@@ -30,6 +30,14 @@ func TestRecoverableRefreshSurvivesLostReplyAndRestart(t *testing.T) {
 	}
 	sessions.now = c.now
 	c.advance(24 * time.Hour)
+	// The predecessor's own window has closed, but the pruner keeps it
+	// while its successor is unspent: it is the receipt the retry is
+	// proven against.
+	sessions.PruneCredentials(0)
+	firstDigest := hashRefreshSecret(first.RefreshSecret)
+	if _, err := st.GetRefreshSecretByHash(firstDigest[:]); err != nil {
+		t.Fatalf("prune dropped the recovery receipt: %v", err)
+	}
 	req.Proof = device.proof(t, "POST", "/auth/token", "retry", c.now())
 	recovered, reason := sessions.Refresh(req)
 	if reason.Refused() {
@@ -116,5 +124,75 @@ func TestSupersededRecoveryDoesNotRevokeNewerState(t *testing.T) {
 	}
 	if _, reason := sessions.Verify(third.Credential); reason.Refused() {
 		t.Fatal("late retry revoked newer state:", reason)
+	}
+}
+
+// A copy of the live head cannot mint access by presenting itself as the
+// SUCCESSOR of a secret nothing issued. Before this held, the recover path
+// looked the proposed successor up when the presented secret was unknown,
+// so any leak of the current head plus a bearer thumbprint renewed without
+// ever spending the head — and reuse detection, which only fires on a
+// spent secret, never saw it.
+func TestRecoveryNeverAdmitsTheLiveHeadAsAProposedSuccessor(t *testing.T) {
+	sessions, st, c, owner, _ := newFixture(t)
+	_, first := pairedDevice(t, sessions, owner, "thumb-phone")
+	next, _, _ := newRefreshSecret()
+	c.advance(time.Minute)
+	second, reason := sessions.Refresh(RefreshRequest{Secret: first.RefreshSecret, NextSecret: next, Proof: bearerProof("thumb-phone")})
+	if reason.Refused() {
+		t.Fatal(reason)
+	}
+	junk, _, _ := newRefreshSecret()
+	if _, reason := sessions.Refresh(RefreshRequest{Secret: junk, NextSecret: second.RefreshSecret, Proof: bearerProof("thumb-phone")}); reason != ReasonUnknownCredential {
+		t.Fatalf("forged recovery = %s, want unknown_credential", reason)
+	}
+	headDigest := hashRefreshSecret(second.RefreshSecret)
+	head, err := st.GetRefreshSecretByHash(headDigest[:])
+	if err != nil || head.Spent() {
+		t.Fatalf("forged recovery touched the head: %+v, %v", head, err)
+	}
+	// The real device still renews, and the copy is then caught the
+	// ordinary way.
+	third, reason := sessions.Refresh(RefreshRequest{Secret: second.RefreshSecret, Proof: bearerProof("thumb-phone")})
+	if reason.Refused() {
+		t.Fatal(reason)
+	}
+	if _, reason := sessions.Refresh(RefreshRequest{Secret: second.RefreshSecret, Proof: bearerProof("thumb-phone")}); reason != ReasonRevokedSession {
+		t.Fatalf("reuse of the spent head = %s, want revoked_session", reason)
+	}
+	if _, reason := sessions.Verify(third.Credential); reason != ReasonRevokedSession {
+		t.Fatalf("family survived reuse: %s", reason)
+	}
+}
+
+// A proposed successor that already names a secret can never succeed on a
+// retry of the same pair, so it is refused terminally rather than as a
+// temporary failure the client would retry forever.
+func TestRefreshRefusesATakenSuccessorTerminally(t *testing.T) {
+	sessions, _, c, owner, _ := newFixture(t)
+	_, first := pairedDevice(t, sessions, owner, "thumb-phone")
+	c.advance(time.Minute)
+	if _, reason := sessions.Refresh(RefreshRequest{Secret: first.RefreshSecret, NextSecret: first.RefreshSecret + "x", Proof: bearerProof("thumb-phone")}); reason != ReasonMalformedProof {
+		// Not a valid successor at all; the shape check answers first.
+		t.Fatalf("malformed successor = %s", reason)
+	}
+	next, _, _ := newRefreshSecret()
+	second, reason := sessions.Refresh(RefreshRequest{Secret: first.RefreshSecret, NextSecret: next, Proof: bearerProof("thumb-phone")})
+	if reason.Refused() {
+		t.Fatal(reason)
+	}
+	taken, _, _ := newRefreshSecret()
+	if _, reason := sessions.Refresh(RefreshRequest{Secret: second.RefreshSecret, NextSecret: taken, Proof: bearerProof("thumb-phone")}); reason.Refused() {
+		t.Fatal(reason)
+	}
+	// The head is now `taken`; proposing it again beside itself is caught by
+	// the equality check, so propose it beside a fresh legitimate head.
+	fresh, _, _ := newRefreshSecret()
+	fourth, reason := sessions.Refresh(RefreshRequest{Secret: taken, NextSecret: fresh, Proof: bearerProof("thumb-phone")})
+	if reason.Refused() {
+		t.Fatal(reason)
+	}
+	if _, reason := sessions.Refresh(RefreshRequest{Secret: fourth.RefreshSecret, NextSecret: next, Proof: bearerProof("thumb-phone")}); reason != ReasonMalformedProof {
+		t.Fatalf("taken successor = %s, want malformed_proof", reason)
 	}
 }

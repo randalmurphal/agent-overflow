@@ -289,9 +289,15 @@ without revoking newer state. Legacy clients retain strict single-use renewal.
 Access expiry is separate from renewal expiry. `Refresh` uses
 `confirmedSession`, never `Live`; expired access can renew while its refresh
 secret remains valid. Pruning retains sessions and spent-secret evidence
-through their refresh retention windows. Recovery uses the still-live
-successor even after the predecessor is pruned. Store failures are temporary
-refusals and must preserve the client's recovery state.
+through their refresh retention windows, and keeps a spent predecessor past
+its own window for as long as its recorded successor is unspent: that row is
+the receipt a recovery is proven against, and `Refresh` looks up only the
+PRESENTED secret, never the proposed successor — admitting the successor on
+its own let any copy of the live head mint access without spending it.
+Store failures are temporary refusals and must preserve the client's
+recovery state; a proposed successor that already names a secret is the
+one store refusal that is terminal (`malformed_proof`), since retrying the
+same saved pair can never succeed.
 
 Refresh binds to the device key on EVERY listener. A bare bearer refresh
 is `missing_proof` even on loopback, because a credential that could

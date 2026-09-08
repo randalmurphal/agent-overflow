@@ -14,8 +14,15 @@ the proposed successor and that successor is still live. Device possession,
 confirmation and revocation are checked before granting recovery or declaring
 reuse. A different successor is reuse evidence and revokes the family. A
 recognized operation whose successor has already been spent must not revoke a
-newer legitimate session state. A still-live proposed successor can also
-recover an operation after its predecessor has aged out of retention.
+newer legitimate session state. Recovery is proven by the spent
+predecessor's recorded receipt and never by possession of the successor
+alone: the pruner keeps an expired spent predecessor for as long as its
+successor is unspent, and a presented secret nothing issued is
+`unknown_credential` whatever rides beside it. (Looking the successor up
+on its own admitted any copy of the live head without spending it, which
+reuse detection cannot see.) A proposed successor that already names a
+secret is refused terminally (`malformed_proof`), because no retry of the
+same saved pair can ever succeed.
 
 Recovery returns the known successor and a usable access credential. It does
 not create another refresh generation. Access to the session and device is

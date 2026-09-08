@@ -1466,7 +1466,10 @@ v79 — every bullet there applies here unchanged.
   reuse detector's evidence: `ConsumeRefreshSecret` refuses it, and
   `GetRefreshSecretByHash` still returns it so the caller can tell "this
   was issued and already spent" from "this was never issued". The prune
-  bound is the EXPIRY, never consumption.
+  bound is the EXPIRY, never consumption — with one retention past it: a
+  spent secret whose `next_secret_hash` names an UNSPENT row stays, because
+  it is the receipt `RotateRefreshSecret` recovers a lost reply against
+  (`DeleteRefreshSecretsExpiredBefore`).
 - **`SpendRefreshSecretsForSession` is the family revocation half.** One
   statement marks every unspent secret of a session consumed, stamped
   with why. Splitting it per row would leave a partially-revoked family

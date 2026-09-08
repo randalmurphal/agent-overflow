@@ -2,7 +2,6 @@ package transport
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 
 	"agent-overflow/internal/pairbootstrap"
@@ -34,8 +33,5 @@ func (s *Server) handleNearbyPair(w http.ResponseWriter, r *http.Request) {
 		writeAuthResult(w, s.csp, TokenGrant{}, "pairing_unavailable")
 		return
 	}
-	WriteSecurityHeaders(w.Header(), s.csp)
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(result)
+	writeAuthJSON(w, s.csp, result)
 }

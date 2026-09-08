@@ -782,3 +782,23 @@ func TestRecoverableTokenRouteRequiresCapabilityAndSuccessor(t *testing.T) {
 		})
 	}
 }
+
+// A backend that could not read its own store is not a verdict about the
+// caller. Both clients classify on the status before the code — the Go
+// client ends a pairing only on an authentication verdict and its
+// confirmation wait ends on ANY typed refusal — so every credential route
+// answers `temporarily_unavailable` under 503, never 401.
+func TestTemporarilyUnavailableIsNotAnAuthenticationVerdict(t *testing.T) {
+	auth := &stubAuth{reason: "temporarily_unavailable"}
+	f := newServerFixtureWith(t, func(cfg *Config) { cfg.AuthEndpoints = auth })
+	for _, path := range []string{AuthPairPath, AuthTokenPath} {
+		resp := postJSON(t, f.srv.Addr(), path, map[string]string{"token": "x", "refreshSecret": "x"}, nil)
+		if resp.StatusCode != http.StatusServiceUnavailable {
+			t.Fatalf("%s: status = %d, want 503", path, resp.StatusCode)
+		}
+		var refusal authRefusal
+		if err := json.NewDecoder(resp.Body).Decode(&refusal); err != nil || refusal.Reason != "temporarily_unavailable" {
+			t.Fatalf("%s: refusal = %+v, %v", path, refusal, err)
+		}
+	}
+}

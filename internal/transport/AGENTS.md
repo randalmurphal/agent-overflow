@@ -778,11 +778,17 @@ Rules that hold across all five:
   authorization: the gate re-reads the session row per call
   (`Config.SessionScopes`), so a client editing the copy changes nothing.
   `frontend/src/lib/transport/scopes.ts` is the consumer.
-- **A refusal is 401 with `{"reason": "<code>"}`**, whatever refused it. The
-  code is the whole message; prose belongs to
+- **A refusal is 401 with `{"reason": "<code>"}`**, whatever refused it, with
+  ONE exception: `temporarily_unavailable` is 503, because a backend that
+  could not read its own store is not a verdict about the caller, and both
+  clients classify on the status before the code (the Go client ends a
+  pairing on nothing but an authentication verdict, and its confirmation
+  wait ends on any typed refusal). `writeAuthRefusal` is the one place that
+  rule lives; every route in the family writes through it. The code is
+  otherwise the whole message; prose belongs to
   `frontend/src/lib/transport/authReason.ts`, which can phrase it for the
-  surface the person is looking at. Mapping codes onto distinct statuses would
-  put the same fact in two places.
+  surface the person is looking at. Mapping the other codes onto distinct
+  statuses would put the same fact in two places.
 - **A proof never comes from the body.** `SessionRenewal.DeviceProof` and
   `PairingRedemption.DeviceProof` are read from `DeviceKeyHeader` and both JSON
   tags are `-`. A proof a caller may write into the same document it is proving

@@ -122,12 +122,13 @@ func (s *Sessions) Refresh(req RefreshRequest) (TokenSet, Reason) {
 		nextDigest = hashRefreshSecret(nextSecret)
 	}
 	now := s.now().UnixMilli()
+	// Always the PRESENTED secret, never the proposed successor. Looking the
+	// successor up when the predecessor is unknown would admit a copy of
+	// the live head with any junk beside it, minting access without
+	// spending the head — the store keeps a spent predecessor around for as
+	// long as its successor is unspent precisely so this lookup can stay
+	// honest (store.DeleteRefreshSecretsExpiredBefore).
 	held, err := s.store.GetRefreshSecretByHash(digest[:])
-	if errors.Is(err, sql.ErrNoRows) && recoverable {
-		// The predecessor may have aged out while the proposed successor is
-		// still live. Possessing that successor and the device key can recover.
-		held, err = s.store.GetRefreshSecretByHash(nextDigest[:])
-	}
 	if errors.Is(err, sql.ErrNoRows) {
 		s.audit(store.AuthAuditEntry{Event: string(AuditRefreshRefused), Outcome: store.AuthAuditOutcomeRefused, Reason: ReasonUnknownCredential.Code(), Peer: req.Peer})
 		return TokenSet{}, ReasonUnknownCredential
@@ -178,6 +179,11 @@ func (s *Sessions) Refresh(req RefreshRequest) (TokenSet, Reason) {
 		return TokenSet{}, ReasonRevokedSession
 	case errors.Is(err, store.ErrRefreshSuperseded):
 		return TokenSet{}, ReasonRefreshSuperseded
+	case errors.Is(err, store.ErrRefreshSuccessorTaken):
+		// Terminal on purpose: a temporary refusal would have the client
+		// retry the same persisted pair forever.
+		s.RecordRefusal(ReasonMalformedProof, req.Peer, session.ID)
+		return TokenSet{}, ReasonMalformedProof
 	case errors.Is(err, sql.ErrNoRows):
 		if _, reason := s.confirmedSession(session.ID, now); reason.Refused() {
 			return TokenSet{}, reason

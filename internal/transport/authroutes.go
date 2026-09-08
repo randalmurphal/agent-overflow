@@ -408,20 +408,39 @@ func (s *Server) handlePasskeyFinish(w http.ResponseWriter, r *http.Request) {
 // with `{"reason": code}`, so a client reads one refusal envelope on
 // every route of this family.
 func writePasskeyChallenge(w http.ResponseWriter, csp ContentSecurityPolicy, challenge PasskeyChallenge, reason string) {
+	if reason != "" {
+		writeAuthRefusal(w, csp, reason)
+		return
+	}
+	writeAuthJSON(w, csp, challenge)
+}
+
+// writeAuthRefusal is the ONE status rule for a typed refusal on this
+// family of routes: `{"reason": code}` under 401, except
+// `temporarily_unavailable`, which is 503. A backend that could not read
+// its own store is not a verdict about the caller, and both clients
+// classify on the status before the code — the Go client ends a pairing on
+// nothing but an authentication verdict, and its confirmation wait ends on
+// ANY typed refusal — so a transient failure under 401 was read as one.
+func writeAuthRefusal(w http.ResponseWriter, csp ContentSecurityPolicy, reason string) {
 	h := w.Header()
 	WriteSecurityHeaders(h, csp)
 	h.Set("Cache-Control", "no-store")
 	h.Set("Content-Type", "application/json")
-	if reason != "" {
-		status := http.StatusUnauthorized
-		if reason == "temporarily_unavailable" {
-			status = http.StatusServiceUnavailable
-		}
-		w.WriteHeader(status)
-		_ = json.NewEncoder(w).Encode(authRefusal{Reason: reason})
-		return
+	status := http.StatusUnauthorized
+	if reason == "temporarily_unavailable" {
+		status = http.StatusServiceUnavailable
 	}
-	_ = json.NewEncoder(w).Encode(challenge)
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(authRefusal{Reason: reason})
+}
+
+func writeAuthJSON(w http.ResponseWriter, csp ContentSecurityPolicy, body any) {
+	h := w.Header()
+	WriteSecurityHeaders(h, csp)
+	h.Set("Cache-Control", "no-store")
+	h.Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 // ticketGrant is the body of a minted WebSocket ticket.
@@ -518,16 +537,11 @@ func decodeAuthBody(w http.ResponseWriter, r *http.Request, into any) bool {
 // onto distinct statuses would put the same fact in two places and let
 // them disagree.
 func writeAuthResult(w http.ResponseWriter, csp ContentSecurityPolicy, grant TokenGrant, reason string) {
-	h := w.Header()
-	WriteSecurityHeaders(h, csp)
-	h.Set("Cache-Control", "no-store")
-	h.Set("Content-Type", "application/json")
 	if reason != "" {
-		w.WriteHeader(http.StatusUnauthorized)
-		_ = json.NewEncoder(w).Encode(authRefusal{Reason: reason})
+		writeAuthRefusal(w, csp, reason)
 		return
 	}
-	_ = json.NewEncoder(w).Encode(grant)
+	writeAuthJSON(w, csp, grant)
 }
 
 // SessionCredential returns the session credential a request carries, or

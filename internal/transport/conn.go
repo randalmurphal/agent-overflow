@@ -94,6 +94,11 @@ const (
 	closeCauseSessionEnded
 	// closeCauseLifetime is the connection reaching its own cap.
 	closeCauseLifetime
+	// closeCauseScopesUnreadable is the upgrade failing to read the named
+	// session's grants. The alternative was a socket that streamed
+	// nothing for its whole life; closing hands the client its ordinary
+	// reconnect, which retries the read.
+	closeCauseScopesUnreadable
 )
 
 // heartbeatFrame is the keepalive frame, encoded once from the same
@@ -276,8 +281,9 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 	sub.SetOriginLoopback(profile.isLoopback)
 	// The grant half of the same arming. A connection naming no session
 	// leaves it inactive, which admits every channel — the unchanged
-	// behavior every launch-credential client still has.
-	eventScopes := connEventScopes(settings, profile)
+	// behavior every launch-credential client still has. A refusal is
+	// acted on below, once the socket has joined the registry.
+	eventScopes, scopeRefusal := connEventScopes(settings, profile)
 	sub.SetScopeFilter(eventScopes)
 	h := &connHandler{
 		ws:                ws,
@@ -348,6 +354,18 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 		log.Printf("transport: ws %s session %s ended during the upgrade; closing",
 			profile.remoteAddr, profile.sessionID)
 		h.closeWithCause(closeCauseSessionEnded, cancel)()
+		return
+	}
+	// The grant read refused — the session ended between the upgrade's
+	// liveness check and here, or the store could not answer. Either way
+	// the filter armed above admits nothing, and a socket kept open on it
+	// would look connected while delivering no event for its whole life.
+	// Close instead: a client's reconnect re-reads the grants, and a
+	// session that really ended is refused at the next upgrade.
+	if scopeRefusal != "" {
+		log.Printf("transport: ws %s session %s grants unreadable at upgrade (%s); closing",
+			profile.remoteAddr, profile.sessionID, scopeRefusal)
+		h.closeWithCause(closeCauseScopesUnreadable, cancel)()
 		return
 	}
 
@@ -609,6 +627,8 @@ func (h *connHandler) closeReason(err error) string {
 		return "session no longer live"
 	case closeCauseLifetime:
 		return "connection lifetime reached"
+	case closeCauseScopesUnreadable:
+		return "session grants unreadable"
 	}
 	return closeReason(err)
 }
@@ -1272,18 +1292,19 @@ var (
 // origin gate alone decided.
 //
 // A session whose grants cannot be read right now gets an ACTIVE filter
-// holding nothing: the connection sees only what host presence opens.
-// That is unreachable on the ordinary path (the upgrade verified the
-// session before it got here) and fail-closed if it ever is reached.
-func connEventScopes(settings connSettings, profile connProfile) eventScopeFilter {
+// holding nothing, and the refusal is returned beside it so the handler
+// closes the connection rather than serving a socket that can never
+// deliver an event. The filter is still fail-closed for the instant
+// between arming and that close.
+func connEventScopes(settings connSettings, profile connProfile) (eventScopeFilter, string) {
 	if profile.sessionID == "" || settings.sessionScopes == nil {
-		return eventScopeFilter{}
+		return eventScopeFilter{}, ""
 	}
 	granted, refusal := settings.sessionScopes(profile.sessionID)
 	if refusal != "" {
 		granted = nil
 	}
-	return sessionScopeFilter(granted, profile.isLoopback)
+	return sessionScopeFilter(granted, profile.isLoopback), refusal
 }
 
 // eventVisible is the whole visibility question for this connection:

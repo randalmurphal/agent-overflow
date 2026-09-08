@@ -183,6 +183,7 @@ func TestCloseCauseNamesEveryServerSideTeardown(t *testing.T) {
 		{closeCauseRevoked, "session revoked"},
 		{closeCauseSessionEnded, "session no longer live"},
 		{closeCauseLifetime, "connection lifetime reached"},
+		{closeCauseScopesUnreadable, "session grants unreadable"},
 	}
 	for _, tc := range cases {
 		h := &connHandler{}
@@ -190,5 +191,26 @@ func TestCloseCauseNamesEveryServerSideTeardown(t *testing.T) {
 		if got := h.closeReason(context.Canceled); got != tc.want {
 			t.Errorf("cause %d reported as %q, want %q", tc.cause, got, tc.want)
 		}
+	}
+}
+
+// TestAnUnreadableGrantSetAtUpgradeClosesTheSocket — the event filter armed
+// from a refused grant read admits nothing, so a connection kept open on
+// it would look connected while delivering no event for its whole life.
+// Closing hands the client its ordinary reconnect, which re-reads.
+func TestAnUnreadableGrantSetAtUpgradeClosesTheSocket(t *testing.T) {
+	f := newSessionFixtureWith(t, func(cfg *Config) {
+		cfg.SessionScopes = func(string) ([]string, string) { return nil, "temporarily_unavailable" }
+	})
+	conn, _, err := websocket.Dial(context.Background(),
+		"ws://"+f.addr+"/ws?token=integration-token&did=screen-abcdef01&conn=live-abcdef01", nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, _, err := conn.Read(ctx); err == nil {
+		t.Fatal("a socket whose grants could not be read stayed open")
 	}
 }
