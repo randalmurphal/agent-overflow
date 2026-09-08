@@ -1,12 +1,13 @@
 import { expect, it } from 'vitest';
-import { mergeComputerRoutes, normalizeComputerRoute, repairComputerRouteCandidates, MAX_COMPUTER_ROUTES } from './computerRoute';
+import { mergeComputerRoutes, repairComputerRouteCandidates, MAX_COMPUTER_ROUTES } from './computerRoute';
 
 it('keeps route origins separate from credentials and enforces HTTPS and exact pins', () => {
-  expect(normalizeComputerRoute({ endpoint: ' https://GPU.Example:0443/ ' })).toEqual({ endpoint: 'https://gpu.example' });
+  // Normalization is reached through the merge, the one door every route takes.
+  expect(mergeComputerRoutes([], [{ endpoint: ' https://GPU.Example:0443/ ' }])).toEqual([{ endpoint: 'https://gpu.example' }]);
   for (const endpoint of ['http://gpu', 'https://user:secret@gpu', 'https://gpu/path', 'https://gpu/?ticket=secret', 'https://gpu/?', 'https://gpu/#secret', 'https://gpu/#', 'https://gpu/a/..', 'https://gp\tu', 'https://gpu:0', 'https://gpu:65536', 'https://gpu:', 'https://gpu%00', 'https://[fe80::1%25en0]', 'https://gpu..example', 'https://-gpu', 'https://gpu_/', 'https://gpu/%2f']) {
-    expect(normalizeComputerRoute({ endpoint }), endpoint).toBeNull();
+    expect(mergeComputerRoutes([], [{ endpoint }]), endpoint).toEqual([]);
   }
-  expect(normalizeComputerRoute({ endpoint: 'https://gpu', certFingerprint: 'sha256:broken' })).toBeNull();
+  expect(mergeComputerRoutes([], [{ endpoint: 'https://gpu', certFingerprint: 'sha256:broken' }])).toEqual([]);
 });
 
 it('retains routes omitted by older hosts, prefers current trust, and bounds the catalog', () => {

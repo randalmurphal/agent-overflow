@@ -99,3 +99,30 @@ it('offers explicit repair for an incomplete pairing without duplicating the com
   await waitFor(() => expect(view.getByRole('alert').textContent).toContain('destination is offline'));
   expect(view.getByRole('button', { name: 'Connect again' })).toBeTruthy();
 });
+
+it('reloads rather than offering a second pairing when enabling fails after the pairing was confirmed', async () => {
+  stageBackend({ id: gpu, backendId: gpu, name: 'GPU', hello: hello(gpu) });
+  await grantBackendScopes(gpu, ['terminal:operate', 'access:admin']);
+  let paired = false;
+  const list = setBindingMock('ListAgentComputers', async () => (paired ? [{ id: gpu, name: 'GPU', enabled: false, projects: [] }] : []));
+  const mint = setBindingMock('MintDevicePairing', async () => ({ linkId: 'invite', url: 'private', expiresAtMs: Date.now() + 60_000 }));
+  setBindingMock('PairAgentComputer', async () => ({ id: gpu, verificationNumber: '123456', name: 'GPU', endpoint: 'https://gpu' }));
+  setBindingMock('DevicePairingStatus', async () => ({ linkId: 'invite', state: 'redeemed', verificationNumber: '123456' }));
+  setBindingMock('ConfirmDevicePairing', async () => { paired = true; });
+  setBindingMock('SetAgentComputerEnabled', async () => { throw new Error('the computer is busy'); });
+  const cancel = setBindingMock('CancelDevicePairing', async () => {});
+  const view = render(AgentComputersSection);
+  await tick();
+  const select = view.getByRole('combobox') as HTMLSelectElement;
+  for (const option of select.options) option.selected = option.value === gpu;
+  await fireEvent.change(select);
+  await fireEvent.click(view.getByRole('button', { name: 'Enable access' }));
+  await waitFor(() => expect(view.getByRole('alert').textContent).toContain('the computer is busy'));
+  // The pairing stands on the backend: its row appears with the toggle as
+  // the retry, and nothing offers to pair it again.
+  await waitFor(() => expect(view.getByRole('button', { name: 'Enable' })).toBeTruthy());
+  expect(view.queryByRole('button', { name: 'Connect again' })).toBeNull();
+  expect(list).toHaveBeenCalledTimes(2);
+  expect(mint).toHaveBeenCalledOnce();
+  expect(cancel).not.toHaveBeenCalled();
+});

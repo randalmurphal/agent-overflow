@@ -64,7 +64,7 @@ function removedComputers(): Set<string> {
   return removed;
 }
 
-export function ownDeviceMembershipRemoved(id: string): boolean { return removedComputers().has(id); }
+function ownDeviceMembershipRemoved(id: string): boolean { return removedComputers().has(id); }
 
 /** Read once for a reconciliation pass; re-read only across async admission. */
 export function ownDeviceConnectionPolicy() {

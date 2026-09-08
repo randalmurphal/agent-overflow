@@ -90,8 +90,10 @@ export function pairingBackendKey(payload: PairingPayload): BackendKey {
     throw new Error('That pairing link does not name a machine this app can attach.');
   }
   if (duplicateLegacyHomeBackend() === payload.backendId) return payload.backendId;
+  // An unreadable map cannot name a slot to repair; the fresh one below is
+  // what `storeBackendEndpoint` then writes over it.
   return attachedBackends().find((entry) => entry.backendId === payload.backendId)?.id
-    ?? Object.keys(storedBackendEndpoints()).find((key) => pairedComputerId(key) === payload.backendId)
+    ?? Object.keys(storedBackendEndpoints() ?? {}).find((key) => pairedComputerId(key) === payload.backendId)
     ?? payload.backendId;
 }
 
@@ -312,7 +314,8 @@ type NamedBackend = { id: string; home: boolean; name: string };
 export function attachedMachines(
   entries: readonly NamedBackend[] = attachedBackends(),
 ): AttachedMachine[] {
-  const endpoints = storedBackendEndpoints();
+  // A render path: an unreadable map attached nothing, so it lists nothing.
+  const endpoints = storedBackendEndpoints() ?? {};
   const out: AttachedMachine[] = [];
   for (const entry of entries) {
     if (entry.home) continue;

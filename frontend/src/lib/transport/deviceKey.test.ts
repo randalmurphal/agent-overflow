@@ -8,7 +8,6 @@
 import 'fake-indexeddb/auto';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
-  canHoldDeviceKey,
   clearDeviceKey,
   deviceKeyPair,
   enrollDeviceKey,
@@ -55,12 +54,6 @@ function readProof(proof: string): { header: ProofHeader; payload: ProofPayload 
 
 beforeEach(async () => {
   await clearDeviceKey();
-});
-
-describe('canHoldDeviceKey', () => {
-  it('answers true where both a secure context and storage exist', () => {
-    expect(canHoldDeviceKey()).toBe(true);
-  });
 });
 
 describe('enrollDeviceKey', () => {

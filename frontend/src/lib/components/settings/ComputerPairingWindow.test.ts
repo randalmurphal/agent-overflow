@@ -118,3 +118,23 @@ describe('computer pairing window', () => {
     expect(poll.mock.calls).toHaveLength(calls);
   });
 });
+
+describe('computer pairing window naming', () => {
+  beforeEach(() => {
+    resetBindingMocks();
+    setBindingMock('OpenComputerPairing', async () => WINDOW);
+    setBindingMock('CloseComputerPairing', async () => {});
+    setBindingMock('ComputerPairingStatus', async () => WAITING);
+  });
+  afterEach(() => { __setTransportHelloForTest(null); cleanup(); resetBindingMocks(); });
+
+  it('names the computer from a hello that lands after the window opened', async () => {
+    const view = show();
+    const instruction = () => view.getByText(/and choose/).textContent ?? '';
+    expect(instruction()).toContain('this computer');
+    __setTransportHelloForTest({ backendId: '', backendName: 'Workstation', capabilities: [], protocolVersion: 1,
+      serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 });
+    await tick();
+    expect(instruction()).toContain('Workstation');
+  });
+});

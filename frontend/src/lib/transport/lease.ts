@@ -36,9 +36,9 @@ export type { LeaseState } from './frames';
  * restates it after its next hello, beside its watch set.
  */
 export function setClientLease(state: LeaseState): void {
-  setLeaseEverywhere(state);
   if (state === current) return;
   current = state;
+  setLeaseEverywhere(state);
   for (const listener of [...listeners]) {
     try {
       listener(state);
@@ -77,8 +77,10 @@ export function onClientLeaseChange(listener: (state: LeaseState) => void): () =
   };
 }
 
-/** Test seam: forget the state this module was told. */
+/** Test seam: forget the state this module was told, and restate the
+ * resting state to every backend so the two records cannot drift. */
 export function __resetClientLeaseForTest(): void {
   current = 'active';
+  setLeaseEverywhere('active');
   listeners.clear();
 }

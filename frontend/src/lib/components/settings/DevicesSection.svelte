@@ -40,6 +40,7 @@
   import { errString } from '../../utils/errors';
   import { relativeTime } from '../../utils/format';
   import { isViewOnlyGrantSet } from '../../transport/scopes';
+  import { backendReachable } from '../../stores/attachedBackends.svelte';
   import PairDeviceModal from './PairDeviceModal.svelte';
   import PasskeysBlock from './PasskeysBlock.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
@@ -82,12 +83,27 @@
   let audit = $derived(overview?.audit ?? []);
   let pairedCount = $derived(devices.filter((d) => d.channel !== 'local').length);
 
-  async function load(): Promise<void> {
+  // A failure is reported to the person who asked for the load; the
+  // background poll below asks quietly. One request at a time, and a
+  // superseded answer never lands over a later one.
+  let loading = false;
+  let loadGeneration = 0;
+
+  function load(): Promise<void> {
+    return refresh(true);
+  }
+
+  async function refresh(report: boolean): Promise<void> {
     if (unavailable) return;
+    const request = ++loadGeneration;
+    loading = true;
     try {
-      overview = await call(() => GetAccessOverview());
+      const next = await call(() => GetAccessOverview());
+      if (request === loadGeneration) overview = next;
     } catch (err) {
-      addToast('error', `Failed to load devices: ${errString(err)}`);
+      if (report) addToast('error', `Failed to load devices: ${errString(err)}`);
+    } finally {
+      if (request === loadGeneration) loading = false;
     }
     await loadReachability();
   }
@@ -259,7 +275,12 @@
   // steady state costs nothing.
   $effect(() => {
     if (unavailable || pending.length === 0) return;
-    const timer = setInterval(() => void load(), 3_000);
+    const timer = setInterval(() => {
+      // A tick joins no request already in flight and asks nothing of a
+      // backend that cannot answer: an offline poll only stacks failures.
+      if (loading || !backendReachable(backend)) return;
+      void refresh(false);
+    }, 3_000);
     return () => clearInterval(timer);
   });
 </script>

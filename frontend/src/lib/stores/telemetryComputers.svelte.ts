@@ -1,6 +1,7 @@
 // Frontend-only choices; a thread focus change never retargets telemetry.
 import { getAttachedBackends, backendDisplayName, backendReachable } from './attachedBackends.svelte';
 import { readFrontendValue, writeFrontendValue, onFrontendValueChanged } from './frontendStorage';
+import { SELECTED_BACKEND_KEY } from './selectedBackend.svelte';
 import { onBackendIdentity } from '../transport/backendIdentity';
 import type { BackendKey } from '../transport/backendKey';
 
@@ -35,7 +36,7 @@ export function telemetryComputers(kind: TelemetryKind) {
   void identityRevision;
   const computers = getAttachedBackends();
   const selection = telemetrySelection(kind);
-  const preferred = readFrontendValue('selected-computer');
+  const preferred = readFrontendValue(SELECTED_BACKEND_KEY);
   const defaultComputer = computers.find((c) => c.home) ?? computers.find((c) => c.id === preferred) ?? computers[0];
   const seen = new Set<string>();
   return computers.flatMap((computer) => {

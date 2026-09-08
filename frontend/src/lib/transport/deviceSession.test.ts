@@ -12,7 +12,6 @@ import {
   acceptPairingEndpoint,
   clearPairedSession,
   deviceKeyThumbprint,
-  endpointMatchesOrigin,
   hasPairedSession,
   mintDialTicket,
   pairedSessionId,
@@ -123,11 +122,12 @@ describe('parsePairingFragment', () => {
   });
 });
 
-describe('endpointMatchesOrigin', () => {
-  it('matches the origin the page loaded from', () => {
-    expect(endpointMatchesOrigin(PAYLOAD, 'http://192.168.1.20:8123')).toBe(true);
-    expect(endpointMatchesOrigin(PAYLOAD, 'http://192.168.1.21:8123')).toBe(false);
-    expect(endpointMatchesOrigin({ ...PAYLOAD, endpoint: 'not a url' }, 'http://x')).toBe(false);
+describe('acceptPairingEndpoint on a browser', () => {
+  it('compares the payload endpoint with the origin the page loaded from', () => {
+    // A browser was NAVIGATED to the link: the page it is on is the backend.
+    expect(acceptPairingEndpoint(PAYLOAD, 'http://192.168.1.20:8123')).toBe(true);
+    expect(acceptPairingEndpoint(PAYLOAD, 'http://192.168.1.21:8123')).toBe(false);
+    expect(acceptPairingEndpoint({ ...PAYLOAD, endpoint: 'not a url' }, 'http://x')).toBe(false);
   });
 });
 

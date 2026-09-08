@@ -1,7 +1,8 @@
 // Stage a second attached backend without a socket.
 //
 // Wave 7c's surfaces (the machine picker, the composer's unreachable
-// reason, the dimmed sidebar row, Settings → Systems) all render from the
+// reason, the dimmed sidebar row, Settings → Remote access → Connect to a
+// computer) all render from the
 // transport registry plus the per-backend status box, so a component test
 // needs a backend whose reachability it controls. The fake client here
 // answers what the registry and the status store read: a status snapshot
@@ -60,6 +61,7 @@ export function stageBackend(
       return () => helloListeners.delete(listener);
     }),
     close: vi.fn(),
+    isClosed: vi.fn(() => false),
     triggerReconnect: vi.fn(),
   };
   __attachBackendForTest(

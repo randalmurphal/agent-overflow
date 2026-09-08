@@ -253,3 +253,26 @@ it('opens discovery pairing for another computer while preserving QR pairing for
   await view.findByLabelText('Pairing QR code');
   expect(mint).toHaveBeenCalledExactlyOnceWith('phone', 'full', 'lan');
 });
+
+describe('<PairDeviceModal> across a hello refresh', () => {
+  beforeEach(() => resetBindingMocks());
+  afterEach(() => {
+    resetBindingMocks();
+    __setTransportHelloForTest(null);
+  });
+
+  it('keeps the shared link when a reconnect republishes the hello with new capabilities', async () => {
+    __setTransportHelloForTest(LEGACY_HELLO);
+    setBindingMock('MintDevicePairing', async () => INVITE);
+    setBindingMock('DevicePairingStatus', async () => ({ linkId: 'link-1', state: 'pending', expiresAtMs: INVITE.expiresAtMs }));
+    const networks = setBindingMock('GetNetworkSettings', async () => ({ bindAll: true }));
+    const view = renderModal();
+    await fireEvent.click(await view.findByRole('button', { name: /Phone or tablet/ }));
+    await view.findByLabelText('Pairing link');
+    // The backend came back able to name networks. The list loads; the
+    // link somebody may already be scanning does not disappear.
+    __setTransportHelloForTest({ ...LEGACY_HELLO, capabilities: ['pairing.networks.v1'], serverTimeMs: 1 });
+    await waitFor(() => expect(networks).toHaveBeenCalledTimes(1));
+    expect(view.getByLabelText('Pairing link')).toBeTruthy();
+  });
+});

@@ -36,11 +36,14 @@
       if (result.status === 'rejected') addToast('error', errString(result.reason));
     }
   }
+  // A dispatched confirmation is the remote's to answer: cancelling under
+  // it could retire a pairing the remote already accepted, so `confirm`
+  // settles the pending connection itself once the answer lands.
   function close(): void {
     disposed = true;
     generation++;
     clearTimeout(timer);
-    if (!confirmed) void cleanup(status?.id ?? '', attachment);
+    if (!confirmed && !confirming) void cleanup(status?.id ?? '', attachment);
     onClose();
   }
   onDestroy(() => {
@@ -48,7 +51,7 @@
     disposed = true;
     generation++;
     clearTimeout(timer);
-    if (!confirmed) void cleanup(status?.id ?? '', attachment);
+    if (!confirmed && !confirming) void cleanup(status?.id ?? '', attachment);
   });
 
   async function poll(id: string, epoch: number): Promise<void> {
@@ -110,17 +113,22 @@
   async function confirm(): Promise<void> {
     if (!status || confirming || status.state !== 'verification' || verification !== status.verificationNumber) return;
     confirming = true;
-    // The remote may accept before our RPC response arrives. Preserve its
-    // profile if this window closes during that interval; activation owns it.
-    confirmed = true;
-    if (attachment) saveComputerSSH(attachment, { target: target.trim(), binary: binary.trim() });
+    const id = status.id;
     try {
-      await ConfirmSSHConnection(status.id, verification);
+      await ConfirmSSHConnection(id, verification);
     } catch (err) {
-      if (!disposed) error = errString(err);
-    } finally {
-      if (!disposed) confirming = false;
+      confirming = false;
+      // Refused: nothing was confirmed. The number stays on screen with
+      // the failure, or the closed dialog's cleanup runs now.
+      if (disposed) void cleanup(id, attachment);
+      else error = errString(err);
+      return;
     }
+    // Confirmed, whether or not the dialog is still open: the remote
+    // holds the pairing, its profile is kept, and activation owns it.
+    confirmed = true;
+    confirming = false;
+    if (attachment) saveComputerSSH(attachment, { target: target.trim(), binary: binary.trim() });
   }
 </script>
 
@@ -151,13 +159,13 @@
         <div class="rounded-[var(--radius-field)] border border-border-subtle px-3 py-3">
           <p class="text-xs text-fg-muted">{target} and this app show the same verification number.</p>
           <p aria-label="SSH verification number" class="my-2 text-xl font-semibold tracking-[0.2em] tabular-nums text-fg">{verification}</p>
-          <Button variant="primary" disabled={confirming || confirmed} onclick={() => void confirm()}>{confirmed ? 'Connecting…' : 'Connect this computer'}</Button>
+          <Button variant="primary" disabled={confirming || confirmed} onclick={() => void confirm()}>{confirming || confirmed ? 'Connecting…' : 'Connect this computer'}</Button>
         </div>
       {:else if busy}
         <p role="status" class="text-xs text-fg-muted">{status?.state === 'confirming' ? 'Completing pairing…' : `Connecting to ${target}…`}</p>
       {/if}
       <div class="flex justify-end gap-2">
-        <Button variant="ghost" onclick={close}>{confirmed ? 'Close' : 'Cancel'}</Button>
+        <Button variant="ghost" onclick={close}>{confirming || confirmed ? 'Close' : 'Cancel'}</Button>
         {#if !busy}<Button type="submit" variant="primary" disabled={!target.trim() || !binary.trim()}>{error ? 'Try again' : 'Continue'}</Button>{/if}
       </div>
     </form>

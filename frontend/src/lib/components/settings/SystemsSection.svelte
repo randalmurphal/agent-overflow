@@ -29,7 +29,6 @@
   import { ownDeviceConnectionsWaiting } from '../../stores/ownDevices.svelte';
   import SSHConnectModal from './SSHConnectModal.svelte';
   import { HOME_BACKEND } from '../../transport/backendKey';
-  import { selectedBackend, setSelectedBackend } from '../../stores/selectedBackend.svelte';
   import { attachedBackendEntry, backendDisplayName } from '../../stores/attachedBackends.svelte';
   import { onMount } from 'svelte';
   import MonitorIcon from '@lucide/svelte/icons/monitor';
@@ -190,12 +189,6 @@
     }
     detachAttachedBackend(id);
     armedRemove = null;
-    // No existing conversation changes owner. Only the empty composer’s
-    // general choice moves away from the computer explicitly removed here.
-    if (selectedBackend() === id) {
-      const next = getAttachedBackends()[0];
-      if (next) setSelectedBackend(next.id);
-    }
     // The legacy singleton is closed permanently; a new document drops its
     // old endpoint and boots from the remaining independent pairings.
     if (id === HOME_BACKEND || getAttachedBackends().length === 0) location.reload();

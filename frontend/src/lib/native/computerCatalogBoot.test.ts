@@ -176,3 +176,27 @@ it.each([true, false])('settles delayed legacy HOME identity before catalog read
   expect(attachedBackends().map((entry) => entry.id)).toEqual([canonical]);
   await verifyCatalogsAndDrafts([canonical]);
 });
+
+it('keeps the saved computers when their address map cannot be read', () => {
+  savePairing(GPU, GPU, 'https://gpu.tail.ts.net');
+  stageBackend({ id: GPU, backendId: GPU, name: 'GPU' });
+  localStorage.setItem('agent-overflow:backendEndpoints', '[not json');
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    // Unreadable is not empty: the boot sync must not detach every computer.
+    expect(prepareNativeShell()).toEqual({ shell: true, paired: true });
+    expect(attachedBackends().map((entry) => entry.id)).toEqual([GPU]);
+    expect(warn).toHaveBeenCalledOnce();
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+it('refuses to restore a home entry over the singleton the shell closed', () => {
+  // Nothing saved: the shell closes the page's own client for good.
+  expect(prepareNativeShell()).toEqual({ shell: true, paired: false });
+  expect(backendById('')).toBeUndefined();
+  savePairing('', MAC, 'https://mac.tail.ts.net');
+  expect(() => restoreHomeBackend()).toThrow(/closed/);
+  expect(backendById('')).toBeUndefined();
+});

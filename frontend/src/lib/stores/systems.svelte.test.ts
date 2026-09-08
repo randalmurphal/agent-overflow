@@ -13,7 +13,6 @@ import {
   getSystems,
   loadSystems,
   removeSystem,
-  renameSystem,
   systemLabel,
   systemsLoaded,
 } from './systems.svelte';
@@ -148,10 +147,8 @@ describe('systems store', () => {
     setBindingMock('ListBackends', async () => [LAPTOP]);
     await loadSystems();
     expect(manifestBackendDescriptors().find((row) => row.id === 'laptop')?.nickname).toBe('');
-    const rename = setBindingMock('RenameBackend', async () => {});
-    await renameSystem('laptop', 'Work laptop');
+    applyBackendSetChange({ action: 'renamed', id: 'laptop', nickname: 'Work laptop' });
     expect(manifestBackendDescriptors().find((row) => row.id === 'laptop')?.nickname).toBe('Work laptop');
-    expect(rename).toHaveBeenCalledWith('laptop', 'Work laptop');
     expect(systemLabel(getSystems()[0])).toBe('Work laptop');
     expect(systemLabel({ id: 'x', name: 'Named', nickname: '' })).toBe('Named');
     expect(systemLabel({ id: 'x', name: '', nickname: '' })).toBe('x');

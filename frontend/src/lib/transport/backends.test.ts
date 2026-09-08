@@ -40,8 +40,9 @@ import {
   homeBackend,
   installStepUpProverEverywhere,
   installDiagnosticsSinkEverywhere,
-  mergeBackendResults,
+  setBackendSource,
   setLeaseEverywhere,
+  syncAttachedBackends,
   setWatchedThreadsEverywhere,
   subscribeEveryBackend,
   type BackendDescriptor,
@@ -327,26 +328,56 @@ describe('event origin across two backends', () => {
   });
 });
 
-describe('mergeBackendResults', () => {
-  it('concatenates arrays in attach order', () => {
-    expect(mergeBackendResults([[1, 2], [3]], [1, 2])).toEqual([1, 2, 3]);
-  });
-
-  it('shallow-merges id-keyed objects, later backends winning', () => {
-    expect(mergeBackendResults([{ a: '1' }, { b: '2', a: '3' }], { a: '1' })).toEqual({
-      a: '3',
-      b: '2',
+describe('the fan-out merges by shape', () => {
+  // The merge rule is reached the one way the app reaches it: an `all`
+  // call's shares, home's first and then attach order. The method id is
+  // one no thread-metadata verification claims, so the shares are judged
+  // by shape alone.
+  const METHOD = 7;
+  function shares(home: unknown, ...remotes: unknown[]): Promise<unknown> {
+    homeClient.callByID.mockResolvedValue(home);
+    remotes.forEach((share, i) => {
+      attachFake({ id: `r${i}`, backendId: `uuid-r${i}`, name: `R${i}` }).client.callByID.mockResolvedValue(share);
     });
+    return callEveryBackend(METHOD, []);
+  }
+
+  it('concatenates arrays in attach order', async () => {
+    await expect(shares([1, 2], [3])).resolves.toEqual([1, 2, 3]);
   });
 
-  it('falls back to the home share for a scalar or a mixed set', () => {
-    expect(mergeBackendResults([7, 9], 7)).toBe(7);
-    expect(mergeBackendResults([[1], { a: '1' }], [1])).toEqual([1]);
+  it('shallow-merges id-keyed objects, later backends winning', async () => {
+    await expect(shares({ a: '1' }, { b: '2', a: '3' })).resolves.toEqual({ a: '3', b: '2' });
   });
 
-  it('drops null and undefined shares before judging the shape', () => {
-    expect(mergeBackendResults([null, [1], undefined, [2]], null)).toEqual([1, 2]);
-    expect(mergeBackendResults([null, undefined], 'home')).toBe('home');
+  it('falls back to the home share for a scalar', async () => {
+    await expect(shares(7, 9)).resolves.toBe(7);
+  });
+
+  it('falls back to the home share for a mixed set', async () => {
+    await expect(shares([1], { a: '1' })).resolves.toEqual([1]);
+  });
+
+  it('drops null and undefined shares before judging the shape', async () => {
+    await expect(shares(null, [1], undefined, [2])).resolves.toEqual([1, 2]);
+  });
+
+  it('answers the home share when every share is nothing', async () => {
+    await expect(shares(null, undefined)).resolves.toBeNull();
+  });
+});
+
+describe('syncAttachedBackends', () => {
+  it('keeps the attached set when the saved addresses cannot be read', () => {
+    attachFake();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    setBackendSource(() => {
+      throw new Error('Saved computer addresses could not be read.');
+    });
+    // An unreadable map is not an empty one: nothing is detached for it.
+    syncAttachedBackends();
+    expect(backendById('laptop')).toBeDefined();
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 });
 

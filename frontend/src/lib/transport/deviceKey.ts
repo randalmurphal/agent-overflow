@@ -69,7 +69,7 @@ interface StoredDeviceKey {
  * because a key that cannot be persisted would be regenerated per page
  * load, and a device whose identity changes every visit is not a device.
  */
-export function canHoldDeviceKey(): boolean {
+function canHoldDeviceKey(): boolean {
   return (
     typeof crypto !== 'undefined' &&
     typeof crypto.subtle?.generateKey === 'function' &&

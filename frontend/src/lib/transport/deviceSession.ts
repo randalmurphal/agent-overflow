@@ -264,7 +264,7 @@ export function parsePairingFragment(hash: string): PairingPayload | null {
  * base, so a mismatch means a stale or foreign payload — and the CSP
  * would block the cross-origin redemption anyway.
  */
-export function endpointMatchesOrigin(payload: PairingPayload, origin: string): boolean {
+function endpointMatchesOrigin(payload: PairingPayload, origin: string): boolean {
   try {
     return new URL(payload.endpoint).origin === origin;
   } catch {

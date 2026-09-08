@@ -15,7 +15,7 @@
   // mint. Closing the modal mid-flow deliberately leaves the link alone:
   // it stays actionable from the pending row in DevicesSection, and only
   // the explicit Cancel button spends it.
-  import { onDestroy } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import { renderSVG } from 'uqr';
   import Modal from '../primitives/Modal.svelte';
   import Button from '../primitives/Button.svelte';
@@ -124,7 +124,6 @@
     copyState = 'idle';
     networkOptions = [];
     networkError = '';
-    if (explicitNetworks) void loadNetworks();
   }
 
   async function loadNetworks(): Promise<void> {
@@ -147,10 +146,17 @@
   }
 
   // Re-arm per open so a reopened modal starts at choose, not wherever
-  // the last flow stopped.
+  // the last flow stopped. `open` is the only dependency: `reset` reads
+  // the hello-derived flags, and tracking them re-ran this on every
+  // hello refresh, throwing a shared link away mid-flow.
   $effect(() => {
-    if (open) reset();
+    if (open) untrack(reset);
     return () => { ++networkGeneration; stopTimers(); };
+  });
+  // The network list follows the backend's capability, which can land
+  // after the modal opened; the stage does not move with it.
+  $effect(() => {
+    if (open && explicitNetworks) untrack(() => void loadNetworks());
   });
 
   async function mint(deviceClass: 'phone' | 'browser', legacy = false): Promise<void> {

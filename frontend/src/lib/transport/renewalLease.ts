@@ -45,7 +45,7 @@ export interface LeaseHold {
 // How long a lease stands without being released. Long enough to cover a
 // slow renewal round trip on a phone's link, short enough that a tab
 // killed mid-exchange does not strand the next one for a visible pause.
-// Nothing waits longer than this.
+// Nothing waits longer than this, under Web Locks included.
 const LEASE_TTL_MS = 8_000;
 
 // How often a waiting context re-reads. 25ms is imperceptible against a
@@ -170,9 +170,23 @@ export async function withRenewalLease<T>(
   if (locks && typeof locks.request === 'function') {
     // Web Locks grants exclusively and queues the rest, so a second
     // context runs AFTER this one rather than beside it, and the grant is
-    // released even if this context is killed. Nothing to re-read and
-    // nothing to expire.
-    return await locks.request(key, () => work({ held: () => true }));
+    // released even if this context is killed. Nothing to re-read, but
+    // the WAIT is bounded like the fallback's: a holder wedged inside
+    // the exchange (a suspended tab whose fetch never settles) would
+    // otherwise queue every later context forever. Past the TTL the
+    // work runs UNHELD, which is the same answer the fallback gives a
+    // lost claim: the caller re-reads and does not attempt the exchange.
+    let granted = false;
+    try {
+      return await locks.request(key, { signal: AbortSignal.timeout(LEASE_TTL_MS) }, () => {
+        granted = true;
+        return work({ held: () => true });
+      });
+    } catch (err) {
+      // After the grant, a rejection is the work's own.
+      if (granted) throw err;
+    }
+    return await work({ held: () => false });
   }
   const { id, ours } = await claim(key);
   try {

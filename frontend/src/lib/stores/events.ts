@@ -505,7 +505,8 @@ export function setupEventListeners(): () => void {
   );
 
   // backend:attach — how a pairing this machine started from Settings →
-  // Systems ended, minutes after AddBackend returned the verification
+  // Remote access → Connect to a computer ended, minutes after AddBackend
+  // returned the verification
   // number. Loopback-only and host-scoped on the Go side, so only the page
   // that can manage systems ever receives it. The ORIGIN is still checked:
   // this subscription is installed on every attached backend, and only
