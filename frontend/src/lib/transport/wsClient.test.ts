@@ -102,6 +102,7 @@ import { clearPairedSession, hasPairedSession, redeemPairing } from './deviceSes
 // two answers to what the client sends.
 import { FakeCtor, flushMicrotasks, MockWebSocket } from '../../test/helpers/mockWebSocket';
 import { __resetHomeEndpointForTest, setHomeEndpoint } from './homeEndpoint';
+import { DamagedTrustError } from '../native/networkTrust';
 import { MAX_REPLAY_BUFFER_CHARS } from './replayBuffer';
 
 const bootstrap = async () => ({ wsUrl: 'ws://example/ws', token: 'test-token' });
@@ -3455,6 +3456,64 @@ describe('WSClient', () => {
     const call = client.callByName('App.Anything', []);
     await expect(call).rejects.toBeInstanceOf(DisconnectedError);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    client.close();
+  });
+
+  // The pairing latch's second cause. A phone's saved certificate trust
+  // for a computer is consulted before any request is addressed at it
+  // (native/networkTrust.certificatePin, on the manifest fetch and the
+  // dial alike), and an unreadable store throws rather than falling back
+  // to WebPKI. No retry reads it back — pairing again is the one action
+  // that rewrites it — so the ladder stops on the sentence a never-paired
+  // page gets, instead of showing "Reconnecting…" forever.
+  it('latches the pairing prompt when this device’s saved trust for the computer is unreadable', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    localStorage.clear();
+
+    const fetchSpy = vi
+      .fn<() => Promise<{ wsUrl: string; token: string }>>()
+      .mockRejectedValue(new DamagedTrustError());
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: fetchSpy,
+      loopbackOrigin: () => false,
+    });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(client.getStatus()).toEqual({ status: 'pairing-required', nextAttemptAt: null });
+    expect(MockWebSocket.instances).toHaveLength(0);
+
+    // Terminal: minutes of wall clock read nothing back.
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    // A caller is told which condition it is, and does not restart the
+    // ladder by asking.
+    await expect(client.callByName('App.Anything', [])).rejects.toThrow(/Pair the computer again/);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    // The banner's Retry is a person acting: one attempt, and the same
+    // verdict while the store is still unreadable.
+    client.triggerReconnect();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(client.getStatus()).toEqual({ status: 'pairing-required', nextAttemptAt: null });
+
+    // Pairing again rewrote the store: the next Retry gets past the
+    // condition and dials.
+    fetchSpy.mockResolvedValue({ wsUrl: 'ws://example/ws', token: 't' });
+    client.triggerReconnect();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    MockWebSocket.instances[0]!.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getStatus().status).toBe('connected');
 
     client.close();
   });

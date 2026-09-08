@@ -183,7 +183,13 @@ pane can substitute for that project's owner.
   at the backend as an off-host peer while this browser holds no paired
   session to name on the upgrade, which that backend refuses
   (`internal/transport/AGENTS.md` § the launch credential and the
-  upgrade). Neither is self-clearing — no timer un-sets a latch, because
+  upgrade). The pairing latch has a second cause with the same remedy: a
+  phone whose SAVED TRUST for the computer is unreadable
+  (`native/networkTrust.DamagedTrustError`, thrown before any request is
+  addressed at it), which nothing but pairing again rewrites — so the
+  ladder stops there instead of showing "Reconnecting…" forever, and the
+  cause rides on the latch so an awaiting caller's rejection names it.
+  Neither state is self-clearing — no timer un-sets a latch, because
   nothing about waiting mints a per-launch credential or pairs a device
   — and both clear only on evidence: a user-initiated
   `triggerReconnect`, or a connect attempt that gets past the condition.

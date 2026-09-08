@@ -1,5 +1,6 @@
 import { createNetworkSocket } from './networkSocket';
 import { networkFetch } from './networkFetch';
+import { DamagedTrustError } from '../native/networkTrust';
 // Long-lived WebSocket client for the Phase B transport. The shim in
 // ./runtime.ts re-exports the @wailsio/runtime surface but routes every
 // call through this client so the same generated bindings and event-store
@@ -516,7 +517,11 @@ let fanoutScratchInUse = false;
 // to name on the upgrade — which that backend refuses (spec §4 "Local
 // clients", internal/transport/AGENTS.md). Dialing would produce one
 // unfingerprintable 404 per attempt, so the ladder does not start.
-// Recovery is pairing this device.
+// Recovery is pairing this device. The same latch holds a phone whose
+// saved certificate trust for the computer is unreadable
+// (native/networkTrust.DamagedTrustError): no request can be addressed
+// at that computer until it is paired again, and pairing again is the
+// one action that rewrites the store, so the remedy is the same sentence.
 //
 // The banner's Retry works out of both (see triggerReconnect), which is
 // what recovers a refusal that was a lie from something in the path, and
@@ -1898,6 +1903,12 @@ export class WSClient {
       if (err instanceof BootstrapRejectedError && this.isRemoteSession()) {
         if (err.paired) this.enterPairingRequired();
         else this.enterCredentialDead(err);
+      } else if (err instanceof DamagedTrustError) {
+        // Decided before any request left (networkTrust.certificatePin,
+        // consulted by the manifest fetch and the dial alike), and no
+        // retry reads the store back. Only pairing again rewrites it, so
+        // the pairing latch is the answer here too.
+        this.enterPairingRequired(err);
       }
       console.warn('wsClient: connection preparation failed', err);
       // Pre-socket failures count toward the outage's attempt
@@ -2298,17 +2309,25 @@ export class WSClient {
     );
   }
 
-  // enterPairingRequired latches the other terminal state. The manifest
-  // served, so nothing is wrong with the credential; the socket is what
-  // this backend will not open for an unpaired off-host device.
-  private enterPairingRequired(): void {
+  // enterPairingRequired latches the other terminal state. Without a
+  // cause, the manifest served, so nothing is wrong with the credential;
+  // the socket is what this backend will not open for an unpaired
+  // off-host device. With one, this device's saved trust for the computer
+  // is unreadable (DamagedTrustError): nothing can be addressed at it
+  // before it is paired again, which is also the only repair. Awaiting
+  // callers are told which, since the two are one remedy but two facts.
+  private enterPairingRequired(cause?: DamagedTrustError): void {
     this.enterTerminal(
       {
         status: 'pairing-required',
-        message: 'this backend admits paired devices only',
+        message: cause?.message ?? 'this backend admits paired devices only',
+        cause,
       },
-      'wsClient: this backend admits paired devices only and this browser holds ' +
-        'no paired session; reconnect stopped until one is paired',
+      cause
+        ? `wsClient: saved trust for this computer is unreadable (${cause.message}); ` +
+          'reconnect stopped until it is paired again'
+        : 'wsClient: this backend admits paired devices only and this browser holds ' +
+          'no paired session; reconnect stopped until one is paired',
     );
   }
 
