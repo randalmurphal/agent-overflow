@@ -167,7 +167,11 @@ it.each([true, false])('settles delayed legacy HOME identity before catalog read
   Object.assign(uuidEntry.client, { setLease: vi.fn(), setWatchedThreads: vi.fn(), setScreenPresence: vi.fn() });
   __attachBackendForTest(HOME_DESCRIPTOR, uuidEntry.client);
   expect(prepareNativeShell()).toEqual({ shell: true, paired: true });
-  expect(attachedBackends().map((entry) => entry.id)).toEqual(['', MAC]);
+  // The UUID slot boots only when it holds its own credential. A bare
+  // endpoint (the failed-redemption leftover) is not a machine this client
+  // can reach, so the boot sync drops it and the legacy slot carries the
+  // pairing alone until bootstrap identifies it.
+  expect(attachedBackends().map((entry) => entry.id)).toEqual(completeUuid ? ['', MAC] : ['']);
 
   setBackendIdentityFromBootstrap(MAC, 'generation', 'Mac', '');
   const canonical = completeUuid ? MAC : '';

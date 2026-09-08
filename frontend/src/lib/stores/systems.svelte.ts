@@ -9,12 +9,20 @@
 // else would leave the transport registry holding a socket to a profile
 // that no longer exists.
 //
-// All three are `host`-scoped and `home`-routed (internal/app/app_backends.go):
-// they act on THIS machine's profile directory, never on an attached one.
-// A standalone frontend owns these operations locally. A legacy relay or
-// paired browser cannot administer its upstream profiles; the passive load asks
-// `hasScope('host')` before it fires (stores/AGENTS.md, the passive-load
-// rule).
+// THE REGISTRY IS THE LIST. This store keeps no mirror of the rows: every
+// `ListBackends` answer is published wholesale into
+// `publishManifestBackends`, which is the transport registry's source, and
+// the section renders the registry's entries — the same list the machine
+// picker and the sidebar read, on both realizations. What the descriptor
+// has no field for (`lastReachedMs` and the two sync errors) lives in the
+// side map below, keyed by the same id.
+//
+// All three RPCs are `host`-scoped and `home`-routed
+// (internal/app/app_backends.go): they act on THIS machine's profile
+// directory, never on an attached one. A standalone frontend owns these
+// operations locally. A legacy relay or paired browser cannot administer
+// its upstream profiles; the passive load asks `hasScope('host')` before
+// it fires (stores/AGENTS.md, the passive-load rule).
 //
 // Pairing is two RPCs apart in time: `AddBackend` returns the verification
 // number at once and the owner of the far machine confirms it minutes
@@ -79,15 +87,23 @@ export interface PendingAttachment {
   verificationNumber: string;
 }
 
-let systems = $state.raw<readonly AttachedBackend[]>([]);
+/** The per-machine facts `ListBackends` carries that the registry's
+ *  descriptor has no field for. */
+export interface SystemStatus {
+  lastReachedMs: number;
+  deviceNameSyncError: string;
+  ownDeviceSyncError: string;
+}
+
+let statuses = $state.raw<ReadonlyMap<string, SystemStatus>>(new Map());
 let loaded = $state(false);
 let pending = $state.raw<readonly PendingAttachment[]>([]);
 let loadInFlight: Promise<void> | null = null;
 let revision = 0;
 
-/** Every attached machine, as the last load answered. */
-export function getSystems(): readonly AttachedBackend[] {
-  return systems;
+/** The status fields the last load recorded for one machine. */
+export function systemStatus(id: string): SystemStatus | undefined {
+  return statuses.get(id);
 }
 
 /** Whether a load has completed since boot (or the last reset). */
@@ -110,25 +126,41 @@ export function loadSystems(): Promise<void> {
   loadInFlight = (async () => {
     try {
       // A response started before a removal/rename cannot bring its old
-      // profile back. Re-read the authoritative set when a mutation raced it.
+      // profile back: the guard covers the PUBLISH, which is the list's
+      // one owner. Re-read the authoritative set when a mutation raced it.
       for (;;) {
         const before = revision;
         const rows = await ListBackends();
         if (before !== revision) continue;
-        systems = rows;
+        publishSystems(rows);
         break;
       }
-      const ids = new Set(systems.map((system) => system.id));
-      for (const removed of manifestBackendDescriptors()) {
-        if (!ids.has(removed.id)) { detachBackend(removed.id); purgeClientState(removed.id); }
-      }
-      publishManifestBackends(systems.map((system) => descriptorForAttachedId(system.id, systemLabel(system), '', system.nickname ?? '')));
       loaded = true;
     } finally {
       loadInFlight = null;
     }
   })();
   return loadInFlight;
+}
+
+/**
+ * Publish one authoritative answer: the descriptors into the registry's
+ * source, the rest into the side map. Synchronous on purpose — the
+ * revision guard above covers everything here, so an older in-flight read
+ * can never erase a repaired set.
+ */
+function publishSystems(rows: readonly AttachedBackend[]): void {
+  const ids = new Set(rows.map((row) => row.id));
+  for (const removed of manifestBackendDescriptors()) {
+    if (!ids.has(removed.id)) { detachBackend(removed.id); purgeClientState(removed.id); }
+  }
+  publishManifestBackends(rows.map((row) =>
+    descriptorForAttachedId(row.id, systemLabel(row), '', row.nickname ?? '', row.backendId)));
+  statuses = new Map(rows.map((row) => [row.id, {
+    lastReachedMs: row.lastReachedMs ?? 0,
+    deviceNameSyncError: row.deviceNameSyncError ?? '',
+    ownDeviceSyncError: row.ownDeviceSyncError ?? '',
+  }]));
 }
 
 /**
@@ -165,8 +197,12 @@ export async function removeSystem(id: string): Promise<void> {
  */
 function forgetSystem(id: string): void {
   revision++;
-  systems = systems.filter((s) => s.id !== id);
   pending = pending.filter((p) => p.id !== id);
+  if (statuses.has(id)) {
+    const next = new Map(statuses);
+    next.delete(id);
+    statuses = next;
+  }
   // Both: the manifest list forgets it so the next sync does not re-open
   // it, and the socket closes now rather than at that sync.
   publishDetachedBackend(id);
@@ -179,13 +215,6 @@ function forgetSystem(id: string): void {
   purgeClientState(id);
 }
 
-function applySystemNickname(id: string, nickname: string): void {
-  revision++;
-  systems = systems.map((s) => (s.id === id ? { ...s, nickname } : s));
-  const system = systems.find((s) => s.id === id);
-  if (system) publishAttachedBackend(descriptorForAttachedId(id, systemLabel(system), '', system.nickname ?? ''));
-}
-
 /**
  * `backend:set-changed` — a removal or a rename, made by any page on this
  * host. Called by events.ts.
@@ -196,7 +225,7 @@ function applySystemNickname(id: string, nickname: string): void {
  *
  * Origin is checked for the same reason `applyBackendAttach` checks it — the
  * event hub subscribes every attached backend, the channel is loopback-only
- * rather than home-only, and these four RPCs act on THIS machine's profile
+ * rather than home-only, and these RPCs act on THIS machine's profile
  * directory. Another backend's frame names an id in its own profile
  * directory, which would drop the wrong row here.
  */
@@ -220,9 +249,13 @@ export function applyBackendSetChange(
     forgetSystem(evt.id);
     return;
   }
-  if (evt.action === 'renamed') applySystemNickname(evt.id, evt.nickname ?? '');
-  if (evt.action === 'device-name-sync') {
-    void loadSystems().catch((err) => addToast('error', `Could not load device name status: ${errString(err)}`));
+  // A rename and a device-name-sync change both land in fields only the
+  // authoritative list holds — the folded label, the sync errors — so both
+  // re-read it. The bumped revision keeps an older in-flight read from
+  // publishing the superseded answer over the fresh one.
+  if (evt.action === 'renamed' || evt.action === 'device-name-sync') {
+    revision++;
+    void loadSystems().catch((err) => addToast('error', `Could not refresh device connections: ${errString(err)}`));
   }
 }
 
@@ -232,14 +265,13 @@ export function systemLabel(system: Pick<AttachedBackend, 'name' | 'nickname' | 
 }
 
 /**
- * The label for a machine that is about to be forgotten: the list's row
- * when this page has loaded it, else the transport registry's descriptor
- * (a page that never opened Settings still carries every attached door),
- * else the id.
+ * The label for a machine that is about to be forgotten: the transport
+ * registry's entry (every page on this host carries every attached door,
+ * whether or not Settings ever opened), else the id. The entry's `name`
+ * already folds the profile nickname in, because `publishSystems` writes
+ * it through `systemLabel`.
  */
 function removedSystemLabel(id: string): string {
-  const system = systems.find((s) => s.id === id);
-  if (system) return systemLabel(system);
   const entry = backendById(id);
   return entry?.nickname || entry?.name || id;
 }
@@ -253,7 +285,7 @@ function removedSystemLabel(id: string): string {
  * rather than trusted upstream.** The event hub subscribes every attached
  * backend (`transport/backends.ts`'s `subscribeEveryBackend`), so this
  * handler is reachable from a machine that is not the one whose profile
- * directory these four RPCs act on. The Go channel is loopback-only and
+ * directory these RPCs act on. The Go channel is loopback-only and
  * host-scoped, which excludes a network peer but not a backend that is
  * itself on this box, and the descriptor built below names THIS machine's
  * proxy path (`/ws/backend/<id>`), so another backend's frame would
@@ -272,7 +304,9 @@ export function applyBackendAttach(
   if (evt.attached) {
     // Another window's result (or a delayed result after removal) is only
     // an invitation to refresh. The current profile set decides membership.
-    if (row) publishAttachedBackend(descriptorForAttachedId(evt.id, name, '', ''));
+    // The profile id IS the machine's UUID (attachedbackends.Attachment.ID
+    // is the link's backend id), so the entry answers to it at once.
+    if (row) publishAttachedBackend(descriptorForAttachedId(evt.id, name, '', '', evt.id));
     if (hasScope('host')) void loadSystems().catch((err) => addToast('error', errString(err)));
     return { name, error: '' };
   }
@@ -287,7 +321,7 @@ export function applyBackendAttach(
 /** Test seam. */
 export function __resetSystemsForTest(): void {
   revision++;
-  systems = [];
+  statuses = new Map();
   loaded = false;
   pending = [];
   loadInFlight = null;

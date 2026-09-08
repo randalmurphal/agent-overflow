@@ -19,7 +19,6 @@ import {
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { getBackendIdentity, onBackendIdentity } from '../transport/backendIdentity';
 import { rememberedIdentity } from '../transport/rememberedIdentity';
-import { endpointHost, storedBackendEndpoint } from '../transport/homeEndpoint';
 import { projectBackend, threadBackend } from '../transport/entityIndex';
 import { hasScope } from '../transport/scopes';
 import { relativeTime } from '../utils/format';
@@ -108,13 +107,8 @@ function resolveDisplayName(entry: BackendEntry): string {
   if (nickname) return nickname;
   const current = list.find((candidate) => candidate.id === entry.id) ?? entry;
   if (current.nickname) return current.nickname;
-  const name = current.name || entry.name;
-  const endpoint = storedBackendEndpoint(entry.id);
-  // Older desktop manifests combined the explicit nickname and advertised
-  // name. Preserve that legacy override, except a phone's address fallback.
-  if (current.nickname === undefined && name && (!endpoint || name !== endpointHost(endpoint))) return name;
   return getBackendIdentity(entry.id).name || rememberedIdentity(entry.id)?.name
-    || name || (entry.home ? 'This computer' : entry.id);
+    || current.name || entry.name || (entry.home ? 'This computer' : entry.id);
 }
 
 /** Resolve once per connection/identity/nickname change, not per sidebar row. */

@@ -5,6 +5,7 @@ import { attachedBackends, backendById, onBackendsChanged, withBackendTarget, ty
 import { attachIntroducedBackend, awaitAttachedActivation, payloadFromLink, retireOwnDeviceBackend } from '../transport/backendAttach';
 import { hasPairedSession, hasOwnDeviceSession, pairedSessionId } from '../transport/deviceSession';
 import { ownDeviceConnectionExcluded, ownDeviceConnectionPolicy, rememberOwnDeviceMemberships } from '../transport/ownDeviceConnections';
+import { backendDisplayName } from './attachedBackends.svelte';
 import { ListOwnDevices, SyncOwnDevices, IntroduceOwnDevice, MintOwnDeviceIntroduction, AcceptOwnDeviceIntroduction } from './bindings';
 import { wailsEventOn } from './wailsEvents';
 
@@ -55,7 +56,7 @@ export function installOwnDeviceSync(): () => void {
           const group = await withBackendTarget(watch.entry.id, ListOwnDevices);
           if (sponsorCurrent() && group.enabled) groups.push({ watch, current: sponsorCurrent, group });
         } catch {
-          if (current(watch)) failed.add(watch.entry.name || watch.entry.client.getHello()?.backendName || 'A computer');
+          if (current(watch)) failed.add(backendDisplayName(watch.entry) || 'A computer');
         }
       }
       // Remember every available removal before any introduction. Metadata is
@@ -128,9 +129,9 @@ export function installOwnDeviceSync(): () => void {
             if (!admission() || ownDeviceConnectionExcluded(id)) continue;
             if (payloadFromLink(invite.url).backendId !== id) throw new Error('The introduction names a different computer.');
             const paired = await attachIntroducedBackend(invite.url, admission, member.routes);
-            if (!stopped && await awaitAttachedActivation(paired.id, 1_000, 10_000) !== 'attached') failed.add(member.name || 'A computer');
+            if (!stopped && await awaitAttachedActivation(paired.id, 1_000, 10_000) !== 'attached') failed.add((target && backendDisplayName(target)) || member.name || 'A computer');
           } catch {
-            if (sponsor.current() && !ownDeviceConnectionExcluded(id)) failed.add(member.name || 'A computer');
+            if (sponsor.current() && !ownDeviceConnectionExcluded(id)) failed.add((target && backendDisplayName(target)) || member.name || 'A computer');
           }
         }
       }

@@ -406,21 +406,30 @@ stops waking readers.
   Both indexed ownership and per-pane overrides are reactive keyed reads, so
   a mounted banner or picker cannot retain a different target from routing
   when a catalog arrives or a draft's choice changes in place.
-- `systems.svelte.ts` owns the attached-machine list (`ListBackends`,
+- `systems.svelte.ts` owns the three profile RPCs (`ListBackends`,
   `AddBackend`, `RemoveBackend`) and the `backend:attach`
-  reaction. Pairing is two RPCs apart in time — the verification number
-  comes back at once, the far owner confirms minutes later — so the pending
-  row and its retirement have to share one owner. A confirmed attach
-  publishes the descriptor to the transport registry itself
-  (`publishAttachedBackend`) rather than waiting on a manifest re-fetch,
-  and a removal detaches the socket as well as forgetting the descriptor.
+  reaction — but not a list of its own: THE TRANSPORT REGISTRY IS THE
+  LIST. Every `ListBackends` answer is published wholesale into
+  `publishManifestBackends` with each row's real profile UUID as the
+  descriptor's `backendId`, and Settings renders `getAttachedBackends()`
+  on both realizations; the store keeps only a side map of the per-machine
+  facts the descriptor has no field for (`systemStatus(id)`:
+  `lastReachedMs` and the two sync errors). A rename or device-name-sync
+  frame re-reads the list rather than patching anything in place. Pairing
+  is two RPCs apart in time — the verification number comes back at once,
+  the far owner confirms minutes later — so the pending row and its
+  retirement have to share one owner. A confirmed attach publishes the
+  descriptor to the transport registry itself (`publishAttachedBackend`)
+  rather than waiting on a manifest re-fetch, and a removal detaches the
+  socket as well as forgetting the descriptor.
   A `backend:set-changed` removal carrying `reason: 'ended-by-computer'`
   is the far owner revoking this installation — the one removal nobody
   here asked for — and gets exactly one `warning` toast naming the machine
   ("<label> ended this computer's access. Pair again from Connect to a
-  computer."). The label is read BEFORE `forgetSystem` runs (the list row,
-  else the transport registry's descriptor for a page that never opened
-  Settings), because afterwards nothing on this side knows the name. A
+  computer."). The label is read BEFORE `forgetSystem` runs, off the
+  transport registry's entry (every page on this host carries every
+  attached door, whether or not Settings ever opened), because afterwards
+  nothing on this side knows the name. A
   removal with no reason is this installation's own and says nothing.
   Desktop frontends manage profiles through their local controller. Phones
   own their profiles locally; neither requires the first host to be online.

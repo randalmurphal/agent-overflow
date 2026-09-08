@@ -57,10 +57,12 @@ it('updates reactive labels on identity arrival and cross-window nickname change
   } finally { cleanup(); }
 });
 
-it('preserves existing desktop profile nicknames and rejects overlong local names', () => {
-  stageBackend({ id: 'mac', name: 'Legacy nickname' });
+it('follows the live identity for a row with no explicit nickname and rejects overlong local names', () => {
+  // A descriptor name with no nickname field is a folded label, not an
+  // override: the live identity outranks it once it arrives.
+  stageBackend({ id: 'mac', name: 'Folded label' });
   setBackendIdentityFromBootstrap(REMOTE_BACKEND_UUID, 'generation', 'Mac', 'mac');
-  expect(backendDisplayName(attachedBackendEntry('mac')!)).toBe('Legacy nickname');
+  expect(backendDisplayName(attachedBackendEntry('mac')!)).toBe('Mac');
   expect(() => setBackendNickname('mac', 'x'.repeat(81))).toThrow('80 characters');
   expect(backendNickname('mac')).toBe('');
 });

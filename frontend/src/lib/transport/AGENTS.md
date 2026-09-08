@@ -1010,15 +1010,26 @@ pane can substitute for that project's owner.
   its next tick instead of probing a cleared credential for the rest of
   the window.
 
-  **An attached machine is never nameless.** `attachedMachines()` joins
-  the registry with the endpoint map and falls back to the endpoint HOST,
-  and `storedBackendDescriptors()` writes the same placeholder. An empty
-  name would leave the machine picker and Settings → Remote access →
-  Connect to a computer blank for a
-  backend whose manifest has not resolved, which on an unreachable machine
-  is never. Reachability is deliberately NOT in that join: an entry's
-  `status` is a getter that moves without the list moving, so a row reads
-  it per render through `stores/attachedBackends.backendReachable`.
+  **An attached machine is never nameless.** `storedBackendDescriptors()`
+  falls back to the endpoint HOST when the pairing carried no name, so
+  every registry entry a shell rebuilds has a label before its manifest
+  resolves — which on an unreachable machine is never. Surfaces render the
+  registry's entries directly (Settings → Remote access → Connect to a
+  computer is one `#each` over `getAttachedBackends()` for both
+  realizations) and label them through
+  `stores/attachedBackends.backendDisplayName`. Reachability is
+  deliberately NOT part of any list snapshot: an entry's `status` is a
+  getter that moves without the list moving, so a row reads it per render
+  through `stores/attachedBackends.backendReachable`.
+
+  **An address with no credential does not attach.**
+  `storedBackendDescriptors()` skips a non-home endpoint holding no stored
+  session and no redemption in flight (`deviceSession.redemptionInFlight`):
+  a failed redemption stores the address before `/auth/pair` answers, and
+  a session cleared later leaves the same orphan — either way the next
+  boot would attach an Offline computer nothing could ever reach. A
+  redemption still in flight is the one legitimate moment the credential
+  is missing, and its own sync re-asks once the session stores.
 - `pageHost.ts` is the OTHER ticket channel: the page's half of the
   handshake with a Go process that owns its window. Such a page is marked
   by `?host=webview` on an otherwise bare URL, because a URL is copyable,

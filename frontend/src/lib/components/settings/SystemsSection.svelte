@@ -29,7 +29,7 @@
   import { ownDeviceConnectionsWaiting } from '../../stores/ownDevices.svelte';
   import SSHConnectModal from './SSHConnectModal.svelte';
   import { HOME_BACKEND } from '../../transport/backendKey';
-  import { attachedBackendEntry, backendDisplayName } from '../../stores/attachedBackends.svelte';
+  import { backendDisplayName } from '../../stores/attachedBackends.svelte';
   import { onMount } from 'svelte';
   import MonitorIcon from '@lucide/svelte/icons/monitor';
   import Button from '../primitives/Button.svelte';
@@ -44,7 +44,6 @@
   import { isNativeShell } from '../../native/platform';
   import {
     attachBackendFromLink,
-    attachedMachines,
     awaitAttachedActivation,
     detachAttachedBackend,
     onPendingAttachmentsChanged,
@@ -56,11 +55,10 @@
   import {
     addSystem,
     getPendingAttachments,
-    getSystems,
     loadSystems,
     removeSystem,
-    systemLabel,
     systemsLoaded,
+    systemStatus,
   } from '../../stores/systems.svelte';
 
   const clientMode = isClientMode();
@@ -78,17 +76,24 @@
   let ownDevices = $derived(hostList && backendHasCapability('own-devices.v1'));
 
   let home = $derived(getAttachedBackends().find((entry) => entry.home));
-  let systems = $derived(getSystems());
   let pending = $derived(getPendingAttachments());
   let loaded = $derived(systemsLoaded());
 
-  // The shell's two lists. `getAttachedBackends()` is the reactive mirror
-  // of the transport registry and moves on exactly the attach and detach
-  // these rows change with, so reading it inside the `$derived` is what
-  // makes the join re-run; the pending map has no rune of its own and
-  // gets one here, fed by the transport's change listener.
+  // ONE list for both realizations: the transport registry, which is what
+  // every mutation path here already writes (the desktop's store publishes
+  // each `ListBackends` answer into it, the shell's transport attaches and
+  // detaches it directly). The registry keeps attach order; the desktop
+  // list has always rendered in `ListBackends` order, which is id-sorted
+  // (deviceclient sorts sessions by BackendID), so the desktop branch
+  // sorts a copy to keep the rows where they were.
+  let computers = $derived.by(() => {
+    const others = getAttachedBackends().filter((entry) => !entry.home);
+    return nativeShell ? others : [...others].sort((a, b) => (a.id < b.id ? -1 : 1));
+  });
+
+  // The pending map has no rune of its own and gets one here, fed by the
+  // transport's change listener.
   let shellPending = $state.raw<readonly PendingAttachedBackend[]>([]);
-  let machines = $derived(nativeShell ? attachedMachines(getAttachedBackends()) : []);
 
   let link = $state('');
   let sshOpen = $state(false);
@@ -219,11 +224,6 @@
     }
   }
 
-  function displayName(id: string, fallback: string): string {
-    const entry = attachedBackendEntry(id);
-    return entry ? backendDisplayName(entry) : fallback;
-  }
-
   function statusText(id: string, lastReachedMs = 0): string {
     return backendReachable(id) ? 'Connected' : backendOfflineLabel(id, lastReachedMs);
   }
@@ -234,7 +234,7 @@
   // written once and the source is the branch.
   let pendingRows = $derived(nativeShell ? shellPending : pending);
   let nothingAttached = $derived(
-    nativeShell ? machines.length === 0 : loaded && systems.length === 0,
+    nativeShell ? computers.length === 0 : loaded && computers.length === 0,
   );
 </script>
 
@@ -289,62 +289,37 @@
         </div>
       {/each}
 
-      {#each machines as machine (machine.id)}
+      {#each computers as computer (computer.id)}
+        {@const status = systemStatus(computer.id)}
         <div
           class="rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-3 py-2.5"
-          data-testid="attached-machine"
+          data-testid={nativeShell ? 'attached-machine' : 'attached-system'}
         >
           <div class="flex items-center gap-3">
             <span class="text-fg-hint"><Icon icon={MonitorIcon} size={18} strokeWidth={1.75} /></span>
             <div class="flex min-w-0 flex-1 flex-col gap-0.5">
-              <p class="truncate text-[0.75rem] font-medium text-fg">{displayName(machine.id, machine.name)}</p>
+              <p class="truncate text-[0.75rem] font-medium text-fg">{backendDisplayName(computer)}</p>
               <p class="truncate text-[0.6875rem] text-fg-hint">
-                {statusText(machine.id)}
+                {statusText(computer.id, status?.lastReachedMs ?? 0)}
               </p>
             </div>
             <Button
-              variant={armedRemove === machine.id ? 'danger' : 'danger-ghost'}
+              variant={armedRemove === computer.id ? 'danger' : 'danger-ghost'}
               size="xs"
-              onclick={() => detachMachine(machine.id)}
+              disabled={!nativeShell && acting}
+              onclick={() => (nativeShell ? detachMachine(computer.id) : void remove(computer.id))}
             >
-              {armedRemove === machine.id ? 'Confirm remove' : 'Remove'}
+              {armedRemove === computer.id ? 'Confirm remove' : 'Remove'}
             </Button>
           </div>
-          <ComputerNickname backend={machine.id} />
-          <ComputerActions backend={machine.id} />
-        </div>
-      {/each}
-
-      {#each systems as system (system.id)}
-        <div
-          class="rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-3 py-2.5"
-          data-testid="attached-system"
-        >
-          <div class="flex items-center gap-3">
-            <span class="text-fg-hint"><Icon icon={MonitorIcon} size={18} strokeWidth={1.75} /></span>
-            <div class="flex min-w-0 flex-1 flex-col gap-0.5">
-              <p class="truncate text-[0.75rem] font-medium text-fg">{displayName(system.id, systemLabel(system))}</p>
-              <p class="truncate text-[0.6875rem] text-fg-hint">
-                {statusText(system.id, system.lastReachedMs)}
-              </p>
-            </div>
-            <Button
-              variant={armedRemove === system.id ? 'danger' : 'danger-ghost'}
-              size="xs"
-              disabled={acting}
-              onclick={() => void remove(system.id)}
-            >
-              {armedRemove === system.id ? 'Confirm remove' : 'Remove'}
-            </Button>
-          </div>
-          <ComputerNickname backend={system.id} />
-          {#if system.deviceNameSyncError}
-            <p class="mt-2 text-xs text-fg-muted">Device name update pending: {system.deviceNameSyncError}</p>
+          <ComputerNickname backend={computer.id} />
+          {#if status?.deviceNameSyncError}
+            <p class="mt-2 text-xs text-fg-muted">Device name update pending: {status?.deviceNameSyncError ?? ''}</p>
           {/if}
-          {#if system.ownDeviceSyncError}
-            <p class="mt-2 text-xs text-fg-muted" role="status">Device connections pending: {system.ownDeviceSyncError}</p>
+          {#if status?.ownDeviceSyncError}
+            <p class="mt-2 text-xs text-fg-muted" role="status">Device connections pending: {status?.ownDeviceSyncError ?? ''}</p>
           {/if}
-          <ComputerActions backend={system.id} />
+          <ComputerActions backend={computer.id} />
         </div>
       {/each}
 
