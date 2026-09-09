@@ -10,6 +10,7 @@ import TypographySettings from './TypographySettings.svelte';
 import ChatSettings from './ChatSettings.svelte';
 import SpinnerSection from './SpinnerSection.svelte';
 import ThreadSettings from './ThreadSettings.svelte';
+import SidebarSettings from './SidebarSettings.svelte';
 import PerformanceSettings from './PerformanceSettings.svelte';
 import KeybindingsSettings from './KeybindingsSettings.svelte';
 import NotificationsSection from './NotificationsSection.svelte';
@@ -34,6 +35,7 @@ export const SETTINGS_PAGES: Record<SettingsSection, Component> = {
   chat: ChatSettings,
   spinner: SpinnerSection,
   threads: ThreadSettings,
+  sidebar: SidebarSettings,
   performance: PerformanceSettings,
   keybindings: KeybindingsSettings,
   notifications: NotificationsSection,

@@ -7,6 +7,12 @@ function keys(query: string): string[] {
 }
 
 describe('searchSettings', () => {
+  it('finds sidebar icons, project ordering, and the relocated auto-pin control', () => {
+    expect(keys('provider icons')).toContain('sidebar.provider-icons');
+    expect(keys('sort')).toContain('sidebar.project-order');
+    const autoPin = searchSettings('auto-pin').find((hit) => hit.kind === 'field');
+    expect(autoPin?.page.id).toBe('sidebar');
+  });
   it("lists each provider's accounts under its own page", () => {
     const pages = searchSettings('accounts')
       .filter((hit) => hit.kind === 'field' && hit.field.label === 'Accounts')

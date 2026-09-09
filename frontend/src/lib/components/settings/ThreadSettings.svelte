@@ -47,18 +47,6 @@
           {/each}
         </select>
       </SettingsField>
-
-      <SettingsField
-        id="threads.auto-pin"
-        label="Auto-pin new threads"
-        hint="Put a new thread on the front burner after its first message is sent."
-      >
-        <ToggleSwitch
-          checked={settings.autoPinNewThreads}
-          ariaLabel="Toggle Auto-Pin New Threads"
-          onToggle={(value) => updateSetting('autoPinNewThreads', value)}
-        />
-      </SettingsField>
     </div>
   </section>
 

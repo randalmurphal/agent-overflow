@@ -24,20 +24,10 @@ describe('<ThreadSettings> — New threads', () => {
   });
 
   it('renders the new-thread seed settings without chat default controls', async () => {
-    const { getByTestId } = render(ThreadSettings);
+    const { getByTestId, queryByRole } = render(ThreadSettings);
     expect(getByTestId('settings-thread-defaults')).toBeTruthy();
     expect(getByTestId('settings-default-thread-env-mode')).toBeTruthy();
-  });
-
-  it('dispatches the auto-pin setting from its default-on state', async () => {
-    const { getByRole } = render(ThreadSettings);
-    const toggle = getByRole('switch', { name: 'Toggle Auto-Pin New Threads' });
-    expect(toggle.getAttribute('aria-checked')).toBe('true');
-
-    await fireEvent.click(toggle);
-
-    expect(getSettings().autoPinNewThreads).toBe(false);
-    expect(getBindingMock('UpdateSettings')).not.toHaveBeenCalled();
+    expect(queryByRole('switch', { name: 'Toggle Auto-Pin New Threads' })).toBeNull();
   });
 
   it('dispatches defaultThreadEnvMode patch on change', async () => {

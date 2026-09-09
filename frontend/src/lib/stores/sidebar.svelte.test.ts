@@ -5,6 +5,8 @@ import {
   collapseThreadList,
   getCollapsedGroups,
   getProjectSortMode,
+  getShowProviderIcons,
+  setShowProviderIcons,
   getThreadListVisibleLimit,
   isDiscussionExpanded,
   isGroupExpanded,
@@ -302,5 +304,37 @@ describe('sidebar store', () => {
       setThreadListVisibleLimit('p1', THREAD_PREVIEW_LIMIT);
       expect(getThreadListVisibleLimit('p1')).toBe(THREAD_PREVIEW_LIMIT);
     });
+  });
+});
+
+
+describe('sidebar provider icon preference', () => {
+  beforeEach(resetSidebarForTest);
+
+  it('defaults off, accepts repeated saves, and persists both on and off', () => {
+    expect(getShowProviderIcons()).toBe(false);
+    for (const value of [true, true, false, false]) {
+      expect(setShowProviderIcons(value)).toBe(true);
+      expect(getShowProviderIcons()).toBe(value);
+      expect(localStorage.getItem('agent-overflow:frontend:sidebar:showProviderIcons')).toBe(JSON.stringify(value));
+    }
+  });
+
+  it('loads cross-window updates and clears the icon for malformed or removed values', () => {
+    const key = 'agent-overflow:frontend:sidebar:showProviderIcons';
+    for (const [raw, expected] of [['true', true], ['"true"', false], ['true', true], ['{}', false], ['true', true], [null, false]] as const) {
+      if (raw === null) localStorage.removeItem(key);
+      else localStorage.setItem(key, raw);
+      const event = new Event('storage');
+      Object.defineProperties(event, { key: { value: key }, storageArea: { value: localStorage } });
+      window.dispatchEvent(event);
+      expect(getShowProviderIcons()).toBe(expected);
+    }
+  });
+
+  it('rejects invalid writes inside the store', () => {
+    expect(() => setShowProviderIcons('true' as unknown as boolean)).toThrow('must be a boolean');
+    expect(getShowProviderIcons()).toBe(false);
+    expect(localStorage.getItem('agent-overflow:frontend:sidebar:showProviderIcons')).toBeNull();
   });
 });

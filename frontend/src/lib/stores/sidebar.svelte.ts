@@ -1,7 +1,8 @@
 // Sidebar UI state: which project rows are expanded, and which direction
 // the projects list is sorted.
 //
-// Two persistence layers, split by what kind of state each is:
+// Persistence follows the kind of state:
+//   - Provider icons persist locally through frontendStorage.
 //   - View state (collapsed projects, expanded discussions, thread-list
 //     limits) persists per client through appStorage
 //     (ui_state table) — two machines looking at the same backend keep
@@ -36,6 +37,7 @@ import {
   appStorageSet,
 } from './appStorage';
 import { getSettings, updateSettingsPatch } from './settings.svelte';
+import { readFrontendValue, writeFrontendValue, onFrontendValueChanged } from './frontendStorage';
 
 export type { ProjectSortMode };
 
@@ -61,11 +63,29 @@ const SORT_MODE_KEY = 'agent-overflow:sidebar:projectSortMode';
 
 const DEFAULT_PROJECT_SORT_MODE: ProjectSortMode = 'lastActivity';
 
-const PROJECT_SORT_MODES: readonly ProjectSortMode[] = [
-  'lastActivity',
-  'createdAt',
-  'manual',
-];
+export const PROJECT_SORT_OPTIONS = [
+  { value: 'lastActivity', label: 'Latest Activity' },
+  { value: 'createdAt', label: 'Created' },
+  { value: 'manual', label: 'Manual' },
+] as const satisfies ReadonlyArray<{ value: ProjectSortMode; label: string }>;
+const PROJECT_SORT_MODES: readonly ProjectSortMode[] = PROJECT_SORT_OPTIONS.map((option) => option.value);
+
+const PROVIDER_ICONS_KEY = 'sidebar:showProviderIcons';
+let showProviderIcons = $state(readFrontendValue(PROVIDER_ICONS_KEY) === true);
+
+export function getShowProviderIcons(): boolean {
+  return showProviderIcons;
+}
+
+export function setShowProviderIcons(value: boolean): boolean {
+  if (typeof value !== 'boolean') throw new Error('Show provider icons must be a boolean');
+  showProviderIcons = value;
+  return writeFrontendValue(PROVIDER_ICONS_KEY, value);
+}
+
+onFrontendValueChanged(PROVIDER_ICONS_KEY, () => {
+  showProviderIcons = readFrontendValue(PROVIDER_ICONS_KEY) === true;
+});
 
 /** Parses a persisted JSON string[] value; null on any malformed shape. */
 function parseStringArray(raw: string): string[] | null {
@@ -395,6 +415,7 @@ function visibleLimitsWith(id: string, limit: number): Record<string, number> {
 /** Test helper: clears in-memory state and the sort-mode cache. View
  *  state lives in appStorage — reset that via resetAppStorageForTest. */
 export function resetSidebarForTest(): void {
+  showProviderIcons = false;
   collapsedProjects = new Set();
   expandedDiscussions = new Set();
   collapsedGroups = new Set();

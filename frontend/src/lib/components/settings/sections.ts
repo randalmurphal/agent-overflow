@@ -44,6 +44,12 @@ export const SETTINGS_SECTIONS = [
     description: 'How messages, diffs, panes and activity render in a thread.',
   },
   {
+    id: 'sidebar',
+    label: 'Sidebar',
+    group: 'Appearance',
+    description: 'Provider icons, pinning new threads, and project order.',
+  },
+  {
     id: 'spinner',
     label: 'Working indicator',
     group: 'Appearance',

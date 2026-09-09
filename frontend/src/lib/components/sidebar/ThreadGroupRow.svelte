@@ -349,7 +349,7 @@
       >
         {group.name}
       </span>
-      <div class="ml-auto relative shrink-0 flex items-center justify-end min-w-7">
+      <div class="-ml-0.5 relative shrink-0 flex items-center justify-end min-w-5">
         {#if !expanded}
           <span
             class="text-[0.625rem] tabular-nums text-fg-hint"

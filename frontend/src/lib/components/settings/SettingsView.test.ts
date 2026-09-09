@@ -53,7 +53,7 @@ describe('settings section map', () => {
       'Data',
     ]);
     expect(SETTINGS_SECTION_GROUPS.map((g) => g.sections.map((s) => s.id))).toEqual([
-      ['theme', 'typography', 'chat', 'spinner'],
+      ['theme', 'typography', 'chat', 'sidebar', 'spinner'],
       ['threads', 'performance', 'keybindings', 'notifications', 'updates'],
       ['claude', 'codex', 'commit-messages', 'browser', 'discussions'],
       ['projects', 'git', 'editor'],

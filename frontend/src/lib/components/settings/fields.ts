@@ -211,6 +211,29 @@ const STATIC_FIELDS = [
     keywords: ['window', 'virtualization', 'memory'],
   },
 
+  // --- Sidebar ------------------------------------------------------------
+  {
+    id: 'sidebar.provider-icons',
+    section: 'sidebar',
+    label: 'Show provider icons',
+    hint: 'Show the provider beside each thread title.',
+    keywords: ['claude', 'codex', 'logo'],
+  },
+  {
+    id: 'sidebar.auto-pin',
+    section: 'sidebar',
+    label: 'Auto-pin new threads',
+    hint: 'Put a new thread on the front burner after its first message is sent.',
+    keywords: ['pin', 'front burner'],
+  },
+  {
+    id: 'sidebar.project-order',
+    section: 'sidebar',
+    label: 'Project order',
+    hint: 'Order projects by activity, creation time, or manual drag order.',
+    keywords: ['sort', 'latest', 'created'],
+  },
+
   // --- Working indicator --------------------------------------------------
   {
     id: 'spinner.verbs',
@@ -270,14 +293,6 @@ const STATIC_FIELDS = [
     label: 'Default environment',
     hint: 'Workspace mode seeded on new draft threads.',
     keywords: ['worktree', 'checkout', 'workspace', 'draft'],
-  },
-  {
-    id: 'threads.auto-pin',
-    section: 'threads',
-    heading: 'New threads',
-    label: 'Auto-pin new threads',
-    hint: 'Put a new thread on the front burner after its first message is sent.',
-    keywords: ['pin', 'front burner', 'sidebar'],
   },
   {
     id: 'threads.confirm-archive',

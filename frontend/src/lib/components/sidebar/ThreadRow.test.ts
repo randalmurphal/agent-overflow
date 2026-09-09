@@ -40,6 +40,7 @@ import { __resetEntityIndexForTest, noteProject, noteThread } from '../../transp
 import { refreshProjects, resetProjectsForTest } from '../../stores/projects.svelte';
 import { __resetBackendIdentityForTest, setBackendIdentityFromBootstrap } from '../../transport/backendIdentity';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
+import { resetSidebarForTest, setShowProviderIcons } from '../../stores/sidebar.svelte';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -56,6 +57,59 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     ...overrides,
   };
 }
+
+describe('<ThreadRow> provider icons', () => {
+  beforeEach(resetSidebarForTest);
+  afterEach(resetSidebarForTest);
+
+  it('adds and fully removes the icon on the mounted row when toggled', async () => {
+    const view = render(ThreadRow, { thread: makeThread(), pane: null });
+    expect(view.queryByTestId('thread-row-provider')).toBeNull();
+    for (let i = 0; i < 2; i++) {
+      setShowProviderIcons(true);
+      await tick();
+      expect(view.getByRole('img', { name: 'Claude' })).toBeInTheDocument();
+      setShowProviderIcons(false);
+      await tick();
+      expect(view.queryByTestId('thread-row-provider')).toBeNull();
+    }
+  });
+
+  it.each([
+    { thread: { provider: 'codex' }, label: 'Codex' },
+    { thread: { provider: 'claude' }, label: 'Claude' },
+    { thread: { provider: 'claude-tui' }, label: 'Claude TUI' },
+    { thread: { provider: 'codex', isDraft: true }, label: 'Codex' },
+    { thread: { mode: 'discussion', parentThreadId: 'parent', provider: 'codex' }, label: 'Codex' },
+    { thread: { groupId: 'group', provider: 'codex' }, label: 'Codex' },
+  ])('identifies $label on $thread', ({ thread, label }) => {
+    setShowProviderIcons(true);
+    const view = render(ThreadRow, { thread: makeThread(thread as Partial<Thread>), pane: null });
+    expect(view.getByTestId('thread-row-provider').getAttribute('title')).toBe(label);
+  });
+
+  it.each([
+    { mode: 'terminal' },
+    { mode: 'discussion' },
+    { provider: undefined },
+    { provider: 'unknown' },
+  ])('omits provider icons for $mode $provider', (thread) => {
+    setShowProviderIcons(true);
+    const view = render(ThreadRow, { thread: makeThread(thread as Partial<Thread>), pane: null });
+    expect(view.queryByTestId('thread-row-provider')).toBeNull();
+  });
+
+  it('updates the provider when the thread changes and hides it during rename', async () => {
+    setShowProviderIcons(true);
+    const view = render(ThreadRow, { thread: makeThread(), pane: null });
+    await view.rerender({ thread: makeThread({ provider: 'codex' }), pane: null });
+    expect(view.getByRole('img', { name: 'Codex' })).toBeInTheDocument();
+    await fireEvent.doubleClick(view.getByTestId('thread-row'));
+    expect(view.queryByTestId('thread-row-provider')).toBeNull();
+    await fireEvent.keyDown(view.getByRole('textbox', { name: 'Rename Thread' }), { key: 'Escape' });
+    expect(view.getByRole('img', { name: 'Codex' })).toBeInTheDocument();
+  });
+});
 
 async function primeSettings(overrides: Partial<Settings> | null = null) {
   setBindingMock('GetSettings', async () => overrides);

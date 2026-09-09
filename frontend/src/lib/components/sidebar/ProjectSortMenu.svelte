@@ -10,6 +10,7 @@
   import {
     getProjectSortMode,
     setProjectSortMode,
+    PROJECT_SORT_OPTIONS,
     type ProjectSortMode,
   } from '../../stores/sidebar.svelte';
   import ArrowDownUp from '@lucide/svelte/icons/arrow-down-up';
@@ -18,18 +19,6 @@
   import Menu from '../primitives/Menu.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
   import Popover from '../primitives/Popover.svelte';
-
-  const SORT_MODE_LABELS: Record<ProjectSortMode, string> = {
-    lastActivity: 'Latest Activity',
-    createdAt: 'Created',
-    manual: 'Manual',
-  };
-
-  const SORT_MODE_ORDER: readonly ProjectSortMode[] = [
-    'lastActivity',
-    'createdAt',
-    'manual',
-  ];
 
   let triggerEl: HTMLElement | undefined = $state(undefined);
   let open = $state(false);
@@ -52,7 +41,7 @@
 
 <span bind:this={triggerEl}>
   <IconButton
-    label={`Sort Projects (${SORT_MODE_LABELS[currentMode]})`}
+    label={`Sort Projects (${PROJECT_SORT_OPTIONS.find((option) => option.value === currentMode)?.label})`}
     size="sm"
     onClick={handleToggle}
   >
@@ -74,11 +63,11 @@
   {#snippet children()}
     <Menu ariaLabel="Sort Projects" onClose={handleClose}>
       {#snippet children()}
-        {#each SORT_MODE_ORDER as mode (mode)}
+        {#each PROJECT_SORT_OPTIONS as option (option.value)}
           <MenuItem
-            label={SORT_MODE_LABELS[mode]}
-            checked={currentMode === mode}
-            onSelect={() => handleSelect(mode)}
+            label={option.label}
+            checked={currentMode === option.value}
+            onSelect={() => handleSelect(option.value)}
           />
         {/each}
       {/snippet}

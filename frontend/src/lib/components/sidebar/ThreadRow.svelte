@@ -5,6 +5,9 @@
   } from '../../stores/keyboardModifiers.svelte';
   import { chordHintForCommand } from '../../stores/keybindings.svelte';
   import { sidebarPinGroup } from '../../utils/sidebarTree';
+  import { getShowProviderIcons } from '../../stores/sidebar.svelte';
+  import { asProviderID, providerLabel } from '../../providers/catalog';
+  import ProviderIcon from '../shared/ProviderIcon.svelte';
   import { getSettings } from '../../stores/settings.svelte';
   import { clearSidebarCursor, getSidebarCursorThreadId } from '../../stores/sidebarCursor.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
@@ -128,6 +131,11 @@
   // Terminals aren't archivable — the row offers Delete (X) instead of
   // Archive, and the leading glyph is the terminal icon.
   let isTerminal = $derived(thread.mode === 'terminal');
+  let showProviderIcon = $derived(
+    getShowProviderIcons() && !isTerminal
+      && (thread.mode !== 'discussion' || Boolean(thread.parentThreadId))
+      && asProviderID(thread.provider) !== null,
+  );
 
   let liveStatus = $derived(getEffectiveThreadStatus(thread));
   let effectiveStatus = $derived(displayLiveStatus ?? liveStatus);
@@ -540,50 +548,63 @@
     </span>
     <ThreadRowBadges {thread} />
 
-    <!--
-      Right-side slot. A fixed min-w-7 keeps the layout stable when the
-      time label fades out and the action button (archive or delete)
-      fades in on hover / keyboard focus. Both live in `relative` so the
-      button can absolute-position over the time without pushing layout.
-      The keyboard reveal keys off `group-has-[:focus-visible]/thread-row`
-      (a focus-VISIBLE descendant) rather than `:focus-within`, so a mouse
-      click on the tabindex=0 row doesn't leave the action stuck visible.
-    -->
-    <div class="ml-auto relative shrink-0 flex items-center justify-end min-w-7">
-      {#if jumpShortcut}
-        <!--
-          Modifier-held jump-hint pill. Fades in on the right side,
-          replacing the relative-time stamp. The shown keybinding navigates to
-          this row when active.
-        -->
+    <div class="flex items-center gap-1 shrink-0 -ml-0.5" data-testid="thread-row-trailing">
+      {#if showProviderIcon}
         <span
-          class="inline-flex h-5 items-center rounded-[var(--radius-field)] border border-border-subtle bg-surface-1/90 px-1.5 font-mono text-[0.625rem] font-medium text-fg shadow-sheet pointer-events-none"
-          aria-hidden="true"
-          data-testid="thread-row-jump-hint"
+          class="inline-flex items-center shrink-0"
+          title={providerLabel(thread.provider)}
+          role="img"
+          aria-label={providerLabel(thread.provider)}
+          data-testid="thread-row-provider"
         >
-          {jumpShortcut}
+          <ProviderIcon provider={thread.provider} size={12} />
         </span>
-      {:else}
-        <span
-          class="text-[0.625rem] tabular-nums text-fg-hint transition-opacity duration-150 pointer-events-none group-hover/thread-item:opacity-0 group-has-[:focus-visible]/thread-row:opacity-0"
-          data-testid="thread-row-time"
-        >
-          {timeLabel}
-        </span>
-        <!--
-          Hover actions stay unmounted while the jump-hint pill is up —
-          otherwise the absolutely-positioned archive/delete button paints
-          over the ctrl+# pill on the hovered row.
-        -->
-        <div
-          class="absolute inset-y-0 right-0 flex items-center opacity-0 pointer-events-none transition-opacity duration-150 group-hover/thread-item:opacity-100 group-hover/thread-item:pointer-events-auto group-has-[:focus-visible]/thread-row:opacity-100 group-has-[:focus-visible]/thread-row:pointer-events-auto"
-        >
-          <ThreadRowActions
-            onArchive={isTerminal ? undefined : handleArchive}
-            onDelete={isTerminal ? handleDelete : undefined}
-          />
-        </div>
       {/if}
+      <!--
+        Right-side slot. A fixed min-w-5 keeps the layout stable when the
+        time label fades out and the action button (archive or delete)
+        fades in on hover / keyboard focus. Both live in `relative` so the
+        button can absolute-position over the time without pushing layout.
+        The keyboard reveal keys off `group-has-[:focus-visible]/thread-row`
+        (a focus-VISIBLE descendant) rather than `:focus-within`, so a mouse
+        click on the tabindex=0 row doesn't leave the action stuck visible.
+      -->
+      <div class="relative shrink-0 flex items-center justify-end min-w-5">
+        {#if jumpShortcut}
+          <!--
+            Modifier-held jump-hint pill. Fades in on the right side,
+            replacing the relative-time stamp. The shown keybinding navigates to
+            this row when active.
+          -->
+          <span
+            class="inline-flex h-5 items-center rounded-[var(--radius-field)] border border-border-subtle bg-surface-1/90 px-1.5 font-mono text-[0.625rem] font-medium text-fg shadow-sheet pointer-events-none"
+            aria-hidden="true"
+            data-testid="thread-row-jump-hint"
+          >
+            {jumpShortcut}
+          </span>
+        {:else}
+          <span
+            class="text-[0.625rem] tabular-nums text-fg-hint transition-opacity duration-150 pointer-events-none group-hover/thread-item:opacity-0 group-has-[:focus-visible]/thread-row:opacity-0"
+            data-testid="thread-row-time"
+          >
+            {timeLabel}
+          </span>
+          <!--
+            Hover actions stay unmounted while the jump-hint pill is up —
+            otherwise the absolutely-positioned archive/delete button paints
+            over the ctrl+# pill on the hovered row.
+          -->
+          <div
+            class="absolute inset-y-0 right-0 flex items-center opacity-0 pointer-events-none transition-opacity duration-150 group-hover/thread-item:opacity-100 group-hover/thread-item:pointer-events-auto group-has-[:focus-visible]/thread-row:opacity-100 group-has-[:focus-visible]/thread-row:pointer-events-auto"
+          >
+            <ThreadRowActions
+              onArchive={isTerminal ? undefined : handleArchive}
+              onDelete={isTerminal ? handleDelete : undefined}
+            />
+          </div>
+        {/if}
+      </div>
     </div>
     <SidebarRowMenuButton label="Thread actions" testId="thread-row-menu" onOpen={handleContextMenu} />
   {/if}
