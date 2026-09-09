@@ -107,9 +107,9 @@ export const RECONNECT_MAX_REMOTE_MS = 30_000;
 // Stale-socket watchdog. The server heartbeats every 10s — 3× that
 // cadence with no traffic at all means the socket is half-open; the
 // full rationale lives in internal/transport/AGENTS.md §Keepalive.
-// Only armed per-connection after its first ping frame proves this
-// server heartbeats (version/deployment skew must not turn an
-// idle-but-healthy connection into a reconnect loop). Check cadence is
+// Armed per connection by the heartbeat capability or its first ping.
+// Version/deployment skew must not turn an
+// idle-but-healthy connection into a reconnect loop. Check cadence is
 // coarse — precision is not the point.
 export const STALE_TRAFFIC_THRESHOLD_MS = 30_000;
 export const STALE_CHECK_INTERVAL_MS = 10_000;
@@ -611,6 +611,8 @@ export interface TransportHello {
 
 export interface TransportStatusSnapshot {
   status: TransportStatus;
+  /** An open socket has not yet delivered traffic after platform resume. */
+  checkingConnection?: boolean;
   /** Wall-clock millis when the next reconnect attempt fires. null when
    *  the attempt is already in flight or no attempt is scheduled. */
   nextAttemptAt: number | null;
@@ -800,11 +802,12 @@ export class WSClient {
   // call, would stand it down for as long as the screen kept asking. The
   // guard applies only once the socket has proven itself since the resume.
   private awaitingFrameSinceResume = false;
-  // Per-connection: set by the first ping frame, reset on close. Each
-  // connection re-proves the traffic floor within one heartbeat period,
+  // Per-connection: set by hello's heartbeat capability or the first ping,
+  // reset on close. Each connection proves its own traffic floor,
   // so a backend rollback to a heartbeat-less build can't leave the
   // watchdog armed against a server that will never feed it.
   private serverSendsHeartbeats = false;
+  private serverAnswersHeartbeatProbes = false;
 
   // Consecutive connect attempts that died before reaching OPEN. Every
   // BOOTSTRAP_INVALIDATE_AFTER_FAILURES failures, the cached bootstrap
@@ -1023,7 +1026,10 @@ export class WSClient {
   // would clobber `this.ws`).
   private handleLifecycleResume(): void {
     if (this.closed) return;
-    if (documentHidden()) return;
+    if (documentHidden() || this.lease === 'background') {
+      this.setAwaitingFrameSinceResume(false);
+      return;
+    }
     if (this.ws !== null && this.ws.readyState === WS_OPEN) {
       // The watchdog's interval clock froze with the page; judge
       // staleness from fresh post-thaw evidence, otherwise every thaw
@@ -1182,6 +1188,7 @@ export class WSClient {
     if (this.lease === state) return;
     this.lease = state;
     if (state === 'active') this.resumeWatchdog();
+    else this.setAwaitingFrameSinceResume(false);
     this.sendFrame({ type: 'lease', state });
     this.applyLeaseToDormantLadder();
   }
@@ -1336,6 +1343,11 @@ export class WSClient {
     if (this.closed) return;
     this.clearTerminal();
     if (this.ws && this.ws.readyState === WS_OPEN) {
+      if (this.statusSnapshot.checkingConnection) {
+        this.forceReconnect('retry while checking resumed connection');
+        this.wakeReconnectLadder();
+        return;
+      }
       // A half-open socket also reads as OPEN. An explicit retry
       // deserves the watchdog's staleness verdict now rather than at
       // its next interval; on a genuinely live socket this is a no-op.
@@ -1464,6 +1476,7 @@ export class WSClient {
     this.socketNamedPairedSession = false;
     this.stopStaleWatchdog();
     this.serverSendsHeartbeats = false;
+    this.serverAnswersHeartbeatProbes = false;
     this.connectedAt = 0;
     try {
       ws.close(1000, 'redial');
@@ -1521,9 +1534,26 @@ export class WSClient {
   }
 
   private resumeWatchdog(): void {
+    // Native resume, visibilitychange and online may describe the same wake.
+    // Repeated signals must not postpone the deadline without inbound traffic.
+    if (this.awaitingFrameSinceResume) return;
     this.lastFrameAt = Date.now();
     if (this.replayBuffer) this.replayStartedAt = this.lastFrameAt;
-    this.awaitingFrameSinceResume = this.ws !== null && this.ws.readyState === WS_OPEN;
+    this.setAwaitingFrameSinceResume(this.ws !== null && this.ws.readyState === WS_OPEN);
+    if (this.awaitingFrameSinceResume && this.serverAnswersHeartbeatProbes) {
+      this.sendFrame({ type: 'ping' });
+    }
+  }
+
+  private setAwaitingFrameSinceResume(value: boolean): void {
+    if (this.awaitingFrameSinceResume === value) return;
+    this.awaitingFrameSinceResume = value;
+    if (this.statusSnapshot.status === 'connected') {
+      this.setStatus({
+        ...this.statusSnapshot,
+        checkingConnection: value && this.serverSendsHeartbeats,
+      });
+    }
   }
 
   private checkStaleness(): void {
@@ -2108,7 +2138,7 @@ export class WSClient {
     // what "last seen" is measured from.
     this.lastFrameAt = Date.now();
     this.lastConnectedAt = this.lastFrameAt;
-    this.awaitingFrameSinceResume = false;
+    this.setAwaitingFrameSinceResume(false);
     const text = typeof ev.data === 'string' ? ev.data : '';
     if (!text) return;
     if (text.length > this.maxFrameBytes) {
@@ -2185,6 +2215,7 @@ export class WSClient {
     this.publishReplay('cancel');
     this.stopStaleWatchdog();
     this.serverSendsHeartbeats = false;
+    this.serverAnswersHeartbeatProbes = false;
     // Backoff reset on STABILITY, not on open: a connection that
     // served for BACKOFF_RESET_AFTER_MS proves the far side is
     // healthy, so its eventual drop deserves a fresh ladder. A socket
@@ -2641,6 +2672,10 @@ export class WSClient {
       return;
     }
     if (frame.type === 'hello') {
+      if (Array.isArray(frame.capabilities) && frame.capabilities.includes('transport.heartbeat.v1')) {
+        this.serverSendsHeartbeats = true;
+        this.serverAnswersHeartbeatProbes = true;
+      }
       this.applyHello(frame);
       return;
     }
@@ -3029,8 +3064,9 @@ export class WSClient {
     const current = this.statusSnapshot;
     if (
       next.status === current.status
+      && (next.checkingConnection ?? false) === (current.checkingConnection ?? false)
       && next.nextAttemptAt === current.nextAttemptAt
-      // Both new fields are optional on the wire shape, so the dedupe
+      // Optional status fields are normalized so the dedupe
       // normalizes rather than comparing an absent value against an
       // explicit one and republishing an identical snapshot.
       && (next.dormant ?? false) === (current.dormant ?? false)

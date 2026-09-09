@@ -666,6 +666,10 @@ func (h *connHandler) readLoop(ctx context.Context) error {
 		}
 
 		switch frame.Type {
+		case frameTypePing:
+			if err := h.writeRaw(ctx, heartbeatFrame); err != nil {
+				return err
+			}
 		case frameTypeRPC:
 			h.dispatchRPC(ctx, frame)
 		case frameTypeReplay:

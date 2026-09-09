@@ -24,9 +24,8 @@ import { fetchPairedComputer } from './deviceSession';
 
 import { MintAttachmentDownloadTicket, MintAttachmentUploadTicket } from '../stores/bindings';
 import { backendCredentials, backendTransferUrl } from './homeEndpoint';
-import { withBackendTarget } from './backends';
-import { threadBackend } from './entityIndex';
-import { HOME_BACKEND } from './backendKey';
+import { requireEntityBackend, withBackendTarget } from './backends';
+import { resolveThreadBackend } from './entityIndex';
 import type { Attachment } from '../types/attachment';
 
 /**
@@ -46,7 +45,7 @@ import type { Attachment } from '../types/attachment';
  * 50 MiB at most, and the composer compresses images first).
  */
 export async function uploadAttachmentBytes(threadId: string, file: File): Promise<Attachment> {
-  const backend = threadBackend(threadId) ?? HOME_BACKEND;
+  const backend = requireEntityBackend(resolveThreadBackend(threadId));
   const url = await withBackendTarget(backend, () => MintAttachmentUploadTicket(threadId, file.name, file.type || '', file.size));
   const response = await fetchPairedComputer(backend, networkFetch, backendTransferUrl(url, backend), {
     method: 'PUT',
@@ -77,7 +76,7 @@ export async function uploadAttachmentBytes(threadId: string, file: File): Promi
  * which is the whole reason the lightbox refetches instead of caching.
  */
 export async function fetchAttachmentBytes(threadId: string, attachmentId: string): Promise<Blob> {
-  const backend = threadBackend(threadId) ?? HOME_BACKEND;
+  const backend = requireEntityBackend(resolveThreadBackend(threadId));
   const url = await withBackendTarget(backend, () => MintAttachmentDownloadTicket(threadId, attachmentId));
   const response = await fetchPairedComputer(backend, networkFetch, backendTransferUrl(url, backend), { credentials: backendCredentials(backend) });
   if (!response.ok) {

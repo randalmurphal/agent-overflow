@@ -3,8 +3,10 @@ import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app
 import { fetchAttachmentBytes, uploadAttachmentBytes } from './attachmentTransfer';
 import { __resetHomeEndpointForTest, setHomeEndpoint, storeBackendEndpoint } from './homeEndpoint';
 
-import { noteThread } from './entityIndex';
-import { takePinnedBackend } from './backends';
+import { __resetEntityIndexForTest, noteThread, threadBackend } from './entityIndex';
+import { backendById, detachBackend, takePinnedBackend, withBackendTarget } from './backends';
+import { Call } from './runtime';
+import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
 
 // These tests drive the module against a fetch of their own rather than
 // through test/mocks/attachmentTransfer.ts, because what is under test IS
@@ -30,12 +32,15 @@ function answerWith(build: (request: Request) => Response | Promise<Response>): 
 
 beforeEach(() => {
   resetBindingMocks();
+  __resetEntityIndexForTest();
+  stageBackend({ id: '', backendId: '', name: 'Home' });
   requests = [];
   realFetch = globalThis.fetch;
 });
 
 afterEach(() => {
   globalThis.fetch = realFetch;
+  resetStagedBackends();
 });
 
 describe('uploadAttachmentBytes', () => {
@@ -225,8 +230,27 @@ describe('under a shell origin', () => {
 describe('a thread on another computer', () => {
   afterEach(() => __resetHomeEndpointForTest());
 
+  it('uploads immediately after remote thread creation without a draft edit or sidebar refresh', async () => {
+    stageBackend({ id: 'phone-desk' });
+    stageBackend({ id: 'other', backendId: 'other-uuid' });
+    detachBackend('');
+    const calls = vi.mocked(backendById('phone-desk')!.client.callByID);
+    calls.mockImplementation(async (method) => method === 2579322833
+      ? { id: 'created-on-phone', projectId: 'project' }
+      : '/attachments/upload?ticket=new');
+    setBindingMock('MintAttachmentUploadTicket', (...args: unknown[]) => Call.ByID(1857144453, ...args));
+    answerWith(() => new Response(JSON.stringify({ id: 'photo', threadId: 'created-on-phone' })));
+
+    await withBackendTarget('phone-desk', () => Call.ByID(2579322833, { projectId: 'project' }));
+    const photo = new File([PNG], 'shot.png', { type: 'image/png' });
+    await expect(uploadAttachmentBytes('created-on-phone', photo)).resolves.toMatchObject({ id: 'photo' });
+    expect(calls).toHaveBeenLastCalledWith(1857144453, ['created-on-phone', photo.name, photo.type, photo.size]);
+    expect(requests[0]!.url).toBe('http://page.test/backend/phone-desk/attachments/upload?ticket=new');
+    expect(backendById('other')!.client.callByID).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])('keeps both uploads and downloads on that computer (phone: %s)', async (phone) => {
-    noteThread('remote-thread', 'gpu');
+    noteThread('remote-thread', 'gpu', 0);
     if (phone) {
       setHomeEndpoint('https://mac.test');
       storeBackendEndpoint('gpu', 'https://gpu.test');
@@ -234,17 +258,18 @@ describe('a thread on another computer', () => {
     setBindingMock('MintAttachmentUploadTicket', async () => {
       expect(takePinnedBackend()).toBe('gpu');
       // Changing ownership while the mint is pending must not redirect its bytes.
-      noteThread('remote-thread', '');
+      noteThread('remote-thread', '', 1);
       return '/attachments/upload?ticket=upload';
     });
     answerWith(() => new Response('{}'));
     await uploadAttachmentBytes('remote-thread', new File([PNG], 'a.png'));
+    expect(threadBackend('remote-thread')).toBe('');
     expect(requests[0]!.url).toBe(phone
       ? 'https://gpu.test/attachments/upload?ticket=upload'
       : 'http://page.test/backend/gpu/attachments/upload?ticket=upload');
     expect(requests[0]!.credentials).toBe(phone ? 'omit' : 'same-origin');
 
-    noteThread('remote-thread', 'gpu');
+    noteThread('remote-thread', 'gpu', 2);
     setBindingMock('MintAttachmentDownloadTicket', () => {
       expect(takePinnedBackend()).toBe('gpu');
       return '/attachments/remote-thread/image?ticket=download';
@@ -255,5 +280,43 @@ describe('a thread on another computer', () => {
     expect(requests[1]!.url).toBe(phone
       ? 'https://gpu.test/attachments/remote-thread/image?ticket=download'
       : 'http://page.test/backend/gpu/attachments/remote-thread/image?ticket=download');
+  });
+});
+
+describe.each(['upload', 'download'] as const)('%s ownership routing', (kind) => {
+  const transfer = () => kind === 'upload'
+    ? uploadAttachmentBytes('unindexed', new File([PNG], 'a.png'))
+    : fetchAttachmentBytes('unindexed', 'image');
+  const method = kind === 'upload' ? 'MintAttachmentUploadTicket' : 'MintAttachmentDownloadTicket';
+
+  it('uses the only connected computer when HOME is absent', async () => {
+    stageBackend({ id: 'phone-desk' });
+    detachBackend('');
+    setBindingMock(method, () => {
+      expect(takePinnedBackend()).toBe('phone-desk');
+      return '/attachments/unindexed/image?ticket=test';
+    });
+    answerWith(() => kind === 'upload' ? new Response('{}') : new Response(PNG));
+    await transfer();
+    expect(requests[0]!.url).toBe('http://page.test/backend/phone-desk/attachments/unindexed/image?ticket=test');
+  });
+
+  it('rejects ambiguous ownership before minting or sending bytes', async () => {
+    stageBackend({ id: 'other' });
+    const mint = setBindingMock(method, () => '/attachments/transfer');
+    answerWith(() => new Response('{}'));
+    await expect(transfer()).rejects.toThrow('owns this item is unknown');
+    expect(mint).not.toHaveBeenCalled();
+    expect(requests).toHaveLength(0);
+  });
+
+  it('rejects conflicting ownership before minting or sending bytes', async () => {
+    noteThread('unindexed', '', 1);
+    noteThread('unindexed', 'other', 1);
+    const mint = setBindingMock(method, () => '/attachments/transfer');
+    answerWith(() => new Response('{}'));
+    await expect(transfer()).rejects.toThrow('Two computers claim this conversation');
+    expect(mint).not.toHaveBeenCalled();
+    expect(requests).toHaveLength(0);
   });
 });

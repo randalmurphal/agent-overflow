@@ -72,6 +72,9 @@ const CapabilityDeviceName = "device-name.v1"
 // CapabilityComputerRoutes supports live invalidation and authenticated route snapshots.
 const CapabilityComputerRoutes = "computer-routes.v1"
 
+// CapabilityHeartbeat promises client-visible keepalives and replies to client pings.
+const CapabilityHeartbeat = "transport.heartbeat.v1"
+
 var serverCapabilities = []string{
 	CapabilityRemoteNotifications,
 	CapabilityPasskeys,
@@ -81,6 +84,7 @@ var serverCapabilities = []string{
 	CapabilityOwnDevices,
 	CapabilityDeviceName,
 	CapabilityComputerRoutes,
+	CapabilityHeartbeat,
 }
 
 // serverCapabilitiesWithBrowser is that list plus the one flag whose
@@ -277,6 +281,7 @@ const MaxRPCParams = 64
 // ClientFrame is the union of every frame the client may send. The
 // receiver dispatches on Type:
 //
+//   - "ping": request an immediate client-visible heartbeat, without an RPC.
 //   - "rpc": invoke a method. Either MethodID (preferred — matches Wails'
 //     reflection hash so generated bindings keep working) or Method (by
 //     name, used by the shim's Call.ByName fallback) MUST be set; Params

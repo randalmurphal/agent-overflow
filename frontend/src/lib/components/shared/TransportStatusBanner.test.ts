@@ -10,6 +10,17 @@ import type { TransportStatusSnapshot } from '../../transport/wsClient';
 const h = vi.hoisted(() => ({
   snapshot: { status: 'connected', nextAttemptAt: null } as TransportStatusSnapshot,
   retry: vi.fn(),
+  recovering: new Set<string>(),
+  recoveryListeners: new Set<(id: string, phase: 'start' | 'complete' | 'cancel') => void>(),
+}));
+
+vi.mock('../../stores/transportRecovery', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../stores/transportRecovery')>()),
+  isBackendRecovering: (id: string) => h.recovering.has(id),
+  onBackendRecovery: (listener: (id: string, phase: 'start' | 'complete' | 'cancel') => void) => {
+    h.recoveryListeners.add(listener);
+    return () => h.recoveryListeners.delete(listener);
+  },
 }));
 
 // Partial mock: only the two exports this component drives are replaced. A
@@ -50,6 +61,11 @@ async function settleBootGrace(): Promise<void> {
   await tick();
 }
 
+beforeEach(() => {
+  h.recovering.clear();
+  h.recoveryListeners.clear();
+});
+
 describe('<TransportStatusBanner>', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -85,6 +101,33 @@ describe('<TransportStatusBanner>', () => {
     expect(queryByTestId('transport-status-banner')).toBeNull();
     expect(container.querySelector('[data-testid="transport-status-slot"]')).toBeNull();
     expect(container.querySelector('.min-h-7')).toBeNull();
+  });
+
+  it('shows resume verification and offers a working retry without a dismiss', async () => {
+    h.snapshot = { status: 'connected', nextAttemptAt: null, checkingConnection: true };
+    const view = render(TransportStatusBanner);
+    await tick();
+    expect(view.getByTestId('transport-status-banner')).toHaveTextContent('Checking connection…');
+    expect(view.queryByTestId('transport-status-dismiss')).toBeNull();
+    await fireEvent.click(view.getByTestId('transport-status-retry'));
+    expect(h.retry).toHaveBeenCalledOnce();
+  });
+
+  it('keeps sync visible until this computer finishes recovery and removes the subscription', async () => {
+    h.recovering.add('');
+    const view = render(TransportStatusBanner);
+    await tick();
+    expect(view.getByTestId('transport-status-banner')).toHaveTextContent('Syncing…');
+    expect(view.queryByTestId('transport-status-dismiss')).toBeNull();
+    for (const listener of h.recoveryListeners) listener('other', 'complete');
+    await tick();
+    expect(view.getByTestId('transport-status-banner')).toHaveTextContent('Syncing…');
+    for (const listener of h.recoveryListeners) listener('', 'complete');
+    await tick();
+    await vi.advanceTimersByTimeAsync(200);
+    expect(view.queryByTestId('transport-status-banner')).toBeNull();
+    view.unmount();
+    expect(h.recoveryListeners.size).toBe(0);
   });
 
   it('keeps the desktop overlay positioning when disconnected', async () => {

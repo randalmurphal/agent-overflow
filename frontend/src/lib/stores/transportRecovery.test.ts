@@ -21,7 +21,7 @@ vi.mock('../transport/backends', () => ({
   onBackendsChanged: () => () => {},
 }));
 
-import { holdBackendRecovery, onBackendRecovery } from './transportRecovery';
+import { holdBackendRecovery, isBackendRecovering, onBackendRecovery } from './transportRecovery';
 import { itemEventQueued, itemEventsSettled, resetItemEventSettlement } from './itemEventSettlement';
 
 const offs: Array<() => void> = [];
@@ -35,6 +35,7 @@ it('finishes replay presentation after queued item mutations reach the panes', a
   const events: string[] = [];
   offs.push(onBackendRecovery((id, phase) => events.push(`${id}:${phase}`)));
   replay(fixture.home, 'start');
+  expect(isBackendRecovering('')).toBe(true);
   itemEventQueued();
   itemEventQueued();
   replay(fixture.home, 'complete');
@@ -45,6 +46,7 @@ it('finishes replay presentation after queued item mutations reach the panes', a
   itemEventsSettled(1);
   await Promise.resolve();
   expect(events).toEqual([':start', ':complete']);
+  expect(isBackendRecovering('')).toBe(false);
 });
 function deferred() {
   let resolve!: () => void;

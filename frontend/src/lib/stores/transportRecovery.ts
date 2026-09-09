@@ -72,6 +72,10 @@ export function onBackendRecovery(listener: Listener): () => void {
   return () => { listeners.delete(listener); };
 }
 
+export function isBackendRecovering(backend: BackendKey): boolean {
+  return active.has(backend);
+}
+
 export function holdBackendRecovery(backend: BackendKey, work: Promise<unknown>): void {
   const pending = active.get(backend);
   if (!pending) return;

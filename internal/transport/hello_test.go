@@ -50,6 +50,33 @@ func readPastHello(t *testing.T, conn *websocket.Conn) []byte {
 	}
 }
 
+func TestServer_HeartbeatProbeRepliesBeforePeriodicKeepalive(t *testing.T) {
+	f := newServerFixture(t)
+	conn := f.dial(t)
+	var hello helloFrame
+	if err := json.Unmarshal(readFirstFrame(t, conn), &hello); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(hello.Capabilities, CapabilityHeartbeat) {
+		t.Fatal("server did not advertise heartbeat probes")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	// Repeated probes share the ordinary bounded writer and have no RPC state.
+	for i := 0; i < 3; i++ {
+		if err := conn.Write(ctx, websocket.MessageText, []byte(`{"type":"ping"}`)); err != nil {
+			t.Fatal(err)
+		}
+		_, raw, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(raw) != string(heartbeatFrame) {
+			t.Fatalf("probe reply = %s, want heartbeat", raw)
+		}
+	}
+}
+
 // The ordering is a contract, not an accident of goroutine scheduling: a
 // client that reads hello first can seed its compatibility state before
 // anything else lands, and needs no "have I been told yet" branch on
@@ -185,6 +212,7 @@ func TestServer_AdvertisedCapabilitiesAreFrozen(t *testing.T) {
 		"own-devices.v1",
 		"device-name.v1",
 		"computer-routes.v1",
+		"transport.heartbeat.v1",
 	}
 	assertCapabilities(t, serverCapabilities, want)
 	assertCapabilities(t, serverCapabilitiesWithBrowser, append(append([]string{}, want...), "browser"))

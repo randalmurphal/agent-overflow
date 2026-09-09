@@ -232,6 +232,13 @@ cause when known. The frontend's stale-socket threshold is defined relative to
 the heartbeat period and does not judge browser-hidden intervals where timers
 and delivery may be throttled.
 
+`transport.heartbeat.v1` in hello arms that watchdog before the first ping
+and permits a client `ping` frame requesting an immediate heartbeat. Resume
+uses this probe to verify an open socket; repeated wake signals do not extend
+its deadline. Older servers arm the watchdog by sending their first heartbeat
+and receive no probes. The connection banner distinguishes resume verification
+from replay and snapshot recovery.
+
 ## Session lifetime and revocation
 
 `SessionConns` maps durable session IDs to current WebSockets. It exists so a

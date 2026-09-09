@@ -1,11 +1,9 @@
 <script lang="ts">
   import { clientDeviceName } from '../../stores/clientDeviceName.svelte';
   // Overlay banner pinned to the top of the app shell that surfaces the
-  // wsClient's current connection state. Hidden on the happy path
-  // ('connected') so it reserves no space above the chat header; only
-  // renders — as an absolute overlay, see the markup comment below — when
-  // the transport is reconnecting or has settled into an idle
-  // disconnected state.
+  // connection and recovery state. A verified connection with completed
+  // recovery reserves no space above the chat header. Compact layout uses
+  // a row instead of an overlay so the Back control remains reachable.
   //
   // The reconnecting state can carry a scheduled-attempt timestamp
   // (`nextAttemptAt`) when the wsClient has queued a backoff timer; we
@@ -68,6 +66,7 @@
   // (stores/bundleNotice.svelte.ts). Empty on every other client, which
   // is every client that cannot install a bundle.
   import { dismissBundleNotice, getBundleNotice } from '../../stores/bundleNotice.svelte';
+  import { isBackendRecovering, onBackendRecovery } from '../../stores/transportRecovery';
 
   // Tick once per second so the countdown stays in sync. We only mount
   // when the banner is visible; on a steady-state connection the
@@ -114,13 +113,23 @@
   });
 
   let bundleNotice = $derived(getBundleNotice());
+  let recovering = $state(false);
+  $effect(() => {
+    const target = backend;
+    recovering = isBackendRecovering(target);
+    return onBackendRecovery((id, phase) => {
+      if (id === target) recovering = phase === 'start';
+    });
+  });
+  let checking = $derived(snapshot.status === 'connected' && snapshot.checkingConnection === true);
+  let syncing = $derived(snapshot.status === 'connected' && recovering);
 
   // A connection problem outranks a bundle notice: one is happening now
   // and the other is about the next launch. The notice keeps the strip
   // up on its own once the transport is healthy again.
   let visible = $derived(
     (snapshot.status !== 'connected' && (hasEverConnected || bootGraceExpired))
-      || bundleNotice !== '',
+      || checking || syncing || bundleNotice !== '',
   );
 
   // A page that mounted while the transport was TERMINAL loaded nothing.
@@ -230,6 +239,8 @@
 
   let message = $derived.by(() => {
     if (removed) return 'This computer was removed. Choose another computer.';
+    if (checking) return 'Checking connection…';
+    if (syncing) return 'Syncing…';
     if (snapshot.status === 'connected') return bundleNotice;
     if (snapshot.status === 'reconnecting') {
       if (dormant) {
@@ -265,7 +276,7 @@
   // a dismiss. Without it, on a phone the strip sat over the compact
   // thread header for the rest of the session, eating its taps (found on
   // the first real-phone run, 2026-09-04).
-  let dismissable = $derived(snapshot.status === 'connected' && bundleNotice !== '');
+  let dismissable = $derived(snapshot.status === 'connected' && !checking && !syncing && bundleNotice !== '');
 
   let terminal = $derived(isTerminalConnectionStatus(snapshot.status));
   let signInOffered = $derived(terminal && backend === HOME_BACKEND && !isNativeShell() && !hasHomeEndpoint() && passkeysUsable());
@@ -334,7 +345,7 @@
          unreadable (the two-line clamp still cut the bundle notice on a
          real phone, 2026-09-04). A backend's hostname can be one
          unbreakable token, hence the wrap anywhere. -->
-    <p class="flex-1 min-w-0 [overflow-wrap:anywhere]">{computerName && snapshot.status !== 'connected' ? `${computerName}: ` : ''}{signInError || message}</p>
+    <p class="flex-1 min-w-0 [overflow-wrap:anywhere]">{computerName && (snapshot.status !== 'connected' || checking || syncing) ? `${computerName}: ` : ''}{signInError || message}</p>
     {#if signInOffered}
       <button
         type="button"
@@ -366,7 +377,7 @@
         Choose computer
       </button>
     {/if}
-    {#if snapshot.status !== 'connected' && !removed}
+    {#if (snapshot.status !== 'connected' || checking) && !removed}
       <button
         type="button"
         onclick={handleRetry}

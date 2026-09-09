@@ -204,6 +204,7 @@ export interface ClientPresenceFrame {
 }
 
 export type ClientFrame =
+  | { type: 'ping' }
   | ClientRPCFrame
   | ClientReplayFrame
   | ClientWatchFrame

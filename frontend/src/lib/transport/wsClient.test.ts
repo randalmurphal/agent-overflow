@@ -90,6 +90,7 @@ import {
   STALE_CHECK_INTERVAL_MS,
   TransportError,
   transportGapChannel,
+  type TransportStatusSnapshot,
 } from './wsClient';
 import { __resetRunModeForTest } from './runMode';
 import { grantedScopes, hasScope } from './scopes';
@@ -2771,6 +2772,131 @@ describe('WSClient', () => {
     client.close();
   });
 
+  it('arms from the current hello even when the first heartbeat never arrives', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    first.pushFrame({ type: 'hello', protocolVersion: 1, capabilities: ['transport.heartbeat.v1'], serverTimeMs: Date.now() });
+    first.pushFrame({ type: 'replay' });
+    await vi.advanceTimersByTimeAsync(STALE_TRAFFIC_THRESHOLD_MS + STALE_CHECK_INTERVAL_MS);
+    expect(first.readyState).toBe(3);
+    client.close();
+  });
+
+  it('probes a capable resumed socket once and clears verification on its reply', async () => {
+    vi.useFakeTimers();
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    ws.pushFrame({ type: 'hello', protocolVersion: 1, capabilities: ['transport.heartbeat.v1'], serverTimeMs: Date.now() });
+    ws.pushFrame({ type: 'replay' });
+    client.setLease('background');
+    window.dispatchEvent(new Event('online'));
+    document.dispatchEvent(new Event('resume'));
+    expect(ws.sent.filter((frame) => frame.type === 'ping')).toHaveLength(0);
+    client.setLease('active');
+    window.dispatchEvent(new Event('online'));
+    document.dispatchEvent(new Event('resume'));
+    expect(ws.sent.filter((frame) => frame.type === 'ping')).toHaveLength(1);
+    expect(client.getStatus().checkingConnection).toBe(true);
+    ws.pushFrame({ type: 'ping' });
+    expect(client.getStatus().checkingConnection).toBe(false);
+    client.close();
+  });
+
+  it('publishes resume verification without a false connection edge and clears it on traffic', async () => {
+    vi.useFakeTimers();
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    ws.pushFrame({ type: 'replay' });
+    ws.pushFrame({ type: 'ping' });
+    const snapshots: TransportStatusSnapshot[] = [];
+    client.onStatusChange((state) => snapshots.push(state));
+    client.setLease('background');
+    await vi.advanceTimersByTimeAsync(60_000);
+    client.setLease('active');
+    expect(client.getStatus()).toMatchObject({ status: 'connected', checkingConnection: true });
+    ws.pushFrame({ type: 'event', channel: 'x', seq: 1, data: {} });
+    expect(client.getStatus().checkingConnection).toBe(false);
+    expect(ws.sent.filter((frame) => frame.type === 'ping')).toHaveLength(0);
+    expect(snapshots.every((state) => state.status === 'connected')).toBe(true);
+    expect(snapshots.map((state) => state.checkingConnection ?? false)).toEqual([false, true, false]);
+    client.close();
+  });
+
+  it('does not let repeated resume signals postpone a silent socket deadline', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    ws.pushFrame({ type: 'replay' });
+    ws.pushFrame({ type: 'ping' });
+    client.setLease('background');
+    client.setLease('active');
+    for (let i = 0; i < 4; i++) {
+      await vi.advanceTimersByTimeAsync(9_000);
+      window.dispatchEvent(new Event('online'));
+      document.dispatchEvent(new Event('resume'));
+    }
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(ws.readyState).toBe(3);
+    expect(client.getStatus().checkingConnection ?? false).toBe(false);
+    client.close();
+  });
+
+  it('gives a second suspension a fresh verification window', async () => {
+    vi.useFakeTimers();
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    ws.pushFrame({ type: 'replay' });
+    ws.pushFrame({ type: 'ping' });
+    client.setLease('background');
+    client.setLease('active');
+    await vi.advanceTimersByTimeAsync(20_000);
+    client.setLease('background');
+    await vi.advanceTimersByTimeAsync(60_000);
+    client.setLease('active');
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(ws.readyState).toBe(1);
+    expect(client.getStatus().checkingConnection).toBe(true);
+    ws.pushFrame({ type: 'ping' });
+    expect(client.getStatus().checkingConnection).toBe(false);
+    client.close();
+  });
+
+  it('lets an explicit retry replace an unverified resumed socket immediately', async () => {
+    vi.useFakeTimers();
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    ws.pushFrame({ type: 'replay' });
+    ws.pushFrame({ type: 'ping' });
+    client.setLease('background');
+    client.setLease('active');
+    client.triggerReconnect();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ws.readyState).toBe(3);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    client.close();
+  });
+
   it('never force-closes when the server has not sent a heartbeat (version skew guard)', async () => {
     vi.useFakeTimers();
     const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
@@ -2790,7 +2916,7 @@ describe('WSClient', () => {
     client.close();
   });
 
-  it('resets the heartbeat proof per connection and re-arms on the next ping', async () => {
+  it.each(['ping', 'hello'])('resets heartbeat proof and probe support per connection (%s)', async (proof) => {
     vi.useFakeTimers();
     vi.spyOn(Math, 'random').mockReturnValue(0.5);
     vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -2804,7 +2930,9 @@ describe('WSClient', () => {
     await vi.advanceTimersByTimeAsync(0);
 
     // Socket #1 proves heartbeats, goes silent, and is force-closed.
-    first.pushFrame({ type: 'ping' });
+    first.pushFrame(proof === 'ping' ? { type: 'ping' } : {
+      type: 'hello', protocolVersion: 1, capabilities: ['transport.heartbeat.v1'], serverTimeMs: Date.now(),
+    });
     await vi.advanceTimersByTimeAsync(STALE_TRAFFIC_THRESHOLD_MS + STALE_CHECK_INTERVAL_MS);
     await vi.advanceTimersByTimeAsync(1_000);
     expect(first.readyState).toBe(3);
@@ -2819,6 +2947,10 @@ describe('WSClient', () => {
     // reconnect-looped by evidence from the previous socket.
     await vi.advanceTimersByTimeAsync(STALE_TRAFFIC_THRESHOLD_MS * 3);
     expect(second.readyState).toBe(1);
+
+    client.setLease('background');
+    client.setLease('active');
+    expect(second.sent.filter((frame) => frame.type === 'ping')).toHaveLength(0);
 
     // And the watchdog re-arms cleanly: one ping on socket #2, silence,
     // force-close again.
