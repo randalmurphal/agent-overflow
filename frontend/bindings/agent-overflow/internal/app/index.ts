@@ -119,6 +119,7 @@ export {
     ThreadContextUsage,
     ThreadContextUsageCategory,
     ThreadDefaults,
+    ThreadLiveActivity,
     ThreadLiveState,
     ThreadMCPServer,
     ThreadTransferIntent,

@@ -47,6 +47,7 @@ import type { ThreadPaneIngest } from './threadPaneRoles';
 import { holdBackendRecovery } from './transportRecovery';
 import { threadMachine, getAttachedBackends } from './attachedBackends.svelte';
 import { applyBackendSetChange } from './systems.svelte';
+import { reconcileThreadLiveActivity } from './threadLiveActivity';
 
 // The registry hands out whole ThreadPanes; this module narrows them to
 // the ingest surface at the one acquisition point, so a new pane member
@@ -120,6 +121,29 @@ function applyWorkflowGap(channel: string, origin?: EventOrigin): void {
   }
 }
 
+/**
+ * The registry half of a live-activity gap. The pane refreshes beside it
+ * repair the threads with a pane; the sidebar reads every other thread's
+ * running / blocked / compacting state from the global registries, which
+ * only the computer's snapshot can put right.
+ */
+function resyncThreadLiveActivity(origin?: EventOrigin): void {
+  const backend = backendKeyForOrigin(origin?.backendId ?? '');
+  holdBackendRecovery(backend, reconcileThreadLiveActivity(backend).catch((err: unknown) => {
+    console.warn(`events: refresh conversation activity after transport gap: ${err}`);
+  }));
+}
+
+/** The blanket answer: forget the stamps, re-read the sidebar, refresh every pane. */
+function refreshEverything(): void {
+  dropStampsAfterGap();
+  refreshSidebarProjections();
+  for (const pane of ingestPanes()) {
+    if (!pane.threadId) continue;
+    holdBackendRecovery(threadMachine(pane.threadId, pane.thread?.projectId), pane.refreshFromBackend());
+  }
+}
+
 // The handler matches on the channel name we lost rather than each
 // payload kind because a single gap on `provider:item_event` can
 // straddle upserts AND deltas; refreshing the whole pane is the
@@ -153,25 +177,33 @@ function applySettledTransportGap(gap: { channel: string; seq: number }, origin?
       // rows: the new computer does not have a connection to read through.
       applyBackendSetChange({ action: 'membership', id: '' }, backendKeyForOrigin(origin?.backendId ?? ''));
       return;
-    case 'provider:item_event':
     case 'provider:turn_started':
     case 'provider:turn_completed':
+    case 'provider:approval':
+    case 'provider:user_input':
+      // A dropped frame here leaves a sidebar dot wrong on a thread with
+      // no pane, and nothing later restates it.
+      resyncThreadLiveActivity(origin);
+      refreshEverything();
+      return;
+    case 'provider:compacting':
+      // Both directions matter: a missed open leaves the rail saying
+      // Working through minutes of silence, a missed close leaves it
+      // saying Compacting after the turn moved on. The flag is read from
+      // the registry by panes and rows alike, so no pane refresh is owed.
+      resyncThreadLiveActivity(origin);
+      return;
+    case 'provider:item_event':
     case 'thread:updated': {
       // The gap carries no entity key, so we cannot say WHICH thread's
       // history moved without us: every stamp we hold may now be an
       // overstatement. Dropping them all costs one window fetch per
       // thread on its next open and is the only answer that cannot
-      // report a stale window as fresh (§3.4).
-      dropStampsAfterGap();
-      refreshSidebarProjections();
-      // Per-pane on purpose: refreshFromBackend refetches THAT
-      // pane's loaded window (two panes on one thread can hold
-      // different slices), so this cannot dedupe by threadId the
-      // way the usage branch below does.
-      for (const pane of ingestPanes()) {
-        if (!pane.threadId) continue;
-        holdBackendRecovery(threadMachine(pane.threadId, pane.thread?.projectId), pane.refreshFromBackend());
-      }
+      // report a stale window as fresh (§3.4). Per-pane on purpose:
+      // refreshFromBackend refetches THAT pane's loaded window (two
+      // panes on one thread can hold different slices), so this cannot
+      // dedupe by threadId the way the usage branch below does.
+      refreshEverything();
       return;
     }
     case 'provider:account': {
@@ -437,11 +469,6 @@ function applySettledTransportGap(gap: { channel: string; seq: number }, origin?
       console.warn(
         `events: transport gap on unknown channel "${gap.channel}" — refreshing active panes`,
       );
-      dropStampsAfterGap();
-      refreshSidebarProjections();
-      for (const pane of ingestPanes()) {
-        if (!pane.threadId) continue;
-        holdBackendRecovery(threadMachine(pane.threadId, pane.thread?.projectId), pane.refreshFromBackend());
-      }
+      refreshEverything();
   }
 }

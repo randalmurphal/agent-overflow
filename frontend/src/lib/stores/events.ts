@@ -303,8 +303,10 @@ export function setupEventListeners(): () => void {
   const cancelItemEvent = wailsEventOn<ItemStreamEvent>('provider:item_event', applyItemStreamEvent);
 
   // provider:turn_{started,completed} — wire-pushed turn lifecycle.
-  // These are the sole drivers of the global active-turn registry
-  // (threadStatuses.svelte.ts → getActiveTurn) and
+  // Together with the live-state snapshots (threadLiveStateHydration.ts
+  // for a mounted pane, threadLiveActivity.ts for every thread of a
+  // computer) these are the only writers of the global active-turn
+  // registry (threadStatuses.svelte.ts → getActiveTurn) and
   // `pane.latestSettledTurn`. See invariant 22 and
   // docs/architecture/turn-lifecycle.md §Frontend state shape.
   const cancelTurnStarted = wailsEventOn<TurnStartedEvent>('provider:turn_started', applyTurnStarted);

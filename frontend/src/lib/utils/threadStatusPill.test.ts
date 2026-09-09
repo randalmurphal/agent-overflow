@@ -8,6 +8,7 @@ type MinimalThread = Pick<
   | 'lastReadAt'
   | 'latestTurnCompletedAt'
   | 'hasIncompleteTurn'
+  | 'hasFailedTurn'
   | 'hasActionableProposedPlan'
   | 'worktreeSetupState'
 >;
@@ -18,6 +19,7 @@ function t(overrides: Partial<MinimalThread> = {}): MinimalThread {
     lastReadAt: undefined,
     latestTurnCompletedAt: 1_000,
     hasIncompleteTurn: false,
+    hasFailedTurn: false,
     hasActionableProposedPlan: false,
     worktreeSetupState: '',
     ...overrides,
@@ -71,6 +73,19 @@ describe('resolveEffectiveThreadStatus', () => {
 
   it('restores plan-ready from an actionable proposed plan when idle', () => {
     expect(resolveEffectiveThreadStatus(t({ hasActionableProposedPlan: true }), 'idle')).toBe('plan-ready');
+  });
+
+  it('restores error from a failed newest turn when idle, above interrupted and plan-ready', () => {
+    expect(resolveEffectiveThreadStatus(t({ hasFailedTurn: true }), 'idle')).toBe('error');
+    expect(
+      resolveEffectiveThreadStatus(t({
+        hasFailedTurn: true,
+        hasIncompleteTurn: true,
+        hasActionableProposedPlan: true,
+      }), 'idle'),
+    ).toBe('error');
+    expect(resolveEffectiveThreadStatus(t({ hasFailedTurn: true }), 'running')).toBe('running');
+    expect(resolveEffectiveThreadStatus(t({ hasFailedTurn: true, worktreeSetupState: 'failed' }), 'idle')).toBe('setup-failed');
   });
 
   it('prefers interrupted over plan-ready when both durable flags are present', () => {

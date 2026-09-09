@@ -44,7 +44,7 @@ func (a *App) broadcastThreadRowIfChanged(action string, row store.Thread, chang
 
 // broadcastThreadRowByID re-reads the row and broadcasts it as `full`. For
 // writes that move one of the DERIVED sidebar columns threadColumns computes
-// (hasActionableProposedPlan, hasIncompleteTurn) rather than a threads column
+// (hasActionableProposedPlan, hasIncompleteTurn, hasFailedTurn) rather than a threads column
 // the caller already holds — the proposed-plan writes, which change no field
 // of the row the RPC returned. Log-and-continue: the write already succeeded
 // and the sidebar converges on the next ListThreads.

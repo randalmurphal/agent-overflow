@@ -82,6 +82,7 @@ export {
   InterruptTurn,
   InterruptAndRevertIfClean,
   GetThreadLiveState,
+  ListThreadLiveActivity,
   ListPendingInteractiveRequests,
   RespondToApproval,
   RespondToUserInput,

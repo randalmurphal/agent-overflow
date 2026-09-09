@@ -81,6 +81,21 @@ const threadColumns = `id, COALESCE(project_id, ''),
        ORDER BY turns.turn_index DESC
        LIMIT 1
     ), 0),
+    COALESCE((
+      SELECT turns.stop_reason = 'error'
+        FROM turns
+       WHERE turns.thread_id = threads.id
+       ORDER BY turns.turn_index DESC
+       LIMIT 1
+    ), 0) OR EXISTS (
+      SELECT 1
+        FROM timeline_items AS errors
+       WHERE errors.thread_id = threads.id
+         AND errors.kind = 'error'
+         AND errors.turn_index >= COALESCE((
+           SELECT MAX(turns.turn_index) FROM turns WHERE turns.thread_id = threads.id
+         ), 0)
+    ),
     NOT EXISTS (SELECT 1 FROM timeline_items WHERE timeline_items.thread_id = threads.id),
     (SELECT COALESCE(MAX(ownership_epoch),0) FROM thread_transfers
       WHERE thread_id = threads.id AND direction = 'incoming' AND phase = 'complete')`
@@ -181,7 +196,7 @@ func validAutoCompactPercent(percent int) bool {
 
 func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	var t Thread
-	var archived, fastMode, hasActionableProposedPlan, hasIncompleteTurn, isDraft int
+	var archived, fastMode, hasActionableProposedPlan, hasIncompleteTurn, hasFailedTurn, isDraft int
 	var latestTurnCompletedAt, lastReadAt, pinnedAt, pinGroup sql.NullInt64
 	if err := scanner.Scan(
 		&t.ID, &t.ProjectID, &t.ProjectPath, &t.Title, &t.Provider, &t.Model,
@@ -195,7 +210,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		&t.GroupID,
 		&t.WorktreeSetupState, &t.ImportSource,
 		&t.CreatedByDevice, &t.Origin.Branch, &t.Origin.RemoteURL, &t.Origin.HeadCommit,
-		&hasActionableProposedPlan, &hasIncompleteTurn, &isDraft, &t.OwnershipEpoch,
+		&hasActionableProposedPlan, &hasIncompleteTurn, &hasFailedTurn, &isDraft, &t.OwnershipEpoch,
 	); err != nil {
 		return Thread{}, err
 	}
@@ -203,6 +218,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	t.Archived = archived != 0
 	t.HasActionableProposedPlan = hasActionableProposedPlan != 0
 	t.HasIncompleteTurn = hasIncompleteTurn != 0
+	t.HasFailedTurn = hasFailedTurn != 0
 	t.IsDraft = isDraft != 0
 	if latestTurnCompletedAt.Valid {
 		v := latestTurnCompletedAt.Int64

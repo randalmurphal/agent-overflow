@@ -1144,7 +1144,7 @@ func (r *Router) emitThreadPatch(threadID string, patch ThreadUpdateEvent) {
 // row the same way.
 //
 // It exists because `threadColumns` computes derived sidebar state
-// (hasActionableProposedPlan, hasIncompleteTurn) that a turn can change
+// (hasActionableProposedPlan, hasIncompleteTurn, hasFailedTurn) that a turn can change
 // from inside triage, and `provider:item_event` is narrowed to the threads
 // a connection is watching — so a client with no pane on this thread would
 // otherwise never learn the plan is sitting there.

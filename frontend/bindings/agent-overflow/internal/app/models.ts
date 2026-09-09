@@ -4879,6 +4879,54 @@ export class ThreadDefaults {
 }
 
 /**
+ * ThreadLiveActivity is the sidebar-grade live state of one thread. It
+ * carries only what the threads:read push channels carry (turn, request
+ * ids, compacting window), never the requests' prose.
+ */
+export class ThreadLiveActivity {
+    "threadId": string;
+    "activeTurn"?: LiveStateActiveTurn | null;
+    "approvalRequestIds": string[];
+    "userInputRequestIds": string[];
+    "compactingSinceUnixMs"?: number;
+
+    /** Creates a new ThreadLiveActivity instance. */
+    constructor($$source: Partial<ThreadLiveActivity> = {}) {
+        if (!("threadId" in $$source)) {
+            this["threadId"] = "";
+        }
+        if (!("approvalRequestIds" in $$source)) {
+            this["approvalRequestIds"] = [];
+        }
+        if (!("userInputRequestIds" in $$source)) {
+            this["userInputRequestIds"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ThreadLiveActivity instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ThreadLiveActivity {
+        const $$createField1_0 = $$createType74;
+        const $$createField2_0 = $$createType8;
+        const $$createField3_0 = $$createType8;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("activeTurn" in $$parsedSource) {
+            $$parsedSource["activeTurn"] = $$createField1_0($$parsedSource["activeTurn"]);
+        }
+        if ("approvalRequestIds" in $$parsedSource) {
+            $$parsedSource["approvalRequestIds"] = $$createField2_0($$parsedSource["approvalRequestIds"]);
+        }
+        if ("userInputRequestIds" in $$parsedSource) {
+            $$parsedSource["userInputRequestIds"] = $$createField3_0($$parsedSource["userInputRequestIds"]);
+        }
+        return new ThreadLiveActivity($$parsedSource as Partial<ThreadLiveActivity>);
+    }
+}
+
+/**
  * ThreadLiveState is the backend-owned live projection a freshly loaded
  * frontend needs after refresh/reconnect. SQLite remains the history cache;
  * every field here mirrors what an active provider process is doing right

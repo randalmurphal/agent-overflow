@@ -17,6 +17,7 @@ import { loadSettings, getSettings, mirrorFrontendPreferences } from './settings
 import { preloadProviderModelsForSettings } from './providerModels.svelte';
 import { loadProviderAccounts, hydrateProviderLogins } from './providerAccounts.svelte';
 import { hydrateRateLimitsSnapshots } from './eventsRateLimits';
+import { reconcileThreadLiveActivity } from './threadLiveActivity';
 import { isWorkflowOverlayLoaded, refreshWorkflowRunsSoon, resyncWorkflowEngineState } from './workflowRuns.svelte';
 
 export function installComputerHydration(): () => void {
@@ -71,6 +72,12 @@ export function installComputerHydration(): () => void {
       void hydrateProviderLogins(backend);
     }
     if (hasScope('threads:read', backend)) {
+      // Every thread of this computer, not only the ones with a pane: the
+      // sidebar's running / blocked / compacting state has no other
+      // source for a client that connected mid-turn.
+      holdBackendRecovery(backend, reconcileThreadLiveActivity(backend).catch((error: unknown) => {
+        if (!isPassiveConnectionFailure(error)) console.warn('Failed to refresh conversation activity:', error);
+      }));
       void hydrateRateLimitsSnapshots(backend).catch((error) => {
         console.warn('Failed to refresh computer quotas:', error);
       });

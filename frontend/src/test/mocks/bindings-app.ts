@@ -149,6 +149,7 @@ export const SteerMessageWithOptions = dispatch('SteerMessageWithOptions');
 export const InterruptTurn = dispatch('InterruptTurn');
 export const InterruptAndRevertIfClean = dispatch('InterruptAndRevertIfClean');
 export const GetThreadLiveState = dispatch('GetThreadLiveState');
+export const ListThreadLiveActivity = dispatch('ListThreadLiveActivity');
 export const ListPendingInteractiveRequests = dispatch('ListPendingInteractiveRequests');
 export const RespondToApproval = dispatch('RespondToApproval');
 export const RespondToUserInput = dispatch('RespondToUserInput');

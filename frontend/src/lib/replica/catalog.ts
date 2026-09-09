@@ -42,7 +42,7 @@ function validRow(row: unknown, kind: CatalogKind): boolean {
       'worktreeSetupState', 'importSource', 'groupId'],
     ['contextWindow', 'autoCompactStandardPercent', 'autoCompactExtendedPercent', 'latestTurnCompletedAt',
       'lastReadAt', 'pinnedAt', 'pinGroup'],
-    ['fastMode', 'hasActionableProposedPlan', 'hasIncompleteTurn', 'isDraft']);
+    ['fastMode', 'hasActionableProposedPlan', 'hasIncompleteTurn', 'hasFailedTurn', 'isDraft']);
 }
 
 export function readCatalogRecord<K extends CatalogKind>(raw: unknown, generation: string, kind: K, stamp: string): CatalogRows[K][] | null {

@@ -2940,3 +2940,92 @@ func TestUpdateThreadColumnGate(t *testing.T) {
 		}
 	}
 }
+
+func TestListThreadsWithItemsDerivesFailedTurn(t *testing.T) {
+	s := newTestStore(t)
+	thread := makeThread("thread-failed", "claude")
+	if err := s.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread(): %v", err)
+	}
+	seedItem(t, s, thread.ID, "item-1", 0, 0, "")
+	startedAt := thread.CreatedAt + 100
+	if err := s.InsertTurn(Turn{TurnID: "turn-1", ThreadID: thread.ID, TurnIndex: 0, StartedAt: startedAt}); err != nil {
+		t.Fatalf("InsertTurn(): %v", err)
+	}
+	if got := mustListSingleThreadWithItems(t, s); got.HasFailedTurn {
+		t.Fatal("HasFailedTurn = true for an open turn, want false")
+	}
+
+	if err := s.UpdateTurnCompleted("turn-1", startedAt+100, "error", "", "", "boom"); err != nil {
+		t.Fatalf("UpdateTurnCompleted(): %v", err)
+	}
+	got := mustListSingleThreadWithItems(t, s)
+	if !got.HasFailedTurn {
+		t.Fatal("HasFailedTurn = false after an error settle, want true")
+	}
+
+	// Reading the thread does not clear it: the pill asks for the next
+	// message, and the live pill behaves the same way.
+	lastReadAt := startedAt + 200
+	if _, _, err := s.setThreadLastRead(thread.ID, &lastReadAt); err != nil {
+		t.Fatalf("setThreadLastRead(): %v", err)
+	}
+	if got := mustListSingleThreadWithItems(t, s); !got.HasFailedTurn {
+		t.Fatal("HasFailedTurn = false after read, want true")
+	}
+
+	// The next turn supersedes it, open or settled.
+	if err := s.InsertTurn(Turn{TurnID: "turn-2", ThreadID: thread.ID, TurnIndex: 1, StartedAt: startedAt + 300}); err != nil {
+		t.Fatalf("InsertTurn(next): %v", err)
+	}
+	if got := mustListSingleThreadWithItems(t, s); got.HasFailedTurn {
+		t.Fatal("HasFailedTurn = true once the next turn opened, want false")
+	}
+	if got := mustListSingleThreadWithItems(t, s); !got.HasIncompleteTurn {
+		t.Fatal("HasIncompleteTurn = false for the open next turn, want true")
+	}
+}
+
+func TestListThreadsWithItemsDerivesFailedTurnFromErrorItems(t *testing.T) {
+	s := newTestStore(t)
+	thread := makeThread("thread-error-item", "claude")
+	if err := s.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread(): %v", err)
+	}
+	// An orphan error (the provider failed before any turn opened) has no
+	// turn row at all: the error item is the only evidence.
+	seedItemWithStatus(t, s, thread.ID, "error:0:1", 0, 0, "error", "completed", "spawn failed", false)
+	if got := mustListSingleThreadWithItems(t, s); !got.HasFailedTurn {
+		t.Fatal("HasFailedTurn = false for an orphan error item, want true")
+	}
+
+	// A non-fatal error during a turn that then settled cleanly still
+	// marks the thread until the next turn, like the live pill.
+	startedAt := thread.CreatedAt + 100
+	if err := s.InsertTurn(Turn{TurnID: "turn-1", ThreadID: thread.ID, TurnIndex: 1, StartedAt: startedAt}); err != nil {
+		t.Fatalf("InsertTurn(): %v", err)
+	}
+	if got := mustListSingleThreadWithItems(t, s); got.HasFailedTurn {
+		t.Fatal("HasFailedTurn = true after a newer turn opened, want false")
+	}
+	seedItemWithStatus(t, s, thread.ID, "error:1:1", 1, 0, "error", "completed", "tool crashed", false)
+	if err := s.UpdateTurnCompleted("turn-1", startedAt+100, "end_turn", "", "", ""); err != nil {
+		t.Fatalf("UpdateTurnCompleted(): %v", err)
+	}
+	if got := mustListSingleThreadWithItems(t, s); !got.HasFailedTurn {
+		t.Fatal("HasFailedTurn = false with an error item on the newest turn, want true")
+	}
+
+	// api_error rows never coloured the sidebar and still do not.
+	other := makeThread("thread-api-error", "claude")
+	if err := s.DeleteThread(thread.ID); err != nil {
+		t.Fatalf("DeleteThread(): %v", err)
+	}
+	if err := s.CreateThread(other); err != nil {
+		t.Fatalf("CreateThread(other): %v", err)
+	}
+	seedItemWithStatus(t, s, other.ID, "api:0:1", 0, 0, "api_error", "completed", "add credits", false)
+	if got := mustListSingleThreadWithItems(t, s); got.HasFailedTurn {
+		t.Fatal("HasFailedTurn = true for an api_error item, want false")
+	}
+}

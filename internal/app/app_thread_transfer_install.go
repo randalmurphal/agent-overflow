@@ -116,7 +116,7 @@ func (installer appTransferInstaller) Prepare(ctx context.Context, row store.Thr
 	target.DiscussionID, target.ParentThreadID, target.GroupID, target.ForkedFromThreadID = "", "", "", ""
 	target.WorktreeSetupState, target.ImportSource = "", ""
 	target.PinnedAt, target.PinGroup = nil, nil
-	target.HasIncompleteTurn = false
+	target.HasIncompleteTurn, target.HasFailedTurn = false, false
 	if row.Kind == "copy" {
 		target.Archived = false
 	}

@@ -730,6 +730,16 @@ func (r *Router) settleTurnRow(evt provider.ProviderEvent, turnIndex int, now in
 		usageJSON = string(meta.Usage)
 	}
 
+	// A settle with no stop reason and no error is a wire result that named
+	// no outcome (Claude answers a slash command that way). Settling such a
+	// result while the send that opened this turn still awaits its echo
+	// contradicts the wire order, so name it: the row is re-settled if a
+	// later init reopens the turn, but nothing else records that it was.
+	if fields.stopReason == "" && fields.errorMessage == "" {
+		if head, ok := r.peekPendingSendHead(evt.ThreadID); ok && head.TurnIndex == turnIndex {
+			log.Printf("triage: turn %s/%d settled without a stop reason before its send %s was echoed", evt.ThreadID, turnIndex, head.AOItemID)
+		}
+	}
 	if err := r.store.UpdateTurnCompleted(fields.logicalTurnID, now, fields.stopReason, fields.assistantMessageID, usageJSON, fields.errorMessage); err != nil {
 		log.Printf("triage: update turn %s: %v", fields.logicalTurnID, err)
 	}

@@ -92,6 +92,13 @@ export function threadBackend(threadId: string): BackendKey | undefined {
   return threads.get(threadId)?.backend;
 }
 
+/** Every thread currently attributed to `backendId`, in no particular order. */
+export function threadIdsForBackend(backendId: BackendKey): string[] {
+  const owned: string[] = [];
+  for (const [id, owner] of threads) if (owner.backend === backendId) owned.push(id);
+  return owned;
+}
+
 /** Read-only hints cannot displace a verified move or resolve conflicting owners. */
 export function resolveThreadBackend(threadId: string): BackendKey | undefined {
   const owner = threads.get(threadId);

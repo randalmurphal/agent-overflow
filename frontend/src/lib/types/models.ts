@@ -110,6 +110,12 @@ export interface Thread {
    */
   hasIncompleteTurn?: boolean;
   /**
+   * Derived by ListThreads from the newest turn: it settled with an error,
+   * or an `error` row was persisted at or after it. The durable Failed
+   * pill; the next turn start clears it, reading the thread does not.
+   */
+  hasFailedTurn?: boolean;
+  /**
    * The durable half of the per-project worktree setup run this thread's
    * worktree was cut with: 'running', 'failed', or '' / undefined for
    * nothing to say. The streaming panel state is in-memory and dies with

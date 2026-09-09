@@ -9,6 +9,12 @@ import { Create as $Create } from "@wailsio/runtime";
 // @ts-ignore: Unused imports
 import * as nearby$0 from "../nearby/models.js";
 
+/**
+ * Config is one complete desired native-listener generation. Generation orders
+ * listener replacement and rejects reports from an earlier configuration.
+ * ScanID is independent: it correlates one bounded discovery request without
+ * allowing a later scan to replace the result a prior caller is consuming.
+ */
 export class Config {
     "generation": number;
     "pairingOpen": boolean;
@@ -54,6 +60,11 @@ export class Config {
     }
 }
 
+/**
+ * State belongs to one Config generation. Reject a stale generation before
+ * publishing Addresses or Error. Nearby completes a discovery request only
+ * when ScanID also matches that pending request; listener updates need no scan.
+ */
 export class State {
     "generation": number;
     "addresses": string[];

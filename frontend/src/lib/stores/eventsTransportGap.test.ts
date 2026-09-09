@@ -89,6 +89,20 @@ describe('transport gap', () => {
     // errors, but an unmocked binding would still log and toast.
     setBindingMock('ListThreads', async () => []);
     setBindingMock('ListProjects', async () => []);
+    setBindingMock('ListThreadLiveActivity', async () => []);
+  });
+
+  it('re-reads live activity for the whole computer on a live-activity channel gap', async () => {
+    // A compacting gap owes no sidebar or pane refresh: the flag is read
+    // from the registry the snapshot repairs.
+    applyTransportGap({ channel: 'provider:compacting', seq: 3 });
+    await vi.waitFor(() => expect(getBindingMock('ListThreadLiveActivity')).toHaveBeenCalledTimes(1));
+    expect(getBindingMock('ListThreads')).not.toHaveBeenCalled();
+    for (const channel of ['provider:turn_started', 'provider:turn_completed', 'provider:approval', 'provider:user_input']) {
+      applyTransportGap({ channel, seq: 4 });
+    }
+    await vi.waitFor(() => expect(getBindingMock('ListThreadLiveActivity')).toHaveBeenCalledTimes(5));
+    await vi.waitFor(() => expect(getBindingMock('ListThreads')).toHaveBeenCalled());
   });
 
   it('coalesces a replay gap burst into one sidebar read but preserves later invalidations', async () => {

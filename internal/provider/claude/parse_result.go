@@ -21,6 +21,7 @@ package claude
 
 import (
 	"encoding/json"
+	"log"
 	"strings"
 	"time"
 
@@ -97,6 +98,13 @@ func (p *Parser) parseResult(threadID string, raw map[string]json.RawMessage, no
 		stopReason = "interrupted"
 	} else if errorMessage != "" || (subtype == "success" && isError) {
 		stopReason = "error"
+	} else if stopReason == "" {
+		// A success envelope that names no stop reason: observed for slash
+		// commands the CLI answers without a model call (`/compact`). It
+		// settles the turn like any other result, so keep the envelope in
+		// the log where a settle that should not have happened can be
+		// read back against it.
+		log.Printf("claude: result without stop_reason for thread %s: %s", threadID, boundedWireLine(line))
 	}
 
 	assistantMessageID := p.takeLastAssistantMessageID()
@@ -201,6 +209,16 @@ func joinErrors(raw json.RawMessage) string {
 }
 
 const maxJoinedErrorChars = 512
+
+// maxLoggedWireLineBytes bounds a raw envelope quoted in the app log.
+const maxLoggedWireLineBytes = 2048
+
+func boundedWireLine(line []byte) string {
+	if len(line) > maxLoggedWireLineBytes {
+		return string(line[:maxLoggedWireLineBytes]) + "..."
+	}
+	return string(line)
+}
 
 func boundedProviderErrorMessage(s string) string {
 	s = strings.TrimSpace(s)

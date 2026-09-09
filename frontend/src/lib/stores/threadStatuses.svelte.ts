@@ -27,10 +27,12 @@ import {
 /**
  * ActiveTurn is the live in-flight turn for a thread. Populated from
  * backend live signals only: `provider:turn_started` pushes during a
- * connected session, and `GetThreadLiveState` hydration after refresh.
- * Cleared on `provider:turn_completed` or an idle backend snapshot.
- * Never hydrated from durable item history — invariant 22 (turn
- * activity is live backend state, never derived from persisted items).
+ * connected session, and the backend's own snapshot of its live state on
+ * every connection edge (`ListThreadLiveActivity` for every thread of a
+ * computer, `GetThreadLiveState` for the thread a pane shows). Cleared on
+ * `provider:turn_completed` or an idle backend snapshot. Never hydrated
+ * from durable item history — invariant 22 (turn activity is live backend
+ * state, never derived from persisted items).
  *
  * The shape lives here because this store owns the per-thread active-
  * turn map used by the composite `isThreadWorking` predicate and the
@@ -56,8 +58,8 @@ export function sameActiveTurn(left: ActiveTurn | null, right: ActiveTurn | null
 // Global per-thread live-status projection for the sidebar. Chat state is
 // authoritative in the unified item stream; this store keeps the minimal
 // derived signal the thread list needs for off-pane rows (running, pending
-// approval, error). Durable boot status such as interrupted turns and
-// actionable proposed plans is derived from Thread rows instead.
+// approval, error). Durable boot status such as failed or interrupted turns
+// and actionable proposed plans is derived from Thread rows instead.
 //
 // Running is derived from the same live sources the composer activity
 // rail uses, OR'd together:
@@ -215,7 +217,7 @@ export function getThreadStatus(threadId: string): ThreadLiveStatus {
  * new fallback lands, and the pure one is the tested one.
  */
 export function getEffectiveThreadStatus(
-  thread: Pick<Thread, 'id' | 'hasIncompleteTurn' | 'hasActionableProposedPlan' | 'worktreeSetupState'>,
+  thread: Pick<Thread, 'id' | 'hasIncompleteTurn' | 'hasFailedTurn' | 'hasActionableProposedPlan' | 'worktreeSetupState'>,
 ): ThreadLiveStatus {
   return resolveEffectiveThreadStatus(thread, getThreadStatus(thread.id), {
     suppressDurableInterrupted: isThreadLiveStateHydrating(thread.id),

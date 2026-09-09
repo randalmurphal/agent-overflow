@@ -74,7 +74,7 @@ func (s *Store) applyProjectRowWrite(write rowWrite) (Project, bool, error) {
 // `RETURNING id` anchors the read on the write, so neither a concurrent writer
 // nor a row the Change predicate excluded can widen the answer, and the
 // read-back projection is paid only when something actually moved. RETURNING
-// cannot carry that projection itself: threadColumns has two correlated
+// cannot carry that projection itself: threadColumns has correlated
 // subqueries per row, and SQLite forbids subqueries in a RETURNING clause.
 //
 // The bool is "this write changed the row". A write the Change predicate

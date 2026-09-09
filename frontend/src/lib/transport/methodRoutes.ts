@@ -223,6 +223,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2445206506: 'thread', // ListTerminals
 	2243533007: 'thread', // ListThreadEditDiffs
 	2176447381: 'all', // ListThreadGroups
+	2177219062: 'all', // ListThreadLiveActivity
 	245278513: 'thread', // ListThreadMcpServers
 	2485050629: 'thread', // ListThreadProposedPlans
 	1165681857: 'thread', // ListThreadRemoteCommands

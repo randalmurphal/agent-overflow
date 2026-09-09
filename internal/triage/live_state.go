@@ -1,6 +1,7 @@
 package triage
 
 import (
+	"sort"
 	"strings"
 
 	"agent-overflow/internal/provider"
@@ -113,4 +114,57 @@ func (r *Router) LiveStateSnapshotForThread(threadID string) LiveStateSnapshot {
 	}
 
 	return snapshot
+}
+
+// ThreadLiveActivity is the sidebar-grade live state of one thread: what a
+// client connected for the whole session would have learned from
+// provider:turn_started, provider:approval, provider:user_input and
+// provider:compacting. Ids and timestamps only; the requests' prose stays
+// on LiveStateSnapshotForThread, whose RPC carries the higher scope.
+type ThreadLiveActivity struct {
+	ThreadID              string
+	ActiveTurn            *ActiveTurnSnapshot
+	ApprovalRequestIDs    []string
+	UserInputRequestIDs   []string
+	CompactingSinceUnixMs int64
+}
+
+// LiveActivitySnapshot lists every thread with live activity, copied under
+// one router lock and sorted by thread id. Threads with nothing open are
+// omitted: a reader treats the list as authoritative for this backend and
+// clears what it does not name.
+func (r *Router) LiveActivitySnapshot() []ThreadLiveActivity {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []ThreadLiveActivity
+	for threadID, st := range r.threads {
+		if st == nil {
+			continue
+		}
+		entry := ThreadLiveActivity{ThreadID: threadID, CompactingSinceUnixMs: st.compactingSince}
+		if st.currentRoundOpen {
+			round := st.currentRound
+			entry.ActiveTurn = &round
+		}
+		for _, requestID := range st.pendingApprovalOrder {
+			if _, ok := st.pendingApprovals[requestID]; ok {
+				entry.ApprovalRequestIDs = append(entry.ApprovalRequestIDs, requestID)
+			}
+		}
+		for _, requestID := range st.pendingUserInputOrder {
+			if _, ok := st.pendingUserInputs[requestID]; ok {
+				entry.UserInputRequestIDs = append(entry.UserInputRequestIDs, requestID)
+			}
+		}
+		if entry.ActiveTurn == nil && len(entry.ApprovalRequestIDs) == 0 &&
+			len(entry.UserInputRequestIDs) == 0 && entry.CompactingSinceUnixMs == 0 {
+			continue
+		}
+		out = append(out, entry)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ThreadID < out[j].ThreadID })
+	return out
 }

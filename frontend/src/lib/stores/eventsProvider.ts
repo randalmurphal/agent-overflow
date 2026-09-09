@@ -397,6 +397,7 @@ export function applyTurnStarted(evt: TurnStartedEvent): void {
   patchThreadDurableStatus(evt.threadId, {
     hasActionableProposedPlan: false,
     hasIncompleteTurn: false,
+    hasFailedTurn: false,
   });
   // A wire turn-start is proof the provider session is alive and
   // serving — any stale session_died banner for this thread is now
@@ -452,7 +453,10 @@ export function applyTurnCompleted(evt: TurnCompletedEvent): void {
     errorMessage: settled.errorMessage,
     revertedUserMessage: Boolean(evt.revertedUserMessage),
   });
-  patchThreadDurableStatus(evt.threadId, { hasIncompleteTurn: false });
+  patchThreadDurableStatus(evt.threadId, {
+    hasIncompleteTurn: false,
+    ...(settled.errorMessage !== '' ? { hasFailedTurn: true } : {}),
+  });
   // Converge the durable row with the turn's usage ONCE, at the turn
   // boundary: mid-turn snapshots live in the side cache (consulted by
   // seedContextWindow, so mid-turn thread switches still seed fresh),

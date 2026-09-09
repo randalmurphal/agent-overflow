@@ -708,6 +708,10 @@ func TestOrderedTimelineReadsGoThroughTheArms(t *testing.T) {
 			marker: "MIN(item_index)",
 			why:    "ListTurnUserSummaries is a GROUP BY aggregate over the whole thread, not a page; the view pushes its predicate down to idx_items_user_text on the local arm already",
 		},
+		{
+			marker: "errors.kind = 'error'",
+			why:    "threadColumns' failed-turn column is an unordered EXISTS probe bounded to the newest turn on each arm's timeline index; the ORDER BY in that literal orders a turns subquery",
+		},
 	}
 
 	entries, err := os.ReadDir(".")

@@ -252,6 +252,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ListTerminals", ID: 2445206506, Scope: "terminal:operate", Route: "thread"},                              // main.App.ListTerminals
 	{Name: "ListThreadEditDiffs", ID: 2243533007, Scope: "threads:read", Route: "thread"},                            // main.App.ListThreadEditDiffs
 	{Name: "ListThreadGroups", ID: 2176447381, Scope: "threads:read", Route: "all"},                                  // main.App.ListThreadGroups
+	{Name: "ListThreadLiveActivity", ID: 2177219062, Scope: "threads:read", Route: "all"},                            // main.App.ListThreadLiveActivity
 	{Name: "ListThreadMcpServers", ID: 245278513, Scope: "settings:write", Route: "thread"},                          // main.App.ListThreadMcpServers
 	{Name: "ListThreadProposedPlans", ID: 2485050629, Scope: "threads:read", Route: "thread"},                        // main.App.ListThreadProposedPlans
 	{Name: "ListThreadRemoteCommands", ID: 1165681857, Scope: "threads:read", Route: "thread"},                       // main.App.ListThreadRemoteCommands

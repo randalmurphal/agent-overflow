@@ -289,7 +289,7 @@ export function updateThreadUsageCache(threadId: string, raw: string): void {
 
 export function patchThreadDurableStatus(
   threadId: string,
-  patch: Pick<Partial<Thread>, 'hasActionableProposedPlan' | 'hasIncompleteTurn'>,
+  patch: Pick<Partial<Thread>, 'hasActionableProposedPlan' | 'hasIncompleteTurn' | 'hasFailedTurn'>,
 ): void {
   // No-op dedupe: skip the replace when none of the patch fields actually
   // change the thread. Callers are the turn-lifecycle handlers, which fire
@@ -311,19 +311,10 @@ export function patchThreadDurableStatus(
 
 function patchMatchesThread(
   thread: Thread,
-  patch: Pick<Partial<Thread>, 'hasActionableProposedPlan' | 'hasIncompleteTurn'>,
+  patch: Pick<Partial<Thread>, 'hasActionableProposedPlan' | 'hasIncompleteTurn' | 'hasFailedTurn'>,
 ): boolean {
-  if (
-    patch.hasActionableProposedPlan !== undefined
-    && thread.hasActionableProposedPlan !== patch.hasActionableProposedPlan
-  ) {
-    return false;
-  }
-  if (
-    patch.hasIncompleteTurn !== undefined
-    && thread.hasIncompleteTurn !== patch.hasIncompleteTurn
-  ) {
-    return false;
+  for (const key of ['hasActionableProposedPlan', 'hasIncompleteTurn', 'hasFailedTurn'] as const) {
+    if (patch[key] !== undefined && thread[key] !== patch[key]) return false;
   }
   return true;
 }
@@ -368,6 +359,7 @@ export interface ThreadErrorNoticeEvent {
 export function applyThreadErrorNotice(evt: ThreadErrorNoticeEvent): void {
   if (!evt?.threadId) return;
   projectThreadError(evt.threadId);
+  patchThreadDurableStatus(evt.threadId, { hasFailedTurn: true });
 }
 
 export function applyThreadUpdated(evt: ThreadUpdateEvent): void {
@@ -386,6 +378,7 @@ export function applyThreadUpdated(evt: ThreadUpdateEvent): void {
       if (evt.updatedAt !== undefined) {
         syncThreadActivity(evt.id, evt.updatedAt);
         projectReaderMessageSent(evt.id);
+        patchThreadDurableStatus(evt.id, { hasFailedTurn: false });
       }
       if (evt.title === undefined && evt.model === undefined && evt.sessionRef === undefined) {
         // Nothing to merge. Falling through would still run syncThreadRow,

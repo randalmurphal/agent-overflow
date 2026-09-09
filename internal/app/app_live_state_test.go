@@ -181,3 +181,66 @@ func TestGetThreadLiveStateSurvivesAnUnreadableTodo(t *testing.T) {
 		t.Fatalf("ActiveTurn = %+v, want the live turn to survive the todo failure", state.ActiveTurn)
 	}
 }
+
+// ListThreadLiveActivity is the sidebar's snapshot of the threads:read push
+// channels: a thread mid-turn is named with its round, a blocked thread with
+// its request ids, and an idle thread not at all.
+func TestListThreadLiveActivityMirrorsPushChannels(t *testing.T) {
+	app, _ := newAppForFlushQueueRPC(t)
+	running := seedLiveStateTodoThread(t, app, "activity-running")
+	blocked := seedLiveStateTodoThread(t, app, "activity-blocked")
+	idle := seedLiveStateTodoThread(t, app, "activity-idle")
+
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnStart,
+		ThreadID:  running.ID,
+		TurnID:    "turn-1",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	approval, err := json.Marshal(provider.ApprovalRequest{RequestID: "approval-1", Kind: "permission"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventApprovalRequest,
+		ThreadID:  blocked.ID,
+		ItemID:    "approval-1",
+		Meta:      approval,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("approval request: %v", err)
+	}
+	// The per-thread snapshot and the bulk one read the same router state.
+	single, err := app.GetThreadLiveState(running.ID)
+	if err != nil {
+		t.Fatalf("GetThreadLiveState: %v", err)
+	}
+	if single.ActiveTurn == nil {
+		t.Fatal("GetThreadLiveState reported no active turn")
+	}
+
+	rows, err := app.ListThreadLiveActivity()
+	if err != nil {
+		t.Fatalf("ListThreadLiveActivity: %v", err)
+	}
+	byThread := make(map[string]ThreadLiveActivity, len(rows))
+	for _, row := range rows {
+		byThread[row.ThreadID] = row
+	}
+	if _, listed := byThread[idle.ID]; listed || len(rows) != 2 {
+		t.Fatalf("rows = %+v, want exactly the running and blocked threads", rows)
+	}
+	got := byThread[running.ID]
+	if got.ActiveTurn == nil || *got.ActiveTurn != *single.ActiveTurn {
+		t.Fatalf("running.ActiveTurn = %+v, want %+v", got.ActiveTurn, single.ActiveTurn)
+	}
+	if len(got.ApprovalRequestIDs) != 0 || len(got.UserInputRequestIDs) != 0 {
+		t.Fatalf("running carried requests: %+v", got)
+	}
+	got = byThread[blocked.ID]
+	if got.ActiveTurn != nil || len(got.ApprovalRequestIDs) != 1 || got.ApprovalRequestIDs[0] != "approval-1" || len(got.UserInputRequestIDs) != 0 {
+		t.Fatalf("blocked = %+v, want only approval-1", got)
+	}
+}

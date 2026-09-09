@@ -65,8 +65,8 @@ export function hasUnread(thread: Pick<Thread, 'lastReadAt' | 'latestTurnComplet
 
 /**
  * Live events win first. When no live event is present, durable Thread-row
- * projections restore boot-time status for a failed worktree setup, prior
- * interrupted turns, and actionable plans.
+ * projections restore boot-time status for a failed worktree setup, failed
+ * and interrupted turns, and actionable plans.
  *
  * The early return on a non-idle live status is what makes "setup-failed must
  * never mask error / pending-approval / awaiting-input" structural rather than
@@ -74,16 +74,18 @@ export function hasUnread(thread: Pick<Thread, 'lastReadAt' | 'latestTurnComplet
  * reports that, whatever its worktree's provisioning state is.
  *
  * Among the durable fallbacks, setup-failed goes first. It is the only one
- * naming a concrete failure with a repair the user has to run — Interrupted is
- * cleared by sending the next message, and Plan Ready is informational.
+ * naming a concrete failure with a repair the user has to run. Failed comes
+ * before Interrupted in the same order the live registry keeps them; both
+ * are cleared by the next turn, and Plan Ready is informational.
  */
 export function resolveEffectiveThreadStatus(
-  thread: Pick<Thread, 'hasIncompleteTurn' | 'hasActionableProposedPlan' | 'worktreeSetupState'>,
+  thread: Pick<Thread, 'hasIncompleteTurn' | 'hasFailedTurn' | 'hasActionableProposedPlan' | 'worktreeSetupState'>,
   liveStatus: ThreadLiveStatus,
   options: EffectiveThreadStatusOptions = {},
 ): ThreadLiveStatus {
   if (liveStatus !== 'idle') return liveStatus;
   if (thread.worktreeSetupState === 'failed') return 'setup-failed';
+  if (thread.hasFailedTurn) return 'error';
   if (thread.hasIncompleteTurn && !options.suppressDurableInterrupted) return 'interrupted';
   if (thread.hasActionableProposedPlan) return 'plan-ready';
   return 'idle';
