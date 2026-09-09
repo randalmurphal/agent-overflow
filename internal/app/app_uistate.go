@@ -18,21 +18,24 @@ import (
 	"github.com/google/uuid"
 )
 
-// UI-state bindings: the wire surface behind the frontend appStorage
-// module. A bucket lives in the ui_state table under a scope this
-// package builds from the CONNECTION — never from a parameter, which is
-// the identity hole docs/specs/remote-access.md §6 opens by naming:
-// a caller-supplied client id is a bearer string, and any client could
-// spell another's.
+// UI-state bindings: the wire surface over a connection's own ui_state
+// bucket. The shipped frontend reads its bucket once (GetUIState) to
+// migrate legacy view state into its own localStorage
+// (frontend/src/lib/stores/appStorage.ts); the same buckets hold the
+// device settings tier (internal/settings/residency.go). A bucket lives
+// in the ui_state table under a scope this package builds from the
+// CONNECTION — never from a parameter, which is the identity hole
+// docs/specs/remote-access.md §6 opens by naming: a caller-supplied
+// client id is a bearer string, and any client could spell another's.
 //
 // Two scope shapes, resolved by uiStateScope below: "device:<id>" for a
 // paired device, "client:<id>" for a screen on this backend's own local
 // page channel. "user:<id>" stays reserved for the user tier (§6).
 //
-// All three carry the `session` FLOOR rather than a settings scope: per-device
-// UI view state is the whole point of this table — remote clients (--connect,
-// LAN browsers) need their own buckets — and the bucket a call may touch is
-// resolved from the connection below, never from an argument. So the authority
+// All three carry the `session` FLOOR rather than a settings scope: the table
+// is keyed per screen — remote clients (--connect, LAN browsers) own their own
+// buckets — and the bucket a call may touch is resolved from the connection
+// below, never from an argument. So the authority
 // is "you are a session reading and writing your own bucket", which is the one
 // thing the floor says. The rows are opaque strings, and a session reaches no
 // bucket but its own.

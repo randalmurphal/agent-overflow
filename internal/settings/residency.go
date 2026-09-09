@@ -33,17 +33,16 @@ import (
 // validation happens in this package before the write, which is what §6's
 // "typed validation over the same store" means.
 //
-// The exact spelling cannot collide with the frontend's own appStorage keys,
-// which share these buckets. Every appStorage key is either namespaced with a
-// colon — `sidebar:width`, `sidebar:collapsed`, `sidebar:collapsedProjects`,
-// `sidebar:expandedDiscussions`, `sidebar:threadListVisibleLimits`,
-// `workflows:overlay`, `reviewScope:<threadID>`, `branch-mru:<projectID>` —
-// or one of the three flat legacy names `paneLayout`, `reviewTreeVisible` and
+// The device buckets also hold the view-state rows the frontend's appStorage
+// persisted here before it moved to the frontend's own localStorage
+// (frontend/src/lib/stores/appStorage.ts reads its bucket once to migrate
+// them). Those legacy keys are either namespaced with a colon
+// (`sidebar:width`, `reviewScope:<threadID>`, `branch-mru:<projectID>`, …) or
+// one of the three flat names `paneLayout`, `reviewTreeVisible` and
 // `reviewTreeWidth`. No settings JSON key contains a colon, and none of those
-// three names is a Settings field (`paneLayout` is retired, and the review
-// pair never was one). A future settings key would have to be spelled
-// `paneLayout`, `reviewTreeVisible` or `reviewTreeWidth` to collide, which is
-// what the tier map's review makes visible.
+// three names is a Settings field, so a settings read never picks up a legacy
+// row. A future settings key would have to be spelled one of those three
+// names to collide, which is what the tier map's review makes visible.
 //
 // A store-less Service keeps every tier in the file, which is the pre-phase-4
 // behaviour. That is not a fallback nobody meant: main.go and main_desktop.go
@@ -193,9 +192,9 @@ func (c Caller) AddRecentWorkspace(path string) {
 // exactly the rules a hand-edited row is.
 //
 // Deliberately NOT cached per bucket. The rows a bucket holds are written by
-// this package AND by the frontend's appStorage through store.SetUIState, so a
-// cache here would need an invalidation edge from a package that knows nothing
-// about settings — a staleness bug in exchange for saving one indexed SELECT
+// this package AND by internal/app (the ui_state bindings, device revocation,
+// the harness reset), so a cache here would need an invalidation edge from
+// code that knows nothing about settings — a staleness bug in exchange for saving one indexed SELECT
 // on a table with a handful of rows, on an RPC the UI issues at page load and
 // on `settings:updated`. Backend logic never takes this path at all: it reads
 // Get(), which touches no database and belongs to no screen.

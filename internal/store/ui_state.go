@@ -7,14 +7,14 @@ import (
 	"strings"
 )
 
-// ui_state is the persisted per-device UI view state table (migration
-// v15). Scope is a namespace string owned by the caller —
-// "device:<id>" for a paired device, "client:<uuid>" for a screen on the
-// local page channel, "user:<id>" reserved for the user tier — and
-// values are opaque strings (the frontend JSON-encodes structured
-// values). This is the durable copy behind the frontend's appStorage
-// module; it exists because webview localStorage resets every launch
-// (ephemeral transport port = new origin). Transient UI state still
+// ui_state is the persisted per-scope key/value table (migration v15).
+// Scope is a namespace string owned by the caller — "device:<id>" for a
+// paired device, "client:<uuid>" for a screen on the local page channel,
+// "user:<id>" for the user tier — and values are opaque strings. The
+// user and device settings tiers live here (internal/settings/residency.go),
+// next to the legacy view-state rows the frontend's appStorage persisted
+// before it moved to localStorage on the pinned transport origin; a
+// screen reads its bucket once to migrate them. Transient UI state
 // belongs to frontend $state, not here.
 //
 // This package has no opinion about which scope a caller may name. The

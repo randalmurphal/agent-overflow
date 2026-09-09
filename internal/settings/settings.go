@@ -539,11 +539,12 @@ type Settings struct {
 	// tells you something you can already see.
 	NotifyQuietWhen string `json:"notifyQuietWhen"`
 
-	// Per-client UI view state (pane layout, collapsed projects,
-	// sidebar width, …) deliberately does NOT live here: it moved to
-	// the store's ui_state table, keyed per client, so two clients of
-	// the same backend stop fighting over one value. See
-	// internal/store/ui_state.go and frontend stores/appStorage.ts.
+	// Per-screen UI view state (pane layout, collapsed projects,
+	// sidebar width, …) deliberately does NOT live here: it belongs to
+	// the frontend that renders it (frontend/src/lib/stores/appStorage.ts,
+	// localStorage on the pinned transport origin). The ui_state table
+	// holds the user and device settings tiers (residency.go) and the
+	// legacy buckets that view state migrated out of.
 
 	// Window stores the desktop window placement (position, size, and
 	// maximized/fullscreen state) so the app reopens where it was last

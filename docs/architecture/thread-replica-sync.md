@@ -416,8 +416,8 @@ window, turning a bounded open into a database-wide payload scan.
 ## 6. IndexedDB replica
 
 New module `frontend/src/lib/replica/` (no IndexedDB exists in the
-app today; `appStorage` is server-backed `ui_state` and localStorage
-does not survive the per-launch origin change).
+app today; `appStorage` is localStorage on the pinned transport origin
+from §6.0).
 
 ### 6.0 Prerequisite: a stable page origin
 

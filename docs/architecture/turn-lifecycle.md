@@ -669,12 +669,15 @@ Cascade shapes pinned by fixtures/tests:
 
 ### Required contract
 
-> **Turn state is wire-pushed.** The UI's "Working…" indicator and
-> active-turn flag come exclusively from provider-pushed
-> `EventTurnStart` / `EventTurnComplete` (per wire round; see above).
-> Never derive turn activity from item state (e.g. "some tool_call
-> is still running, so the turn must be active"). A dropped
-> completion must not freeze the UI.
+> **Turn state is live backend state.** The UI's "Working…" indicator
+> and active-turn flag come exclusively from the provider's live turn
+> registry: pushed `EventTurnStart` / `EventTurnComplete` (per wire
+> round; see above) and, for a client that connects or recovers
+> mid-turn, the snapshots `GetThreadLiveState` (one thread, pane
+> hydration) and `ListThreadLiveActivity` (every thread of a computer,
+> sidebar pills). Never derive turn activity from item state (e.g.
+> "some tool_call is still running, so the turn must be active"). A
+> dropped completion must not freeze the UI.
 
 ### Turn-level projections
 
@@ -838,8 +841,11 @@ get isTurnActive() {
 
 On `SwitchThread`, the frontend calls `ListRecentTurns(threadId, 2)`
 to rehydrate `latestSettledTurn` from the DB. The global active-turn
-registry is NOT rehydrated from persistence. It's only set on live
-`provider:turn_started` events. A crashed turn rehydrates as "turn
+registry is never rehydrated from persistence. Its writers are the live
+`provider:turn_started` push and the two live-state snapshots:
+`GetThreadLiveState` when a pane mounts (`threadLiveStateHydration.ts`)
+and `ListThreadLiveActivity` on every connection edge and after a gap on
+a live-status channel (`threadLiveActivity.ts`). A crashed turn rehydrates as "turn
 was interrupted", not "turn is currently active": the boot sweep has
 settled it with `stop_reason='interrupted'` (see §Crash behavior), so
 it surfaces through the normal settled-turn projection. When the user switches AWAY from a thread with a live

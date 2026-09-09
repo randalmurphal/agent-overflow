@@ -1953,8 +1953,11 @@ Prerequisite sweep, valuable standalone:
   than both the executing bundle and APK-packaged bundle; older peers
   remain usable through capability flags. Release order comes from
   SemVer in hashed `bundle-release.json`, never hash or arrival order.
-  Equal-version rebuilds and unordered `dev` versions cannot replace
-  installed code; development tests need a version bump or APK install.
+  A release build (`AO_RELEASE_BUILD=1`, set by `scripts/build-release.sh`
+  and the release workflow) stamps the package version; every other
+  build stamps `<next patch>-dev.<unix seconds>`, so a phone adopts each
+  development rebuild in build order, the release of that patch replaces
+  them all, and an older release never replaces newer code.
 - **Code trust per client class, stated plainly.** Browsers and the
   desktop attach client load the SPA *from* the backend they connect
   to. A member using a browser against a team hub executes
@@ -2500,8 +2503,9 @@ the review fixes that follow them):
   every path must pass `CleanPath` or the tree is refused;
   `MinShellBuild = 10` is the native compatibility floor, separate from
   strictly newer release ordering. `frontend/scripts/bundleId.ts` stamps
-  `dist/bundle-release.json` from the frontend package version before
-  hashing, then stamps `dist/bundle-id.txt`, the APK's own answer to "what am I running";
+  `dist/bundle-release.json` before hashing (the package version in a
+  release build, a `-dev.<unix seconds>` prerelease of the next patch
+  otherwise), then stamps `dist/bundle-id.txt`, the APK's own answer to "what am I running";
   one fixture directory and one golden id pin the two implementations.
 - *The routes* (`internal/transport/bundleroutes.go`): `GET
   /bundle/manifest.json` and `GET /bundle/archive.zip`, admitted by the

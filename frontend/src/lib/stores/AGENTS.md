@@ -74,6 +74,13 @@ Gap recovery belongs to `transportRecovery.ts`. Register snapshot reads with
 mutations that existed when replay ended. A gap snapshot must not overtake older
 queued replay, and later live events must not extend that recovery wait.
 
+Live turn, approval, user-input and compacting state is backend state, never
+derived from items or rows. `threadLiveActivity.ts` reads
+`ListThreadLiveActivity` for every thread of a computer on each connection
+edge and after a gap on one of those channels; a pane additionally reads
+`GetThreadLiveState` when it mounts. A push that lands while a snapshot is in
+flight wins over the snapshot.
+
 `watchedThreads.ts` unions registered sources for every thread whose surface
 exists, including child threads with no pane. Watches never depend on focus,
 visibility, or `document.hidden`. Registering a consumer of an entity-filtered

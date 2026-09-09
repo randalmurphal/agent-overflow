@@ -126,7 +126,9 @@ documented error subtypes are:
 Mirrors the Anthropic API. Observed: `"end_turn"`, `"max_tokens"`,
 `"tool_use"`, `"stop_sequence"`, `"refusal"`, `"pause_turn"`.
 **`"interrupted"` is NOT a value.** Interruption surfaces through the
-`error_during_execution` envelope below.
+`error_during_execution` envelope below. A success `result` can carry
+`stop_reason: null` (observed for slash commands such as `/compact`);
+`parse_result.go` records an empty stop reason and logs the envelope.
 
 ### Interrupted-turn `result` envelope (verified 2.1.170)
 

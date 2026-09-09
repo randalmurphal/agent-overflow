@@ -80,7 +80,10 @@ of the real-provider smoke tests.
 ## Releases
 
 Use [release candidates](release-candidates.md) for producing, testing and
-promoting saved artifact bytes. Every build artifact must survive CI upload
+promoting saved artifact bytes. Only `scripts/build-release.sh` and the release
+workflow set `AO_RELEASE_BUILD=1`, which stamps the frontend bundle with the
+bare package version; any other build stamps a dated prerelease of the next
+patch so a paired phone adopts development rebuilds in build order. Every build artifact must survive CI upload
 and download before checksumming and publishing;
 `TestReleaseWorkflowCarriesEveryArtifactToPackaging` checks that handoff.
 For installation, pairing and Android signing, follow
