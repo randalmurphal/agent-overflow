@@ -48,8 +48,10 @@ func newCapturingSession(t *testing.T, codexThreadID string) (*Session, string) 
 		t.Fatalf("spawn capture process: %v", err)
 	}
 	t.Cleanup(func() {
+		if err := proc.Close(); err != nil {
+			t.Errorf("close capture process: %v", err)
+		}
 		cancelProc()
-		_ = proc.Close()
 	})
 
 	s := &Session{

@@ -38,6 +38,9 @@ func (s *Store) RollbackImportedThread(threadID string) error {
 	if _, err := tx.Exec(`DELETE FROM usage_ledger WHERE thread_id = ?`, threadID); err != nil {
 		return fmt.Errorf("store: delete rolled-back usage for thread %s: %w", threadID, err)
 	}
+    if _, err := tx.Exec(`DELETE FROM usage_pending WHERE thread_id = ?`, threadID); err != nil {
+        return fmt.Errorf("store: delete rolled-back pending usage for thread %s: %w", threadID, err)
+    }
 	result, err := tx.Exec(`DELETE FROM threads WHERE id = ?`, threadID)
 	if err != nil {
 		return fmt.Errorf("store: delete rolled-back imported thread %s: %w", threadID, err)

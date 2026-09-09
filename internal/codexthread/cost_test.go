@@ -571,3 +571,18 @@ func TestFailedThreadCostDeleteIsHarmlessAcrossARestart(t *testing.T) {
 		t.Fatalf("overlay after the re-read = %+v, want the fresh provider figure", got)
 	}
 }
+
+func TestProviderCostWithPendingTokensRemainsPartial(t *testing.T) {
+	h := newCostTestHarness(t)
+	thread := codexCostThread("pending-cost", "provider-pending")
+	if err := h.store.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.PutProviderThreadCost(store.ProviderThreadCost{ThreadID: thread.ID, Provider: "codex", SessionRef: thread.SessionRef, CostSource: "provider-estimate", CostUSDMicros: 1_000_000, UpdatedAt: 100}); err != nil {
+		t.Fatal(err)
+	}
+	b := h.OverlayProviderThreadCost(store.UsageQuery{ThreadID: thread.ID}, []store.UsageBucket{{OutputTokens: 50, PendingRows: 1}})
+	if len(b) != 1 || b[0].CostUSD != 1 || b[0].UnpricedRows != 1 || b[0].OutputTokens != 50 {
+		t.Fatalf("pending provider cost: %+v", b)
+	}
+}

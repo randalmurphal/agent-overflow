@@ -50,6 +50,7 @@ type Router struct {
 	// usageWorkItemResolver attributes phase-thread usage rows to a
 	// workflow run at append time; the app installs it once the
 	// workflow engine is wired (SetUsageWorkItemResolver).
+	usageEmitMu           sync.Mutex
 	usageResolverMu       sync.RWMutex
 	usageWorkItemResolver func(threadID string) string
 	tracer                trace.Tracer
@@ -376,6 +377,8 @@ func (r *Router) dispatch(evt provider.ProviderEvent) error {
 		return r.handleTimelineNotification(evt)
 	case provider.EventAPIRetry:
 		return r.handleAPIRetry(evt)
+	case provider.EventUsageProgress:
+		return r.handleUsageProgress(evt)
 	case provider.EventTokenUsage:
 		return r.handleTokenUsage(evt)
 	case provider.EventInit:

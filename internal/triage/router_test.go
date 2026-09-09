@@ -72,6 +72,7 @@ func TestAllEventKindsListIsComplete(t *testing.T) {
 		provider.EventUserInputResolved:          true,
 		provider.EventSessionStatus:              true,
 		provider.EventTokenUsage:                 true,
+		provider.EventUsageProgress:              true,
 		provider.EventError:                      true,
 		provider.EventTodoUpdate:                 true,
 		provider.EventTaskCreate:                 true,
@@ -499,6 +500,7 @@ func newTestRouter(t *testing.T) (*Router, *store.Store, *emissionLog) {
 	}
 
 	router := NewRouter(st, emit)
+	t.Cleanup(router.flushAllUsage)
 	return router, st, emissions
 }
 

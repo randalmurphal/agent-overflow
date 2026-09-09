@@ -652,6 +652,19 @@ func TestWaitProcessExitErr(t *testing.T) {
 	}
 }
 
+func TestWaitProcessExitErrDoesNotReadUnpublishedStatus(t *testing.T) {
+	// The waiter publishes its write by closing done. Before that close,
+	// reading err is unsafe even if the waiter already assigned a value.
+	p := &Process{done: make(chan struct{}), err: fmt.Errorf("unpublished exit")}
+	if err := WaitProcessExitErr(p); err != nil {
+		t.Fatalf("read an exit status before publication: %v", err)
+	}
+	close(p.done)
+	if err := WaitProcessExitErr(p); err != p.err {
+		t.Fatalf("published exit status = %v, want %v", err, p.err)
+	}
+}
+
 // TestIsClosedPipeErr feeds the predicate errors produced by the real
 // syscalls rather than hand-written sentences: the point of matching on
 // identity is that the classification survives any rewording, and a test

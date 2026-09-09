@@ -22,6 +22,7 @@ const (
 	EventUserInputResolved EventKind = "user_input_resolved"
 	EventSessionStatus     EventKind = "session_status"
 	EventTokenUsage        EventKind = "token_usage"
+	EventUsageProgress     EventKind = "usage_progress"
 	EventError             EventKind = "error"
 	EventTodoUpdate        EventKind = "todo_update"
 
@@ -224,6 +225,7 @@ var AllEventKinds = []EventKind{
 	EventUserInputResolved,
 	EventSessionStatus,
 	EventTokenUsage,
+	EventUsageProgress,
 	EventError,
 	EventTodoUpdate,
 	EventTaskCreate,
@@ -284,6 +286,7 @@ type ProviderEvent struct {
 	ParentToolUseID string           `json:"parentToolUseId,omitempty"`
 	Raw             json.RawMessage  `json:"-"`
 	TurnComplete    TurnCompleteMeta `json:"-"`
+	UsageProgress   *UsageProgress   `json:"-"`
 	// Failure is the provider adapter's normalized error disposition. Raw wire
 	// fields remain in Meta/Raw for rendering and diagnostics; control-flow
 	// consumers must use this typed value rather than decoding provider JSON.
@@ -459,6 +462,9 @@ type TurnCompleteMeta interface {
 // triage persists Usage on the turn row and ModelUsage as usage-ledger
 // rows.
 type WireTurnCompleteMeta struct {
+	// UsageScope identifies the provider process whose earlier usage checkpoints
+	// this accounting delta reconciles. It is not a provider conversation ID.
+	UsageScope         string
 	StopReason         string
 	AssistantMessageID string
 	Usage              *TokenUsage

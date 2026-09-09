@@ -236,7 +236,8 @@ export interface RateLimitsSnapshot {
 }
 
 export interface UsageEvent {
-  action: 'usage' | 'reset' | 'rate_limits' | 'rate_limits_removed';
+  action: 'usage' | 'progress' | 'reset' | 'rate_limits' | 'rate_limits_removed';
+  error?: string;
   threadId: string;
   usedTokens?: number;
   maxTokens?: number;

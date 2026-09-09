@@ -6,36 +6,60 @@
 package triage
 
 import (
+	"fmt"
 	"log"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
 
-// appendUsageLedger persists one ledger row per model for a settled
-// turn. Called from BOTH turn-settle paths — settleTurnRow (first
-// settlement) and persistLateTurnPayload (multi-result cascade / soft
-// round-close fold) — because the provider parsers emit per-turn DELTAS:
-// a second result for the same logical turn carries only usage that
-// accrued since the first settle, so appending on every non-empty event
-// is additive-correct while the turns row keeps first-write-wins for
-// display.
-//
-// Failure here is logged, not returned: the turn itself persisted fine
-// and accounting is supplementary — but it is an error (data we want),
-// never silently dropped.
-func (r *Router) appendUsageLedger(evt provider.ProviderEvent, turnID string, meta turnCompleteMeta, now int64) {
-	if len(meta.ModelUsage) == 0 {
-		return
+// appendUsageLedger exchanges reported progress for final provider accounting.
+func (r *Router) appendUsageLedger(evt provider.ProviderEvent, turnID string, meta turnCompleteMeta, now int64) (err error) {
+	defer func() {
+		if err != nil {
+			r.emitUsageFailure(evt.ThreadID, err)
+		}
+	}()
+	if len(meta.ModelUsage) == 0 || evt.ParentToolUseID != "" {
+		return nil
 	}
-	// Nested/subagent turn completes never carry ModelUsage today
-	// (Claude folds subagent spend into the parent's modelUsage; Codex
-	// child lifecycle events attach no usage) — the guard keeps a future
-	// nested producer from double-counting against the parent's rows.
-	if evt.ParentToolUseID != "" {
-		return
+	rows := r.usageLedgerRows(evt, turnID, meta.ModelUsage, now)
+	if err := r.store.AppendUsageAndReconcile(meta.UsageScope, rows); err != nil {
+		return fmt.Errorf("usage accounting for %s: %w", evt.ThreadID, err)
 	}
+	r.throttledEmitUsage(evt.ThreadID, provider.UsageEvent{Action: "progress", ThreadID: evt.ThreadID})
+	return nil
+}
 
+func (r *Router) handleUsageProgress(evt provider.ProviderEvent) (err error) {
+	defer func() {
+		if err != nil {
+			r.emitUsageFailure(evt.ThreadID, err)
+		}
+	}()
+	if evt.ParentToolUseID != "" {
+		return nil
+	}
+	if evt.UsageProgress == nil {
+		return fmt.Errorf("usage progress missing payload")
+	}
+	turnIndex, err := r.currentTurnIndex(evt.ThreadID)
+	if err != nil {
+		return fmt.Errorf("usage progress turn: %w", err)
+	}
+	progress := evt.UsageProgress
+	rows := r.usageLedgerRows(evt, r.persistedTurnID(evt, turnIndex), progress.ModelUsage, eventTimestampMillis(evt))
+	changed, err := r.store.PutUsageProgress(progress.Scope, progress.Segment, rows)
+	if err != nil {
+		return err
+	}
+	if changed {
+		r.throttledEmitUsage(evt.ThreadID, provider.UsageEvent{Action: "progress", ThreadID: evt.ThreadID})
+	}
+	return nil
+}
+
+func (r *Router) usageLedgerRows(evt provider.ProviderEvent, turnID string, models []provider.ModelTokenUsage, now int64) []store.UsageLedgerRow {
 	attribution, err := r.store.GetThreadContextSettings(evt.ThreadID)
 	if err != nil {
 		// Thread row unavailable (already deleted mid-settle). Persist
@@ -50,8 +74,8 @@ func (r *Router) appendUsageLedger(evt provider.ProviderEvent, turnID string, me
 		workItemID = resolveWorkItem(evt.ThreadID)
 	}
 
-	rows := make([]store.UsageLedgerRow, 0, len(meta.ModelUsage))
-	for _, m := range meta.ModelUsage {
+	rows := make([]store.UsageLedgerRow, 0, len(models))
+	for _, m := range models {
 		rows = append(rows, store.UsageLedgerRow{
 			CreatedAt:                now,
 			ThreadID:                 evt.ThreadID,
@@ -60,6 +84,7 @@ func (r *Router) appendUsageLedger(evt provider.ProviderEvent, turnID string, me
 			TurnID:                   turnID,
 			Provider:                 provider.UsageProviderFamily(attribution.Provider),
 			Model:                    m.Model,
+			AccountingModel:          m.AccountingModel,
 			InputTokens:              m.InputTokens,
 			OutputTokens:             m.OutputTokens,
 			CacheReadInputTokens:     m.CacheReadInputTokens,
@@ -68,7 +93,11 @@ func (r *Router) appendUsageLedger(evt provider.ProviderEvent, turnID string, me
 			CostUSD:                  m.TotalCostUSD,
 		})
 	}
-	if err := r.store.AppendUsage(rows); err != nil {
-		log.Printf("triage: usage ledger append for %s turn %s: %v", evt.ThreadID, turnID, err)
-	}
+	return rows
+}
+
+func (r *Router) emitUsageFailure(threadID string, err error) {
+	log.Printf("triage: persist reported usage for %s: %v", threadID, err)
+	r.throttledEmitUsage(threadID, provider.UsageEvent{Action: "progress", ThreadID: threadID,
+		Error: "Reported usage could not be saved. Totals may be incomplete."})
 }

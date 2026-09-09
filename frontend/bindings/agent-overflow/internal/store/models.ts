@@ -1710,14 +1710,19 @@ export class UsageBucket {
      * TurnCount counts distinct settled turns in the bucket (a turn that
      * used several models is one turn). SessionCount counts distinct
      * threads — the usage modal reports "sessions", and a thread is the
-     * user-facing session unit. UnpricedRows counts rows whose model has
-     * no known price in the internal/usagecost rate table — when > 0 the
+     * user-facing session unit. UnpricedRows counts pending reports and rows
+     * with no known price in the internal/usagecost rate table. When > 0 the
      * bucket's CostUSD is a lower bound, not a total. Set by
      * GetUsageStats, not by QueryUsage (see the struct doc above).
      */
     "turnCount": number;
     "sessionCount": number;
     "unpricedRows": number;
+
+    /**
+     * PendingRows counts reported token snapshots awaiting final accounting.
+     */
+    "pendingRows": number;
 
     /**
      * CostSource names whose arithmetic produced CostUSD, and is empty on
@@ -1766,6 +1771,9 @@ export class UsageBucket {
         }
         if (!("unpricedRows" in $$source)) {
             this["unpricedRows"] = 0;
+        }
+        if (!("pendingRows" in $$source)) {
+            this["pendingRows"] = 0;
         }
         if (!("costSource" in $$source)) {
             this["costSource"] = "";

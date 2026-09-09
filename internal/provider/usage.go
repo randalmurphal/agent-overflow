@@ -5,7 +5,8 @@ package provider
 // `rate_limits` carries a rate-limits snapshot folded onto the same channel
 // for future UI, but does not change the context ring.
 type UsageEvent struct {
-	Action                string  `json:"action"` // "usage" | "reset" | "rate_limits"
+	Error                 string  `json:"error,omitempty"`
+	Action                string  `json:"action"` // "usage" | "progress" | "reset" | "rate_limits" | "rate_limits_removed"
 	ThreadID              string  `json:"threadId"`
 	UsedTokens            int     `json:"usedTokens,omitempty"`
 	MaxTokens             int     `json:"maxTokens,omitempty"`
@@ -222,6 +223,9 @@ func (u *TokenUsage) Sub(other TokenUsage) {
 // entry for the session's configured model.
 type ModelTokenUsage struct {
 	Model string `json:"model"`
+	// AccountingModel correlates progress when the final report uses another
+	// spelling of the same model. Empty means Model. It is not display data.
+	AccountingModel string `json:"-"`
 	TokenUsage
 }
 

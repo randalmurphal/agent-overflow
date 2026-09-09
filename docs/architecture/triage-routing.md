@@ -18,6 +18,7 @@ Every normalized `ProviderEvent` flows through `Router.Handle` in
 | `approval_request` | `handleApprovalRequest`: record pending, emit `provider:approval` (request). |
 | `approval_resolved` | `handleApprovalResolved`: fold decision onto the row, emit `provider:approval` (resolve). |
 | `session_status` | `handleSessionStatus`: precise mapping to `ProviderStatusEventKind`, emit `provider:status` when persistent. |
+| `usage_progress` | `handleUsageProgress`: persist absolute reported token snapshots and invalidate usage queries through `provider:usage`. Final accounting reconciles them with the ledger. |
 | `token_usage` | `handleTokenUsage`: persist and emit a provider-normalized context-window snapshot. Generic token-spend totals are ignored here. |
 | `error` | `handleError`: persist error row, mark turn items errored on fatal, emit `provider:item_event` upsert + `thread:error_notice` (the sidebar's Failed badge, on a wildcard channel — see below). |
 | `compact_boundary` | `handleCompaction`: persist compaction marker; emit an included context-window snapshot when present, otherwise emit `provider:usage` reset. |

@@ -235,6 +235,7 @@ type Parser struct {
 	// (including --resume) restarts the CLI's counters at zero, so the
 	// nil map is always the correct baseline. Cleared by Close.
 	usageTotalsByModel map[string]provider.TokenUsage
+	usageProgress      claudeUsageProgress
 	// usageAccountedCostUSD mirrors usageTotalsByModel for the flat
 	// `total_cost_usd` field — the session-cumulative cost already
 	// attributed to settled turns. Single lifecycle owner:
@@ -387,6 +388,7 @@ func (p *Parser) Close() {
 	p.activeCommandUUID = ""
 	p.closeTranscriptMirrors()
 	p.usageTotalsByModel = nil
+	p.usageProgress = claudeUsageProgress{}
 	p.usageAccountedCostUSD = 0
 }
 

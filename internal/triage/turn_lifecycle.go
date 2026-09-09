@@ -492,7 +492,8 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 			if fcErr := r.forceCloseOrphanToolCalls(evt.ThreadID, turnIndex, now); fcErr != nil && lateErr == nil {
 				lateErr = fcErr
 			}
-			r.persistLateTurnPayload(evt, turnIndex, meta)
+			lateErr = errors.Join(lateErr, r.persistLateTurnPayload(evt, turnIndex, meta))
+			r.FlushUsageEmitThrottle(evt.ThreadID)
 			return lateErr
 		}
 	}
@@ -573,7 +574,7 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// Anchor recording does NOT happen here. Message anchors are
 	// recorded by app_send.go before provider stdin/RPC dispatch so
 	// the anchor maps directly to "before this user message".
-	r.settleTurnRow(evt, turnIndex, now, meta, persistErr)
+	persistErr = errors.Join(persistErr, r.settleTurnRow(evt, turnIndex, now, meta, persistErr))
 
 	r.clearOpenTurn(evt.ThreadID)
 	r.finishTurnSpan(evt.ThreadID, completedTurnOutcome(meta, persistErr))
@@ -722,7 +723,7 @@ func (r *Router) persistedTurnID(evt provider.ProviderEvent, turnIndex int) stri
 // so subagent completions do not reorder the sidebar. Synthesized
 // session-died / abort flavors flow through this same path when they
 // belong to the top-level turn.
-func (r *Router) settleTurnRow(evt provider.ProviderEvent, turnIndex int, now int64, meta turnCompleteMeta, persistErr error) {
+func (r *Router) settleTurnRow(evt provider.ProviderEvent, turnIndex int, now int64, meta turnCompleteMeta, persistErr error) error {
 	fields := decodeTurnCompleteFields(evt, r.persistedTurnID(evt, turnIndex), meta, persistErr)
 
 	usageJSON := ""
@@ -743,10 +744,11 @@ func (r *Router) settleTurnRow(evt provider.ProviderEvent, turnIndex int, now in
 	if err := r.store.UpdateTurnCompleted(fields.logicalTurnID, now, fields.stopReason, fields.assistantMessageID, usageJSON, fields.errorMessage); err != nil {
 		log.Printf("triage: update turn %s: %v", fields.logicalTurnID, err)
 	}
-	r.appendUsageLedger(evt, fields.logicalTurnID, meta, now)
+	usageErr := r.appendUsageLedger(evt, fields.logicalTurnID, meta, now)
 	if turnCountsAsThreadActivity(evt) {
 		r.bumpThreadActivity(evt.ThreadID, now, "turn settle")
 	}
+	return usageErr
 }
 
 func turnCountsAsThreadActivity(evt provider.ProviderEvent) bool {
@@ -844,14 +846,14 @@ func (r *Router) buildRoundCompletedEvent(
 //
 // Folded as a single UPDATE so the common case (both fields arrive
 // on the trailing `result`) pays one autocommit boundary.
-func (r *Router) persistLateTurnPayload(evt provider.ProviderEvent, turnIndex int, meta turnCompleteMeta) {
+func (r *Router) persistLateTurnPayload(evt provider.ProviderEvent, turnIndex int, meta turnCompleteMeta) error {
 	turnID := r.persistedTurnID(evt, turnIndex)
 	// Ledger rows append on every settle event: the provider emits
 	// per-turn DELTAS, so a late fold's usage is new spend the first
 	// settle could not have carried (soft round-close settles with no
 	// usage at all; a multi-result cascade's second envelope deltas only
 	// the re-round's growth).
-	r.appendUsageLedger(evt, turnID, meta, eventTimestampMillis(evt))
+	usageErr := r.appendUsageLedger(evt, turnID, meta, eventTimestampMillis(evt))
 	usageJSON := ""
 	if len(meta.Usage) > 0 {
 		usageJSON = string(meta.Usage)
@@ -859,7 +861,7 @@ func (r *Router) persistLateTurnPayload(evt provider.ProviderEvent, turnIndex in
 	amid := meta.AssistantMessageID
 	stopReason, errorMessage := lateErrorTurnPayload(meta)
 	if usageJSON == "" && amid == "" && stopReason == "" && errorMessage == "" {
-		return
+		return usageErr
 	}
 	if err := r.store.UpdateTurnLatePayload(turnID, store.LateTurnPayload{
 		TokenUsageJSONIfEmpty:       usageJSON,
@@ -867,8 +869,9 @@ func (r *Router) persistLateTurnPayload(evt provider.ProviderEvent, turnIndex in
 		StopReasonOverwrite:         stopReason,
 		ErrorMessageOverwrite:       errorMessage,
 	}); err != nil {
-		log.Printf("triage: update turn %s late payload: %v", turnID, err)
+		return errors.Join(usageErr, fmt.Errorf("update turn %s late payload: %w", turnID, err))
 	}
+	return usageErr
 }
 
 func lateErrorTurnPayload(meta turnCompleteMeta) (string, string) {
@@ -1616,6 +1619,7 @@ func (r *Router) Wait(ctx context.Context) error {
 	}()
 	select {
 	case <-done:
+		r.flushAllUsage()
 		return r.flushAllStreamPersistence()
 	case <-ctx.Done():
 		return ctx.Err()
@@ -1703,6 +1707,8 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 	anchor := r.flushAnchor(threadID)
 	anchor.Lock()
 	defer anchor.Unlock()
+	r.usageEmitMu.Lock()
+	defer r.usageEmitMu.Unlock()
 
 	r.mu.Lock()
 	identity := r.identity(threadID)
@@ -1744,6 +1750,8 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 		effectiveModelRevision uint64
 		pendingUsage           provider.UsageEvent
 		hasPendingUsage        bool
+		pendingProgress        provider.UsageEvent
+		hasPendingProgress     bool
 		closedCodexAgents      []closedCodexAgent
 	)
 	if st != nil {
@@ -1765,6 +1773,7 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 		}
 		hadEffectiveModel = st.effectiveModelSet
 		pendingUsage, hasPendingUsage = r.takeUsageEmitPendingLocked(threadID)
+		pendingProgress, hasPendingProgress = takeUsagePending(st.usageProgressThrottle)
 	}
 	delete(r.threads, threadID)
 	if hadEffectiveModel {
@@ -1779,6 +1788,9 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 		r.emit(eventchan.ProviderModelFallback, ModelFallbackEvent{ThreadID: threadID, Revision: effectiveModelRevision})
 	}
 
+	if hasPendingProgress {
+		r.emit(eventchan.ProviderUsage, pendingProgress)
+	}
 	if hasPendingUsage {
 		r.emit(eventchan.ProviderUsage, pendingUsage)
 	}

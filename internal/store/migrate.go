@@ -1623,6 +1623,7 @@ CREATE INDEX idx_flush_queue_send_id ON flush_queue_items(thread_id, send_id)
 	},
 	{Version: 90, Name: "own_devices", SQL: ownDevicesV90SQL},
 	{Version: 91, Name: "remote_watches", SQL: remoteWatchesV91SQL},
+	{Version: 92, Name: "usage_pending", SQL: usagePendingV92SQL},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

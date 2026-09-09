@@ -36,15 +36,8 @@ func (a *App) GetUsageStats(query store.UsageQuery) ([]store.UsageBucket, error)
 	// arithmetic shift.
 	query.TZOffsetMinutes = clampTZOffsetMinutes(query.TZOffsetMinutes)
 
-	buckets, err := a.store.QueryUsage(query)
-	if err != nil {
-		return nil, fmt.Errorf("usage stats: %w", err)
-	}
-
-	details, err := a.store.QueryUsageDetail(query)
-	if err != nil {
-		return nil, fmt.Errorf("usage stats detail: %w", err)
-	}
+	buckets, details, err := a.store.ReadUsageStats(query)
+    if err != nil { return nil, fmt.Errorf("usage stats: %w", err) }
 
 	byBucket := make(map[string]*store.UsageBucket, len(buckets))
 	for i := range buckets {

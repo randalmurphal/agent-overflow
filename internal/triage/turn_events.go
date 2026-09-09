@@ -169,6 +169,7 @@ type BackgroundTaskStateEvent struct {
 // producers must populate ProviderEvent.TurnComplete with one of the typed
 // provider-neutral payloads.
 type turnCompleteMeta struct {
+	UsageScope         string
 	StopReason         string
 	AssistantMessageID string
 	Usage              json.RawMessage
@@ -221,6 +222,7 @@ func wireTurnCompleteMeta(meta provider.WireTurnCompleteMeta) turnCompleteMeta {
 		AssistantMessageID: meta.AssistantMessageID,
 		Usage:              usage,
 		ModelUsage:         meta.ModelUsage,
+		UsageScope:         meta.UsageScope,
 		Aborted:            meta.Aborted,
 		Error:              meta.ErrorMessage,
 	}

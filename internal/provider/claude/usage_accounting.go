@@ -135,7 +135,7 @@ func (p *Parser) takeModelUsageDeltas(rawModelUsage json.RawMessage) (deltas []p
 		if delta.IsZero() {
 			continue
 		}
-		deltas = append(deltas, provider.ModelTokenUsage{Model: name, TokenUsage: delta})
+		deltas = append(deltas, accountingModelUsage(name, delta))
 	}
 	return deltas, true
 }
@@ -166,7 +166,18 @@ func (p *Parser) takeFlatUsageDelta(raw map[string]json.RawMessage) (provider.To
 	if usage.IsZero() {
 		return provider.TokenUsage{}, nil
 	}
-	return usage, []provider.ModelTokenUsage{{Model: p.currentModel(), TokenUsage: usage}}
+	return usage, []provider.ModelTokenUsage{accountingModelUsage(p.currentModel(), usage)}
+}
+
+// Message snapshots use API model IDs, while result.modelUsage can use CLI
+// aliases or a context-tier marker. Reconcile by the shared canonical slug
+// while preserving the final report's model spelling and price.
+func accountingModelUsage(model string, usage provider.TokenUsage) provider.ModelTokenUsage {
+	result := provider.ModelTokenUsage{Model: model, TokenUsage: usage}
+	if key := provider.NormalizeModelSlug(string(provider.Claude), model); key != model {
+		result.AccountingModel = key
+	}
+	return result
 }
 
 // advanceAccountedCost moves the cumulative-cost tracker to the wire's

@@ -302,7 +302,8 @@ type threadState struct {
 	// events/second but the UI doesn't benefit from updates faster than
 	// ~2/sec. The pending window is flushed on turn-complete and at
 	// teardown so the final reading always reaches the frontend.
-	usageEmitThrottle *usageEmitThrottle
+	usageEmitThrottle     *usageEmitThrottle
+	usageProgressThrottle *usageEmitThrottle
 
 	// pendingCommandDiffs holds command-execution inline-diff capture
 	// state awaiting its matching tool result, keyed by itemID.

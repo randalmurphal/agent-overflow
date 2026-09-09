@@ -1,4 +1,14 @@
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import type { BackendKey } from '../transport/backendKey';
+import { bumpUsageRefresh } from './usageRefresh.svelte';
+
+const recovery = vi.hoisted(() => ({ listeners: new Set<(backend: string, phase: 'start' | 'complete' | 'cancel') => void>() }));
+vi.mock('./transportRecovery', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./transportRecovery')>(),
+  onBackendRecovery(listener: (backend: string, phase: 'start' | 'complete' | 'cancel') => void) {
+    recovery.listeners.add(listener); return () => recovery.listeners.delete(listener);
+  },
+}));
 import { flushSync } from 'svelte';
 import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
 import { setBindingMock } from '../../test/mocks/bindings-app';
@@ -10,7 +20,7 @@ import { setTelemetrySelection, resetTelemetryForTest } from './telemetryCompute
 
 let release = () => {};
 beforeEach(resetTelemetryForTest);
-afterEach(() => { release(); resetTelemetryForTest(); resetStagedBackends(); });
+afterEach(() => { release(); vi.useRealTimers(); resetTelemetryForTest(); resetStagedBackends(); });
 async function flush() { flushSync(); await Promise.resolve(); await Promise.resolve(); flushSync(); }
 
 it('aggregates only selected online hosts and exposes offline/failed hosts as partial results', async () => {
@@ -76,4 +86,50 @@ it('queries a known project only on its owner and preserves historical project l
   projectId = 'deleted-project';
   await flush();
   expect(targets).toEqual(['', 'gpu']);
+});
+
+
+it('serializes sustained progress without discarding each slow answer and detaches cleanly', async () => {
+  vi.useFakeTimers();
+  noteThread('live-thread', '' as BackendKey);
+  const pending: Array<(rows: UsageBucket[]) => void> = [];
+  const calls = setBindingMock('GetUsageStats', () => new Promise((resolve) => pending.push(resolve)));
+  let stats!: ReturnType<typeof createUsageStats>;
+  release = $effect.root(() => { stats = createUsageStats(() => new UsageQuery({ threadId: 'live-thread' })); });
+  await flush();
+  for (let i = 0; i < 10; i++) { bumpUsageRefresh('live-thread'); await vi.advanceTimersByTimeAsync(100); }
+  expect(calls).toHaveBeenCalledTimes(1);
+  pending.shift()!([new UsageBucket({ outputTokens: 10 })]);
+  await flush();
+  expect(stats.buckets?.[0].outputTokens).toBe(10);
+  await vi.advanceTimersByTimeAsync(500);
+  expect(calls).toHaveBeenCalledTimes(2);
+  pending.shift()!([new UsageBucket({ outputTokens: 20 })]);
+  await flush();
+  expect(stats.buckets?.[0].outputTokens).toBe(20);
+  release(); release = () => {};
+  bumpUsageRefresh('live-thread');
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(calls).toHaveBeenCalledTimes(2);
+});
+
+it('refreshes on its owner recovery and fences an older response', async () => {
+  stageBackend({ id: 'gpu', name: 'GPU' });
+  noteThread('recovering-thread', 'gpu');
+  let finish!: (rows: UsageBucket[]) => void;
+  setBindingMock('GetUsageStats', () => new Promise((resolve) => { finish = resolve; }));
+  let stats!: ReturnType<typeof createUsageStats>;
+  release = $effect.root(() => { stats = createUsageStats(() => new UsageQuery({ threadId: 'recovering-thread' })); });
+  await flush();
+  const oldFinish = finish;
+  const calls = setBindingMock('GetUsageStats', async () => [new UsageBucket({ outputTokens: 30 })]);
+  for (const fn of recovery.listeners) fn('', 'start');
+  await flush();
+  expect(calls).not.toHaveBeenCalled();
+  for (const fn of recovery.listeners) fn('gpu', 'start');
+  await flush();
+  expect(stats.buckets?.[0].outputTokens).toBe(30);
+  oldFinish([new UsageBucket({ outputTokens: 5 })]);
+  await flush();
+  expect(stats.buckets?.[0].outputTokens).toBe(30);
 });

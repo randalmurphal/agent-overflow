@@ -86,3 +86,16 @@ func TestPriceGroups_FailsWholeOnOneBadGroup(t *testing.T) {
 		t.Fatalf("PriceGroups with a corrupt group must error, not return a partial total")
 	}
 }
+
+func TestPendingUsageDoesNotInventInterimCost(t *testing.T) {
+	spend, err := PriceGroups([]store.UsageDetailRow{
+		{Model: "claude-haiku-4-5", CostSource: "wire", CostUSD: 0.5, Rows: 1},
+		{Model: "gpt-5.2-codex", CostSource: "pending", OutputTokens: 1_000_000, Rows: 2},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spend.TotalUSD() != 0.5 || spend.EstimatedUSD != 0 || spend.UnpricedRows != 2 {
+		t.Fatalf("pending spend: %+v", spend)
+	}
+}

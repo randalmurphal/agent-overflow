@@ -52,7 +52,7 @@ func (p *Parser) parseStreamEvent(threadID string, raw map[string]json.RawMessag
 		if json.Unmarshal(eventObj["message"], &msg) == nil {
 			p.rememberStreamedMessageID(msg.ID)
 		}
-		return nil, nil
+		return p.startUsageMessage(threadID, parentToolUseID, eventObj["message"], now), nil
 
 	case "content_block_start":
 		index, _ := readIntAtAnyKey(eventRaw, "index")
@@ -147,6 +147,9 @@ func (p *Parser) parseStreamEvent(threadID string, raw map[string]json.RawMessag
 		if usageRaw := eventObj["usage"]; len(usageRaw) > 0 {
 			var u assistantUsage
 			if json.Unmarshal(usageRaw, &u) == nil {
+				if p != nil && parentToolUseID == "" {
+					events = append(events, p.reportMessageUsage(threadID, p.usageProgress.activeMessage, "", &u, now)...)
+				}
 				events = appendContextUsageEvent(events, threadID, parentToolUseID, now, u)
 			}
 		}

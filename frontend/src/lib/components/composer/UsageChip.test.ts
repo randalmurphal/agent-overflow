@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 
 import UsageChip from './UsageChip.svelte';
+import { applyUsageEvent } from '../../stores/eventsProvider';
 import { buildPane, makeThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
 import { UsageBucket } from '../../stores/bindings';
@@ -196,4 +197,46 @@ describe('<UsageChip>', () => {
       expect(popover.textContent).toContain('≥$0.50');
     });
   });
+});
+
+
+it('refreshes the chip and open model breakdown on reported progress without clearing context', async () => {
+  const pane = await buildPane(makeThread());
+  let output = 500;
+  let pending = 1;
+  setBindingMock('GetUsageStats', async (query: unknown) => {
+    const values = { outputTokens: output, pendingRows: pending, unpricedRows: pending };
+    return [(query as { groupBy?: string }).groupBy === 'model' ? modelBucket(values) : lifetimeBucket(values)];
+  });
+  const { findByTestId, getByTestId, getByText } = render(UsageChip, { props: { pane } });
+  const trigger = await findByTestId('usage-chip-trigger');
+  await fireEvent.click(trigger);
+  await waitFor(() => expect(getByText('Latest reported tokens. Cost accounting is still pending.')).toBeTruthy());
+  await waitFor(() => expect(getByText('Sonnet 4.6').parentElement?.textContent).toContain('500'));
+  pane.setContextWindow({ usedTokens: 4000, maxTokens: 200000, usedPercentage: 2 });
+  const contextBefore = pane.contextWindow;
+  output = 900;
+  pending = 0;
+  applyUsageEvent({ action: 'progress', threadId: pane.threadId! });
+  await waitFor(() => {
+    expect(trigger.textContent).toContain('900');
+    expect(getByText('Sonnet 4.6').parentElement?.textContent).toContain('900');
+    expect(getByTestId('usage-chip-popover').textContent).not.toContain('accounting is still pending');
+  });
+  expect(pane.contextWindow).toEqual(contextBefore);
+  const modelCalls = getBindingMock('GetUsageStats')!.mock.calls.filter(([q]) => (q as { groupBy?: string }).groupBy === 'model');
+  expect(modelCalls.length).toBeGreaterThanOrEqual(2);
+});
+
+it('preserves known totals and displays a failed refresh', async () => {
+  const pane = await buildPane(makeThread());
+  setBindingMock('GetUsageStats', async () => [lifetimeBucket()]);
+  const { findByTestId } = render(UsageChip, { props: { pane } });
+  const trigger = await findByTestId('usage-chip-trigger');
+  setBindingMock('GetUsageStats', async () => { throw new Error('read failed'); });
+  bumpUsageRefresh(pane.threadId!);
+  await waitFor(() => expect(trigger.title).toContain('could not be refreshed'));
+  expect(trigger.textContent).toContain('500');
+  applyUsageEvent({ action: 'progress', threadId: pane.threadId!, error: 'Reported usage could not be saved.' });
+  await waitFor(() => expect(trigger.title).toBe('Reported usage could not be saved.'));
 });

@@ -264,6 +264,7 @@ func (s *Session) foldNotificationOntoParent(method string, params json.RawMessa
 		// the context-meter EventTokenUsage classification below is
 		// untouched.
 		s.usageAcct.observe(params)
+		s.emitUsageProgress()
 	}
 }
 
@@ -531,6 +532,7 @@ func (s *Session) updateNotificationState(evt *provider.ProviderEvent) {
 	switch evt.Kind {
 	case provider.EventTurnStart:
 		s.usageAcct.onTurnStart()
+		s.usageAcct.model = ""
 		if evt.TurnID == "" {
 			return
 		}

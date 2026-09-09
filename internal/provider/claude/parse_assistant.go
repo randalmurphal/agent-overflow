@@ -206,6 +206,9 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 	}
 
 	if !advisorOnly {
+		if parentToolUseID == "" && errorEnum == "" {
+			events = append(events, p.reportMessageUsage(threadID, msg.ID, msg.Model, msg.Usage, now)...)
+		}
 		events = p.appendAssistantUsageEvent(events, threadID, parentToolUseID, now, msg.Usage)
 	}
 

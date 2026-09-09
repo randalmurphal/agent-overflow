@@ -12,7 +12,7 @@ func TestEventKindUniqueness(t *testing.T) {
 		EventInit, EventTextDelta, EventToolStart, EventToolComplete,
 		EventTurnStart, EventTurnComplete, EventApprovalRequest,
 		EventApprovalResolved, EventUserInputRequest, EventUserInputResolved,
-		EventSessionStatus, EventTokenUsage,
+		EventSessionStatus, EventTokenUsage, EventUsageProgress,
 		EventError, EventTodoUpdate, EventNotification,
 		EventCompactBoundary, EventRateLimits,
 		EventModelRerouted, EventThreadRenamed, EventDiff,
@@ -30,8 +30,8 @@ func TestEventKindUniqueness(t *testing.T) {
 		seen[k] = true
 	}
 
-	if len(seen) != 23 {
-		t.Errorf("expected 23 unique EventKind values, got %d", len(seen))
+	if len(seen) != 24 {
+		t.Errorf("expected 24 unique EventKind values, got %d", len(seen))
 	}
 }
 

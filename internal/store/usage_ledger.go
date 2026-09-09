@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// usage_ledger accessors — append-only per-turn token/cost accounting.
+// Usage queries combine settled ledger rows with reported pending tokens.
 //
 // One row per (settled turn, model). Rows are written by triage on turn
 // settlement and never updated or deleted; thread/project deletion leaves
@@ -16,6 +16,9 @@ import (
 
 // UsageLedgerRow is one model's share of one settled turn.
 type UsageLedgerRow struct {
+	// AccountingModel identifies pending snapshots consumed at settlement.
+	// Model retains the provider's final spelling in the ledger.
+	AccountingModel          string  `json:"-"`
 	CreatedAt                int64   `json:"createdAt"`
 	ThreadID                 string  `json:"threadId"`
 	ProjectID                string  `json:"projectId"`
@@ -130,7 +133,7 @@ func (s *Store) QueryWorkItemUsage(workItemID string) (WorkItemUsage, error) {
 		 COALESCE(SUM(reasoning_output_tokens), 0),
 		 COALESCE(SUM(input_tokens + output_tokens + cache_read_input_tokens + cache_creation_input_tokens), 0),
 		 COALESCE(SUM(CASE WHEN cost_source = 'wire' THEN cost_usd ELSE 0 END), 0)
-		 FROM usage_ledger WHERE work_item_id = ?`, workItemID,
+		 FROM usage_records WHERE work_item_id = ?`, workItemID,
 	).Scan(
 		&usage.InputTokens, &usage.OutputTokens, &usage.CacheReadInputTokens,
 		&usage.CacheCreationInputTokens, &usage.ReasoningOutputTokens,
@@ -172,7 +175,7 @@ func queryWorkItemTreeUsage(q sqlQueryer, rootItemID string) (WorkItemUsage, err
 		 COALESCE(SUM(reasoning_output_tokens), 0),
 		 COALESCE(SUM(input_tokens + output_tokens + cache_read_input_tokens + cache_creation_input_tokens), 0),
 		 COALESCE(SUM(CASE WHEN cost_source = 'wire' THEN cost_usd ELSE 0 END), 0)
-		 FROM usage_ledger WHERE work_item_id IN (SELECT id FROM tree)`, rootItemID,
+		 FROM usage_records WHERE work_item_id IN (SELECT id FROM tree)`, rootItemID,
 	).Scan(
 		&usage.InputTokens, &usage.OutputTokens, &usage.CacheReadInputTokens,
 		&usage.CacheCreationInputTokens, &usage.ReasoningOutputTokens,
@@ -200,7 +203,7 @@ func queryWorkItemTreeUsageDetail(q sqlQueryer, rootItemID string) ([]UsageDetai
 		 SUM(input_tokens), SUM(output_tokens), SUM(cache_read_input_tokens),
 		 SUM(cache_creation_input_tokens), SUM(reasoning_output_tokens),
 		 SUM(cost_usd), COUNT(*)
-		 FROM usage_ledger WHERE work_item_id IN (SELECT id FROM tree)
+		 FROM usage_records WHERE work_item_id IN (SELECT id FROM tree)
 		 GROUP BY model, cost_source ORDER BY model, cost_source`, rootItemID,
 	)
 	if err != nil {
@@ -243,7 +246,7 @@ const queryWorkItemCostsSQL = `SELECT work_item_id, model, cost_source,
 	 SUM(input_tokens), SUM(output_tokens), SUM(cache_read_input_tokens),
 	 SUM(cache_creation_input_tokens), SUM(reasoning_output_tokens),
 	 SUM(cost_usd), COUNT(*)
-	 FROM usage_ledger
+	 FROM usage_records
 	 WHERE project_id = ? AND work_item_id <> ''
 	 GROUP BY work_item_id, model, cost_source`
 
@@ -289,7 +292,7 @@ func (s *Store) QueryWorkItemUsageDetail(workItemID string) ([]UsageDetailRow, e
 		 SUM(input_tokens), SUM(output_tokens), SUM(cache_read_input_tokens),
 		 SUM(cache_creation_input_tokens), SUM(reasoning_output_tokens),
 		 SUM(cost_usd), COUNT(*)
-		 FROM usage_ledger WHERE work_item_id = ?
+		 FROM usage_records WHERE work_item_id = ?
 		 GROUP BY model, cost_source ORDER BY model, cost_source`, workItemID,
 	)
 	if err != nil {
@@ -368,13 +371,15 @@ type UsageBucket struct {
 	// TurnCount counts distinct settled turns in the bucket (a turn that
 	// used several models is one turn). SessionCount counts distinct
 	// threads — the usage modal reports "sessions", and a thread is the
-	// user-facing session unit. UnpricedRows counts rows whose model has
-	// no known price in the internal/usagecost rate table — when > 0 the
+	// user-facing session unit. UnpricedRows counts pending reports and rows
+	// with no known price in the internal/usagecost rate table. When > 0 the
 	// bucket's CostUSD is a lower bound, not a total. Set by
 	// GetUsageStats, not by QueryUsage (see the struct doc above).
 	TurnCount    int64 `json:"turnCount"`
 	SessionCount int64 `json:"sessionCount"`
 	UnpricedRows int64 `json:"unpricedRows"`
+	// PendingRows counts reported token snapshots awaiting final accounting.
+	PendingRows int64 `json:"pendingRows"`
 	// CostSource names whose arithmetic produced CostUSD, and is empty on
 	// every bucket priced the ordinary way (wire cost plus rate-table
 	// estimates, possibly mixed). It is set only when a single PROVIDER
@@ -490,6 +495,10 @@ func usageWhereFilters(q UsageQuery) ([]string, []any) {
 // per-model breakdown priced through internal/usagecost. See the
 // UsageBucket doc comment.
 func (s *Store) QueryUsage(q UsageQuery) ([]UsageBucket, error) {
+	return queryUsage(s.reader(), q)
+}
+
+func queryUsage(db sqlQueryer, q UsageQuery) ([]UsageBucket, error) {
 	bucketExpr, err := usageBucketExpr(q.GroupBy, q.TZOffsetMinutes)
 	if err != nil {
 		return nil, err
@@ -500,15 +509,15 @@ func (s *Store) QueryUsage(q UsageQuery) ([]UsageBucket, error) {
         SUM(input_tokens), SUM(output_tokens),
         SUM(cache_read_input_tokens), SUM(cache_creation_input_tokens),
         SUM(reasoning_output_tokens),
-        COUNT(DISTINCT CASE WHEN turn_id <> '' THEN turn_id END),
-        COUNT(DISTINCT CASE WHEN thread_id <> '' THEN thread_id END)
-        FROM usage_ledger`, bucketExpr)
+        COUNT(DISTINCT CASE WHEN pending = 0 AND turn_id <> '' THEN turn_id END),
+        COUNT(DISTINCT CASE WHEN thread_id <> '' THEN thread_id END), SUM(pending)
+        FROM usage_records`, bucketExpr)
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
 	}
 	query += " GROUP BY bucket ORDER BY bucket ASC"
 
-	rows, err := s.reader().Query(query, args...)
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: usage query: %w", err)
 	}
@@ -523,7 +532,7 @@ func (s *Store) QueryUsage(q UsageQuery) ([]UsageBucket, error) {
 			&b.InputTokens, &b.OutputTokens,
 			&b.CacheReadInputTokens, &b.CacheCreationInputTokens,
 			&b.ReasoningOutputTokens,
-			&b.TurnCount, &b.SessionCount,
+			&b.TurnCount, &b.SessionCount, &b.PendingRows,
 		); err != nil {
 			return nil, fmt.Errorf("store: usage query scan: %w", err)
 		}
@@ -542,6 +551,10 @@ func (s *Store) QueryUsage(q UsageQuery) ([]UsageBucket, error) {
 // per model from internal/usagecost without re-deriving bucket
 // boundaries — see UsageDetailRow.
 func (s *Store) QueryUsageDetail(q UsageQuery) ([]UsageDetailRow, error) {
+	return queryUsageDetail(s.reader(), q)
+}
+
+func queryUsageDetail(db sqlQueryer, q UsageQuery) ([]UsageDetailRow, error) {
 	bucketExpr, err := usageBucketExpr(q.GroupBy, q.TZOffsetMinutes)
 	if err != nil {
 		return nil, err
@@ -552,13 +565,13 @@ func (s *Store) QueryUsageDetail(q UsageQuery) ([]UsageDetailRow, error) {
         SUM(input_tokens), SUM(output_tokens),
         SUM(cache_read_input_tokens), SUM(cache_creation_input_tokens),
         SUM(reasoning_output_tokens), SUM(cost_usd), COUNT(*)
-        FROM usage_ledger`, bucketExpr)
+        FROM usage_records`, bucketExpr)
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
 	}
 	query += " GROUP BY bucket, model, cost_source ORDER BY bucket ASC, model ASC"
 
-	rows, err := s.reader().Query(query, args...)
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: usage detail query: %w", err)
 	}
@@ -583,4 +596,23 @@ func (s *Store) QueryUsageDetail(q UsageQuery) ([]UsageDetailRow, error) {
 		return nil, fmt.Errorf("store: usage detail rows: %w", err)
 	}
 	return details, nil
+}
+
+// ReadUsageStats reads tokens and cost groups from the same SQLite snapshot.
+// A final result can replace pending rows between two independent reads.
+func (s *Store) ReadUsageStats(q UsageQuery) (buckets []UsageBucket, details []UsageDetailRow, err error) {
+	tx, err := s.reader().Begin()
+	if err != nil {
+		return nil, nil, fmt.Errorf("store: usage snapshot begin: %w", err)
+	}
+	defer rollbackUsageTx(tx, &err)
+	buckets, err = queryUsage(tx, q)
+	if err != nil {
+		return nil, nil, err
+	}
+	details, err = queryUsageDetail(tx, q)
+	if err != nil {
+		return nil, nil, err
+	}
+	return buckets, details, tx.Commit()
 }

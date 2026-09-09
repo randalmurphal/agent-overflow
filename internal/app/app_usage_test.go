@@ -240,3 +240,26 @@ func TestGetUsageStats_NilStoreReturnsError(t *testing.T) {
 		t.Fatal("GetUsageStats with nil store: want error, got nil")
 	}
 }
+
+func TestGetUsageStatsReportedTokensAwaitFinalCost(t *testing.T) {
+	app := newTestAppWithStore(t)
+	row := store.UsageLedgerRow{ThreadID: "live-usage", TurnID: "turn", Provider: "claude", Model: "claude-haiku-4-5", CreatedAt: 100, OutputTokens: 50}
+	if _, err := app.store.PutUsageProgress("scope", "0", []store.UsageLedgerRow{row}); err != nil {
+		t.Fatal(err)
+	}
+	for _, group := range []string{"", "model"} {
+		b, err := app.GetUsageStats(store.UsageQuery{ThreadID: row.ThreadID, GroupBy: group})
+		if err != nil || len(b) != 1 || b[0].OutputTokens != 50 || b[0].PendingRows != 1 || b[0].CostUSD != 0 || b[0].UnpricedRows != 1 {
+			t.Fatalf("pending %q: %+v %v", group, b, err)
+		}
+	}
+	row.OutputTokens = 60
+	row.CostUSD = 0.5
+	if err := app.store.AppendUsageAndReconcile("scope", []store.UsageLedgerRow{row}); err != nil {
+		t.Fatal(err)
+	}
+	b, err := app.GetUsageStats(store.UsageQuery{ThreadID: row.ThreadID})
+	if err != nil || len(b) != 1 || b[0].OutputTokens != 60 || b[0].PendingRows != 0 || b[0].CostUSD != 0.5 || b[0].UnpricedRows != 0 {
+		t.Fatalf("settled: %+v %v", b, err)
+	}
+}

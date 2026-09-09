@@ -260,7 +260,7 @@ func (b *builder) apply(evt importir.Event) error {
 		return b.notification(evt)
 	case provider.EventCommandResult:
 		return b.commandResult(evt)
-	case provider.EventTokenUsage, provider.EventInit, provider.EventSessionStatus,
+	case provider.EventTokenUsage, provider.EventUsageProgress, provider.EventInit, provider.EventSessionStatus,
 		provider.EventRateLimits, provider.EventContentBlockStart:
 		// Live-only signals with no durable row: the context meter, the
 		// session handshake, and the block OPENING an imported event

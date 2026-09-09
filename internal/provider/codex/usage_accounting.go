@@ -3,8 +3,11 @@ package codex
 import (
 	"encoding/json"
 	"log"
+	"strconv"
+	"time"
 
 	"agent-overflow/internal/provider"
+	"github.com/google/uuid"
 )
 
 // Per-turn usage accounting for Codex sessions.
@@ -84,6 +87,10 @@ func (b codexWireTokenBreakdown) isZero() bool { return b == codexWireTokenBreak
 
 // usageAccounting tracks the cumulative→delta state for one session.
 type usageAccounting struct {
+	model   string
+	scope   string
+	segment uint64
+	active  bool
 	// latest is the most recent cumulative `total` observation.
 	latest    codexWireTokenBreakdown
 	latestSet bool
@@ -132,6 +139,7 @@ func (a *usageAccounting) observe(params json.RawMessage) {
 	exceededSentinel := window > 0 && total.TotalTokens == window &&
 		total.InputTokens == 0 && total.OutputTokens == 0
 	if exceededSentinel {
+		a.scope = uuid.NewString()
 		a.latest = total
 		a.latestSet = true
 		a.accounted = total
@@ -152,6 +160,7 @@ func (a *usageAccounting) observe(params json.RawMessage) {
 // onTurnStart marks that observations can no longer be pre-turn seeds.
 func (a *usageAccounting) onTurnStart() {
 	a.firstTurnStarted = true
+	a.active = true
 }
 
 // settleTurn returns the per-turn usage delta at a turn boundary and
@@ -188,17 +197,50 @@ func (a *usageAccounting) settleTurn() provider.TokenUsage {
 	return delta.toTokenUsage()
 }
 
-// attachTurnUsage stamps the per-turn usage delta onto a parent-thread
-// turn-complete event. Interrupted/failed turns still account — their
-// tokens were consumed. Model attribution is the session's configured
-// model: Codex cannot attribute per-model (review/compact model usage
-// rolls into the same cumulative), and mid-session reroutes are not
-// tracked onto Session.model, so this is the best available label.
+// attachTurnUsage settles parent-thread tokens, including interrupted turns.
+// Codex's cumulative counters do not split models. Keep the model observed at
+// the first usage report for this segment so later settings changes cannot
+// attribute the same pending tokens to a second model.
 func (s *Session) attachTurnUsage(meta *provider.WireTurnCompleteMeta) {
+	meta.UsageScope = s.usageAcct.scope
 	usage := s.usageAcct.settleTurn()
+	s.usageAcct.active = false
+	s.usageAcct.segment++
 	if usage.IsZero() {
 		return
 	}
 	meta.Usage = &usage
-	meta.ModelUsage = []provider.ModelTokenUsage{{Model: s.currentModel(), TokenUsage: usage}}
+	model := s.usageAcct.model
+	if model == "" {
+		model = s.currentModel()
+	}
+	meta.ModelUsage = []provider.ModelTokenUsage{{Model: model, TokenUsage: usage}}
+}
+
+func (s *Session) emitUsageProgress() {
+	a := &s.usageAcct
+	if !a.active || !a.baselined || !a.latestSet {
+		return
+	}
+	if a.latest.TotalTokens < a.accounted.TotalTokens {
+		a.accounted = a.latest
+		a.scope = uuid.NewString()
+		return
+	}
+	preview := *a
+	usage := preview.settleTurn()
+	if usage.IsZero() {
+		return
+	}
+	if a.scope == "" {
+		a.scope = uuid.NewString()
+	}
+	if a.model == "" {
+		a.model = s.currentModel()
+	}
+	s.emitEvent(provider.ProviderEvent{
+		Kind: provider.EventUsageProgress, ThreadID: s.threadID, Timestamp: time.Now(),
+		UsageProgress: &provider.UsageProgress{Scope: a.scope, Segment: strconv.FormatUint(a.segment, 10),
+			ModelUsage: []provider.ModelTokenUsage{{Model: a.model, TokenUsage: usage}}},
+	})
 }

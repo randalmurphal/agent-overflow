@@ -1,7 +1,7 @@
 import { UsageBucket } from '../stores/bindings';
 
 const totals = ['inputTokens', 'outputTokens', 'cacheReadInputTokens', 'cacheCreationInputTokens',
-  'reasoningOutputTokens', 'costUsd', 'turnCount', 'sessionCount', 'unpricedRows'] as const;
+  'reasoningOutputTokens', 'costUsd', 'turnCount', 'sessionCount', 'unpricedRows', 'pendingRows'] as const;
 
 /** One bucket per group across selected hosts; inputs are never mutated. */
 export function combineUsageBuckets(rows: readonly UsageBucket[]): UsageBucket[] {

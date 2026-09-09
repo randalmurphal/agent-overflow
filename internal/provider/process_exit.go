@@ -89,11 +89,12 @@ func MarshalProcessExitMeta(err error, stderrTail string) json.RawMessage {
 }
 
 // WaitProcessExitErr waits briefly for the process waiter to publish its final
-// exit error, then returns the most recent value.
+// exit error. A timeout leaves the exit status unknown.
 func WaitProcessExitErr(proc *Process) error {
 	select {
 	case <-proc.Done():
+		return proc.Err()
 	case <-time.After(100 * time.Millisecond):
+		return nil
 	}
-	return proc.Err()
 }

@@ -22,8 +22,10 @@ import (
 const usageEmitMinInterval = 500 * time.Millisecond
 
 type usageEmitThrottle struct {
+	generation    uint64
 	lastEmittedAt time.Time
 	pending       *provider.UsageEvent
+	timer         *time.Timer
 }
 
 func decodeContextWindow(raw json.RawMessage) (provider.ContextWindow, bool) {
@@ -287,41 +289,62 @@ func (r *Router) persistAndEmitContextWindow(threadID string, window provider.Co
 	return nil
 }
 
-// throttledEmitUsage rate-limits provider:usage emissions to at most one
-// per usageEmitMinInterval per thread. The context meter changes gradually;
-// updating it faster than ~2Hz has no visible benefit but costs wire bytes
-// and ring buffer slots. Caller must hold NO lock (emit may fan out).
+// Context snapshots and accounting invalidations have independent lanes so a
+// burst cannot overwrite either kind. A trailing timer delivers the last event
+// even if the provider goes quiet. usageEmitMu orders emission against teardown.
 func (r *Router) throttledEmitUsage(threadID string, evt provider.UsageEvent) {
-	now := time.Now()
+	r.usageEmitMu.Lock()
+	defer r.usageEmitMu.Unlock()
 	r.mu.Lock()
 	st := r.state(threadID)
-	throttle := st.usageEmitThrottle
-	if throttle == nil {
-		throttle = &usageEmitThrottle{}
-		st.usageEmitThrottle = throttle
+	lane := &st.usageEmitThrottle
+	if evt.Action == "progress" {
+		lane = &st.usageProgressThrottle
 	}
-	if now.Sub(throttle.lastEmittedAt) >= usageEmitMinInterval {
-		throttle.lastEmittedAt = now
-		throttle.pending = nil
+	if *lane == nil {
+		*lane = &usageEmitThrottle{}
+	}
+	throttle := *lane
+	throttle.pending = &evt
+	remaining := usageEmitMinInterval - time.Since(throttle.lastEmittedAt)
+	if remaining <= 0 {
+		event, _ := takeUsagePending(throttle)
 		r.mu.Unlock()
-		r.emit(eventchan.ProviderUsage, evt)
+		r.emit(eventchan.ProviderUsage, event)
 		return
 	}
-	throttle.pending = &evt
+	if throttle.timer == nil {
+		generation := throttle.generation
+		throttle.timer = time.AfterFunc(remaining, func() {
+			r.usageEmitMu.Lock()
+			defer r.usageEmitMu.Unlock()
+			r.mu.Lock()
+			current := r.threadStateIfPresent(threadID)
+			if current != st || *lane != throttle || throttle.generation != generation {
+				r.mu.Unlock()
+				return
+			}
+			event, ok := takeUsagePending(throttle)
+			r.mu.Unlock()
+			if ok {
+				r.emit(eventchan.ProviderUsage, event)
+			}
+		})
+	}
 	r.mu.Unlock()
 }
 
-// takeUsageEmitPendingLocked drains the pending usage event for a thread
-// under r.mu. Returns the event and true if there was a pending event,
-// or a zero value and false otherwise. Caller must hold r.mu and emit
-// the returned event AFTER releasing the lock.
-func (r *Router) takeUsageEmitPendingLocked(threadID string) (provider.UsageEvent, bool) {
-	st := r.threadStateIfPresent(threadID)
-	if st == nil {
+// Caller holds r.mu and usageEmitMu. Stopping and draining are one operation.
+func takeUsagePending(throttle *usageEmitThrottle) (provider.UsageEvent, bool) {
+	if throttle == nil {
 		return provider.UsageEvent{}, false
 	}
-	throttle := st.usageEmitThrottle
-	if throttle == nil || throttle.pending == nil {
+	throttle.generation++
+	if throttle.timer != nil {
+		throttle.timer.Stop()
+		throttle.timer = nil
+	}
+	if throttle.pending == nil {
 		return provider.UsageEvent{}, false
 	}
 	evt := *throttle.pending
@@ -330,25 +353,59 @@ func (r *Router) takeUsageEmitPendingLocked(threadID string) (provider.UsageEven
 	return evt, true
 }
 
-// FlushUsageEmitThrottle emits any pending throttled usage event for
-// a thread. Called at turn-complete to ensure the final context-meter
-// reading reaches the frontend.
+func (r *Router) takeUsageEmitPendingLocked(threadID string) (provider.UsageEvent, bool) {
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return provider.UsageEvent{}, false
+	}
+	return takeUsagePending(st.usageEmitThrottle)
+}
+
 func (r *Router) FlushUsageEmitThrottle(threadID string) {
+	r.usageEmitMu.Lock()
+	defer r.usageEmitMu.Unlock()
 	r.mu.Lock()
-	evt, ok := r.takeUsageEmitPendingLocked(threadID)
+	context, hasContext := r.takeUsageEmitPendingLocked(threadID)
+	var progress provider.UsageEvent
+	var hasProgress bool
+	if st := r.threadStateIfPresent(threadID); st != nil {
+		progress, hasProgress = takeUsagePending(st.usageProgressThrottle)
+	}
 	r.mu.Unlock()
-	if ok {
-		r.emit(eventchan.ProviderUsage, evt)
+	if hasContext {
+		r.emit(eventchan.ProviderUsage, context)
+	}
+	if hasProgress {
+		r.emit(eventchan.ProviderUsage, progress)
 	}
 }
 
-// resetUsageEmitThrottle clears the throttle for a thread so the next
-// usage event emits immediately. Used at compaction boundaries where the
-// context meter reading jumps discontinuously.
 func (r *Router) resetUsageEmitThrottle(threadID string) {
+	r.usageEmitMu.Lock()
+	defer r.usageEmitMu.Unlock()
 	r.mu.Lock()
 	if st := r.threadStateIfPresent(threadID); st != nil {
+		takeUsagePending(st.usageEmitThrottle)
 		st.usageEmitThrottle = nil
 	}
 	r.mu.Unlock()
+}
+
+// Called after the event pump drains. No timer may publish beyond shutdown.
+func (r *Router) flushAllUsage() {
+	r.usageEmitMu.Lock()
+	defer r.usageEmitMu.Unlock()
+	r.mu.Lock()
+	var events []provider.UsageEvent
+	for _, st := range r.threads {
+		for _, lane := range []*usageEmitThrottle{st.usageEmitThrottle, st.usageProgressThrottle} {
+			if event, ok := takeUsagePending(lane); ok {
+				events = append(events, event)
+			}
+		}
+	}
+	r.mu.Unlock()
+	for _, event := range events {
+		r.emit(eventchan.ProviderUsage, event)
+	}
 }

@@ -8,7 +8,6 @@
   // the closed chip never needs it.
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { UsageQuery } from '../../stores/bindings';
-  import { getThreadUsageRefreshVersion } from '../../stores/usageRefresh.svelte';
   import { createUsageStats } from '../../stores/usageQuery.svelte';
   import { formatTokens } from '../../utils/format';
   import { displayUsageModelLabel } from '../../utils/modelLabels';
@@ -25,13 +24,10 @@
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
   let open = $state(false);
 
-  // Refetch on mount, on thread switch, and whenever a turn completes
-  // on THIS thread (per-thread refresh version — see
-  // usageRefresh.svelte.ts for why the chip doesn't use the global one).
+  // Both queries subscribe to reported usage while mounted.
   const lifetime = createUsageStats(() => {
     const threadId = pane.threadId;
     if (!threadId) return null;
-    getThreadUsageRefreshVersion(threadId);
     return new UsageQuery({ threadId });
   });
 
@@ -46,10 +42,7 @@
   });
 
   let modelBuckets = $derived(models.buckets ?? []);
-  // `models.buckets` is null both before the popover opens and while a
-  // fetch is in flight; once open (and threaded) is true, null means
-  // "in flight" specifically.
-  let modelBucketsLoading = $derived(open && Boolean(pane.threadId) && models.buckets === null);
+  let modelBucketsLoading = $derived(open && Boolean(pane.threadId) && models.loading && models.buckets === null);
 
   function togglePopover(): void {
     open = !open;
@@ -123,7 +116,7 @@
     aria-haspopup="dialog"
     aria-expanded={open}
     data-testid="usage-chip-trigger"
-    title={providerEstimated ? 'Cost estimated by Codex' : undefined}
+    title={lifetime.error ?? (lifetimeBucket.pendingRows > 0 ? 'Latest reported tokens; cost accounting is still pending' : providerEstimated ? 'Cost estimated by Codex' : undefined)}
     class="{composerTriggerClasses} tabular-nums"
   >
     {chipLabel}
@@ -146,6 +139,13 @@
             </div>
           {/each}
         </div>
+
+        {#if lifetimeBucket.pendingRows > 0}
+          <p class="mt-2 text-xs text-fg-hint">Latest reported tokens. Cost accounting is still pending.</p>
+        {/if}
+        {#if lifetime.error || models.error}
+          <p role="status" class="mt-2 text-xs text-fg-hint">{lifetime.error ?? models.error}</p>
+        {/if}
 
         {#if modelBucketsLoading}
           <p class="mt-2 text-xs text-fg-hint">Loading models…</p>
@@ -175,4 +175,6 @@
       </div>
     {/snippet}
   </Popover>
+{:else if lifetime.error}
+  <span role="status" class="text-xs text-fg-hint" title={lifetime.error}>Usage unavailable</span>
 {/if}

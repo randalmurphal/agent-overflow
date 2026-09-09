@@ -49,13 +49,17 @@ func (s Spend) TotalUSD() float64 { return s.WireUSD + s.EstimatedUSD }
 func (s Spend) Estimated() bool { return s.EstimatedUSD != 0 || s.UnpricedRows > 0 }
 
 // Add folds one (model, cost_source) ledger group into the running total. An
-// unrecognized cost_source is an error rather than a skipped group: the column
-// is written by one code path with two legal values, so a third one is
-// corruption that must not silently subtract from a cost total.
+// unrecognized cost_source is an error rather than silently missing cost.
+// Pending snapshots are reported tokens awaiting authoritative accounting.
 func (s *Spend) Add(group store.UsageDetailRow) error {
 	switch group.CostSource {
 	case "wire":
 		s.WireUSD += group.CostUSD
+	case "pending":
+		// These tokens were reported before authoritative cost accounting.
+		// Keep existing cost sources until settlement, including when an
+		// interrupted turn left token counts without a price.
+		s.UnpricedRows += group.Rows
 	case "none":
 		estimate, priced := usagecost.Price(
 			group.Model, group.InputTokens, group.OutputTokens,

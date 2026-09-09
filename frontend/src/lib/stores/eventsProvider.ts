@@ -1,3 +1,4 @@
+import { resolveThreadBackend } from '../transport/entityIndex';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { threadMachine, getAttachedBackends } from './attachedBackends.svelte';
 // Provider-lifecycle event domain: approvals, user-input requests, usage /
@@ -196,6 +197,12 @@ export function applyUsageEvent(evt: UsageEvent, backend: BackendKey = HOME_BACK
   // Context-window updates require a threadId because they target a
   // specific pane's ring.
   if (!evt.threadId) return;
+  if (evt.action === 'progress') {
+    const owner = resolveThreadBackend(evt.threadId);
+    if (owner !== undefined && owner !== backend) return;
+    bumpUsageRefresh(evt.threadId, evt.error);
+    return;
+  }
 
   const payload = evt.action === 'usage'
     ? {
