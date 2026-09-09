@@ -585,7 +585,7 @@ the floor (its own tier below observe — wave 7b, §6), and `host`
 | `settings:read` | observe | settings and preference reads: settings snapshot, keybindings, themes, spinners, chat-bar favorites (added wave 6b — the original ten could not spell a settings read) |
 | `settings:write` | execute | user/device-tier settings; host-tier and the step-up set are excluded |
 | `access:admin` | execute | device list/revoke, audit read; **minting and network changes additionally require step-up** |
-| `session` | floor (not a grant) | any named live session: the per-argument methods — the settings patch (per-key tiers), the ui_state methods (own bucket only) |
+| `session` | floor (not a grant) | any named live session: the per-argument methods — the settings patch (per-key tiers), `GetUIState` (own bucket only) |
 
 Rationale for the splits: answering an approval authorizes host command
 execution, and a thread in `full-access` mode needs no approval at all,
@@ -692,8 +692,8 @@ path is untouched and BOTH gates stay live for session connections
 until every client authenticates. Known gap, phase 4: the scope
 vocabulary cannot spell "any valid session", so a device-tier-only
 settings patch still needs `settings:write` to reach the per-key gate
-(stricter than §6, never looser), and `SetUIState`/`DeleteUIState`
-keep their overrides for the same reason. Scope refusals are not yet
+(stricter than §6, never looser), and `GetUIState` keeps its override
+for the same reason. Scope refusals are not yet
 written to the auth audit log (no transport→identity hook for it).
 
 ### Host-only scope (`scope: host`)
@@ -790,9 +790,9 @@ pairing surface is a later decision, not a phase-3 gap.
 
 ### Derive device identity from the authenticated session
 
-`GetUIState`/`SetUIState`/`DeleteUIState` currently take a
-caller-supplied `clientID` with no authenticated device binding. They stop
-taking it; the backend derives scope from the authenticated session's device.
+`GetUIState` takes no caller-supplied `clientID`: the backend derives the
+bucket from the authenticated session's device. The frontend reads it once
+to migrate legacy view state into its own storage.
 
 ### One mechanism, three tiers
 
@@ -905,7 +905,7 @@ waves:
   attribute the write to. Window geometry has no caller and stays a
   host-tier file value (adjudication above).
 - **The session floor** lands as a scope value meaning "any named
-  session" carried by `UpdateSettings` (and the ui_state methods),
+  session" carried by `UpdateSettings` (and `GetUIState`),
   with the per-key tier gate doing all real enforcement: device keys
   pass on session presence, user keys require `settings:write`, host
   keys require step-up. A view-only device changing its own font size
@@ -933,8 +933,8 @@ overlays per caller through `Service.For(bucket)` (bucket derivation
 shared with `uiStateScope`; sessionless in-process callers read device
 defaults). Validators run on every write regardless of destination,
 and the device overlay re-runs `sanitizeLoadedSettings` on READ, so a
-value poked directly into a bucket via `SetUIState` is clamped exactly
-like a hand-edited file. Seeding runs once at boot: file values seed
+value written directly into a bucket row is clamped exactly like a
+hand-edited file. Seeding runs once at boot: file values seed
 `user:default` and the backend screen's `client:<id>` bucket,
 never-overwrite, defaults skipped; moved keys are NOT retired (they
 must stay on the wire) — the codec split is the mechanism instead.
@@ -974,7 +974,7 @@ it beside `host` as a method property no session can be granted, in
 its own `TierSession` below observe (a floor call is not read-only; a
 device-tier settings write rides it), and `AuthorizeSessionMethod`
 admits it on session presence alone, liveness re-read per call.
-`UpdateSettings` and the three ui_state methods carry it; the frozen
+`UpdateSettings` and `GetUIState` carry it; the frozen
 floor set, "never a grant", and the event-filter bit are each pinned
 by test. `GetSettings` deliberately stays `settings:read` — it answers
 the merged host+user+device view, more than the caller's own bucket.
