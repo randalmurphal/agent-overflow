@@ -1210,9 +1210,10 @@ export class Thread {
      * HasFailedTurn is derived from the newest turn: it is true when that
      * turn settled with stop_reason='error' or when an `error` item was
      * persisted at or after its index (orphan errors have no turn row of
-     * their own). It is the durable form of the sidebar's Failed pill and,
-     * like the live pill, clears when the next turn starts rather than when
-     * the thread is read. It is not a persisted threads column.
+     * their own), and the user has not read the thread since. It is the
+     * durable form of the sidebar's Failed pill: attention state, cleared
+     * by reading like Interrupted, superseded by the next turn. It is not
+     * a persisted threads column.
      */
     "hasFailedTurn": boolean;
 

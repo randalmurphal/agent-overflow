@@ -22,6 +22,18 @@ import (
 // timestamp and distinguish migrated front-burner pins from explicit groups.
 // The two boolean tail columns are derived sidebar state:
 // they are cheap scalar probes over indexed tables, not threads columns.
+// newestTurnErrorItems is the row source of the `error` items that light a
+// thread's Failed pill: kind `error` at or after the newest turn (an orphan
+// error has no turn row of its own). threadColumns derives hasFailedTurn
+// from it and MarkThreadReadNow advances the read stamp past it, so the pill
+// and the read that clears it cannot disagree about which rows count.
+const newestTurnErrorItems = `FROM timeline_items AS errors
+       WHERE errors.thread_id = threads.id
+         AND errors.kind = 'error'
+         AND errors.turn_index >= COALESCE((
+           SELECT MAX(turns.turn_index) FROM turns WHERE turns.thread_id = threads.id
+         ), 0)`
+
 const threadColumns = `id, COALESCE(project_id, ''),
     COALESCE((SELECT path FROM projects WHERE projects.id = threads.project_id), ''),
     title, provider, model,
@@ -83,18 +95,14 @@ const threadColumns = `id, COALESCE(project_id, ''),
     ), 0),
     COALESCE((
       SELECT turns.stop_reason = 'error'
+         AND (threads.last_read_at IS NULL OR threads.last_read_at < turns.completed_at)
         FROM turns
        WHERE turns.thread_id = threads.id
        ORDER BY turns.turn_index DESC
        LIMIT 1
     ), 0) OR EXISTS (
-      SELECT 1
-        FROM timeline_items AS errors
-       WHERE errors.thread_id = threads.id
-         AND errors.kind = 'error'
-         AND errors.turn_index >= COALESCE((
-           SELECT MAX(turns.turn_index) FROM turns WHERE turns.thread_id = threads.id
-         ), 0)
+      SELECT 1 ` + newestTurnErrorItems + `
+         AND (threads.last_read_at IS NULL OR threads.last_read_at < errors.created_at)
     ),
     NOT EXISTS (SELECT 1 FROM timeline_items WHERE timeline_items.thread_id = threads.id),
     (SELECT COALESCE(MAX(ownership_epoch),0) FROM thread_transfers
@@ -1105,7 +1113,7 @@ func (s *Store) MarkThreadReadNow(ctx context.Context, id string) (Thread, bool,
 	}
 	defer tx.Rollback()
 
-	var latestTurnCompletedAt, latestIncompleteStartedAt, lastReadAt sql.NullInt64
+	var latestTurnCompletedAt, latestIncompleteStartedAt, latestErrorAt, lastReadAt sql.NullInt64
 	err = tx.QueryRowContext(
 		ctx,
 		`SELECT
@@ -1114,13 +1122,14 @@ func (s *Store) MarkThreadReadNow(ctx context.Context, id string) (Thread, bool,
 		    (SELECT CASE WHEN completed_at IS NULL THEN started_at END
 		       FROM turns
 		      WHERE thread_id = threads.id
-		      ORDER BY turn_index DESC
+		      ORDER BY turns.turn_index DESC
 		      LIMIT 1),
+		    (SELECT MAX(errors.created_at) `+newestTurnErrorItems+`),
 		    last_read_at
 		   FROM threads
 		  WHERE id = ?`,
 		id,
-	).Scan(&latestTurnCompletedAt, &latestIncompleteStartedAt, &lastReadAt)
+	).Scan(&latestTurnCompletedAt, &latestIncompleteStartedAt, &latestErrorAt, &lastReadAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Thread{}, false, fmt.Errorf("store: mark thread read %s: %w", id, sql.ErrNoRows)
@@ -1138,6 +1147,15 @@ func (s *Store) MarkThreadReadNow(ctx context.Context, id string) (Thread, bool,
 		hasReadTarget = true
 		if latestIncompleteStartedAt.Int64 > readTarget {
 			readTarget = latestIncompleteStartedAt.Int64
+		}
+	}
+	// The Failed pill is read state too: the stamp must pass the error row
+	// that lit it, or a read after the newest turn completed would be a
+	// no-op that leaves the pill on.
+	if latestErrorAt.Valid {
+		hasReadTarget = true
+		if latestErrorAt.Int64 > readTarget {
+			readTarget = latestErrorAt.Int64
 		}
 	}
 

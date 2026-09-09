@@ -258,12 +258,16 @@
       thread.lastReadAt ?? '',
       thread.latestTurnCompletedAt ?? '',
       thread.hasIncompleteTurn ? 'interrupted' : '',
+      thread.hasFailedTurn ? 'failed' : '',
       pane.timelineRevision,
       pane.latestSettledTurn?.turnId ?? '',
     ].join(':');
     if (marker === lastReadMarker) return;
     lastReadMarker = marker;
-    const shouldClearInterrupted = thread.hasIncompleteTurn === true;
+    // Interrupted and Failed are unseen read-state with no completion
+    // of their own to read up to (an orphan error has no turn at all),
+    // so they force a stamp at now.
+    const shouldClearAttention = thread.hasIncompleteTurn === true || thread.hasFailedTurn === true;
     // Completion knowledge lives in two places that advance
     // independently: the thread row (turn_completed push / sidebar
     // resync) and the pane's settled-turn record (refreshFromBackend).
@@ -277,16 +281,16 @@
     ].filter((value): value is number => value !== undefined);
     const readTarget = completions.length > 0
       ? Math.max(...completions)
-      : (shouldClearInterrupted ? Date.now() : undefined);
+      : (shouldClearAttention ? Date.now() : undefined);
     if (readTarget === undefined) {
       return;
     }
-    if (!shouldClearInterrupted && thread.lastReadAt !== undefined && thread.lastReadAt >= readTarget) {
+    if (!shouldClearAttention && thread.lastReadAt !== undefined && thread.lastReadAt >= readTarget) {
       return;
     }
     const readAt = Math.max(Date.now(), readTarget);
-    const readPatch = shouldClearInterrupted
-      ? { lastReadAt: readAt, hasIncompleteTurn: false }
+    const readPatch = shouldClearAttention
+      ? { lastReadAt: readAt, hasIncompleteTurn: false, hasFailedTurn: false }
       : { lastReadAt: readAt };
     untrack(() => {
       updateThreadReadState(thread.id, readPatch);

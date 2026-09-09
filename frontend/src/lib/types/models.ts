@@ -111,8 +111,9 @@ export interface Thread {
   hasIncompleteTurn?: boolean;
   /**
    * Derived by ListThreads from the newest turn: it settled with an error,
-   * or an `error` row was persisted at or after it. The durable Failed
-   * pill; the next turn start clears it, reading the thread does not.
+   * or an `error` row was persisted at or after it, and the thread has not
+   * been read since. The durable Failed pill: reading clears it like
+   * Interrupted, and the next turn start supersedes it.
    */
   hasFailedTurn?: boolean;
   /**

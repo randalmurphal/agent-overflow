@@ -23,7 +23,7 @@ import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import { onBackendDetached } from '../transport/backends';
 import { withLocalReadMarker } from './threadReadWrites';
 
-type ThreadReadStatePatch = Partial<Pick<Thread, 'lastReadAt' | 'hasIncompleteTurn'>>;
+type ThreadReadStatePatch = Partial<Pick<Thread, 'lastReadAt' | 'hasIncompleteTurn' | 'hasFailedTurn'>>;
 
 let threads: Thread[] = $state([]);
 const catalogWriter = computerCatalogWriter('threads', () => threads, (row) => threadBackend(row.id));
@@ -195,9 +195,10 @@ export function getThreadLiveActivityAt(thread: Pick<Thread, 'id' | 'updatedAt'>
 
 /**
  * Patches local sidebar read state immediately after a MarkThreadRead /
- * MarkThreadUnread request. `hasIncompleteTurn` is included because
- * Interrupted is also unseen read-state; opening the thread clears it
- * before the next refreshThreads() round-trip.
+ * MarkThreadUnread request. `hasIncompleteTurn` and `hasFailedTurn` are
+ * included because Interrupted and Failed are also unseen read-state;
+ * opening the thread clears them before the next refreshThreads()
+ * round-trip.
  */
 export function updateThreadReadState(
   id: string,

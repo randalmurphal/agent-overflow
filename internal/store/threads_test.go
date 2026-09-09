@@ -2964,14 +2964,26 @@ func TestListThreadsWithItemsDerivesFailedTurn(t *testing.T) {
 		t.Fatal("HasFailedTurn = false after an error settle, want true")
 	}
 
-	// Reading the thread does not clear it: the pill asks for the next
-	// message, and the live pill behaves the same way.
-	lastReadAt := startedAt + 200
-	if _, _, err := s.setThreadLastRead(thread.ID, &lastReadAt); err != nil {
-		t.Fatalf("setThreadLastRead(): %v", err)
+	// A read from before the failure leaves it lit; reading the failure
+	// clears it, the way Interrupted clears.
+	staleRead := startedAt + 50
+	if _, _, err := s.setThreadLastRead(thread.ID, &staleRead); err != nil {
+		t.Fatalf("setThreadLastRead(stale): %v", err)
 	}
 	if got := mustListSingleThreadWithItems(t, s); !got.HasFailedTurn {
-		t.Fatal("HasFailedTurn = false after read, want true")
+		t.Fatal("HasFailedTurn = false with a read older than the failure, want true")
+	}
+	if _, changed, err := s.MarkThreadReadNow(context.Background(), thread.ID); err != nil || !changed {
+		t.Fatalf("MarkThreadReadNow() = changed %v, err %v; want a stamp", changed, err)
+	}
+	if got := mustListSingleThreadWithItems(t, s); got.HasFailedTurn {
+		t.Fatal("HasFailedTurn = true after reading the failure, want false")
+	}
+	if _, _, err := s.MarkThreadUnread(thread.ID); err != nil {
+		t.Fatalf("MarkThreadUnread(): %v", err)
+	}
+	if got := mustListSingleThreadWithItems(t, s); !got.HasFailedTurn {
+		t.Fatal("HasFailedTurn = false after marking unread, want true")
 	}
 
 	// The next turn supersedes it, open or settled.
@@ -2992,28 +3004,67 @@ func TestListThreadsWithItemsDerivesFailedTurnFromErrorItems(t *testing.T) {
 	if err := s.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread(): %v", err)
 	}
+	insertError := func(id string, turnIndex, itemIndex int, kind string, createdAt int64) {
+		t.Helper()
+		if err := s.InsertItem(Item{
+			ID: id, ThreadID: thread.ID, TurnIndex: turnIndex, ItemIndex: itemIndex, Kind: kind,
+			Role: "assistant", Status: "completed", Summary: "failed", CreatedAt: createdAt,
+		}); err != nil {
+			t.Fatalf("InsertItem(%s): %v", id, err)
+		}
+	}
+	readNow := func(wantChanged bool) int64 {
+		t.Helper()
+		read, changed, err := s.MarkThreadReadNow(context.Background(), thread.ID)
+		if err != nil || changed != wantChanged {
+			t.Fatalf("MarkThreadReadNow() = changed %v, err %v; want changed %v", changed, err, wantChanged)
+		}
+		if !changed {
+			return 0
+		}
+		if read.LastReadAt == nil {
+			t.Fatal("MarkThreadReadNow() stamped no last_read_at")
+		}
+		return *read.LastReadAt
+	}
+
 	// An orphan error (the provider failed before any turn opened) has no
 	// turn row at all: the error item is the only evidence.
-	seedItemWithStatus(t, s, thread.ID, "error:0:1", 0, 0, "error", "completed", "spawn failed", false)
+	insertError("error:0:1", 0, 0, "error", thread.CreatedAt+100)
 	if got := mustListSingleThreadWithItems(t, s); !got.HasFailedTurn {
 		t.Fatal("HasFailedTurn = false for an orphan error item, want true")
 	}
+	// With no turn to read, the error row itself is the read target: the
+	// stamp must land past it, or the pill could never be cleared.
+	readAt := readNow(true)
+	if got := mustListSingleThreadWithItems(t, s); got.HasFailedTurn {
+		t.Fatal("HasFailedTurn = true after reading the orphan error, want false")
+	}
+	readNow(false)
+	insertError("error:0:2", 0, 1, "error", readAt+1)
+	if got := mustListSingleThreadWithItems(t, s); !got.HasFailedTurn {
+		t.Fatal("HasFailedTurn = false for an error newer than the read, want true")
+	}
 
-	// A non-fatal error during a turn that then settled cleanly still
-	// marks the thread until the next turn, like the live pill.
-	startedAt := thread.CreatedAt + 100
+	// A newer turn supersedes the orphan errors; a non-fatal error during
+	// that turn marks the thread even though the turn settled cleanly.
+	startedAt := readAt + 100
 	if err := s.InsertTurn(Turn{TurnID: "turn-1", ThreadID: thread.ID, TurnIndex: 1, StartedAt: startedAt}); err != nil {
 		t.Fatalf("InsertTurn(): %v", err)
 	}
 	if got := mustListSingleThreadWithItems(t, s); got.HasFailedTurn {
 		t.Fatal("HasFailedTurn = true after a newer turn opened, want false")
 	}
-	seedItemWithStatus(t, s, thread.ID, "error:1:1", 1, 0, "error", "completed", "tool crashed", false)
+	insertError("error:1:1", 1, 0, "error", startedAt+10)
 	if err := s.UpdateTurnCompleted("turn-1", startedAt+100, "end_turn", "", "", ""); err != nil {
 		t.Fatalf("UpdateTurnCompleted(): %v", err)
 	}
 	if got := mustListSingleThreadWithItems(t, s); !got.HasFailedTurn {
 		t.Fatal("HasFailedTurn = false with an error item on the newest turn, want true")
+	}
+	readNow(true)
+	if got := mustListSingleThreadWithItems(t, s); got.HasFailedTurn {
+		t.Fatal("HasFailedTurn = true after reading the turn's error, want false")
 	}
 
 	// api_error rows never coloured the sidebar and still do not.
