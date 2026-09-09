@@ -79,7 +79,10 @@ For uncertain external-tool behavior, use the provider references and
 
 ## Validation
 
-Every task must leave these passing:
+Read-only investigations do not require build, type-check or test runs. Run
+focused checks only when needed to answer the question or requested by the user.
+
+Tasks that change code must leave these passing:
 
 - `make go-build`
 - `make go-test`
