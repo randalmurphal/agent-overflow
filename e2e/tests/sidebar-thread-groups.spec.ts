@@ -12,6 +12,7 @@ interface ThreadRow {
   title: string;
   groupId?: string;
   pinnedAt?: number;
+  isDraft?: boolean;
 }
 
 interface ThreadGroup {
@@ -144,3 +145,42 @@ test('New Group… from a thread row renames inline, pins, and deletes back to t
     return rows.map((row) => row.groupId ?? null);
   }).toEqual([null, null]);
 });
+
+
+for (const entry of ['button', 'menu'] as const) {
+  test(`new thread from group ${entry} keeps membership through draft cleanup and first send`, async ({ harness, page }) => {
+    const seed = await harness.rpc<SeedResult>('HarnessSeed', seedProject(`group-draft-${entry}`, []));
+    const { projectId } = seed.projects[0];
+    const group = await harness.rpc<ThreadGroup>('CreateThreadGroup', projectId, 'Draft work');
+    await harness.open(page);
+    const groupRow = page.getByTestId('thread-group-row');
+    await groupRow.getByTestId('thread-group-row-expand').click();
+    if (entry === 'button') {
+      await groupRow.hover();
+      await groupRow.getByRole('button', { name: 'New Thread in Group' }).click();
+    } else {
+      await groupRow.click({ button: 'right' });
+      await page.getByRole('menuitem', { name: 'New Thread', exact: true }).click();
+    }
+    await expect(groupRow).toHaveAttribute('data-expanded', 'true');
+    const input = page.getByLabel('Message Input');
+    await expect(input).toBeVisible();
+    expect(await harness.rpc<ThreadRow[]>('HarnessListThreadRows')).toHaveLength(0);
+    await input.fill('Draft in this group');
+    await expect.poll(async () => {
+      const rows = await harness.rpc<ThreadRow[]>('HarnessListThreadRows');
+      return rows.map((row) => ({ groupId: row.groupId, isDraft: row.isDraft }));
+    }).toEqual([{ groupId: group.id, isDraft: true }]);
+    await expect(page.getByTestId('thread-row')).toHaveCount(1);
+    await input.fill('');
+    await expect.poll(() => harness.rpc<ThreadRow[]>('HarnessListThreadRows')).toHaveLength(0);
+    await input.fill('Start the grouped thread');
+    await page.getByTestId('composer-send').click();
+    await expect(page.getByTestId('user-message-summary').filter({ hasText: 'Start the grouped thread' })).toBeVisible();
+    await expect(page.getByTestId('assistant-message-body').first()).toBeVisible();
+    await expect.poll(async () => {
+      const rows = await harness.rpc<ThreadRow[]>('HarnessListThreadRows');
+      return rows.map((row) => ({ groupId: row.groupId, draft: !!row.isDraft, pinned: row.pinnedAt != null }));
+    }).toEqual([{ groupId: group.id, draft: false, pinned: false }]);
+  });
+}

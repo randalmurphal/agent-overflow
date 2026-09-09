@@ -14,6 +14,8 @@ import {
   setThreadEnvMode,
   worktreeIntentForThread,
 } from './worktreeIntent.svelte';
+import type { CreateThreadOptions } from './bindings';
+import { applyThreadGroupUpdated } from './threadGroups.svelte';
 import { type Project } from '../types/models';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { buildPane, makeThread } from '../../test/helpers/chat';
@@ -62,10 +64,6 @@ describe('threadDraftPlaceholder', () => {
         updatedAt: 0,
         archived: false,
       };
-      // Use a distinct project for the second placeholder so the
-      // synthesised draft id differs even when both startDraftPlaceholder
-      // calls land in the same millisecond — otherwise the cleanup and
-      // a "no-op" cannot be distinguished by querying the same id back.
       const projectB: Project = {
         ...projectA,
         id: 'p-2',
@@ -407,6 +405,118 @@ describe('threadDraftPlaceholder watch set', () => {
       expect(pushed.flat().some((id) => id.startsWith('draft:'))).toBe(false);
     } finally {
       vi.restoreAllMocks();
+    }
+  });
+});
+
+
+describe('grouped draft lifecycle', () => {
+  beforeEach(installThreadPaneTestEnv);
+  const project: Project = { id: 'p-group', path: '/tmp/group-project', name: 'Grouped', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false };
+
+  it('keeps membership through materialization, clearing, and retyping', async () => {
+    const pane = openEmptyPane();
+    const create = setBindingMock('CreateThread', async (opts: CreateThreadOptions) => makeThread({
+      id: 'grouped-draft', projectId: project.id, projectPath: project.path,
+      workspacePath: project.path, groupId: opts.groupId, isDraft: true,
+    }));
+    pane.startDraftPlaceholder(project, 'chat', undefined, 'group-1');
+    expect(pane.thread?.groupId).toBe('group-1');
+    await Promise.all([pane.ensureMaterializedThread(), pane.ensureMaterializedThread()]);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls[0][0]).toMatchObject({ projectId: project.id, groupId: 'group-1' });
+    expect(pane.thread?.groupId).toBe('group-1');
+    expect(pane.dematerializeEmptyDraftThread()).toBe(true);
+    expect(pane.thread?.groupId).toBe('group-1');
+    await pane.ensureMaterializedThread();
+    expect(create.mock.calls[1][0]).toMatchObject({ groupId: 'group-1' });
+    pane.clear();
+  });
+
+  it('ungroups open placeholders when the group is deleted', async () => {
+    const pane = openEmptyPane();
+    pane.startDraftPlaceholder(project, 'chat', undefined, 'group-1');
+    applyThreadGroupUpdated({ action: 'delete', group: { id: 'group-1', projectId: project.id, name: 'Gone', createdAt: 0, updatedAt: 0 } });
+    expect(pane.thread?.groupId).toBeUndefined();
+    const create = setBindingMock('CreateThread', async (opts: CreateThreadOptions) => makeThread({ id: 'ungrouped', projectId: project.id, groupId: opts.groupId }));
+    await pane.ensureMaterializedThread();
+    expect(create.mock.calls[0][0]).toMatchObject({ groupId: undefined });
+    pane.clear();
+  });
+
+  it('does not restore deleted membership from an in-flight creation response', async () => {
+    const pane = openEmptyPane();
+    pane.startDraftPlaceholder(project, 'chat', undefined, 'group-1');
+    let finish!: (thread: ReturnType<typeof makeThread>) => void;
+    setBindingMock('CreateThread', () => new Promise((resolve) => { finish = resolve; }));
+    const creating = pane.ensureMaterializedThread();
+    applyThreadGroupUpdated({ action: 'delete', group: { id: 'group-1', projectId: project.id, name: 'Gone', createdAt: 0, updatedAt: 0 } });
+    finish(makeThread({ id: 'created-before-delete', projectId: project.id, groupId: 'group-1' }));
+    expect(await creating).toBe('created-before-delete');
+    expect(pane.thread?.groupId).toBeUndefined();
+    pane.clear();
+  });
+
+  it.each(['delete', 'switch'])('respects a group %s during terminal migration', async (action) => {
+    setBindingMock('CloseThreadTerminals', async () => {});
+    const pane = openEmptyPane();
+    pane.startDraftPlaceholder(project, 'chat', undefined, 'group-1');
+    const placeholderId = pane.thread!.id;
+    getThreadTerminalState(placeholderId).addTab({
+      terminalID: 'term-group', threadID: placeholderId, shell: '/bin/sh', cwd: project.path,
+      rows: 24, cols: 80, pid: 123, startedAt: 1, running: true, exitCode: 0, exitReason: '',
+    });
+    setBindingMock('CreateThread', async () => makeThread({ id: 'group-terminal-draft', projectId: project.id, groupId: 'group-1' }));
+    let release!: () => void;
+    let started!: () => void;
+    const migrating = new Promise<void>((resolve) => { started = resolve; });
+    setBindingMock('MoveThreadTerminals', () => {
+      started();
+      return new Promise<[]>((resolve) => { release = () => resolve([]); });
+    });
+    const creating = pane.ensureMaterializedThread();
+    await migrating;
+    if (action === 'delete') {
+      applyThreadGroupUpdated({ action: 'delete', group: { id: 'group-1', projectId: project.id, name: 'Gone', createdAt: 0, updatedAt: 0 } });
+    } else {
+      pane.startDraftPlaceholder(project, 'chat', undefined, 'group-2');
+    }
+    release();
+    expect(await creating).toBe(action === 'delete' ? 'group-terminal-draft' : null);
+    expect(pane.thread?.groupId).toBe(action === 'delete' ? undefined : 'group-2');
+    pane.clear();
+  });
+
+  it('keeps the grouped composer on creation failure and retries with its group', async () => {
+    const pane = openEmptyPane();
+    pane.startDraftPlaceholder(project, 'chat', undefined, 'group-1');
+    setBindingMock('CreateThread', async () => { throw new Error('Group unavailable'); });
+    expect(await pane.ensureMaterializedThread()).toBeNull();
+    expect(pane.thread?.groupId).toBe('group-1');
+    expect(pane.generalError).toContain('Group unavailable');
+    const create = setBindingMock('CreateThread', async (opts: CreateThreadOptions) => makeThread({ id: 'retry', projectId: project.id, groupId: opts.groupId }));
+    expect(await pane.ensureMaterializedThread()).toBe('retry');
+    expect(create.mock.calls[0][0]).toMatchObject({ groupId: 'group-1' });
+    pane.clear();
+  });
+
+  it('does not adopt a stale creation after switching groups in the same millisecond', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1000);
+    const pane = openEmptyPane();
+    try {
+      pane.startDraftPlaceholder(project, 'chat', undefined, 'group-1');
+      const firstId = pane.thread?.id;
+      let finish!: (thread: ReturnType<typeof makeThread>) => void;
+      setBindingMock('CreateThread', () => new Promise((resolve) => { finish = resolve; }));
+      const creating = pane.ensureMaterializedThread();
+      pane.startDraftPlaceholder(project, 'chat', undefined, 'group-2');
+      expect(pane.thread?.id).not.toBe(firstId);
+      finish(makeThread({ id: 'old', projectId: project.id, groupId: 'group-1' }));
+      expect(await creating).toBeNull();
+      expect(pane.thread?.groupId).toBe('group-2');
+    } finally {
+      now.mockRestore();
+      pane.clear();
     }
   });
 });

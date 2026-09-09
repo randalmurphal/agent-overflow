@@ -430,3 +430,48 @@ func TestSetThreadGroupIsIdempotentAndSkipsBlankIDs(t *testing.T) {
 		t.Fatalf("repeat move = (%v, %v), want the same single row", moved, err)
 	}
 }
+
+func TestCreateThreadValidatesGroupMembershipAtomically(t *testing.T) {
+	s := newTestStore(t)
+	group := mustCreateGroup(t, s, defaultTestProjectID, "Drafts")
+	seedThreadGroupProject(t, s, "other-project", "/tmp/other-group-project")
+	other := mustCreateGroup(t, s, "other-project", "Other")
+	deleted := mustCreateGroup(t, s, defaultTestProjectID, "Deleted")
+	if err := s.DeleteThreadGroup(deleted.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, groupID string
+		allowed       bool
+	}{
+		{"grouped", group.ID, true},
+		{"ungrouped", "", true},
+		{"cross-project", other.ID, false},
+		{"deleted", deleted.ID, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			thread := makeThread(tc.name, "claude")
+			thread.GroupID = tc.groupID
+			err := s.CreateThread(thread)
+			if !tc.allowed {
+				if !errors.Is(err, ErrThreadGroupGone) {
+					t.Fatalf("create error = %v", err)
+				}
+				if _, err := s.GetThread(thread.ID); !errors.Is(err, sql.ErrNoRows) {
+					t.Fatalf("refused create left a thread: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			stored, err := s.GetThread(thread.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stored.GroupID != tc.groupID || !stored.IsDraft || stored.PinnedAt != nil {
+				t.Fatalf("unexpected draft: %+v", stored)
+			}
+		})
+	}
+}

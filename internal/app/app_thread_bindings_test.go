@@ -847,3 +847,42 @@ func TestMarkThreadReadUnreadLifecycle(t *testing.T) {
 		t.Fatalf("MarkThreadUnread(missing) error = %v, want sql.ErrNoRows", err)
 	}
 }
+
+func TestCreateThreadInGroupPublishesGroupedDraft(t *testing.T) {
+	app := newTestAppWithStore(t)
+	group, err := app.store.CreateThreadGroup(defaultTestProjectID, "Drafts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := &emitRecorder{}
+	app.testEmitHook = rec.capture
+	thread, err := app.CreateThread(t.Context(), CreateThreadOptions{ProjectID: defaultTestProjectID, GroupID: group.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if thread.GroupID != group.ID || !thread.IsDraft {
+		t.Fatalf("unexpected thread: %+v", thread)
+	}
+	listed := 0
+	for _, call := range rec.snapshot() {
+		if evt, ok := call.Data.(triage.ThreadUpdateEvent); ok && evt.Thread != nil && evt.Thread.ID == thread.ID {
+			listed++
+			if evt.Action != triage.ThreadActionListed || evt.Thread.GroupID != group.ID {
+				t.Fatalf("unexpected frame: %+v", evt)
+			}
+		}
+	}
+	if listed != 1 {
+		t.Fatalf("listed frames = %d, want 1", listed)
+	}
+	rec.reset()
+	if err := app.store.DeleteThreadGroup(group.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.CreateThread(t.Context(), CreateThreadOptions{ProjectID: defaultTestProjectID, GroupID: group.ID}); !errors.Is(err, store.ErrThreadGroupGone) {
+		t.Fatalf("deleted group error = %v", err)
+	}
+	if len(rec.snapshot()) != 0 {
+		t.Fatal("refused create emitted an event")
+	}
+}

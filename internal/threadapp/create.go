@@ -1,6 +1,8 @@
 package threadapp
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -15,6 +17,7 @@ import (
 
 type CreateOptions struct {
 	ProjectID                  string
+	GroupID                    string
 	Title                      string
 	Provider                   string
 	Model                      string
@@ -86,6 +89,17 @@ func (s *Service) Create(opts CreateOptions) (store.Thread, error) {
 	project, err := database.GetProject(projectID)
 	if err != nil {
 		return store.Thread{}, fmt.Errorf("create thread: resolve project %s: %w", projectID, err)
+	}
+
+	groupID := strings.TrimSpace(opts.GroupID)
+	if groupID != "" {
+		group, err := database.GetThreadGroup(groupID)
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && group.ProjectID != project.ID) {
+			return store.Thread{}, store.ErrThreadGroupGone
+		}
+		if err != nil {
+			return store.Thread{}, fmt.Errorf("create thread: resolve group: %w", err)
+		}
 	}
 
 	mode, err := threadmode.ValidateCreate(opts.Mode)
@@ -224,6 +238,7 @@ func (s *Service) Create(opts CreateOptions) (store.Thread, error) {
 	thread := store.Thread{
 		ID:                         s.newID(),
 		ProjectID:                  project.ID,
+		GroupID:                    groupID,
 		ProjectPath:                project.Path,
 		Title:                      title,
 		Provider:                   providerName,

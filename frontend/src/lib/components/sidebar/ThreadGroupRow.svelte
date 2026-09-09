@@ -18,6 +18,7 @@
   import { getThreadById, getThreadLiveActivityAt } from '../../stores/threads.svelte';
   import { consumePendingGroupRename } from '../../stores/threadGroups.svelte';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import Plus from '@lucide/svelte/icons/plus';
   import Folder from '@lucide/svelte/icons/folder';
   import FolderOpen from '@lucide/svelte/icons/folder-open';
   import Icon from '../primitives/Icon.svelte';
@@ -26,6 +27,7 @@
   import SidebarRowMenuButton from './SidebarRowMenuButton.svelte';
   import {
     moveThreadsToGroupAction,
+    newThreadInGroupAction,
     pinThreadGroupAction,
     renameThreadGroupAction,
     setThreadGroupPinGroupAction,
@@ -170,7 +172,7 @@
   }
 
   function handleKeydown(e: KeyboardEvent): void {
-    if (editing) return;
+    if (editing || e.target !== e.currentTarget) return;
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       toggleExpansion();
@@ -366,6 +368,20 @@
           </span>
         {/if}
       </div>
+      <button
+        type="button"
+        aria-label="New Thread in Group"
+        title="New Thread in Group"
+        data-testid="thread-group-new-thread"
+        onclick={(e) => {
+          e.stopPropagation();
+          void newThreadInGroupAction(group, pane);
+        }}
+        ondblclick={(e) => e.stopPropagation()}
+        class="flex h-5 w-5 compact:h-9 compact:w-9 shrink-0 items-center justify-center rounded-[var(--radius-field)] text-fg-subtle hover:text-fg hover:bg-surface-2/30 opacity-0 group-hover/thread-item:opacity-100 group-focus-within/thread-item:opacity-100 compact:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+      >
+        <Icon icon={Plus} size={12} strokeWidth={2} />
+      </button>
       <SidebarRowMenuButton label="Group actions" testId="thread-group-row-menu" onOpen={handleContextMenu} />
     {/if}
   </div>

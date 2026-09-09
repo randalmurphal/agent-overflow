@@ -31,6 +31,7 @@ import {
 } from './worktreeIntent.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import { adoptDiffSpanOwner } from '../utils/diffSpanCache.svelte';
+import { randomId } from '../utils/randomId';
 import { errString } from '../utils/errors';
 import { sameNormalizedPath } from '../utils/path';
 import { seedContextWindow } from './threadContextWindow';
@@ -141,7 +142,7 @@ export function createThreadDraftPlaceholder(
     const now = Date.now();
     const mode = current.mode as DraftPlaceholderMode;
     const placeholder: DraftThreadPlaceholder = {
-      id: `draft:${paneId}:${current.projectId}:${mode}:${now}`,
+      id: `draft:${paneId}:${current.projectId}:${mode}:${randomId()}`,
       projectId: current.projectId,
       projectName: '',
       projectPath: current.projectPath,
@@ -167,6 +168,7 @@ export function createThreadDraftPlaceholder(
     project: Project,
     mode: DraftPlaceholderMode = 'chat',
     defaults?: DraftPlaceholderDefaults,
+    groupId?: string,
   ): void {
     // clearPane() drops any intent staged against the prior placeholder id,
     // so "+ New" on top of an existing placeholder doesn't leak entries.
@@ -177,7 +179,7 @@ export function createThreadDraftPlaceholder(
     options.clearPane();
     const now = Date.now();
     const placeholder: DraftThreadPlaceholder = {
-      id: `draft:${paneId}:${project.id}:${mode}:${now}`,
+      id: `draft:${paneId}:${project.id}:${mode}:${randomId()}`,
       projectId: project.id,
       projectName: project.name,
       projectPath: project.path,
@@ -193,6 +195,7 @@ export function createThreadDraftPlaceholder(
     options.setThread({
       id: placeholder.id,
       title: 'New Thread',
+      groupId,
       provider: seededProvider ?? 'codex',
       workspacePath: defaults?.workspacePath || project.path,
       projectPath: project.path,
@@ -223,6 +226,7 @@ export function createThreadDraftPlaceholder(
     const backend = projectBackend(placeholder.projectId) ?? HOME_BACKEND;
     const created = (await withBackendTarget(backend, () => CreateThread({
       projectId: placeholder.projectId,
+      groupId: current?.groupId,
       provider: current?.provider,
       model: current?.model,
       mode: current?.mode ?? placeholder.mode,
@@ -271,13 +275,18 @@ export function createThreadDraftPlaceholder(
     const placeholderId = placeholder.id;
     materializingThreadPromise = (async () => {
       try {
-        const created = await materializeDraftPlaceholder();
+        let created = await materializeDraftPlaceholder();
         if (!created) return null;
         if (draftPlaceholder?.id !== placeholderId) return null;
         await options.switchLoad().migrateDraftPlaceholderTerminals(
           placeholderId,
           created.id,
         );
+        if (draftPlaceholder?.id !== placeholderId) return null;
+        // A group deletion may arrive during creation or terminal migration.
+        if (created.groupId && !options.getThread()?.groupId) {
+          created = { ...created, groupId: undefined };
+        }
         // Re-key any intent staged against the placeholder id BEFORE we
         // adopt the real thread. Worktree/branch picks made on the
         // placeholder otherwise become orphaned when lookups switch to

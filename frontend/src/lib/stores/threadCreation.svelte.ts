@@ -7,12 +7,13 @@ import {
   mountThreadInPane,
   openEmptyPane,
 } from './panes.svelte';
-import { expandProject } from './sidebar.svelte';
+import { expandProject, isGroupExpanded, toggleGroup } from './sidebar.svelte';
 import { prependThread } from './threads.svelte';
 import { addToast } from './toast.svelte';
 import { errString } from '../utils/errors';
 import type { DraftPlaceholderDefaults, ThreadPane } from './thread.svelte';
 import type { Project, Thread } from '../types/models';
+import { getThreadGroupById } from './threadGroups.svelte';
 import { preferredProjectTarget } from './projectTargets';
 import { withBackendTarget } from '../transport/backends';
 import { noteThread, projectBackend } from '../transport/entityIndex';
@@ -57,6 +58,7 @@ function finishDraftDefaultsRequest(
 async function loadAndStartDraftPlaceholder(
   pane: ThreadPane,
   project: Project,
+  groupId?: string,
 ): Promise<boolean> {
   // Reserve the pane before the RPC. A second "+ New" request or a thread
   // switch must win even if this older defaults response resolves last.
@@ -74,7 +76,7 @@ async function loadAndStartDraftPlaceholder(
     return false;
   }
 
-  pane.startDraftPlaceholder(project, 'chat', defaults);
+  pane.startDraftPlaceholder(project, 'chat', defaults, groupId && getThreadGroupById(groupId) ? groupId : undefined);
   finishDraftDefaultsRequest(pane, request);
   return true;
 }
@@ -121,6 +123,7 @@ export function resolveDraftTargetProject(
 
 export interface OpenDraftThreadOptions {
   projectId: string;
+  groupId?: string;
   targetPane?: ThreadPane | null;
   openInNewPane?: boolean;
 }
@@ -141,13 +144,18 @@ export interface OpenDraftThreadOptions {
 export async function openDraftThreadForProject(
   options: OpenDraftThreadOptions,
 ): Promise<ThreadPane | null> {
-  const { projectId, targetPane, openInNewPane = false } = options;
+  const { projectId, groupId, targetPane, openInNewPane = false } = options;
   expandProject(projectId);
   const source = getProject(projectId)?.project;
   if (!source) {
     throw new Error('Project not found');
   }
-  const project = preferredProjectTarget(source);
+  if (groupId && getThreadGroupById(groupId)?.projectId !== projectId) {
+    throw new Error('That group no longer exists in this project');
+  }
+  // A group fixes the computer and project; repository preferences cannot redirect it.
+  const project = groupId ? source : preferredProjectTarget(source);
+  if (groupId && !isGroupExpanded(groupId)) toggleGroup(groupId);
   const pane: ThreadPane = openInNewPane
     ? openEmptyPane()
     : (targetPane ?? getFocusedPaneOrNull() ?? ensureMainPane());
@@ -160,7 +168,7 @@ export async function openDraftThreadForProject(
   // and workspace strip don't render "no model / no branch" before
   // materialization. Failure here is tolerable — we still want the
   // placeholder to appear; the user can pick from the toolbar.
-  const opened = await loadAndStartDraftPlaceholder(pane, project);
+  const opened = await loadAndStartDraftPlaceholder(pane, project, groupId);
   return opened ? pane : null;
 }
 

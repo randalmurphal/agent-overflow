@@ -1180,6 +1180,7 @@ export class ContextSettingsUpdate {
  */
 export class CreateThreadOptions {
     "projectId": string;
+    "groupId"?: string;
 
     /**
      * empty = "New Thread"

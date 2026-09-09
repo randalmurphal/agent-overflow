@@ -305,14 +305,16 @@ const threadInsertColumns = `id, project_id, title, provider, model,
 		    group_id`
 
 const threadInsertSQL = `INSERT INTO threads (` + threadInsertColumns + `)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+		 WHERE ? = '' OR EXISTS (SELECT 1 FROM thread_groups WHERE id = ? AND project_id = ?)`
 
 func insertThread(execer threadExecer, t Thread, lastReadAtArg any) error {
 	return writeThread(execer, t, lastReadAtArg, "")
 }
 
+// Validate group ownership in the insert so deletion cannot race a prior read.
 func writeThread(execer threadExecer, t Thread, lastReadAtArg any, conflict string) error {
-	_, err := execer.Exec(
+	result, err := execer.Exec(
 		threadInsertSQL+conflict,
 		t.ID, nilIfEmpty(t.ProjectID), t.Title, t.Provider, t.Model,
 		t.WorkspacePath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch),
@@ -329,8 +331,19 @@ func writeThread(execer threadExecer, t Thread, lastReadAtArg any, conflict stri
 		// blank a thread's provenance or its git origin.
 		t.CreatedByDevice, t.Origin.Branch, t.Origin.RemoteURL, t.Origin.HeadCommit,
 		nilIfEmpty(t.GroupID),
+		t.GroupID, t.GroupID, t.ProjectID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: insert thread rows affected: %w", err)
+	}
+	if affected == 0 {
+		return ErrThreadGroupGone
+	}
+	return nil
 }
 
 func (s *Store) GetThread(id string) (Thread, error) {

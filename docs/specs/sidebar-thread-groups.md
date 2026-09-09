@@ -55,9 +55,14 @@ running member moves the group up the list, it does not light the row.
   project's groups plus "New Group…"; a grouped row also gets "Remove
   from Group". Multi-select gets the same two when every selected thread
   shares one project. Project header: "New Group…", also a hover-revealed
-  folder-plus button beside New Terminal / New Thread. Group row: Rename
+  folder-plus button beside New Terminal / New Thread. Group row: New Thread, Rename
   Group, Pin / Unpin / burner move, Archive Threads, Ungroup All, Delete
   Group.
+- **New thread.** The group row's plus button and New Thread menu item open
+  the normal draft composer with that group's project and computer. Membership
+  persists when the draft materializes and when an emptied draft returns to a
+  placeholder. Switching projects clears membership. Deleting the group ungroups
+  open placeholders as well as saved threads.
 - **Lifecycle.** A new group is named "New Group" and opens inline
   rename immediately. An empty group persists until deleted. Deleting a
   group ungroups its members and never deletes a thread; it honors the
@@ -77,8 +82,6 @@ running member moves the group up the list, it does not light the row.
 - Manual ordering inside a group.
 - Multi-thread drag (a drag carries one thread).
 - Cross-project groups.
-- "New thread in group" from the group row. A thread joins a group after
-  it exists; the draft-creation path is untouched.
 - Group-level actions beyond the list above (no bulk delete of member
   threads, no group colors or icons).
 
@@ -123,7 +126,7 @@ running member moves the group up the list, it does not light the row.
   `SetThreadGroupPinGroup` (the last three mirror the thread pin
   primitives, including "pin never touches updated_at"), and
   `SetThreadGroup(threadIDs []string, groupID string)`.
-- `SetThreadGroup` is the one writer of `threads.group_id`. One
+- `SetThreadGroup` changes membership on existing threads. One
   transaction; for each id it runs
 
   ```sql

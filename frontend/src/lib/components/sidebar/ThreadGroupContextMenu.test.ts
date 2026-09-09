@@ -1,4 +1,4 @@
-// Group-row menu gating. Items + order are pinned (Rename, the pin controls,
+// Group-row menu gating. Items + order are pinned (New Thread, Rename, the pin controls,
 // Archive Threads (N), Ungroup All, Delete Group), the two count-gated items
 // disable rather than vanish on an empty group, and Delete Group ungroups —
 // which is what its dialog has to say.
@@ -8,10 +8,11 @@ import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ThreadGroupContextMenu from './ThreadGroupContextMenu.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { resetPanesForTest } from '../../stores/panes.svelte';
+import { addProjectLocal, resetProjectsForTest } from '../../stores/projects.svelte';
+import { getFocusedPaneOrNull, resetPanesForTest } from '../../stores/panes.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { replaceAllThreads } from '../../stores/threads.svelte';
-import { resetThreadGroupsForTest } from '../../stores/threadGroups.svelte';
+import { upsertThreadGroup, resetThreadGroupsForTest } from '../../stores/threadGroups.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import type { Settings } from '../../types/settings';
 import type { Thread, ThreadGroup } from '../../types/models';
@@ -78,15 +79,33 @@ async function flush(): Promise<void> {
 describe('<ThreadGroupContextMenu>', () => {
   beforeEach(async () => {
     resetPanesForTest();
+    resetProjectsForTest();
     resetThreadGroupsForTest();
     resetBindingMocks();
     replaceAllThreads([mkThread('t1'), mkThread('t2')]);
     await primeSettings();
   });
 
+  it('offers New Thread for an empty group', async () => {
+    const group = mkGroup();
+    replaceAllThreads([]);
+    addProjectLocal({ id: group.projectId, path: '/tmp/ws', name: 'Project', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false });
+    upsertThreadGroup(group);
+    setBindingMock('GetThreadDefaults', async () => ({}));
+    const anchor = document.createElement('div');
+    document.body.appendChild(anchor);
+    const onClose = vi.fn();
+    const { getByRole } = render(ThreadGroupContextMenu, { props: { group, pane: null, anchor, open: true, onClose, onRename: vi.fn() } });
+    await fireEvent.click(getByRole('menuitem', { name: 'New Thread' }));
+    await flush();
+    expect(onClose).toHaveBeenCalled();
+    expect(getFocusedPaneOrNull()?.thread?.groupId).toBe(group.id);
+  });
+
   it('renders the unpinned item set in order', () => {
     const { baseElement } = renderMenu();
     expect(visibleLabels(baseElement)).toEqual([
+      'New Thread',
       'Rename Group',
       'Pin Group',
       'Archive Threads (2)',
@@ -98,6 +117,7 @@ describe('<ThreadGroupContextMenu>', () => {
   it('swaps in the burner move and unpin once the group is pinned', () => {
     const { baseElement } = renderMenu(mkGroup({ pinnedAt: 1, pinGroup: 0 }));
     expect(visibleLabels(baseElement)).toEqual([
+      'New Thread',
       'Rename Group',
       'Move to Back Burner',
       'Unpin Group',

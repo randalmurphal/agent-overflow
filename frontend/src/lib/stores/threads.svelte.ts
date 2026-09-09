@@ -1,4 +1,5 @@
 import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
+import { getAllPanes } from './panes.svelte';
 import { reconcileThreadRows } from './eventsThreadRows';
 import { computerCatalogWriter } from './computerCatalogWriter';
 import { computerCatalog, readComputerRows, retainUnavailableComputerRows } from './computerRows';
@@ -299,6 +300,12 @@ export function updateThreadGroupState(rows: readonly Thread[]): void {
  */
 export function clearThreadGroupMembership(groupId: string): void {
   if (!groupId) return;
+  // Empty placeholders have no catalog row but still carry the group intent.
+  for (const pane of getAllPanes().values()) {
+    if (pane.thread?.groupId === groupId) {
+      pane.replaceThread({ ...pane.thread, groupId: undefined });
+    }
+  }
   let changed = false;
   const next = threads.map((t) => {
     if (t.groupId !== groupId) return t;

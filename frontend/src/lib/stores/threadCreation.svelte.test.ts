@@ -7,8 +7,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   openDraftThreadForProject,
+  flipPaneDraftPlaceholder,
   resolveDraftTargetProject,
 } from './threadCreation.svelte';
+import { upsertThreadGroup, resetThreadGroupsForTest, applyThreadGroupUpdated } from './threadGroups.svelte';
+import { isGroupExpanded, toggleGroup, resetSidebarForTest } from './sidebar.svelte';
+import * as projectTargets from './projectTargets';
 import { createThreadPane } from './thread.svelte';
 import {
   addProjectLocal,
@@ -130,11 +134,69 @@ describe('resolveDraftTargetProject', () => {
 
 describe('openDraftThreadForProject', () => {
   beforeEach(() => {
+    resetThreadGroupsForTest();
+    resetSidebarForTest();
     resetProjectsForTest();
     resetPaneLayoutForTest();
   });
 
   afterEach(() => setCompactLayoutForTest(false));
+
+  it('opens a grouped placeholder, expands its group, and clears membership on a project switch', async () => {
+    const project = makeProject();
+    addProjectLocal(project);
+    upsertThreadGroup({ id: 'g1', projectId: project.id, name: 'Group', createdAt: 0, updatedAt: 0 });
+    toggleGroup('g1');
+    const create = setBindingMock('CreateThread', vi.fn());
+    setBindingMock('GetThreadDefaults', async () => makeDefaults());
+    const pane = createThreadPane();
+    await openDraftThreadForProject({ projectId: project.id, groupId: 'g1', targetPane: pane });
+    expect(pane.thread?.groupId).toBe('g1');
+    expect(isGroupExpanded('g1')).toBe(true);
+    expect(create).not.toHaveBeenCalled();
+    await flipPaneDraftPlaceholder(pane, makeProject({ id: 'other-project' }));
+    expect(pane.thread?.groupId).toBeUndefined();
+    pane.clear();
+  });
+
+  it('keeps the group project instead of redirecting to a preferred checkout', async () => {
+    const project = makeProject();
+    const preferred = makeProject({ id: 'preferred-project' });
+    addProjectLocal(project);
+    addProjectLocal(preferred);
+    upsertThreadGroup({ id: 'g1', projectId: project.id, name: 'Group', createdAt: 0, updatedAt: 0 });
+    const preference = vi.spyOn(projectTargets, 'preferredProjectTarget').mockReturnValue(preferred);
+    setBindingMock('GetThreadDefaults', async () => makeDefaults());
+    const pane = createThreadPane();
+    try {
+      await openDraftThreadForProject({ projectId: project.id, groupId: 'g1', targetPane: pane });
+      expect(preference).not.toHaveBeenCalled();
+      expect(pane.thread?.projectId).toBe(project.id);
+      await openDraftThreadForProject({ projectId: project.id, targetPane: pane });
+      expect(pane.thread?.projectId).toBe(preferred.id);
+      expect(pane.thread?.groupId).toBeUndefined();
+    } finally {
+      preference.mockRestore();
+      pane.clear();
+    }
+  });
+
+  it('handles group deletion while draft defaults are loading', async () => {
+    const project = makeProject();
+    addProjectLocal(project);
+    const group = { id: 'g1', projectId: project.id, name: 'Group', createdAt: 0, updatedAt: 0 };
+    upsertThreadGroup(group);
+    const defaults = deferred<ThreadDefaults>();
+    setBindingMock('GetThreadDefaults', () => defaults.promise);
+    const pane = createThreadPane();
+    const opening = openDraftThreadForProject({ projectId: project.id, groupId: group.id, targetPane: pane });
+    applyThreadGroupUpdated({ action: 'delete', group });
+    defaults.resolve(makeDefaults());
+    await opening;
+    expect(pane.thread?.groupId).toBeUndefined();
+    expect(pane.thread?.projectId).toBe(project.id);
+    pane.clear();
+  });
 
   it('reveals a reused draft pane every time New Thread is requested from the compact list', async () => {
     const project = makeProject();

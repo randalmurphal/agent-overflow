@@ -26,6 +26,7 @@ import (
 // Branch verbatim, with no git lookups.
 type CreateThreadOptions struct {
 	ProjectID                  string `json:"projectId"`
+	GroupID                    string `json:"groupId,omitempty"`
 	Title                      string `json:"title,omitempty"`                      // empty = "New Thread"
 	Provider                   string `json:"provider,omitempty"`                   // empty = latest chat profile provider
 	Model                      string `json:"model,omitempty"`                      // empty = latest provider/model profile
@@ -117,6 +118,7 @@ func (a *App) CreateThread(ctx context.Context, opts CreateThreadOptions) (store
 	settingsBucket, settingsClass := a.callerSettingsScreen(ctx)
 	thread, err := a.threadApplication().Create(threadapp.CreateOptions{
 		ProjectID:                  opts.ProjectID,
+		GroupID:                    opts.GroupID,
 		Title:                      opts.Title,
 		Provider:                   opts.Provider,
 		Model:                      opts.Model,

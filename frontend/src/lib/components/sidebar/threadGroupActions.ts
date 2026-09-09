@@ -32,6 +32,8 @@ import {
   clearThreadGroupMembership,
   updateThreadGroupState,
 } from '../../stores/threads.svelte';
+import { openDraftThreadForProject } from '../../stores/threadCreation.svelte';
+import type { ThreadPane } from '../../stores/thread.svelte';
 import { expandProject } from '../../stores/sidebar.svelte';
 import { setThreadFilterQuery } from '../../stores/threadFilter.svelte';
 import { addToast } from '../../stores/toast.svelte';
@@ -47,6 +49,16 @@ export const NEW_THREAD_GROUP_NAME = 'New Group';
 function reportGroupFailure(what: string, err: unknown): void {
   console.error(`Failed to ${what}:`, err);
   addToast('error', userFacingError(err));
+}
+
+export async function newThreadInGroupAction(group: ThreadGroup, pane: ThreadPane | null): Promise<ThreadPane | null> {
+  setThreadFilterQuery('');
+  try {
+    return await openDraftThreadForProject({ projectId: group.projectId, groupId: group.id, targetPane: pane });
+  } catch (err) {
+    reportGroupFailure('create thread in group', err);
+    return null;
+  }
 }
 
 async function createThreadGroup(projectId: string, name: string): Promise<ThreadGroup | null> {

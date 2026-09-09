@@ -691,6 +691,7 @@ import type { ReasoningEffort } from '../types/settings';
 
 export interface CreateThreadOptions {
   projectId: string;
+  groupId?: string;
   title?: string;
   provider?: 'claude' | 'codex' | string;
   model?: string;

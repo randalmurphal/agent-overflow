@@ -9,11 +9,13 @@ import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ThreadGroupRow from './ThreadGroupRow.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { resetPanesForTest } from '../../stores/panes.svelte';
+import { addProjectLocal, resetProjectsForTest } from '../../stores/projects.svelte';
+import { openEmptyPane, resetPanesForTest } from '../../stores/panes.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { isGroupExpanded, resetSidebarForTest, toggleGroup } from '../../stores/sidebar.svelte';
 import {
   requestGroupRename,
+  upsertThreadGroup,
   resetThreadGroupsForTest,
 } from '../../stores/threadGroups.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
@@ -93,6 +95,7 @@ async function flush(): Promise<void> {
 describe('<ThreadGroupRow>', () => {
   beforeEach(async () => {
     resetPanesForTest();
+    resetProjectsForTest();
     resetSidebarForTest();
     resetThreadGroupsForTest();
     resetBindingMocks();
@@ -100,6 +103,30 @@ describe('<ThreadGroupRow>', () => {
     replaceAllThreads([mkThread('t1'), mkThread('t2')]);
     setBindingMock('GetSettings', async () => null);
     await loadSettings();
+  });
+
+  it.each([false, true])('opens a grouped draft with the plus button (compact=%s)', async (compact) => {
+    setCompactLayoutForTest(compact);
+    const group = mkGroup();
+    addProjectLocal({ id: group.projectId, path: '/tmp/ws', name: 'Project', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false });
+    upsertThreadGroup(group);
+    toggleGroup(group.id);
+    const pane = openEmptyPane();
+    const create = setBindingMock('CreateThread', vi.fn());
+    setBindingMock('GetThreadDefaults', async () => ({}));
+    const { getByRole, queryByRole } = renderRow({ group, pane, expanded: false });
+    const button = getByRole('button', { name: 'New Thread in Group' });
+    await fireEvent.keyDown(button, { key: 'Enter' });
+    expect(isGroupExpanded(group.id)).toBe(false);
+    await fireEvent.click(button);
+    await flush();
+    expect(pane.thread?.groupId).toBe(group.id);
+    expect(pane.thread?.isDraft).toBe(true);
+    expect(isGroupExpanded(group.id)).toBe(true);
+    expect(create).not.toHaveBeenCalled();
+    await fireEvent.doubleClick(button);
+    expect(queryByRole('textbox', { name: 'Rename Group' })).toBeNull();
+    setCompactLayoutForTest(false);
   });
 
   /** What a dragover target sees: DataTransfer says nothing, so the record answers. */

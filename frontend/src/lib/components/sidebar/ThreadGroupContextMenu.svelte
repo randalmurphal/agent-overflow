@@ -24,6 +24,7 @@
   import { addToast } from '../../stores/toast.svelte';
   import {
     deleteThreadGroupAction,
+    newThreadInGroupAction,
     pinThreadGroupAction,
     removeThreadsFromGroupAction,
     setThreadGroupPinGroupAction,
@@ -109,6 +110,13 @@
   {#snippet children()}
     <Menu ariaLabel="Group Actions" {onClose}>
       {#snippet children()}
+        <MenuItem
+          label="New Thread"
+          onSelect={() => {
+            onClose();
+            void newThreadInGroupAction(group, pane);
+          }}
+        />
         <MenuItem
           label="Rename Group"
           onSelect={() => {
