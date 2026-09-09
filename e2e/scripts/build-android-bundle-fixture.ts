@@ -4,7 +4,7 @@
 import { execFileSync } from 'node:child_process';
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { stampBundle, BUNDLE_ID_FILE, BUNDLE_RELEASE_FILE } from '../../frontend/scripts/bundleId.ts';
+import { nextPatchVersion, stampBundle, BUNDLE_ID_FILE, BUNDLE_RELEASE_FILE } from '../../frontend/scripts/bundleId.ts';
 import { compareBundleVersions } from '../../frontend/src/lib/native/bundleVersion.ts';
 
 const repo = path.resolve(import.meta.dirname, '../..');
@@ -16,9 +16,7 @@ const source = JSON.parse(await readFile(path.join(dist, BUNDLE_RELEASE_FILE), '
 if (typeof source !== 'string' || typeof packaged !== 'string') throw new Error('Both bundles require release metadata.');
 const order = compareBundleVersions(source, packaged);
 if (order === null) throw new Error('Both bundles require valid SemVer releases.');
-const baseline = order >= 0 ? source : packaged;
-const [major, minor, patch] = baseline.split(/[.+-]/);
-const version = `${major}.${minor}.${BigInt(patch) + 1n}`;
+const version = nextPatchVersion(order >= 0 ? source : packaged);
 const names = [BUNDLE_RELEASE_FILE, BUNDLE_ID_FILE];
 const originals = await Promise.all(names.map((name) => readFile(path.join(dist, name))));
 try {

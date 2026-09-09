@@ -135,7 +135,9 @@ type Manifest struct {
 	ID string `json:"id"`
 	// Version comes from hashed release metadata; only legacy trees without
 	// metadata use the link-time stamp. Automatic installation requires a
-	// strictly newer semantic version, never a different hash alone.
+	// strictly newer semantic version, never a different hash alone. A
+	// release build stamps the package version; a development build stamps
+	// a dated prerelease of the next patch (frontend/scripts/bundleId.ts).
 	Version string `json:"version"`
 	// MinShellBuild is the constant above, carried so a shell can answer
 	// the question without a second route.

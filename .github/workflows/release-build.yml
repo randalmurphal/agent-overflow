@@ -14,6 +14,12 @@ on:
 permissions:
   contents: read
 
+env:
+  # Every artifact here is a release: the frontend bundle carries the bare
+  # package version. build-release.sh sets this itself; the Android job
+  # builds the SPA directly (frontend/scripts/bundleId.ts).
+  AO_RELEASE_BUILD: "1"
+
 jobs:
   linux-wsl:
     if: github.event_name == 'workflow_dispatch'

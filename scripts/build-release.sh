@@ -53,6 +53,11 @@ if [ "$ONLY_MACOS" -eq 1 ] && [ "$SKIP_MACOS" -eq 1 ]; then
 	exit 2
 fi
 
+# The frontend build stamps its bundle with the bare package version only
+# when told it is a release; every other build is a development prerelease
+# of the next patch (frontend/scripts/bundleId.ts).
+export AO_RELEASE_BUILD=1
+
 if [ -z "$VERSION" ]; then
 	VERSION=$(sed -n 's/^  version: "\([^"]*\)"/\1/p' "$ROOT_DIR/build/config.yml")
 fi

@@ -1,7 +1,9 @@
 import { networkFetch } from '../transport/networkFetch';
 // The paired host supplies verified frontend releases. A content hash identifies
 // bytes; a strictly newer SemVer authorizes adoption. Same-version builds and
-// unknown versions stay installed, including locally rebuilt development code.
+// unknown versions stay installed. A development build stamps a dated
+// prerelease of the next patch (frontend/scripts/bundleId.ts), so rebuilds
+// adopt in build order and a release still outranks them.
 // Android independently enforces this policy before publication and at boot.
 //
 // Selection is rechecked across downloads and native calls. A pending update

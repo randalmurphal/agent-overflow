@@ -105,18 +105,54 @@ export async function computeBundleId(root: string): Promise<string> {
   return bundleId(await bundleFiles(root));
 }
 
-/** Release identity is part of the content hash, not the host binary's stamp. */
-export async function stampBundle(root: string, version: unknown): Promise<void> {
+/**
+ * Set by `scripts/build-release.sh` and the release workflow. A build
+ * without it is development code, whatever version the package names.
+ */
+export const RELEASE_BUILD_ENV = 'AO_RELEASE_BUILD';
+
+function requireReleaseVersion(version: unknown): string {
   if (typeof version !== 'string' || compareBundleVersions(version, version) !== 0) {
     throw new Error('The frontend package version must be a complete semantic version.');
   }
-  await writeFile(path.join(root, BUNDLE_RELEASE_FILE), `${JSON.stringify({ version })}\n`, 'utf8');
+  return version;
+}
+
+/** The bare release one patch above `version`'s core; prerelease and build metadata are dropped. */
+export function nextPatchVersion(version: string): string {
+  const [major, minor, patch] = requireReleaseVersion(version).split(/[.+-]/);
+  return `${major}.${minor}.${BigInt(patch) + 1n}`;
+}
+
+/**
+ * The version a build stamps into `bundle-release.json`.
+ *
+ * A release build stamps the package version as it is. Every other build is
+ * development code and stamps `<next patch>-dev.<unix seconds>`: SemVer
+ * orders a prerelease below its release and numeric identifiers
+ * numerically, so a phone adopts each rebuild in build order, the release of
+ * that patch still replaces all of them, and an older release never replaces
+ * newer code. Package versions are bare releases; a prerelease package
+ * version still yields the next patch.
+ */
+export function bundleReleaseVersion(packageVersion: unknown, release: boolean, nowMs = Date.now()): string {
+  const version = requireReleaseVersion(packageVersion);
+  if (release) return version;
+  return `${nextPatchVersion(version)}-dev.${Math.floor(nowMs / 1000)}`;
+}
+
+/** Release identity is part of the content hash, not the host binary's stamp. */
+export async function stampBundle(root: string, version: unknown): Promise<void> {
+  const release = requireReleaseVersion(version);
+  await writeFile(path.join(root, BUNDLE_RELEASE_FILE), `${JSON.stringify({ version: release })}\n`, 'utf8');
   const id = await computeBundleId(root);
   await writeFile(path.join(root, BUNDLE_ID_FILE), `${id}\n`, 'utf8');
 }
 
 /**
  * The Vite plugin: stamp release metadata, then hash and stamp the content id.
+ * The version is `bundleReleaseVersion` of the package version, so only a
+ * build that says it is a release publishes the bare package version.
  *
  * `closeBundle` rather than `writeBundle`, so every asset — including the
  * ones plugins emit late — is on disk before the walk. Build only: a dev
@@ -144,7 +180,7 @@ export function bundleIdPlugin(): {
     },
     async closeBundle() {
       const pkg: { version?: unknown } = JSON.parse(await readFile(packagePath, 'utf8'));
-      await stampBundle(outDir, pkg.version);
+      await stampBundle(outDir, bundleReleaseVersion(pkg.version, process.env[RELEASE_BUILD_ENV] === '1'));
     },
   };
 }

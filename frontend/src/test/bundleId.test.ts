@@ -19,8 +19,9 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
-import { BUNDLE_ID_FILE, BUNDLE_RELEASE_FILE, bundleFiles, bundleId, bundleIdPlugin, computeBundleId, included, stampBundle } from '../../scripts/bundleId';
+import { afterEach, describe, expect, it } from 'vitest';
+import { BUNDLE_ID_FILE, BUNDLE_RELEASE_FILE, RELEASE_BUILD_ENV, bundleFiles, bundleId, bundleIdPlugin, bundleReleaseVersion, computeBundleId, included, nextPatchVersion, stampBundle } from '../../scripts/bundleId';
+import { compareBundleVersions } from '../lib/native/bundleVersion';
 
 const TESTDATA = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -93,26 +94,82 @@ describe('the bundle id rule', () => {
   });
 });
 
+describe('the stamped release version', () => {
+  it('is the package version for a release build', () => {
+    expect(bundleReleaseVersion('1.2.3', true)).toBe('1.2.3');
+    expect(bundleReleaseVersion('1.2.3-rc.1+build.4', true)).toBe('1.2.3-rc.1+build.4');
+  });
+
+  it('is a development prerelease of the next patch for every other build', () => {
+    expect(bundleReleaseVersion('1.2.3', false, 1_754_000_000_500)).toBe('1.2.4-dev.1754000000');
+    expect(bundleReleaseVersion('1.2.3-rc.1+build.4', false, 1_754_000_000_500)).toBe('1.2.4-dev.1754000000');
+    expect(nextPatchVersion('1.2.9')).toBe('1.2.10');
+  });
+
+  it('orders development builds forward, below the release they precede, above the release they follow', () => {
+    const earlier = bundleReleaseVersion('1.2.3', false, 1_754_000_000_000);
+    const later = bundleReleaseVersion('1.2.3', false, 1_754_000_001_000);
+    expect(compareBundleVersions(later, earlier)).toBe(1);
+    expect(compareBundleVersions(earlier, '1.2.3')).toBe(1);
+    expect(compareBundleVersions('1.2.4', later)).toBe(1);
+    expect(compareBundleVersions('1.2.4-rc.1', later)).toBe(1);
+  });
+
+  it.each([undefined, null, 12, '', 'dev', 'v1.2.3', '1.2', '01.2.3', '1.2.3-01', '1.2.3\n', '1.2.3-', '1.2.3+'])('rejects invalid package version %j', (version) => {
+    expect(() => bundleReleaseVersion(version, false)).toThrow('semantic version');
+    expect(() => bundleReleaseVersion(version, true)).toThrow('semantic version');
+  });
+});
+
 describe('release identity in built bundles', () => {
-  it('stamps the frontend package version before hashing all release bytes', async () => {
+  const releaseBuild = process.env[RELEASE_BUILD_ENV];
+  afterEach(() => {
+    if (releaseBuild === undefined) delete process.env[RELEASE_BUILD_ENV];
+    else process.env[RELEASE_BUILD_ENV] = releaseBuild;
+  });
+
+  async function buildFixture(run: (root: string, output: string) => Promise<void>): Promise<void> {
     const root = await mkdtemp(resolve(tmpdir(), 'ao-bundle-release-'));
     try {
       const output = resolve(root, 'dist');
       await mkdir(output);
       await writeFile(resolve(output, 'index.html'), '<html>UI</html>');
-      await writeFile(resolve(root, 'package.json'), JSON.stringify({ version: '1.2.3-rc.1+build.4' }));
-      const plugin = bundleIdPlugin();
-      plugin.configResolved({ root, build: { outDir: 'dist' } });
-      await plugin.closeBundle();
-      expect(JSON.parse(await readFile(resolve(output, BUNDLE_RELEASE_FILE), 'utf8'))).toEqual({ version: '1.2.3-rc.1+build.4' });
-      const first = (await readFile(resolve(output, BUNDLE_ID_FILE), 'utf8')).trim();
-      expect(first).toBe(await computeBundleId(output));
-      expect((await bundleFiles(output)).map((file) => file.path)).toContain(BUNDLE_RELEASE_FILE);
-      await stampBundle(output, '1.2.3');
-      expect(await computeBundleId(output)).not.toBe(first);
+      await writeFile(resolve(root, 'package.json'), JSON.stringify({ version: '1.2.3' }));
+      await run(root, output);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  }
+
+  it('stamps the package version in a release build before hashing all release bytes', async () => {
+    process.env[RELEASE_BUILD_ENV] = '1';
+    await buildFixture(async (root, output) => {
+      const plugin = bundleIdPlugin();
+      plugin.configResolved({ root, build: { outDir: 'dist' } });
+      await plugin.closeBundle();
+      expect(JSON.parse(await readFile(resolve(output, BUNDLE_RELEASE_FILE), 'utf8'))).toEqual({ version: '1.2.3' });
+      const first = (await readFile(resolve(output, BUNDLE_ID_FILE), 'utf8')).trim();
+      expect(first).toBe(await computeBundleId(output));
+      expect((await bundleFiles(output)).map((file) => file.path)).toContain(BUNDLE_RELEASE_FILE);
+      await stampBundle(output, '1.2.4');
+      expect(await computeBundleId(output)).not.toBe(first);
+    });
+  });
+
+  it('stamps a development prerelease of the next patch in any other build', async () => {
+    delete process.env[RELEASE_BUILD_ENV];
+    await buildFixture(async (root, output) => {
+      const before = Math.floor(Date.now() / 1000);
+      const plugin = bundleIdPlugin();
+      plugin.configResolved({ root, build: { outDir: 'dist' } });
+      await plugin.closeBundle();
+      const { version } = JSON.parse(await readFile(resolve(output, BUNDLE_RELEASE_FILE), 'utf8')) as { version: string };
+      const match = /^1\.2\.4-dev\.(\d+)$/.exec(version);
+      expect(match).not.toBeNull();
+      expect(Number(match![1])).toBeGreaterThanOrEqual(before);
+      expect(compareBundleVersions(version, '1.2.3')).toBe(1);
+      expect(compareBundleVersions('1.2.4', version)).toBe(1);
+    });
   });
 
   it.each([undefined, null, 12, '', 'dev', 'v1.2.3', '1.2', '01.2.3', '1.2.3-01', '1.2.3\n', '1.2.3-', '1.2.3+'])('rejects invalid package version %j before writing', async (version) => {
