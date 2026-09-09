@@ -1018,6 +1018,29 @@ export function timelineNodeItemId(node: TimelineNode): string {
   return _exhaustive;
 }
 
+/**
+ * Adds the id of every item a node represents, including the members of
+ * a collapsed run or group and their descendants. Window cuts use it to
+ * keep an on-screen row whole: a run is one row however many items it
+ * wraps, so a cut that kept only its first member would split it.
+ */
+export function collectTimelineNodeItemIds(node: TimelineNode, out: Set<string>): void {
+  if (node.kind === 'leaf') {
+    out.add(node.item.id);
+    return;
+  }
+  if (node.kind === 'read_group') {
+    for (const member of node.members) out.add(member.id);
+    return;
+  }
+  if (node.kind === 'activity_run') {
+    for (const child of node.children) collectTimelineNodeItemIds(child, out);
+    return;
+  }
+  out.add(node.kind === 'group' ? node.anchor.id : node.parent.id);
+  for (const child of node.children) collectTimelineNodeItemIds(child, out);
+}
+
 /** Turn index of the leaf or structural node's first represented item. */
 export function timelineNodeTurnIndex(node: TimelineNode): number {
   return timelineNodeRootItem(node).turnIndex;

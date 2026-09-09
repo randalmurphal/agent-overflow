@@ -45,8 +45,11 @@ fix; `NetworkServiceInProcess2` rejected.
   snaps fully; "jump to one viewport short, glide the rest" was rejected.
 - Nothing force-snaps hidden panes in the background; visible-again must
   simply already be right.
-- History the reader explicitly loaded (Load older) is never taken back by
-  an automatic prune; memory is the cheaper cost.
+- The loaded timeline window is a bounded range around the reader, not a
+  tail. A window cut never drops a row the viewport shows, at any count;
+  anything outside the window is one page away and scrolling toward it
+  always loads (an upward gesture pages older even at the very top and in
+  a window too short for the scroll geometry to express direction).
 
 ## Sidebar, threads, drafts
 

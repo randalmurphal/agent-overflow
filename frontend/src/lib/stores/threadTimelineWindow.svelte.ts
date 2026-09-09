@@ -98,15 +98,6 @@ export interface ThreadTimelineWindow {
   readonly hasDeferredRecentWindowPrune: boolean;
   readonly loadingOlder: boolean;
   readonly loadingNewer: boolean;
-  /**
-   * The reader explicitly paged history into this window (`loadOlder`,
-   * or a `loadUntilItem` recenter). While set, NO automatic prune may
-   * drop rows: the reader asked to see this history, and reclaiming a
-   * few MB of summary rows is never worth taking their conversation
-   * away (user ruling, 2026-08-31). Clears when the window is rebuilt
-   * at a bounded size — thread switch, cache restore, tail reload.
-   */
-  readonly userPinnedHistory: boolean;
   /** Apply `switchThread`'s single initial paged load (cache-miss path). */
   applyInitialSlice(paged: PagedItems, threadID: string): void;
   /** Refresh cursors + hasMore flags from a paged response against the current window. Also used directly by `refreshFromBackend`. */
@@ -121,9 +112,14 @@ export interface ThreadTimelineWindow {
   noteDroppedNewerItems(): void;
   /** Follow repositioned anchors, retaining the capped floor and ordinary tail-append policy. */
   refreshCursorsAfterUpserts(changedItems: readonly Item[], appended: boolean, previousItems: readonly Item[]): void;
-  pruneToRecentWindowIfNeeded(options?: {
-    hasMoreNewerAfterPrune?: boolean;
-  }): void;
+  /**
+   * Streaming-path window cut. Over `ACTIVE_TIMELINE_WINDOW_MAX_ITEMS`
+   * top-level rows it keeps `ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS` around
+   * the visible rows (the newest rows when holding the bottom) and marks
+   * whichever edge it dropped as loadable again. Never drops a visible
+   * row: such a cut is deferred, at any count.
+   */
+  pruneToRecentWindowIfNeeded(): void;
   retryDeferredRecentWindowPrune(): void;
   /**
    * `settleTurn`'s prune entry: records the prune as pending for the
@@ -141,10 +137,22 @@ interface PrunedWindow {
   items: Item[];
   oldestCursor: TimelineCursorLike | null;
   newestCursor: TimelineCursorLike | null;
+  droppedHead: boolean;
+  droppedTail: boolean;
 }
 
 type PrunedWindowApplyResult = 'applied' | 'deferred';
-type PrunedWindowVetoPolicy = 'defer' | 'force';
+
+/**
+ * Which side of the visible rows a cut spends its buffer on. `oldest`
+ * (load-older) keeps the head so a page the reader just asked for is
+ * never dropped by the cut that follows it; `newest` (load-newer, and the
+ * bottom-held streaming tail) keeps the tail for the same reason;
+ * `centered` (streaming cut under a reader who is up in history) buffers
+ * both sides and drops the live tail, which `hasMoreNewer` then offers
+ * back through load-newer and jump-to-latest.
+ */
+type WindowCutPolicy = 'oldest' | 'newest' | 'centered';
 
 function cloneCursor(
   cursor: TimelineCursorLike | null | undefined,
@@ -295,8 +303,6 @@ export function createThreadTimelineWindow(
   let recentWindowPrunePending: boolean = $state(false);
   let loadingOlder: boolean = $state(false);
   let loadingNewer: boolean = $state(false);
-  /** See the interface doc — set by user paging, disables every automatic prune. */
-  let userPinnedHistory: boolean = $state(false);
 
   /**
    * Separate generation counter for `loadOlder` / `loadUntilItem` so a
@@ -415,42 +421,117 @@ export function createThreadTimelineWindow(
     return sourceItems.filter((item) => keepIds.has(item.id));
   }
 
-  function keepRecentWindowItems(
+  /**
+   * Top-level index range `[first, last]` of the rows the viewport shows,
+   * resolved through each visible item's top-level root. Null when the
+   * reader holds the bottom or no visible row is in the window.
+   */
+  function visibleTopLevelRange(
+    sourceItems: readonly Item[],
+    topLevel: readonly Item[],
+  ): { first: number; last: number } | null {
+    const visible = options.getScrollController()?.visibleTimelineItemIds?.() ?? null;
+    if (!visible || visible.size === 0) return null;
+    const byId = new Map<string, Item>();
+    for (const item of sourceItems) byId.set(item.id, item);
+    let oldest: TimelineCursorLike | null = null;
+    let newest: TimelineCursorLike | null = null;
+    for (const id of visible) {
+      const start = byId.get(id);
+      if (!start) continue;
+      let walker: Item = start;
+      for (let hops = 0; hops < MAX_PARENT_HOPS; hops += 1) {
+        const parentId: string = walker.parentId ?? '';
+        const parent: Item | undefined = parentId === '' ? undefined : byId.get(parentId);
+        if (!parent) break;
+        walker = parent;
+      }
+      const cursor = cursorFromItem(walker);
+      if (!oldest || compareCursors(cursor, oldest) < 0) oldest = cursor;
+      if (!newest || compareCursors(cursor, newest) > 0) newest = cursor;
+    }
+    if (!oldest || !newest) return null;
+    let first = -1;
+    let last = -1;
+    for (let index = 0; index < topLevel.length; index += 1) {
+      const cursor = cursorFromItem(topLevel[index]);
+      if (first < 0 && compareCursors(cursor, oldest) >= 0) first = index;
+      if (compareCursors(cursor, newest) <= 0) last = index;
+      else break;
+    }
+    if (first < 0 || last < first) return null;
+    return { first, last };
+  }
+
+  /**
+   * The window cut. Keeps `targetCount` top-level rows: the visible range
+   * whole, plus buffer placed by `policy`. A visible range wider than the
+   * target is kept in full. Reports which edges were dropped so the
+   * commit can mark them loadable again.
+   */
+  function keepWindowNearReader(
     sourceItems: readonly Item[],
     targetCount: number,
+    policy: WindowCutPolicy,
   ): PrunedWindow {
     const topLevel = sourceItems.filter(
       (item) => (item.parentId ?? '') === '',
     );
-    if (topLevel.length <= targetCount) {
-      return {
-        items: sourceItems as Item[],
-        oldestCursor: oldestCursorFromItems(sourceItems),
-        newestCursor: newestCursorFromItems(sourceItems),
-      };
+    const length = topLevel.length;
+    const unchanged = (): PrunedWindow => ({
+      items: sourceItems as Item[],
+      oldestCursor: oldestCursorFromItems(sourceItems),
+      newestCursor: newestCursorFromItems(sourceItems),
+      droppedHead: false,
+      droppedTail: false,
+    });
+    if (length <= targetCount) return unchanged();
+    const visible = visibleTopLevelRange(sourceItems, topLevel);
+    let start: number;
+    let end: number;
+    if (!visible) {
+      start = policy === 'oldest' ? 0 : length - targetCount;
+      end = start + targetCount;
+    } else if (policy === 'oldest') {
+      start = 0;
+      end = Math.max(visible.last + 1, targetCount);
+    } else if (policy === 'newest') {
+      end = length;
+      start = Math.min(visible.first, length - targetCount);
+    } else {
+      const extra = Math.max(0, targetCount - (visible.last - visible.first + 1));
+      const above = Math.floor(extra / 2);
+      start = visible.first - above;
+      end = visible.last + 1 + (extra - above);
+      if (start < 0) {
+        end -= start;
+        start = 0;
+      }
+      if (end > length) {
+        start -= end - length;
+        end = length;
+      }
     }
-    const cutoffCursor = cursorFromItem(
-      topLevel[topLevel.length - targetCount],
-    );
+    start = Math.max(0, start);
+    end = Math.min(length, end);
+    if (start === 0 && end === length) return unchanged();
+    const oldestKeep = cursorFromItem(topLevel[start]);
+    const newestKeep = cursorFromItem(topLevel[end - 1]);
     return {
       items: cutWindowByRootCursor(
         sourceItems,
-        (rootCursor) => compareCursors(rootCursor, cutoffCursor) >= 0,
+        (rootCursor) =>
+          compareCursors(rootCursor, oldestKeep) >= 0
+          && compareCursors(rootCursor, newestKeep) <= 0,
       ),
-      oldestCursor: cutoffCursor,
-      newestCursor: newestCursorFromItems(sourceItems),
+      oldestCursor: oldestKeep,
+      newestCursor: newestKeep,
+      droppedHead: start > 0,
+      droppedTail: end < length,
     };
   }
 
-  function pruneToRecentWindowIfNeeded(
-    pruneOptions: {
-      hasMoreNewerAfterPrune?: boolean;
-    } = {},
-  ): void {
-    if (userPinnedHistory) {
-      recentWindowPrunePending = false;
-      return;
-    }
+  function pruneToRecentWindowIfNeeded(): void {
     const items = options.getItems();
     const loadedTopLevel = topLevelCount(items);
     if (loadedTopLevel <= ACTIVE_TIMELINE_WINDOW_MAX_ITEMS) return;
@@ -459,106 +540,56 @@ export function createThreadTimelineWindow(
     const exceedsHardCeiling =
       loadedTopLevel > ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS;
     // A large keyed reconciliation is avoidable main-thread work while a
-    // turn is active. Defer it, with the hard ceiling as the memory
-    // backstop against a runaway turn. Paint correctness does not depend on
-    // this timing: the virtualizer's stable row plane preserves surviving
-    // rows even when the ceiling forces the prune. The debt is recorded so the
-    // quiet scheduler's retry keeps standing off a turn that started
-    // while the prune waited, and later append-path calls short-circuit
-    // on the pending flag instead of re-slicing the window.
-    if (
-      !exceedsHardCeiling
-      && activeTurn
-    ) {
+    // turn is active. Defer it until the count passes the ceiling. Paint
+    // correctness does not depend on this timing: the cut keeps every
+    // visible row, and the virtualizer's stable row plane preserves
+    // surviving rows. The debt is recorded so the quiet scheduler's
+    // retry keeps standing off a turn that started while the cut waited,
+    // and later append-path calls short-circuit on the pending flag
+    // instead of re-slicing the window.
+    if (!exceedsHardCeiling && activeTurn) {
       recentWindowPrunePending = true;
       return;
     }
     if (recentWindowPrunePending && !exceedsHardCeiling) return;
-    const next = keepRecentWindowItems(
+    const next = keepWindowNearReader(
       items,
       ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
+      'centered',
     );
-    const vetoPolicy = exceedsHardCeiling ? 'force' : 'defer';
-    const result = applyPrunedWindow(next, {
-      hasMoreHistoryAfterPrune: true,
-      hasMoreNewerAfterPrune: pruneOptions.hasMoreNewerAfterPrune ?? false,
-      vetoPolicy,
-    });
-    recentWindowPrunePending = result === 'deferred';
+    recentWindowPrunePending = applyPrunedWindow(next) === 'deferred';
   }
 
-  // loadNewer's opposite-edge prune. Gated on the user pin like every
-  // other automatic drop: once the reader has explicitly paged history
-  // in, catching the window up toward the tail must not throw that
-  // history away behind them.
-  function prunePagedRecentWindowIfNeeded(hasMoreNewerAfterPrune: boolean): void {
-    if (userPinnedHistory) return;
-    const items = options.getItems();
-    if (topLevelCount(items) <= ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS) return;
-    const next = keepRecentWindowItems(items, ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
-    applyPagedPrune(next, {
-      hasMoreHistoryAfterPrune: true,
-      hasMoreNewerAfterPrune,
-    });
-    recentWindowPrunePending = false;
-  }
-
-  // Shared window swap used by both prune paths: replace items, cursors, and
-  // history flags. The pane's replacement chokepoint synchronizes the reveal
-  // gate as part of the commit, so callers cannot omit it.
+  // Shared window swap used by every cut: replace items and cursors, and
+  // mark a dropped edge loadable again. The pane's replacement chokepoint
+  // synchronizes the reveal gate as part of the commit, so callers cannot
+  // omit it.
   function commitWindow(
     next: PrunedWindow,
-    flags: {
-      hasMoreHistoryAfterPrune?: boolean;
-      hasMoreNewerAfterPrune?: boolean;
-    },
+    afterCommit?: () => void,
   ): void {
     options.replaceTimelineItems(next.items, {
       disposeDropped: true,
       afterCommit: () => {
         setLoadedCursors(next.oldestCursor, next.newestCursor);
-        if (flags.hasMoreHistoryAfterPrune !== undefined) {
-          hasMoreHistory = flags.hasMoreHistoryAfterPrune;
-        }
-        if (flags.hasMoreNewerAfterPrune !== undefined) {
-          hasMoreNewer = flags.hasMoreNewerAfterPrune;
-        }
+        if (next.droppedHead) hasMoreHistory = true;
+        if (next.droppedTail) hasMoreNewer = true;
+        afterCommit?.();
       },
     });
   }
 
-  // Paging prune (loadOlder tail-drop / loadNewer head-drop). The dropped end
-  // is always opposite the reading viewport, so there is nothing to veto and
-  // no anchor to restore. The virtualizer derives the keyed mutation and
-  // carries surviving measurements and paint coordinates with their rows.
-  function applyPagedPrune(
-    next: PrunedWindow,
-    pruneOptions: {
-      hasMoreHistoryAfterPrune?: boolean;
-      hasMoreNewerAfterPrune?: boolean;
-    },
-  ): void {
-    if (next.items.length === options.getItems().length) return;
-    commitWindow(next, pruneOptions);
-  }
-
-  // Streaming / settle prune. Holds position via the explicit anchor
-  // guard because it can fire under a bottom-pinned, mid-turn viewport, and
-  // it can be vetoed/deferred when the prune would drop the visible anchor.
-  function applyPrunedWindow(
-    next: PrunedWindow,
-    pruneOptions: {
-      hasMoreHistoryAfterPrune?: boolean;
-      hasMoreNewerAfterPrune?: boolean;
-      vetoPolicy: PrunedWindowVetoPolicy;
-    },
-  ): PrunedWindowApplyResult {
+  // Streaming / settle cut. The cut keeps the visible rows by
+  // construction; the anchor guard is the check that it did, and a cut
+  // that would still drop the row under the reader is deferred, never
+  // forced.
+  function applyPrunedWindow(next: PrunedWindow): PrunedWindowApplyResult {
     if (next.items.length === options.getItems().length) return 'applied';
     const keptItemIds = new Set(next.items.map((item) => item.id));
     const guard = options.getScrollController()?.canPreserveTimelineWindow;
     const safe = !guard || guard((itemId) => keptItemIds.has(itemId));
-    if (!safe && pruneOptions.vetoPolicy === 'defer') return 'deferred';
-    commitWindow(next, pruneOptions);
+    if (!safe) return 'deferred';
+    commitWindow(next);
     return 'applied';
   }
 
@@ -603,7 +634,6 @@ export function createThreadTimelineWindow(
     recentWindowPrunePending = false;
     loadingOlder = false;
     loadingNewer = false;
-    userPinnedHistory = false;
   }
 
   /**
@@ -624,7 +654,6 @@ export function createThreadTimelineWindow(
     recentWindowPrunePending = false;
     loadingOlder = false;
     loadingNewer = false;
-    userPinnedHistory = false;
   }
 
   /**
@@ -683,14 +712,9 @@ export function createThreadTimelineWindow(
    * quiet scheduler (timelineQuietWork) retries it once nothing is
    * animating. Without one, such as a discussion surface or headless pane,
    * it applies immediately.
-   * The hard ceiling stays with the append path and is unaffected.
    * See docs/architecture/scroll-arbitration-plan.md.
    */
   function settleRecentWindowPrune(): void {
-    if (userPinnedHistory) {
-      recentWindowPrunePending = false;
-      return;
-    }
     if (hasMoreNewer) return;
     if (topLevelCount(options.getItems()) <= ACTIVE_TIMELINE_WINDOW_MAX_ITEMS) {
       recentWindowPrunePending = false;
@@ -750,7 +774,7 @@ export function createThreadTimelineWindow(
                 !currentIds.has(item.id) &&
                 compareItemsByTimelinePosition(item, currentFirst) < 0,
             );
-      const next = mergeItemsById(prepend, options.getItems());
+      const merged = mergeItemsById(prepend, options.getItems());
       const pageBounds = cursorsAfterItemUpserts(
         pagedOldestCursor(paged, prepend), pagedNewestCursor(paged, prepend),
         prepend, options.getItems(), currentThread.id,
@@ -759,31 +783,30 @@ export function createThreadTimelineWindow(
       if (oldestLoadedCursor && compareCursors(nextFloor, oldestLoadedCursor) > 0) {
         nextFloor = { ...oldestLoadedCursor };
       }
-      const nextNewest = cloneCursor(newestLoadedCursor) ?? newestCursorFromItems(next);
-      // Progress guard. If the backend returned no items AND the floor
-      // didn't decrease, another click would fire the same query for
-      // the same range. Force hasMore=false so the UI stops offering a
-      // button that can't actually load anything. A later in-flight
-      // upsert that lands an older item will re-enable paging through
-      // the normal streaming path.
-      const nextHasMoreHistory =
-        prepend.length === 0 && compareCursors(nextFloor, floor) >= 0
-          ? false
-          : pagedHasMoreOlder(paged);
+      // Prepend and the opposite-edge cut land in one flush. The cut keeps
+      // the head (the page the reader just asked for) and the visible rows,
+      // and drops the tail, which `hasMoreNewer` offers back below. The
+      // dropped end is opposite the reading viewport, so there is nothing to
+      // veto and no anchor to restore.
+      const cut = topLevelCount(merged) > ACTIVE_TIMELINE_WINDOW_MAX_ITEMS
+        ? keepWindowNearReader(merged, ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS, 'oldest')
+        : null;
+      const next = cut?.items ?? merged;
+      const nextNewest = cut?.droppedTail
+        ? cut.newestCursor
+        : cloneCursor(newestLoadedCursor) ?? newestCursorFromItems(next);
+      // The backend's answer is the only source for "more older". An empty
+      // page reports false itself (finalizePagedItems), and the auto-load
+      // gate's progress guard keeps an unmoved floor from re-probing.
+      const nextHasMoreHistory = pagedHasMoreOlder(paged);
       options.replaceTimelineItems(next, {
         disposeDropped: true,
         afterCommit: () => {
           setLoadedCursors(nextFloor, nextNewest);
           hasMoreHistory = nextHasMoreHistory;
+          if (cut?.droppedTail) hasMoreNewer = true;
         },
       });
-      // The reader asked for this history: pin the window so no
-      // automatic prune (streaming, settle, or the loadNewer edge drop)
-      // can take it back. There is deliberately no opposite-edge prune
-      // here either — the window grows as far as the reader pages
-      // (incident 2026-08-25 was the capped version of this path eating
-      // the thread tail; the pin replaces that tolerance dance).
-      if (insertedRows) userPinnedHistory = true;
       await tick();
       return loadOlderResult('loaded', insertedBeforeWindow, insertedRows);
     } catch (err) {
@@ -916,10 +939,6 @@ export function createThreadTimelineWindow(
         disposeDropped: true,
         afterCommit: () => applyWindowMetadataFromPaged(paged),
       });
-      // A scroll-to-item recenter is explicit navigation into history:
-      // pin the window so the streaming prunes cannot yank the reader's
-      // target out from under them while a turn keeps appending.
-      userPinnedHistory = true;
       if (subagentRootID) {
         await options.hydrateSubagentChildren(subagentRootID);
         if (
@@ -981,7 +1000,7 @@ export function createThreadTimelineWindow(
                 !currentIds.has(item.id) &&
                 compareItemsByTimelinePosition(item, currentLast) > 0,
             );
-      const next = mergeItemsById(append, options.getItems());
+      const merged = mergeItemsById(append, options.getItems());
       const pageBounds = cursorsAfterItemUpserts(
         pagedOldestCursor(paged, append), pagedNewestCursor(paged, append),
         append, options.getItems(), currentThread.id,
@@ -990,21 +1009,26 @@ export function createThreadTimelineWindow(
       if (newestLoadedCursor && compareCursors(nextCeiling, newestLoadedCursor) < 0) {
         nextCeiling = { ...newestLoadedCursor };
       }
-      const nextOldest = cloneCursor(oldestLoadedCursor) ?? oldestCursorFromItems(next);
-      const nextHasMoreNewer =
-        append.length === 0 && compareCursors(nextCeiling, ceiling) <= 0
-          ? false
-          : pagedHasMoreNewer(paged);
+      // Mirror of loadOlder's cut: append and head-drop in one flush, the
+      // tail (the page just asked for) and the visible rows kept. The keyed
+      // virtualizer derives the combined tail grow + head-drop and preserves
+      // the reading coordinate through its head-splice compensation.
+      const cut = topLevelCount(merged) > ACTIVE_TIMELINE_WINDOW_MAX_ITEMS
+        ? keepWindowNearReader(merged, ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS, 'newest')
+        : null;
+      const next = cut?.items ?? merged;
+      const nextOldest = cut?.droppedHead
+        ? cut.oldestCursor
+        : cloneCursor(oldestLoadedCursor) ?? oldestCursorFromItems(next);
+      const nextHasMoreNewer = pagedHasMoreNewer(paged);
       options.replaceTimelineItems(next, {
         disposeDropped: true,
         afterCommit: () => {
           setLoadedCursors(nextOldest, nextCeiling);
           hasMoreNewer = nextHasMoreNewer;
+          if (cut?.droppedHead) hasMoreHistory = true;
         },
       });
-      // The keyed virtualizer derives the combined tail grow + head prune
-      // and preserves the reading coordinate in one flush.
-      prunePagedRecentWindowIfNeeded(nextHasMoreNewer);
       await tick();
       return loadOlderResult('loaded', insertedAfterWindow, insertedRows);
     } catch (err) {
@@ -1047,9 +1071,6 @@ export function createThreadTimelineWindow(
         disposeDropped: true,
         afterCommit: () => applyWindowMetadataFromPaged(paged),
       });
-      // The window is a bounded tail slice again — the pinned history it
-      // may have replaced is gone, so bounded steady-state pruning re-arms.
-      userPinnedHistory = false;
       return true;
     } catch (err) {
       if (
@@ -1092,9 +1113,6 @@ export function createThreadTimelineWindow(
     },
     get loadingNewer() {
       return loadingNewer;
-    },
-    get userPinnedHistory() {
-      return userPinnedHistory;
     },
     applyInitialSlice,
     applyWindowMetadataFromPaged,

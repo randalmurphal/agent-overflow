@@ -78,38 +78,32 @@ export function wantsInlinePreviews(): boolean {
 export const LOAD_OLDER_ITEM_BUDGET = 200;
 
 /**
- * Target loaded item count after pruning or recentering a long active
- * timeline window. This is intentionally larger than the initial slice so
- * paging has room to preserve reading context without keeping a whole thread.
+ * Loaded TOP-LEVEL item count a window cut keeps. Every cut keeps the
+ * rows the reader can see (`PaneScrollController.visibleTimelineItemIds`)
+ * and spends the rest of this budget on buffer around them, so the
+ * window is a sliding range near the viewport rather than a tail.
+ * Subagent children travel with their anchor and are not counted, the
+ * same rule as the backend pagers' `topLevelItemsFilter`.
  */
-export const ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS = 500;
+export const ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS = 800;
 
 /**
- * Loaded TOP-LEVEL item count that arms pruning/recentering. The pane
- * keeps a single contiguous window; exceeding this cap drops the far
- * side and exposes an older/newer gap control. Subagent children are
- * deliberately not counted (and travel with their anchor through every
- * cut) — the same rule as the backend pagers' `topLevelItemsFilter`,
- * because a busy agent's held-loaded child transcript renders as one
- * card, and counting it evicted the visible conversation (incident
- * 2026-08-31). The recent-window path defers its prune to turn settle
- * while a turn is streaming — see
- * ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS below. NONE of the prunes
- * run once the reader has explicitly paged history in
- * (`userPinnedHistory` in threadTimelineWindow.svelte.ts): loaded
- * history the user asked for is never taken back automatically.
+ * Loaded TOP-LEVEL item count that arms a window cut. The gap above the
+ * target is hysteresis: a cut is a keyed reconciliation of the whole
+ * timeline, so it must not run on every appended row or paged batch.
  */
-export const ACTIVE_TIMELINE_WINDOW_MAX_ITEMS = 800;
+export const ACTIVE_TIMELINE_WINDOW_MAX_ITEMS = 1200;
 
 /**
- * Memory backstop for the prune deferral, in top-level items. While a
- * turn is streaming, the recent-window prune waits for turn settle (a
- * mid-stream head-drop repaints the visible timeline — incident
- * 2026-06-10); a single turn that streams past this ceiling gets pruned
- * anyway, accepting the repaint over unbounded growth. Also the
- * loadNewer opposite-edge prune trigger.
+ * Count above which the streaming-path cut no longer waits for turn
+ * settle. Below it, a window over `ACTIVE_TIMELINE_WINDOW_MAX_ITEMS`
+ * during an active turn records the cut as pending and the quiet
+ * scheduler applies it once nothing is animating (a mid-stream
+ * reconciliation is avoidable main-thread work); past it the cut runs
+ * mid-turn. It never bypasses the visible-row guard: a cut that would
+ * drop a row the reader can see is deferred at any count.
  */
-export const ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS = 1600;
+export const ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS = 2400;
 
 /**
  * Initial-load slice size on `switchThread`. Sized to cover several
@@ -255,6 +249,13 @@ export interface PaneScrollController {
     action: () => void | Promise<void>,
   ): Promise<void>;
   canPreserveTimelineWindow?(keepsItem: (itemId: string) => boolean): boolean;
+  /**
+   * Item ids of every row the viewport currently shows, including the
+   * members of collapsed runs and groups, or null when the reader holds
+   * the bottom (the tail is the anchor) or no geometry is mounted. Window
+   * cuts keep this range whole and spend the rest of the budget around it.
+   */
+  visibleTimelineItemIds?(): ReadonlySet<string> | null;
   /**
    * Run a deliberate height change with the viewport's BOTTOM edge held, so it
    * opens upward instead of pushing the reader's rows down the page — and

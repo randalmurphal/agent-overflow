@@ -534,6 +534,7 @@
     armWarmup: armWarmupWithReset,
     autoScrollInFlight: () => stick.autoScrollInFlight(),
     canPreserveTimelineWindow: windowAnchor.canPreserveTimelineWindow,
+    visibleTimelineItemIds: windowAnchor.visibleTimelineItemIds,
     preserveViewportBottom: windowAnchor.preserveViewportBottom,
     stickToLatest: () => {
       void paging.jumpToLatest();
@@ -581,16 +582,44 @@
     // listeners, so the gate stays disarmed until the user actually moves.
     // The 350ms cooldown in the gate itself is a fallback for devices
     // where gesture detection misses an event.
+    // An upward gesture also probes the older edge directly: at
+    // scrollTop 0 there is no scroll event to carry it, and a short
+    // window's geometry cannot express direction (timelinePaging.ts).
     const onUserGesture = (): void => {
       paging.armGatesOnUserGesture();
     };
-    surface.addEventListener('wheel', onUserGesture, { passive: true });
-    surface.addEventListener('touchmove', onUserGesture, { passive: true });
-    surface.addEventListener('keydown', onUserGesture);
+    const onWheel = (event: WheelEvent): void => {
+      onUserGesture();
+      if (event.deltaY < 0) paging.probeOlderOnUpwardGesture();
+    };
+    const onKeyDown = (event: KeyboardEvent): void => {
+      onUserGesture();
+      if (event.key === 'ArrowUp' || event.key === 'PageUp' || event.key === 'Home') {
+        paging.probeOlderOnUpwardGesture();
+      }
+    };
+    let lastTouchY: number | null = null;
+    const onTouchStart = (event: TouchEvent): void => {
+      lastTouchY = event.touches[0]?.clientY ?? null;
+    };
+    const onTouchMove = (event: TouchEvent): void => {
+      onUserGesture();
+      const y = event.touches[0]?.clientY ?? null;
+      // A finger moving down the screen scrolls the content up.
+      if (y !== null && lastTouchY !== null && y > lastTouchY) {
+        paging.probeOlderOnUpwardGesture();
+      }
+      lastTouchY = y;
+    };
+    surface.addEventListener('wheel', onWheel, { passive: true });
+    surface.addEventListener('touchstart', onTouchStart, { passive: true });
+    surface.addEventListener('touchmove', onTouchMove, { passive: true });
+    surface.addEventListener('keydown', onKeyDown);
     return () => {
-      surface.removeEventListener('wheel', onUserGesture);
-      surface.removeEventListener('touchmove', onUserGesture);
-      surface.removeEventListener('keydown', onUserGesture);
+      surface.removeEventListener('wheel', onWheel);
+      surface.removeEventListener('touchstart', onTouchStart);
+      surface.removeEventListener('touchmove', onTouchMove);
+      surface.removeEventListener('keydown', onKeyDown);
     };
   });
 

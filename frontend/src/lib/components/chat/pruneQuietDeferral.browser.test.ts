@@ -19,6 +19,10 @@ import {
   type QuietBottomOptions,
 } from '../../../test/helpers/timelineBrowserHarness';
 import type { Item } from '../../types/models';
+import {
+  ACTIVE_TIMELINE_WINDOW_MAX_ITEMS,
+  ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
+} from '../../stores/threadPaneShared';
 
 setupTimelineHarness();
 
@@ -34,7 +38,7 @@ function shortRow(id: string, turnIndex: number): Item {
     kind: 'assistant_text',
     role: 'assistant',
     status: 'completed',
-    summary: `Reply ${turnIndex}, kept short so an 800-row transcript mounts fast.`,
+    summary: `Reply ${turnIndex}, kept short so a cap-sized transcript mounts fast.`,
     createdAt: turnIndex,
     updatedAt: turnIndex,
   });
@@ -42,21 +46,23 @@ function shortRow(id: string, turnIndex: number): Item {
 
 describe('recent-window prune quiet deferral', () => {
   it('settle leaves the window intact; the prune lands after quiet with the viewport still at the bottom', { timeout: 30000 }, async () => {
-    // One over ACTIVE_TIMELINE_WINDOW_MAX_ITEMS (800), seeded through the
+    // One over ACTIVE_TIMELINE_WINDOW_MAX_ITEMS, seeded through the
     // initial-load path (which never prunes).
+    const max = ACTIVE_TIMELINE_WINDOW_MAX_ITEMS;
+    const live = max + 1;
     const seed: Item[] = [];
-    for (let i = 0; i < 801; i++) seed.push(shortRow(`s-${i}`, i));
+    for (let i = 0; i <= max; i++) seed.push(shortRow(`s-${i}`, i));
     const { pane, scrollEl } = await mountTimeline(THREAD_ID, seed, QUIET_BOTTOM);
-    expect(pane.items).toHaveLength(801);
+    expect(pane.items).toHaveLength(max + 1);
 
     // A turn streams one more row — the append arms the structural
     // spring and stamps liveness, so a glide (and then the sentinel) is
     // in flight when the wire settles a beat later.
-    pane.setActiveTurn({ turnId: 'turn-live', turnIndex: 801, startedAt: 1 });
-    pane.applyProviderItemUpserts([shortRow('s-live', 801)]);
+    pane.setActiveTurn({ turnId: 'turn-live', turnIndex: live, startedAt: 1 });
+    pane.applyProviderItemUpserts([shortRow('s-live', live)]);
     pane.settleTurn({
       turnId: 'turn-live',
-      turnIndex: 801,
+      turnIndex: live,
       startedAt: 1,
       completedAt: 2,
       stopReason: 'end_turn',
@@ -67,10 +73,10 @@ describe('recent-window prune quiet deferral', () => {
     });
 
     // The settle itself must not have flushed the head-drop.
-    expect(pane.items).toHaveLength(802);
+    expect(pane.items).toHaveLength(max + 2);
     expect(pane.hasDeferredRecentWindowPrune).toBe(true);
     const plane = scrollEl.querySelector('[data-virtual-row-plane]') as HTMLElement | null;
-    const liveRow = (scrollEl.querySelector('[data-item-id="s-800"]')
+    const liveRow = (scrollEl.querySelector(`[data-item-id="s-${max}"]`)
       ?.closest('[data-virtual-row]') as HTMLElement | undefined) ?? null;
     expect(plane).not.toBeNull();
     expect(liveRow).not.toBeNull();
@@ -81,15 +87,15 @@ describe('recent-window prune quiet deferral', () => {
     // (liveness hold ~500ms, recheck cadence 200ms) — no further wire
     // activity may be required to trigger it.
     await waitFor(
-      () => !pane.hasDeferredRecentWindowPrune && pane.items.length < 802,
+      () => !pane.hasDeferredRecentWindowPrune && pane.items.length < max + 2,
       'quiet scheduler to land the deferred prune',
       600,
     );
-    expect(pane.items.length).toBeLessThanOrEqual(501);
+    expect(pane.items.length).toBeLessThanOrEqual(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS + 1);
     expect(pane.hasMoreHistory).toBe(true);
     expect(scrollEl.querySelector('[data-virtual-row-plane]')).toBe(plane);
     expect(
-      scrollEl.querySelector('[data-item-id="s-800"]')?.closest('[data-virtual-row]'),
+      scrollEl.querySelector(`[data-item-id="s-${max}"]`)?.closest('[data-virtual-row]'),
     ).toBe(liveRow);
 
     // And the reader never left the bottom: the head-drop was absorbed

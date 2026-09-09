@@ -31,6 +31,12 @@ import {
 // `pane.loadNewer()`. Either way the next batch slots in before the user
 // runs out of buffer. The index gate keeps an idle small-thread render
 // from auto-loading just because the whole thing fits in viewport.
+//
+// Older additionally fires from an upward gesture (wheel, key, touch)
+// regardless of geometry: a window whose rows collapse into a few runs
+// can be shorter than the zones, and a reader parked at scrollTop 0
+// produces no scroll event at all. Intent is the gate there, so the
+// gesture is only honored when it moves toward the top.
 const AUTO_LOAD_OFFSET_PX = 800;
 const AUTO_LOAD_INDEX_THRESHOLD = 5;
 const AUTO_LOAD_ZONE: AutoLoadZoneThresholds = {
@@ -52,6 +58,13 @@ export interface TimelinePagingOptions {
 
 export interface TimelinePaging {
   maybeAutoLoadOlder(offset: number): boolean;
+  /**
+   * Upward user gesture (wheel up, ArrowUp/PageUp/Home, touch drag down).
+   * Arms the older gate and probes it at the current offset, so a reader
+   * who is already at the top, or in a window too short for the scroll
+   * path's geometry, still pages older.
+   */
+  probeOlderOnUpwardGesture(): boolean;
   maybeAutoLoadNewer(offset: number): boolean;
   handleLoadOlder(): Promise<void>;
   handleLoadNewer(): Promise<void>;
@@ -66,13 +79,20 @@ export interface TimelinePaging {
 export function createTimelinePaging(options: TimelinePagingOptions): TimelinePaging {
   const autoLoadOlderGate = createAutoLoadGate();
   const autoLoadNewerGate = createAutoLoadGate();
+  // Last scroll offset the older probe saw; a decreasing offset is the
+  // reader moving toward the top, the intent that lets the probe fire in
+  // a window too short for disjoint zones.
+  let lastOlderProbeOffset: number | null = null;
 
   // Auto-load-older trigger. Fires `pane.loadOlder()` when the user is
   // reading near the top of the loaded window, so older items page in
   // before they hit a wall. The "Load older messages" button at the top of
   // the timeline is the explicit fallback when auto-load is bypassed (no
   // progress, fast-skip past the threshold, etc.). Returns whether it fired.
-  function maybeAutoLoadOlder(offset: number): boolean {
+  function maybeAutoLoadOlder(offset: number, gestureUp = false): boolean {
+    const movingUp = gestureUp
+      || (lastOlderProbeOffset !== null && offset < lastOlderProbeOffset);
+    lastOlderProbeOffset = offset;
     // Cheap pre-check before building the gate-state object + zone closure
     // on every scroll frame. `shouldLoad`'s own `!hasMore` check remains the
     // authoritative gate; this just keeps the allocation off the hot path.
@@ -81,10 +101,14 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
     const viewport = options.getScrollEl();
     if (!listRef || !viewport || !pane.hasMoreHistory) return false;
     // Degenerate geometry: with the top and bottom zones overlapping, a
-    // scroll event cannot express WHICH edge the reader is heading for, and
-    // auto-firing here is what evicted a live streaming tail (see
-    // autoLoadZonesDisjoint). Manual chips remain.
-    if (!autoLoadZonesDisjoint(viewport.scrollHeight - viewport.clientHeight, AUTO_LOAD_ZONE))
+    // scroll offset alone cannot express WHICH edge the reader is heading
+    // for, and auto-firing on any offset there is what evicted a live
+    // streaming tail (see autoLoadZonesDisjoint). Direction can: only an
+    // upward move fires in that state.
+    if (
+      !movingUp
+      && !autoLoadZonesDisjoint(viewport.scrollHeight - viewport.clientHeight, AUTO_LOAD_ZONE)
+    )
       return false;
     if (
       !autoLoadOlderGate.shouldLoad({
@@ -244,6 +268,13 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
     options.saveScrollSnapshot();
   }
 
+  function probeOlderOnUpwardGesture(): boolean {
+    autoLoadOlderGate.armOnGesture();
+    const listRef = options.getListRef();
+    if (!listRef) return false;
+    return maybeAutoLoadOlder(listRef.getScrollOffset(), true);
+  }
+
   function armGatesOnUserGesture(): void {
     autoLoadOlderGate.armOnGesture();
     autoLoadNewerGate.armOnGesture();
@@ -252,10 +283,12 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
   function resetGates(): void {
     autoLoadOlderGate.reset();
     autoLoadNewerGate.reset();
+    lastOlderProbeOffset = null;
   }
 
   return {
     maybeAutoLoadOlder,
+    probeOlderOnUpwardGesture,
     maybeAutoLoadNewer,
     handleLoadOlder,
     handleLoadNewer,

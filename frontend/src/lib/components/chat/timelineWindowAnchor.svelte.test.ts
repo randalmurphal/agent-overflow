@@ -129,6 +129,78 @@ describe('canPreserveTimelineWindow', () => {
   });
 });
 
+describe('visibleTimelineItemIds', () => {
+  function run(id: string, children: string[]): TimelineNode {
+    return {
+      kind: 'activity_run',
+      runId: id,
+      children: children.map(leaf),
+    } as unknown as TimelineNode;
+  }
+
+  function harness({
+    holdingBottom,
+    nodes,
+    offset = 0,
+    viewport = 100,
+    rowHeight = 40,
+  }: {
+    holdingBottom: boolean;
+    nodes: TimelineNode[];
+    offset?: number;
+    viewport?: number;
+    rowHeight?: number;
+  }) {
+    const stick = {
+      isSticky: holdingBottom,
+      escapedFromLock: !holdingBottom,
+      isAtBottom: holdingBottom,
+      pauseAutoScroll: vi.fn(() => vi.fn()),
+      observe: vi.fn(),
+      markAtBottom: vi.fn(),
+      requestBottom: vi.fn(),
+      autoScrollInFlight: () => false,
+    } as unknown as UseStickToBottomController;
+    return createTimelineWindowAnchor({
+      getPane: () => ({ switchGeneration: 1 }) as ThreadPane,
+      stick,
+      getListRef: () =>
+        ({
+          scrollToIndex: vi.fn(),
+          getScrollOffset: () => offset,
+          getViewportSize: () => viewport,
+          findItemIndex: (px: number) => Math.min(Math.floor(px / rowHeight), nodes.length - 1),
+          getItemOffset: (index: number) => index * rowHeight,
+        }) as unknown as TimelineVirtualizerHandle,
+      getScrollEl: () => document.createElement('div'),
+      getRevealedNodes: () => nodes,
+      findTimelineNodeIndex: () => 0,
+      saveScrollSnapshot: vi.fn(),
+      nextRestoreToken: () => 1,
+      isRestoreTokenCurrent: () => true,
+    });
+  }
+
+  it('is null while the reader holds the bottom', () => {
+    const anchor = harness({ holdingBottom: true, nodes: [leaf('a'), leaf('b')] });
+    expect(anchor.visibleTimelineItemIds()).toBeNull();
+  });
+
+  it('reports every node the viewport spans, run members included', () => {
+    const nodes = [leaf('a'), run('r', ['b', 'c', 'd']), leaf('e'), leaf('f')];
+    // offset 40..140 covers nodes 1..3 (rows are 40px).
+    const anchor = harness({ holdingBottom: false, nodes, offset: 40, viewport: 100 });
+    expect([...anchor.visibleTimelineItemIds()!].sort()).toEqual(['b', 'c', 'd', 'e', 'f']);
+  });
+
+  it('keeps an offset on a row boundary from claiming the row below', () => {
+    const nodes = [leaf('a'), leaf('b'), leaf('c')];
+    // offset 0..80 ends exactly at node 2's top: only a and b are visible.
+    const anchor = harness({ holdingBottom: false, nodes, offset: 0, viewport: 80 });
+    expect([...anchor.visibleTimelineItemIds()!].sort()).toEqual(['a', 'b']);
+  });
+});
+
 describe('preserveViewportBottom — takeover priority', () => {
   it("an unasked transaction's yield stands down for the engaged program", async () => {
     const h = makeHarness({ autoScrollInFlight: true });

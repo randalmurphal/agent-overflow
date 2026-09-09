@@ -134,11 +134,12 @@ The prune migration itself:
   A pane with no registered controller (no mounted timeline) prunes
   immediately as today. No reader to disturb.
 - The streaming append path and its active-turn defer are unchanged.
-- `ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS` is unchanged and remains
-  the only force: a run of back-to-back turns that never reaches quiet
-  keeps deferring until the ceiling forces the prune mid-stream, exactly
-  as a runaway single turn does today. (Measured headroom: 800 → 1600 is
-  many turns; any quiet gap drains the pending prune.)
+- `ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS` ends the settle deferral:
+  a run of back-to-back turns that never reaches quiet keeps deferring
+  until the ceiling runs the cut mid-stream, exactly as a runaway single
+  turn does. The cut still keeps every visible row and is deferred if the
+  viewport guard vetoes it. (Headroom: the cap to the ceiling is many
+  turns; any quiet gap drains the pending cut.)
 
 ### 3. Provenance: evidence-based clamp detection
 

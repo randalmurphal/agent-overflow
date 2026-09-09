@@ -12,8 +12,13 @@ import { makeItem, makeThread, stubScrollController } from '../../test/helpers/c
 import { installThreadPaneTestEnv } from '../../test/helpers/threadPane';
 import {
   ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS,
+  ACTIVE_TIMELINE_WINDOW_MAX_ITEMS,
   ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
 } from './threadPaneShared';
+
+const MAX = ACTIVE_TIMELINE_WINDOW_MAX_ITEMS;
+const TARGET = ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS;
+const CEILING = ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS;
 import { MAX_CACHED_SNAPSHOT_CHARS } from './threadItemCache';
 
 describe('subagent fold', () => {
@@ -369,7 +374,7 @@ describe('subagent fold', () => {
       const pane = createThreadPane();
       const initial = [
         launchItem('fold-prune', { turnIndex: 0 }),
-        ...Array.from({ length: 799 }, (_, index) =>
+        ...Array.from({ length: MAX - 1 }, (_, index) =>
           makeItem({
             id: `t${index + 1}`,
             threadId: 'fold-prune',
@@ -381,7 +386,7 @@ describe('subagent fold', () => {
       setBindingMock('ListThreadSliceAround', async () => ({
         items: initial,
         oldestTurnIndex: 0,
-        newestTurnIndex: 799,
+        newestTurnIndex: MAX - 1,
         hasMore: false,
         hasMoreOlder: false,
         hasMoreNewer: false,
@@ -391,10 +396,10 @@ describe('subagent fold', () => {
       pane.upsertItem(childItem('fold-prune', { turnIndex: 0 }));
       expect(pane.subagentLiveAggregate('anchor')?.evictedCount).toBe(1);
       // Folded children no longer count toward the window cap.
-      expect(pane.items).toHaveLength(800);
+      expect(pane.items).toHaveLength(MAX);
 
       pane.upsertItem(
-        makeItem({ id: 't800', threadId: 'fold-prune', turnIndex: 800, itemIndex: 0 }),
+        makeItem({ id: `t${MAX}`, threadId: 'fold-prune', turnIndex: MAX, itemIndex: 0 }),
       );
 
       expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
@@ -545,7 +550,7 @@ describe('subagent fold', () => {
 
     it('defers the recent-window prune while a turn is active and runs it on settle', async () => {
       const pane = createThreadPane();
-      const initial = Array.from({ length: 800 }, (_, index) =>
+      const initial = Array.from({ length: MAX }, (_, index) =>
         makeItem({
           id: `t${index}`,
           threadId: 'fold-defer',
@@ -556,24 +561,24 @@ describe('subagent fold', () => {
       setBindingMock('ListThreadSliceAround', async () => ({
         items: initial,
         oldestTurnIndex: 0,
-        newestTurnIndex: 799,
+        newestTurnIndex: MAX - 1,
         hasMore: false,
         hasMoreOlder: false,
         hasMoreNewer: false,
       }));
       await pane.switchThread(makeThread({ id: 'fold-defer' }));
-      pane.setActiveTurn({ turnId: 'turn-800', turnIndex: 800, startedAt: 1 });
+      pane.setActiveTurn({ turnId: 'turn-800', turnIndex: MAX, startedAt: 1 });
 
       // Mid-turn growth past the cap: a head-drop here repaints the
       // visible timeline (incident 2026-06-10), so the prune waits.
       pane.upsertItem(
-        makeItem({ id: 't800', threadId: 'fold-defer', turnIndex: 800, itemIndex: 0 }),
+        makeItem({ id: `t${MAX}`, threadId: 'fold-defer', turnIndex: MAX, itemIndex: 0 }),
       );
-      expect(pane.items).toHaveLength(801);
+      expect(pane.items).toHaveLength(MAX + 1);
 
       pane.settleTurn({
         turnId: 'turn-800',
-        turnIndex: 800,
+        turnIndex: MAX,
         startedAt: 1,
         completedAt: 2,
         stopReason: 'end_turn',
@@ -584,13 +589,13 @@ describe('subagent fold', () => {
       });
 
       expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
-      expect(pane.items[0].id).toBe('t301');
+      expect(pane.items[0].id).toBe(`t${MAX + 1 - TARGET}`);
       expect(pane.hasMoreHistory).toBe(true);
     });
 
     it('records the settle prune as pending and runs it inside the transaction on retry', async () => {
       const pane = createThreadPane();
-      const initial = Array.from({ length: 800 }, (_, index) =>
+      const initial = Array.from({ length: MAX }, (_, index) =>
         makeItem({
           id: `t${index}`,
           threadId: 'prune-rebase',
@@ -601,18 +606,18 @@ describe('subagent fold', () => {
       setBindingMock('ListThreadSliceAround', async () => ({
         items: initial,
         oldestTurnIndex: 0,
-        newestTurnIndex: 799,
+        newestTurnIndex: MAX - 1,
         hasMore: false,
         hasMoreOlder: false,
         hasMoreNewer: false,
       }));
       await pane.switchThread(makeThread({ id: 'prune-rebase' }));
-      pane.setActiveTurn({ turnId: 'turn-800', turnIndex: 800, startedAt: 1 });
+      pane.setActiveTurn({ turnId: 'turn-800', turnIndex: MAX, startedAt: 1 });
       pane.upsertItem(
         makeItem({
-          id: 't800',
+          id: `t${MAX}`,
           threadId: 'prune-rebase',
-          turnIndex: 800,
+          turnIndex: MAX,
           itemIndex: 0,
         }),
       );
@@ -620,8 +625,8 @@ describe('subagent fold', () => {
       let itemCountDuringGuard = 0;
       const canPreserveTimelineWindow = vi.fn((keepsItem: (itemId: string) => boolean) => {
         itemCountDuringGuard = pane.items.length;
-        expect(keepsItem('t300')).toBe(false);
-        expect(keepsItem('t301')).toBe(true);
+        expect(keepsItem(`t${MAX - TARGET}`)).toBe(false);
+        expect(keepsItem(`t${MAX + 1 - TARGET}`)).toBe(true);
         return true;
       });
       pane.attachScrollController(
@@ -630,7 +635,7 @@ describe('subagent fold', () => {
 
       pane.settleTurn({
         turnId: 'turn-800',
-        turnIndex: 800,
+        turnIndex: MAX,
         startedAt: 1,
         completedAt: 2,
         stopReason: 'end_turn',
@@ -645,21 +650,21 @@ describe('subagent fold', () => {
       // as pending for the quiet scheduler instead of repainting the
       // head-drop into the reveal drain's glide.
       expect(canPreserveTimelineWindow).not.toHaveBeenCalled();
-      expect(pane.items).toHaveLength(801);
+      expect(pane.items).toHaveLength(MAX + 1);
       expect(pane.hasDeferredRecentWindowPrune).toBe(true);
 
       pane.retryDeferredRecentWindowPrune();
 
       expect(canPreserveTimelineWindow).toHaveBeenCalledTimes(1);
-      expect(itemCountDuringGuard).toBe(801);
+      expect(itemCountDuringGuard).toBe(MAX + 1);
       expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
-      expect(pane.items[0].id).toBe('t301');
+      expect(pane.items[0].id).toBe(`t${MAX + 1 - TARGET}`);
       expect(pane.hasDeferredRecentWindowPrune).toBe(false);
     });
 
     it('a retry landing while the next turn already streams keeps the prune pending', async () => {
       const pane = createThreadPane();
-      const initial = Array.from({ length: 800 }, (_, index) =>
+      const initial = Array.from({ length: MAX }, (_, index) =>
         makeItem({
           id: `t${index}`,
           threadId: 'prune-next-turn',
@@ -670,18 +675,18 @@ describe('subagent fold', () => {
       setBindingMock('ListThreadSliceAround', async () => ({
         items: initial,
         oldestTurnIndex: 0,
-        newestTurnIndex: 799,
+        newestTurnIndex: MAX - 1,
         hasMore: false,
         hasMoreOlder: false,
         hasMoreNewer: false,
       }));
       await pane.switchThread(makeThread({ id: 'prune-next-turn' }));
-      pane.setActiveTurn({ turnId: 'turn-800', turnIndex: 800, startedAt: 1 });
+      pane.setActiveTurn({ turnId: 'turn-800', turnIndex: MAX, startedAt: 1 });
       pane.upsertItem(
         makeItem({
-          id: 't800',
+          id: `t${MAX}`,
           threadId: 'prune-next-turn',
-          turnIndex: 800,
+          turnIndex: MAX,
           itemIndex: 0,
         }),
       );
@@ -693,7 +698,7 @@ describe('subagent fold', () => {
 
       pane.settleTurn({
         turnId: 'turn-800',
-        turnIndex: 800,
+        turnIndex: MAX,
         startedAt: 1,
         completedAt: 2,
         stopReason: 'end_turn',
@@ -708,16 +713,16 @@ describe('subagent fold', () => {
       // retry must stand down (mid-stream head-drops are banned —
       // incident 2026-06-10) but keep the debt recorded for the next
       // quiet window.
-      pane.setActiveTurn({ turnId: 'turn-801', turnIndex: 801, startedAt: 3 });
+      pane.setActiveTurn({ turnId: 'turn-801', turnIndex: MAX + 1, startedAt: 3 });
       pane.retryDeferredRecentWindowPrune();
 
       expect(canPreserveTimelineWindow).not.toHaveBeenCalled();
-      expect(pane.items).toHaveLength(801);
+      expect(pane.items).toHaveLength(MAX + 1);
       expect(pane.hasDeferredRecentWindowPrune).toBe(true);
 
       pane.settleTurn({
         turnId: 'turn-801',
-        turnIndex: 801,
+        turnIndex: MAX + 1,
         startedAt: 3,
         completedAt: 4,
         stopReason: 'end_turn',
@@ -735,7 +740,7 @@ describe('subagent fold', () => {
 
     it('defers a recent-window prune when the scroll-controller cannot preserve the visible anchor', async () => {
       const pane = createThreadPane();
-      const initial = Array.from({ length: 800 }, (_, index) =>
+      const initial = Array.from({ length: MAX }, (_, index) =>
         makeItem({
           id: `t${index}`,
           threadId: 'prune-veto',
@@ -746,18 +751,18 @@ describe('subagent fold', () => {
       setBindingMock('ListThreadSliceAround', async () => ({
         items: initial,
         oldestTurnIndex: 0,
-        newestTurnIndex: 799,
+        newestTurnIndex: MAX - 1,
         hasMore: false,
         hasMoreOlder: false,
         hasMoreNewer: false,
       }));
       await pane.switchThread(makeThread({ id: 'prune-veto' }));
-      pane.setActiveTurn({ turnId: 'turn-800', turnIndex: 800, startedAt: 1 });
+      pane.setActiveTurn({ turnId: 'turn-800', turnIndex: MAX, startedAt: 1 });
       pane.upsertItem(
         makeItem({
-          id: 't800',
+          id: `t${MAX}`,
           threadId: 'prune-veto',
-          turnIndex: 800,
+          turnIndex: MAX,
           itemIndex: 0,
         }),
       );
@@ -769,7 +774,7 @@ describe('subagent fold', () => {
 
       pane.settleTurn({
         turnId: 'turn-800',
-        turnIndex: 800,
+        turnIndex: MAX,
         startedAt: 1,
         completedAt: 2,
         stopReason: 'end_turn',
@@ -786,7 +791,7 @@ describe('subagent fold', () => {
       pane.retryDeferredRecentWindowPrune();
 
       expect(canPreserveTimelineWindow).toHaveBeenCalledTimes(1);
-      expect(pane.items).toHaveLength(801);
+      expect(pane.items).toHaveLength(MAX + 1);
       expect(pane.items[0].id).toBe('t0');
       expect(pane.hasMoreHistory).toBe(false);
       expect(pane.hasDeferredRecentWindowPrune).toBe(true);
@@ -800,14 +805,14 @@ describe('subagent fold', () => {
 
       expect(retryPreserve).toHaveBeenCalledTimes(1);
       expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
-      expect(pane.items[0].id).toBe('t301');
+      expect(pane.items[0].id).toBe(`t${MAX + 1 - TARGET}`);
       expect(pane.hasMoreHistory).toBe(true);
       expect(pane.hasDeferredRecentWindowPrune).toBe(false);
     });
 
     it('keeps prune mutation ownership in the pane after the viewport guard approves it', async () => {
       const pane = createThreadPane();
-      const initial = Array.from({ length: 800 }, (_, index) =>
+      const initial = Array.from({ length: MAX }, (_, index) =>
         makeItem({
           id: `t${index}`,
           threadId: 'prune-missing-run',
@@ -818,18 +823,18 @@ describe('subagent fold', () => {
       setBindingMock('ListThreadSliceAround', async () => ({
         items: initial,
         oldestTurnIndex: 0,
-        newestTurnIndex: 799,
+        newestTurnIndex: MAX - 1,
         hasMore: false,
         hasMoreOlder: false,
         hasMoreNewer: false,
       }));
       await pane.switchThread(makeThread({ id: 'prune-missing-run' }));
-      pane.setActiveTurn({ turnId: 'turn-800', turnIndex: 800, startedAt: 1 });
+      pane.setActiveTurn({ turnId: 'turn-800', turnIndex: MAX, startedAt: 1 });
       pane.upsertItem(
         makeItem({
-          id: 't800',
+          id: `t${MAX}`,
           threadId: 'prune-missing-run',
-          turnIndex: 800,
+          turnIndex: MAX,
           itemIndex: 0,
         }),
       );
@@ -841,7 +846,7 @@ describe('subagent fold', () => {
 
       pane.settleTurn({
         turnId: 'turn-800',
-        turnIndex: 800,
+        turnIndex: MAX,
         startedAt: 1,
         completedAt: 2,
         stopReason: 'end_turn',
@@ -856,14 +861,14 @@ describe('subagent fold', () => {
 
       expect(canPreserveTimelineWindow).toHaveBeenCalledTimes(1);
       expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
-      expect(pane.items[0].id).toBe('t301');
+      expect(pane.items[0].id).toBe(`t${MAX + 1 - TARGET}`);
       expect(pane.hasMoreHistory).toBe(true);
       expect(pane.hasDeferredRecentWindowPrune).toBe(false);
     });
 
     it('prunes mid-turn anyway once the hard ceiling is exceeded', async () => {
       const pane = createThreadPane();
-      const initial = Array.from({ length: 800 }, (_, index) =>
+      const initial = Array.from({ length: MAX }, (_, index) =>
         makeItem({
           id: `t${index}`,
           threadId: 'fold-ceiling',
@@ -874,39 +879,40 @@ describe('subagent fold', () => {
       setBindingMock('ListThreadSliceAround', async () => ({
         items: initial,
         oldestTurnIndex: 0,
-        newestTurnIndex: 799,
+        newestTurnIndex: MAX - 1,
         hasMore: false,
         hasMoreOlder: false,
         hasMoreNewer: false,
       }));
       await pane.switchThread(makeThread({ id: 'fold-ceiling' }));
-      pane.setActiveTurn({ turnId: 'turn-x', turnIndex: 800, startedAt: 1 });
+      pane.setActiveTurn({ turnId: 'turn-x', turnIndex: MAX, startedAt: 1 });
 
       // Grow to exactly the ceiling — still deferred.
       pane.upsertItems(
-        Array.from({ length: 800 }, (_, index) =>
+        Array.from({ length: CEILING - MAX }, (_, index) =>
           makeItem({
-            id: `t${800 + index}`,
+            id: `t${MAX + index}`,
             threadId: 'fold-ceiling',
-            turnIndex: 800 + index,
+            turnIndex: MAX + index,
             itemIndex: 0,
           }),
         ),
       );
       expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS);
 
-      // One more row breaches the ceiling: memory wins over the repaint.
+      // One more row breaches the ceiling: the cut no longer waits for
+      // settle. No controller is attached, so the tail is the anchor.
       pane.upsertItem(
-        makeItem({ id: 't1600', threadId: 'fold-ceiling', turnIndex: 1600, itemIndex: 0 }),
+        makeItem({ id: `t${CEILING}`, threadId: 'fold-ceiling', turnIndex: CEILING, itemIndex: 0 }),
       );
       expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
-      expect(pane.items.at(-1)?.id).toBe('t1600');
+      expect(pane.items.at(-1)?.id).toBe(`t${CEILING}`);
       expect(pane.hasMoreHistory).toBe(true);
     });
 
-    it('forces the hard-ceiling prune when visible-anchor preservation vetoes it', async () => {
+    it('keeps a ceiling-breaching window whole when the viewport guard vetoes the cut', async () => {
       const pane = createThreadPane();
-      const initial = Array.from({ length: 800 }, (_, index) =>
+      const initial = Array.from({ length: MAX }, (_, index) =>
         makeItem({
           id: `t${index}`,
           threadId: 'fold-ceiling-veto',
@@ -917,13 +923,13 @@ describe('subagent fold', () => {
       setBindingMock('ListThreadSliceAround', async () => ({
         items: initial,
         oldestTurnIndex: 0,
-        newestTurnIndex: 799,
+        newestTurnIndex: MAX - 1,
         hasMore: false,
         hasMoreOlder: false,
         hasMoreNewer: false,
       }));
       await pane.switchThread(makeThread({ id: 'fold-ceiling-veto' }));
-      pane.setActiveTurn({ turnId: 'turn-x', turnIndex: 800, startedAt: 1 });
+      pane.setActiveTurn({ turnId: 'turn-x', turnIndex: MAX, startedAt: 1 });
 
       const canPreserveTimelineWindow = vi.fn(() => false);
       pane.attachScrollController(
@@ -931,38 +937,51 @@ describe('subagent fold', () => {
       );
 
       pane.upsertItems(
-        Array.from({ length: 800 }, (_, index) =>
+        Array.from({ length: CEILING - MAX }, (_, index) =>
           makeItem({
-            id: `t${800 + index}`,
+            id: `t${MAX + index}`,
             threadId: 'fold-ceiling-veto',
-            turnIndex: 800 + index,
+            turnIndex: MAX + index,
             itemIndex: 0,
           }),
         ),
       );
       expect(canPreserveTimelineWindow).not.toHaveBeenCalled();
-      expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS);
+      expect(pane.items).toHaveLength(CEILING);
 
       pane.upsertItem(
         makeItem({
-          id: 't1600',
+          id: `t${CEILING}`,
           threadId: 'fold-ceiling-veto',
-          turnIndex: 1600,
+          turnIndex: CEILING,
           itemIndex: 0,
         }),
       );
 
+      // The ceiling ends the settle deferral, not the visible-row rule: a
+      // cut the viewport cannot survive stays pending at any count.
       expect(canPreserveTimelineWindow).toHaveBeenCalledTimes(1);
-      expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
-      expect(pane.items[0].id).toBe('t1101');
-      expect(pane.items.at(-1)?.id).toBe('t1600');
+      expect(pane.items).toHaveLength(CEILING + 1);
+      expect(pane.items[0].id).toBe('t0');
+      expect(pane.hasMoreHistory).toBe(false);
+      expect(pane.hasDeferredRecentWindowPrune).toBe(true);
+
+      // Once the viewport can hold its rows through the cut, the retry
+      // applies it around the tail.
+      pane.attachScrollController(
+        stubScrollController({ canPreserveTimelineWindow: () => true }),
+      );
+      pane.retryDeferredRecentWindowPrune();
+      expect(pane.items).toHaveLength(TARGET);
+      expect(pane.items[0].id).toBe(`t${CEILING + 1 - TARGET}`);
+      expect(pane.items.at(-1)?.id).toBe(`t${CEILING}`);
       expect(pane.hasMoreHistory).toBe(true);
       expect(pane.hasDeferredRecentWindowPrune).toBe(false);
     });
 
-    it('forces the hard-ceiling prune after a settled deferred prune keeps growing', async () => {
+    it('a settled deferred cut keeps waiting past the ceiling while the viewport guard vetoes it', async () => {
       const pane = createThreadPane();
-      const initial = Array.from({ length: 800 }, (_, index) =>
+      const initial = Array.from({ length: MAX }, (_, index) =>
         makeItem({
           id: `t${index}`,
           threadId: 'settled-ceiling-veto',
@@ -973,18 +992,18 @@ describe('subagent fold', () => {
       setBindingMock('ListThreadSliceAround', async () => ({
         items: initial,
         oldestTurnIndex: 0,
-        newestTurnIndex: 799,
+        newestTurnIndex: MAX - 1,
         hasMore: false,
         hasMoreOlder: false,
         hasMoreNewer: false,
       }));
       await pane.switchThread(makeThread({ id: 'settled-ceiling-veto' }));
-      pane.setActiveTurn({ turnId: 'turn-800', turnIndex: 800, startedAt: 1 });
+      pane.setActiveTurn({ turnId: 'turn-800', turnIndex: MAX, startedAt: 1 });
       pane.upsertItem(
         makeItem({
-          id: 't800',
+          id: `t${MAX}`,
           threadId: 'settled-ceiling-veto',
-          turnIndex: 800,
+          turnIndex: MAX,
           itemIndex: 0,
         }),
       );
@@ -996,7 +1015,7 @@ describe('subagent fold', () => {
 
       pane.settleTurn({
         turnId: 'turn-800',
-        turnIndex: 800,
+        turnIndex: MAX,
         startedAt: 1,
         completedAt: 2,
         stopReason: 'end_turn',
@@ -1006,38 +1025,39 @@ describe('subagent fold', () => {
         errorMessage: '',
       });
       expect(canPreserveTimelineWindow).not.toHaveBeenCalled();
-      expect(pane.items).toHaveLength(801);
+      expect(pane.items).toHaveLength(MAX + 1);
       expect(pane.hasDeferredRecentWindowPrune).toBe(true);
 
       pane.upsertItem(
         makeItem({
-          id: 't801',
+          id: `t${MAX + 1}`,
           threadId: 'settled-ceiling-veto',
-          turnIndex: 801,
+          turnIndex: MAX + 1,
           itemIndex: 0,
         }),
       );
       expect(canPreserveTimelineWindow).not.toHaveBeenCalled();
-      expect(pane.items).toHaveLength(802);
+      expect(pane.items).toHaveLength(MAX + 2);
       expect(pane.hasDeferredRecentWindowPrune).toBe(true);
 
       pane.upsertItems(
-        Array.from({ length: 799 }, (_, index) =>
+        Array.from({ length: CEILING - MAX - 1 }, (_, index) =>
           makeItem({
-            id: `t${802 + index}`,
+            id: `t${MAX + 2 + index}`,
             threadId: 'settled-ceiling-veto',
-            turnIndex: 802 + index,
+            turnIndex: MAX + 2 + index,
             itemIndex: 0,
           }),
         ),
       );
 
+      // Past the ceiling the cut is attempted on the append path and the
+      // guard vetoes it: the rows stay, the debt stays recorded.
       expect(canPreserveTimelineWindow).toHaveBeenCalledTimes(1);
-      expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
-      expect(pane.items[0].id).toBe('t1101');
-      expect(pane.items.at(-1)?.id).toBe('t1600');
-      expect(pane.hasMoreHistory).toBe(true);
-      expect(pane.hasDeferredRecentWindowPrune).toBe(false);
+      expect(pane.items).toHaveLength(CEILING + 1);
+      expect(pane.items[0].id).toBe('t0');
+      expect(pane.hasMoreHistory).toBe(false);
+      expect(pane.hasDeferredRecentWindowPrune).toBe(true);
     });
   });
 });

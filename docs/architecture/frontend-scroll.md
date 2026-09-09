@@ -297,9 +297,22 @@ and the initial slice under one `Promise.allSettled`.
 There is no second wider-window load on switch. Older history pages in
 lazily through `pane.loadOlder()` when the user scrolls near the top, with
 the manual "Load older messages" button as the explicit fallback. The
-bottom edge mirrors this: when the window has been pruned away from the
+bottom edge mirrors this: when the window has been cut away from the
 tail (`hasMoreNewer`), scrolling near the bottom pages forward through
 `pane.loadNewer()`, with the "Load newer / Jump to latest" control as the
+fallback.
+
+The older probe fires from two sources. The scroll callback probes on
+every offset while the scroller is long enough for the top and bottom
+zones to be disjoint (`autoLoadZonesDisjoint`); in a shorter window, where
+an offset alone cannot say which edge the reader is heading for (a window
+of collapsed runs: soak incident 2026-08-25, where any scroll event fired
+`loadOlder` under a bottom-held live tail), only a decreasing offset
+probes. An upward gesture (wheel up, ArrowUp/PageUp/Home, a touch drag
+down the screen) probes directly through `probeOlderOnUpwardGesture`,
+regardless of geometry: at scrollTop 0 no scroll event exists to carry
+the probe, and the short-window case is exactly where history matters.
+The newer probe keeps the geometry gate; the jump-to-latest control is its
 fallback.
 
 Both auto-load triggers share one direction-agnostic gate
@@ -349,11 +362,12 @@ the review pane's collapse/expand, not just same-length reorders.
 
 ## Load Paging (keyed mutation inference)
 
-`loadOlder` grows the window at the head and never drops the tail; a
-successful page also sets the pane's `userPinnedHistory` latch (below).
-`loadNewer` grows the tail and may prune the head, but only while the
-window is unpinned. When a paired prune does fire, both mutations commit
-before one final Svelte flush. The virtualizer
+`loadOlder` grows the window at the head and, past
+`ACTIVE_TIMELINE_WINDOW_MAX_ITEMS`, cuts the tail in the same commit
+(`hasMoreNewer` offers it back). `loadNewer` mirrors this: it grows the
+tail and cuts the head. Both cuts keep the page just fetched and every
+visible row (**Live Window Bounds** below), and the paired mutations
+commit before one final Svelte flush. The virtualizer
 compares the previous and next key sequences before exposing render data and
 classifies the combined change as head, tail, unchanged, or a general keyed
 mutation. Callers cannot label a mutation or leave a mode bit armed.
@@ -369,76 +383,72 @@ signature (`utils/virtual/priors.ts`), not a position, so there is no
 index-keyed prior state left to shift. Duplicate keys fail at the virtualizer
 boundary instead of corrupting the measurement map.
 
-`loadNewer` applies its paired prune directly (the dropped end is
-always opposite the reading viewport, so there is nothing to veto or restore).
-The streaming / settle prune keeps an explicit anchor-survival guard
-(`canPreserveTimelineWindow`, below) because it can fire under a
-reading viewport where the prune may remove the row under the reader. The pane
-owns and commits the retention mutation. The viewport only answers whether
-the visible anchor survives. `<TimelineVirtualizer>` independently classifies
+The paging cuts apply directly (the dropped end is always opposite the
+reading viewport, so there is nothing to veto or restore). The streaming /
+settle cut keeps an explicit anchor-survival guard
+(`canPreserveTimelineWindow`, below) because it fires under any viewport.
+The pane owns and commits the retention mutation. The viewport answers
+which rows it shows and whether the visible anchor survives.
+`<TimelineVirtualizer>` independently classifies
 the filtered/grouped `revealedNodes`, so a Read group, notification filter,
 subagent group, or reveal boundary cannot make pane-level direction metadata
 corrupt the rendered size store.
 
 ## Live Window Bounds
 
-The streaming append path caps the loaded window
-(`ACTIVE_TIMELINE_WINDOW_MAX_ITEMS`, pruning back to
-`ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS`). Two rules bound every cap and
-cut in `threadTimelineWindow.svelte.ts`:
+The loaded window is a bounded range around the reader. Past
+`ACTIVE_TIMELINE_WINDOW_MAX_ITEMS` top-level rows a cut keeps
+`ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS`, and every path that grows the
+window (streaming append, settle, `loadOlder`, `loadNewer`) cuts through
+`keepWindowNearReader` in `threadTimelineWindow.svelte.ts`. Three rules
+bound every cut:
 
-- **Caps count top-level rows only**, and prune cuts select by an item's
+- **Caps count top-level rows only**, and cuts select by an item's
   top-level root, so children always travel with their anchor — the
   frontend half of the backend pagers' `topLevelItemsFilter` rule.
   Subagent children render inside their anchor's card (or the agent
   companion, whose held rows every cut also keeps), so counting them let
   a busy agent's invisible child mass force the prune into evicting the
-  visible conversation (incident 2026-08-31: one launch card left, and a
-  "Load older" whose pages the next prune cycle ate again).
-- **User paging pins the window** (`userPinnedHistory`): after a
-  successful `loadOlder` or a `loadUntilItem` recenter, no automatic
-  prune runs at all — history the reader explicitly loaded is never
-  taken back for a few MB of summary rows. The pin clears when the
-  window is rebuilt at a bounded size: thread switch, cache restore,
-  `loadRecentTail`.
+  visible conversation (incident 2026-08-31).
+- **Visible rows are kept whole.** The timeline reports every item the
+  viewport shows (`visibleTimelineItemIds`, members of collapsed runs and
+  groups included, null while holding the bottom), and the cut keeps that
+  range and spends the rest of the target on buffer. The policy decides
+  where the buffer goes: `oldest` (after `loadOlder`) keeps the head so
+  the page just fetched survives, `newest` (after `loadNewer`, and under a
+  bottom-held reader) keeps the tail, `centered` (the streaming cut under
+  a reader up in history) buffers both sides and drops the live tail,
+  which `hasMoreNewer` offers back through load-newer and jump-to-latest.
+  A cut that would still drop the row under the reader
+  (`canPreserveTimelineWindow`) is deferred at any count; nothing forces
+  it.
+- **A dropped edge is loadable again.** The commit sets `hasMoreHistory`
+  or `hasMoreNewer` for whichever side it dropped, so the rows are one
+  page away and the auto-load probes bring them back.
 
 A mounted timeline normally defers the
-prune to visual quiet because reconciling hundreds of rows is still expensive
-main-thread work. Correctness no longer depends on that timing. The
+cut to visual quiet because reconciling hundreds of rows is still expensive
+main-thread work. Correctness does not depend on that timing. The
 virtualizer keeps surviving rows on one stable mounted paint plane, preserves
 their local coordinates across keyed structural changes, and lets the plane
 origin absorb content-space relocation. The outer spacer changes document
-height without becoming the raster surface. This prevents the previous
-remove-all intermediate render. Surviving rows keep their raster even when
-the hard ceiling forces a prune during activity. If that ceiling removes the
-visible anchor, the resulting content replacement still has to paint and may
-jump, but it does not pass through an empty intermediate frame.
+height without becoming the raster surface, so there is no
+remove-all intermediate render.
 
 Wire settle is not the end of the visible
 stream: the reveal smoother keeps draining the tail for seconds after
-the turn completes, so a settle-time prune landed its flush, the most
+the turn completes, so a settle-time cut landed its flush, the most
 expensive in the app (78–186ms in the bug-report-20260801T214455Z
 traces), inside the glide the reader was watching. `settleTurn`
-therefore only *records* the prune as pending
+therefore only *records* the cut as pending
 (`settleRecentWindowPrune`) when a mounted timeline is behind the pane;
 the quiet scheduler (`timelineQuietWork.ts`) runs
 `retryDeferredRecentWindowPrune` once no glide is running or armed. A
-pane with no timeline (discussion surface, headless) prunes at settle
-directly.
-`ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS` is the memory backstop and
-the only force: back-to-back turns that never reach quiet keep deferring
-until the ceiling prunes mid-stream.
-
-The streaming / settle window prune goes through `MessageTimeline` when a
-timeline is mounted. The pane owns the window decision and mutation. The
-timeline contributes only the synchronous `canPreserveTimelineWindow` guard.
-Bottom intent is always preservable because the controller owns the resulting
-pin. Reading state is preservable when the first visible item survives. If a
-normal recent-window prune would drop that visible anchor,
-the pane defers it and retries when bottom intent returns instead of
-re-asking on every append. The hard ceiling is the only exception; it
-forces the prune even when anchor preservation vetoes the operation, and
-it is independent of provider turn state.
+pane with no timeline (discussion surface, headless) cuts at settle
+directly. The streaming append path defers the same way while a turn is
+active, until `ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS`, past which
+the cut runs mid-stream. The ceiling ends the deferral only; the
+visible-row rule holds at every count.
 
 Subagent child rows get a tighter bound than the window cap. Streaming
 children must live in `pane.items` (the delta pipeline applies only to

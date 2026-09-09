@@ -1632,17 +1632,80 @@ describe('scroll integration — auto-load-older trigger', () => {
     expect(loadOlder).not.toHaveBeenCalled();
   });
 
-  it('does not fire pane.loadOlder when the scroller is too short for disjoint zones', async () => {
-    // The giant-single-run incident (2026-08-25): 700 items collapse into a
-    // few nodes and ~150px of outer range, so the top and bottom trigger
-    // zones cover every offset simultaneously and ANY scroll event fired
-    // loadOlder — escaping bottom-follow and head-pruning the live tail.
-    // Auto-paging must stand down when range < 2x AUTO_LOAD_OFFSET_PX.
+  function shortScroller(container: HTMLElement): HTMLElement {
+    const scrollEl = container.querySelector(
+      '[data-testid="message-timeline-scroll"]',
+    ) as HTMLElement;
+    expect(scrollEl).not.toBeNull();
+    // Range 150 < 2x AUTO_LOAD_OFFSET_PX: the top and bottom zones overlap,
+    // so an offset alone cannot say which edge the reader is heading for.
+    Object.defineProperty(scrollEl, 'scrollTop', { configurable: true, get: () => 0, set: () => {} });
+    Object.defineProperty(scrollEl, 'scrollHeight', { configurable: true, get: () => 750 });
+    Object.defineProperty(scrollEl, 'clientHeight', { configurable: true, get: () => 600 });
+    return scrollEl;
+  }
+
+  async function shortScrollerPane() {
     const items = [makeItem({ id: 'a', turnIndex: 5, summary: 'a' })];
     const pane = await buildPane(undefined, items);
     Object.defineProperty(pane, 'hasMoreHistory', { configurable: true, get: () => true });
     Object.defineProperty(pane, 'loadingOlder', { configurable: true, get: () => false });
     Object.defineProperty(pane, 'oldestLoadedCursor', { configurable: true, get: () => ({ turnIndex: 5, itemIndex: 0 }) });
+    return pane;
+  }
+
+  it('does not fire pane.loadOlder from a directionless scroll event when the scroller is too short for disjoint zones', async () => {
+    // The giant-single-run incident (2026-08-25): 700 items collapse into a
+    // few nodes and ~150px of outer range, so the top and bottom trigger
+    // zones cover every offset simultaneously and ANY scroll event fired
+    // loadOlder — escaping bottom-follow and head-pruning the live tail.
+    // Without an upward move, a scroll event there carries no intent.
+    const pane = await shortScrollerPane();
+    const loadOlder = vi.spyOn(pane, 'loadOlder');
+
+    const { container } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    const scrollEl = shortScroller(container);
+    scrollEl.dispatchEvent(new Event('scroll', { bubbles: true }));
+    await tick();
+
+    expect(loadOlder).not.toHaveBeenCalled();
+  });
+
+  it('fires pane.loadOlder from an upward wheel when the scroller is too short for disjoint zones', async () => {
+    // A window whose rows collapse into a few runs is exactly where
+    // history matters, and it is also where the geometry gate stands
+    // down. Direction is the intent the geometry cannot express.
+    const pane = await shortScrollerPane();
+    const loadOlder = vi.spyOn(pane, 'loadOlder');
+
+    const { container } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    const scrollEl = shortScroller(container);
+    scrollEl.dispatchEvent(new WheelEvent('wheel', { deltaY: -40, bubbles: true }));
+    await tick();
+
+    expect(loadOlder).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not fire pane.loadOlder from a downward wheel in a short scroller', async () => {
+    const pane = await shortScrollerPane();
+    const loadOlder = vi.spyOn(pane, 'loadOlder');
+
+    const { container } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    const scrollEl = shortScroller(container);
+    scrollEl.dispatchEvent(new WheelEvent('wheel', { deltaY: 40, bubbles: true }));
+    await tick();
+
+    expect(loadOlder).not.toHaveBeenCalled();
+  });
+
+  it('fires pane.loadOlder from an upward wheel at scrollTop 0 without any scroll event', async () => {
+    // Parked at the very top there is no scroll event to carry the
+    // probe; the wheel itself is the trigger, or the reader can never
+    // page further back from a stop.
+    const pane = await shortScrollerPane();
     const loadOlder = vi.spyOn(pane, 'loadOlder');
 
     const { container } = render(MessageTimeline, { props: { pane } });
@@ -1651,12 +1714,27 @@ describe('scroll integration — auto-load-older trigger', () => {
       '[data-testid="message-timeline-scroll"]',
     ) as HTMLElement;
     Object.defineProperty(scrollEl, 'scrollTop', { configurable: true, get: () => 0, set: () => {} });
-    Object.defineProperty(scrollEl, 'scrollHeight', { configurable: true, get: () => 750 });
+    Object.defineProperty(scrollEl, 'scrollHeight', { configurable: true, get: () => 3000 });
     Object.defineProperty(scrollEl, 'clientHeight', { configurable: true, get: () => 600 });
-    scrollEl.dispatchEvent(new Event('scroll', { bubbles: true }));
+    scrollEl.dispatchEvent(new WheelEvent('wheel', { deltaY: -40, bubbles: true }));
     await tick();
 
+    expect(loadOlder).toHaveBeenCalledTimes(1);
+  });
+
+  it('fires pane.loadOlder from ArrowUp and PageUp, not from ArrowDown', async () => {
+    const pane = await shortScrollerPane();
+    const loadOlder = vi.spyOn(pane, 'loadOlder');
+
+    const { container } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    const scrollEl = shortScroller(container);
+    scrollEl.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    await tick();
     expect(loadOlder).not.toHaveBeenCalled();
+    scrollEl.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    await tick();
+    expect(loadOlder).toHaveBeenCalledTimes(1);
   });
 
   it('does not fire pane.loadOlder while a load is already in flight', async () => {

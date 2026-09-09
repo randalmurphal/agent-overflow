@@ -1,9 +1,10 @@
 // Timeline viewport guards and anchored height transactions.
 //
-// `canPreserveTimelineWindow` is the read-only seam used by recent-window
-// retention. The pane keeps mutation ownership. The viewport only vetoes a
-// normal prune when it would remove the row under the reader. The virtualizer
-// handles coordinate preservation for surviving keyed rows.
+// `canPreserveTimelineWindow` and `visibleTimelineItemIds` are the read-only
+// seams used by window cuts. The pane keeps mutation ownership: a cut keeps
+// every visible row and buffers around them, and the viewport vetoes any cut
+// that would still remove the row under the reader. The virtualizer handles
+// coordinate preservation for surviving keyed rows.
 //
 // `preserveViewportBottom` runs a reader-requested height change, then
 // collapsing or expanding — and holds the BOTTOM, so the change opens upward
@@ -23,7 +24,7 @@ import type {
   UseStickToBottomController,
 } from '../../utils/scroll/index.svelte';
 import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
-import type { TimelineNode } from '../../utils/subagentGrouping';
+import { collectTimelineNodeItemIds, type TimelineNode } from '../../utils/subagentGrouping';
 import {
   captureTimelineAnchor,
   captureTimelineTailAnchor,
@@ -51,6 +52,7 @@ export interface TimelineWindowAnchorOptions {
 
 export interface TimelineWindowAnchor {
   canPreserveTimelineWindow(keepsItem: (itemId: string) => boolean): boolean;
+  visibleTimelineItemIds(): ReadonlySet<string> | null;
   preserveViewportBottom(change: () => void, opts?: PreserveViewportBottomOptions): void;
 }
 
@@ -75,6 +77,30 @@ export function createTimelineWindowAnchor(
       { clampIndex: true },
     );
     return anchor !== null && keepsItem(anchor.itemId);
+  }
+
+  // Every item the viewport shows, run and group members included. Null
+  // while holding the bottom: the tail is the anchor there, and a cut
+  // keeps the newest rows without naming any.
+  function visibleTimelineItemIds(): ReadonlySet<string> | null {
+    const currentListRef = options.getListRef();
+    const scrollEl = options.getScrollEl();
+    const revealedNodes = options.getRevealedNodes();
+    if (!currentListRef || !scrollEl || revealedNodes.length === 0) return null;
+    if (holdingBottom()) return null;
+    const offset = currentListRef.getScrollOffset();
+    const firstRaw = currentListRef.findItemIndex(offset);
+    if (firstRaw < 0) return null;
+    const lastIndex = revealedNodes.length - 1;
+    const first = Math.min(firstRaw, lastIndex);
+    const bottom = Math.max(0, offset + currentListRef.getViewportSize() - 1);
+    const lastRaw = currentListRef.findItemIndex(bottom);
+    const last = lastRaw < 0 ? lastIndex : Math.min(Math.max(lastRaw, first), lastIndex);
+    const ids = new Set<string>();
+    for (let index = first; index <= last; index += 1) {
+      collectTimelineNodeItemIds(revealedNodes[index], ids);
+    }
+    return ids;
   }
 
   // Every restore in this module preserves intent: scrollToIndex writes are
@@ -215,6 +241,7 @@ export function createTimelineWindowAnchor(
 
   return {
     canPreserveTimelineWindow,
+    visibleTimelineItemIds,
     preserveViewportBottom,
   };
 }
