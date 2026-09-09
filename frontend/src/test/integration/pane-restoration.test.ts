@@ -37,28 +37,18 @@ function savePaneLayout(
 
 /**
  * Stateful appStorage backend mock: the server bucket starts with the
- * given persisted layout and absorbs SetUIState / DeleteUIState writes,
- * so tests can assert on what actually landed durably.
+ * given persisted layout, so tests can assert on what the frontend then
+ * holds durably in its own storage.
  */
 function installUIStateWithPaneLayout(initialPaneLayout: unknown) {
   const entries: Record<string, string> = {
     paneLayout: JSON.stringify(initialPaneLayout),
   };
-  const setUIState = vi.fn(async (patch: Record<string, string>) => {
-    Object.assign(entries, patch);
-    return null;
-  });
   setBindingMock('GetUIState', async () => ({ ...entries }));
-  setBindingMock('SetUIState', setUIState);
-  setBindingMock('DeleteUIState', async (keys: string[]) => {
-    for (const key of keys) delete entries[key];
-    return null;
-  });
   return {
     get paneLayout(): PaneLayoutPersistedSettings {
       return JSON.parse(appStorageGet('paneLayout') ?? entries.paneLayout) as PaneLayoutPersistedSettings;
     },
-    setUIState,
   };
 }
 
@@ -132,7 +122,6 @@ describe('App integration - pane restoration', () => {
     await flush();
 
     window.dispatchEvent(new Event('pagehide'));
-    expect(uiState.setUIState).not.toHaveBeenCalled();
     expect(uiState.paneLayout).toEqual(savedLayout);
 
     resolveThreads([left]);
@@ -159,14 +148,13 @@ describe('App integration - pane restoration', () => {
     await waitFor(() => expect(rendered.getByTestId('pane-host-empty')).toBeInTheDocument());
     window.dispatchEvent(new Event('pagehide'));
 
-    expect(uiState.setUIState).not.toHaveBeenCalled();
     expect(uiState.paneLayout).toEqual(savedLayout);
   });
 
   it('does not rewrite pane layout on pagehide when there is no pending layout write', async () => {
     const left = makeThread({ id: 'left-thread', title: 'Left Thread' });
     installThreadMocks([left]);
-    const uiState = installUIStateWithPaneLayout(savePaneLayout([
+    installUIStateWithPaneLayout(savePaneLayout([
       { paneId: 'left', threadId: left.id, widthPx: 1 },
     ], 'left'));
 
@@ -174,7 +162,6 @@ describe('App integration - pane restoration', () => {
     await waitFor(() => expect(rendered.getByTestId('pane-host')).toBeInTheDocument());
     window.dispatchEvent(new Event('pagehide'));
 
-    expect(uiState.setUIState).not.toHaveBeenCalled();
   });
 
   it('drops saved panes whose threads are no longer available', async () => {
@@ -239,12 +226,10 @@ describe('App integration - pane restoration', () => {
       overflowPx: 0,
       zeroSum: true,
     });
-    expect(uiState.setUIState).not.toHaveBeenCalled();
 
     window.dispatchEvent(new Event('pagehide'));
 
     await waitFor(() => expect(appStorageGet('paneLayout')).not.toBe(beforeResize));
-    expect(uiState.setUIState).not.toHaveBeenCalled();
     expect(uiState.paneLayout.panes.map((pane) => pane.threadId)).toEqual([left.id, right.id]);
   });
 });

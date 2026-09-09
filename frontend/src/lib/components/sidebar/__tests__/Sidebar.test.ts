@@ -131,8 +131,6 @@ describe('<Sidebar> collapse toggle', () => {
     resetAppStorageForTest();
     resetSidebarLayoutForTest();
     resetKeybindingsStore();
-    setBindingMock('SetUIState', async () => null);
-    setBindingMock('DeleteUIState', async () => null);
     setBindingMock('ListThreads', async () => []);
     setBindingMock('ListProjects', async () => []);
   });

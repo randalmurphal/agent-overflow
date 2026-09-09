@@ -117,12 +117,10 @@ export function installAppDefaults(): void {
   // Usage surfaces (composer UsageChip, sidebar UsageFooter) fetch
   // ledger aggregates on mount. Default to no usage recorded.
   setBindingMock('GetUsageStats', async () => []);
-  // App boot hydrates the per-client appStorage bucket. Default to an
-  // empty bucket + no-op writes; tests that assert on persisted view
-  // state install their own stateful mocks.
+  // App boot reads the legacy per-client ui_state bucket once to migrate
+  // it. Default to an empty bucket; tests that assert on persisted view
+  // state install their own.
   setBindingMock('GetUIState', async () => ({}));
-  setBindingMock('SetUIState', async () => null);
-  setBindingMock('DeleteUIState', async () => null);
   // App boot warms the highlight schema-version + class-name tables
   // (warmHighlightTables) so history rows' persisted-span ingest can
   // seed synchronously.

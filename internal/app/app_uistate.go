@@ -32,22 +32,12 @@ import (
 // paired device, "client:<id>" for a screen on this backend's own local
 // page channel. "user:<id>" stays reserved for the user tier (§6).
 //
-// All three carry the `session` FLOOR rather than a settings scope: the table
-// is keyed per screen — remote clients (--connect, LAN browsers) own their own
-// buckets — and the bucket a call may touch is resolved from the connection
-// below, never from an argument. So the authority
-// is "you are a session reading and writing your own bucket", which is the one
-// thing the floor says. The rows are opaque strings, and a session reaches no
-// bucket but its own.
-
-// Wire-input bounds. Generous for real UI state (pane layout JSON is
-// the largest value today at well under 4 KB) while keeping a buggy
-// client from growing the table without limit.
-const (
-	maxUIStateBatch    = 128
-	maxUIStateKeyLen   = 128
-	maxUIStateValueLen = 32 * 1024
-)
+// GetUIState carries the `session` FLOOR rather than a settings scope: the
+// table is keyed per screen — remote clients (--connect, LAN browsers) own
+// their own buckets — and the bucket a call may touch is resolved from the
+// connection below, never from an argument. So the authority is "you are a
+// session reading your own bucket", which is the one thing the floor says.
+// The rows are opaque strings, and a session reaches no bucket but its own.
 
 // validClientID bounds every id that reaches a scope string — the client
 // id a screen declares on its upgrade URL and the device id a session
@@ -275,32 +265,6 @@ func (a *App) GetUIState(ctx context.Context) (map[string]string, error) {
 	return a.store.GetUIState(scope)
 }
 
-// SetUIState batch-upserts entries into the calling connection's bucket.
-//
-//ao:scope session
-//ao:route home
-func (a *App) SetUIState(ctx context.Context, entries map[string]string) error {
-	if a.store == nil {
-		return fmt.Errorf("ui state: store unavailable")
-	}
-	scope, err := a.uiStateScope(ctx)
-	if err != nil {
-		return err
-	}
-	if len(entries) > maxUIStateBatch {
-		return fmt.Errorf("ui state: batch of %d entries exceeds limit %d", len(entries), maxUIStateBatch)
-	}
-	for key, value := range entries {
-		if len(key) == 0 || len(key) > maxUIStateKeyLen {
-			return fmt.Errorf("ui state: key length %d outside 1..%d", len(key), maxUIStateKeyLen)
-		}
-		if len(value) > maxUIStateValueLen {
-			return fmt.Errorf("ui state: value for %q is %d bytes, limit %d", key, len(value), maxUIStateValueLen)
-		}
-	}
-	return a.store.SetUIState(scope, entries)
-}
-
 // migrateUIStateFromSettings performs the one-shot move of the UI view
 // state that used to persist in settings.json — paneLayout and
 // collapsedProjects, fields the Settings struct no longer declares —
@@ -362,23 +326,4 @@ func migrateUIStateFromSettings(configDir string, st *store.Store) {
 		return
 	}
 	log.Printf("ui state migration: moved %d settings.json key(s) into %s", len(entries), scope)
-}
-
-// DeleteUIState removes keys from the calling connection's bucket.
-// Missing keys are a no-op.
-//
-//ao:scope session
-//ao:route home
-func (a *App) DeleteUIState(ctx context.Context, keys []string) error {
-	if a.store == nil {
-		return fmt.Errorf("ui state: store unavailable")
-	}
-	scope, err := a.uiStateScope(ctx)
-	if err != nil {
-		return err
-	}
-	if len(keys) > maxUIStateBatch {
-		return fmt.Errorf("ui state: batch of %d keys exceeds limit %d", len(keys), maxUIStateBatch)
-	}
-	return a.store.DeleteUIState(scope, keys)
 }

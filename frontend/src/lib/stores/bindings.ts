@@ -177,8 +177,6 @@ export {
 
   // Per-client UI view state (ui_state table) behind stores/appStorage.ts.
   GetUIState,
-  SetUIState,
-  DeleteUIState,
 
   // Network bindings (LAN-bind toggle, canonical domain and its
   // certificate, for the embedded transport). RenewCanonicalDomainCert

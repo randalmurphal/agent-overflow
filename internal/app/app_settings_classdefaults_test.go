@@ -120,9 +120,9 @@ func TestAPairedPhoneCanOptIntoLowPowerMode(t *testing.T) {
 	}
 
 	// And clearing the row returns the phone to its CLASS default, not to the
-	// global one. DeleteUIState is the clear that exists: settings rows share
-	// the bucket, spelled as the settings JSON key.
-	if err := app.DeleteUIState(ctx, []string{"lowPowerMode"}); err != nil {
+	// global one. Settings rows share the bucket, spelled as the settings
+	// JSON key; the device tier is read per call, so nothing is cached.
+	if err := app.store.DeleteUIState("device:"+device.ID, []string{"lowPowerMode"}); err != nil {
 		t.Fatalf("DeleteUIState: %v", err)
 	}
 	cleared, err := app.GetSettings(ctx)

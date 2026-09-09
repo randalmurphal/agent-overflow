@@ -126,9 +126,6 @@ async function installUIStateMock(initialPaneLayout: unknown = makeSavedLayout([
   setBindingMock('GetUIState', async () =>
     initialPaneLayout === null ? {} : { paneLayout: JSON.stringify(initialPaneLayout) },
   );
-  const setUIState = vi.fn(async () => null);
-  setBindingMock('SetUIState', setUIState);
-  setBindingMock('DeleteUIState', async () => null);
   await hydrateAppStorage();
   const writes = vi.spyOn(localStorage, 'setItem');
   writes.mockClear();

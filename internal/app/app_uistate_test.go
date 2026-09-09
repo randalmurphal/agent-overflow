@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -131,34 +130,23 @@ func TestUIStateScope_PairedSessionGetsTheDeviceBucket(t *testing.T) {
 	app := identityApp(t)
 	device, session := pairDevice(t, app, "A browser", "thumb-browser")
 
-	if err := app.SetUIState(sessionCtx(session.ID, "aaaaaaaa-1111-2222-3333-444444444444"),
-		map[string]string{"sidebar:width": "312"}); err != nil {
-		t.Fatalf("SetUIState: %v", err)
+	if err := app.store.SetUIState("device:"+device.ID, map[string]string{"sidebar:width": "312"}); err != nil {
+		t.Fatalf("seed the device bucket: %v", err)
 	}
-	bucket, err := app.store.GetUIState("device:" + device.ID)
-	if err != nil {
-		t.Fatalf("read the device bucket: %v", err)
-	}
-	if bucket["sidebar:width"] != "312" {
-		t.Fatalf("device bucket = %v, want the write", bucket)
+	if err := app.store.SetUIState("client:aaaaaaaa-1111-2222-3333-444444444444", map[string]string{"sidebar:width": "999"}); err != nil {
+		t.Fatalf("seed the client bucket: %v", err)
 	}
 
-	// A second screen declaring a different client id on the SAME session
-	// reads the same bucket: the device is the scope, not the screen.
-	got, err := app.GetUIState(sessionCtx(session.ID, "bbbbbbbb-1111-2222-3333-444444444444"))
-	if err != nil {
-		t.Fatalf("GetUIState: %v", err)
-	}
-	if got["sidebar:width"] != "312" {
-		t.Fatalf("second screen read %v, want the device bucket", got)
-	}
-	// And nothing landed in a client-keyed bucket.
-	stray, err := app.store.GetUIState("client:aaaaaaaa-1111-2222-3333-444444444444")
-	if err != nil {
-		t.Fatalf("read the client bucket: %v", err)
-	}
-	if len(stray) != 0 {
-		t.Fatalf("a paired session also wrote a client bucket: %v", stray)
+	// Two screens declaring different client ids on the SAME session read
+	// the device bucket, never the bucket their declared id would name.
+	for _, clientID := range []string{"aaaaaaaa-1111-2222-3333-444444444444", "bbbbbbbb-1111-2222-3333-444444444444"} {
+		got, err := app.GetUIState(sessionCtx(session.ID, clientID))
+		if err != nil {
+			t.Fatalf("GetUIState as %s: %v", clientID, err)
+		}
+		if got["sidebar:width"] != "312" {
+			t.Fatalf("screen %s read %v, want the device bucket", clientID, got)
+		}
 	}
 }
 
@@ -171,13 +159,14 @@ func TestUIStateScope_LocalChannelKeepsPerScreenBuckets(t *testing.T) {
 	const screenA = "11111111-2222-3333-4444-555555555555"
 	const screenB = "99999999-8888-7777-6666-555555555555"
 
-	if err := app.SetUIState(sessionCtx(session.ID, screenA),
-		map[string]string{"sidebar:width": "312"}); err != nil {
-		t.Fatalf("SetUIState A: %v", err)
-	}
-	if err := app.SetUIState(sessionCtx(session.ID, screenB),
-		map[string]string{"sidebar:width": "250"}); err != nil {
-		t.Fatalf("SetUIState B: %v", err)
+	for scope, width := range map[string]string{
+		"client:" + screenA:          "312",
+		"client:" + screenB:          "250",
+		"device:" + session.DeviceID: "100",
+	} {
+		if err := app.store.SetUIState(scope, map[string]string{"sidebar:width": width}); err != nil {
+			t.Fatalf("seed %s: %v", scope, err)
+		}
 	}
 
 	gotA, err := app.GetUIState(sessionCtx(session.ID, screenA))
@@ -193,13 +182,6 @@ func TestUIStateScope_LocalChannelKeepsPerScreenBuckets(t *testing.T) {
 	}
 	if gotB["sidebar:width"] != "250" {
 		t.Fatalf("screen B read %v, want 250", gotB)
-	}
-	if _, err := app.store.GetUIState("device:" + session.DeviceID); err != nil {
-		t.Fatalf("read the channel device bucket: %v", err)
-	}
-	channelBucket, _ := app.store.GetUIState("device:" + session.DeviceID)
-	if len(channelBucket) != 0 {
-		t.Fatalf("the local channel collapsed two screens into %v", channelBucket)
 	}
 }
 
@@ -217,17 +199,11 @@ func TestUIStateScope_RevokedSessionIsRefused(t *testing.T) {
 	if _, err := app.GetUIState(ctx); err == nil {
 		t.Fatal("GetUIState on a revoked session: want error, got nil")
 	}
-	if err := app.SetUIState(ctx, map[string]string{"a": "1"}); err == nil {
-		t.Fatal("SetUIState on a revoked session: want error, got nil")
-	}
-	if err := app.DeleteUIState(ctx, []string{"a"}); err == nil {
-		t.Fatal("DeleteUIState on a revoked session: want error, got nil")
-	}
 }
 
 // TestUIStateScope_AnonymousConnectionHasNoBucket — no session and no
-// declared screen is an error on all three methods. An anonymous bucket
-// would be one every anonymous connection shares.
+// declared screen is an error. An anonymous bucket would be one every
+// anonymous connection shares.
 func TestUIStateScope_AnonymousConnectionHasNoBucket(t *testing.T) {
 	app := identityApp(t)
 	for _, ctx := range []context.Context{
@@ -238,27 +214,21 @@ func TestUIStateScope_AnonymousConnectionHasNoBucket(t *testing.T) {
 		if _, err := app.GetUIState(ctx); err == nil {
 			t.Fatal("GetUIState with no identity: want error, got nil")
 		}
-		if err := app.SetUIState(ctx, map[string]string{"a": "1"}); err == nil {
-			t.Fatal("SetUIState with no identity: want error, got nil")
-		}
-		if err := app.DeleteUIState(ctx, []string{"a"}); err == nil {
-			t.Fatal("DeleteUIState with no identity: want error, got nil")
-		}
 	}
 }
 
-// TestUIStateBindings_RoundTripAndScopeIsolation covers the
+// TestUIStateBindings_ReadsOnlyTheCallersBucket covers the
 // launch-credential path: no session, a declared screen, today's buckets.
-func TestUIStateBindings_RoundTripAndScopeIsolation(t *testing.T) {
+func TestUIStateBindings_ReadsOnlyTheCallersBucket(t *testing.T) {
 	app := newTestAppWithStore(t)
 	const clientA = "11111111-2222-3333-4444-555555555555"
 	const clientB = "99999999-8888-7777-6666-555555555555"
 
-	if err := app.SetUIState(clientCtx(clientA), map[string]string{"sidebar:width": "312"}); err != nil {
-		t.Fatalf("SetUIState: %v", err)
+	if err := app.store.SetUIState("client:"+clientA, map[string]string{"sidebar:width": "312"}); err != nil {
+		t.Fatalf("seed A: %v", err)
 	}
-	if err := app.SetUIState(clientCtx(clientB), map[string]string{"sidebar:width": "250"}); err != nil {
-		t.Fatalf("SetUIState B: %v", err)
+	if err := app.store.SetUIState("client:"+clientB, map[string]string{"sidebar:width": "250"}); err != nil {
+		t.Fatalf("seed B: %v", err)
 	}
 
 	got, err := app.GetUIState(clientCtx(clientA))
@@ -268,48 +238,12 @@ func TestUIStateBindings_RoundTripAndScopeIsolation(t *testing.T) {
 	if got["sidebar:width"] != "312" {
 		t.Fatalf("client A bucket = %v, want sidebar:width=312", got)
 	}
-
-	if err := app.DeleteUIState(clientCtx(clientA), []string{"sidebar:width"}); err != nil {
-		t.Fatalf("DeleteUIState: %v", err)
-	}
-	got, err = app.GetUIState(clientCtx(clientA))
-	if err != nil {
-		t.Fatalf("GetUIState after delete: %v", err)
-	}
-	if len(got) != 0 {
-		t.Fatalf("client A bucket after delete = %v, want empty", got)
-	}
-	// B's identical key is untouched — buckets are per-client.
 	gotB, err := app.GetUIState(clientCtx(clientB))
 	if err != nil {
 		t.Fatalf("GetUIState B: %v", err)
 	}
 	if gotB["sidebar:width"] != "250" {
 		t.Fatalf("client B bucket = %v, want sidebar:width=250", gotB)
-	}
-}
-
-func TestUIStateBindings_RejectsOversizeInput(t *testing.T) {
-	app := newTestAppWithStore(t)
-	ctx := clientCtx("11111111-2222-3333-4444-555555555555")
-
-	if err := app.SetUIState(ctx, map[string]string{
-		"too-big": strings.Repeat("v", maxUIStateValueLen+1),
-	}); err == nil {
-		t.Fatal("SetUIState with oversize value: want error, got nil")
-	}
-	if err := app.SetUIState(ctx, map[string]string{
-		strings.Repeat("k", maxUIStateKeyLen+1): "v",
-	}); err == nil {
-		t.Fatal("SetUIState with oversize key: want error, got nil")
-	}
-
-	oversizeBatch := make(map[string]string, maxUIStateBatch+1)
-	for i := 0; i <= maxUIStateBatch; i++ {
-		oversizeBatch["key-"+strconv.Itoa(i)] = "v"
-	}
-	if err := app.SetUIState(ctx, oversizeBatch); err == nil {
-		t.Fatal("SetUIState with oversize batch: want error, got nil")
 	}
 }
 
@@ -385,11 +319,5 @@ func TestUIStateBindings_NilStore(t *testing.T) {
 	ctx := clientCtx("11111111-2222-3333-4444-555555555555")
 	if _, err := app.GetUIState(ctx); err == nil {
 		t.Fatal("GetUIState with nil store: want error, got nil")
-	}
-	if err := app.SetUIState(ctx, map[string]string{"a": "1"}); err == nil {
-		t.Fatal("SetUIState with nil store: want error, got nil")
-	}
-	if err := app.DeleteUIState(ctx, []string{"a"}); err == nil {
-		t.Fatal("DeleteUIState with nil store: want error, got nil")
 	}
 }

@@ -16,7 +16,7 @@ import {
 } from './sidebarLayout.svelte';
 import { appStorageGet, appStorageSet, resetAppStorageForTest } from './appStorage';
 import { setAppShellWidth, resetLayoutMetricsForTest } from './layoutMetrics.svelte';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { resetBindingMocks } from '../../test/mocks/bindings-app';
 
 const WIDTH_KEY = 'sidebar:width';
 const COLLAPSED_KEY = 'sidebar:collapsed';
@@ -25,8 +25,6 @@ const LEGACY_STORAGE_KEY = 'agent-overflow:sidebar:width';
 describe('sidebar layout store', () => {
   beforeEach(() => {
     resetBindingMocks();
-    setBindingMock('SetUIState', async () => null);
-    setBindingMock('DeleteUIState', async () => null);
     localStorage.removeItem(LEGACY_STORAGE_KEY);
     resetAppStorageForTest();
     resetLayoutMetricsForTest();

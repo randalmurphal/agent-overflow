@@ -270,16 +270,14 @@ func TestSessionFloorAdmitsASessionThatWasGrantedNothing(t *testing.T) {
 // floor, because the floor is the one scope that admits everybody: an
 // annotation that drifted onto a method whose authority is decided by its
 // NAME would be an ungated surface, and nothing else in the tree would
-// notice. §6 names four — the settings patch, gated per key, and the
-// three ui_state calls, each of which reaches only the calling
-// connection's own bucket. §4's step-up ceremony adds two, for the
-// reason spelled out beside them.
+// notice. §6 names two — the settings patch, gated per key, and the
+// ui_state read, which reaches only the calling connection's own
+// bucket. §4's step-up ceremony adds two, for the reason spelled out
+// beside them.
 func TestSessionFloorMethodsAreTheSpecSet(t *testing.T) {
 	want := map[string]string{
 		"UpdateSettings": "all three settings tiers on one method; requireSettingsTier decides per key",
 		"GetUIState":     "reads the calling connection's own bucket and no other",
-		"SetUIState":     "writes the calling connection's own bucket and no other",
-		"DeleteUIState":  "deletes from the calling connection's own bucket and no other",
 		// The two step-up ceremony calls. The floor is not a relaxation
 		// here, it is the only scope that works: this pair is how a session
 		// SATISFIES the gate that just refused it, so any grant requirement

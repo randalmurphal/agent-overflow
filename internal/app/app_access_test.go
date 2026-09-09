@@ -558,10 +558,9 @@ func TestRevokeAccessDevice_EndsEveryCredentialAndDropsTheDevicesUIState(t *test
 	gone, goneSession := pairDevice(t, app, "The removed one", "thumb-gone")
 	kept, keptSession := pairDevice(t, app, "The other one", "thumb-kept")
 
-	for _, session := range []store.Session{goneSession, keptSession} {
-		if err := app.SetUIState(sessionCtx(session.ID, ""),
-			map[string]string{"sidebar:width": "312"}); err != nil {
-			t.Fatalf("SetUIState: %v", err)
+	for _, device := range []store.Device{gone, kept} {
+		if err := app.store.SetUIState("device:"+device.ID, map[string]string{"sidebar:width": "312"}); err != nil {
+			t.Fatalf("seed the device bucket: %v", err)
 		}
 	}
 

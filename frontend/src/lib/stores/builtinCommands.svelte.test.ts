@@ -1754,8 +1754,6 @@ describe('sidebar.toggle command', () => {
     resetAppStorageForTest();
     resetSidebarLayoutForTest();
     resetSidebarCursorStore();
-    setBindingMock('SetUIState', async () => null);
-    setBindingMock('DeleteUIState', async () => null);
   });
 
   it('is registered and toggles the collapsed state both ways', () => {

@@ -192,8 +192,8 @@ func (c Caller) AddRecentWorkspace(path string) {
 // exactly the rules a hand-edited row is.
 //
 // Deliberately NOT cached per bucket. The rows a bucket holds are written by
-// this package AND by internal/app (the ui_state bindings, device revocation,
-// the harness reset), so a cache here would need an invalidation edge from
+// this package AND by internal/app (the settings.json migration, device
+// revocation, the harness reset), so a cache here would need an invalidation edge from
 // code that knows nothing about settings — a staleness bug in exchange for saving one indexed SELECT
 // on a table with a handful of rows, on an RPC the UI issues at page load and
 // on `settings:updated`. Backend logic never takes this path at all: it reads

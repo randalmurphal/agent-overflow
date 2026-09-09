@@ -34,8 +34,6 @@ describe('sidebar store', () => {
     resetBindingMocks();
     resetAppStorageForTest();
     resetSidebarForTest();
-    setBindingMock('SetUIState', async () => null);
-    setBindingMock('DeleteUIState', async () => null);
   });
 
   describe('expansion', () => {

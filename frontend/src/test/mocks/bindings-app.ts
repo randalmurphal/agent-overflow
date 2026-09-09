@@ -654,8 +654,6 @@ export const GetCodexAccountUsage = dispatch('GetCodexAccountUsage');
 
 // Per-client UI view state (appStorage)
 export const GetUIState = dispatch('GetUIState');
-export const SetUIState = dispatch('SetUIState');
-export const DeleteUIState = dispatch('DeleteUIState');
 
 // Session import (provider session files → AO threads). ImportSessions is
 // async on the backend: a mock returns the run handle and the test drives

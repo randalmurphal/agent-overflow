@@ -108,7 +108,6 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "DeleteProviderCustomEnvVar", ID: 784096448, Scope: "settings:write", Route: "home", StepUp: true},        // main.App.DeleteProviderCustomEnvVar
 	{Name: "DeleteThread", ID: 1186337974, Scope: "threads:operate", Route: "thread"},                                // main.App.DeleteThread
 	{Name: "DeleteThreadGroup", ID: 4104302889, Scope: "threads:operate", Route: "home"},                             // main.App.DeleteThreadGroup
-	{Name: "DeleteUIState", ID: 1186757769, Scope: "session", Route: "home"},                                         // main.App.DeleteUIState
 	{Name: "DevicePairingStatus", ID: 604263015, Scope: "access:admin", Route: "home"},                               // main.App.DevicePairingStatus
 	{Name: "DisallowPreviewPort", ID: 1061100039, Scope: "access:admin", Route: "selected"},                          // main.App.DisallowPreviewPort
 	{Name: "DiscardUnpreparedThreadTransfer", ID: 2309612888, Scope: "threads:operate", Route: "selected"},           // main.App.DiscardUnpreparedThreadTransfer
@@ -369,7 +368,6 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SetThreadGroupPinGroup", ID: 4218979176, Scope: "threads:operate", Route: "home"},                        // main.App.SetThreadGroupPinGroup
 	{Name: "SetThreadMcpServerEnabled", ID: 1041195811, Scope: "settings:write", Route: "thread", StepUp: true},      // main.App.SetThreadMcpServerEnabled
 	{Name: "SetThreadPinGroup", ID: 3112222989, Scope: "threads:operate", Route: "thread"},                           // main.App.SetThreadPinGroup
-	{Name: "SetUIState", ID: 1514250938, Scope: "session", Route: "home"},                                            // main.App.SetUIState
 	{Name: "SetWSLDistroPreference", ID: 3978807241, Scope: "host", Route: "home", StepUp: true},                     // main.App.SetWSLDistroPreference
 	{Name: "SetWindowBackgroundColor", ID: 3648660014, Scope: "host", Route: "home"},                                 // main.App.SetWindowBackgroundColor
 	{Name: "SetWorkspaceMcpServerEnabled", ID: 2181574220, Scope: "settings:write", Route: "selected", StepUp: true}, // main.App.SetWorkspaceMcpServerEnabled

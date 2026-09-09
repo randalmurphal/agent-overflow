@@ -22,8 +22,6 @@ describe('appStorage', () => {
     localStorage.clear();
     resetAppStorageForTest();
     setBindingMock('GetUIState', async () => ({}));
-    setBindingMock('SetUIState', async () => null);
-    setBindingMock('DeleteUIState', async () => null);
   });
 
   describe('same-origin reload', () => {
@@ -51,9 +49,7 @@ describe('appStorage', () => {
       expect(cached['a']).toBeUndefined();
     });
 
-    it('saves while offline without sending view preferences to a computer', async () => {
-      const set = setBindingMock('SetUIState', async () => null);
-      const remove = setBindingMock('DeleteUIState', async () => null);
+    it('saves while offline and survives a module reinit', async () => {
       appStorageSet('a', '1');
       appStorageSet('b', '2');
       appStorageDelete('a');
@@ -61,8 +57,6 @@ describe('appStorage', () => {
       reinitAppStorageForTest();
       expect(appStorageGet('a')).toBeNull();
       expect(appStorageGet('b')).toBe('2');
-      expect(set).not.toHaveBeenCalled();
-      expect(remove).not.toHaveBeenCalled();
     });
   });
 

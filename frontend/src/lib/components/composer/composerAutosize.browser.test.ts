@@ -59,7 +59,6 @@ function installMocks(): void {
   setBindingMock('GetClaudeSlashCommands', async () => ({ probed: false, commands: [] }));
   setBindingMock('GetCodexSkills', async () => ({ cwd: '/tmp/workspace', skills: [], errors: [] }));
   setBindingMock('GetClaudeSkills', async () => []);
-  setBindingMock('SetUIState', async () => {});
   setBindingMock('AppendUIRenderTraceBatch', async () => {});
 }
 

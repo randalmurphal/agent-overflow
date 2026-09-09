@@ -893,14 +893,6 @@ export function DeleteThreadGroup(id: string): $CancellablePromise<void> {
 }
 
 /**
- * DeleteUIState removes keys from the calling connection's bucket.
- * Missing keys are a no-op.
- */
-export function DeleteUIState(keys: string[]): $CancellablePromise<void> {
-    return $Call.ByID(1186757769, keys);
-}
-
-/**
  * DevicePairingStatus reads one link, for the surface polling while it
  * waits.
  */
@@ -4460,13 +4452,6 @@ export function SetThreadPinGroup(id: string, group: number): $CancellablePromis
     return $Call.ByID(3112222989, id, group).then(($result: any) => {
         return $$createType6($result);
     });
-}
-
-/**
- * SetUIState batch-upserts entries into the calling connection's bucket.
- */
-export function SetUIState(entries: { [_ in string]?: string }): $CancellablePromise<void> {
-    return $Call.ByID(1514250938, entries);
 }
 
 /**

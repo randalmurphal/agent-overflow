@@ -79,7 +79,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	784096448: 'home', // DeleteProviderCustomEnvVar
 	1186337974: 'thread', // DeleteThread
 	4104302889: 'home', // DeleteThreadGroup
-	1186757769: 'home', // DeleteUIState
 	604263015: 'home', // DevicePairingStatus
 	1061100039: 'selected', // DisallowPreviewPort
 	2309612888: 'selected', // DiscardUnpreparedThreadTransfer
@@ -340,7 +339,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	4218979176: 'home', // SetThreadGroupPinGroup
 	1041195811: 'thread', // SetThreadMcpServerEnabled
 	3112222989: 'thread', // SetThreadPinGroup
-	1514250938: 'home', // SetUIState
 	3978807241: 'home', // SetWSLDistroPreference
 	3648660014: 'home', // SetWindowBackgroundColor
 	2181574220: 'selected', // SetWorkspaceMcpServerEnabled

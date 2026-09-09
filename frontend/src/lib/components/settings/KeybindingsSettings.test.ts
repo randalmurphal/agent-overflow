@@ -347,8 +347,6 @@ describe('<KeybindingsSettings> chord capture vs. global dispatch', () => {
     resetAppStorageForTest();
     resetSidebarLayoutForTest();
     for (const t of [...getToasts()]) removeToast(t.id);
-    setBindingMock('SetUIState', async () => null);
-    setBindingMock('DeleteUIState', async () => null);
     registerCommand({
       id: 'sidebar.toggle',
       label: 'Sidebar: Toggle',

@@ -156,7 +156,7 @@ func TestDeviceClassDefaultsResolveUnderTheBucketsOwnWrite(t *testing.T) {
 	}
 
 	// 3. CLEARING returns to the CLASS default, not to the global one. The
-	//    only clear that exists is dropping the row — DeleteUIState reaches
+	//    only clear that exists is dropping the row — store.DeleteUIState reaches
 	//    these rows, since they share the bucket — and with the row gone the
 	//    read falls through to the layer below it, which is the class's.
 	delete(store.scopes[bucket], "lowPowerMode")

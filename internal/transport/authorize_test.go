@@ -22,7 +22,7 @@ const (
 	hostMethod     = "OpenExternalURL"            // host
 	stepUpMethod   = "SetNetworkSettings"         // settings:write + //ao:stepup
 	settingsGetter = "GetSettings"                // settings:read
-	floorMethod    = "SetUIState"                 // session: the floor
+	floorMethod    = "GetUIState"                 // session: the floor
 	unclassified   = "HarnessSomethingUnbindable" // no row: enforces as host
 )
 
