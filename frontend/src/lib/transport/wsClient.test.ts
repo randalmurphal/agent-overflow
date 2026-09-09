@@ -1391,7 +1391,7 @@ describe('WSClient', () => {
     const text = 'x'.repeat(MAX_REPLAY_BUFFER_CHARS / 2);
     for (const seq of [1, 2, 3]) socket.pushFrame({ type: 'event', channel: 'provider:item_event', seq, data: text });
     socket.pushFrame({ type: 'replay' });
-    expect(activated).toHaveBeenCalledExactlyOnceWith({ threadId: 'target' });
+    expect(activated).toHaveBeenCalledExactlyOnceWith({ threadId: 'target' }, 1);
     client.close();
   });
 

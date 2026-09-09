@@ -823,6 +823,7 @@ export function createUseStickToBottomController(
     intent.clearRecentDownIntent();
     intent.clearScrollbarDragSession();
     intent.setEscapedFromLock(false);
+    spring.clearStopRequest();
     isAtBottomState = true;
     refreshIsNearBottom();
   }

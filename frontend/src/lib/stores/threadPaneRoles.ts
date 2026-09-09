@@ -335,7 +335,7 @@ export interface ErrorSurface {
   readonly clearSessionError: () => void;
   readonly setProviderBanner: (status: ProviderStatusEvent | null | undefined) => void;
   readonly retryHistoryLoad: () => Promise<void>;
-  readonly refreshFromBackend: () => Promise<void>;
+  readonly refreshFromBackend: (requireItems?: boolean) => Promise<void>;
 }
 
 /**
@@ -376,6 +376,7 @@ export interface PaneDoors {
  * not ingest, and it states its own `Pick`.
  */
 export interface ThreadPaneIngest {
+  readonly armStructuralSpring: () => boolean;
   readonly confirmOptimisticSend: (threadId: string, sendId: string | undefined, canonicalItemId?: string) => void;
   readonly paneId: string;
   readonly threadId: string | null;
@@ -394,7 +395,7 @@ export interface ThreadPaneIngest {
   readonly applyItemPatch: (evt: ItemPatchEvent) => void;
   readonly upsertItems: (incoming: Item[]) => boolean;
   readonly removeItemById: (itemId: string, expectedThreadId: string) => Item | null;
-  readonly removeItemsFromTurn: (fromTurnIndex: number) => Item[];
+  readonly removeItemsFromTurn: (fromTurnIndex: number, expectedThreadId: string) => Item[];
   readonly removeRevertedItems: (turnIndex: number, keptAnchorTurnItemIds: string[]) => Item[];
   readonly addApproval: (approval: ApprovalRequest) => void;
   readonly removeApproval: (requestId: string) => void;
@@ -407,7 +408,7 @@ export interface ThreadPaneIngest {
   readonly settleTurn: (settled: SettledTurn) => void;
   readonly applyEffectiveModel: (model: string, revision: number) => void;
   readonly replaceThread: (nextThread: Thread) => void;
-  readonly refreshFromBackend: () => Promise<void>;
+  readonly refreshFromBackend: (requireItems?: boolean) => Promise<void>;
   readonly applyChannelMessage: (message: ChannelMessage) => void;
   readonly applyChannelMessages: (messages: ChannelMessage[]) => void;
   readonly applyChannelState: (payload: ChannelStatePayload) => void;

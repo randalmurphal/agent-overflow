@@ -1,3 +1,10 @@
+import { optimisticInterruptCut, noteHiddenInterruptItem } from './threadInterruptState.svelte';
+import { getTransportHelloFor } from './transportStatus.svelte';
+import { threadBackend, HOME_BACKEND } from '../transport/entityIndex';
+import { getUndoableSend, retireUndoableSend } from './composerSendUndo';
+import type { EventOrigin } from '../transport/handle';
+import type { UserMessageRevertedEvent } from '../types/messageRevert';
+import { onThreadHistoryInvalidated } from './threadIdentityInvalidation';
 // Item-stream event batching: the provider:item_event ordered mutation
 // queue (upsert/delta/meta/patch actions sharing one wire channel), its
 // rAF-scheduled flush, per-item upsert validation, the item-upsert
@@ -37,8 +44,68 @@ const ITEM_EVENT_QUEUE_FORCE_FLUSH_EVENTS = 2_000;
 // alone; accepted events are never truncated or dropped.
 const ITEM_EVENT_FLUSH_MAX_CHARS = 256 * 1024;
 const ITEM_EVENT_QUEUE_FORCE_FLUSH_CHARS = 2 * 1024 * 1024;
-let itemEventQueue: (ItemStreamEvent | undefined)[] = [];
+type QueuedItemEvent = ItemStreamEvent & { sequence?: number };
+let itemEventQueue: (QueuedItemEvent | undefined)[] = [];
 let itemEventQueueChars = 0;
+
+const cuts = new Map<string, { sequence: number; turnIndex: number; kept: Set<string>; launchId?: string; turnStartedSequence?: number; turnCompletedSequence?: number }>();
+onThreadHistoryInvalidated((owns) => {
+  for (const id of cuts.keys()) if (owns(id)) cuts.delete(id);
+});
+
+export function fenceConversationSnapshot(threadId: string, sequence: number, turns?: { turnStartedSequence?: number; turnCompletedSequence?: number }): void {
+  cuts.set(threadId, { sequence, turnIndex: -1, kept: new Set(), ...turns, launchId: getTransportHelloFor(threadBackend(threadId) ?? HOME_BACKEND)?.launchId });
+}
+
+export function survivesRevertedTurnEvent(threadId: string, kind: 'turnStartedSequence' | 'turnCompletedSequence', origin?: EventOrigin): boolean {
+  const cut = cuts.get(threadId);
+  const launch = getTransportHelloFor(threadBackend(threadId) ?? HOME_BACKEND)?.launchId;
+  if (cut?.launchId && launch && cut.launchId !== launch) return true;
+  const boundary = cut?.[kind];
+  return boundary === undefined || origin?.sequence === undefined || origin.sequence > boundary;
+}
+
+function survivesCut(evt: QueuedItemEvent): boolean {
+  const cut = cuts.get(evt.threadId);
+  const launch = getTransportHelloFor(threadBackend(evt.threadId) ?? HOME_BACKEND)?.launchId;
+  if (cut?.launchId && launch && cut.launchId !== launch) {
+    cuts.delete(evt.threadId);
+    return true;
+  }
+  if (!cut || evt.sequence === undefined || evt.sequence > cut.sequence) return true;
+  if (evt.action === 'upsert') {
+    return evt.item.turnIndex < cut.turnIndex
+      || (evt.item.turnIndex === cut.turnIndex && cut.kept.has(evt.item.id));
+  }
+  for (const pane of ingestPanes()) {
+    if (pane.threadId !== evt.threadId) continue;
+    const item = pane.getItemById(evt.itemId);
+    if (item && (item.turnIndex < cut.turnIndex || cut.kept.has(item.id))) return true;
+  }
+  return false;
+}
+
+/** Fence queued and not-yet-delivered pre-cut frames without flushing other threads. */
+export function fenceRevertedItemEvents(cut: UserMessageRevertedEvent): void {
+  if (typeof cut.itemEventSequence === 'number') {
+    cuts.set(cut.threadId, {
+      sequence: cut.itemEventSequence, turnIndex: cut.turnIndex,
+      turnStartedSequence: cut.turnStartedSequence, turnCompletedSequence: cut.turnCompletedSequence,
+      launchId: getTransportHelloFor(threadBackend(cut.threadId) ?? HOME_BACKEND)?.launchId,
+      kept: new Set(cut.keptAnchorTurnItemIds ?? []),
+    });
+  }
+  // Unsequenced test/legacy deliveries still have a known ordering boundary
+  // once they are in this queue. Stamp only those already received.
+  for (let i = itemEventQueueStart; i < itemEventQueue.length; i++) {
+    const evt = itemEventQueue[i];
+    if (evt?.threadId !== cut.threadId || evt.sequence !== undefined) continue;
+    evt.sequence = cut.itemEventSequence ?? 0;
+  }
+  if (!cuts.has(cut.threadId)) cuts.set(cut.threadId, {
+    sequence: 0, turnIndex: cut.turnIndex, kept: new Set(cut.keptAnchorTurnItemIds ?? []),
+  });
+}
 
 function itemEventChars(evt: ItemStreamEvent): number {
   const fields = evt.action === 'upsert' ? evt.item : evt.action === 'patch' ? evt.patch : evt;
@@ -91,6 +158,7 @@ export function resetItemEventQueue(): void {
   itemEventQueueStart = 0;
   itemEventQueueChars = 0;
   resetItemEventSettlement();
+  cuts.clear();
 }
 
 function isValidItemForThread(item: Item | null | undefined, threadId: string): item is Item {
@@ -272,7 +340,7 @@ function applyItemDelta(evt: ItemDeltaEvent): void {
   }
 }
 
-export function applyItemStreamEvent(evt: ItemStreamEvent): void {
+export function applyItemStreamEvent(evt: ItemStreamEvent, origin?: EventOrigin): void {
   if (!evt || !evt.threadId) return;
   if (evt.action === 'upsert' && evt.item) {
     // Boundary validation only, and now the ONLY global work this
@@ -281,6 +349,8 @@ export function applyItemStreamEvent(evt: ItemStreamEvent): void {
     // channel is narrowed to the threads a client watches and a client
     // that is not watching would never have learned any of them.
     if (!isValidItemForThread(evt.item, evt.threadId)) return;
+    if ((evt.item.kind === 'assistant_text' || evt.item.kind === 'tool_call')
+      && getUndoableSend(evt.threadId)?.turnIndex === evt.item.turnIndex) retireUndoableSend(evt.threadId);
   } else if (evt.action === 'delta') {
     if (!isBoundedString(evt.threadId, 512)) return;
     if (!isBoundedString(evt.itemId, 512) || evt.itemId.trim() === '') return;
@@ -311,7 +381,7 @@ export function applyItemStreamEvent(evt: ItemStreamEvent): void {
       itemEventQueueChars + chars > ITEM_EVENT_QUEUE_FORCE_FLUSH_CHARS)) {
     flushItemEventQueue();
   }
-  itemEventQueue.push(evt);
+  itemEventQueue.push({ ...evt, sequence: origin?.sequence });
   itemEventQueued();
   itemEventQueueChars += chars;
   scheduleItemEventFlush();
@@ -325,7 +395,7 @@ export function flushItemEventQueue(): void {
     return;
   }
 
-  const events: ItemStreamEvent[] = [];
+  const events: QueuedItemEvent[] = [];
   let chars = 0;
   let itemEventQueueEnd = itemEventQueueStart;
   while (itemEventQueueEnd < itemEventQueue.length && events.length < ITEM_EVENT_FLUSH_MAX_EVENTS) {
@@ -415,7 +485,12 @@ export function flushItemEventQueue(): void {
   // O(window) array copy and a full timeline regroup.
   try {
     for (const evt of events) {
-      if (!evt || !evt.threadId) continue;
+      if (!evt || !evt.threadId || !survivesCut(evt)) continue;
+      const hiddenFrom = optimisticInterruptCut(evt.threadId);
+      if (hiddenFrom !== null && evt.action === 'upsert' && evt.item.turnIndex >= hiddenFrom) {
+        noteHiddenInterruptItem(evt.threadId);
+        continue;
+      }
       if (evt.action === 'upsert') {
         if (!isValidItemForThread(evt.item, evt.threadId)) continue;
         const itemKey = itemConflictKey(evt.threadId, evt.item.id);

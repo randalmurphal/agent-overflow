@@ -1733,6 +1733,46 @@ describe('threadTimelineWindow', () => {
       expect(pane.items.map((it) => it.id)).toEqual(['refreshed']);
     });
 
+    it('recovers a historical window without replacing its loaded prefix with newer history', async () => {
+      const pane = createThreadPane();
+      const rows = Array.from({ length: 1000 }, (_, i) => makeItem({ id: `historical-${i}`, threadId: 't', turnIndex: i + 100, itemIndex: 0 }));
+      const paged = { items: rows,
+        oldestCursor: { turnIndex: 100, itemIndex: 0, itemId: rows[0].id },
+        newestCursor: { turnIndex: 1099, itemIndex: 0, itemId: rows.at(-1)!.id },
+        oldestTurnIndex: 100, newestTurnIndex: 1099, hasMore: true, hasMoreOlder: true, hasMoreNewer: true };
+      setBindingMock('ListThreadSliceAround', async () => paged);
+      await pane.switchThread(makeThread({ id: 't' }));
+      const before = vi.fn(async (..._args: unknown[]) => paged);
+      setBindingMock('ListItemsBeforeCursor', before);
+      await pane.refreshFromBackend(true);
+      expect(before.mock.calls[0][1]).toEqual({ turnIndex: 1099, itemIndex: 1, itemId: '' });
+      expect(pane.items.map(item => item.id)).toEqual(rows.map(item => item.id));
+      expect(pane.hasMoreNewer).toBe(true);
+    });
+
+    it('revalidates explicitly loaded history across bounded pages during mutation recovery', async () => {
+      const pane = createThreadPane();
+      const rows = Array.from({ length: 1200 }, (_, i) => makeItem({ id: `loaded-${i}`, threadId: 't', turnIndex: i, itemIndex: 0 }));
+      const page = (items: typeof rows, more: boolean) => ({ items,
+        oldestCursor: { turnIndex: items[0].turnIndex, itemIndex: 0, itemId: items[0].id },
+        newestCursor: { turnIndex: items.at(-1)!.turnIndex, itemIndex: 0, itemId: items.at(-1)!.id },
+        oldestTurnIndex: items[0].turnIndex, newestTurnIndex: items.at(-1)!.turnIndex,
+        hasMore: more, hasMoreOlder: more, hasMoreNewer: false });
+      setBindingMock('ListThreadSliceAround', async () => page(rows.slice(-200), true));
+      await pane.switchThread(makeThread({ id: 't' }));
+      setBindingMock('ListItemsBeforeCursor', async () => page(rows.slice(0, 1000), false));
+      await pane.loadOlder();
+      const slice = vi.fn(async (..._args: unknown[]) => page(rows.slice(-800), true));
+      const older = vi.fn(async () => page(rows.slice(0, 400), false));
+      setBindingMock('ListThreadSliceAround', slice);
+      setBindingMock('ListItemsBeforeCursor', older);
+      await pane.refreshFromBackend(true);
+      expect(slice.mock.calls[0][2]).toBe(1200);
+      expect(older).toHaveBeenCalledOnce();
+      expect(pane.items.map(item => item.id)).toEqual(rows.map(item => item.id));
+      expect(pane.hasMoreHistory).toBe(false);
+    });
+
     it('keeps live item mutations that land while a gap snapshot is in flight', async () => {
       const pane = createThreadPane();
       let sliceCall = 0;

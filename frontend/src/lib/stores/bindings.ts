@@ -81,6 +81,7 @@ export {
   SendMessage,
   InterruptTurn,
   InterruptAndRevertIfClean,
+  GetConversationMutationState,
   GetThreadLiveState,
   ListThreadLiveActivity,
   ListPendingInteractiveRequests,

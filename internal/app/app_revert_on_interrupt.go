@@ -16,10 +16,18 @@ import (
 	"agent-overflow/internal/usermessage"
 )
 
+type InterruptRevertOptions struct {
+	ExpectedSendID string         `json:"expectedSendId,omitempty"`
+	Draft          *DraftSnapshot `json:"draft,omitempty"`
+}
+
 // InterruptAndRevertResult is returned by InterruptAndRevertIfClean.
 // The frontend uses Reverted to decide whether to commit or roll back
 // its optimistic UI (timeline row removal + composer rehydrate).
 type InterruptAndRevertResult struct {
+	TurnStartedSequence   uint64 `json:"turnStartedSequence"`
+	TurnCompletedSequence uint64 `json:"turnCompletedSequence"`
+	ItemEventSequence     uint64 `json:"itemEventSequence"`
 	// Reverted is true when the predicate matched and the user message
 	// was successfully reverted. false means we fell back to a plain
 	// interrupt (predicate failed under the lock or no session exists)
@@ -54,9 +62,15 @@ type InterruptAndRevertResult struct {
 // SQLite cut. Idempotent on the frontend: a removal of an
 // already-absent id is a no-op.
 type UserMessageRevertedEvent struct {
-	ThreadID   string `json:"threadId"`
-	UserItemID string `json:"userItemId"`
-	TurnIndex  int    `json:"turnIndex"`
+	TurnStartedSequence   uint64 `json:"turnStartedSequence"`
+	TurnCompletedSequence uint64 `json:"turnCompletedSequence"`
+	// Replacement is published with the cut once send preparation and persistence finish.
+	Replacement *store.Item `json:"replacement,omitempty"`
+	// ItemEventSequence fences item frames published before the destructive cut.
+	ItemEventSequence uint64 `json:"itemEventSequence"`
+	ThreadID          string `json:"threadId"`
+	UserItemID        string `json:"userItemId"`
+	TurnIndex         int    `json:"turnIndex"`
 	// KeptAnchorTurnItemIDs lists the anchor turn's SURVIVING items.
 	// Turns after TurnIndex are always fully removed; within the anchor
 	// turn the frontend keeps exactly these ids and drops everything
@@ -78,35 +92,11 @@ type UserMessageRevertedEvent struct {
 	// overstated stamp would show stale content as fresh (§3.4).
 	HistoryRev   int64 `json:"historyRev"`
 	HistoryEpoch int64 `json:"historyEpoch"`
-	// DraftPendingResend marks this revert as the first half of an
-	// edit-and-resend saga (RevertConversationAndResendMessage): the
-	// replacement message is being dispatched right behind this event.
-	// The thread's persisted draft row at this instant is that saga's
-	// transient crash copy — the edited text merged ahead of the user's
-	// untouched composer WIP — NOT composer content, so a handler seeing
-	// this flag must not rehydrate composers from it. The saga settles
-	// the row itself (WIP restored on success, crash copy kept for the
-	// still-open editor on failure). False on the un-send path, where
-	// the draft row IS the restored composer.
+	// DraftPendingResend identifies a replacement operation. It leaves the
+	// ordinary composer draft alone; only the early un-send rehydrates it.
 	DraftPendingResend bool `json:"draftPendingResend,omitempty"`
-	// ConnectionID names the page load whose edit-and-resend saga produced
-	// this cut, and is set only alongside DraftPendingResend.
-	//
-	// The cut itself is a fact about the thread and every client applies
-	// it. What is NOT shared is the saga: the frontend records a marker on
-	// this event and its own failure handler consumes it to decide whether
-	// its revert committed (frontend/src/lib/stores/eventsMessageRevert.ts),
-	// so a second client's saga would otherwise answer the first client's
-	// question — reporting a committed revert to a caller whose own call
-	// never got one. Suppression is by CONNECTION and never by device: two
-	// tabs of one browser run independent sagas.
-	//
-	// Empty means no screen was behind the call (a saga, a test) or a
-	// backend too old to stamp it. A receiver RECORDS an unstamped cut as
-	// its own (frontend/src/lib/stores/eventsMessageRevert.ts,
-	// resendIsOurs), the pre-stamp behaviour kept for a bundle ahead of
-	// its backend; stamping is what keeps one client's saga out of the
-	// others' failure handlers.
+	// ConnectionID attributes replacement recovery to the requesting page load.
+	// Every client applies the cut; only that connection records its local marker.
 	ConnectionID string `json:"connectionId,omitempty"`
 }
 
@@ -128,7 +118,7 @@ type UserMessageRevertedEvent struct {
 // flush queue. Both must agree for revert to succeed.
 //
 //ao:scope threads:operate
-func (a *App) InterruptAndRevertIfClean(threadID string) (InterruptAndRevertResult, error) {
+func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOptions) (InterruptAndRevertResult, error) {
 	if a.shuttingDown.Load() {
 		return InterruptAndRevertResult{}, ErrShuttingDown
 	}
@@ -147,6 +137,13 @@ func (a *App) InterruptAndRevertIfClean(threadID string) (InterruptAndRevertResu
 		return InterruptAndRevertResult{}, fmt.Errorf("interrupt-and-revert: load thread: %w", err)
 	}
 
+	if opts.ExpectedSendID != "" {
+		if _, found, err := a.findRecordedSend(threadID, opts.ExpectedSendID); err != nil {
+			return InterruptAndRevertResult{}, err
+		} else if !found {
+			return InterruptAndRevertResult{Reason: "sent message is no longer present"}, nil
+		}
+	}
 	eligible, userItem, reason, err := a.evaluateInterruptRevertPredicate(threadID)
 	if err != nil {
 		return InterruptAndRevertResult{}, fmt.Errorf("interrupt-and-revert: predicate: %w", err)
@@ -162,11 +159,26 @@ func (a *App) InterruptAndRevertIfClean(threadID string) (InterruptAndRevertResu
 		return InterruptAndRevertResult{Reverted: false, Reason: reason}, nil
 	}
 
+	if opts.ExpectedSendID != "" {
+		meta, err := usermessage.FromItem(userItem)
+		if err != nil {
+			return InterruptAndRevertResult{}, err
+		}
+		if meta.SendID != opts.ExpectedSendID {
+			return InterruptAndRevertResult{Reason: "latest message changed"}, nil
+		}
+	}
 	promptDraft, err := composerdraft.FromUserItem(threadID, userItem, time.Now().UnixMilli())
 	if err != nil {
 		return InterruptAndRevertResult{}, fmt.Errorf("interrupt-and-revert: build prompt draft: %w", err)
 	}
 
+	if opts.Draft != nil && opts.ExpectedSendID != "" {
+		promptDraft, err = encodeThreadDraft(threadID, *opts.Draft)
+		if err != nil {
+			return InterruptAndRevertResult{}, err
+		}
+	}
 	markedReverted := false
 	if a.triage != nil {
 		a.triage.MarkTurnReverted(threadID)
@@ -208,6 +220,9 @@ func (a *App) InterruptAndRevertIfClean(threadID string) (InterruptAndRevertResu
 	}
 
 	cutEvent := UserMessageRevertedEvent{
+		TurnStartedSequence:   a.eventSequence(eventchan.ProviderTurnStarted),
+		TurnCompletedSequence: a.eventSequence(eventchan.ProviderTurnCompleted),
+		ItemEventSequence:     a.itemEventSequence(),
 		ThreadID:              threadID,
 		UserItemID:            userItem.ID,
 		TurnIndex:             userItem.TurnIndex,
@@ -218,6 +233,9 @@ func (a *App) InterruptAndRevertIfClean(threadID string) (InterruptAndRevertResu
 	a.emit(eventchan.UserMessageReverted, cutEvent)
 
 	return InterruptAndRevertResult{
+		TurnStartedSequence:   cutEvent.TurnStartedSequence,
+		TurnCompletedSequence: cutEvent.TurnCompletedSequence,
+		ItemEventSequence:     cutEvent.ItemEventSequence,
 		Reverted:              true,
 		UserItemID:            userItem.ID,
 		TurnIndex:             userItem.TurnIndex,
@@ -393,4 +411,13 @@ func (a *App) runPlainInterruptLocked(threadID string) error {
 		a.eagerPersistFlushSendsOnInterrupt(threadID, sess, interruptedTurn, stampToken)
 	}
 	return nil
+}
+
+func (a *App) itemEventSequence() uint64 { return a.eventSequence(eventchan.ProviderItemEvent) }
+
+func (a *App) eventSequence(channel eventchan.Channel) uint64 {
+	if bus := a.eventBus.Load(); bus != nil {
+		return bus.ChannelSequence(channel)
+	}
+	return 0
 }

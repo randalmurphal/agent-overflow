@@ -110,6 +110,7 @@ export interface ThreadTimelineWindow {
   resetAfterLoadError(): void;
   /** Streaming upsert dropped newer items below/above the window: re-arm the "load newer" affordance. */
   noteDroppedNewerItems(): void;
+  applyConversationCut(boundaryWasLoaded: boolean): void;
   /** Follow repositioned anchors, retaining the capped floor and ordinary tail-append policy. */
   refreshCursorsAfterUpserts(changedItems: readonly Item[], appended: boolean, previousItems: readonly Item[]): void;
   /**
@@ -670,6 +671,16 @@ export function createThreadTimelineWindow(
     hasMoreNewer = false;
   }
 
+  function applyConversationCut(boundaryWasLoaded: boolean): void {
+    ++pagingGeneration;
+    if (boundaryWasLoaded || !hasMoreNewer) {
+      hasMoreNewer = false;
+      const items = options.getItems();
+      setLoadedCursors(oldestCursorFromItems(items), newestCursorFromItems(items));
+      recentWindowPrunePending = false;
+    }
+  }
+
   function noteDroppedNewerItems(): void {
     hasMoreNewer = true;
   }
@@ -1120,6 +1131,7 @@ export function createThreadTimelineWindow(
     resetForFreshThread,
     resetAfterLoadError,
     noteDroppedNewerItems,
+    applyConversationCut,
     refreshCursorsAfterUpserts,
     pruneToRecentWindowIfNeeded,
     retryDeferredRecentWindowPrune,

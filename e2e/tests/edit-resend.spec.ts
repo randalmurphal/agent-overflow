@@ -3,15 +3,9 @@
 // that reverts the conversation and sends the replacement under a
 // single thread lock.
 //
-// What only this level can prove is the CHOREOGRAPHY. The backend emits
-// `user_message:reverted` before it dispatches the resend, and both
-// frames travel the same FIFO WebSocket, so the user must see the tail
-// collapse and THEN the replacement arrive — never a replacement row
-// landing in a timeline that is about to be cut. The `step-gated`
-// scenario is what makes that observable instead of racy: the resend's
-// mock session parks before it emits a single assistant frame, so the
-// truncated-and-resent state is a stable thing to assert on rather than
-// a moment to catch.
+// The prepared replacement and its cut arrive together. The step-gated provider
+// parks before assistant output so the replacement state can be inspected.
+// Frame-by-frame presentation and cleanup gating live in revert-presentation.
 //
 // Scope note: the anchor here is the thread's FIRST user message, whose
 // rollback drops the Claude session reference outright. Reverting to a

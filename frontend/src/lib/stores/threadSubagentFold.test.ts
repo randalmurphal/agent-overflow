@@ -314,7 +314,7 @@ describe('subagent fold', () => {
       pane.upsertItem(childItem('fold-revert'));
       expect(pane.subagentLiveAggregate('anchor')?.evictedCount).toBe(1);
 
-      const removed = pane.removeItemsFromTurn(1);
+      const removed = pane.removeItemsFromTurn(1, pane.threadId!);
 
       expect(removed.map((it) => it.id)).toEqual(['anchor']);
       expect(pane.subagentLiveAggregate('anchor')).toBeUndefined();

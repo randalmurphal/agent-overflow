@@ -356,13 +356,13 @@ export const Events = {
     name: string,
     handler: (ev: { name: string; data: unknown; origin?: EventOrigin }) => void,
   ): () => void {
-    return subscribeEveryBackend(name, (data, transport) => {
+    return subscribeEveryBackend(name, (data, transport, sequence) => {
       // threadId is the shared routing field on thread-scoped runtime events.
       // Row ownership events use id/thread.id and are admitted separately so a
       // newer owner can introduce itself before its runtime events arrive.
       const threadId = (data as { threadId?: unknown } | null)?.threadId;
       if (typeof threadId === 'string' && !currentThreadEvent(threadId, backendKeyForOrigin(transport.origin.backendId))) return;
-      handler({ name, data, origin: transport.origin });
+      handler({ name, data, origin: sequence === undefined ? transport.origin : { ...transport.origin, sequence } });
     });
   },
   Emit(_event: { name: string; data: unknown }): void {

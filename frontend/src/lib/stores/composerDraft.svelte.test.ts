@@ -1,3 +1,4 @@
+import { setBackendIdentityFromBootstrap } from '../transport/backendIdentity';
 import { describe, expect, it, beforeEach } from 'vitest';
 import {
   createComposerDraftStore,
@@ -5,7 +6,7 @@ import {
 } from './composerDraft.svelte';
 import type { Attachment } from '../types/attachment';
 import { getToasts } from './toast.svelte';
-import { getRememberedDraftSnapshot } from './composerDraftSnapshots';
+import { pendingDraftRestore, getRememberedDraftSnapshot } from './composerDraftSnapshots';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 
 function installMocks(draft: {
@@ -45,6 +46,23 @@ describe('composerDraft store', () => {
   beforeEach(() => {
     resetComposerDraftSnapshotsForTest();
     installMocks({ content: '', attachmentIds: [], terminalChips: [] });
+  });
+
+  it('releases a restore barrier on history invalidation without writing queued edits to the new history', async () => {
+    const store = createComposerDraftStore();
+    await store.setThread('thread-1');
+    const writes: string[] = [];
+    setBindingMock('SaveDraft', async (_id: unknown, content: string) => { writes.push(content); });
+    store.applyOptimisticRestoredDraft('thread-1', { content: 'restored', attachments: [], terminalChips: [], sourceProposedPlan: null });
+    store.setContent('edited during cleanup');
+    const saving = store.flushPending();
+    setBackendIdentityFromBootstrap('restore-owner', 'after-history-reset');
+    await saving;
+    expect(pendingDraftRestore('thread-1')).toBeUndefined();
+    expect(writes).toEqual([]);
+    expect(store.content).toBe('edited during cleanup');
+    await store.flushPending();
+    expect(writes).toEqual(['edited during cleanup']);
   });
 
   it('hydrates content and attachments from the backend on setThread', async () => {
@@ -223,6 +241,7 @@ describe('composerDraft store', () => {
     await store.reloadFromBackend('thread-1');
 
     expect(store.content).toBe('edited prompt');
+    await store.settleOptimisticRestoredDraft('thread-1');
     await store.flushPending();
   });
 
@@ -844,4 +863,30 @@ describe('composerDraft store', () => {
     resolveSave?.();
     await flushing;
   });
+});
+
+
+it('orders edits after rollback across pane switches and remounts', async () => {
+  resetComposerDraftSnapshotsForTest();
+  const rows = new Map<string, string>();
+  setBindingMock('GetDraft', async (id: string) => ({ content: rows.get(id) ?? '', attachmentIds: [], terminalChips: [] }));
+  setBindingMock('ListAttachments', async () => []);
+  const writes: string[] = [];
+  setBindingMock('SaveDraft', async (id: string, content: string) => { rows.set(id, content); writes.push(content); });
+  const first = createComposerDraftStore({ debounceMs: 10000 });
+  await first.setThread('a');
+  first.applyOptimisticRestoredDraft('a', { content: 'raw /command', attachments: [], terminalChips: [], sourceProposedPlan: null });
+  first.setContent('raw /command plus edits');
+  await first.setThread('b');
+  expect(writes).toEqual([]);
+  const reopened = createComposerDraftStore({ debounceMs: 10000 });
+  await reopened.setThread('a');
+  expect(reopened.content).toBe('raw /command plus edits');
+  rows.set('a', 'raw /command'); // backend rollback restores the original
+  await reopened.reloadFromBackend('a');
+  expect(reopened.content).toBe('raw /command plus edits');
+  await first.settleOptimisticRestoredDraft('a');
+  expect(rows.get('a')).toBe('raw /command plus edits');
+  expect(first.content).toBe('');
+  await reopened.setThread(null);
 });

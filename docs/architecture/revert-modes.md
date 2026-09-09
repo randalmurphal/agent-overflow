@@ -14,15 +14,31 @@ message-boundary operations can slice provider history at that message:
   content yet, Stop rolls the message back (conversation only) and
   restores it into the composer draft instead of leaving a dangling
   turn.
-- **Edit-and-resend** (`app_revert_and_resend.go`): the edit-in-place
-  affordance on a past user message on an IDLE thread. One saga stages
-  the edited text in `thread_drafts` as a crash copy (merged ahead of
-  any composer work-in-progress), rolls back, emits
-  `user_message:reverted` with `draftPendingResend`, resends the
-  replacement through `sendMessageLocked`, and settles the draft row
-  back to the user's work-in-progress. The whole sequence holds one
-  acquisition of the thread's action lock, so no send, revert, or
-  session start can slip between the truncation and the replacement.
+- **Edit-and-resend** (`app_revert_and_resend.go`): stage the edited text in
+  `thread_draft_recoveries`, roll back, prepare the provider, then publish the
+  cut and persisted replacement together through `user_message:reverted`.
+  Composer autosaves remain independent. The thread action lock spans the cut
+  and send; a client send ID prevents duplicate replacement dispatch.
+
+Early Stop immediately restores the raw submitted draft and hides the outgoing
+turn. Background-task checks and provider cleanup run behind a Send gate while
+editing remains available. Draft autosaves wait behind restoration so switching
+panes cannot let the backend overwrite newer typing. A background guard or a
+raced assistant response declines the rollback and retains ordinary interrupt
+behavior.
+
+Older-message replacement keeps the editor loading until preparation completes.
+The client transfers follow intent before applying the cut and replacement in
+one render transaction, using the normal structural scroll spring. RPC results
+carry the same cut as the event and distinguish a refusal from a committed cut
+whose send failed. Channel sequence boundaries fence delayed pre-cut item and
+turn events; history revisions deduplicate cut delivery. After a lost response,
+a locked read confirms the outcome before Send unlocks.
+
+Recovery staging is removed after acceptance. On failure it merges atomically
+into the composer draft. Startup recovers unfinished edits without dispatching
+them and retires copies whose send ID is already accepted. Outstanding recovery
+prevents empty-thread cleanup, transfer export and snapshot rewind.
 
 All three are conversation-level operations. There is no working-tree
 revert: the per-message git-checkpoint machinery (hidden
@@ -47,28 +63,18 @@ missing or drifted anchor is synthesized from the item's persisted meta
 
 ## Rollback sequence
 
-`rollbackConversationLocked` (`app_conversation_rollback.go`) is the
-shared destructive tail behind the un-send and the edit-and-resend saga:
-stop the provider session, roll provider history back, delete
-`items`/`turns` from the selected turn onward, and, only when the
-caller passed a `promptDraft`, restore the prompt into
-`thread_drafts`.
-
-That last step is caller-owned. A nil `promptDraft` means the caller
-already put a durable copy in the draft row and settles it itself: the
-un-send passes the rolled-back prompt so the composer rehydrates, while
-edit-and-resend passes nil because there is nothing to rehydrate (the
-replacement is being sent) and the row is holding its crash copy. The
-active-turn rejection lives in the entry points, not here. The un-send
-interrupts the live turn first, and edit-and-resend refuses outright.
+`rollbackConversationLocked` (`app_conversation_rollback.go`) owns the shared
+provider rollback and cache truncation. Early un-send also restores a prompt
+draft; edit/resend owns separate durable recovery. Background-task guards remain
+in the entry points. Early Stop declines rollback while tasks run; older-message
+replacement requires explicit consent to stop them.
 
 Provider-side rollback differs by provider:
 
-- **Codex** has a native `thread/rollback` wire method
-  (`internal/provider/codex/session_rollback.go`); it uses the live
-  session when one is active, else resumes a short-lived temp session
-  just for the call. Rolling back to turn 0 (or to a prefix with no
-  provider-backed turns) starts a fresh thread instead.
+- **Codex** prefers native `thread/revert` for supported paginated sessions,
+  retaining the provider thread identity. Older app servers use `thread/fork`.
+  Both cut at turn boundaries. An empty provider prefix starts a fresh thread.
+  Native revert owns active-turn shutdown; it needs no preceding interrupt RPC.
 - **Claude** has no rollback RPC. `rollbackClaudeThreadToMessage`
   slices the current Claude JSONL through the end of the turn before
   the selected message using `internal/provider/claude/sessionfork`,

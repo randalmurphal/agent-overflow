@@ -124,6 +124,13 @@ func (s *Store) RestoreFrom(srcPath string) (identity Identity, retErr error) {
 	if transferring {
 		return Identity{}, fmt.Errorf("Finish or cancel conversation transfers before restoring history.")
 	}
+	var recovering bool
+	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM main.thread_draft_recoveries) OR EXISTS(SELECT 1 FROM restore_src.thread_draft_recoveries)`).Scan(&recovering); err != nil {
+		return Identity{}, err
+	}
+	if recovering {
+		return Identity{}, fmt.Errorf("Finish recovering edited messages before restoring history; the snapshot must also have no pending edits.")
+	}
 	var commandsRunning bool
 	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM remote_jobs WHERE state = 'running')`).Scan(&commandsRunning); err != nil {
 		return Identity{}, err

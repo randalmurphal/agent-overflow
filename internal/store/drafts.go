@@ -29,7 +29,11 @@ type ThreadDraft struct {
 // GetThreadDraft returns the draft for a thread, or (empty, false, nil) if no
 // draft row exists yet.
 func (s *Store) GetThreadDraft(threadID string) (ThreadDraft, bool, error) {
-	row := s.reader().QueryRow(
+	return getThreadDraft(s.reader(), threadID)
+}
+
+func getThreadDraft(q sqlQueryer, threadID string) (ThreadDraft, bool, error) {
+	row := q.QueryRow(
 		`SELECT thread_id, content, attachments, terminal_chips, pending_plan_implementation, updated_at
 		 FROM thread_drafts WHERE thread_id = ?`,
 		threadID,
@@ -62,6 +66,10 @@ func (s *Store) GetThreadDraft(threadID string) (ThreadDraft, bool, error) {
 // was, which is the honest answer (nothing was edited) and which nothing
 // reads: the draft's updated_at is not rendered anywhere.
 func (s *Store) UpsertThreadDraft(d ThreadDraft) (bool, error) {
+	return upsertThreadDraft(s.db, d)
+}
+
+func upsertThreadDraft(q sqlQueryer, d ThreadDraft) (bool, error) {
 	if d.ThreadID == "" {
 		return false, fmt.Errorf("store: upsert draft: thread id is required")
 	}
@@ -87,7 +95,7 @@ func (s *Store) UpsertThreadDraft(d ThreadDraft) (bool, error) {
 	// nullable and `NULL <> 'x'` is NULL, which SQLite reads as false — a `<>`
 	// predicate would report a plan link appearing or disappearing as a no-op.
 	var written string
-	err := s.db.QueryRow(
+	err := q.QueryRow(
 		`INSERT INTO thread_drafts (thread_id, content, attachments, terminal_chips, pending_plan_implementation, updated_at, has_content)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(thread_id) DO UPDATE SET

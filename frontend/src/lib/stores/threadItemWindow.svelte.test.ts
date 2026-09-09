@@ -422,7 +422,7 @@ describe('threadItemWindow', () => {
         makeItem({ id: 'x', threadId: 't', turnIndex: 1 }),
       ]);
       setThreadSizePriors('t', { ...seedEntry });
-      pane.removeItemsFromTurn(1);
+      pane.removeItemsFromTurn(1, pane.threadId!);
       expect(peekThreadSizePriorsForTest('t')).toBeUndefined();
     });
 
@@ -639,7 +639,7 @@ describe('threadItemWindow', () => {
       ]);
       const revision = pane.rowUiRetentionRevision;
 
-      expect(pane.removeItemsFromTurn(1).map((it) => it.id)).toEqual(['live']);
+      expect(pane.removeItemsFromTurn(1, pane.threadId!).map((it) => it.id)).toEqual(['live']);
 
       expect(pane.rowUiRetentionRevision).toBeGreaterThan(revision);
     });
@@ -680,7 +680,7 @@ describe('threadItemWindow', () => {
       });
       expect(pane.activityRuns.wholesaleGeneration).toBe(generation);
 
-      expect(pane.removeItemsFromTurn(1).map((it) => it.id)).toEqual(['tool']);
+      expect(pane.removeItemsFromTurn(1, pane.threadId!).map((it) => it.id)).toEqual(['tool']);
 
       expect(pane.activityRuns.wholesaleGeneration).toBeGreaterThan(generation);
     });

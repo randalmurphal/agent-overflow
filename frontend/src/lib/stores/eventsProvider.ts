@@ -1,3 +1,5 @@
+import { survivesRevertedTurnEvent } from './eventsItemStream';
+import type { EventOrigin } from '../transport/handle';
 import { resolveThreadBackend } from '../transport/entityIndex';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { threadMachine, getAttachedBackends } from './attachedBackends.svelte';
@@ -395,8 +397,8 @@ export function applyProviderSessionAccount(evt: ProviderSessionAccountEvent): v
  * is `GetThreadLiveState` hydration after refresh. Neither path derives
  * turn activity from durable item history.
  */
-export function applyTurnStarted(evt: TurnStartedEvent): void {
-  if (!evt?.threadId || !evt.turnId) return;
+export function applyTurnStarted(evt: TurnStartedEvent, origin?: EventOrigin): void {
+  if (!evt?.threadId || !evt.turnId || !survivesRevertedTurnEvent(evt.threadId, 'turnStartedSequence', origin)) return;
   // Pass the full {turnIndex, startedAt} into the global registry so
   // the chat working indicator's self-ticking timer and the timeline
   // boundary projection can read both without a separate write path.
@@ -427,8 +429,8 @@ export function applyTurnStarted(evt: TurnStartedEvent): void {
  * thread-switch rehydration — so malformed JSON degrades gracefully to
  * `tokenUsage: null` rather than crashing the listener.
  */
-export function applyTurnCompleted(evt: TurnCompletedEvent): void {
-  if (!evt?.threadId || !evt.turnId) return;
+export function applyTurnCompleted(evt: TurnCompletedEvent, origin?: EventOrigin): void {
+  if (!evt?.threadId || !evt.turnId || !survivesRevertedTurnEvent(evt.threadId, 'turnCompletedSequence', origin)) return;
   // New usage_ledger rows may exist for this turn; nudge every usage
   // surface (composer chip, sidebar footer, usage modal) to refetch —
   // the composer chip is thread-scoped and only reacts to its own
@@ -456,6 +458,7 @@ export function applyTurnCompleted(evt: TurnCompletedEvent): void {
   // backend marked this as a revert-on-interrupt, in which case the
   // pill stays clean (nothing happened, so don't paint it like it did).
   projectTurnCompleted(evt.threadId, evt.turnId, {
+    turnIndex: evt.turnIndex,
     aborted: settled.aborted,
     errorMessage: settled.errorMessage,
     revertedUserMessage: Boolean(evt.revertedUserMessage),

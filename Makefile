@@ -1,4 +1,4 @@
-.PHONY: help ao-harness-docs methodgen install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-macos go-build go-test test-race provider-smoke-compile provider-smoke import-corpus-smoke mockprovider harness-build harness harness-window soak-window e2e apk apk-release e2e-android
+.PHONY: help ao-harness-docs methodgen install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-macos go-build go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider harness-build harness harness-window soak-window e2e apk apk-release e2e-android
 
 # Print the supported build, test, harness, and smoke targets. Keep this
 # short enough to use from an unfamiliar checkout. `make e2e` is the
@@ -170,9 +170,10 @@ test-race:
 # binary-path override) and asserts schema acceptance, envelope round-trip, and
 # the §9 worktree/branch rules. A Claude-only scenario additionally builds a
 # real multi-branch transcript and proves the CLI resumes a fork cut by the
-# session importer's lazy branch materialisation. It SPENDS REAL MODEL TOKENS —
-# one trivial turn per provider plus four for that scenario — and requires both
-# CLIs installed and authenticated.
+# session importer's lazy branch materialisation. It SPENDS REAL MODEL TOKENS:
+# one trivial turn per provider, four for that scenario, and four answered
+# turns plus one early interrupt per provider for the revert flow. Both CLIs
+# must be installed and authenticated.
 #
 # The `providersmoke` build tag keeps these tests out of `make go-test`.
 # `make verify` compiles them without running any test so production API changes
@@ -183,14 +184,18 @@ test-race:
 # internal/app/providersmoke_test.go.
 #
 # -timeout covers the sum of the in-test deadlines (6m per workflow leg, 3m for
-# the imported-branch scenario, plus per-leg auth probes) with headroom, so a
-# wedged turn fails through the gate's own diagnostics rather than as a bare
-# test-binary timeout panic.
+# the imported-branch scenario, 6m per revert leg, plus auth probes) with
+# headroom, so a wedged turn fails through the gate's own diagnostics rather
+# than as a bare test-binary timeout panic.
 provider-smoke-compile:
 	go test -tags providersmoke -run '^$$' ./internal/app
 
 provider-smoke:
-	go test -tags providersmoke -run 'TestProviderSmoke' -v -count=1 -timeout 20m ./internal/app
+	go test -tags providersmoke -run 'TestProviderSmoke' -v -count=1 -timeout 35m ./internal/app
+
+# Focused real-provider rollback/resume gate; also included in provider-smoke.
+provider-smoke-revert:
+	go test -tags providersmoke -run '^TestProviderSmokeRevertFlows$$' -v -count=1 -timeout 15m ./internal/app
 
 # Two supplied production artifacts, disposable state, mocked providers.
 .PHONY: service-artifact-smoke

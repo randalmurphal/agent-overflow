@@ -132,6 +132,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetCommitDiff", ID: 3399370629, Scope: "files:read", Route: "workspace"},                                 // main.App.GetCommitDiff
 	{Name: "GetComputerRoutes", ID: 873893084, Scope: "session", Route: "selected"},                                  // main.App.GetComputerRoutes
 	{Name: "GetContextSettings", ID: 3416004963, Scope: "settings:read", Route: "home"},                              // main.App.GetContextSettings
+	{Name: "GetConversationMutationState", ID: 3307838728, Scope: "threads:operate", Route: "thread"},                // main.App.GetConversationMutationState
 	{Name: "GetDevServers", ID: 139818238, Scope: "preview:open", Route: "selected"},                                 // main.App.GetDevServers
 	{Name: "GetDeviceName", ID: 1370118726, Scope: "session", Route: "home"},                                         // main.App.GetDeviceName
 	{Name: "GetDiffContextLines", ID: 1590634674, Scope: "files:read", Route: "workspace"},                           // main.App.GetDiffContextLines

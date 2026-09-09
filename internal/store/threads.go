@@ -464,6 +464,7 @@ func (s *Store) ListThreadsWithItems() ([]Thread, error) {
 		   AND (
 		       threads.mode = 'terminal'
 		    OR EXISTS (SELECT 1 FROM timeline_items WHERE timeline_items.thread_id = threads.id)
+		    OR EXISTS (SELECT 1 FROM thread_draft_recoveries WHERE thread_id = threads.id)
 		    OR EXISTS (
 		         SELECT 1 FROM thread_drafts
 		          WHERE thread_drafts.thread_id = threads.id

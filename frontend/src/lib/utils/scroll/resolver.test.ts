@@ -855,3 +855,24 @@ describe('resolveEngineCompensation — structural invariants', () => {
     expect(checked).toBe(2 * 2 * 2 * 2 * 2 * 2 * 6);
   });
 });
+
+describe('prepared replacement after a tail cut', () => {
+  it('honors the send arm when total height shrinks but the new tail is ahead', () => {
+    const decision = resolveContentDelivery(state({ structuralAppendPending: true }), delta({ delta: -1600, scrollTop: 400, target: 800 }));
+    expect(decision.startSpring).toBe(true);
+    expect(decision.write).toBeNull();
+  });
+  it.each([
+    ['reduced motion', { prefersReducedMotion: true }],
+    ['width reflow', { widthReflowActive: true }],
+    ['pinned remeasure', { pinnedRemeasureActive: true }],
+  ])('keeps the %s layout guard', (_label, override) => {
+    const decision = resolveContentDelivery(state({ structuralAppendPending: true }), delta({ delta: -1600, scrollTop: 400, target: 800, ...override }));
+    expect(decision.startSpring).toBe(false);
+    expect(decision.write?.value).toBe(800);
+  });
+  it('keeps reader escape and startup gates', () => {
+    expect(resolveContentDelivery(state({ structuralAppendPending: true, escaped: true }), delta({ delta: -1600, scrollTop: 400, target: 800 })).write).toBeNull();
+    expect(resolveContentDelivery(state({ structuralAppendPending: true, warm: false }), delta({ delta: -1600, scrollTop: 400, target: 800 })).startSpring).toBe(false);
+  });
+});

@@ -1,3 +1,4 @@
+import { getUndoableSend } from '../../stores/composerSendUndo';
 import { buildSendOptions } from '../../utils/sendOptions';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { dispatchSend } from './composerSend';
@@ -273,4 +274,19 @@ describe('dispatchSend', () => {
     expect(await dispatchSend(sendOptions())).toBe(true);
     expect(pin).not.toHaveBeenCalled();
   });
+  it('does not dispatch when Stop cancelled the captured draft preparation', async () => {
+    const send = setBindingMock('SendMessageWithOptions', async () => makeThread());
+    let ready!: () => void;
+    const draftReady = new Promise<void>((resolve) => { ready = resolve; });
+    const opts = { ...sendOptions(), draftReady };
+    const pending = dispatchSend(opts);
+    const undo = getUndoableSend(opts.threadId)!;
+    undo.undoRequested = true;
+    ready();
+    expect(await pending).toBe(false);
+    expect(await undo.completion).toBe('cancelled');
+    expect(send).not.toHaveBeenCalled();
+    expect(opts.restoreDraft).not.toHaveBeenCalled();
+  });
+
 });

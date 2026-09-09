@@ -219,7 +219,7 @@ func TestInterruptRevertEventCarriesPostCutStamps(t *testing.T) {
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "the original prompt")
 	before := appHistoryStamp(t, app, thread.ID)
 
-	result, err := app.InterruptAndRevertIfClean(thread.ID)
+	result, err := app.InterruptAndRevertIfClean(thread.ID, InterruptRevertOptions{})
 	if err != nil {
 		t.Fatalf("interrupt-and-revert: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestRevertAndResendEventCarriesPostCutStamps(t *testing.T) {
 	thread, _ := seedResendThread(t, app, "t-resend-stamps")
 	before := appHistoryStamp(t, app, thread.ID)
 
-	if err := app.RevertConversationAndResendMessage(context.Background(), thread.ID, "user:1",
+	if err := revertAndResendForTest(app, context.Background(), thread.ID, "user:1",
 		RevertAndResendOptions{Content: "rewritten second"}); err != nil {
 		t.Fatalf("revert and resend: %v", err)
 	}

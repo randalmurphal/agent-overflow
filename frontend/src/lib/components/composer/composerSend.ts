@@ -1,3 +1,4 @@
+import { beginUndoableSend, retireUndoableSend, type SendUndoOutcome } from '../../stores/composerSendUndo';
 // Composer send / interrupt flow.
 //
 // Extracted from Composer.svelte to shrink the shell below the 300-line
@@ -25,6 +26,7 @@ import { autoPinNewThread, shouldAutoPinFirstSend } from '../../stores/threadAut
 
 export interface SendOptions {
   threadId: string;
+  turnIndex?: number;
   message: string;
   /** Captured draft persistence must succeed before any send is issued. */
   draftReady?: Promise<void>;
@@ -54,8 +56,12 @@ export interface SendOptions {
  */
 export async function dispatchSend(opts: SendOptions): Promise<boolean> {
   let sendStarted = false;
+  let outcome: SendUndoOutcome = 'failed';
+  const undo = beginUndoableSend(opts.threadId, opts.options.sendId, { ...opts.snapshot, sourceProposedPlan: opts.snapshot.sourceProposedPlan ?? null }, opts.turnIndex);
   try {
     if (opts.draftReady) await opts.draftReady;
+    if (undo.undoRequested) { outcome = 'cancelled'; return false; }
+    undo.dispatched = true;
     const autoPinAfterSend = shouldAutoPinFirstSend(getThreadById(opts.threadId));
     // Optimistically flip the sidebar pill to Working the moment the
     // user clicks Send. Provider sessions for brand-new threads take
@@ -68,11 +74,21 @@ export async function dispatchSend(opts: SendOptions): Promise<boolean> {
     sendStarted = true;
 
     let updated = (await SendMessageWithOptions(opts.threadId, opts.message, opts.options)) as Thread;
-    if (autoPinAfterSend) updated = await autoPinNewThread(updated);
+    if (autoPinAfterSend) {
+      try { updated = await autoPinNewThread(updated); }
+      catch (err) { opts.reportError(`Message sent, but pinning the thread failed: ${userFacingError(err)}`); }
+    }
     syncThread(updated);
+    outcome = 'accepted';
     return true;
   } catch (err) {
     console.error('Failed to send message:', err);
+    if (undo.undoRequested) {
+      outcome = isUndeliveredSendError(err) ? 'unknown' : 'failed';
+      if (sendStarted && outcome === 'failed') projectSendResolved(opts.threadId);
+      opts.reportError(`Send interrupted during preparation: ${userFacingError(err)}`);
+      return false;
+    }
     // Flip to error so the sidebar pill reads "Failed" — the user
     // should see the failure without having to open the thread.
     if (sendStarted) {
@@ -124,5 +140,8 @@ export async function dispatchSend(opts: SendOptions): Promise<boolean> {
       );
     }
     return false;
+  } finally {
+    undo.finish(outcome);
+    if (outcome !== 'accepted') retireUndoableSend(opts.threadId, undo);
   }
 }

@@ -1,3 +1,5 @@
+import { getUndoableSend, retireUndoableSend, resetUndoableSendsForTest } from './composerSendUndo';
+import { isThreadInterruptRestored } from './threadInterruptState.svelte';
 import type { ApprovalKind } from '../types/events';
 import type { Thread } from '../types/models';
 import { resolveEffectiveThreadStatus } from '../utils/threadStatusPill';
@@ -196,6 +198,7 @@ function recalculateThreadStatus(threadId: string): void {
  * to render no dot, so callers don't need to special-case undefined.
  */
 export function getThreadStatus(threadId: string): ThreadLiveStatus {
+  if (isThreadInterruptRestored(threadId)) return 'idle';
   const stored = statuses.get(threadId);
   if ((approvalIDsByThread.get(threadId)?.size ?? 0) > 0 || stored === 'pending-approval') {
     return 'pending-approval';
@@ -278,6 +281,7 @@ export function setThreadStatus(threadId: string, status: ThreadLiveStatus): voi
 export function clearThreadStatus(threadId: string): void {
   activeTurns.drop(threadId);
   completedTurnIDsByThread.delete(threadId);
+  retireUndoableSend(threadId);
   pendingSendThreads.drop(threadId);
   for (const requestIdSet of [
     approvalIDsByThread.get(threadId),
@@ -350,18 +354,19 @@ export function projectSendResolved(threadId: string, opts: { error?: boolean } 
  */
 export function hasPendingSend(threadId: string | null | undefined): boolean {
   if (!threadId) return false;
-  return pendingSendThreads.get(threadId);
+  return !isThreadInterruptRestored(threadId) && pendingSendThreads.get(threadId);
 }
 
 export function isThreadWorking(threadId: string | null | undefined): boolean {
   if (!threadId) return false;
+  if (isThreadInterruptRestored(threadId)) return false;
   return activeTurns.get(threadId) !== null
     || pendingSendThreads.get(threadId)
     || hasQueueItems(threadId);
 }
 
 export function isSendInFlight(threadId: string | null | undefined, paneSendInFlight: boolean): boolean {
-  return paneSendInFlight || hasPendingSend(threadId);
+  return !isThreadInterruptRestored(threadId) && (paneSendInFlight || hasPendingSend(threadId));
 }
 
 /**
@@ -486,11 +491,13 @@ export function projectTurnStarted(
 export function projectTurnCompleted(
   threadId: string,
   turnId: string,
-  opts: { aborted?: boolean; errorMessage?: string; revertedUserMessage?: boolean } = {},
+  opts: { turnIndex?: number; aborted?: boolean; errorMessage?: string; revertedUserMessage?: boolean } = {},
 ): void {
   if (!threadId || !turnId) return;
   markCompletedTurnID(threadId, turnId);
+  if (opts.turnIndex !== undefined && getUndoableSend(threadId)?.turnIndex === opts.turnIndex) retireUndoableSend(threadId);
   if (activeTurns.get(threadId)?.turnId === turnId) {
+    retireUndoableSend(threadId);
     activeTurns.set(threadId, null);
   }
   if (opts.errorMessage && opts.errorMessage.length > 0) {
@@ -588,6 +595,11 @@ function hasCompletedTurnID(threadId: string, turnId: string): boolean {
   return completedTurnIDsByThread.get(threadId)?.has(turnId) === true;
 }
 
+/** Execution reconciliation must read through the temporary presentation overlay. */
+export function getCanonicalActiveTurn(threadId: string | null | undefined): ActiveTurn | null {
+  return threadId ? activeTurns.get(threadId) : null;
+}
+
 /**
  * Read the live in-flight turn for a thread. Returns null when no
  * turn is active or the thread id is empty/null/undefined. The
@@ -599,7 +611,7 @@ function hasCompletedTurnID(threadId: string, turnId: string): boolean {
  */
 export function getActiveTurn(threadId: string | null | undefined): ActiveTurn | null {
   if (!threadId) return null;
-  return activeTurns.get(threadId);
+  return isThreadInterruptRestored(threadId) ? null : activeTurns.get(threadId);
 }
 
 /**
@@ -729,6 +741,7 @@ export function projectThreadViewed(threadId: string): void {
  * send queue because `isThreadWorking` reads that bridge state.
  */
 export function resetForTest(): void {
+  resetUndoableSendsForTest();
   activeTurns.reset();
   completedTurnIDsByThread.clear();
   pendingSendThreads.reset();

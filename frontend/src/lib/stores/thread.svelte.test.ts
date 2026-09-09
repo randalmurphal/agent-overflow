@@ -8,6 +8,7 @@
 // load, turns, reveal smoothing/sequencing, scroll, errors, companions —
 // named after the module it covers.
 
+import { beginThreadInterrupt, presentThreadInterruptAsRestored, finishThreadInterrupt } from './threadInterruptState.svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
 import { createThreadPane } from './thread.svelte';
@@ -100,6 +101,25 @@ describe('createThreadPane', () => {
     releases[0]({ threadId: pane.threadId, activeTurn: { threadId: pane.threadId, turnId: 'old-running', turnIndex: 1, startedAt: 10 } });
     await history;
     expect(getActiveTurn(pane.threadId)).toBeNull();
+  });
+
+  it('clears canonical activity during optimistic un-send recovery', async () => {
+    const pane = await buildPane(makeThread({ id: 'undo-recovery' }));
+    const id = pane.threadId!;
+    projectTurnStarted(id, 'old-turn', 3, 100);
+    const token = beginThreadInterrupt(id)!;
+    presentThreadInterruptAsRestored(id, token, 3);
+    setBindingMock('GetThreadLiveState', async () => ({ threadId: id, activeTurn: null }));
+    await pane.refreshFromBackend(true);
+    finishThreadInterrupt(id, token);
+    expect(getActiveTurn(id)).toBeNull();
+    expect(getThreadStatus(id)).toBe('idle');
+  });
+
+  it('rejects strict recovery when execution state cannot be fetched', async () => {
+    const pane = await buildPane(makeThread({ id: 'failed-recovery' }));
+    setBindingMock('GetThreadLiveState', async () => { throw new Error('execution snapshot unavailable'); });
+    await expect(pane.refreshFromBackend(true)).rejects.toThrow('execution snapshot unavailable');
   });
 
   it('starts empty', () => {

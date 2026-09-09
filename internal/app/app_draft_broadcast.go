@@ -110,3 +110,13 @@ func (a *App) broadcastDraft(who transport.ClientIdentity, evt DraftUpdatedEvent
 	evt.ConnectionID = who.ConnectionID
 	a.emitEvent(eventchan.DraftUpdated, evt)
 }
+
+// writeRecoveredThreadDraft atomically consumes a recovery row with its draft write.
+func (a *App) writeRecoveredThreadDraft(who transport.ClientIdentity, recovery store.ThreadDraftRecovery, expected, merged store.ThreadDraft) (bool, error) {
+	committed, changed, err := a.store.CommitThreadDraftRecovery(recovery, expected, merged)
+	if err != nil || !committed || !changed {
+		return committed, err
+	}
+	a.broadcastDraft(who, DraftUpdatedEvent{ThreadID: recovery.ThreadID, UpdatedAt: merged.UpdatedAt})
+	return true, nil
+}

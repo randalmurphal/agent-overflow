@@ -536,6 +536,7 @@
     canPreserveTimelineWindow: windowAnchor.canPreserveTimelineWindow,
     visibleTimelineItemIds: windowAnchor.visibleTimelineItemIds,
     preserveViewportBottom: windowAnchor.preserveViewportBottom,
+    followReplacement: () => stick.markAtBottom(),
     stickToLatest: () => {
       void paging.jumpToLatest();
     },

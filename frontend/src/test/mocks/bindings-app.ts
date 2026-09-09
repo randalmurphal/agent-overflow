@@ -147,6 +147,7 @@ export const SendMessage = dispatch('SendMessage');
 export const SendMessageWithOptions = dispatch('SendMessageWithOptions');
 export const SteerMessageWithOptions = dispatch('SteerMessageWithOptions');
 export const InterruptTurn = dispatch('InterruptTurn');
+export const GetConversationMutationState = dispatch('GetConversationMutationState');
 export const InterruptAndRevertIfClean = dispatch('InterruptAndRevertIfClean');
 export const GetThreadLiveState = dispatch('GetThreadLiveState');
 export const ListThreadLiveActivity = dispatch('ListThreadLiveActivity');

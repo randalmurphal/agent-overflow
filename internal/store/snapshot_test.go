@@ -128,3 +128,22 @@ func TestRestoreFromForeignKeysStayEnforced(t *testing.T) {
 		t.Fatal("FK enforcement lost after restore")
 	}
 }
+
+func TestSnapshotRestoreCannotErasePendingEditRecovery(t *testing.T) {
+	st := snapshotTestStore(t)
+	seedSnapshotFixture(t, st, "thread", "Before")
+	snapshot := filepath.Join(t.TempDir(), "saved.db")
+	if err := st.SnapshotTo(snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.StageThreadDraftRecovery(ThreadDraftRecovery{ThreadID: "thread", SendID: "edit", Content: "unsent edit", Attachments: "[]"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.RestoreFrom(snapshot); err == nil {
+		t.Fatal("restore discarded pending recovery")
+	}
+	rows, err := st.ListThreadDraftRecoveries()
+	if err != nil || len(rows) != 1 || rows[0].Content != "unsent edit" {
+		t.Fatalf("recovery lost: %+v %v", rows, err)
+	}
+}

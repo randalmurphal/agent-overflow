@@ -310,7 +310,7 @@ func TestRegisterQueueItemSerializesInterruptRevertAcrossFlushHandoff(t *testing
 	}
 	result := make(chan iarOutcome, 1)
 	go func() {
-		res, err := app.InterruptAndRevertIfClean(thread.ID)
+		res, err := app.InterruptAndRevertIfClean(thread.ID, InterruptRevertOptions{})
 		result <- iarOutcome{res, err}
 	}()
 
@@ -475,7 +475,7 @@ func TestRunPlainInterruptLockedNoSessionIsNoOp(t *testing.T) {
 func TestInterruptAndRevertIfCleanRejectsEmptyThreadID(t *testing.T) {
 	app := newTestApp(t)
 
-	_, err := app.InterruptAndRevertIfClean("")
+	_, err := app.InterruptAndRevertIfClean("", InterruptRevertOptions{})
 	if err == nil {
 		t.Fatalf("expected error for empty thread id, got nil")
 	}
@@ -506,7 +506,7 @@ func TestInterruptAndRevertIfCleanFallsBackWhenAssistantPresent(t *testing.T) {
 		t.Fatalf("append assistant: %v", err)
 	}
 
-	result, err := app.InterruptAndRevertIfClean(thread.ID)
+	result, err := app.InterruptAndRevertIfClean(thread.ID, InterruptRevertOptions{})
 	if err != nil {
 		t.Fatalf("interrupt-and-revert: %v", err)
 	}
@@ -544,7 +544,7 @@ func TestInterruptAndRevertIfCleanRevertsClaudeFirstTurn(t *testing.T) {
 	}
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "the original prompt")
 
-	result, err := app.InterruptAndRevertIfClean(thread.ID)
+	result, err := app.InterruptAndRevertIfClean(thread.ID, InterruptRevertOptions{})
 	if err != nil {
 		t.Fatalf("interrupt-and-revert: %v", err)
 	}
@@ -657,7 +657,7 @@ func TestInterruptAndRevertIfCleanRevertsClaudeTUIWithoutKillingSession(t *testi
 	thread := createAppTestThread(t, app, "revert-tui", "claude-tui", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "the original prompt")
 
-	result, err := app.InterruptAndRevertIfClean(thread.ID)
+	result, err := app.InterruptAndRevertIfClean(thread.ID, InterruptRevertOptions{})
 	if err != nil {
 		t.Fatalf("interrupt-and-revert: %v", err)
 	}
@@ -699,7 +699,7 @@ func TestInterruptAndRevertIfCleanRevertsWithSynthesizedAnchor(t *testing.T) {
 	// eligible because it only depends on items + queue, and the revert
 	// helper synthesizes a record from the user item.
 
-	result, err := app.InterruptAndRevertIfClean(thread.ID)
+	result, err := app.InterruptAndRevertIfClean(thread.ID, InterruptRevertOptions{})
 	if err != nil {
 		t.Fatalf("interrupt-and-revert: %v", err)
 	}
@@ -764,7 +764,7 @@ func TestInterruptAndRevertIfCleanCodexStopsSessionWithActiveTurn(t *testing.T) 
 		Codex:    sess,
 	})
 
-	result, err := app.InterruptAndRevertIfClean(thread.ID)
+	result, err := app.InterruptAndRevertIfClean(thread.ID, InterruptRevertOptions{})
 	if err != nil {
 		t.Fatalf("interrupt-and-revert: %v", err)
 	}
@@ -825,6 +825,9 @@ func TestInterruptAndRevertIfCleanCodexUsesLiveThreadRevert(t *testing.T) {
 		t.Fatalf("start active turn: %v", err)
 	}
 	insertUserItem(t, app.store, thread.ID, "u:1", 1, "restore me")
+	// Early Stop can beat the provider's user-message echo. Its pending
+	// correlation must leave with the reverted turn even on a live session.
+	app.triage.RegisterPendingSendWithExpectation(thread.ID, "u:1", 1, triage.PendingSendExpectation{ByClientID: true})
 	var completions []triage.TurnCompletedEvent
 	var providerEvents []provider.EventKind
 	app.testEmitHook = func(name string, data any) {
@@ -873,7 +876,7 @@ func TestInterruptAndRevertIfCleanCodexUsesLiveThreadRevert(t *testing.T) {
 		Codex:    sess,
 	})
 
-	result, err := app.InterruptAndRevertIfClean(thread.ID)
+	result, err := app.InterruptAndRevertIfClean(thread.ID, InterruptRevertOptions{})
 	if err != nil {
 		t.Fatalf("interrupt-and-revert: %v", err)
 	}
@@ -913,6 +916,23 @@ func TestInterruptAndRevertIfCleanCodexUsesLiveThreadRevert(t *testing.T) {
 	}
 	if len(completions) != 1 || !completions[0].RevertedUserMessage {
 		t.Fatalf("turn completions = %+v from provider events %v, want one revert-owned completion", completions, providerEvents)
+	}
+	if app.triage.HasPendingSendForThread(thread.ID) {
+		t.Fatal("reverted turn retained a pending send on the live session")
+	}
+	next, err := app.nextSendTurnIndex(thread.ID)
+	if err != nil || next != 1 {
+		t.Fatalf("next send turn = %d, err=%v, want 1", next, err)
+	}
+	app.triage.RegisterPendingSendWithExpectation(thread.ID, "u:next", next, triage.PendingSendExpectation{ByClientID: true})
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: thread.ID, TurnID: "turn-next", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	turns, err := app.store.ListRecentTurns(thread.ID, 1)
+	if err != nil || len(turns) != 1 || turns[0].TurnIndex != next {
+		t.Fatalf("next native turn = %+v, err=%v, want index %d", turns, err, next)
 	}
 }
 
@@ -1060,7 +1080,7 @@ func TestInterruptAndRevertIfCleanCodexMarksCompletionDuringInterruptAsReverted(
 		Codex:    sess,
 	})
 
-	if _, err := app.InterruptAndRevertIfClean(thread.ID); err != nil {
+	if _, err := app.InterruptAndRevertIfClean(thread.ID, InterruptRevertOptions{}); err != nil {
 		t.Fatalf("interrupt-and-revert: %v", err)
 	}
 	if len(completions) == 0 {
@@ -1111,7 +1131,7 @@ func TestInterruptAndRevertIfCleanSurvivesCompactBoundary(t *testing.T) {
 	// path will read to populate the synthesized anchor.
 	insertUserItemWithMeta(t, app.store, thread.ID, "u:2", 2, "third", `{"provider_item_id":"u2"}`)
 
-	result, err := app.InterruptAndRevertIfClean(thread.ID)
+	result, err := app.InterruptAndRevertIfClean(thread.ID, InterruptRevertOptions{})
 	if err != nil {
 		t.Fatalf("interrupt-and-revert: %v", err)
 	}
@@ -1183,7 +1203,7 @@ func TestInterruptAndRevertIfCleanSurvivesPriorInterruptMarker(t *testing.T) {
 	// hasn't stamped the UUID yet.
 	insertUserItem(t, app.store, thread.ID, "u:2", 2, "third")
 
-	result, err := app.InterruptAndRevertIfClean(thread.ID)
+	result, err := app.InterruptAndRevertIfClean(thread.ID, InterruptRevertOptions{})
 	if err != nil {
 		t.Fatalf("interrupt-and-revert: %v", err)
 	}

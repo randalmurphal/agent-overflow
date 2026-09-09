@@ -83,6 +83,14 @@ type ThreadHistoryExport struct {
 }
 
 func (s *Store) ExportThreadHistoryWith(ctx context.Context, threadID string, output io.Writer, transform ThreadHistoryExport) error {
+	var recovery int
+	if err := s.reader().QueryRow(`SELECT COUNT(*) FROM thread_draft_recoveries WHERE thread_id = ?`, threadID).Scan(&recovery); err != nil {
+		return err
+	}
+	if recovery != 0 {
+		return errors.New("transfer: an edited message is still awaiting recovery")
+	}
+
 	output = &transferHistoryWriter{Writer: output, remaining: transferfiles.MaxFileBytes}
 	thread, err := s.GetThread(threadID)
 	if err != nil {

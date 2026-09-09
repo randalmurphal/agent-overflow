@@ -232,8 +232,8 @@ func TestDraftBroadcastHasOneEmitSite(t *testing.T) {
 	}
 	slices.Sort(emitters)
 	emitters = slices.Compact(emitters)
-	if !slices.Equal(emitters, []string{"removeThreadDraft", "writeThreadDraft"}) {
-		t.Fatalf("broadcastDraft callers = %v, want exactly [removeThreadDraft writeThreadDraft]", emitters)
+	if !slices.Equal(emitters, []string{"removeThreadDraft", "writeRecoveredThreadDraft", "writeThreadDraft"}) {
+		t.Fatalf("broadcastDraft callers = %v, want exactly [removeThreadDraft writeRecoveredThreadDraft writeThreadDraft]", emitters)
 	}
 }
 

@@ -35,6 +35,7 @@ import type { StepUpProver } from './wsClient';
  */
 export interface EventOrigin {
   readonly backendId: string;
+  readonly sequence?: number;
 }
 
 /** What a transport must provide to carry this app's RPCs and events. */
@@ -78,7 +79,7 @@ export interface TransportHandle {
    * (`setPresenceEverywhere`) and `stores/screenPresence.ts` composes it.
    */
   setPresence(focused: boolean, threadIds: readonly string[]): void;
-  subscribe(channel: string, handler: (data: unknown) => void): () => void;
+  subscribe(channel: string, handler: (data: unknown, sequence?: number) => void): () => void;
 }
 
 /**

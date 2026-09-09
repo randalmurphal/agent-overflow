@@ -37,3 +37,29 @@ it('a viewport-only delivery cannot snap an optimistic send to the bottom', asyn
     scroller.remove();
   }
 });
+
+it('a prepared replacement follows through the send spring from an escaped reader position', async () => {
+  const scroller = document.createElement('div');
+  scroller.style.cssText = 'position:fixed;width:400px;height:600px;overflow:auto;overflow-anchor:none';
+  const content = document.createElement('div');
+  content.style.height = '3000px';
+  scroller.appendChild(content);
+  document.body.appendChild(scroller);
+  const controller = createUseStickToBottomController({ externalContentGeometry: true });
+  const deliver = (height: number) => controller.deliverContentGeometry({ height, viewportHeight: 600, width: 400, windowMeasured: true, maxFirstMeasureCorrectionPx: 0 });
+  try {
+    controller.attach(scroller, content);
+    deliver(3000); controller.skipWarmup();
+    controller.setEscapedFromLock(true);
+    scroller.scrollTop = 400;
+    await raf();
+    controller.markAtBottom();
+    controller.markStructuralContentPending();
+    content.style.height = '1400px';
+    deliver(1400);
+    expect(scroller.scrollTop, 'publishing the replacement does not snap to the new tail').toBe(400);
+    await waitFor(() => scroller.scrollTop > 400, 'replacement motion starts');
+    expect(scroller.scrollTop).toBeLessThan(800);
+    await waitFor(() => Math.abs(scroller.scrollTop - 800) <= 1, 'replacement settles at the new tail', 240);
+  } finally { controller.detach(); scroller.remove(); }
+});

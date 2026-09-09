@@ -2,13 +2,17 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
+	"time"
+
+	"github.com/google/uuid"
 
 	"agent-overflow/internal/composerdraft"
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/itemwire"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
@@ -22,12 +26,21 @@ import (
 // positionals because the method crossed the arity where a transposed
 // bool still type-checks (mirrors SendMessageOptions).
 type RevertAndResendOptions struct {
+	SendID string `json:"sendId,omitempty"`
 	// Content is the edited replacement message.
 	Content       string   `json:"content"`
 	AttachmentIDs []string `json:"attachmentIds,omitempty"`
 	// KillRunningBackgroundTasks is the caller's explicit consent to kill
 	// background work the revert orphans; see the method doc.
 	KillRunningBackgroundTasks bool `json:"killRunningBackgroundTasks,omitempty"`
+}
+
+// RevertAndResendResult separates a refusal from a committed cut whose send failed.
+// Event delivery and RPC completion are independently scheduled.
+type RevertAndResendResult struct {
+	Warning string                    `json:"warning,omitempty"`
+	Cut     *UserMessageRevertedEvent `json:"cut,omitempty"`
+	Failure string                    `json:"failure,omitempty"`
 }
 
 // RevertConversationAndResendMessage rolls a thread back to the selected
@@ -51,10 +64,9 @@ type RevertAndResendOptions struct {
 // This one mutates the current thread and keeps it. It shares the whole
 // destructive tail (provider rollback -> truncate) with
 // InterruptAndRevertIfClean through rollbackConversationLocked and emits
-// the same `user_message:reverted` event, so the frontend truncates the
-// timeline through one code path — distinguished only by
-// DraftPendingResend, which tells it a replacement message is already on
-// the way and the draft row is saga state rather than composer content.
+// the same `user_message:reverted` event. A prepared replacement travels with
+// its cut, so clients can replace the tail in one render transaction. Recovery
+// staging lives in thread_draft_recoveries, independently of composer autosaves.
 //
 // Reverting stops the provider session, which kills any background work
 // it owns (Claude background tasks, Codex background terminals /
@@ -98,51 +110,70 @@ func (a *App) RevertConversationAndResendMessage(
 	threadID string,
 	userItemID string,
 	opts RevertAndResendOptions,
-) error {
+) (result RevertAndResendResult, err error) {
 	if a.shuttingDown.Load() {
-		return ErrShuttingDown
+		return result, ErrShuttingDown
 	}
 	if strings.TrimSpace(threadID) == "" {
-		return errors.New("revert and resend: thread id is required")
+		return result, errors.New("revert and resend: thread id is required")
 	}
 	if strings.TrimSpace(userItemID) == "" {
-		return errors.New("revert and resend: user item id is required")
+		return result, errors.New("revert and resend: user item id is required")
 	}
 	// An edit-resend with no text is a caller bug, not an empty send:
 	// this method's whole contract is "replace that message with this
 	// one", and there is no replacement to send.
 	if strings.TrimSpace(opts.Content) == "" {
-		return errors.New("revert and resend: edited message content is required")
+		return result, errors.New("revert and resend: edited message content is required")
 	}
 
+	releaseAdmission, admissionErr := a.lockSendAdmission(context.WithoutCancel(ctx), threadID, opts.SendID)
+	if admissionErr != nil {
+		return result, admissionErr
+	}
+	defer releaseAdmission()
 	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()
 	if err := a.threadApplication().CheckMutable(threadID); err != nil {
-		return err
+		return result, err
 	}
 
+	if _, found, lookupErr := a.findRecordedSend(threadID, opts.SendID); lookupErr != nil {
+		return result, lookupErr
+	} else if found {
+		return result, nil
+	}
 	thread, item, err := a.resolveRevertAndResendTarget(threadID, userItemID, opts.KillRunningBackgroundTasks)
 	if err != nil {
-		return err
+		return result, err
 	}
 
-	// Crash durability, BEFORE anything destructive. The edited text has
-	// no durable home yet: the old user row is about to be truncated and
-	// the replacement row does not exist until the resend persists it.
-	// Park the edit in the thread's draft row — merged AHEAD of whatever
-	// unsent composer WIP the user already had — so that from here until
-	// the resend commits, a crash at ANY point leaves both texts
-	// recoverable in the composer rather than silently destroying one.
-	// MergeParts carries the WIP's terminal chips and pending-plan link
-	// through untouched, which is what makes the restore at the end a
-	// byte-identical round-trip.
-	staged, err := a.mergeAndUpsertThreadDraft(threadID, []composerdraft.Part{{
-		Content:       opts.Content,
-		AttachmentIDs: opts.AttachmentIDs,
-	}})
-	if err != nil {
-		return fmt.Errorf("revert and resend: stage edited message: %w", err)
+	// Keep recovery independent from the editable composer row. Autosaves and
+	// other clients must never observe or overwrite transaction staging.
+	if opts.SendID == "" {
+		opts.SendID = uuid.NewString()
 	}
+	attachmentJSON, err := json.Marshal(opts.AttachmentIDs)
+	if err != nil {
+		return result, fmt.Errorf("revert and resend: encode attachments: %w", err)
+	}
+	recovery := store.ThreadDraftRecovery{ThreadID: threadID, SendID: opts.SendID, Content: opts.Content, Attachments: string(attachmentJSON)}
+	if err := a.store.StageThreadDraftRecovery(recovery); err != nil {
+		return result, fmt.Errorf("revert and resend: stage edited message: %w", err)
+	}
+	// A failed cut still preserves the edit. Recovery failures remain durable
+	// and are included in the operation's error, never silently discarded.
+	defer func() {
+		if err != nil {
+			if recoveryErr := a.recoverReplacementDraft(clientOf(ctx), recovery); recoveryErr != nil {
+				err = errors.Join(err, fmt.Errorf("restore edited draft: %w", recoveryErr))
+			}
+			if result.Cut != nil {
+				result.Failure = err.Error()
+				err = nil
+			}
+		}
+	}()
 
 	// resolveMessageAnchor synthesizes an anchor from the item row when
 	// the persisted one is missing or its turn index drifted, so the
@@ -150,11 +181,7 @@ func (a *App) RevertConversationAndResendMessage(
 	// un-send and fork-from-message paths.
 	anchor := a.resolveMessageAnchor("revert and resend", threadID, item)
 
-	// promptDraft nil: the rollback tail must NOT restore the old prompt
-	// to the composer. This saga owns the draft row (the crash copy
-	// staged above lives there), and there is no composer to rehydrate —
-	// the replacement is sent below.
-	//
+	// Recovery is already durable; the ordinary composer draft stays editable.
 	cut, err := a.rollbackConversationLocked(rollbackConversationLockedArgs{
 		thread:                      thread,
 		userItem:                    item,
@@ -164,53 +191,59 @@ func (a *App) RevertConversationAndResendMessage(
 		clearRunningBackgroundTasks: opts.KillRunningBackgroundTasks,
 	})
 	if err != nil {
-		return err
+		return result, err
 	}
 
-	// Emitted BEFORE the resend dispatches. Both frames travel the same
-	// FIFO WebSocket, so the frontend observes truncate-then-new-message
-	// and never sees the replacement user row land in a timeline it is
-	// about to cut.
-	a.emit(eventchan.UserMessageReverted, UserMessageRevertedEvent{
-		ThreadID:              threadID,
-		UserItemID:            item.ID,
-		TurnIndex:             item.TurnIndex,
+	cutEvent := UserMessageRevertedEvent{
+		TurnStartedSequence:   a.eventSequence(eventchan.ProviderTurnStarted),
+		TurnCompletedSequence: a.eventSequence(eventchan.ProviderTurnCompleted),
+		ThreadID:              threadID, UserItemID: item.ID, TurnIndex: item.TurnIndex,
 		KeptAnchorTurnItemIDs: cut.KeptAnchorTurnItemIDs,
-		HistoryRev:            cut.Stamp.Rev,
-		HistoryEpoch:          cut.Stamp.Epoch,
-		DraftPendingResend:    true,
-		ConnectionID:          clientOf(ctx).ConnectionID,
-	})
+		HistoryRev:            cut.Stamp.Rev, HistoryEpoch: cut.Stamp.Epoch,
+		ItemEventSequence:  a.itemEventSequence(),
+		DraftPendingResend: true, ConnectionID: clientOf(ctx).ConnectionID,
+	}
+	result.Cut = &cutEvent
+	published := false
+	defer func() {
+		// Startup or persistence can fail after the native cut. Publish that cut
+		// and return its outcome explicitly even if the event arrives after the RPC.
+		if !published {
+			a.emit(eventchan.UserMessageReverted, cutEvent)
+		}
+
+	}()
 
 	// sendMessageLocked, not sendMessageWithOptions: the whole saga runs
 	// under one acquisition of this thread's action lock, so nothing can
 	// slip a send, revert, or session start into the window between the
 	// truncation and the replacement.
 	//
-	// The option set is exact parity with the composer's own send
-	// (SendMessageWithOptions): this text was typed into a composer, so
-	// it gets D31 command expansion. PreserveDraft keeps the send from
-	// consuming the crash copy — this saga settles that row itself, below.
-	if _, err := a.sendMessageLocked(context.Background(), threadID, opts.Content, sendMessageOptions{
+	// PreserveDraft leaves composer work untouched on successful replacement.
+	if _, sendErr := a.sendMessageLocked(context.Background(), threadID, opts.Content, sendMessageOptions{
+		SendID:                 opts.SendID,
 		AttachmentIDs:          opts.AttachmentIDs,
 		ExpandComposerCommands: true,
 		PreserveDraft:          true,
-	}, sendMessagePrepared{}); err != nil {
-		// The conversation is already truncated and the event already
-		// told the frontend so. The merged draft row stays exactly as
-		// staged: it is the process-crash backstop — a LIVE frontend
-		// rebuilds its recovery from its own in-memory copy of the edit
-		// (composer saves may interleave with this saga, so the row is
-		// not guaranteed pristine by the time the error lands there),
-		// while a dead one finds both texts here on the next hydrate.
-		// The distinct prefix is what lets the caller tell "the revert
-		// never happened" (every guard in resolveRevertAndResendTarget)
-		// from "the revert happened, the resend did not".
-		return fmt.Errorf("revert and resend: resend failed: %w", err)
+		onUserMessageReady: func(replacement store.Item) {
+			projected := itemwire.Project(replacement, true)
+			cutEvent.Replacement = &projected
+			a.emit(eventchan.UserMessageReverted, cutEvent)
+			published = true
+		},
+	}, sendMessagePrepared{}); sendErr != nil {
+		// The deferred recovery returns the edit to the composer and retains an
+		// explicit committed-cut outcome even if the event has not reached clients.
+		return result, fmt.Errorf("revert and resend: resend failed: %w", sendErr)
 	}
 
-	a.settleRevertAndResendDraft(threadID, staged)
-	return nil
+	if err := a.store.DeleteThreadDraftRecovery(threadID, opts.SendID); err != nil {
+		// The message is accepted; return a cleanup outcome without reporting a
+		// failed send. Boot recovery recognizes its SendID and retires the copy.
+		result.Warning = fmt.Sprintf("Message sent; recovery cleanup failed: %v", err)
+		return result, nil
+	}
+	return result, nil
 }
 
 // resolveRevertAndResendTarget runs every guard that needs the thread
@@ -281,38 +314,47 @@ func (a *App) resolveRevertAndResendTarget(
 	return thread, item, nil
 }
 
-// settleRevertAndResendDraft retires the crash copy once the edited text
-// has a durable home in the persisted user row: the draft row goes back
-// to the untouched WIP, or away entirely when there was none.
-//
-// Conditional on the row still BEING the crash copy. The composer stays
-// typeable for the whole saga — only sending is suspended, and SaveDraft
-// takes no thread lock — so a debounced composer save can land between
-// the staging and here. Restoring the pre-saga snapshot over it would
-// silently destroy text the user typed, which is the exact loss the
-// crash copy exists to prevent. A row that moved is a newer, more
-// authoritative write, so this leaves it entirely alone: no restore, no
-// delete.
-//
-// Failing to settle would report a send that already went out as failed,
-// and nothing is lost either way (the row still holds recoverable text),
-// so every error logs instead.
-func (a *App) settleRevertAndResendDraft(threadID string, staged stagedThreadDraft) {
-	current, exists, err := a.store.GetThreadDraft(threadID)
-	if err != nil {
-		log.Printf("app: revert and resend: re-read staged draft for thread %s: %v", threadID, err)
-		return
+func (a *App) recoverReplacementDraft(who transport.ClientIdentity, recovery store.ThreadDraftRecovery) error {
+	var ids []string
+	if err := json.Unmarshal([]byte(recovery.Attachments), &ids); err != nil {
+		return err
 	}
-	if !exists || current != staged.merged {
-		return
-	}
-	if staged.priorExisted {
-		if err := a.writeThreadDraft(transport.ClientIdentity{}, staged.prior); err != nil {
-			log.Printf("app: revert and resend: restore composer draft for thread %s: %v", threadID, err)
+	for attempt := 0; attempt < 8; attempt++ {
+		current, _, err := a.store.GetThreadDraft(recovery.ThreadID)
+		if err != nil {
+			return err
 		}
-		return
+		merged, err := composerdraft.MergeParts(recovery.ThreadID, current, []composerdraft.Part{{Content: recovery.Content, AttachmentIDs: ids}}, time.Now().UnixMilli())
+		if err != nil {
+			return err
+		}
+		committed, err := a.writeRecoveredThreadDraft(who, recovery, current, merged)
+		if err != nil {
+			return err
+		}
+		if committed {
+			return nil
+		}
 	}
-	if err := a.removeThreadDraft(transport.ClientIdentity{}, threadID, nil); err != nil {
-		log.Printf("app: revert and resend: clear staged draft for thread %s: %v", threadID, err)
+	return errors.New("composer kept changing while recovering the edited message; recovery retained")
+}
+
+func (a *App) restoreReplacementDraftsAtBoot() error {
+	rows, err := a.store.ListThreadDraftRecoveries()
+	if err != nil {
+		return err
 	}
+	var failures []error
+	for _, row := range rows {
+		if _, found, err := a.findRecordedSend(row.ThreadID, row.SendID); err != nil {
+			failures = append(failures, err)
+		} else if found {
+			if err := a.store.DeleteThreadDraftRecovery(row.ThreadID, row.SendID); err != nil {
+				failures = append(failures, err)
+			}
+		} else if err := a.recoverReplacementDraft(transport.ClientIdentity{}, row); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	return errors.Join(failures...)
 }

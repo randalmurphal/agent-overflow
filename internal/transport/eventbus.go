@@ -289,6 +289,17 @@ func (b *EventBus) Emit(typedChannel eventchan.Channel, payload any) (Event, err
 // — paying it twice per emit to keep the signature shorter would be the
 // wrong trade on the transcript-stream hot path. internal/app's emit funnel
 // is where the single derivation lives.
+// ChannelSequence returns the last published sequence without creating a ring.
+// A destructive mutation can carry this boundary in both its event and RPC reply.
+func (b *EventBus) ChannelSequence(channel eventchan.Channel) uint64 {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if r := b.rings[string(channel)]; r != nil {
+		return r.seq
+	}
+	return 0
+}
+
 func (b *EventBus) EmitEntity(typedChannel eventchan.Channel, entityKey string, payload any) (Event, error) {
 	if b.closed.Load() {
 		return Event{}, nil

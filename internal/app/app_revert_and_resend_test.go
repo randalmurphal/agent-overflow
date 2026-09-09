@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -102,7 +103,7 @@ func TestRevertAndResendReplacesMessageAndRestoresWIP(t *testing.T) {
 	}
 
 	const edited = "rewritten prompt"
-	if err := app.RevertConversationAndResendMessage(context.Background(), thread.ID, "user:1", RevertAndResendOptions{Content: edited}); err != nil {
+	if err := revertAndResendForTest(app, context.Background(), thread.ID, "user:1", RevertAndResendOptions{Content: edited}); err != nil {
 		t.Fatalf("revert and resend: %v", err)
 	}
 
@@ -180,7 +181,7 @@ func TestRevertAndResendKeepsMergedDraftWhenResendFails(t *testing.T) {
 	// resolveUserMessageEnvelope — after the rollback committed, which is
 	// exactly the window the crash copy exists for.
 	const edited = "rewritten prompt"
-	err := app.RevertConversationAndResendMessage(
+	err := revertAndResendForTest(app,
 		context.Background(),
 		thread.ID, "user:1",
 		RevertAndResendOptions{Content: edited, AttachmentIDs: []string{"ghost-attachment"}},
@@ -224,7 +225,7 @@ func TestRevertAndResendClearsDraftWhenNoWIP(t *testing.T) {
 	app, _ := newResendTestApp(t)
 	thread, _ := seedResendThread(t, app, "t-resend-nowip")
 
-	if err := app.RevertConversationAndResendMessage(context.Background(), thread.ID, "user:1", RevertAndResendOptions{Content: "rewritten prompt"}); err != nil {
+	if err := revertAndResendForTest(app, context.Background(), thread.ID, "user:1", RevertAndResendOptions{Content: "rewritten prompt"}); err != nil {
 		t.Fatalf("revert and resend: %v", err)
 	}
 
@@ -244,7 +245,7 @@ func TestRevertAndResendStagesEditedPayloadWithoutWIP(t *testing.T) {
 	thread, _ := seedResendThread(t, app, "t-resend-stage")
 
 	const edited = "rewritten prompt"
-	if err := app.RevertConversationAndResendMessage(
+	if err := revertAndResendForTest(app,
 		context.Background(),
 		thread.ID, "user:1",
 		RevertAndResendOptions{Content: edited, AttachmentIDs: []string{"ghost-attachment"}},
@@ -287,7 +288,7 @@ func TestRevertAndResendKeepsAttachments(t *testing.T) {
 		t.Fatalf("stamp attachment meta on the anchor: %v", err)
 	}
 
-	if err := app.RevertConversationAndResendMessage(
+	if err := revertAndResendForTest(app,
 		context.Background(),
 		thread.ID, "user:1",
 		RevertAndResendOptions{Content: "rewritten prompt", AttachmentIDs: []string{record.ID}},
@@ -323,7 +324,7 @@ func TestRevertAndResendConfirmedKillClearsBackgroundRows(t *testing.T) {
 		t.Fatalf("precondition: running background tasks = %d (%v), want 1", count, err)
 	}
 
-	if err := app.RevertConversationAndResendMessage(context.Background(), thread.ID, "user:1", RevertAndResendOptions{Content: "rewritten prompt", KillRunningBackgroundTasks: true}); err != nil {
+	if err := revertAndResendForTest(app, context.Background(), thread.ID, "user:1", RevertAndResendOptions{Content: "rewritten prompt", KillRunningBackgroundTasks: true}); err != nil {
 		t.Fatalf("confirmed revert and resend: %v", err)
 	}
 
@@ -378,7 +379,7 @@ func TestRevertAndResendMidTurnAnchorEmitsKeptSet(t *testing.T) {
 	}
 	seedMessageAnchor(t, app.store, thread.ID, "user:steer", 0, "u1", "")
 
-	if err := app.RevertConversationAndResendMessage(context.Background(), thread.ID, "user:steer", RevertAndResendOptions{Content: "rewritten steer"}); err != nil {
+	if err := revertAndResendForTest(app, context.Background(), thread.ID, "user:steer", RevertAndResendOptions{Content: "rewritten steer"}); err != nil {
 		t.Fatalf("revert and resend: %v", err)
 	}
 
@@ -481,7 +482,7 @@ func TestRevertAndResendReExpandsComposerCommands(t *testing.T) {
 	}
 
 	const edited = "/workflow start the release"
-	if err := app.RevertConversationAndResendMessage(context.Background(), thread.ID, "user:1", RevertAndResendOptions{Content: edited}); err != nil {
+	if err := revertAndResendForTest(app, context.Background(), thread.ID, "user:1", RevertAndResendOptions{Content: edited}); err != nil {
 		t.Fatalf("revert and resend: %v", err)
 	}
 
@@ -526,7 +527,7 @@ func TestARevertAndResendNamesTheConnectionThatStartedIt(t *testing.T) {
 	thread, _ := seedResendThread(t, app, "t-resend-attribution")
 
 	ctx := ctxFromClient(transport.ClientIdentity{DeviceID: "laptop-1", ConnectionID: "conn-9"})
-	if err := app.RevertConversationAndResendMessage(ctx, thread.ID, "user:1", RevertAndResendOptions{
+	if err := revertAndResendForTest(app, ctx, thread.ID, "user:1", RevertAndResendOptions{
 		Content: "rewritten prompt",
 	}); err != nil {
 		t.Fatalf("revert and resend: %v", err)
@@ -549,7 +550,7 @@ func TestARevertWithNoConnectionCarriesNoStamp(t *testing.T) {
 	app, bus := newResendTestApp(t)
 	thread, _ := seedResendThread(t, app, "t-resend-unstamped")
 
-	if err := app.RevertConversationAndResendMessage(t.Context(), thread.ID, "user:1", RevertAndResendOptions{
+	if err := revertAndResendForTest(app, t.Context(), thread.ID, "user:1", RevertAndResendOptions{
 		Content: "rewritten prompt",
 	}); err != nil {
 		t.Fatalf("revert and resend: %v", err)
@@ -558,5 +559,105 @@ func TestARevertWithNoConnectionCarriesNoStamp(t *testing.T) {
 	_, evt := findRevertedEvent(t, bus)
 	if evt.ConnectionID != "" {
 		t.Fatalf("connectionId = %q, want empty", evt.ConnectionID)
+	}
+}
+
+func revertAndResendForTest(a *App, ctx context.Context, threadID, itemID string, opts RevertAndResendOptions) error {
+	result, err := a.RevertConversationAndResendMessage(ctx, threadID, itemID, opts)
+	if err != nil {
+		return err
+	}
+	if result.Failure != "" {
+		return errors.New(result.Failure)
+	}
+	return nil
+}
+
+func TestReplacementRecoveryAtBootPreservesComposerAndDoesNotDispatch(t *testing.T) {
+	app, _ := newResendTestApp(t)
+	thread, _ := seedResendThread(t, app, "recovery-boot")
+	if _, err := app.store.UpsertThreadDraft(store.ThreadDraft{ThreadID: thread.ID, Content: "my work", Attachments: "[]", TerminalChips: `[{"id":"terminal"}]`}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.store.StageThreadDraftRecovery(store.ThreadDraftRecovery{ThreadID: thread.ID, SendID: "unfinished", Content: "edited message", Attachments: "[]"}); err != nil {
+		t.Fatal(err)
+	}
+	app.sendMessageFn = func(string, string, []string) error { t.Fatal("boot replayed a send"); return nil }
+	for range 2 {
+		if err := app.restoreReplacementDraftsAtBoot(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	draft, _, err := app.store.GetThreadDraft(thread.ID)
+	if err != nil || draft.Content != "edited message\n\nmy work" || draft.TerminalChips != `[{"id":"terminal"}]` {
+		t.Fatalf("recovered draft: %+v %v", draft, err)
+	}
+}
+
+func TestPreparedReplacementCutCarriesPersistedPosition(t *testing.T) {
+	app, _ := newResendTestApp(t)
+	thread, _ := seedResendThread(t, app, "ready-replacement")
+	result, err := app.RevertConversationAndResendMessage(context.Background(), thread.ID, "user:1", RevertAndResendOptions{Content: "new prompt", SendID: "ready-send"})
+	if err != nil || result.Failure != "" || result.Cut == nil || result.Cut.Replacement == nil {
+		t.Fatalf("ready result: %+v %v", result, err)
+	}
+	got := result.Cut.Replacement
+	persisted, found, err := app.store.GetThreadItem(thread.ID, got.ID)
+	if err != nil || !found || persisted.ItemIndex != got.ItemIndex || persisted.TurnIndex != got.TurnIndex {
+		t.Fatalf("publication disagrees with persisted row: %+v %+v %v", got, persisted, err)
+	}
+	// A repeated transport delivery has the same send identity and cannot cut twice.
+	if _, err := app.RevertConversationAndResendMessage(context.Background(), thread.ID, "user:1", RevertAndResendOptions{Content: "new prompt", SendID: "ready-send"}); err != nil {
+		t.Fatal(err)
+	}
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, item := range items {
+		if item.Kind == "user_text" && item.Summary == "new prompt" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("replacement count: %d", count)
+	}
+}
+
+func TestConversationMutationReadWaitsForReplacement(t *testing.T) {
+	app, _ := newResendTestApp(t)
+	thread, _ := seedResendThread(t, app, "read-barrier")
+	entered, release := make(chan struct{}), make(chan struct{})
+	app.sendMessageFn = func(string, string, []string) error { close(entered); <-release; return nil }
+	sent := make(chan error, 1)
+	go func() {
+		_, err := app.RevertConversationAndResendMessage(context.Background(), thread.ID, "user:1", RevertAndResendOptions{Content: "replacement", SendID: "edit"})
+		sent <- err
+	}()
+	<-entered
+	read := make(chan ConversationMutationState, 1)
+	readError := make(chan error, 1)
+	go func() {
+		state, err := app.GetConversationMutationState(thread.ID, "user:1", "edit")
+		read <- state
+		readError <- err
+	}()
+	select {
+	case <-read:
+		close(release)
+		t.Fatal("read crossed the in-progress replacement")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	if err := <-sent; err != nil {
+		t.Fatal(err)
+	}
+	state := <-read
+	if err := <-readError; err != nil {
+		t.Fatal(err)
+	}
+	if state.UserItemExists {
+		t.Fatal("read returned pre-cut history")
 	}
 }

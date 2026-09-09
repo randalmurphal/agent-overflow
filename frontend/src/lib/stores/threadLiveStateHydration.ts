@@ -10,7 +10,7 @@ import { GetThreadLiveState, ListPendingInteractiveRequests } from './bindings';
 import type { LiveStateHydrationGuard } from './threadPaneShared';
 import {
   finishThreadLiveStateHydration,
-  getActiveTurn,
+  getCanonicalActiveTurn as getActiveTurn,
   isThreadLiveStateHydrationCurrent,
   projectTurnCompleted,
   projectTurnStarted,
@@ -60,6 +60,8 @@ export interface ThreadLiveStateHydrationOptions {
 }
 
 export interface LiveStateFetchResult {
+  /** Present when the full execution snapshot could not be fetched. */
+  error?: unknown;
   /**
    * Pending-send timeline rows the backend has NOT persisted to SQLite
    * yet (a pending send's row lands on its wire echo). A caller
@@ -247,6 +249,7 @@ export function createThreadLiveStateHydration(
       options.getThread()?.id === threadID;
 
     let snapshot: ThreadLiveState | null = null;
+    let snapshotError: unknown;
     let fallbackInteractive: PendingInteractiveRequests | null = null;
     // Opening a thread is a READ, so neither leg may be issued
     // speculatively. This runs on every thread switch, so a session that
@@ -263,6 +266,7 @@ export function createThreadLiveStateHydration(
       try {
         snapshot = (await GetThreadLiveState(threadID)) as ThreadLiveState;
       } catch (err) {
+        snapshotError = err;
         if (currentTarget()) {
           console.error('Failed to hydrate thread live state:', err);
         }
@@ -287,6 +291,7 @@ export function createThreadLiveStateHydration(
 
     let tokenConsumed = false;
     return {
+      error: snapshotError,
       deferredItems: snapshot ? deferredItemsForThread(snapshot, threadID) : [],
       apply(): void {
         if (tokenConsumed) return;

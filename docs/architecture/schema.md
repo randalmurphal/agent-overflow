@@ -63,6 +63,11 @@ conversation whose ownership moved to another computer.
 | `push_tokens`, `push_sender` | Push destinations and sender credentials used by remote notification delivery. |
 | `store_meta` | One row containing stable `backend_id` and history-lineage `replica_generation`. Restore preserves the former and remints the latter. |
 
+`thread_draft_recoveries` holds one staged replacement per thread until a user row
+owns its SendID or recovery merges it into the composer. It is durable application
+data, independent of history retention and editable drafts. Boot restores unsent
+content without dispatching it. Thread deletion cascades to the recovery row.
+
 ## Authoritative identity and access
 
 These rows cannot be recovered from provider sessions and are excluded from

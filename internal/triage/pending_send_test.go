@@ -338,6 +338,36 @@ func TestMaxPendingSendTurnIndex(t *testing.T) {
 	}
 }
 
+func TestClearPendingSendsFromTurn(t *testing.T) {
+	router, _, _ := newTestRouter(t)
+	router.RegisterPendingSendWithExpectation("t1", "kept", 0, PendingSendExpectation{})
+	router.RegisterPendingSendWithExpectation("t1", "cut", 1, PendingSendExpectation{ByClientID: true})
+	router.RegisterPendingFlushResendWithExpectation("t1", "user:2:flush:1", 2, PendingSendExpectation{})
+	router.RegisterPendingSendWithExpectation("t2", "other", 1, PendingSendExpectation{})
+
+	router.ClearPendingSendsFromTurn("t1", -1)
+	if max, ok := router.MaxPendingSendTurnIndex("t1"); !ok || max != 2 {
+		t.Fatalf("invalid cut changed pending sends: max=%d ok=%v", max, ok)
+	}
+	router.ClearPendingSendsFromTurn("t1", 1)
+	router.ClearPendingSendsFromTurn("t1", 1)
+	head, ok := router.consumeMatchingPendingSend("t1", "")
+	if !ok || head.AOItemID != "kept" || router.HasPendingSendForThread("t1") {
+		t.Fatalf("cut must preserve only the prefix: head=%+v ok=%v", head, ok)
+	}
+	head, ok = router.consumeMatchingPendingSend("t2", "")
+	if !ok || head.AOItemID != "other" {
+		t.Fatalf("cut changed another thread: head=%+v ok=%v", head, ok)
+	}
+	router.RegisterPendingSendWithExpectation("t1", "new", 0, PendingSendExpectation{})
+	router.ClearPendingSendsFromTurn("t1", 0)
+	if router.HasPendingSendForThread("t1") {
+		t.Fatal("cut from zero retained a pending send")
+	}
+	router.ClearPendingSendsFromTurn("missing", 0)
+	router.ClearPendingSendsFromTurn("", 0)
+}
+
 func TestClearPendingSendsByItemIDs_EmptyThread(t *testing.T) {
 	router, _, _ := newTestRouter(t)
 

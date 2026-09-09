@@ -479,7 +479,7 @@ interface Pending {
   sentAt: number;
 }
 
-type EventHandler = (data: unknown) => void;
+type EventHandler = (data: unknown, sequence?: number) => void;
 
 // Reusable subscriber-fanout copy. dispatchToSubscribers snapshots a
 // channel's handler set before iterating; doing that into one shared
@@ -573,6 +573,8 @@ interface TerminalLatch {
 // is why `hasCapability` is the only accessor and there is deliberately
 // no version comparison anywhere in the client.
 export interface TransportHello {
+  /** Sequence numbers belong to this server process. */
+  launchId?: string;
   /** The backend's wire dialect. Recorded for logs and bug reports;
    *  nothing branches on it (docs/specs/remote-access.md §9). */
   protocolVersion: number;
@@ -2860,6 +2862,7 @@ export class WSClient {
       : [];
     const serverTimeMs = Number.isFinite(frame.serverTimeMs) ? frame.serverTimeMs : 0;
     const next: TransportHello = {
+      launchId,
       protocolVersion: Number.isFinite(frame.protocolVersion) ? frame.protocolVersion : 0,
       capabilities,
       backendId: typeof frame.backendId === 'string' ? frame.backendId : '',
@@ -2932,7 +2935,7 @@ export class WSClient {
         channel: evt.channel,
         seq: evt.seq,
       });
-      this.dispatchToSubscribers(evt.channel, evt.data);
+      this.dispatchToSubscribers(evt.channel, evt.data, evt.seq);
       return;
     }
     const cursor = this.lastSeqByChannel.get(evt.channel);
@@ -2977,7 +2980,7 @@ export class WSClient {
       });
     }
     this.recordChannelSeq(evt.channel, evt.seq);
-    this.dispatchToSubscribers(evt.channel, evt.data);
+    this.dispatchToSubscribers(evt.channel, evt.data, evt.seq);
   }
 
   // recordChannelSeq updates the per-channel last-seen seq and evicts
@@ -3014,7 +3017,7 @@ export class WSClient {
     }
   }
 
-  private dispatchToSubscribers(channel: string, data: unknown): void {
+  private dispatchToSubscribers(channel: string, data: unknown, sequence?: number): void {
     const set = this.subscribers.get(channel);
     if (!set || set.size === 0) return;
     // Copy so a handler that unsubscribes mid-iteration doesn't perturb
@@ -3040,7 +3043,7 @@ export class WSClient {
         // from the copy and correctly wait for the next event.)
         if (!set.has(handler)) continue;
         try {
-          handler(data);
+          handler(data, sequence);
         } catch (err) {
           console.warn(`wsClient: subscriber on ${clampString(channel)} threw`, err);
         }

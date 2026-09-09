@@ -239,9 +239,12 @@ func TestRemoteWatchPairedCompletionStartsIdleAgentAndRespectsThreadOwnership(t 
 			if _, err := source.AgentRemoteStart(caller, request); err != nil {
 				t.Fatal(err)
 			}
+			// Wait on the fixture's job before reading it over the paired
+			// transport. Millisecond RPC polling spends an auth ticket each
+			// time and can exhaust the shared peer's rate limit across cases.
 			deadline := time.Now().Add(5 * time.Second)
 			for {
-				receipt, err := source.AgentRemoteStatus(caller, peer.ID, id)
+				receipt, err := destination.app.store.GetRemoteJob(id)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -252,6 +255,10 @@ func TestRemoteWatchPairedCompletionStartsIdleAgentAndRespectsThreadOwnership(t 
 					t.Fatal("job did not finish")
 				}
 				time.Sleep(time.Millisecond)
+			}
+			receipt, err := source.AgentRemoteStatus(caller, peer.ID, id)
+			if err != nil || receipt.State != "succeeded" || receipt.Output != "remote integration passed" {
+				t.Fatalf("paired completion receipt=%+v err=%v", receipt, err)
 			}
 			switch mode {
 			case "archived":

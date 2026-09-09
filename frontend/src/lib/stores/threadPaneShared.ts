@@ -277,6 +277,8 @@ export interface PaneScrollController {
    * that flow.
    */
   stickToLatest?(): void;
+  /** Claim follow before a prepared replacement, without a later snap over its send spring. */
+  followReplacement?(): void;
   /**
    * The pane is about to leave this thread — capture anything only the
    * mounted timeline can, right now, while its items and its measured

@@ -60,9 +60,9 @@ Read `editResendFlow.svelte.ts`, `userMessageActions.ts`, and
   changes. Pass the element whose top edge the reader is following.
 - `pendingCutAfter` dims only rows the in-flight revert would remove. Do not
   truncate the local projection before the backend event arrives.
-- Only a successful destructive replacement calls `stickToLatest`. A refusal or
-  failed send preserves the reader's scroll position while returning the text to
-  an actionable editor or composer.
+- Transfer follow intent before applying a prepared replacement and its cut in
+  one render transaction. Use the normal structural spring. A refusal or failed
+  preparation preserves reader position and returns text to an editor or composer.
 - The editor may delete only attachments uploaded by that edit session. Once a
   send outcome is unknown, later exits retain those records because a delivered
   message or recovered draft may reference them.

@@ -357,20 +357,30 @@ export function isMethodUnavailableError(err: unknown): boolean {
  * pending forever, which is the honest answer for "do this once we can
  * talk to the backend again" — the caller has nothing to do meanwhile.
  */
-export function whenTransportConnected(): Promise<void> {
-  return new Promise<void>((resolve) => {
-    let unsubscribe: (() => void) | null = null;
+export function whenTransportConnected(backend?: BackendKey, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    let unsubscribe: (() => void) | undefined;
     let settled = false;
-    unsubscribe = wsClient.onStatusChange((next) => {
-      if (settled || next.status !== 'connected') return;
+    const finish = (error?: unknown) => {
+      if (settled) return;
       settled = true;
-      // `onStatusChange` invokes the handler synchronously with the
-      // current snapshot, so on an already-connected transport this runs
-      // BEFORE the assignment above completes — the post-call check below
-      // is what drops the subscription in that case.
       unsubscribe?.();
-      resolve();
-    });
+      signal?.removeEventListener('abort', abort);
+      if (error) reject(error); else resolve();
+    };
+    const abort = () => finish(signal?.reason ?? new Error('Connection wait cancelled'));
+    if (signal?.aborted) { abort(); return; }
+    signal?.addEventListener('abort', abort, { once: true });
+    if (backend !== undefined) {
+      unsubscribe = onBackendStatusChange((id, next) => {
+        if (id === backend && next.status === 'connected') finish();
+      });
+      if (getTransportStatusFor(backend).status === 'connected') finish();
+    } else {
+      unsubscribe = wsClient.onStatusChange((next) => {
+        if (next.status === 'connected') finish();
+      });
+    }
     if (settled) unsubscribe();
   });
 }

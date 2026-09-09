@@ -9,7 +9,7 @@ import "fmt"
 // logs, checkpoint git refs in the user's repos) that a row-level
 // DELETE in this package would silently skip.
 //
-// Excludes nothing: archived, pinned, mid-turn, and draft threads all
+// Excludes pending edited-message recovery. Archived, pinned, mid-turn and draft threads
 // match if their updated_at qualifies. The retention policy is
 // intentionally uniform; mid-turn is naturally protected because
 // MarkThreadActivity bumps updated_at on every persisted event, so an
@@ -18,7 +18,7 @@ import "fmt"
 // Uses idx_threads_updated for the range scan + ORDER BY.
 func (s *Store) ThreadIDsOlderThan(cutoffMs int64) ([]string, error) {
 	rows, err := s.reader().Query(
-		`SELECT id FROM threads WHERE updated_at < ? ORDER BY updated_at ASC`,
+		`SELECT id FROM threads WHERE updated_at < ? AND NOT EXISTS(SELECT 1 FROM thread_draft_recoveries r WHERE r.thread_id = threads.id) ORDER BY updated_at ASC`,
 		cutoffMs,
 	)
 	if err != nil {

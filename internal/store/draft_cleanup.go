@@ -29,6 +29,7 @@ func (s *Store) IsEmptyDraftThread(threadID string) (bool, error) {
 		    AND NOT EXISTS (
 		    	SELECT 1 FROM turns WHERE turns.thread_id = threads.id
 		    )
+		    AND NOT EXISTS (SELECT 1 FROM thread_draft_recoveries WHERE thread_id = threads.id)
 		    AND NOT EXISTS (
 		    	SELECT 1 FROM thread_drafts
 		    	 WHERE thread_drafts.thread_id = threads.id
@@ -66,6 +67,7 @@ func (s *Store) DeleteEmptyDraftThread(threadID string) (bool, error) {
 		    AND NOT EXISTS (
 		    	SELECT 1 FROM turns WHERE turns.thread_id = threads.id
 		    )
+		    AND NOT EXISTS (SELECT 1 FROM thread_draft_recoveries WHERE thread_id = threads.id)
 		    AND NOT EXISTS (
 		    	SELECT 1 FROM thread_drafts
 		    	 WHERE thread_drafts.thread_id = threads.id

@@ -11,7 +11,7 @@
   // cleanup, the pending approval / user-input panels, and the activity
   // rail.
 
-  import { onDestroy, onMount, untrack } from 'svelte';
+  import { onDestroy, onMount, tick, untrack } from 'svelte';
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import type { ComposerDraftStore } from '../../stores/composerDraft.svelte';
   import ComposerInputSurface from './ComposerInputSurface.svelte';
@@ -697,6 +697,7 @@
     try {
       const sent = await dispatchSend({
         draftReady,
+        turnIndex: nextTurn,
         threadId,
         message,
         options: sendOptions,
@@ -750,7 +751,14 @@
 
   function interrupt() {
     if (!pane.threadId) return;
-    runInterruptOrRevert(pane, draft);
+    if (runInterruptOrRevert(pane, draft)) {
+      pane.setSendInFlight(false);
+      const restoredThreadId = pane.threadId;
+      void tick().then(() => {
+        if (pane.threadId === restoredThreadId) surface?.focusInputAtEnd();
+      });
+      return;
+    }
     // Match the thread.interrupt builtin's optimistic clear so the
     // spinner / Stop button / mid-turn input gate all flip in this
     // render tick. The backend's `provider:turn_completed` arrives

@@ -1166,8 +1166,26 @@ func (r *Router) ClearPendingSendsByItemIDs(threadID string, ids []string) {
 	for _, id := range ids {
 		remove[id] = struct{}{}
 	}
-	// Anchor lock so the removal is total against an in-flight echo's
-	// failure reinsert (round-5, R5-2).
+	r.clearPendingSendsMatching(threadID, func(entry pendingSend) bool {
+		_, drop := remove[entry.AOItemID]
+		return drop
+	})
+}
+
+// ClearPendingSendsFromTurn retires send correlations after a committed
+// conversation cut. A provider session retained across the cut must not assign
+// its next turn or user echo to a send removed from history.
+func (r *Router) ClearPendingSendsFromTurn(threadID string, turnIndex int) {
+	if threadID == "" || turnIndex < 0 {
+		return
+	}
+	r.clearPendingSendsMatching(threadID, func(entry pendingSend) bool {
+		return entry.TurnIndex >= turnIndex
+	})
+}
+
+func (r *Router) clearPendingSendsMatching(threadID string, drop func(pendingSend) bool) {
+	// Serialize removal with an in-flight echo's failed-write reinsert.
 	anchor := r.flushAnchor(threadID)
 	anchor.Lock()
 	defer anchor.Unlock()
@@ -1183,7 +1201,7 @@ func (r *Router) ClearPendingSendsByItemIDs(threadID string, ids []string) {
 	}
 	filtered := make([]pendingSend, 0, len(queue))
 	for _, entry := range queue {
-		if _, drop := remove[entry.AOItemID]; !drop {
+		if !drop(entry) {
 			filtered = append(filtered, entry)
 		}
 	}

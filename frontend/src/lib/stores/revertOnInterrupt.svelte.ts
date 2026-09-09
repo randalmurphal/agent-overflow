@@ -1,30 +1,10 @@
-// Stop-button revert-on-interrupt entry point.
-//
-// When the user clicks Stop (or hits Esc) before the agent has produced
-// any visible response, the user's message should be removed from the
-// timeline and put back into the composer as a draft — matching Claude
-// Code's TUI behavior. This module owns the FRONTEND predicate
-// (canRevertEarlyInterrupt) and the unified flow that decides between
-// the revert path and the plain-interrupt fallback.
-//
-// Architecture:
-//   - Frontend predicate runs synchronously so the click handler can
-//     paint instant optimistic state.
-//   - Backend re-checks under the per-thread lock (SQLite + flush
-//     queue) so a Send→Stop race resolves correctly. Result.reverted
-//     tells the frontend which path the backend actually took.
-//   - The tray preflight runs before any optimistic timeline mutation
-//     because reverting a provider session would kill background work.
-//     Backend success later confirms the durable draft; backend
-//     decline/error clears the optimistic restore if the user has not
-//     already edited it.
-//
-// References:
-//   - claude-code-source-code/src/components/REPL.tsx — the TUI's
-//     `messagesAfterAreOnlySynthetic` predicate; only assistant_text
-//     and tool_use rows block the revert.
-//   - app_revert_on_interrupt.go — the backend method this dispatches
-//     to and the predicate it re-runs under the lock.
+import { conversationMutationReconciler } from './reconcileConversationMutation';
+import { isTransportClassError } from './transportStatus.svelte';
+import { getUndoableSend, retireUndoableSend } from './composerSendUndo';
+import { parseUserMessageMeta } from '../utils/userMessageMeta';
+// Early Stop restores presentation synchronously. The original send, background
+// checks and provider rollback finish behind a thread-scoped Send gate. A refusal
+// restores the transcript; a committed cut fences delayed item and turn events.
 
 import type { Attachment } from '../types/attachment';
 import type { TerminalChip } from '../types/draft';
@@ -39,7 +19,10 @@ import { reportNonBenignInterruptError } from './interruptErrors';
 import { applyUserMessageReverted } from './eventsMessageRevert';
 import {
   beginThreadInterrupt,
+  isThreadInterruptCurrent,
   finishThreadInterrupt,
+  presentThreadInterruptAsRestored,
+  restoreThreadInterruptPresentation,
 } from './threadInterruptState.svelte';
 import {
   CountRunningBackgroundTasks,
@@ -79,6 +62,7 @@ interface DraftSnapshotInputs {
   attachments: Attachment[] | { length: number };
   terminalChips: TerminalChip[] | { length: number };
   applyOptimisticRestoredDraft?: (threadId: string, snapshot: ComposerDraftSnapshot) => void;
+  settleOptimisticRestoredDraft?: (threadId: string) => Promise<void>;
   clearOptimisticRestoredDraft?: (threadId: string, snapshot: ComposerDraftSnapshot) => void;
 }
 
@@ -89,7 +73,8 @@ export function canRevertEarlyInterrupt(
   const threadId = pane.threadId;
   if (!threadId) return { canRevert: false, reason: 'no thread' };
   const active = getActiveTurn(threadId);
-  if (!active) return { canRevert: false, reason: 'no active turn' };
+  const pending = getUndoableSend(threadId);
+  if (!active && !pending) return { canRevert: false, reason: 'no active turn' };
 
   // Composer not empty → user has started typing new text or carries
   // attachments / terminal chips from prior actions. Preserve their work
@@ -108,7 +93,9 @@ export function canRevertEarlyInterrupt(
   // Scan items on the active turn. Only one user_text allowed; any
   // assistant_text or tool_call means the agent has produced visible
   // output and the revert would discard real work.
-  const turnIndex = active.turnIndex;
+  const turnIndex = active?.turnIndex ?? pane.items.find((item) =>
+    parseUserMessageMeta(item.meta).sendId === pending?.sendId)?.turnIndex;
+  if (turnIndex === undefined) return { canRevert: false, reason: 'no pending user message' };
   let userItem: Item | undefined;
   let userCount = 0;
   for (const item of pane.items) {
@@ -135,46 +122,31 @@ export function canRevertEarlyInterrupt(
   return { canRevert: true, userItem };
 }
 
-/**
- * Unified Stop entry point shared by the Composer Stop button and the
- * `thread.interrupt` keybinding. Decides between revert-on-interrupt
- * and the plain-interrupt fallback, then dispatches the matching
- * backend RPC fire-and-forget. The plain-
- * interrupt branch matches the legacy `dispatchInterrupt` behavior;
- * the revert branch first checks the live background tray, then
- * truncates the active turn from the timeline (matching the backend's
- * `DeleteConversationFromTurn` — inclusive at turnIndex — so synthetic
- * siblings like thinking / api_retry / error rows go with the user row)
- * and rolls everything back on rollback / error.
- *
- * The pane's active-turn and send-in-flight flags ARE NOT cleared here.
- * Callers (builtin command, Composer.interrupt) own that decision so
- * they can sequence it with their own per-call cleanup (user-input /
- * approval cancellations, etc).
- */
+/** Returns true when the early un-send owns the local status projection. */
 export function runInterruptOrRevert(
   pane: InterruptPane,
   draft: DraftSnapshotInputs,
-): void {
+): boolean {
   const threadId = pane.threadId;
-  if (!threadId) return;
+  if (!threadId) return false;
   const interruptToken = beginThreadInterrupt(threadId);
-  if (interruptToken === null) return;
+  if (interruptToken === null) return true;
 
   const eligibility = canRevertEarlyInterrupt(pane, draft);
 
   if (!eligibility.canRevert) {
     void runPlainInterrupt(pane, threadId, interruptToken);
-    return;
+    return false;
   }
 
-  void runInterruptOrRevertAfterBackgroundPreflight(
+  void runEarlyInterrupt(
     pane,
     draft,
     threadId,
     eligibility.userItem,
     interruptToken,
   );
+  return true;
 }
 
 async function runPlainInterrupt(
@@ -191,61 +163,120 @@ async function runPlainInterrupt(
   }
 }
 
-async function runInterruptOrRevertAfterBackgroundPreflight(
+async function runEarlyInterrupt(
   pane: InterruptPane,
   draft: DraftSnapshotInputs,
   threadId: string,
   userItem: Item,
   interruptToken: number,
 ): Promise<void> {
-  let backgroundCount = 0;
-  try {
-    backgroundCount = Number(await CountRunningBackgroundTasks(threadId));
-  } catch (err) {
-    reportNonBenignInterruptError(pane, err);
-    await runPlainInterrupt(pane, threadId, interruptToken);
-    return;
-  }
-  if (backgroundCount > 0) {
-    await runPlainInterrupt(pane, threadId, interruptToken);
-    return;
-  }
-
   // Match the backend truncate: remove EVERY item on the active turn,
   // not just the user_text. Stranded thinking / api_retry / error rows
   // are the visible symptom of doing this piecewise. The rollback path
   // restores the full set via `upsertItems` when the backend refuses
   // the revert (predicate raced).
-  const removedItems = pane.removeItemsFromTurn(userItem.turnIndex);
+  const removedItems = pane.removeItemsFromTurn(userItem.turnIndex, threadId);
   const shouldRestoreDraft = Boolean(
     draft.applyOptimisticRestoredDraft || draft.clearOptimisticRestoredDraft,
   );
+  const undo = getUndoableSend(threadId);
+  const matchesSend = undo && parseUserMessageMeta(userItem.meta).sendId === undo.sendId;
+  if (matchesSend) undo.undoRequested = true;
   const restoredDraft = shouldRestoreDraft
-    ? restoredDraftSnapshotFromUserItem(userItem)
+    ? (matchesSend ? undo.snapshot : restoredDraftSnapshotFromUserItem(userItem))
     : null;
   if (restoredDraft) {
     draft.applyOptimisticRestoredDraft?.(threadId, restoredDraft);
   }
 
+  presentThreadInterruptAsRestored(threadId, interruptToken, userItem.turnIndex);
+  const current = () => isThreadInterruptCurrent(threadId, interruptToken);
+  const reconcile = conversationMutationReconciler(pane, threadId, userItem.id, matchesSend ? undo.sendId : '');
+  const restore = () => {
+    if (pane.threadId === threadId && removedItems.length > 0) pane.upsertItems(removedItems);
+    if (restoredDraft) draft.clearOptimisticRestoredDraft?.(threadId, restoredDraft);
+    return restoreThreadInterruptPresentation(threadId, interruptToken);
+  };
+
+  if (matchesSend) {
+    const outcome = await undo.completion;
+    if (!current()) return;
+    if (outcome === 'cancelled' || outcome === 'failed') {
+      try { await draft.settleOptimisticRestoredDraft?.(threadId); }
+      catch (err) { reportNonBenignInterruptError(pane, err); }
+      finally {
+        retireUndoableSend(threadId, undo);
+        finishThreadInterrupt(threadId, interruptToken);
+      }
+      return;
+    }
+  }
+
+  let backgroundCount = 0;
+  try {
+    backgroundCount = Number(await CountRunningBackgroundTasks(threadId));
+    if (!current()) return;
+  } catch (err) {
+    if (!current()) return;
+    const refreshNeeded = restore();
+    reportNonBenignInterruptError(pane, err);
+    await runPlainInterrupt(pane, threadId, interruptToken);
+    if (refreshNeeded && pane.threadId === threadId) await pane.refreshFromBackend();
+    return;
+  }
+  if (backgroundCount > 0) {
+    const refreshNeeded = restore();
+    await runPlainInterrupt(pane, threadId, interruptToken);
+    if (refreshNeeded && pane.threadId === threadId) await pane.refreshFromBackend();
+    return;
+  }
+
   let result: Awaited<ReturnType<typeof InterruptAndRevertIfClean>>;
   try {
-    result = await InterruptAndRevertIfClean(threadId);
+    result = await InterruptAndRevertIfClean(threadId, {
+      expectedSendId: matchesSend ? undo.sendId : '',
+      draft: matchesSend ? {
+        content: undo.snapshot.content,
+        attachmentIds: undo.snapshot.attachments.map((a) => a.id),
+        terminalChips: undo.snapshot.terminalChips,
+        sourceProposedPlan: undo.snapshot.sourceProposedPlan,
+      } : undefined,
+    });
+    if (!current()) return;
   } catch (err) {
-    if (removedItems.length > 0) pane.upsertItems(removedItems);
-    if (restoredDraft) {
-      draft.clearOptimisticRestoredDraft?.(threadId, restoredDraft);
-    }
-    finishThreadInterrupt(threadId, interruptToken);
+    if (!current()) return;
     reportNonBenignInterruptError(pane, err);
+    if (isTransportClassError(err)) {
+      try {
+        const state = await reconcile();
+        if (matchesSend ? state.sendAccepted : state.userItemExists) {
+          if (restoredDraft) draft.clearOptimisticRestoredDraft?.(threadId, restoredDraft);
+        } else await draft.settleOptimisticRestoredDraft?.(threadId);
+        finishThreadInterrupt(threadId, interruptToken);
+      } catch (recoveryError) {
+        reportNonBenignInterruptError(pane, recoveryError);
+      }
+    } else {
+      const refreshNeeded = restore();
+      finishThreadInterrupt(threadId, interruptToken);
+      if (refreshNeeded && pane.threadId === threadId) await pane.refreshFromBackend();
+    }
     return;
   }
 
   if (!result.reverted) {
-    if (removedItems.length > 0) pane.upsertItems(removedItems);
-    if (restoredDraft) {
-      draft.clearOptimisticRestoredDraft?.(threadId, restoredDraft);
+    if (result.reason === 'sent message is no longer present' || result.reason === 'latest message changed') {
+      try {
+        const state = await reconcile();
+        if (state.sendAccepted) restore();
+        else await draft.settleOptimisticRestoredDraft?.(threadId);
+      } catch (err) { reportNonBenignInterruptError(pane, err); }
+      finishThreadInterrupt(threadId, interruptToken);
+      return;
     }
+    const refreshNeeded = restore();
     finishThreadInterrupt(threadId, interruptToken);
+    if (refreshNeeded && pane.threadId === threadId) await pane.refreshFromBackend();
     return;
   }
 
@@ -256,9 +287,9 @@ async function runInterruptOrRevertAfterBackgroundPreflight(
   // Send closed because restoring or re-enabling here could race a cut that
   // has committed but has not reached this client.
   if (!result.userItemId
-    || result.userItemId !== userItem.id
+    || (!matchesSend && result.userItemId !== userItem.id)
     || typeof result.turnIndex !== 'number'
-    || result.turnIndex !== userItem.turnIndex
+    || (!matchesSend && result.turnIndex !== userItem.turnIndex)
     || typeof result.historyEpoch !== 'number'
     || typeof result.historyRev !== 'number'
     || !Number.isFinite(result.historyEpoch)
@@ -268,10 +299,19 @@ async function runInterruptOrRevertAfterBackgroundPreflight(
       pane,
       new Error('interrupt-and-revert completed without its authoritative cut fields'),
     );
+    try {
+      const state = await reconcile();
+      if (matchesSend ? state.sendAccepted : state.userItemExists) restore();
+      else await draft.settleOptimisticRestoredDraft?.(threadId);
+      finishThreadInterrupt(threadId, interruptToken);
+    } catch (err) { reportNonBenignInterruptError(pane, err); }
     return;
   }
   applyUserMessageReverted({
     threadId,
+    itemEventSequence: result.itemEventSequence,
+    turnStartedSequence: result.turnStartedSequence,
+    turnCompletedSequence: result.turnCompletedSequence,
     userItemId: result.userItemId,
     turnIndex: result.turnIndex,
     keptAnchorTurnItemIds: result.keptAnchorTurnItemIds,
@@ -281,5 +321,12 @@ async function runInterruptOrRevertAfterBackgroundPreflight(
   // Caller-owned release, after its exact RPC cut has been applied. A revert
   // event from another client on the same thread must not release this
   // operation while its own RPC is still queued behind that client.
-  finishThreadInterrupt(threadId, interruptToken);
+  try {
+    await draft.settleOptimisticRestoredDraft?.(threadId);
+  } catch (err) {
+    reportNonBenignInterruptError(pane, err);
+  } finally {
+    if (matchesSend) retireUndoableSend(threadId, undo);
+    finishThreadInterrupt(threadId, interruptToken);
+  }
 }

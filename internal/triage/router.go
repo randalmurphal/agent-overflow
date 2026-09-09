@@ -1464,6 +1464,12 @@ func (r *Router) PersistItem(item store.Item, payload *store.Payload) error {
 	return r.persistItem(item, payload)
 }
 
+// PersistItemForPublication returns the assigned position for an app-owned atomic
+// publication, such as a conversation cut and its replacement user message.
+func (r *Router) PersistItemForPublication(item store.Item, payload *store.Payload) (store.Item, error) {
+	return r.persistItemWithEmit(item, payload, nil, false)
+}
+
 // PersistItemQuiet persists the item to the store without emitting
 // provider:item_event. Used by the eager-persist flush path to reserve
 // timeline position in SQLite while the frontend keeps showing the

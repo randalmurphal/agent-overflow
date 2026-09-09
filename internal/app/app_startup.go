@@ -661,6 +661,9 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	// running — and it never re-dispatches. See
 	// restoreDurableFlushQueueAtBoot.
 	flushQueueSweepStarted := time.Now()
+	if err := a.restoreReplacementDraftsAtBoot(); err != nil {
+		return fmt.Errorf("restore replacement drafts: %w", err)
+	}
 	a.restoreDurableFlushQueueAtBoot()
 	logBootPhase("app.restore_durable_flush_queue", flushQueueSweepStarted)
 	browserSettings := a.currentSettings()

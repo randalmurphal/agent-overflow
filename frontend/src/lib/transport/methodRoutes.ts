@@ -103,6 +103,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3399370629: 'workspace', // GetCommitDiff
 	873893084: 'selected', // GetComputerRoutes
 	3416004963: 'home', // GetContextSettings
+	3307838728: 'thread', // GetConversationMutationState
 	139818238: 'selected', // GetDevServers
 	1370118726: 'home', // GetDeviceName
 	1590634674: 'workspace', // GetDiffContextLines

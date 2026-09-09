@@ -1055,8 +1055,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * transport-gap consumer when a missed event window forces a full
      * reconcile of the active pane. See threadSwitchLoad.svelte.ts.
      */
-    refreshFromBackend(): Promise<void> {
-      return switchLoad.refreshFromBackend();
+    refreshFromBackend(requireItems = false): Promise<void> {
+      return switchLoad.refreshFromBackend(requireItems);
     },
 
     /** Rebind a mounted conversation without discarding its local composer. */
@@ -1244,8 +1244,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * plain-interrupt fallback when the backend predicate disagrees).
      * Idempotent: returns `[]` when no rows match.
      */
-    removeItemsFromTurn(fromTurnIndex: number): Item[] {
-      if (!Number.isFinite(fromTurnIndex)) return [];
+    removeItemsFromTurn(fromTurnIndex: number, expectedThreadId: string): Item[] {
+      if (thread?.id !== expectedThreadId || !Number.isFinite(fromTurnIndex)) return [];
       return removeMatchedItems((it) => it.turnIndex >= fromTurnIndex);
     },
 
@@ -1262,13 +1262,13 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      */
     removeRevertedItems(turnIndex: number, keptAnchorTurnItemIds: string[]): Item[] {
       if (!Number.isFinite(turnIndex)) return [];
-      if (keptAnchorTurnItemIds.length === 0) {
-        return removeMatchedItems((it) => it.turnIndex >= turnIndex);
-      }
+      const boundaryWasLoaded = getItems().some((item) => item.turnIndex >= turnIndex);
       const kept = new Set(keptAnchorTurnItemIds);
-      return removeMatchedItems(
+      const removed = removeMatchedItems(
         (it) => it.turnIndex > turnIndex || (it.turnIndex === turnIndex && !kept.has(it.id)),
       );
+      timelineWindow.applyConversationCut(boundaryWasLoaded);
+      return removed;
     },
 
     /**

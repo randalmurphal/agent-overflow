@@ -341,6 +341,7 @@ describe('<ChatView>', () => {
         {
           content: 'Update TWO of the lines',
           attachmentIds: [],
+          sendId: expect.stringMatching(/^[0-9a-f-]{36}$/),
           killRunningBackgroundTasks: false,
         },
       );
@@ -377,6 +378,7 @@ describe('<ChatView>', () => {
         {
           content: 'Update one of the lines',
           attachmentIds: [],
+          sendId: expect.stringMatching(/^[0-9a-f-]{36}$/),
           killRunningBackgroundTasks: true,
         },
       );
@@ -498,6 +500,7 @@ describe('<ChatView>', () => {
       expect(resend).toHaveBeenCalledWith(thread.id, userA.id, {
         content: 'first prompt',
         attachmentIds: [],
+        sendId: expect.stringMatching(/^[0-9a-f-]{36}$/),
         killRunningBackgroundTasks: false,
       });
     });

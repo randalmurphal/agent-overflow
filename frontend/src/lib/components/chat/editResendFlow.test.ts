@@ -100,6 +100,7 @@ beforeEach(() => {
   resetResendRevertMarkersForTest();
   resetEditResendExecutionForTest();
   transport.connected = null;
+  setBindingMock('GetConversationMutationState', async () => ({ userItemExists: true, sendAccepted: false, historyRev: 0, itemEventSequence: 0 }));
 });
 
 function seedThread(overrides: Partial<Thread> = {}): Thread {
@@ -605,10 +606,10 @@ describe('edit-and-resend flow — composer save pipeline', () => {
     expect(order).toEqual(['save']);
 
     save.resolve();
-    await waitFor(() => expect(order).toEqual(['save', 'revert']));
+    await waitFor(() => expect(order).toEqual(['save', 'save', 'revert']));
   });
 
-  it('drops a debounced composer save rather than letting it land after the RPC', async () => {
+  it('persists a debounced composer draft before resending', async () => {
     const thread = seedThread();
     const item = userItem('user:1', 1, 'Update one of the lines');
     const pane = await buildPane(thread, [item]);
@@ -629,7 +630,7 @@ describe('edit-and-resend flow — composer save pipeline', () => {
 
     // Well past the debounce: the armed save was cancelled, not deferred.
     await new Promise((resolve) => setTimeout(resolve, 800));
-    expect(order).toEqual(['revert']);
+    expect(order).toEqual(['save', 'revert']);
   });
 });
 
@@ -1057,8 +1058,8 @@ describe('edit-and-resend flow — transport-class failure', () => {
     const before = errorToastCount();
     resend.reject(new DisconnectedError());
 
-    // Nothing is lost: the editor is back, sendable, with the user's text.
-    await waitFor(() => expect(view.getByTestId('user-message-edit-send')).not.toBeDisabled());
+    // Cleanup is still unknown. Editing remains visible and Send stays gated.
+    await waitFor(() => expect(view.getByTestId('user-message-edit-send')).toBeDisabled());
     expect(within(view.getByTestId('user-message-editor')).getByLabelText('Message Input'))
       .toHaveValue('Update TWO of the lines');
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -1075,6 +1076,7 @@ describe('edit-and-resend flow — transport-class failure', () => {
     // Reconnect: the backend's own row is the only party that knows what
     // happened, so the composer is refreshed from it.
     transport.connected!.resolve();
+    await waitFor(() => expect(view.getByTestId('user-message-edit-send')).not.toBeDisabled());
     await waitFor(() => {
       expect(getDraft.mock.calls.some((call) => call[0] === thread.id)).toBe(true);
     });
@@ -1124,8 +1126,10 @@ describe('edit-and-resend flow — transport-class failure', () => {
     const deleteAttachment = setBindingMock('DeleteAttachment', async () => {});
     const saveDraft = setBindingMock('SaveDraft', async () => {});
     await fireEvent.click(view.getByTestId('user-message-edit-send'));
-    await waitFor(() => expect(view.queryByTestId('user-message-editor')).not.toBeNull());
+    await waitFor(() => expect(pane.items).toHaveLength(0));
 
+    setBindingMock('GetConversationMutationState', async () => ({ userItemExists: false, sendAccepted: true, historyRev: 1, itemEventSequence: 0 }));
+    setBindingMock('ListThreadSliceAround', async () => ({ items: [], oldestTurnIndex: -1, hasMore: false }));
     resend.reject(new TransportError('timeout', 'RPC timed out'));
     // The anchor is already gone, so the editor the branch handed back is
     // voided by the anchor-removed invalidation on the very next pass —
@@ -1168,6 +1172,7 @@ describe('edit-and-resend flow — transport-class failure', () => {
     await fireEvent.click(view.getByTestId('user-message-edit-send'));
     await waitFor(() => expect(view.getByTestId('user-message-edit-send')).toBeDisabled());
     resend.reject(new DisconnectedError());
+    transport.connected!.resolve();
     await waitFor(() => expect(view.getByTestId('user-message-edit-send')).not.toBeDisabled());
 
     // Leave the doubtful flow the way a user would: discard it. The

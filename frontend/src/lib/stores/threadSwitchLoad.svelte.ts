@@ -13,6 +13,7 @@ import {
   AutoResumeThread,
   CloseThreadTerminals,
   ListRecentTurns,
+  ListItemsBeforeCursor,
   ListThreadSliceAround,
   MoveThreadTerminals,
   SwitchThread,
@@ -36,6 +37,7 @@ import {
   type ThreadItemSnapshot,
 } from './threadItemCache';
 import {
+  compareCursors,
   itemsAreEqual,
   itemsForThread,
   mergeMissingItemsById,
@@ -191,7 +193,7 @@ export interface ThreadSwitchLoad {
   /** Point the pane at `newThread`: snapshot the outgoing one, reset, paint, converge. */
   switchThread(newThread: Thread): Promise<void>;
   /** Re-fetch the visible window after a transport gap, without resetting pane UI state. */
-  refreshFromBackend(): Promise<void>;
+  refreshFromBackend(requireItems?: boolean): Promise<void>;
   /** Retry the failed initial history window without resetting the pane. */
   retryHistoryLoad(): Promise<void>;
   /** Drop every cached copy of a thread's window (L1, priors, replica, stamp). */
@@ -336,7 +338,7 @@ export function createThreadSwitchLoad(
    * being cancelled. Thread switches invalidate through reset() in
    * resetPipeline; the run itself re-checks the pane switch generation.
    */
-  const refreshWaiters: Array<() => void> = [];
+  const refreshWaiters: Array<{ resolve: () => void; reject: (error: unknown) => void; requireItems: boolean }> = [];
   const refreshScheduler = createRefreshScheduler({
     name: 'thread-refresh',
     delayMs: 150,
@@ -1386,9 +1388,9 @@ export function createThreadSwitchLoad(
    * Surgical reconciliation would need the channel + seq window the
    * transport doesn't expose to the consumer today.
    */
-  function refreshFromBackend(): Promise<void> {
-    return new Promise((resolve) => {
-      refreshWaiters.push(resolve);
+  function refreshFromBackend(requireItems = false): Promise<void> {
+    return new Promise((resolve, reject) => {
+      refreshWaiters.push({ resolve, reject, requireItems });
       refreshScheduler.request({ immediate: true });
     });
   }
@@ -1398,10 +1400,17 @@ export function createThreadSwitchLoad(
     // began is answered by it; a request landing mid-run stays queued for
     // the trailing run its own dirty bit guarantees.
     const claimedWaiters = refreshWaiters.splice(0, refreshWaiters.length);
+    let error: unknown;
     try {
-      await runBackendRefresh(token);
+      error = await runBackendRefresh(token, claimedWaiters.some(waiter => waiter.requireItems));
+    } catch (err) {
+      error = err;
+      throw err;
     } finally {
-      for (const resolve of claimedWaiters) resolve();
+      for (const waiter of claimedWaiters) {
+        if (error && waiter.requireItems) waiter.reject(error);
+        else waiter.resolve();
+      }
     }
   }
 
@@ -1415,7 +1424,7 @@ export function createThreadSwitchLoad(
    * message and the block being streamed; the deferred-item merge and
    * the status-based retention below close that window.
    */
-  async function runBackendRefresh(token: RefreshToken): Promise<void> {
+  async function runBackendRefresh(token: RefreshToken, requireItems: boolean): Promise<unknown> {
     const currentThread = options.getThread();
     if (!currentThread) return;
     const gen = options.getSwitchGeneration();
@@ -1443,12 +1452,30 @@ export function createThreadSwitchLoad(
         const anchorItemId = options.timelineWindow.hasMoreNewer
           ? (options.getItems().at(-1)?.id ?? '')
           : '';
-        paged = await ListThreadSliceAround(
-          currentThread.id,
-          anchorItemId,
-          ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
-          wantsInlinePreviews(),
-        );
+        // Recovery must revalidate the history already loaded by the reader.
+        // Keep its existing budget, using bounded RPC pages for large windows.
+        const retainedBudget = requireItems
+          ? Math.max(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS, options.getItems().filter(item => !item.parentId).length)
+          : ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS;
+        const ceiling = options.timelineWindow.newestLoadedCursor;
+        paged = requireItems && options.timelineWindow.hasMoreNewer && ceiling
+          ? await ListItemsBeforeCursor(currentThread.id,
+            { turnIndex: ceiling.turnIndex, itemIndex: ceiling.itemIndex + 1, itemId: '' },
+            Math.min(retainedBudget, 2000), wantsInlinePreviews())
+          : await ListThreadSliceAround(currentThread.id, anchorItemId,
+            Math.min(retainedBudget, 2000), wantsInlinePreviews());
+        let remaining = retainedBudget - (paged.items?.length ?? 0);
+        while (requireItems && remaining > 0 && paged.hasMoreOlder && paged.oldestCursor?.itemId) {
+          if (!refreshIsCurrent()) return;
+          const older = await ListItemsBeforeCursor(currentThread.id, paged.oldestCursor, Math.min(remaining, 2000), wantsInlinePreviews());
+          if (!older.items?.length) break;
+          if (compareCursors(older.oldestCursor, paged.oldestCursor) >= 0) {
+            throw new Error('Conversation recovery did not advance through loaded history');
+          }
+          paged = { ...paged, items: [...older.items, ...(paged.items ?? [])], oldestCursor: older.oldestCursor,
+            oldestTurnIndex: older.oldestTurnIndex, hasMore: older.hasMoreOlder, hasMoreOlder: older.hasMoreOlder };
+          remaining -= older.items.length;
+        }
       } catch (err) {
         if (!refreshIsCurrent()) return;
         console.error('Failed to refresh thread items after gap:', err);
@@ -1456,12 +1483,13 @@ export function createThreadSwitchLoad(
           'transport: gap refresh failed to fetch items',
           errString(err),
         );
-        return;
+        return err;
       }
       // Never rejects: fetch failures resolve with empty deferredItems
       // and an apply() that falls back to the interactive-only leg.
       const liveState = await liveStatePromise;
       if (!refreshIsCurrent()) return;
+      if (requireItems && liveState.error) return liveState.error;
       const snapshot = itemsForThread(
         (paged.items ?? []) as Item[],
         currentThread.id,
@@ -1650,7 +1678,7 @@ export function createThreadSwitchLoad(
     // trailing run; the pane is moving on. Waiters resolve rather than
     // hang — their refresh is moot, and callers only sequence on it.
     refreshScheduler.reset();
-    while (refreshWaiters.length > 0) refreshWaiters.pop()?.();
+    while (refreshWaiters.length > 0) refreshWaiters.pop()?.resolve();
     pastSpinnerThreshold = false;
   }
 

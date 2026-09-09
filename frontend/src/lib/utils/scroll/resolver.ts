@@ -475,7 +475,18 @@ export function resolveContentDelivery(
     // the carve-out: the paired growth is layout correction and
     // sync-pins, so the shrink must too — and the pinned-remeasure
     // settle window overrides it for the same reason.
-    if (!state.springActive || obs.widthReflowActive || obs.pinnedRemeasureActive) {
+    // A replacement can remove a large tail while adding a new user row.
+    // Its armed send still owes forward motion even when total height shrinks.
+    if (state.structuralAppendPending && state.warm
+      && target - scrollTop > ARRIVAL_DISTANCE_PX
+      && !obs.widthReflowActive && !obs.pinnedRemeasureActive
+      && springGateIsOpen({
+        springStopRequested: state.springStopRequested, paused: state.paused,
+        isAtBottom: state.isAtBottom, escaped: state.escaped,
+        prefersReducedMotion: obs.prefersReducedMotion,
+      })) {
+      startSpring = true;
+    } else if (!state.springActive || obs.widthReflowActive || obs.pinnedRemeasureActive) {
       write = {
         caller: obs.widthReflowActive ? 'contentRO.negativeDeltaReflow' : 'contentRO.negativeDelta',
         value: target,

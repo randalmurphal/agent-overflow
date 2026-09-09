@@ -26,7 +26,7 @@ import type { ThreadLiveActivity } from '../../../bindings/agent-overflow/intern
 import { ListThreadLiveActivity } from './bindings';
 import { hydrateCompactingState } from './compactingState.svelte';
 import {
-  getActiveTurn,
+  getCanonicalActiveTurn as getActiveTurn,
   projectTurnCompleted,
   projectTurnStarted,
   replaceInteractiveRequestsForThread,

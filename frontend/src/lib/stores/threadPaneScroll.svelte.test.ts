@@ -510,7 +510,7 @@ describe('threadPaneScroll', () => {
         // successor go in one call. The boundary drops, but nothing
         // mounts — the timeline SHRANK — so arming would open a phantom
         // spring window over the revert settle.
-        pane.removeItemsFromTurn(1);
+        pane.removeItemsFromTurn(1, pane.threadId!);
         expect(pane.revealBoundary).toBeNull();
         expect(markStructuralContentPending).not.toHaveBeenCalled();
       } finally {

@@ -1,3 +1,7 @@
+import { conversationMutationReconciler } from '../../stores/reconcileConversationMutation';
+import type { UserMessageRevertedEvent } from '../../types/messageRevert';
+import { beginThreadInterrupt, finishThreadInterrupt } from '../../stores/threadInterruptState.svelte';
+import { buildSendOptions } from '../../utils/sendOptions';
 // The edit-and-resend flow, from the pencil click to the destructive
 // RPC's outcome. Extracted from `ChatView.svelte` the same way the
 // scroll-session modules were extracted from `MessageTimeline.svelte`:
@@ -38,12 +42,11 @@ import {
 } from '../../stores/composerDraft.svelte';
 import { prependDraftSnapshot } from '../../utils/mergeDraftSnapshots';
 import type { ComposerDraftSnapshot } from '../../stores/composerDraftSnapshots';
-import { consumeResendRevertMarker } from '../../stores/eventsMessageRevert';
+import { applyUserMessageReverted, onUserMessageReverted, consumeResendRevertMarker } from '../../stores/eventsMessageRevert';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import { addToast } from '../../stores/toast.svelte';
 import {
   isTransportClassError,
-  whenTransportConnected,
 } from '../../stores/transportStatus.svelte';
 import type { Item } from '../../types/models';
 import { restoredDraftSnapshotFromUserItem } from '../../utils/userMessageDraftSnapshot';
@@ -74,7 +77,7 @@ interface EditFlowSession {
   /**
    * A destructive RPC on this flow died with the wire, so whether its
    * saga committed — and whether a committed saga's resend then landed —
-   * is unknown to this client. Set once by `handleTransportLoss` and
+   * is unknown to this client. Set on transport loss and
    * carried through every later stage: it is what stops the flow deleting
    * attachment records a sent message (or the backend's crash-copy draft
    * row) may now own. See `reclaimUploads`.
@@ -125,26 +128,30 @@ export interface PendingCutPosition {
 // the thread lock already enforces authoritatively — and, being
 // client-produced, a steering primitive on a channel every client
 // renders. The two panes below share one connection, so one marker map,
-// which is exactly the collision this Set still exists to prevent.
+// which is the collision this registry prevents.
 
-const executingThreads = new Set<string>();
+const executingThreads = new Map<string, number>();
 
 const CONCURRENT_SUBMIT_MESSAGE =
   'Another edit on this thread is already being sent. Wait for it to finish.';
 
 function claimThreadExecution(threadId: string): boolean {
   if (executingThreads.has(threadId)) return false;
-  executingThreads.add(threadId);
+  const token = beginThreadInterrupt(threadId);
+  if (token === null) return false;
+  executingThreads.set(threadId, token);
   return true;
 }
 
 function releaseThreadExecution(threadId: string): void {
+  const token = executingThreads.get(threadId);
+  if (token !== undefined) finishThreadInterrupt(threadId, token);
   executingThreads.delete(threadId);
 }
 
 /** Test-only. Drops any lane a torn-down component never released. */
 export function resetEditResendExecutionForTest(): void {
-  executingThreads.clear();
+  for (const id of executingThreads.keys()) releaseThreadExecution(id);
 }
 
 // ---------------------------------------------------------------------------
@@ -190,6 +197,13 @@ export function createEditResendFlow(opts: EditResendFlowOptions): EditResendFlo
   const pane = $derived(opts.getPane());
 
   let flow = $state.raw<EditFlow | null>(null);
+  const unsubscribeRevert = onUserMessageReverted((cut) => {
+    const current = flow;
+    if (current?.stage !== 'executing' || current.item.threadId !== cut.threadId
+      || current.item.id !== cut.userItemId || !cut.replacement) return;
+    if (pane.thread?.id === cut.threadId) pane.scrollController?.followReplacement?.();
+    flow = null;
+  });
 
   /**
    * The stage-independent half of a flow. Used instead of spreading the
@@ -324,15 +338,7 @@ export function createEditResendFlow(opts: EditResendFlowOptions): EditResendFlo
     await execute(payload, false);
   }
 
-  /**
-   * Revert to the anchor and send the replacement, in ONE backend call
-   * under one thread lock. The backend emits `user_message:reverted`
-   * (carrying draftPendingResend) before it dispatches the send, and the
-   * wire is FIFO, so the choreography the user sees is: the tail
-   * collapses, then the edited message arrives as a normal item push.
-   * Nothing is painted optimistically here — the timeline only ever
-   * truncates on the backend's own event.
-   */
+  /** Keep preparation visible until the cut and prepared replacement arrive together. */
   async function execute(
     payload: EditResendPayload,
     killRunningBackgroundTasks: boolean,
@@ -365,59 +371,53 @@ export function createEditResendFlow(opts: EditResendFlowOptions): EditResendFlo
     // disabled Send.
     const executing: ExecutingFlow = { ...sessionOf(current), stage: 'executing', payload };
     flow = executing;
+    const sendOptions = buildSendOptions({ attachmentIds: payload.attachmentIds });
+    const reconcile = conversationMutationReconciler(pane, thread.id, executing.item.id, sendOptions.sendId);
     try {
-      // Settle the composer's save pipeline BEFORE the destructive RPC:
-      // cancel the debounce and wait out in-flight saves so a stale
-      // composer save can't land after the backend stages its merged
-      // crash-copy draft and clobber it. Saves the user triggers by typing
-      // DURING the RPC can still land — that's why the failure recovery
-      // below rebuilds from live frontend state instead of trusting the
-      // row.
-      await opts.getComposerDraft().prepareForExternalDraftReplace(thread.id);
-      await RevertConversationAndResendMessage(thread.id, executing.item.id, {
+      // Preserve pending WIP before starting; later autosaves have independent storage.
+      await opts.getComposerDraft().flushPending();
+      const result = await RevertConversationAndResendMessage(thread.id, executing.item.id, {
+        sendId: sendOptions.sendId,
         content: payload.message,
         attachmentIds: payload.attachmentIds,
         killRunningBackgroundTasks,
       });
+      if (result?.cut) applyUserMessageReverted(result.cut as UserMessageRevertedEvent);
+      if (result?.warning) addToast('warning', result.warning);
+      if (result?.failure) {
+        handleFailure(executing, new Error(result.failure), Boolean(result.cut));
+        return;
+      }
       // No toast: the visible truncate plus the edited message arriving IS
       // the confirmation. The marker the reverted event recorded is
       // consumed here so it cannot linger and misclassify a later,
       // unrelated failure on this anchor.
       consumeResendRevertMarker(thread.id, executing.item.id);
       if (flow === executing) flow = null;
-      // Land at the thread's new tail, following — as if the message had
-      // just been sent from the bottom. A normal send never yanks a
-      // scrolled-up reader, but the height this reader was parked at
-      // measured rows the revert just destroyed, and they asked for this
-      // message to become the tail; the resend streams there.
-      // `stickToLatest` (MessageTimeline's `jumpToLatest`) reconciles a
-      // windowed tail before pinning, and its post-tick bottom write
-      // lands after the editor row unmounts.
-      if (pane.thread?.id === thread.id) pane.scrollController?.stickToLatest?.();
+      // Legacy responses lack the atomic replacement. Current responses transfer
+      // follow intent before applying their cut, through the subscriber above.
+      if (!result?.cut?.replacement && pane.thread?.id === thread.id) pane.scrollController?.stickToLatest?.();
     } catch (err) {
-      handleFailure(executing, err);
+      if (isTransportClassError(err)) {
+        executing.sagaOutcomeUnknown = true;
+        addToast('error', 'Connection lost while resending. Restoring the conversation state.');
+        try {
+          const state = await reconcile();
+          if (flow === executing) flow = state.userItemExists ? { ...sessionOf(executing), stage: 'editing' } : null;
+          if (!state.sendAccepted && !state.userItemExists) await recoverEditedText(executing);
+          else if (!opts.getComposerDraft().hasPendingSave) await opts.getComposerDraft().reloadFromBackend(thread.id);
+        } catch (recoveryError) {
+          addToast('error', `Could not restore the conversation state: ${userFacingError(recoveryError)}`);
+        }
+      } else handleFailure(executing, err);
     } finally {
       releaseThreadExecution(thread.id);
     }
   }
 
-  /**
-   * Which half of the saga failed is decided by the reverted-event marker,
-   * never from the error text and never structurally from `pane.items` —
-   * the event frame precedes the RPC rejection on the FIFO wire, so the
-   * marker is authoritative even after a mid-RPC thread switch, when the
-   * pane's items belong to ANOTHER thread and a structural check would
-   * misread a plain refusal as a committed revert.
-   *
-   * That reasoning holds only while the socket survived the call, which is
-   * why the transport-class branch comes first.
-   */
-  function handleFailure(failed: ExecutingFlow, err: unknown): void {
-    if (isTransportClassError(err)) {
-      handleTransportLoss(failed, err);
-      return;
-    }
-    const committed = consumeResendRevertMarker(failed.item.threadId, failed.item.id);
+  /** The RPC carries committed failure explicitly; the event marker is additive. */
+  function handleFailure(failed: ExecutingFlow, err: unknown, cutCommitted = false): void {
+    const committed = consumeResendRevertMarker(failed.item.threadId, failed.item.id) || cutCommitted;
     if (!committed) {
       // A guard refused before anything was committed (live turn,
       // unconsented background tasks, unsupported provider…). Nothing
@@ -434,83 +434,11 @@ export function createEditResendFlow(opts: EditResendFlowOptions): EditResendFlo
       addToast('error', `Edit failed: ${userFacingError(err)}`);
       return;
     }
-    // The revert committed and the resend failed. The editor's own row is
-    // gone with the truncate, so the composer is the only surface left.
-    // The backend left its merged crash-copy draft in the row, but that
-    // copy is only the process-crash backstop — a composer save fired by
-    // typing during the RPC, or the draft store's own switch-flush on a
-    // mid-RPC thread change, can have overwritten it — so the recovery
-    // must not blindly trust the row.
+    // The deleted editor hands its text to the composer. Merge against live
+    // keystrokes; backend recovery protects the edit if this client disappears.
     if (flow === failed) flow = null;
     void recoverEditedText(failed);
     addToast('error', 'Reverted, but sending failed — your message is in the composer.');
-  }
-
-  /**
-   * The wire broke under the RPC. The frontend is now epistemically
-   * crash-equivalent: it cannot know whether the saga committed, and for a
-   * timed-out call the saga can still COMPLETE afterwards — so it cannot
-   * know whether a committed saga's resend succeeded either.
-   *
-   * Every recovery this module does elsewhere would be a guess here, and
-   * each guess destroys something real: deleting the session's attachment
-   * records breaks a resend that landed, and repainting the composer from
-   * live state duplicates a message the user can already see in the
-   * transcript. So nothing is guessed and nothing is thrown away — the
-   * flow goes BACK to its editor, still holding the edited text, and the
-   * saga's own outcome resolves it once the connection returns. The
-   * backend runs to completion regardless of the lost answer, and the
-   * ANCHOR ROW is the frontend's existing witness for which way it went:
-   *
-   *   - Never arrived, or guard-refused: the anchor survives the gap
-   *     replay, the editor stays open, and the user can simply send
-   *     again. The composer reload finds the row unchanged.
-   *   - Committed, resend succeeded: the replayed `user_message:reverted`
-   *     removes the anchor, which is exactly what
-   *     `invalidateOnAnchorRemoved` voids the (now 'editing') flow on —
-   *     the executing-stage exemption no longer applies. The composer
-   *     reload finds the untouched WIP, so nothing is duplicated.
-   *   - Committed, resend failed: same void by the same route, and the
-   *     composer reload finds the backend's merged crash copy, which
-   *     already holds both texts.
-   *
-   * The one thing that must NOT follow the ordinary void path is the
-   * session's attachment records — see `reclaimUploads`.
-   */
-  function handleTransportLoss(failed: ExecutingFlow, err: unknown): void {
-    // Consumed for hygiene — a marker left behind would answer a later,
-    // unrelated failure on this anchor — but its VALUE is ignored: the
-    // frame may simply not have arrived before the socket died.
-    consumeResendRevertMarker(failed.item.threadId, failed.item.id);
-    console.error('Transport failed during an edit-and-resend:', err);
-    if (flow === failed) {
-      flow = { ...sessionOf(failed), sagaOutcomeUnknown: true, stage: 'editing' };
-    }
-    // When the flow was already voided mid-RPC (a thread switch), there is
-    // no editor to hand back and its uploads stay untouched — that void
-    // deliberately left them for a send that may well have landed, and
-    // this failure does not disprove it.
-    addToast(
-      'error',
-      'Connection lost while resending. If the message did not send, your edit is still in the editor.',
-    );
-    void restoreComposerAfterTransportLoss(failed.item.threadId);
-  }
-
-  async function restoreComposerAfterTransportLoss(threadId: string): Promise<void> {
-    await whenTransportConnected();
-    const composerDraft = opts.getComposerDraft();
-    // `reloadFromBackend` discards unsaved local state by design (it is
-    // the "the backend row is now the truth" path). That is right after a
-    // saga whose own writes we cannot see, but not over text the user
-    // typed while the connection was down and that has not been saved
-    // yet — their keystrokes are newer than anything the row can hold.
-    if (composerDraft.threadId === threadId && composerDraft.hasPendingSave) return;
-    try {
-      await composerDraft.reloadFromBackend(threadId);
-    } catch (err) {
-      console.error('Failed to reload the composer draft after a lost connection:', err);
-    }
   }
 
   /**
@@ -544,6 +472,10 @@ export function createEditResendFlow(opts: EditResendFlowOptions): EditResendFlo
     if (edited.content.trim() === '' && edited.attachments.length === 0) return;
     const composerDraft = opts.getComposerDraft();
     if (composerDraft.threadId === threadId) {
+      const staged = failed.payload.message.trim();
+      const alreadyRecovered = (composerDraft.content === staged || composerDraft.content.startsWith(`${staged}\n\n`))
+        && edited.attachments.every(attachment => composerDraft.attachments.some(current => current.id === attachment.id));
+      if (staged && alreadyRecovered) return;
       const recovered = prependDraftSnapshot(edited, {
         content: composerDraft.content,
         attachments: composerDraft.attachments,
@@ -595,7 +527,7 @@ export function createEditResendFlow(opts: EditResendFlowOptions): EditResendFlo
   const pendingCutAfter = $derived.by<PendingCutPosition | null>(() => {
     const current = flow;
     if (current?.stage !== 'executing') return null;
-    return { turnIndex: current.item.turnIndex, itemIndex: current.item.itemIndex };
+    return { turnIndex: current.item.turnIndex, itemIndex: pane.thread?.provider === 'codex' ? -1 : current.item.itemIndex };
   });
 
   const confirmDescription = $derived.by(() => {
@@ -664,6 +596,7 @@ export function createEditResendFlow(opts: EditResendFlowOptions): EditResendFlo
     // A pane closed mid-edit abandons the edit; same cleanup, same
     // executing-stage exemption as the invalidation passes.
     destroy(): void {
+      unsubscribeRevert();
       const current = flow;
       if (current && current.stage !== 'executing') reclaimUploads(current);
     },

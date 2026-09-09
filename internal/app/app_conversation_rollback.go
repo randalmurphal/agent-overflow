@@ -175,8 +175,7 @@ func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (c
 	// anchor, and a retry converges — the provider rollback re-runs
 	// against the already-cut transcript (the already-cut detector clones
 	// it whole) and this upsert is idempotent (round-4 review, CT4-4).
-	// A nil promptDraft means the caller already put a durable copy in
-	// that row itself and owns settling it.
+	// A nil promptDraft means the caller owns separate durable recovery.
 	if args.promptDraft != nil {
 		if err := a.writeThreadDraft(transport.ClientIdentity{}, *args.promptDraft); err != nil {
 			return revertedConversationCut{}, fmt.Errorf("%s: restore prompt draft: %w", args.errorPrefix, err)
@@ -198,6 +197,9 @@ func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (c
 		_, stamp, err := a.store.DeleteConversationFromTurn(args.thread.ID, args.userItem.TurnIndex)
 		if err != nil {
 			return revertedConversationCut{}, fmt.Errorf("%s: truncate conversation: %w", args.errorPrefix, err)
+		}
+		if a.triage != nil {
+			a.triage.ClearPendingSendsFromTurn(args.thread.ID, args.userItem.TurnIndex)
 		}
 		return revertedConversationCut{Stamp: stamp}, nil
 	}

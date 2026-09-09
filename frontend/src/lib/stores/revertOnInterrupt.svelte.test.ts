@@ -1,3 +1,5 @@
+import { isThreadWorking, projectSendStarted } from './threadStatuses.svelte';
+import { beginUndoableSend, retireUndoableSend } from './composerSendUndo';
 // Tests for the Stop-button revert-on-interrupt flow. The predicate
 // is pure (in-memory state only); the helper drives the bindings
 // mock to assert dispatch + rollback behavior.
@@ -570,4 +572,55 @@ describe('runInterruptOrRevert', () => {
     expect(pane.items.find((i) => i.id === 'u:0')).toBeDefined();
     expect(isThreadInterruptPending('thread-1')).toBe(false);
   });
+  it('restores draft, history and working presentation synchronously while preflight is unresolved', async () => {
+    const pane = readyPane();
+    pane.upsertItem(userItem('u:0', 0));
+    pane.setActiveTurn({ turnId: 'live', turnIndex: 0, startedAt: 1 });
+    projectSendStarted('thread-1');
+    const draft = optimisticDraftProbe();
+    let resolveCount!: (count: number) => void;
+    setBindingMock('CountRunningBackgroundTasks', () => new Promise<number>((resolve) => { resolveCount = resolve; }));
+    setBindingMock('InterruptAndRevertIfClean', async () => successfulRevert());
+    runInterruptOrRevert(pane, draft);
+    expect(draft.applied?.content).toBe('hello');
+    expect(pane.items).toHaveLength(0);
+    expect(isThreadWorking('thread-1')).toBe(false);
+    expect(isThreadInterruptPending('thread-1')).toBe(true);
+    resolveCount(0);
+    await flushInterruptFlow();
+    expect(isThreadInterruptPending('thread-1')).toBe(false);
+  });
+
+  it('cancels a prepared send before dispatch and restores its raw multiline draft', async () => {
+    const pane = readyPane();
+    const item = { ...userItem('optimistic:send', 0), meta: JSON.stringify({ sendId: 'send' }) };
+    pane.upsertItem(item);
+    const snapshot = { content: 'raw\n  text', attachments: [], terminalChips: [], sourceProposedPlan: null };
+    const pending = beginUndoableSend('thread-1', 'send', snapshot);
+    const draft = optimisticDraftProbe();
+    runInterruptOrRevert(pane, draft);
+    expect(pending.undoRequested).toBe(true);
+    expect(draft.applied).toEqual(snapshot);
+    expect(pane.items).toHaveLength(0);
+    pending.finish('cancelled');
+    await flushInterruptFlow();
+    expect(isThreadInterruptPending('thread-1')).toBe(false);
+    retireUndoableSend('thread-1');
+  });
+
+  it('cannot restore removed rows into a pane switched during preflight', async () => {
+    const pane = readyPane();
+    pane.upsertItem(userItem('u:0', 0));
+    pane.setActiveTurn({ turnId: 'live', turnIndex: 0, startedAt: 1 });
+    let resolveCount!: (count: number) => void;
+    setBindingMock('CountRunningBackgroundTasks', () => new Promise<number>((resolve) => { resolveCount = resolve; }));
+    runInterruptOrRevert(pane, EMPTY_DRAFT);
+    const previous = pane.thread!;
+    await pane.switchThread({ ...previous, id: 'thread-2' });
+    resolveCount(1);
+    await flushInterruptFlow();
+    expect(pane.threadId).toBe('thread-2');
+    expect(pane.items.some((item) => item.threadId === 'thread-1')).toBe(false);
+  });
+
 });

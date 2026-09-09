@@ -1,3 +1,4 @@
+import { fenceRevertedItemEvents } from './eventsItemStream';
 // User-message-revert event domain: truncating pane items on
 // user_message:reverted (the Stop/Esc un-send flow and the
 // edit-and-resend saga). Fan-in target of events.ts's
@@ -5,7 +6,7 @@
 import type { UserMessageRevertedEvent } from '../types/messageRevert';
 import { iterPanes } from './panes.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
-import { projectThreadReverted } from './threadStatuses.svelte';
+import { projectSendStarted, projectThreadReverted } from './threadStatuses.svelte';
 import { adoptEventStamp, dropThreadHistoryStamp } from './threadHistoryStamps';
 import { threadItemCache } from './threadItemCache';
 import { removeReplicaWindow } from '../replica';
@@ -39,25 +40,12 @@ function ingestPanes(): Iterable<ThreadPaneIngest> {
 // input. `reloadFromBackend` is a no-op when the draft store is not
 // pointed at this thread, so we just fire it for every active draft.
 //
-// (2) is skipped entirely for `draftPendingResend`: the edit-and-resend
-// saga persists a merged crash-copy draft (edited text + the composer's
-// WIP) before it truncates, and reloading would repaint the live
-// composer with that transient saga row — replacing the user's untouched
-// WIP with a copy of the message they are in the middle of resending.
-// The saga restores the real draft row itself once the resend lands; a
-// committed-then-failed resend is recovered by the edit-and-resend flow
-// (`components/chat/editResendFlow.svelte.ts`) from live frontend state,
-// not from this row.
+// Replacement operations leave the composer draft alone. Their cut and prepared
+// replacement are applied in one task. Early un-send rehydrates other clients;
+// its initiating composer holds a local restoration until cleanup settles.
 
-// A `draftPendingResend` revert was observed for this (thread, user
-// item). This is the AUTHORITATIVE "did the revert commit" signal for the
-// edit-and-resend flow's failure handler. The event frame is emitted
-// before the saga dispatches the resend and the RPC rejection is written
-// after it, so on the FIFO WebSocket the marker is always recorded before
-// the caller's promise rejects. Inferring the same answer structurally
-// from `pane.items` breaks after a mid-RPC thread switch, when the pane
-// holds another thread's rows.
-//
+// Event markers supplement the structured RPC outcome. The event and reply may
+// arrive in either order; neither depends on the pane still showing this thread.
 // Keyed by thread AND item, not by thread alone: two panes on one thread
 // can each be running a flow, and a single per-thread slot would let the
 // second flow's guard rejection consume the first flow's marker and
@@ -71,6 +59,12 @@ function ingestPanes(): Iterable<ThreadPaneIngest> {
 // client's saga on the same anchor would otherwise answer it yes for a
 // call that never got that far. The CONNECTION and not the device: two
 // tabs of one browser run independent flows.
+const revertSubscribers = new Set<(cut: UserMessageRevertedEvent) => void>();
+export function onUserMessageReverted(handler: (cut: UserMessageRevertedEvent) => void): () => void {
+  revertSubscribers.add(handler);
+  return () => { revertSubscribers.delete(handler); };
+}
+
 const pendingResendReverts = new Map<string, string>();
 // The initiating RPC and the event bus both deliver the same committed cut.
 // Their order is intentionally unspecified. The post-cut history stamp is the
@@ -124,6 +118,11 @@ function clearResendRevertMarkersForThread(threadId: string): void {
   }
 }
 
+/** A locked reconciliation has superseded earlier cut notifications. */
+export function acknowledgeConversationRevision(threadId: string, revision: number): void {
+  if (Number.isFinite(revision)) appliedRevertRevByThread.set(threadId, Math.max(revision, appliedRevertRevByThread.get(threadId) ?? 0));
+}
+
 export function resetResendRevertMarkersForTest(): void {
   pendingResendReverts.clear();
   appliedRevertRevByThread.clear();
@@ -139,6 +138,7 @@ export function applyUserMessageReverted(payload: UserMessageRevertedEvent | nul
   // one. Backend identity changes clear this map before a restored database
   // can rewind the counter.
   if (revision !== null && appliedRevision !== undefined && appliedRevision >= revision) return;
+  fenceRevertedItemEvents(payload);
   const rehydrateDrafts = payload.draftPendingResend !== true;
   clearResendRevertMarkersForThread(payload.threadId);
   if (payload.draftPendingResend === true && resendIsOurs(payload.connectionId)) {
@@ -153,6 +153,8 @@ export function applyUserMessageReverted(payload: UserMessageRevertedEvent | nul
   // and so no orphaned Zone 2 chip (whose provider confirm died with
   // the reverted session) lingers under new output.
   projectThreadReverted(payload.threadId);
+  for (const handler of revertSubscribers) handler(payload);
+  if (payload.replacement) projectSendStarted(payload.threadId);
   // Every cached copy of this thread's window predates the cut, and the
   // per-pane patch below only reaches panes that are showing it. Drop
   // them unconditionally (and the stamp with them): a cached window
@@ -163,7 +165,9 @@ export function applyUserMessageReverted(payload: UserMessageRevertedEvent | nul
   void removeReplicaWindow(payload.threadId);
   for (const pane of ingestPanes()) {
     if (pane.threadId !== payload.threadId) continue;
+    if (payload.replacement) pane.armStructuralSpring();
     pane.removeRevertedItems(payload.turnIndex, payload.keptAnchorTurnItemIds ?? []);
+    if (payload.replacement?.threadId === payload.threadId) pane.applyProviderItemUpserts([payload.replacement]);
     if (!rehydrateDrafts) continue;
     const draft = getComposerDraftForPane(pane.paneId);
     if (draft) {

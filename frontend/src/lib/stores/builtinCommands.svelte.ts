@@ -35,7 +35,7 @@ import {
 import { closeFocusedPaneOrCompanion } from './companionPanes.svelte';
 import { closeFocusedBrowserTab } from './browserCompanion.svelte';
 import type { PaneLayoutItem } from './paneLayout.svelte';
-import { focusPaneComposerIfEditableActive } from '../components/panes/paneComposerFocus';
+import { focusPaneComposer, focusPaneComposerIfEditableActive } from '../components/panes/paneComposerFocus';
 import { getThreadById } from './threads.svelte';
 import { openTerminalThread } from './threadCreation.svelte';
 import {
@@ -525,11 +525,16 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
         );
       } else {
         const draft = getComposerDraftForPane(pane.paneId);
-        runInterruptOrRevert(pane, draft ?? {
+        const restored = runInterruptOrRevert(pane, draft ?? {
           content: '',
           attachments: [],
           terminalChips: [],
         });
+        if (restored) {
+          pane.setSendInFlight(false);
+          queueMicrotask(() => { if (pane.threadId === threadID) focusPaneComposer(pane.paneId); });
+          return;
+        }
       }
 
       // Optimistic clear — spinner / Stop button / mid-turn input

@@ -34,6 +34,9 @@ type SourceProposedPlan = store.ProposedPlanSourceRef
 type SourceDiffReview = store.DiffReviewSourceRef
 
 type sendMessageOptions struct {
+	// onUserMessageReady publishes a prepared replacement and its committed cut together.
+	// When set, provider startup finishes before the user row is published.
+	onUserMessageReady           func(store.Item)
 	ConsumeDraft                 *DraftSnapshot
 	AttachmentIDs                []string
 	RuntimeMode                  string
@@ -575,6 +578,14 @@ func (a *App) sendMessageLocked(
 		a.maybeRenameTemporaryWorktreeBranch(threadID, content)
 	}
 
+	if opts.onUserMessageReady != nil {
+		if _, live := a.sessionManager().get(threadID); !live {
+			if err := a.startSession(ctx, threadID); err != nil {
+				return store.Item{}, fmt.Errorf("send message: start session: %w", err)
+			}
+		}
+	}
+
 	now := time.Now().UnixMilli()
 	userItem := store.Item{
 		ID:        userItemID,
@@ -591,10 +602,19 @@ func (a *App) sendMessageLocked(
 	// Route through the triage chokepoint so parent_id validation,
 	// emit order, and ItemsPersisted metric stay consistent with
 	// provider-sourced items.
-	if err = a.triage.PersistItem(userItem, nil); err != nil {
+	if opts.onUserMessageReady != nil {
+		userItem, err = a.triage.PersistItemForPublication(userItem, nil)
+	} else {
+		err = a.triage.PersistItem(userItem, nil)
+	}
+	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: persist user message: %w", err)
 	}
 	userMsgKept = true
+	if opts.onUserMessageReady != nil {
+		opts.onUserMessageReady(userItem)
+		a.emit(eventchan.ProviderItemEvent, triage.NewItemStreamUpsert(userItem))
+	}
 	if !opts.PreserveDraft {
 		// Attributed to the screen that sent: it has already cleared its
 		// composer, and an anonymous frame would make it re-read the row it

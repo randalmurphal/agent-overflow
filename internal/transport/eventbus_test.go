@@ -1310,3 +1310,23 @@ func TestEventBus_LatestOnlyDropIsNotAnnounced(t *testing.T) {
 		t.Fatalf("expected clean superseding frame, got %+v", got)
 	}
 }
+
+func TestChannelSequenceReadsThePublishedBoundary(t *testing.T) {
+	bus := NewEventBus(0)
+	defer bus.Close()
+	if got := bus.ChannelSequence(eventchan.ProviderItemEvent); got != 0 {
+		t.Fatal(got)
+	}
+	bus.Emit(eventchan.ProviderTurnStarted, nil)
+	event, err := bus.Emit(eventchan.ProviderItemEvent, "before cut")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := bus.ChannelSequence(eventchan.ProviderItemEvent); got != event.Seq {
+		t.Fatalf("boundary %d, event %d", got, event.Seq)
+	}
+	bus.Emit(eventchan.ProviderItemEvent, "replacement")
+	if got := bus.ChannelSequence(eventchan.ProviderItemEvent); got != event.Seq+1 {
+		t.Fatal(got)
+	}
+}
