@@ -8,8 +8,8 @@ workspace through the separate conversation-transfer protocol.
 ## Setup
 
 Connect both computers in Settings → Remote access → Connect to a computer. Open
-Remote access → Agent access and select the originating computer.
-Choose the destination and enable access. The frontend mints a destination
+Remote access → Agent remote tools and select the originating computer.
+Choose the destination and enable tools. The frontend mints a destination
 invitation, enrolls the originating computer, compares both verification
 numbers and the destination identity, then confirms and enables commands.
 Each computer retains its own device key and rotating credentials. Pairing a
@@ -30,10 +30,13 @@ settings. Existing computers appear once; the add selector lists new peers.
 
 ## Agent use
 
-Claude and Codex receive the built-in **ao-remote-tools** MCP server, controlled
-from the composer's MCP menu. It uses the same provider registration and HTTP
-boundary as **ao-browser-tools**. Tool descriptions carry usage; no CLI guidance
-is injected into the system/developer prompt. Claude TUI is not supported.
+Claude and Codex receive the built-in **ao-remote-tools** MCP server at session
+startup only when at least one paired computer is explicitly enabled. Pairing
+alone leaves tools off. Settings keeps the unavailable control visible and
+disabled when there are no computers to enable. The composer's MCP menu can
+also disable tools for an individual conversation. It uses the same provider
+registration and HTTP boundary as **ao-browser-tools**. Tool descriptions carry
+usage; no CLI guidance is injected into the system/developer prompt. Claude TUI is not supported.
 Workflow phases must declare `remote-commands` in their frozen definition.
 
 | Tool | Use |
@@ -119,9 +122,11 @@ Forgetting a computer also waits for outstanding jobs and notification handoff;
 reconnect an offline computer and stop its jobs first. Pairing credentials must
 remain available while AO still needs to confirm or cancel its work.
 
-Configuration changes refresh live MCP discovery without restarting provider
-turns or polling peers for discovery. Thread toggles survive provider-session
-restarts within the app process; machine opt-ins persist across app restarts.
+Configuration changes refresh discovery for sessions that already registered
+the server, without restarting provider turns or polling peers. Enabling tools
+for a session started without the server takes effect at its next start. Thread
+toggles survive provider-session restarts within the app process; machine
+opt-ins persist across app restarts.
 Disabling destination agent access blocks new work while preserving owned job
 status, cancellation, log reads and artifact retrieval. Revoking the pairing
 ends all peer access. A disabled conversation MCP server blocks its tools.

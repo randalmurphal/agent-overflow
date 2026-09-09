@@ -20,11 +20,13 @@ const hello = (id: string): TransportHello => ({
 beforeEach(() => { resetBindingMocks(); resetStagedBackends(); resetToLocalPage(); __setTransportHelloForTest(hello(mac)); __setBackendStatusForTest('', { status: 'connected', nextAttemptAt: null }); });
 afterEach(() => { cleanup(); __setTransportHelloForTest(null); resetStagedBackends(); resetToLocalPage(); resetBindingMocks(); });
 
-it('hides unsupported hosts and does not issue their new RPCs', () => {
+it('keeps unsupported hosts visible and disabled without issuing their new RPCs', () => {
   __setTransportHelloForTest({ ...hello(mac), capabilities: [] });
   const read = setBindingMock('ListAgentComputers', async () => []);
   const view = render(AgentComputersSection);
-  expect(view.queryByText('Agent access to other computers')).toBeNull();
+  const toggle = view.getByRole('switch', { name: 'Agent remote tools' }) as HTMLButtonElement;
+  expect(toggle.disabled).toBe(true);
+  expect(toggle.getAttribute('aria-checked')).toBe('false');
   expect(read).not.toHaveBeenCalled();
 });
 
@@ -42,8 +44,8 @@ it.each([{ source: '', destination: gpu, targetID: gpu }, { source: gpu, destina
   const select = view.getByRole('combobox') as HTMLSelectElement;
   for (const option of select.options) option.selected = option.value === targetID;
   await fireEvent.change(select);
-  expect((view.getByRole('button', { name: 'Enable access' }) as HTMLButtonElement).disabled).toBe(false);
-  await fireEvent.click(view.getByRole('button', { name: 'Enable access' }));
+  expect((view.getByRole('button', { name: 'Enable tools' }) as HTMLButtonElement).disabled).toBe(false);
+  await fireEvent.click(view.getByRole('button', { name: 'Enable tools' }));
   await waitFor(() => expect(enable).toHaveBeenCalledOnce());
   expect(confirm).toHaveBeenCalledOnce();
 });
@@ -63,8 +65,8 @@ it('refuses a mismatched pairing and cancels its invitation', async () => {
   const select = view.getByRole('combobox') as HTMLSelectElement;
   for (const option of select.options) option.selected = option.value === gpu;
   await fireEvent.change(select);
-  expect((view.getByRole('button', { name: 'Enable access' }) as HTMLButtonElement).disabled).toBe(false);
-  await fireEvent.click(view.getByRole('button', { name: 'Enable access' }));
+  expect((view.getByRole('button', { name: 'Enable tools' }) as HTMLButtonElement).disabled).toBe(false);
+  await fireEvent.click(view.getByRole('button', { name: 'Enable tools' }));
   await waitFor(() => expect(cancel).toHaveBeenCalledOnce());
   expect(confirm).not.toHaveBeenCalled(); expect(enable).not.toHaveBeenCalled();
   expect(view.getByRole('alert').textContent).toContain('could not be verified');
@@ -116,7 +118,7 @@ it('reloads rather than offering a second pairing when enabling fails after the 
   const select = view.getByRole('combobox') as HTMLSelectElement;
   for (const option of select.options) option.selected = option.value === gpu;
   await fireEvent.change(select);
-  await fireEvent.click(view.getByRole('button', { name: 'Enable access' }));
+  await fireEvent.click(view.getByRole('button', { name: 'Enable tools' }));
   await waitFor(() => expect(view.getByRole('alert').textContent).toContain('the computer is busy'));
   // The pairing stands on the backend: its row appears with the toggle as
   // the retry, and nothing offers to pair it again.
@@ -125,4 +127,30 @@ it('reloads rather than offering a second pairing when enabling fails after the 
   expect(list).toHaveBeenCalledTimes(2);
   expect(mint).toHaveBeenCalledOnce();
   expect(cancel).not.toHaveBeenCalled();
+});
+
+it('keeps agent remote tools visible, off and disabled with no connected computers', async () => {
+  setBindingMock('ListAgentComputers', async () => []);
+  const enable = setBindingMock('SetAgentComputerEnabled', async () => {});
+  const view = render(AgentComputersSection);
+  const toggle = await view.findByRole('switch', { name: 'Agent remote tools' }) as HTMLButtonElement;
+  expect(toggle.disabled).toBe(true);
+  expect(toggle.getAttribute('aria-checked')).toBe('false');
+  await fireEvent.click(toggle);
+  expect(enable).not.toHaveBeenCalled();
+});
+
+it('only enables a paired computer explicitly and allows disabling it again', async () => {
+  let enabled = false;
+  setBindingMock('ListAgentComputers', async () => [{ id: gpu, name: 'GPU', enabled, projects: [] }]);
+  const save = setBindingMock('SetAgentComputerEnabled', async (_id, next) => { enabled = next; });
+  const view = render(AgentComputersSection);
+  await view.findByRole('button', { name: 'Enable' });
+  expect(save).not.toHaveBeenCalled();
+  await fireEvent.click(view.getByRole('button', { name: 'Enable' }));
+  await view.findByRole('button', { name: 'Enabled' });
+  expect(save).toHaveBeenLastCalledWith(gpu, true);
+  await fireEvent.click(view.getByRole('button', { name: 'Enabled' }));
+  await view.findByRole('button', { name: 'Enable' });
+  expect(save).toHaveBeenLastCalledWith(gpu, false);
 });

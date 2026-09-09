@@ -94,7 +94,7 @@ func (m *Manager) CallAgentPeer(ctx context.Context, id, method string, result a
 		return err
 	}
 	if !access[id] && method != "RemoteCommandStatus" && method != "RemoteCommandCancel" && method != "RemoteCommandReadLog" && method != "RemoteCommandSearchLog" && method != "RemoteCommandArtifact" {
-		return errorsx.Public("remote_access_disabled", "Agent commands are not enabled for this computer. Ask the user to enable the destination in Remote access → Agent access on the originating computer.", nil)
+		return errorsx.Public("remote_access_disabled", "Agent commands are not enabled for this computer. Ask the user to enable the destination in Remote access → Agent remote tools on the originating computer.", nil)
 	}
 	return m.callAgentPeer(ctx, id, method, result, params...)
 }

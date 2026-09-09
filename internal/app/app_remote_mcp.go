@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -48,6 +50,13 @@ func (a *App) remoteMCPConfigForThread(thread store.Thread, sessionToken string)
 	if !ok || (scope.IsPhase() && !scope.HasGrant("remote-commands")) {
 		return nil, nil
 	}
+	enabled, err := a.remoteMCPEnabled()
+	if err != nil {
+		return nil, err
+	}
+	if !enabled || !a.remoteMCPServer().ThreadEnabled(thread.ID) {
+		return nil, nil
+	}
 	return a.remoteMCPServer().RegisterThread(thread.ID, remoteMCPAccess{thread.ID, sessionToken})
 }
 
@@ -55,14 +64,26 @@ func (a *App) remoteMCPTools(access remoteMCPAccess) []map[string]any {
 	if _, err := a.remoteMCPContext(context.Background(), access.ThreadID); err != nil {
 		return nil
 	}
-	// Pairings, not transient reachability, determine membership. Offline peers
-	// still need discovery/errors and accepted jobs still need status/cancel after
-	// opt-out. Every start separately checks the destination's current opt-in.
-	rows, err := a.ListAgentComputers()
-	if err != nil || len(rows) == 0 {
+	enabled, err := a.remoteMCPEnabled()
+	if err != nil || !enabled {
 		return nil
 	}
 	return remoteToolDefinitions
+}
+
+// An explicit destination opt-in controls registration and discovery. A saved
+// pairing alone is insufficient; temporary network outages retain the opt-in.
+func (a *App) remoteMCPEnabled() (bool, error) {
+	rows, err := a.ListAgentComputers()
+	if err != nil {
+		return false, err
+	}
+	for _, row := range rows {
+		if row.Enabled {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (a *App) remoteMCPContext(ctx context.Context, threadID string) (context.Context, error) {
@@ -274,7 +295,7 @@ func (a *App) withRemoteMCPRow(thread store.Thread, rows []ThreadMCPServer, live
 		return rows
 	}
 	if len(a.remoteMCPTools(remoteMCPAccess{ThreadID: thread.ID})) == 0 {
-		return rows
+		return slices.DeleteFunc(rows, func(row ThreadMCPServer) bool { return row.Name == remoteMCPName })
 	}
 	enabled := a.remoteMCPServer().ThreadEnabled(thread.ID)
 	source := mcpRowSourceConfig
@@ -304,12 +325,23 @@ func (a *App) setRemoteThreadMCPEnabled(thread store.Thread, enabled bool) error
 	if a.backends == nil {
 		return errNoBackendProfiles
 	}
+	if enabled {
+		available, err := a.remoteMCPEnabled()
+		if err != nil {
+			return err
+		}
+		if !available {
+			return fmt.Errorf("agent remote tools are off: enable a computer in Settings → Remote access → Agent remote tools")
+		}
+	}
 	server := a.remoteMCPServer()
 	previous := server.ThreadEnabled(thread.ID)
 	server.SetThreadEnabled(thread.ID, enabled)
-	if err := a.mcpService().ApplyManagedServerEnabled(thread.ID, remoteMCPName, enabled); err != nil {
-		server.SetThreadEnabled(thread.ID, previous)
-		return err
+	if server.HasThread(thread.ID) {
+		if err := a.mcpService().ApplyManagedServerEnabled(thread.ID, remoteMCPName, enabled); err != nil {
+			server.SetThreadEnabled(thread.ID, previous)
+			return err
+		}
 	}
 	a.mcpStatus().Invalidate(mcpstatus.Key{Provider: mcpstatus.Provider(thread.Provider), Name: remoteMCPName})
 	if enabled {
@@ -357,7 +389,9 @@ func (a *App) startRemoteMCPRefresh() {
 							a.emitWireErrorToThread(id, "Remote tools could not refresh: "+mcpapp.SanitizeError(err.Error()))
 						}
 					} else if live.Codex != nil {
-						_ = a.mcpService().ApplyManagedServerEnabled(id, remoteMCPName, true)
+						if err := a.mcpService().ApplyManagedServerEnabled(id, remoteMCPName, true); err != nil && a.lifeCtx().Err() == nil {
+							a.emitWireErrorToThread(id, "Remote tools could not refresh: "+mcpapp.SanitizeError(err.Error()))
+						}
 					}
 				}
 			}

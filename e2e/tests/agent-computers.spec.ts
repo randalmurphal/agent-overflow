@@ -26,8 +26,8 @@ test('enables agent access from home to an attached computer and back again', as
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     await page.getByRole('tab', { name: 'Connect to a computer', exact: true }).click();
     await expect(page.getByTestId('attached-system')).toContainText('GPU computer');
-    await page.getByRole('tab', { name: 'Agent access', exact: true }).click();
-    const peers = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Agent access to other computers', exact: true }) });
+    await page.getByRole('tab', { name: 'Agent remote tools', exact: true }).click();
+    const peers = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Agent remote tools', exact: true }) });
     await expect(peers).toHaveCount(1);
     await peers.getByRole('button', { name: 'Enable', exact: true }).click();
     await expect(peers.getByRole('button', { name: 'Enabled', exact: true })).toHaveAttribute('aria-pressed', 'true');
@@ -40,7 +40,7 @@ test('enables agent access from home to an attached computer and back again', as
     await expect(candidate.locator('option')).toHaveCount(2);
     const [homeID] = await candidate.selectOption({ index: 1 });
     expect(homeID).not.toBe(remoteID);
-    await peers.getByRole('button', { name: 'Enable access', exact: true }).click();
+    await peers.getByRole('button', { name: 'Enable tools', exact: true }).click();
     await expect(peers.getByRole('button', { name: 'Enabled', exact: true })).toHaveAttribute('aria-pressed', 'true');
     expect(await remote.rpc<Peer[]>('ListAgentComputers')).toEqual([expect.objectContaining({ id: homeID, enabled: true })]);
 

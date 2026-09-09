@@ -15,6 +15,7 @@ import (
 
 	"agent-overflow/internal/attachedbackends"
 	appbrowser "agent-overflow/internal/browser"
+	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
@@ -45,6 +46,9 @@ func remoteMCPEndpoint(t *testing.T, a *App, thread store.Thread, token string) 
 	configs, err := a.remoteMCPConfigForThread(thread, token)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(configs) == 0 {
+		t.Fatal("remote MCP was not registered")
 	}
 	return configs[remoteMCPName].(map[string]any)["url"].(string)
 }
@@ -138,6 +142,9 @@ func TestRemoteMCPCommandsCrossPairedTLSAndRespectOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(destination.app.remoteJobs.Close)
+	if err := source.SetAgentComputerEnabled(ctx, peer.ID, true); err != nil {
+		t.Fatal(err)
+	}
 	thread, token := remoteMCPThread(t, source, string(provider.Codex))
 	endpoint := remoteMCPEndpoint(t, source, thread, token)
 	status, reply := remoteMCPRequest(t, endpoint, "initialize", map[string]any{})
@@ -155,7 +162,10 @@ func TestRemoteMCPCommandsCrossPairedTLSAndRespectOwnership(t *testing.T) {
 	}
 	id := uuid.NewString()
 	run := map[string]any{"computer_id": peer.ID, "project_id": project.ID, "request_id": id, "argv": []string{"test-helper", "--wait"}, "wait_seconds": 0}
-	remoteMCPCall(t, endpoint, "remote_run", run, true) // Pairing is not command opt-in.
+	if err := source.SetAgentComputerEnabled(ctx, peer.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	remoteMCPCall(t, endpoint, "remote_run", run, true)
 	if err := source.SetAgentComputerEnabled(ctx, peer.ID, true); err != nil {
 		t.Fatal(err)
 	}
@@ -255,11 +265,22 @@ func TestRemoteMCPCommandsCrossPairedTLSAndRespectOwnership(t *testing.T) {
 // that already named its operation is never prefixed twice.
 func TestRemoteMCPToolErrorsNeverLeakPrivateCauses(t *testing.T) {
 	a := identityApp(t)
+	t.Cleanup(func() {
+		if err := a.remoteMCPServer().Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	dir := t.TempDir()
 	var err error
 	if a.backends, err = attachedbackends.New(dir, "source", "test"); err != nil {
 		t.Fatal(err)
 	}
+	thread, token := remoteMCPThread(t, a, string(provider.Codex))
+	configs, err := a.remoteMCPServer().RegisterThread(thread.ID, remoteMCPAccess{thread.ID, token})
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := configs[remoteMCPName].(map[string]any)["url"].(string)
 	access := filepath.Join(dir, "agent-access.json")
 	if err = os.WriteFile(access, []byte("{corrupt"), 0600); err != nil {
 		t.Fatal(err)
@@ -268,8 +289,6 @@ func TestRemoteMCPToolErrorsNeverLeakPrivateCauses(t *testing.T) {
 	if private == nil {
 		t.Fatal("corrupt access configuration was accepted")
 	}
-	thread, token := remoteMCPThread(t, a, string(provider.Codex))
-	endpoint := remoteMCPEndpoint(t, a, thread, token)
 	computerID, requestID := uuid.NewString(), uuid.NewString()
 	run := map[string]any{"computer_id": computerID, "project_id": uuid.NewString(), "request_id": requestID, "argv": []string{"test-helper"}}
 	text := string(remoteMCPCall(t, endpoint, "remote_run", run, true))
@@ -301,10 +320,11 @@ func TestRemoteMCPRegistrationAndRowsKeepProvidersAndBrowserSeparate(t *testing.
 	t.Cleanup(func() { _ = a.remoteMCPServer().Close() })
 	for _, name := range []string{string(provider.Claude), string(provider.Codex)} {
 		thread, token := remoteMCPThread(t, a, name)
-		endpoint := remoteMCPEndpoint(t, a, thread, token)
-		_, reply := remoteMCPRequest(t, endpoint, "tools/list", nil)
-		if string(reply["result"]) != "{\"tools\":[]}" {
-			t.Fatalf("unpaired tools: %s", reply)
+		if config, err := a.remoteMCPConfigForThread(thread, token); err != nil || len(config) != 0 {
+			t.Fatalf("unpaired MCP registration: %v, %v", config, err)
+		}
+		if a.remoteMCPServer().HasThread(thread.ID) {
+			t.Fatal("unpaired thread retained an MCP endpoint")
 		}
 		thread.Provider = string(provider.ClaudeTUI)
 		if config, err := a.remoteMCPConfigForThread(thread, token); err != nil || len(config) != 0 {
@@ -342,7 +362,9 @@ func TestRemoteMCPRefreshesLiveProvidersAndKeepsThreadDisable(t *testing.T) {
 			a.appCtx = ctx
 			t.Cleanup(func() { cancel(); a.remoteMCP.wg.Wait(); _ = a.remoteMCPServer().Close() })
 			thread, token := remoteMCPThread(t, a, name)
-			remoteMCPEndpoint(t, a, thread, token)
+			if _, err := a.remoteMCPServer().RegisterThread(thread.ID, remoteMCPAccess{thread.ID, token}); err != nil {
+				t.Fatal(err)
+			}
 			capture := t.TempDir()
 			if name == string(provider.Claude) {
 				binary := writeClaudeMcpToggleCaptureBinary(t, capture)
@@ -387,6 +409,76 @@ func TestRemoteMCPRefreshesLiveProvidersAndKeepsThreadDisable(t *testing.T) {
 			if a.remoteMCPServer().ThreadEnabled(thread.ID) {
 				t.Fatal("refresh reset thread opt-out")
 			}
+		})
+	}
+}
+
+func TestRemoteMCPRequiresEnabledPairedComputer(t *testing.T) {
+	for _, name := range []string{string(provider.Claude), string(provider.Codex)} {
+		t.Run(name, func(t *testing.T) {
+			a := identityApp(t)
+			dir := t.TempDir()
+			var err error
+			a.backends, err = attachedbackends.New(dir, "source", "test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := a.remoteMCPServer().Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			thread, token := remoteMCPThread(t, a, name)
+			peer := deviceclient.Session{BackendID: uuid.NewString(), SessionID: "test", Credential: "test", Endpoint: "https://127.0.0.1:1"}
+			checkOff := func() {
+				t.Helper()
+				for range 2 {
+					config, err := a.remoteMCPConfigForThread(thread, token)
+					if err != nil || len(config) != 0 {
+						t.Fatalf("disabled registration: %v, %v", config, err)
+					}
+					if got := a.remoteMCPTools(remoteMCPAccess{ThreadID: thread.ID}); len(got) != 0 {
+						t.Fatal("disabled tools advertised")
+					}
+					rows := a.withRemoteMCPRow(thread, []ThreadMCPServer{{Name: remoteMCPName, Status: "connected", Tools: []string{"remote_run"}}, {Name: "other"}}, true)
+					if len(rows) != 1 || rows[0].Name != "other" {
+						t.Fatalf("stale remote row: %+v", rows)
+					}
+				}
+				if err := a.setRemoteThreadMCPEnabled(thread, true); err == nil {
+					t.Fatal("thread toggle bypassed destination opt-in")
+				}
+			}
+			checkOff()
+			if err := deviceclient.SaveSession(dir, peer); err != nil {
+				t.Fatal(err)
+			}
+			checkOff()
+			for range 2 {
+				if err := a.backends.SetAgentAccess(peer.BackendID, true); err != nil {
+					t.Fatal(err)
+				}
+				endpoint := remoteMCPEndpoint(t, a, thread, token)
+				_, reply := remoteMCPRequest(t, endpoint, "tools/list", nil)
+				if !strings.Contains(string(reply["result"]), "remote_run") {
+					t.Fatalf("enabled tools missing: %s", reply)
+				}
+				if err := a.SetAgentComputerEnabled(context.Background(), peer.BackendID, false); err != nil {
+					t.Fatal(err)
+				}
+				_, reply = remoteMCPRequest(t, endpoint, "tools/list", nil)
+				if string(reply["result"]) != "{\"tools\":[]}" {
+					t.Fatalf("disabled endpoint retained tools: %s", reply)
+				}
+				checkOff()
+			}
+			if err := a.backends.SetAgentAccess(peer.BackendID, true); err != nil {
+				t.Fatal(err)
+			}
+			if err := a.backends.Remove(peer.BackendID); err != nil {
+				t.Fatal(err)
+			}
+			checkOff()
 		})
 	}
 }

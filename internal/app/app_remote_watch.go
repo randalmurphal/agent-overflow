@@ -85,7 +85,7 @@ func (a *App) registerRemoteWatch(input AgentRemoteRequest) (bool, error) {
 		return false, err
 	}
 	if !enabled[input.ComputerID] {
-		return false, errorsx.Public("remote_access_disabled", "Agent commands are not enabled for this computer. Enable it in Remote access → Agent access.", nil)
+		return false, errorsx.Public("remote_access_disabled", "Agent commands are not enabled for this computer. Enable it in Remote access → Agent remote tools.", nil)
 	}
 	// Admission and final deletion/transfer share the short mutation fence,
 	// which also rederives execution ownership (a moved or fenced conversation

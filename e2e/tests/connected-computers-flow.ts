@@ -120,8 +120,8 @@ export function connectedComputersFlow(): void {
       // Backend pairing alone does not allow model commands. Toggle the real
       // originating host's opt-in, then exercise the CLI with the credential
       // injected into its mocked provider session (never the page's token).
-      await settingsPage(page, 'Agent access');
-      const agentAccess = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Agent access to other computers', exact: true }) });
+      await settingsPage(page, 'Agent remote tools');
+      const agentAccess = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Agent remote tools', exact: true }) });
       await expect(agentAccess.getByRole('button', { name: 'Enable', exact: true })).toBeVisible();
       await agentAccess.getByRole('button', { name: 'Enable', exact: true }).click();
       await expect(agentAccess.getByRole('button', { name: 'Enabled', exact: true })).toHaveAttribute('aria-pressed', 'true');

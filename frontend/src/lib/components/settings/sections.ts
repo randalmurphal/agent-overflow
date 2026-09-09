@@ -151,7 +151,7 @@ export const SETTINGS_SECTIONS = [
   },
   {
     id: 'agent-access',
-    label: 'Agent access',
+    label: 'Agent remote tools',
     group: 'Remote access',
     description: 'Allow agents to run commands on your other computers.',
   },
