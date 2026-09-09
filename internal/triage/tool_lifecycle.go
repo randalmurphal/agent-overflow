@@ -130,6 +130,18 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 		return nil
 	}
 
+	if found && existing.Status != statusRunning && isCodexSpawnAgentLaunch(existing, nil) {
+		if metaUpdateOnly {
+			current := r.codexAgentRuntimeOrLaunch(existing)
+			current.Meta = mergeItemMetaJSON(current.Meta, evt.Meta)
+			if err := r.setCodexAgentRuntime(current); err != nil {
+				return err
+			}
+			r.emitBackgroundTasksChangedNudge(evt.ThreadID)
+		}
+		return nil
+	}
+
 	if metaUpdateOnly {
 		// A §E6 rebind is the end of the PREVIOUS binding's last round:
 		// a parked agent (launchIsParked) settles onto the row it was
@@ -390,7 +402,7 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 	if codexThread && isCodexSpawnAgentLaunch(launch, evt.Meta) {
 		launch.Status = CompletionStatus(meta)
 		launch.Summary = BuildCompletionSummary(CompletionBaseSummary(launch, meta, evt.ItemType), meta)
-		if meta.IsBackground {
+		if meta.IsBackground || hasRunningChild(decodeCodexItemMeta(evt.Meta).AgentsStates) {
 			launch.IsBackground = true
 		}
 		launch.Meta = mergeItemMetaJSON(launch.Meta, evt.Meta)
@@ -639,6 +651,9 @@ func (r *Router) persistToolCallCompletedWithoutLaunch(evt provider.ProviderEven
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
+	if isCodexSpawnAgentLaunch(item, evt.Meta) {
+		item.IsBackground = meta.IsBackground || hasRunningChild(decodeCodexItemMeta(evt.Meta).AgentsStates)
+	}
 	payload := CompletionPayloadForTool(item.ID, toolName, commandFromInput(meta.Input), evt, meta, now)
 	inputPayload := r.shapeToolItemMeta(&item, now)
 	return r.persistItemWithInputPayload(item, payload, inputPayload)
@@ -756,10 +771,7 @@ func (r *Router) snapshotCodexWaitStartReceivers(evt provider.ProviderEvent) (pr
 	if evt.ItemType != "wait_agent" || waitMetaHasReceiverTargets(evt.Meta) {
 		return evt, nil
 	}
-	launches, err := r.store.ListLiveCodexSubagentLaunches(evt.ThreadID)
-	if err != nil {
-		return evt, fmt.Errorf("snapshot Codex wait receivers: %w", err)
-	}
+	launches := r.ListLiveCodexAgentTasks(evt.ThreadID)
 	parentID := eventParentID(evt)
 	seen := make(map[string]struct{})
 	receiverThreadIDs := make([]string, 0, len(launches))

@@ -211,7 +211,7 @@
   // The Codex child's delivered verdict (empty for Claude launches): the
   // FINAL_ANSWER on the completion sibling this card sits at.
   let completionAnswer = $derived(codexCompletionPreview(parent, completionItem));
-  let decorated = $derived(decoratedSubagentAggregates(parent));
+  let decorated = $derived(decoratedSubagentAggregates(completionItem ?? parent));
   // Max, not replace — the same reconciliation `subagentGroupNode` does,
   // re-run against the live anchor. The node's count already folds in
   // loaded children, the eviction fold, and whatever decoration existed
@@ -223,7 +223,7 @@
   let latestChildSummary = $derived(
     pickLatestChildSummary(
       group.children,
-      pane?.subagentLiveAggregate(parent.id),
+      completionItem ? undefined : pane?.subagentLiveAggregate(parent.id),
       (id) => pane?.getItemById(id),
     )
       || decorated.summary
@@ -231,7 +231,7 @@
   );
   // One derived id for both halves of the disclosure (utils/chatDomIds.ts):
   // the header's `controls` and the body's `id` must be one string.
-  let groupDomId = $derived(chatRowDomId(pane, 'subagent-group', parent.id));
+  let groupDomId = $derived(chatRowDomId(pane, 'subagent-group', group.anchor.id));
   let parentMeta = $derived(parseJsonObject(parent.meta));
   let payloadMeta = $derived(parseJsonObject(parent.payloadMeta));
   let statusPayloadMeta = $derived(
@@ -250,7 +250,9 @@
   const launchCtx: SubagentLaunchContext = {
     hasChildren: () => group.children.length > 0 || group.descendantCount > 0,
   };
-  let launchInfo = $derived(subagentLaunchInfo(parent, launchCtx));
+  let identityItem = $derived(parent.toolName === 'collab_agent' && completionItem
+    ? { ...parent, meta: completionItem.meta } : parent);
+  let launchInfo = $derived(subagentLaunchInfo(identityItem, launchCtx));
   let kindLabel = $derived(launchInfo?.kind ?? 'agent');
   let agentTitle = $derived(launchInfo?.name ?? (parentToolName || 'Agent'));
   let modelLabel = $derived.by(() => {
@@ -286,8 +288,8 @@
   // it settled. `isRunning` (completion-aware) is passed as the liveness
   // override because the launch row of a background agent never leaves
   // `running` — see resolveSubagentProgress.
-  let liveTick = $derived(liveSubagentProgress(parent.threadId, parent.id));
-  let progress = $derived(resolveSubagentProgress(parent, liveTick, isRunning));
+  let liveTick = $derived(isRunning ? liveSubagentProgress(parent.threadId, parent.id) : undefined);
+  let progress = $derived(resolveSubagentProgress(completionItem ?? parent, liveTick, isRunning));
   let toolCountLabel = $derived(formatToolUses(progress.toolUses));
   let tokensLabel = $derived(
     progress.totalTokens !== null ? `${formatTokens(progress.totalTokens)} tokens` : '',
@@ -362,7 +364,7 @@
   const clock = createSharedNowClock(() => isRunning);
 
   let elapsedLabel = $derived.by<string>(() => {
-    const start = parent.createdAt;
+    const start = Number(parseJsonObject(completionItem?.meta)?.codex_execution_started_at ?? parent.createdAt);
     if (Number.isFinite(start) && start > 0) {
       // Start at the launch, end at whatever carries the terminal — for a
       // background agent that is the completion sibling, whose updatedAt is

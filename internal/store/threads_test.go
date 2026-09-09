@@ -239,8 +239,8 @@ func TestListBlockedThreadWorkspaceRefs(t *testing.T) {
 	for _, ref := range refs {
 		got[ref.ID] = true
 	}
-	if !got["active"] || !got["background"] || !got["codex-subagent"] {
-		t.Fatalf("blocked ref ids = %v, want active, background, and Codex subagent", got)
+	if !got["active"] || !got["background"] || got["codex-subagent"] {
+		t.Fatalf("blocked ref ids = %v, want only persisted active turns and background tools", got)
 	}
 	// Unscoped by project on purpose: a directory does not stop being in use
 	// because a second project row also names it, and the removal gate this
@@ -251,7 +251,7 @@ func TestListBlockedThreadWorkspaceRefs(t *testing.T) {
 	if got["idle"] || got["completed-background"] {
 		t.Fatalf("blocked ref ids leaked an idle thread: %v", got)
 	}
-	if len(refs) != 4 {
+	if len(refs) != 3 {
 		t.Fatalf("blocked refs = %+v, want active, background, codex-subagent, other-active", refs)
 	}
 
@@ -274,7 +274,7 @@ func TestListBlockedThreadWorkspaceRefs(t *testing.T) {
 	if err := planRows.Err(); err != nil {
 		t.Fatalf("iterate query plan: %v", err)
 	}
-	if !usedBackgroundIndex || !usedSubagentIndex || !usedCompletionIndex {
+	if !usedBackgroundIndex || usedSubagentIndex || !usedCompletionIndex {
 		t.Fatalf(
 			"query plan missing background/subagent/completion indexes: background=%v subagent=%v completion=%v",
 			usedBackgroundIndex, usedSubagentIndex, usedCompletionIndex,
@@ -3078,5 +3078,30 @@ func TestListThreadsWithItemsDerivesFailedTurnFromErrorItems(t *testing.T) {
 	seedItemWithStatus(t, s, other.ID, "api:0:1", 0, 0, "api_error", "completed", "add credits", false)
 	if got := mustListSingleThreadWithItems(t, s); got.HasFailedTurn {
 		t.Fatal("HasFailedTurn = true for an api_error item, want false")
+	}
+}
+
+func TestHistoricalCodexMetadataDoesNotClaimWorkspaceLiveness(t *testing.T) {
+	s := newTestStore(t)
+	project := newTestProject(t, s, "codex-runtime", "/repo")
+	thread := makeThread("codex-followup", "codex")
+	thread.ProjectID = project.ID
+	thread.WorkspacePath = "/repo"
+	if err := s.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	launch := Item{ID: "spawn", ThreadID: thread.ID, Kind: "tool_call", Role: "assistant", Status: "completed", ToolName: "collab_agent", IsBackground: true, Meta: `{"input":{"tool":"spawn_agent","receiverThreadIds":["child"]},"live_background_active":true,"codex_runtime":{"turnId":"B","status":"running"}}`}
+	if _, err := s.AppendItem(launch); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendItem(Item{ID: "answer-A", ThreadID: thread.ID, Kind: "tool_completion", Role: "assistant", Status: "completed", CompletionOf: "spawn"}); err != nil {
+		t.Fatal(err)
+	}
+	refs, err := s.ListBlockedThreadWorkspaceRefs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 0 {
+		t.Fatalf("blocked refs=%+v", refs)
 	}
 }

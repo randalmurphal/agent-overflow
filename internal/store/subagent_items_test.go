@@ -927,3 +927,32 @@ func TestSubagentResumeRoundProbeProbesTheParentIndexes(t *testing.T) {
 		t.Errorf("parent index used: local=%v imported=%v, want both", local, imported)
 	}
 }
+
+func TestCodexExecutionSnapshotExcludesOtherRunsAndLeavesSpawnUndecorated(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "codex")); err != nil {
+		t.Fatal(err)
+	}
+	spawn := Item{ID: "spawn", ThreadID: "t", Kind: "tool_call", Role: "assistant", ToolName: "collab_agent", Status: "completed", CreatedAt: 1, Meta: `{}`}
+	if err := s.InsertItem(spawn); err != nil {
+		t.Fatal(err)
+	}
+	seedToolChildItem(t, s, "t", "first", 0, 1, "spawn", "first task", "completed")
+	seedToolChildItem(t, s, "t", "nested", 0, 2, "first", "nested task", "completed")
+	seedToolChildItem(t, s, "t", "later", 0, 3, "spawn", "later task", "running")
+	meta, err := s.SnapshotSubagentExecutionMeta("t", "spawn", `{}`, 0, 0, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count, summary, _, _ := decodedSubagentMeta(t, Item{Meta: meta})
+	if count != 2 || summary != "nested task" {
+		t.Fatalf("snapshot: %s", meta)
+	}
+	decorated, err := s.decorateSubagentAnchors(s.reader(), "t", []Item{spawn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decorated[0].Meta != spawn.Meta {
+		t.Fatalf("spawn acquired later history: %s", decorated[0].Meta)
+	}
+}

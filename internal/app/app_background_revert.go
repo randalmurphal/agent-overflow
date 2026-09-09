@@ -1,7 +1,6 @@
 package app
 
 import (
-	"errors"
 	"fmt"
 	"time"
 
@@ -20,11 +19,7 @@ func (a *App) countRunningBackgroundTasks(threadID string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	codexSubagents, err := a.store.CountLiveCodexSubagentLaunches(threadID)
-	if err != nil {
-		return 0, err
-	}
-	total += codexSubagents
+
 	if a.triage != nil {
 		total += a.triage.CountLiveCodexBackgroundTasks(threadID)
 	}
@@ -78,13 +73,9 @@ func (a *App) markConfirmedBackgroundTasksInactiveAfterProviderCleanup(threadID 
 	}
 	now := time.Now().UnixMilli()
 	_, toolCallErr := a.store.MarkLiveBackgroundToolCallsInactive(threadID, now)
-	_, subagentErr := a.store.MarkLiveCodexSubagentLaunchesInactive(threadID, now)
 	a.emit(eventchan.ProviderBackgroundTasksChanged, map[string]any{"threadId": threadID})
 	if toolCallErr != nil {
 		toolCallErr = fmt.Errorf("%s: clear running background tasks: %w", errorPrefix, toolCallErr)
 	}
-	if subagentErr != nil {
-		subagentErr = fmt.Errorf("%s: clear Codex subagent background tasks: %w", errorPrefix, subagentErr)
-	}
-	return errors.Join(toolCallErr, subagentErr)
+	return toolCallErr
 }

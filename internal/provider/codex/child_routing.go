@@ -127,6 +127,7 @@ func (s *Session) takeDeferredChildWireEventsUnlessClosing(providerThreadID stri
 		return nil
 	}
 	delete(s.childRouting.deferredChildWireEvents, providerThreadID)
+	delete(s.childRouting.recoveryPending, providerThreadID)
 	if timer := s.childRouting.deferredChildDeadlines[providerThreadID]; timer != nil {
 		timer.Stop()
 		delete(s.childRouting.deferredChildDeadlines, providerThreadID)

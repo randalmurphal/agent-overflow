@@ -822,6 +822,11 @@ func (r *Router) CountLiveCodexBackgroundTasks(threadID string) int {
 		return 0
 	}
 	count := 0
+	for _, item := range state.agents {
+		if codexRuntimeActive(item) {
+			count++
+		}
+	}
 	for _, tracker := range state.unifiedExec {
 		if tracker != nil && strings.TrimSpace(tracker.parentID) == "" {
 			count++
@@ -831,7 +836,7 @@ func (r *Router) CountLiveCodexBackgroundTasks(threadID string) int {
 }
 
 // ThreadIDsWithLiveCodexBackgroundTasks snapshots the threads that currently
-// own top-level transient unified-exec tasks. Callers that need project-wide
+// own active Codex agents or top-level unified-exec tasks. Project-wide
 // availability can take one router lock instead of probing every historical
 // thread independently.
 func (r *Router) ThreadIDsWithLiveCodexBackgroundTasks() []string {
@@ -841,6 +846,17 @@ func (r *Router) ThreadIDsWithLiveCodexBackgroundTasks() []string {
 	for threadID, st := range r.threads {
 		state := st.codexBackground
 		if state == nil {
+			continue
+		}
+		agentActive := false
+		for _, item := range state.agents {
+			if codexRuntimeActive(item) {
+				agentActive = true
+				break
+			}
+		}
+		if agentActive {
+			ids = append(ids, threadID)
 			continue
 		}
 		for _, tracker := range state.unifiedExec {

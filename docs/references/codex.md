@@ -74,9 +74,10 @@ signal is an `item/completed` `subAgentActivity` with `kind:"started"`,
 Core can start the child before this parent-side activity is emitted, so any
 unmapped non-root provider thread must be quarantined rather than treated as
 the AO root. A started activity emitted on a child creates a nested ownership
-edge for a grandchild. Reopen recovery walks persisted descendant histories
-with bounded read-only `thread/read` calls and resumes only currently-active
-children for notification subscription. The V2 activity and raw spawn request
+edge for a grandchild. Reopen recovery restores persisted ownership and uses
+metadata-only reads for execution state. On 0.153.4+, descendant discovery and
+bounded item pages can recover a missed original spawn. Unrelated history is
+never replayed. Active children are resumed for notification subscription. The V2 activity and raw spawn request
 do not report the effective child profile. Agent Overflow reads model and
 reasoning effort from the child's metadata-only
 `thread/resume {excludeTurns:true}` response, without replaying turns. See
@@ -133,12 +134,9 @@ Still true, and still not a workaround worth taking:
 - `command/exec/terminate { process_id }` applies only to
   client-initiated `command/exec` PTYs, not model-initiated
   `exec_command` items. Use the background-terminal RPCs instead.
-- `close_agent` and `write_stdin` remain **model tools**, not
-  client-callable. Killing a spawned collab-agent child thread from the
-  client still has no path. (Claude's `KillShell` is similarly a model
-  tool but ALSO reachable via the client-sent `stop_task`
-  control_request. See
-  [`claude-wire.md §stop_task`](claude-wire.md#stop_task).)
+- `close_agent` and `write_stdin` remain model tools. A client can interrupt
+  an owned child's execution with `turn/interrupt`. AO resolves the child
+  and turn from the launch, with generation checks against a newer execution.
 
 ## Known upstream constraints
 

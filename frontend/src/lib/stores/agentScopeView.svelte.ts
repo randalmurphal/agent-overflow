@@ -1,3 +1,5 @@
+import { liveCodexAgent } from './subagentProgress.svelte';
+import { subagentExecutionItem } from '../utils/codexSubagentRuntime';
 // Scoped ThreadPane facade for the agent companion pane.
 //
 // The agent pane is a NORMAL thread pane — the real MessageTimeline with
@@ -264,21 +266,13 @@ export function createAgentScopeView(
   let scopedItems = $derived(scopeWindow.items);
 
   // ---- Scope lifecycle as the timeline's turn ---------------------------
-  // Status reads go through the SOURCE pane's live row (`getItemById`,
-  // the row's own box), so a launch flipping to terminal re-derives
-  // without a structural revision. The completion sibling is the status
-  // source once it exists — same rule the card and the composer shell
-  // follow. Its MEMBERSHIP comes from the array (structure); its fields
-  // must not, because a patch to the row is written in place and the
-  // array signal stays silent for it.
-  //
-  // The LIFECYCLE row is the launch for an ordinary agent and the LATEST
-  // resume carrier for a resumed one (claude-wire.md §E6): the scope root
-  // settled when its first round did, so reading status from it would
-  // settle the pane's turn while round two runs. Elapsed counts from the
-  // resume, which is what the reader is watching (user ruling).
+  // Read lifecycle fields from the source's reactive item boxes. Claude's
+  // latest resume carrier owns its round; Codex reads its separate live
+  // projection without changing any historical item.
   let lifecycle = $derived.by<Item | undefined>(() => {
     const root = scopeItemId ? sourcePane.getItemById(scopeItemId) : undefined;
+    const codex = root && liveCodexAgent(root.threadId, root.id);
+    if (codex) return codex;
     let latest = root;
     // `>=` with the carriers in timeline order: the latest carrier wins,
     // and a carrier always outranks the root at an equal timestamp
@@ -292,23 +286,24 @@ export function createAgentScopeView(
   let lifecycleCompletion = $derived.by<Item | undefined>(() => {
     const lifecycleId = lifecycle?.id;
     if (!lifecycleId) return undefined;
-    const completion = sourcePane.items.find((item) => item.completionOf === lifecycleId);
+    let completion: Item | undefined;
+    for (const item of sourcePane.items) { if (item.completionOf === lifecycleId) completion = item; }
     return completion ? (sourcePane.getItemById(completion.id) ?? completion) : undefined;
   });
   const timelineTurns: TimelineTurnFacet = {
     keyOf: () => AGENT_SCOPE_TURN_KEY,
     get activeKey() {
-      const status = (lifecycleCompletion ?? lifecycle)?.status;
+      const status = subagentExecutionItem(lifecycle, lifecycleCompletion)?.status;
       return status === 'running' || status === 'streaming' ? AGENT_SCOPE_TURN_KEY : null;
     },
     get settled() {
       const launch = lifecycle;
-      const statusItem = lifecycleCompletion ?? launch;
+      const statusItem = subagentExecutionItem(launch, lifecycleCompletion);
       if (!launch || !statusItem) return null;
       if (statusItem.status === 'running' || statusItem.status === 'streaming') return null;
       return {
         key: AGENT_SCOPE_TURN_KEY,
-        startedAt: launch.createdAt,
+        startedAt: subagentExecutionItem(launch)!.createdAt,
         completedAt: statusItem.updatedAt,
       };
     },

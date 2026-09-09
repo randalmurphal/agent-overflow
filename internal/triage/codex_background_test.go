@@ -1323,21 +1323,18 @@ func TestCodexSubagentInactiveStatusMarksLaunchInactiveWithoutTranscriptCompleti
 		t.Fatalf("subagent inactive status: %v", err)
 	}
 
-	live, err := st.ListLiveBackgroundTasks("t1", 0)
-	if err != nil {
-		t.Fatalf("live background tasks: %v", err)
-	}
+	live := router.ListLiveCodexAgentTasks("t1")
 	if len(live) != 0 {
 		t.Fatalf("inactive subagent should leave no live tray rows, got %+v", live)
 	}
-	if _, found, err := st.GetThreadItem("t1", ToolCompletionID("spawn-inactive")); err != nil || found {
-		t.Fatalf("direct child lifecycle must not create transcript completion: found=%v err=%v", found, err)
+	if _, found, err := st.GetThreadItem("t1", ToolCompletionID("spawn-inactive")); err != nil || !found {
+		t.Fatalf("child lifecycle must create a new completion: found=%v err=%v", found, err)
 	}
 	row, found, err := st.GetThreadItem("t1", "spawn-inactive")
 	if err != nil || !found {
 		t.Fatalf("spawn row missing: found=%v err=%v", found, err)
 	}
-	meta := decodeItemMetaMap(t, row.Meta)
+	meta := decodeItemMetaMap(t, router.codexAgentRuntimeOrLaunch(row).Meta)
 	if meta["live_background_active"] != false {
 		t.Fatalf("live_background_active = %v, want false", meta["live_background_active"])
 	}
@@ -1358,23 +1355,6 @@ func TestCodexSubagentRunningStatusReactivatesCompletedChild(t *testing.T) {
 			t.Fatalf("handle %s: %v", event.Kind, err)
 		}
 	}
-	// A previous child turn may already have produced a visible completion.
-	// Follow-up activity must still make the launch live again.
-	now := time.Now().UnixMilli()
-	if _, err := st.AppendItem(store.Item{
-		ID:           ToolCompletionID("spawn-followup"),
-		ThreadID:     "t1",
-		TurnIndex:    0,
-		Kind:         itemKindBackgroundDone,
-		Role:         "assistant",
-		Status:       statusCompleted,
-		CompletionOf: "spawn-followup",
-		ToolName:     "collab_agent",
-		CreatedAt:    now,
-		UpdatedAt:    now,
-	}); err != nil {
-		t.Fatalf("seed previous completion: %v", err)
-	}
 
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventSubagentStatus, ThreadID: "t1", ItemID: "spawn-followup",
@@ -1382,9 +1362,9 @@ func TestCodexSubagentRunningStatusReactivatesCompletedChild(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("reactivate child: %v", err)
 	}
-	live, err := st.ListLiveCodexSubagentLaunches("t1")
-	if err != nil || len(live) != 1 || live[0].ID != "spawn-followup" {
-		t.Fatalf("reactivated live launches = %+v err=%v", live, err)
+	live := router.ListLiveCodexAgentTasks("t1")
+	if len(live) != 1 || live[0].ID != "spawn-followup" {
+		t.Fatalf("reactivated live launches = %+v", live)
 	}
 
 	if err := router.Handle(provider.ProviderEvent{
@@ -1393,9 +1373,9 @@ func TestCodexSubagentRunningStatusReactivatesCompletedChild(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("complete follow-up child: %v", err)
 	}
-	live, err = st.ListLiveCodexSubagentLaunches("t1")
-	if err != nil || len(live) != 0 {
-		t.Fatalf("completed follow-up remained live: %+v err=%v", live, err)
+	live = router.ListLiveCodexAgentTasks("t1")
+	if len(live) != 0 {
+		t.Fatalf("completed follow-up remained live: %+v", live)
 	}
 }
 
@@ -1434,7 +1414,7 @@ func TestCodexSubagentStatusWaitsForAllChildrenBeforeHidingLiveBackground(t *tes
 	if err != nil || !found {
 		t.Fatalf("spawn row missing after first child: found=%v err=%v", found, err)
 	}
-	meta := decodeItemMetaMap(t, row.Meta)
+	meta := decodeItemMetaMap(t, router.codexAgentRuntimeOrLaunch(row).Meta)
 	if meta["live_background_active"] == false {
 		t.Fatalf("live_background_active should not be false until all children finish: %+v", meta)
 	}
@@ -1446,15 +1426,15 @@ func TestCodexSubagentStatusWaitsForAllChildrenBeforeHidingLiveBackground(t *tes
 	}); err != nil {
 		t.Fatalf("second child status: %v", err)
 	}
-	live, err := st.ListLiveBackgroundTasks("t1", 0)
+	live := router.ListLiveCodexAgentTasks("t1")
 	if err != nil {
 		t.Fatalf("live background tasks after second child: %v", err)
 	}
 	if len(live) != 0 {
 		t.Fatalf("spawn should hide after all children finish without transcript completion, got %+v", live)
 	}
-	if _, found, err := st.GetThreadItem("t1", ToolCompletionID("spawn-multi-status")); err != nil || found {
-		t.Fatalf("direct child lifecycle must not create completion sibling: found=%v err=%v", found, err)
+	if _, found, err := st.GetThreadItem("t1", ToolCompletionID("spawn-multi-status")); err != nil || !found {
+		t.Fatalf("child lifecycle must create a new completion: found=%v err=%v", found, err)
 	}
 }
 
@@ -1504,13 +1484,13 @@ func TestCodexSubagentStatusAggregatesMultiChildFailures(t *testing.T) {
 	if _, exists := meta["codex_child_status"]; exists {
 		t.Fatalf("spawn row exposes aggregate child status: %s", launch.Meta)
 	}
-	statuses := decodeCodexChildTerminalStatuses(json.RawMessage(launch.Meta))
+	statuses := decodeCodexChildTerminalStatuses(json.RawMessage(router.codexAgentRuntimeOrLaunch(launch).Meta))
 	if statuses["child-a"] != "errored" || statuses["child-b"] != "completed" {
 		t.Fatalf("terminal bookkeeping = %+v", statuses)
 	}
 	completion, found, err := st.GetThreadItem("t1", ToolCompletionID("spawn-mixed-status"))
-	if err != nil || found {
-		t.Fatalf("direct child lifecycle must not create completion row: found=%v item=%+v err=%v", found, completion, err)
+	if err != nil || !found {
+		t.Fatalf("child lifecycle must create a new completion: found=%v item=%+v err=%v", found, completion, err)
 	}
 }
 
@@ -1554,8 +1534,8 @@ func TestCodexSubagentStatusDoesNotFlushBufferedChildTextToTranscriptCompletion(
 	}
 
 	completion, found, err := st.GetThreadItem("t1", ToolCompletionID("spawn-buffered"))
-	if err != nil || found {
-		t.Fatalf("direct child lifecycle must not create completion row: found=%v item=%+v err=%v", found, completion, err)
+	if err != nil || !found {
+		t.Fatalf("child lifecycle must create a new completion: found=%v item=%+v err=%v", found, completion, err)
 	}
 }
 
@@ -1877,7 +1857,7 @@ func TestCodexSubagentPriorLifecycleStatusDoesNotAttachToUnrelatedLaterWait(t *t
 		t.Fatalf("unrelated wait complete: %v", err)
 	}
 
-	if completion, found, err := st.GetThreadItem("t1", ToolCompletionID("spawn-franklin")); err != nil || found {
+	if completion, found, err := st.GetThreadItem("t1", ToolCompletionID("spawn-franklin")); err != nil || !found || strings.Contains(completion.Meta, "wait-arendt") {
 		t.Fatalf("franklin completion = %+v found=%v err=%v, want no unrelated wait attachment", completion, found, err)
 	}
 }
@@ -1913,14 +1893,14 @@ func TestCodexSubagentNotificationAfterLifecycleStatusCarriesFinalOutput(t *test
 	}); err != nil {
 		t.Fatalf("subagent status: %v", err)
 	}
-	if completion, found, err := st.GetThreadItem("t1", ToolCompletionID("spawn-franklin")); err != nil || found {
-		t.Fatalf("lifecycle status completion = %+v found=%v err=%v, want none", completion, found, err)
+	if completion, found, err := st.GetThreadItem("t1", ToolCompletionID("spawn-franklin")); err != nil || !found {
+		t.Fatalf("lifecycle status completion = %+v found=%v err=%v, want a completion", completion, found, err)
 	}
 	launchAfterStatus, found, err := st.GetThreadItem("t1", "spawn-franklin")
 	if err != nil || !found {
 		t.Fatalf("spawn after lifecycle status: found=%v err=%v", found, err)
 	}
-	if got := decodeCodexChildTerminalStatuses(json.RawMessage(launchAfterStatus.Meta))["child-provider-franklin"]; got != "errored" {
+	if got := decodeCodexChildTerminalStatuses(json.RawMessage(router.codexAgentRuntimeOrLaunch(launchAfterStatus).Meta))["child-provider-franklin"]; got != "errored" {
 		t.Fatalf("persisted lifecycle status = %q, want errored; meta=%s", got, launchAfterStatus.Meta)
 	}
 
@@ -2917,7 +2897,7 @@ func TestCodexMailboxProgressDeliveryCreatesStandaloneActivity(t *testing.T) {
 // Resume generations remain durable because completion identity uses them to
 // distinguish identical answers from different child turns. They are internal
 // bookkeeping, not timeline presentation state.
-func TestCodexResumeGenerationRemainsDurable(t *testing.T) {
+func TestCodexResumeGenerationDoesNotMutateHistory(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
@@ -2931,8 +2911,9 @@ func TestCodexResumeGenerationRemainsDurable(t *testing.T) {
 		"codex_child_resume_generations": map[string]int{"child-1": 7},
 		"codex_child_terminal_statuses":  map[string]string{"child-1": "completed"},
 	})
-	if err := st.UpdateItemMeta("t1", "spawn-1", mergeItemMetaJSON(launch.Meta, seeded)); err != nil {
-		t.Fatalf("seed launch meta: %v", err)
+	launch.Meta = mergeItemMetaJSON(launch.Meta, seeded)
+	if err := router.setCodexAgentRuntime(launch); err != nil {
+		t.Fatal(err)
 	}
 
 	statusMeta, _ := json.Marshal(map[string]any{"agent_path": "child-1", "status": "running"})
@@ -2947,7 +2928,7 @@ func TestCodexResumeGenerationRemainsDurable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("launch: %v", err)
 	}
-	if got := decodeCodexChildResumeGenerations(json.RawMessage(stored.Meta))["child-1"]; got != 8 {
+	if got := decodeCodexChildResumeGenerations(json.RawMessage(router.codexAgentRuntimeOrLaunch(stored).Meta))["child-1"]; got != 8 {
 		t.Fatalf("resume generation = %d, want 8", got)
 	}
 }

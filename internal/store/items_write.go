@@ -275,12 +275,33 @@ func (s *Store) UpsertItem(item Item, payload *Payload) (Item, error) {
 // Pass nil for either payload to skip it. Passing nil for both is
 // equivalent to UpsertItem(item, nil).
 func (s *Store) UpsertItemWithInputPayload(item Item, resultPayload, inputPayload *Payload) (Item, error) {
+	return s.upsertItemWithInputPayload(item, resultPayload, inputPayload, false)
+}
+
+// UpsertUnsettledItem atomically preserves an existing terminal item and its
+// payloads. Replayed or concurrently deferred lifecycle events cannot reopen
+// or enrich it. Existing running/streaming items may still settle normally.
+func (s *Store) UpsertUnsettledItem(item Item, resultPayload, inputPayload *Payload) (Item, error) {
+	return s.upsertItemWithInputPayload(item, resultPayload, inputPayload, true)
+}
+
+func (s *Store) upsertItemWithInputPayload(item Item, resultPayload, inputPayload *Payload, preserveTerminal bool) (Item, error) {
 	applyItemDefaults(&item)
 	tx, err := s.db.Begin()
 	if err != nil {
 		return Item{}, fmt.Errorf("store: begin upsert item tx: %w", err)
 	}
 	defer tx.Rollback()
+
+	if preserveTerminal {
+		existing, found, err := s.getThreadItem(tx, item.ThreadID, item.ID)
+		if err != nil {
+			return Item{}, err
+		}
+		if found && existing.Status != "running" && existing.Status != "streaming" {
+			return existing, nil
+		}
+	}
 
 	if err := upsertPayload(tx, resultPayload, &item); err != nil {
 		return Item{}, err

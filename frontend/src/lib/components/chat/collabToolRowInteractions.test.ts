@@ -67,6 +67,7 @@ describe('<CollabToolRow> immutable spawn and standalone activity', () => {
           tool: 'send_input',
           activityKind: 'interacted',
           activityTool: 'followup_task',
+          agentPath: '/root/reviewer',
           receiverThreadIds: ['child-1'],
         },
       }),
@@ -87,7 +88,7 @@ describe('<CollabToolRow> immutable spawn and standalone activity', () => {
     });
 
     const sentView = render(ToolCallCard, { props: { pane, item: sent } });
-    expect(sentView.getByTestId('collab-tool-row').textContent).toContain('Sent follow-up to Agent');
+    expect(sentView.getByTestId('collab-tool-row').textContent).toContain('Sent follow-up to reviewer');
     sentView.unmount();
 
     const progressView = render(ToolCallCard, { props: { pane, item: progress } });

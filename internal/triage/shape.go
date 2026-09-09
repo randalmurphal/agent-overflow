@@ -366,6 +366,15 @@ func ThinkingItemID(turnIndex int, scope string, blockIndex int) string {
 	return fmt.Sprintf("think:%d:%s:%d", turnIndex, scope, blockIndex)
 }
 
+// Scoped streams outlive provider sessions and remain under the launch's turn.
+// Native block identity prevents a fresh session's counters replacing history.
+func scopedStreamItemID(kind string, turnIndex int, scope, providerItemID, fallback string) string {
+	if scope == "" || providerItemID == "" {
+		return fallback
+	}
+	return fmt.Sprintf("%s:%d:%s:provider:%s", kind, turnIndex, scope, providerItemID)
+}
+
 // ErrorItemID is the id of an error row: the Nth error of a turn within
 // a scope. The sequence comes from the Router's per-scope counter.
 func ErrorItemID(turnIndex int, scope string, seq int) string {

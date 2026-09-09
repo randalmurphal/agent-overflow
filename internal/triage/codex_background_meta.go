@@ -17,7 +17,7 @@ func codexBackgroundCompletionStatus(meta json.RawMessage) string {
 	switch decoded.ItemStatus {
 	case "failed", "errored":
 		return statusErrored
-	case "killed":
+	case "killed", "interrupted", "shutdown", "notFound":
 		return statusKilled
 	default:
 		return statusCompleted
@@ -50,7 +50,7 @@ func codexBackgroundOutcome(meta json.RawMessage) string {
 		return "failed"
 	case "errored":
 		return "errored"
-	case "killed":
+	case "killed", "interrupted", "shutdown", "notFound":
 		return "killed"
 	case "completed":
 		return "done"
@@ -63,6 +63,7 @@ func codexBackgroundOutcome(meta json.RawMessage) string {
 // EventToolComplete Meta blob that the projector needs. See
 // protocol.enrichItemMeta for the source of each field.
 type codexItemMeta struct {
+	Runtime           *codexRuntimeMeta
 	Source            string
 	ItemStatus        string
 	ProcessID         string
@@ -84,15 +85,17 @@ func decodeCodexItemMeta(raw json.RawMessage) codexItemMeta {
 		return codexItemMeta{}
 	}
 	var shell struct {
-		Source     string          `json:"source"`
-		ItemStatus string          `json:"item_status"`
-		ProcessID  string          `json:"process_id"`
-		Input      json.RawMessage `json:"input"`
+		Runtime    *codexRuntimeMeta `json:"codex_runtime"`
+		Source     string            `json:"source"`
+		ItemStatus string            `json:"item_status"`
+		ProcessID  string            `json:"process_id"`
+		Input      json.RawMessage   `json:"input"`
 	}
 	if err := json.Unmarshal(raw, &shell); err != nil {
 		return codexItemMeta{}
 	}
 	out := codexItemMeta{
+		Runtime:    shell.Runtime,
 		Source:     shell.Source,
 		ItemStatus: shell.ItemStatus,
 		ProcessID:  shell.ProcessID,
@@ -196,20 +199,23 @@ func formatAgentCompletionMessage(result agentTerminalResult, totalChildren int)
 	return header + ":\n" + message
 }
 
-// codexSubagentSignalMeta is the common shape for Codex child-agent terminal
-// signals. <subagent_notification> includes Message and can create transcript
-// completion once every child in the spawn is terminal. EventSubagentStatus is
-// status-only live-state evidence and does not synthesize transcript rows.
+// codexSubagentSignalMeta carries either execution state or a mailbox receipt.
+// Native terminal turns create completion records. Mailbox delivery is a
+// separate timeline event and does not settle the recipient's execution.
 type codexSubagentSignalMeta struct {
+	StartedAt int64  `json:"started_at"`
+	Recovered bool   `json:"recovered"`
 	AgentPath string `json:"agent_path"`
 	Status    string `json:"status"`
 	Message   string `json:"message"`
 	// MessageType is the mailbox envelope header (FINAL_ANSWER | MESSAGE).
-	// FINAL_ANSWER is the transcript-completion boundary; MESSAGE is a
-	// mid-run progress note that must never mark a child terminal.
-	MessageType     string `json:"message_type"`
-	MailboxDelivery bool   `json:"mailbox_delivery"`
-	DeliveryID      string `json:"delivery_id"`
+	// Message type identifies the received envelope, not runtime liveness.
+	MessageType     string   `json:"message_type"`
+	MailboxDelivery bool     `json:"mailbox_delivery"`
+	DeliveryID      string   `json:"delivery_id"`
+	Recipient       string   `json:"recipient"`
+	Encrypted       bool     `json:"encrypted"`
+	ActiveFlags     []string `json:"active_flags"`
 }
 
 // isCodexMailboxProgressDelivery reports whether this delivery is a `MESSAGE`
@@ -253,7 +259,7 @@ func allCodexSpawnChildrenTerminal(receiverThreadIDs []string, terminalStatuses 
 }
 
 // MergeCodexSubagentTerminalMeta applies one child lifecycle update to a
-// stored spawn launch. Both the live router and session importer use this so
+// transient status ledger. Both the live router and session importer use this so
 // multi-child completion and live_background_active cannot diverge. The last
 // result is false when childID is not owned by the launch.
 func MergeCodexSubagentTerminalMeta(existing, childID, status string) (string, bool, bool) {

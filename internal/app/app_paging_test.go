@@ -1,6 +1,10 @@
 package app
 
 import (
+	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/provider"
+	"agent-overflow/internal/triage"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -124,6 +128,7 @@ func TestListLiveBackgroundTasks_RetentionCutoffUsesWallClock(t *testing.T) {
 
 func TestListLiveBackgroundTasks_ProjectsActiveCodexSubagentAsRunning(t *testing.T) {
 	app := newTestAppWithStore(t)
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	thread, err := createTestThread(t, app, "codex", "/tmp/w-codex-subagent", "gpt-5.3-codex", "")
 	if err != nil {
 		t.Fatalf("createTestThread: %v", err)
@@ -152,6 +157,10 @@ func TestListLiveBackgroundTasks_ProjectsActiveCodexSubagentAsRunning(t *testing
 		UpdatedAt:    1000,
 	}); err != nil {
 		t.Fatalf("seed spawn: %v", err)
+	}
+
+	if err := app.triage.Handle(provider.ProviderEvent{Kind: provider.EventSubagentStatus, ThreadID: thread.ID, ItemID: "spawn-active", TurnID: "child-turn", Meta: json.RawMessage(`{"agent_path":"child-1","status":"running"}`), Timestamp: time.Now()}); err != nil {
+		t.Fatal(err)
 	}
 
 	tasks, err := app.ListLiveBackgroundTasks(thread.ID)

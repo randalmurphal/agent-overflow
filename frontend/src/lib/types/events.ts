@@ -252,6 +252,7 @@ export interface UsageEvent {
 }
 
 export interface BackgroundTasksChangedEvent {
+  resetCodexAgents?: boolean;
   threadId: string;
 }
 
@@ -609,6 +610,7 @@ export interface SubagentProgress {
 
 /** `provider:subagent_progress` payload (Go: triage.SubagentProgressEvent). */
 export interface SubagentProgressEvent {
+  codexAgent?: Item;
   threadId: string;
   /** The launch tool_use the tick belongs to. */
   itemId: string;

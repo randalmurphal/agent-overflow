@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { subagentExecutionItem } from '../../utils/codexSubagentRuntime';
   // One row of the activity rail's Background body. The rail owns task
   // grouping and stop dispatch; chat row components own the actual tool
   // presentation so background rows do not drift from transcript styling.
@@ -61,7 +62,7 @@
   }
 
   let displayItem = $derived<Item>(task.launch ?? task.completion ?? task.anchor);
-  let statusItem = $derived<Item>(task.completion ?? task.launch ?? task.anchor);
+  let statusItem = $derived<Item>(subagentExecutionItem(task.launch ?? task.anchor, task.completion));
   let renderItem = $derived<Item>(task.completion ?? task.launch ?? task.anchor);
   let outputItem = $derived.by<Item>(() => {
     if (task.completion?.payloadKind === 'command_output') return task.completion;

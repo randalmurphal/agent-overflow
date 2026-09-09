@@ -22,6 +22,7 @@ import (
 // threads.live_todo (migration v65) because a todo list outlives the session
 // that reported it and the process that received it.
 type ThreadLiveState struct {
+	CodexAgents            []store.Item         `json:"codexAgents"`
 	ThreadID               string               `json:"threadId"`
 	EffectiveModel         string               `json:"effectiveModel,omitempty"`
 	EffectiveModelRevision uint64               `json:"effectiveModelRevision,omitempty"`
@@ -107,6 +108,7 @@ func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {
 	}
 
 	live := a.triage.LiveStateSnapshotForThread(threadID)
+	state.CodexAgents = itemwire.ProjectItems(a.triage.CodexAgentRuntimeSnapshot(threadID), true)
 	state.EffectiveModel = live.EffectiveModel
 	state.EffectiveModelRevision = live.EffectiveModelRevision
 	state.CompactingSinceUnixMs = live.CompactingSinceUnixMs

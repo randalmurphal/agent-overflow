@@ -1,6 +1,7 @@
 package rollout
 
 import (
+	"bytes"
 	"encoding/json"
 	"sort"
 	"strings"
@@ -147,6 +148,9 @@ func (c *converter) emitSubAgentCompleted(parent, agentPath, agentThreadID, acti
 		turnID = c.turn.id
 		turnIndex = c.turn.index
 	}
+	if childTurn, ok := strings.CutPrefix(strings.TrimSpace(activityID), "subagent-completed-"); ok && childTurn != "" {
+		turnID = childTurn
+	}
 	c.emit(provider.ProviderEvent{
 		Kind:            provider.EventSubagentStatus,
 		TurnID:          turnID,
@@ -196,7 +200,7 @@ func (c *converter) emitCollabInteraction(eventID, agentPath, agentThreadID stri
 	c.emitStandaloneCollabActivity(eventID, input)
 }
 
-func (c *converter) emitStandaloneCollabActivity(itemID string, input json.RawMessage) {
+func (c *converter) emitStandaloneCollabActivity(itemID string, input json.RawMessage, body ...string) {
 	c.ensureTurn()
 	meta := metaJSON(map[string]any{
 		"toolName": "send_input",
@@ -217,6 +221,9 @@ func (c *converter) emitStandaloneCollabActivity(itemID string, input json.RawMe
 	complete := base
 	complete.Kind = provider.EventToolComplete
 	complete.ContentPresent = true
+	if len(body) > 0 {
+		complete.Content = body[0]
+	}
 	c.emit(complete)
 	c.collabActivityRows[itemID] = struct{}{}
 }
@@ -302,42 +309,57 @@ func (c *converter) emitInterAgent(p interAgentPayload, rawAgentMessage bool) {
 	if !present || strings.TrimSpace(text) == "" {
 		return
 	}
-	author := strings.TrimSpace(p.Author)
-	messageType, message, mailboxEnvelope := parseInterAgentEnvelope(p.Author, p.Recipient, text)
-	progressAuthorized := rawAgentMessage
-	if !rawAgentMessage {
-		progressAuthorized = p.TriggerTurn != nil && !*p.TriggerTurn && message != ""
-	} else if p.TriggerTurn != nil && *p.TriggerTurn {
-		progressAuthorized = false
+	recipient := c.pre.meta.AgentPath
+	if recipient == "" {
+		recipient = "/root"
 	}
-	if mailboxEnvelope && messageType == "MESSAGE" && progressAuthorized {
-		input := map[string]any{
-			"tool":         "send_input",
-			"activityKind": "progress",
-		}
-		if author != "" {
-			input["target"] = author
-		}
-		if message = boundedRolloutProgress(message); message != "" {
-			input["message"] = message
-		}
-		c.emitStandaloneCollabActivity(lineUUID(c.lineStart)+":collab-progress", metaJSON(input))
+	if p.Recipient != recipient {
+		c.corrupt++
 		return
 	}
-	meta := map[string]any{"kind": "agent_message"}
-	if author != "" {
-		meta["agentPath"] = author
+	kind, body, ok := parseInterAgentEnvelope(p.Author, p.Recipient, text)
+	if p.TriggerTurn != nil && *p.TriggerTurn && p.Recipient == "/root" {
+		ok = false
 	}
-	if recipient := strings.TrimSpace(p.Recipient); recipient != "" {
-		meta["recipient"] = recipient
+	if !ok {
+		c.emitNotification(text, map[string]any{"kind": "agent_message", "agentPath": p.Author, "recipient": p.Recipient}, "")
+		return
 	}
-	c.emitNotification(text, meta, c.agentParents[author].itemID)
+	encrypted := bytes.Contains(p.Content, []byte(`"encrypted_content"`))
+	if !rawAgentMessage && body == "" {
+		return
+	}
+	key := "mailbox:" + p.ID
+	if p.ID == "" {
+		key = lineUUID(c.lineStart) + ":mailbox"
+	}
+	if p.ID != "" {
+		if _, exists := c.itemRows[key]; exists {
+			return
+		}
+		c.itemRows[key] = struct{}{}
+	}
+	if encrypted {
+		body = "Message content is encrypted by Codex."
+	}
+	if p.Recipient != "/root" {
+		c.ensureTurn()
+		parent := c.agentParents[p.Recipient].itemID
+		c.emit(provider.ProviderEvent{Kind: provider.EventUserText, ItemID: key, ParentToolUseID: parent, Content: body, Role: "user", Meta: metaJSON(map[string]any{"wire_only": true, "agent_message": map[string]any{"sender": p.Author, "recipient": p.Recipient, "messageType": kind, "encrypted": encrypted, "deliveryId": p.ID}})})
+		return
+	}
+	input := map[string]any{"tool": "send_input", "activityKind": "progress", "target": p.Author, "message": boundedRolloutProgress(body), "messageType": kind}
+	id := lineUUID(c.lineStart) + ":collab-progress"
+	if p.ID != "" {
+		id = key
+	}
+	c.emitStandaloneCollabActivity(id, metaJSON(input), body)
 }
 
 func parseInterAgentEnvelope(author, recipient, text string) (messageType, message string, ok bool) {
 	author = strings.TrimSpace(author)
 	recipient = strings.TrimSpace(recipient)
-	if author == "" || recipient != "/root" || !strings.HasPrefix(text, "Message Type: ") {
+	if author == "" || (recipient != "/root" && !strings.HasPrefix(recipient, "/root/")) || !strings.HasPrefix(text, "Message Type: ") {
 		return "", "", false
 	}
 	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
@@ -345,7 +367,7 @@ func parseInterAgentEnvelope(author, recipient, text string) (messageType, messa
 		return "", "", false
 	}
 	messageType = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(lines[0]), "Message Type:"))
-	if messageType != "MESSAGE" && messageType != "FINAL_ANSWER" {
+	if messageType != "MESSAGE" && messageType != "FINAL_ANSWER" && messageType != "NEW_TASK" {
 		return "", "", false
 	}
 	if !strings.HasPrefix(lines[1], "Task name:") ||

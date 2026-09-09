@@ -72,8 +72,8 @@ Because the row never leaves `running`, its LIVENESS is carried by
 that flag rather than the write paths: `items` triggers stamp it false
 the moment a completion sibling exists — including when the launch row
 arrives after its sibling, and when a later write replaces the launch's
-meta wholesale — and restore it if the sibling is deleted. The teardown
-and Codex-projection writers still set it for their own reasons; what
+meta wholesale — and restore it if the sibling is deleted. The Claude teardown
+writers also retire this flag; what
 changed is that "a completion exists" no longer has to be re-derived by
 every reader. That is what lets the tray's read be two index seeks
 instead of a walk of every launch the thread has ever backgrounded. DDL
@@ -96,11 +96,15 @@ signals:
 Codex command executions do not follow Claude's sibling completion contract:
 when Agent Overflow persists a command execution, typed `item/completed`
 updates the original command row. Codex `spawn_agent` is different: the parent
-launch row is only the completed "spawned" event. Child-agent terminal state is
-shown by a separate `tool_completion` sibling created from `wait_agent` or
-injected `<subagent_notification>` fragments. Direct child lifecycle
-notifications only update live/incomplete state so later explicit wait or
-notification output can own the visible transcript boundary.
+launch row is only the completed "spawned" event and never changes again.
+Child execution state lives in the router's bounded session projection and
+reaches clients through live events and `GetThreadLiveState`. Each native
+child turn completion creates a distinct `tool_completion` at the timeline
+write head. Its status, progress and child-history boundaries are snapshots.
+A later execution cannot update that completion. Mailbox receipts are
+separate events and never settle a newer execution. Legacy waits and terminal
+notifications retain their own typed completion evidence. See the
+[immutable agent history contract](../specs/agent-visibility.md#immutable-agent-history).
 
 Every non-root Codex provider thread is quarantined at the session boundary.
 Until a V1 spawn completion or V2 started activity maps it to a spawn item,
@@ -476,16 +480,12 @@ settle and the boot sweep prune leftover stash rows afterwards
 never materialized has no future observer, and the table has no other
 prune.
 
-Codex background projections use a different lifecycle. On startup, before a
-provider can spawn, `Store.RecoverCodexBackgroundRuntime` retires every live
-projection owned by the prior app-server. Running background terminals become
-`errored/lost`. Completed spawn cards keep `status='completed'`, receiver ids,
-and incomplete ownership, but receive `live_background_active=false` and
-`codex_background_end_reason="session_ended"`. No completion sibling is
-invented because AO cannot know whether the child completed just before the
-disconnect. A later typed child `turn/started` sets the launch live again and
-removes the end reason. The same scoped retirement runs when a Codex session
-ends inside a live app process.
+Codex startup recovery retires only running background terminal commands.
+Spawn events and completed history remain unchanged. Agent runtime is a
+session-owned projection restored from native child lifecycle snapshots.
+Session teardown clears that projection and records a new interrupted completion
+for each execution that was still active. See
+[immutable agent history](../specs/agent-visibility.md#immutable-agent-history).
 
 ### Output
 

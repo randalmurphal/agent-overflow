@@ -181,7 +181,7 @@
       decoratedSubagentAggregates(launch).transcriptCount,
       scopedItems.length + evicted,
     );
-    if (scopedItems.length > 0 && scopedItems.length >= expected) return;
+    if (launch.toolName !== 'collab_agent' && scopedItems.length > 0 && scopedItems.length >= expected) return;
     void ctx.ensureSubagentChildren(scopeItemId);
   });
 </script>

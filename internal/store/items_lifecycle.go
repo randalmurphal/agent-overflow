@@ -178,78 +178,6 @@ func (s *Store) CountLiveRunningBackgroundToolCalls(threadID string) (int, error
 	return count, nil
 }
 
-func (s *Store) HasLiveCodexSubagentLaunch(threadID string) (bool, error) {
-	var exists int
-	if err := s.reader().QueryRow(
-		`SELECT EXISTS(
-		    SELECT 1 FROM items
-		    JOIN threads ON threads.id = items.thread_id
-		     WHERE items.thread_id = ?
-		       AND threads.provider = 'codex'
-		       AND items.kind = 'tool_call'
-		       AND items.status = 'completed'
-		       AND items.tool_name = 'collab_agent'
-		       AND items.is_background = 1
-		       AND COALESCE(json_extract(items.meta, '$.live_background_active'), 1) != 0
-		       AND json_extract(items.meta, '$.input.tool') IN ('spawn_agent', 'spawnAgent')
-		       AND `+noCompletionSiblingSQL+`
-		     LIMIT 1
-		)`,
-		threadID,
-	).Scan(&exists); err != nil {
-		return false, fmt.Errorf("store: has live Codex subagent launch for thread %s: %w", threadID, err)
-	}
-	return exists != 0, nil
-}
-
-func (s *Store) CountLiveCodexSubagentLaunches(threadID string) (int, error) {
-	var count int
-	if err := s.reader().QueryRow(
-		`SELECT COUNT(*)
-		   FROM items INDEXED BY idx_items_live_codex_subagent
-		   JOIN threads ON threads.id = items.thread_id
-		  WHERE items.thread_id = ?
-		    AND threads.provider = 'codex'
-		    AND items.kind = 'tool_call'
-		    AND items.status = 'completed'
-		    AND items.tool_name = 'collab_agent'
-		    AND items.is_background = 1
-		    AND COALESCE(json_extract(items.meta, '$.live_background_active'), 1) != 0
-		    AND json_extract(items.meta, '$.input.tool') IN ('spawn_agent', 'spawnAgent')
-		    AND `+noCompletionSiblingIndexedSQL,
-		threadID,
-	).Scan(&count); err != nil {
-		return 0, fmt.Errorf("store: count live Codex subagent launches for thread %s: %w", threadID, err)
-	}
-	return count, nil
-}
-
-func (s *Store) MarkLiveCodexSubagentLaunchesInactive(threadID string, updatedAt int64) (int64, error) {
-	result, err := s.db.Exec(
-		`UPDATE items
-		    SET meta = json_set(meta, '$.live_background_active', json('false')),
-		        updated_at = ?
-		  WHERE thread_id = ?
-		    AND kind = 'tool_call'
-		    AND status = 'completed'
-		    AND tool_name = 'collab_agent'
-		    AND is_background = 1
-		    AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0
-		    AND json_extract(meta, '$.input.tool') IN ('spawn_agent', 'spawnAgent')
-		    AND `+noCompletionSiblingSQL+``,
-		updatedAt,
-		threadID,
-	)
-	if err != nil {
-		return 0, fmt.Errorf("store: mark live Codex subagent launches inactive for thread %s: %w", threadID, err)
-	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("store: count inactive Codex subagent launches for thread %s: %w", threadID, err)
-	}
-	return count, nil
-}
-
 // MarkLiveBackgroundToolCallsInactive hides top-level running background
 // tool_call rows whose owning provider session was intentionally closed.
 // The rows are no longer live once the provider process group is gone, and
@@ -557,55 +485,9 @@ func (s *Store) ListIncompleteCodexSubagentOwnerships(threadID string) ([]CodexS
 	return items, rows.Err()
 }
 
-// ListLiveCodexSubagentLaunches returns Codex spawn_agent cards whose child
-// threads are still active. The persisted spawn card is completed on the
-// upstream wire; callers that render a "live work" surface should project the
-// returned copy as running instead of changing the stored timeline row.
-func (s *Store) ListLiveCodexSubagentLaunches(threadID string) ([]Item, error) {
-	rows, err := s.reader().Query(
-		`SELECT `+itemColumns+`
-		   FROM items
-		   JOIN threads ON threads.id = items.thread_id
-		   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
-		  WHERE items.thread_id = ?
-		    AND threads.provider = 'codex'
-		    AND items.kind = 'tool_call'
-		    AND items.status = 'completed'
-		    AND items.tool_name = 'collab_agent'
-		    AND items.is_background = 1
-		    AND COALESCE(json_extract(items.meta, '$.live_background_active'), 1) != 0
-		    AND json_extract(items.meta, '$.input.tool') IN ('spawn_agent', 'spawnAgent')
-		    AND (
-		      `+noCompletionSiblingSQL+`
-		      OR json_extract(items.meta, '$.live_background_active') = 1
-		    )
-		  ORDER BY items.turn_index, items.item_index`,
-		threadID,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store: list live Codex subagent launches for thread %s: %w", threadID, err)
-	}
-	defer rows.Close()
-
-	var items []Item
-	for rows.Next() {
-		it, err := scanItemRow(rows)
-		if err != nil {
-			return nil, fmt.Errorf("store: scan live Codex subagent launch row: %w", err)
-		}
-		items = append(items, it)
-	}
-	return items, rows.Err()
-}
-
-// ListLiveCodexSubagentLaunchesForTray decorates the canonical live launch
-// rows with tray-only latest-tool state. Operational callers use
-// ListLiveCodexSubagentLaunches so display hydration cannot fail ingestion.
-func (s *Store) ListLiveCodexSubagentLaunchesForTray(threadID string) ([]Item, error) {
-	items, err := s.ListLiveCodexSubagentLaunches(threadID)
-	if err != nil {
-		return nil, err
-	}
+// DecorateCodexAgentTasksForTray adds child activity to runtime copies supplied
+// by the live provider projection. Spawn history never determines liveness.
+func (s *Store) DecorateCodexAgentTasksForTray(threadID string, items []Item) ([]Item, error) {
 	return s.decorateLatestDirectSubagentTools(s.reader(), threadID, items)
 }
 

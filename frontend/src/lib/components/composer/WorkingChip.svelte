@@ -29,6 +29,7 @@
     pickKey: string;
     /** Label-only swap to "Compacting" (+ the compaction sprite). Wins over a verb. */
     compacting?: boolean;
+    labelOverride?: string;
     elapsedLabel: string;
     /**
      * False reserves the timer's width without showing a clock — the
@@ -43,6 +44,7 @@
     threadId,
     pickKey,
     compacting = false,
+    labelOverride,
     elapsedLabel,
     showElapsed = true,
     testIdPrefix = 'activity-rail-working',
@@ -64,7 +66,7 @@
 
   // The compaction label always wins over a spinner verb — it is
   // information.
-  let workingLabel = $derived(compacting ? 'Compacting' : (spinnerVerb ?? 'Working'));
+  let workingLabel = $derived(labelOverride || (compacting ? 'Compacting' : (spinnerVerb ?? 'Working')));
 
   // Custom sprites load lazily and only once animations are actually on;
   // the effect keys on the setting so flipping it mid-session attaches.

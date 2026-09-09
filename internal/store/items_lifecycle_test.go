@@ -2181,7 +2181,7 @@ func TestRetireCodexBackgroundRuntimeScopedPerThread(t *testing.T) {
 	}
 }
 
-func TestRecoverCodexBackgroundRuntimeRetiresCompletedSpawnWithoutLosingOwnership(t *testing.T) {
+func TestRecoverCodexBackgroundRuntimePreservesImmutableSpawnEvents(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("codex-runtime", "codex")); err != nil {
 		t.Fatalf("create Codex thread: %v", err)
@@ -2204,7 +2204,7 @@ func TestRecoverCodexBackgroundRuntimeRetiresCompletedSpawnWithoutLosingOwnershi
 	if err != nil {
 		t.Fatalf("RecoverCodexBackgroundRuntime: %v", err)
 	}
-	if got := collectIDs(recovered); !equalStringSlice(got, []string{"spawn-root", "spawn-nested", "terminal"}) {
+	if got := collectIDs(recovered); !equalStringSlice(got, []string{"terminal"}) {
 		t.Fatalf("recovered ids = %v", got)
 	}
 	for _, id := range []string{"spawn-root", "spawn-nested"} {
@@ -2219,13 +2219,11 @@ func TestRecoverCodexBackgroundRuntimeRetiresCompletedSpawnWithoutLosingOwnershi
 		if err := json.Unmarshal([]byte(item.Meta), &meta); err != nil {
 			t.Fatalf("decode %s meta: %v", id, err)
 		}
-		if meta["live_background_active"] != false || meta["codex_background_end_reason"] != "session_ended" {
+		if meta["live_background_active"] == false || meta["codex_background_end_reason"] != nil || item.UpdatedAt != item.CreatedAt {
 			t.Fatalf("%s runtime meta = %v", id, meta)
 		}
 	}
-	if live, err := s.ListLiveCodexSubagentLaunches("codex-runtime"); err != nil || len(live) != 0 {
-		t.Fatalf("live launches after recovery = %v, err=%v", collectIDs(live), err)
-	}
+
 	if ownerships, err := s.ListIncompleteCodexSubagentOwnerships("codex-runtime"); err != nil || len(ownerships) != 2 {
 		t.Fatalf("ownerships after recovery = %+v, err=%v", ownerships, err)
 	}
@@ -2786,4 +2784,40 @@ func TestListLiveBackgroundChildLaunchesListsOnlyLiveDirectChildren(t *testing.T
 	    AND items.status = 'running'
 	    AND items.is_background = 1
 	    AND `+noCompletionSiblingSQL, "t-park", "root")
+}
+
+func TestUpsertUnsettledItemPreservesTerminalRowAndPayloadUnderConcurrentReplay(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "codex")); err != nil {
+		t.Fatal(err)
+	}
+	item := Item{ID: "event", ThreadID: "t", Kind: "tool_call", Role: "assistant", Status: "running", Summary: "launch", CreatedAt: 1, UpdatedAt: 1}
+	if _, err := s.UpsertUnsettledItem(item, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	item.Status, item.Summary, item.UpdatedAt = "completed", "original", 2
+	first, err := s.UpsertUnsettledItem(item, &Payload{ID: "payload", Kind: "tool_call_result", Data: []byte("original"), CreatedAt: 1}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workers sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		workers.Go(func() {
+			later := first
+			later.Status, later.Summary, later.UpdatedAt = "running", "later", 3
+			saved, err := s.UpsertUnsettledItem(later, &Payload{ID: "payload", Kind: "tool_call_result", Data: []byte("replacement"), CreatedAt: 3}, nil)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			if saved.Status != first.Status || saved.Summary != first.Summary || saved.UpdatedAt != first.UpdatedAt {
+				t.Errorf("terminal row changed: %+v", saved)
+			}
+		})
+	}
+	workers.Wait()
+	data, err := s.GetPayloadData("t", "payload")
+	if err != nil || string(data) != "original" {
+		t.Fatalf("terminal payload changed: %s %v", data, err)
+	}
 }

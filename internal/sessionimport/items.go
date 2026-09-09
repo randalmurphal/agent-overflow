@@ -27,6 +27,24 @@ import (
 // and triage persists fresh (persistWireOnlySubagentPrompt). The two
 // have different ids, different metas, and different turn semantics.
 func (b *builder) userText(evt importir.Event) error {
+	var delivery struct {
+		Message json.RawMessage `json:"agent_message"`
+	}
+	if err := json.Unmarshal(evt.Meta, &delivery); err == nil && len(delivery.Message) > 0 {
+		now, err := timestamp(evt)
+		if err != nil {
+			return err
+		}
+		turnIndex := b.turns.current()
+		b.closeStreams(turnIndex, evt.ParentToolUseID)
+		id := evt.ItemID
+		if id == "" {
+			id = evt.SourceUUID
+		}
+		_, err = b.appendRow(evt, store.Item{ID: id, TurnIndex: turnIndex, Kind: "user_text", Role: "user", Status: "completed", Summary: evt.Content, ParentID: evt.ParentToolUseID, Meta: string(evt.Meta), CreatedAt: now, UpdatedAt: now}, nil, nil)
+		return err
+	}
+
 	if strings.TrimSpace(evt.Content) == "" {
 		return nil
 	}

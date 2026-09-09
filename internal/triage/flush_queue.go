@@ -489,11 +489,7 @@ func (r *Router) hasQueueBlockingWork(threadID string) (bool, error) {
 	if active {
 		return true, nil
 	}
-	active, err = r.store.HasLiveCodexSubagentLaunch(threadID)
-	if err != nil {
-		return false, err
-	}
-	return active, nil
+	return len(r.ListLiveCodexAgentTasks(threadID)) > 0, nil
 }
 
 func (r *Router) hasActiveCodexUnifiedExec(threadID string) bool {

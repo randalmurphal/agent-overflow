@@ -245,7 +245,8 @@ func (s *Session) startOrResumeThread(ctx context.Context, cfg Config) error {
 		// place. Recording is not arming — see sessionRolloutTailState.
 		s.prepareRolloutSubagentNotificationTail(readNestedString(resp, "thread", "path"))
 		s.rehydrateCollabOwnership(cfg.ResumeCollabLaunches)
-		if cfg.ResumeHasUnresolvedSubagents {
+		s.discoverResumedChildren()
+		if cfg.ResumeHasUnresolvedSubagents || len(cfg.ResumeCollabLaunches) > 0 {
 			// The app layer found spawn launches on this thread that are still
 			// waiting for their answer, so the mailbox delivery this session
 			// cannot see as a raw event is exactly what it is about to miss.

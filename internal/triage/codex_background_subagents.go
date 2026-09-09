@@ -8,14 +8,13 @@ import (
 	"strings"
 	"time"
 
-	"agent-overflow/internal/itemmeta"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
 
 // codex_background_subagents.go — the spawn/subagent launch state machine of
 // the Codex background projection: `spawn_agent` launch trackers, `wait_agent`
-// resolution, the child terminal-status ledger on the launch row, the
+// resolution, the live child terminal-status ledger, the
 // persisted-launch lookups every other spawn path resolves through, and the
 // transcript completion row a terminal spawn synthesizes.
 //
@@ -154,6 +153,19 @@ func (r *Router) resolveSubagentsForWait(evt provider.ProviderEvent) error {
 	toEmit = append(toEmit, persisted...)
 
 	for _, p := range toEmit {
+		// V2 execution completion is fenced by the child's native turn. A
+		// wait without that identity is a separate observed activity, not
+		// permission to create another completion or settle a newer run.
+		launch, found, err := r.store.GetThreadItem(evt.ThreadID, p.launchID)
+		if err != nil {
+			return err
+		}
+		if found {
+			current := decodeCodexItemMeta(json.RawMessage(r.codexAgentRuntimeOrLaunch(launch).Meta))
+			if current.Runtime != nil && current.Runtime.TurnID != "" {
+				continue
+			}
+		}
 		sort.Slice(p.childResults, func(i, j int) bool {
 			return p.childResults[i].ordinal < p.childResults[j].ordinal
 		})
@@ -196,7 +208,7 @@ func pendingSubagentWaitEmit(launchID string, receiverThreadIDs []string, termin
 			switch strings.TrimSpace(terminal.status) {
 			case "errored":
 				hasErrored = true
-			case "interrupted", "notFound":
+			case "interrupted", "shutdown", "notFound":
 				hasInterrupted = true
 			}
 		} else {
@@ -256,8 +268,8 @@ func subagentStatusToItemStatusMeta(agentStatus string) json.RawMessage {
 	switch agentStatus {
 	case "errored":
 		return json.RawMessage(`{"item_status":"errored"}`)
-	case "interrupted", "notFound":
-		return json.RawMessage(`{"item_status":"failed"}`)
+	case "interrupted", "shutdown", "notFound":
+		return json.RawMessage(`{"item_status":"killed"}`)
 	default:
 		// "completed", "shutdown", and any future value.
 		return json.RawMessage(`{"item_status":"completed"}`)
@@ -279,100 +291,157 @@ func clearPendingCodexSpawnTrackersLocked(state *codexBackgroundState) bool {
 	return changed
 }
 
-// observeCodexSubagentStatus handles child-thread lifecycle signals that prove
-// a spawned Codex subagent is no longer actively working. Direct child
-// lifecycle is live-state evidence only; parent transcript completion is owned
-// by typed wait_agent completions or Codex's injected <subagent_notification>.
+// observeCodexSubagentStatus updates live execution state and records each
+// terminal child turn as a new completion. The spawn row remains unchanged.
 func (r *Router) observeCodexSubagentStatus(evt provider.ProviderEvent) error {
 	parsed := decodeCodexSubagentSignalMeta(evt.Meta)
-	childID := strings.TrimSpace(parsed.AgentPath)
-	if childID == "" {
+	childID, status := strings.TrimSpace(parsed.AgentPath), strings.TrimSpace(parsed.Status)
+	if childID == "" || status == "" {
 		return nil
 	}
-	status := strings.TrimSpace(parsed.Status)
-	if status == "" {
-		status = "completed"
-	}
-
-	threadID := evt.ThreadID
-	launchID := strings.TrimSpace(evt.ItemID)
-	if status == "running" || status == "pendingInit" {
-		return r.reactivateCodexSpawnChild(threadID, launchID, childID)
-	}
-
-	launch, found, err := r.findPersistedCodexSpawnLaunchForStatus(threadID, launchID, childID)
-	if err != nil {
-		return err
-	}
-	if !found {
-		return nil
-	}
-
-	allTerminal, _, err := r.markCodexSpawnChildTerminal(launch.item, launch.meta, childID, status)
-	if err != nil {
-		return err
-	}
-	r.observeCodexSpawnChildTerminalInMemory(threadID, launch.item.ID, allTerminal)
-	if allTerminal {
-		r.emitBackgroundTasksChangedNudge(threadID)
-	}
-	return nil
-}
-
-func (r *Router) reactivateCodexSpawnChild(threadID, launchID, childID string) error {
-	launch, found, err := r.findPersistedCodexSpawnLaunchForStatus(threadID, launchID, childID)
+	launch, found, err := r.findPersistedCodexSpawnLaunchForStatus(evt.ThreadID, evt.ItemID, childID)
 	if err != nil || !found {
 		return err
 	}
-	terminalStatuses := decodeCodexChildTerminalStatuses(json.RawMessage(launch.item.Meta))
-	// A child that was already terminal and is running again started a new turn
-	// (`followup_task` or resume). Advance the durable generation so a repeated
-	// FINAL_ANSWER remains a distinct completion row.
-	resumed := strings.TrimSpace(terminalStatuses[childID]) != ""
-	// mergeItemMetaJSON deep-merges maps, so an explicit empty value clears
-	// this child logically without requiring a delete sentinel in stored JSON.
-	terminalStatuses[childID] = ""
-	fields := map[string]any{
-		"codex_child_terminal_statuses": terminalStatuses,
-		"live_background_active":        true,
+	launch.item = r.codexAgentRuntimeOrLaunch(launch.item)
+	var previous struct {
+		Runtime codexRuntimeMeta `json:"codex_runtime"`
 	}
-	if resumed {
-		// The resume generation is what keeps a child that legitimately
-		// answers identically twice (followup_task -> "Done." again) on two
-		// rows: it is mixed into codexMailboxCompletionID, which is otherwise
-		// a pure content hash. The counter is durable so reconnects and live
-		// delivery carriers agree on the same identity.
-		generations := decodeCodexChildResumeGenerations(json.RawMessage(launch.item.Meta))
-		generations[childID]++
-		fields["codex_child_resume_generations"] = generations
+	if err := json.Unmarshal([]byte(launch.item.Meta), &previous); err != nil {
+		return fmt.Errorf("decode child runtime: %w", err)
 	}
-	extra, err := json.Marshal(fields)
+	runtime := previous.Runtime
+	if runtime.StartedAt == 0 && runtime.TurnID == "" {
+		runtime.ChildStartIndex = launch.item.ItemIndex
+		endIndex, err := r.store.SubagentCompletedChildIndex(evt.ThreadID, launch.item.ID)
+		if err != nil {
+			return err
+		}
+		if endIndex > runtime.ChildStartIndex {
+			runtime.ChildStartIndex, runtime.ChildEndIndex = endIndex, endIndex
+		}
+	}
+	turnID := strings.TrimSpace(evt.TurnID)
+	var activity struct {
+		CallID string `json:"activity_call_id"`
+	}
+	if err := json.Unmarshal(evt.Meta, &activity); err != nil {
+		return err
+	}
+	// Parent-side interrupt has no child turn identity. Its snapshot or the
+	// child-scoped lifecycle settles runtime, never this unfenced signal.
+	if activity.CallID != "" && turnID == "" && runtime.TurnID != "" {
+		return nil
+	}
+	active := status == "running" || status == "pendingInit"
+	if !active && turnID != "" && runtime.TurnID != "" && turnID != runtime.TurnID {
+		return nil
+	}
+	now := eventTimestampMillis(evt)
+	if active && (runtime.StartedAt == 0 || (turnID != "" && turnID != runtime.TurnID) || (runtime.Status != "running" && runtime.Status != "pendingInit")) {
+		runtime.StartedAt = now
+		if runtime.ChildEndIndex > runtime.ChildStartIndex {
+			runtime.ChildStartIndex = runtime.ChildEndIndex
+		}
+	}
+	if turnID != "" {
+		runtime.TurnID = turnID
+	}
+	if parsed.StartedAt > 0 {
+		runtime.StartedAt = parsed.StartedAt
+	} else if parsed.Recovered && active {
+		runtime.StartedAt = 0
+	}
+	if !active {
+		endIndex, found, err := r.store.MaxItemIndexForTurn(evt.ThreadID, launch.item.TurnIndex)
+		if err != nil {
+			return fmt.Errorf("snapshot Codex execution history: %w", err)
+		}
+		if found {
+			runtime.ChildEndIndex = endIndex
+		}
+		if runtime.TurnID != "" {
+			completed, found, err := r.store.GetThreadItem(evt.ThreadID, codexExecutionCompletionID(launch.item.ID, runtime.TurnID, nil))
+			if err != nil {
+				return err
+			}
+			if found {
+				saved := decodeCodexItemMeta(json.RawMessage(completed.Meta))
+				if saved.Runtime != nil {
+					runtime = *saved.Runtime
+					if status == "idle" {
+						status = runtime.Status
+					}
+				}
+				now = completed.CreatedAt
+			}
+		}
+	}
+	runtime.Status, runtime.UpdatedAt, runtime.ActiveFlags = status, now, parsed.ActiveFlags
+	statuses := decodeCodexChildTerminalStatuses(json.RawMessage(launch.item.Meta))
+	generations := decodeCodexChildResumeGenerations(json.RawMessage(launch.item.Meta))
+	if active {
+		if statuses[childID] != "" {
+			generations[childID]++
+		}
+		statuses[childID] = ""
+	} else {
+		statuses[childID] = status
+	}
+	anyActive := !allCodexSpawnChildrenTerminal(launch.meta.ReceiverThreadIDs, statuses)
+	if anyActive && !active {
+		runtime.Status = "running"
+	}
+	fields, err := json.Marshal(map[string]any{"codex_runtime": runtime, "codex_child_terminal_statuses": statuses, "codex_child_resume_generations": generations, "live_background_active": anyActive})
 	if err != nil {
 		return err
 	}
-	launch.item.Meta = mergeItemMetaJSON(launch.item.Meta, extra)
-	launch.item.Meta, err = itemmeta.MarkCodexBackgroundRuntimeActive(launch.item.Meta)
-	if err != nil {
-		return fmt.Errorf("reactivate Codex spawn %s: %w", launch.item.ID, err)
-	}
-	launch.item.UpdatedAt = time.Now().UnixMilli()
-	if err := r.persistItem(launch.item, nil); err != nil {
+	launch.item.Meta = mergeItemMetaJSON(launch.item.Meta, fields)
+	launch.item.UpdatedAt = now
+	if err := r.setCodexAgentRuntime(launch.item); err != nil {
 		return err
 	}
 
 	r.mu.Lock()
-	state := r.codexBackgroundForThread(threadID)
-	tracker := state.spawnAgent[launch.item.ID]
-	if tracker == nil {
-		tracker = &spawnAgentTracker{}
-		state.spawnAgent[launch.item.ID] = tracker
+	state := r.codexBackgroundForThread(evt.ThreadID)
+	if anyActive {
+		state.spawnAgent[launch.item.ID] = &spawnAgentTracker{backgrounded: true, hasRunningChildren: true, receiverThreadIDs: launch.meta.ReceiverThreadIDs}
+	} else {
+		delete(state.spawnAgent, launch.item.ID)
 	}
-	tracker.backgrounded = true
-	tracker.hasRunningChildren = true
-	tracker.receiverThreadIDs = append([]string(nil), launch.meta.ReceiverThreadIDs...)
 	r.mu.Unlock()
-	r.emitBackgroundTasksChangedNudge(threadID)
+	terminal := status == "completed" || status == "errored" || status == "interrupted" || status == "shutdown" || status == "notFound"
+	if terminal && !anyActive && (!parsed.Recovered || runtime.TurnID != "") {
+		completionID := codexExecutionCompletionID(launch.item.ID, runtime.TurnID, generations)
+		completionMeta, err := json.Marshal(map[string]any{
+			"item_status": aggregateCodexSubagentTerminalStatus(launch.meta.ReceiverThreadIDs, statuses), "codex_runtime": runtime,
+			"codex_execution_started_at":        runtime.StartedAt,
+			"codex_execution_completed_at":      now,
+			"codex_execution_child_start_index": runtime.ChildStartIndex,
+			"codex_execution_child_end_index":   runtime.ChildEndIndex,
+		})
+		if err != nil {
+			return err
+		}
+		completion := evt
+		completion.Meta = completionMeta
+		if err := r.synthesizeCodexBackgroundCompletion(completion, launch.item.ID, codexBackgroundCompletionOptions{completionID: completionID}); err != nil {
+			return err
+		}
+	}
+
+	r.emitBackgroundTasksChangedNudge(evt.ThreadID)
 	return nil
+}
+
+type codexRuntimeMeta struct {
+	ChildStartIndex int      `json:"childStartIndex"`
+	ChildEndIndex   int      `json:"childEndIndex"`
+	TurnID          string   `json:"turnId"`
+	Status          string   `json:"status"`
+	StartedAt       int64    `json:"startedAt"`
+	UpdatedAt       int64    `json:"updatedAt"`
+	ActiveFlags     []string `json:"activeFlags"`
 }
 
 func (r *Router) findPersistedCodexSpawnLaunchForStatus(threadID, launchID, childID string) (persistedCodexSpawnLaunch, bool, error) {
@@ -386,7 +455,7 @@ func (r *Router) findPersistedCodexSpawnLaunchForStatus(threadID, launchID, chil
 	if launch.Kind != itemKindToolCall || launch.ToolName != "collab_agent" {
 		return persistedCodexSpawnLaunch{}, false, nil
 	}
-	meta := decodeCodexItemMeta(json.RawMessage(launch.Meta))
+	meta := decodeCodexItemMeta(json.RawMessage(r.codexAgentRuntimeOrLaunch(launch).Meta))
 	if strings.TrimSpace(childID) != "" && !containsString(meta.ReceiverThreadIDs, childID) {
 		return persistedCodexSpawnLaunch{}, false, nil
 	}
@@ -412,24 +481,16 @@ func (r *Router) observeCodexSpawnChildTerminalInMemory(threadID, launchID strin
 }
 
 func (r *Router) markCodexSpawnChildTerminal(launch store.Item, meta codexItemMeta, childID, status string) (bool, string, error) {
+	launch = r.codexAgentRuntimeOrLaunch(launch)
 	var allTerminal bool
 	launch.Meta, allTerminal, _ = MergeCodexSubagentTerminalMeta(launch.Meta, childID, status)
 	terminalStatuses := decodeCodexChildTerminalStatuses(json.RawMessage(launch.Meta))
 	aggregateStatus := aggregateCodexSubagentTerminalStatus(meta.ReceiverThreadIDs, terminalStatuses)
 	launch.UpdatedAt = time.Now().UnixMilli()
-	if err := r.persistItem(launch, nil); err != nil {
+	if err := r.setCodexAgentRuntime(launch); err != nil {
 		return allTerminal, aggregateStatus, err
 	}
-	// A child going terminal is where this spawn's live token counters
-	// stop moving, so they become durable here. Every child terminal
-	// folds — not just the last — because a spawn with several children
-	// keeps ticking after the first one settles, and the fold is
-	// order-free: the persisted numbers are the next fold's merge base.
-	// Ordered AFTER the persist above so it merges onto the meta that
-	// write just landed rather than being clobbered by it.
-	if err := r.persistFinalSubagentProgress(launch); err != nil {
-		return allTerminal, aggregateStatus, err
-	}
+
 	return allTerminal, aggregateStatus, nil
 }
 
@@ -440,7 +501,7 @@ func aggregateCodexSubagentTerminalStatus(receiverThreadIDs []string, terminalSt
 		switch status {
 		case "errored":
 			return "errored"
-		case "interrupted", "notFound":
+		case "interrupted", "shutdown", "notFound":
 			hasInterrupted = true
 		}
 	}
@@ -497,10 +558,7 @@ func (r *Router) findPersistedCodexSpawnLaunch(threadID, launchID, childID strin
 	return persistedCodexSpawnLaunch{}, false, nil
 }
 
-// stampCodexItemBackgrounded flips is_background=true on a persisted row. The
-// row MUST already exist — the projector only tracks ids that went through
-// persistToolCallLaunch, so a missing row is a sign of a race we can't silently
-// heal.
+// stampCodexItemBackgrounded initializes the live execution from its recorded spawn.
 func (r *Router) stampCodexItemBackgrounded(threadID, itemID string) error {
 	launch, found, err := r.store.GetThreadItem(threadID, itemID)
 	if err != nil {
@@ -510,12 +568,16 @@ func (r *Router) stampCodexItemBackgrounded(threadID, itemID string) error {
 		log.Printf("triage: codex-background stamp target %s missing on thread %s", itemID, threadID)
 		return nil
 	}
-	if launch.IsBackground {
+	current := r.codexAgentRuntimeOrLaunch(launch)
+	if decodeCodexItemMeta(json.RawMessage(current.Meta)).Runtime != nil {
 		return nil
 	}
-	launch.IsBackground = true
-	launch.UpdatedAt = time.Now().UnixMilli()
-	return r.persistItem(launch, nil)
+	current.Meta = mergeItemMetaJSON(current.Meta, json.RawMessage(fmt.Sprintf(`{"live_background_active":true,"codex_runtime":{"status":"running","startedAt":%d}}`, launch.CreatedAt)))
+	if err := r.setCodexAgentRuntime(current); err != nil {
+		return err
+	}
+	r.emitBackgroundTasksChangedNudge(threadID)
+	return nil
 }
 
 // synthesizeCodexBackgroundCompletion writes the tool_completion
@@ -529,8 +591,7 @@ func (r *Router) stampCodexItemBackgrounded(threadID, itemID string) error {
 // and the row must appear where the timeline's write-head is at completion
 // time.
 //
-// Idempotent by stable id (`complete:<launchID>`): a duplicate
-// item/completed upserts in place rather than creating a second row.
+// Stable execution ids make repeated completion signals a no-op.
 func (r *Router) synthesizeCodexBackgroundCompletion(evt provider.ProviderEvent, launchID string, opts codexBackgroundCompletionOptions) error {
 	launch, found, err := r.store.GetThreadItem(evt.ThreadID, launchID)
 	if err != nil {
@@ -575,16 +636,41 @@ func (r *Router) synthesizeCodexBackgroundCompletion(evt provider.ProviderEvent,
 	if launch.PayloadID != "" && launch.PayloadKind == "command_output" {
 		completion.PayloadID = launch.PayloadID
 	}
-	if existing, ok, err := r.store.GetThreadItem(evt.ThreadID, completionID); err == nil && ok {
-		completion.CreatedAt = existing.CreatedAt
-		completion.TurnIndex = existing.TurnIndex
-		completion.ItemIndex = existing.ItemIndex
-		completion.Meta = mergeItemMetaJSON(existing.Meta, json.RawMessage(completion.Meta))
-		if existing.PayloadID != "" {
-			completion.PayloadID = existing.PayloadID
-		}
+	if _, ok, err := r.store.GetThreadItem(evt.ThreadID, completionID); err == nil && ok {
+		return nil
 	} else if err != nil {
 		return fmt.Errorf("codex-background sibling existing lookup %s: %w", completionID, err)
+	}
+
+	if launch.ToolName == "collab_agent" {
+		current := r.codexAgentRuntimeOrLaunch(launch)
+		// Snapshot profile and progress once onto this completion. Neither
+		// current runtime nor later child rows may enrich it afterwards.
+		completion.Meta = mergeItemMetaJSON(current.Meta, json.RawMessage(completion.Meta))
+		completion.Meta = mergeItemMetaJSON(completion.Meta, json.RawMessage(`{"codex_live_projection":false}`))
+		if progress, ok := r.PeekSubagentProgress(evt.ThreadID, launchID); ok {
+			progress.Activity = ""
+			fields, err := json.Marshal(map[string]any{subagentProgressMetaKey: progress})
+			if err != nil {
+				return err
+			}
+			completion.Meta = mergeItemMetaJSON(completion.Meta, fields)
+		}
+	}
+	if launch.ToolName == "collab_agent" {
+		var bounds struct {
+			Start *int `json:"codex_execution_child_start_index"`
+			End   *int `json:"codex_execution_child_end_index"`
+		}
+		if err := json.Unmarshal([]byte(completion.Meta), &bounds); err != nil {
+			return err
+		}
+		if bounds.Start != nil && bounds.End != nil {
+			completion.Meta, err = r.store.SnapshotSubagentExecutionMeta(evt.ThreadID, launchID, completion.Meta, launch.TurnIndex, *bounds.Start, *bounds.End)
+			if err != nil {
+				return fmt.Errorf("snapshot Codex completion aggregates: %w", err)
+			}
+		}
 	}
 
 	payload := attachCodexBackgroundCompletionPayload(&completion, launch, evt, now, opts.sharedPayloadID)

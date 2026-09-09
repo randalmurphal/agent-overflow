@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -136,7 +137,7 @@ func TestMultiAgentV2ActivityCompletedLegClassification(t *testing.T) {
 			// A status event, not a tool completion — which is exactly why the
 			// started leg must not create a tool row for this kind.
 			kind: "interrupted",
-			want: []wantEvent{{kind: provider.EventSubagentStatus}},
+			want: []wantEvent{{kind: provider.EventSubagentStatus}, {kind: provider.EventToolComplete, itemType: "send_input"}},
 		},
 	}
 	for _, tt := range tests {
@@ -154,7 +155,11 @@ func TestMultiAgentV2ActivityCompletedLegClassification(t *testing.T) {
 					t.Fatalf("event %d = (%q, %q), want (%q, %q)",
 						i, events[i].Kind, events[i].ItemType, want.kind, want.itemType)
 				}
-				if events[i].ItemID != "activity-1" || events[i].TurnID != "root-turn" {
+				wantTurn := "root-turn"
+				if want.kind == provider.EventSubagentStatus {
+					wantTurn = ""
+				}
+				if events[i].ItemID != "activity-1" || events[i].TurnID != wantTurn {
 					t.Fatalf("event %d identity = (%q, %q)", i, events[i].ItemID, events[i].TurnID)
 				}
 			}
@@ -180,8 +185,8 @@ func TestMultiAgentV2InterruptedActivityPairEmitsOnlyStatus(t *testing.T) {
 	s.dispatchLine(v2ActivityNotification("item/started", "root-provider-thread", "root-turn", "interrupt-call", "interrupted", "child-a", "/root/reviewer"))
 	s.dispatchLine(v2ActivityLine("root-provider-thread", "root-turn", "interrupt-call", "interrupted", "child-a", "/root/reviewer"))
 
-	if len(events) != 1 {
-		t.Fatalf("interrupt events = %+v, want only the scoped status event", events)
+	if len(events) != 2 {
+		t.Fatalf("interrupt events = %+v, want status and interruption activity", events)
 	}
 	if events[0].Kind != provider.EventSubagentStatus || events[0].ItemID != "spawn-a" || events[0].ParentToolUseID != "spawn-a" {
 		t.Fatalf("interrupt event = %+v", events[0])
@@ -339,10 +344,10 @@ func TestMultiAgentV2ChildCompletionAndInterruptAreScopedStatuses(t *testing.T) 
 	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"child-a","turn":{"id":"child-turn","status":"completed","error":null}}}`))
 	s.dispatchLine(v2ActivityLine("root-provider-thread", "root-turn", "interrupt-call", "interrupted", "child-a", "/root/reviewer"))
 
-	if len(events) != 2 {
+	if len(events) != 3 {
 		t.Fatalf("terminal events = %+v", events)
 	}
-	for _, event := range events {
+	for _, event := range events[:2] {
 		if event.Kind != provider.EventSubagentStatus || event.ItemID != "spawn-a" || event.ParentToolUseID != "spawn-a" {
 			t.Fatalf("terminal activity was not scoped to launch: %+v", event)
 		}
@@ -763,7 +768,7 @@ func TestReadCollabThreadSnapshotLoadsOnlyLatestTurnStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read snapshot: %v", err)
 	}
-	if snapshot != (collabThreadSnapshot{ThreadID: "child-a", Status: "idle", LatestTurnStatus: "completed"}) {
+	if !reflect.DeepEqual(snapshot, collabThreadSnapshot{ThreadID: "child-a", Status: "idle", LatestTurnStatus: "completed", LatestTurnID: "turn-a"}) {
 		t.Fatalf("snapshot = %+v", snapshot)
 	}
 
@@ -826,8 +831,9 @@ func TestCollabHistoryTerminalReconciliation(t *testing.T) {
 			wantStatus: "interrupted",
 		},
 		{
-			name:     "active child",
-			snapshot: collabThreadSnapshot{ThreadID: "child-a", Status: "active"},
+			name:       "active child",
+			snapshot:   collabThreadSnapshot{ThreadID: "child-a", Status: "active"},
+			wantStatus: "running",
 		},
 		{
 			name:     "idle child with in-progress turn",

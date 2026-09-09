@@ -329,6 +329,7 @@ func TestTryFlushQueue_NilDispatcher_DoesNotConsume(t *testing.T) {
 func TestMaybeFlushQueueAtBoundary_BlocksOnLiveCodexSubagent(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	seedCodexThreadWithLiveSubagent(t, st, "t-codex")
+	resumeChild(t, router, "t-codex", "spawn-active", "child-1")
 
 	rec := &recordingDispatcher{}
 	router.SetFlushDispatcher(rec.dispatch)
@@ -348,8 +349,10 @@ func TestMaybeFlushQueueAtBoundary_BlocksOnLiveCodexSubagent(t *testing.T) {
 func TestCleanupThread_MarksLiveCodexSubagentLaunchesInactive(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	seedCodexThreadWithLiveSubagent(t, st, "t-codex")
+	resumeChild(t, router, "t-codex", "spawn-active", "child-1")
 
-	active, err := st.HasLiveCodexSubagentLaunch("t-codex")
+	active := len(router.ListLiveCodexAgentTasks("t-codex")) > 0
+	var err error
 	if err != nil {
 		t.Fatalf("has live before cleanup: %v", err)
 	}
@@ -359,7 +362,7 @@ func TestCleanupThread_MarksLiveCodexSubagentLaunchesInactive(t *testing.T) {
 
 	router.CleanupThread("t-codex")
 
-	active, err = st.HasLiveCodexSubagentLaunch("t-codex")
+	active = len(router.ListLiveCodexAgentTasks("t-codex")) > 0
 	if err != nil {
 		t.Fatalf("has live after cleanup: %v", err)
 	}

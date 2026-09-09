@@ -536,6 +536,13 @@ func classifySubAgentActivityCompleted(threadID string, params json.RawMessage, 
 		}}
 	case "interrupted", "completed":
 		status := activity.Kind
+		childTurnID := ""
+		if activity.Kind == "completed" {
+			childTurnID = strings.TrimPrefix(activity.ItemID, "subagent-completed-")
+			if childTurnID == activity.ItemID {
+				childTurnID = ""
+			}
+		}
 		meta, err := json.Marshal(map[string]any{
 			"agent_path":       activity.AgentThreadID,
 			"canonical_path":   activity.AgentPath,
@@ -545,14 +552,18 @@ func classifySubAgentActivityCompleted(threadID string, params json.RawMessage, 
 		if err != nil {
 			return nil
 		}
-		return []provider.ProviderEvent{{
+		events := []provider.ProviderEvent{{
 			Kind:      provider.EventSubagentStatus,
 			ThreadID:  threadID,
-			TurnID:    turnID,
+			TurnID:    childTurnID,
 			ItemID:    activity.ItemID,
 			Meta:      meta,
 			Timestamp: now,
 		}}
+		if activity.Kind == "interrupted" {
+			events = append(events, provider.ProviderEvent{Kind: provider.EventToolComplete, ThreadID: threadID, TurnID: turnID, ItemID: activity.ItemID, ItemType: "send_input", Meta: subAgentActivityCollabMeta(params, activity, "sendInput", "completed", false), Timestamp: now})
+		}
+		return events
 	default:
 		return nil
 	}

@@ -509,7 +509,7 @@ func TestReconcileCodexOnStart_FlipsGhostBackgroundRows(t *testing.T) {
 	}
 }
 
-func TestStartupRecoveryRetiresLiveCompletedCodexSpawn(t *testing.T) {
+func TestStartupRecoveryPreservesCompletedCodexSpawn(t *testing.T) {
 	st := storetest.Clone(t)
 	a := newAppWithStore(t, st)
 	threadID := seedCodexThread(t, st, "thread-restart-spawn")
@@ -536,8 +536,12 @@ func TestStartupRecoveryRetiresLiveCompletedCodexSpawn(t *testing.T) {
 	if err := json.Unmarshal([]byte(stored.Meta), &meta); err != nil {
 		t.Fatalf("decode spawn meta: %v", err)
 	}
-	if meta["live_background_active"] != false || meta["codex_background_end_reason"] != "session_ended" {
-		t.Fatalf("spawn runtime meta = %v", meta)
+	if stored.Meta != spawn.Meta || stored.UpdatedAt != spawn.UpdatedAt || stored.Summary != spawn.Summary {
+		t.Fatalf("startup changed completed spawn: %+v", stored)
+	}
+	live, err := a.ListLiveBackgroundTasks(threadID)
+	if err != nil || len(live) != 0 {
+		t.Fatalf("historical spawn became live: %+v, %v", live, err)
 	}
 	if ownerships, err := st.ListIncompleteCodexSubagentOwnerships(threadID); err != nil || len(ownerships) != 1 {
 		t.Fatalf("spawn ownership after restart = %+v, err=%v", ownerships, err)

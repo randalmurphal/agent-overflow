@@ -137,11 +137,17 @@ func (s *Session) childLifecycleEvents(method string, params json.RawMessage, pa
 		// otherwise identical mailbox deliveries. Counted here, on the live
 		// notification, rather than derived from the deliveries themselves —
 		// which would be circular. See subagentNotificationDedupKey.
+		if !s.recordChildTurnStarted(providerThreadID, readNestedString(params, "turn", "id")) {
+			return nil
+		}
 		s.advanceChildTurnGeneration(providerThreadID)
-		s.recordChildTurnStarted(providerThreadID, readNestedString(params, "turn", "id"))
 		event := s.childStatusEvent(providerThreadID, parentToolUseID, "running")
 		if event == nil {
 			return nil
+		}
+		event.TurnID = readNestedString(params, "turn", "id")
+		if startedAt, ok := readRawInt(readNestedObject(params, "turn"), "startedAt"); ok && startedAt > 0 {
+			event.Timestamp = time.Unix(int64(startedAt), 0)
 		}
 		return []provider.ProviderEvent{*event}
 	}
@@ -149,7 +155,9 @@ func (s *Session) childLifecycleEvents(method string, params json.RawMessage, pa
 		return nil
 	}
 	completed := decodeTurnCompletedParams(params)
-	s.recordChildTurnCompleted(providerThreadID, completed.Turn.ID)
+	if !s.recordChildTurnCompleted(providerThreadID, completed.Turn.ID) {
+		return nil
+	}
 	status := codexSubagentStatusFromTurnCompleted(params)
 	if status == "" {
 		return nil
@@ -157,6 +165,10 @@ func (s *Session) childLifecycleEvents(method string, params json.RawMessage, pa
 	event := s.childStatusEvent(providerThreadID, parentToolUseID, status)
 	if event == nil {
 		return nil
+	}
+	event.TurnID = completed.Turn.ID
+	if completedAt, ok := readRawInt(readNestedObject(params, "turn"), "completedAt"); ok && completedAt > 0 {
+		event.Timestamp = time.Unix(int64(completedAt), 0)
 	}
 	events := []provider.ProviderEvent{*event}
 	if status == "errored" {
@@ -193,6 +205,7 @@ func (s *Session) observeAndEmitChildLifecycle(providerThreadID string, events [
 	if providerThreadID == "" {
 		return
 	}
+	s.armChildMailboxRead(providerThreadID)
 	s.childLifecycleMu.Lock()
 	if s.childLifecycleRevision == nil {
 		s.childLifecycleRevision = make(map[string]uint64)
@@ -383,13 +396,39 @@ func (s *Session) emitChildErrorStatusEvent(providerThreadID, parentToolUseID st
 }
 
 func (s *Session) emitRecoveredChildStatus(providerThreadID string, expectedRevision uint64, event provider.ProviderEvent) bool {
+	s.mu.Lock()
 	s.childLifecycleMu.Lock()
 	if s.childLifecycleRevision[providerThreadID] != expectedRevision {
 		s.childLifecycleMu.Unlock()
+		s.mu.Unlock()
 		return false
 	}
+	var signal struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(event.Meta, &signal); err != nil {
+		s.childLifecycleMu.Unlock()
+		s.mu.Unlock()
+		log.Printf("codex: decode recovered runtime: %v", err)
+		return false
+	}
+	if s.collab.childRuntimeByThread == nil {
+		s.collab.childRuntimeByThread = make(map[string]childRuntimeState)
+	}
+	runtime := s.collab.childRuntimeByThread[providerThreadID]
+	if signal.Status == "running" {
+		runtime.phase = childRuntimeRunning
+	} else {
+		runtime.phase = childRuntimeStopped
+	}
+	if event.TurnID != "" && event.TurnID != runtime.turnID {
+		runtime.generation++
+	}
+	runtime.turnID = event.TurnID
+	s.collab.childRuntimeByThread[providerThreadID] = runtime
 	s.eventMu.Lock()
 	s.childLifecycleMu.Unlock()
+	s.mu.Unlock()
 	defer s.eventMu.Unlock()
 	s.emitEventLocked(event)
 	return true

@@ -1,6 +1,10 @@
+import type { Item } from '../types/models';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   applySubagentProgress,
+  codexAgentRevision,
+  hydrateCodexAgents,
+  liveCodexAgent,
   clearSubagentProgressForThread,
   dropSubagentProgress,
   liveSubagentProgress,
@@ -59,5 +63,42 @@ describe('subagentProgress', () => {
     // A tick after the clear registers the thread again.
     applySubagentProgress({ threadId: 't1', itemId: 'a', updatedAt: 2, progress: { toolUses: 5 } });
     expect(liveSubagentProgress('t1', 'a')?.toolUses).toBe(5);
+  });
+});
+
+
+describe('Codex runtime hydration', () => {
+  beforeEach(resetForTest);
+  const agent = (threadId = 't1'): Item => ({
+    threadId, id: 'spawn', kind: 'tool_call', toolName: 'collab_agent', role: 'assistant',
+    turnIndex: 0, itemIndex: 0, status: 'completed', summary: 'Worker', createdAt: 1, updatedAt: 2,
+  });
+  it('hydrates runtime without erasing progress or decorating history', () => {
+    const launch = agent();
+    applySubagentProgress({threadId: 't1', itemId: 'spawn', updatedAt: 5, progress: {totalTokens: 42}});
+    hydrateCodexAgents('t1', [launch], codexAgentRevision('t1'));
+    expect(liveSubagentProgress('t1', 'spawn')?.totalTokens).toBe(42);
+    expect(liveCodexAgent('t1', 'spawn')).toEqual(launch);
+    expect(launch.meta).toBeUndefined();
+  });
+  it('rejects snapshots overtaken by a runtime event or teardown', () => {
+    const revision = codexAgentRevision('t1');
+    applySubagentProgress({threadId: 't1', itemId: 'spawn', updatedAt: 5, progress: {}, codexAgent: agent()});
+    hydrateCodexAgents('t1', [], revision);
+    expect(liveCodexAgent('t1', 'spawn')).toBeDefined();
+    const beforeClear = codexAgentRevision('t1');
+    clearSubagentProgressForThread('t1');
+    hydrateCodexAgents('t1', [agent()], beforeClear);
+    expect(liveCodexAgent('t1', 'spawn')).toBeUndefined();
+  });
+  it('isolates revisions across threads and clears runtime after progress was dropped', () => {
+    const revision = codexAgentRevision('t1');
+    hydrateCodexAgents('t2', [agent('t2')], codexAgentRevision('t2'));
+    hydrateCodexAgents('t1', [agent()], revision);
+    expect(liveCodexAgent('t1', 'spawn')).toBeDefined();
+    dropSubagentProgress('t1', 'spawn');
+    clearSubagentProgressForThread('t1');
+    expect(liveCodexAgent('t1', 'spawn')).toBeUndefined();
+    expect(liveCodexAgent('t2', 'spawn')).toBeDefined();
   });
 });

@@ -96,7 +96,7 @@ func TestIdenticalMailboxAnswersAcrossAResumeGetTwoRows(t *testing.T) {
 
 // Progress is a chronological activity row. The launch's visible content stays
 // the spawn event, and the body is bounded before it reaches the timeline.
-func TestMailboxProgressStoresABoundedBody(t *testing.T) {
+func TestMailboxProgressPreservesFullBodyWithBoundedPreview(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
@@ -149,6 +149,13 @@ func TestMailboxProgressStoresABoundedBody(t *testing.T) {
 	if rows[0].ParentID != "" || !json.Valid([]byte(rows[0].Meta)) ||
 		!containsJSONField(rows[0].Meta, "message", "halfway; tests failing in X") {
 		t.Fatalf("plaintext progress row = %+v", rows[0])
+	}
+	data, err := st.GetPayloadData("t1", rows[0].PayloadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "halfway; tests failing in X\nsecond line dropped" {
+		t.Fatalf("full progress body=%q", data)
 	}
 	var latestMeta struct {
 		Input struct {

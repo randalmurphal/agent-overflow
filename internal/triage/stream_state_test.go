@@ -846,7 +846,7 @@ func TestProviderItemCompletionCanCreateCompletedAssistantText(t *testing.T) {
 	}
 }
 
-func TestSubagentProviderItemCompletionUpdatesSettledTextWithoutTopLevelDuplicate(t *testing.T) {
+func TestSubagentProviderItemCompletionRejectsChangesToSettledText(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	insertToolCallItem(t, st, "t1", "spawn-1", "Spawned reviewer", "spawn_agent", statusRunning)
@@ -872,9 +872,12 @@ func TestSubagentProviderItemCompletionUpdatesSettledTextWithoutTopLevelDuplicat
 		ParentToolUseID: "spawn-1", Content: "final child text", ContentPresent: true,
 		Meta: json.RawMessage(`{"blockType":"text"}`), Timestamp: time.Now(),
 	}); err != nil {
-		t.Fatalf("late child content block stop: %v", err)
+		t.Fatal(err)
 	}
 	router.WaitForPendingSettles()
+	if len(findItemsByKind(t, st, "t1", ItemKindError)) != 1 {
+		t.Fatal("history conflict was not surfaced")
+	}
 
 	textItems := findItemsByKind(t, st, "t1", itemKindAssistantText)
 	if len(textItems) != 1 {
@@ -884,8 +887,8 @@ func TestSubagentProviderItemCompletionUpdatesSettledTextWithoutTopLevelDuplicat
 	if item.ParentID != "spawn-1" {
 		t.Fatalf("parent_id = %q, want spawn-1", item.ParentID)
 	}
-	if item.Summary != "final child text" {
-		t.Fatalf("summary = %q, want final child text", item.Summary)
+	if item.Summary != "draft child text" {
+		t.Fatalf("summary = %q, want draft child text", item.Summary)
 	}
 	if strings.TrimSpace(readProviderItemIDFromMeta(json.RawMessage(item.Meta))) != "child-msg" {
 		t.Fatalf("meta.provider_item_id = %q, want child-msg (meta=%s)", readProviderItemIDFromMeta(json.RawMessage(item.Meta)), item.Meta)
@@ -1029,7 +1032,7 @@ func TestProviderItemCompletionCanCreateCompletedThinking(t *testing.T) {
 	}
 }
 
-func TestSubagentProviderItemCompletionUpdatesSettledThinkingWithoutTopLevelDuplicate(t *testing.T) {
+func TestSubagentProviderItemCompletionRejectsChangesToSettledThinking(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	insertToolCallItem(t, st, "t1", "spawn-1", "Spawned reviewer", "spawn_agent", statusRunning)
@@ -1055,9 +1058,12 @@ func TestSubagentProviderItemCompletionUpdatesSettledThinkingWithoutTopLevelDupl
 		ParentToolUseID: "spawn-1", Content: "final thought", ContentPresent: true,
 		Meta: json.RawMessage(`{"blockType":"thinking"}`), Timestamp: time.Now(),
 	}); err != nil {
-		t.Fatalf("late child thinking stop: %v", err)
+		t.Fatal(err)
 	}
 	router.WaitForPendingSettles()
+	if len(findItemsByKind(t, st, "t1", ItemKindError)) != 1 {
+		t.Fatal("history conflict was not surfaced")
+	}
 
 	thinkingItems := findItemsByKind(t, st, "t1", itemKindThinking)
 	if len(thinkingItems) != 1 {
@@ -1067,15 +1073,15 @@ func TestSubagentProviderItemCompletionUpdatesSettledThinkingWithoutTopLevelDupl
 	if item.ParentID != "spawn-1" {
 		t.Fatalf("parent_id = %q, want spawn-1", item.ParentID)
 	}
-	if item.Summary != "final thought" {
-		t.Fatalf("summary = %q, want final thought", item.Summary)
+	if item.Summary != "draft thought" {
+		t.Fatalf("summary = %q, want draft thought", item.Summary)
 	}
 	data, err := st.GetPayloadData(item.ThreadID, item.PayloadID)
 	if err != nil {
 		t.Fatalf("get payload: %v", err)
 	}
-	if string(data) != "final thought" {
-		t.Fatalf("payload = %q, want final thought", data)
+	if string(data) != "draft thought" {
+		t.Fatalf("payload = %q, want draft thought", data)
 	}
 }
 

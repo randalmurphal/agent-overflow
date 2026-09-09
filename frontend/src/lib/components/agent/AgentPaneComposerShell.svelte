@@ -1,36 +1,7 @@
 <script lang="ts">
-  // The agent pane's composer (spec Q5, user rulings 2026-08-22): the
-  // SAME card the main composer renders, built from the REAL composer
-  // pieces with the subagent's values filled in and the non-applicable
-  // pieces absent — never a hand-drawn imitation:
-  //
-  // - activity rail: the working chip (the agent's own spinner sprite /
-  //   LED chase, verb, and elapsed timer — the sprite keyed on the agent
-  //   so it holds for the run, the timer counting from the lifecycle row,
-  //   which for a resumed agent is the resume) while the agent runs —
-  //   the same chip the main composer's rail shows (user ruling
-  //   2026-08-23, reversing the earlier "no run timer, no spinner" call).
-  //   Idle, the row stays as a height twin so the transcript's bottom
-  //   edge never moves when the agent settles (same reservation
-  //   Composer makes). No todos, no background segment, no input chip:
-  //   those are the thread's.
-  // - input area: read-only line (plus the backgrounded-stream note);
-  //   no textarea because steering a subagent is not a thing the wire
-  //   offers.
-  // - toolbar row: model chip (provider icon + the launch's model) where
-  //   the model picker sits, Codex reasoning effort beside it. No rate
-  //   dials, no tool count, no kind chip — ruled off this surface.
-  // - send slot: the real SendButton in its stop variant, only where
-  //   the wire can actually kill the task (a Claude launch carrying a
-  //   task_id — StopClaudeTask). Forked skills have no task lifecycle
-  //   and a Codex child has no client-reachable kill, so neither shows
-  //   a button at all.
-  // - bottom row: the real ComposerWorkspaceStrip (readonly) — same
-  //   mode/project/env/branch as the main pane, because a subagent runs
-  //   in this very thread — with the usage slot showing the SUBAGENT's
-  //   own token spend. No cost: usage rows are priced per thread, never
-  //   per launch. No context ring either — progress ticks carry
-  //   cumulative spend, not context occupancy.
+  import { subagentExecutionItem } from '../../utils/codexSubagentRuntime';
+  // The pane shares composer controls but remains read-only. Execution
+  // metadata owns Codex liveness; scoped turn/interrupt is its Stop action.
   import type { Item } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import ProviderIcon from '../shared/ProviderIcon.svelte';
@@ -41,7 +12,7 @@
   import { activityRailChipClasses, activityRailRowClasses } from '../composer/activityRailClasses';
   import { createSharedNowClock } from '../chat/useRunningElapsed.svelte';
   import { formatElapsedSeconds } from '../../utils/format';
-  import { StopClaudeTask } from '../../stores/bindings';
+  import { StopClaudeTask, StopCodexSubagent } from '../../stores/bindings';
   import { extractClaudeTaskID } from '../../utils/claudeTaskMeta';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import { formatTokens } from '../../utils/format';
@@ -89,7 +60,15 @@
     hasChildren: boolean;
   } = $props();
 
-  let statusItem = $derived(lifecycleCompletion ?? lifecycle);
+  let runtimeLabel = $derived.by(() => {
+    const runtime = parseJsonObject(lifecycle?.meta)?.codex_runtime as Record<string, unknown> | undefined;
+    const flags = runtime?.activeFlags;
+    if (!Array.isArray(flags)) return undefined;
+    if (flags.includes('waitingOnApproval')) return 'Waiting for approval';
+    if (flags.includes('waitingOnUserInput')) return 'Waiting for input';
+    return undefined;
+  });
+  let statusItem = $derived(subagentExecutionItem(lifecycle, lifecycleCompletion));
   let isRunning = $derived(
     statusItem !== undefined &&
       (statusItem.status === 'running' || statusItem.status === 'streaming'),
@@ -99,7 +78,7 @@
   // a resume carrier carries the original agent's `subagent_type`,
   // `subagent_model` and description, so the chips stay right even on a
   // pane restored above its launch.
-  let identity = $derived(launch ?? lifecycle);
+  let identity = $derived(lifecycle?.toolName === 'collab_agent' ? lifecycle : launch ?? lifecycle);
   let payloadMeta = $derived(identity ? parseJsonObject(identity.payloadMeta) : null);
   let parentMeta = $derived(identity ? parseJsonObject(identity.meta) : null);
   let inputObject = $derived(readClaudeSubagentInput(payloadMeta, parentMeta));
@@ -131,6 +110,7 @@
   });
   let modelLabel = $derived.by(() => {
     if (namedModelLabel) return namedModelLabel;
+    if (provider === 'codex') return 'Codex · Model unavailable';
     const inherited = pane?.effectiveModel || pane?.thread?.model || '';
     return inherited ? displayModelLabel(provider, inherited) : providerLabel(provider);
   });
@@ -143,7 +123,7 @@
   // start/end pair, so the chip and the response pill never disagree.
   const clock = createSharedNowClock(() => isRunning);
   let elapsedLabel = $derived.by(() => {
-    const start = lifecycle?.createdAt ?? 0;
+    const start = subagentExecutionItem(lifecycle)?.createdAt ?? 0;
     if (!Number.isFinite(start) || start <= 0) return '0s';
     return formatElapsedSeconds(Math.max(0, Math.floor((clock.now - start) / 1_000)));
   });
@@ -165,6 +145,7 @@
 
   let stopTaskId = $derived.by(() => {
     if (!lifecycle || !isRunning) return null;
+    if (codexInfo) return lifecycle.id;
     // Agent/Task launches, backgrounded Bash, and a SendMessage resume
     // carrier (triage rebinds the fresh task_id onto it) all name a live
     // Claude task. Anything else has no stop primitive.
@@ -182,7 +163,8 @@
     stopping = true;
     stopError = '';
     try {
-      await StopClaudeTask(threadId, taskId);
+      if (codexInfo) await StopCodexSubagent(threadId, taskId);
+      else await StopClaudeTask(threadId, taskId);
     } catch (err) {
       stopError = err instanceof Error ? err.message : String(err);
     } finally {
@@ -225,6 +207,8 @@
       <div class={activityRailRowClasses}>
         {#if isRunning && identity}
           <WorkingChip
+            labelOverride={runtimeLabel}
+            showElapsed={(subagentExecutionItem(lifecycle)?.createdAt ?? 0) > 0}
             {threadId}
             pickKey={identity.id}
             {elapsedLabel}

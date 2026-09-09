@@ -125,19 +125,20 @@ func TestBuildAppliesCodexSubagentTerminalStatusToSpawnLaunch(t *testing.T) {
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %+v", warnings)
 	}
-	if len(batch.Rows) != 1 {
-		t.Fatalf("rows = %d, want only the spawn launch", len(batch.Rows))
+	if len(batch.Rows) != 2 {
+		t.Fatalf("rows=%d, want spawn and completion", len(batch.Rows))
 	}
-	if batch.Rows[0].Item.Status != statusCompleted || !batch.Rows[0].Item.IsBackground {
-		t.Fatalf("spawn row state = %s background=%v, want completed background launch", batch.Rows[0].Item.Status, batch.Rows[0].Item.IsBackground)
+	spawn, completion := batch.Rows[0].Item, batch.Rows[1].Item
+	if spawn.Status != statusCompleted || !spawn.IsBackground {
+		t.Fatalf("spawn=%+v", spawn)
 	}
-	meta := batch.Rows[0].Item.Meta
-	if !strings.Contains(meta, `"codex_child_terminal_statuses":{"child-1":"completed"}`) {
-		t.Fatalf("spawn meta missing child terminal status: %s", meta)
+	if strings.Contains(spawn.Meta, "codex_child_terminal_statuses") || spawn.UpdatedAt != at(2).UnixMilli() {
+		t.Fatalf("terminal changed spawn: %+v", spawn)
 	}
-	if !strings.Contains(meta, `"live_background_active":false`) {
-		t.Fatalf("spawn meta still active after its only child completed: %s", meta)
+	if completion.CompletionOf != spawn.ID || completion.CreatedAt != at(3).UnixMilli() {
+		t.Fatalf("completion=%+v", completion)
 	}
+
 }
 
 // SourceOffset is a resume position, never a substitute for provenance. A

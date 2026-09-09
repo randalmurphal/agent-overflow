@@ -2003,6 +2003,21 @@ describe('groupItemsBySubagent — launch kinds', () => {
     expect(l3.descendantCount).toBe(2);
   });
 
+  it('excludes later descendants when a completed execution is flattened at the depth cap', () => {
+    const items = launchChain(5).map(item => item.id === 'l3' ? {...item, isBackground: true} : item);
+    const first = mkItem({id: 'first-deep', parentId: 'l5', itemIndex: 6});
+    const completion = mkItem({id: 'complete:l3', parentId: 'l2', itemIndex: 7,
+      kind: 'tool_completion', toolName: 'Agent', completionOf: 'l3', isBackground: true,
+      meta: toolMeta({codex_execution_child_start_index: 3, codex_execution_child_end_index: 6}),
+    });
+    const before = groupItemsBySubagent([...items, first, completion]);
+    const later = mkItem({id: 'later-deep', parentId: 'l5', itemIndex: 8});
+    const after = groupItemsBySubagent([...items, first, completion, later]);
+    expect(after).toEqual(before);
+    expect(nodeContainsItem(after[0], 'first-deep')).toBe(true);
+    expect(nodeContainsItem(after[0], 'later-deep')).toBe(false);
+  });
+
   it('keeps a flattened launch completion sibling as a leaf beside it', () => {
     // Below the cap a nested launch renders as a LEAF, so there is no card
     // to build at its completion. The sibling carries the launch's parentId
@@ -3051,14 +3066,7 @@ describe('groupItemsBySubagent — card reuse across passes', () => {
   });
 });
 
-// A detached launch can have MANY durable completion rows. Codex's
-// background mailbox keys a delivery by content plus resume generation
-// (internal/triage/codex_background_mailbox.go), so a resumed child's later
-// answers are separate `tool_completion` rows by design — the backend must
-// never collapse them. Turning each into a card minted N group nodes under
-// one key, and the duplicate key threw out of the row `{#each}`, aborting
-// the Svelte update batch: the pane froze (production 2026-08-29).
-describe('groupItemsBySubagent — one card per launch across repeated deliveries', () => {
+describe('groupItemsBySubagent — immutable completion cards across repeated executions', () => {
   function codexSpawn(id: string, itemIndex: number): Item {
     return mkItem({
       id,
@@ -3106,7 +3114,7 @@ describe('groupItemsBySubagent — one card per launch across repeated deliverie
     expect(new Set(keys).size).toBe(keys.length);
   }
 
-  it('anchors ONE card at the first delivery and leaves the rest as leaves', () => {
+  it('gives every completion its own card and expansion identity', () => {
     const nodes = groupItemsBySubagent([
       codexSpawn('spawn-1', 0),
       delivery('spawn-1', 'aaa', 1),
@@ -3120,23 +3128,29 @@ describe('groupItemsBySubagent — one card per launch across repeated deliverie
       'complete:spawn-1:delivery:bbb',
       'complete:spawn-1:delivery:ccc',
     ]);
-    // The spawn row is the immutable pre-card leaf; the FIRST delivery is
-    // the card; the later two are ordinary chronological leaves, so every
-    // durable delivery stays visible where it landed.
     expect(expectLeaf(nodes[0]).item.id).toBe('spawn-1');
     const card = expectGroup(nodes[1]);
     expect(card.anchor.id).toBe('complete:spawn-1:delivery:aaa');
-    expect(expectLeaf(nodes[2]).item.id).toBe('complete:spawn-1:delivery:bbb');
-    expect(expectLeaf(nodes[3]).item.id).toBe('complete:spawn-1:delivery:ccc');
-    expect(nodes.filter((node) => node.kind === 'group')).toHaveLength(1);
-    // Status comes from the LATEST delivery even though the card sits at
-    // the first: the card reports what the agent last said.
-    expect(card.completion?.id).toBe('complete:spawn-1:delivery:ccc');
-    // Expansion still keys on the launch — that is what makes an opened
-    // card stay open when its anchor moves.
-    expect(card.groupKey).toBe('spawn-1');
-    // …and the ROW key is the anchor's, which is what the freeze was about.
+    expect(expectGroup(nodes[2]).anchor.id).toBe('complete:spawn-1:delivery:bbb');
+    expect(expectGroup(nodes[3]).anchor.id).toBe('complete:spawn-1:delivery:ccc');
+    expect(nodes.filter((node) => node.kind === 'group')).toHaveLength(3);
+    expect(card.completion?.id).toBe('complete:spawn-1:delivery:aaa');
+    expect(card.groupKey).toBe('complete:spawn-1:delivery:aaa');
     expect(timelineNodeKey(card)).toBe('g:thread-1:complete:spawn-1:delivery:aaa');
+    expectNoDuplicateKeys(nodes);
+  });
+
+  it('keeps a completed card unchanged while later child rows and executions arrive', () => {
+    const spawn = codexSpawn('spawn-1', 0);
+    const firstText = mkItem({id:'text-a', parentId:spawn.id, itemIndex:1, summary:'First answer'});
+    const first = delivery(spawn.id, 'first', 2, {meta:toolMeta({codex_execution_child_start_index:0,codex_execution_child_end_index:1})});
+    const before = expectGroup(groupItemsBySubagent([spawn,firstText,first])[1]);
+    const laterText = mkItem({id:'text-b', parentId:spawn.id, itemIndex:3, summary:'Later answer'});
+    const second = delivery(spawn.id, 'second', 4, {meta:toolMeta({codex_execution_child_start_index:1,codex_execution_child_end_index:3})});
+    const nodes = groupItemsBySubagent([spawn,firstText,first,laterText,second]);
+    expect(expectGroup(nodes[1])).toEqual(before);
+    expect(expectGroup(nodes[2]).children.map(child => expectLeaf(child).item.id)).toEqual(['text-b']);
+    expect(expectGroup(nodes[2]).groupKey).not.toBe(before.groupKey);
     expectNoDuplicateKeys(nodes);
   });
 
@@ -3154,13 +3168,12 @@ describe('groupItemsBySubagent — one card per launch across repeated deliverie
     const after = expectGroup(nodes[1]);
     expect(after.anchor.id).toBe(before.anchor.id);
     expect(timelineNodeKey(after)).toBe(beforeKey);
-    // The new delivery is a new leaf, and the card's status follows it.
-    expect(expectLeaf(nodes[4]).item.id).toBe('complete:spawn-1:delivery:ddd');
-    expect(after.completion?.id).toBe('complete:spawn-1:delivery:ddd');
+    expect(expectGroup(nodes[4]).anchor.id).toBe('complete:spawn-1:delivery:ddd');
+    expect(after).toEqual(before);
     expectNoDuplicateKeys(nodes);
   });
 
-  it('leaves a later wait-claimed delivery a leaf inside its wait group', () => {
+  it('places a later completion in its own wait group', () => {
     const nodes = groupItemsBySubagent([
       codexSpawn('spawn-1', 0),
       delivery('spawn-1', 'aaa', 1),
@@ -3184,19 +3197,14 @@ describe('groupItemsBySubagent — one card per launch across repeated deliverie
     const card = expectGroup(nodes[1]);
     expect(card.anchor.id).toBe('complete:spawn-1:delivery:aaa');
     const wait = expectWaitGroup(nodes[2]);
-    // The wait-claimed delivery renders under the wait as a LEAF, not as a
-    // second card for the same launch.
-    expect(wait.children.map((child) => expectLeaf(child).item.id)).toEqual([
+    expect(wait.children.map((child) => expectGroup(child).anchor.id)).toEqual([
       'complete:spawn-1:delivery:bbb',
     ]);
-    expect(card.completion?.id).toBe('complete:spawn-1:delivery:bbb');
+    expect(card.completion?.id).toBe('complete:spawn-1:delivery:aaa');
     expectNoDuplicateKeys(nodes);
   });
 
-  it('lets a wait-claimed FIRST delivery anchor the card inside the wait group', () => {
-    // First-wins is by timeline order, not by which list a delivery lands
-    // in: a completion the wait claimed can be the card, and then the
-    // unclaimed one after it is the plain leaf.
+  it('preserves both waited and independent completion cards', () => {
     const nodes = groupItemsBySubagent([
       codexSpawn('spawn-1', 0),
       mkItem({
@@ -3215,16 +3223,12 @@ describe('groupItemsBySubagent — one card per launch across repeated deliverie
     expect(card.parent.id).toBe('spawn-1');
     expect(card.anchor.id).toBe('complete:spawn-1:delivery:aaa');
     expect(timelineNodeKey(card)).toBe('g:thread-1:complete:spawn-1:delivery:aaa');
-    expect(expectLeaf(nodes[2]).item.id).toBe('complete:spawn-1:delivery:bbb');
-    expect(card.completion?.id).toBe('complete:spawn-1:delivery:bbb');
+    expect(expectGroup(nodes[2]).anchor.id).toBe('complete:spawn-1:delivery:bbb');
+    expect(card.completion?.id).toBe('complete:spawn-1:delivery:aaa');
     expectNoDuplicateKeys(nodes);
   });
 
-  it('moves the anchor to an EARLIER delivery paged in by load-older', () => {
-    // The one legitimate anchor move: the window's earlier edge grows and a
-    // delivery that already existed becomes the first LOADED one. The card
-    // relocates to it, the old anchor becomes an ordinary leaf, and the
-    // projection stays duplicate-free through the transition.
+  it('adds an earlier card without moving the already loaded card', () => {
     const spawn = codexSpawn('spawn-1', 0);
     const later = delivery('spawn-1', 'bbb', 3);
     const first = groupItemsBySubagent([spawn, later]);
@@ -3235,8 +3239,8 @@ describe('groupItemsBySubagent — one card per launch across repeated deliverie
     const card = expectGroup(nodes[1]);
     expect(card.anchor.id).toBe('complete:spawn-1:delivery:aaa');
     expect(timelineNodeKey(card)).toBe('g:thread-1:complete:spawn-1:delivery:aaa');
-    expect(expectLeaf(nodes[2]).item.id).toBe('complete:spawn-1:delivery:bbb');
-    expect(nodes.filter((node) => node.kind === 'group')).toHaveLength(1);
+    expect(expectGroup(nodes[2]).anchor.id).toBe('complete:spawn-1:delivery:bbb');
+    expect(nodes.filter((node) => node.kind === 'group')).toHaveLength(2);
     expectNoDuplicateKeys(nodes);
   });
 
@@ -3251,6 +3255,7 @@ describe('groupItemsBySubagent — one card per launch across repeated deliverie
     expect(timelineNodeKey(card)).toBe('g:thread-1:agent-1');
   });
 });
+
 
 // Structural regression fixture: the item shapes from the pane that froze on
 // 2026-08-29, with every content field replaced by a placeholder at
@@ -3302,20 +3307,20 @@ describe('groupItemsBySubagent — production snapshot shape', () => {
     expect(duplicateKeysPerList(nodes)).toEqual([]);
   });
 
-  it('renders exactly one card per launch that has any card at all', () => {
+  it('renders each completion under one unique card identity', () => {
     const nodes = groupConsecutiveReads(groupItemsBySubagent(snapshot));
-    const cardsByLaunch = new Map<string, number>();
+    const cardsByAnchor = new Map<string, number>();
     const walk = (list: readonly TimelineNode[]): void => {
       for (const node of list) {
         if (node.kind === 'group') {
-          cardsByLaunch.set(node.parent.id, (cardsByLaunch.get(node.parent.id) ?? 0) + 1);
+          cardsByAnchor.set(node.anchor.id, (cardsByAnchor.get(node.anchor.id) ?? 0) + 1);
         }
         if (node.kind === 'group' || node.kind === 'wait_group') walk(node.children);
       }
     };
     walk(nodes);
-    expect(cardsByLaunch.size).toBeGreaterThan(0);
-    expect([...cardsByLaunch.values()].filter((count) => count !== 1)).toEqual([]);
+    expect(cardsByAnchor.size).toBeGreaterThan(0);
+    expect([...cardsByAnchor.values()].filter((count) => count !== 1)).toEqual([]);
   });
 });
 

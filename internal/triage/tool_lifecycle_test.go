@@ -1087,6 +1087,13 @@ func TestCodexWaitStartSnapshotsActiveReceiversWhenWireTargetsAreMissing(t *test
 		}); err != nil {
 			t.Fatalf("seed launch %s: %v", id, err)
 		}
+		item, _, err := st.GetThreadItem("t1", id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := router.setCodexAgentRuntime(item); err != nil {
+			t.Fatal(err)
+		}
 	}
 	seedLaunch("spawn-a", "", `{"live_background_active":true,"input":{"tool":"spawn_agent","receiverThreadIds":["child-a"],"newAgentNickname":"Ada","newAgentRole":"reviewer"}}`, 0)
 	seedLaunch("spawn-multi", "", `{"live_background_active":true,"codex_child_terminal_statuses":{"child-b":"completed"},"input":{"tool":"spawn_agent","receiverThreadIds":["child-b","child-c"],"receiverAgents":[{"threadId":"child-c","agentNickname":"Curie","agentRole":"default"}]}}`, 1)
@@ -1479,7 +1486,7 @@ func TestCodexSpawnLabelMetaUpdatePreservesFullReceiverList(t *testing.T) {
 			ReasoningEffort   string   `json:"reasoningEffort"`
 		} `json:"input"`
 	}
-	if err := json.Unmarshal([]byte(item.Meta), &persistedMeta); err != nil {
+	if err := json.Unmarshal([]byte(router.codexAgentRuntimeOrLaunch(item).Meta), &persistedMeta); err != nil {
 		t.Fatalf("unmarshal persisted meta: %v", err)
 	}
 	want := []string{"child-1", "child-2"}

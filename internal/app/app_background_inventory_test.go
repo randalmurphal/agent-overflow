@@ -76,6 +76,12 @@ func seedCodexSubagentLaunchRow(t *testing.T, app *App, threadID, itemID string,
 	}); err != nil {
 		t.Fatalf("seed Codex subagent launch: %v", err)
 	}
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind: provider.EventSubagentStatus, ThreadID: threadID, ItemID: itemID, TurnID: "child-turn",
+		Meta: json.RawMessage(`{"agent_path":"child-1","status":"running"}`), Timestamp: time.UnixMilli(createdAt),
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // seedCodexUnifiedExecTracker drives the triage router the way a live
@@ -120,7 +126,7 @@ func seedCodexUnifiedExecTracker(t *testing.T, app *App, threadID, itemID, proce
 // TestListRunningBackgroundWorkUnionsAllThreeSources is the reason the
 // inventory reuses ListLiveBackgroundTasks instead of writing its own
 // query. Live background work comes from three places — the store's
-// background tool calls, the store's live Codex subagent launches, and
+// background tool calls, the router's live Codex agents, and
 // the triage router's in-memory unified-exec trackers — and the third
 // exists in no table at all. Each is seeded on its own thread here, so a
 // leg dropped from the union takes a whole row with it.

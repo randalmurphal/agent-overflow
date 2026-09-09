@@ -1744,8 +1744,16 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 		effectiveModelRevision uint64
 		pendingUsage           provider.UsageEvent
 		hasPendingUsage        bool
+		closedCodexAgents      []closedCodexAgent
 	)
 	if st != nil {
+		if st.codexBackground != nil {
+			for _, item := range st.codexBackground.agents {
+				if codexRuntimeActive(item) {
+					closedCodexAgents = append(closedCodexAgents, closedCodexAgent{item: item, progress: st.subagentProgress[item.ID]})
+				}
+			}
+		}
 		orphanSpan, st.turnSpan = st.turnSpan, nil
 		// Stop the in-flight flush timers before the buffers become
 		// unreachable — a live timer would otherwise fire against a
@@ -1778,14 +1786,9 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 	if orphanSpan != nil {
 		r.recordTurnSpanOutcome(orphanSpan, cleanupTurnOutcome())
 	}
-	if r.store != nil {
-		count, err := r.store.MarkLiveCodexSubagentLaunchesInactive(threadID, cleanupAt)
-		if err != nil {
-			log.Printf("triage: cleanup live Codex subagent launches for thread %s: %v", threadID, err)
-		} else if count > 0 {
-			r.emitBackgroundTasksChangedNudge(threadID)
-		}
-	}
+	r.finishClosedCodexAgents(closedCodexAgents, cleanupAt)
+	r.emit(eventchan.ProviderBackgroundTasksChanged, BackgroundTasksChangedEvent{ThreadID: threadID, ResetCodexAgents: true})
+
 	return true
 }
 

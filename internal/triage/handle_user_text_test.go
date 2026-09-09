@@ -574,7 +574,7 @@ func TestSubagentLaunchPromptKeepsItsOpeningPositionWhenTranscriptIdentityArrive
 	}
 
 	children := childrenOfLaunch(t, st, "t1", "spawn-1", 0)
-	if got, want := childIDs(children), []string{"user:subagent-prompt:spawn-1", TextItemID(0, "spawn-1", 1)}; fmt.Sprint(got) != fmt.Sprint(want) {
+	if got, want := childIDs(children), []string{"user:subagent-prompt:spawn-1", "text:0:spawn-1:provider:child-text#0"}; fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("children = %v, want opening prompt before output %v", got, want)
 	}
 	if got := readProviderItemIDFromMeta(json.RawMessage(children[0].Meta)); got != "prompt-uuid" {
@@ -597,7 +597,7 @@ func TestSubagentLaunchPromptKeepsItsOpeningPositionWhenTranscriptIdentityArrive
 	children = childrenOfLaunch(t, st, "t1", "spawn-1", 0)
 	if got, want := childIDs(children), []string{
 		"user:subagent-prompt:spawn-1",
-		TextItemID(0, "spawn-1", 1),
+		"text:0:spawn-1:provider:child-text#0",
 		"user:wire:followup-uuid",
 	}; fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("children after later delivery = %v, want %v", got, want)

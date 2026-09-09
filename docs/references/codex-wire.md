@@ -4,11 +4,10 @@ Authoritative reference for the JSON-RPC 2.0 notifications Codex
 emits over stdio. Consulted by `internal/provider/codex/`
 parser code.
 
-Multi-agent shapes in this document were re-verified on 2026-07-09 against
-the exact `rust-v0.144.0` tag (`767822446c...`) and a live
-`codex-cli 0.144.0` MultiAgentV2 rollout. The local Codex checkout may be on
-an older tag; use `git show rust-v0.144.0:<path>` rather than assuming its
-worktree revision describes the installed binary.
+Multi-agent behavior is source-verified against `rust-v0.153.4`
+(`3d2ee51ca2d5db578f328aa75e20aa22c0197c9a`). Current Rust definitions in
+`app-server-protocol/src/protocol/v2/` include experimental fields omitted
+from the checked-in public TypeScript schema.
 
 Child-profile resolution was re-verified on 2026-08-29 against
 `rust-v0.150.1`. The public V2 `SubAgentActivity` has no model or effort.
@@ -522,8 +521,9 @@ must clear the old live-work projection without deleting spawn ownership or
 fabricating a child completion result.
 
 ⚠ **V2's two messaging verbs are indistinguishable on the typed wire.**
-`send_message` (QueueOnly: queues into the child's mailbox, starts no turn) and
-`followup_task` (TriggerTurn: starts a new child turn) share one handler path
+`send_message` (QueueOnly: usually queues without starting an idle turn, but
+can wake durable sleep) and `followup_task` (TriggerTurn: may start an idle
+child or queue input into an active child) share one handler path
 (`core/src/tools/handlers/multi_agents_v2/message_tool.rs`) and both end in a
 single `kind:"interacted"` item with no verb field. The ONLY signal is the raw
 function-call `name` on `rawResponseItem/completed`, which is live-only: a
@@ -557,9 +557,10 @@ The V2 item is:
 }
 ```
 
-`kind` is `started | interacted | interrupted`. The `id` is the function
-call id. For `started`, it is also the stable parent spawn-card id; for the
-other kinds it is the control call's own id. `agentThreadId` is the routing
+`kind` is `started | interacted | interrupted | completed`. The first three
+use the function call id. `started` establishes the stable spawn id.
+`completed` uses `subagent-completed-<child-turn-id>` and reaches the initiating
+agent, which can differ from the structural parent receiving FINAL_ANSWER. `agentThreadId` is the routing
 identity and `agentPath` is the canonical task path. V2 spawn output normally
 returns `{"task_name":"/root/reviewer"}` and may intentionally hide nickname
 metadata; the activity item, not the raw output, is the ownership source.
@@ -649,8 +650,8 @@ Agent Overflow drops the started leg outright and expands a canonical
 completion pair used by the existing projector. Routing the started leg as a
 tool row instead would mint a raw `subAgentActivity` tool_call, transient for
 `started` / `interacted` (the completion upserts the same item id) but
-permanent for `interrupted`, whose completion is a status event that never
-settles the row. The normalized completion
+incorrect for automatic status signals. `interrupted` produces a scoped
+status and a separate activity for the actual interrupt operation. The normalized completion
 contains the authoritative receiver thread and a running `agentsStates`
 entry, because successful emission occurs only after core has spawned the
 child. This is a typed authorization signal, not an ordering heuristic.
@@ -676,20 +677,21 @@ role configuration. Each nested child is queried independently. No child
 inherits a displayed profile from its parent. On resume, raw events are
 unavailable, so the same response repairs active child profiles without
 replaying turns.
-`thread/resume` history is scanned for both V1 spawn items and V2 started
-activities to rebuild ownership without replaying duplicate transcript rows.
-A sequential, session-cancellable worker inspects each unresolved child with
-`thread/read {includeTurns:false}` and one latest-turn query when needed. It
-resumes only children whose reported status is `active`, using
-`excludeTurns:true` to restore the live subscription and recover the effective
-profile. The queue bounds concurrency without an arbitrary child-count limit.
-A fresh `Session.Resume` starts a new traversal generation. Transient
-reads/resumes retry, and conflicting or self-referential ownership is rejected.
+Recovery starts from AO's compact persisted launches. On 0.153.4+, a
+version-gated `thread/list {ancestorThreadId, sourceKinds:["subAgent"]}`
+discovers missing descendants. Metadata verifies their parent chain; bounded
+`thread/items/list` pages locate the original started activity. The adapter
+projects only that ownership record, with unrelated history excluded.
+`thread/read {includeTurns:false}` and a latest-turn metadata query reconcile
+runtime. Lifecycle revisions reject snapshots superseded by live observations.
 
-Known child `turn/started` is normalized to a launch-keyed running status. This
-reactivates a previously completed child's background projection when `followup_task`
-starts another turn; its later `turn/completed` marks that launch inactive
-again. Neither lifecycle event is allowed to mutate the root turn.
+Child `turn/started`, `turn/completed`, and `thread/status/changed` own current
+execution, including approval/input flags. Child turn IDs fence stale endings.
+A separate session projection supplies current state and elapsed time for the
+pane and tray. Completion cards retain their own execution snapshots; delivered
+answers cannot stop a newer execution or update an earlier card.
+Child status never changes the root turn. Client Stop uses owned
+`turn/interrupt`; effective profile stays unknown until the child reports it.
 
 ### Parent learning the child finished
 
@@ -743,53 +745,29 @@ The metadata record carries only `trigger_turn`; the envelope itself is the
 
 #### `Message Type:` is the classifier, and it has three values
 
-The envelope's own first line is the only wire-typed signal for what a delivery
-means. Three types are observed:
+The envelope header names sender, recipient, and message type. `NEW_TASK`
+assigns work; `MESSAGE` conveys communication; `FINAL_ANSWER` delivers a
+terminal answer to the structural parent. All can target nested scopes.
+A receipt is evidence of insertion into model context, not proof that the
+sender is still running or that the recipient acted on it. FINAL_ANSWER alone
+also does not prove success: errors and shutdown can produce that envelope.
 
-| Type | Direction | Meaning |
-|---|---|---|
-| `FINAL_ANSWER` | child → parent | The child's terminal answer. **The transcript-completion boundary.** |
-| `MESSAGE` | child → parent | A mid-run progress note (`send_message`, QueueOnly). The child is still running. |
-| `NEW_TASK` | parent → child | Task assignment. Appears in the CHILD's rollout with the child path as `recipient`. |
+Use native `agent_message.id` for delivery identity. The receiving
+`internal_chat_message_metadata_passthrough.turn_id` is neither a delivery id
+nor the originating child turn. Older records without id use a content digest;
+that fallback cannot distinguish identical deliveries within one execution.
 
-A child → parent envelope always has `recipient: "/root"` and
-`Task name: /root`, which is what keeps `NEW_TASK` out of the parent's
-completion path. Treating any delivery as terminal without reading this header
-marks a still-running child as finished.
+Encrypted deliveries have a readable header and an `encrypted_content` block.
+Show a user-style, sender-attributed placeholder in the receiving agent scope.
+Preserve readable bodies, with bounded previews and payload hydration for
+activity rows. Outbound interactions stay in the sender scope; the child's own
+final answer stays a normal assistant message. A root FINAL_ANSWER delivery
+has its own answer-received activity without governing current execution.
 
-#### ⚠ `internal_chat_message_metadata_passthrough.turn_id` is the RECEIVING PARENT turn
-
-It is **not** the child turn, and it is **not** a delivery identity. Every
-delivery drained into one parent turn carries the same value. Corpus proof: a
-parent rollout with two distinct `FINAL_ANSWER`s from one child, 3.5 minutes
-apart, both stamped `01a020d1-a06b-7b71-9791-749c71f19cd7`; and another whose
-ten `MESSAGE` deliveries from four different children all share
-`01a02202-9b32-76b3-872f-4bd409b794d3`. Keying a completion row on it collapses
-every same-turn delivery onto one row and silently loses all but the last
-(the bug fixed by `interAgentContentDeliveryID` in `subagent_notifications.go`).
-Delivery identity is content: agent path, message type, payload text, and a
-digest of the non-text content blocks.
-
-#### Encrypted envelopes carry two content blocks
-
-`send_message.message` and `followup_task.message` are encrypted tool
-parameters, so an envelope's `content` is commonly
-`[{"type": "input_text", ...}, {"type": "encrypted_content", ...}]`: the
-plaintext half is the header and stops at `"Payload:\n"`, and the body never
-leaves the ciphertext. A parser that requires exactly one text block sees none
-of these. Two `MESSAGE` deliveries from the same sender therefore have byte-
-identical plaintext, which is why the ciphertext block has to be folded into the
-delivery digest for them to stay distinct.
-
-That envelope, not child `turn/completed` and not `wait_agent` returning, is the
-MultiAgentV2 transcript-completion boundary, and only for `FINAL_ANSWER`. Agent
-Overflow emits one flat completion row per DELIVERY (a child that answers twice
-in one parent turn produces two rows); a `MESSAGE` delivery produces no
-completion row, but does produce its own chronological `send_input` progress
-row. Fresh
-sessions see the model-input projection as a raw `agent_message` response item;
-resumed sessions see the durable record above. Older rollouts that persisted the
-projected response item remain supported.
+Fresh roots and their children receive raw mailbox items. Cold resumes lack
+raw-event opt-in, so AO observes appended native records for known reusable
+children as well as the root. One child-reader worker uses file notifications
+to wake idle recipients, with bounded reads and partial-record retention.
 
 **(b) Legacy implicit via `<subagent_notification>`**: When a detached
 child finishes and the parent has NO `wait` outstanding, Codex core
@@ -1773,12 +1751,13 @@ rollout `response_item` records on resumed sessions, and the legacy
 standalone user-message carrier, then emits
 `EventSubagentNotification`. The provider also maps child
 `turn/completed` lifecycle notifications to `EventSubagentStatus`, which
-is used as live-state evidence only; it does not write parent transcript
-completion rows. The provider maps named `agent_path` values back to the
+updates a separate live projection. Native child turn completion writes a
+new completion item for that execution; it never updates the spawn event. The provider maps named `agent_path` values back to the
 parent `spawn_agent` item when it has seen the child `thread/started`;
 triage falls back to receiver-thread matching for legacy unnamed flows.
-Parent transcript completions are written from explicit `wait_agent`
-completion or `EventSubagentNotification`.
+Legacy transcript completions also use explicit `wait_agent` completion or
+terminal `EventSubagentNotification`. Modern mailbox receipts remain distinct
+from execution completion.
 
 ---
 

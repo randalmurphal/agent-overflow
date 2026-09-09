@@ -4,7 +4,7 @@
 // after every tool round of a running agent and Codex a token-usage
 // frame per child turn. The agent card reads the latest tick while the
 // agent runs (tool count, tokens, elapsed, activity line); once the
-// launch row settles, the FINAL numbers live on the row's own meta
+// execution settles, the final numbers live on its completion meta
 // (`meta.subagentProgress`, persisted by triage at the terminal) and the
 // card reads those instead — see `utils/subagentProgress.ts`.
 //
@@ -15,12 +15,37 @@
 // which is the same answer the backend gives — nothing is persisted on
 // either side until the terminal.
 
+import type { Item } from '../types/models';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import type { SubagentProgress, SubagentProgressEvent } from '../types/events';
 
 const EMPTY: SubagentProgress | undefined = undefined;
 
 const progressByKey = createKeyedSignalRegistry<SubagentProgress | undefined>(EMPTY);
+const codexAgents = createKeyedSignalRegistry<Item | undefined>(undefined);
+let codexRevision = 0;
+const codexRevisions = new Map<string, number>();
+
+export function codexAgentRevision(threadId: string): number { return codexRevisions.get(threadId) ?? 0; }
+
+export function liveCodexAgent(threadId: string, itemId: string): Item | undefined {
+  return codexAgents.get(progressKey(threadId, itemId));
+}
+
+export function hydrateCodexAgents(threadId: string, items: Item[], revision: number): void {
+  if (revision !== codexAgentRevision(threadId)) return;
+  for (const key of keysByThread.get(threadId) ?? []) codexAgents.drop(key);
+  for (const item of items) {
+    if (item.threadId !== threadId) continue;
+    const key = progressKey(threadId, item.id);
+    codexAgents.set(key, item);
+    let keys = keysByThread.get(threadId);
+    if (!keys) keysByThread.set(threadId, keys = new Set());
+    keys.add(key);
+  }
+  codexRevisions.set(threadId, ++codexRevision);
+}
+
 const keysByThread = new Map<string, Set<string>>();
 
 function progressKey(threadId: string, itemId: string): string {
@@ -41,6 +66,10 @@ export function liveSubagentProgress(
 export function applySubagentProgress(evt: SubagentProgressEvent | undefined): void {
   if (!evt || !evt.threadId || !evt.itemId || !evt.progress) return;
   const key = progressKey(evt.threadId, evt.itemId);
+  if (evt.codexAgent && evt.codexAgent.threadId === evt.threadId && evt.codexAgent.id === evt.itemId) {
+    codexAgents.set(key, evt.codexAgent);
+    codexRevisions.set(evt.threadId, ++codexRevision);
+  }
   progressByKey.set(key, { ...evt.progress, updatedAt: evt.updatedAt ?? 0 });
   let keys = keysByThread.get(evt.threadId);
   if (!keys) {
@@ -56,20 +85,24 @@ export function dropSubagentProgress(threadId: string, itemId: string): void {
   if (!threadId || !itemId) return;
   const key = progressKey(threadId, itemId);
   progressByKey.drop(key);
-  keysByThread.get(threadId)?.delete(key);
+  if (!codexAgents.get(key)) keysByThread.get(threadId)?.delete(key);
 }
 
 /** Drop a thread's ticks — session teardown, thread delete/archive. */
 export function clearSubagentProgressForThread(threadId: string): void {
   if (!threadId) return;
   const keys = keysByThread.get(threadId);
+  codexRevisions.set(threadId, ++codexRevision);
   if (!keys) return;
-  for (const key of keys) progressByKey.drop(key);
+  for (const key of keys) { progressByKey.drop(key); codexAgents.drop(key); }
   keysByThread.delete(threadId);
 }
 
 /** Test-only fixture isolation, matching the sibling stores. */
 export function resetForTest(): void {
   progressByKey.reset();
+  codexAgents.reset();
+  codexRevisions.clear();
+  codexRevision++;
   keysByThread.clear();
 }

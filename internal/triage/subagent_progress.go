@@ -42,7 +42,8 @@ const (
 
 // SubagentProgressEvent is the `provider:subagent_progress` payload.
 type SubagentProgressEvent struct {
-	ThreadID string `json:"threadId"`
+	CodexAgent *store.Item `json:"codexAgent,omitempty"`
+	ThreadID   string      `json:"threadId"`
 	// ItemID is the launch tool_use the progress belongs to.
 	ItemID string `json:"itemId"`
 	// ParentID is the launch's own parent tool_use ("" at top level), so a
@@ -189,6 +190,10 @@ func (r *Router) PeekSubagentProgress(threadID, itemID string) (provider.Subagen
 // terminal (live tick only) followed by a task_notification (authoritative
 // usage) lands the same final numbers as the reverse order.
 func (r *Router) persistSubagentFinalProgress(launch store.Item, final provider.SubagentProgressMeta) error {
+	if isCodexSpawnAgentLaunch(launch, nil) {
+		// Codex final counters belong on a new completion, never the spawn.
+		return nil
+	}
 	base := persistedSubagentProgress(launch.Meta)
 	live, _ := r.TakeSubagentProgress(launch.ThreadID, launch.ID)
 	merged := mergeSubagentProgress(mergeSubagentProgress(base, live), final)

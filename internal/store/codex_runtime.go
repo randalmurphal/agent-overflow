@@ -4,13 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-
-	"agent-overflow/internal/itemmeta"
 )
 
 // RecoverCodexBackgroundRuntime retires every Codex-owned background runtime
-// left by a prior app instance. A completed spawn card keeps its completed
-// tool status and ownership metadata, but is marked inactive. A running tool
+// left by a prior app instance. Spawn events are immutable and excluded. A running tool
 // call becomes errored/lost because its provider process no longer exists.
 func (s *Store) RecoverCodexBackgroundRuntime(summarise func(string) string, updatedAt int64) ([]Item, error) {
 	return s.retireCodexBackgroundRuntime("", summarise, updatedAt)
@@ -67,28 +64,14 @@ func (s *Store) retireCodexBackgroundRuntime(threadID string, summarise func(str
 		  WHERE threads.provider = 'codex'
 		    AND items.kind = 'tool_call'
 		    AND items.status = 'running'
+ AND items.tool_name <> 'collab_agent'
 		    AND items.is_background = 1
 		    AND COALESCE(json_extract(items.meta, '$.live_background_active'), 1) != 0`+scopeSQL,
 		args...,
 	); err != nil {
 		return nil, fmt.Errorf("store: select running Codex background runtime: %w", err)
 	}
-	if err := collect(
-		`SELECT `+itemColumnsSansPayload+`
-		   FROM items INDEXED BY idx_items_live_codex_subagent
-		   JOIN threads ON threads.id = items.thread_id
-		  WHERE threads.provider = 'codex'
-		    AND items.kind = 'tool_call'
-		    AND items.status = 'completed'
-		    AND items.tool_name = 'collab_agent'
-		    AND items.is_background = 1
-		    AND COALESCE(json_extract(items.meta, '$.live_background_active'), 1) != 0
-		    AND json_extract(items.meta, '$.input.tool') IN ('spawn_agent', 'spawnAgent')
-		    AND (`+noCompletionSiblingSQL+` OR json_extract(items.meta, '$.live_background_active') = 1)`+scopeSQL,
-		args...,
-	); err != nil {
-		return nil, fmt.Errorf("store: select live Codex subagent runtime: %w", err)
-	}
+
 	sort.Slice(retired, func(i, j int) bool {
 		if retired[i].ThreadID != retired[j].ThreadID {
 			return retired[i].ThreadID < retired[j].ThreadID
@@ -101,17 +84,9 @@ func (s *Store) retireCodexBackgroundRuntime(threadID string, summarise func(str
 
 	for i := range retired {
 		item := &retired[i]
-		if item.Status == "completed" {
-			meta, err := itemmeta.MarkCodexBackgroundRuntimeEnded(item.Meta)
-			if err != nil {
-				return nil, fmt.Errorf("store: retire Codex subagent %s: %w", item.ID, err)
-			}
-			item.Meta = meta
-		} else {
-			item.Status = "errored"
-			item.Summary = summarise(item.Summary)
-			item.Decision = "lost"
-		}
+		item.Status = "errored"
+		item.Summary = summarise(item.Summary)
+		item.Decision = "lost"
 		item.UpdatedAt = updatedAt
 		if _, err := tx.Exec(
 			`UPDATE items SET status = ?, summary = ?, decision = ?, meta = ?, updated_at = ? WHERE thread_id = ? AND id = ?`,

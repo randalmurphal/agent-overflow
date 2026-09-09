@@ -136,6 +136,7 @@ func (s *Session) readChildThreadProfileOnce(ctx context.Context, providerThread
 			ID            string `json:"id"`
 			AgentNickname string `json:"agentNickname"`
 			AgentRole     string `json:"agentRole"`
+			Path          string `json:"path"`
 		} `json:"thread"`
 		Model           string `json:"model"`
 		ReasoningEffort string `json:"reasoningEffort"`
@@ -147,6 +148,7 @@ func (s *Session) readChildThreadProfileOnce(ctx context.Context, providerThread
 	if responseThreadID != providerThreadID {
 		return collabReceiverMeta{}, fmt.Errorf("child profile thread mismatch: got %q, want %q", responseThreadID, providerThreadID)
 	}
+	s.registerChildMailboxTail(providerThreadID, decoded.Thread.Path)
 	model := strings.TrimSpace(decoded.Model)
 	if model == "" {
 		return collabReceiverMeta{}, errors.New("child thread/resume response is missing model")

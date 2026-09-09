@@ -4935,6 +4935,7 @@ export class ThreadLiveActivity {
  * that reported it and the process that received it.
  */
 export class ThreadLiveState {
+    "codexAgents": store$0.Item[];
     "threadId": string;
     "effectiveModel"?: string;
     "effectiveModelRevision"?: number;
@@ -4974,6 +4975,9 @@ export class ThreadLiveState {
 
     /** Creates a new ThreadLiveState instance. */
     constructor($$source: Partial<ThreadLiveState> = {}) {
+        if (!("codexAgents" in $$source)) {
+            this["codexAgents"] = [];
+        }
         if (!("threadId" in $$source)) {
             this["threadId"] = "";
         }
@@ -4997,34 +5001,38 @@ export class ThreadLiveState {
      * Creates a new ThreadLiveState instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadLiveState {
-        const $$createField3_0 = $$createType74;
-        const $$createField4_0 = $$createType76;
+        const $$createField0_0 = $$createType76;
+        const $$createField4_0 = $$createType74;
         const $$createField5_0 = $$createType78;
         const $$createField6_0 = $$createType80;
-        const $$createField7_0 = $$createType81;
-        const $$createField8_0 = $$createType83;
-        const $$createField9_0 = $$createType85;
+        const $$createField7_0 = $$createType76;
+        const $$createField8_0 = $$createType81;
+        const $$createField9_0 = $$createType83;
+        const $$createField10_0 = $$createType85;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("codexAgents" in $$parsedSource) {
+            $$parsedSource["codexAgents"] = $$createField0_0($$parsedSource["codexAgents"]);
+        }
         if ("activeTurn" in $$parsedSource) {
-            $$parsedSource["activeTurn"] = $$createField3_0($$parsedSource["activeTurn"]);
+            $$parsedSource["activeTurn"] = $$createField4_0($$parsedSource["activeTurn"]);
         }
         if ("queueItems" in $$parsedSource) {
-            $$parsedSource["queueItems"] = $$createField4_0($$parsedSource["queueItems"]);
+            $$parsedSource["queueItems"] = $$createField5_0($$parsedSource["queueItems"]);
         }
         if ("flushedItems" in $$parsedSource) {
-            $$parsedSource["flushedItems"] = $$createField5_0($$parsedSource["flushedItems"]);
+            $$parsedSource["flushedItems"] = $$createField6_0($$parsedSource["flushedItems"]);
         }
         if ("deferredItems" in $$parsedSource) {
-            $$parsedSource["deferredItems"] = $$createField6_0($$parsedSource["deferredItems"]);
+            $$parsedSource["deferredItems"] = $$createField7_0($$parsedSource["deferredItems"]);
         }
         if ("interactive" in $$parsedSource) {
-            $$parsedSource["interactive"] = $$createField7_0($$parsedSource["interactive"]);
+            $$parsedSource["interactive"] = $$createField8_0($$parsedSource["interactive"]);
         }
         if ("todo" in $$parsedSource) {
-            $$parsedSource["todo"] = $$createField8_0($$parsedSource["todo"]);
+            $$parsedSource["todo"] = $$createField9_0($$parsedSource["todo"]);
         }
         if ("providerAccount" in $$parsedSource) {
-            $$parsedSource["providerAccount"] = $$createField9_0($$parsedSource["providerAccount"]);
+            $$parsedSource["providerAccount"] = $$createField10_0($$parsedSource["providerAccount"]);
         }
         return new ThreadLiveState($$parsedSource as Partial<ThreadLiveState>);
     }
@@ -8692,11 +8700,11 @@ const $$createType71 = ThreadContextUsageCategory.createFrom;
 const $$createType72 = $Create.Array($$createType71);
 const $$createType73 = LiveStateActiveTurn.createFrom;
 const $$createType74 = $Create.Nullable($$createType73);
-const $$createType75 = flushqueue$0.QueuedItem.createFrom;
+const $$createType75 = store$0.Item.createFrom;
 const $$createType76 = $Create.Array($$createType75);
-const $$createType77 = QueueFlushedItem.createFrom;
+const $$createType77 = flushqueue$0.QueuedItem.createFrom;
 const $$createType78 = $Create.Array($$createType77);
-const $$createType79 = store$0.Item.createFrom;
+const $$createType79 = QueueFlushedItem.createFrom;
 const $$createType80 = $Create.Array($$createType79);
 const $$createType81 = provider$0.PendingInteractiveRequests.createFrom;
 const $$createType82 = LiveStateTodo.createFrom;

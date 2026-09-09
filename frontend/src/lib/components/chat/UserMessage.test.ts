@@ -74,6 +74,13 @@ describe('<UserMessage>', () => {
   // own `codex queue --thread ...`) keeps the user bubble — it IS user-role
   // content the model answered — but says where it came from. Attributing a
   // stranger's write to the reader is a transcript that lies about who asked.
+  it('attributes encrypted agent input without human edit controls', () => {
+    const view=render(UserMessage,{item:makeItem({kind:'user_text',role:'user',summary:'Message content is encrypted by Codex.',meta:JSON.stringify({wire_only:true,agent_message:{sender:'/root',recipient:'/root/worker',encrypted:true}})})});
+    expect(view.getByTestId('user-message-agent-origin').textContent).toContain('From main agent');
+    expect(view.getByText('Message content is encrypted by Codex.')).toBeInTheDocument();
+    expect(view.queryByRole('button',{name:/edit/i})).toBeNull();
+  });
+
   it('marks a message queued from outside, and leaves a locally typed one unmarked', () => {
     const external = render(UserMessage, {
       props: {

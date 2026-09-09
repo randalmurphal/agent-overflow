@@ -205,15 +205,15 @@ func TestCodexChildTerminalPersistsFinalProgress(t *testing.T) {
 	})
 	deliverMailbox(t, r, "t1", "spawn-1", mailboxDelivery(t, "/root/reviewer", "Done."))
 
-	progress, ok := persistedProgressFor(t, st, "t1", "spawn-1")
+	progress, ok := persistedProgressFor(t, st, "t1", completionRowsFor(t, st, "t1", "spawn-1")[0].ID)
 	if !ok {
 		t.Fatal("codex child terminal did not persist final progress")
 	}
 	if progress.TaskID != "child-1" || progress.TotalTokens != 15200 {
 		t.Fatalf("final progress = %+v", progress)
 	}
-	if _, live := r.PeekSubagentProgress("t1", "spawn-1"); live {
-		t.Fatal("the live entry must be consumed at the terminal")
+	if _, ok := persistedProgressFor(t, st, "t1", "spawn-1"); ok {
+		t.Fatal("completion progress modified spawn")
 	}
 }
 

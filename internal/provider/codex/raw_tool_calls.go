@@ -17,14 +17,16 @@ const (
 )
 
 type rawToolCall struct {
-	CallID    string
-	Name      string
-	ProcessID string
-	Command   string
-	AgentType string
-	Prompt    string
-	Target    string
-	Targets   []string
+	TypedActivity    bool
+	ProviderThreadID string
+	CallID           string
+	Name             string
+	ProcessID        string
+	Command          string
+	AgentType        string
+	Prompt           string
+	Target           string
+	Targets          []string
 }
 
 func (s *Session) observeRawResponseItem(method string, params json.RawMessage) json.RawMessage {
@@ -34,14 +36,14 @@ func (s *Session) observeRawResponseItem(method string, params json.RawMessage) 
 	item := readNestedObject(params, "item")
 	switch readRawString(item, "type") {
 	case "function_call":
-		s.rememberRawToolCall(item)
+		s.rememberRawToolCall(item, providerThreadIDFromParams(params))
 	case "function_call_output":
 		return s.enrichRawToolCallOutput(params, item)
 	}
 	return params
 }
 
-func (s *Session) rememberRawToolCall(item map[string]json.RawMessage) {
+func (s *Session) rememberRawToolCall(item map[string]json.RawMessage, providerThreads ...string) {
 	callID := strings.TrimSpace(firstNonEmptyString(readRawString(item, "call_id"), readRawString(item, "id")))
 	name := strings.TrimSpace(readRawString(item, "name"))
 	if callID == "" || name == "" {
@@ -51,6 +53,9 @@ func (s *Session) rememberRawToolCall(item map[string]json.RawMessage) {
 	call := rawToolCall{
 		CallID: callID,
 		Name:   name,
+	}
+	if len(providerThreads) > 0 {
+		call.ProviderThreadID = providerThreads[0]
 	}
 	switch name {
 	case "exec_command":
@@ -71,7 +76,7 @@ func (s *Session) rememberRawToolCall(item map[string]json.RawMessage) {
 		call.Targets = readFlexibleStringArray(args, "targets")
 	case "send_message", "followup_task":
 		call.Target = readFlexibleString(args, "target")
-	case "interrupt_agent":
+	case "list_agents", "interrupt_agent":
 		call.Target = readFlexibleString(args, "target")
 	default:
 		return
@@ -97,6 +102,7 @@ func (s *Session) enrichRawToolCallOutput(params json.RawMessage, item map[strin
 		return params
 	}
 	defer s.deleteRawToolCall(callID)
+	s.emitUnrepresentedCollabResult(call, params, item)
 	switch call.Name {
 	case "exec_command":
 		s.handleRawExecCommandOutput(call, params, item)
@@ -171,6 +177,10 @@ func (s *Session) enrichRawToolCallMetadata(evt *provider.ProviderEvent) {
 	}
 	s.mu.Lock()
 	call := s.rawCalls.byID[itemID]
+	if call.CallID != "" && evt.Kind == provider.EventToolComplete {
+		call.TypedActivity = true
+		s.rawCalls.byID[itemID] = call
+	}
 	s.mu.Unlock()
 	if call.CallID == "" {
 		return
@@ -600,4 +610,41 @@ func readFlexibleStringArray(m map[string]json.RawMessage, key string) []string 
 		}
 	}
 	return out
+}
+
+// Some collaboration operations emit no typed activity, including refusals.
+// Preserve the returned text without guessing success from model-facing prose.
+func (s *Session) emitUnrepresentedCollabResult(call rawToolCall, params json.RawMessage, item map[string]json.RawMessage) {
+	if call.TypedActivity || !s.appServerAtLeast("0.153.4") {
+		return
+	}
+	switch call.Name {
+	case "spawn_agent", "send_message", "followup_task", "interrupt_agent", "wait_agent", "list_agents":
+	default:
+		return
+	}
+	output := readRawString(item, "output")
+	if output == "" {
+		var blocks []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(item["output"], &blocks); err != nil {
+			return
+		}
+		for _, block := range blocks {
+			if block.Type == "input_text" {
+				if output != "" {
+					output += "\n"
+				}
+				output += block.Text
+			}
+		}
+	}
+	meta, err := json.Marshal(map[string]any{"toolName": "send_input", "input": map[string]any{"tool": "send_input", "activityKind": "result", "activityTool": call.Name, "target": call.Target, "outcome": "unknown"}})
+	if err != nil {
+		s.warnCollabHistory("Codex collaboration result could not be encoded", err)
+		return
+	}
+	s.emitEvent(provider.ProviderEvent{Kind: provider.EventToolComplete, ThreadID: s.threadID, TurnID: readTopLevelString(params, "turnId"), ParentToolUseID: s.parentToolUseForProviderThread(providerThreadIDFromParams(params)), ItemID: call.CallID, ItemType: "send_input", Content: output, Meta: meta, Timestamp: time.Now()})
 }

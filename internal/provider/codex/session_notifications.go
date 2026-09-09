@@ -15,18 +15,7 @@ const maxSubagentNotificationDedupEntries = 1024
 
 type subagentNotificationDedupKey struct {
 	ParentItemID string
-	// Generation is the child's own turn count at the moment the delivery was
-	// seen (childTurnGenerations, advanced by each child `turn/started`). It is
-	// the same tiebreak triage applies to the persisted row id: without it a
-	// child that legitimately answers IDENTICALLY twice — a `followup_task`
-	// wakes it and it replies "Done." again — loses the second answer HERE,
-	// before triage can separate them.
-	//
-	// Residual, deliberate: within ONE child turn, byte-identical duplicate
-	// deliveries still collapse. A child emits one FINAL_ANSWER per turn, so a
-	// second identical one inside the same generation is the retry this dedupe
-	// exists for (the live raw stream and the rollout tail both carrying the
-	// same record), not a second answer.
+	// Legacy records without native message ids use a per-child generation.
 	Generation uint64
 	MetaHash   [sha256.Size]byte
 }
@@ -68,6 +57,7 @@ func (s *Session) dispatchNotification(method string, params json.RawMessage) {
 			if method == "thread/started" {
 				s.rememberAgentMetaForProviderThread(providerThreadID, params)
 			}
+			s.scheduleChildOwnershipRecovery(providerThreadID)
 			return
 		}
 		s.warnChildRoutingOverflow(providerThreadID, method, nil)
@@ -154,6 +144,9 @@ func (s *Session) claimNotificationOwnership(
 	}
 	if method == "thread/started" {
 		s.rememberAgentMetaForProviderThread(providerThreadID, params)
+		if parentToolUseID != "" {
+			s.registerChildMailboxTail(providerThreadID, readNestedString(params, "thread", "path"))
+		}
 	}
 	return parentToolUseID, mappedChildThreadIDs, false
 }
@@ -170,6 +163,46 @@ func (s *Session) interceptChildNotification(
 ) bool {
 	if parentToolUseID == "" {
 		return false
+	}
+	if method == "thread/status/changed" {
+		var wire struct {
+			Status struct {
+				Type        string   `json:"type"`
+				ActiveFlags []string `json:"activeFlags"`
+			} `json:"status"`
+		}
+		if err := json.Unmarshal(params, &wire); err != nil {
+			s.warnCollabHistory("Codex child status could not be decoded", err)
+			return true
+		}
+		// idle precedes turn/completed in some paths. It proves inactivity but
+		// does not supply the terminal outcome of that turn.
+		status := map[string]string{"active": "running", "idle": "idle", "notLoaded": "notLoaded", "systemError": "errored"}[wire.Status.Type]
+		if status == "" {
+			s.warnCollabHistory("Codex child reported an unknown runtime status", nil)
+			return true
+		}
+		event := s.childStatusEvent(providerThreadID, parentToolUseID, status)
+		if event != nil {
+			s.mu.Lock()
+			runtime := s.collab.childRuntimeByThread[providerThreadID]
+			event.TurnID = runtime.turnID
+			if status == "running" {
+				runtime.phase = childRuntimeRunning
+			} else {
+				runtime.phase = childRuntimeStopped
+			}
+			s.collab.childRuntimeByThread[providerThreadID] = runtime
+			s.mu.Unlock()
+			meta, err := json.Marshal(map[string]any{"agent_path": providerThreadID, "status": status, "active_flags": wire.Status.ActiveFlags})
+			if err != nil {
+				s.warnCollabHistory("Codex child runtime could not be encoded", err)
+				return true
+			}
+			event.Meta = meta
+			s.observeAndEmitChildLifecycle(providerThreadID, []provider.ProviderEvent{*event})
+		}
+		return true
 	}
 	if method == "thread/tokenUsage/updated" {
 		// The child's ONLY live progress signal. Re-emitted scoped to
@@ -190,6 +223,14 @@ func (s *Session) interceptChildNotification(
 		// overwrite the parent thread's projection. See the suppression
 		// helpers in collab_agents.go for the rationale.
 		return true
+	}
+	if method == "turn/started" {
+		s.mu.Lock()
+		resumed := s.rolloutTail.path != ""
+		s.mu.Unlock()
+		if resumed {
+			s.scheduleCollabProfileRead(providerThreadID, parentToolUseID, collabLaunchMeta{})
+		}
 	}
 	if isChildTurnLifecycleNotification(method) {
 		s.emitChildLifecycleEvents(method, params, parentToolUseID)
@@ -319,28 +360,42 @@ func (s *Session) emitSubagentNotificationsFromRawMailboxCarrier(
 	if method != "rawResponseItem/completed" {
 		return false
 	}
-	if strings.TrimSpace(parentToolUseID) != "" {
-		return false
+	item := readNestedObject(params, "item")
+	if readRawString(item, "type") == "agent_message" {
+		n, ok := extractSubagentCompletionFromRawAgentMessageItem(item)
+		if !ok {
+			return false
+		}
+		// The carrier's thread, not the sender's name, owns the received row.
+		if n.Recipient == "/root" {
+			if providerThreadID != s.rootThreadID() {
+				return false
+			}
+		} else if parentToolUseID == "" || s.parentToolUseForAgentPath(n.Recipient) != parentToolUseID {
+			return false
+		}
+		return s.emitSubagentNotification(n, true)
 	}
-	rootThreadID := s.rootThreadID()
-	if rootThreadID != "" && strings.TrimSpace(providerThreadID) != rootThreadID {
+	if parentToolUseID != "" || providerThreadID != s.rootThreadID() {
 		return false
 	}
 
-	item := readNestedObject(params, "item")
 	return s.emitResolvedSubagentNotificationsFromRawMessageItem(item)
 }
 
-func (s *Session) emitResolvedSubagentNotificationsFromRawMessageItem(item map[string]json.RawMessage) bool {
+func (s *Session) emitResolvedSubagentNotificationsFromRawMessageItem(item map[string]json.RawMessage, observedAt ...time.Time) bool {
 	if item == nil {
 		return false
 	}
 	if readRawString(item, "type") == "agent_message" {
 		notification, ok := extractSubagentCompletionFromRawAgentMessageItem(item)
-		if !ok {
+		if !ok || notification.Recipient != "/root" {
 			return false
 		}
-		return s.emitResolvedSubagentNotifications([]subagentNotification{notification}, "", true)
+		if len(observedAt) > 0 {
+			notification.Timestamp = observedAt[0]
+		}
+		return s.emitSubagentNotification(notification, true)
 	}
 	if readRawString(item, "type") != "message" {
 		return false
@@ -386,19 +441,37 @@ func (s *Session) emitSubagentNotification(n subagentNotification, requireKnownP
 	if parentItemID == "" {
 		parentItemID = s.parentToolUseForProviderThread(n.AgentPath)
 	}
-	if parentItemID == "" && requireKnownParent {
+	if parentItemID == "" && requireKnownParent && !n.MailboxDelivery && n.AgentPath != "/root" {
 		return false
+	}
+	recipientItemID := ""
+	if n.Recipient != "" && n.Recipient != "/root" {
+		recipientItemID = s.parentToolUseForAgentPath(n.Recipient)
+		if recipientItemID == "" {
+			return false
+		}
 	}
 	meta := buildSubagentNotificationMeta(n)
-	if !s.claimSubagentNotification(parentItemID, s.childTurnGeneration(n.AgentPath), meta) {
+	generation := s.childTurnGeneration(n.AgentPath)
+	dedupParent := parentItemID
+	if strings.HasPrefix(n.DeliveryID, "item:") {
+		generation = 0
+		dedupParent = ""
+	}
+	if !s.claimSubagentNotification(dedupParent, generation, meta) {
 		return false
 	}
+	observedAt := n.Timestamp
+	if observedAt.IsZero() {
+		observedAt = time.Now()
+	}
 	s.emitEvent(provider.ProviderEvent{
-		Kind:      provider.EventSubagentNotification,
-		ThreadID:  s.threadID,
-		ItemID:    parentItemID,
-		Meta:      meta,
-		Timestamp: time.Now(),
+		Kind:            provider.EventSubagentNotification,
+		ThreadID:        s.threadID,
+		ItemID:          parentItemID,
+		ParentToolUseID: recipientItemID,
+		Meta:            meta,
+		Timestamp:       observedAt,
 	})
 	return true
 }
@@ -493,8 +566,14 @@ func (s *Session) updateNotificationState(evt *provider.ProviderEvent) {
 		}
 		s.mu.Lock()
 		s.turn.activeTurnID = ""
-		s.rawCalls.byID = make(map[string]rawToolCall)
-		s.rawCalls.waitReceiverIDsByCall = make(map[string][]string)
+		// Retire root calls without erasing still-running child calls.
+		for id, call := range s.rawCalls.byID {
+			if s.collab.childParentByThread[call.ProviderThreadID] == "" {
+				delete(s.rawCalls.byID, id)
+				delete(s.rawCalls.waitReceiverIDsByCall, id)
+			}
+		}
+
 		s.mu.Unlock()
 		s.clearPlanBufferForTurn(evt.TurnID)
 		s.clearTurnStart(evt.TurnID)

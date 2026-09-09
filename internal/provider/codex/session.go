@@ -257,6 +257,9 @@ type childRuntimeState struct {
 // ownership edge maps the provider thread to its spawn card. Guarded by mu;
 // Close stops the deadline timers and then zeroes the group.
 type sessionChildRoutingState struct {
+	recoveryPending         map[string]bool
+	recoveryQueue           []string
+	recoveryRunning         bool
 	deferredChildWireEvents map[string][]deferredChildWireEvent
 	deferredChildWireCount  int
 	deferredChildWireBytes  int

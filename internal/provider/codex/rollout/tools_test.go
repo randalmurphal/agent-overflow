@@ -236,8 +236,12 @@ func TestConvertParentsSubagentRecordsUnderTheSpawningCall(t *testing.T) {
 	if len(notes) != 2 {
 		t.Fatalf("want the activity row and the delivery row, got %d", len(notes))
 	}
-	for _, n := range notes {
-		if n.ParentToolUseID != "call_S" {
+	for i, n := range notes {
+		expectedParent := "call_S"
+		if i == 1 {
+			expectedParent = ""
+		}
+		if n.ParentToolUseID != expectedParent {
 			t.Fatalf("notification %q not parented under the spawn: %q", n.Content, n.ParentToolUseID)
 		}
 	}
@@ -537,5 +541,15 @@ func TestConvertKeepsADiffForAnEmptyCreatedFile(t *testing.T) {
 	}
 	if !strings.Contains(diffs[0].Content, "--- a//repo/empty.txt") {
 		t.Fatalf("empty added file lost its headers: %q", diffs[0].Content)
+	}
+}
+
+func TestNestedMailboxImportUsesRecipientUserRow(t *testing.T) {
+	header := strings.Replace(metaLine, `"cwd":"/repo"`, `"cwd":"/repo","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent","agent_path":"/root/worker"}}}`, 1)
+	message := `{"timestamp":"2026-08-07T19:07:58.000Z","type":"response_item","payload":{"id":"message-1","type":"agent_message","author":"/root/worker/helper","recipient":"/root/worker","content":[{"type":"input_text","text":"Message Type: FINAL_ANSWER\nTask name: /root/worker\nSender: /root/worker/helper\nPayload:\ncomplete answer\nsecond line"}]}}`
+	result := parseFixture(t, writeRollout(t, testSessionID, header, taskStartedLine, message, message, taskCompleteLn))
+	rows := eventsOfKind(result.Events, provider.EventUserText)
+	if len(rows) != 1 || rows[0].Content != "complete answer\nsecond line" || rows[0].ParentToolUseID != "" || !strings.Contains(string(rows[0].Meta), `"sender":"/root/worker/helper"`) {
+		t.Fatalf("received messages=%+v", rows)
 	}
 }

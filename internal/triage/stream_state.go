@@ -67,7 +67,7 @@ func (r *Router) ensureTextBlockStarted(threadID string, turnIndex int, scope, p
 		st.segmentIndexByScope = make(map[string]int)
 	}
 	st.segmentIndexByScope[counterKey] = st.segmentIndexByScope[counterKey] + 1
-	itemID := TextItemID(turnIndex, scope, st.segmentIndexByScope[counterKey])
+	itemID := scopedStreamItemID("text", turnIndex, scope, providerItemID, TextItemID(turnIndex, scope, st.segmentIndexByScope[counterKey]))
 	if st.activeTextBlocks == nil {
 		st.activeTextBlocks = make(map[string]bool)
 		st.activeTextBlockRefs = make(map[string]activeStreamBlock)
@@ -96,7 +96,7 @@ func (r *Router) ensureThinkingBlockStarted(threadID string, turnIndex int, scop
 		st.blockIndexByScope = make(map[string]int)
 	}
 	st.blockIndexByScope[counterKey] = st.blockIndexByScope[counterKey] + 1
-	itemID := ThinkingItemID(turnIndex, scope, st.blockIndexByScope[counterKey])
+	itemID := scopedStreamItemID("think", turnIndex, scope, providerItemID, ThinkingItemID(turnIndex, scope, st.blockIndexByScope[counterKey]))
 	if st.activeThinkingBlocks == nil {
 		st.activeThinkingBlocks = make(map[string]bool)
 		st.activeThinkingBlockRefs = make(map[string]activeStreamBlock)
@@ -246,7 +246,7 @@ func (r *Router) drainInterruptQueueLocked(threadID string, forceErrored bool) e
 	var firstErrr error
 	for _, queued := range queue {
 		item := queued.item
-		if forceErrored {
+		if forceErrored && !(item.ToolName == "collab_agent" && item.Kind == itemKindBackgroundDone) {
 			item.Status = statusErrored
 			item.Summary = interruptedSummary(item.Summary)
 			item.UpdatedAt = time.Now().UnixMilli()
@@ -535,7 +535,7 @@ func (r *Router) settleStreamingTextAsync(threadID string, turnIndex int, scope,
 	if !active {
 		if finalContentPresent && finalContent != "" {
 			if err := r.persistOrUpdateCompletedTextItem(threadID, turnIndex, scope, providerItemID, finalContent, blockMeta); err != nil {
-				log.Printf("triage: persist completed text %s/%s: %v", threadID, providerItemID, err)
+				r.reportCompletedHistoryConflict(threadID, scope, err)
 			}
 		}
 		return
@@ -600,6 +600,9 @@ func (r *Router) persistOrUpdateCompletedTextItem(threadID string, turnIndex int
 				// row into a wholesale jump.
 				return nil
 			}
+			if item.Status == statusCompleted {
+				return fmt.Errorf("provider attempted to replace completed text item %s", item.ID)
+			}
 			item.Summary = content
 			item.Status = statusCompleted
 			item.UpdatedAt = time.Now().UnixMilli()
@@ -614,7 +617,7 @@ func (r *Router) persistOrUpdateCompletedTextItem(threadID string, turnIndex int
 }
 
 func (r *Router) persistCompletedTextItem(threadID string, turnIndex int, scope, providerItemID, content string, blockMeta json.RawMessage) error {
-	itemID := r.nextTextItemID(threadID, turnIndex, scope)
+	itemID := scopedStreamItemID("text", turnIndex, scope, providerItemID, r.nextTextItemID(threadID, turnIndex, scope))
 	now := time.Now().UnixMilli()
 	item := store.Item{
 		ID:        itemID,
@@ -1003,7 +1006,7 @@ func (r *Router) settleStreamingThinkingAsync(threadID string, turnIndex int, sc
 	if !active {
 		if finalContentPresent && finalContent != "" {
 			if err := r.persistOrUpdateCompletedThinkingItem(threadID, turnIndex, scope, providerItemID, finalContent); err != nil {
-				log.Printf("triage: persist completed thinking %s/%s: %v", threadID, providerItemID, err)
+				r.reportCompletedHistoryConflict(threadID, scope, err)
 			}
 		}
 		return
@@ -1067,6 +1070,9 @@ func (r *Router) persistOrUpdateCompletedThinkingItem(threadID string, turnIndex
 				// the payload rewrite along with the upsert.
 				return nil
 			}
+			if item.Status == statusCompleted {
+				return fmt.Errorf("provider attempted to replace completed thinking item %s", item.ID)
+			}
 			item.Summary = ThinkingSummaryPreview(content)
 			item.Status = statusCompleted
 			item.UpdatedAt = time.Now().UnixMilli()
@@ -1082,7 +1088,7 @@ func (r *Router) persistOrUpdateCompletedThinkingItem(threadID string, turnIndex
 }
 
 func (r *Router) persistCompletedThinkingItem(threadID string, turnIndex int, scope, providerItemID, content string) error {
-	itemID := r.nextThinkingItemID(threadID, turnIndex, scope)
+	itemID := scopedStreamItemID("think", turnIndex, scope, providerItemID, r.nextThinkingItemID(threadID, turnIndex, scope))
 	payloadID := ThinkingPayloadID(itemID)
 	now := time.Now().UnixMilli()
 	item := store.Item{
@@ -1164,4 +1170,10 @@ func backgroundCompletionID(launchID, taskID string) string {
 		return ToolCompletionID(launchID)
 	}
 	return "complete:by-task:" + taskID
+}
+
+func (r *Router) reportCompletedHistoryConflict(threadID, scope string, err error) {
+	if reportErr := r.handleError(provider.ProviderEvent{ThreadID: threadID, ParentToolUseID: scope, Content: err.Error(), Timestamp: time.Now()}); reportErr != nil {
+		log.Printf("triage: report completed history conflict: %v (original: %v)", reportErr, err)
+	}
 }

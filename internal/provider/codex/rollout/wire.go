@@ -314,6 +314,7 @@ type messagePayload struct {
 // interAgentPayload is a collab message between agent threads. In 0.146 files
 // the same record also arrives as response_item/agent_message.
 type interAgentPayload struct {
+	ID          string          `json:"id"`
 	Author      string          `json:"author"`
 	Recipient   string          `json:"recipient"`
 	Content     json.RawMessage `json:"content"`

@@ -306,7 +306,7 @@ func (s *Store) decorateSubagentAnchors(q sqlQueryer, threadID string, items []I
 		return items, nil
 	}
 	// Only tool_call rows can anchor subagent transcripts (Claude
-	// Task/Agent launches, Codex collab_agent spawns). Filtering here
+	// Task/Agent launches). Codex spawn events never acquire live decoration. Filtering here
 	// keeps the IN list short on plain text-heavy windows.
 	//
 	// A Claude §E6 resume CARRIER is the exception that has to be walked
@@ -318,7 +318,7 @@ func (s *Store) decorateSubagentAnchors(q sqlQueryer, threadID string, items []I
 	seenRoot := make(map[string]struct{}, len(items))
 	var walkRootByAnchor map[string]string
 	for _, item := range items {
-		if item.Kind != "tool_call" || strings.TrimSpace(item.ID) == "" {
+		if item.Kind != "tool_call" || item.ToolName == "collab_agent" || strings.TrimSpace(item.ID) == "" {
 			continue
 		}
 		walkRoot := item.ID
@@ -692,6 +692,41 @@ func (s *Store) subagentAggregatesByRoot(q sqlQueryer, threadID string, rootIDs 
 		return nil, fmt.Errorf("store: iterate subagent aggregates for %s: %w", threadID, err)
 	}
 	return out, nil
+}
+
+// SubagentCompletedChildIndex restores the execution boundary from immutable
+// completion records after the session's live projection has been discarded.
+func (s *Store) SubagentCompletedChildIndex(threadID, launchID string) (int, error) {
+	source, args := timelineArms(threadID, timelineSelection{
+		Columns: func(string) string {
+			return "json_extract(items.meta, '$.codex_execution_child_end_index') AS child_end"
+		},
+		Where:     "items.completion_of <> '' AND items.completion_of = ?",
+		WhereArgs: []any{launchID},
+	})
+	var end int
+	if err := s.reader().QueryRow("SELECT COALESCE(MAX(child_end), 0) FROM ("+source+")", args...).Scan(&end); err != nil {
+		return 0, fmt.Errorf("store: read completed subagent boundary: %w", err)
+	}
+	return end, nil
+}
+
+// SnapshotSubagentExecutionMeta returns immutable aggregates for one completed
+// execution. The caller persists the result on its new completion item only.
+// Child coordinates belong to the original spawn's AO turn.
+func (s *Store) SnapshotSubagentExecutionMeta(threadID, launchID, itemMeta string, turnIndex, startIndex, endIndex int) (string, error) {
+	aggregates, err := s.subagentAggregatesByRound(s.reader(), threadID, []string{launchID}, []subagentRoundBounds{{
+		anchorID: launchID, rootID: launchID, loTurn: turnIndex, loItem: startIndex + 1,
+		hiTurn: turnIndex, hiItem: endIndex + 1,
+	}})
+	if err != nil {
+		return "", err
+	}
+	aggregate := aggregates[launchID]
+	return mergeReadTimeMeta(itemMeta, map[string]any{
+		metaKeySubagentDescendantCount:    aggregate.descendantCount,
+		metaKeySubagentLatestChildSummary: aggregate.latestChildSummary,
+	})
 }
 
 // subagentRankedPreviewSQL is the pick rule both aggregate queries share:

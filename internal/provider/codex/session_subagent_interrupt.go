@@ -136,10 +136,10 @@ func (s *Session) finishChildInterrupt(target childInterruptTarget) bool {
 	return true
 }
 
-func (s *Session) recordChildTurnStarted(providerThreadID, turnID string) {
+func (s *Session) recordChildTurnStarted(providerThreadID, turnID string) bool {
 	providerThreadID = strings.TrimSpace(providerThreadID)
 	if providerThreadID == "" {
-		return
+		return false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -147,25 +147,30 @@ func (s *Session) recordChildTurnStarted(providerThreadID, turnID string) {
 		s.collab.childRuntimeByThread = make(map[string]childRuntimeState)
 	}
 	runtime := s.collab.childRuntimeByThread[providerThreadID]
+	if turnID != "" && runtime.turnID == strings.TrimSpace(turnID) {
+		return false
+	}
 	runtime.phase = childRuntimeRunning
 	runtime.turnID = strings.TrimSpace(turnID)
 	runtime.generation++
 	s.collab.childRuntimeByThread[providerThreadID] = runtime
+	return true
 }
 
-func (s *Session) recordChildTurnCompleted(providerThreadID, turnID string) {
+func (s *Session) recordChildTurnCompleted(providerThreadID, turnID string) bool {
 	providerThreadID = strings.TrimSpace(providerThreadID)
 	if providerThreadID == "" {
-		return
+		return false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	runtime := s.collab.childRuntimeByThread[providerThreadID]
 	turnID = strings.TrimSpace(turnID)
 	if runtime.turnID != "" && turnID != "" && runtime.turnID != turnID {
-		return
+		return false
 	}
 	runtime.phase = childRuntimeStopped
-	runtime.turnID = ""
+	// Retain the last turn identity to reject duplicate starts and stale ends.
 	s.collab.childRuntimeByThread[providerThreadID] = runtime
+	return true
 }

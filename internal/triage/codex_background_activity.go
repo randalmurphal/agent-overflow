@@ -48,7 +48,7 @@ func codexCollabProgressText(message string) string {
 	return bounded + "\u2026"
 }
 
-// persistCodexMailboxProgress writes one child -> parent MESSAGE delivery at
+// persistCodexMailboxProgress writes one child -> parent mailbox delivery at
 // the current timeline write head. The spawn row remains only the visible
 // launch record; later communication is its own activity item.
 func (r *Router) persistCodexMailboxProgress(
@@ -56,11 +56,20 @@ func (r *Router) persistCodexMailboxProgress(
 	launch persistedCodexSpawnLaunch,
 	parsed codexSubagentSignalMeta,
 ) error {
+	identityScope := strings.TrimSpace(launch.item.ID)
+	if strings.HasPrefix(parsed.DeliveryID, "item:") {
+		identityScope = parsed.Recipient
+	}
 	digest := sha256.Sum256([]byte(
-		strings.TrimSpace(launch.item.ID) + "\x00" +
+		identityScope + "\x00" +
 			strings.TrimSpace(parsed.AgentPath) + "\x00" + strings.TrimSpace(parsed.DeliveryID),
 	))
 	itemID := fmt.Sprintf("collab-progress:%x", digest[:8])
+	if _, found, err := r.store.GetThreadItem(evt.ThreadID, itemID); err != nil {
+		return err
+	} else if found {
+		return nil
+	}
 	// The progress row is top-level (no ParentID below), so it always
 	// follows the write head.
 	turnIndex, err := r.backgroundCompletionTurnIndex(evt.ThreadID, launch.item.TurnIndex, "")
@@ -72,8 +81,19 @@ func (r *Router) persistCodexMailboxProgress(
 	if err != nil {
 		return fmt.Errorf("codex progress item meta %s: %w", itemID, err)
 	}
+	content := parsed.Message
+	if parsed.Encrypted {
+		content = "Message content is encrypted by Codex."
+	}
+	payload := completionPayload(itemID, provider.ProviderEvent{Content: content}, ToolCompleteMeta{}, now)
+	payloadID := ""
+	if payload != nil {
+		payloadID = payload.ID
+	}
 	return r.persistItem(store.Item{
 		ID:        itemID,
+		PayloadID: payloadID,
+		ParentID:  evt.ParentToolUseID,
 		ThreadID:  evt.ThreadID,
 		TurnIndex: turnIndex,
 		Kind:      itemKindToolCall,
@@ -84,7 +104,7 @@ func (r *Router) persistCodexMailboxProgress(
 		Meta:      meta,
 		CreatedAt: now,
 		UpdatedAt: now,
-	}, nil)
+	}, payload)
 }
 
 func codexMailboxProgressItemMeta(launchMeta string, parsed codexSubagentSignalMeta) (string, error) {
@@ -100,6 +120,15 @@ func codexMailboxProgressItemMeta(launchMeta string, parsed codexSubagentSignalM
 		"tool":         json.RawMessage(`"send_input"`),
 		"activityKind": json.RawMessage(`"progress"`),
 	}
+	target, err := json.Marshal(parsed.AgentPath)
+	if err != nil {
+		return "", err
+	}
+	messageType, err := json.Marshal(parsed.MessageType)
+	if err != nil {
+		return "", err
+	}
+	input["target"], input["messageType"] = target, messageType
 	for _, key := range []string{
 		"receiverThreadIds", "receiverAgents", "newAgentNickname", "newAgentRole",
 		"agentNickname", "agentRole", "agentPath", "taskName",
@@ -123,4 +152,41 @@ func codexMailboxProgressItemMeta(launchMeta string, parsed codexSubagentSignalM
 		return "", err
 	}
 	return string(encoded), nil
+}
+
+// persistCodexReceivedMessage records the observed delivery in its recipient's
+// scope. wire_only prevents edit/resend from treating it as human input.
+func (r *Router) persistCodexReceivedMessage(evt provider.ProviderEvent, parsed codexSubagentSignalMeta) error {
+	parent := strings.TrimSpace(evt.ParentToolUseID)
+	launch, found, err := r.store.GetThreadItem(evt.ThreadID, parent)
+	if err != nil {
+		return err
+	}
+	if !found || launch.ToolName != "collab_agent" {
+		return fmt.Errorf("Codex message recipient launch %q is unavailable", parent)
+	}
+	digest := sha256.Sum256([]byte(parent + "\x00" + parsed.AgentPath + "\x00" + parsed.DeliveryID))
+	id := fmt.Sprintf("agent-message:%x", digest[:16])
+	if _, found, err := r.store.GetThreadItem(evt.ThreadID, id); err != nil {
+		return err
+	} else if found {
+		return nil
+	}
+	index, err := r.turnIndexForScope(evt.ThreadID, parent)
+	if err != nil {
+		return err
+	}
+	body := parsed.Message
+	if body == "" {
+		body = "Empty message."
+	}
+	if parsed.Encrypted {
+		body = "Message content is encrypted by Codex."
+	}
+	meta, err := json.Marshal(map[string]any{"wire_only": true, "agent_message": map[string]any{"sender": parsed.AgentPath, "recipient": parsed.Recipient, "messageType": parsed.MessageType, "encrypted": parsed.Encrypted, "deliveryId": parsed.DeliveryID}})
+	if err != nil {
+		return err
+	}
+	now := eventTimestampMillis(evt)
+	return r.persistItem(store.Item{ID: id, ThreadID: evt.ThreadID, TurnIndex: index, ParentID: parent, Kind: itemKindUserText, Role: "user", Status: statusCompleted, Summary: body, Meta: string(meta), CreatedAt: now, UpdatedAt: now}, nil)
 }

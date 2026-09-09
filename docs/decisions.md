@@ -78,7 +78,7 @@ fix; `NetworkServiceInProcess2` rejected.
 ## Subagents and background work
 
 - Rulings: `docs/specs/agent-visibility.md`. In short: the launch row is
-  unchanged except the open-pane door; every detached launch gets one card
+  unchanged except the open-pane door; every detached execution gets one card
   at its completion; the card body is an allowlist; approvals show only in
   the composer, never as a card or tray pill.
 - A Codex child's answer is a normal message; never a special final-answer

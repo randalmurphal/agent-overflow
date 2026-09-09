@@ -11,30 +11,21 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-// codex_background_mailbox.go — the mailbox half of the Codex spawn
-// projection: Codex's injected `<subagent_notification>` closure signal
-// (a FINAL_ANSWER delivery, which records terminal status on the owning
-// launch and synthesizes the transcript completion row once every child in
-// that spawn is terminal), the `MESSAGE` progress beat that must never do
-// either, the row identity ONE delivery lands on
-// (`codexMailboxCompletionID`), and the launch resolution both paths share.
-//
-// The spawn/launch state machine these writers mutate lives in
-// codex_background_subagents.go. Progress deliveries are independent timeline
-// activities; they never mutate the historical spawn row.
-
-// observeCodexSubagentNotification handles the detached-child closure
-// signal: Codex core injects a <subagent_notification> tag into the
-// parent's next user message when a backgrounded child finished with no wait
-// outstanding. The projector records terminal status on the owning spawn row
-// and only synthesizes the transcript sibling once every child in that spawn is
-// terminal. When the provider resolved the path to a parent card, evt.ItemID is
-// the authoritative launch id; otherwise we fall back to receiverThreadIDs for
-// older unnamed-agent builds where agent_path was the receiver thread id.
+// observeCodexSubagentNotification separates legacy terminal notices from V2
+// message delivery. V2 receipts never govern the recipient or sender runtime.
 func (r *Router) observeCodexSubagentNotification(evt provider.ProviderEvent) error {
 	parsed := decodeCodexSubagentSignalMeta(evt.Meta)
 	if parsed.AgentPath == "" {
 		return nil
+	}
+	if parsed.MailboxDelivery && evt.ParentToolUseID != "" {
+		return r.persistCodexReceivedMessage(evt, parsed)
+	}
+	if parsed.MailboxDelivery && evt.ItemID == "" {
+		return r.persistCodexMailboxProgress(evt, persistedCodexSpawnLaunch{}, parsed)
+	}
+	if parsed.MailboxDelivery && parsed.Recipient != "" {
+		return r.recordCodexMailboxProgress(evt, parsed)
 	}
 	threadID := evt.ThreadID
 	if parsed.isCodexMailboxProgressDelivery() {
@@ -56,18 +47,33 @@ func (r *Router) observeCodexSubagentNotification(evt provider.ProviderEvent) er
 
 	var firstErr error
 	for _, launch := range launches {
+		launch.item = r.codexAgentRuntimeOrLaunch(launch.item)
+		launch.meta = decodeCodexItemMeta(json.RawMessage(launch.item.Meta))
 		childID, ok := codexNotificationChildID(launch.meta, parsed.AgentPath)
 		if !ok {
 			continue
 		}
-		// Read before the terminal merge: the delivery belongs to the child
-		// turn that is settling now, which is the generation the card already
-		// carries. reactivateCodexSpawnChild is what advances it.
+		// Legacy records without a native id use the observed execution generation.
 		resumeGeneration := decodeCodexChildResumeGenerations(json.RawMessage(launch.item.Meta))[childID]
 		if parsed.MailboxDelivery {
 			if recorded := strings.TrimSpace(decodeCodexChildTerminalStatuses(json.RawMessage(launch.item.Meta))[childID]); recorded != "" {
 				status = recorded
 			}
+		}
+		// A delivered answer may belong to an earlier turn. Only execution
+		// observations may change the current runtime of a reusable child.
+		if parsed.MailboxDelivery && (parsed.Recipient != "" || (launch.meta.Runtime != nil && launch.meta.Runtime.TurnID != "")) {
+			delivery := evt
+			delivery.ItemID = launch.item.ID
+			delivery.Content = parsed.Message
+			delivery.Meta = subagentStatusToItemStatusMeta("completed")
+			if parsed.Recipient == "" {
+				delivery.Meta = subagentStatusToItemStatusMeta(status)
+			}
+			if err := r.synthesizeCodexBackgroundCompletion(delivery, launch.item.ID, codexBackgroundCompletionOptions{completionID: codexMailboxCompletionID(launch.item.ID, resumeGeneration, parsed)}); err != nil && firstErr == nil {
+				firstErr = err
+			}
+			continue
 		}
 		allTerminal, aggregateStatus, err := r.markCodexSpawnChildTerminal(launch.item, launch.meta, childID, status)
 		if err != nil {
@@ -103,34 +109,14 @@ func (r *Router) observeCodexSubagentNotification(evt provider.ProviderEvent) er
 	return firstErr
 }
 
-// codexMailboxCompletionID is the stable row id for ONE child -> parent mailbox
-// delivery on a spawn launch.
-//
-// It is keyed on the delivery's own CONTENT, never on the provider-supplied
-// `delivery_id` alone. A parent turn drains as many deliveries as the child
-// sent, and older Codex builds label all of them with the receiving parent
-// turn id (corpus: rollout-2026-08-20T16-16-28-01a020d1-* records 686 and 763,
-// two distinct FINAL_ANSWERs sharing turn_id 01a020d1-a06b-...): keying on that
-// made a child's second answer overwrite its first. Hashing the content keeps
-// distinct deliveries distinct AND keeps a genuine retry — the same record seen
-// by both the live raw stream and the rollout tail — on one row, without any
-// in-memory counter that a restart could reset into a duplicate.
-//
-// `status` is deliberately not part of the key: the caller may substitute a
-// previously recorded terminal status before synthesizing, and the id must not
-// move when it does.
-//
-// resumeGeneration is the one non-content dimension, and it is what keeps a
-// child that legitimately answers IDENTICALLY twice on two rows: a
-// `followup_task` wakes it for a second turn and it replies "Done." again, byte
-// for byte. Pure content hashing collapsed that onto the first row. The
-// generation is durable thread state on the launch (`codex_child_resume_
-// generations`, advanced by reactivateCodexSpawnChild), never an in-memory
-// counter, so both carriers of ONE delivery — the live raw stream and the
-// rollout tail — still read the same value and still land on one row.
+// Native delivery ids do not depend on the sender's execution at receipt time.
+// Older records keep their content/generation fallback.
 func codexMailboxCompletionID(launchID string, resumeGeneration int, delivery codexSubagentSignalMeta) string {
 	if !delivery.MailboxDelivery {
 		return ToolCompletionID(launchID)
+	}
+	if strings.HasPrefix(delivery.DeliveryID, "item:") {
+		resumeGeneration = 0
 	}
 	digest := sha256.Sum256(fmt.Appendf(nil, "%s\x00%s\x00%s\x00%s\x00%d",
 		strings.TrimSpace(delivery.AgentPath),
@@ -181,7 +167,7 @@ func (r *Router) persistedSubagentNotificationLaunches(
 
 // recordCodexMailboxProgress lands a child -> parent `MESSAGE` delivery as an
 // independent timeline activity: no terminal status and no completion row.
-// Plaintext keeps one bounded line; encrypted delivery still records the beat.
+// Metadata keeps a bounded preview; the payload retains the full readable body.
 func (r *Router) recordCodexMailboxProgress(evt provider.ProviderEvent, parsed codexSubagentSignalMeta) error {
 	launches, err := r.codexSubagentNotificationLaunches(evt, parsed)
 	if err != nil || len(launches) == 0 {

@@ -153,11 +153,9 @@ func (a *App) ListThreadProposedPlans(threadID string) ([]store.Item, error) {
 // leg lists by BACKGROUNDED ANCESTRY, not top-level-ness (invariant 24):
 // nested background launches and the agent launches between them and a
 // background root are included, so the tray can indent by walking
-// parentId within the result. SQLite
-// rows cover persisted Claude launches and Codex subagent launches; the
-// latter are projected as running tray rows while the chat-history spawn
-// card remains completed. The triage router appends transient Codex
-// unified-exec tasks that intentionally do not exist in chat history.
+// parentId within the result. SQLite rows cover persisted Claude launches.
+// The triage router supplies current Codex agent executions and unified-exec
+// tasks independently of immutable chat history.
 // Pending Codex unifiedExec launches surface here before they are known
 // to be backgrounded.
 //
@@ -169,16 +167,14 @@ func (a *App) ListLiveBackgroundTasks(threadID string) ([]store.Item, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list live background tasks: %w", err)
 	}
-	codexSubagents, err := a.store.ListLiveCodexSubagentLaunchesForTray(threadID)
-	if err != nil {
-		return nil, fmt.Errorf("list live Codex subagent launches: %w", err)
-	}
-	for _, item := range codexSubagents {
-		item.Status = "running"
-		items = append(items, item)
-	}
+
 	if a.triage != nil {
 		items = append(items, a.triage.ListLiveCodexBackgroundTasks(threadID, now, cutoff)...)
+		agents, err := a.store.DecorateCodexAgentTasksForTray(threadID, a.triage.ListLiveCodexAgentTasks(threadID))
+		if err != nil {
+			return nil, fmt.Errorf("decorate Codex background agents: %w", err)
+		}
+		items = append(items, agents...)
 	}
 	remoteItems, err := a.remoteTrayItems(threadID, cutoff)
 	if err != nil {

@@ -1304,7 +1304,13 @@ func (r *Router) persistItemWithEmit(item store.Item, payload *store.Payload, in
 		}
 	}
 
-	persisted, err := r.store.UpsertItemWithInputPayload(item, payload, inputPayload)
+	// Codex spawn events and completed executions cannot acquire later data,
+	// including when duplicate completions arrive through the deferred queue.
+	write := r.store.UpsertItemWithInputPayload
+	if item.ToolName == "collab_agent" && (item.Kind == itemKindToolCall || item.Kind == itemKindBackgroundDone) {
+		write = r.store.UpsertUnsettledItem
+	}
+	persisted, err := write(item, payload, inputPayload)
 	if err != nil {
 		return store.Item{}, err
 	}

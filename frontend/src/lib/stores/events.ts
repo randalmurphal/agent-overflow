@@ -144,7 +144,7 @@ import {
   applyCompactingState,
   type CompactingStatePayload,
 } from './compactingState.svelte';
-import { applySubagentProgress } from './subagentProgress.svelte';
+import { applySubagentProgress, clearSubagentProgressForThread } from './subagentProgress.svelte';
 import type { SubagentProgressEvent } from '../types/events';
 import {
   applyProviderCommands,
@@ -457,6 +457,10 @@ export function setupEventListeners(): () => void {
   // subagent (tool count, tokens, elapsed, activity line). Triage merges
   // each tick over the previous one, so the newest frame is the whole
   // answer; the final numbers persist on the launch row at its terminal.
+  const cancelCodexAgentsReset = wailsEventOn<{threadId: string; resetCodexAgents?: boolean}>(
+    'provider:background_tasks_changed',
+    (evt) => { if (evt?.resetCodexAgents) clearSubagentProgressForThread(evt.threadId); },
+  );
   const cancelSubagentProgress = wailsEventOn<SubagentProgressEvent>(
     'provider:subagent_progress',
     applySubagentProgress,
@@ -724,6 +728,7 @@ export function setupEventListeners(): () => void {
     cancelFastModeState();
     cancelCompactingState();
     cancelSubagentProgress();
+    cancelCodexAgentsReset();
     cancelProviderCommands();
     cancelUserMessageReverted();
     cancelThreadUpdated();

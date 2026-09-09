@@ -29,6 +29,7 @@ type SessionMeta struct {
 	Originator     string
 	CLIVersion     string
 	SubagentKind   string
+	AgentPath      string
 	ModelProvider  string
 	GitBranch      string
 	GitCommit      string
@@ -221,6 +222,20 @@ func decodeSessionMeta(env envelope, sessionID string) (SessionMeta, bool) {
 	}
 	if json.Unmarshal(payload.Source, &source) == nil {
 		meta.SubagentKind = strings.TrimSpace(source.Subagent)
+	}
+	var spawnSource struct {
+		Subagent struct {
+			ThreadSpawn struct {
+				AgentPath string `json:"agent_path"`
+				ParentID  string `json:"parent_thread_id"`
+			} `json:"thread_spawn"`
+		} `json:"subagent"`
+	}
+	if json.Unmarshal(payload.Source, &spawnSource) == nil {
+		meta.AgentPath = strings.TrimSpace(spawnSource.Subagent.ThreadSpawn.AgentPath)
+		if meta.ParentThreadID == "" {
+			meta.ParentThreadID = spawnSource.Subagent.ThreadSpawn.ParentID
+		}
 	}
 	if payload.HistoryBase != nil {
 		meta.HistoryBase = &HistoryBase{

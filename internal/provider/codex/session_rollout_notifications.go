@@ -27,25 +27,10 @@ const (
 	rolloutSubagentNotificationPartialKeepBytes = 64 * 1024
 )
 
-// sessionRolloutTailState is the arming state of the rollout tail — the narrow
-// reader that recovers detached-child mailbox deliveries a RESUMED session
-// cannot see any other way.
-//
-// It exists because the opt-in that exposes those deliveries live
-// (`experimentalRawEvents`) is a `thread/start` field held in the app-server's
-// in-memory ThreadState: `thread/resume` has no such field, so a resumed thread
-// never gets `rawResponseItem/completed` and the mailbox record that closes a
-// spawn card is invisible. Tailing the rollout file is how AO gets it back.
-//
-// The tail is therefore NOT started for every resume: a thread that never
-// spawned an agent cannot hit that gap, and polling its rollout file every
-// 150ms for the life of the session buys nothing. Two things arm it, both
-// evidence that this session CAN hit the gap — the app layer reporting
-// unresolved spawn children on the thread at resume time
-// (Config.ResumeHasUnresolvedSubagents), and a live spawn observed on the wire
-// afterwards (registerChildOwnership). Once armed it runs until session end.
-//
-// Guarded by mu; zeroed by Close with the other session-scoped groups.
+// sessionRolloutTailState observes native mailbox records when thread/resume
+// cannot enable raw events. Reusable or newly spawned children arm the root
+// tail; child files share one watcher/reader worker. Guarded by mu and cleared
+// only after Close joins the session's observers.
 type sessionRolloutTailState struct {
 	// path is the rollout file `thread/resume` named for this thread, recorded
 	// unarmed. Empty on a fresh `thread/start` session — which keeps its raw
@@ -54,7 +39,12 @@ type sessionRolloutTailState struct {
 	// started is the one-shot latch. The observer goroutine runs at most once
 	// per session; a failed preparation latches too, because a rollout path
 	// this reader refuses is not going to become acceptable on the next spawn.
-	started bool
+	started             bool
+	children            map[string]*childMailboxTail
+	activeChildren      map[string]*childMailboxTail
+	childWake           chan struct{}
+	childRegistrations  []string
+	childWatcherStarted bool
 }
 
 // prepareRolloutSubagentNotificationTail records the rollout file a resumed
@@ -94,7 +84,7 @@ func (s *Session) armRolloutSubagentNotificationTail(reason string) {
 
 	resolved, offset, err := prepareRolloutSubagentNotificationObserver(path, s.rootThreadID())
 	if err != nil {
-		log.Printf("codex: rollout notification observer disabled: %v", err)
+		s.warnCollabHistory("Codex mailbox observation could not start", err)
 		return
 	}
 	s.rolloutObserverWG.Add(1)
@@ -121,7 +111,7 @@ func (s *Session) watchRolloutSubagentNotifications(ctx context.Context, path st
 
 		chunk, nextOffset, err := readRolloutAppend(path, offset)
 		if err != nil {
-			log.Printf("codex: read rollout notifications %s: %v", path, err)
+			s.warnCollabHistory("Codex mailbox observation stopped", err)
 			return
 		}
 		offset = nextOffset
@@ -283,8 +273,9 @@ func (s *Session) emitSubagentNotificationsFromRolloutLine(line []byte) bool {
 	}
 
 	var record struct {
-		Type    string                     `json:"type"`
-		Payload map[string]json.RawMessage `json:"payload"`
+		Timestamp time.Time                  `json:"timestamp"`
+		Type      string                     `json:"type"`
+		Payload   map[string]json.RawMessage `json:"payload"`
 	}
 	if err := json.Unmarshal(line, &record); err != nil {
 		return false
@@ -294,12 +285,13 @@ func (s *Session) emitSubagentNotificationsFromRolloutLine(line []byte) bool {
 	}
 	switch record.Type {
 	case "response_item":
-		return s.emitResolvedSubagentNotificationsFromRawMessageItem(record.Payload)
+		return s.emitResolvedSubagentNotificationsFromRawMessageItem(record.Payload, record.Timestamp)
 	case "inter_agent_communication":
 		notification, ok := extractSubagentCompletionFromInterAgentCommunication(record.Payload)
 		if !ok {
 			return false
 		}
+		notification.Timestamp = record.Timestamp
 		return s.emitResolvedSubagentNotifications([]subagentNotification{notification}, "", true)
 	default:
 		return false

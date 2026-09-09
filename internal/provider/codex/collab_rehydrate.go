@@ -193,12 +193,14 @@ type collabThreadSnapshot struct {
 	ThreadID         string
 	Status           string
 	LatestTurnStatus string
+	LatestTurnID     string
+	StartedAt        int64
+	ActiveFlags      []string
 }
 
 // reconcileCollabHistoryTerminal repairs a persisted spawn that missed its
 // child-scoped turn/completed notification while AO was disconnected. Active
-// children are deliberately excluded: their latest stored turn may be an older
-// completed turn while a newer turn is still running.
+// children retain active state even when their latest stored turn is older.
 func (s *Session) reconcileCollabHistoryTerminal(job collabHistoryJob, snapshot collabThreadSnapshot, expectedLifecycleRevision uint64) (string, error) {
 	providerThreadID := strings.TrimSpace(job.Ownership.ChildThreadID)
 	parentToolUseID := strings.TrimSpace(job.Ownership.ParentItemID)
@@ -212,7 +214,7 @@ func (s *Session) reconcileCollabHistoryTerminal(job collabHistoryJob, snapshot 
 	var status string
 	switch snapshot.Status {
 	case "active":
-		return snapshot.Status, nil
+		status = "running"
 	case "systemError":
 		status = "errored"
 	case "idle", "notLoaded":
@@ -231,6 +233,19 @@ func (s *Session) reconcileCollabHistoryTerminal(job collabHistoryJob, snapshot 
 		return "", errors.New("could not construct recovered child terminal status")
 	}
 
+	event.TurnID = snapshot.LatestTurnID
+	startedAt := snapshot.StartedAt
+	if snapshot.Status == "active" && snapshot.LatestTurnStatus != "inProgress" {
+		startedAt = 0
+	}
+	meta, err := json.Marshal(map[string]any{"agent_path": providerThreadID, "status": status, "active_flags": snapshot.ActiveFlags, "started_at": startedAt * 1000, "recovered": true})
+	if err != nil {
+		return "", err
+	}
+	event.Meta = meta
+	if snapshot.Status == "active" && snapshot.LatestTurnStatus != "inProgress" {
+		event.TurnID = ""
+	}
 	s.emitRecoveredChildStatus(providerThreadID, expectedLifecycleRevision, *event)
 	return snapshot.Status, nil
 }
@@ -263,8 +278,10 @@ func (s *Session) readCollabThreadSnapshot(ctx context.Context, providerThreadID
 	var read struct {
 		Thread struct {
 			ID     string `json:"id"`
+			Path   string `json:"path"`
 			Status struct {
-				Type string `json:"type"`
+				Type        string   `json:"type"`
+				ActiveFlags []string `json:"activeFlags"`
 			} `json:"status"`
 		} `json:"thread"`
 	}
@@ -272,13 +289,20 @@ func (s *Session) readCollabThreadSnapshot(ctx context.Context, providerThreadID
 		return collabThreadSnapshot{}, fmt.Errorf("decode child thread metadata: %w", err)
 	}
 	snapshot := collabThreadSnapshot{
-		ThreadID: strings.TrimSpace(read.Thread.ID),
-		Status:   strings.TrimSpace(read.Thread.Status.Type),
+		ThreadID:    strings.TrimSpace(read.Thread.ID),
+		Status:      strings.TrimSpace(read.Thread.Status.Type),
+		ActiveFlags: read.Thread.Status.ActiveFlags,
 	}
 	if snapshot.ThreadID == "" || snapshot.Status == "" {
 		return collabThreadSnapshot{}, errors.New("child thread metadata is missing id or status")
 	}
-	if snapshot.Status != "idle" && snapshot.Status != "notLoaded" {
+	if snapshot.ThreadID != providerThreadID {
+		return collabThreadSnapshot{}, errors.New("child thread metadata has a mismatched id")
+	}
+	// Establish the cursor for idle children before a later follow-up can
+	// drain their mailbox. Waiting for turn/started can miss that delivery.
+	s.registerChildMailboxTail(providerThreadID, read.Thread.Path)
+	if snapshot.Status != "idle" && snapshot.Status != "notLoaded" && snapshot.Status != "active" {
 		return snapshot, nil
 	}
 
@@ -293,7 +317,9 @@ func (s *Session) readCollabThreadSnapshot(ctx context.Context, providerThreadID
 	}
 	var turns struct {
 		Data []struct {
-			Status string `json:"status"`
+			ID        string `json:"id"`
+			StartedAt int64  `json:"startedAt"`
+			Status    string `json:"status"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(turnsResp, &turns); err != nil {
@@ -301,6 +327,8 @@ func (s *Session) readCollabThreadSnapshot(ctx context.Context, providerThreadID
 	}
 	if len(turns.Data) > 0 {
 		snapshot.LatestTurnStatus = strings.TrimSpace(turns.Data[0].Status)
+		snapshot.LatestTurnID = strings.TrimSpace(turns.Data[0].ID)
+		snapshot.StartedAt = turns.Data[0].StartedAt
 	}
 	return snapshot, nil
 }

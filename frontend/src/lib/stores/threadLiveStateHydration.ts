@@ -1,3 +1,4 @@
+import { codexAgentRevision, hydrateCodexAgents } from './subagentProgress.svelte';
 import { threadHasScope } from '../transport/entityScopes';
 import type { Item, Thread } from '../types/models';
 import type {
@@ -168,6 +169,7 @@ export function createThreadLiveStateHydration(
     activityRequestAtStart: number,
   ): void {
     if (snapshot.threadId !== threadID) return;
+    hydrateCodexAgents(threadID, (snapshot.codexAgents ?? []) as Item[], guard.codexAgentRevisionAtRequest);
     if (activityRequestAtStart === activityRequest) {
       applyActiveTurnSnapshot(snapshot, threadID, guard.activeTurnAtRequest);
     }
@@ -232,6 +234,7 @@ export function createThreadLiveStateHydration(
     // single-phase form: apply-time comparisons against these detect
     // registries that moved while the snapshot was in flight.
     const guard: LiveStateHydrationGuard = {
+      codexAgentRevisionAtRequest: codexAgentRevision(threadID),
       activeTurnAtRequest: getActiveTurn(threadID),
       queueRevisionAtRequest: getQueueRevisionForThread(threadID),
       liveTodoRevisionAtRequest: options.liveTodoState.revision,

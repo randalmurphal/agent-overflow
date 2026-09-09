@@ -489,9 +489,9 @@ func TestSubagentTranscriptBackfillAddsThePromptAnAsyncAgentNeverEchoed(t *testi
 	children := childrenOfLaunch(t, st, "t1", "agent-async", 0)
 	got := childIDs(children)
 	want := []string{
-		TextItemID(0, "agent-async", 1),
+		"text:0:agent-async:provider:msg_open#0",
 		"toolu_sub_read",
-		TextItemID(0, "agent-async", 2),
+		"text:0:agent-async:provider:msg_close#0",
 		provider.SubagentOpeningPromptItemID("agent-async"),
 	}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
@@ -548,9 +548,9 @@ func TestSubagentTranscriptBackfillReplaysOnlyTheRowsAfterTheCut(t *testing.T) {
 	got := childIDs(children)
 	want := []string{
 		"user:wire:s1",
-		TextItemID(0, "agent-cut", 1),
+		"text:0:agent-cut:provider:msg_open#0",
 		"toolu_sub_read",
-		TextItemID(0, "agent-cut", 2),
+		"text:0:agent-cut:provider:msg_close#0",
 	}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("backfilled children = %v, want %v", got, want)
@@ -609,9 +609,9 @@ func TestSubagentTranscriptBackfillRunsForANestedLaunch(t *testing.T) {
 	got := childIDs(childrenOfLaunch(t, st, "t1", "agent-inner", 0))
 	want := []string{
 		provider.SubagentOpeningPromptItemID("agent-inner"),
-		TextItemID(0, "agent-inner", 1),
+		"text:0:agent-inner:provider:msg_open#0",
 		"toolu_sub_read",
-		TextItemID(0, "agent-inner", 2),
+		"text:0:agent-inner:provider:msg_close#0",
 	}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("nested backfill children = %v, want %v", got, want)

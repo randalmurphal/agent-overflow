@@ -110,7 +110,10 @@
     return codexSubagentLaunchInfo(launch);
   });
   function receiverLabel(id: string): string {
-    return labelByReceiver.get(id) ?? codexSubagentReceiverLabels.get(id) ?? 'Agent';
+    return labelByReceiver.get(id) ?? codexSubagentReceiverLabels.get(id)
+      ?? (receivers.length === 1
+        ? agentPathLabel(stringValue(input, 'target') || stringValue(input, 'agentPath')) || 'Agent'
+        : 'Agent');
   }
 
   let receiverDisplayLabels = $derived.by(() => receivers.map((id) => receiverLabel(id)));
@@ -144,8 +147,11 @@
       return completionLaunchInfo?.agentLabel || item.summary || 'Completed agent';
     }
     if (spawnInfo) return spawnInfo.title;
-    if (activityKind === 'progress') return `Progress from ${agentLabel || 'agent'}`;
+    if (activityKind === 'result') return `${activityTool || 'Agent operation'} returned`;
+    if (activityKind === 'interrupted') return `Interrupted ${agentLabel || 'agent'}`;
+    if (activityKind === 'progress') return `${stringValue(input, 'messageType') === 'FINAL_ANSWER' ? 'Answer' : stringValue(input, 'messageType') === 'MESSAGE' ? 'Message' : 'Progress'} from ${agentLabel || 'agent'}`;
     if (tool === 'send_input') {
+      if (!activityTool && activityKind) return `Interaction with ${agentLabel || 'agent'}`;
       return activityTool === 'followup_task'
         ? `Sent follow-up to ${agentLabel || 'agent'}`
         : `Sent message to ${agentLabel || 'agent'}`;
@@ -172,6 +178,7 @@
   });
 
   let badgeStatus = $derived.by<'success' | 'failure' | null>(() => {
+    if (stringValue(input, 'outcome') === 'unknown') return null;
     if (tool === 'wait_agent' && item.kind === 'tool_call') return null;
     return deriveCompletionStatus(effectiveStatusItem, { meta: statusPayloadMeta });
   });
@@ -313,6 +320,6 @@
     {tool}
     {receiverDisplayLabels}
     expansion={hasExpandableOutput ? expansion : null}
-    emptyMessage={importUnavailableLabel(item) ?? 'No stored output for this agent.'}
+    emptyMessage={importUnavailableLabel(item) ?? (activityKind === 'interacted' ? 'Message content is encrypted by Codex or unavailable in this session.' : 'No stored output for this agent.')}
   />
 </div>

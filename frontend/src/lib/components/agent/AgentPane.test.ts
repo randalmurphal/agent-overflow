@@ -1,3 +1,4 @@
+import { applySubagentProgress } from '../../stores/subagentProgress.svelte';
 // The agent companion pane (docs/specs/agent-visibility.md Q4/Q5): the
 // REAL MessageTimeline over the scoped facade (agentScopeView.svelte.ts).
 // These tests drive it with a real ThreadPane so the scoped projection,
@@ -511,6 +512,23 @@ describe('<AgentPane>', () => {
   // message}` with the message encrypted and NO nickname anywhere. The
   // crumb already carries the model-chosen task name, so the header must
   // not append it a second time as a description.
+  it('runs and stops a Codex follow-up independently of an older answer', async () => {
+    const stop=vi.fn(async()=>{});
+    setBindingMock('StopCodexSubagent',stop);
+    const {ctx}=await setup([
+      launchItem({toolName:'collab_agent',status:'completed',meta:JSON.stringify({input:{tool:'spawn_agent',receiverThreadIds:['child'],agentPath:'/root/worker'},live_background_active:true,codex_runtime:{turnId:'B',status:'running',startedAt:1000,updatedAt:2000,activeFlags:['waitingOnApproval']}}),payloadMeta:undefined}),
+      makeItem({id:'old-answer',threadId:THREAD_ID,kind:'tool_completion',status:'completed',toolName:'collab_agent',completionOf:'launch-1'}),
+    ]);
+    const current = ctx.getItemById('launch-1')!;
+    applySubagentProgress({threadId:THREAD_ID,itemId:'launch-1',progress:{},updatedAt:2000,codexAgent:current});
+    openAgentCompanion('main',THREAD_ID,'launch-1','worker');
+    const view=render(AgentPane,{props:{ctx}});
+    expect(view.getByText('Waiting for approval')).toBeTruthy();
+    expect(view.getByTestId('agent-pane-model').textContent).toContain('Model unavailable');
+    await fireEvent.click(view.getByRole('button',{name:'Stop agent'}));
+    await waitFor(()=>expect(stop).toHaveBeenCalledWith(THREAD_ID,'launch-1'));
+  });
+
   it('says a V2 Codex task name once, in the crumb, not twice', async () => {
     const { ctx } = await setup([
       launchItem({

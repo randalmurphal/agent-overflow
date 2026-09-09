@@ -1072,13 +1072,7 @@ describe('<ActivityRun>', () => {
       expect(clips[1].dataset.scrollOwner).toBe('controller');
     });
   });
-  // A run's rows are a keyed `{#each}`, and svelte THROWS on a duplicate key
-  // (`each_key_duplicate`) — a throw inside an update batch aborts the batch,
-  // so the pane stops rendering and reads as frozen. Codex's background
-  // mailbox delivers a durable `tool_completion` per content + resume
-  // generation, so one detached spawn routinely lands several; while each of
-  // them became a card, all three keyed on the launch id (production
-  // 2026-08-29).
+  // Each execution completion needs its own rendering and expansion identity.
   describe('repeated completion deliveries for one launch', () => {
     function spawn(id: string, index: number): Item {
       return makeItem({
@@ -1106,7 +1100,7 @@ describe('<ActivityRun>', () => {
       });
     }
 
-    it('renders three deliveries in one run as one card plus two leaves', async () => {
+    it('renders three execution completions as independent cards', async () => {
       await updateSetting('activityRunWindowRows', 20);
       const { container, getAllByTestId } = await renderRun([
         spawn('spawn-1', 0),
@@ -1118,7 +1112,7 @@ describe('<ActivityRun>', () => {
       // Reaching this line at all is most of the claim: the render would
       // throw on a duplicate key before any assertion ran.
       expect(container.querySelectorAll('[data-run-child]')).toHaveLength(4);
-      expect(getAllByTestId('subagent-group')).toHaveLength(1);
+      expect(getAllByTestId('subagent-group')).toHaveLength(3);
       const keys = [...container.querySelectorAll('[data-run-child]')]
         .map((el) => el.getAttribute('data-run-child'));
       expect(new Set(keys).size).toBe(keys.length);

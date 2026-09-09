@@ -90,7 +90,7 @@ func TestAllEventKindsListIsComplete(t *testing.T) {
 		provider.EventSessionWakeup:              true, // Claude ScheduleWakeup ack; records pending in-process wakeup for reaper protection
 		provider.EventCompactionStatus:           true, // live compacting window open/close; drives provider:compacting, never persisted
 		provider.EventSubagentNotification:       true, // reserved for Codex subagent UI
-		provider.EventSubagentStatus:             true, // Codex child lifecycle marker; updates live state only
+		provider.EventSubagentStatus:             true, // Codex execution state and terminal completion
 		provider.EventCodexExecResult:            true, // Codex raw exec_command result; live-state enrichment only
 		provider.EventSubagentProgress:           true, // live per-subagent counters; in-memory + provider:subagent_progress, final numbers persisted at terminal
 		provider.EventSubagentBackgrounded:       true, // Claude task_updated is_backgrounded patch; stamps the launch row's streaming cut

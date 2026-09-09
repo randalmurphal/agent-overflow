@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { parseJsonObject } from '../../utils/parseJsonObject';
   import File from '@lucide/svelte/icons/file';
   import Pencil from '@lucide/svelte/icons/pencil';
   import GitFork from '@lucide/svelte/icons/git-fork';
@@ -59,6 +60,11 @@
   // row.
   const messageOrigin = $derived(userMessageOrigin(userMeta));
   const originBadge = $derived.by<{ testid: string; label: string } | null>(() => {
+    const delivery = parseJsonObject(item.meta)?.agent_message as Record<string, unknown> | undefined;
+    if (typeof delivery?.sender === 'string') return {
+      testid: 'user-message-agent-origin',
+      label: `From ${delivery.sender === '/root' ? 'main agent' : delivery.sender}`,
+    };
     switch (messageOrigin) {
       case 'external-queue':
         return {

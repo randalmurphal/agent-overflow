@@ -661,24 +661,6 @@ const threadBusyPredicateSQL = `(
                AND completion.completion_of <> ''
           )
      )
-     OR EXISTS(
-       SELECT 1
-         FROM items subagent INDEXED BY idx_items_live_codex_subagent
-        WHERE subagent.thread_id = t.id
-          AND t.provider = 'codex'
-          AND subagent.kind = 'tool_call'
-          AND subagent.status = 'completed'
-          AND subagent.tool_name = 'collab_agent'
-          AND subagent.is_background = 1
-          AND COALESCE(json_extract(subagent.meta, '$.live_background_active'), 1) != 0
-          AND json_extract(subagent.meta, '$.input.tool') IN ('spawn_agent', 'spawnAgent')
-          AND NOT EXISTS(
-            SELECT 1 FROM items completion INDEXED BY idx_items_completion_of
-             WHERE completion.thread_id = subagent.thread_id
-               AND completion.completion_of = subagent.id
-               AND completion.completion_of <> ''
-          )
-     )
    )`
 
 const blockedThreadWorkspaceRefsSQL = `SELECT t.id, t.workspace_path, COALESCE(t.worktree_path, '')

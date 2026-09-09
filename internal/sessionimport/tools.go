@@ -35,6 +35,9 @@ func (b *builder) toolStart(evt importir.Event) error {
 	b.closeStreams(turnIndex, scope)
 
 	if existing, found := b.byID[itemID]; found {
+		if b.isCodexSpawnLaunch(existing) && existing.item.Status != statusRunning {
+			return nil
+		}
 		if existing.item.Kind != kindToolCall {
 			b.warn("import.tool-id-collision", fmt.Sprintf(
 				"tool start %s collides with a %s row and was dropped", itemID, existing.item.Kind))
@@ -178,7 +181,7 @@ func (b *builder) toolComplete(evt importir.Event) error {
 		r.item.UpdatedAt = now
 		return b.markUnavailableReason(unavailableReason, r)
 	}
-	if flaggedAtLaunch {
+	if flaggedAtLaunch && !b.isCodexSpawnLaunch(r) {
 		// The hint was wrong: settle in place as an ordinary tool row so
 		// nothing lists it as live background work.
 		r.item.IsBackground = false
@@ -258,6 +261,9 @@ func (b *builder) subagentStatus(evt importir.Event) error {
 	if err := json.Unmarshal(evt.Meta, &signal); err != nil {
 		return fmt.Errorf("decode subagent status %s: %w", launchID, err)
 	}
+	if signal.Status == "running" || signal.Status == "pendingInit" {
+		return nil
+	}
 	childID := strings.TrimSpace(signal.AgentPath)
 	if childID == "" {
 		return fmt.Errorf("subagent status %s carries no child id", launchID)
@@ -269,14 +275,50 @@ func (b *builder) subagentStatus(evt importir.Event) error {
 	if launch.item.ToolName != "collab_agent" {
 		return fmt.Errorf("subagent status %s targets tool %s", launchID, launch.item.ToolName)
 	}
-	updated, _, matched := triage.MergeCodexSubagentTerminalMeta(launch.item.Meta, childID, signal.Status)
+	base := launch.item.Meta
+	if value := b.codexAgentStatuses[launchID]; value != "" {
+		base = value
+	}
+	updated, allTerminal, matched := triage.MergeCodexSubagentTerminalMeta(base, childID, signal.Status)
 	if !matched {
 		return fmt.Errorf("subagent status %s names child %s outside the launch", launchID, childID)
 	}
-	launch.item.Meta = updated
-	launch.item.IsBackground = true
-	launch.item.UpdatedAt = now
-	return nil
+	if b.codexAgentStatuses == nil {
+		b.codexAgentStatuses = make(map[string]string)
+	}
+	b.codexAgentStatuses[launchID] = updated
+	if !allTerminal {
+		return nil
+	}
+	id := triage.ToolCompletionID(launchID)
+	if evt.TurnID != "" {
+		id += ":turn:" + evt.TurnID
+	}
+	if _, exists := b.byID[id]; exists {
+		return nil
+	}
+	var terminal struct {
+		Statuses map[string]string `json:"codex_child_terminal_statuses"`
+	}
+	if err := json.Unmarshal([]byte(updated), &terminal); err != nil {
+		return err
+	}
+	status := statusCompleted
+	for _, childStatus := range terminal.Statuses {
+		if childStatus == "errored" {
+			status = "errored"
+			break
+		}
+		if childStatus == "interrupted" || childStatus == "shutdown" || childStatus == "notFound" {
+			status = "killed"
+		}
+	}
+	_, err = b.appendRow(evt, store.Item{
+		ID: id, TurnIndex: b.turns.current(), Kind: kindToolCompletion, Role: "assistant", Status: status,
+		Summary: launch.item.Summary, ParentID: launch.item.ParentID, CompletionOf: launchID,
+		ToolName: launch.item.ToolName, IsBackground: true, Meta: string(evt.Meta), CreatedAt: now, UpdatedAt: now,
+	}, nil, nil)
+	return err
 }
 
 // placeholderToolLaunch builds the launch row an `import_unavailable`

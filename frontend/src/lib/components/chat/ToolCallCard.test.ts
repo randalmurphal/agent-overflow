@@ -440,7 +440,7 @@ describe("<ToolCallCard> header dispatcher", () => {
     const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
 
     const text = getByTestId("collab-tool-row").textContent ?? "";
-    expect(text).toContain("Sent message");
+    expect(text).toContain("Interaction with");
     expect(text).not.toContain("gAAAA");
   });
 

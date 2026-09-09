@@ -47,10 +47,10 @@ until ownership resolves, and reject them when its deadline expires. Child
 token usage may be re-scoped to the root; child lifecycle and content must not
 mutate root turn state.
 
-Collaboration recovery is a bounded metadata-only descendant traversal. Do not
-rehydrate by replaying transcript turns. Delayed ownership notifications must
-correlate through persistent tool references, and only an owned child may
-settle its launch metadata.
+Recover collaboration ownership from persisted launches and verified descendant
+metadata. Bounded item-page reads may locate an original spawn when its event
+was missed; never replay unrelated transcript items or use a send as a spawn.
+Only an owned child's execution signals may settle current launch runtime.
 
 Use typed wire fields for background and collaboration ownership. Requested
 child model and effort values are not the effective profile; obtain it from the
@@ -59,9 +59,9 @@ child's metadata-only resume response. Stop a child through its owned
 
 Read `session_rollout_notifications.go` before changing resumed-session or
 child-ownership setup. Fresh starts never tail the rollout. A resumed session
-arms the tail only when `ResumeHasUnresolvedSubagents` reports outstanding work
-or `registerChildOwnership` observes a new live child; replaying historical
-ownership must not arm it.
+arms mailbox observation when reusable children are known or discovered.
+Child readers use file notifications to wake idle recipients, share one worker,
+and retain bounded partial records. Fresh roots keep their raw subscriptions.
 
 ## Native operations
 

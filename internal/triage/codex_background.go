@@ -6,6 +6,7 @@ import (
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/store"
 )
 
 // codex_background.go — Codex-specific background-terminal projection.
@@ -67,8 +68,9 @@ const codexLiveCommandOutputMaxBytes = 1024 * 1024
 // Claude's level set of live background tasks (subagent_progress.go).
 // Tasks is nil for the Codex / app-side nudges, which know no set.
 type BackgroundTasksChangedEvent struct {
-	ThreadID string                       `json:"threadId"`
-	Tasks    []provider.BackgroundTaskRef `json:"tasks,omitempty"`
+	ResetCodexAgents bool                         `json:"resetCodexAgents,omitempty"`
+	ThreadID         string                       `json:"threadId"`
+	Tasks            []provider.BackgroundTaskRef `json:"tasks,omitempty"`
 }
 
 // codexBackgroundState holds the per-thread correlation state for
@@ -103,6 +105,8 @@ type codexBackgroundState struct {
 	// spawnAgent maps launchID → tracker for collabAgentToolCall
 	// spawn_agent items that may outlive their parent turn.
 	spawnAgent map[string]*spawnAgentTracker
+	// Agent runtime is session state, never a mutation of a spawn/history item.
+	agents map[string]store.Item
 }
 
 func newCodexBackgroundState() *codexBackgroundState {
@@ -112,6 +116,7 @@ func newCodexBackgroundState() *codexBackgroundState {
 		pendingWaitByProcess: make(map[string]pendingTerminalWait),
 		waitCarrierByProcess: make(map[string]pendingTerminalWait),
 		spawnAgent:           make(map[string]*spawnAgentTracker),
+		agents:               make(map[string]store.Item),
 	}
 }
 
@@ -248,12 +253,17 @@ func (r *Router) observeCodexToolStart(evt provider.ProviderEvent) bool {
 	return isSpawnAgentCandidate && meta.Tool == "spawn_agent"
 }
 
+// ClearLiveCodexBackgroundTasks clears native background terminals. Cleaning
+// terminals does not end agent executions; their own lifecycle still owns them.
 func (r *Router) ClearLiveCodexBackgroundTasks(threadID string) {
 	r.mu.Lock()
-	if st := r.threadStateIfPresent(threadID); st != nil {
-		st.codexBackground = nil
+	if st := r.threadStateIfPresent(threadID); st != nil && st.codexBackground != nil {
+		prior := st.codexBackground
+		st.codexBackground = newCodexBackgroundState()
+		st.codexBackground.agents, st.codexBackground.spawnAgent = prior.agents, prior.spawnAgent
 	}
 	r.mu.Unlock()
+	r.emitBackgroundTasksChangedNudge(threadID)
 }
 
 // observeCodexToolComplete handles spawn_agent and wait_agent completion:

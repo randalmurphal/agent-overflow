@@ -20,6 +20,28 @@ launch id. Provider adapters answer three questions only: what is a
 launch, how do progress and terminal signals arrive, which controls exist
 (background / kill). Everything above the adapters is provider-neutral.
 
+## Immutable agent history
+
+Completed chat history items are immutable, including their rendered contents.
+A Codex spawn row records the spawn event and provides an open-pane button.
+After that event is recorded, later activity must never change its fields,
+metadata, status, timestamps, progress, preview or transcript contents. It is
+not the reusable agent's runtime record.
+
+The background tray represents the current execution. When that execution
+finishes, its background entry disappears and a new completion item is added
+at the completion's timeline position. Subsequent executions have distinct
+completion items. Messages and signals appear where they happen; they do not
+reactivate, enrich or attach themselves to earlier completed items. Each
+completion card retains only its execution's history and settled values.
+
+The separate agent pane contains the agent's continuous history across
+executions, including correctly scoped nested-agent activity. Live status
+belongs to the pane and background tray, independently of historical events.
+
+The Codex spawn contract may change only if Codex fundamentally changes its
+subagent model and the user explicitly authorizes the corresponding change.
+
 ## Key decisions
 
 - Card = today's inline subagent card for every kind. Awaited vs background
@@ -35,14 +57,11 @@ launch, how do progress and terminal signals arrive, which controls exist
   title regeneration). Claude creates it from the Agent/Task launch input
   before child output as `user:subagent-prompt:<launchID>`. The inline echo
   or sidechain transcript later stamps the transcript uuid onto that row in
-  place. Codex MultiAgentV2 has no prompt to show at any price. The model
-  service encrypts `spawn_agent.message` and the child's NEW_TASK payload
-  alike, so no client can read it. Its only plaintext statement of the
-  task is the model-chosen `task_name`, and the card title and pane
-  breadcrumb ALREADY carry it: a V2 spawn sends no nickname, so the label
-  falls back to the agent path's own tail. `codexSubagentTaskDescription`
-  is therefore empty on V2 by design (it would repeat the label) and
-  carries the plaintext prompt on V1.
+  place. Codex V2 records observed incoming NEW_TASK and MESSAGE deliveries as
+  sender-attributed user rows in the recipient scope. Encrypted bodies show an
+  explicit placeholder; readable text remains available. Message delivery does
+  not imply that either agent is currently running. The canonical task path
+  remains the fallback launch label.
 - A Codex child's final answer is a NORMAL message, not a special block
   (ruling 2026-08-23). Its transcript streams to the parent parented to
   the launch, so the answer already renders in the card body and the
@@ -85,8 +104,9 @@ launch, how do progress and terminal signals arrive, which controls exist
   pane live. Sessions started before mirror support fall back to terminal
   transcript recovery.
 - Kill only where the wire can: Claude nodes with a task id
-  (`stop_task`); never forks (interrupt-only) or Codex children
-  (`close_agent` is model-only).
+  (`stop_task`) and owned Codex child turns (`turn/interrupt`); never forks.
+  A reusable Codex agent reads current execution metadata for its spinner,
+  elapsed timer, waiting label, and Stop action, independently of older answers.
 - A direct Claude slash command appears as a running Command row on its
   `command_lifecycle` started frame. If its mirror has ownerless
   `agent_metadata` and an `isSidechain:true` row carrying `attributionSkill`,
@@ -107,8 +127,9 @@ launch, how do progress and terminal signals arrive, which controls exist
 - Live progress is in-memory UI state fed by Claude `task_progress`
   (tool count, tokens, elapsed, activity line) and, for Codex, the
   child thread's `thread/tokenUsage/updated` (unsuppressed into a scoped
-  progress event) plus row counts. The final numbers persist onto the
-  launch row at terminal so a reloaded thread shows them (Q5 fold-in).
+  progress event) plus row counts. Codex final numbers are captured on
+  each execution completion; the spawn row never receives them. Claude
+  launch settlement retains its provider-specific progress handling.
 - Attribution rule: anything a subagent causes carries its scope.
   `permission_denied` fixed (ce580f3f); `can_use_tool` approvals must
   resolve `agent_id` → launch tool_use (parser task map, triage row
@@ -118,7 +139,7 @@ launch, how do progress and terminal signals arrive, which controls exist
   Q10b).
 - The bell is the timeline `notification` row and nothing else (no
   toast, no OS notification), and it fires for top-level nodes only;
-  nested completions update their card silently (Q11). A parked async
+  nested completions render without a bell (Q11). A parked async
   agent (claude-wire.md §E6b) rings it at every stop, and the frontend
   hides all of them together once the completed sibling lands.
 - A DETACHED launch (async ack, `run_in_background`, a Codex spawn, a
@@ -129,14 +150,14 @@ launch, how do progress and terminal signals arrive, which controls exist
   label, model, description, the `backgrounded` indicator, launch time;
   no ticker, no text pill, see c58f9b55), a Codex `spawn_agent` launch is
   the collab `launched` row. Neither changes after the spawn and neither
-  is ever a card. The launch's ONE card (status, duration, tool count,
+  is ever a card. Each execution's card (status, duration, tool count,
   tokens, the expandable transcript, open-in-pane) renders AT its
   completion sibling (`SubagentGroupNode.anchor`): top-level, inside the
   parent card for a nested node, or under the `wait_agent` group that
   claimed a Codex completion (`WaitGroupNode.children` are nodes), after
   everything the main thread wrote while the agent ran. A Codex card
-  summarizes collapsed with the child's FINAL_ANSWER preview; the answer
-  itself is a normal message in the body, never a second block. While
+  summarizes the completed execution; the answer is a normal message
+  in its body. Later answer deliveries remain separate timeline events. While
   the agent runs there is no card: the pane and the tray are its live
   surfaces, and the tray row shows tokens plus only the latest direct tool
   call as its activity line. The bell is hidden on the strength of the completion

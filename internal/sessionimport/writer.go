@@ -126,7 +126,8 @@ type row struct {
 }
 
 type builder struct {
-	thread store.Thread
+	codexAgentStatuses map[string]string
+	thread             store.Thread
 
 	rows []*row
 	byID map[string]*row
