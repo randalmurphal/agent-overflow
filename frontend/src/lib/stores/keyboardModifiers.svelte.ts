@@ -9,9 +9,9 @@
 // platform modifier signal for the thread-jump commands.
 
 import { isMacPlatform } from '../utils/platform';
+import { getSidebarJumpThreadIds } from './sidebarThreadOrder';
 
 const HINT_SHOW_DELAY_MS = 100;
-const MAX_JUMP_INDEX = 9;
 
 let jumpHintsVisible: boolean = $state(false);
 let jumpLabelsByThreadId: ReadonlyMap<string, string> = $state(new Map());
@@ -19,6 +19,7 @@ let listenerCount = 0;
 let installed = false;
 let pendingTimer: ReturnType<typeof setTimeout> | null = null;
 let platformIsMacForTest: boolean | null = null;
+const rowObservers = new Map<HTMLElement, MutationObserver>();
 
 function isJumpModifier(event: KeyboardEvent): boolean {
   const isMac = platformIsMacForTest ?? isMacPlatform();
@@ -33,19 +34,64 @@ function clearPendingTimer(): void {
 }
 
 function rebuildJumpLabels(): void {
-  if (typeof document === 'undefined') {
-    jumpLabelsByThreadId = new Map();
-    return;
-  }
   const next = new Map<string, string>();
-  const rows = document.querySelectorAll<HTMLElement>('[data-sidebar-thread-id]');
-  for (const row of rows) {
-    if (next.size >= MAX_JUMP_INDEX) break;
-    const id = row.dataset.sidebarThreadId;
-    if (!id || next.has(id)) continue;
-    next.set(id, String(next.size + 1));
+  for (const [index, id] of getSidebarJumpThreadIds().entries()) {
+    next.set(id, String(index + 1));
   }
+  if (next.size === jumpLabelsByThreadId.size
+    && [...next].every(([id, label]) => jumpLabelsByThreadId.get(id) === label)) return;
   jumpLabelsByThreadId = next;
+}
+
+function containsThreadRow(node: Node): boolean {
+  if (node.nodeType !== Node.ELEMENT_NODE) return false;
+  const element = node as Element;
+  return element.matches('[data-sidebar-thread-id]')
+    || element.querySelector('[data-sidebar-thread-id]') !== null;
+}
+
+function observeRows(root: HTMLElement, observer: MutationObserver): void {
+  observer.observe(root, {
+    subtree: true,
+    childList: true,
+    attributes: true,
+    attributeFilter: ['data-sidebar-thread-id', 'data-sidebar-jump-target'],
+  });
+}
+
+/** Svelte action: observe only mounted sidebar trees, and only during a hold. */
+export function trackSidebarJumpRows(root: HTMLElement): { destroy: () => void } {
+  const observer = new MutationObserver((records) => {
+    if (!jumpHintsVisible) return;
+    if (records.some((record) => record.type === 'attributes'
+      || [...record.addedNodes, ...record.removedNodes].some(containsThreadRow))) {
+      rebuildJumpLabels();
+    }
+  });
+  rowObservers.set(root, observer);
+  if (jumpHintsVisible) {
+    observeRows(root, observer);
+    rebuildJumpLabels();
+  }
+  return {
+    destroy: () => {
+      observer.disconnect();
+      rowObservers.delete(root);
+      // An action can be destroyed before its DOM subtree is removed.
+      // Clear hints now; surviving roots are rescanned after removal.
+      if (jumpHintsVisible) {
+        jumpLabelsByThreadId = new Map();
+        queueMicrotask(() => { if (jumpHintsVisible) rebuildJumpLabels(); });
+      }
+    },
+  };
+}
+
+function hideJumpHints(): void {
+  clearPendingTimer();
+  for (const observer of rowObservers.values()) observer.disconnect();
+  jumpHintsVisible = false;
+  jumpLabelsByThreadId = new Map();
 }
 
 function handleKeyDown(event: KeyboardEvent): void {
@@ -55,27 +101,20 @@ function handleKeyDown(event: KeyboardEvent): void {
     pendingTimer = null;
     rebuildJumpLabels();
     jumpHintsVisible = true;
+    for (const [root, observer] of rowObservers) observeRows(root, observer);
   }, HINT_SHOW_DELAY_MS);
 }
 
 function handleKeyUp(event: KeyboardEvent): void {
   if (!isJumpModifier(event)) return;
-  clearPendingTimer();
-  if (jumpHintsVisible) {
-    jumpHintsVisible = false;
-    jumpLabelsByThreadId = new Map();
-  }
+  hideJumpHints();
 }
 
 function handleBlur(): void {
   // Window loses focus mid-hold (cmd-tab to another app) — clear so
   // the hints don't persist when the user comes back without the
   // modifier still down.
-  clearPendingTimer();
-  if (jumpHintsVisible) {
-    jumpHintsVisible = false;
-    jumpLabelsByThreadId = new Map();
-  }
+  hideJumpHints();
 }
 
 function ensureInstalled(): void {
@@ -88,13 +127,12 @@ function ensureInstalled(): void {
 }
 
 function teardown(): void {
+  hideJumpHints();
   if (!installed) return;
   if (typeof window === 'undefined') return;
   window.removeEventListener('keydown', handleKeyDown);
   window.removeEventListener('keyup', handleKeyUp);
   window.removeEventListener('blur', handleBlur);
-  clearPendingTimer();
-  jumpHintsVisible = false;
   installed = false;
 }
 
@@ -107,7 +145,10 @@ function teardown(): void {
 export function subscribeJumpHints(): () => void {
   ensureInstalled();
   listenerCount += 1;
+  let released = false;
   return () => {
+    if (released) return;
+    released = true;
     listenerCount -= 1;
     if (listenerCount <= 0) {
       listenerCount = 0;
@@ -122,8 +163,7 @@ export function getJumpHintsVisible(): boolean {
 
 /**
  * Look up a row's jump-hint label ("1".."9") or undefined if it isn't
- * one of the first 9 visible rows. Reactive — updates when modifier
- * presses re-scan the DOM.
+ * one of the first 9 rendered front-burner pin targets.
  */
 export function jumpLabelForThread(threadId: string): string | undefined {
   return jumpLabelsByThreadId.get(threadId);
@@ -131,12 +171,10 @@ export function jumpLabelForThread(threadId: string): string | undefined {
 
 /** Test helper. */
 export function resetKeyboardModifiersForTest(): void {
-  clearPendingTimer();
-  jumpHintsVisible = false;
-  jumpLabelsByThreadId = new Map();
+  teardown();
+  rowObservers.clear();
   platformIsMacForTest = null;
   listenerCount = 0;
-  if (installed) teardown();
 }
 
 export function setKeyboardModifierPlatformForTest(isMac: boolean | null): void {

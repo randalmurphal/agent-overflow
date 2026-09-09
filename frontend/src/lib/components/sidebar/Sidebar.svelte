@@ -7,7 +7,7 @@
   import { onDestroy } from 'svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { refreshProjects } from '../../stores/projects.svelte';
-  import { subscribeJumpHints } from '../../stores/keyboardModifiers.svelte';
+  import { subscribeJumpHints, trackSidebarJumpRows } from '../../stores/keyboardModifiers.svelte';
   import {
     SIDEBAR_RAIL_WIDTH,
     getSidebarWidth,
@@ -105,6 +105,7 @@
     style={compact ? undefined : `width: ${getSidebarWidth()}px`}
     inert={listInert}
     data-testid="sidebar"
+    use:trackSidebarJumpRows
   >
     <div class="flex items-center gap-1 px-3 pt-3 pb-2">
       <SidebarSearch {registerFocusSearch} />

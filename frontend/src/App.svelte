@@ -102,7 +102,7 @@
   import { warmHighlightTables } from './lib/utils/syntaxSpans';
   import { dispatchTextEditing } from './lib/utils/textEditingKeymap';
   import { installExternalLinkDelegate } from './lib/utils/externalLinks';
-  import { getVisibleSidebarThreadIds } from './lib/stores/sidebarThreadOrder';
+  import { getSidebarJumpThreadIds } from './lib/stores/sidebarThreadOrder';
   import { setAppShellWidth } from './lib/stores/layoutMetrics.svelte';
   import DiagramInteractionHost from './lib/components/chat/DiagramInteractionHost.svelte';
   import FootnotePopoverHost from './lib/components/chat/FootnotePopoverHost.svelte';
@@ -259,7 +259,7 @@
   }
 
   function requestThreadJump(index: number): void {
-    const ids = getVisibleSidebarThreadIds();
+    const ids = getSidebarJumpThreadIds();
     const targetId = ids[index - 1];
     if (!targetId) return;
     const thread = getThreads().find((t) => t.id === targetId);

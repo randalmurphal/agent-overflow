@@ -23,6 +23,7 @@ import { relativeTime } from '../../utils/format';
 import {
   resetKeyboardModifiersForTest,
   subscribeJumpHints,
+  trackSidebarJumpRows,
 } from '../../stores/keyboardModifiers.svelte';
 import type { Thread } from '../../types/models';
 import type { Settings } from '../../types/settings';
@@ -1053,21 +1054,36 @@ describe('<ThreadRow> live status dot', () => {
 
   it('renders the active thread-jump keybinding in the jump hint', async () => {
     vi.useFakeTimers();
+    let tracking: ReturnType<typeof trackSidebarJumpRows> | undefined;
+    let release: (() => void) | undefined;
     try {
       setKeybindingsForTest([{ key: 'ctrl+alt+2', command: 'thread.jump.1' }]);
-      const release = subscribeJumpHints();
+      release = subscribeJumpHints();
       const pane = createThreadPane();
-      const { getByTestId } = render(ThreadRow, {
-        props: { thread: makeThread({ id: 'jump-target' }), pane },
+      const thread = makeThread({ id: 'jump-target', pinnedAt: 1 });
+      const { getByTestId, queryByTestId, rerender, container } = render(ThreadRow, {
+        props: { thread, pane },
       });
+      tracking = trackSidebarJumpRows(container);
 
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Control', bubbles: true }));
       vi.advanceTimersByTime(101);
       await tick();
 
       expect(getByTestId('thread-row-jump-hint').textContent?.trim()).toBe('Ctrl+Alt+2');
-      release();
+
+      await rerender({ thread: { ...thread, pinGroup: 1 }, pane });
+      await vi.advanceTimersByTimeAsync(0);
+      await tick();
+      expect(queryByTestId('thread-row-jump-hint')).toBeNull();
+
+      await rerender({ thread, pane });
+      await vi.advanceTimersByTimeAsync(0);
+      await tick();
+      expect(getByTestId('thread-row-jump-hint').textContent?.trim()).toBe('Ctrl+Alt+2');
     } finally {
+      release?.();
+      tracking?.destroy();
       resetKeyboardModifiersForTest();
       resetKeybindingsStore();
       vi.useRealTimers();
@@ -1081,6 +1097,34 @@ describe('<ThreadRow> nested row chrome', () => {
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
     await refreshThreads();
+  });
+
+  it.each([
+    { name: 'front pin', thread: { pinnedAt: 1, pinGroup: 0 }, eligible: true },
+    { name: 'legacy front pin', thread: { pinnedAt: 0 }, eligible: true },
+    { name: 'pinned discussion parent', thread: { mode: 'discussion' as const, pinnedAt: 1 }, eligible: true },
+    { name: 'back pin', thread: { pinnedAt: 1, pinGroup: 1 }, eligible: false },
+    { name: 'unpinned', thread: { pinGroup: 0 }, eligible: false },
+    { name: 'group member', thread: { pinnedAt: 1, groupId: 'group' }, eligible: false },
+    { name: 'nested discussion child', thread: { pinnedAt: 1, parentThreadId: 'parent' }, indent: 2, eligible: false },
+    { name: 'pinned child promoted to a top-level row', thread: { pinnedAt: 1, parentThreadId: 'missing-parent' }, eligible: true },
+  ])('marks jump eligibility for $name', ({ thread, eligible, indent }) => {
+    const { getByTestId } = render(ThreadRow, {
+      props: { thread: makeThread(thread), pane: null, indent: indent ?? 1 },
+    });
+    expect(getByTestId('thread-row').hasAttribute('data-sidebar-jump-target')).toBe(eligible);
+  });
+
+  it('updates jump eligibility when a pin changes burner or is removed', async () => {
+    const front = makeThread({ pinnedAt: 1, pinGroup: 0 });
+    const { getByTestId, rerender } = render(ThreadRow, { props: { thread: front, pane: null } });
+    expect(getByTestId('thread-row')).toHaveAttribute('data-sidebar-jump-target');
+    await rerender({ thread: { ...front, pinGroup: 1 }, pane: null });
+    expect(getByTestId('thread-row')).not.toHaveAttribute('data-sidebar-jump-target');
+    await rerender({ thread: front, pane: null });
+    expect(getByTestId('thread-row')).toHaveAttribute('data-sidebar-jump-target');
+    await rerender({ thread: makeThread(), pane: null });
+    expect(getByTestId('thread-row')).not.toHaveAttribute('data-sidebar-jump-target');
   });
 
   it('renders no chevron when hasChildren is false', () => {

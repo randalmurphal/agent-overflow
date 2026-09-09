@@ -1800,7 +1800,7 @@ describe('sidebar.toggle command', () => {
     expect(focusCount).toBe(1);
   });
 
-  it('thread.jump.N expands before resolving the Nth rendered row', async () => {
+  it('thread.jump.N expands before resolving the Nth front-burner pin', async () => {
     const jumps: number[] = [];
     register({ requestThreadJump: (index) => jumps.push(index) });
     setSidebarCollapsed(true);

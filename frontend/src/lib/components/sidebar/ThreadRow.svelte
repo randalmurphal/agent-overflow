@@ -4,6 +4,7 @@
     jumpLabelForThread,
   } from '../../stores/keyboardModifiers.svelte';
   import { chordHintForCommand } from '../../stores/keybindings.svelte';
+  import { sidebarPinGroup } from '../../utils/sidebarTree';
   import { getSettings } from '../../stores/settings.svelte';
   import { clearSidebarCursor, getSidebarCursorThreadId } from '../../stores/sidebarCursor.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
@@ -270,11 +271,12 @@
   // and the schema refuses a pin on a grouped row).
   let showPinAffordance = $derived(indent <= 1 && !thread.groupId);
   let isPinned = $derived(thread.pinnedAt != null);
+  let isJumpTarget = $derived(
+    showPinAffordance && !inGroup && sidebarPinGroup(thread) === 'front',
+  );
 
   // Jump-hint label for this row when the user holds Cmd/Ctrl. Reactive:
-  // when modifier press fires, the keyboardModifiers store rescans the
-  // DOM and updates the labels map — Svelte re-derives this row's label
-  // and the pill renders.
+  // The store tracks rendered pin order while the modifier is held.
   let jumpLabel = $derived.by<string | null>(() => {
     if (!getJumpHintsVisible()) return null;
     return jumpLabelForThread(thread.id) ?? null;
@@ -424,6 +426,7 @@
     style="padding-left: {rowPaddingLeftPx}px"
     data-testid="thread-row"
     data-sidebar-thread-id={thread.id}
+    data-sidebar-jump-target={isJumpTarget ? '' : undefined}
     data-live-status={liveStatus}
     data-effective-status={effectiveStatus}
     data-machine-unreachable={machineUnreachable || undefined}

@@ -4,7 +4,7 @@
 import { describe, expect, it, beforeAll, beforeEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import App from '../../App.svelte';
-import type { Thread } from '../../lib/types/models';
+import type { Project, Thread } from '../../lib/types/models';
 import { setBindingMock } from '../mocks/bindings-app';
 import {
   flush,
@@ -20,6 +20,10 @@ import { setPaneLayoutItemsForTest } from '../../lib/stores/paneLayout.svelte';
 import { answerBackPress } from '../../lib/native/lifecycle';
 import { registerCommand } from '../../lib/stores/commandRegistry.svelte';
 import { getCompactScreen, setCompactLayoutForTest, showCompactThread } from '../../lib/stores/layoutMode.svelte';
+import { collapseProject, expandProject } from '../../lib/stores/sidebar.svelte';
+import { setThreadFilterQuery } from '../../lib/stores/threadFilter.svelte';
+import { setSidebarCollapsed } from '../../lib/stores/sidebarLayout.svelte';
+import { getSidebarJumpThreadIds } from '../../lib/stores/sidebarThreadOrder';
 
 beforeAll(installAnimateShim);
 
@@ -35,12 +39,19 @@ async function loadKeybindingsFromMock(rules: Array<{
   await mod.loadKeybindings();
 }
 
-async function mountBareApp(threads: Thread[] = []) {
+async function mountBareApp(threads: Thread[] = [], projects?: Project[]) {
   installAppDefaults();
   setBindingMock('ListThreads', async () => threads);
   // The sidebar is projects-first — each thread must live under a
   // project and its project must be expanded for the row to render.
-  if (threads.length > 0) seedSidebarProject(threads);
+  if (projects) {
+    setBindingMock('ListProjects', async () => projects.map((project, index) => ({
+      project,
+      threadCount: threads.filter((thread) => thread.projectId === project.id).length,
+      lastActive: projects.length - index,
+    })));
+    for (const project of projects) expandProject(project.id);
+  } else if (threads.length > 0) seedSidebarProject(threads);
   // If any thread ends up active during the test, these are used.
   installThreadViewDefaults();
   for (const t of threads) installComposerDefaults(t.id);
@@ -192,36 +203,73 @@ describe('App integration — keybindings + palette', () => {
     expect(rendered.queryByTestId('command-palette-backdrop')).toBeNull();
   });
 
-  it('mod+1..9 jumps to the thread at that index', async () => {
+  it('numbers front-burner pins across projects and respects collapse and search', async () => {
+    const projects: Project[] = ['proj-int', 'proj-next'].map((id, index) => ({
+      id, name: id, path: `/tmp/project-${index}`, sortPosition: index,
+      createdAt: 0, updatedAt: 0, archived: false,
+    }));
     const threads: Thread[] = [
-      makeThread({ id: 't-1', title: 'Thread One' }),
-      makeThread({ id: 't-2', title: 'Thread Two' }),
-      makeThread({ id: 't-3', title: 'Thread Three' }),
+      makeThread({ id: 't-1', title: 'Thread One', pinnedAt: 1, updatedAt: 100 }),
+      makeThread({ id: 't-2', title: 'Thread Two', pinnedAt: 1, updatedAt: 90 }),
+      makeThread({ id: 't-3', title: 'Thread Three', pinnedAt: 1, updatedAt: 80 }),
+      makeThread({ id: 'back', title: 'Back Burner', pinnedAt: 1, pinGroup: 1 }),
+      makeThread({ id: 'unpinned', title: 'Unpinned' }),
+      makeThread({ id: 't-4', title: 'Thread Four', pinnedAt: 1, projectId: 'proj-next', updatedAt: 70 }),
+      makeThread({ id: 't-5', title: 'Thread Five', pinnedAt: 1, projectId: 'proj-next', updatedAt: 60 }),
     ];
-    await mountBareApp(threads);
+    await mountBareApp(threads, projects);
     await waitForThreadStore(threads.length);
     await loadKeybindingsFromMock([
       { key: 'mod+1', command: 'thread.jump.1' },
-      { key: 'mod+2', command: 'thread.jump.2' },
-      { key: 'mod+3', command: 'thread.jump.3' },
+      { key: 'mod+4', command: 'thread.jump.4' },
+      { key: 'mod+9', command: 'thread.jump.9' },
     ]);
+    await waitFor(() => expect(getSidebarJumpThreadIds()).toEqual(['t-1', 't-2', 't-3', 't-4', 't-5']));
 
-    // Fire mod+2 chord.
-    await fireEvent.keyDown(window, { key: '2', metaKey: true });
-    await fireEvent.keyDown(window, { key: '2', ctrlKey: true });
-    await flush(15);
+    async function jump(key: string) {
+      await fireEvent.keyDown(window, { key, metaKey: true });
+      await fireEvent.keyDown(window, { key, ctrlKey: true });
+      await flush(15);
+    }
 
-    // Pane should now be showing thread 2. Check the pane state directly.
     const paneMod = await import('../../lib/stores/panes.svelte');
     const pane = paneMod.ensureMainPane();
-    await waitFor(() => expect(pane.thread?.id).toBe('t-2'));
+    // Jumping from the collapsed sidebar must wait for pin rows to mount.
+    setSidebarCollapsed(true);
+    await flush();
+    await jump('4');
+    await waitFor(() => expect(pane.thread?.id).toBe('t-4'));
+    await jump('9');
+    expect(pane.thread?.id).toBe('t-4');
+
+    collapseProject('proj-int');
+    await waitFor(() => expect(getSidebarJumpThreadIds()).toEqual(['t-4', 't-5']));
+    await jump('1');
+    expect(pane.thread?.id).toBe('t-4');
+
+    setThreadFilterQuery('Thread Five');
+    await waitFor(() => expect(getSidebarJumpThreadIds()).toEqual(['t-5']));
+    await jump('1');
+    await waitFor(() => expect(pane.thread?.id).toBe('t-5'));
+
+    setThreadFilterQuery('nothing matches');
+    await waitFor(() => expect(getSidebarJumpThreadIds()).toEqual([]));
+    await jump('1');
+    expect(pane.thread?.id).toBe('t-5');
+
+    expandProject('proj-int');
+    setThreadFilterQuery('Unpinned');
+    await waitFor(() => expect(document.querySelector('[data-sidebar-thread-id="unpinned"]')).not.toBeNull());
+    expect(getSidebarJumpThreadIds()).toEqual([]);
+    await jump('1');
+    expect(pane.thread?.id).toBe('t-5');
   });
 
   it('mod+1..9 jumps while the composer textarea is focused', async () => {
     const threads: Thread[] = [
-      makeThread({ id: 't-1', title: 'Thread One' }),
-      makeThread({ id: 't-2', title: 'Thread Two' }),
-      makeThread({ id: 't-3', title: 'Thread Three' }),
+      makeThread({ id: 't-1', title: 'Thread One', pinnedAt: 1 }),
+      makeThread({ id: 't-2', title: 'Thread Two', pinnedAt: 1 }),
+      makeThread({ id: 't-3', title: 'Thread Three', pinnedAt: 1 }),
     ];
     const rendered = await mountBareApp(threads);
     await waitForThreadStore(threads.length);

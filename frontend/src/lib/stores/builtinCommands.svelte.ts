@@ -8,6 +8,7 @@ import { selectedBackend } from './selectedBackend.svelte';
 // via ctx rather than closing over a cached value.
 
 import { tick } from 'svelte';
+import { SIDEBAR_JUMP_LIMIT } from './sidebarThreadOrder';
 import type { ThreadPane } from './thread.svelte';
 import type { Thread } from '../types/models';
 import type { TerminalHandle } from '../types/terminal';
@@ -564,17 +565,15 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
       }),
   });
 
-  for (let i = 1; i <= 9; i += 1) {
+  for (let i = 1; i <= SIDEBAR_JUMP_LIMIT; i += 1) {
     const index = i;
     registerCommand({
       id: `thread.jump.${i}`,
-      label: `Thread: Jump to ${i}`,
+      label: `Thread: Jump to Front Burner ${i}`,
+      description: 'Open the numbered front-burner pinned thread in sidebar order.',
       icon: String(i),
       editableReachable: true,
-      // The Nth row is the Nth row of the RENDERED sidebar, and the
-      // numbers themselves are hints painted on those rows — both gone
-      // while collapsed. Bring the sidebar back so the jump means what
-      // the hint said.
+      // Expand before resolving the numbered pin in the rendered sidebar.
       run: () => withSidebarVisible(() => requestThreadJump(index)),
     });
   }
