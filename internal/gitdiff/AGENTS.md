@@ -44,7 +44,7 @@ constructors.
     resolution won't DWIM on its own.
 - `run.go` holds the subprocess plumbing: `runGit` variants with env scrubbing
   (`GIT_EXTERNAL_DIFF` / `GIT_DIFF_OPTS` cleared), a hard
-  `maxDiffOutputBytes` stdout cap, and `WaitDelay` so a wedged pipe
+  `maxDiffOutputBytes` stdout cap, and `WaitDelay` so a blocked pipe
   can't hang a review-pane load.
 - `options.go`: `Options`, the last parameter of every patch producer
   (`DiffWorkspaceVsHead`, `DiffBranchBaseToWorktree`, `CommitDiff`).

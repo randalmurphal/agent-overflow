@@ -10,9 +10,8 @@ lifecycle, history modes, and the queue. Read it before changing handler
 logic. This guide carries only what an agent must know before editing the
 package: concurrency rules, version gates, and the AO-side decisions that look
 arbitrary from the code. Provider floor is codex 0.143
-(`provider.minimumCodexCLIVersion`), and the installed CLI at the last sweep
-was 0.150.1 (2026-08-29). Run `codex --version` before trusting a version
-claim here.
+(`provider.minimumCodexCLIVersion`). Run `codex --version` before trusting a
+version claim here.
 
 - `session.go` — the shared `Session` state struct, the `Config` it is built
   from, the accessors over both, dynamic-tool and MCP handler registration
@@ -105,7 +104,7 @@ claim here.
   payload shaping.
 - `interactive_requests.go` — the codex half of interactive-request
   bookkeeping: what a released request means on this wire. The ledger itself
-  (track / claim / cancel / drain, with the Bug B9 dedupe) is
+  (track / claim / cancel / drain, including deduplication) is
   `provider.ApprovalRegistry`, shared with claude; what stays here is the
   JSON-RPC id encoding, the `turnTransition` error write that unblocks the
   server request, and the interrupt-vs-close drain distinction.
@@ -131,9 +130,8 @@ claim here.
   works on every supported codex, and the one AO falls back to. It
   always sends `excludeTurns: true` so a long transcript cannot become one
   oversized JSON-RPC response. Anchored forks validate the new tail with one
-  metadata-only `thread/turns/list` request. It replaced the deprecated
-  `thread/rollback` and is not upstream's only cut — see §"History
-  truncation: three cuts, all turn-granular".
+  metadata-only `thread/turns/list` request. It is not upstream's only cut —
+  see §"History truncation: three cuts, all turn-granular".
 - `session_revert.go` — the `thread/revert` RPC wrapper (`Revert`), the
   in-place cut AO PREFERS: same thread id, same rollout lineage, no
   repoint. Two gates decide whether it is available, both read off the
@@ -382,9 +380,9 @@ claim here.
     - **Only TERMINAL retained states (`TerminalFailure`: failed /
       cancelled) outrank the settled list.** The list awaits pending
       startups before answering, so it is always the newer observation
-      for a non-terminal retained state — a retained "starting" latching
-      over a connected probe is exactly the incident shape this exists
-      to prevent. Unrecognized future states defer to the list too.
+      for a non-terminal retained state; a retained "starting" state must
+      not mask a connected probe. Unrecognized future states defer to the
+      list too.
     - **AO-initiated restarts forget first.** Every path that asks Codex
       to restart a server (OAuth success, enable/disable toggle,
       Reconnect) calls `ForgetMCPStartupState(name)` before the reload:
@@ -479,10 +477,9 @@ THIS pipe. Empty or unparseable is too old to every gate, failing closed.
   two of those readers already hold `mu`.
 - **No generic "unknown notification" path.** A method is either dispatched or
   explicitly opted out. One that no classifier claims reaches
-  `warnUnclaimedNotification`, which logs it once per method per session, and
-  silence there once let seven upstream notifications arrive unnoticed between
-  the 2026-06 and 2026-07 surveys. It stays log-and-continue by design, since
-  a Codex release adding a notification must not break a live session.
+  `warnUnclaimedNotification`, which logs it once per method per session.
+  It stays log-and-continue by design, since a Codex release adding a
+  notification must not break a live session.
 
 ## Notifications
 

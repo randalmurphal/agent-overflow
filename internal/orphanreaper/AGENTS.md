@@ -9,11 +9,9 @@ primitive for arbitrary children, so we reconstruct it in userspace.
 ## Why this exists
 
 The provider package spawns each Claude/Codex process in its own process
-group (`Setpgid`). On a clean shutdown the app signals that group and the
-subprocess (plus its subagents/MCP children) dies. But if the app dies
-*ungracefully* (panic, `SIGKILL`, crash), no app code runs, the kernel
-reparents the providers to `launchd`, and they linger (~288 MB RSS each;
-the Claude CLI ignores stdin EOF). This package closes that gap.
+group (`Setpgid`). Clean shutdown signals that group, but an ungraceful
+shutdown can leave the provider and its subagents reparented to `launchd`.
+This package closes that gap.
 
 ## Two layers (defense in depth)
 

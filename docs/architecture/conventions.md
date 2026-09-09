@@ -101,14 +101,12 @@ wrong place or a helper should own the logic that uses it. Don't grep-fix.
   nil / no-op in production paths. `SetEventHook` is the reference.
 - Tests must be deterministic. If a test needs timing, use
   `t.Setenv("TMPDIR", t.TempDir())` or per-test fixtures. Never scan
-  shared system state. Past flakes that violated this are documented in
-  the test-flake history.
+  shared system state.
 
 ## SQL / Store Patterns
 
 - **Always use `?` placeholders.** Never `fmt.Sprintf` or `+` values into
-  a query string. We've had zero SQL-injection incidents and intend to
-  keep it that way.
+  a query string.
 - **Index every column used in a `WHERE`.** SQLite will table-scan
   otherwise. Partial indexes (`WHERE col <> ''`) keep the index small on
   sparse columns. See `idx_items_parent`, `idx_items_completion_of`,
@@ -245,8 +243,6 @@ useful exactly as long as they are true. Four rules keep them true.
   across `**/AGENTS.md` and `docs/`, read each hit, and fix every
   claim the change made false, in the same commit. Done means every
   doc claim about the touched behavior is verified true or updated.
-  The class this closes: the 2026-08-29 eventbus change made "no later
-  frame announces a drop" false in two documents at once.
 - **Retire prose that enforcement replaced.** When a rule gains a
   tripwire test, lint, or type shape, shrink its guide bullet to the
   claim plus a pointer at the enforcement; the test carries the weight
@@ -260,10 +256,12 @@ useful exactly as long as they are true. Four rules keep them true.
   updates the `internal/AGENTS.md` table and ships the `CLAUDE.md`
   symlink (§ Adding a package there).
 
-When writing the entry itself: cache what the code cannot say — the
-unwritten convention, the reason, the gotcha. One meaning lives in one
-place; elsewhere, point. An incident citation is one sentence, the date
-and the mechanism.
+When writing the entry itself, record the convention, reason, or constraint
+that a future edit needs. Use plain engineering language and preserve exact
+API names and technical terms when they are needed for accuracy. Keep work
+logs, completed review histories, and incident narratives out of `AGENTS.md`;
+retain their lasting requirements and point to the relevant tests or reference.
+One meaning lives in one place; elsewhere, point.
 
 ## Before You Commit
 

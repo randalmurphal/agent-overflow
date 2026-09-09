@@ -100,7 +100,7 @@ final binaries on the same minimum macOS version.
   get approval before settling.
 - **Close the class, not the instance.** When a bug can recur, make it
   structural: narrow the API, validate inside the function, add the
-  tripwire test or lint. Then sweep for siblings of the same pattern.
+  regression test or lint. Then sweep for siblings of the same pattern.
 - **Consider every place.** A change to a shared shape updates every
   caller, every sibling path with the same pattern, and both providers
   when it applies to both. Compiling is not the same as complete.
@@ -118,6 +118,11 @@ final binaries on the same minimum macOS version.
 - **A fixed bug ships its lesson.** When the bug's class could recur,
   update the nearest AGENTS.md (or the doc it points to) in the same
   change.
+- **Guides contain lasting instructions.** Write concrete engineering rules
+  in plain language. Keep work logs, completed review histories, and incident
+  narratives out of `AGENTS.md`; keep any lasting requirement and its test or
+  reference. Preserve exact API names and technical terms where precision
+  requires them.
 - **A change keeps the guides true.** Before reporting done, sweep
   `**/AGENTS.md` and `docs/` for claims your change falsified and fix
   them in the same commit. Full maintenance rules (fact routing, the
@@ -230,48 +235,43 @@ See [docs/references/spike-policy.md](docs/references/spike-policy.md).
   root, never with a consumed invitation or a computer that may be removed.
   The shared updater owns argv preservation and rollback environment cleanup.
 
-- **Transport boundary stays clean.** Go → frontend goes through
-  `app.Event.Emit` and Wails bindings only; UI code must not add a
-  back-channel that bypasses `internal/transport/`. The embedded
+- **Use the shared transport.** Go → frontend uses `a.emit`; frontend → Go
+  uses the generated Wails bindings in `frontend/bindings/`. Both use
+  `internal/transport/`. UI code must not add another path around that
+  transport. The embedded
   webview, `agent-overflow --connect`, and remote browser access share
   the same HTTP+WS wire shape. Any new App-bound method also becomes a
   wire RPC, so it carries an `//ao:scope <name>` annotation naming the
-  capability it exercises — `methodgen` fails the run without one, and
-  that scope is what the per-call gate compares a session's grants
-  against. It also carries a ROUTE, naming which attached backend the
+  required scope. Scopes describe permissions or caller restrictions;
+  `methodgen` fails without one. Dispatch enforces the named permission or
+  caller/session/host restriction. Each method also has a route, naming which attached backend the
   call belongs to: `thread` and `project` are inferred from a first
   parameter named `threadID` / `projectID`, `workspace` from a first
   parameter of type `gitapp.WorkspaceRef`, and everything else declares
   `//ao:route home|selected|all` or the same generator fails the run.
-  See `internal/transport/AGENTS.md` for both vocabularies, the
-  step-up set, and the authz and replay rules.
+  See `internal/transport/AGENTS.md` for the supported values, operations
+  requiring fresh user confirmation, permission checks, and event delivery.
 
 - **`.claude/` and `.playwright-mcp/` MUST stay excluded from the
-  Wails3 dev watcher.** Claude Code's worktree isolation creates
-  full-repo checkouts under `.claude/worktrees/agent-*/`; each one
-  matches thousands of watched extensions, and without the explicit
-  exclude in `build/config.yml#dev_mode.ignore.dir` the fsnotify watch
-  storm crashes the dev process (incident 2026-05-02). `git_ignore:
-  true` alone was not enough; keep the dir-level exclude, and its
-  defensive mirror in `frontend/vite.config.ts#server.watch.ignored`.
+  Wails3 dev watcher.** Nested checkouts can create enough file watches to
+  crash the dev process. Keep explicit directory exclusions in
+  `build/config.yml#dev_mode.ignore.dir` and
+  `frontend/vite.config.ts#server.watch.ignored`; `git_ignore: true` alone
+  does not cover this.
 
 - **Tests MUST never reach a real provider binary or the developer's
-  real provider homes.** `make go-test` runs on machines whose
-  `~/.claude` / `~/.codex` hold live logins. Claude refresh tokens are
-  single-use, so a test that spawns and kills the real CLI can destroy
-  the developer's login hours later, and every leaked session burns
-  real, billed tokens (incidents 2026-07-29 and 2026-08-03: wiped
-  credential slots, 143 leaked real sessions, a dead OAuth grant).
-  Spawning a real CLI is what `make provider-smoke` is for, never
-  `make go-test`. Enforcement lives in `internal/kerneltest` (see its
-  AGENTS.md): `setupE2EApp` and `newTestAppWithStore` poison provider
-  binaries, stub text generation and the Codex catalog, detach
-  HOME/USERPROFILE, and fail any test that still spawns;
+  real provider homes.** Tests use temporary homes and mock providers to
+  avoid changing the developer's login or incurring model charges.
+  Real CLI execution belongs only in `make provider-smoke`.
+  `internal/kerneltest` documents the shared helpers: `setupE2EApp` and
+  `newTestAppWithStore` replace provider binaries with failing test doubles,
+  stub text generation and the Codex catalog, redirect HOME/USERPROFILE,
+  and fail unexpected provider starts;
   `resolveTextGenerationExecutor` refuses real CLI execution inside any
   test binary; the boot prune refuses a store whose `providerHome`
-  stamp mismatches the credential home. Any NEW fixture that constructs
+  stamp mismatches the provider account home. Any new fixture that constructs
   a session-capable `*App`, and any new spawn path, must wire into the
-  same guard (`kerneltest.IsolateSpawns` outside package `main`).
+  same checks (`kerneltest.IsolateSpawns` outside package `main`).
   Mocking is mandatory-by-default, never opt-in per test.
 
 ## Deferred (Not Currently in Scope)

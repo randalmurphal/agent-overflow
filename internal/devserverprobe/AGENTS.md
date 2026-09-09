@@ -9,12 +9,13 @@ ground truth that separates the two.
 
 ## Ownership
 
-- Input validation is the trust boundary: only loopback HTTP(S) URLs
+- Validate the input before dialing: only loopback HTTP(S) URLs
   (`localhost`, `127.0.0.0/8`, `[::1]`) are dialable. Anything else is
   an error, never a dial. The caller is a wire RPC
   (`ProbeDevServerURL`, `//ao:scope host` — it probes THIS machine's
   loopback, so it has no remote form and no session may be granted it),
-  and a prober that dials arbitrary hosts is an SSRF primitive.
+  and allowing arbitrary hosts would let command output direct the backend
+  to probe other machines.
 - `localhost` resolves statically to `127.0.0.1` then `::1` (never
   through the system resolver), so dial targets stay deterministic and
   a server bound to a single address family is still found.

@@ -10,12 +10,13 @@ Design authority: `docs/specs/remote-access.md` §9, "Push" and
 "Notification semantics"; §17 item 4; §18 item 1.
 
 Consumers: `internal/app/app_push.go` (the fan-out and the RPCs),
-`internal/store/push.go` (the tokens and the credential),
+`internal/store/push.go` (the registration ids and Firebase service-account
+data),
 `mobile/android/.../push/` (the renderer on the other end).
 
-## Owner-only, this wave
+## Owner-only sending
 
-The owner's backend sends with the app's own Firebase credential. A
+The owner's backend sends with the app's own Firebase service-account data. A
 friend's backend has no `push_sender` row, so its `Sender` is nil: it
 records registrations and sends nothing. That branch is one nil check
 and it is deliberately the WHOLE of the difference, because the design's
@@ -44,7 +45,7 @@ plugin instead.
 
 ## What a message is allowed to say
 
-The payload transits Google, so §9's redaction rule applies and the
+The payload transits Google, so §9's rules for omitting private content apply and the
 type shape enforces it the same way `notify`'s does: there is nowhere in
 `Message` to put a thread title. `MessageFor` is the only builder, and
 it composes exactly:

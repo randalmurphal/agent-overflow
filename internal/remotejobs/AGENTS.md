@@ -21,12 +21,12 @@ request fields use `omitempty` to preserve old argv request fingerprints.
 Production supplies `Options.LogDir` beneath the durable private data root;
 omitting it creates disposable test storage. Every accepted job has a disk log
 reserved before spawning. Logs are byte rings, capped at 4 GiB per job and 20 GiB
-retained overall (plus small headers), with 256 MiB free-disk headroom. Admission
+retained overall (plus small headers), with 256 MiB free-disk headroom. Acceptance
 reserves active writers' full capacities and expires completed logs oldest-first;
 it never evicts an active writer. Disk failures always drain the process, record
 lost output, and resume capture when storage recovers. A partial ring overwrite
 is explicitly unreadable after a crash, never silently presented at stale byte
-offsets; that verdict and a damaged header are terminal public refusals, and
+offsets; that decision and a damaged header are terminal public refusals, and
 only an unclassified I/O failure advises a retry. Logs sync at completion;
 power loss can still lose recent writes.
 

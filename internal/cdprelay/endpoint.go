@@ -86,7 +86,7 @@ var ErrTunnelDown = errors.New("cdprelay: no browser host tunnel is connected")
 
 // New binds the loopback listener and starts accepting. It opens no
 // outbound connection: the launcher dials the backend, never the reverse
-// (internal/webview2host/AGENTS.md § Direction is the security property).
+// (internal/webview2host/AGENTS.md § The launcher is the only dialer).
 func New(config Config) (*Endpoint, error) {
 	logf := config.Logf
 	if logf == nil {

@@ -15,8 +15,8 @@ without changing its size.
     It disables Wails' automatic window-event JavaScript forwarding. Those
     events have no consumer in our HTTP/WS frontend, and WebKit clears
     transient user activation after native JavaScript evaluation: an update
-    event between mousedown and click broke code-block Copy on macOS
-    (2026-09-04). Go hooks/listeners and explicit page-ticket `ExecJS` remain
+    event between mousedown and click can break code-block Copy on macOS.
+    Go hooks/listeners and explicit page-ticket `ExecJS` remain
     active. Create shell windows here, never directly with `NewWithOptions`.
 
 - `uiwindow.go`
@@ -46,8 +46,8 @@ without changing its size.
     forward" path (OS notification click, second launch of the binary)
     goes through it. NEVER `Window.Restore()` for this: Wails defines
     Restore as "undo minimised / fullscreen / maximised", so revealing a
-    maximized window through it drops the window to its normal size (that
-    was the 2026-09-03 notification-click shrink). `reveal_test.go` fails
+    maximized window through it drops the window to its normal size.
+    `reveal_test.go` fails
     the build on any zero-arg `.Restore()` call in a file importing the
     Wails application package.
 - `pageticket.go`

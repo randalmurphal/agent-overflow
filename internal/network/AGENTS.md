@@ -45,15 +45,11 @@ because from here nothing can tell what that proxy does.
 ## The origin allow-list names EXACT PORTS
 
 `OriginPatterns(bindAll, lanIP, canonicalDomain, port)` takes the port the
-listener actually bound, and every pattern it emits carries it. That is a
-wave-9 correction, not a refinement: the LAN entries were
-`http://127.0.0.1:*`, `http://localhost:*` and `http://<lanIP>:*` from the
-day the transport landed, so a document served by ANY port on this machine
-named an origin the WS upgrade accepted — with this backend's page cookie
-attached to the handshake, because cookies are scoped by host and not by
-port. Nothing ever needed the wildcard; it was written when the list went
-straight to the WebSocket library's matcher and the bound port was not
-threaded down here.
+listener actually bound, and every pattern it emits carries it. A wildcard
+port would let a page served by another port on these hosts claim an origin
+the WS upgrade accepts and send this backend's page cookie with its
+handshake; cookies are scoped by host and not by port. The bound port must
+therefore be threaded through every caller.
 
 Two consequences for callers:
 

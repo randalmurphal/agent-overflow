@@ -28,10 +28,9 @@ editor reachable via the vendor's WSL Remote integration.
   under home, with `~/../…` refused), absolute-canonical pass-through
   when no workspace is supplied, relative-against-workspace joining,
   UNC (`\\`) rejection up front for path AND workspace, and the
-  openability rule. An existing REGULAR FILE opens from anywhere
-  (the deliberate 2026-08-18 carve-out that makes out-of-repo file
-  links like `~/.claude/notes.md` openable), anything that exists but
-  is not a regular file is refused everywhere (a folder open can
+  openability rule. An existing REGULAR FILE opens from anywhere,
+  including out-of-repo links such as `~/.claude/notes.md`. An existing
+  path that is not a regular file is refused everywhere (a folder open can
   execute `.vscode/` tasks the model authored, so in-workspace
   directories are refused too), and a not-yet-existing target opens
   only inside the workspace (the new-file flow; symlink escape closed
@@ -74,10 +73,9 @@ On WSL, an entry is `Available = true` only when one of these is true:
 
 A PATH-resolved Linux-native install (apt-installed `code-oss`, the
 flatpak `cursor`, etc.) is deliberately NOT marked available on WSL.
-Per the WSL editor-bridge feedback memory, those would render via
-WSLg and miss the user's actual editor environment; falling back to
-them silently is worse than reporting "no editor available" so the
-user sees the Remote-WSL setup hint.
+Those editors render through WSLg and do not use the user's Windows
+editor environment, so falling back to them would hide the Remote-WSL
+setup requirement. Report "no editor available" instead.
 
 ### Shim validation
 
@@ -142,7 +140,7 @@ the bridge logic, the shim-content sniff, or the install-path walk.
 
 `internal/AGENTS.md` forbids global mutable state by default; this
 package keeps four globals deliberately. Each is documented here so
-the carve-out is traceable.
+the exception is easy to audit.
 
 - `detectionCache` (`detect.go`) is bounded by `detectionCacheTTL`
   (60s). Backs `DetectEditors` so the App-level methods that call
@@ -154,7 +152,7 @@ the carve-out is traceable.
 - WSL detection lives in `internal/platform` and is exposed here via
   `IsWSL`. The test-friendly `isWSLEnv(env)` still bypasses the live
   cache when fed an injected env so each test can use its own `/proc`
-  fixture without poisoning process state.
+  fixture without changing shared process state.
 - `lookPath` / `startCmd` (`spawn.go`) are exec.LookPath / Cmd.Start
   indirection seams. Tests substitute fakes to record invocations
   without spawning real processes. Production never overrides
@@ -166,7 +164,7 @@ the carve-out is traceable.
   never overrides.
 
 If you add a new editor, do not add additional globals. The four
-above are the package's full carve-out. Extend the catalog and the
+above are the package's full exception set. Extend the catalog and the
 WSL install table instead.
 
 ## Anti-patterns

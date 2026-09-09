@@ -46,12 +46,11 @@ thread launched on `claude-opus-5[1m]`, and an alias (`opus`) matches its
 resolved id. Without that, a user who switches a thread to the 1M tier
 silently loses their override.
 
-Do NOT re-apply `provider.TrimContextMarker` on the way in, which this
-package did until it was removed: the marker rule is Claude's, and layering
-it on top applied it to CODEX ids too. A bracketed codex id would be
-trimmed on this one path and nowhere else in the app, so an entry could
-match here and miss everywhere the same id is compared. The provider package
-owns which providers the rule covers.
+Do NOT re-apply `provider.TrimContextMarker` on the way in: the marker rule is
+Claude's, and applying it here would affect CODEX ids too. A bracketed codex id
+would then be trimmed on this path and nowhere else in the app, so an entry
+could match here and miss everywhere the same id is compared. The provider
+package owns which providers the rule covers.
 
 Entries are evaluated in the user's order and the first enabled entry listing
 the model wins. Disabled entries and entries with a blank prompt are skipped

@@ -12,13 +12,10 @@ app's answers (`app_workflow_memory.go`).
 
 ## Why the tree is keyed by the ROOT run
 
-A campaign is the run TREE, not the run. The live case this came out of is a
-recursive spine that calls itself for the next wave and fans out to lanes that
-each call a child workflow; keying memory by the writing run would give every
-lane its own log that nothing else ever reads, which is precisely the failure
-being fixed. `wave` is the writing run's `call_depth` (the engine's own
-counter, read off the row), so a note says how far down the call chain it was
-written without this package or the app maintaining a parallel one.
+A campaign is the run TREE, not an individual run. Recursive waves and fan-out
+lanes share one log, keyed by the root run. `wave` is the writing run's
+`call_depth` (the engine's own counter, read off the row), so a note records its
+depth without this package or the app maintaining a parallel counter.
 
 Storage is `<configDir>/workflow-memory/<root-run-id>/notes.ndjson`. It is
 deliberately NOT in the repository or a worktree: a campaign's memory is not
@@ -37,9 +34,9 @@ reads.
 budget ahead of every other kind, because it exists specifically to reach the
 next element and losing one to a budget defeats it. Nothing else is ranked.
 
-**`ruling` as an operator-only kind is deliberately absent** and deferred
-pending its own scope conversation. `TestRulingIsNotAKind` is there to make
-adding it a conscious edit rather than a drive-by.
+**`ruling` is not a kind.** Adding an operator-only `ruling` kind requires its
+own scope decision. `TestRulingIsNotAKind` keeps that addition a conscious
+change rather than an accidental vocabulary expansion.
 
 ## Provenance is stamped, never supplied
 
@@ -69,11 +66,8 @@ notes and the log is the record; what is bounded is the INJECTION.
 
 ## Aging is the budget and newest-first ordering, and nothing else
 
-No curation gate, no human graduation step, no decay score. Every note is
-eligible the moment it is written. The prior art this was specified against
-failed in exactly the two ways those mechanisms fail: a heavy knowledge
-subsystem nobody used, and a human-graduation gate that made agent notes a
-write-only log.
+No curation gate, graduation step, or decay score applies. Every note is
+eligible as soon as it is written.
 
 `Render` has two ordering axes answering different questions:
 
@@ -103,7 +97,7 @@ budget the block promises.
 temp-and-rename would mean reading the whole log back and rewriting it, turning
 every note into a read-modify-write over a file that grows all campaign.
 
-A crash can therefore leave a torn FINAL line, and two things follow:
+A crash can therefore leave a torn final line, and two things follow:
 
 - `ReadNotes` skips it and REPORTS it (`Skipped{Line, Reason}`), never fatal.
   The accumulated memory of a whole campaign must survive the crash that
@@ -112,8 +106,8 @@ A crash can therefore leave a torn FINAL line, and two things follow:
   header; nothing about it is silent.
 - `Append` heals the log: a file whose last byte is not a newline gets one
   prepended to the next line, so the tear costs ONE note rather than welding
-  every later note onto the wreckage. Without this the first torn line poisons
-  the log forever, which is what the first version did.
+  every later note onto the incomplete record. Without this, later notes cannot
+  be decoded separately.
 
 A well-formed JSON object that is not a note (an unknown kind, blank text) is
 reported like a torn line rather than rendered: the digest groups by kind, and a

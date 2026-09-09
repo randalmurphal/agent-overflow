@@ -106,8 +106,8 @@ deliberation as the "lightweight coordination" exception.
 
 - Do NOT grow `DeliberationState` into a long-lived cache of channel history. The
   channel is the source of truth; in-memory state is turn coordination only.
-- Do NOT bypass `ChannelService` to write messages directly against `store`.
-  Ordering invariants live here.
+- Write messages through `ChannelService`; direct writes against `store` would
+  skip the ordering invariants that live here.
 - Do NOT couple to a specific provider. `app.go` supplies the participant list.
 
 ## References

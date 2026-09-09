@@ -11,8 +11,9 @@ the same array for the price of a second subprocess.
 
 ## What the wire is (and is not)
 
-Captured from claude 2.1.219 in
-`docs/references/fixtures/claude/initialize_models_20260802.json`, five rows:
+The reference fixture
+`docs/references/fixtures/claude/initialize_models_20260802.json` contains five
+rows:
 
 - It is the CLI's own **picker shortlist**: aliases (`sonnet`, `opus[1m]`), the
   `default` pointer, and canonical ids share one `value` space.
@@ -42,7 +43,7 @@ In priority order (each rule earns its place from the shape above):
    name the CLI ships for it ("Fable") is not per-model and would sit in
    the picker next to the catalog's "Claude Fable 5" as a second, vaguer
    entry for what looks like the same thing.
-3. **The wire owns capability flags** for the models it lists: fast-mode
+3. **The wire owns feature flags** for the models it lists: fast-mode
    support and the reasoning-effort set. It is the running binary's answer; a
    catalog that disagrees is stale. Every override is reported as drift.
 4. **Wire-only models are added**, so a model the CLI ships before we list it
@@ -58,12 +59,10 @@ In priority order (each rule earns its place from the shape above):
    Silently promoting a model to a costlier tier is the one failure mode that
    spends the user's money.
 6. **Learned models survive degraded answers** (`Catalog.Store`, not `Merge`:
-   this rule needs per-identity memory). Rule 1 applied to wire-only models,
-   not just shipped ones: the shortlist's rows are server-gated, and on
-   2026-09-03 one flaky probe answer omitted `claude-fable-5-1` and silently
-   removed it from every picker for hours while the user's threads ran it. A
-   wire that omits a model this identity learned earlier — or reports no
-   models at all — leaves the learned models served (`DriftRetained`). The
+   this rule needs per-identity memory). Rule 1 applies to wire-only models,
+   not just shipped ones: the shortlist is server-gated, so an answer that
+   omits a model this identity learned earlier — or reports no models at all —
+   leaves the learned models served (`DriftRetained`). The
    one subtraction event is the binary behind the entry changing:
    `DropBinary`, called by the provider-binary watcher before its re-probe,
    because a learned model is a claim about the binary that reported it.
@@ -78,9 +77,8 @@ so it is never a toast and never blocks anything.
 
 Two kinds exist for the retention rule. `DriftRetained` marks a learned model
 this wire omitted (or a wire that reported no models over an enriched entry).
-`DriftCleared` fires when a report goes from something to NOTHING — before
-it, enrichment reverting to the plain catalog left no log evidence of when,
-which is exactly how the 2026-09-03 disappearance went unnoticed.
+`DriftCleared` fires when a report goes from something to NOTHING, so a return
+to the plain catalog remains visible to maintainers.
 
 `DriftDisabled` is reported and nothing else: the CLI's schema has a `disabled`
 flag (an org's Zero Data Retention setting excluding a model) but no capture
@@ -92,8 +90,8 @@ worse failure.
 The wire's per-model answer about `--permission-mode auto` is a `*bool`
 on both `claude.WireModel` and `ModelInfo.SupportsAutoMode`, never a
 `Capabilities` marker: nil means "nobody said". That third state is
-load-bearing: the 2026-08-02 capture itself omits the key on the Haiku
-row, and the catalog never states it, so a two-state carrier would
+load-bearing: the reference fixture omits the key on the Haiku row, and the
+catalog never states it, so a two-state carrier would
 manufacture explicit denials for every unlisted model. The consumer
 contract (pinned by the frontend AccessToggle): restrict Auto ONLY on
 an explicit wire `false`; unknown behaves exactly like true, because
@@ -107,14 +105,12 @@ line, because the catalog deliberately has no opinion to disagree with.
   picker. `ModelInfo` has no field for either, and adding one is UI work.
 - **`supportsAdaptiveThinking`**: no AO surface consumes it.
 
-## CLI-version gating (t3-improvements §2.5)
+## CLI-version gating
 
 AO gates the Codex CLI on a minimum version and deliberately does not gate
-Claude (`internal/provider/detect.go`). §2.5 proposed adding hand-maintained
-PER-MODEL minimums so an old CLI could not offer a model it would reject at
-spawn. **That is not being built, and this package is why:** the running
-binary's own model list is a better answer than a version table maintained by
-hand. A model the CLI lists is a model the CLI has.
+Claude (`internal/provider/detect.go`). Claude has no hand-maintained
+per-model minimums: the running binary's own model list is a better answer
+than a version table. A model the CLI lists is a model the CLI has.
 
 What that does NOT license is the inverse. Wire absence is ambiguous (older
 models are absent from a shortlist that still runs them), so the catalog keeps
@@ -142,5 +138,5 @@ entries whose binary changed underneath its path (merge rule 6).
   binary version change.
 - Do NOT spawn anything from here. If a caller wants fresher models, it probes.
 - Do NOT surface drift to the user. It is a note to the maintainer.
-- Do NOT infer capability from an alias string. `[1m]` presence is evidence;
+- Do NOT infer feature support from an alias string. `[1m]` presence is evidence;
   its absence is not, and no other id substring means anything.

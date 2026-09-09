@@ -34,8 +34,8 @@ from a dev build is that profile, never `dev`.
   `window-perf.json`), because a developer expects one `launcher.log` and
   one remembered window placement across dev and prod.
 - `DevToolsPort` is distinct per diagnostic mode (dev 9223, soak 9224,
-  harness 9225, perf 9226) and 0 for production, where CDP is
-  unauthenticated. Every diagnostic instance can be up at once, and two
+  harness 9225, perf 9226) and 0 for production, which does not expose a
+  CDP endpoint. Every diagnostic instance can be up at once, and two
   WebView2s asked for one port leave whichever lost the bind unattachable.
 - Adding a mode means updating `isolatedMode` plus every switch in
   `profile.go` and `singleinstance.go`. A mode missing from one of them

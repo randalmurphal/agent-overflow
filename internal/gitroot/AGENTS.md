@@ -45,9 +45,10 @@ names its private gitdir, and the registration carries a `gitdir` file naming
 that worktree's `.git` file back. Both pointer resolutions above run on that
 back-pointer first (`registrationNamesWorkTree`).
 
-Without that check, resolving is spoofable and the answer is not cosmetic: a
-resolved main root becomes an **auto-created project row at that path**. The
-commondir path needs two files anybody can write (a `.git` pointer plus a
+Without that check, a `.git` pointer can direct resolution to an unrelated
+path, and the answer is not cosmetic: a resolved main root becomes an
+**auto-created project row at that path**. The commondir path needs two files
+anybody can write (a `.git` pointer plus a
 `commondir` naming the target); the pre-2.13 fallback needs ONE, naming a
 gitdir that need not even exist, as long as its path contains
 `/.git/worktrees/`.
@@ -144,8 +145,8 @@ are stamped with canonical roots and macOS `/tmp` is `/private/tmp`.
 
 Layouts are hand-written into `t.TempDir()`. The file contents git writes
 are exactly what the resolver reads, and writing them directly pins those
-contents while spawning nothing. That includes the layouts git would never
-write: a spoofed pointer, a mismatched back-pointer, a corrupt `.git` file.
+contents while spawning nothing. That includes layouts git would never write:
+a forged pointer, a mismatched back-pointer, and a corrupt `.git` file.
 
 `gitroot_fifo_test.go` is `!windows` (no `mkfifo` there) and wraps each call in
 a watchdog, because the defect it guards is a hang. A failed guard must be

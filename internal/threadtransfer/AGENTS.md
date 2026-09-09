@@ -17,13 +17,14 @@ no general orchestration engine. See `docs/specs/conversation-transfer.md`.
   `manifest_hash` survive file cleanup and answer completed status.
 - Copy's sealed archive has independent AO/native identities. Release the
   original at sealing, including while upload/confirmation is pending; another
-  copy or move may then start on the original. Move stays fenced until canceled
-  with acknowledgment or permanently retired. Native copies remain fenced on
-  their source through the native-closure journal.
+  copy or move may then start on the original. Move retains the source ownership
+  fence until canceled with acknowledgment or permanently retired. Native copies
+  retain that fence through the native-closure journal; source execution stays
+  disabled while the fence is held.
 - Retire the source durably before releasing activation proof. Unknown outcomes
   stay pending and are queried on the next run, including after app restart.
 - Source cancellation intent is durable before contacting the destination.
-  Keep execution fenced until it acknowledges that activation is impossible.
+  Keep execution blocked until it acknowledges that activation is impossible.
   The store's commit gate prevents cancellation racing the retirement write.
 - One Source per app serializes operations and bounds concurrent buffers. Use
   app-lifetime contexts for accepted jobs, not frontend connection contexts.
@@ -51,13 +52,13 @@ is durable before acknowledging acceptance, so restart can finish without the
 phone or source online. Only the installer may publish ownership, through the
 store's atomic history/completion transaction. Status reads never wait behind
 validation/installation. App-lifetime jobs own these long operations; HTTP
-control calls only accept them. Preparation touches inert operation scratch,
+control calls only accept them. Preparation touches isolated operation scratch,
 never native provider files or the live workspace.
 
 Cancellation also checks that no durable activation proof has been accepted,
 even while SQL still says prepared. An accepted proof cannot be revoked by a
 late cancel. App installers implement `DestinationDiscarder`: release their
-inert worktree/branch reservations before acknowledging cancellation, then drop
+isolated worktree/branch reservations before acknowledging cancellation, then drop
 the private upload. A failed cleanup stays retryable from the source's durable
 cancel intent. Published workspace identities are never preparation cleanup.
 

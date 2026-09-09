@@ -38,14 +38,12 @@ feature with its own consent conversation.
 
 **`Node` is SINGLE USE, and `Close` is guarded by a started flag.**
 `tsnet.Server.Close` on a server that never ran `Start` dereferences a
-nil backend and PANICS (spike-verified against v1.102.3), and "a disable
-arrives while an enable is still failing" is exactly that shape. So Close
-checks the flag, is idempotent, and bounds its wait on the node's
-teardown — one spike run had stragglers past 30s across 27 cycles, and a
-reconciler that has to answer a person cannot block on them. A restart
-builds a NEW `Node` over the SAME directory, which is what keeps the
-identity; making `Node` itself restartable would mean carrying that flag
-through two more states for no gain.
+nil backend and panics, which is possible when disable races a failed
+enable. `Close` therefore checks the started flag, is idempotent, and
+bounds its teardown wait so reconciliation cannot block indefinitely. A
+restart builds a NEW `Node` over the SAME directory, which keeps the
+identity; making `Node` restartable would add lifecycle states without
+benefit.
 
 **The state directory is key material.** `StateDir(configRoot)` holds
 `tailscaled.state` (the private node key, inside tsnet's persisted prefs

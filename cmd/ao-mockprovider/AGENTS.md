@@ -147,7 +147,7 @@ own their genuine terminal frames and write the interrupt ack/response first.
 
 ### A turn is the unit, not the process
 
-Two engine facts follow from that, and both used to be per-process:
+Two engine facts follow from that and are scoped to each turn:
 
 - **`scenario_done` fires once per TURN.** Under the default
   `afterTurns: repeatLast`, turns 2..N re-run the last scripted turn and
@@ -170,10 +170,9 @@ Two engine facts follow from that, and both used to be per-process:
 Both are visible on the control channel: `advance_released {gate}` and
 `advance_buffered {gate, openGate}` join the report vocabulary, and the
 control server projects them into `MockInfo.openGate` /
-`MockInfo.pendingAdvances` so "which gate is this mock sitting on"
-has an answer that does not require reading stderr. `fixture_error`
-carries what `fixture` / `writeFile` failures and undelivered command
-batches used to say only in the mock's log.
+`MockInfo.pendingAdvances` so "which gate is this mock sitting on" has an
+answer that does not require reading stderr. `fixture_error` carries details
+of `fixture` / `writeFile` failures and undelivered command batches.
 
 ## Claude adapter contract
 
@@ -206,26 +205,14 @@ terminal_reason:aborted_streaming}` shape. Codex interrupted turns end with
 
 ### `control_request` acks are subtype-aware and strict
 
-The mock used to answer every `control_request` with a success carrying
-`{}`. That is worse than useless: `mcp_status` rendered an empty server
-list, `mcp_authenticate` FAILED every time (the app rejects a success
-response with no payload), and (the real cost) an outbound wire-KEY
-bug was invisible, because a mock that acks anything acks a misspelled
-request too. The CLI destructures the fields it wants off `request` and
-never validates the object, so `server_name` where it reads `serverName`
-reads as `undefined` with the round trip, the error path and the status
-projection all working correctly around it. That shipped, for months.
-
-So `writeClaudeControlAck` validates each subtype's REQUIRED keys and
-answers an error `control_response` naming the key it wanted, and
-answers the successful ones with a minimally real payload. The key
-spellings come from `internal/provider/claude`'s
-`TestControlRequestWireKeys` (read off the binary), not from what looks
-consistent, because the CLI mixes camelCase and snake_case per handler
-with no rule (`mcp_toggle.serverName` beside `stop_task.task_id`). A
-subtype the mock has never heard of still gets the permissive `{}`, and
-logs; forward compatibility beats strictness for an assertion nobody has
-written yet.
+`writeClaudeControlAck` validates each subtype's REQUIRED keys and answers an
+error `control_response` naming the missing key. Successful subtypes receive a
+minimally real payload, so status and authentication callers exercise the same
+wire shape as production. Key spellings come from
+`internal/provider/claude`'s `TestControlRequestWireKeys`, because the CLI
+mixes camelCase and snake_case (`mcp_toggle.serverName` beside
+`stop_task.task_id`). Unknown subtypes retain the permissive `{}` response and
+are logged for forward compatibility.
 
 ## Codex adapter contract
 
@@ -247,11 +234,9 @@ does on its own:
   Overflow sends every mid-turn message with `turn/steer` and must never call
   either method; both answer with a JSON-RPC error, which is what turns a
   regrown caller into a failing harness run instead of a duplicated turn.
-  `list` and `delete` DO answer (over an empty queue, since nothing here can
-  fill one) because AO still calls them for the rollback purge and the
-  legacy-row sunset. `thread/queue/update` and `.../reorder` are refused too,
-  for the same reason they always were: a mock more permissive than the app
-  would let a harness run pass against a wrapper nothing verifies.
+  `list` and `delete` DO answer over an empty queue because AO still calls them
+  for the rollback purge and legacy-row sunset. `thread/queue/update` and
+  `.../reorder` are refused for the same ownership rule.
 - **A thread remembers its history mode.** `thread/start` echoes the
   `historyMode` it was asked for (upstream's default, `legacy`, when the
   params say nothing) and RECORDS it under `AO_HARNESS_TRANSCRIPT_HOME`;
@@ -289,16 +274,11 @@ whole history, so an unknown anchor is nonsense and stays an error.
 
 ### An unimplemented method answers -32601, never an empty success
 
-The default branch used to return `{"result":{}}` for anything the mock
-did not recognise. No real app-server does that, and it defeated the
-app's own fallback machinery: `codex.IsMethodUnsupported` keys on
-`-32601`, so under an empty-success default it could never fire and
-every optional surface reported success against a server that had done
-nothing.
-
-The default is now the JSON-RPC MethodNotFound error, which means the
-methods the app calls as a matter of course need real answers or the
-DEFAULT harness experience breaks rather than only the optional
+The default branch returns the JSON-RPC MethodNotFound error. The app's
+fallback machinery (`codex.IsMethodUnsupported`) keys on `-32601`; an empty
+success would make optional surfaces appear to work against a server that did
+nothing. Methods the app calls as a matter of course therefore need real
+answers or the DEFAULT harness experience breaks rather than only the optional
 surfaces. `handleReadRequest` covers those (`account/read`,
 `account/rateLimits/read`, `account/usage/read`, `thread/read`,
 `thread/turns/list`, `thread/settings/update`, `skills/list`,
@@ -306,10 +286,8 @@ surfaces. `handleReadRequest` covers those (`account/read`,
 `thread/backgroundTerminals/list`), each with
 the minimum the app's own decoder needs and nothing invented beyond it
 (a terminating cursor, a `thread.status.type`, an account with a plan).
-`account/rateLimits/read` is the ACCOUNT PROBE's only call, so its
-absence failed every identity read the app makes — adoption after a
-sign-in most visibly, with a JSON-RPC method name in the user's face.
-It reports a plan and NO window: a window carries an absolute
+`account/rateLimits/read` is the ACCOUNT PROBE's only call. It reports a plan
+and NO window: a window carries an absolute
 `resetsAt`, and a hardcoded one is either already in the past or a date
 this file outlives.
 Genuinely optional or newer surfaces (`thread/compact/start`,

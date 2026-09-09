@@ -55,7 +55,7 @@ lines by construction.
   body; context spans get a 1-byte plain pad (the frontend keeps the
   leading space on context lines). Meta/`@@`/`\`-marker lines are plain.
 - **Per-hunk isolation.** Hunks parse as independent documents so a
-  construct left open at the end of one hunk can't poison the next
+  construct left open at the end of one hunk cannot affect the next
   across the invisible gap.
 - **Primed docs splice BOTH sides of the hunk.** `PatchWithContext`
   builds prefix + hunk + suffix from the resolved file content. The

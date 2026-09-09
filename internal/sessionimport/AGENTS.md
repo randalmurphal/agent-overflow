@@ -254,9 +254,10 @@ layer verbatim: `not-imported`, `diverged-local`, `source-missing`,
   carries a wire-reported cost, so "none" is what makes `GetUsageStats` price
   them from `internal/usagecost` at query time.
 
-## Provider storage facts the design rests on
+## Provider storage facts
 
-Spike- and corpus-verified; neither provider documents them.
+The providers do not document these storage details, so the corpus and parser
+tests are the behavioral reference:
 
 - Codex `thread/read` and `thread/turns/list` are LOSSY (2-3 items for a
   90-tool-call thread), so rollouts are parsed directly. The rollout enum is
@@ -270,11 +271,10 @@ Spike- and corpus-verified; neither provider documents them.
   stitched through `logicalParentUuid`. GC'd `tool-results/*.txt` are the
   one unrecoverable loss.
 
-Locked product decisions: one AO thread per Claude leaf (an in-thread branch
+Product decisions: one AO thread per Claude leaf (an in-thread branch
 switcher is a separate future feature); dedup is mandatory (session_ref,
 fork-lineage ancestors, subagent files), which is what makes Import All safe;
-non-active Claude branches materialize LAZILY at first send (an eager cut
-was rejected: gigabytes of copies and it pollutes `claude --resume`); no
+non-active Claude branches materialize LAZILY at first send; no
 "imported" badge, original timestamps, Codex-archived sessions skipped, no
 auto-sync (right-click "Check for new items"); `rememberChatModelProfile` is
 deliberately not called.

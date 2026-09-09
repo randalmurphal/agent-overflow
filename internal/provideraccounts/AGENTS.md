@@ -2,12 +2,11 @@
 
 Multi-account metadata plus the filesystem boundary that activates
 provider-native credentials. Claude's refresh tokens are single-use and
-rotation is serialized on a lockfile scoped to the config home, so almost
-every rule here exists because one wrong write ends a login the user
-cannot recover without signing in again. Root `AGENTS.md` §Permanent
-invariants carries the incident history and the test rules.
+rotation is serialized on a lockfile scoped to the config home. A wrong
+write can end a login the user cannot recover without signing in again.
+Root `AGENTS.md` §Permanent invariants carries the test rules.
 
-## Security boundary
+## Credential and identity rules
 
 - `provider-accounts.json` holds metadata and quota snapshots only. Never
   add tokens, API keys, OAuth URLs, or authorization codes.
@@ -86,11 +85,10 @@ Matching uses email plus org ID only: `OrgName` changes on an org rename.
   `WriteNativeCredentialForTest` is the one deliberate bypass: it
   impersonates the CLI, the actor that legitimately writes a husk.
 - **A backwards slot write is LOGGED, never refused.** `writeCredentialAt`
-  compares `Policy.ChainPosition`. Refusing was implemented and reverted:
-  it drops real rotations, one bad value wedges a slot permanently, and
-  the skip is invisible to callers that re-read the slot. Canonical writes
-  are not ordered at all, since switching accounts legitimately installs
-  an older expiry.
+  compares `Policy.ChainPosition`. Refusing it could drop a real rotation
+  or wedge a slot permanently, while callers that re-read the slot would
+  otherwise see no explanation. Canonical writes are not ordered, since
+  switching accounts legitimately installs an older expiry.
 - **`rollback.go` captures STRUCTURE only.** `RestoreAccountCredential`
   removes a credential or slot the operation introduced and never rewrites
   bytes, because the rolled-back operation is frequently what rotated the
@@ -115,15 +113,15 @@ Matching uses email plus org ID only: `OrgName` changes on an org rename.
   inherited value makes a temporary-home probe write its rotated
   single-use token into the canonical account's Keychain item.
 - **Swapping the canonical credential under live processes is SUPPORTED**
-  (spike-verified 2026-08-18, claude 2.1.234): the CLI resolves its
+  (Claude 2.1.234): the CLI resolves its
   credential from disk per request and concurrent processes serialize
   rotation on the config-home lock. Do not "fix" this with per-account
   `CLAUDE_CONFIG_DIR` isolation, which buys nothing and costs the shared
   `~/.claude` settings, skills, plugins, and transcripts every other
   subsystem reads. So applying a switch needs no session restart, and a
-  live session re-bills to the new account from its next request
-  (`usage_ledger` has no account column, so that spend is unattributable,
-  a known product gap).
+  live session re-bills to the new account from its next request.
+  `usage_ledger` has no account column, so it cannot attribute that spend
+  to the account used for each request.
 - **`PruneOrphanedAccounts` runs only when the `providerHome` stamp
   matches** the home the credentials operate under (`ClaimProviderHome`,
   first claim wins). A store paired with a foreign home, such as a scratch
@@ -136,8 +134,8 @@ Matching uses email plus org ID only: `OrgName` changes on an org rename.
 Every `security(1)` invocation in the codebase lives in
 `claude_keychain.go`, pinned by
 `TestNoSecurityCallsOutsideTheKeychainSeam`. Never add one outside it.
-That file carries the rationale, the incident, and how the production
-backend mirrors Claude Code's keychain/plaintext fallback.
+That file carries the rationale and how the production backend mirrors
+Claude Code's keychain/plaintext fallback.
 
 A temporary home does NOT isolate the Keychain: the active slot's service
 name is fixed regardless of the injected home. `NewCredentials` therefore

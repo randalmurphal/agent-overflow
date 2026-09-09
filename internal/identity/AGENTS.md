@@ -72,7 +72,7 @@ instead of a flag on the connection.
 
 ### And "the row is live" is itself two rows
 
-**Revocation is absolute** (spec §2, owner ruling 2026-08-31): a session is
+**Revocation is absolute** (spec §2): a session is
 live only while its own row AND its device's row are both unrevoked. Every
 consult reads that conjunction — the per-RPC gate, `Verify`, refresh
 rotation, `/auth/ticket`, the connection's interval re-check. `Sessions.Live`
@@ -98,10 +98,9 @@ Three things keep that honest:
 - a session row that appears AFTER the sweep has no entry at all, so its
   first consult is a slow path and the row it reads carries the revocation.
 
-That last case is what the incident turned on, and it is why the
-enforcement is at the consult rather than at the mint. Mint-time refusals
-are real (below) but they are hygiene: a revocation can always land the
-instant after one.
+Enforcement belongs at the consult rather than only at mint time: a
+revocation can land immediately after issuance. Mint-time refusals are still
+required as hygiene.
 
 `TestEveryCredentialProducingCallGoesThroughAChokepoint` is the class gate.
 Four calls bring a credential into existence or keep one alive —
@@ -156,13 +155,9 @@ A second revocation reports `moved == false` and **still closes
 connections**: a connection that survived the first revocation is exactly
 the case worth closing again.
 
-`RevokeDevice` honors that same doctrine, and used not to. The store's
-already-revoked early return meant a re-revoke touched no session, so a
-session that slipped past the first sweep was unreachable through the
-device surface forever — a paired browser kept full access and every later
-revoke was a silent no-op (incident 2026-08-31). It now re-sweeps, and this
-side forgets what came back, closes its sockets, and **moves the generation
-even when nothing came back at all**: what changed is the device row, and a
+`RevokeDevice` honors that same doctrine. It re-sweeps, this side forgets what
+came back, closes its sockets, and **moves the generation even when nothing
+came back at all**: the device row changed, and a
 `Live()` slow path in flight may be holding a joined copy of it. A loop of
 per-session `forget` calls would leave exactly the zero-session case — the
 straggler case — unguarded, which is why `forgetAll` exists and bumps once
@@ -462,13 +457,13 @@ prompt behavior stay live-only by construction.
   at all, spent ones included. Keying on "no unspent rows" would silently
   hand someone who used their last code a set they were never shown.
 
-## The credential this does NOT replace (yet)
+## The launch credential remains
 
 `internal/transport`'s `Credential` is the per-launch page token: one per
 process, not persisted, no device, no scopes, no revocation. It is
 untouched by this package and **still authorizes every request today**.
 
-What changed in wave 5b is that a request may now ALSO name a session.
+Requests may also name a session.
 `internal/app/app_identity.go` supplies the transport's hooks: a request
 carrying no session credential proceeds and names none (every
 launch-credential client — the harness CLI, the e2e rig, a same-host
@@ -478,9 +473,9 @@ connection. A `--connect` stub started from a PAIRING LINK is on the
 other side of that line: it holds no launch credential at all and names
 its own device session on every hop (`internal/deviceclient`).
 
-Phase 3 has since made naming a session REQUIRED where its absence
-cannot be tolerated, and the boundary it drew is the PEER rather than
-the route: a `/ws` upgrade from a peer that is not on this machine must
+Naming a session is REQUIRED where its absence cannot be tolerated, and the
+boundary is the PEER rather than the route: a `/ws` upgrade from a peer that
+is not on this machine must
 name a live session, because a connection with no session id is one
 `CloseSession` has no id to reach and the per-RPC gate has no grant set
 to read. The launch credential is unchanged and still authorizes every
@@ -495,11 +490,11 @@ it — including `/auth/ticket`, whose whole authentication is that hook.
 
 ## The device proof, and why the row decides
 
-`deviceproof.go`. Phase 5 replaced the thumbprint STRING with an ES256
-compact JWS signed over the request (spec §4). A string copied out of a
-page's storage was as good as the key it named, so the old binding bought
-attribution and nothing more; a proof is minted per call, so a copied
-credential is no longer sufficient on any path that binds to a device key.
+`deviceproof.go` uses an ES256 compact JWS signed over the request (spec §4).
+An enrolled key device must present a fresh proof signed by its private key on
+every request that binds to the device. A copied thumbprint or credential is
+not sufficient; the device row's `ProofKind` determines whether a proof is
+required.
 
 - **The row decides what a valid presentation IS, never the
   presentation.** `checkProofAgainstDevice` switches on the device's
@@ -511,9 +506,8 @@ credential is no longer sufficient on any path that binds to a device key.
 - **`bearer` is not a weaker option, it is a different device.** A
   plain-HTTP LAN page is not a secure context, so `crypto.subtle` does not
   exist there at all and no key can be generated. Spec §15 constraint 6
-  states there is deliberately no LAN-HTTP proof path; `ProofBearer` is how
-  that is recorded rather than pretended away, and such a device keeps
-  exactly the behavior it had before phase 5.
+  states there is deliberately no LAN-HTTP proof path; `ProofBearer` records
+  that posture, and such a device keeps its bearer behavior.
 - **The refusal ordering is structural, the same way claims.go's is.**
   `verifiedDeviceProof` is constructed only by `checkProofSignature`'s
   success path, and `withinWindow` and `boundTo` are methods on it. So a
@@ -564,8 +558,7 @@ silent false on those bytes), and its exported JWK carries `ext` and
 A session's `BindingClass` is a property of the CREDENTIAL, not of the
 socket it arrives on, and `loopback-only` is the one class with a
 listener restriction: it is the posture this backend mints for ITSELF
-(`local.go`), so a copy of one must carry no reach at all. Wave 6d2
-turned that from a recorded fact into an enforced one.
+(`local.go`), so a copy of one must carry no reach at all.
 
 **The comparison lives in `internal/app`'s `SessionForRequest`
 (`bindingAdmitsPeer`), and nowhere else.** That hook is the one place in

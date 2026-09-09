@@ -131,25 +131,7 @@ Rules only. The reasoning lives in `docs/specs/workflows-system.md` (section num
 - `PropagatedWorkspaceNeed(workflow, calls)` is the call-aware workspace answer. A workflow
   that calls a writing workflow needs a worktree, because the child never provisions one (§9).
 
-## Grants and reasoning effort
-
-- `grants:` is the CLOSED set of first-party `ao` capabilities a phase's agent may exercise
-  (§5): `start-run`, `schedule`, `update-notes`, `introspect`. An unknown name is a finding.
-  **`report-back` is deliberately not in the v1 set** even though §5 lists it. Grants require
-  an agent session, so a tool phase is a finding; a fan-out phase answers with its units and
-  its join, and a call phase grants nothing. Grants freeze with the snapshot, and
-  `frozenPhaseGrants` (`internal/app`) drops any name this build does not recognize.
-- `effort:` is legal exactly where `provider:`/`model:` are, so it is a finding on a tool
-  phase, a call phase, a fan-out phase, and a call unit.
-- **Validation checks the tier NAME; the app checks the tier against the model.** `effort.go`
-  owns the closed vocabulary (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`,
-  `ultra`), declared rather than imported to keep this package free of `internal/provider`.
-  Which tiers a given model advertises is deliberately not validated, because the catalog is
-  provider-owned and partly live.
-
-## Envelopes
-
-## Reasoning effort
+## Reasoning effort and phase grants
 
 - `effort:` pins the reasoning tier of one model turn. It is legal **exactly
   where `provider:`/`model:` are** — an agent-driver phase running its own turn,
@@ -164,27 +146,22 @@ Rules only. The reasoning lives in `docs/specs/workflows-system.md` (section num
   stray `provider:` gets: it is one rule, not a parallel one.
 - **Validation checks the tier NAME; the app checks the tier against the
   model.** `effort.go` owns the closed vocabulary (`none`, `minimal`, `low`,
-  `medium`, `high`, `xhigh`, `max`, `ultra`) and an unknown name is a finding —
-  a typo must not read as "run at the model's default". Which of those tiers a
-  *given* model advertises is deliberately NOT validated: the catalog is
-  provider-owned and partly live (Codex's comes off the app-server, Claude's is
-  probe-enriched), so a static rule would make a definition's validity depend on
-  data the author cannot see in the YAML and cannot pin. An authored tier the
-  model does not advertise is coerced onto that model's own default at thread
-  creation instead (`createWorkflowThread`, `internal/app`), which is also where the
-  `threads.reasoning_effort` CHECK constraint is satisfied.
+  `medium`, `high`, `xhigh`, `max`, `ultra`) and an unknown name is a finding.
+  The catalog is provider-owned and partly live (Codex's comes from the
+  app-server, Claude's is probe-enriched), so model-specific tier support is
+  not validated here. An authored tier the model does not advertise is coerced
+  to that model's default at thread creation (`createWorkflowThread`,
+  `internal/app`), which also satisfies the `threads.reasoning_effort` CHECK.
 - The vocabulary is declared here rather than imported because this package
   stays free of `internal/provider`. The two lists are held together by
   `TestWorkflowEffortTiersMatchTheProviderReasoningEfforts` in `internal/app`,
   which compares them in both directions and in order.
 
-## Phase grants
-
 - A phase may declare `grants:`, the first-party `ao` capabilities its agent is
-  allowed to exercise (spec §5). The set is CLOSED — `start-run`, `schedule`,
-  `update-notes`, `introspect`, `resolve`, `remote-commands` — and lives in `grants.go`. An unknown name is a
-  finding rather than an ignored line, because a typo would otherwise read as
-  "this phase deliberately has no authority".
+  allowed to exercise (spec §5). The CLOSED set in `grants.go` is
+  `start-run`, `schedule`, `update-notes`, `introspect`, `resolve`, and
+  `remote-commands`; an unknown name or duplicate is a finding rather than an
+  ignored line.
 - Grants require an agent session, which `phaseHoldsAgentSession` is the one
   predicate for. A `driver: tool` phase runs a command, not a session that could
   hold the credentials, so `grants:` on one is a finding. A fan-out phase has no
@@ -200,14 +177,12 @@ Rules only. The reasoning lives in `docs/specs/workflows-system.md` (section num
   (`internal/app/app_session_runtime.go`) reads them back and drops any name this build does not
   recognize, so an old snapshot cannot hand out authority the code cannot
   enforce.
-- **`report-back` is deliberately NOT in the v1 set** even though spec §5 lists
-  it. The other four map onto CLI commands that already exist; `report-back`
-  does not yet have a defined destination or payload contract, and shipping a
-  grant name that authorizes nothing would be a promise the enforcement layer
-  cannot keep. It stays out until it is ratified with a contract; §5 is
-  unchanged and the orchestrator owns surfacing the gap.
+- **`report-back` is absent from the v1 set** even though spec §5 lists it. Its
+  destination and payload contract are not defined, so admitting a grant that
+  the enforcement layer cannot honor would mislead authors. Keep it out until
+  that contract is ratified; the orchestrator surfaces the gap.
 
-## Unit and join envelopes
+## Envelopes
 
 - `EnvelopeContract` is the one thing schema generation and post-validation are
   written against, so a unit cannot drift from the rules a phase is held to.
@@ -323,5 +298,5 @@ Rules only. The reasoning lives in `docs/specs/workflows-system.md` (section num
 ## References
 
 - `docs/specs/workflows-system.md` for §5 grants, §8 call scoping, and §9 workspace.
-- `docs/specs/workflows-system-decisions.md` for D29, D44, D45, and incident D-C1.
+- `docs/specs/workflows-system-decisions.md` for D29, D44, and D45.
 - `internal/workflow/engine/AGENTS.md` for what the engine composes and enforces at runtime.

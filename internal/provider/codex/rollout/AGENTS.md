@@ -201,8 +201,7 @@ WITHIN one `Parse`, reuse is knowable and is the converter's job.
 records written after a settle mint a synthetic id instead of re-claiming the
 wire one, a `task_complete` racing an abort is dropped rather than re-opened,
 and a `task_started` whose id `ensureTurn` already opened adopts that turn.
-Before this, 122 of 1297 real rollouts hard-failed first import
-(`turns_reopen_test.go`, 2026-08-08).
+`turns_reopen_test.go` covers these transitions.
 
 ## Tool correlation
 
@@ -219,7 +218,7 @@ the open call and the output line settles it. A known call merges into the
 completion. An unknown call with a self-contained record becomes its own tool
 row: a patch applied from inside an `exec` script is stamped with a synthetic
 `exec-<uuid>` call id that appears nowhere else in the file, and dropping
-those turned ~5,600 real diffs into placeholders in corpus testing. An unknown
+those would turn valid diffs into placeholders. An unknown
 call with a contentless record becomes an `import_unavailable: "exec-detail"`
 row plus a `codex-unmatched-tool-end` warning. `web_search_call` is
 `selfCompleting`, having no `*_output` response item and its own terminal
@@ -285,7 +284,7 @@ history is a refusal; `forked_from_ordinal_exclusive` names the logical parent
 and is not a coordinate on the child's rewritten file. The provider then
 rebuilds its own SQLite history index on resume. Copying a prefix chain alone
 preserves model context but leaves that index empty in a fresh home, breaking
-historical reverts (CLI 0.153.4 probe). `TransferGraph` likewise visits only retained
+historical reverts. `TransferGraph` likewise visits only retained
 prefix records: discarded future collaboration calls cannot pull unrelated
 sessions into a transfer. The session importer still reports `history_base` gaps;
 this transfer-specific materialization does not change its parsing contract.
@@ -294,7 +293,7 @@ Current reverted filenames carry `<thread-id>_<rollout-id>`. `SessionIDFromPath`
 selects the first identity for native metadata; `rolloutFileIDs` supplies the
 second for prefix discovery and byte coordinates. Copy rewrites BOTH filename
 identities. A trailing UUID parser would confuse ownership with a history segment
-and reject current revert files (verified with CLI 0.153.4, 2026-09-05).
+and reject current revert files.
 Collaboration output can be a string or content-item array; decode structured
 results only in `input_text`, preserving image/audio/encrypted items. Nested JSON
 uses `UseNumber` too: UUID remapping must not round unrelated integer content.

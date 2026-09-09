@@ -9,13 +9,12 @@ pairing. A frontend-only controller's own capability comes from the raw HOME
 hello, not the selected computer. Pairing copy must explain the group join;
 existing ordinary sessions never gain personal membership automatically.
 
-The capability is not the whole verdict. The host allows a personal join only
+The capability alone does not authorize a personal join. The host allows one only
 from its own window or an active member (`ownPairingAdmin`), and a
-passkey-signed browser or an ordinary full-access device is neither — it used
-to be offered a **My device** that always failed with a toast (owner ruling,
-2026-09-08). `ListOwnDevices().canEnroll` is the backend's answer about the
-CALLER; `DevicesSection` reads it ahead of the modal so the choice stage opens
-with it, and `PairDeviceModal` (and `ComputerPairingWindow` through
+passkey-signed browser or an ordinary full-access device is neither and must
+not be offered **My device**. `ListOwnDevices().canEnroll` is the backend's
+answer for the caller. `DevicesSection` reads it ahead of the modal so the
+choice stage opens with it, and `PairDeviceModal` (and `ComputerPairingWindow` through
 `ownEnroll`) then offers ordinary **Full access** / **View only** — both of
 which that backend honours — plus one line saying where the personal option
 lives. Unknown (an old backend, a failed read) keeps the capability's offer.

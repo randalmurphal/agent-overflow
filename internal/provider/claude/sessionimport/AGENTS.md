@@ -44,17 +44,15 @@ through.
   selection; indexed `ConvertBranch` remains for legacy branch-thread
   refresh and explicit branch tools.
 
-This shape is the difference between "a 220 MB transcript costs 220 MB"
-and "it costs 0.5 to 0.9 GB": decoding every line into `map[string]any`
-up front retains 2.2 to 4.2 times the source size. **A change that
-reintroduces a whole-file decode, or converts every branch when the
-caller needs one, undoes this.**
+Decoding every line into `map[string]any` up front multiplies a transcript's
+memory use. **A change that reintroduces a whole-file decode, or converts every
+branch when the caller needs one, violates this bound.**
 
 Two ceilings, both failing the ONE session rather than the import:
 
 | Limit | Value | Behaviour |
 |---|---|---|
-| One line | 16 MB | Skipped, counted, reported as a `transcript-oversized-line` warning; the scan keeps reading past it. The row is absent from the DAG, which can leave its children rooting branches of their own: a hole, not an abandoned file. A scanner whose over-long token is TERMINAL does not belong here; that is what failed a whole session on one runaway `tool_result`. |
+| One line | 16 MB | Skipped, counted, reported as a `transcript-oversized-line` warning; the scan keeps reading past it. The row is absent from the DAG, which can leave its children rooting branches of their own: a hole, not an abandoned file. A scanner whose over-long token is TERMINAL would fail the whole session on one runaway `tool_result` and does not belong here. |
 | Whole file | 1 GB | `LoadSession` refuses on the STAT, before reading a byte, with `ErrTranscriptTooLarge` and user-facing prose naming the file. `ImportOne` passes it through so one session is skipped and the rest of an "Import All" is unaffected. |
 
 Listing is cheaper still and must stay that way: a stat plus the first
@@ -79,9 +77,8 @@ releases, so `BuildBranches` keeps the full unfiltered DAG and
 deterministic leaf ordering.
 
 Bending the live path to answer both would put an import concern inside
-the code that decides whether a user's resume succeeds, the
-highest-consequence path in the Claude integration (invariant 28, and the
-BSOD resume-filter incident). The two are allowed to disagree.
+the code that decides whether a user's resume succeeds, the highest-consequence
+path in the Claude integration (invariant 28). The two are allowed to disagree.
 
 What is NOT duplicated is row admission and parent resolution. Those come
 from `sessionfork`, which owns the rules and their rationale (see its

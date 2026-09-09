@@ -180,8 +180,8 @@ verb's answer waits for the runner start it dispatched, is 20 s
 (`runnerStartReplyBudget`, `internal/workflow/engine/reply_budget.go`). A
 backend that answers second turns a verb it has ALREADY COMMITTED into `context
 deadline exceeded` here, and the operator's retry then meets an FSM refusal for
-the state their first call produced (incident 2026-08-15). Lowering
-`rpcTimeout`, or raising either hold, breaks it. Change them together.
+the state their first call produced. Lowering `rpcTimeout`, or raising either
+hold, breaks the ordering; change them together.
 
 `--json` prints the app's own result document verbatim, and human rendering
 decodes only the fields it prints into narrow local structs, so the CLI never
@@ -282,8 +282,9 @@ Sized so the next verb is readable from the output (D38).
   reader never has to guess what 25 is. **A run with no ceiling prints no budget
   line at all**, because most runs are that run and a `budget=none` on each of
   them is a field a reader learns to skip.
-- Untrusted values (park causes, unit notes, envelope outputs, memory prose and
-  its cited paths) are quoted through `internal/untrustedtext` and bounded
+- Values that may contain model, runner, or operator text (park causes, unit
+  notes, envelope outputs, memory prose and its cited paths) are quoted through
+  `internal/untrustedtext` and bounded
   (`maxCauseRunes`, `maxUnitNoteRunes`). There is no leading data notice: a
   command result the caller asked for is not an injected message. Narrative
   CONTENT is printed verbatim, because it is the point of the command.
@@ -349,7 +350,7 @@ because the status is not the whole answer: **a pause tears its in-flight units
 down `failed` with an interrupted note** — there is no interrupted unit status,
 and `failed` is exactly what the repair verbs recover — so a reader given only
 the ids and the status reads their own pause as a wave of agent failures. The
-note is quoted as untrusted data (a runner's error text lands in it) and bounded
+note is quoted as data (a runner's error text lands in it) and bounded
 at `maxUnitNoteRunes`, like the park cause beside it; `run inspect --phase <id>`
 prints it whole on the unit's own line. A unit with no note contributes no line —
 the run line already named it. `run status` alone additionally renders one
@@ -368,7 +369,7 @@ attempt carries no value at all, because that is every attempt of every run that
 has never looped. `cause=` is the ENGINE's own
 diagnosis of a park (`store` v51's `park_cause`) — the worktree that would not
 cut, the phase missing from the snapshot, the budget that ran out — quoted as
-untrusted data and bounded at `maxCauseRunes`, because a status block carries
+data and bounded at `maxCauseRunes`, because a status block carries
 one line per attempt. It is absent for every attempt that rested on its own
 envelope, and for the reasons that name their own cause. Before it existed, an
 engine-side park was diagnosable only from the filesystem.
@@ -388,8 +389,6 @@ computes the percent itself; a CLI that recomputed the share would be a second
 answer to "how much is left". **A run with no ceiling prints no budget line at
 all** — most runs are that run, and a `budget=none` on each of them is a field a
 reader learns to skip on the one surface they scan for what the run needs.
-Before this, a ceiling was enforced, announced once at the park, and invisible
-every moment before that.
 
 Failed units and phase attempts
 are both resolved on the single-run read only — a list would pay an extra query
@@ -403,12 +402,8 @@ prints the app's own `[]`.
 ## The read verbs, and their documented `--json` shapes
 
 `run status` answers where a run is. `run inspect` and `run narrative` answer
-what it *is*, and they exist because the alternative was measured: an agent
-supervising a multi-day campaign ran 45 raw SQLite queries against the live
-database and 79 hand-assembled narrative-file reads, because no verb exposed a
-run's worktree, branch, seeds, called runs, or any attempt's outputs. Everything
-they return was already persisted. Neither adds state; both stay narrow for the
-reason `run status` does — an agent's context window pays per byte.
+what it *is*, from data already persisted. Neither adds state; both stay narrow
+for the same reason as `run status`: an agent's context window pays per byte.
 
 `run inspect <run-id>` is the one-call picture: the `run status` document
 unchanged, plus the worktree/branch/base-branch the work happens on, the seeds
@@ -547,13 +542,6 @@ block format is unit-testable without a database. That resolver is NOT a bound
 method — the block never reaches the frontend. The composer holds only the
 literal word `/workflow`, and the send path appends the block to the
 provider-bound payload (D31, `app_chat_bar.go`).
-
-The app-side resolver that produces the live data is `workflowComposerBlock`
-(`app_workflow_composer.go`), and the split exists so the block format is
-unit-testable without a database. That resolver is NOT a bound method: the block
-never reaches the frontend. The composer holds only the literal word
-`/workflow`, and the send path appends the block to the provider-bound payload
-(D31, `app_composer_commands.go`).
 
 The block also carries the **reason to verb repair map** (`composerRepair`,
 D38): every park reason a CLI verb settles, the verb, and what taking it does.

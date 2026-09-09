@@ -189,11 +189,8 @@ Rules that live in this package:
   returns a `*TerminalAttachment`, and everything a client armed is given
   back through that one handle. The app mints one per CONNECTION and
   registers its `Release` with the socket's teardown, so a client that
-  dies mid-take-control gives the lease back on its own. Before this the
-  lease was one session-wide `bool`: a dead socket left it held and every
-  `Send` on the thread was refused until the session restarted, and a
-  second attach displaced the first viewer's sink while either detach
-  stripped the other's lease.
+  dies mid-take-control gives the lease back on its own. The lease is per
+  attachment, while the shared live tee stays active until the last release.
 - **The input lease is the arbitration, and it has ONE holder.**
   `WriteInput` is refused unless the CALLING attachment holds the lease,
   so neither a read-only attach nor a second pane watching over the
@@ -225,18 +222,17 @@ MCP auth and OAuth, and one-off native dialogs such as sensitive-path
 edits. AO never parses the TUI to DECIDE an answer; at most it de-ANSIs
 coarsely to notice a stall and fetch the human.
 
-## Security boundary
+## Credential and hook handling
 
 - **The gateway forwards credentials untouched and never logs them.**
   Production stores AO-normalized events only. Raw body capture is
   dev-only, local-only, short-retention, with credential headers
   redacted. Never commit fresh raw captures.
-- **The hook relay is a privileged local boundary.** Loopback-only, with
-  a per-session capability token checked in constant time
-  (`crypto/subtle`) plus a loopback-peer check. Reject browser and
-  LAN-origin calls.
-- The hook child (`hookcmd.go`) is FAIL-OPEN: any error exits 0 with no
-  stdout, which the CLI reads as "observe, do not interfere".
+- **The hook relay accepts only its local caller.** It is loopback-only,
+  checks a per-session capability token in constant time (`crypto/subtle`),
+  and verifies the loopback peer. Reject browser- and LAN-origin calls.
+- The hook child (`hookcmd.go`) treats errors as observation-only: any error
+  exits 0 with no stdout, which the CLI reads as "observe, do not interfere".
 
 ## Provider-package discipline
 

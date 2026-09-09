@@ -71,8 +71,8 @@ session for replay on reconnect.
 - Do NOT mutate a PTY's winsize outside `Session.Resize` /
   `Session.Refresh`. Those serialize on `resizeMu` so Refresh's
   shrink→restore nudge can't be clobbered by a concurrent resize. A new
-  path that calls `Process.Resize` (or `pty.resize`) directly bypasses
-  that lock and reopens the lost-update race
+  path that calls `Process.Resize` (or `pty.resize`) directly skips that lock
+  and reopens the lost-update race
   (`TestManagerRefreshSerializesWithConcurrentResize` guards it).
 
 ## References

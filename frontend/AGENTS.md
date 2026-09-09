@@ -63,7 +63,7 @@ stack sites would make the supposed cap unbounded.
 Plain-text clipboard and copy-button failures must reach `utils/clipboard.ts#reportCopyFailure`,
 whose diagnostic sink is installed by `frontendErrorCapture`. A caught error
 sent only to `console.error` disappears in production, where the inspector is
-disabled (macOS copy-button report, 2026-09-04). Keep the diagnostic message
+disabled. Keep the diagnostic message
 constant, put error details in the detail field, and never log the copied
 payload. Plain-text writes capture focus and user activation before awaiting
 the write so the failure log distinguishes initial state from rejection state.
@@ -156,8 +156,8 @@ What compact changes, and where:
   control and an empty thread screen has no back button.
   Because the swap is INHERITED visibility, an inline
   `visibility: visible` anywhere under a screen punches through it and
-  paints over the other screen — the timeline's warm-up gate did exactly
-  that on a real phone (2026-09-04). A style that means "not hidden"
+  paints over the other screen — the timeline's warm-up gate can do the same
+  on a real phone. A style that means "not hidden"
   must clear the property (`undefined` / `''`), never set `visible`;
   the compact back-navigation spec fails on any element that still
   computes visible inside the hidden screen. Screen-level opacity additionally
@@ -214,12 +214,12 @@ What compact changes, and where:
   `composer-pickers-rollup` (`ComposerPickersRollup`), whose rows open
   the same registry handles the chords do; the pickers stay mounted
   under it. The model and the meters are what a phone reader reads
-  before sending (owner ruling, 2026-09-04), so they never yield.
+  before sending, so they never yield.
   `composerToolbarDensity.ts` documents the ladder. The picker box the
   rung hides is `shrink-0` on purpose: a box allowed below its content
   width let the pickers paint over the meters while the toolbar's
-  `scrollWidth` still read as fitting, so the ladder never reached the
-  rung it was built for (first phone session, 2026-09-04).
+  `scrollWidth` still read as fitting, so the box must remain `shrink-0`
+  until the minimal rung.
   The model trigger must also resist shrinking until the other pickers
   roll up; only the minimal rung may ellipsize its label. Otherwise a
   shrinkable model silently loses all its text while the toolbar still
@@ -269,8 +269,8 @@ that no longer offends fails too.
    neither. The allowlisted exceptions all consume-and-drop their payload.
 3. Authored layer promotion is prohibited app-wide: never a conditional
    `will-change`, never a promote/demote lease. A second paint position
-   outside the `scrollTop` chokepoint left WebView2 presenting stale
-   pixels while state, DOM and input stayed live. The one carve-out is
+   outside the `scrollTop` chokepoint can leave WebView2 presenting stale
+   pixels while state, DOM and input stay live. The one carve-out is
    `will-change: scroll-position` on `.pane-scroll-surface`, where the
    scroll offset IS the chokepoint's value.
 4. `lib/harness/` is reachable only through the dynamic import in
@@ -316,9 +316,8 @@ Print Doctrine, directory rules in
 [`chat/AGENTS.md`](src/lib/components/chat/AGENTS.md).
 
 - A standing animation is STEPPED. Smoothly interpolated and repeating
-  forever, it pins GPU frame production to panel refresh for as long as
-  it is on screen: one 6px pulsing dot was a standing 165 presents/sec
-  client that stuttered other applications (2026-07-04). Use
+  forever pins GPU frame production to panel refresh for as long as it is
+  on screen. Use
   `primitives/SteppedSpinner.svelte` or step a sprite strip. Guard:
   `timelineKeyframeAnimations.test.ts` rule 1, run over all of `app.css`
   because the hazard is document-wide.
@@ -411,8 +410,8 @@ CLIENT MACHINE, so a write-blocked session keeps its own locally (§9.6).
 - A render throw is contained, never page-wide. Uncaught, a throw inside
   an update flush aborts the whole batch and every region the traversal
   had not reached keeps its stale DOM for good: a composer that will not
-  clear after its send went through, a reveal stopped mid-message
-  (2026-08-29, 2026-09-04). Every pane body (`panes/PaneHost.svelte`),
+  clear after its send went through, a reveal stopped mid-message. Every
+  pane body (`panes/PaneHost.svelte`),
   the thread list (`sidebar/Sidebar.svelte`) and the review pane sit in
   `shared/RenderBoundary.svelte`, which renders the failure in place
   with a Retry and records it through `reportFrontendDiagnostic`
@@ -434,15 +433,11 @@ and the frame-level `scrollInterleavings.test.ts`) plus
 
 A globally suppressed engine warning is a defect-ledger entry, not a
 config setting. "ResizeObserver loop completed with undelivered
-notifications" was filtered out of the browser suite's error sink as
-benign noise, and it hid a user-visible stale-frame paint bug for the
-whole 2026-08-28 session: an undelivered notification means the
-observer's write slid past the frame it belonged to, which is precisely
-a row painting last frame's geometry. Suppress at the narrowest scope
-that unblocks the test, name the defect it stands for, and pair it with
-an assertion that the suppressed condition does not occur where it
-matters — never a suite-wide filter. The two real instances are
-documented at their sites: `MessageTimeline.svelte`'s
+notifications" can indicate that an observer's write missed its frame and
+left a row with stale geometry. Suppress at the narrowest scope that unblocks
+the test, name the defect it stands for, and pair it with an assertion that
+the suppressed condition does not occur where it matters — never a suite-wide
+filter. The two instances are documented at their sites: `MessageTimeline.svelte`'s
 `observeScrollSurfaceContentWidth` (ancestor resolved before row
 observers) and `TimelineVirtualizer.svelte`'s
 `deferNewRowObservationUntilNextFrame` (overscan rows registered next
@@ -456,48 +451,35 @@ The shared browser setup owns that reset, not individual geometry fixtures.
 A stateful door gets a transition test, not just an on-state assertion.
 `test/helpers/transitions.ts` drives on→off→on, teardown twice, a second
 engagement, and teardown-mid-flight, comparing the state you name after
-every lap. The leaks the 2026-08 perf session found by hand all lived in
-the SECOND lap — a re-register that duplicated a sink, a toggle that kept
-a stale checkpoint, a cache that carried the previous mode.
+every lap. This catches duplicate registrations, stale checkpoints, and caches
+that carry the previous mode.
 
 A timer that hands work to rAF owns BOTH handles. Cancel both on
 supersession and detach, and invalidate already-dispatched callbacks by
-generation. The scroll observer's resize-clear used to outlive detach
-and erase a new attachment's identical stamp (`scroll/observers.test.ts`).
+generation. `scroll/observers.test.ts` covers the resize-clear callback after
+detach.
 
 A deterministic CPU sweep gets a contention-sized budget, never the
 5s default. Vitest fans files across one fork per core, so a sweep's
-wall time scales with whatever else the gate is running — three
-markdown sweeps sitting at 48-62% of their budgets on an idle core all
-failed the same 2026-08-30 full run at ~1.6x contention, green in
-isolation every time. Size the budget as a wedged-runtime tripwire
+wall time scales with whatever else the gate is running. Size the budget as
+a wedged-runtime tripwire
 (10x+ idle cost, stated in a comment at the timeout), and put the real
 hang guard in the loop itself: a bounded corpus, or an explicit
 iteration cap that throws.
 
 A wait that gives up must FAIL, and its budget is wall-clock, never a
-count of loop turns. Both halves came from the same 2026-08-30 flake:
-`harnessBridge.test.ts`'s poll helper spent 500 `setTimeout(0)` hops and
-then RETURNED, so a cold dynamic import that outran them left the case
-asserting against state that had not arrived — and the arrival then
-landed inside the NEXT case, past the `afterEach` that had just zeroed
-the counters. One slow import, two failing tests, neither naming the
-wait. The event loop spins hops happily while a starved worker gets no
-CPU, so hops measure the fast machine rather than the work.
+count of loop turns. The event loop can spin hops while a starved worker
+gets no CPU, so hops measure the fast machine rather than the work.
 
-Do not quantize a continuous measurement in an assertion. The same
-session's second flake compared which 125ms slot two aligned animations
-floored into, when what the aligner promises is that their PHASES agree
-to within a frame — a pair a millisecond either side of a slot boundary
-failed a mechanism that was working. Assert the distance, with the
-tolerance the mechanism actually claims.
+Do not quantize a continuous measurement in an assertion. If the aligner
+promises that animation PHASES agree to within a frame, assert the distance
+with the tolerance the mechanism actually claims.
 
 `vi.mock` a shared store with an `importOriginal` spread, never a
 whole-module factory. A factory listing only the exports one test drives
 turns every LATER export of that module into `undefined` for it, and the
-failure lands in an unrelated file (adding `isMethodUnavailableError` to
-`transportStatus.svelte.ts` broke five suites that only wanted
-`getTransportStatus`).
+failure can land in an unrelated file. Preserve all other exports with
+`importOriginal`.
 
 `vi.mock` also does not reliably reach `.svelte.ts` importers: a mock was
 observed replacing the binding seen by plain `.ts` importers while
@@ -511,9 +493,7 @@ that renders the component, not just the one that asserts on it. The
 mock dispatcher throws SYNCHRONOUSLY for an unmocked name, so the
 `try/catch` around the load runs its `addToast` inside the `$effect`
 flush, and Svelte reports `effect_update_depth_exceeded` instead of the
-name that was missing. Adding the phone-push status read to
-`NotificationsSection` failed four unrelated settings suites that way
-(2026-09-02); the fix is one `setBindingMock` per suite, and
+missing name. Add one `setBindingMock` per suite, and
 `test/integration/_helpers.ts#installAppDefaults` is where the whole-App
 ones belong.
 
@@ -546,37 +526,35 @@ LICENSE — there is no `vendor/` tree and no divergence ledger. Never edit
 `node_modules`: packages are hardlinked from the pnpm store, so an edit
 corrupts every project on the machine.
 
-The markdown pipeline is the one adoption so far, at
+The markdown pipeline lives at
 [`src/lib/markdown/`](src/lib/markdown/AGENTS.md) — `svelte-streamdown`
-(formerly `vendor/svelte-streamdown/`) plus marked's lexing half in
+plus marked's lexing half in
 `parser/engine/`, which replaced both the `marked` dependency and its
 pnpm patch. Fix parser bugs there, never duplicating the fix in
 `markdownEnhance.ts` or the host wrappers. Its area guide owns the parser
-map, the host seams, the path-relative URL security boundary and the test
-map.
+map, the host seams, relative-URL validation and the test map.
 
 `patches/svelte@5.57.0.patch` has six hunks, each dropping when its
 suite passes against an unpatched release (the two deliberate
 divergences never will; their rows say so).
 `svelte-patch-zombie-leak.test.ts` and
 `svelte-patch-event-slot.test.ts` are two more suites with no hunk
-left, guarding leak classes upstream fixed in 5.56.5 and 5.57.0; both
-must keep passing UNPATCHED.
+left; they guard leak classes already fixed upstream and must keep passing
+UNPATCHED.
 
 | Hunk | What it fixes | Suite |
 |---|---|---|
 | ownerless-roots | `$effect.root` inherited the creating component's context and parent, so store-level roots pinned dead row instances. Deliberate divergence, no upstream issue: carry forward, re-evaluate every bump. | `svelte-patch-ownerless-roots.test.ts` |
 | destroy-pass-errors | A throwing user `$effect` teardown aborted the sibling-destroy loop, leaving queued effects subscribed and detached DOM retained for the parent's lifetime. Upstream PR [#18566](https://github.com/sveltejs/svelte/pull/18566). | `svelte-patch-destroy-pass.test.ts` |
-| flush-loop-caps | Both synchronous flush loops were unbounded, so a cycle was an unreportable renderer freeze (2026-08-07: WebView2 wedged 8+ minutes, no paint, no error, nothing in any log). The caps abort and throw a svelte-shaped error that `utils/frontendErrorCapture.ts` persists, message kept in production. PR candidate. | `svelte-patch-flush-caps.test.ts` |
-| each-key-repair | A repeated key in a keyed `{#each}` threw `each_key_duplicate` from inside the flush, aborting the batch and freezing every region it had not reached (2026-08-29: 400+ hits behind the pane-freeze incident; 2026-09-04: a composer that kept its sent text). The hunk repairs the repeat to a unique key (`key\u0000#n`, stable across runs for string and number keys; a fresh Symbol otherwise) and reports it once per block through `reportError`, so `utils/frontendErrorCapture.ts` records the key value where the throw used to land. Deliberate divergence: upstream throws by design. | `svelte-patch-each-key-repair.test.ts` |
-| reconnect-dedupe | `get()` on a disconnected, dirty, previously-run derived registered it twice in one dep, so losing its last reader left that dep and everything upstream connected for the app's life (2026-08-23 heap snapshot: a closed pane's 3.4k detached nodes). PR candidate. | `svelte-patch-reconnect-dedupe.test.ts`, `chatview-dom-retention.test.ts` |
-| flip-phases | An animated keyed-each reorder interleaved abort / read / create per item, forcing up to N style-layout passes in one microtask (34.6ms of gBCR self-time in a sidebar-reorder burst, 2026-08-26). Three phased loops instead: identical geometry, one forced pass. PR candidate. | `svelte-patch-flip-phases.test.ts` |
+| flush-loop-caps | Both synchronous flush loops were unbounded, so a cycle could freeze rendering without a report. The caps abort and throw a svelte-shaped error that `utils/frontendErrorCapture.ts` persists, with the message kept in production. | `svelte-patch-flush-caps.test.ts` |
+| each-key-repair | A repeated key in a keyed `{#each}` threw `each_key_duplicate` from inside the flush, aborting the batch. The hunk repairs the repeat to a unique key (`key\u0000#n`, stable across runs for string and number keys; a fresh Symbol otherwise) and reports it once per block through `reportError`, so `utils/frontendErrorCapture.ts` records the key value where the throw used to land. Deliberate divergence: upstream throws by design. | `svelte-patch-each-key-repair.test.ts` |
+| reconnect-dedupe | `get()` on a disconnected, dirty, previously-run derived could register it twice in one dependency, keeping the dependency and everything upstream connected after its last reader left. | `svelte-patch-reconnect-dedupe.test.ts`, `chatview-dom-retention.test.ts` |
+| flip-phases | An animated keyed-each reorder could interleave abort / read / create per item, forcing repeated style-layout passes in one microtask. Three phased loops preserve the geometry with one forced pass. | `svelte-patch-flip-phases.test.ts` |
 
 `patches/@lucide__svelte@1.28.0.patch`, mask-icons: `dist/Icon.svelte`
 renders a CSS-mask `<span>` against the patch's own hidden `<mask>`
-sprite rather than an inline `<svg>` root, which measured as a scaled
-replaced-content transform node costing 72% of Oilpan churn while
-scrolling at ~400 icons (2026-08-24). A data-URI `mask-image` per icon,
+sprite rather than an inline `<svg>` root, avoiding the expensive scaled
+replaced-content transform path when many icons scroll. A data-URI `mask-image` per icon,
 the obvious alternative, costs an isolated SVG document per DISTINCT URI.
 The patch owns only shape and box size. Color and `mask-mode` live in
 `app.css` (`.lucide-icon` / `.mask-icon`, with the `forced-colors:

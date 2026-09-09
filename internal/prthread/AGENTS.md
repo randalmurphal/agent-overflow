@@ -21,7 +21,7 @@ reads/writes — stays in `app_thread_bindings.go`.
 | `BuildUserMessage(ref, meta, diff) string` | Composes the first user message: title, link, author, branches, file count, body, and a fenced patch block. Uses `FenceForContent` so inner triple-backtick runs don't close the fence prematurely. |
 | `FenceForContent(content) string` | Picks a backtick fence strictly longer than the longest backtick run found in content (minimum 3). |
 | `TruncateDiff(diff) string` | Clips at `MaxInlinedDiffBytes` and appends a marker; shorter inputs pass through unchanged. |
-| `TruncateTitle(title) string` | Rune-boundary truncation with `...` suffix so multibyte codepoints (CJK, combining marks, emoji) survive intact. Bug C6 regression guard. |
+| `TruncateTitle(title) string` | Rune-boundary truncation with `...` suffix so multibyte codepoints (CJK, combining marks, emoji) survive intact. |
 
 ## Design notes
 
@@ -31,6 +31,5 @@ reads/writes — stays in `app_thread_bindings.go`.
   minimum 3) is captured here so the contract is explicit and tested
   directly. A future "PR diff in markdown" renderer should call
   this same helper rather than re-deriving the rule.
-- `TruncateTitle` guards Bug C6: byte-based slicing at 117 used to
-  split a multibyte rune into an invalid UTF-8 sequence. The
-  rune-boundary cut is preserved here with its own regression tests.
+- `TruncateTitle` cuts on rune boundaries so multibyte titles remain valid
+  UTF-8; its regression tests pin that contract.

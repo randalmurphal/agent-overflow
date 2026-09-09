@@ -17,9 +17,8 @@ every bucket in one response sets it (Claude's `/api/oauth/usage`, Codex's
 `rateLimitsByLimitId`). A complete reading also DROPS cached limits it omits,
 because a provider removes a bucket from its answer once that bucket has no
 usage — which is exactly what a mid-window reset produces. Without the drop,
-the pre-reset percentage survived for the rest of the window (2026-09-01: a
-Fable weekly row frozen at 90% while session and all-models correctly read
-0%). Two rules follow from that:
+a pre-reset percentage would survive for the rest of the window. Two rules
+follow from that:
 
 - A parser that had to SKIP a limit must clear `Complete`. It no longer holds
   the whole answer, and pruning against it would delete a live quota.
@@ -31,7 +30,7 @@ always leaves `Complete` false — otherwise the persisted union would prune a
 live reading on the next boot. `frontend/src/lib/stores/rateLimitsInfo.svelte.ts`
 is this rule's twin and changes with it.
 
-`internal/app` keeps the provider event chokepoint and its exact ordering
+`internal/app` keeps the provider event boundary and its exact ordering
 through triage, observers, queue recovery, reconnect, and provider-specific
 post-turn hooks.
 Managed credential/adoption transactions remain in `provideraccountapp`, while

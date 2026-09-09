@@ -81,16 +81,12 @@ an absence rather than 28 tools that could only fail.
 - Pages are created hidden and stay hidden. The user-visible surface is the
   calling thread's companion pane, presenting the exact same page the MCP tools
   drive; do not reintroduce a separate browser window or a second session.
-- **No engine is ever downloaded, on any deployment.** AO used to install a Chrome-for-Testing
-  build on first use; that whole path (`internal/chromium` and the
-  `browser:install-progress` channel) is deleted. This package makes no network
-  request of its own — every byte it fetches is a page a tool navigated to.
-  History worth keeping: managed Chrome needed a blank-flip recovery, because a
-  tab whose renderer died came back as a live-but-blank target that every
-  subsequent tool call happily addressed. The engines here report page death
-  through `engineEvents.PageClosed` instead, so a dead page LEAVES the registry
-  rather than lingering as a plausible one. Any future engine must report the
-  same way; do not re-add a recovery pass that guesses from page content.
+- **No engine is ever downloaded, on any deployment.** This package makes no
+  network request of its own; every byte it fetches is a page a tool navigated
+  to. Engines report renderer death through `engineEvents.PageClosed`, so a dead
+  page leaves the registry rather than lingering as a plausible target. Any
+  future engine must report the same way; do not add recovery that guesses from
+  page content.
 
 ## The hosted engine (Windows/WSL)
 
@@ -131,8 +127,8 @@ controller exactly as it drives a Chrome tab. Only LIFETIME differs.
   Linux/macOS: a per-page clip container widget/view). Per page, never a
   process-wide singleton: two threads can present two panes at once, and a
   shared container (or a single "the presented view" pointer) corrupts the
-  first pane the moment the second presents — both engines shipped that bug
-  once (2026-08-31 review) and the class is named here so it stays dead.
+  first pane when the second presents, so the container and presentation state
+  must remain per page.
   `SetPaneRect` normalizes a zero clip to clip == rect, so a clip-less
   reporter still works; an empty intersection never presents. `Background`
   ("#rrggbb") is painted where the page has not presented yet so freshly
@@ -161,20 +157,19 @@ controller exactly as it drives a Chrome tab. Only LIFETIME differs.
   boundary through `engineFileURL`, in BOTH directions. Outbound:
   `browser_open_file` navigates via `FileURL` (`wslpath -w` → the
   `\\wsl.localhost` UNC → `windowsFileURL`); a backend-path file URL
-  navigates a live pane to ERR_FILE_NOT_FOUND (2026-08-31). Inbound: every
+  navigates a live pane to ERR_FILE_NOT_FOUND. Inbound: every
   file URL the Manager sees back from this engine — the `fetch`-interceptor
   authority check in `navigationAllowed`, an address-bar paste in
   `NavigateCompanion`, the page address `RevealPageFile` resolves —
   is renderer-form, and must come back through
   `BackendFilePath` (`windowsPathFromFileURL` → `wslpath -u`) before being
   authorized against workspace paths. Skipping the inverse made the
-  interceptor block the very navigation `OpenFile` had just authorized,
-  with Edge painting our own `ErrorReasonBlockedByClient` as "This page has
-  been blocked by Microsoft Edge" (2026-08-31) — when a pane shows that
-  page, suspect the interceptor before Edge policy. Known open sibling of
-  the same class: `profileOptions.DownloadDir` is a WSL path no Windows
-  renderer can write — downloads on this deployment are not wired to the
-  artifact directory yet.
+  interceptor block the very navigation `OpenFile` had just authorized, with
+  Edge painting our own `ErrorReasonBlockedByClient` as "This page has been
+  blocked by Microsoft Edge". When a pane shows that page, suspect the
+  interceptor before Edge policy. `profileOptions.DownloadDir` remains a WSL
+  path that no Windows renderer can write; downloads on this deployment are
+  not wired to the artifact directory.
 - **The clear's correlation id is not a page.** It is minted by
   `newHostedPageID` and rides the same watch/report machinery `createPage`
   uses, because that machinery is keyed on a page id. `Report` therefore
@@ -300,7 +295,7 @@ completion callbacks, the window surgery). Everything else is ordinary Go.
 - Hidden pages are MAPPED, parked in a 1x1 clipping `GtkScrolledWindow` at
   their own slot. That keeps a real viewport and fresh snapshots at no window
   cost. A `GtkFixed` at offscreen coordinates balloons the window, and
-  `opacity:0` kills rAF: both are banned (spike-verified).
+  `opacity:0` kills rAF: both are banned.
 - The pane rect is four `GtkOverlay` margins with `ALIGN_FILL`, never a size
   request: `gtk_widget_set_size_request` cannot SHRINK a WebKitWebView, whose
   natural size sticks at its largest-ever allocation.
@@ -323,19 +318,18 @@ completion callbacks, the window surgery). Everything else is ordinary Go.
   re-resolves the frame chain and selector per operation. A selector that no
   longer matches exactly one element is the stale-locator error, which is the
   same answer the CDP driver gives.
-- Engine-visible differences to preserve rather than paper over: input is the
-  untrusted JS tier (`element.click()`, focus + value + events), the viewport
+- Engine-visible differences to preserve: locator click/type/press uses the
+  programmatic JS event path (`element.click()`, focus + value + events), so
+  its DOM events have `isTrusted=false`; the viewport
   IS the widget size (no device-metrics override), assets are read through the
   page and capped well below the Manager's bundle cap because they cross as
   base64, and the streamed companion pane cannot run here at all — it speaks
   CDP directly and is replaced by the presented native view (spec §7/§9).
-- The untrusted tier spells out what a trusted event gets for free. A
+- The JS input path must spell out what native input supplies. A
   `browser_pointer` right-click dispatches `contextmenu` (a site's custom menu
   listens for nothing else) and `auxclick` in place of `click`, and
   `MouseEvent.buttons` is the DOM bitmask (`webkitButtonsMask`: secondary is 2,
-  auxiliary 4), not `1 << button`. Found live on the WKWebView engine
-  (2026-09-03): a right-click reached the page as a left-click with the wrong
-  mask and no menu.
+  auxiliary 4), not `1 << button`.
 - Evaluate is an EXPRESSION first and a statement list second
   (`webkitEvaluate`): `return (expr);` cannot parse `const n = 1; n * 2`, which
   CDP's Runtime.evaluate accepts, so a parse failure retries once as
@@ -359,9 +353,7 @@ builder for macOS.
   bounded). Same rule, same reasons, same lock discipline as `gtkDo`: a lock
   here covers map bookkeeping only, and no wkDo-backed call happens under one.
 - Teardown issued FROM the main thread disposes inline. Wails runs
-  `ServiceShutdown` on the main thread and blocks it until it returns, so a
-  `closeBrowser` that fanned profile disposal out to goroutines parked every
-  `wkDo` for its full timeout and Cmd+Q beachballed (2026-09-01). The engine
+  `ServiceShutdown` on the main thread and blocks it until it returns. The engine
   answers `OnUIThread()` (`engineUIThread` in driver.go, `ao_wkv_on_main_thread`)
   and the Manager disposes sequentially on the caller when it is true. The
   GTK engine has the same seam (`ao_wk_on_main_thread`) for the same reason.
@@ -387,7 +379,7 @@ builder for macOS.
   (an anchor's `download` attribute) alongside the deferred decision, and an
   allowed one is answered `AO_POLICY_DOWNLOAD` → `WKNavigationActionPolicyDownload`.
   Allow is not enough: WebKit navigates to the href instead and no WKDownload
-  is ever created (live, 2026-09-03). The Manager's authority stays over the
+  is ever created. The Manager's authority stays over the
   URL; download-vs-navigate is what the page asked for.
 - Hidden pages are IN THE WINDOW, parked in a 1x1 layer-masked `NSView` at
   their own slot, added BELOW the SPA webview. An unparented WKWebView is the
@@ -561,7 +553,7 @@ builder for macOS.
   whose only failure mode is silent belongs in the tag-free half: a malformed
   `wkStoreIdentifier` costs a workspace its isolation with no error anywhere,
   which is why it does not live in the darwin file that produced it.
-- Trusted keyboard tests must assert the resulting DOM state, not merely a
+- Native-input keyboard tests (`isTrusted=true` events) must assert the resulting DOM state, not merely a
   successful CDP call. Encode modifier chords as modifiers/editing commands;
   concatenating modifier key runes presses and releases them before the key.
 

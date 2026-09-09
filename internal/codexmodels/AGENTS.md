@@ -38,7 +38,7 @@ NPE-safe) and reaches into it from `GetModelsForProvider("codex")` and
 
 - Do NOT cache failed lookups for the full success TTL. A transient CLI
   failure (binary missing during a settings edit, permissions) is retained
-  only for `DefaultErrorTTL`, so paired capability reads share the failure
+  only for `DefaultErrorTTL`, so model-catalog reads share the failure
   without masking recovery for five minutes.
 - Do NOT add a per-key TTL knob to `Get`. The cache's coherence
   assumption is "one TTL for everything"; introducing per-call

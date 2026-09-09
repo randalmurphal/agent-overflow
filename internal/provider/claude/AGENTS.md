@@ -142,8 +142,8 @@ to the subprocess touches credentials.
   permanently dead login, not a retry. `ProbeConfig.ReadCredential` arms
   a watch when the credential is at or inside the CLI's five-minute
   proactive-refresh buffer; teardown then holds until the credential
-  actually changes. Measurements, the failure rates, and why a fixed
-  delay is not a fix are on `rotationWatch`.
+  actually changes. A fixed delay is not sufficient; `rotationWatch`
+  waits for the credential change itself.
 - `ratelimits_probe.go` — out-of-band HTTP probe of Anthropic's OAuth usage
   endpoint. Reads a bounded, regular native credential file, preserves every
   dynamically returned limit bucket, and falls back to
@@ -169,13 +169,11 @@ to the subprocess touches credentials.
   stores those verbatim and only ever carries a prior explanation
   forward onto an error-LESS ephemeral fetch, so nothing has to be
   forced.
-  Version floor worth knowing when reading old reports: before 2.1.221
-  a `--mcp-config` server was not connected before the first
+  Compatibility floor: before 2.1.221 a `--mcp-config` server was not
+  connected before the first
   print-mode turn, so a session's first turn ran with none of them
-  available and `system/init` said so. AO does not gate on this — the
-  supported-version floor is above it — but a stale bug report
-  describing "MCP servers missing on the first message only" is that,
-  not this projection.
+  available and `system/init` said so. AO does not gate on this because
+  its supported-version floor is above it.
   `sanitizeChildStderr` lives here too for bounding child-process
   stderr in user-facing errors.
 - `sessionfork/` — subpackage. The fork transform over an existing
@@ -269,9 +267,9 @@ dispatches. Parser state is single-goroutine, driven by the read loop.
   `parseTaskWakeEvent` emits ONE `EventUserText`
   (`user:subagent-wake:<shell tool_use_id>`, parent = the task's bound
   tool_use, meta `subagent_wake_prompt`) and touches no binding; an
-  unbound task or a non-agent task type is dropped. Before 2026-09-08
-  the `tool_use_id` guard dropped the wake outright, so the woken
-  round streamed under a settled launch.
+  unbound task or a non-agent task type is dropped. A wake without a
+  `tool_use_id` must take this path; treating it as a rebind loses the
+  association with the parked task.
 - `run_in_background: true` on a tool_use input is a HINT
   (`backgroundHintInput`), never a verdict. The completion classifies
   from `tool_use_result.backgroundTaskId` or, on a sidechain where
@@ -279,9 +277,8 @@ dispatches. Parser state is single-goroutine, driven by the read loop.
   (`sessionimport.BackgroundAckTaskID`, claude-wire.md §E2b). Only a
   `task_started` rebind (`backgroundFromTaskStarted`, §E6) is a verdict
   on its own. A flagged launch the CLI refused (hook deny, don't-ask
-  permission denial) settles as an ordinary error; treating the flag as
-  sufficient is what left refused shells "running" in the tray for 13
-  hours with no task id to stop them by (2026-09-02).
+  permission denial) settles as an ordinary error; the flag alone must
+  never make a refused launch appear to be running.
 - Absence is never a denial anywhere on this wire. `fast_mode_state`,
   `fast_mode_disabled_reason` and an absent `commands` / `tasks` key all
   mean "no signal", never "off" or "empty". An EMPTY array, by contrast,

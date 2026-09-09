@@ -20,7 +20,7 @@ bound memory. Keep the embedded `internal/spinner/assets/SPINNERS.md` true.
 Cold-start preference tests must import the module after seeding storage.
 Reset helpers cannot catch a validator declared after its module-level read:
 the guarded read catches that initialization error and silently chooses defaults
-(`appearanceColdStart.test.ts`; desktop's later file load used to hide it).
+(`appearanceColdStart.test.ts`).
 
 ## Personal-device connections
 
@@ -72,7 +72,7 @@ The deciding question is "is there something to release?".
   suspend and re-acquire only that computer’s keys. The listener exists only
   while entries are held. Use a null owner only for frontend-owned state.
   A HOME disconnect must never clear or stop an attached computer’s resources.
-  `apply` is the single write chokepoint, so
+  `apply` is the single write boundary, so
   an `onApply` reconciliation hook cannot be bypassed by a new call site.
 - `keyedSignalRegistry.svelte.ts` for PUSH-FED state: events arrive and are
   written, nothing to acquire, nothing to tear down. One `$state.raw` box
@@ -121,8 +121,7 @@ stops waking readers.
   pane mounted — thread live state, git status, the MCP listing, the model
   catalog, worktree setup, the PR entity, the launch update check — has
   nobody to report a refusal to, so an ungranted session would spend one
-  refusal per surface per open. That was the whole shape of the view-only
-  toast burst (owner's live test, 2026-08-30). Each such loader checks
+  refusal per surface per open. Each such loader checks
   `hasScope` first and returns its empty answer: an inert `EntityAttachment`
   where callers hold one, a plain early return where they do not. This is
   NOT a global swallow — a refusal arriving on a surface that believed it
@@ -139,18 +138,14 @@ stops waking readers.
   (`transport/AGENTS.md` § scopes.ts).
 
   **The rule is not about stores.** A section that calls its RPCs from its
-  own mount effect is the same passive load one layer out, and that sweep
-  cannot see it: all four settings sections under Network — bind
-  preference, devices, saved `--connect` targets, WSL distro — fired
-  ungranted on every paired device's first visit while it was green
-  (2026-08-31, found by `e2e/tests/harness-remote-device-lifecycle.spec.ts`
-  reading the absence off the wire). Their sweep is
+  own mount effect is the same passive load one layer out, and the store
+  sweep cannot see it. The four Network sections — bind preference,
+  devices, saved `--connect` targets, and WSL distro — are covered by
   `components/settings/passiveLoads.test.ts`. Ask for the scope the RPC
   actually carries: `host` refuses EVERY paired device, full access
-  included, while a named capability refuses only the sessions that lack
-  it — so a section gated on the wrong one is wrong in a direction a
-  view-only case alone cannot see, and each of those cases pairs a
-  full-access device too.
+  included, while a named capability refuses only sessions that lack it.
+  The tests cover both directions, including a full-access device, so a
+  section cannot pass by checking the wrong scope.
 - `events.ts` is the single subscription root. It owns channel names,
   generics and teardown order, and fans each channel out to the
   `events*.ts` module that owns the reaction. Add a channel there, put the
@@ -194,9 +189,8 @@ stops waking readers.
   and the pane adopts the real row in place. Every write to a pane's
   `thread` goes through `assignThread` in `thread.svelte.ts`, which calls
   `refreshWatchedThreads` on an identity change — the draft adopt, the
-  clear, `replaceThread`, both switch-load commits. Before that chokepoint
-  existed the adopt restated nothing, and every new thread rendered its
-  status and none of its items until a reload (2026-09-03).
+  clear, `replaceThread`, and both switch-load commits. This keeps a newly
+  adopted thread's status and items subscribed immediately.
   `e2e/tests/draft-first-turn-render.spec.ts` sends from a real "+ New"
   draft for exactly this reason; RPC-seeded threads only ever take the
   mount path.
@@ -256,10 +250,9 @@ stops waking readers.
   local write has to say so out loud.** Explicit unread persists as epoch
   0 — the SMALLEST value `lastReadAt` takes — so `eventsThreadRows.ts`
   cannot tell "I just marked this unread" from "a 0 that another client
-  already superseded" on the numbers. It used to try: any 0 from any
-  source won, forever, which meant a cached 0 absorbed every later
-  timestamp the backend broadcast and the thread could never read as read
-  again short of a reload (2026-09-03). `threadReadWrites.ts` replaces
+  already superseded" on the numbers. A numeric merge cannot distinguish
+  those writes, so a cached 0 could absorb every later timestamp the
+  backend broadcasts. `threadReadWrites.ts` replaces
   that with an explicit claim — the value this page load is currently
   writing, held for as long as it is writing it — and the merge is three
   ordered rules: a held claim wins outright, else a wire 0 wins, else the
@@ -332,8 +325,8 @@ stops waking readers.
   (`internal/settings/residency.go`, `classdefaults.go`).
 - **An app-state surface converges too, and the frame carries what its own
   RPC answered with.** Eleven writes persisted and answered their caller and
-  told nobody, so a second device kept the superseded state until reload
-  (wave 2026-09-03). Each is now a channel, and there are exactly three
+  told nobody, so another device could keep superseded state. Each is now
+  a channel, and there are exactly three
   shapes:
 
   | Shape | Channels | Handler does |
@@ -505,7 +498,7 @@ stops waking readers.
   and is pushed the same list wants this — a mount plus one tick is enough
   to hit it, which is how the pane's tests found it.
 - A project is a REPOSITORY, and the same repository on two attached
-  machines is one sidebar entry (`projects.svelte.ts`, wave 7d). The rows
+  machines is one sidebar entry (`projects.svelte.ts`). The rows
   stay as the backends sent them; `projectEntries()` is the merged VIEW,
   keyed by `utils/repoKey.ts` (the normalised `origin` URL, else the root
   commit — never a path, which names a different checkout on every
@@ -596,8 +589,7 @@ stops waking readers.
   follow the pattern: merge `GetThreadLiveState.deferredItems` into the
   page, retain current `streaming`/`running` rows, and commit the
   install and the live-state apply in one synchronous step so no
-  slice-only frame ever paints (incident 2026-08-29: gap-refresh cycles
-  made a queued message flicker in and out of the timeline). Merged
+  slice-only frame ever paints. Merged
   deferred rows also join the pane's optimistic-id ledger
   (`trackDeferredBets`): the stamped tiers strip optimistic rows because
   a bet can be dropped without a rev bump, and an untracked merged row
@@ -681,7 +673,7 @@ construction order is circular) rather than reaching for pane state.
 | `threadPaneErrors.svelte.ts` | the banner-stack error slots |
 
 Streaming reveal is three modules behind one composition root, split the
-same way. `threadStreamingReveal.svelte.ts` keeps the CHOKEPOINT
+same way. `threadStreamingReveal.svelte.ts` keeps the single write point
 (`prepareItemReplacement`) and its invariant guard, and must not be split
 away from either; `threadRevealSmoothers.ts` owns the smoother map and
 retained tails, `threadRevealGate.svelte.ts` owns `revealBoundary` and
@@ -731,15 +723,13 @@ the smoother a longer suffix to drain, or hand ownership over with a
 summary that WINS the row — snapping forward. It may never publish text
 that rewinds behind the cursor.
 
-Five separate bugs in the 2026-08-28/29 perf session were this one rule,
-broken five different ways. It is one rule because there is one
-chokepoint: `prepareItemReplacement` in
+Every wholesale commit has one write point: `prepareItemReplacement` in
 `threadStreamingReveal.svelte.ts` decides the text of every row a
 wholesale commit publishes, and `commitTimelineItems` (fold eviction,
 prune, revert, replica paint, cache install) and `upsertItemsBatch` both
 go through it.
 
-The shape that keeps recurring is a summary that TRAILS the cursor. A
+The common case is a summary that TRAILS the cursor. A
 row can be terminal while its smoother still drains — the completion
 patch flips `status` and skips the summary write, so for seconds the
 row's summary is a strict prefix of the smoother's `received` and
@@ -749,27 +739,22 @@ wire-visible delta stream. Either way the trailing summary must not take
 the row:
 
 - Mid-drain, disposing the smoother strands the row at the partial text
-  forever (incident 2026-08-29: the final assistant answer froze at ~130
-  of 1021 chars whenever a subagent child settled inside the drain
-  window).
+  forever.
 - Post-drain, letting the trailing summary settle the row truncates it
-  outright — the same rewind, reached when the drain happened to finish
-  first.
+  outright.
 
 Reasoning-tail rows (`thinking`, `compaction_reasoning`) publish only
 the last `THINKING_TAIL_RUNES` of the cursor, so past that length the
 same trailing producers hand back a summary that is an INTERIOR slice of
-`received`, never a prefix. The chokepoint tests containment for those
-kinds; a prefix-only test disposed the smoother on every wholesale commit
-mid-drain and left a permanent hole in the live tail until reload
-(2026-09-01).
+`received`, never a prefix. The write point tests containment for those
+kinds; prefix-only checks are insufficient for these rows.
 
 Disposing is correct only when the incoming summary genuinely DIVERGES;
 then it must win the row, so the visible text snaps rather than
 truncates.
 
-**Enforcement.** `assertRevealCursorNotRewound`, called at the
-chokepoint under `ASSERT_REVEAL_INVARIANT` (dev and test only; both
+**Enforcement.** `assertRevealCursorNotRewound`, called at the write point
+under `ASSERT_REVEAL_INVARIANT` (dev and test only; both
 operands fold to literals so the guard and its `getRevealed()`
 materialization leave the production bundle). Tests:
 `threadStreamingRevealInvariant.test.ts` for the rule, the tripwire and

@@ -176,7 +176,7 @@ credential or scope gate applies to it, because none of those bytes are ours.
   (`pagecookie_contract_test.go`).
 - **The session credential never arrives.** `MintURL` returns a URL carrying
   a single-use 60s ticket bound to `(principal, port)`; the first hit spends
-  it for an opaque cookie and 302s to the same address without it. Every later
+  it for a cookie and 302s to the same address without it. Every later
   request re-checks the principal through `Config.SessionLive` — nothing here
   may cache that answer, exactly as on the WebSocket path.
 - **The outbound Cookie header is stripped by NAMESPACE, not by name.**
@@ -196,7 +196,7 @@ credential or scope gate applies to it, because none of those bytes are ours.
   the gateway lock; an exchange holds a counted reservation from before ticket
   consumption through grant publication. There must be no gap where idle cleanup
   closes the browser's listener. Explicit port removal and shutdown still retire
-  it immediately. Retention never bypasses per-request or socket revocation.
+  it immediately. Retention never overrides per-request or socket revocation.
 - **A retired listener CUTS the sockets it handed out**
   (`previewconns.go`). net/http STOPS TRACKING a connection the moment
   a handler takes it over from the server, which is what an UPGRADE
@@ -266,14 +266,14 @@ credential or scope gate applies to it, because none of those bytes are ours.
   `preview-gateway.spec.ts` / `compact-preview-gateway.spec.ts` drives the
   same rules from a paired browser against a dev server that RECORDS what it
   received, so a rewrite that would have made a real one refuse fails on the
-  record rather than on a green screen.
+  record rather than on a successful page load.
 
 **Every header rule is a verified fact, not a guess.**
-`docs/references/dev-server-proxy.md` records them with the version and date
-they were verified against (Vite 8.2.2, 2026-09-02). Two of them fail in ways
+`docs/references/dev-server-proxy.md` records them with the version they were
+verified against (Vite 8.2.2). Two of them fail in ways
 that look like success: the Host check applies to the WebSocket UPGRADE as
 well as the HTTP path, and a changed path hangs the upgrade with no response
-at all. `vite-ping` bypasses the host check entirely, so a ping-only probe
+at all. `vite-ping` does not exercise the host check, so a ping-only probe
 proves nothing — the contract test drives a real upgrade. Change a rule only
 with a new spike, and update that file in the same commit.
 
@@ -346,19 +346,15 @@ codegen filter. That is all it holds.
 
 **There is no per-method origin partition.** `LocalOnlyMethods`, the
 `transitionalReachability` override map, and the frozen `preScopeTableLocalOnly`
-list they were held against are deleted (wave 6d2). They existed because a
-launch-credential client could be off-host and unnamed, so "is this peer on this
-machine" was the only fact available to judge it by. It no longer is: wave 6d1's
-admission rule requires every non-loopback `/ws` upgrade to name a session, and
+list are not part of the dispatcher. Every non-loopback `/ws` upgrade must name
+a session, and
 `internal/app`'s `bindingAdmitsPeer` refuses a `loopback-only` session presented
 by a non-loopback peer. An off-host caller is therefore always a named session,
 and what it may call is the scope gate's answer.
 
-Deleting it changed reachability deliberately and in one direction: the twelve
-diff / workspace-content methods that were pinned local-only in 2026-05 now
-answer a session granted `files:read` (two of them `threads:read`), and the
-twenty-one thread / project / discussion bookkeeping mutations ride
-`threads:operate`. That is what those scopes are for.
+The diff and workspace-content methods answer a session granted `files:read`
+(two of them `threads:read`), and thread, project, and discussion bookkeeping
+mutations ride `threads:operate`. That is what those scopes are for.
 `TestWorkspaceContentAnswersASessionGrantedTheScope` and
 `TestBookkeepingMutationsRideThreadsOperate` (`reachability_test.go`) pin the new
 truth by name, and `TestHostScopedMethodsStayRefusedForEveryOffHostSession` pins
@@ -527,8 +523,8 @@ missing field remains compatible with older backends.
 - `serverTimeMs` is sampled per accept, not cached at boot: the field
   exists so a client can measure its own skew, and a cached value would
   be wrong by the process uptime.
-- **The three bundle fields are on the frame, not behind a route**
-  (wave 6g-a). They describe the SPA this backend serves — `bundleId`
+- **The three bundle fields are on the frame, not behind a route.** They describe
+  the SPA this backend serves — `bundleId`
   is `internal/bundle`'s CONTENT id, `bundleVersion` comes from hashed frontend
   release metadata (link-time fallback only for legacy trees),
   `minShellBuild` is the lowest Android `versionCode` this bundle's
@@ -811,8 +807,8 @@ Rules that hold across all five:
   presents its bare enrollment thumbprint, which is the plain-HTTP LAN browser
   of spec §15 constraint 6 — no secure context, so no `crypto.subtle`, so
   deliberately no signed path. A device that enrolled a key is never accepted on
-  the bare shape, on any route. Phase 5 swapped the VALUE and moved no call
-  site, which is what the header being named for the KEY bought.
+  the bare shape, on any route. The header identifies the key; its value must
+  follow the enrolled device's proof format.
 
 **Only the SIGN-IN ceremony is a route.** A passkey has three uses and the
 other two — registering a credential, and proving step-up — are made from a
@@ -935,10 +931,10 @@ passes only when it names the authority this request was addressed to — scheme
 from the TLS state, authority from the `Host` header, so the answer stays true
 across a rebind, a port change, and every spelling of loopback — or matches a
 pattern the LAN bind adds. Those patterns name EXACT PORTS
-(`internal/network.OriginPatterns`, which takes the bound port): until wave 9
-they were `http://localhost:*` and its siblings, so a document served by any
-other port on this machine named an admitted origin — and this machine now
-also runs the dev-server preview listeners on other ports of the same hosts.
+(`internal/network.OriginPatterns`, which takes the bound port), so a document
+served by another port on this machine cannot use the app's origin admission;
+the machine also runs dev-server preview listeners on other ports of the same
+hosts.
 `pagecookie_contract_test.go` is the structural half: it reads the source of
 this package and `internal/clientmode` and fails on any function that reads the
 page cookie without asking the origin question in the same body, and it drives
@@ -946,15 +942,15 @@ the real routes with a real cookie and a preview-shaped Origin. A reader that
 fails it gets the check, never an entry on its exemption list. The TLS state,
 deliberately, not `requestIsHTTPS`: a
 caller-supplied header must not widen an authorization check, so a deployment
-behind a TLS-terminating proxy allow-lists its origin explicitly rather than
-talking its way past this one (the spec calls a reverse proxy unsupported until
-phase 3's model lands, not silently degraded). `internal/network.OriginPatterns` produces those
+behind a TLS-terminating proxy must configure its origin explicitly. The spec
+documents the limits on reverse-proxy support; do not silently relax these
+checks. `internal/network.OriginPatterns` produces those
 patterns and this package enforces them. Read the list live, through
 `currentOriginPatterns()` per request rather than `Config.OriginPatterns`, since
 `SetOriginPatterns` and `Rebind` rotate it under `mu`. Sockets already upgraded
 keep their handshake-time policy.
 
-The check is load-bearing on loopback too, which is why the empty list no longer
+The check is required on loopback too, which is why the empty list no longer
 means "accept anything". Cookies are scoped by host and not by port, so a page
 served by any other listener on this machine has our page cookie attached for it
 by the browser, and a WebSocket handshake is not subject to the cross-origin read
@@ -969,11 +965,9 @@ ADDRESS.** While the live listen
 address is loopback it 404s any Host header that is not a loopback name
 (`loopback.HostHeader` accepts only `127.0.0.1`, `localhost`, and `::1`, and
 refuses every DNS name — including one that resolves to 127.0.0.1, which is the
-case it exists for). It read the origin allow-list's emptiness until wave 8d, and
-that was the wrong signal twice: a boot honouring a PERSISTED LAN preference set
-no patterns, so every LAN client got a 404 until the user toggled the setting
-again, and adding a canonical domain's origins would have switched the guard off
-for every OTHER name as a side effect of naming one.
+case it exists for). The guard is determined by the bind address rather than
+by whether the origin allow-list is empty, so persisted LAN settings and
+canonical-domain origins cannot change which Host names are accepted.
 
 A configured canonical domain (`Config.CanonicalHost` / `SetCanonicalHost`) adds
 exactly ONE accepted name and stays INSIDE the guard rather than switching it
@@ -1073,8 +1067,8 @@ do not swap one for another because the names look interchangeable.
 
 ## Attachment bytes do not ride the socket
 
-`attachmentroutes.go` (wave 6b). Two routes, both reached by a ticket and
-nothing else:
+`attachmentroutes.go` defines two routes, both reached by a ticket and nothing
+else:
 
 | route | ticket subject | answers |
 |---|---|---|
@@ -1128,7 +1122,7 @@ it.
 **Resumable upload is deliberately NOT built.** A ticket is spent by the first
 request, so a failed upload is retried by minting again. Bodies are at most
 10 MiB and the composer compresses images first; resumable transfer belongs to
-the phone waves and is a design of its own.
+phone-specific transfer support and is a design of its own.
 
 `GetAttachmentThumbnail` stays an RPC. ~10-30 KB is not a large body, and a grid
 would pay a mint round trip per tile.
@@ -1158,7 +1152,7 @@ never assumes that an HTTP failure means the peer made no change.
 
 ## The backend is the phone's update server
 
-`bundleroutes.go` (wave 6g-a), over `internal/bundle`. Two reads, and
+`bundleroutes.go`, over `internal/bundle`. Two reads, and
 between them they are the whole update channel for the one client that
 carries a bundle of its own:
 
@@ -1170,13 +1164,12 @@ carries a bundle of its own:
 **The credential is the paired SESSION, not the page cookie.** Both run
 the check `/bootstrap.json` falls back to — `sessionAdmitsRequest`, which
 is a live session credential in `X-AO-Session` plus the device proof its
-enrolment bound. Refusing the cookie is a property of the CONSUMER rather
-than a hardening choice: the consumer is a page at `ShellOrigin`, which
-holds no cookie for this backend and could not be sent one, so admitting
-it would only widen the door to something this surface cannot revoke. A
-caller naming no session gets the same unfingerprintable 404 an unpaired
-remote gets at the manifest — loopback pages included, which is the plain
-consequence of the rule rather than an exception carved out for them.
+enrolment bound. The shell page at `ShellOrigin` has no cookie for this
+backend, so this route requires the session header and device proof instead
+of accepting a cookie that cannot be presented or revoked here. A caller
+naming no session gets the same 404 as an unpaired remote at the manifest —
+loopback pages included — so the response reveals neither a valid route nor
+a valid credential.
 
 **The tier rule, and where its gate goes.** The spec states that only
 OWNER-TIER backends may supply bundles: peer and hub connections never
@@ -1258,8 +1251,8 @@ present.
 `wireheaders.go` is the one definition, shared with `internal/clientmode`.
 `WriteSecurityHeaders` sends `X-Content-Type-Options: nosniff`,
 `X-Frame-Options: DENY`, and `Referrer-Policy: no-referrer`, which keeps the
-page ticket out of outbound referers — and, since wave 6b, transfer tickets
-too. Cache-Control is deliberately NOT in that set: each route picks its own
+page ticket out of outbound referers and transfer tickets too.
+Cache-Control is deliberately NOT in that set: each route picks its own
 policy. The byte routes pick `no-store`, because the URL that fetched them
 carried a single-use credential and a shared cache holding the response would
 hold an attachment past the one request authorized to read it.
@@ -1282,8 +1275,8 @@ registry mechanics are in
 - **Route.** `POST /rpc` (`ScopedRPCPath`), `Authorization: Bearer <token>`,
   one `ClientFrame` in and one `ServerFrame` out. A CLI process makes one call
   and exits, so it gets a POST rather than a WebSocket with a replay ring.
-  Loopback-only, and a non-loopback peer gets a 404 so the route stays
-  unfingerprintable. The server's own session token is **not** honoured here —
+  Loopback-only, and a non-loopback peer gets a 404 so the route's existence
+  is not disclosed. The server's own session token is **not** honoured here —
   this surface can never be wider than the table below, however it is reached.
 - **Registry.** The app owns it (`App.aoTokens`, mutated only from the session
   registry in `internal/sessionruntime.Manager`); this package consults it through the narrow
@@ -1319,7 +1312,7 @@ off the receiver. `GrantNotRequired`
 scoped token whatever grants the phase froze. It is not a grant: no workflow may
 declare it, `def.KnownGrant` does not know it, and a test pins that in both
 directions. Use it only for a method that is part of doing the work rather than
-an extra capability, which is the case campaign memory makes.
+an extra permission. Campaign memory is one such method family.
 
 **One method on this route blocks.** `WorkflowAgentWatchRun` holds its request
 until the run it names moves, bounded by the app's `maxWorkflowWatchHold` (25s).
@@ -1367,25 +1360,20 @@ package's `TestEmitSitesNameAnEventChannelConstant` catches.
   session ARMING a stream, but once a local pane subscribes the push side
   fans out to every subscriber regardless of who armed it.
 
-  It is **not** a disclosure control for thread or workspace state. Since
-  wave 6d1 every off-host connection names a session, so `Scope` is the gate
+  It is **not** a disclosure control for thread or workspace state. Because
+  every off-host connection names a session, `Scope` is the gate
   for that state, and a channel carrying it is `AudienceAny` with the scope
   its pull RPC carries. Every event about a thread or a workspace must reach,
   in real time, any connected client that has visibility of it — a sidebar
-  row or an open pane — the phone and the `--connect` browser included (user
-  ruling 2026-09-03). `TestLoopbackOnlyIsForHostDirectivesOnly` holds both
+  row or an open pane — the phone and the `--connect` browser included.
+  `TestLoopbackOnlyIsForHostDirectivesOnly` holds both
   lists by name in both directions.
 
-  **The lesson, and it is the reason nineteen rows were wrong for three
-  months: a `Why` that justifies an audience by citing an RPC's
-  REACHABILITY goes stale the moment reachability changes.** Those rows read
-  "the resolve RPCs are LocalOnly" and "every MCP RPC is LocalOnly"; wave 6d2
-  deleted that table and nothing in this file pointed at them, so a phone
-  could call `RegisterQueueItem`, `RespondToApproval`, `GetGitStatus` and
-  `OpenTerminal` while every matching push was withheld — stale queue rows,
-  no live approval prompt, a terminal with no output. Justify an audience by
-  the DATA CLASS and by `Scope` instead. Both survive a reachability change,
-  because `Scope` is what reachability is now made of.
+  **An audience rationale must use the data class and `Scope`, not an RPC's
+  reachability.** Reachability can change while the data's sensitivity and
+  scope remain stable; otherwise a client can call `RegisterQueueItem`,
+  `RespondToApproval`, `GetGitStatus` or `OpenTerminal` while its matching
+  push is withheld. Review the audience and scope together.
 - `Scope`: the grant a session-carrying connection must hold. **Pick it by
   finding the RPC that reads the same data** — a push must not be a way
   around the authorization its pull half enforces, so `git:status` is
@@ -1398,9 +1386,7 @@ package's `TestEmitSitesNameAnEventChannelConstant` catches.
   worked example. Both carry a supervised host's update story —
   `service:update-status` while the flow runs, `service:update-outcome` from the
   version that comes back — and the peer they exist for is an owner who is not
-  at that machine. `service:update-outcome` shipped in 8h1 as `host`, so no
-  session could receive it and the only client that could was the one standing
-  beside the box; 8h2 moved both to `access:admin`, which is what
+  at that machine. Both channels carry `access:admin`, which is what
   `GetServiceUpdateStatus` (the read that answers the same fact) carries.
   `TestChannelScopeMatchesItsReadRPC` pins both rows and the reason.
 - `Retention`: `RetentionDefault` (full ring) / `RetentionEphemeral`
@@ -1418,7 +1404,7 @@ package's `TestEmitSitesNameAnEventChannelConstant` catches.
   inherited a default rather than one anyone decided, and
   `TestChannelPolicyUnreviewedWorklist` prints any that appear.
 
-A channel with no row gets the fail-closed default
+A channel with no row gets the local-only default
 (`unregisteredChannelPolicy`: loopback-only, full ring) and Emit logs it once at
 ring creation, so a forgotten registration degrades to "invisible to remote
 clients", never to "leaked to remote clients". The two harness-only emit paths
@@ -1434,20 +1420,15 @@ that must stay loopback-only, and a sweep that fails on any third loopback-only
 row appearing on neither.
 
 **A write path that persists and answers only its caller is a channel that
-was never added, and the registry cannot see the hole.** Every test here
-asks whether an existing row is right; none asks whether a row is MISSING,
-because the missing half is a Go write path in another package with nothing
-to parse. Eleven of them were found by reading write paths rather than rows
-(wave 2026-09-03): worktree cut and attach, `OpenTerminal`, keybindings,
-chat-bar favorites, review comments, new-thread defaults, discussion
-definitions, provider-account listing, backend add/remove/rename, the editor
-preference and session import all persisted and returned, and no other
-connected client learned of them until reload. So the question belongs at
-the write, not here: after a write persists, name the clients that can SEE
-what it changed and say how each of them learns. The answers are the
-ordinary ones — an existing row channel (a thread or project row moved: use
-the `broadcast*Row` chokepoint, never a second emit beside it), an existing
-state channel, or a new row here.
+was never added, and the registry cannot see the hole.** Existing-row tests
+cannot find a missing channel because the write path lives in another package.
+After every write, identify the clients that can see the changed data and how
+they learn it. Use an existing row channel (a thread or project row moved:
+use the `broadcast*Row` chokepoint, never a second emit beside it), an existing
+state channel, or a new row here. This applies to worktree cut and attach,
+`OpenTerminal`, keybindings, chat-bar favorites, review comments, new-thread
+defaults, discussion definitions, provider-account listing, backend
+add/remove/rename, editor preferences and session import.
 
 **Opening a channel to remote clients decides the RECEIVE side only, and
 whatever PRODUCES that channel must be re-checked in the same change.** A
@@ -1500,9 +1481,8 @@ down. `webview2host`'s CDP tunnel is that; an event that has merely run out of a
 better key is not. The exemption is keyed by file so it cannot widen quietly.
 
 Two panes routinely watch one entity, so subscription-keyed frames force each
-pane into a private filtered copy and those copies drift: they disagreed about
-whether there was anything to commit for minutes at a time before `git:status`
-was re-keyed (audit 2026-08-08). The producer is therefore refcounted per
+pane into a private filtered copy and those copies can drift. The producer is
+therefore refcounted per
 entity, not per caller. N subscribers on one cwd share one
 `gitwatch.Subscription`, one goroutine, and one frame per change; pause and
 resume compose across them, and fetch errors ride the payload.
@@ -1704,13 +1684,10 @@ of `routes.go` by AST rather than restating either, for the reason it parses
 generates into, or a broken `methods_gen.go` would stop the very run that fixes
 it. That makes both files generator INPUTS — see the manifest paragraph below.
 
-That gate is only as good as its cache key, and for a long time it was not
-good at all. `go test` keys a cached result on the files the TEST PROCESS
-opens; this test opens none of `internal/app`, because it shells out to
-`methodgen`. A cached PASS therefore stood over source the test never
-looked at, and two newly exported `App` methods reached a green six-gate
-run undeclared (2026-08-30). The generator now writes an input manifest
-(`-inputs`) and the test opens every path in it — **files for their
+The gate's cache key must cover every generator input. `go test` keys a cached
+result on the files the TEST PROCESS opens; this test shells out to `methodgen`
+and would otherwise open none of `internal/app`. The generator writes an input
+manifest (`-inputs`) and the test opens every path in it — **files for their
 content, and their directories for the entry list**, since only the second
 notices a method declared in a file that did not exist on the cached run.
 If `methodgen` ever grows an input, add it to `writeInputManifest` in the
@@ -1762,7 +1739,7 @@ a TYPE rather than a name: a method whose first non-context parameter is a
 the only id that can answer the question, and a workspace path on its own means
 nothing off the machine that holds it. Everything else **declares
 `//ao:route home|selected|all`**. Unrouted fails the run listing
-every offender, the same fail-closed shape as unscoped: a method nobody routed
+every missing annotation, just as a missing scope does: a method nobody routed
 is one a multi-backend client answers from whichever socket happened to be
 first, which is a wrong answer that looks like a right one.
 
@@ -1778,8 +1755,8 @@ it is also where the methods keyed by an id that is neither a thread nor a
 project land today (terminal ids, workflow item ids, subscription ids,
 attachment ids). Those are NOT settled: the client resolves such an id through
 its entity index, and the route column has no word for that. `home` is the
-fail-closed placeholder, and the list is in wave 7a's report; a method that
-grows a thread-id parameter should take the inference instead.
+default that confines calls to the home backend until a method gains a thread-id parameter and can use
+the inference instead.
 
 The service-update trio (`GetServiceUpdateStatus`, `ListServiceReleases`,
 `RequestServiceUpdate`) is the deliberate exception, and it is `selected`
@@ -1818,8 +1795,8 @@ STRIP that parameter, so adding one changes no wire signature and no call site.
 
 Identity rides the upgrade URL rather than a post-connect handshake frame
 because it must be readable before the FIRST RPC on the connection: a write
-issued in a pre-handshake window would broadcast unattributed and echo back into
-the surface that made it.
+issued in a pre-handshake window would broadcast without client attribution and
+echo back into the surface that made it.
 
 The keepalive loop (conn.go `keepalive`) defaults to a 10s cadence and a 10s
 pong timeout, both overridable through `Config.KeepaliveInterval` and
@@ -1852,8 +1829,8 @@ call: a socket that is mid-stream keeps receiving events until something
 closes it, and `CloseSession` is that something.
 
 - `Config.SessionForRequest` resolves a request's session BEFORE the upgrade
-  and may refuse it. Refusal is `http.NotFound`, the same unfingerprintable
-  shape a bad launch credential gets — see § Credentials and refusal shapes.
+  and may refuse it. Refusal is `http.NotFound`, the same non-disclosing
+  response a bad launch credential gets — see § Credentials and refusal shapes.
   The app supplies it from `internal/identity`; a request carrying no session
   credential still proceeds and names none, which is every launch-credential
   client — and the peer rule above then admits such a connection only from
@@ -1942,9 +1919,8 @@ closes it, and `CloseSession` is that something.
   next event that fits on it arrives `gap:true` (re-encoded per subscriber),
   and other flagged channels get standalone `{gap:true, data:null}` markers
   flushed ahead of any later delivery. Client-side seq-skip detection alone
-  needed a later same-channel delivery to fire, which sustained traffic can delay.
-  A subagent fan-out burst left a pane's timeline truncated for 30-40s with the
-  connection healthy (incident 2026-08-29). Latest-only channels stay
+  needs a later same-channel delivery to fire, which sustained traffic can delay.
+  Latest-only channels stay
   unannounced on purpose: the next frame supersedes the lost one.
 - `Server.Start` returns when the listener is bound. The HTTP serve goroutine
   surfaces async failure through `Server.ServeErr() <-chan error`.
@@ -1973,8 +1949,8 @@ requires the destination's ordinary owner-confirmed pairing.
 
 `Config.WaitForActivation` gates the entire HTTP handler during supervisor
 trials, including credential, transfer, bundle and WebSocket routes. Only
-`/healthz` bypasses it. Wait on the request context and abort disconnected
-requests without an auth-shaped response; older clients treated HTTP 503 as
+`/healthz` is exempt. Wait on the request context and abort disconnected
+requests without an auth-shaped response; HTTP 503 must remain distinct from
 revocation. The gate is supplied by App's existing activation owner. Do not
 replace it with a bootstrap-only check: paired clients can mint tickets and
 rotate credentials without fetching bootstrap first.

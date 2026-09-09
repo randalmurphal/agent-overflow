@@ -41,7 +41,7 @@ stateful composition with the production app through `Host`.
   calls `App.emit`; never write directly to the transport bus here.
 - After restoring a replay snapshot, publish the returned store identity
   immediately through `Host.PublishStoreIdentity` before replay starts.
-- Reset order is load-bearing: stop harness emitters, pause/cancel/sync workflow
+- Reset order is required: stop harness emitters, pause/cancel/sync workflow
   startup, stop sessions, settle turns, clear mocks, delete workflow records,
   delete projects, clear the app-wide chat-profile seed, invalidate import
   projection, drop the push ledger,

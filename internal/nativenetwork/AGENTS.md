@@ -25,10 +25,10 @@ preferences cannot make an explicit loopback-only bind remotely reachable.
 Loopback, hostnames, public addresses, credentials and URL paths are refused
 inside the relay constructor, not just by its caller.
 
-The non-loopback upstream is a security boundary. A LAN TCP connection forwarded
+The non-loopback upstream is a network boundary. A LAN TCP connection forwarded
 through localhost would appear to the backend as a local peer. Dialing the WSL
 private interface makes the observed peer the Windows vEthernet gateway, which
-is non-loopback. No launcher token, session credential, forwarded header or new
+is non-loopback. No launcher token, session access data, forwarded header or new
 trust class is added. TLS terminates at the existing WSL backend and the client
 checks its original certificate pin. Forwarded clients share the gateway's
 per-peer rate limits and network address in the host's audit records.

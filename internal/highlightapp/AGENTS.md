@@ -13,8 +13,8 @@ This package holds no thread-to-directory lookup. `PatchWithContext` and
 `ObserveDiffPayload` take an already-resolved workspace directory; the App
 resolves it per scope (`gitapp.ResolveWorkspace` for a checkout,
 `threadDiffWorkspace` for the edits scope) before calling in. Never reintroduce
-a `WorkspaceForThread`-style closure: a workspace path reaching this package
-un-resolved is a trust-boundary bypass.
+a `WorkspaceForThread`-style closure: callers must resolve a workspace path
+before passing it here, or they could bypass workspace ownership checks.
 
 Provider text and patches are bounded before parsing. Invalid UTF-8 and
 incomplete parses never cross a content-addressed persistence/event boundary.

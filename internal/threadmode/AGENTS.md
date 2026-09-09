@@ -55,6 +55,6 @@ sessions—lives in `internal/app/app_thread_bindings.go` and
   caller produce orphaned discussion shells with no deliberation channel.
   Workflow phase threads similarly require an engine run record and schema;
   `workflow-triage` threads require the run's hand-off entry point. Nothing
-  creates `workflow-studio` threads any more (D32). The mode stays legal
+  creates `workflow-studio` threads. The mode stays legal
   because shipped databases hold rows in it and the hidden-mode exclusion has
   to keep hiding them.

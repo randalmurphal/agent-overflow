@@ -48,7 +48,7 @@ the boot sweep is `app_flush_queue_restore.go`'s.
   the attachment and plan references and never the message, which is the
   part a person typed and the reason the text has a column of its own.
 
-## Anti-pattern carve-out: drift guard test
+## Exception: drift guard test
 
 `app_flush_queue_test.go` keeps a compile-only
 `guardCompileEnsureSendMessageOptionsCompatible` referencing the

@@ -31,7 +31,7 @@ Linux unit tests.
 ## The directive vocabulary
 
 Both vocabularies are CLOSED and both ends validate. `Validate` is the
-trust boundary: a directive names a profile that becomes a directory on
+validation boundary: a directive names a profile that becomes a directory on
 disk and a page the host creates OS windows for.
 
 | Op | Addresses | Host does | Answers with |
@@ -88,7 +88,7 @@ The folder is recreated empty afterwards, 0700, because the launcher
 validated and created it at boot (`prepareBrowserProfileStorage`) and
 environment creation expects it to exist.
 
-## Direction is the security property
+## The launcher is the only dialer
 
 The launcher DIALS. Nothing in this package listens on anything, and
 nothing ever crosses the WSL boundary inbound:
@@ -146,9 +146,6 @@ HWND, so the host snapshots the parent's child list immediately before
 handler, then raises with `SetWindowPos(..., HWND_TOP, ...)`. Every `show`
 re-raises, because Wails' renderer-hang recovery can recreate the SPA
 controller above the pane.
-
-Both are from the 2026-08-31 spike; its evidence lives in
-`/tmp/spike-webview2-dual/VERDICTS.md` while that tree exists.
 
 ## The clip container
 

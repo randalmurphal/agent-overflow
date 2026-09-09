@@ -49,10 +49,11 @@ real device profile or provider home. Cross-process and lost-response tests
 must exercise persisted state, not just two references to one Client.
 
 `WithDialContext` selects a network path at construction for pairing, reopened
-clients, learned alternatives and address-repair probes alike. It bypasses
-environment proxies but never changes TLS pinning, destination authority or
-credential rules. The owner can route tailnet destinations through its tsnet
-node and ordinary LAN destinations through the OS without a global dialer.
+clients, learned alternatives and address-repair probes alike. It dials without
+using environment proxy settings but never changes TLS pinning, destination
+authority or credential rules. The owner can route tailnet destinations through
+its tsnet node and ordinary LAN destinations through the OS without a global
+dialer.
 
 `Session.OwnDevice` records the invitation's intent so a confirmed own-device
 introduction can replace an older limited profile without repeatedly replacing
@@ -74,4 +75,4 @@ an invitation that may already have been spent.
 snapshots. Identity must match this client's backend, and the profile transaction
 fences retired/replaced pairings before saving trust. A live route invalidation
 causes a bootstrap refresh through the existing desktop proxy, which feeds this
-same owner; do not parse opaque WebSocket bytes in the reverse proxy.
+same owner; do not parse raw WebSocket bytes in the reverse proxy.

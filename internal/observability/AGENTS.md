@@ -7,8 +7,9 @@ at most one interface dispatch.
 
 One subpackage is deliberately NOT opt-in. `goroutinedump` arms a
 signal handler at boot. Opt-in is the right default for anything that
-costs per call site; it is the wrong default for the one tool a wedged
-process needs, because the wedge is discovered after the process started.
+costs per call site; it is the wrong default for the one tool an
+unresponsive process needs, because the stall is discovered after the
+process starts.
 
 ## Layout
 
@@ -33,9 +34,8 @@ process needs, because the wedge is discovered after the process started.
   0700 dir) into the logging directory. Stdlib-only; `install_windows.go`
   is a no-op stub. It is the one thing here that is NOT opt-in, and
   deliberately so: `pprofserve` needs an env var set before the process
-  started, which is never true of the process that is wedged NOW
-  (incident 2026-08-15, a send stuck under a per-thread lock in a
-  stripped binary). The cost is one parked goroutine.
+  starts, which is unavailable when diagnosing a process that is already
+  unresponsive. The cost is one parked goroutine.
   - Dumps are throttled to one per `MinInterval` (10s) and the
     suppression is LOGGED, because anyone able to signal the process can
     ask for one and an unthrottled loop both fills the disk and starves

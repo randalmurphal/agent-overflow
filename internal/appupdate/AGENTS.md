@@ -76,15 +76,12 @@ Things to keep true when editing here:
 
 `matchReleaseAsset` (`assetmatch.go`) replaces the updater library's
 `DefaultAssetMatcher`, which accepts any asset whose name CONTAINS the platform
-and arch tokens and returns the first one it finds. That is safe only while
-every artifact in a release happens to be disjoint under substring matching,
-which is a property of today's list rather than a rule. Adding
-`agent-overflow-headless-linux-amd64` broke it: the name contains "linux" and
-"amd64", sorts ahead of `agent-overflow-linux-amd64`, and every Linux desktop
-install would have taken the windowless serve binary as its next update and
-then opened no window, with nothing reporting a mismatch.
+and arch tokens and returns the first one it finds. Substring matching does not
+define ownership: a qualifier such as `headless` can produce a name containing
+the same platform and architecture tokens while targeting a different host.
+An exact matcher keeps each update on the artifact intended for that target.
 
-So an asset is a target's iff its name is `agent-overflow-<platform>-<arch>`
+So an asset belongs to a target iff its name is `agent-overflow-<platform>-<arch>`
 plus one of `releaseAssetExtensions`. Consequences for anyone editing here:
 
 - A NEW release artifact is named with its qualifier in the middle

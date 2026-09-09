@@ -165,7 +165,7 @@ assemble so a broken bundle store cannot be packaged.
 
 GitHub builds explicitly provision the SDK with `setup-android`, including
 the platform and build-tools packages. Do not assume a runner's preinstalled
-SDK puts `sdkmanager` on PATH; the first Android candidate failed that way.
+SDK puts `sdkmanager` on PATH.
 
 The toolchain is not on PATH on the development box. Both are discovered
 with the defaults below and can be overridden by exporting them:
@@ -185,10 +185,9 @@ seams have to be IN it: the Capacitor packages the seams import
 no npm package) are dependencies of `frontend/` as well as of this
 package, pinned to the same versions. The seams issue those imports
 only behind `isNativeShell()`, and each is a dynamic `import()`, so on
-the desktop they are chunks nobody fetches. The first device run
-(2026-09-03) is what retired the earlier `AO_SHELL=1` alias-to-a-stub
-arrangement: the phone downloaded the backend's bundle, found every
-seam stubbed, could not confirm the launch healthy, and rolled back.
+the desktop they are chunks nobody fetches. Do not reintroduce an
+`AO_SHELL=1` alias-to-stub arrangement: a downloaded bundle must contain
+working native seams and report a healthy launch.
 
 Adding a plugin means adding it to both `package.json` files at one
 version; `cap sync` reads this package's list to wire the native side.
@@ -291,9 +290,8 @@ then verifies Back during a live turn navigates without interrupting it.
 
 The APK ships with the SPA it was built with and runs it until the
 backend it paired with says it has a newer one. `BundlePlugin` (local to
-this app, registered in `MainActivity`, the only native code wave 6g-a
-adds) is what puts that bundle on disk; `frontend/src/lib/native/
-bundleSync.ts` decides when, and `internal/bundle` +
+this app, registered in `MainActivity`) puts that bundle on disk;
+`frontend/src/lib/native/bundleSync.ts` decides when, and `internal/bundle` +
 `internal/transport/bundleroutes.go` are the other end. Design
 authority: `docs/specs/remote-access.md` §9, "Bundle sync".
 
@@ -365,7 +363,7 @@ The installed APK's `versionCode` is recorded as `apkBuild`. Before the ordinary
 transition, a different positive build (including legacy state without this
 field) clears only bundle selection and serves the APK's packaged assets.
 Otherwise a downloaded old UI can permanently mask an APK update, even while
-that UI cannot reconnect to obtain newer code (Pixel incident, 2026-09-05).
+that UI cannot reconnect to obtain newer code.
 Pairing, preferences and WebView storage are outside this reset. The next healthy
 report prunes the retired bundle directories. Every distributed APK increments
 `shell-build.txt`; ordinary cold starts retain subsequent downloaded updates.
@@ -579,9 +577,7 @@ the app is a thing people already do.
 first act is the `POST_NOTIFICATIONS` prompt, and a platform prompt
 raised while the lock's own credential prompt is up is two system
 dialogs on one screen: whatever the person types goes to the one on
-top. That is how every unlock in the emulator smoke failed on the first
-device run (2026-09-03), and it is the general rule, not a push one —
-anything that raises a platform dialog on boot waits for the gate
+top. Anything that raises a platform dialog on boot waits for the gate
 (`boot.ts`, `onceUnlocked`). The presenter and the tap route raise
 nothing and start at once. The smoke pre-grants the permission with
 `pm grant`, so its runs never see the dialog at all.
@@ -634,8 +630,7 @@ sent to, what the tray does with each message — is covered by
 `internal/push`, `internal/app`, the Playwright spec, and
 `TrayNotifierTest`. The hop itself has a manual case:
 `e2e/android/shell-boot.spec.ts`'s real-push test, self-skipped unless
-`AO_ANDROID_PUSH_CREDENTIAL` names the service-account key (first real
-delivery 2026-09-04, Pixel 9a).
+`AO_ANDROID_PUSH_CREDENTIAL` names the service-account key.
 
 ## Backup and device transfer are off
 
@@ -718,10 +713,8 @@ pause a prompt caused and lets the matching resume through untouched.
 Read as a trip, that resume raised a second prompt after a passed one
 (the success had cleared the pause timestamp, so it looked like a cold
 start) and re-raised a dismissed one on the spot, with no way out of it
-short of killing the app (2026-09-03, the first device run). There is
-deliberately NO `FLAG_SECURE`:
-the 2026-09-03 ruling is bank-app behaviour, a timed re-lock and
-nothing more, and a person may screenshot or record their own
+short of killing the app. There is deliberately NO `FLAG_SECURE`: the
+lock is a timed re-lock and a person may screenshot or record their own
 threads. The task switcher shows the cover, which is the lock screen,
 because the cover is painted before the OS takes the thumbnail.
 
@@ -748,9 +741,8 @@ arrives, that a notification tap's extras cold-launch onto the right
 thread — needs an emulator: `make e2e-android`, which exits clean when
 there is none. It drives the shell's own WebView through Playwright's
 Android API rather than a Chromium of its own; `e2e/AGENTS.md` §
-The emulator smoke owns the details. Its first device run was the Mac
-pass (2026-09-03, an arm64 android-36 emulator): five shell defects the
-unit suites could not reach, all fixed in that pass, and green since.
+The emulator smoke owns the details. The emulator exercises shell behavior
+that unit suites cannot reach.
 
 ## Deferred
 

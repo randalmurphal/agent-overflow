@@ -4,10 +4,11 @@ Opens user-visible HTTP(S) links in the host operating system's browser.
 
 ## Ownership
 
-- Keep URL validation here as the backend trust boundary. Frontend checks are
-  UX only and must not be treated as authorization.
+- Validate URLs here before the backend opens them. Frontend checks are UX
+  only and must not be treated as authorization.
 - Only `http` and `https` URLs are allowed. Do not expand this to arbitrary
-  schemes without a threat-model pass.
+  schemes without first documenting and reviewing which applications they can
+  launch, what supplied input they accept, and how that input is constrained.
 - Do not invoke a shell. Build commands as argv slices so URLs cannot become
   shell syntax.
 - WSL opens through Windows interop because the visible desktop is Windows.

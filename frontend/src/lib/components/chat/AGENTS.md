@@ -115,9 +115,9 @@ Every row rendered inside `<TimelineVirtualizer>`:
 - **The line-slide is a tracker, never a fixed-duration transition.**
   `TailClampedText`'s per-line inversion drains a fraction of whatever
   offset is pending each frame (`tailSlide.ts`), so lines arriving faster
-  than one transition could absorb them ticker faster. A 140ms-per-line
-  FLIP saturated at its one-window cap under short-line thinking and
-  teleported every further line (bug-report-20260904T184019Z). Guard:
+  than one transition could absorb them ticker faster. A fixed-duration
+  FLIP can saturate its one-window cap under short-line thinking and
+  teleport later lines. Guard:
   `thinkingTailContinuity.browser.test.ts`, a per-frame sampler over the
   whole streaming run, completion and handoff included.
 
@@ -223,17 +223,14 @@ The projection's last pass wraps consecutive activity rows into ONE
 over a height-capped clip that scrolls in place. Architecture, every term
 below, and an implementation map:
 [`activity-runs.md`](../../../../../docs/architecture/activity-runs.md).
-Known validation finding (2026-09-06): `observeActivityRunExpansion` measures
-expanded descendant bodies in ResizeObserver and changes the ancestor clip's
-cap. Chromium reports two deferred-delivery warnings during the real
-`activityRunScroll.browser.test.ts` "re-pins the live run to its bottom after a
-think collapse" case, although its final pin/geometry assertions pass. An
-isolated always-expanded body growing/shrinking reproduces the same class.
-This is unresolved, not harmless noise or a permitted suppression. A toggle-only
-synchronous measurement removes the toggle warnings but misses streamed growth;
-naively moving the cap write to the next frame changes visible timing. Preserve
-current behavior until the geometry ownership/scheduling tradeoff is resolved
-before public release. Reproduce the real transition with
+`observeActivityRunExpansion` measures expanded descendant bodies in
+`ResizeObserver` and changes the ancestor clip's cap. Deferred-delivery
+warnings in the real `activityRunScroll.browser.test.ts` "re-pins the live run
+to its bottom after a think collapse" case are unresolved and must not be
+treated as harmless noise or suppressed. Toggle-only synchronous measurement
+misses streamed growth, while moving the cap write to the next frame changes
+visible timing. Preserve current behavior until geometry ownership and
+scheduling are resolved before public release. Reproduce the transition with
 `pnpm exec vitest run --project browser src/lib/components/chat/activityRunScroll.browser.test.ts -t 're-pins the live run to its bottom'`.
 
 The rules that bite here:
@@ -304,7 +301,7 @@ through its `index.ts` barrel and nothing deeper — with host wrappers
 under `markdown/` for Code, Mermaid and Math. Fix parser bugs in that
 tree, never duplicating the fix in `markdownEnhance.ts` or a host
 wrapper. Its area guide owns the parser map, the host seams, the
-path-relative URL security boundary and the test map.
+relative-URL validation and the test map.
 
 Mermaid and Math stamp their source on `data-mermaid-source` and
 `data-math-source`, keeping markdown copy and diagram actions working.
@@ -411,11 +408,11 @@ toasts; failed results are never cached, so later requests can recover.
 
 A raw-JSON assistant message never reaches the prose path.
 `AssistantMessage.svelte` hands `ChatMarkdown` the output of
-`markdown/rawJsonFence.ts`: a pretty-printed json fence whose printer is
-PREFIX-STABLE, so incremental line rendering stays incremental while the
-document streams. As prose, a 20KB single-line envelope restyled 5KB of
-already-read text per reveal tick (2026-08-22). Detection is a shape
-sniff, because Codex emits prose progress notes in the same session.
+`markdown/rawJsonFence.ts`: a pretty-printed JSON fence whose printer is
+PREFIX-STABLE, so each reveal updates only newly rendered lines while the
+document streams. Detection is a shape sniff, because Codex emits prose
+progress notes in the same session; those notes must continue through the
+ordinary prose path.
 
 ## Message nav rail
 

@@ -26,7 +26,8 @@ their lease through the complete transaction. The host's update guard must not
 observe an idle gap between a refresh consuming and saving a credential.
 Submitting/canceling an existing sign-in needs no new admission: its session
 already owns one. Fixtures use `kerneltest.IsolateSpawns` and explicitly replace
-the poisoned binary with a mock for tests that exercise native login transport.
+the fail-any-spawn executable with a mock for tests that exercise native login
+transport.
 
 `loginsession.go` holds one live sign-in per provider behind a registry whose
 lock is a LEAF: no other Manager lock is taken under it, and nothing is
@@ -34,12 +35,10 @@ published while it is held. Four bound methods drive it — `StartProviderLogin`
 `GetProviderLoginState`, `SubmitProviderLoginCode`, `CancelProviderLogin` — and
 progress reaches every admitted client on the `provider:login` channel.
 
-It replaced a single blocking RPC that opened a browser on the BACKEND'S
-machine and waited for it. That shape has no remote answer: from a paired
-phone, the link lands on a screen nobody is looking at and the call times out
-before anyone could have finished. So the state is retained and pushed rather
-than returned, and the client picks its own method — a page that cannot reach
-`OpenExternalURL` asks for the REMOTE one without being told to.
+Sign-in state is retained and pushed rather than returned by a blocking call.
+This gives paired clients a usable result when the link must be completed on a
+different screen; a page that cannot reach `OpenExternalURL` asks for the
+REMOTE method without being told to open a browser on the backend.
 
 Rules the drivers impose, and this layer obeys:
 

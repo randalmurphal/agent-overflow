@@ -25,10 +25,10 @@ same ask. See Coalescing.
   references. Raw envelopes, gate traces, and diffs are reachable
   through the references — they never ride the message.
 - **A bounded digest is not a dump (K3).** Two facts ride the message
-  because the alternative was measured, not because they fit: the run's
-  **worktree and branch** (asked twelve times in one live campaign), and
+  because readers repeatedly need them: the run's
+  **worktree and branch**, and
   — for a `gate` park alone — a bounded digest of what the PARKED
-  ATTEMPT produced (`Input.AttemptOutputs`, the verdict/severity a human
+  ATTEMPT produced (`Input.AttemptOutputs`, the decision/severity a human
   is being asked to rule on, read before *every* gate resolution in that
   same campaign). Both are resolved app-side. The digest reuses `run
   inspect`'s bounding rather than a second one, states its own overflow,
@@ -44,10 +44,9 @@ same ask. See Coalescing.
   conflating the two would let engine prose read as a model's report. An
   absent cause renders nothing: an empty label would read as a diagnosis
   that was lost on the way here.
-- **Every quoted value is data.** Goals, questions, stuck reasons, and
-  output values come out of a model. They go through
-  `internal/untrustedtext` and the message leads with the notice that
-  says so, because the reader is another agent.
+- **Every supplied value is treated as data.** Goals, questions, stuck
+  reasons, and output values go through `internal/untrustedtext`, and the
+  message leads with a notice saying so because the reader is another agent.
 - **Bounded.** Outputs, references, and every free-text field carry a
   rune/count budget with an explicit "…and N more" tail. A run that
   produced a thousand outputs still composes a message a thread can
@@ -62,18 +61,15 @@ same ask. See Coalescing.
   This is what turns "a grandchild is stuck" into one message on the
   surface a human or agent actually watches. It carries **no
   `Input.Outputs`**: those are the ROOT's declared outputs and the root
-  has not finished, so for a recursive campaign they are the previous
-  wave's carry-forward values (`next-wave-number: 3`) restated on every
-  park deep in the tree as though they described the run that just
-  stopped. Same rule as the blanked `Run.Reason` — the resolver
+  has not finished, so they are root-level values rather than facts about the
+  run that just stopped. The resolver
   (`internal/workflowapp/wake_surface.go`) omits both on a descendant wake, and the
   descendant's own attempt outputs already ride the message as
   `AttemptOutputs`. The body also carries the
   **call chain** root→park (`Descendant.Chain`, elided in the middle
   past `MaxChainRuns` with the elision stating how many it dropped) and
-  a closing naming which run to act on, because a campaign's sixth wave
-  is a run the reader has never seen and the message has to be enough to
-  issue a repair verb against it without a second command (D36a).
+  a closing naming which run to act on, so the reader can issue a repair verb
+  against it without a second command (D36a).
 - **`checkpoint` is the one reason whose closing is not a fault.** The
   run stopped exactly where it was asked to (D36), so both the root and
   the descendant closing say that and point at the resume rather than at
@@ -83,9 +79,8 @@ same ask. See Coalescing.
   the root branch is the sentence alone (with no "parked and does not
   continue" preamble, which would report the stop as something owing
   resolution). That matters beyond tidiness — `agent-overflow run watch`
-  prints `RepairSentence` and nothing else, so a checkpoint branch that
-  existed only in `closing` watched to a resting line naming no verb, on
-  the one park a supervising agent produces for itself.
+  prints `RepairSentence` and nothing else, so the checkpoint branch must
+  carry its verb in that field.
 - **A closing names the verb, not just the run (D38).** `repairSentence`
   appends the literal command to the closing: `run resume` for
   paused/interrupted/checkpoint, `run rerun` for a failed state,
@@ -122,13 +117,13 @@ same ask. See Coalescing.
   reason prints no verb, because the reason names its
   own cause and a generic "resume" would be exactly the wrong guess. The
   command carries the id of the run being acted on, which for a
-  descendant park is the DESCENDANT's, still quoted as untrusted data.
+  descendant park is the DESCENDANT's, still quoted as supplied data.
   The states and reasons the closing branches on are mirrored here as
   package constants rather than imported from the engine — this package
   is pure text assembly over a flat input, and importing the engine for a
   handful of strings would drag the whole FSM in.
 
-## The closing names the verb, not just the run (D38)
+## Coalescing
 
 - **Deduplication is by CONTENT, never by a time window.** A timer
   answers the wrong question in both directions: it suppresses a
@@ -148,10 +143,8 @@ same ask. See Coalescing.
   render byte-identical, so treating them as different asks would deliver
   the same words twice.
 - **`ProgressSignature` carries the ATTEMPT, and that is load-bearing.**
-  A campaign's loop-back notify fires once per wave over the same phase
-  and the same route; a signature keyed on route alone would report wave
-  one and swallow every wave after it — the failure this mechanism exists
-  to prevent, inverted.
+  A loop-back notify can repeat over the same phase and route; a signature
+  keyed on route alone would swallow later attempts.
 - A signature is a readable string rather than a hash because it is
   persisted on the run row (`work_items.wake_signature`, v52) and read
   by a human debugging a wake that did or did not arrive. The comparison,
@@ -234,21 +227,21 @@ same ask. See Coalescing.
 - Do NOT reach into the store or the engine from here. If the composer
   needs a new fact, resolve it in `internal/workflowapp/wake_surface.go` and add a
   field to the input.
-- Do NOT bypass `untrustedtext` for a field a model can write.
+- Every field a model can write must go through `untrustedtext`.
 - Do NOT grow a second composer for a new TRIGGER. `ComposeProgress` is not one: a
   resting wake and a progress wake are different *messages*, one naming a verb the
   reader owes and one existing to say no verb is owed, and they share every rule
   and body writer they can. A new trigger reporting a run resting, or continuing,
   belongs in the message that already exists.
-- Do NOT make a progress wake reach for a surface a park uses. It is inert for an
+- Do NOT make a progress wake reach for a surface a park uses. It has no effect for an
   unbound run by design: progress is not an interruption, and the OS notification
   belongs to runs that need a human.
 
 ## References
 
 - `docs/specs/workflows-system.md` §5 — thread binding and wake.
-- `docs/specs/workflows-system-decisions.md` D17 — the ruling, plus the
-  2026-07-25 amendment that made descendant parks surface at the root.
+- `docs/specs/workflows-system-decisions.md` D17 — the ruling that descendant
+  parks surface at the root.
 - `internal/workflowapp/wake_surface.go` — resolution.
 - `internal/workflowapp/wake_delivery.go` — the one delivery + coalescing
   decision point every composed wake goes through.

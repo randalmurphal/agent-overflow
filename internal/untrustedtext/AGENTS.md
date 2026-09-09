@@ -9,13 +9,13 @@ and pure.
 ## Invariants
 
 - **One definition of "quoted as data".** The workflow triage seed and
-  the wake composer both compose model-authored fields into prompts; if
-  they quoted differently, an injection that survives one surface would
-  be invisible to tests of the other. New prompt-composing surfaces use
-  this package rather than growing a local escaper.
+  wake composer use this package for supplied text, including text that looks
+  like valid instructions or markup. Apply the same quoting to every value
+  so tests cover both consumers. New prompt composers use this package
+  rather than adding a local escaper.
 - **Escaping never changes the value.** The output is a valid Go/JSON
-  string literal that unquotes to the original text. Markup bytes are
-  hidden from scanning surfaces, not stripped.
+  string literal that unquotes to the original text. Markup bytes remain quoted
+  data, so prompt readers do not interpret them as delimiters.
 - **Truncation is visible.** A cut value ends in `TruncationSuffix`,
   appended outside the quoting so a reader can tell truncation from
   content. A non-positive budget means "no budget", never "empty".
@@ -26,7 +26,7 @@ and pure.
 
 - Do NOT compose a model-written field into a prompt raw because it
   "looks safe" (an id, a status). The rule is one rule precisely so
-  callers never classify.
+  callers do not have to make a local safety judgment.
 - Do NOT add surface-specific variants (markdown-flavoured, HTML-only).
   One rendering that is safe everywhere beats three that each assume a
   surface.

@@ -38,7 +38,7 @@ That is also the wire's own contract on the other two surfaces:
 
 `Cache` is keyed by `provider.ProbeCacheKey`, the same key the account probe
 memoizes under. Project-scoped commands live in the workdir and plugin commands
-under the credentialed home, so one identity's list is not another's.
+under the account home, so one identity's list is not another's.
 
 It deliberately does NOT share the probe cache's TTL or its invalidations: a
 command list has no correctness deadline, and dropping it while identity is

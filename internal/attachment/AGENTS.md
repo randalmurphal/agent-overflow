@@ -80,11 +80,10 @@ attachment without a permission prompt; nothing may re-derive that path.
 
 `Upload` takes a declared LENGTH and an `io.Reader`, and `OpenThread`
 hands back an open `*os.File`. Neither side ever holds the payload as one
-`[]byte`, which is the whole of what wave 6b bought: the same 10 MiB
-screenshot used to exist as a decoded buffer, a base64 string ~1.34× its
-size, and a JSON frame containing that string, all live at once and all
-on the WebSocket the live events share. A 50 MiB `file` was never
-representable that way at all.
+`[]byte`; otherwise a 10 MiB screenshot would exist as a decoded buffer, a
+base64 string ~1.34× its size, and a JSON frame containing that string, all
+live at once on the WebSocket the live events share. A 50 MiB `file` is not
+representable that way.
 
 Three rules follow, and each is enforced inside the function rather than
 at its caller:
@@ -100,7 +99,7 @@ at its caller:
   the one the declaration earns (10 MiB for an `image`, 50 MiB for a
   `file`), and a caller that forgot its own bound still cannot make this
   store write past it. The transport classified it once already, to bound
-  the request body before a byte arrives; neither side trusts the other's
+  the request body before a byte arrives; neither side relies on the other's
   answer.
 - **The image signature is judged from a PEEK**, at most
   `signatureBytes` (12), before a byte is committed. Buffering the
@@ -113,11 +112,11 @@ Callers defer `Abort` after successful staging; `Commit` consumes that
 ownership and rolls back failed publication. Never leave cleanup to the
 HTTP caller or scatter direct file removal across app failure paths.
 
-App upload admission checks thread existence and transfer ownership before
+App upload acceptance checks thread existence and transfer ownership before
 reading, releases the mutation lock while staging, then rechecks under the
 same lock before Commit. Thread deletion holds that lock for final file/row
 cleanup. Never put network reads back under it: a stalled body otherwise
-blocks composer saves and queue admission. Stages stay outside thread
+blocks composer saves and queue acceptance. Stages stay outside thread
 directories so delete/transfer cannot capture partial bytes. `NewStore` runs
 before uploads begin under exclusive data-root ownership and prunes only
 reserved root stage filenames; interrupted legacy copy `.tmp` siblings
@@ -139,7 +138,7 @@ retain their existing behavior.
   - Deciding WHO may read an attachment. Thread ownership is enforced
     here (`resolveThreadAttachment`, shared by `ReadThreadBytes`,
     `PathForThread` and `OpenThread`) because it is a property of the
-    stored row; the capability check that precedes it belongs to the
+    stored row; the permission check that precedes it belongs to the
     bound method that mints the transfer ticket.
   - Deciding WHERE the file line goes in a turn. That is the send
     envelope's job (`resolveUserMessageEnvelope`).
@@ -165,9 +164,9 @@ retain their existing behavior.
 
 ## Anti-patterns
 
-- Do NOT bypass `commitStagedWrite` when publishing staged bytes. Its
-  metadata insert, atomic rename and failed-rename rollback must stay shared
-  across uploads and copies. These are separate disk operations, with the
+- Always publish staged bytes through `commitStagedWrite`. Its metadata
+  insert, atomic rename and failed-rename rollback must stay shared across
+  uploads and copies. These are separate disk operations, with the
   process-death gap described above.
 - Do NOT gate "safe to hand back to a client" on the MIME type. The
   attachment root now holds arbitrary bytes; the guarantee lives on the

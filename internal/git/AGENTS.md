@@ -310,8 +310,8 @@ status, diff, branches, commits, worktrees, and PR/MR creation.
   exist and the test suite hits them. Use `CanonicalPath`.
 - Do NOT stage silently when the caller asked for a commit. `Commit`
   explicitly refuses to stage; the caller must call `StageAll` first.
-- Do NOT bypass the `Forge` interface to call `gh` / `glab` directly
-  from app code. Add the operation to `Forge` and route through
+- App code must call `gh` / `glab` through the `Forge` interface. Add each
+  operation to `Forge` and route through
   `Core.forgeFor` (auto-detect) or `Core.ForgeByID` (caller knows id).
 
 ## References

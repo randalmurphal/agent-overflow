@@ -113,7 +113,7 @@ implement.
   pick the wrong default. Use `GetOrFetch(k, fetcher, force)` for
   single-key reads with cache-aware semantics.
 - Do NOT hand the same `flight.results` slice to multiple callers.
-  `RefreshProvider`'s defensive `cloneStatuses` is load-bearing for
+  `RefreshProvider`'s defensive `cloneStatuses` is required for
   the `-race` regression. Removing it re-introduces the shared-slice
   data race documented in the cache tests.
 - Do NOT cache fetcher errors. Only successful results populate the

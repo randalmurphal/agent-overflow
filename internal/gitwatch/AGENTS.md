@@ -72,9 +72,7 @@ share a watcher per canonical cwd via refcount.
    newest status supersedes the older one (the run loop drains the
    pending value before sending).
 8. **Silent-death recovery.** An fs-watch install can "succeed" and
-   then never deliver. Observed 2026-08-01 on macOS: FSEvents streams
-   installed during a dark-wake died when the machine re-slept,
-   freezing the header diff badge for a whole session. Every
+   then never deliver. Every
    rebuild trigger above rides on fs events, so a fully deaf watcher
    cannot heal itself. Two layers close the loop, both keyed on "the
    event stream has been quiet" so they cost nothing while events flow:
@@ -133,8 +131,8 @@ share a watcher per canonical cwd via refcount.
 - Watcher tests must drain the `Updates()` channel with a timeout
   (debounce makes everything async); never `time.Sleep` for
   synchronization.
-- `fetch_refresh_test.go` is a load-bearing integration test, not a
-  nicety: the app's background `git fetch` cadence
+- `fetch_refresh_test.go` is a load-bearing integration test: the app's
+  background `git fetch` cadence
   (`app_git_background_fetch.go`) broadcasts nothing of its own and
   relies entirely on this package noticing the fetched refs under the
   common dir. If it starts failing, that cadence needs an explicit

@@ -14,4 +14,5 @@ Contract: [computer-routes.md](../../docs/architecture/computer-routes.md).
 `RepairCandidates` permits a new address under an existing private pin, or a
 new port under the same WebPKI hostname. A different domain with a valid public
 certificate and a matching public backend ID is not proof of the old computer.
-Keep the same trust boundary in frontend `transport/computerRoute.ts`.
+The frontend `transport/computerRoute.ts` must apply these same checks before
+accepting an alternative address.

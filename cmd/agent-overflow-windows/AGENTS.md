@@ -87,8 +87,7 @@ same immutable snapshot rather than choosing explanations from the route name.
 
 The probe gap starts at `bootstrapProbeInitialPollInterval` (25 ms) and
 doubles up to `bootstrapProbePollInterval` (250 ms). A miss is an instant
-503 or RST, so early retries are free; the flat 250 ms gap it replaced
-cost every boot ~250 ms of sleep after the backend was already ready.
+503 or RST, so early retries do not wait for the maximum interval.
 
 ## Payload path: recorded, not re-resolved
 
@@ -100,8 +99,8 @@ embedded bytes with bounded scratch space; a version string cannot identify
 locally rebuilt binaries. Legacy records without a digest reinstall once.
 Every replacement clears the previous digest before writing WSL bytes. A failed
 install/boot or a rollback therefore cannot reuse an old record over new bytes;
-only a successful boot records the new identity. Resolving `$HOME` through wsl.exe costs ~440 ms per boot and only
-matters when something has to be installed. The record is the one thing a
+only a successful boot records the new identity. Resolving `$HOME` through
+wsl.exe is needed only when something has to be installed. The record is the one thing a
 warm boot trusts without asking WSL, so `launchAndShow` treats
 `errLaunchFailed` on a recorded path as "maybe stale": it re-resolves once,
 reinstalls at the fresh path if it differs, and retries. A path that
@@ -294,8 +293,8 @@ GUI-subsystem exe. Everything below is under `%APPDATA%\agent-overflow\`.
   `AGENT_OVERFLOW_WEBVIEW_LOG=1 make dev-wsl`, which whitelists the var across
   the WSL to Windows hop through WSLENV (the gate works in prod builds too).
   Off by default because enabling Chromium logging opens a visible console
-  window even for file-only destinations (WebView2Feedback #3192, no
-  workaround), and closing that console CTRL_CLOSE-kills the whole app.
+  window even for file-only destinations, and closing that console
+  CTRL_CLOSE-kills the whole app.
   Chromium truncates at every browser start, so `rotateChromeDebugLog` keeps
   the prior session as `chrome_debug.previous.log`: after a webview crash the
   autopsy is there, not in the live file.

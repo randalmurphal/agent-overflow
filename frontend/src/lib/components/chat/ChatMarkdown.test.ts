@@ -366,7 +366,7 @@ describe('<ChatMarkdown> path-link rendering', () => {
 
   it('never renders a raw same-origin img for a /-leading image src', async () => {
     // Image.svelte carried the same isPathRelativeUrl bypass Link.svelte
-    // lost (markdown/AGENTS.md § Security boundary): `![x](/api/whatever)`
+    // lost (markdown/AGENTS.md § Rendering and input validation): `![x](/api/whatever)`
     // rendered a raw <img> issuing a model-authored same-origin GET.
     const { container } = render(ChatMarkdown, {
       props: {
@@ -389,7 +389,7 @@ describe('<ChatMarkdown> path-link rendering', () => {
     // (its isPathRelativeUrl branch bypasses transformUrl) — a same-tab
     // top-level navigation onto the SPA origin: a 404 at best, an
     // origin-isolation escape at worst. `Link.svelte` drops that branch
-    // (markdown/AGENTS.md § Security boundary); the href renders as a
+    // (markdown/AGENTS.md § Rendering and input validation); the href renders as a
     // non-navigable schemeless reference instead.
     const { container } = render(ChatMarkdown, {
       props: {
@@ -422,7 +422,7 @@ describe('<ChatMarkdown> path-link rendering', () => {
     // Asserted through the real component on BOTH render paths, because a
     // settled ChatMarkdown serializes through `staticHtml.ts` and only a
     // streaming one mounts `Link.svelte` — see markdown/AGENTS.md
-    // § Security boundary and the corpus in
+    // § Rendering and input validation and the corpus in
     // ChatMarkdown.compactStaticLinkUrls.test.ts.
     const { container } = render(ChatMarkdown, {
       props: {

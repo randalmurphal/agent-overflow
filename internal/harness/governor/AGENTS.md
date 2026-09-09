@@ -33,11 +33,11 @@ kill path here.
   as an answer: on Darwin a missing pid answers the `kern.proc.pid`
   sysctl with ZERO bytes, surfacing as `EIO` from `SysctlKinfoProc`,
   and that (like `ESRCH`) is "dead", not a probe error. Reading it as an
-  error kept every crashed instance's lease until TTL and blocked
-  `ao-harness up` for a day (fixed 2026-09-04, regression-tested). A live owner whose
+  error must not preserve a dead lease. A live owner whose
   birth marker still matches is kept past its TTL. A dead owner, or a
   reused PID, is dropped even before TTL expiry, which is what lets a
-  crashed detached `up` return its capacity.
+  crashed detached `up` return its capacity. The Darwin zero-byte case is
+  covered by `process_darwin_test.go`.
 - **`Monitor` re-checks the birth marker after every separate OS query.**
   RSS and liveness are two syscalls, and a PID that exits and is reused
   between them must not produce an event for the old lease.
@@ -51,10 +51,8 @@ kill path here.
   helper processes constantly, so a pid vanishing between the tree
   snapshot and its memory query is routine operation. Only the OWNER's
   death or identity change ends the monitor (and the monitor's own
-  owner rechecks catch that). All three platform samplers follow this;
-  Windows treating the gap as an error let the reservation layer read
-  helper churn as a safety failure and tear down a healthy instance
-  (incident 2026-08-30).
+  owner rechecks catch that). All three platform samplers follow this.
+  A member-process gap is routine and must not tear down a healthy instance.
 
 Windows parent IDs outlive their parent process. Tree sampling uses one
 `SystemProcessInformation` snapshot with creation times and working sets:

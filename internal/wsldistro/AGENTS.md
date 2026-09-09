@@ -56,7 +56,7 @@ File mode is `0o600`; directory mode is `0o700`. The schema is
 per-user state. A multi-user host shouldn't expose another user's
 distro choice.
 
-## Env-var threat model
+## Environment variable validation
 
 `AGENT_OVERFLOW_WIN_APPDATA` is the WSL-side handle for the writable
 config root. The launcher always exports a clean absolute Windows
@@ -64,8 +64,8 @@ path that WSLENV's `/p` flag translates into a clean `/mnt/c/...`
 form. `WSLConfigDir` rejects anything else: relative paths, values
 containing `..` segments, regular files (would otherwise pass
 through `os.Stat` but fail mid-write), and paths to non-existent
-directories. Falling through to "WSL settings unavailable" is
-preferable to writing into an attacker-prepared path.
+directories. Falling through to "WSL settings unavailable" avoids writing
+into an untrusted path.
 
 ## References
 

@@ -68,8 +68,8 @@ per logger; up to three backups (`.1` / `.2` / `.3`).
 ## Anti-patterns
 
 - Keep `ProviderEventEntry.Data` a `json.RawMessage`, never a quoted
-  string. Re-escaping every provider frame was ~24% of backend allocation
-  during streaming turns (measured 2026-08-24). The encoder compacts the
+  string. Re-escaping every provider frame accounts for about 24% of backend
+  allocation during streaming turns. The encoder compacts the
   raw value, so NDJSON framing stays safe, and a non-JSON payload still
   falls back to the quoted form.
 - Do NOT swallow rotation errors. `rotate` always returns a typed

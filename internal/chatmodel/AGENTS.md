@@ -53,8 +53,7 @@ contract; read those before adding a variant.
   catalogs, so a static lookup reports it unknown and a static
   default guesses the provider-wide standard window — a value that IS
   a supported option and silently displaces the family's flagged
-  default (claude-fable-5-1 defaulting to 200k instead of 1M,
-  2026-09-01). The catalog-aware pieces stay pure by taking the
+  default. The catalog-aware pieces stay pure by taking the
   resolved options (`ValidateContextUpdate`, `DefaultContextWindowFor`)
   or the caller's resolver (`FallbackProfileWith`) as a PARAMETER; App
   code supplies `App.contextWindowOptionsForModel`, threadapp supplies

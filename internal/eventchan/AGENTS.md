@@ -57,7 +57,7 @@ What the type does NOT stop is an untyped string LITERAL: Go assigns
 those to any string type. `internal/app`'s
 `TestEmitSitesNameAnEventChannelConstant` closes that hole by AST-scanning
 every production source for an emit call with a `BasicLit` first argument.
-Both guards are load-bearing; neither is sufficient alone.
+Both guards are required; neither is sufficient alone.
 
 ## Anti-patterns
 

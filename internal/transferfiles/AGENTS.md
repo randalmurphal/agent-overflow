@@ -26,7 +26,7 @@ credentials, HTTP handlers, database state, or execution ownership live here.
   Never reset after acknowledging preparation or infer a new digest from a
   damaged local file. A reset persists zero before any byte truncation. If extraction fails before
   its digest check, `VerifyUploadContent` distinguishes damaged disk bytes from
-  faithfully received invalid archives; only the former may restart upload.
+  faithfully received invalid archives; only a damaged file may restart upload.
   Healthy uploads never pay a second complete hash pass. One deterministic
   scratch chunk bounds orphan storage across repeated process deaths.
 - Installation maps verified members into caller-injected roots. Preparation

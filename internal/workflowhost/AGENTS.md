@@ -11,10 +11,8 @@ one fate back. Spec: `docs/specs/workflows-system.md`.
 
 ## The host seam
 
-The runner used to be `workflowAppRunner` in package `main` with an
-`app *App` field, which made all 19 App members it happened to reach part
-of its contract by accident. It now holds `host Host` (`host.go`): nine
-capability-named consumer-side interfaces composed into one field.
+The runner holds `host Host` (`host.go`): nine capability-named consumer-side
+interfaces composed into one field.
 `SessionHost`, `TurnHost`, `ThreadHost`, `WorktreeHost`, `PromptHost`,
 `EventEmitter`, `EngineSource`, `ProcessLifetime`, and
 `ProviderHomeSource`, the last of which exists because an isolated boot
@@ -92,6 +90,6 @@ in `internal/app`.
 ## References
 
 - `docs/specs/workflows-system.md` describes the system this implements.
-- `docs/architecture/root-decomposition.md` § Stage 3+ covers why the
-  move happened and what stayed behind.
+- `docs/architecture/root-decomposition.md` § Stage 3+ describes the
+  package boundary.
 - `internal/workflow/engine/` is the FSM that calls `Start` / `Stop`.

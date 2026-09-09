@@ -78,6 +78,5 @@ both directions, and guessing tightens the union for no reason.
   does, in both Claude (`--json-schema`) and Codex (`outputSchema`) modes,
   and on the one-shot text-generation paths (`claude -p` uses
   `ValidateClaude`, `codex exec --output-schema` uses `Validate`).
-  Without this the mock accepts anything and a workflow suite passes green
-  while every real provider run fails at spawn, which is exactly how the
-  original five schema defects survived a full green harness.
+  Without this the mock accepts anything and a workflow suite can pass while
+  every real provider run fails at spawn.

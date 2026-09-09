@@ -10,7 +10,7 @@ DTOs, shutdown sentinel, and adapters into
 the session manager, provider credential store, event bus, and triage. Do not
 move those wire shapes or method receivers into this package.
 
-The service owns every MCP mutex, timer, poll, temporary auth process, and
+The service owns every MCP mutex, timer, poll, temporary authorization process, and
 reload coalescer. Dependencies arrive through `Deps`; package code must not
 resolve global homes, sessions, lifecycle state, or event transport through a
 back-channel.

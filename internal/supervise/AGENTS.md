@@ -6,10 +6,9 @@ backend it spawns is its child. This package is the protocol, the durable
 state, and the supervisor loop. Operator-facing walkthrough:
 [serve-mode.md](../../docs/architecture/serve-mode.md) § The supervisor.
 
-The architecture is t3code's `docs/internals/server-updates.md` translated to
-one Go binary: a stable supervisor the service manager owns, immutable staged
-versions, a database snapshot taken while nothing holds the file, a trial boot
-parked before it can act, and a durable commit or a marked restore.
+The design uses a stable supervisor owned by the service manager, immutable
+staged versions, a database snapshot taken while nothing holds the file, a
+trial boot parked before it can act, and a durable commit or marked restore.
 
 ## Two properties everything else follows from
 
@@ -96,9 +95,10 @@ one.
   (`snapshotForTrial`, `Attempts == 0`), because that is the one place a trial
   can begin. Accepting an update writes the pending record durably and then
   waits out `ResponseGrace` so the asking child can flush its answer, and a
-  crash, a shutdown or a kill anywhere in that window used to leave a pending
-  record with no snapshot beside it — after which the next boot trialled the
-  new version against a database nothing could put back. The general rule:
+  crash, shutdown, or kill in that window may leave a pending record without
+  its snapshot. The consumer of that record must create the snapshot before
+  starting the trial; otherwise the next boot cannot undo trial writes. The
+  general rule:
   when a durable record promises a resource, whatever CONSUMES the record
   creates the resource, or a process that dies between the two leaves a
   promise nobody can keep.
@@ -132,20 +132,16 @@ on that same goroutine with nothing else scheduled. There is no lock in
 `supervisor.go` and there must not need to be: two state transitions cannot
 overlap because there is only ever one thing running.
 
-Two consequences that were bugs before they were rules:
+Two consequences follow from this design:
 
 - **The child's exit is a FACT, not a message.** Two readers need it (the loop,
   which decides what it means, and `stopChild`, which waits for the stop it
   asked for). It is a closed `exited` channel plus an `exitErr` field, because a
-  one-shot value channel gave whichever read second a wait that never ended —
-  a crashed trial wedged the supervisor permanently, in exactly the case
-  rollback exists for.
+  one-shot value channel would leave the second reader waiting forever.
 - **The message channel closing and the process exiting are the SAME event**,
   arriving on two channels in whichever order the scheduler picks. Never settle
-  a trial on the channel close: the exit STATUS is the better description and
-  is a moment behind, so that arm is disabled and the exit (or the trial budget)
-  supplies the reason. Settling on the first made a crashed trial's durably
-  recorded reason a coin flip.
+  a trial on channel close: the exit STATUS is the authoritative description,
+  and the exit or trial budget supplies the reason.
 
 ## Spawning
 
@@ -196,19 +192,18 @@ children: `make service-artifact-smoke` accepts two supplied production binaries
 or macOS ZIPs, stages them, boots a baseline, commits a trial, and cold-restarts
 the target while retaining backend identity and a SQLite row. It skips without
 both artifact paths. The fixture uses `kerneltest` isolation, explicit mocks
-for boot-time Claude discovery and Codex catalog probes, poisoned PATH fallbacks, and loopback
-HTTP only. `--data-dir` names the config root; settings, SQLite and the supervisor
-layout belong under its `agent-overflow/` child. The fixture never installs a
-service or replaces the supplied artifacts. This supplements the deterministic
-failure tests; it does not verify release signatures or the download source.
+for boot-time Claude discovery and Codex catalog probes, failing provider
+test doubles on PATH, and loopback HTTP only. `--data-dir` names the config root;
+settings, SQLite and the supervisor layout belong under its `agent-overflow/`
+child. The fixture never installs a service or replaces supplied artifacts.
+This supplements deterministic failure tests; it does not verify release
+signatures or the download source.
 
-Every sequence is covered and each one earns its keep: the full commit cycle,
-a trial that crashes, a trial that never prepares, a supervisor killed mid-trial
-(three supervisors over one install, ending at the attempt limit), a restore
-interrupted mid-copy, an invalid state file, an unstaged target, a target
-speaking a newer protocol, and an update whose snapshot cannot be taken. The
-marked-restore test asserts the trial READ the restored bytes, which is the only
-way to prove the resume ran before the spawn.
+Tests cover the full commit cycle, a crashing or unprepared trial, a supervisor
+killed mid-trial through the attempt limit, a restore interrupted mid-copy, an
+invalid state file, an unstaged target, a target speaking a newer protocol, and
+an update whose snapshot cannot be taken. The marked-restore test asserts that
+the trial READ the restored bytes, proving resume ran before spawn.
 
 `supervisor_recovery_unix_test.go` holds the sequences that begin from a state
 file rather than from a running backend, over the same rig: a pending update

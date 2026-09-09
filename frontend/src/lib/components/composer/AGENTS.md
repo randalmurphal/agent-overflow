@@ -214,13 +214,9 @@ Stop, which the desktop relays.
 `WorkingSprite.svelte` translates a horizontal strip PNG inside a
 one-frame clipping window, stepped once per frame, with no timer and no
 lifecycle JS. `transform` is compositable, so Blink runs it off the main
-thread. The previous inline `background-position-x` write from a
-wall-clock timer was the single most expensive thing in the renderer:
-163.0ms of main-thread work per 5s at 25 frames/s, against 0.0ms now
-(2026-08-23). Layer-promoting the old write still cost 95.4ms. Phase comes
-from `utils/ambientPhase.ts`, so a remount lands mid-cycle on the same
-beat every other ambient indicator shares. Any new indicator here follows
-the same shape.
+thread. Phase comes from `utils/ambientPhase.ts`, so a remount lands
+mid-cycle on the same beat every other ambient indicator shares. Any new
+indicator here follows the same shape.
 
 ## The workspace strip reads outer to inner
 

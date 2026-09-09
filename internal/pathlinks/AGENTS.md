@@ -2,9 +2,8 @@
 
 Extracts file-path references from agent prose and validates them
 against a workspace filesystem. Output feeds the chat surface's
-auto-linkifier as an allowlist the frontend can trust, replacing the
-old client-side regex that produced false positives for any
-`prefix/word.word` shape.
+auto-linkifier as an allowlist the frontend can trust. The filesystem-backed
+allowlist avoids treating arbitrary `prefix/word.word` text as a path.
 
 ## Layout
 
@@ -55,15 +54,15 @@ old client-side regex that produced false positives for any
   validation time. Agent prose is untrusted, and without this guard
   `os.Stat` would expose an existence oracle for arbitrary host
   paths. Deliberately STRICTER than click-time
-  `internal/editor.ResolvePath` (which opens existing regular files
-  outside the workspace too, since 2026-08-18): prose linkification
-  decorates text without user intent, while the click gate's looser
-  reach is reserved for explicit markdown-link hrefs the user clicks.
+  `internal/editor.ResolvePath`, which can open existing regular files
+  outside the workspace: prose linkification decorates text without user
+  intent, while the click gate's looser reach is reserved for explicit
+  markdown-link hrefs the user clicks.
 - Empty / non-canonical / non-absolute `workspacePath` drops every
   candidate. Without a usable root the boundary check can't run, so
   refusing is the only safe behavior.
 - Candidate count is capped (`maxCandidates`) to bound worst-case
-  syscalls under a hostile message body.
+  syscalls for an untrusted message body.
 
 ## Testing
 

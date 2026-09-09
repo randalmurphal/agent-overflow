@@ -38,10 +38,8 @@ until ready and cannot override a newer navigation.
   Everything under its toolbar sits in `shared/RenderBoundary.svelte`: a
   render throw (a row model that cannot build) renders the failure in
   place with a Retry, and is recorded through `reportFrontendDiagnostic`
-  because the boundary keeps it from `window.onerror`. Without it the
-  flush aborted mid-branch and the pane kept the previous branch's DOM —
-  "Loading…" over a fully loaded store, the only trace in
-  `frontend-errors.jsonl` (MR !309, 2026-09-04).
+  because the boundary keeps it from `window.onerror`. Without it a flush
+  can abort mid-branch and leave the previous branch's DOM in place.
 - `reviewScroll.ts` is the pane's only scrollTop writer, with
   per-(thread, scope, geometry) position memory. The conflict view passes
   `scope:conflicts` so its position does not clobber the diff's. It
@@ -74,7 +72,7 @@ until ready and cannot override a newer navigation.
   (`stores/reviewSectionSizes.svelte.ts`).
 - Forge-authored bodies (PR description, review thread comments, verdict
   summaries) render `ChatMarkdown` with `embeddedHtml` — the sanitized
-  forge-HTML surface (`markdown/AGENTS.md` § Security boundary) — and
+  forge-HTML surface (`markdown/AGENTS.md` § Rendering and input validation) — and
   comments whose `visibleBody` is empty (marker-only bot replies) render
   nothing. `ReviewThreadComments.svelte` is the one comment-list +
   reply-composer body, shared by the inline strip (`ReviewPRThreadRow`)

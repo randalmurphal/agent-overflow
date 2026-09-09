@@ -4,9 +4,9 @@ Application coordination around `internal/git` and `internal/gitwatch`.
 
 ## Ownership
 
-- `WorkspaceRef` and `ResolveWorkspace`: the one trust boundary where a
-  caller-supplied workspace path is accepted, plus simple git reads/actions,
-  branch-prune preview and exact-tip revalidation.
+- `WorkspaceRef` and `ResolveWorkspace`: the one checked path-resolution
+  entry point for caller-supplied workspace paths, plus simple git
+  reads/actions, branch-prune preview and exact-tip revalidation.
 - One workspace-keyed git-status pump per canonical cwd, caller handle
   refcounts, bounded admission, and shutdown join.
 - The unattended background-fetch cadence, common-dir deduplication, live
@@ -34,7 +34,7 @@ on live thread/session ordering.
   ask for git status at all.
 - Agent activity never gates a BRANCH change. Checkout, create-branch, pull
   and sync run whenever the user asks, whatever any thread in the directory is
-  doing (user ruling, 2026-09-02). Only deleting the directory
+  doing. Only deleting the directory
   (`RemoveOtherWorktree`) and moving a thread to another checkout keep their
   activity checks.
 - `ResolveWorkspace` is the only place a caller-supplied path becomes a

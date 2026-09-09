@@ -3,7 +3,7 @@
  * base here, which resolved path-relative (`/x`, `docs/a`) and
  * protocol-relative (`//host/x`) input into passable URLs BEFORE the
  * prefix check — reopening the security boundary (see AGENTS.md
- * § Security boundary) for any caller that supplied one. No base
+ * § Rendering and input validation) for any caller that supplied one. No base
  * parameter exists now, so relative input fails closed structurally
  * instead of by every caller remembering not to pass it. That also
  * means every URL leaving transformUrl is absolute: upstream's

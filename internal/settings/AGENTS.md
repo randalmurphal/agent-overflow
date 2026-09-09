@@ -34,8 +34,8 @@ file, which is what the pre-database boot readers in `main.go` and
   `DisabledToolsForProvider` selectors. Both selectors route `claude-tui`
   onto the Claude lists, exactly like `HiddenModelsForProvider`: it is the
   same binary, and the interactive TUI honors `--system-prompt-file` and
-  `--disallowedTools` the same way headless does (spike-verified 2.1.234;
-  `internal/provider/claudetui/launch.go` passes both).
+  `--disallowedTools` the same way headless does
+  (`internal/provider/claudetui/launch.go` passes both).
   Neither tool list is enum-checked
   here: they speak two different vocabularies (Claude raw tool names,
   Codex curated toggle ids) and validating either against a table this
@@ -176,9 +176,9 @@ file, which is what the pre-database boot readers in `main.go` and
   coordination server, so keeping the toggle alone would register the
   node somewhere the user never named. The BIND half is two values and
   only one of them can be wrong: an out-of-range port drops to 0, which
-  means automatic — what every install did before the field existed — so
-  the backend still binds and still starts.
-  `previewPorts` is a FOURTH independent half (wave 9, the port gateway):
+  means automatic — the default behavior — so the backend still binds and
+  starts.
+  `previewPorts` is a FOURTH independent half (the port gateway):
   the owner's hand-named dev-server ports, 1-65535, deduplicated and
   sorted on write so two writes of the same set produce the same file and
   the gateway's reconciler sees no change. Capped at `MaxPreviewPorts`,
@@ -213,7 +213,7 @@ file, which is what the pre-database boot readers in `main.go` and
   projection and diff `mutate` reports with. Total is the point: a new
   settings field fails `TestEverySettingsKeyHasATier` until it is placed,
   because an unplaced key is one that silently stops announcing itself —
-  and since phase 4 an unplaced key is also one with no home, because
+  and an unplaced key is also one with no home, because
   this map is the STORAGE routing table. Placing a key is now two
   decisions in one: who may write it, and where it lives. A DEVICE-tier
   key is additionally eligible for a per-class default (`classdefaults.go`);
@@ -295,8 +295,8 @@ file, which is what the pre-database boot readers in `main.go` and
   - **The user tier is not in settings.json, so a file this process cannot
     read says nothing about it.** All three of `loadFromFile`'s exits —
     parsed, absent, preserved-as-corrupt — go through `overlayUserTier`. The
-    two fallback exits returned bare defaults until 2026-09-03, which meant
-    an install with no settings.json ignored every user-tier ROW: `mutate`
+    fallback exits must also overlay user-tier rows, so an install with no
+    settings.json does not ignore user-tier ROWs: `mutate`
     rewrites the file only for a write that moved a key still resident in
     it, so an owner who has only ever changed preferences never has one.
 - `gendefaults.go` + `gendefaults/`: the generator that makes
@@ -347,9 +347,8 @@ file, which is what the pre-database boot readers in `main.go` and
   at all; it still belongs to a screen, because the question it answers is
   about the one this process interrupts. It is one picker rather than two
   toggles because the reading most people want is the AND of "focused" and
-  "the thread is on screen", which independent toggles cannot say. Its two
-  pre-release predecessors, `notifyMuteWhenFocused` and
-  `notifyMuteWhenThreadVisible`, are retired names.
+  "the thread is on screen", which independent toggles cannot say. The names
+  `notifyMuteWhenFocused` and `notifyMuteWhenThreadVisible` are retired names.
   A DEVICE-tier field may also want a different default on some kinds of
   screen. That is `classDefaults` in `classdefaults.go`, and it is a
   separate decision from `DefaultSettings`: the global default is what a
@@ -361,7 +360,7 @@ file, which is what the pre-database boot readers in `main.go` and
   `DefaultSettings`. That is what makes an absent key read as the
   default for every settings file written before the field existed.
   `ClaudeTUIEnabled` is the deliberate example (opt-in claude-tui
-  visibility, 2026-08-18): `ClaudeEnabled` / `CodexEnabled` beside it
+  visibility): `ClaudeEnabled` / `CodexEnabled` beside it
   default true, so the inversion is documented at the field and pinned
   by `TestClaudeTUIEnabledDefaultsOffAndRoundTrips`. Do not "fix" it by
   adding it to `DefaultSettings`. `writeSparse` persists what differs

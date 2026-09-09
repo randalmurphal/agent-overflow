@@ -47,10 +47,9 @@ other binary payload still ON the wire spells base64 out for the same
 reason (`AttachmentThumbnail.Data`, terminal replay). Do not "simplify"
 it back to `[]byte`.
 
-The rule is not "base64 everything". Payloads too large for a frame left
-the wire entirely in wave 6b — attachment bytes stream over HTTP now — so
-the rule is: a binary payload small enough to belong in a frame says so
-in its type. A sprite strip is tens of KB and belongs there.
+The rule is not "base64 everything". Payloads too large for a frame stream
+over HTTP; a binary payload small enough to belong in a frame says so in its
+type. A sprite strip is tens of KB and belongs there.
 
 ## Warnings are data
 

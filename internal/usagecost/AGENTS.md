@@ -4,17 +4,13 @@ Hardcoded per-model USD pricing, applied at query time to
 `usage_ledger` rows that carry no wire-reported cost (Codex,
 claudetui). Stdlib-only, no persistence, no store/provider imports.
 
-## Why this exists
+## Pricing rule
 
 Claude reports cost CLI-side (`result.modelUsage[model].costUSD`), so
-Claude's `usage_ledger.cost_usd` is real and is never touched here.
-Codex has no cost anywhere on its wire; claudetui's synthesized results
-carry none either. Those rows persist tokens only
-(`cost_source='none'`). Pricing them requires a rate table, but a
-persisted estimate would go stale the moment rates change and there
-would be no way to reprice history. Instead, `Price` is called fresh on
-every query and the result is never written back. An app update with new
-rates reprices all history the next time someone looks.
+Claude's `usage_ledger.cost_usd` is wire data and is never touched here.
+Codex and claudetui rows persist tokens only (`cost_source='none'`).
+`Price` runs fresh on every query and its estimate is never written back, so
+changing this table reprices existing history on the next read.
 
 ## The one caller, and why it is not this package
 
@@ -25,11 +21,8 @@ composes through: the usage dashboard (`GetUsageStats`), a workflow run's
 overlay cost (`WorkflowGetItem`, `WorkflowListItemCosts`), and the workflow
 engine's per-tree budget enforcement (`workflowSpendSource.TreeSpend`).
 
-**One pricing rule, one place.** Display and enforcement previously each folded
-`Price` themselves and had already drifted: one counted unpriced rows and
-carried on, the other failed the read outright and parked the run. A run's
-budget must be judged against the same number its overlay shows, so the fold is
-shared rather than duplicated.
+**One pricing rule, one place.** Display and budget enforcement use the same
+fold so both surfaces report the same amount and handle unknown rates alike.
 
 The fold lives in `internal/usageledger`, not here, because it operates on
 `store.UsageDetailRow`. Keeping this package stdlib-only and store-free lets

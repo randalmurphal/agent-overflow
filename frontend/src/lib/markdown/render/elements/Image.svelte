@@ -27,7 +27,7 @@
 	// fall to the blocked-image span (no AO surface produces them —
 	// chat attachments render through dedicated components, not
 	// markdown). Cited by docs/specs/remote-access-boundaries.md; see
-	// markdown/AGENTS.md § Security boundary.
+	// markdown/AGENTS.md § Rendering and input validation.
 	const transformedUrl = $derived(
 		transformUrl(token.href, streamdown.allowedImagePrefixes ?? [])
 	);

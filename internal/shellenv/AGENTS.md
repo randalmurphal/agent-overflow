@@ -89,10 +89,6 @@ The probe brackets the value with `__AO_SHELLENV_PATH_START__` /
 them. Anything before / after / completely-absent sentinels yields a
 clear error.
 
-T3-code uses the same pattern (see
-`/Users/randy/repos/t3-code/packages/shared/src/shell.ts`); the
-namespacing convention there is `__T3CODE_*`, ours is `__AO_*`.
-
 ## Anti-patterns
 
 - Do NOT add fallback paths like `~/.nvm/versions/node/*/bin` here.
@@ -100,18 +96,14 @@ namespacing convention there is `__T3CODE_*`, ours is `__AO_*`.
   whole point of probing the shell is to avoid it.
 - Do NOT make `Sync` block startup on shell failure. The 5 s timeout
   is a hard cap; everything past that returns an error and continues.
-- Do NOT extend the captured env beyond `PATH` without a concrete
-  case. T3-code captures `SSH_AUTH_SOCK`, `HOMEBREW_*`, `XDG_*`; if
-  any of those are needed here, add them with a justification rather
-  than upfront.
+- Do NOT extend the captured environment beyond `PATH` without a concrete
+  case. Add each new variable with a justification rather than upfront.
 - Do NOT call `Sync` from anywhere except `main()` once. Repeated
   calls would re-merge an already-merged PATH (idempotent, but
   wasteful) and fork a shell on every call.
 
 ## References
 
-- `/Users/randy/repos/t3-code/apps/desktop/src/syncShellEnvironment.ts`:
-  reference implementation we're aligning with.
 - `internal/provider/detect.go` is the consumer most affected by this:
   `DetectProvider` calls `exec.LookPath` against a settings-supplied
   binary name.

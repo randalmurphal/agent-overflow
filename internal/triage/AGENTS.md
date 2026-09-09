@@ -51,9 +51,8 @@ the file list. A `Handle` case in `router.go` makes a handler reachable.
   `buildCommandOutputPayloadMeta` reads the explicit message out of
   provider meta whose fallbacks (`tool_use_result.stdout`,
   `tool_result.content`) are a successful command's ordinary output, so
-  the read is gated on `exit_code != 0 || is_error`; before that gate a
-  dev server's startup banner was persisted as the `errorMessage` of
-  every row that exited 0 (found by the wave-9 preview e2e, 2026-09-02).
+  the read is gated on `exit_code != 0 || is_error`; a successful command's
+  startup output must never become its `errorMessage`.
 - **A Claude `SendMessage` row's verdict is the ack, not the wire
   flag.** The CLI answers a refused send with an ordinary
   `is_error:false` tool_result whose `tool_use_result.success` is
@@ -111,9 +110,8 @@ subagent-aware path as guilty until it proves scope containment.
   every scope-resolving path resolves through `transcriptRoot`
   (`transcript_root.go`): the terminal transcript replay, the
   keep-running identity flip, and the resume prompt row. A new
-  scope-resolving path joins them. Treating the carrier as a scope
-  reparented 474 already-delivered round-1 rows onto it and duplicated
-  220 more on one live thread (2026-09-03).
+  scope-resolving path joins them. Treating the carrier as a scope would
+  reparent already-delivered rows and duplicate later rows.
 - **An async agent's stop is a pause while it owns a live shell.** The
   CLI parks such an agent and wakes it when the shell reports, and the
   pause is wire-identical to a final stop (claude-wire.md §E6b).
@@ -125,9 +123,8 @@ subagent-aware path as guilty until it proves scope containment.
   under the root, and the launch settles on the first stop with no live
   shell, on `killed`, on a §E6 rebind (`settleParkedLaunchForRebind`),
   or at session end. A `TaskOutput` observation of a parked agent
-  settles nothing. Settling at the first stop put every woken round's
-  rows, bells and counters under a card already rendered as completed
-  (2026-09-08). A new settle path checks the park state first.
+  settles nothing. Every settle path checks the park state first, so woken
+  rounds keep their rows, bells and counters under the active launch.
 - Tray membership and lifecycle gates must not share a filter.
   `Store.ListLiveBackgroundTasks` lists by backgrounded ancestry at any
   depth, while the reaper and queue gates beside it in
@@ -136,14 +133,14 @@ subagent-aware path as guilty until it proves scope containment.
   membership question; whether it blocks the flush queue is top-level
   only (invariant 24). Settlement is NOT top-level:
   `SettleBackgroundLaunchesForSessionEnd` (session close and death)
-  and the boot sweep settle launches at any depth, because the gates'
-  exemption is exactly what used to leave nested rows ticking forever.
+  and the boot sweep settle launches at any depth. Session-end settlement
+  must include nested rows even though the activity gates exclude them.
 - A Claude launch's `is_background` is decided by its COMPLETION, not
   its launch flag. `handleToolComplete` keeps a launch running only when
   the completion carries `is_background`; a flagged launch whose
   completion does not is settled in place with the flag cleared,
   otherwise a refused `run_in_background` Bash stands in the tray
-  forever with no task id (2026-09-02). Codex is the opposite: the
+  forever with no task id. Codex is the opposite: the
   projector stamps the flag from wire-typed signals and completions
   never carry the verdict (invariant 25), so there the launch flag stays
   authoritative. `internal/sessionimport`'s writer mirrors both rules.
@@ -169,10 +166,8 @@ subagent-aware path as guilty until it proves scope containment.
   scope's turn like every other row there. `backgroundCompletionTurnIndex`
   takes the parent id the new row will carry and routes a non-empty one
   through `turnIndexForScope`; only a top-level row follows the write
-  head. A scoped sibling filed on the main thread's later turn sorted
-  after every row the agent wrote afterwards, so a subagent's finished
-  background Bash rode the tail of its newest activity run forever
-  (2026-09-01). Pass the row's own parent, never `""` for convenience.
+  head. A scoped sibling must use its own parent when selecting a turn index;
+  never pass `""` for convenience.
 
 ## Stopped-thread routing (invariant 29)
 
@@ -450,7 +445,7 @@ decisions, and the enricher stays a pure function of the text.
 ownership under one mutex. Queue dispatch claims and pending-echo claims live
 on the stable thread identity until their callbacks finish, including across
 cleanup. Never infer Claude idleness from runtime ActiveTurns: Claude opens
-logical turns through init/echo instead of Codex's turn/start event. The native
-Claude 2.1.261 isolated fake-API spike confirmed init precedes echo on repeated
-sends; both orders remain supported. Activity checks must cover the handoff,
-not assume one provider's observed order is universal.
+logical turns through init/echo instead of Codex's turn/start event. An
+isolated fake-API spike confirmed init can precede echo on repeated sends;
+both orders remain supported. Activity checks must cover the handoff, not
+assume one provider's observed order is universal.

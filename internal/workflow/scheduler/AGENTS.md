@@ -104,8 +104,7 @@ refused (`app_workflow_bindings.go`).
   occurrence is held in `armedFire` keyed on the stored trigger text.
   `Schedule.Next` only ever answers strictly *after* the time it is
   given, so recomputing a due occurrence would roll it silently
-  forward, which is what a command landing in the same instant as a
-  fire used to do.
+  forward. Preserve the armed occurrence until it is handled.
 - **Self-chaining is an authoring accident.** An automation whose own
   run's completion re-matches its trigger records a `self-chain` skip.
   Cycles across two automations stay legal. Those are deliberate.

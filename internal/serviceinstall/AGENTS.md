@@ -12,10 +12,8 @@ Reached from one place: the `service` verb in `internal/aocli`
 
 **The host is a string, not a build tag.** `Config.GOOS` selects the manager,
 so both unit-file formats generate on any machine and both are golden-tested in
-full on every `make go-test`. Behind a build tag, the launchd plist would be
-reviewed only by whoever happens to be at a Mac, which is how a plist that
-never loads ships. Only the COMMANDS are platform-bound, and those never run in
-a test.
+full on every `make go-test`. Both formats are therefore reviewed on every
+platform. Only the COMMANDS are platform-bound, and those never run in a test.
 
 **Every external command goes through `Runner`, and `New` refuses a nil one.**
 There is exactly one real implementation, `ExecRunner`, and no test may

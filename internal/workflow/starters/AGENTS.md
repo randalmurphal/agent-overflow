@@ -28,7 +28,7 @@ is the source of truth for what a starter demonstrates; do not restate it here.
 
 ## Starters that call starters
 
-A starter may name another one on a `call:` edge, and may call itself for a next wave (D37).
+A starter may name another one on a `call:` edge, and may call itself for a next wave.
 
 - **The set is validated as a set.** `TestEmbeddedStartersAreCompleteAndValid` materializes
   every starter first and validates each against a `CallResolver` over all of them, because a

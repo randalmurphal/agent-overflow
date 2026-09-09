@@ -3,9 +3,10 @@
 Persisted workflow item/phase FSM, direct run start, project-local resource semaphores, and
 startup recovery.
 
-Rules only. Rationale, rejected alternatives, and incidents live in
+This guide states the rules. Rationale and decisions live in
 `docs/specs/workflows-system.md` (section numbers) and
-`docs/specs/workflows-system-decisions.md` (D-numbers). Cite, do not restate.
+`docs/specs/workflows-system-decisions.md` (D-numbers); cite them instead of
+duplicating them here.
 
 ## Ownership
 

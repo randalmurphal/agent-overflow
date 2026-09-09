@@ -54,7 +54,7 @@ to line up to the pixel.
 Left to right: pin gutter (absolute, inside the padding, so it costs the
 flex row no gap) · chevron · glyph · status dot (thread rows only; a group
 row shows no status, its members' status only moves it in the sort) ·
-title · right slot. The sidebar shows NO status text (ruling 2026-09-02):
+title · right slot. The sidebar shows NO status text:
 `utils/threadStatusPill.ts` owns the visual grammar, `label` is the dot's
 accessible name, and Completed / Plan Ready ring the row shell
 (`ringClass`), a ring the keyboard cursor's own ring overrides.
@@ -118,8 +118,8 @@ opens the editor, and only `threadGroupActions` asks. Create-and-move
 (`createThreadGroupAndMoveAction`, the thread menu's "New Group…") asks
 AFTER the move: the move re-sorts the group by its members' activity, the
 keyed-each reorder moves the row's DOM node, a moved node blurs the input
-inside it, and blur commits the rename — an editor opened before the move
-closed itself on "New Group" whenever the RPC was slow (e2e, 2026-09-02).
+inside it, and blur commits the rename. An editor opened before the move
+would otherwise close while the RPC is in flight.
 A row that has to move again while its editor is open still loses it; the
 list does not hold position for an edit.
 

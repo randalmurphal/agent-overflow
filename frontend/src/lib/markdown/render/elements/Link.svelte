@@ -52,7 +52,7 @@
 	// below. Hosts that want path-shaped hrefs to DO something rewrite
 	// them during parsing (utils/pathLinkExtension.ts). Cited by
 	// docs/specs/remote-access-boundaries.md; see markdown/AGENTS.md
-	// § Security boundary. Same rule in Image.svelte for `src`.
+	// § Rendering and input validation. Same rule in Image.svelte for `src`.
 	const isSchemelessReference = $derived(
 		typeof token.href === 'string' &&
 			!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(token.href) &&

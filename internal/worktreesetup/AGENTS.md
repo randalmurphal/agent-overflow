@@ -5,9 +5,9 @@ how it runs. One project-level config, executed whenever a new worktree is
 created for that project.
 
 Storage is `projects.worktree_setup` (a JSON blob, migration v46) and it is
-edited in Settings → Projects. It used to be the `worktree_setup` block of
-`<config-root>/projects/<slug>/profile.yaml`; that block is now a validation
-finding that tells the author to move it here (see
+edited in Settings → Projects. Legacy `worktree_setup` blocks in
+`<config-root>/projects/<slug>/profile.yaml` are validation findings that tell
+the author to move the setting here (see
 `internal/workflow/profile/AGENTS.md`).
 
 ## Boundaries

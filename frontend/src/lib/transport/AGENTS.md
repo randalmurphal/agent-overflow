@@ -1,8 +1,9 @@
 # lib/transport/
 
 Personal introductions use the same pairing redemption path as explicit links.
-Admission is checked after asynchronous work and before storing trust, endpoint
-or credentials. An activation probe belongs to its pending object and session;
+After asynchronous work, pairing acceptance is checked before storing the
+pairing's trust state, an endpoint or credentials. An activation probe belongs
+to its pending object and session;
 a late success cannot reactivate a removed connection or consume a replacement
 pairing. Local connection exclusions and generation-stamped removal hints are
 bounded and durable (`ownDeviceConnections.ts`); never evict tombstones or
@@ -29,8 +30,8 @@ pane can substitute for that project's owner.
 - `backends.ts` is the registry: which backends this client is attached to,
   and the one `WSClient` + `TransportHandle` each of them owns. Everything a
   connection owns stays per socket and unchanged — hello, session, replay
-  cursors, watch set, status — and what phase 7 changed is that there can be
-  more than one of them (spec §10, "One seam, two realizations").
+  cursors, watch set, status — and there can be more than one of them (spec
+  §10, "One seam, two realizations").
 
   **The page's own backend is an ORDINARY entry.** Its descriptor
   (`manifestBackends.HOME_DESCRIPTOR` on a desktop, the stored legacy slot
@@ -145,13 +146,14 @@ pane can substitute for that project's owner.
   allows `REPLAY_TIMEOUT_MS` (one RPC transfer budget) for the marker, including
   first-connection notification replay. Pings, live events and RPC replies do
   not extend it: none distinguishes replay progress from overtaking live traffic.
-  Document suspension and the native background lease defer verdicts; resume
+  Document suspension and the native background lease defer connection
+  decisions; resume
   grants a fresh window. Timeout retires the socket immediately through ordinary
   close bookkeeping, discards buffered payloads and retries unchanged cursors;
   it never repeats a mutation. Late close/frames cannot affect its successor.
   A socket that never completed replay does not earn a backoff reset.
 
-  **A resume onto an open socket owes one frame.** The stale-socket verdict
+  **A resume onto an open socket owes one frame.** The stale-socket decision
   stands down for a RECENTLY issued RPC on a remote backend (a single large
   reply blocks the heartbeats behind it). It does not stand down between a
   resume (page thaw, native `active` lease, connectivity returning) and the
@@ -186,29 +188,28 @@ pane can substitute for that project's owner.
   attempt and rejoins the reconnect ladder unless closed or terminal; an
   event-only connection must recover without another RPC or subscription.
 
-  **The reconnect ladder stops on exactly two conditions, and one latch
-  holds both.** `unauthorized` is a refused credential this session
+  **The reconnect ladder has two terminal states.** `unauthorized` is a refused credential this session
   cannot re-mint; `pairing-required` is a page whose socket would arrive
   at the backend as an off-host peer while this browser holds no paired
   session to name on the upgrade, which that backend refuses
   (`internal/transport/AGENTS.md` § the launch credential and the
-  upgrade). The pairing latch has a second cause with the same remedy: a
-  phone whose SAVED TRUST for the computer is unreadable
+  upgrade). The pairing terminal state has a second cause with the same remedy: a
+  phone whose saved network trust data for the computer is unreadable
   (`native/networkTrust.DamagedTrustError`, thrown before any request is
   addressed at it), which nothing but pairing again rewrites — so the
   ladder stops there instead of showing "Reconnecting…" forever, and the
-  cause rides on the latch so an awaiting caller's rejection names it.
-  Neither state is self-clearing — no timer un-sets a latch, because
+  cause rides on the terminal state so an awaiting caller's rejection names
+  it. Neither state is self-clearing — no timer clears it, because
   nothing about waiting mints a per-launch credential or pairs a device
   — and both clear only on evidence: a user-initiated
   `triggerReconnect`, or a connect attempt that gets past the condition.
   Three rules the states have to keep:
 
   - The pairing condition is decided BEFORE dialing, against the
-    manifest that just landed, and before the un-latch. The refusal is
+    manifest that just landed, and before clearing the terminal state. The refusal is
     an unfingerprintable 404 the browser surfaces as a bare 1006, so
     dialing would buy no information and cost one doomed socket per
-    backoff step — and a page that is going to latch must not publish a
+    backoff step — and a page entering the terminal state must not publish a
     moment of `reconnecting` on the way there.
   - Its predicate is the AND of the two signals `isRemoteSession` ORs
     (the manifest's `remote`, and a non-loopback document origin), plus
@@ -218,7 +219,7 @@ pane can substitute for that project's owner.
     machine; the origin alone strands Tailscale Serve and same-host
     proxies, where the page origin is a public name and the backend
     still sees a loopback peer.
-  - A latched client refuses RPCs locally rather than re-entering the
+  - A terminal client refuses RPCs locally rather than re-entering the
     ladder, so passive demand (a remounting pane, a background poll)
     cannot turn a stopped ladder into one fetch per caller.
 
@@ -293,7 +294,7 @@ pane can substitute for that project's owner.
   actually missed.
 
   **One interception in the dispatch path turns a step-up refusal into a
-  proof, for every gated method at once.** `installStepUpProver` is the
+  proof, for every permission-checked method at once.** `installStepUpProver` is the
   slot and `stepUp.ts` fills it at boot — the client owns the seam and
   the ceremony is INJECTED, mirroring the backend's
   `transport.Config.StepUpProof` and for the same reason the Go side has
@@ -376,15 +377,17 @@ pane can substitute for that project's owner.
   only when ITS identity moves, so a streaming channel does not mint one
   per frame.
 
-  **An explicit detached target fails closed.** Unknown entity ownership resolves only when exactly one computer is
-  attached; otherwise it refuses. Explicit, indexed and selected targets
-  never fall back. An unknown method keeps its legacy HOME route. HOME itself can be absent on a phone,
-  and an explicit HOME route then fails closed like any other missing target.
+  **An explicit detached target is rejected when unavailable.** Unknown entity
+  ownership resolves only when exactly one computer is attached; otherwise it
+  refuses. Explicit, indexed and selected targets never fall back. An unknown
+  method keeps its legacy HOME route. HOME itself can be absent on a phone,
+  and an explicit HOME route is rejected like any other missing target.
   A moved conversation's epoch excludes older catalog rows and conflicting
-  equal-epoch claims from admission. Its ownership notification carries the
-  former computer so the thread store invalidates pending reads and rewrites
-  that computer's offline catalog. Delete events apply store cleanup before
-  forgetting the origin used to choose the catalog.
+  equal-epoch claims before accepting ownership. Its ownership notification
+  carries the former computer so the thread store invalidates pending reads
+  and rewrites that computer's offline catalog. Delete events apply store
+  cleanup before
+  forgetting the origin that selected the catalog.
 - `entityIndex.ts` records the backend owning each entity. Lists, routed
   family results, thread/project/group row events and matching per-computer
   catalogs populate it. Backend IDs are not duplicated onto row types.
@@ -476,9 +479,9 @@ pane can substitute for that project's owner.
   once at boot (`src/main.ts`) — and in the slot of every backend attached
   afterwards, which `backends.ts` owns. A per-connection install done once
   at boot would leave a backend added later unable to satisfy a step-up
-  refusal, and the omission would be invisible on the owner's own machine:
-  the same recurring shape as the per-call-site wrapping this module
-  replaced. Where it runs is `wsClient.ts`'s single interception above.
+  refusal, and the omission is invisible on the owner's own machine:
+  the same recurring omission that a single interception prevents. Where it
+  runs is `wsClient.ts`'s single interception above.
 
   **The ceremony runs on the handle that REFUSED, which the transport
   passes it (`StepUpTarget`).** A token is minted for the session that
@@ -498,10 +501,10 @@ pane can substitute for that project's owner.
   Per-call-site wrapping is the recurring-bug shape: the wrapper is what
   the next gated surface forgets, and the forgetting is invisible where
   it is written, because on the owner's own machine host presence
-  satisfies the gate and no ceremony ever runs. That was the shipped
-  state after wave 8f — one wrapped call site, and minting a pairing
-  link, MCP config writes, provider custom env, worktree-setup recipes
-  and every host-tier settings key silently unreachable from a phone.
+  satisfies the gate and no ceremony ever runs. A per-call wrapper is
+  easy to omit, leaving writes such as pairing links, MCP config, provider
+  custom env, worktree-setup recipes and host-tier settings unreachable
+  from a phone.
   Do not add a second door: there is no per-call wrapper to reach for,
   and a surface that wants one is asking for the interception to be
   wrong.
@@ -567,13 +570,13 @@ pane can substitute for that project's owner.
   narrows the channels of ONE machine, so each backend is sent the ids
   it owns (`entityIndex.threadBackend`) PLUS every id whose owner this
   client does not know yet. Both halves matter and they fail in opposite
-  directions — withholding an id from its owner is a pane that silently
-  receives nothing and nothing later corrects it, while an unknown id is
-  the ordinary state of a thread reached by deep link or painted from
+  directions — withholding an id from its owner leaves that pane with no
+  updates, while an unknown id is the ordinary state of a thread reached by
+  deep link or painted from
   the replica, so home-only would be the routing fallback's answer and
-  the wrong one here. Pushing to `wsClient` alone (what this used to do)
-  meant every pane on an attached machine received nothing at all. The
-  per-socket `MAX_WATCH_THREADS` bound is each handle's own, and a split
+  the wrong one here. Each attached machine must receive its own split set;
+  sending only one unsplit set leaves panes on other machines without updates.
+  The per-socket `MAX_WATCH_THREADS` bound is each handle's own, and a split
   can only bring a connection further under it.
 - **A timestamp is read against the clock that MINTED it**
   (`backendClock.ts`). Every hello frame carries the server's own reading
@@ -591,7 +594,7 @@ pane can substitute for that project's owner.
   is a NATIVE signal: the phone shell's pause/resume, arriving through a
   Capacitor plugin. The shell's `native/lifecycle.ts` is its one caller
   (pause → `background`, resume → `active`); no browser or desktop client
-  calls it, so nobody wires the capability by reaching past the seam.
+  calls it, so nobody wires the feature by reaching past the seam.
   `setClientLease(state)` dedups BEFORE the fan-out — an unchanged state
   reaches no connection and no listener — and
   states it to EVERY attached backend (`backends.setLeaseEverywhere`, and
@@ -640,7 +643,7 @@ pane can substitute for that project's owner.
   a retry offers a button that cannot work. `TestFrontendHintsCoverEveryRefusal`
   (Go side) fails if this module and the Go set disagree in either
   direction.
-- `scopes.ts` is the capability answer, and the TypeScript mirror of
+- `scopes.ts` is the permission answer, and the TypeScript mirror of
   `internal/transport/scopes.go`'s vocabulary. A surface asks
   `hasScope('threads:operate', backend)` rather than "am I a remote session",
   because the two answer the same only for a device paired with FULL
@@ -685,13 +688,12 @@ pane can substitute for that project's owner.
   bootstrap separately and race the one-use page ticket. `hasScope` / `grantedScopes` / `isViewOnly`
   throw in test mode, and report once in a running app, when the home
   answer is read before resolution outside a tracking context: the idle
-  memory trim did exactly that at mount and shipped as a permanent no-op
-  (2026-09-03, ~50MB of idle renderer growth, found only from the
-  launcher log because `test/setup.ts` pre-resolves grants before every
-  test). `test/integration/scopes-resolve-after-mount.test.ts` mounts App
+  memory trim can otherwise run as a permanent no-op. The test setup
+  pre-resolves grants before every test, so
+  `test/integration/scopes-resolve-after-mount.test.ts` mounts App
   with the manifest still pending and is the sweep for that class.
 
-  `isViewOnly()` is the one exception to "ask for the capability, not the
+  `isViewOnly()` is the one exception to "ask for the permission, not the
   mode", and it exists for exactly one consumer: the ambient marker in
   `components/sidebar/SettingsFooter.svelte`. It is derived from the GRANT
   SET — a set was granted, and none of its names is execute-tier
@@ -708,31 +710,29 @@ pane can substitute for that project's owner.
   came from somewhere ELSE, and `isViewOnly()` is now it applied to this
   page. Its other caller is `settings/DevicesSection.svelte`, which labels
   each paired device from the grant set the overview carries
-  (`AccessSession.Scopes` — the backend ships the SET, not a verdict, so
+  (`AccessSession.Scopes` — the backend ships the SET, not a decision, so
   there is one definition of the word rather than two that agree until one
   moves). An unknown name is ignored rather than assumed execute-tier: a
   bundle older than the backend has no gate for it, and guessing would
   label a full-access device read-only.
 
   Two rules for the surfaces that DO gate. A control stays mounted and goes
-  inert — `disabled` plus the platform's own affordance, never hidden and
+  inactive — `disabled` plus the platform's own affordance, never hidden and
   never a click that swallows itself — because a screen that lost half its
   buttons reads as broken rather than read-only. And a PASSIVE load, one
   that runs because a pane mounted rather than because anybody pressed
   anything, checks before it fires: it has nobody to report a refusal to,
-  so an ungranted session spends one refusal per surface per open. That was
-  the whole shape of the view-only toast burst (owner's live test,
-  2026-08-30). Two sweeps, because the loaders live in two places:
+  so an ungranted session spends one refusal per surface per open. Two sweeps
+  cover the two loader locations:
   `stores/viewOnlyPassiveLoads.test.ts` for the stores, and
   `components/settings/passiveLoads.test.ts` for the sections that call
-  their RPCs from their own mount effect — which the first sweep cannot
-  see, and which is how four of them stayed ungated until a harness spec
-  read the absence off the wire (2026-08-31). `host` is the scope to be
+  their RPCs from their own mount effect, which the store sweep cannot see.
+  `host` is the scope to be
   careful with here: it refuses EVERY paired device, full access
   included, so it is the right gate for a fact about the MACHINE and the
-  wrong one for a capability. `NetworkSection.svelte` is the worked
+  wrong one for a permission. `NetworkSection.svelte` is the worked
   example of getting that wrong: managing how a backend is exposed is a
-  CAPABILITY the owner grants a device (`access:admin`), and gating the
+  PERMISSION the owner grants a device (`access:admin`), and gating the
   read on `host` made Settings → Remote access unreachable from every phone the
   owner had paired — including from the screen whose whole subject is
   remote access. What is genuinely host-only there is not the settings but
@@ -743,7 +743,7 @@ pane can substitute for that project's owner.
   Notified at the two moments the answer can move — the manifest
   resolving, and `redialAfterPairing` — and polled never. Nothing clears
   it on a disconnect, for the reason the hello snapshot survives one: a
-  capability that flapped to "nothing" for the length of an outage would
+  permission answer that flapped to "nothing" for the length of an outage would
   blank half the UI mid-reconnect. An unchanged answer keeps its snapshot
   IDENTITY, so a reconnect's manifest refetch does not invalidate every
   gated surface in the app.
@@ -757,7 +757,7 @@ pane can substitute for that project's owner.
   usable the remedy is a touch, where they are not it is being at the
   computer, and naming a passkey nobody can register sends somebody
   nowhere. The
-  backend puts the missing capability in a wire FIELD (`scope`, on
+  backend puts the missing permission in a wire FIELD (`scope`, on
   `scope_required`) because a method error's prose is redacted for a
   non-loopback caller — the field is the whole answer that survives. It
   is the REACTIVE backstop; `scopes.ts` is the proactive half a surface
@@ -765,7 +765,7 @@ pane can substitute for that project's owner.
   reaching it means the two disagreed: a grant narrower than the page
   believed, a method whose authority depends on its ARGUMENTS rather
   than its name (`transport.ScopeRequired`), or a revocation landing
-  mid-session. Like `authReason.ts` it always answers — a capability
+  mid-session. Like `authReason.ts` it always answers — a permission
   name this bundle has no word for degrades to the generic sentence.
 - `connectionRefusal.ts` is the third sibling, and the one whose refusals
   are the CONNECTION's rather than a call's. The other two read a code
@@ -788,10 +788,10 @@ pane can substitute for that project's owner.
   `handle.ts`.
 - `attachmentTransfer.ts` is the ONE module here that calls `fetch` for
   app data, and it exists because bindings carry JSON: a Blob body and a
-  streamed response are exactly what they cannot express. Attachment bytes
-  used to ride base64 inside a WS RPC frame, so a 10 MiB screenshot became
-  a ~13.4 MB frame on the socket the live event stream shares. Now an RPC
-  mints a single-use ticket and the bytes cross on their own connection.
+  streamed response are exactly what they cannot express. An RPC mints a
+  single-use ticket and attachment bytes cross on their own connection, so a
+  10 MiB screenshot does not become a ~13.4 MB frame on the socket shared by
+  the live event stream.
   Two rules hold it together. Every URL is **relative** — the SPA is served
   from three different origins across the boots it supports (embedded
   webview, `--connect` stub, paired remote browser) and does not know which
@@ -837,10 +837,10 @@ pane can substitute for that project's owner.
   leaves a phone retrying a dead session or dialing an upgrade the
   backend will not open for it.
 - `homeEndpoint.ts` is the ONE seam between "the origin that served this
-  page" and "the origin the home backend is at". Every client before wave
-  6f-c was served its bundle by the backend it then talked to, so every
-  home-backend URL in this directory could be RELATIVE and every one of
-  them was. The phone shell serves the same bundle from its own fixed
+  page" and "the origin the home backend is at". The embedded webview and
+  `--connect` clients are served by the backend they talk to, so their
+  home-backend URLs can be RELATIVE. The phone shell serves the same bundle
+  from its own fixed
   origin (`https://shell.agent-overflow.invalid`, which resolves nowhere)
   and reaches the backend across the tailnet, so those URLs have to be
   carried somewhere — and this is the only file that knows where.
@@ -922,9 +922,9 @@ pane can substitute for that project's owner.
   HOME pairings. It also reads the saved pairing's computer ID before bootstrap,
   so an offline invitation cannot create a second slot for the same computer.
   Native boot prefers a complete UUID pairing over a proven duplicate HOME
-  pairing, keeping the dormant HOME credentials/endpoints/trust until explicit
-  removal. An endpoint left by failed redemption cannot supersede a valid
-  legacy pairing. Old HOME sessions without an ID converge when authenticated
+  pairing, keeping the dormant HOME credentials/endpoints/trust records until
+  explicit removal. An endpoint left by failed redemption cannot supersede a
+  valid legacy pairing. Old HOME sessions without an ID converge when authenticated
   bootstrap identifies them, before catalog reads can claim two owners.
   Removing the canonical computer also retires its proven dormant duplicate.
   This is native pairing repair, not permission to merge different computer
@@ -1129,8 +1129,7 @@ pane can substitute for that project's owner.
   against a transport mid-transition, and both ways that ends are a
   burst of failures shown for a pairing that worked: the retiring
   socket's close reaching `failPending`, or one failed first attempt
-  settling all ~20 awaiting calls at once (2026-08-31, the owner's first
-  paired browser; the app came up "mostly" and a refresh fixed it). The
+  settling all awaiting calls at once. The
   budget is what keeps an unreachable backend from stranding the person
   on the pairing screen — past it the app mounts into its ordinary
   reconnecting banner, which is the designed surface for that.
@@ -1138,14 +1137,13 @@ pane can substitute for that project's owner.
   **The banner's surface is the case where the app is ALREADY mounted,
   and that needs the boot to run a SECOND time.** A page that mounted
   while the transport was terminal loaded nothing: every store's first
-  fetch was refused by the latched client, and only the entity-keyed ones
+  fetch was refused by the terminal client, and only the entity-keyed ones
   re-acquire when a connection arrives (`stores/entityStore.svelte.ts`),
   so the sidebar, settings, keybindings, the pane layout and the
   persisted app storage each loaded once and never again. Signing in from
   the banner therefore attached a socket to an EMPTY app until
-  `TransportStatusBanner.svelte` grew the guarded reload that gives it
-  what `main.ts` gives the pairing path by construction (found by
-  `e2e/tests/harness-passkey-lifecycle.spec.ts`). Anything else that adds
+  `TransportStatusBanner.svelte` performs the guarded reload that gives it
+  what `main.ts` gives the pairing path by construction. Anything else that adds
   a way OUT of a terminal state inherits it — the exit is what has to
   boot, never each button that reaches one.
 
@@ -1167,8 +1165,8 @@ pane can substitute for that project's owner.
   screen on silence. A rotation that publishes none keeps what the
   redemption did, since grants are immutable for a session's lifetime.
 
-  Since phase 5 a device also PROVES the key it enrolled with, rather
-  than restating its name. Which of the two presentations a device makes
+  A device also PROVES the key it enrolled with, rather than restating its
+  name. Which of the two presentations a device makes
   is fixed at enrolment and read off its own row by the backend
   (`devices.proof_kind`, `internal/identity/deviceproof.go`), so this
   module's job is only to send what its stored `proofKind` says. A key
@@ -1202,16 +1200,14 @@ pane can substitute for that project's owner.
   runs under happy-dom's missing IndexedDB and is therefore that class's
   regression suite; `deviceKey.test.ts` and `deviceSessionKeyed.test.ts`
   bring `fake-indexeddb` and cover the signing one. Both must keep
-  passing — the phase added a presentation, it did not replace one.
+  passing — the keyed presentation supplements the existing bare one.
 
   **`crypto.subtle` is not the only thing missing on that page, and it is
   the only one anybody remembered.** Secure context also gates
   `crypto.randomUUID` and `navigator.clipboard`, and an absent property is
   a TypeError when called, not a degraded feature. `wsClient.generateId`
-  minted the id of every RPC through `crypto.randomUUID`, so a device that
-  paired perfectly threw on the first call of the boot fan-out and rendered
-  a BLANK page — no error surface, because the code that draws one had not
-  mounted (2026-08-31, found by the harness). Random ids now come from
+  used `crypto.randomUUID` for every RPC. Calling it during boot can throw
+  before the error surface mounts. Random ids now come from
   `utils/randomId.ts`, which falls back to `crypto.getRandomValues` — NOT
   secure-context gated, so the answer stays a CSPRNG — and architecture
   rule 6 fails the build on a bare `crypto.randomUUID` anywhere else.
@@ -1227,16 +1223,16 @@ the only sanctioned compatibility questions. No hello and an unrecognised name b
 feature degrades instead of being attempted against a backend that cannot
 serve it. There is deliberately no protocol-version accessor to reach
 for: version gating guesses at what a number implies, flag gating asks
-(`docs/specs/remote-access.md` §9). A flag is never authorization — the
+(`docs/specs/remote-access.md` §9). A feature flag is never authorization — the
 backend re-checks every RPC regardless. The snapshot survives a
 disconnect on purpose, since the ladder is trying to reach the same
-backend and a flapping capability answer would be worse than a stale one.
+backend and a flapping feature answer would be worse than a stale one.
 
 `backendHasCapability()` answers for the PAGE's own backend. A surface
 asking about an attached one reads `getTransportHelloFor(key)` — which is
 per-backend reactive — and the question gets a named helper rather than an
 inline `.includes`, so a rename has one site: `utils/browserTools.ts`'s
-`backendHasBrowser` is the pattern (`browser`, the capability a machine
+`backendHasBrowser` is the pattern (`browser`, the feature a machine
 that can drive the browser tools advertises).
 
 The hello also carries the SPA that backend serves — `bundleId`,
@@ -1267,7 +1263,7 @@ unchanged whichever backend it names, which is what makes a device proof
 signed over it verify on either spelling.
 
 Three boot-derived flags, each with a different reactivity contract.
-None of them is a capability — that axis is `scopes.ts` above:
+None of them is a permission — that axis is `scopes.ts` above:
 
 - `runMode.ts` reads the page URL's `?mode=` once at module load, because a
   different mode means a different process boot — and because it must
@@ -1289,7 +1285,7 @@ None of them is a capability — that axis is `scopes.ts` above:
   network boots with mode `local` while holding no grant at all. A
   surface that needs both asks both (`EditorSection.svelte`,
   `utils/idleMemoryTrim.ts`).
-- `harnessMode.ts` LATCHES and is deliberately not reactive: it is a
+- `harnessMode.ts` sets its value once and is deliberately not reactive: it is a
   one-shot arm for `stores/harnessBridge.ts`, which subscribes to a wire
   channel, installs a document-wide MutationObserver and can hold a rAF
   loop open. Keying it on a manifest field rather than a build flag is
@@ -1306,16 +1302,15 @@ None of them is a capability — that axis is `scopes.ts` above:
   are told WHICH backend moved: "the identity changed" answers nothing once
   there is more than one.
 
-Every per-backend singleton this client used to hold is now a map keyed by
-registry id, with `HOME_BACKEND` as the default argument — which is the
-whole reason a single-backend client behaves identically and no call site
-moved. The set, and the one field that is deliberately NOT per backend:
+Per-backend state is stored in maps keyed by registry id, with `HOME_BACKEND`
+as the default argument. A single-backend client therefore uses the same
+default path. The set, and the one field that is deliberately NOT per backend:
 
 | What | Where | Home keeps |
 |---|---|---|
 | connection + handle | `backends.ts` | the `wsClient` singleton |
 | history identity + name | `backendIdentity.ts` | today's answer |
-| capability snapshot | `scopes.ts` | today's answer; `onHost` is home's ALONE, and every remote backend answers `onHost: false` |
+| permission snapshot | `scopes.ts` | today's answer; `onHost` is home's ALONE, and every remote backend answers `onHost: false` |
 | transport status | `stores/transportStatus.svelte.ts` | the unkeyed readers, so the banner is unchanged |
 | hello snapshot | `stores/transportStatus.svelte.ts` | the unkeyed `getTransportHello()` |
 | replica session | `replica/session.ts` | today's token; the DB was already named per backend |
@@ -1342,8 +1337,8 @@ fan-out, local administration and removal of the original launch computer.
 not authority to attach a computer or repeat the operation on another host.
 
 A missing explicit target is a rejected RPC, including when only HOME remains.
-The fan-out's one-computer direct dispatch applies to `all` routes alone; it
-must never bypass an explicit pin or a selected route naming a removed computer.
+The fan-out's one-computer direct dispatch applies to `all` routes alone; an
+explicit pin or a selected route naming a removed computer must be rejected.
 resolveTransport refuses missing targets. Pin one synchronously dispatched call
 with withBackendTarget, and capture that target again for every follow-up RPC
 across an await. runtime.test.ts covers absent pins on ByID and ByName.
@@ -1365,7 +1360,7 @@ for that request. Attachment and bundle HTTP use `fetchPairedComputer` too.
 See [computer-routes.md](../../../../docs/architecture/computer-routes.md).
 
 `networkFetch` and `createNetworkSocket` select native certificate verification
-only for origins explicitly trusted by a native pairing. They never patch the
+only for origins explicitly approved by a native pairing. They never patch the
 browser globals or introduce a second protocol. See `mobile/AGENTS.md` for the
 bounded bridge and its real-TLS tests.
 

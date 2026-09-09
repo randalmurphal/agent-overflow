@@ -5,9 +5,8 @@ headless, isolated data dir, mocked providers. Full harness guide:
 [docs/architecture/agent-harness.md](../docs/architecture/agent-harness.md).
 
 `tests/*.spec.ts` is the index. Each file names its subject, and every
-spec's own header comment says what it proves. Do not keep a per-spec
-catalogue here: the last one had drifted 11 of 44 files behind the
-directory.
+spec's own header comment says what it proves. Do not keep a second per-spec
+catalogue here.
 
 ## Where the shared pieces live
 
@@ -23,11 +22,8 @@ directory.
   registry when its WebSocket is torn down, which Playwright does not
   order before the next test's fixtures, and a ui query naming no page
   refuses two. The wait returns the instant the count reaches zero
-  (~1.5-2s in the common case: Chromium context teardown, not a backend
-  cost), so its ceiling is generous — 15s, because a heavy test that
-  navigated one page several times was measured clearing at ~5.6s on
-  macOS. A page still there at the ceiling fails the test as a leaked
-  context.
+  and has a 15s ceiling. A page still there at the ceiling fails the test
+  as a leaked context.
 - `frontend-client-helpers.ts` starts the compiled `frontendclient` test fixture
   under the same containment boundary. It owns a production frontend controller
   and no execution backend. Its `open(page)` obtains a fresh local page ticket;
@@ -44,8 +40,8 @@ directory.
   the current mock provider explicitly and disposable homes/data; a changed
   version label is not evidence of release compatibility.
   Current hosts exercise abrupt loss. The optional saved-release leg stops
-  normally: the saved 0.0.14 harness retains its lifetime lock after SIGKILL,
-  so its graceful-restart result must not be reported as crash recovery.
+  normally and is a graceful-restart check; it must not be reported as crash
+  recovery.
   Harness boot intentionally ignores persisted network settings; the older
   desktop pairing flow uses LAN, so this fixture reapplies its LAN listener
   after restart without re-pairing. This validates saved sessions and wire
@@ -57,40 +53,37 @@ directory.
   spaces and always names the isolated harness data root. It never installs a
   service or uses the developer's normal SSH configuration. Stop the owned
   daemon and delete its temporary keys after the manual run.
-- **A spec that asserts a MAPPED notification must not have a page open.**
-  Since wave R5 the SPA states a screen presence on its socket, and the
+- **A spec that asserts a mapped notification must not have a page open.**
+  The SPA states a screen presence on its socket, and the
   backend's default `notifyQuietWhen: "focused"` holds back a notification
   about a screen that is being looked at (`internal/app/app_notifications.go`) —
-  a Playwright page HAS focus, so a mapped turn-complete would simply not be
+  a Playwright page has focus, so a mapped turn-complete would simply not be
   raised. `notifications.spec.ts` and `push.spec.ts` are page-free today and
   that is what makes them deterministic, not luck. A spec that genuinely
   needs both writes `UpdateSettings({ notifyQuietWhen: "never" })` first,
   on the same connection the sender reads (a harness connection names no device, so the write lands on
   the backend machine's own screen).
 
-  The attended gate is deliberately LIVE under the harness rather than
-  pinned off at boot: turning it off there would make it the one piece of
-  notification logic `make e2e` never runs, which is the mistake this rig
-  already made once with the refusal stub
-  (`docs/architecture/agent-harness.md`). `HarnessNotify` is the single
+  The attended gate is deliberately live under the harness so `make e2e`
+  exercises notification preferences. `HarnessNotify` is the single
   exception and it says so — it sends through `notifyOSUngated`, because a
   send that exercises the pipe must not depend on preferences a spec never
   set.
 - `harness.rpc('MethodName', ...)` calls bound methods by NAME STRING, so
   no compiler connects these call sites to the Go signature. Changing a
   bound method's parameters must sweep `e2e/tests` and `cmd/ao-harness`
-  for that name (the dispatcher rejects a wrong arity with `bad_params`,
-  which is 26 red specs, not a build error — 2026-08-31, the `ListItems`
-  `inlinePreviews` param). `make e2e` is the gate that catches it; run it
+  for that name (for example, a `ListItems` `inlinePreviews` parameter
+  change; the dispatcher rejects a wrong arity with `bad_params`, which
+  compilation cannot catch). `make e2e` is the gate that catches it; run it
   before merging any bound-signature change.
 - `tests/*-helpers.ts` and `tests/probe-wire.ts` hold the wire builders
   and seeds their spec families share. Put a new provider wire shape
   there, not inline in one spec. `offhost-helpers.ts` also owns the
-  PAIRING CEREMONY every off-host spec starts with — mint the link,
+  pairing sequence every off-host spec starts with — mint the link,
   redeem it on the real screen, compare the number the device shows
   against the one the host holds, confirm — because one flow with two
   implementations is one that drifts, and it owns
-  `answered(outcome, why)`: a wire-level spec that wants the PAYLOAD of a
+  `answered(outcome, why)`: a wire-level spec that wants the result payload of a
   call needs the outcome union narrowed, and `expect(outcome.ok).toBe(true)`
   narrows nothing, so reading `.result` after it fails the launcher's
   typecheck rather than the assertion.
@@ -142,7 +135,7 @@ shows as a pause stack. The probe arms `Debugger` up front because
 
 ## The emulator smoke
 
-`make e2e-android` is a THIRD suite, not a third project: its own config
+`make e2e-android` is a third suite, not a third project: its own config
 (`playwright.android.config.ts`), its own directory (`android/`), and one
 spec, `android/shell-boot.spec.ts`. It has to be separate because its
 `page` fixture does not come from a browser Playwright launched — it is
@@ -151,12 +144,7 @@ the shell's own WebView, reached through Playwright's Android API
 spec written for it is nonsense under `desktop` or `compact` and vice
 versa. Everything after that fixture is the ordinary Page API.
 
-**First run 2026-09-03**, on a Mac against an arm64 android-36 emulator
-(no biometric, a device PIN). It was written from the Playwright Android
-docs and this app's own contracts on a box with no emulator, and the
-first run found five shell defects the unit suites could not reach (the
-spec's header lists them) plus two stale premises of its own. Do not
-read a green `make e2e-android` on a laptop as evidence: it exits 0
+Do not read a green `make e2e-android` on a laptop as evidence: it exits 0
 when no device is attached, on purpose.
 
 `make e2e-android` enables UI trace, then the Android runner builds a
@@ -187,11 +175,11 @@ wait on the renewed session itself rather than treating a visible row as proof.
 It then changes the backend's port, repairs the now-offline computer through
 Settings, and verifies that the same pairing and thread are usable afterwards.
 
-`scripts/android-smoke.sh` owns what is per RUN: it installs the APK
+`scripts/android-smoke.sh` owns what is per run: it installs the APK
 `make apk` built, sets a device PIN, and clears the PIN on every exit
-path. The SPEC owns everything per case and everything downstream of
+path. The spec owns everything per case and everything downstream of
 the port: its `page` fixture `pm clear`s the app, re-grants the
-notification permission and relaunches the activity before EVERY case
+notification permission and relaunches the activity before every case
 (the shell persists its endpoint and session in the WebView's
 localStorage, each run's harness is on a fresh port, and a case that
 failed with the credential prompt up would otherwise leave the WebView
@@ -226,10 +214,10 @@ unless `AO_ANDROID_PUSH_CREDENTIAL` names a service-account key file and
 the APK was built with `google-services.json` in place (mobile/AGENTS.md
 § google-services.json), making it a manual gate in the same sense as
 `make provider-smoke`: run it when the Firebase project or the push path
-changes. First real delivery 2026-09-04, Pixel 9a over wireless adb.
+changes.
 
-Two platform facts the spec has to answer for, both learned on that
-run: the platform's credential prompt is an activity of its own, so it
+Two platform facts the spec has to answer for: the platform's credential
+prompt is an activity of its own, so it
 is answered through the focused native PIN field, then Enter,
 not at the page; and a hardware back press with the soft keyboard up
 closes the keyboard and reaches nothing else, so `pressBack` closes the
@@ -335,8 +323,7 @@ missing value over one that skips. Two rules keep the evidence real:
   the group leader exits authenticates through a surviving member proof,
   and `captureProcessGroupMemberProof` declines any identity without a
   `groupId` — so a platform branch that omits the field silently disarms
-  teardown instead of failing loudly (the Linux branch did exactly that,
-  fixed 2026-08-31). A row only becomes a proof once its executable
+  teardown instead of failing loudly. A row only becomes a proof once its executable
   resolves; on Linux that link is read per candidate, never per row,
   because the memory watchdog sweeps every row on a cadence.
 - **Sweep `/proc` by name.** `readdir` with `withFileTypes` lstats the
@@ -360,9 +347,7 @@ missing value over one that skips. Two rules keep the evidence real:
 - **An assertion that nothing happened waits for the thing that would
   have.** Emptiness is true before the work starts, so a spec that checks
   it without first waiting on a SETTLED rendered state is racing what it
-  is about, and wins often enough to look green — two runs in three, for
-  "a view-only device spends no refusal", which was passing over four
-  real refusals (2026-08-31). Wait on the state the guarded path
+  is about. Wait on the state the guarded path
   produces, and assert the capture itself saw traffic, so a broken probe
   reads as a failure rather than as a clean bill.
 - **A listener this process opens is one the backend genuinely
@@ -373,7 +358,7 @@ missing value over one that skips. Two rules keep the evidence real:
   to anything the backend spawned, it is attributed to no thread and
   arrives as a `seen` candidate. That is what lets the preview-gateway
   pair drive the real allow-then-open flow, and it is also the only way
-  to assert what CROSSED the proxy: the fake server records the `Host`,
+  to assert what crosses the proxy: the fake server records the `Host`,
   `Origin`, raw request target and cookies of every request, so a
   rewrite that would have made a real dev server answer 403 fails on the
   record rather than passing on a green screen. Bind port 0 and read the
@@ -393,12 +378,12 @@ missing value over one that skips. Two rules keep the evidence real:
 - Draft threads (no items yet) are hidden from the sidebar. Seed at least
   one turn, or send the first message before navigating, when a spec needs
   the thread visible.
-- **A seeded-and-opened thread takes the MOUNT path; the in-app draft does
+- **A seeded-and-opened thread takes the mount path; the in-app draft does
   not.** "+ New" holds a placeholder and adopts the created row in place,
   which is a different code path from `openThreadInPane` for everything
   keyed on the pane's thread identity (the watched-thread set above all).
   `draft-first-turn-render.spec.ts` drives that path through the real
-  composer and asserts the first turn RENDERS; a change to how a pane
+  composer and asserts the first turn renders; a change to how a pane
   acquires its thread is not covered by the RPC-seeded specs.
 - **Each browser context owns its view preferences and layout.** `appStorage`
   reads the legacy connection-scoped `ui_state` bucket only on first migration.
@@ -408,30 +393,29 @@ missing value over one that skips. Two rules keep the evidence real:
   So a spec that must see a layout write become durable before it reloads
   polls the page's `agent-overflow:uistate:bucket` localStorage key, never
   `GetUIState`: the backend bucket is never written, and that poll times
-  out (`agent-visibility-pane.spec.ts` was stranded exactly so when
-  26fd27dca moved the layout local; fixed 2026-09-08).
+  out.
 
-- **A spec boots its OWN backend only for state `harness.reset()` cannot
+- **A spec boots its own backend only for state `harness.reset()` cannot
   undo**, and then owns everything downstream of it. The LAN bind and the
-  canonical domain both PERSIST to the settings file and REBIND the
+  canonical domain both persist to the settings file and rebind the
   listener, so borrowing the worker fixture's instance hands the next
   spec a rebound backend. Such a spec is `test.describe.serial` with its
   own `beforeAll`/`afterAll`, restores the settings it wrote, and — when
-  its legs need different browser LAUNCH arguments, since
+  its legs need different browser launch arguments, since
   `--host-resolver-rules` is process-wide — owns its browsers too.
   `harness-remote-device-lifecycle.spec.ts`,
   `harness-passkey-lifecycle.spec.ts`,
   `harness-provider-signin.spec.ts`, `compact-shell-origin.spec.ts` and
   the preview-gateway pair (`preview-gateway.spec.ts` /
   `compact-preview-gateway.spec.ts`, whose backend also holds a LAN
-  preview LISTENER open on somebody else's port for the length of the
+  preview listener open on another process's port for the length of the
   file) are the five, and each header argues its own constraints where
   they bite. The cross-origin one owns its backend for a different reason than
   persistence: the page origin it has to admit is an ephemeral port that
   does not exist until a listener has one, so the backend has to be
-  LAUNCHED with that origin in its environment. Read the passkey one before
+  launched with that origin in its environment. Read the passkey one before
   writing any WebAuthn case: the three requirements a page has to satisfy
-  at once (secure context, a DOMAIN relying party, a non-loopback peer)
+  at once (secure context, a domain relying party, a non-loopback peer)
   admit exactly one shape, and Chromium's virtual authenticator has a
   ceiling the header names rather than stages around. The sign-in spec is
   the other kind of unresettable state: it ADOPTS provider accounts,
@@ -449,7 +433,7 @@ missing value over one that skips. Two rules keep the evidence real:
   backend state can produce a notification therefore declares a distinct
   no-op worker fixture identity, and each cold-activation case declares
   its own, so an activation for deleted test state cannot redirect or
-  satisfy a later spec. That population is now EVERY spec that runs a
+  satisfy a later spec. That population is now every spec that runs a
   turn: the event mapping (`internal/app/app_notification_mapping.go`)
   raises a `notification:send` when a top-level turn comes to rest, fails,
   or opens an approval, and withdraws it when the thread resumes. A spec

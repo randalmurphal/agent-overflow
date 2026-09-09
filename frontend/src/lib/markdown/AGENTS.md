@@ -87,20 +87,15 @@ boundary/             the block-boundary splitter (incremark, own LICENSE)
 smoothing/            PerItemSmoother
 ```
 
-## Security boundary
+## Rendering and input validation
 
 **A path-relative href or src NEVER renders a raw anchor or image.**
 
-Upstream rendered any `/`-leading URL through a branch that bypassed
-`transformUrl`. In an SPA host that anchor is a same-tab top-level
-navigation onto the app origin: a 404 against the transport server for
-`[x](/home/user/file.md)`, and for a crafted `[x](/design/...)` a
-confirmed origin-isolation escape (agent-authored HTML served
-same-origin acts with the page's credential — the browser attaches the
-session cookie to whatever it requests, and HttpOnly narrows that to
-"cannot read the value", not "cannot use it"). `//host/x` counted as
-"relative" too, giving protocol-relative navigation off-origin. The
-`<img>` element had the identical bypass on `src`.
+Path-shaped URLs must not bypass `transformUrl`. In an SPA host, a URL
+beginning with `/` can navigate same-origin onto the transport server, where
+the browser attaches the page's HttpOnly session cookie. A `//host/x` URL is
+protocol-relative and can leave the page's origin. The `<img>` element has the
+same boundary on `src`.
 
 Both branches are removed. An anchor renders only for a
 `transformUrl`-approved href, an `<img>` only for a
@@ -146,16 +141,11 @@ that says it no longer pays.
   `literalHost.ts`'s controller, which is the single writer of that
   element's children. The renderer publishes the parser's authoritative
   leaf text INTO it; an app-side owner may `adopt` the element and take
-  over while it streams. Two writers on one visible text run was a
-  defect, not a division of labour — the app deleted its appended
-  siblings in one task while Svelte re-extended its own parser-owned
-  node in a later one, and WebView2 presented the rollback as a settle
-  flicker. The rule both writers are held to is ownership, not timing:
+  over while it streams. The ownership rule prevents competing writers
+  from deleting and re-extending the same visible text run:
   the visible string only ever EXTENDS, until a genuine divergence
   replaces it in a single `replaceChildren` mutation.
 - **Completed blocks render as fixed-tag HTML, not components.**
-  A 7.3K-character rich answer held >10K non-element control-flow nodes
-  in Blink once settled, multiplied across every visible pane.
   `CompactBlocks` owns the completed prefix, keeps reference-identical
   prefix DOM, appends HTML for new blocks and rebuilds only a rewritten
   suffix. It mounts a real `Block` island when serialization rejects a
@@ -168,9 +158,8 @@ that says it no longer pays.
 - **`sd-trim-first-block` / `sd-trim-last-block`** carry message-edge
   margin trimming. Structural `:first-child` / `:last-child` made every
   nested sibling change — including highlighted-span replacement —
-  schedule an invalidation set over all prior `md-blk` elements: ~4,600
-  elements and 32ms per style pass on a 65K four-pane run. The HOST
-  states which edges this root owns; this tree moves the class.
+  schedule invalidations over prior `md-blk` elements. The HOST states
+  which edges this root owns; this tree moves the class.
 - **`sd-first-block`, the task-item class, parser-derived paragraph
   adjacency.** Same disease, three ordinary Markdown rules:
   `p:first-child`, `li:has(> input)` and `p + p` all had document-wide
@@ -194,8 +183,7 @@ marker: `<code>.textContent` owns the source.
 ## Landmines
 
 - **Token raws are V8 substrings of the parser input.** A
-  long-lived block array therefore retains one whole historical document
-  per checkpoint that introduced a block.
+  long-lived block array can retain the parser input through each block.
   `updateParseBlockStringMaterialization` copies each completed block
   once, at the parser boundary. The compact renderer enables it; the
   volatile renderer must NOT (its final block is replaced on every
@@ -227,12 +215,9 @@ marker: `<code>.textContent` owns the source.
 - **`staticHtml.ts` must route every token the way `Element.svelte`
   does.** They are two renderers of one token stream, and a case the
   static path serializes that the component path routes to a component
-  is a silent output fork. The mermaid fence was exactly that: the
-  static code case had no `lang === 'mermaid'` bail, and a warm span
-  cache (the backend highlights every fence, all-plain for unknown
-  languages) serialized the DIAGRAM as a plain code block — invisible
-  to every frontend suite, because with no backend the cache is always
-  cold and the island always mounted. Pinned by
+  is a silent output fork. The static code path must bail for
+  `lang === 'mermaid'`, including when the span cache is warm, so the
+  diagram mounts as an island. Pinned by
   `chat/ChatMarkdown.compactStaticMermaid.test.ts` (warm-cache unit)
   and `e2e/tests/markdown-render.spec.ts` (real app). When a test's
   fast path depends on a cache a backend fills, at least one test must
@@ -241,29 +226,21 @@ marker: `<code>.textContent` owns the source.
   is pinned per href class by
   `chat/ChatMarkdown.compactStaticLinkUrls.test.ts`.
 - **A blockquote is lexed by a blockquote-SCOPED Lexer.** A module-level
-  one accumulated an undrained `inlineQueue` entry per quoted paragraph
-  for the life of the page (16,511 over one corpus) and carried
-  reference definitions between documents.
+  lexer would retain `inlineQueue` entries and reference definitions across
+  documents. Scope one lexer to each blockquote.
 - **A blockquote token's `raw` is the consumed prefix of the source.**
-  marked rebuilt it by re-joining walked lines and spliced inner
-  marker-stripped raws back in, so `raw` came back holding bytes the
-  source never had at that offset — and, in the list-continuation
-  branch, one byte more than the block rule even matched. Nothing
-  crashed, because marked only reads `raw.length` — but a block token's
-  `raw` naming its consumed bytes is the contract every offset sum in
-  this tree tests against. `engine/Tokenizer.ts#blockquote` now returns
-  `src.slice(0, …)` and the shim `marked-alert` carried is gone.
+  `engine/Tokenizer.ts#blockquote` returns `src.slice(0, …)` so the raw
+  value names exactly the bytes consumed. Offset sums depend on this
+  contract.
 - **The extension tokenizers gate on a character code first.** The
-  lexer invokes every registered tokenizer at every candidate position;
-  the inline footnote one called `getContext` before checking for `[^`, so
-  ordinary prose paid a thrown-and-caught Svelte lifecycle error per
-  inline token. An extension-heavy 20,000-parse benchmark fell 1.98s →
-  0.46s when the gates went in.
+  lexer invokes every registered tokenizer at every candidate position.
+  Each extension must check its opening character sequence before doing
+  context lookup or throwing; ordinary prose must not pay that work for
+  every inline token.
 - **A stylesheet from this tree must not reach a component that has
-  never rendered markdown.** An unscoped `:global([data-expanded='true'])`
-  pinned the workflows run map's expanded wave row `position: fixed`
-  over the whole viewport at `z-index: 2147483647`, swallowing every
-  click underneath.
+  never rendered markdown.** Scope selectors such as
+  `:global([data-expanded='true'])` to markdown-owned markup so they cannot
+  affect unrelated components or swallow clicks.
 
 ## Tests
 
@@ -309,13 +286,12 @@ incremental parser, the literal host, `CompactBlocks`, `staticHtml` and
 every test beside them are original.
 
 `parser/engine/` is marked 16.4.2's lexing half (MIT, in `LICENSE`),
-absorbed in W4 of
-[`markdown-first-party.md`](../../../../docs/specs/markdown-first-party.md).
-The `marked` package, its pnpm patch and its 16.4.2 pin are gone. The
-Parser/Renderer/Hooks/`marked()` surface was never reachable from here
-and is not absorbed. Divergences from upstream are commented at their
+adapted as first-party code.
+The `marked` package is not a dependency; its
+Parser/Renderer/Hooks/`marked()` surface is not reachable from here and is not
+absorbed. Divergences from upstream are commented at their
 sites, in three groups: the allocation-free extension dispatch (one
-receiver per Lexer, indexed loops — formerly the pnpm patch), the app's
+receiver per Lexer, indexed loops), the app's
 own rule overrides (`~~`-only strikethrough, no mailto autolinking,
 homogeneous leading runs in the GFM inline `text` rule) and the
 blockquote `raw` fix above. The 17.x/18.x ReDoS and quadratic-backtracking
@@ -325,8 +301,8 @@ not, so output stays 16.4.2-identical with one accepted exception: the
 unmatched multi-backtick run mid-label (`` [use ``raw](x) ``) no longer
 forms a link. 16.4.2 matched the run as an empty code span via
 catastrophic-backtracking-prone grammar; every marked release since
-17.0.5 parses it the way we do, and this renderer's input is
-attacker-influenced by construction, so the ReDoS fix wins over parity
+17.0.5 parses it the way we do, and this renderer accepts untrusted message
+content, so the ReDoS fix wins over parity
 (`engine/labelBacktickRuns.test.ts` pins it). Fix bugs there like any other file
 — but a fix that upstream also made is worth diffing against, because the
 grammar tables are still recognisably theirs.

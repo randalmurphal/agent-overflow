@@ -25,7 +25,7 @@ read its database and its evidence logs, stop it again.
 A pure client. It links `internal/harnessclient` (WS peer plus process
 supervisor) and no App code, so it cannot fabricate app state: every
 capability is an RPC the backend already exposes, and every file it reads
-is one the backend already writes. One sanctioned out-of-band read:
+is one the backend already writes. One allowed out-of-band read:
 `health` samples the backend's native process ownership set directly
 (`procrss.SampleAll`), because liveness must not depend on the wire of
 the process being judged. Anything else goes through an RPC.
@@ -35,7 +35,7 @@ the process being judged. Anything else goes through an RPC.
 not. `attach` has the same exposure, for the same reason: the page URL
 is the authenticated one.
 
-One sanctioned read outside the "files the backend writes" rule, of an
+One allowed read outside the "files the backend writes" rule, of an
 executable path only: `attach` resolves a browser through
 `$AO_HARNESS_BROWSER`, then `exec.LookPath`. It never downloads — this
 binary has no network story and must not grow one.
@@ -51,8 +51,9 @@ binary links no App code). `db --file` refuses a path resolving through
 symlinks inside the real data dir, located through `internal/appdirs` so
 the guard cannot drift from what it guards; an unresolvable root refuses
 the flag rather than allowing it. `compare prepare` has its own refusals
-(`internal/compare/AGENTS.md`). Two carve-outs, both operator-typed and
-both loud: `clone --from <real dataDir>` reads real data by definition,
+(`internal/compare/AGENTS.md`). Two operator-selected exceptions are
+explicit and loud: `clone --from <real dataDir>` reads real data by
+definition,
 and `up --keep-home` leaves the real `$HOME` visible to child processes
 while backend provider state stays in the harness home. Provider
 isolation for harness and soak alike is
@@ -98,7 +99,7 @@ Three layers answering three questions. Do not collapse them.
   `harness-watchdog-ready.json` handshake and rolls the launch back if it
   never arms.
 
-Instruments that must not run unbounded attest first
+Instruments that must not run unbounded verify their boundary first
 (`requireActiveHarnessBoundary`): the watchdog named by
 `harness-watchdog-state.json` has to still be the process holding the
 exact live lease, because a stale state file is not evidence anything is
@@ -113,7 +114,7 @@ bad news, so a script tells that from "the harness refused" without
 parsing prose. Ambiguity is `2`, not `1`: under-specified, not refused. A
 `bench --baseline` whose run never MEASURED an explicitly budgeted metric
 is `3`, not `0`, because a gate that could not read its number is bad
-news; a headless run used to print an empty table and exit 0.
+news.
 
 ## Instance resolution
 
@@ -211,10 +212,9 @@ opening a wire would make the answer time-dependent and risk talking to
 the wrong process.
 
 **`events await` waits for what happens NEXT.** `--since` defaults to
-`now`, and that default is the whole correctness of the command: `await`
-used to settle on the oldest match in the replay ring and return a turn
-that finished ten minutes ago, instantly, forever. `--since <seq>` or
-`--history` reaches back on purpose, and then the scan runs NEWEST-first.
+`now`, so `await` waits for a matching event emitted after the command
+starts. `--since <seq>` or `--history` reaches back on purpose, and then
+the scan runs NEWEST-first.
 `tail` replays history by default: a tail is a reader, not an assertion.
 `tail`/`await`/`count` WARN on a channel absent from
 `internal/eventchan` and run anyway, because the harness publishes onto
@@ -241,11 +241,9 @@ register and its bridge to answer, and only then reports success. Four
 rules it does not bend:
 
 - The page it waits for must be NEW. `PageMarker` names the BACKEND, not
-  one document, so a bare marker match is satisfied by any window
-  already open — an attach whose browser died on the spot reported
-  success against somebody else's page (found live 2026-08-30). The
-  registered page ids are snapshotted before the spawn and excluded
-  after it. Any future code that answers "is my page up" from
+  one document, so a bare marker match can be satisfied by an already-open
+  window. Snapshot registered page ids before spawning and exclude them
+  afterward. Any future code that answers "is my page up" from
   `HarnessInfo` needs the same before/after pair, not a marker alone.
 
 - A wait that runs out FAILS. The budget is `--timeout`, wall-clock, and
@@ -300,19 +298,15 @@ text rendering, the only place `ui_diff.go`'s hand-kept mirror of
 `frontend/src/lib/harness/snapshot.ts` is checked against the TS.
 
 **Size a fixture to the shape that breaks, not to the smallest thing that
-compiles.** `clone`'s scrub passed against a one-row
-`thread_import_state` fixture and aborted on the real store's 1811 rows,
-because migration v63's uniqueness trigger only fires when a SECOND row
-of the same provider reaches the same `source_session_id` (found live
-2026-08-26). The fixture now carries the v63 triggers verbatim plus two
-same-provider rows and asserts the restored copy still ABORTS a duplicate
-claim: an inert restored trigger weakens the schema in silence. The clone
-rig is tested on synthetic data only, never a copy of anyone's app.
+compiles.** The `clone` scrub fixture carries migration v63's uniqueness
+triggers verbatim, plus two same-provider rows, and asserts that the
+restored copy still ABORTS a duplicate claim. An inert restored trigger
+weakens the schema in silence.
+The clone rig is tested on synthetic data only, never a copy of anyone's app.
 
 Two cross-checks earn their keep here rather than in review:
 `TestKnownChannelsCoversTheEventChannelRegistry` AST-parses
 `internal/eventchan` and diffs it against `channels.go` (Go cannot
-enumerate a package's constants at runtime, which is why that roll call
-exists), and the launcher-kill tests pin unparseable tasklist output as
-an ERROR rather than "the process is gone", which used to leave a live
-launcher's window on the desktop with nothing said.
+enumerate a package's constants at runtime). Launcher-kill tests treat
+unparseable tasklist output as an ERROR rather than "the process is gone",
+so an unverified process is never reported as stopped.

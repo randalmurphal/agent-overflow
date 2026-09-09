@@ -73,11 +73,9 @@ enforce for a caller that reached it another way; put it in
 
 - `initIdentity` runs from `Start` after the store opens, and is
   **deliberately not fatal**. The launch credential still authorizes every
-  request, so an App whose identity core failed serves the local page
-  exactly as it did before this existed; what it loses is attribution and
-  revocation. Refusing to boot would turn a credential-table problem into
-  "the app does not start". The loss is confined to this machine on its
-  own: no session resolves, so the transport's peer rule refuses every
+  request, so an App whose identity core failed serves the local page while
+  losing session attribution and revocation. The loss is confined to this
+  machine: no session resolves, so the transport's peer rule refuses every
   off-host `/ws` upgrade rather than admitting one nothing could revoke.
 - Every accessor answers honestly for an App that never called `Start`.
   Test fixtures build one directly, and nil `identityState` means
@@ -296,11 +294,11 @@ WHERE each one is observed and how the sentence is finished.
   pocket is a different screen from the one the presence describes.
   `pushFanout` runs after `notifyOS` and applies the per-kind gate per phone
   and nothing else.
-- **There is exactly ONE bypass, and it is named.** `notifyOSUngated` skips both
-  halves for the harness RPC alone (`app_harness.go`), because every gate reads a
-  preference or a screen an e2e run cannot see or control — a Playwright page HAS
-  focus, so the default `notifyQuietWhen: "focused"` would silence every harness
-  notification the moment a spec opened the app.
+- **The only exception is `notifyOSUngated`.** It skips both halves for the
+  harness RPC (`app_harness.go`), because the harness cannot see or control
+  the preference or screen each gate reads. A Playwright page has focus, so
+  the default `notifyQuietWhen: "focused"` would silence every harness
+  notification when a spec opens the app.
   `TestOnlyTheHarnessBypassesTheNotificationGate` keeps the caller list at one.
 - **A retraction is never gated**, by either half. The gate answers "may I
   interrupt you", and withdrawing something already on screen is the opposite.
@@ -387,8 +385,8 @@ are facts about this process rather than about a row:
   device row moved, how many sessions ended, how many sockets closed —
   because "revoked, 2 sessions ended" and "already revoked, nothing was
   live" are different answers and the person who just lost a phone needs
-  to be told which one they got. Reporting success uniformly is how a
-  device that kept access went unnoticed (spec §2, incident 2026-08-31).
+  to be told which one they got. Reporting success uniformly could hide a
+  device that kept access (spec §2).
   Re-revoking is deliberately still allowed and still re-sweeps; the
   surface is where that becomes visible, not where it is decided.
 - **`backend-peer` is not a class this surface mints.** Enrolling another
@@ -397,11 +395,9 @@ are facts about this process rather than about a row:
 - **How much a link grants is chosen at mint, and only there.**
   `MintDevicePairing` takes an access level — `full` or `view-only`
   (`identity.PairingAccess`) — and the grant set it resolves to is the
-  session's for that session's whole life. An EMPTY level is full: the
-  parameter was appended to a call that already existed, so naming none
-  asks for what the surface always did, and an unrecognized one is
-  refused rather than widened. Re-narrowing a paired device is a fresh
-  link, not an edit to a row.
+  session's for that session's whole life. An EMPTY level is full for
+  compatibility, and an unrecognized one is refused rather than widened.
+  Re-narrowing a paired device is a fresh link, not an edit to a row.
 
 Every method carries `//ao:scope access:admin`, which is what keeps the
 set together: one annotation, so the surface moves as a unit. The operations that ISSUE add `//ao:stepup`: minting a pairing
@@ -533,7 +529,7 @@ called by the headless entry point inside WSL) marks native ingress as coming
 before the transport binds, so `nativeLANStatus` answers the starting state
 rather than nil — and nil is what makes `ComputerRoutes` fall back to the WSL
 NAT address, which no other machine can reach and which the first peer to read
-the catalog would have pinned (C7). The launcher and the WSL payload ship as
+the catalog would have pinned. The launcher and the WSL payload ship as
 one artifact and the launcher's bridge always runs the poll, so there is no
 launcher-hosted boot the state is wrong for; a `serve` or `supervise` boot
 inside WSL has no launcher, never reaches the headless entry point, and keeps
@@ -1119,7 +1115,7 @@ which gets no safety net and owes the explicit release it always did.
 
 Application tests stay beside the shell. `main_test.go` changes their working
 directory to the repository root because whole-repository AST contracts and
-committed fixtures historically use root-relative paths. New tests should still
+committed fixtures use root-relative paths. New tests should still
 prefer `t.TempDir()` and explicit paths rather than adding more cwd dependence.
 
 Use package-local tests for private transaction invariants. Put behavior tests
@@ -1202,9 +1198,9 @@ snapshots predating currently owned incoming conversations. UI status reads
 exclude private grants, project reservation data, and installation details.
 
 App integration tests use isolated native files and two real TLS listeners.
-Never restart the developer's running backend to test a transfer: it may host
-this conversation. Current implementation progress and remaining delivery work
-are tracked in `docs/specs/conversation-transfer.md`.
+Never restart a running backend to test a transfer: it may host an active
+conversation. Transfer behavior and invariants are specified in
+`docs/specs/conversation-transfer.md`.
 
 ## Commands on peer computers
 
