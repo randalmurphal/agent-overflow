@@ -16,7 +16,7 @@
   import { createUsageStats, localTzOffsetMinutes } from '../../stores/usageQuery.svelte';
   import { telemetrySelection, telemetrySelectionLabel } from '../../stores/telemetryComputers.svelte';
   import { formatTokens } from '../../utils/format';
-  import { formatUsageCostOrNull } from '../../utils/usageDisplay';
+  import { formatUsageCostOrNull, USAGE_COST_EXPLANATION } from '../../utils/usageDisplay';
   import LazyOverlay from '../primitives/LazyOverlay.svelte';
 
   interface ProviderRow {
@@ -79,6 +79,7 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="border-t border-border-subtle px-3 py-1.5 shrink-0 flex items-center justify-between gap-3 text-[0.6875rem] leading-tight text-fg-muted cursor-pointer hover:text-fg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+    title={USAGE_COST_EXPLANATION}
     data-testid="sidebar-usage-footer"
     role="button"
     tabindex="0"

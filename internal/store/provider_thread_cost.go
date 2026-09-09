@@ -67,7 +67,8 @@ func (c ProviderThreadCost) CostUSD() float64 { return float64(c.CostUSDMicros) 
 // PutProviderThreadCost records (or replaces) a thread's provider-reported
 // cost. Last write wins by construction: every read of the provider restates
 // the same cumulative total, so there is no history here to preserve and no
-// ordering to enforce — a later read is simply a better answer.
+// ordering to enforce. A transient zero never replaces an existing positive
+// estimate for the same provider thread, matching Codex's settlement behavior.
 //
 // SessionRef is REQUIRED. A row that cannot name the provider thread it
 // describes can never be checked against the thread's current one, which is
@@ -90,6 +91,9 @@ func (s *Store) PutProviderThreadCost(cost ProviderThreadCost) error {
 	if sessionRef == "" {
 		return fmt.Errorf("store: put provider thread cost %s: empty session ref", threadID)
 	}
+	if cost.CostUSDMicros < 0 || cost.CreditsMicros < 0 {
+		return fmt.Errorf("store: put provider thread cost %s: negative estimate", threadID)
+	}
 	if cost.CostSource == "" {
 		cost.CostSource = ProviderThreadCostSourceEstimate
 	}
@@ -104,7 +108,10 @@ func (s *Store) PutProviderThreadCost(cost ProviderThreadCost) error {
 		     cost_source     = excluded.cost_source,
 		     cost_usd_micros = excluded.cost_usd_micros,
 		     credits_micros  = excluded.credits_micros,
-		     updated_at      = excluded.updated_at`,
+		     updated_at      = excluded.updated_at
+   WHERE provider_thread_cost.session_ref <> excluded.session_ref
+      OR excluded.cost_usd_micros > 0
+      OR provider_thread_cost.cost_usd_micros = 0`,
 		threadID, sessionRef, cost.Provider, cost.CostSource,
 		cost.CostUSDMicros, cost.CreditsMicros, cost.UpdatedAt,
 		threadID,
@@ -152,6 +159,9 @@ func (s *Store) GetProviderThreadCost(threadID string) (ProviderThreadCost, bool
 	}
 	if err != nil {
 		return ProviderThreadCost{}, false, fmt.Errorf("store: get provider thread cost %s: %w", threadID, err)
+	}
+	if cost.CostUSDMicros < 0 || cost.CreditsMicros < 0 {
+		return ProviderThreadCost{}, false, fmt.Errorf("store: invalid provider thread cost %s", threadID)
 	}
 	return cost, true, nil
 }

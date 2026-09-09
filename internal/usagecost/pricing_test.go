@@ -5,200 +5,175 @@ import (
 	"testing"
 )
 
-// almostEqual checks whether two floats are within a small tolerance.
-func almostEqual(a, b, tolerance float64) bool {
-	return math.Abs(a-b) < tolerance
-}
+func almostEqual(a, b, tolerance float64) bool { return math.Abs(a-b) < tolerance }
 
-// TestPrice_AllFamiliesInputOutputOnly hand-computes input+output cost
-// (no cache) for every rate-table family at exactly 1M tokens each, so
-// each expected value is just Input+Output per the table above. This is
-// the arithmetic spot check across the whole table, including exact
-// entries (claude-sonnet-5, gpt-5.2-codex, gpt-5.1-codex, gpt-5-codex,
-// gpt-5.6, gpt-5.6-terra, gpt-5.6-luna) and family fallbacks
-// (claude-sonnet, gpt-5, gpt-5.4, gpt-5.4-mini, gpt-5.6-sol).
-func TestPrice_AllFamiliesInputOutputOnly(t *testing.T) {
-	cases := []struct {
-		model       string
-		wantCostUSD float64
-	}{
-		{"claude-fable-5", 60.00},    // 10 + 50
-		{"claude-opus-5", 30.00},     // 5 + 25 (family)
-		{"claude-opus-4-6", 30.00},   // 5 + 25
-		{"claude-sonnet-5", 12.00},   // 2 + 10 (intro, exact)
-		{"claude-sonnet-4-6", 18.00}, // 3 + 15 (family)
-		{"claude-haiku-4-5", 6.00},   // 1 + 5
-		{"gpt-5.2-codex", 15.75},     // 1.75 + 14
-		{"gpt-5.1-codex", 15.75},
-		{"gpt-5-codex", 15.75},
-		{"gpt-5.6", 35.00},       // 5 + 30
-		{"gpt-5.6-sol", 35.00},   // trims to gpt-5.6
-		{"gpt-5.6-terra", 17.50}, // 2.5 + 15
-		{"gpt-5.6-luna", 7.00},   // 1 + 6
-		{"gpt-5.5", 35.00},       // 5 + 30
-		{"gpt-5.4", 17.50},       // 2.5 + 15
-		{"gpt-5.4-mini", 5.25},   // 0.75 + 4.5
-		{"gpt-5", 11.25},         // 1.25 + 10
-		{"o3", 15.75},            // 1.75 + 14
-		{"o4-mini", 2.25},        // 0.25 + 2
-	}
-	for _, c := range cases {
-		t.Run(c.model, func(t *testing.T) {
-			got, ok := Price(c.model, 1_000_000, 1_000_000, 0, 0)
-			if !ok {
-				t.Fatalf("Price(%q) ok = false, want true", c.model)
-			}
-			if !almostEqual(got, c.wantCostUSD, 0.001) {
-				t.Errorf("Price(%q) = %f, want %f", c.model, got, c.wantCostUSD)
+func TestPublishedStandardRates(t *testing.T) {
+	// One million tokens in each of the four billing classes.
+	for model, want := range map[string]float64{
+		"gpt-6-astra": 73.5,
+		"gpt-5.6-sol": 29.4, "gpt-daybreak-blue-latest": 29.4,
+		"gpt-5.6-terra": 16.7, "gpt-5.6-luna": 1.67,
+		"gpt-5.6-cyber": 104.375, "gpt-daybreak-red-latest": 104.375,
+		"claude-fable-5": 81, "claude-fable-5-1": 80.25,
+		"claude-mythos-5-1": 80.25, "claude-opus-4-1": 121.5,
+		"claude-opus-4-6": 40.5, "claude-sonnet-5": 16.2,
+		"claude-sonnet-4-6": 24.3, "claude-haiku-4-5": 8.1,
+	} {
+		t.Run(model, func(t *testing.T) {
+			got, ok := Price(model, 1_000_000, 1_000_000, 1_000_000, 1_000_000)
+			if !ok || !almostEqual(got, want, 0.000001) {
+				t.Fatalf("got %v, %v; want %v", got, ok, want)
 			}
 		})
 	}
 }
 
-// TestPrice_ClaudeHaikuFamilyMatch exercises the progressive
-// suffix-trim path with all four token components: "claude-haiku-4-5"
-// must resolve to the "claude-haiku" family.
-func TestPrice_ClaudeHaikuFamilyMatch(t *testing.T) {
-	// claude-haiku: $1/M in, $5/M out, $0.10/M cache read, $2/M cache write.
-	// 2M*$1 + 1M*$5 + 0.5M*$0.10 + 0.1M*$2 = 2 + 5 + 0.05 + 0.2 = 7.25
-	want := 7.25
-	got, ok := Price("claude-haiku-4-5", 2_000_000, 1_000_000, 500_000, 100_000)
-	if !ok {
-		t.Fatal("Price(claude-haiku-4-5) ok = false, want true")
-	}
-	if !almostEqual(got, want, 0.001) {
-		t.Errorf("Price(claude-haiku-4-5) = %f, want %f", got, want)
+func TestOlderModelsInputOutputAndCacheRead(t *testing.T) {
+	for model, want := range map[string]float64{
+		"gpt-5.3-codex": 15.925, "gpt-5.2-codex": 15.925,
+		"gpt-5.1-codex": 11.375, "gpt-5-codex": 11.375,
+		"gpt-5.5": 35.5, "gpt-5.4": 17.75, "gpt-5.4-mini": 5.325,
+		"gpt-5": 11.375, "o3": 10.5, "o4-mini": 5.775,
+	} {
+		got, ok := Price(model, 1_000_000, 1_000_000, 1_000_000, 0)
+		if !ok || !almostEqual(got, want, 0.000001) {
+			t.Errorf("%s: %v, %v; want %v", model, got, ok, want)
+		}
 	}
 }
 
-// TestPrice_ContextTierSuffixStripped confirms the "[1m]" context-tier
-// marker is stripped before matching, and that the stripped slug still
-// resolves to its EXACT entry (claude-sonnet-5, not the claude-sonnet
-// family) rather than losing precision from the strip.
-func TestPrice_ContextTierSuffixStripped(t *testing.T) {
-	// claude-sonnet-5 (exact): $2/M in, $10/M out, $0.20/M cache read,
-	// $4/M cache write.
-	// 1M*$2 + 0.5M*$10 + 1M*$0.20 + 1M*$4 = 2 + 5 + 0.20 + 4 = 11.20
-	want := 11.20
-	got, ok := Price("claude-sonnet-5[1m]", 1_000_000, 500_000, 1_000_000, 1_000_000)
-	if !ok {
-		t.Fatal("Price(claude-sonnet-5[1m]) ok = false, want true")
-	}
-	if !almostEqual(got, want, 0.001) {
-		t.Errorf("Price(claude-sonnet-5[1m]) = %f, want %f", got, want)
+func TestPriceDoesNotGuessFutureVariants(t *testing.T) {
+	for _, model := range []string{"unknown", "gpt-5.6", "gpt-5.99", "gpt-5.6-ultra", "claude-sonnet-99", "o3-pro", "gpt-5.4-invalid-date"} {
+		if got, ok := Price(model, 1_000_000, 0, 0, 0); ok || got != 0 {
+			t.Errorf("%s guessed %v", model, got)
+		}
 	}
 }
 
-// TestPrice_ExactOverFamilyPrecedence proves the intro claude-sonnet-5
-// entry wins over the claude-sonnet family price for the exact slug,
-// while a versioned slug that isn't the exact intro string still falls
-// through to the family rate.
-func TestPrice_ExactOverFamilyPrecedence(t *testing.T) {
-	usage := struct{ input, output int64 }{1_000_000, 500_000}
-
-	exact, ok := Price("claude-sonnet-5", usage.input, usage.output, 0, 0)
-	if !ok {
-		t.Fatal("Price(claude-sonnet-5) ok = false, want true")
-	}
-	if want := 7.00; !almostEqual(exact, want, 0.001) { // 1*2 + 0.5*10
-		t.Errorf("Price(claude-sonnet-5) = %f, want %f", exact, want)
-	}
-
-	family, ok := Price("claude-sonnet-4-6", usage.input, usage.output, 0, 0)
-	if !ok {
-		t.Fatal("Price(claude-sonnet-4-6) ok = false, want true")
-	}
-	if want := 10.50; !almostEqual(family, want, 0.001) { // 1*3 + 0.5*15
-		t.Errorf("Price(claude-sonnet-4-6) = %f, want %f", family, want)
-	}
-
-	if almostEqual(exact, family, 0.001) {
-		t.Fatalf("exact intro price (%f) must differ from family price (%f)", exact, family)
+func TestPriceDocumentedSuffixes(t *testing.T) {
+	for _, model := range []string{"claude-sonnet-5[1m]", "claude-sonnet-5-20260801", "claude-sonnet-5-2026-08-01"} {
+		got, ok := Price(model, 1_000_000, 0, 0, 0)
+		if !ok || got != 2 {
+			t.Errorf("%s: %v, %v", model, got, ok)
+		}
 	}
 }
 
-// TestPrice_UnknownModelReturnsNotOK confirms callers can distinguish
-// "no known pricing" from "priced at $0".
-func TestPrice_UnknownModelReturnsNotOK(t *testing.T) {
-	got, ok := Price("totally-unknown-model", 1_000_000, 500_000, 0, 0)
-	if ok {
-		t.Fatalf("Price(unknown) ok = true, want false")
+func TestPriceVersionAndMissingClasses(t *testing.T) {
+	if got, ok := PriceVersion(CurrentVersion, "gpt-6-astra", 0, 0, 0, 0); !ok || got != 0 {
+		t.Fatalf("known zero: %v, %v", got, ok)
 	}
-	if got != 0 {
-		t.Errorf("Price(unknown) cost = %f, want 0", got)
+	if _, ok := PriceVersion("missing-snapshot", "gpt-6-astra", 100, 0, 0, 0); ok {
+		t.Fatal("unknown snapshot used current pricing")
 	}
-}
-
-// TestPrice_ZeroUsageKnownModelStillOK confirms a known model with zero
-// tokens is priced ($0) rather than reported as unknown.
-func TestPrice_ZeroUsageKnownModelStillOK(t *testing.T) {
-	got, ok := Price("claude-opus-4-6", 0, 0, 0, 0)
-	if !ok {
-		t.Fatal("Price(claude-opus-4-6, zero usage) ok = false, want true")
+	if _, ok := Price("gpt-6-astra", -1, 0, 0, 0); ok {
+		t.Fatal("negative tokens priced")
 	}
-	if got != 0 {
-		t.Errorf("Price(claude-opus-4-6, zero usage) = %f, want 0", got)
+	if _, ok := Price("gpt-5.4", 0, 0, 0, 10); ok {
+		t.Fatal("unpublished cache-write rate treated as free")
 	}
 }
 
-// TestPrice_OpenAICacheWriteIsFreeWithoutExplicitRate confirms older
-// OpenAI rows without a published cache-write price do not add cost for
-// cache-write tokens.
-func TestPrice_OpenAICacheWriteIsFreeWithoutExplicitRate(t *testing.T) {
-	withoutCacheWrite, ok := Price("gpt-5.4", 1_000_000, 1_000_000, 0, 0)
-	if !ok {
-		t.Fatal("Price(gpt-5.4) ok = false, want true")
+func TestNewModelBackfillsWithoutFollowingLaterPriceChanges(t *testing.T) {
+	const oldVersion = "2026-09-01"
+	old := catalog{Rates: map[string]Rate{"known-model": {Input: 2}}}
+	launch := catalog{Rates: map[string]Rate{
+		"known-model": {Input: 3},
+		"new-model":   {Input: 4, Output: 20, Backfill: true},
+	}, Aliases: map[string]Alias{"new-alias": {Model: "new-model", Backfill: true}}}
+	changed := catalog{Rates: map[string]Rate{
+		"known-model": {Input: 8},
+		"new-model":   {Input: 9, Output: 40},
+		"replacement": {Input: 15, Backfill: true},
+	}, Aliases: map[string]Alias{"new-alias": {Model: "replacement", Backfill: true}}}
+	snapshots := map[string]catalog{oldVersion: old}
+	price := func(model string, want float64, wantOK bool) {
+		t.Helper()
+		got, ok := newCatalogSet(snapshots).priceVersion(oldVersion, model, 1_000_000, 0, 0, 0)
+		if got != want || ok != wantOK {
+			t.Fatalf("%s: got %v,%v; want %v,%v", model, got, ok, want, wantOK)
+		}
 	}
-	withCacheWrite, ok := Price("gpt-5.4", 1_000_000, 1_000_000, 0, 5_000_000)
-	if !ok {
-		t.Fatal("Price(gpt-5.4, with cache write) ok = false, want true")
+	price("new-model", 0, false)
+	price("known-model", 2, true)
+	snapshots["2026-09-10"] = launch
+	for _, model := range []string{"new-model", "new-alias", "new-model-20260905", "new-model[1m]"} {
+		price(model, 4, true)
 	}
-	if !almostEqual(withoutCacheWrite, withCacheWrite, 0.001) {
-		t.Errorf("cache-write tokens changed cost: without=%f with=%f", withoutCacheWrite, withCacheWrite)
+	snapshots["2026-10-01"] = changed
+	for range 3 {
+		price("new-model", 4, true)
+		price("new-alias", 4, true)
+		price("known-model", 2, true)
+		price("new-model-ultra", 0, false)
+	}
+	got, ok := newCatalogSet(snapshots).priceVersion("2026-10-01", "new-model", 1_000_000, 0, 0, 0)
+	if !ok || got != 9 {
+		t.Fatalf("new usage missed changed rate: %v,%v", got, ok)
+	}
+	if _, found := old.Rates["new-model"]; found {
+		t.Fatal("backfill mutated the original snapshot")
 	}
 }
 
-// TestPrice_GPT56CacheWriteUsesPublishedRates confirms the GPT-5.6
-// family bills cache-write tokens with its explicit 1.25x input rates.
-func TestPrice_GPT56CacheWriteUsesPublishedRates(t *testing.T) {
-	cases := []struct {
-		model       string
-		wantCostUSD float64
-	}{
-		{"gpt-5.6", 41.75},        // 5 + 30 + 0.5 + 6.25
-		{"gpt-5.6-sol", 41.75},    // trims to gpt-5.6
-		{"gpt-5.6-terra", 20.875}, // 2.5 + 15 + 0.25 + 3.125
-		{"gpt-5.6-luna", 8.35},    // 1 + 6 + 0.1 + 1.25
+func TestBackfillRequiresVerifiedHistoricalApplicability(t *testing.T) {
+	cs := newCatalogSet(map[string]catalog{
+		"2026-09-01": {Rates: map[string]Rate{}},
+		"2026-09-10": {Rates: map[string]Rate{"new-model": {Input: 4}}},
+		"2026-10-01": {Rates: map[string]Rate{"new-model": {Input: 9, Backfill: true}}},
+	})
+	if _, ok := cs.priceVersion("2026-09-01", "new-model", 100, 0, 0, 0); ok {
+		t.Fatal("skipped an unverified historical price to use a later one")
 	}
-	for _, c := range cases {
-		t.Run(c.model, func(t *testing.T) {
-			got, ok := Price(c.model, 1_000_000, 1_000_000, 1_000_000, 1_000_000)
-			if !ok {
-				t.Fatalf("Price(%q) ok = false, want true", c.model)
-			}
-			if !almostEqual(got, c.wantCostUSD, 0.001) {
-				t.Errorf("Price(%q) = %f, want %f", c.model, got, c.wantCostUSD)
-			}
-		})
+	if _, ok := cs.priceVersion("missing-snapshot", "new-model", 100, 0, 0, 0); ok {
+		t.Fatal("backfill concealed an unknown pricing version")
 	}
 }
 
-// TestPrice_DottedCodexVersionMissesFamilyFallback documents (and
-// regression-guards) the trim-algorithm quirk called out in the
-// package comment: a hypothetical "gpt-5.3-codex" without its own
-// explicit entry does NOT fall back to "gpt-5-codex" pricing. It trims
-// to "gpt-5.3" then "gpt-5", landing on the plain (non-codex) family
-// rate instead.
-func TestPrice_DottedCodexVersionMissesFamilyFallback(t *testing.T) {
-	// gpt-5 family: $1.25/M in + $10/M out = 1*1.25 + 1*10 = 11.25.
-	// (NOT gpt-5-codex's 1.75+14=15.75, which the naive reading of
-	// "family fallback" might expect.)
-	want := 11.25
-	got, ok := Price("gpt-5.3-codex", 1_000_000, 1_000_000, 0, 0)
-	if !ok {
-		t.Fatal("Price(gpt-5.3-codex) ok = false, want true (falls back to gpt-5)")
+func TestBackfillMissingCacheWriteKeepsOriginalRatesAndAlias(t *testing.T) {
+	snapshots := map[string]catalog{
+		"2026-09-01": {Rates: map[string]Rate{"model": {Input: 2, Output: 10, CacheRead: 0.2}}, Aliases: map[string]Alias{"alias": {Model: "model"}}},
+		"2026-09-10": {Rates: map[string]Rate{
+			"model":       {Input: 4, Output: 20, CacheRead: 0.4, CacheWrite: 2.5, Backfill: true},
+			"replacement": {Input: 50, CacheWrite: 60, Backfill: true},
+		}, Aliases: map[string]Alias{"alias": {Model: "replacement", Backfill: true}}},
 	}
-	if !almostEqual(got, want, 0.001) {
-		t.Errorf("Price(gpt-5.3-codex) = %f, want %f (gpt-5 fallback, not gpt-5-codex)", got, want)
+	before := newCatalogSet(map[string]catalog{"2026-09-01": snapshots["2026-09-01"]})
+	if _, ok := before.priceVersion("2026-09-01", "alias", 1_000_000, 1_000_000, 1_000_000, 1_000_000); ok {
+		t.Fatal("missing write price was not unpriced")
+	}
+	cs := newCatalogSet(snapshots)
+	for range 3 {
+		got, ok := cs.priceVersion("2026-09-01", "alias", 1_000_000, 1_000_000, 1_000_000, 1_000_000)
+		if !ok || !almostEqual(got, 14.7, 1e-9) {
+			t.Fatalf("backfill repriced original components or alias: %v,%v", got, ok)
+		}
+		got, ok = cs.priceVersion("2026-09-01", "alias", 1_000_000, 0, 0, 0)
+		if !ok || got != 2 {
+			t.Fatalf("already-priced usage changed: %v,%v", got, ok)
+		}
+	}
+	if snapshots["2026-09-01"].Rates["model"].CacheWrite != 0 {
+		t.Fatal("query modified pinned rates")
+	}
+	unverified := snapshots["2026-09-10"].Rates["model"]
+	unverified.Backfill = false
+	snapshots["2026-09-10"].Rates["model"] = unverified
+	if _, ok := cs.priceVersion("2026-09-01", "alias", 0, 0, 0, 100); ok {
+		t.Fatal("unverified cache-write price backfilled")
+	}
+}
+
+func TestModelBackfillDoesNotGuessAnAliasesHistoricalTarget(t *testing.T) {
+	cs := newCatalogSet(map[string]catalog{
+		"2026-09-01": {Rates: map[string]Rate{}},
+		"2026-09-10": {Rates: map[string]Rate{"model": {Input: 4, Backfill: true}}, Aliases: map[string]Alias{"moving-alias": {Model: "model"}}},
+		"2026-10-01": {Rates: map[string]Rate{"model": {Input: 4, Backfill: true}}, Aliases: map[string]Alias{"moving-alias": {Model: "model", Backfill: true}}},
+	})
+	if got, ok := cs.priceVersion("2026-09-01", "model", 1_000_000, 0, 0, 0); !ok || got != 4 {
+		t.Fatalf("verified model did not backfill: %v,%v", got, ok)
+	}
+	if _, ok := cs.priceVersion("2026-09-01", "moving-alias", 1_000_000, 0, 0, 0); ok {
+		t.Fatal("model price approval inferred an unverified historical alias target")
 	}
 }

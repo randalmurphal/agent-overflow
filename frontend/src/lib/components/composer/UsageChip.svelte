@@ -11,7 +11,7 @@
   import { createUsageStats } from '../../stores/usageQuery.svelte';
   import { formatTokens } from '../../utils/format';
   import { displayUsageModelLabel } from '../../utils/modelLabels';
-  import { formatUsageCostOrNull } from '../../utils/usageDisplay';
+  import { formatUsageCostOrNull, USAGE_COST_EXPLANATION } from '../../utils/usageDisplay';
   import { composerTriggerClasses } from './triggerClasses';
   import Popover from '../primitives/Popover.svelte';
 
@@ -116,7 +116,7 @@
     aria-haspopup="dialog"
     aria-expanded={open}
     data-testid="usage-chip-trigger"
-    title={lifetime.error ?? (lifetimeBucket.pendingRows > 0 ? 'Latest reported tokens; cost accounting is still pending' : providerEstimated ? 'Cost estimated by Codex' : undefined)}
+    title={lifetime.error ?? (lifetimeBucket.pendingRows > 0 ? 'Latest reported tokens; cost accounting is still pending' : providerEstimated ? 'Cost estimated by Codex; billing may still be settling' : USAGE_COST_EXPLANATION)}
     class="{composerTriggerClasses} tabular-nums"
   >
     {chipLabel}
@@ -140,6 +140,7 @@
           {/each}
         </div>
 
+        <p class="mt-2 max-w-xs text-xs text-fg-hint">{providerEstimated ? 'Cost estimated by Codex; billing may still be settling. Model totals below use standard token rates.' : USAGE_COST_EXPLANATION}</p>
         {#if lifetimeBucket.pendingRows > 0}
           <p class="mt-2 text-xs text-fg-hint">Latest reported tokens. Cost accounting is still pending.</p>
         {/if}

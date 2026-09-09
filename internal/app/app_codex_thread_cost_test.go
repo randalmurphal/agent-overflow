@@ -99,7 +99,12 @@ func startThreadCostSession(t *testing.T, app *App, id, usageReply, capturePath 
 	if err := app.StartSession(id); err != nil {
 		t.Fatalf("StartSession() error = %v", err)
 	}
-	t.Cleanup(func() { _ = app.StopSession(id) })
+	t.Cleanup(func() {
+		app.codexThreadService().Close()
+		if err := app.StopSession(id); err != nil {
+			t.Errorf("stop cost fixture session: %v", err)
+		}
+	})
 	if err := app.SendMessage(id, "price this", nil); err != nil {
 		t.Fatalf("SendMessage() error = %v", err)
 	}

@@ -1260,7 +1260,7 @@ func TestWorkflowSpendSourceAddsEstimatedRowsToWireCost(t *testing.T) {
 	app := newTestAppWithStore(t)
 	if err := app.store.AppendUsage([]store.UsageLedgerRow{
 		{WorkItemID: "item", Model: "claude-opus-4-7", CostUSD: 0.5, CostSource: "wire"},
-		{WorkItemID: "item", Model: "gpt-5.2-codex", InputTokens: 1_000_000, OutputTokens: 1_000_000, CacheReadInputTokens: 1_000_000, CacheCreationInputTokens: 1_000_000, CostSource: "none"},
+		{WorkItemID: "item", Model: "gpt-5.2-codex", InputTokens: 1_000_000, OutputTokens: 1_000_000, CacheReadInputTokens: 1_000_000, CostSource: "none"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1268,7 +1268,7 @@ func TestWorkflowSpendSourceAddsEstimatedRowsToWireCost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if spend.Tokens != 4_000_000 || math.Abs(spend.USD-16.425) > 1e-12 {
+	if spend.Tokens != 3_000_000 || math.Abs(spend.USD-16.425) > 1e-12 {
 		t.Fatalf("composed spend = %+v", spend)
 	}
 	// Most of that total came off a rate table rather than a provider, and the

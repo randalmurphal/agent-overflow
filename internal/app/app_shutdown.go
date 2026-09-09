@@ -161,6 +161,7 @@ func (a *App) Shutdown(ctx context.Context) error {
 		}
 		return nil
 	}())
+	a.codexThreadService().Close()
 	a.transfers.close()
 	// The preview listeners come down with the app context, and for the
 	// same reason: they are network-facing, and every request they carry

@@ -30,15 +30,19 @@ type Service struct {
 	deps  Deps
 	store *store.Store
 
+	costClosed   bool
+	costWG       sync.WaitGroup
 	costMu       sync.Mutex
 	costInflight map[string]*threadCostRead
 }
 
 // threadCostRead is one thread's in-flight cumulative-cost read slot.
 type threadCostRead struct {
-	dirty bool
-	token string
-	epoch uint64
+	cancel context.CancelFunc
+	wake   chan struct{}
+	dirty  bool
+	token  string
+	epoch  uint64
 }
 
 // New constructs a Codex provider-thread service.
@@ -75,4 +79,18 @@ func (a *Service) emit(channel eventchan.Channel, payload any) {
 	if a != nil && a.deps.Emit != nil {
 		a.deps.Emit(channel, payload)
 	}
+}
+
+// Close stops admission, cancels cost reads and timers, and joins their workers
+// before the owning application closes provider transports or SQLite.
+func (a *Service) Close() {
+	a.costMu.Lock()
+	a.costClosed = true
+	for _, slot := range a.costInflight {
+		if slot.cancel != nil {
+			slot.cancel()
+		}
+	}
+	a.costMu.Unlock()
+	a.costWG.Wait()
 }

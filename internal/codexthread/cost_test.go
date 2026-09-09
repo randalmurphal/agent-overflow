@@ -100,7 +100,7 @@ func (a *Service) forgetCodexThreadCost(threadID string) {
 }
 
 func (a *Service) readCodexThreadCost(threadID, sessionToken string, epoch uint64) {
-	a.readThreadCost(threadID, sessionToken, epoch)
+	a.readThreadCost(a.lifeCtx(), threadID, sessionToken, epoch)
 }
 
 func (a *Service) overlayProviderThreadCost(query store.UsageQuery, buckets []store.UsageBucket) []store.UsageBucket {
@@ -584,5 +584,84 @@ func TestProviderCostWithPendingTokensRemainsPartial(t *testing.T) {
 	b := h.OverlayProviderThreadCost(store.UsageQuery{ThreadID: thread.ID}, []store.UsageBucket{{OutputTokens: 50, PendingRows: 1}})
 	if len(b) != 1 || b[0].CostUSD != 1 || b[0].UnpricedRows != 1 || b[0].OutputTokens != 50 {
 		t.Fatalf("pending provider cost: %+v", b)
+	}
+}
+
+func TestThreadCostWaitWakesForTurnAndStopsForRollback(t *testing.T) {
+	a := newCostTestHarness(t)
+	epoch, _ := a.claimThreadCostRead("t", "first")
+	if _, ok := a.claimThreadCostRead("t", "latest"); ok {
+		t.Fatal("parallel reader admitted")
+	}
+	token, nextEpoch, again, newTurn := a.waitThreadCostRead(context.Background(), "t", epoch, time.Hour)
+	if !again || !newTurn || token != "latest" || nextEpoch <= epoch {
+		t.Fatalf("missed turn: %q %d %v %v", token, nextEpoch, again, newTurn)
+	}
+	epoch = nextEpoch
+	_, _, again, newTurn = a.waitThreadCostRead(context.Background(), "t", epoch, 0)
+	if !again || newTurn {
+		t.Fatal("timer did not retain slot")
+	}
+	a.ForgetThreadCost("t")
+	_, _, again, _ = a.waitThreadCostRead(context.Background(), "t", epoch, time.Hour)
+	if again {
+		t.Fatal("rollback retained retry")
+	}
+	if _, ok := a.claimThreadCostRead("t", "new"); !ok {
+		t.Fatal("retry leaked slot")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _, again, _ = a.waitThreadCostRead(ctx, "t", 0, time.Hour)
+	if again {
+		t.Fatal("shutdown retained retry")
+	}
+}
+
+func TestThreadCostTransientZeroAndRestatement(t *testing.T) {
+	a := newCostTestHarness(t)
+	thread := codexCostThread("t", "provider-t")
+	if err := a.store.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	for i, step := range []struct{ reported, want int64 }{{0, 0}, {100, 100}, {0, 100}, {80, 80}} {
+		if err := a.store.PutProviderThreadCost(store.ProviderThreadCost{ThreadID: "t", SessionRef: "provider-t", Provider: "codex", CostUSDMicros: step.reported, UpdatedAt: int64(i)}); err != nil {
+			t.Fatal(err)
+		}
+		cost, found, err := a.store.GetProviderThreadCost("t")
+		if err != nil || !found || cost.CostUSDMicros != step.want {
+			t.Fatalf("step %d: %+v %v", i, cost, err)
+		}
+	}
+	if err := a.store.PutProviderThreadCost(store.ProviderThreadCost{ThreadID: "t", SessionRef: "provider-t", Provider: "codex", CostUSDMicros: -1}); err == nil {
+		t.Fatal("negative estimate accepted")
+	}
+}
+
+func TestCostCloseStopsAdmission(t *testing.T) {
+	a := newCostTestHarness(t)
+	a.NoteThreadCost("t", "token")
+	a.Close()
+	a.Close()
+	a.NoteThreadCost("t", "token")
+	a.costMu.Lock()
+	defer a.costMu.Unlock()
+	if len(a.costInflight) != 0 {
+		t.Fatal("closed service retained a cost worker")
+	}
+}
+
+func TestNewSessionFencesPreviousCostRead(t *testing.T) {
+	a := newCostTestHarness(t)
+	epoch, _ := a.claimThreadCostRead("t", "old-session")
+	if _, ok := a.claimThreadCostRead("t", "new-session"); ok {
+		t.Fatal("second reader admitted")
+	}
+	if a.threadCostReadIsCurrent("t", epoch) {
+		t.Fatal("old session estimate can overwrite replacement")
+	}
+	token, nextEpoch, again := a.nextThreadCostRead("t")
+	if !again || token != "new-session" || !a.threadCostReadIsCurrent("t", nextEpoch) {
+		t.Fatal("replacement lost its read")
 	}
 }

@@ -1,8 +1,10 @@
 package claude
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
+	"strings"
 	"testing"
 
 	"agent-overflow/internal/provider"
@@ -293,5 +295,72 @@ func TestParseResult_AutoModeClassifierRowIsAccountedNotDropped(t *testing.T) {
 	}
 	if wantCost := 0.00059 + 0.23093199999999997; math.Abs(usage.TotalCostUSD-wantCost) > 1e-9 {
 		t.Errorf("aggregate cost = %v, want %v (the classifier call is billed spend)", usage.TotalCostUSD, wantCost)
+	}
+}
+
+func TestUsageAccountingStaleCumulativeDoesNotRebill(t *testing.T) {
+	p := NewParser()
+	for i, n := range []int{100, 80, 100, 120} {
+		raw := map[string]json.RawMessage{
+			"modelUsage": json.RawMessage(fmt.Sprintf(`{"claude-haiku-4-5":{"inputTokens":%d,"outputTokens":%d,"costUSD":%g}}`, n, n, float64(n)/100)),
+		}
+		got, _ := p.takeTurnUsage(raw)
+		want := []int{100, 0, 0, 20}[i]
+		if got.InputTokens != want || got.OutputTokens != want || math.Abs(got.TotalCostUSD-float64(want)/100) > 1e-9 {
+			t.Fatalf("report %d: %+v, want %d new tokens", n, got, want)
+		}
+	}
+}
+
+func TestFlatCostStaleCumulativeDoesNotRebill(t *testing.T) {
+	p := NewParser()
+	for i, n := range []float64{1, .8, 1, 1.2} {
+		got := p.advanceAccountedCost(n)
+		if math.Abs(got-[]float64{1, 0, 0, .2}[i]) > 1e-9 {
+			t.Fatalf("report %g: new cost %g", n, got)
+		}
+	}
+}
+
+func TestUsageCostPresenceAndRecovery(t *testing.T) {
+	for _, flat := range []bool{false, true} {
+		t.Run(fmt.Sprint("flat=", flat), func(t *testing.T) {
+			p := &Parser{model: "claude-sonnet-5"}
+			for i, step := range []struct {
+				cost     string
+				reported bool
+				usd      float64
+			}{
+				{`,"costUSD":0`, true, 0},
+				{``, false, 0},
+				{`,"costUSD":3`, false, 0}, // recovery includes the already estimated gap
+				{`,"costUSD":4`, true, 1},
+			} {
+				body := fmt.Sprintf(`{"modelUsage":{"claude-sonnet-5":{"inputTokens":%d%s}}}`, (i+1)*100, step.cost)
+				if flat {
+					body = fmt.Sprintf(`{"usage":{"input_tokens":100}%s}`, strings.Replace(step.cost, "costUSD", "total_cost_usd", 1))
+				}
+				var raw map[string]json.RawMessage
+				if err := json.Unmarshal([]byte(body), &raw); err != nil {
+					t.Fatal(err)
+				}
+				usage, rows := p.takeTurnUsage(raw)
+				if usage.InputTokens != 100 || len(rows) != 1 || rows[0].CostReported != step.reported || usage.TotalCostUSD != step.usd {
+					t.Fatalf("step %d: %+v %+v", i, usage, rows)
+				}
+			}
+		})
+	}
+}
+
+func TestEmptyModelUsageDoesNotRepeatFlatTokens(t *testing.T) {
+	p := &Parser{}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(`{"modelUsage":{},"usage":{"input_tokens":100}}`), &raw); err != nil {
+		t.Fatal(err)
+	}
+	usage, rows := p.takeTurnUsage(raw)
+	if !usage.IsZero() || len(rows) != 0 {
+		t.Fatalf("empty model snapshot repeated flat tokens: %+v", rows)
 	}
 }

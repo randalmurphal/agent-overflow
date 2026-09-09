@@ -57,7 +57,7 @@ func TestWorkflowTreeSpendPricesCodexTokenOnlyRows(t *testing.T) {
 	item := createBudgetTestRun(t, app, "codex-run", nil)
 	if err := app.store.AppendUsage([]store.UsageLedgerRow{
 		// 1M input + 1M output + 1M cache read at gpt-5.6-sol rates:
-		// $5.00 + $30.00 + $0.50.
+		// $4.00 + $20.00 + $0.40.
 		codexUsageRow(item.ID, "phase-1", 2, 1_000_000, 1_000_000, 1_000_000),
 	}); err != nil {
 		t.Fatal(err)
@@ -70,8 +70,8 @@ func TestWorkflowTreeSpendPricesCodexTokenOnlyRows(t *testing.T) {
 	if spend.Tokens != 3_000_000 {
 		t.Fatalf("tree tokens = %d, want 3000000", spend.Tokens)
 	}
-	if spend.USD < 35.49 || spend.USD > 35.51 {
-		t.Fatalf("tree USD = %v, want ~35.50 from the rate table", spend.USD)
+	if spend.USD < 24.39 || spend.USD > 24.41 {
+		t.Fatalf("tree USD = %v, want ~24.40 from the rate table", spend.USD)
 	}
 	if !spend.Estimated {
 		t.Fatal("spend composed entirely from the rate table must report itself as estimated")
@@ -125,11 +125,11 @@ func TestWorkflowUSDBudgetIsCrossedByEstimatedCodexSpend(t *testing.T) {
 	if budget.Kind != engine.BudgetKindUSD || budget.CeilingUSD != 10 {
 		t.Fatalf("budget = %+v, want the declared $10 ceiling", budget)
 	}
-	if budget.SpentUSD < 34.99 || budget.SpentUSD > 35.01 {
-		t.Fatalf("spent = %v, want ~35.00 — the wire reported none of it", budget.SpentUSD)
+	if budget.SpentUSD < 23.99 || budget.SpentUSD > 24.01 {
+		t.Fatalf("spent = %v, want ~24.00 — the wire reported none of it", budget.SpentUSD)
 	}
-	if !budget.Estimated || !budget.Exhausted || budget.Percent != 350 {
-		t.Fatalf("budget = %+v, want estimated, exhausted, 350%%", budget)
+	if !budget.Estimated || !budget.Exhausted || budget.Percent != 240 {
+		t.Fatalf("budget = %+v, want estimated, exhausted, 240%%", budget)
 	}
 }
 
@@ -159,7 +159,7 @@ func TestWorkflowRunBudgetSurvivesAnUnpriceableModel(t *testing.T) {
 	}
 	// The dollars that COULD be priced are still reported, and the figure says
 	// it is not exactly what the providers reported.
-	if budget.SpentUSD != 1 || !budget.Estimated || budget.Exhausted {
+	if budget.SpentUSD != 0.8 || !budget.Estimated || budget.Exhausted {
 		t.Fatalf("budget = %+v, want the priced lower bound, flagged, not exhausted", budget)
 	}
 }
@@ -292,8 +292,8 @@ func TestWorkflowItemDetailAndCostsPriceCodexSpend(t *testing.T) {
 	if detail.Usage.CostUSD != 1.25 || detail.Spend.WireCostUSD != 1.25 {
 		t.Fatalf("wire cost = %v / %v, want 1.25", detail.Usage.CostUSD, detail.Spend.WireCostUSD)
 	}
-	if detail.Spend.EstimatedCostUSD != 5 || detail.Spend.CostUSD != 6.25 {
-		t.Fatalf("spend = %+v, want $5.00 estimated on top of $1.25 wire", detail.Spend)
+	if detail.Spend.EstimatedCostUSD != 4 || detail.Spend.CostUSD != 5.25 {
+		t.Fatalf("spend = %+v, want $4.00 estimated on top of $1.25 wire", detail.Spend)
 	}
 	if detail.Spend.UnpricedRows != 0 {
 		t.Fatalf("unpriced rows = %d, want 0", detail.Spend.UnpricedRows)
@@ -303,7 +303,7 @@ func TestWorkflowItemDetailAndCostsPriceCodexSpend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(costs) != 1 || costs[item.ID] != 6.25 {
+	if len(costs) != 1 || costs[item.ID] != 5.25 {
 		t.Fatalf("overview costs = %#v, want the composed total", costs)
 	}
 }

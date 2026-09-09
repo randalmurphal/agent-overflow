@@ -1,6 +1,7 @@
 package store
 
 import (
+	"agent-overflow/internal/usagecost"
 	"testing"
 )
 
@@ -381,6 +382,7 @@ func TestQueryWorkItemCostsGroupsByProjectAndItem(t *testing.T) {
 	for _, group := range costs {
 		key := group.WorkItemID + "/" + group.Model + "/" + group.CostSource
 		expected, known := want[key]
+		expected.PricingVersion = usagecost.CurrentVersion
 		if !known {
 			t.Fatalf("unexpected group %q: %#v", key, group)
 		}

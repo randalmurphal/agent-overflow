@@ -325,3 +325,28 @@ func createCodexTestThread(t *testing.T, st *store.Store, id string) {
 		t.Fatalf("create codex thread: %v", err)
 	}
 }
+
+func TestUsageReportedZeroSurvivesPersistence(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	rows := router.usageLedgerRows(provider.ProviderEvent{ThreadID: "t1"}, "turn", []provider.ModelTokenUsage{
+		{Model: "claude-sonnet-5", CostReported: true, TokenUsage: provider.TokenUsage{InputTokens: 100}},
+		{Model: "gpt-6-astra", TokenUsage: provider.TokenUsage{InputTokens: 100}},
+	}, 100)
+	if err := st.AppendUsage(rows); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := st.QueryUsageDetail(store.UsageQuery{ThreadID: "t1"})
+	if err != nil || len(detail) != 2 {
+		t.Fatalf("details: %+v %v", detail, err)
+	}
+	for _, d := range detail {
+		want := "none"
+		if d.Model == "claude-sonnet-5" {
+			want = "wire"
+		}
+		if d.CostSource != want || d.CostUSD != 0 {
+			t.Fatalf("zero provenance lost: %+v", d)
+		}
+	}
+}

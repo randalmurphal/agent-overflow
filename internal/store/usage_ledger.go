@@ -2,8 +2,12 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
+	"math"
 	"strings"
+
+	"agent-overflow/internal/usagecost"
 )
 
 // Usage queries combine settled ledger rows with reported pending tokens.
@@ -19,6 +23,7 @@ type UsageLedgerRow struct {
 	// AccountingModel identifies pending snapshots consumed at settlement.
 	// Model retains the provider's final spelling in the ledger.
 	AccountingModel          string  `json:"-"`
+	PricingVersion           string  `json:"-"`
 	CreatedAt                int64   `json:"createdAt"`
 	ThreadID                 string  `json:"threadId"`
 	ProjectID                string  `json:"projectId"`
@@ -34,7 +39,7 @@ type UsageLedgerRow struct {
 	CostUSD                  float64 `json:"costUsd"`
 	// CostSource is 'wire' when CostUSD came from the provider (Claude
 	// reports cost CLI-side) and 'none' when the row carries no
-	// wire-reported cost (Codex has no cost on its wire; claudetui
+	// wire-reported per-turn cost (Codex turn reports and claudetui
 	// synthesized results carry none). GetUsageStats (app_usage.go)
 	// prices 'none' rows at query time from internal/usagecost when the
 	// model is recognized; rows whose model isn't in that rate table
@@ -46,7 +51,7 @@ type UsageLedgerRow struct {
 // AppendUsage inserts the rows in one transaction. Empty input is a no-op.
 // Rows with an empty CostSource are stamped 'wire' when CostUSD > 0 and
 // 'none' otherwise.
-func (s *Store) AppendUsage(rows []UsageLedgerRow) error {
+func (s *Store) AppendUsage(rows []UsageLedgerRow) (err error) {
 	if len(rows) == 0 {
 		return nil
 	}
@@ -54,7 +59,7 @@ func (s *Store) AppendUsage(rows []UsageLedgerRow) error {
 	if err != nil {
 		return fmt.Errorf("store: usage append begin: %w", err)
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer rollbackUsageTx(tx, &err)
 
 	if err := appendUsageTx(tx, rows); err != nil {
 		return err
@@ -66,7 +71,12 @@ func (s *Store) AppendUsage(rows []UsageLedgerRow) error {
 // shared with the import batch writer so usage rows land in the same commit
 // as the items they account for — and so the empty-CostSource defaulting
 // rule has one implementation.
-func appendUsageTx(tx *sql.Tx, rows []UsageLedgerRow) error {
+func appendUsageTx(tx *sql.Tx, rows []UsageLedgerRow) (err error) {
+	for _, row := range rows {
+		if err := validateUsageRow(row); err != nil {
+			return err
+		}
+	}
 	if len(rows) == 0 {
 		return nil
 	}
@@ -74,14 +84,18 @@ func appendUsageTx(tx *sql.Tx, rows []UsageLedgerRow) error {
         created_at, thread_id, project_id, work_item_id, turn_id, provider, model,
         input_tokens, output_tokens, cache_read_input_tokens,
         cache_creation_input_tokens, reasoning_output_tokens,
-        cost_usd, cost_source)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        cost_usd, cost_source, pricing_version)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("store: usage append prepare: %w", err)
 	}
-	defer stmt.Close()
+	defer func() { err = errors.Join(err, stmt.Close()) }()
 
 	for _, row := range rows {
+		version := row.PricingVersion
+		if version == "" {
+			version = usagecost.CurrentVersion
+		}
 		source := row.CostSource
 		if source == "" {
 			if row.CostUSD > 0 {
@@ -95,7 +109,7 @@ func appendUsageTx(tx *sql.Tx, rows []UsageLedgerRow) error {
 			row.Provider, row.Model,
 			row.InputTokens, row.OutputTokens, row.CacheReadInputTokens,
 			row.CacheCreationInputTokens, row.ReasoningOutputTokens,
-			row.CostUSD, source,
+			row.CostUSD, source, version,
 		); err != nil {
 			return fmt.Errorf("store: usage append insert: %w", err)
 		}
@@ -199,12 +213,12 @@ func queryWorkItemTreeUsageDetail(q sqlQueryer, rootItemID string) ([]UsageDetai
 		return nil, fmt.Errorf("store: query work item tree usage detail: empty work item id")
 	}
 	rows, err := q.Query(
-		workItemTreeCTE+`SELECT model, cost_source,
+		workItemTreeCTE+`SELECT model, cost_source, pricing_version,
 		 SUM(input_tokens), SUM(output_tokens), SUM(cache_read_input_tokens),
 		 SUM(cache_creation_input_tokens), SUM(reasoning_output_tokens),
 		 SUM(cost_usd), COUNT(*)
 		 FROM usage_records WHERE work_item_id IN (SELECT id FROM tree)
-		 GROUP BY model, cost_source ORDER BY model, cost_source`, rootItemID,
+		 GROUP BY model, cost_source, pricing_version ORDER BY model, cost_source`, rootItemID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: query work item tree usage detail %s: %w", rootItemID, err)
@@ -214,7 +228,7 @@ func queryWorkItemTreeUsageDetail(q sqlQueryer, rootItemID string) ([]UsageDetai
 	for rows.Next() {
 		var detail UsageDetailRow
 		if err := rows.Scan(
-			&detail.Model, &detail.CostSource,
+			&detail.Model, &detail.CostSource, &detail.PricingVersion,
 			&detail.InputTokens, &detail.OutputTokens,
 			&detail.CacheReadInputTokens, &detail.CacheCreationInputTokens,
 			&detail.ReasoningOutputTokens, &detail.CostUSD, &detail.Rows,
@@ -242,13 +256,13 @@ type WorkItemCostGroup struct {
 // One query keeps overview loads constant-time in query count instead of
 // issuing an aggregate per visible run; the split is what makes the answer
 // truthful for a Codex-heavy run, whose `cost_usd` is zero in every row.
-const queryWorkItemCostsSQL = `SELECT work_item_id, model, cost_source,
+const queryWorkItemCostsSQL = `SELECT work_item_id, model, cost_source, pricing_version,
 	 SUM(input_tokens), SUM(output_tokens), SUM(cache_read_input_tokens),
 	 SUM(cache_creation_input_tokens), SUM(reasoning_output_tokens),
 	 SUM(cost_usd), COUNT(*)
 	 FROM usage_records
 	 WHERE project_id = ? AND work_item_id <> ''
-	 GROUP BY work_item_id, model, cost_source`
+	 GROUP BY work_item_id, model, cost_source, pricing_version`
 
 func (s *Store) QueryWorkItemCosts(projectID string) ([]WorkItemCostGroup, error) {
 	if projectID == "" {
@@ -264,7 +278,7 @@ func (s *Store) QueryWorkItemCosts(projectID string) ([]WorkItemCostGroup, error
 	for rows.Next() {
 		var group WorkItemCostGroup
 		if err := rows.Scan(
-			&group.WorkItemID, &group.Model, &group.CostSource,
+			&group.WorkItemID, &group.Model, &group.CostSource, &group.PricingVersion,
 			&group.InputTokens, &group.OutputTokens,
 			&group.CacheReadInputTokens, &group.CacheCreationInputTokens,
 			&group.ReasoningOutputTokens, &group.CostUSD, &group.Rows,
@@ -288,12 +302,12 @@ func (s *Store) QueryWorkItemUsageDetail(workItemID string) ([]UsageDetailRow, e
 		return nil, fmt.Errorf("store: query work item usage detail: empty work item id")
 	}
 	rows, err := s.reader().Query(
-		`SELECT model, cost_source,
+		`SELECT model, cost_source, pricing_version,
 		 SUM(input_tokens), SUM(output_tokens), SUM(cache_read_input_tokens),
 		 SUM(cache_creation_input_tokens), SUM(reasoning_output_tokens),
 		 SUM(cost_usd), COUNT(*)
 		 FROM usage_records WHERE work_item_id = ?
-		 GROUP BY model, cost_source ORDER BY model, cost_source`, workItemID,
+		 GROUP BY model, cost_source, pricing_version ORDER BY model, cost_source`, workItemID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: query work item usage detail %s: %w", workItemID, err)
@@ -304,7 +318,7 @@ func (s *Store) QueryWorkItemUsageDetail(workItemID string) ([]UsageDetailRow, e
 	for rows.Next() {
 		var detail UsageDetailRow
 		if err := rows.Scan(
-			&detail.Model, &detail.CostSource,
+			&detail.Model, &detail.CostSource, &detail.PricingVersion,
 			&detail.InputTokens, &detail.OutputTokens,
 			&detail.CacheReadInputTokens, &detail.CacheCreationInputTokens,
 			&detail.ReasoningOutputTokens, &detail.CostUSD, &detail.Rows,
@@ -401,6 +415,7 @@ type UsageBucket struct {
 // the corresponding QueryUsage call's result — GetUsageStats merges the
 // two by that key rather than re-deriving bucket boundaries.
 type UsageDetailRow struct {
+	PricingVersion           string `json:"-"`
 	Bucket                   string `json:"bucket"`
 	Model                    string `json:"model"`
 	CostSource               string `json:"costSource"`
@@ -561,7 +576,7 @@ func queryUsageDetail(db sqlQueryer, q UsageQuery) ([]UsageDetailRow, error) {
 	}
 	where, args := usageWhereFilters(q)
 
-	query := fmt.Sprintf(`SELECT %s AS bucket, model, cost_source,
+	query := fmt.Sprintf(`SELECT %s AS bucket, model, cost_source, pricing_version,
         SUM(input_tokens), SUM(output_tokens),
         SUM(cache_read_input_tokens), SUM(cache_creation_input_tokens),
         SUM(reasoning_output_tokens), SUM(cost_usd), COUNT(*)
@@ -569,7 +584,7 @@ func queryUsageDetail(db sqlQueryer, q UsageQuery) ([]UsageDetailRow, error) {
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
 	}
-	query += " GROUP BY bucket, model, cost_source ORDER BY bucket ASC, model ASC"
+	query += " GROUP BY bucket, model, cost_source, pricing_version ORDER BY bucket ASC, model ASC"
 
 	rows, err := db.Query(query, args...)
 	if err != nil {
@@ -582,7 +597,7 @@ func queryUsageDetail(db sqlQueryer, q UsageQuery) ([]UsageDetailRow, error) {
 		var d UsageDetailRow
 		var bucket sql.NullString
 		if err := rows.Scan(
-			&bucket, &d.Model, &d.CostSource,
+			&bucket, &d.Model, &d.CostSource, &d.PricingVersion,
 			&d.InputTokens, &d.OutputTokens,
 			&d.CacheReadInputTokens, &d.CacheCreationInputTokens,
 			&d.ReasoningOutputTokens, &d.CostUSD, &d.Rows,
@@ -615,4 +630,23 @@ func (s *Store) ReadUsageStats(q UsageQuery) (buckets []UsageBucket, details []U
 		return nil, nil, err
 	}
 	return buckets, details, tx.Commit()
+}
+
+// validateUsageRow keeps invalid accounting out of every writer, including imports.
+func validateUsageRow(row UsageLedgerRow) error {
+	for _, n := range usageTokens(row) {
+		if n < 0 {
+			return fmt.Errorf("store: usage tokens must be nonnegative")
+		}
+	}
+	if row.CostUSD < 0 || math.IsNaN(row.CostUSD) || math.IsInf(row.CostUSD, 0) {
+		return fmt.Errorf("store: usage cost must be finite and nonnegative")
+	}
+	if row.CostSource != "" && row.CostSource != "wire" && row.CostSource != "none" {
+		return fmt.Errorf("store: invalid usage cost source %q", row.CostSource)
+	}
+	if row.CostSource == "none" && row.CostUSD != 0 {
+		return fmt.Errorf("store: unpriced usage cannot carry cost")
+	}
+	return nil
 }

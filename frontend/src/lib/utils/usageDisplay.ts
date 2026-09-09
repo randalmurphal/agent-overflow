@@ -1,16 +1,6 @@
-// Shared cost-display rule for the usage surfaces (sidebar UsageFooter,
-// UsageModal heatmap/totals/model-table). A UsageBucket's
-// cost is wire-reported only (Claude) — when `unpricedRows > 0`, some
-// rows in the aggregate carried no price and `costUsd` is a lower
-// bound, not a total.
-//
-// Kept out of utils/format.ts as its own module: this is a usage-surface
-// display POLICY (when to show a value at all, when to mark it as a
-// lower bound) rather than a generic number-to-string formatter, so it
-// stays separate from format.ts's pure formatting helpers even though
-// it delegates to formatUsd for the actual string.
-
 import { formatUsd } from './format';
+
+export const USAGE_COST_EXPLANATION = 'Estimated cost from provider reports or standard token rates. May differ from billing; missing prices are excluded.';
 
 /**
  * Formats a bucket's cost for display, or returns `null` when the cost

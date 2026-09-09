@@ -5,31 +5,20 @@ package usageledger
 
 import (
 	"fmt"
+	"math"
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/usagecost"
 )
 
-// Spend is one pricing rule for the usage ledger.
-//
-// A ledger row carries either a wire-reported cost (Claude prices its own
-// turns) or tokens alone (Codex reports no cost anywhere on its wire;
-// claudetui's synthesized results carry none — both persist
-// `cost_source='none'`). Every surface that reports dollars has to compose
-// those two halves: the usage modal, a run's cost in the overlay, `run status`,
-// and the workflow budget check the engine enforces with.
-//
-// They compose them HERE, once. A second place that priced token-only rows
-// would drift from this one the first time a rate moved, and the number a
-// budget is enforced against would stop being the number a human is shown.
-// internal/usagecost owns the rate table; this owns the rule for which rows it
-// applies to and what an unpriceable row does to a total.
+// Spend combines provider-reported estimates with versioned standard-rate
+// estimates for token-only rows. All usage surfaces and workflow budgets share
+// this rule; cumulative provider thread totals are overlaid separately.
 type Spend struct {
 	// WireUSD is what the providers themselves reported.
 	WireUSD float64
 	// EstimatedUSD is what the internal/usagecost rate table priced token-only
-	// rows at. It is never persisted — a rate change reprices all history on the
-	// next read.
+	// rows at, using the catalog version stored with each ledger row.
 	EstimatedUSD float64
 	// UnpricedRows counts rows whose model resolves to no rate at all. Their
 	// tokens are real and counted everywhere tokens are; their dollars are
@@ -41,17 +30,17 @@ type Spend struct {
 // TotalUSD is the composed cost: what was reported plus what was priced.
 func (s Spend) TotalUSD() float64 { return s.WireUSD + s.EstimatedUSD }
 
-// Estimated reports whether TotalUSD is anything other than exactly what the
-// providers reported — either because the rate table priced part of it, or
-// because some rows could not be priced at all and the total is a lower bound.
-// Both are the same caveat to a reader, and a total that silently OMITS rows
-// must never present itself as exact.
-func (s Spend) Estimated() bool { return s.EstimatedUSD != 0 || s.UnpricedRows > 0 }
+// Estimated reports nonzero estimated spend or missing prices. Provider-reported
+// amounts are estimates too, not settled invoices.
+func (s Spend) Estimated() bool { return s.WireUSD != 0 || s.EstimatedUSD != 0 || s.UnpricedRows > 0 }
 
 // Add folds one (model, cost_source) ledger group into the running total. An
 // unrecognized cost_source is an error rather than silently missing cost.
 // Pending snapshots are reported tokens awaiting authoritative accounting.
 func (s *Spend) Add(group store.UsageDetailRow) error {
+	if group.CostUSD < 0 || math.IsNaN(group.CostUSD) || math.IsInf(group.CostUSD, 0) {
+		return fmt.Errorf("usage ledger: invalid cost for model %q", group.Model)
+	}
 	switch group.CostSource {
 	case "wire":
 		s.WireUSD += group.CostUSD
@@ -61,8 +50,8 @@ func (s *Spend) Add(group store.UsageDetailRow) error {
 		// interrupted turn left token counts without a price.
 		s.UnpricedRows += group.Rows
 	case "none":
-		estimate, priced := usagecost.Price(
-			group.Model, group.InputTokens, group.OutputTokens,
+		estimate, priced := usagecost.PriceVersion(
+			group.PricingVersion, group.Model, group.InputTokens, group.OutputTokens,
 			group.CacheReadInputTokens, group.CacheCreationInputTokens,
 		)
 		if !priced {

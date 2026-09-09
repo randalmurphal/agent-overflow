@@ -319,3 +319,18 @@ func TestThreadUsageFloorIsAboveTheProviderFloor(t *testing.T) {
 			threadUsageMinimumCodexVersion)
 	}
 }
+
+func TestThreadUsageRejectsNegativeEstimatesAndPreservesZero(t *testing.T) {
+	for _, body := range []string{
+		`{"threadUsage":{"threadId":"t","estimatedUsageUsdMicros":-1}}`,
+		`{"threadUsage":{"threadId":"t","estimatedUsageUsdMicros":0,"estimatedUsageCreditsMicros":-1}}`,
+	} {
+		if _, err := parseThreadUsage(json.RawMessage(body)); err == nil || errors.Is(err, ErrThreadUsageUnavailable) {
+			t.Fatalf("invalid estimate accepted or hidden: %v", err)
+		}
+	}
+	usage, err := parseThreadUsage(json.RawMessage(`{"threadUsage":{"threadId":"t","estimatedUsageUsdMicros":0}}`))
+	if err != nil || usage.USDMicros == nil || *usage.USDMicros != 0 {
+		t.Fatalf("explicit zero lost: %+v %v", usage, err)
+	}
+}

@@ -12,60 +12,22 @@ import (
 	"agent-overflow/internal/store"
 )
 
-// Codex's own cumulative cost estimate for a thread.
-//
-// WHAT THIS IS. Codex reports no cost anywhere on its turn wire, so every
-// Codex `usage_ledger` row persists tokens alone (`cost_source='none'`) and
-// AO prices them at query time from `internal/usagecost`. Since codex 0.148
-// there is a second, independent answer available: `account/usage/read`
-// accepts a `threadId` and returns `threadUsage.estimatedUsageUsdMicros` —
-// the BACKEND's estimate of what that thread has cost, cumulative over the
-// thread's whole life.
-//
-// WHY IT DOES NOT REPLACE THE LEDGER. The figure is cumulative, optional
-// ("populated when a thread was requested and its billing route is
-// available"), and is upstream's own estimate rather than a settled charge.
-// So it is stored BESIDE the ledger, in `provider_thread_cost`, and the rate
-// table remains the answer whenever the estimate is absent — an older codex,
-// an API-key login, a thread with no billing route, or a credits-only
-// account. Nothing about the token accounting changes.
-//
-// WHY IT IS NOT A PER-TURN DELTA. Subtracting the previous total to
-// manufacture a per-turn figure would attribute the whole difference to the
-// last turn, and the difference is not a turn's cost: the backend restates
-// its estimate as it learns more, a resumed thread accumulates spend from
-// sessions AO never observed, and any read that fails leaves a gap the next
-// delta silently absorbs. AO already has an exact per-turn decomposition —
-// its own ledger. Keeping the provider figure at the grain the provider
-// states it at (the thread) means the two are never in a position to
-// contradict each other row by row: one is the thread's total, the other is
-// the turns.
-//
-// WHEN IT RUNS. Once per settled top-level Codex turn, after the turn is
-// already persisted, off the provider read loop, single-flighted per thread.
-// Never on a timer and never while idle. Every failure is logged and leaves
-// the rate-table fallback in place; nothing about a turn's completion depends
-// on it.
-
-// noteCodexThreadCost fires the post-turn thread-cost read for threadID.
-//
-// Called from the provider event fan-out on EventTurnComplete AFTER
-// triage.Handle has persisted the turn and its usage rows (per core principle
-// 3, the provider figure is recorded on completion, not accumulated in
-// memory). It returns immediately: the read itself runs on its own goroutine
-// because the app-server forwards it to the ChatGPT backend.
-//
-// sessionToken pins the session that completed the turn. A session replaced
-// between the settle and the read is a different process — possibly on a
-// different login — and its estimate would be attributed to this thread
-// wrongly, so the goroutine re-checks the token rather than re-resolving the
-// thread's current session.
+// Thread estimates are optional cumulative backend values, separate from the
+// per-turn token ledger. Read after settlement and retry at bounded intervals
+// because billing can lag execution. Never derive per-turn cost from these totals.
+// Session tokens and rollback epochs fence reads against provider-thread changes.
 func (a *Service) NoteThreadCost(threadID, sessionToken string) {
-	if a.store == nil || threadID == "" {
+	if a.store == nil || threadID == "" || a.lifeCtx().Err() != nil || a.isShuttingDown() {
 		return
 	}
-	epoch, ok := a.claimThreadCostRead(threadID, sessionToken)
+	a.costMu.Lock()
+	if a.costClosed {
+		a.costMu.Unlock()
+		return
+	}
+	epoch, ok := a.claimThreadCostReadLocked(threadID, sessionToken)
 	if !ok {
+		a.costMu.Unlock()
 		// A read for this thread is already out. It is NOT enough to drop
 		// this turn: the in-flight request may have been sent — and the
 		// backend may have computed its total — before this turn completed,
@@ -76,15 +38,36 @@ func (a *Service) NoteThreadCost(threadID, sessionToken string) {
 		// describing a state at or after the last settled turn.
 		return
 	}
+	ctx, cancel := context.WithCancel(a.lifeCtx())
+	a.costInflight[threadID].cancel = cancel
+	a.costWG.Add(1)
+	a.costMu.Unlock()
 	go func() {
+		defer a.costWG.Done()
+		defer cancel()
 		token := sessionToken
+		delays := [...]time.Duration{15 * time.Second, 60 * time.Second, 120 * time.Second}
+		retry := 0
 		for {
-			a.readThreadCost(threadID, token, epoch)
-			next, nextEpoch, again := a.nextThreadCostRead(threadID)
-			if !again {
-				return
+			retryable := a.readThreadCost(ctx, threadID, token, epoch)
+			if retryable && retry < len(delays) {
+				next, nextEpoch, again, newTurn := a.waitThreadCostRead(ctx, threadID, epoch, delays[retry])
+				if !again {
+					return
+				}
+				token, epoch = next, nextEpoch
+				if newTurn {
+					retry = 0
+				} else {
+					retry++
+				}
+			} else {
+				next, nextEpoch, again := a.nextThreadCostRead(threadID)
+				if !again {
+					return
+				}
+				token, epoch, retry = next, nextEpoch, 0
 			}
-			token, epoch = next, nextEpoch
 		}
 	}()
 }
@@ -96,6 +79,13 @@ func (a *Service) NoteThreadCost(threadID, sessionToken string) {
 func (a *Service) claimThreadCostRead(threadID, sessionToken string) (uint64, bool) {
 	a.costMu.Lock()
 	defer a.costMu.Unlock()
+	return a.claimThreadCostReadLocked(threadID, sessionToken)
+}
+
+func (a *Service) claimThreadCostReadLocked(threadID, sessionToken string) (uint64, bool) {
+	if a.costClosed {
+		return 0, false
+	}
 	if a.costInflight == nil {
 		a.costInflight = make(map[string]*threadCostRead)
 	}
@@ -105,10 +95,17 @@ func (a *Service) claimThreadCostRead(threadID, sessionToken string) (uint64, bo
 		// Keeping the first claimant's would send the rerun at a session
 		// that may have been replaced since, where readCodexThreadCost
 		// refuses it and the newest turn never reaches the backend.
+		if slot.token != sessionToken {
+			slot.epoch++
+		}
 		slot.token = sessionToken
+		select {
+		case slot.wake <- struct{}{}:
+		default:
+		}
 		return 0, false
 	}
-	a.costInflight[threadID] = &threadCostRead{token: sessionToken}
+	a.costInflight[threadID] = &threadCostRead{token: sessionToken, wake: make(chan struct{}, 1)}
 	return 0, true
 }
 
@@ -133,7 +130,51 @@ func (a *Service) nextThreadCostRead(threadID string) (string, uint64, bool) {
 		return "", 0, false
 	}
 	slot.dirty = false
+	select {
+	case <-slot.wake:
+	default:
+	}
 	return slot.token, slot.epoch, true
+}
+
+// waitThreadCostRead retains the single-flight slot while billing settles.
+// A newly settled turn wakes it immediately; rollback and cancellation release it.
+func (a *Service) waitThreadCostRead(ctx context.Context, threadID string, epoch uint64, delay time.Duration) (string, uint64, bool, bool) {
+	a.costMu.Lock()
+	slot := a.costInflight[threadID]
+	if slot == nil {
+		a.costMu.Unlock()
+		return "", 0, false, false
+	}
+	wake := slot.wake
+	dirty := slot.dirty
+	a.costMu.Unlock()
+	if !dirty {
+		timer := time.NewTimer(delay)
+		select {
+		case <-timer.C:
+		case <-wake:
+		case <-ctx.Done():
+		}
+		timer.Stop()
+	}
+	a.costMu.Lock()
+	defer a.costMu.Unlock()
+	slot = a.costInflight[threadID]
+	if slot == nil {
+		return "", 0, false, false
+	}
+	if ctx.Err() != nil || (!slot.dirty && slot.epoch != epoch) {
+		delete(a.costInflight, threadID)
+		return "", 0, false, false
+	}
+	newTurn := slot.dirty
+	slot.dirty = false
+	select {
+	case <-slot.wake:
+	default:
+	}
+	return slot.token, slot.epoch, true, newTurn
 }
 
 // codexThreadCostReadIsCurrent reports whether a read that started at epoch
@@ -225,6 +266,10 @@ func (a *Service) ForgetThreadCost(threadID string) {
 	a.costMu.Lock()
 	if slot, ok := a.costInflight[threadID]; ok {
 		slot.epoch++
+		select {
+		case slot.wake <- struct{}{}:
+		default:
+		}
 	}
 	a.costMu.Unlock()
 
@@ -235,7 +280,7 @@ func (a *Service) ForgetThreadCost(threadID string) {
 
 // readCodexThreadCost performs one read and persists the result. Blocking;
 // callers run it on their own goroutine.
-func (a *Service) readThreadCost(threadID, sessionToken string, epoch uint64) {
+func (a *Service) readThreadCost(parent context.Context, threadID, sessionToken string, epoch uint64) bool {
 	sess, ok := a.session(threadID)
 	if !ok || sess.Session == nil || (sessionToken != "" && sess.Token != sessionToken) {
 		// The session died, was replaced, or was never Codex. There is no
@@ -243,13 +288,13 @@ func (a *Service) readThreadCost(threadID, sessionToken string, epoch uint64) {
 		// ephemeral app-server: the estimate is a nicety, and spawning a
 		// process per settled turn is exactly the traffic the account-usage
 		// cache exists to avoid.
-		return
+		return false
 	}
 
 	// a.lifeCtx() rather than Background: the read can sit for the full
 	// DefaultThreadUsageTimeout against the ChatGPT backend, and shutdown must
 	// not wait on a request whose answer nothing will read.
-	ctx, cancel := context.WithTimeout(a.lifeCtx(), codex.DefaultThreadUsageTimeout)
+	ctx, cancel := context.WithTimeout(parent, codex.DefaultThreadUsageTimeout)
 	defer cancel()
 
 	usage, err := sess.Session.ReadThreadUsage(ctx)
@@ -259,10 +304,18 @@ func (a *Service) readThreadCost(threadID, sessionToken string, epoch uint64) {
 			// billing route, or credits-only pricing. The rate-table estimate
 			// stays. Not logged at all — on a pre-0.148 codex this would be
 			// one line per settled turn forever.
-			return
+			return false
+		}
+		if parent.Err() != nil {
+			return false
 		}
 		log.Printf("codex thread cost: read for %s: %v", threadID, err)
-		return
+		return true
+	}
+
+	current, alive := a.session(threadID)
+	if !alive || current.Token != sess.Token || current.Session != sess.Session || ctx.Err() != nil {
+		return false
 	}
 
 	usdMicros := int64(0)
@@ -285,7 +338,7 @@ func (a *Service) readThreadCost(threadID, sessionToken string, epoch uint64) {
 	sessionRef := usage.ThreadID
 	if sessionRef == "" {
 		log.Printf("codex thread cost: read for %s carried no thread id; keeping the rate-table estimate", threadID)
-		return
+		return false
 	}
 	// The fence check and the write are one critical section (see
 	// persistCodexThreadCostIfCurrent). A rollback that repointed (or cleared)
@@ -303,10 +356,10 @@ func (a *Service) readThreadCost(threadID, sessionToken string, epoch uint64) {
 	})
 	if err != nil {
 		log.Printf("codex thread cost: persist for %s: %v", threadID, err)
-		return
+		return true
 	}
 	if !stored {
-		return
+		return false
 	}
 	// The composer's usage chip re-queries on this thread's usage-refresh
 	// version, which the turn-complete emission already bumped — but that
@@ -314,6 +367,7 @@ func (a *Service) readThreadCost(threadID, sessionToken string, epoch uint64) {
 	// rate-table figure until the next turn. This second, narrower nudge is
 	// what makes the provider figure appear on the turn it describes.
 	a.emit(eventchan.UsageThreadCost, map[string]any{"threadId": threadID})
+	return true
 }
 
 // OverlayProviderThreadCost replaces exactly one ungrouped lifetime-thread

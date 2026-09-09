@@ -2,6 +2,7 @@ package claude
 
 import (
 	"encoding/json"
+	"log"
 	"sort"
 
 	"agent-overflow/internal/provider"
@@ -43,20 +44,24 @@ import (
 // wireModelUsage is the per-model shape inside `result.modelUsage`.
 // Field casing on the wire is camelCase (unlike the flat `usage` object).
 type wireModelUsage struct {
-	InputTokens              int     `json:"inputTokens"`
-	OutputTokens             int     `json:"outputTokens"`
-	CacheReadInputTokens     int     `json:"cacheReadInputTokens"`
-	CacheCreationInputTokens int     `json:"cacheCreationInputTokens"`
-	CostUSD                  float64 `json:"costUSD"`
+	InputTokens              int      `json:"inputTokens"`
+	OutputTokens             int      `json:"outputTokens"`
+	CacheReadInputTokens     int      `json:"cacheReadInputTokens"`
+	CacheCreationInputTokens int      `json:"cacheCreationInputTokens"`
+	CostUSD                  *float64 `json:"costUSD"`
 }
 
 func (w wireModelUsage) toTokenUsage() provider.TokenUsage {
+	var cost float64
+	if w.CostUSD != nil {
+		cost = *w.CostUSD
+	}
 	return provider.TokenUsage{
 		InputTokens:              w.InputTokens,
 		OutputTokens:             w.OutputTokens,
 		CacheReadInputTokens:     w.CacheReadInputTokens,
 		CacheCreationInputTokens: w.CacheCreationInputTokens,
-		TotalCostUSD:             w.CostUSD,
+		TotalCostUSD:             cost,
 	}
 }
 
@@ -100,14 +105,18 @@ func (p *Parser) takeTurnUsage(raw map[string]json.RawMessage) (provider.TokenUs
 // from the returned slice, but `present` still reports true so callers
 // can distinguish "modelUsage was here and simply had nothing new" from
 // "modelUsage was absent" — only the latter should fall back to flat
-// usage. Negative deltas (cumulative moved backwards — never observed on
-// the wire) clamp to zero rather than corrupting downstream sums.
+// usage. Stale snapshots cannot lower the baseline. Missing prices establish
+// a new cost baseline on recovery, avoiding overlap with token-rate estimates.
 func (p *Parser) takeModelUsageDeltas(rawModelUsage json.RawMessage) (deltas []provider.ModelTokenUsage, present bool) {
 	if len(rawModelUsage) == 0 {
 		return nil, false
 	}
 	var models map[string]wireModelUsage
-	if json.Unmarshal(rawModelUsage, &models) != nil || len(models) == 0 {
+	if err := json.Unmarshal(rawModelUsage, &models); err != nil {
+		log.Printf("claude: invalid modelUsage: %v", err)
+		return nil, true
+	}
+	if models == nil {
 		return nil, false
 	}
 
@@ -126,16 +135,41 @@ func (p *Parser) takeModelUsageDeltas(rawModelUsage json.RawMessage) (deltas []p
 		}
 		delta := cumulative
 		delta.Sub(prev)
+		reported := models[name].CostUSD != nil && *models[name].CostUSD >= 0
+		reliable := reported && cumulative.TotalCostUSD >= prev.TotalCostUSD && (p == nil || !p.usageCostMissingByModel[name])
+		tokens := delta
+		tokens.TotalCostUSD = 0
+		if p != nil {
+			if p.usageCostMissingByModel == nil {
+				p.usageCostMissingByModel = make(map[string]bool)
+			}
+			if reported && cumulative.TotalCostUSD >= prev.TotalCostUSD {
+				p.usageCostMissingByModel[name] = false
+			} else if !tokens.IsZero() {
+				p.usageCostMissingByModel[name] = true
+			}
+		}
 		if p != nil {
 			if p.usageTotalsByModel == nil {
 				p.usageTotalsByModel = make(map[string]provider.TokenUsage)
 			}
-			p.usageTotalsByModel[name] = cumulative
+			// A stale snapshot must not lower the baseline and rebill its recovery.
+			accountedCost := max(prev.TotalCostUSD, cumulative.TotalCostUSD)
+			prev.Add(delta)
+			prev.TotalCostUSD = accountedCost
+			p.usageTotalsByModel[name] = prev
+		}
+		// A recovered cumulative price includes the gap already priced by fallback.
+		// Establish its new baseline without adding that interval's dollars again.
+		if !reliable {
+			delta.TotalCostUSD = 0
 		}
 		if delta.IsZero() {
 			continue
 		}
-		deltas = append(deltas, accountingModelUsage(name, delta))
+		row := accountingModelUsage(name, delta)
+		row.CostReported = reliable
+		deltas = append(deltas, row)
 	}
 	return deltas, true
 }
@@ -161,12 +195,28 @@ func (p *Parser) takeFlatUsageDelta(raw map[string]json.RawMessage) (provider.To
 			usage.CacheCreationInputTokens = u.CacheCreationInputTokens
 		}
 	}
+	var reported *float64
+	valid := json.Unmarshal(raw["total_cost_usd"], &reported) == nil && reported != nil && *reported >= 0
+	reliable := valid && (p == nil || (!p.usageFlatCostMissing && *reported >= p.usageAccountedCostUSD))
+	hasTokens := !usage.IsZero()
 	usage.TotalCostUSD = p.advanceAccountedCost(readRawFloat(raw["total_cost_usd"]))
+	if !reliable {
+		usage.TotalCostUSD = 0
+	}
+	if p != nil {
+		if valid && *reported >= p.usageAccountedCostUSD {
+			p.usageFlatCostMissing = false
+		} else if hasTokens {
+			p.usageFlatCostMissing = true
+		}
+	}
 
 	if usage.IsZero() {
 		return provider.TokenUsage{}, nil
 	}
-	return usage, []provider.ModelTokenUsage{accountingModelUsage(p.currentModel(), usage)}
+	row := accountingModelUsage(p.currentModel(), usage)
+	row.CostReported = reliable
+	return usage, []provider.ModelTokenUsage{row}
 }
 
 // Message snapshots use API model IDs, while result.modelUsage can use CLI
@@ -185,14 +235,17 @@ func accountingModelUsage(model string, usage provider.TokenUsage) provider.Mode
 // delta. A missing or zero wire value returns 0 and leaves the tracker
 // alone (interrupted results report 0, which does not mean "reset").
 func (p *Parser) advanceAccountedCost(cumulativeCostUSD float64) float64 {
-	if cumulativeCostUSD <= 0 || p == nil {
+	if cumulativeCostUSD <= 0 {
 		return 0
+	}
+	if p == nil {
+		return cumulativeCostUSD
 	}
 	delta := cumulativeCostUSD - p.usageAccountedCostUSD
 	if delta < 0 {
 		delta = 0
 	}
-	p.usageAccountedCostUSD = cumulativeCostUSD
+	p.usageAccountedCostUSD = max(p.usageAccountedCostUSD, cumulativeCostUSD)
 	return delta
 }
 

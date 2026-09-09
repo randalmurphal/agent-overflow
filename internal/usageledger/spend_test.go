@@ -17,14 +17,14 @@ func TestAdd_WireRowsSumReportedCost(t *testing.T) {
 	if s.WireUSD != 1.75 || s.EstimatedUSD != 0 || s.UnpricedRows != 0 {
 		t.Fatalf("wire fold = %+v, want WireUSD=1.75 and nothing estimated", s)
 	}
-	if s.Estimated() {
-		t.Fatalf("wire-only spend must report itself exact")
+	if !s.Estimated() {
+		t.Fatalf("provider-reported costs are still estimates")
 	}
 }
 
 func TestAdd_TokenOnlyRowsPriceThroughTheRateTable(t *testing.T) {
 	var s Spend
-	// A model the rate table knows (family-prefix matched); the exact figure
+	// A model with a published rate; the exact figure
 	// is usagecost's business, so assert the classification, not the number.
 	err := s.Add(store.UsageDetailRow{
 		CostSource:   "none",
@@ -97,5 +97,25 @@ func TestPendingUsageDoesNotInventInterimCost(t *testing.T) {
 	}
 	if spend.TotalUSD() != 0.5 || spend.EstimatedUSD != 0 || spend.UnpricedRows != 2 {
 		t.Fatalf("pending spend: %+v", spend)
+	}
+}
+
+func TestReportedZeroAndMissingSnapshotRemainDistinct(t *testing.T) {
+	spend, err := PriceGroups([]store.UsageDetailRow{
+		{Model: "gpt-6-astra", CostSource: "wire", InputTokens: 1_000_000, Rows: 1},
+		{Model: "gpt-6-astra", CostSource: "none", PricingVersion: "unavailable", InputTokens: 1_000_000, Rows: 1},
+	})
+	if err != nil || spend.TotalUSD() != 0 || spend.UnpricedRows != 1 {
+		t.Fatalf("zero/missing conflated: %+v %v", spend, err)
+	}
+}
+
+func TestUnpublishedCacheWriteRateDoesNotBecomeFree(t *testing.T) {
+	spend, err := PriceGroups([]store.UsageDetailRow{
+		{CostSource: "wire", CostUSD: 0.5, Rows: 1},
+		{Model: "gpt-5.2-codex", CostSource: "none", InputTokens: 1_000_000, CacheCreationInputTokens: 1_000_000, Rows: 1},
+	})
+	if err != nil || spend.TotalUSD() != 0.5 || spend.UnpricedRows != 1 {
+		t.Fatalf("unpublished billing class priced as free: %+v %v", spend, err)
 	}
 }

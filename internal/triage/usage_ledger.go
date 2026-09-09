@@ -76,6 +76,10 @@ func (r *Router) usageLedgerRows(evt provider.ProviderEvent, turnID string, mode
 
 	rows := make([]store.UsageLedgerRow, 0, len(models))
 	for _, m := range models {
+		source := ""
+		if m.CostReported {
+			source = "wire"
+		}
 		rows = append(rows, store.UsageLedgerRow{
 			CreatedAt:                now,
 			ThreadID:                 evt.ThreadID,
@@ -91,6 +95,7 @@ func (r *Router) usageLedgerRows(evt provider.ProviderEvent, turnID string, mode
 			CacheCreationInputTokens: m.CacheCreationInputTokens,
 			ReasoningOutputTokens:    m.ReasoningOutputTokens,
 			CostUSD:                  m.TotalCostUSD,
+			CostSource:               source,
 		})
 	}
 	return rows

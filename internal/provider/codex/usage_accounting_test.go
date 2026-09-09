@@ -190,10 +190,8 @@ func TestUsageAccounting_ExceededSentinelRebaselines(t *testing.T) {
 	}
 }
 
-// TestUsageAccounting_BackwardsCumulativeRebaselines — a total that moves
-// backwards (unhealthy wire) re-baselines silently instead of clamping
-// into a fake delta.
-func TestUsageAccounting_BackwardsCumulativeRebaselines(t *testing.T) {
+// Stale totals cannot produce a new delta or lower the accounted baseline.
+func TestUsageAccounting_BackwardsCumulativeIgnored(t *testing.T) {
 	a := newUsageAccounting(false)
 	a.onTurnStart()
 	a.observe(tokenUsageParams(wireTotals{total: 5000, input: 4000, cached: 3000, output: 1000}, 258400))
@@ -203,7 +201,7 @@ func TestUsageAccounting_BackwardsCumulativeRebaselines(t *testing.T) {
 	a.onTurnStart()
 	a.observe(tokenUsageParams(wireTotals{total: 2000, input: 1500, cached: 1000, output: 500}, 258400))
 	if got := a.settleTurn(); !got.IsZero() {
-		t.Fatalf("backwards cumulative must re-baseline, got %+v", got)
+		t.Fatalf("backwards cumulative must be ignored, got %+v", got)
 	}
 }
 
@@ -233,5 +231,37 @@ func TestAttachTurnUsage_StampsAggregateAndModel(t *testing.T) {
 	s.attachTurnUsage(meta2)
 	if meta2.Usage != nil || meta2.ModelUsage != nil {
 		t.Fatalf("empty turn must not attach usage: %+v %+v", meta2.Usage, meta2.ModelUsage)
+	}
+}
+
+func TestUsageAccountingStaleCumulativeDoesNotRebill(t *testing.T) {
+	a := newUsageAccounting(false)
+	for i, n := range []int{100, 80, 100, 120} {
+		a.onTurnStart()
+		a.observe(tokenUsageParams(wireTotals{total: 2 * n, input: n, output: n}, 258400))
+		got := a.settleTurn()
+		want := []int{100, 0, 0, 20}[i]
+		if got.InputTokens != want || got.OutputTokens != want {
+			t.Fatalf("report %d: %+v, want %d", n, got, want)
+		}
+	}
+}
+
+func TestUsageAccountingMidTurnRegressionSettlesReportedProgress(t *testing.T) {
+	a := newUsageAccounting(false)
+	a.onTurnStart()
+	a.observe(tokenUsageParams(wireTotals{total: 100, input: 100}, 1000))
+	preview := a
+	if got := preview.settleTurn(); got.InputTokens != 100 {
+		t.Fatalf("progress: %+v", got)
+	}
+	a.observe(tokenUsageParams(wireTotals{total: 80, input: 80}, 1000))
+	if got := a.settleTurn(); got.InputTokens != 100 {
+		t.Fatalf("settlement left already-reported tokens pending: %+v", got)
+	}
+	a.onTurnStart()
+	a.observe(tokenUsageParams(wireTotals{total: 120, input: 120}, 1000))
+	if got := a.settleTurn(); got.InputTokens != 20 {
+		t.Fatalf("next segment repeated pending tokens: %+v", got)
 	}
 }

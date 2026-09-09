@@ -73,7 +73,7 @@
     const dateLabel = `${cell.monthShort} ${cell.dayOfMonth}`;
     const tokenLabel = `${formatTokens(cell.tokens)} tok`;
     const costLabel = formatUsageCostOrNull(cell.costUsd, cell.unpricedRows);
-    return costLabel ? `${dateLabel} · ${tokenLabel} · ${costLabel}` : `${dateLabel} · ${tokenLabel}`;
+    return costLabel ? `${dateLabel} · ${tokenLabel} · Est. ${costLabel}` : `${dateLabel} · ${tokenLabel}`;
   }
 </script>
 

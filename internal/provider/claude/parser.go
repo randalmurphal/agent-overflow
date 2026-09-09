@@ -234,8 +234,10 @@ type Parser struct {
 	// + subagents + advisor). Process-lifetime state: a fresh process
 	// (including --resume) restarts the CLI's counters at zero, so the
 	// nil map is always the correct baseline. Cleared by Close.
-	usageTotalsByModel map[string]provider.TokenUsage
-	usageProgress      claudeUsageProgress
+	usageTotalsByModel      map[string]provider.TokenUsage
+	usageCostMissingByModel map[string]bool
+	usageFlatCostMissing    bool
+	usageProgress           claudeUsageProgress
 	// usageAccountedCostUSD mirrors usageTotalsByModel for the flat
 	// `total_cost_usd` field — the session-cumulative cost already
 	// attributed to settled turns. Single lifecycle owner:
@@ -388,6 +390,8 @@ func (p *Parser) Close() {
 	p.activeCommandUUID = ""
 	p.closeTranscriptMirrors()
 	p.usageTotalsByModel = nil
+	p.usageCostMissingByModel = nil
+	p.usageFlatCostMissing = false
 	p.usageProgress = claudeUsageProgress{}
 	p.usageAccountedCostUSD = 0
 }

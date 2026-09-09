@@ -222,7 +222,9 @@ func (u *TokenUsage) Sub(other TokenUsage) {
 // entry per model; Codex cannot attribute per-model and produces a single
 // entry for the session's configured model.
 type ModelTokenUsage struct {
-	Model string `json:"model"`
+	// CostReported distinguishes a provider-reported zero from missing cost.
+	CostReported bool   `json:"-"`
+	Model        string `json:"model"`
 	// AccountingModel correlates progress when the final report uses another
 	// spelling of the same model. Empty means Model. It is not display data.
 	AccountingModel string `json:"-"`

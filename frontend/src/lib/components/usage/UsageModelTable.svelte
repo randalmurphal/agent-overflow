@@ -9,7 +9,7 @@
   import { createUsageStats, localTzOffsetMinutes } from '../../stores/usageQuery.svelte';
   import { formatTokens } from '../../utils/format';
   import { displayUsageModelLabel } from '../../utils/modelLabels';
-  import { formatUsageCostOrNull } from '../../utils/usageDisplay';
+  import { formatUsageCostOrNull, USAGE_COST_EXPLANATION } from '../../utils/usageDisplay';
 
   interface Props {
     /** '' = all providers, else 'claude' | 'codex'. */
@@ -70,7 +70,7 @@
             <td class="py-1 px-2 text-right tabular-nums text-fg-muted whitespace-nowrap">
               {row.tokens}
             </td>
-            <td class="py-1 pl-2 text-right tabular-nums text-fg whitespace-nowrap" data-testid="usage-model-row-cost">
+            <td class="py-1 pl-2 text-right tabular-nums text-fg whitespace-nowrap" title={USAGE_COST_EXPLANATION} data-testid="usage-model-row-cost">
               {row.cost ?? '—'}
             </td>
           </tr>

@@ -49,8 +49,8 @@ import (
 // history, and skipping one turn beats double-counting; every later
 // turn is exact.
 //
-// Codex reports no USD cost anywhere on the wire (only an opaque credits
-// balance), so ledger rows from this provider carry tokens only.
+// Turn notifications carry tokens only. Optional cumulative thread USD
+// estimates come through account/usage/read and never enter this ledger.
 //
 // All methods run on the session read-loop goroutine (dispatchNotification
 // → updateNotificationState); no locking needed, mirroring the parser-side
@@ -153,6 +153,12 @@ func (a *usageAccounting) observe(params json.RawMessage) {
 		a.accounted = total
 		a.baselined = true
 	}
+	// Preserve the largest observed snapshot within the turn too. Pending
+	// progress may already expose it; settling a smaller snapshot would leave
+	// residual pending tokens that the next segment reports again.
+	if a.latestSet {
+		total = maxWireUsage(a.latest, total)
+	}
 	a.latest = total
 	a.latestSet = true
 }
@@ -166,7 +172,7 @@ func (a *usageAccounting) onTurnStart() {
 // settleTurn returns the per-turn usage delta at a turn boundary and
 // advances the accounted baseline. Returns zero usage (IsZero) when the
 // turn produced nothing attributable — no observations, an unbaselined
-// resume, or a cumulative that moved backwards (re-baselines defensively).
+// resume, or a stale cumulative report below the accounted baseline.
 func (a *usageAccounting) settleTurn() provider.TokenUsage {
 	if !a.latestSet {
 		return provider.TokenUsage{}
@@ -181,8 +187,7 @@ func (a *usageAccounting) settleTurn() provider.TokenUsage {
 	}
 	if a.latest.TotalTokens < a.accounted.TotalTokens {
 		// Cumulative moved backwards — never observed on a healthy wire.
-		// Re-baseline rather than emit garbage.
-		a.accounted = a.latest
+		// Preserve the baseline so recovery cannot bill the same tokens twice.
 		return provider.TokenUsage{}
 	}
 	delta := codexWireTokenBreakdown{
@@ -193,8 +198,19 @@ func (a *usageAccounting) settleTurn() provider.TokenUsage {
 		OutputTokens:          max(a.latest.OutputTokens-a.accounted.OutputTokens, 0),
 		ReasoningOutputTokens: max(a.latest.ReasoningOutputTokens-a.accounted.ReasoningOutputTokens, 0),
 	}
-	a.accounted = a.latest
+	a.accounted = maxWireUsage(a.accounted, a.latest)
 	return delta.toTokenUsage()
+}
+
+func maxWireUsage(a, b codexWireTokenBreakdown) codexWireTokenBreakdown {
+	return codexWireTokenBreakdown{
+		TotalTokens:           max(a.TotalTokens, b.TotalTokens),
+		InputTokens:           max(a.InputTokens, b.InputTokens),
+		CachedInputTokens:     max(a.CachedInputTokens, b.CachedInputTokens),
+		CacheWriteInputTokens: max(a.CacheWriteInputTokens, b.CacheWriteInputTokens),
+		OutputTokens:          max(a.OutputTokens, b.OutputTokens),
+		ReasoningOutputTokens: max(a.ReasoningOutputTokens, b.ReasoningOutputTokens),
+	}
 }
 
 // attachTurnUsage settles parent-thread tokens, including interrupted turns.
@@ -223,8 +239,6 @@ func (s *Session) emitUsageProgress() {
 		return
 	}
 	if a.latest.TotalTokens < a.accounted.TotalTokens {
-		a.accounted = a.latest
-		a.scope = uuid.NewString()
 		return
 	}
 	preview := *a

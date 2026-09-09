@@ -450,6 +450,9 @@ func parseThreadUsage(raw json.RawMessage) (ThreadUsage, error) {
 	if usage.USDMicros == nil {
 		return usage, fmt.Errorf("%w: the backend priced this thread in credits only", ErrThreadUsageUnavailable)
 	}
+	if *usage.USDMicros < 0 || usage.CreditsMicros < 0 {
+		return ThreadUsage{}, fmt.Errorf("codex: invalid negative thread usage estimate")
+	}
 	return usage, nil
 }
 

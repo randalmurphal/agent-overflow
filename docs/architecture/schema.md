@@ -53,7 +53,7 @@ conversation whose ownership moved to another computer.
 | `proposed_plans`, `proposed_plan_comments` | Plan version and inline-review state projected into timeline item metadata. Their mutators bump the owning thread's history revision. |
 | `diff_review_comments` | Review comments keyed to diff scope and location. |
 | `chat_bar_favorites`, `chat_model_profiles` | Legacy favorite seeds and last-used provider/model settings. Profile constraints remain aligned with thread runtime and reasoning settings. |
-| `usage_ledger` | Append-only per-turn, per-model token and cost deltas. Deliberately denormalized without thread or project foreign keys so retained totals survive deletion. Any slice is safe to sum. |
+| `usage_ledger` | Append-only per-turn, per-model token and cost deltas. Deliberately denormalized without thread or project foreign keys so retained totals survive deletion. Any slice is safe to sum. `pricing_version` pins token-only estimates to a bundled rate snapshot. |
 | `usage_pending` | Reported token snapshots awaiting final accounting, keyed by thread, provider process scope, segment and model. Survives interruption, restart and thread deletion. Final deltas consume matching pending tokens atomically; `usage_records` unions the remaining tokens with the settled ledger for queries. Pending rows have no dollar price. |
 | `work_items`, `work_item_phases`, `work_item_units` | Durable workflow run, attempt, and fan-out records. State-machine and scheduling rules remain in `internal/workflow`; the store enforces structural relationships and atomic transitions. |
 | `work_item_effects` | Idempotency ledger for first-party workflow side effects, unique by run, phase, tool, and payload hash. |

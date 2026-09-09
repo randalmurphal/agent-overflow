@@ -67,6 +67,7 @@ describe('<UsageChip>', () => {
     // growing context every turn and drowns out what the thread
     // actually produced. costUsd 0.32 -> "$0.32".
     expect(trigger.textContent?.trim()).toBe('500 · $0.32');
+    expect(trigger.title).toContain('Estimated cost');
   });
 
   it('suppresses the cost when costUsd is 0 and some rows are unpriced', async () => {
@@ -239,4 +240,21 @@ it('preserves known totals and displays a failed refresh', async () => {
   expect(trigger.textContent).toContain('500');
   applyUsageEvent({ action: 'progress', threadId: pane.threadId!, error: 'Reported usage could not be saved.' });
   await waitFor(() => expect(trigger.title).toBe('Reported usage could not be saved.'));
+});
+
+
+it('explains why the Codex thread estimate can differ from the model breakdown', async () => {
+  resetBindingMocks();
+  resetUsageRefreshForTest();
+  const pane = await buildPane(makeThread());
+  setBindingMock('GetUsageStats', async (query: unknown) => (query as { groupBy?: string }).groupBy === 'model'
+    ? [modelBucket()]
+    : [lifetimeBucket({ costSource: 'provider-estimate', costUsd: 1.2 })]);
+  const { findByTestId, getByTestId } = render(UsageChip, { props: { pane } });
+  const trigger = await findByTestId('usage-chip-trigger');
+  expect(trigger.title).toContain('Cost estimated by Codex');
+  await fireEvent.click(trigger);
+  await waitFor(() => {
+    expect(getByTestId('usage-chip-popover').textContent).toContain('Model totals below use standard token rates');
+  });
 });
