@@ -12,6 +12,21 @@ import { wailsEventOn } from './wailsEvents';
 let waiting = $state.raw<readonly string[]>([]);
 export function ownDeviceConnectionsWaiting(): readonly string[] { return waiting; }
 
+/**
+ * Coordinate personal-device membership for the native frontend. Desktop and
+ * headless clients run the equivalent coordinator in Go.
+ *
+ * Only an active personal session may sponsor catalog merges or introductions.
+ * Every asynchronous result remains owned by the captured backend client and
+ * session; replacement, disconnect, teardown, or local removal prevents it from
+ * admitting a connection. Removal records are applied before enrollment, and
+ * credentials or conversation data are never copied between computers.
+ *
+ * Reconciliation is single-flight and coalesces changes that arrive while it is
+ * running. Unreachable members retry with bounded backoff. Failures remain in
+ * `ownDeviceConnectionsWaiting` for the connection settings UI rather than
+ * producing startup notifications.
+ */
 export function installOwnDeviceSync(): () => void {
   if (!isNativeShell()) return () => {};
   type Watch = { entry: BackendEntry; stop: () => void };

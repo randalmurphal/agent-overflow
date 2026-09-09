@@ -348,8 +348,8 @@ resolver virtua-branch comments, stale comment mentions (~35 files,
 listed in inventories §B8). Warm gate: untouched through V3 (priors
 make it near-idle on revisits); V4 re-sources it from engine
 settlement. Docs: frontend-scroll.md owners + virtua sections,
-frontend/AGENTS.md vendor-patches entry, chat AGENTS.md operational
-rules, scroll-rearchitecture-plan.md Stage-5 verdict. Gate:
+the current frontend, chat, and virtual-area guides, and
+scroll-rearchitecture-plan.md Stage-5 verdict. Gate:
 `make verify` + `scripts/release-check.sh`.
 
 ### V4: observation-source unification (contentRO merge)

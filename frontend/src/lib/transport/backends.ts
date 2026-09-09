@@ -117,12 +117,7 @@ export interface BackendEntry {
   /** This connection's own status. The runes mirror the UI renders from is
    *  `stores/transportStatus.svelte.ts`, keyed by the same id. */
   readonly status: TransportStatusSnapshot;
-  /**
-   * The last `all`-route share this backend failed to supply, or null. A
-   * fan-out never rejects as a whole for one backend's failure — the share
-   * is dropped and recorded here — so this is the only place that loss is
-   * visible.
-   */
+  /** Last failed `all`-route share; null after a successful call. */
   readonly lastFanoutError: unknown;
 }
 
@@ -733,10 +728,9 @@ function watchedThreadsFor(backendId: BackendKey): string[] {
 // ---------------------------------------------------------------------------
 
 /**
- * THE MERGE RULE, stated once and implemented once.
+ * Merge results from an `all` route.
  *
- * An `all`-routed call is asked of every attached backend and the answers
- * are combined by SHAPE, because the wire carries no envelope to name the
+ * Answers are combined by shape because the wire carries no envelope to name the
  * backend an answer came from and adding one would change every list
  * method's type:
  *
@@ -789,12 +783,10 @@ function mergeBackendResults(shares: readonly unknown[], homeShare: unknown): un
  * path. It is the same rule for whichever computer that is: home holds no
  * privilege here.
  *
- * A backend that fails supplies no share: the failure is recorded on its
- * entry (`lastFanoutError`) and the merge proceeds, because one
- * unreachable machine must not blank the sidebar of the ones that are
- * reachable. The whole call rejects only when EVERY backend failed, and
- * then with the home backend's own error — which is what the
- * single-backend app has always done, and what the toast beside it says.
+ * A failed backend supplies no share. Its error is retained in
+ * `lastFanoutError`, while successful shares still merge. The call rejects only
+ * when every backend fails, using HOME's error when HOME participated and the
+ * first backend error otherwise.
  *
  * `observe` is handed each backend's own share before the merge; it is how
  * ./entityIndex.ts learns which machine a row came from, which the merged

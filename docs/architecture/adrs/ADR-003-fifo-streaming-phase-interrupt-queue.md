@@ -54,12 +54,12 @@ Considered alternatives:
 
 ## Consequences
 
-- Invariant #4 ("FIFO drain") and #11 ("item_index assigned in
-  intended-appearance order") are consequences of this ADR.
+- FIFO drain and assignment of `item_index` in intended appearance order are
+  consequences of this ADR. See
+  [conversation history](../invariants.md#conversation-history).
 - The queue must drain on turn-complete even if streaming didn't
   naturally settle (truncated turns). `handleTurnComplete` explicitly
   drains with the errored status flag.
-- Any new event kind that produces fresh rows mid-turn must also
-  route through the queue. This is called out in invariant #11 and
-  in the add-a-new-event-kind recipe in
-  [`how-to.md`](../how-to.md).
+- Any new event kind that produces fresh rows mid-turn must preserve this
+  ordering. Follow the [provider-event change guide](../how-to.md#provider-events-and-timeline-items)
+  and the current queue entry points in `internal/triage/stream_state.go`.

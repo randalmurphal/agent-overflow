@@ -22,18 +22,19 @@ half of the path could succeed while the other failed.
 
 ## Decision
 
-All timeline-row persistence goes through `Router.persistItem` in
-`internal/triage/router.go`. The function:
+Timeline-row creation goes through the `Router.persistItem` helper family in
+`internal/triage/router.go`, centered on `persistItemWithEmit`. The common path:
 
-1. Runs the `parent_id` cycle / dangling-reference guard (invariant
-   #7).
-2. Calls `store.UpsertItem`.
+1. Runs the `parent_id` cycle and type guard.
+2. Calls the matching store upsert.
 3. Emits a `provider:item_event` upsert via `emitItemUpsert`.
 4. Bumps the `items.persisted` metric.
 5. Bumps the `payloads.persisted` metric if a payload was attached.
 
-No caller inside `internal/triage/` calls `store.UpsertItem`
-directly. New code reviews enforce this.
+Streaming payload appends use `persistItemWithPayloadAppend` to keep the payload
+append and item upsert in one store transaction. Existing-row changes use the
+targeted update helpers and emit a matching patch. Handlers do not call store
+upserts directly.
 
 ## Rationale
 
@@ -58,13 +59,10 @@ Considered alternatives:
 
 ## Consequences
 
-- Invariant #12 ("`persistItem` is the single write+emit
-  chokepoint") is this ADR promoted to invariant.
-- Provider adapters don't call `persistItem` (they have no store
-  reference, per invariant #13). They produce events; triage calls
-  `persistItem`.
+- The helper family keeps persistence and the corresponding event emission in
+  one triage-owned path. See
+  [provider events and lifecycle](../invariants.md#provider-events-and-lifecycle).
+- Provider adapters have no store reference. They produce events, and triage
+  chooses the persistence path.
 - Tests that want to synchronize on persistence use
   `SetEventHook` (see ADR-007) rather than post-hoc SQLite reads.
-- Future work: if we add a bulk-persist path for crash-recovery
-  backfill, it should also route through `persistItem` or a
-  deliberate sibling with the same contract.

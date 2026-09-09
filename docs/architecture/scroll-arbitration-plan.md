@@ -235,8 +235,8 @@ failing test before it is a bug report.
    the clamp witness from the sentinel guard fails the head-splice and
    composer cases from sentinel-idle.
 5. Fold the shipped rules into `frontend-scroll.md`; update
-   `chat/AGENTS.md` operational rules (the auto-collapse section's
-   stand-down description moves to the scheduler). **Shipped**
+   the chat guide's [scroll ownership](../../frontend/src/lib/components/chat/AGENTS.md#scroll-ownership)
+   when the auto-collapse stand-down description moves to the scheduler. **Shipped**
    incrementally with 1–3: each phase folded its durable rules into
    `frontend-scroll.md` (§Intent And Programmatic Writes, §Live Window
    Bounds, §Run Height Changes) and `chat/AGENTS.md` as it landed.

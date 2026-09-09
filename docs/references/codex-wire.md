@@ -73,7 +73,7 @@ only while a Codex wire round is active. Typed
 waited/interacted marker rows. Raw `exec_command` function-call output is
 model-facing text; it can enrich live metadata but must not gate or fabricate
 chat history. Per
-[invariant 25](../architecture/invariants.md#25-codex-backgrounding-uses-wire-typed-signals-never-heuristics),
+[turn-lifecycle.md § Codex background projection](../architecture/turn-lifecycle.md#codex-background-projection),
 heuristic classifiers (event-ordering, etc.) are forbidden because that's
 what produced ghost rows in the former `BackgroundClassifier` (previously at
 `internal/provider/codex/background.go`, retired).
@@ -132,7 +132,7 @@ Authoritative method list from
 | `item/reasoning/summaryPartAdded` | Section boundary between reasoning-summary parts. Emitted by codex for EVERY part; AO turns it into a `"\n\n"` thinking delta only when `summaryIndex > 0`. See §Reasoning. |
 | `item/plan/delta` | Buffered by `appendPlanDelta`; surfaces on the completed plan item, never on the delta. Consumed INLINE, not by a classifier. |
 | `item/commandExecution/outputDelta` | Streaming command output. |
-| `item/commandExecution/terminalInteraction` | The wire-typed background-terminal signal (waited / interacted marker rows). See §Background terminals and invariant 25. |
+| `item/commandExecution/terminalInteraction` | The wire-typed background-terminal signal (waited / interacted marker rows). See §Background terminals and [turn-lifecycle.md § Codex background projection](../architecture/turn-lifecycle.md#codex-background-projection). |
 | `item/fileChange/outputDelta`, `item/fileChange/patchUpdated` | Streaming patch progress. |
 | `rawResponseItem/completed` | Raw response items: `spawn_agent` / `wait_agent` / `write_stdin` enrichment and the live mailbox carrier. Only available on a fresh `thread/start` with `experimentalRawEvents`. See §`<subagent_notification>`. |
 | `item/mcpToolCall/progress`, `item/autoApprovalReview/started`, `item/autoApprovalReview/completed` | Recognised and dropped (consumed, so never opted out). |
@@ -141,7 +141,7 @@ Authoritative method list from
 | `thread/started` | Session-level. First notification on a new thread; emits `EventSessionInit`. |
 | `thread/status/changed` | Session-level. Thread status transitions; emits `EventSessionStatus`. |
 | `thread/archived`, `thread/unarchived`, `thread/closed` | Recognised, no event. |
-| `thread/reverted` | The echo `thread/revert` waits on. Releases the RPC's bounded wait; an UNSOLICITED one is logged and never acted on (it carries a thread id and no boundary). See §History truncation in the package guide. |
+| `thread/reverted` | The echo `thread/revert` waits on. Releases the RPC's bounded wait; an UNSOLICITED one is logged and never acted on (it carries a thread id and no boundary). See §History truncation below. |
 | `thread/queue/changed` | 0.148. The thread's provider-side queue changed. `{threadId}` and nothing else: no depth, no item id, no text. Below 0.148 the classifier's own notice is the answer; on a queue-native session the session layer replaces it with a `thread/queue/list` diffed against AO's own client ids. See §Externally queued turns in the package guide. |
 | `thread/compacted` | Thread housekeeping. Compaction boundary event (deprecated upstream in favour of the `contextCompaction` item; both feed `EventCompactBoundary`). |
 | `thread/name/updated` | Thread housekeeping. Thread name/title changed. |
@@ -226,7 +226,7 @@ spend and grows with round count rather than with work. It never reaches
 the parent's usage accounting and is never emitted as `EventTokenUsage`.
 This is the only channel through which a child's usage is visible on the
 parent thread. AO's suppression and carve-out rules are in
-[`internal/provider/codex/AGENTS.md` §Child threads](../../internal/provider/codex/AGENTS.md).
+[`internal/provider/codex/AGENTS.md` §Routing and collaboration](../../internal/provider/codex/AGENTS.md#routing-and-collaboration).
 
 ### `account/rateLimits/updated` and `account/rateLimits/read`
 
@@ -532,7 +532,7 @@ resumed session never sees it. Agent Overflow persists it on the standalone
 neutrally when it is absent. It must never be inferred from whether a child
 turn followed. That is
 exactly the ordering heuristic
-[invariant 25](../architecture/invariants.md#25-codex-backgrounding-uses-wire-typed-signals-never-heuristics)
+[turn-lifecycle.md § Codex background projection](../architecture/turn-lifecycle.md#codex-background-projection)
 forbids.
 
 Namespacing (`features.multi_agent_v2.tool_namespace`, default
@@ -1688,8 +1688,7 @@ What a client sees, in order: `thread/queue/changed`, then up to ~10s later a
 including an `item/completed` `userMessage` it never sent.
 `thread/queue/changed` carries `{threadId}` and nothing else, so depth and
 authorship can only come from a `thread/queue/list`. AO's adoption and
-attribution rules are in `internal/provider/codex/AGENTS.md` §"Turns AO did
-not start".
+attribution rules are described below in §Externally queued turns.
 
 ---
 

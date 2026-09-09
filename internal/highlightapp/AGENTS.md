@@ -2,7 +2,7 @@
 
 Application coordination around the pure `internal/highlight` parser.
 
-`Service` owns the content-addressed cache, streaming fence seed state, bounded
+`Service` owns the content-addressed cache, streaming code-block seed state, bounded
 diff-persistence workers, persisted span encoding, and remote-client gating.
 `internal/app` injects lifecycle state, diff-context resolution, filesystem
 reads, event emission, and the store. Stateless code/patch request and result

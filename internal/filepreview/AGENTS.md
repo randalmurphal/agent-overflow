@@ -1,4 +1,4 @@
-# filepreview
+# internal/filepreview
 
 Generated HTML and nearby assets, mounted only on transport's independent
 preview origin. The App owns the manager; it passes the authenticated session

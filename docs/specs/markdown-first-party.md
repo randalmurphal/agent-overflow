@@ -229,7 +229,8 @@ Split with real seams, all callers updated, no shims. DONE:
   found by hand (sink adoption, live-updates toggle, view-only bootstrap,
   virtualizer mode cleanup, scrollbar drag across target replacement,
   lexer completion-mode cache).
-- Record the ResizeObserver lesson in frontend/AGENTS.md testing section:
+- Keep the ResizeObserver regression under the tests and dependencies guidance
+  in `frontend/AGENTS.md`:
   a globally suppressed engine warning is a defect ledger entry, not a
   config setting.
 - Markdown test fixtures: replace repeated filler ("ordinary streamed

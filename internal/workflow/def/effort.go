@@ -11,7 +11,7 @@ import (
 // otherwise read as "this phase deliberately runs at the model's default".
 //
 // The list is declared here rather than imported from `internal/provider`
-// because this package is pure (see AGENTS.md §Boundaries) — a workflow
+// because this package is pure (see AGENTS.md). A workflow
 // definition is authored, validated, and published without any provider
 // process in reach. The two vocabularies are held together by
 // TestWorkflowEffortTiersMatchTheProviderReasoningEfforts in the root package,

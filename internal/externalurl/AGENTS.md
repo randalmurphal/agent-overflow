@@ -2,7 +2,7 @@
 
 Opens user-visible HTTP(S) links in the host operating system's browser.
 
-## Ownership
+## Contract
 
 - Validate URLs here before the backend opens them. Frontend checks are UX
   only and must not be treated as authorization.
@@ -13,13 +13,13 @@ Opens user-visible HTTP(S) links in the host operating system's browser.
   shell syntax.
 - WSL opens through Windows interop because the visible desktop is Windows.
   Native Linux uses desktop opener commands in fallback order.
-- **"Nothing is installed" is a typed answer, not prose.** `ErrNoOpener` is
+- `ErrNoOpener` is the typed answer when no platform opener is installed. It is
   returned when every platform candidate is absent from PATH (or the platform
   names none), and it is `errors.Is`-able because a caller can have somewhere
   else to put the link: the provider login flow degrades a headless host's
   browser method to showing the URL rather than discarding it
   (`internal/provideraccountapp/loginsession.go`). A candidate that WAS on
-  PATH and failed to start is deliberately not this sentinel — an opener
+  PATH and failed to start is not this sentinel: an opener
   exists, so degrading would be wrong.
 - The opener inherits our environment minus the AppImage launch artifacts
   (`appimage.ScrubInherited` in `startCommand`; nil on every other launch

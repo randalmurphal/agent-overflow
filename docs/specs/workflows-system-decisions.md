@@ -811,7 +811,9 @@ verdict it now is, with what the first attempt got wrong.
   that own the flow and fails on any call to `DeleteBranch` or
   `RemoveWorktreeForce`, including in the lines no fixture reaches.
 
-  **Implementation note: the ordering is load-bearing (invariant 35).** The
+  **Implementation note: the ordering is load-bearing.** The workflow
+  lock-release and teardown contract is specified in
+  `workflows-system.md` sections 6 and 12. The
   cleanup runs *before* `DeleteProject` acquires a single thread lock.
   Cancelling a live run walks engine teardown → `Runner.Stop` →
   `App.InterruptTurn`, which takes `a.threadLocks().Lock(threadID)` on the
@@ -860,7 +862,8 @@ verdict it now is, with what the first attempt got wrong.
   `workflow:error`, into a UI that is closing. Nothing is silently swallowed,
   and nothing durable is lost: the run is parked `needs-human(paused)` in
   SQLite by the same teardown, so at next boot it is in the overlay with the
-  needs-attention badge and resumes on the same provider thread (invariant 31).
+  needs-attention badge and resumes according to the parked-attempt
+  continuation rules in `workflows-system.md` sections 7 and 12.
   The alternative (pausing runs *before* closing the RPC surface so the wake
   lands) would leave a window where the UI can start new work during
   shutdown, which is a worse trade than losing a message that is redundant

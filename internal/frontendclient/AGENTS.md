@@ -1,4 +1,4 @@
-# internal/frontendclient/
+# internal/frontendclient
 
 The desktop frontend for `--frontend` and `--connect <paired computer>`. It boots no `App`,
 SQLite store, provider, workspace, LAN listener or execution engine. A small

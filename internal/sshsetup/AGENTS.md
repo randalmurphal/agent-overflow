@@ -1,4 +1,4 @@
-# internal/sshsetup/
+# internal/sshsetup
 
 Desktop SSH setup/control is a bounded console session, not an agent scheduler.
 Use OpenSSH configuration, agent authentication and known-host checks. Never

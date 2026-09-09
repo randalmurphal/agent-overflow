@@ -1,45 +1,24 @@
-# internal/appidentity/
+# Application and device identity
 
-Every per-instance name the desktop binary and the WSL launcher use, all
-derived from one mode string. Pure and dependency-free, so the two entry points
-cannot drift on single-instance ids, window titles, or diagnostic paths.
+This package owns two related sets of names:
 
-## The mode axis
+- validated runtime profiles and the per-instance launcher, storage,
+  diagnostics, browser, and CDP names derived from them; and
+- the installation's mutable display name, including validation, atomic
+  persistence, cached reads, and host-name fallback.
 
-`ModeDev` / `ModeProd` are build stamps. `ModeHarness` / `ModeSoak` /
-`ModePerf` are RUNTIME modes the same binary enters when the operator
-passes `--profile` (or `AGENT_OVERFLOW_PROFILE`). None of the three may
-ever become a build stamp: such a build would be indistinguishable from
-the dev build the developer does real work in.
+`NormalizeProfile` accepts empty, `harness`, `soak`, and `perf`. An isolated
+profile overrides the build mode in `LauncherMode`; runtime profiles never
+become build stamps. Unknown values fail rather than falling back to developer
+state. Adding a mode requires updating every exhaustive naming switch.
 
-`LauncherMode(buildMode, profile)` folds the two into the one string every
-helper branches on. The profile wins, so an isolated instance launched
-from a dev build is that profile, never `dev`.
+Diagnostic modes must coexist without sharing browser storage or ports.
+Production exposes no CDP port. Derive single-instance IDs, titles, WSL payload
+directories, state filenames, WebView profiles, browser profiles, diagnostic
+paths, and CDP ports through these helpers.
 
-## Rules
-
-- An unknown profile is an error, never a fallback. `NormalizeProfile`
-  accepts only `""`, `harness`, `soak`, and `perf`. A typo that quietly
-  resolved to the default would point an isolated instance at the
-  developer's own state, which is what the axis exists to prevent.
-- Per-instance names derive from the folded mode and nothing else:
-  `SingleInstanceID`, `AppTitle`, `WebviewProfileDir`,
-  `RenderDiagnosticsDir`, `BrowserProfilesDir`, `DevToolsPort`.
-  `BrowserProfilesDir` names the embedded browser pane's SECOND WebView2
-  environment, and splitting it per mode is not just hygiene: a WebView2
-  user-data folder belongs to one browser process, so a shared folder
-  leaves whichever launcher started second unable to create the
-  environment at all. `StateFileName` is the one
-  exception, suffixing only for isolated profiles (`launcher-soak.log`,
-  `window-perf.json`), because a developer expects one `launcher.log` and
-  one remembered window placement across dev and prod.
-- `DevToolsPort` is distinct per diagnostic mode (dev 9223, soak 9224,
-  harness 9225, perf 9226) and 0 for production, which does not expose a
-  CDP endpoint. Every diagnostic instance can be up at once, and two
-  WebView2s asked for one port leave whichever lost the bind unattachable.
-- Adding a mode means updating `isolatedMode` plus every switch in
-  `profile.go` and `singleinstance.go`. A mode missing from one of them
-  answers with the developer's own name instead of failing.
-
-`cmd/agent-overflow-windows/AGENTS.md` § CLI flags is the consumer side: what
-each profile boots and which Make target drives it.
+`DeviceName` is display metadata, not a stable device ID or credential.
+`NormalizeDeviceName` enforces the wire limit and rejects invalid UTF-8 and
+control characters. An empty saved name falls back to `HostDisplayName`.
+`Get` notices external file changes; `Set` uses `atomicfile` and invalidates
+the local cache.

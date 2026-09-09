@@ -1,89 +1,43 @@
-# harness/
+# Harness engines
 
-Engines behind the `--harness` agent test harness boot mode. The full
-guide (boot contract, RPC surface, workflows) is
-[docs/architecture/agent-harness.md](../../docs/architecture/agent-harness.md);
-this file covers the package boundaries.
+This tree contains reusable engines behind `--harness` and `--soak`. The
+application-facing composition belongs to `internal/harnessrpc`; command-line
+driving belongs to `cmd/ao-harness`. See
+[agent-harness.md](../../docs/architecture/agent-harness.md) for the boot,
+scenario, replay, and RPC architecture.
 
-## What lives where
+## Package boundaries
 
-- `gitfixture.go` defines `CreateRepo(path, RepoSpec)`: throwaway git
-  repositories for seeded projects (files, commits, dirty state, and
-  extra branches left unchecked-out so a worktree can attach one).
-- `replayer.go` defines `Replayer`: re-emits a recorded NDJSON event stream
-  (the `internal/observability/replay` format) onto the live event bus
-  with original inter-event timing; pause/resume/single-step. One
-  replay at a time. Starting over an active run fails loudly.
-- `control/` is the loopback HTTP control channel between the harness
-  and `ao-mockprovider` processes: `Server` (registration resolve,
-  long-poll command delivery, progress reports), `Client` +
-  `FromEnv` (the mock side), and the `AO_HARNESS_CONTROL` /
-  `AO_HARNESS_CONTROL_TOKEN` env contract. `CommandLoginComplete` is the
-  one command that is not about a scenario: the Codex device-code
-  sign-in finishes on another screen, so nothing written to the mock's
-  stdin reaches that moment, and the completion has to be paired with
-  the credential adoption then reads out of the isolated login home.
-- `instanceinfo/` covers instance discovery for `--harness` / `--soak`
-  boots: `ID(dataRoot)` (first 8 hex of the canonical root's SHA-256),
-  the `Row` written to
-  `<user cache dir>/agent-overflow/harness-instances/<id>.json`, and
-  `List` with a signal-0 liveness probe so a reader can tell a live row
-  from a killed process's leftovers. Deliberately token-free. The
-  token lives in `<dataDir>/harness-instance.json`, inside the data
-  root a reader must already be able to open, so a planted row can at
-  worst name a path.
-- `scenario/` is the mock scenario document: `Parse`/`Validate`, step
-	types, `${VAR}` substitution, and the `//go:embed`-shipped library
-	(`library/*.json`) with `LoadLibrary` / `Library` / `DefaultName`.
-- `governor/`: host-wide memory bookkeeping shared by every harness
-  launcher. A cross-process capacity lease under an OS file lock, plus the
-  monitor that reports ceiling and host-floor crossings. It never signals an
-  application, so it is not the OOM protection. Has its own subarea guide.
-- `darwinbundle/`: gives an isolated macOS harness executable its own
-  application bundle. WKWebView keys its default data store by bundle id, so
-  the ordinary `com.agentoverflow.app` bundle must never host an isolated
-  run. Cleanup removes the exact generated bundle and bundle-id-scoped
-  user-Library WebKit state after the supervised process exits. A no-op on
-  every other platform.
-- `containment/`: memory containment policy for harness launches. Linux uses
-  cgroup v2 or inherited `RLIMIT_DATA` when cgroup delegation is unavailable,
-  Windows uses a Job Object, and macOS uses a native application-responsibility
-  ceiling plus host-floor watchdog because its kernel rejects lowering the
-  available memory rlimits. Unsupported platforms fail closed.
+- `scenario` parses, validates, substitutes, and embeds mock-provider scenarios.
+- `control` is the authenticated loopback channel between a harness instance and
+  its mock-provider children. Keep its token in the child environment; never
+  publish it process-wide.
+- `instanceinfo` discovers instances by canonical data root. Registry rows are
+  token-free discovery records; the authenticated token stays inside the owned
+  data root.
+- `governor` reserves host-wide memory capacity and observes pressure. It does
+  not signal applications. Its subdirectory guide defines the accounting rules.
+- `containment` installs the per-instance platform memory policy and fails closed
+  on unsupported platforms.
+- `darwinbundle` gives isolated macOS runs a distinct bundle identity and cleans
+  only the generated bundle and its bundle-scoped WebKit state.
+- `Replayer` emits one recorded stream at a time with its original timing.
+  Starting a replay while another is active is an error.
 
-## Responsibility boundary
+Keep these packages independent of `*App` and application store details. The
+`internal/harnessrpc.Host` adapter owns production wiring. Changes to control or
+scenario wire shapes must be checked against `cmd/ao-mockprovider` and `e2e`.
 
-- These packages are engines, not policy: no `*App` access, no store
-  schema knowledge beyond what their inputs carry. The `internal/harnessrpc`
-  receiver owns wiring them to the live app through its explicit `Host`
-  adapter (event emission, store snapshot/restore, session lifecycle).
-- `control` and `scenario` are shared with `cmd/ao-mockprovider` — the
-  mock binary is the other consumer. Changing a wire shape or scenario
-  field means checking both sides plus `e2e/`.
-- The mock engine reports `turn_interrupted` when a provider interrupt wins an
-  active scenario turn. This is the deterministic assertion surface for cancel
-  and watchdog tests; adapter terminal frames remain provider stdout traffic.
-- Both mock adapters report `user_input` carrying the text they received and
-  the provider session that received it (Claude session id or Codex thread id)
-  when a turn starts, and when a Codex turn is steered. It is the only surface
-  that answers both "what did the app actually send" and "where did it send
-  it"; neither question can be inferred from the stored transcript or process
-  id.
+## Scenario contracts
 
-## Invariants
+- Validate scenarios when loading or installing them, before spawning a mock.
+- Claude scenarios do not emit `system/init`; the adapter emits init and user
+  echo for each turn. Scenario content must use valid assistant framing.
+- Every embedded scenario must pass both provider parsers. When a scenario
+  claims an effect beyond parsing, add a test through that downstream path.
+- Mock reports are the deterministic assertion surface for received user input,
+  interrupts, gates, and fixture failures. Provider terminal frames remain on
+  provider stdout.
 
-- Claude scenarios must not emit `system/init`, and assistant
-  text/thinking envelopes need a prior `message_start` registering the
-  same message id. The mock's adapter owns per-turn init + user echo,
-  scenarios own content framing. `scenario/library_test.go` enforces
-  this for every shipped scenario; keep the check green when adding
-  library entries.
-- Every shipped scenario line must survive the real provider parsers
-  (`scenario/library_parsers_test.go`).
-- A scenario that claims a downstream effect the parsers alone cannot
-  show gets a test that drives its own lines through that path:
-  `file-edit-diff`'s inline diff payload is pinned by
-  `internal/triage/scenario_file_edit_diff_test.go` (parser + Router +
-  store), the usage-limit pair by `scenario/library_parsers_test.go`.
-- Scenario validation happens at load/set time, never inside a spawned
-  mock. A bad script must fail the RPC that installed it.
+Run `go test ./internal/harness/...` for changes in this tree. Harness boot and
+browser integration are covered by `make e2e`.

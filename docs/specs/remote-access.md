@@ -3350,9 +3350,10 @@ Their activity rows stored full tool payloads inline, so they built
 an allowlist projection to strip them on the way out (12.2 MB → 546
 KB for MCP results) and later a second one at ingestion, after
 discovering one 65 KB tool result had persisted 238.7 MB across 2,226
-streaming updates. Our payload bodies have always lived in a separate
-table behind an id, and items persist on completion rather than per
-update, so neither problem exists here. We also already have the
+streaming updates. Our payload bodies live in a separate table behind an id,
+and streaming items flush on bounded intervals and byte thresholds rather
+than rewriting the full payload for every provider delta, so neither problem
+exists here. We also already have the
 partial-window guard they rate as their most valuable idea: an event
 for an item outside the loaded window must not be appended at the
 end. Ours is cursor-based in both directions and handles negative

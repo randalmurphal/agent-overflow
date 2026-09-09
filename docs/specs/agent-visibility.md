@@ -149,7 +149,7 @@ launch, how do progress and terminal signals arrive, which controls exist
 - Row actions (open-in-pane, background, stop) render before the
   status / duration / timestamp columns on every row so the timestamp
   column stays aligned (`ToolHeaderMeta`'s `actions` slot; chat
-  AGENTS.md "Row Contract").
+  guide [rows and transcript identity](../../frontend/src/lib/components/chat/AGENTS.md#rows-and-transcript-identity)).
 - The agent pane keys its whole scoped window as ONE turn
   (`ThreadPane.timelineTurns`, overridden by the scope facade): active
   while the scoped launch runs, settled on the launch's own completion

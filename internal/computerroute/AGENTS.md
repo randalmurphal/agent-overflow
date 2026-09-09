@@ -1,4 +1,4 @@
-# Computer routes
+# internal/computerroute
 
 Credential-free HTTPS origins and certificate fingerprints only. This package
 normalizes and bounds advertisements; it does not establish trust, dial, store

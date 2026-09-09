@@ -1,43 +1,15 @@
-# internal/workspacefiles/
+# `internal/workspacefiles`
 
-Finds files inside a workspace for @-mention completion. Git-backed
-workspaces use `git ls-files` so the user's `.gitignore` is honoured;
-non-git workspaces fall back to a filesystem walk with a tight
-`IgnoredDirs` whitelist. A short-TTL cache keeps the popover
-responsive.
+Bounded workspace file discovery for the @-mention picker.
 
-## Layout
+Git workspaces use `git ls-files --cached --others --exclude-standard`; other
+directories use a filesystem walk. Both remain beneath the resolved root and
+apply the small `IgnoredDirs` exclusion set. The fallback does not treat a
+repository's `.gitignore` as policy, and hidden files are otherwise eligible.
 
-- `search.go` holds the `Searcher` type with the TTL-cached `workspaceIndex`,
-  the git / filesystem-walk strategies, and the scoring that produces
-  the @-picker result list. `gitCommand` is overridable in tests so
-  unit tests never shell out.
+Use `Searcher` so callers share the per-workspace TTL cache, deterministic
+scoring, result cap, and explicit invalidation. Do not scan file contents or
+follow directory symlinks to extend coverage. Surface root and enumeration
+errors that invalidate the index.
 
-## Responsibility boundary
-
-- What BELONGS here:
-  - Listing / scoring files in a workspace for completion.
-  - Per-workspace TTL cache invalidation.
-  - Respecting `.gitignore` (via `git ls-files`) and the hard-coded
-    `IgnoredDirs` whitelist outside git.
-- What does NOT belong here:
-  - File content search (grep). That's a future feature with its own
-    package.
-  - Rendering the @-picker. The frontend owns presentation.
-
-## Extension points
-
-- To tune the @-picker defaults: adjust `DefaultTTL`,
-  `DefaultMaxEntries`, `DefaultResultLimit` in `search.go`.
-- To ignore additional directory names outside git: extend
-  `IgnoredDirs`. Keep the list short. Inside a repo we defer to
-  `.gitignore`.
-- To add a new result field: extend `WorkspaceFile`, update the
-  frontend binding.
-
-## Anti-patterns
-
-- Do NOT traverse into `.git` or `node_modules` outside git workspaces.
-  The whitelist is the gatekeeper; additions need a justification.
-- Do NOT bypass the TTL cache. Callers hit `Searcher`, not raw walks.
-- Do NOT scan content. This is a path-only index.
+Transport and frontend filtering belong to callers.

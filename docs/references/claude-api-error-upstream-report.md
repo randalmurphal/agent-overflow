@@ -3,7 +3,7 @@
 > Status: **draft, not filed**. File on maintainer go-ahead. Sanitized
 > fixture lives at
 > [`fixtures/claude/session_api_error_offbranch.jsonl`](fixtures/claude/session_api_error_offbranch.jsonl).
-> Internal context: invariant 28, claude-wire.md §"deferred
+> Internal context: claude-wire.md §"deferred
 > system/api_error rows", incident 2026-06-10.
 
 ---

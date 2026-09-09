@@ -1,4 +1,4 @@
-# internal/rpcclient/
+# internal/rpcclient
 
 Serialized HTTP+WebSocket RPC client shared by local owner commands and paired
 computer calls. One outstanding call, 1 MiB frame bound, no event subscriptions

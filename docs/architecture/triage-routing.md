@@ -56,20 +56,21 @@ this split exists to prevent.
 ## Pre-dispatch rewrites
 
 `Handle` performs exactly two checks before the switch. The stopped-thread
-gate (invariant 29) drops every wire event for a thread `CleanupThread`
+gate drops every wire event for a thread `CleanupThread`
 marked stopped. The carrier rewrite then replaces a `ParentToolUseID`
 naming a known §E6 resume CARRIER with that agent's transcript ROOT
 (`internal/triage/transcript_root.go`), so no handler can write a row
 parented to a lifecycle row. Both are cheap by construction — the rewrite
 short-circuits on an empty parent before taking the lock — and both apply
 to every kind, which is why they live above the switch rather than in a
-handler.
+handler. This is the stopped-thread ownership contract described in
+[`turn-lifecycle.md`](turn-lifecycle.md#turn--tool--task-lifecycles).
 
-## The Sentinel
+## Exhaustiveness Check
 
 The `default` branch in `Handle` returns
 `fmt.Errorf("%w: %s", ErrUnhandledEventKind, evt.Kind)` and emits on no
-channel. The sentinel exists so `TestHandleEveryEventKindCovered` (in
+channel. The explicit error lets `TestHandleEveryEventKindCovered` (in
 `internal/triage/router_test.go`) can loop `provider.AllEventKinds`
 and fail loudly if any kind falls through.
 `TestAllEventKindsListIsComplete` (same file) guards the complementary

@@ -1,330 +1,140 @@
 # SQLite Schema
 
-Source of truth for the shape lives in `internal/store/schema_v1.go` (the
-squashed v1 baseline) plus the forward-only chain in
-`internal/store/migrate.go`. This page is the human-readable summary. If
-it disagrees with the migrations, the migrations win.
+The executable schema is the squashed baseline in
+`internal/store/schema_v1.go` plus the forward-only migrations in
+`internal/store/migrate.go` and `internal/store/migration_v*.go`. Those files
+win if this summary disagrees. See [sqlite-store.md](sqlite-store.md) for
+connection, migration, restore, trigger, and query contracts.
 
-## Tables
+## Data classes
 
-| Table | Purpose |
+SQLite has three distinct responsibilities:
+
+| Class | Meaning |
 |---|---|
-| `thread_transfers` | Durable move/copy coordination (v86), independent of history retention. `id` binds an immutable request, `thread_id`, `target_thread_id`, `peer_backend_id`, destination `project_id`, `kind`, `direction`, `activation_hash`, and private recovery JSON. A copy has a new deterministic target identity; a move keeps its identity. `peer_state` binds the recipient offer once. `ownership_epoch` orders completed moves across computers; `owned_threads` filters catalogs using the latest non-canceled operation. Source `phase` advances preparing → prepared → committed → complete; `cancel_requested` durably blocks retirement. Destination completion atomically imports history with source proof; cancellation also requires source proof. `manifest_hash` and `archive_size` bind the sealed source snapshot or declared incoming upload; only the prepared phase attests destination validation. `next_attempt_at` and `retry_count` support bounded host jobs; `cleanup_pending` keeps terminal operations scheduled until private archives are removed, while SQL receipts and ownership persist; `error` preserves the phase. Millisecond creation/update timestamps support recovery. No thread FK: source retirement survives history deletion. History restore retains live records and refuses pending transfers or snapshots predating currently owned incoming conversations. Pending incoming rows reserve their project against deletion. Secrets are excluded from status JSON. |
-| `thread_transfer_sessions` | Immutable native session closure reserved by a transfer (v86). Composite key `(transfer_id, provider, session_ref)`; provider is Claude or Codex. Outgoing copies reserve their newly forked IDs, never the original. Latest non-canceled reservation fences execution/import independently of AO history rows. FK to the authoritative transfer journal; history restore retains the live closure. |
-| `projects` | User-defined grouping of threads rooted at a directory. `path` (UNIQUE), `name`, immutable `slug` (UNIQUE, filesystem-safe; keys per-project app config under `<config-root>/projects/<slug>/`), `color`, `sort_position`, `archived`, `worktree_setup` (v46, the project's worktree setup recipe as JSON: files copied from the main checkout and argv commands run at worktree creation; `''` means unconfigured, and a non-empty blob that does not strictly decode is an error rather than an empty recipe. See `internal/worktreesetup`), `remote_url` + `root_commit` (v83, the checkout's DERIVED repository identity: the `origin` remote exactly as git reports it — unnormalised, because the client attached to several backends owns the matching — and the lexicographically smallest root commit of HEAD, which is what lets a remoteless repo, or one with several roots, still answer the same on every machine. Both `''` when the path is not a repository, has no origin, or has an unborn HEAD; written by `internal/git`'s `RepoIdentity` at project creation and by the boot backfill, and never through `updated_at`). Each thread belongs to exactly one project. **Dead columns:** `workflow_queue_paused` and `workflow_concurrency` are leftovers from the removed workflow queue (workflows rev 2). SQLite refuses `DROP COLUMN` on a CHECK-bearing column, and rebuilding this FK-parent table to delete two unread integers is not worth the blast radius, so they stay physically present with their defaults. No Go code reads or writes them; `projectColumns` in `internal/store/projects.go` omits them. |
-| `threads` | One row per conversation. Provider, session_ref, workspace/project paths, model, `mode` (chat/plan/discussion/terminal/workflow/workflow-studio/workflow-triage), `reasoning_effort`, `fast_mode`, `context_window`, per-tier auto-compact percentages (`auto_compact_standard_percent`, `auto_compact_extended_percent`), `runtime_mode` (`read-only` / `approval-required` / `auto-accept-edits` / `auto` / `full-access`; `read-only` added in v34 for workflow phases that declare `access: read-only`, `auto`, the AI-reviewed approval tier, in v45), archived flag, fork lineage (`parent_thread_id`, `pending_fork_session_ref`, `forked_from_thread_id`, and `pending_fork_resume_at`, added in v69 as the pinned transcript cut for a lazy Claude fork taken off a LIVE source: the source leaf uuid captured at fork click, passed to the CLI as `--resume-session-at` on the fork's first start after repair against the resume filters; cleared together with `pending_fork_session_ref` by both session-ref writers), discussion membership (`discussion_id`), `last_token_usage`, `worktree_setup_state` (v47, `''` / `running` / `failed`, CHECK'd; the durable half of the per-project worktree setup run the thread's worktree was cut with, written by `SetThreadWorktreeSetupState` only, swept `running` → `failed` at startup by `SweepRunningThreadWorktreeSetups` because a run exists only inside a live process), `import_source` (v50, `''` / `claude` / `codex`, CHECK'd; write-once provenance for a thread imported from a provider session file, and the only thing that can gate the "Check for Provider Updates" affordance since every thread that has run a turn has a `session_ref`. Written by `CreateThread` only and deliberately omitted from `updateThreadSetSQL`), `created_by_device` (v77; the device id of the screen that started the thread, empty for backend-created threads — creation attribution only, write-once for the same reason `import_source` is), `created_branch` / `created_remote_url` / `created_head_commit` (v78; the workspace's git coordinates AT CREATION, surfaced as `Thread.Origin`. A historical record, unlike the live `branch` column: empty always means "not known", and all three are write-once), `live_todo` (v65, `TEXT NOT NULL DEFAULT '' CHECK(live_todo = '' OR json_valid(live_todo))`; the activity rail's todo list as the provider last reported it (Claude TodoWrite / Task\*, Codex update_plan) as `{steps:[{step,status,id?,owner?}],updatedAt}`. `''` is the only spelling of "no list": `SetThreadLiveTodo` refuses an empty step array so a clear cannot also be stored as `[]`, and `ClearThreadLiveTodo` reports whether it cleared anything so the live push can be gated on it. Written by those two accessors only, absent from `threadColumns` / `updateThreadSetSQL` / the `Thread` struct, and it moves neither `updated_at` (a todo tick is not user activity) nor `history_rev` (it is not window-visible, and rides `GetThreadLiveState`). The read is strict: a blob that does not decode is an error, never an empty list. The 5s auto-hide of a finished list is the READER's rule, applied in `internal/app/app_live_state.go` in lockstep with the frontend's `LIVE_TODO_AUTOHIDE_MS`). Workflow-owned modes identify phase, studio, and triage threads so normal thread listings can exclude them without a naming convention. Migration v72 converts legacy `design` rows to `chat` and removes `design` from the table CHECK. `history_rev` / `history_epoch` (v55) are the client-replica invalidation stamps: rev counts every window-visible mutation, epoch only the ones a client cannot apply incrementally (a deletion or a reposition), and every epoch bump also bumps rev. `history_bulk_load` (v59) is the private 0/1 flag an import transaction uses to replace per-item trigger updates with the identical aggregate revision before commit. Maintained by three AFTER triggers on `items` plus `bumpHistoryRevTx` in the payload mutators, never by ad-hoc UPDATEs. See `internal/store/AGENTS.md` § History invalidation contract and `docs/architecture/thread-replica-sync.md`. |
-| `items` | Timeline items per thread. PK `(thread_id, id)`. `turn_index`, `item_index`, `kind`, `role`, `status`, `summary` (always-loaded preview), `payload_id`, `parent_id` (subagent / nested-tool correlation), `is_background`, `completion_of` (back-reference from tool_completion to its launch), `tool_name`, `decision`, `meta`. Payload references are composite `(thread_id, payload_id)` FKs, so an item cannot link to another thread's heavy content. Four trigger sets ride this table and are the reason Go never maintains what they maintain: the history stamps (`historyRevTriggersSQL`), payload GC, the v61 imported-history guards, and the v74 background-launch settlement set below. |
-| `payloads` | Thread-owned heavy content, PK `(thread_id, id)` since migration v58. Provider-local IDs may legitimately repeat in Claude branches and in live per-turn coordinates; the thread key makes those rows independent. `kind`, `meta` (JSON, loaded with items), `data` (base BLOB, on-demand), plus persisted highlight-span blobs (migration v22): `preview_spans` (small, size-capped; joined into item list reads) and `spans` (full patch spans; read only by explicit payload loads). Span blobs are version-stamped and content-addressed: empty or stale means the frontend recomputes via the highlight RPCs. Migration v58 duplicated each legacy payload graph once per referencing thread; bytes already overwritten by the old global key could not be reconstructed. |
-| `import_history_chunks` | Content-addressed immutable item chunks for imported history (v61). A chunk contains complete turns only, records its item count and turn range, and is shared by every imported thread with identical content. It is collected when its final `thread_import_chunks` reference disappears. |
-| `import_history_items` / `import_history_payloads` | Thread-neutral contents of an immutable import chunk. Their composite keys begin with `chunk_id`; item-to-payload FKs stay inside that chunk. These are physical storage, not direct read APIs. |
-| `thread_import_chunks` | Ordered mapping from a logical thread to immutable import chunks. Triggers require contiguous order and reject item, timeline-position, or payload-id overlap, making an ambiguous logical history unrepresentable. |
-| `thread_import_item_overrides` | Explicit hide markers for imported items copied into the mutable `items` overlay. A raw local insert cannot silently shadow shared history without one. |
-| `payload_chunks` | Append-only payload data for live streaming payloads. Rows are keyed by `(thread_id, payload_id, chunk_index)` and carry `start_offset` so chunk reads can jump to the requested byte range. Composite `ON DELETE CASCADE` keeps lifecycle owned by the matching thread's payload. |
-| `edit_file_snapshots` | Per-edit new-side file snapshots backing the review pane's Edits scope (migration v24). PK `(thread_id, payload_id, path)`, composite `ON DELETE CASCADE` with `payloads` (the payload GC triggers cascade here). `content` is the gzip-compressed full file as it stood right after the edit's diff applied, written by the diff persist tap only when the just-edited workspace file provably matched the patch. Hunk-gap expansion and span priming resolve snapshot-first (`app_diff_context.go`), so historical edits stay expandable after the workspace drifts; absent rows (pre-feature history, size-capped writes) degrade to workspace verification. No backfill. |
-| `channels` | Deliberation channels for multi-agent discussions. Belongs to a thread. |
-| `channel_messages` | Ordered messages within a channel. `sequence`, `from_type`/`from_id`/`from_role`, `content`. |
-| `discussion_definitions` | Reusable discussion templates. Scoped global or per-project. `UNIQUE(name, scope, project_id)`. |
-| `attachments` | Message attachments. `mime_type`, `size`, `relative_path` on disk, plus `kind` (migration v75, `image` \| `file`, DEFAULT `'image'`). The kind decides delivery and exposure: an `image` reaches the provider as inline bytes or a `localImage` path and is the only kind whose bytes are ever served back to a client; a `file` reaches it as one path line in the prompt and is never decoded or thumbnailed. Closed vocabulary, enforced by `InsertAttachment` (the table's one writer) rather than by a CHECK, so the FK-parent table needed no rebuild. Disk layout differs by kind: `<root>/<thread>/<id><ext>` for images, `<root>/<thread>/<id>/<sanitized-name>` for files, so the agent-facing path carries the real filename. |
-| `turns` | Per-turn records (one row per user → assistant round-trip). Thread-scoped AO `turn_id` PK (v62), `provider_turn_id` for the verbatim Codex wire anchor, `thread_id` FK, `turn_index`, `started_at`, nullable `completed_at` (NULL = in-flight; crash leftovers are boot-swept to `interrupted`), `stop_reason`, `assistant_message_id`, `token_usage_json`, `error_message`. |
-| `message_anchors` | Per-real-user-message provider correlation written right after the message's `items` row persists (migration v23, replacing the removed `thread_checkpoints`). PK `(thread_id, user_item_id)`, cascade with `items`. `turn_index` plus Claude wire uuids (`provider_user_message_id`, `provider_parent_uuid`) let fork-from-message and revert-on-interrupt slice provider history at the message boundary. Pure SQLite, no git snapshots. Leftover `refs/agent-overflow/*` refs from the removed checkpoint machinery are not cleaned automatically; drain a repo with `git for-each-ref --format='%(refname)' refs/agent-overflow/ \| xargs -n1 git update-ref -d`. |
-| `proposed_plans` | Per-plan state layered over proposed-plan payload items. Tracks immutable plan item id, thread id, revision parent item id, version, implementation marker, implementation thread/item ids, and timestamps. |
-| `proposed_plan_comments` | Inline review comments anchored to one proposed-plan version. Tracks draft/sent/resolved status, line range, selected text, body, sent turn id, and timestamps. |
-| `chat_bar_favorites` | Legacy composer stars and the one-time migration seed for frontend-local favorites. Retained for older clients. Model entries include provider + model id; discussion entries use the definition id. |
-| `chat_model_profiles` | Last-used composer settings per provider/model: reasoning effort, fast mode, context window, per-tier auto-compact percentages, runtime mode, and `updated_at` for seeding new chats. Its `runtime_mode` CHECK is widened in lockstep with `threads` (v34 added `read-only`) because `rememberChatModelProfile` writes a thread's runtime mode back into the profile row. |
-| `pending_background_task_terminals` | Per-task stash of Claude `task_updated` terminals whose chat-side `tool_completion` sibling has not been written yet. PK `(thread_id, task_id)`; carries `tool_use_id`, `status`, `exit_code`, `output_file`, `end_time`, `source` (`task_updated`), `created_at`. The LIFECYCLE GATES (`HasLiveBackgroundToolCall`, `HasQueueBlockingBackgroundToolCall`, `CountLiveRunningBackgroundToolCalls`) probe this table to stop treating a launch as live once its host process exited but its agent observation has not arrived. The tray read (`ListLiveBackgroundTasks`) deliberately does NOT: the launch is still the row the user has a handle on until its sibling lands. Drained when `task_notification` / TaskOutput observation lands. The startup sweep for recoverable Claude launches writes the `tool_completion` sibling directly (with `source="session_died"` recorded on the sibling's meta) and never stages a stash row. |
-| `usage_ledger` | Append-only per-turn per-model token/cost accounting (migration v14; workflow attribution in v26). One row per (settled turn, model): `created_at`, attribution columns `thread_id` / `project_id` / `work_item_id` / `turn_id` / `provider` / `model` (denormalized, DELIBERATELY no FKs so lifetime totals survive thread/project deletion), token columns (`input_tokens` = non-cached input for both providers, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, `reasoning_output_tokens`), `cost_usd` (wire-reported only), `cost_source` (`wire`\|`none`). Values are per-turn deltas computed by the provider parsers — summing any slice of rows is safe. Written by `triage/usage_ledger.go`; aggregated by `store.QueryUsage`, with per-workflow-run totals from `store.QueryWorkItemUsage` and per-run-*tree* totals (a run plus every run it called, through a recursive walk of `work_items.parent_item_id`) from `store.QueryWorkItemTreeUsage` — the latter is what a budget ceiling is compared against. |
-| `provider_thread_cost` | The PROVIDER's own cumulative cost estimate for one thread (migration v66; provider-thread identity in v68). PK `thread_id`, cascading with `threads`; `session_ref` (CHECK'd non-empty), `provider`, `cost_source` (CHECK'd to `provider-estimate` — deliberately a THIRD value disjoint from `usage_ledger.cost_source`'s `wire`/`none`, so a row can never be mistaken for a ledger pricing basis), `cost_usd_micros` + `credits_micros` (stored verbatim as integer micros, never round-tripped through a float), `updated_at`. Written after a settled top-level Codex turn from `account/usage/read {threadId}` (codex >= 0.148 — `internal/codexthread`), one row per thread REWRITTEN IN PLACE. It is deliberately NOT a `usage_ledger` row: the ledger's contract is per-turn deltas where summing any slice is safe, and a cumulative figure appended there would be added to the very turns it already covers, inflating every dollar surface including workflow budget enforcement. No per-turn delta is derived either — the backend restates its estimate, a resumed thread carries spend AO never observed, and a failed read leaves a gap the next delta would silently absorb; AO's own ledger already holds the exact per-turn decomposition. Cache content per core principle 3: droppable, never migrated. Read by `GetUsageStats` for exactly one query shape (one thread, no time bounds, no grouping, no model filter), where it replaces `cost_usd` and stamps `UsageBucket.CostSource`. `session_ref` records WHICH provider thread the figure was read from — the Codex root thread id the backend echoed on `account/usage/read`, which is the same value `threads.session_ref` holds while the thread still points at that provider thread — and every read compares the two (`GetProviderThreadCost` joins `threads` and requires equality). It exists because the row is keyed by the AO thread while describing a provider one, so a rollback that forks into a new provider thread, or one that clears the ref entirely, leaves a lifetime total belonging to a conversation this thread no longer is. Before v68 the only thing standing between that row and the user was a DELETE plus an in-memory "the delete failed" marker that died with the process. Now a row naming a provider thread the AO thread no longer points at is simply IGNORED — the overlay falls back to the rate table exactly as if the row were gone, across restarts — and the rollback's delete is housekeeping for a row nothing can read rather than the thing that makes the answer correct. The CHECK forbids `''` because a blank identity would match a rolled-back thread's cleared `session_ref`, and the writer refuses a row it cannot name. v68 DROPS and recreates the table rather than backfilling: an existing row cannot say which provider thread it came from, and stamping it with today's `threads.session_ref` would assert the very identity the column exists to verify. |
-| `ui_state` | Connection-scoped settings residency and legacy view-state migration. PK `(scope, key)`; the backend derives `device:<id>` / `client:<uuid>` from the connection, while `internal/settings` owns `user:default`. Values are opaque strings. Frontend view layout now lives locally in `appStorage`; `GetUIState` supplies a one-time migration, and the write/delete RPCs remain for older clients. |
-| `work_items` | Durable workflow run records (migration v26, extended v28/v29, rebuilt v33/v36/v38/v39/v43/v44/v56): denormalized project/workflow identity, goal and seeds, frozen workflow snapshot, lifecycle state + typed reason, step mode, worktree/branch metadata, budget, source attribution, optional `triage_thread_id`, JSON disposition receipt + digest, call linkage, and timestamps. No project/thread FK: history outlives either row. v33 removed the queue: `sort_position` is gone, `state` no longer admits `'queued'` (surviving queued rows became `needs-human` / `interrupted`), and the three `sort_position`-ordered indexes were replaced by `created_at`-ordered ones — a run list has no manual order to preserve any more. v36 widened `reason` with `'unit-failed'`, the typed park a fan-out attempt takes when a unit does not complete. v38 added the call linkage a run tree is read through — `parent_item_id` / `parent_phase_id` / `parent_attempt` / `call_depth`, all empty/zero on a root run and constrained all-or-nothing by three CHECKs — widened `source` with `'call'` (a run a call phase created; nobody enqueued it) and `reason` with `'child-failed'`. A called run carries its caller's worktree/branch and never its own budget: the workspace flows down the call stack and the budget is enforced against the tree's root. v39 added `origin_thread_id` — the conversation thread a root run reports back into (D17): every resting transition composes one compact message and injects it there through the queued-user-message path. A fourth CHECK (`parent_item_id = '' OR origin_thread_id = ''`) makes "child runs never bind" structural rather than conventional, and the same rebuild widened `reason` with `'paused'`, the typed park reason a per-run pause and the graceful-quit pause-all take (D23). v43 added `parent_unit_id`, which narrows the linkage to one fan-out unit when the call was declared on a unit rather than on the phase (D35). It is empty for a phase call — a `shape: call` phase makes exactly one call per attempt, so (item, phase, attempt) already identifies it — and non-empty for a call-bound unit, whose siblings share that key. A fifth CHECK (`parent_unit_id = '' OR parent_item_id <> ''`) keeps it all-or-nothing like the rest of the linkage. A unit-called run carries *no* stamped workspace: isolation is introduced by fan-out, so the runner resolves that unit's sub-worktree through this column. v44 added `soft_stop` (0/1) and widened `reason` with `'checkpoint'` (D36): the standing request to stop a run tree at its next call boundary, and the typed park a boundary takes when it honours one. Only a root run ever carries the flag — a tree is stopped as a tree, like pause — and the engine's command loop is its only writer, because the boundary that fires also clears it. v52 added `wake_signature`: the content identity of the last wake DELIVERED into this run's bound thread (K2). Wakes are deduplicated by what they say — run, resting state, typed reason, phase and attempt, detail, engine cause, plus the descendant's own set for a descendant park — never by a time window, and the record is durable because a restart is one of the ways the same ask gets re-composed. Empty means nothing delivered yet, or somebody has acted on the run since; the app clears it whenever any member of the tree returns to `running`. It is deliberately absent from `workItemColumns` — wake bookkeeping no listing reads — and has its own narrow accessors. v53 added `pending_guidance`: the JSON array of operator instructions `agent-overflow run guide` has left for this run and no phase entry has consumed yet (`{text, at, by, byRun?}`, oldest first). It is the thread→run direction of a `notify:` gate — live data a run re-reads at its next FRESH phase entry, never part of the frozen snapshot — and the engine is its only writer, including the author stamp, which comes from the authenticated caller so an agent cannot leave an entry attributed to a person. Delivery clears it, after the attempt row carrying the entries exists, so a crash redelivers rather than losing an instruction. Absent from `workItemColumns` for the same reason `wake_signature` is, with its own narrow accessors. v54 added `auto_resume_at` (Unix milliseconds, 0 = nothing armed): the moment a parked run brings itself back. One park writes it — a provider that refused the turn for a spent usage allowance AND named the moment it returns, which parks `provider-retries-exhausted` with the reset stated in the attempt's `park_cause` — and `agent-overflow run resume --at <when>` arms the same mechanism by hand. It is durable because the wait is measured in days: the timer lives app-side (the engine holds none by boundary) and is re-armed from this column at every boot, so a five-day stall does not need a human alarm clock after a restart. Every transition out of the park clears it, so an opt-out takes back what the opt-in stored. Absent from `workItemColumns` like the two columns before it, with its own narrow accessors. v56 split new parks into `provider-retries-exhausted` and `loop-limit-exhausted`; legacy `retries-exhausted` remains accepted for existing rows because its source cannot be reconstructed safely. |
-| `work_item_phases` | One row per workflow phase attempt, unique on `(item_id, phase_id, attempt)`. Stores denormalized phase-thread id, input/output envelopes, evaluated gate trace, intervention record, narrative path, status, and timestamps. Migration v51 adds `park_cause`: why the ENGINE parked this attempt, in its own words (a worktree that would not cut, a phase missing from the frozen snapshot, a spent budget). It is a column of its own rather than envelope text because `output_envelope` is the AGENT's artifact — a phase that parked before any turn ran authored nothing, and engine prose written there is read as a model's terminal outcome by every envelope consumer. Empty is the common case: the attempt rested on its own envelope, or the reason names its own cause. `ReopenWorkItemPhase` clears it. Migration v64 adds `feedback_delivered_at`: when this attempt's persisted `input_envelope.feedback` stopped being owed to a turn — a prompt rendering it was dispatched to a live provider session (the send door's `AckFeedbackRendered`), or a later attempt of the same phase took the note over. 0 means still owed, which is what lets the phase's next attempt redeliver an operator answer no turn ever read (`internal/workflow/engine/feedback.go`); the migration backfills every pre-existing row as delivered so historical rounds cannot redeliver. No run/thread FK; loop counts derive from attempt rows, which now include the parked attempt an unstartable phase leaves behind. |
-| `work_item_units` | One row per fan-out unit (and per join) of one phase attempt (migration v35), unique on `(item_id, phase_id, attempt, unit_id)`. Rows are written when the attempt expands — pending — not when a unit finishes, so a sub-worktree is discoverable the moment it exists and an attempt's width survives a crash. Carries `unit_index` (launch order), `kind` (`unit`\|`join`), the unit's own provider/model, the thread / branch / sub-worktree / narrative path the runner registered, `status` (`pending`\|`running`\|`done`\|`failed`\|`dropped`\|`taken-over`), `unit_attempt` (per-unit retry counter — a retried unit reuses its row), the unit's control envelope, a feedback note, and timestamps. No run/thread FK, like the rest of the workflow tables. The runner registers `branch` + `worktree_path` before the unit's session starts, and clears `worktree_path` (keeping `branch`) when a done join retires the checkout it consumed — but retirement is non-force, so a unit checkout still holding uncommitted work keeps its path on the row and is reported instead, since that path is the only pointer left to work no branch carries. A join's row carries the same thread the phase attempt row does, because the join's envelope is the phase's. |
-| `work_item_effects` | Surface-and-skip ledger for the side effects a phase's first-party CLI grants fire (spec §5): one row per `(item_id, phase_id, tool, payload_hash)` — a table-level `UNIQUE` — with the JSON payload and creation time. Loop-back, take-over re-run, and crash-recovery all re-enter a phase, so the second identical call finds its own prior row and returns that effect instead of firing again (`agent-overflow run start` exits 0 with the run it already started). No run FK so history remains independently durable. |
-| `automations` | Scheduled/internal-event workflow definitions: project and workflow identity/scope, name, enable flag, trigger/condition JSON, seed template, continuity notes, and timestamps. Migration v40 adds the fire record the scheduler writes: `last_fired_at` + `last_run_item_id` when a fire started a run, and `skip_count` + `last_skip_at` + `last_skip_reason` when one was refused (already running, condition false or unevaluable, self-chain, start failure). Both writes deliberately leave `updated_at` untouched — a fire is not a definition change. The trigger JSON is one of `{"kind":"cron","expr":"<5 fields>"}` or `{"kind":"event","on":"item-done"\|"item-failed"\|"item-needs-human","workflowId":"<optional>"}`, parsed on write *and* on every scheduler load so a row that stopped parsing surfaces as broken instead of as a schedule that never fires; the condition is a `def.Predicate` evaluated against the run's own seed context. |
-| `thread_import_state` | Per-thread cursor into the provider session file an import came from (migration v50). PK `thread_id`, cascading with `threads`; `provider` (`claude`\|`codex`, CHECK'd), `source_path`, `source_session_id`, `source_parent_session_id` (v63 explicit-fork provenance), `leaf_uuid` (the active Claude leaf this thread was cut from; older stores may also contain inactive leaves imported before the one-session/one-thread rule), `imported_at`, `refreshed_at`. The parent source id is reconciled to `threads.forked_from_thread_id` after each import, so either side can arrive first and deleting/re-importing a parent can relink it. Ambiguous, self, and cyclic source metadata preserves history but omits the unsafe edge. New `(provider, source_session_id)` claims are trigger-enforced unique; legacy duplicates survive migration and remain refreshable. `last_source_uuid` is the provenance stamp of the last event consumed and is written by BOTH providers (a transcript uuid for Claude, `line:<byte offset>` for Codex), but only Claude ANCHORS a refresh on it — its transcript is a uuid DAG where a byte offset says nothing about conversation position. `last_source_offset` is Codex's anchor and stays 0 for Claude: its append-only rollout makes a tail read the cheap refresh (and a file that SHRANK the diverged-source signal). `last_turn_index` + `last_item_index` (both defaulting to **-1**) are the divergence guard, and they are a PAIR because `items.item_index` restarts at 0 in every turn — a lone item index names no position in a thread. A refresh refuses when any item sorts lexicographically after the pair (`HasItemsAfterCursor`, one range scan on `idx_items_thread_turn_item_unique`), meaning the thread was resumed inside AO after the import and appending the source's tail would interleave duplicate history. `source_meta_hash` + `source_history_mode` (v67) are the SOURCE-identity guard the offset resume is gated on: sha256 of the session file's first line plus Codex's declared `history_mode`. They exist because a size comparison cannot see a rollout Codex REWROTE in place — since 0.147 a thread can be migrated from `legacy` to `paginated` history, and the rewritten file is usually the same size or larger while every byte offset in it addresses a different record. `''` means "recorded before v67", never "no header": the comparison is SKIPPED for a blank stored value and the next successful refresh backfills it, so a pre-v67 thread keeps refreshing under the size test it has always had. Codex-only; Claude leaves both blank because its refresh anchors on a transcript uuid, which a rewritten file invalidates by itself. |
-| `automation_cursors` | Per-automation source watermarks keyed by `(automation_id, source_key)`. Cursors cascade with their owning automation; they are scheduler state, not run history. |
-| `thread_groups` | A named, collapsible sidebar row gathering threads of ONE project (migration v76; spec: `docs/specs/sidebar-thread-groups.md`). `project_id` (FK, `ON DELETE CASCADE` — a group cannot outlive its project), `name`, `pinned_at`, `pin_group`, timestamps. It is NOT a thread: it has a name and a pin and nothing else of its own, and its status, activity, and sort position are its members'. `pin_group` repeats v71's thread-side CHECK verbatim (front/back burner, and no latent burner on an unpinned row). Membership lives on `threads.group_id`, whose FK is `ON DELETE SET NULL`: deleting a group ungroups its members — archived ones included — and never deletes a thread. `internal/store/thread_groups.go` owns the accessors; `SetThreadGroup` is the ONE writer of `threads.group_id`. |
-| `store_meta` | The store's own identity, exactly one row (`CHECK(id = 1)`, migration v55). `backend_id` names this database and never changes. A client keys its on-disk thread replica by it, so re-minting would orphan every cached window. `replica_generation` names the current history LINEAGE and IS re-minted, inside the transaction, by `RestoreFrom`: a restore rewinds every thread's counters, so stamps a client holds from the replaced future would compare as "ahead" and read as fresh forever. Both are UUIDs minted by the migration's `Fix`. Read by `Store.Identity`, published in the transport bootstrap manifest and on every `SyncThreadWindow` answer. |
-| `users` | One account (migration v79, identity core). `display_name`, `role` (`owner` / `member`, CHECK'd), `created_at`, nullable `disabled_at`. At most one row may hold `owner` — the partial unique index `idx_users_single_owner` makes a second one unrepresentable — and `Store.EnsureOwnerUser` is the ONLY read that resolves a user by role, so no other query inherits a single-user assumption. Authoritative data, not cache: losing it costs identity, and recovery is re-pairing or a recovery code, never a migration. |
-| `devices` | One client instance: this desktop, this browser profile, this phone, a peer backend (v79). `user_id` (FK, cascade), `label`, `class` (`desktop` / `browser` / `phone` / `cli` / `backend-peer`, CHECK'd), `platform`, `created_at`, `last_seen_at`, nullable `revoked_at`, plus the two proof-of-possession slots `key_thumbprint` and `passkey_credential_id` — nullable, filled by later phases, and each uniquely indexed WHERE NOT NULL so one key can never name two devices while any number of devices may hold none. `proof_kind` (v81, CHECK'd `bearer` / `key`, default `bearer`) says how `key_thumbprint` may be PRESENTED: `key` is the RFC 7638 thumbprint of an ECDSA P-256 public key and accepts only a signed proof over the request, `bearer` is an opaque identifier compared as a string (the plain-HTTP LAN browser, which has no WebCrypto to sign with). The default is what makes the migration a no-op for every device paired before it. `channel` (v80) names the ONE row a same-machine client resolves on every boot (`local` today) so a launch does not mint a device per restart; it is empty on every paired device and uniquely indexed only where non-empty. |
-| `sessions` | A device → user binding with a scope set (v79). `binding_class` (`loopback-only` / `device-bound` / `public`, CHECK'd), `scopes` (JSON array, `json_valid` CHECK; `[]` is the only spelling of "granted nothing" and a blob that does not decode is an error, never an empty grant), `signing_key_id` (FK to `signing_keys`, cascade), `created_at`, `expires_at`, nullable `revoked_at`, `last_seen_at`, and nullable `activated_at` (v80). The row is the authoritative half of a credential: a presentation is admitted only when the signed claims verify AND this row is live. `activated_at` is the pairing confirmation gate — `Session.Live` requires it, so a session awaiting the owner's verification-number match refuses on every path without any of them knowing pairing exists; v80 backfills it to `created_at` because a pre-column session was already live. **Liveness is the conjunction of this row and its DEVICE's** (`docs/specs/remote-access.md` §2): every read goes through `sessionSelect`, which JOINs `devices` and surfaces `Session.DeviceRevokedAt`, and `CreateSession` / `ActivateSession` / `ExtendSession` / `TouchSession` each carry the live-device predicate INSIDE the statement, so a write cannot land between `RevokeDevice`'s mark and its sweep. `Store.RevokeDevice` flips the device and its live sessions in one transaction and returns what moved — and an already-revoked device is still swept, because the early return there left one session unreachable by any later revoke (incident 2026-08-31). |
-| `signing_keys` | HMAC secrets for session claims (v79). `id` (the `kid` the claims carry), `secret` BLOB, `created_at`. The newest row is the active key; older rows stay so credentials minted under them keep verifying. Deleting a key cascades its sessions away, which is the bulk form of "these credentials can never verify again". |
-| `recovery_codes` | Single-use offline credentials, minted at owner creation (v79). `code_hash` BLOB (uniquely indexed; the code itself is never stored), `created_at`, nullable `consumed_at`, `consumed_by`. Consumption is ONE `UPDATE … WHERE code_hash = ? AND consumed_at IS NULL RETURNING user_id`, so single use is decided by SQLite and a replay matches no row — indistinguishable from a code that never existed. Spent rows survive a re-mint; unspent ones are replaced. |
-| `auth_audit` | Append-only credential event log (v79): mint, refresh, refusal, revocation. `at`, `event` (no CHECK — the value set grows every phase and SQLite cannot widen a CHECK in place; the closed Go set in `internal/identity` is the gate), `outcome` (`allowed` / `refused`, CHECK'd), `reason` (the typed refusal code), `user_id` / `device_id` / `session_id` (attribution, deliberately NOT foreign keys so the log outlives what it describes), `peer`, `detail`. A `BEFORE UPDATE` trigger aborts any rewrite; rows are pruned by insert order past `maxAuthAuditRows`, never edited. |
-| `pairing_links` | One pairing invitation (v80). `user_id` (FK, cascade), `token_hash` BLOB (uniquely indexed; the token lives only in the link's URL fragment), the terms the redeemed session will carry (`scopes` JSON, `binding_class`, `device_class`), `cert_fingerprint` (the main listener’s self-signed pin for Go-native pairing; empty for tailnet/canonical HTTPS, which uses WebPKI), `created_at`, `expires_at`, and (v90) explicit `purpose`, `expected_key`, `member_generation`, `sponsor_key`; the redemption record `redeemed_at` / `device_id` / `key_thumbprint` / `session_id` / `confirmed_at` / `canceled_at`. Redemption is ONE `UPDATE … WHERE token_hash = ? AND redeemed_at IS NULL AND canceled_at IS NULL AND expires_at > ? RETURNING …`, so single use is SQLite's decision and a replay is indistinguishable from a token that never existed. |
-| `own_devices` | Personal device membership (v90): key thumbprint primary key, public member JSON, generation and removal tombstone. Removal wins equal-generation updates; endpoint trust updates require an authenticated direct source. This computer's own row is stored with NO routes — every read fills them from the live listeners (`ComputerRoutes`), so the JSON is never a second source of what this machine advertises. |
-| `own_device_sessions` | Personal enrollment attribution (v90): session primary/FK, member key FK and admitted generation. Removal or generation replacement atomically revokes these sessions. |
+| Provider-history cache | Conversation history and derived render data can be rebuilt from provider session files. Restore and retention may replace or remove it under their documented guards. |
+| Application records | Projects, settings, workflow records, automation state, drafts, discussions, and usage are durable application data. Their accessors define their lifecycle. They are not evidence that SQLite is an event store. |
+| Authoritative state | Identity, accepted-message queues, transfer ownership, remote command acceptance, and notification ownership have no provider-history replacement. Whole-store snapshot restore handles them deliberately; history retention and generic cleanup must not treat them as cache rows. |
 
-| `refresh_secrets` | One link in a session's rotating renewal chain (v80). `session_id` (FK, cascade — it IS the family key, so no `family_id` column can drift out of step with it), `secret_hash` BLOB (uniquely indexed), `created_at`, `expires_at`, nullable `consumed_at` / `consumed_by`. Consumption is ONE `UPDATE … WHERE secret_hash = ? AND consumed_at IS NULL AND expires_at > ? RETURNING …`. A spent row stays readable until it expires because it is the reuse detector's evidence: presenting it again is what revokes the whole family. |
-| `passkeys` | One registered WebAuthn credential belonging to an ACCOUNT (v82). `user_id` (FK, cascade), `label`, `credential_id` BLOB (uniquely indexed — it is what an assertion arrives naming, so it is the lookup key), `public_key` (COSE), `attestation_type` / `attestation_format`, `transports` (JSON hint array, advisory), `aaguid` (the authenticator MODEL, all zeroes when it declines to say), `attachment`, `rp_id`, `sign_count`, and the four CHECK'd 0/1 flags `clone_warning` / `user_verified` / `backup_eligible` / `backup_state`, plus `created_at` and `last_used_at` (0 = never asserted). Owner-level rather than device-level because a passkey is not a device: one authenticator syncs across a person's phones, so `devices.passkey_credential_id` stays unused and the device row a passkey sign-in mints is a separate fact. `rp_id` records the domain a credential was registered under — a row whose value no longer matches the canonical domain can never assert again and is still LISTED, because hiding it would leave a person unable to remove what they can still see in their own authenticator. `clone_warning` is persisted and surfaced, never acted on: authenticators that keep no counter report `{0, 0}` forever. `backup_eligible` and `user_verified` LATCH (`RecordPasskeyAssertion` deliberately does not write them); an assertion reports a backup STATE and its own verification, never a change to what the credential was enrolled as. |
-| `flush_queue_items` | The per-thread flush queue, made durable (v85). One row per message the user has already sent that is waiting out an active turn before it reaches the provider — the composer clears at Send, so between the register and the provider write this row is the message's only copy, and it used to be process memory alone. `id` (`queue:<uuid>`, PRIMARY KEY on its own, since the ids are unique across threads and the delete-by-id caller does not always know the thread), `thread_id` (FK, cascade — deleting a thread takes its queue with it), `send_id` (the client-minted idempotency id, deliberately NOT unique: the empty string is legal for every app-internal injector), `message`, `payload` BLOB (the app's opaque queue JSON; a row whose payload no longer decodes still restores its `message`), `enqueued_at` (ms, the queue order, with `rowid` as the tiebreak). **Authoritative accepted-message state:** nothing recomputes a message nobody kept a copy of, so a row is DELETED on successful provider dispatch or a session-death restore into the composer draft. A deferred user row may still await provider echo: its pending correlation entry answers session-local retries, while provider transcripts own consumed-input crash recovery. This is not a durable exactly-once receipt spanning provider acceptance and cached history. Every row still present at boot is restored into its thread's draft and deleted — never re-dispatched. |
+The phrase "SQLite is a history cache" applies to provider history. It does not
+make every row disposable.
 
-Schema amendment (v71): `threads.pin_group` is the nullable two-tier companion
-to `pinned_at`. A pinned NULL/0 row is front burner and a pinned 1 row is back
-burner. The column CHECK rejects every other value and rejects a group on an
-unpinned row; existing pins remain NULL and therefore stay front burner
-without a backfill.
+## Provider history
 
-Schema amendment (v76): `threads.group_id` names the `thread_groups` row a
-thread belongs to, or NULL for a top-level thread. Its CHECK is the "one pin
-per visible row" rule — `group_id IS NULL OR pinned_at IS NULL` — so a grouped
-thread cannot hold a pin and `PinThread` on a grouped row fails at the
-constraint rather than in a prevalidation a future caller could skip. The FK's
-`ON DELETE SET NULL` is what "delete group = ungroup" means. The column is
-deliberately absent from `updateThreadSetSQL`: `SetThreadGroup` is its one
-writer, and a whole-row `UpdateThread` from a stale struct could move a thread
-back into a group the user just left.
+| Tables | Ownership and key constraints |
+|---|---|
+| `threads`, `turns`, `message_anchors` | Conversation metadata, thread-scoped turns, and provider message correlation. `threads.history_rev` and `history_epoch` invalidate client replicas. Narrow lifecycle columns such as import provenance, live todo, group membership, and worktree setup state have dedicated writers and are omitted from broad updates. |
+| `items` | Mutable timeline overlay keyed by `(thread_id, id)` and ordered by `(thread_id, turn_index, item_index)`. `summary` is the always-loaded raw preview. `parent_id` links nested work; `completion_of` links terminal siblings to launches. Item triggers maintain history stamps, payload collection, import guards, and background liveness. |
+| `payloads`, `payload_chunks` | Heavy content keyed by `(thread_id, id)`. Metadata and capped preview spans may ride list reads; base data, chunks, and full spans load on demand. Span blobs are versioned render caches. |
+| `import_history_chunks`, `import_history_items`, `import_history_payloads` | Content-addressed immutable imported history. Chunk-local composite keys keep item and payload identity together. |
+| `thread_import_chunks`, `thread_import_item_overrides`, `thread_import_state` | Ordered mapping of chunks into a thread, explicit mutable-overlay hides, and provider refresh provenance. Triggers reject gaps, overlaps, and implicit shadowing. |
+| `edit_file_snapshots` | Gzip-compressed new-side file snapshots for diff expansion. They cascade with their payload and remain cache content: readers verify them against the requested patch. |
+| `pending_background_task_terminals` | Claude terminal observations awaiting their chat-side completion sibling. Lifecycle gates consult these rows; tray display retains the launch until the sibling lands. |
+| `provider_thread_cost` | Provider-reported cumulative cost estimate for the current `session_ref`. It is replaced in place and ignored when the thread points at a different provider session. It is not a per-turn `usage_ledger` entry. |
 
-Schema amendment (v57, superseding v54's earlier automatic-quota use):
-`provider-usage-limited` is a continuable `work_items.reason`; the resting
-`work_item_phases` or `work_item_units` row carries a
-`provider_usage_scope_id`. `workflow_provider_usage_scopes` identifies the
-exact provider, account id, and credential generation that made the refused
-send. `workflow_provider_usage_attention` correlates pending and durably
-surfaced notification generations by that scope plus watching thread, with
-tokenized compare-and-set settlement across resume and delivery races.
-Provider dispatch and successful session-death recovery into the composer are
-both durable surface points; only a claim still confined to process memory is
-reclaimed on boot. Ownership is transferred in place before the new engine can
-emit claims of its own, so a second crash cannot land in a cleared-claim gap.
-Recovery then uses the durable scope and watching thread, prefers the recorded
-source while it is still affected, and otherwise selects another currently
-parked run under that scope; resolving the source before restart therefore
-cannot strand a suppressed sibling. These tables are
-attention provenance only: provider admission, start, retry, and resume never
-read them. Usage-limit parks do not write `auto_resume_at`; that column remains
-the durable implementation of an explicitly requested `run resume --at`.
+`timeline_items` and `timeline_payloads` are logical views over the mutable
+overlay and immutable import chunks. Ordered, limited, and recursive reads use
+the physical arms from `timeline_arms.go`; see
+[sqlite-store.md](sqlite-store.md#logical-history).
 
-Plan implementation and revision source references are stored on the user
-message `items.meta` as `sourceProposedPlan` and
-`revisionSourceProposedPlan`. The proposed-plan tables stay as durable
-per-plan state, while accepted turns reconcile those metadata references into
-implementation markers and revision parent links.
+`owned_threads` is the ownership-filtered thread view. It applies the latest
+non-canceled transfer epoch so catalogs and execution checks do not recover a
+conversation whose ownership moved to another computer.
 
-## Always-Loaded vs On-Demand
+## Application records
 
-- `threads`: list, always loaded for sidebar.
-- `timeline_items`: logical union of mutable `items` and active immutable
-  import chunks, loaded per visible thread. A local override hides its imported
-  base. `summary` is raw always-loaded
-  text, except for deliberately collapsed heavy rows such as thinking.
-  It is a `UNION ALL` compound, so it is the source for unordered set
-  reads, `EXISTS` probes and single-row lookups only: an ORDERED or
-  LIMITED read renders the same two arms directly
-  (`internal/store/timeline_arms.go`), because SQLite cannot push an
-  outer `ORDER BY … LIMIT` into a compound whose ordering keys are not
-  selected and instead sorts the thread whole in a temp b-tree.
-- `timeline_payloads.meta`: logical local-or-imported payload loaded alongside
-  items (JSON preview/stats); a local payload shadows its immutable base.
-- `timeline_payloads.preview_spans`: loaded alongside items (small span blobs
-  for inline diff previews; capped at write time).
+| Tables | Ownership and key constraints |
+|---|---|
+| `projects` | User-defined repository grouping. `path` and immutable filesystem-safe `slug` are unique. `worktree_setup` is strict JSON owned by `internal/worktreesetup`. `remote_url` and `root_commit` are derived repository identity. Legacy workflow queue columns remain physically present but have no readers or writers. |
+| `thread_groups` | Named per-project sidebar groups. Membership is `threads.group_id`; deleting a group ungroups its threads. A grouped thread cannot also carry its own pin. |
+| `thread_drafts`, `thread_tracked_files`, `new_thread_mcp_defaults` | Composer drafts, per-thread tracked-file state, and defaults applied to newly materialized threads. Each uses narrow accessors rather than the broad thread projection. |
+| `channels`, `channel_messages`, `discussion_definitions` | Multi-agent discussion channels, ordered messages, and reusable global or project templates. |
+| `attachments` | Attachment metadata; bytes live under `internal/attachment`. `kind` is the closed `image` or `file` vocabulary enforced by `InsertAttachment`. |
+| `proposed_plans`, `proposed_plan_comments` | Plan version and inline-review state projected into timeline item metadata. Their mutators bump the owning thread's history revision. |
+| `diff_review_comments` | Review comments keyed to diff scope and location. |
+| `chat_bar_favorites`, `chat_model_profiles` | Legacy favorite seeds and last-used provider/model settings. Profile constraints remain aligned with thread runtime and reasoning settings. |
+| `usage_ledger` | Append-only per-turn, per-model token and cost deltas. Deliberately denormalized without thread or project foreign keys so retained totals survive deletion. Any slice is safe to sum. |
+| `work_items`, `work_item_phases`, `work_item_units` | Durable workflow run, attempt, and fan-out records. State-machine and scheduling rules remain in `internal/workflow`; the store enforces structural relationships and atomic transitions. |
+| `work_item_effects` | Idempotency ledger for first-party workflow side effects, unique by run, phase, tool, and payload hash. |
+| `workflow_provider_usage_scopes`, `workflow_provider_usage_attention` | Durable attribution and notification ownership for provider-usage parks. They do not decide provider admission. |
+| `automations`, `automation_cursors` | Automation definitions, fire receipts, and source watermarks. Fire bookkeeping does not change definition `updated_at`. |
+| `ui_state` | Opaque user/device settings plus legacy frontend-state migration buckets. `internal/settings` owns key meaning and scope derivation. |
+| `push_tokens`, `push_sender` | Push destinations and sender credentials used by remote notification delivery. |
+| `store_meta` | One row containing stable `backend_id` and history-lineage `replica_generation`. Restore preserves the former and remints the latter. |
 
-Always-loaded is a statement about SQLite reads, not about the wire. The
-rows these produce are complete; the copy a client receives is bounded by
-the wire projection (`internal/itemwire`), which can drop an oversized
-`meta.input` leaf, an inline preview patch, and the `preview_spans` blob
-that indexes patches it dropped. Nothing about the stored row changes —
-markers name what a client did not receive and
-`GetThreadItemProjectionSource` returns it. See
-[data-flow.md § Wire Projection](data-flow.md#wire-projection).
-- `payloads.data` + `payload_chunks.data`: composed on demand when the
-  user expands, copies, or saves a heavy payload. `payloads.spans` rides
-  along with those explicit payload reads.
+## Authoritative identity and access
 
-## Key Indexes
+These rows cannot be recovered from provider sessions and are excluded from
+provider-history reconstruction. A whole-store snapshot includes them.
 
-- `idx_thread_transfers_pending` on `thread_transfers(thread_id)` for pending incoming operations, moves and unsealed copies: one freezing operation per thread. A sealed independent copy can keep uploading while its original is used or transferred again.
-- `idx_thread_transfers_project` on `(project_id)` for unfinished incoming project reservations.
-- `idx_thread_transfers_owner` on `(thread_id)` for durable ownership checks.
-- `idx_thread_transfer_sessions_ref` on `(provider, session_ref)` for native ownership/import checks.
-- `idx_thread_transfers_retry` on `(next_attempt_at, created_at, id)` for unfinished transfer recovery pages.
+| Tables | Ownership and key constraints |
+|---|---|
+| `users` | Accounts. A partial unique index allows at most one owner. Disabled state is durable authority. |
+| `devices` | Client instances and proof-of-possession identity. Key thumbprints, passkey credential references, and nonempty local channels are uniquely indexed. Device and session liveness are evaluated together. |
+| `sessions` | Device-to-user grants with JSON scopes, binding class, expiry, revocation, and activation. The database row and verified signed claims must both be valid. |
+| `signing_keys` | HMAC claim-signing secrets. Older keys remain while credentials minted under them may be valid. |
+| `recovery_codes` | Hashed single-use recovery credentials. A conditional `UPDATE ... RETURNING` makes consumption atomic. |
+| `auth_audit` | Bounded append-only authentication audit. Attribution deliberately has no foreign keys so it can outlive deleted credentials. An update trigger rejects mutation. |
+| `pairing_links` | Hashed single-use invitations plus the exact grant, proof, purpose, membership generation, and redemption outcome. |
+| `refresh_secrets` | Hashed rotating renewal chain. Spent rows remain until expiry because reuse revokes the session family. |
+| `passkeys` | WebAuthn credentials owned by an account, with unique credential ID, public key, relying-party identity, counters, and authenticator flags. |
+| `own_devices`, `own_device_sessions` | Personal device membership, removal tombstones, generations, and admitted-session attribution. Membership replacement and session revocation commit together. |
 
-- `idx_threads_updated`: sidebar sort.
-- `idx_projects_slug`: enforces the stable, unique filesystem-safe project slug used by per-project app config directories.
-- `idx_threads_project`: per-project thread list.
-- `idx_threads_group` on `threads(group_id) WHERE group_id IS NOT NULL` and `idx_thread_groups_project` on `thread_groups(project_id)` (migration v76): the two directions the sidebar reads a thread group in — a group's members, and a project's groups. The threads side is partial because `group_id` is NULL on nearly every row; the FK's `ON DELETE SET NULL` walks it.
-- `idx_items_thread_turn_item_unique`: load the thread timeline and enforce one row per `(thread_id, turn_index, item_index)`. Migration v60 removed the former non-unique `idx_items_thread`, whose key columns were identical and therefore only duplicated write and disk work.
-- `idx_import_history_items_timeline`: walk one immutable chunk in timeline order; `thread_import_chunks` supplies the thread-to-chunk map.
-- `idx_items_parent`: group subagent / nested-tool items under a parent (partial index on non-empty `parent_id`). The subagent descendant CTE writes an explicit `parent_id <> ''` term so the planner can prove the index predicate. See `descendantsCTEFromRoots`, whose imported hops probe `idx_import_history_items_parent` under the same rule — it is FOUR arms, one per physical source per hop, because a recursive step naming `timeline_items` makes SQLite materialize the whole thread instead.
-- `idx_items_completion_of`: pair a `tool_completion` row with its launch (partial index on non-empty `completion_of`).
-- `idx_items_live_background` on `items(thread_id, id) WHERE is_background = 1 AND status = 'running' AND parent_id = '' AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0`: the per-thread live background-launch read. `parent_id = ''` scopes it to top-level launches, which is why it cannot also serve the startup sweep below. The `live_background_active` term is schema-maintained since v74 (triggers below), so the index holds only GENUINELY live launches instead of every launch the thread ever backgrounded.
-- `idx_items_running_bg_tool_calls` on `items(thread_id, id)` with the same predicate plus `kind = 'tool_call'` and no `parent_id` term (migration v41): backs `ListRecoverableClaudeBackgroundLaunches`, the unscoped startup sweep for orphaned background tasks. Subagent-scoped launches carry a parent, so the index above cannot serve it, and without a matching partial index the sweep full-scans `items` (measured 12s of cold I/O on a multi-GB history in 2026-07-28, inside `ServiceStartup` while the SPA waits on readiness). It also serves the tray's live-launch seed (`ListLiveBackgroundTasks`) and v74's backfill; like the index above, its entries are genuinely-live launches only since v74.
-- `idx_items_running_fg_tool_calls` on `items(thread_id) WHERE kind = 'tool_call' AND status = 'running' AND is_background = 0 AND parent_id = ''` (migration v42): backs `HasRunningTopLevelForegroundToolCall`, which runs at every flush-queue boundary. It matches at most a handful of rows but walked the thread's whole item slice without the index (11ms per probe on a 38k-item thread).
-- `idx_items_completion_created` on `items(thread_id, created_at) WHERE completion_of <> ''` (migration v74): backs the tray's second seed — the launches named by a completion sibling inside the retention window, which is how a just-settled launch and its completion age out of `ListLiveBackgroundTasks` together — and the same read's candidate-row set. Like every other completion-sibling probe, the query repeats `completion_of <> ''` so the planner can prove the partial predicate.
-- `idx_items_user_text` on `items(thread_id, turn_index, item_index) WHERE kind = 'user_text' AND parent_id = ''` (migration v73): the reader-authored user messages of one thread, in timeline order. Backs the nav rail's ticks (`ListThreadUserMessageTicks`, run on EVERY thread switch), the composer's ArrowUp recall (`ListThreadUserMessageHistory`), the thread-title context reads, and `ListTurnUserSummaries`. Nothing indexed `kind`, so those reads walked the whole ordering index probing each row: 17,816 pages / 17 ms on a 67k-item thread, against 736 / 1-3 ms with it. The predicate is exactly the prefix `readerAuthoredUserTextFilterFor` emits — by the partial-index qualification rule, neither term may be dropped. Narrow by construction: reader prompts were 6,816 of 620,987 rows on the measured store.
-- `idx_payload_chunks_payload_start`: seek chunk-backed payload reads by payload id and byte offset.
-- `idx_threads_forked_from`: fork lineage walks.
-- `idx_channels_thread`, `idx_design_artifacts_thread`: per-thread feature lookups.
-- `turns_thread_index` on `turns(thread_id, turn_index DESC)`: backs `ListRecentTurns` for the newest-first rehydration the frontend runs on thread-switch.
-- `idx_turns_thread_completed` on `turns(thread_id, completed_at DESC) WHERE completed_at IS NOT NULL`: backs sidebar read-state checks against the newest completed turn.
-- `idx_turns_inflight` on `turns(thread_id, turn_index) WHERE completed_at IS NULL`: keeps the boot-time crashed-turn sweep (`RecoverCrashedTurns`) O(in-flight rows) instead of a full `turns` scan.
-- `message_anchors PRIMARY KEY(thread_id, user_item_id)`: one anchor per real user message; backs message-keyed fork/rollback lookups.
-- `idx_message_anchors_thread_turn` on `message_anchors(thread_id, turn_index)`: backs turn-boundary anchor resolution for provider rollback.
-- `idx_proposed_plans_thread_version` on `proposed_plans(thread_id, version DESC)`: backs newest-first plan sidebar/history queries.
-- `idx_proposed_plan_comments_plan` on `proposed_plan_comments(thread_id, plan_item_id, status, start_line, created_at)`: backs per-plan review comment listing and draft/sent counts.
-- `idx_chat_bar_favorites_created` on `chat_bar_favorites(created_at DESC)`: backs newest-first favorite listing in the composer menu.
-- `idx_chat_model_profiles_updated` on `chat_model_profiles(updated_at DESC)`: backs latest-profile seeding for new chats.
-- `idx_pending_terminals_tool_use` on `pending_background_task_terminals(thread_id, tool_use_id) WHERE tool_use_id <> ''`: partial index backing the tray query's `NOT EXISTS` join. The PK on `(thread_id, task_id)` already covers thread-prefix lookups.
-- `idx_usage_ledger_created` on `usage_ledger(created_at)`: time-range usage aggregation.
-- `idx_usage_ledger_thread` on `usage_ledger(thread_id, created_at)`: per-thread usage aggregation.
-- `idx_usage_ledger_work_item` on `usage_ledger(work_item_id, created_at)`: per-run token and wire-cost budget aggregation. A budget is enforced against the whole run *tree*, so the recursive `parent_item_id` walk drives one lookup per run through this index.
-- `idx_usage_ledger_project_work_item` on `usage_ledger(project_id, work_item_id) WHERE work_item_id <> ''` (migration v30): project-scoped workflow usage without scanning ordinary-thread rows.
-- `idx_work_items_project_state_created` on `work_items(project_id, state, created_at)`: filtered run listings in chronological order.
-- `idx_work_items_project_created` on `work_items(project_id, created_at)`: full project run listings when no state filter is applied.
-- `idx_work_items_state_created` on `work_items(state, created_at, id)`: global unresolved-run counts without scanning retained history.
-- `idx_work_items_agent_source_ref`: UNIQUE on `work_items(source_ref) WHERE source = 'agent' AND source_ref <> ''` (migration v31): one run per agent-originated source reference, enforced by the database rather than by the start path checking first. It is what makes a re-entered phase's repeated `agent-overflow run start` a surfaced prior effect instead of a race between two identical starts.
-- `idx_work_items_triage_thread` on non-empty `work_items(triage_thread_id)`: item hand-off identity and project triage-shell exclusion.
-- `idx_work_items_parent` on `work_items(parent_item_id, parent_phase_id, parent_attempt) WHERE parent_item_id <> ''` (migration v38), the run tree read downward: the children of one run, and the child one call attempt created. Queries pair `parent_item_id = ?` with `parent_item_id <> ''` so the partial index is usable; a bound parameter alone cannot prove the predicate.
-- `idx_work_items_origin_thread` on non-empty `work_items(origin_thread_id)` (migration v39), the inverse of the wake lookup: every run bound to one thread, which is what clearing a deleted thread's bindings walks.
-- `idx_work_item_phases_thread` on non-empty `work_item_phases(thread_id, started_at DESC, attempt DESC)`: phase-thread ownership lookup for takeover sends.
-- `idx_work_item_phases_item_started` on `work_item_phases(item_id, started_at, phase_id, attempt)`: chronological run-detail and phase-attempt reads.
-- `idx_work_item_units_attempt` on `work_item_units(item_id, phase_id, attempt, unit_index)`: one fan-out attempt's units in launch order (scheduling, join results, recovery).
-- `idx_work_item_units_worktree` on non-empty `work_item_units(item_id, worktree_path)`: sub-worktree ownership lookup for a run's fan-out units.
-- `idx_work_item_units_thread` on non-empty `work_item_units(thread_id)` (migration v37) resolves the unit that owns an AO thread, which is what a send into a fan-out unit's thread (human steering of one unit) starts from. It mirrors `idx_work_item_phases_thread` for the unit half of the same lookup.
-- `idx_automations_project` on `automations(project_id, created_at)`: project automation listings.
-- `idx_users_single_owner` on `users(role) WHERE role = 'owner'` (v79): a unique index over a one-value predicate, so a second owner row is refused by the schema rather than by a convention someone has to remember.
-- `idx_devices_key_thumbprint` / `idx_devices_passkey` on `devices` (v79), each unique and partial (`WHERE … IS NOT NULL`): one key or passkey credential names at most one device, while any number of devices may carry none.
-- `idx_sessions_live` on `sessions(expires_at) WHERE revoked_at IS NULL` (v79): the boot-time warm of the in-memory session table, and the device-management list. `ListLiveSessions` also filters `devices.revoked_at IS NULL` through the join, so neither can disagree with `Session.Live`.
-- `idx_recovery_codes_hash` on `recovery_codes(code_hash)` (v79), unique: it is what makes consumption a single indexed UPDATE, which is what makes single use atomic.
-- `idx_auth_audit_device` / `idx_auth_audit_user` on `auth_audit` (v79), partial on non-empty attribution. Both reads repeat the `<> ''` term so the planner can prove the index predicate.
-- `idx_devices_channel` on `devices(channel) WHERE channel <> ''` (v80), unique: the local page channel resolves to exactly one device row across every boot, while paired devices (empty channel) are unconstrained. `EnsureChannelDevice` races against it deliberately — a loser re-reads the winner.
-- `idx_pairing_links_token` on `pairing_links(token_hash)` (v80), unique, and `idx_refresh_secrets_hash` on `refresh_secrets(secret_hash)` (v80), unique: each is what makes its single-use consumption a single indexed UPDATE.
-- `idx_pairing_links_user` on `pairing_links(user_id, created_at DESC)` and `idx_pairing_links_open` on `pairing_links(expires_at) WHERE redeemed_at IS NULL` (v80): the owner's pairing history, and the prune's scan over links that expired without ever being spent.
-- `idx_refresh_secrets_session` on `refresh_secrets(session_id, created_at DESC)` (v80): the family — read to revoke every outstanding secret at once when a spent one is presented again.
-- `idx_work_items_automation_source_ref` on `work_items(source_ref, state) WHERE source = 'automation' AND source_ref <> ''` (migration v40), the skip-if-running probe: does this automation already have a run that is `running` or `needs-human`. Queries repeat `source_ref <> ''` so the partial index is usable.
+Identity policy, proof validation, claim signing, and scope meaning belong to
+`internal/identity`. The store owns durable rows, uniqueness, consumption, and
+atomic revocation.
+
+## Authoritative queues and coordination
+
+| Tables | Ownership and key constraints |
+|---|---|
+| `flush_queue_items` | Messages accepted by the UI while a turn blocks dispatch. The row may be the only durable copy. Successful provider dispatch or restoration into the composer removes it. Boot restores remaining rows to drafts and does not redispatch them. `send_id` supports idempotency but is empty for internal injection. |
+| `thread_transfers` | Move/copy journal, ownership epoch, sealed-manifest identity, retries, cancellation, and cleanup status. It intentionally has no thread foreign key so history deletion cannot erase ownership. Pending incoming rows reserve their project. |
+| `thread_transfer_sessions` | Native provider-session closure reserved by a transfer. The latest non-canceled reservation fences execution and import independently of cached AO history. |
+| `remote_jobs` | Destination-side command acceptance and bounded receipt. Request ID and immutable fingerprint prevent a delayed retry from executing twice. Output retention may clear old tails but keeps acceptance and provenance. Boot interrupts unfinished jobs and never replays them. |
+| `remote_watches` | Source-side monitoring and notification ownership. Registration precedes the network call. Terminal observations are monotonic. Queueing a completion and inserting its `flush_queue_items` row is one transaction. |
+
+`RestoreFrom` refuses replacement while active commands or transfer phases make
+it unsafe. It preserves the live transfer journal, reserved transfer sessions,
+remote command receipts, and remote watches instead of replacing them from the
+snapshot. It also rejects snapshots that predate current incoming transfer
+ownership.
+
+## Important indexes
+
+Most indexes follow directly from an accessor's filter and ordering. The
+following families carry additional correctness or performance meaning:
+
+| Index family | Contract |
+|---|---|
+| Timeline ordering and import indexes | `idx_items_thread_turn_item_unique` enforces one mutable row per timeline coordinate. Import indexes and triggers keep chunk order and identities unambiguous. |
+| Sparse send identity indexes | Local items, imported items, and queued messages index nonempty `sendId` values so retry checks do not scan or hydrate history. |
+| Item relationship partial indexes | Parent, completion, live-background, running-foreground, and reader-authored-message indexes require their qualifying predicate to appear explicitly in query SQL. |
+| Workflow relationship indexes | Agent source references are unique; parent-run, phase-thread, unit-thread, automation, state, and usage indexes bound recovery and budget queries. Partial predicates such as `parent_item_id <> ''` and `source_ref <> ''` remain explicit. |
+| Credential lookup indexes | Owner uniqueness, credential hashes, live sessions, passkey IDs, device proofs, channels, and refresh families make authorization and single-use consumption indexed atomic operations. |
+| Coordination indexes | Transfer ownership/retry, active and settled remote jobs, pending watches, and thread watch discovery bound recovery work independently of conversation size. |
+
+When index selection is part of behavior, tests assert both result parity and
+`EXPLAIN QUERY PLAN`. See [sqlite-store.md](sqlite-store.md#query-plans).
 
 ## Triggers
 
-Four trigger sets ride `items`, and each carries an invariant a Go write
-path cannot be trusted to remember. Full rules and rationale:
-`internal/store/AGENTS.md` § Triggers, and what Go must not duplicate.
+| Family | Purpose |
+|---|---|
+| History revision | Three `items` triggers maintain `history_rev` and `history_epoch`. |
+| Payload collection | Item deletion removes payloads no longer referenced by either payload field in the same thread. Cascades collect payload chunks and edit snapshots. |
+| Imported-history integrity | Triggers reject implicit shadowing, coordinate overlap, chunk gaps, and ambiguous payload identity; the final chunk reference collects immutable storage. |
+| Background settlement | Four triggers maintain `meta.live_background_active` as launches and completion siblings arrive, change, or are removed. |
+| Authentication audit | A before-update trigger makes `auth_audit` append-only. |
 
-- **History stamps** (`historyRevTriggersSQL`, v55/v59) maintain
-  `threads.history_rev` / `history_epoch`.
-- **Payload GC** (`trg_items_gc_payload` / `trg_items_gc_input_payload`)
-  drops an unreferenced payload on item DELETE only.
-- **Imported-history guards** (v61) abort a local row that would shadow
-  an imported one, a chunk-order gap, or an overlapping identity.
-- **Background-launch settlement** (v74,
-  `internal/store/background_settle_triggers.go`) maintains
-  `items.meta.live_background_active` on background `tool_call` launches.
-  A backgrounded launch stays `status = 'running'` forever (invariant
-  24) and its terminal state is a SIBLING row naming it through
-  `completion_of`, so "live" is `running AND live_background_active != 0
-  AND no completion sibling`. That third term is correlated and no
-  partial index can carry it, which is why the live indexes used to
-  match every launch a thread had ever backgrounded (2,883 rows across
-  157 threads on a real history). The four triggers move it onto the row
-  at write time: an inserted completion stamps its launch false, a
-  launch inserted after its completion stamps itself (import and
-  shared-history materialization), an UPDATE re-stamps a launch whose
-  meta was rewritten wholesale (triage's final-progress write does
-  exactly that, from a copy read before the sibling insert), and
-  deleting the last completion sibling `json_remove`s the flag again
-  (the `DeleteConversationFromTurn` rollback). None of them touch
-  `updated_at`. The migration backfills history in the same version.
+Do not reproduce these invariants in Go write paths. Restore temporarily removes
+the item-derived trigger sets for its bulk copy and recreates them from the
+shared latest-schema constants.
 
-### Send identity indexes (v89)
+## Migration policy
 
-`idx_items_send_id` on `(thread_id, json_extract(meta, '$.sendId'))` and
-`idx_import_history_items_send_id` on `(json_extract(meta, '$.sendId'), chunk_id)`
-cover top-level user rows with valid metadata and a non-null send identity.
-Rows without an identity have no index entry. The lookup spans retained history
-and respects per-thread imported overrides; newer messages cannot erase duplicate
-detection during an outage. No separate receipt table is added. Query-plan tests
-require both sparse indexes and refuse a scan of message history.
-`idx_flush_queue_send_id` indexes `(thread_id, send_id) WHERE send_id <> ''`;
-duplicate checks read one queued message instead of hydrating the full queue.
-
-## Migration Policy
-
-- Migrations are numbered, forward-only, append-only. Never edit a migration
-  that has shipped; add a new one.
-- SQLite check constraints (see `CHECK(mode IN ...)`, `CHECK(provider IN ...)`,
-  `CHECK(runtime_mode IN ...)`) are the recommended way to enforce enums.
-- Test every migration: each migration must have a corresponding test under
-  `internal/store/` that proves the expected schema state.
-- WAL mode is verified on startup (not just requested). If `journal_mode=WAL`
-  didn't take, the app logs a visible warning and continues. The store is
-  still correct under rollback journaling, but the warning is the only
-  signal that SQLite concurrency has degraded. See invariant 19.
-
-## What Goes in SQLite vs What Doesn't
-
-- **In**: timeline items, payloads, thread metadata, projects, channels/messages,
-  discussion templates, attachment metadata, composer
-  favorites, last-used model profile seeds, workflow run records, and automation
-  definitions/cursors.
-- **Not in**: live per-turn provider state (the provider owns it),
-  transient UI state (frontend $state), logs (observability package has
-  its own NDJSON logger).
-
-If you find yourself reaching for a new table, first ask whether the
-provider process already owns the answer.
-
-## `turns`
-
-Per-turn records. One row per user → assistant round-trip.
-
-Columns:
-- `turn_id` TEXT PK: AO's thread-scoped durable id (`<threadID>:<providerTurnID>` when the provider supplied one, otherwise `<threadID>:<turnIndex>`; v62 scopes legacy bare Codex ids)
-- `thread_id` FK threads(id)
-- `turn_index` INTEGER: monotonic per thread, caller-assigned
-- `started_at` INTEGER (ms): turn-start wire event timestamp
-- `completed_at` INTEGER (ms, nullable): NULL = in-flight right now (crash
-  leftovers are settled as `interrupted` by the boot sweep, so NULL never
-  survives an app restart)
-- `stop_reason` TEXT: end_turn / max_tokens / tool_use / stop_sequence / refusal / error / interrupted
-- `assistant_message_id` TEXT: provider-derived final assistant
-  message id when available. Claude derives it from the last in-stream
-  assistant `message.id`; current Codex `turn/completed` does not
-  carry one.
-- `token_usage_json` TEXT: the turn's PER-TURN usage delta (aggregate
-  across models; JSON shape of `provider.TokenUsage`). First non-empty
-  write wins across multi-result settles; the per-model split lands in
-  `usage_ledger` instead.
-- `error_message` TEXT: populated when stop_reason indicates error
-
-Indexes:
-- `turns_thread_index` on (thread_id, turn_index DESC) for ListRecentTurns
-- `idx_turns_thread_completed` on (thread_id, completed_at DESC) where completed_at is not NULL for sidebar read-state
-- `idx_turns_inflight` on (thread_id, turn_index) where completed_at IS NULL: keeps the boot-time crashed-turn sweep O(in-flight rows)
-
-Rules:
-- Inserted at turn-start with `completed_at=NULL`; updated at turn-complete.
-- NEVER auto-close a NULL row while the owning session may be alive. The
-  only sanctioned settle-without-wire-event paths are triage's synthesized
-  truncated turn-complete (in-app session death) and the boot sweep
-  `RecoverCrashedTurns` (app died mid-turn; runs before any session can
-  spawn). Both settle with `stop_reason='interrupted'`, which is the durable
-  signal behind the sidebar's Interrupted pill.
-- `turn_index` is assigned by the caller (triage), not by the store.
-
-See `docs/architecture/turn-lifecycle.md` for the full lifecycle rules.
-
-## Remote command acceptance (v87)
-
-`remote_jobs` is authoritative coordination: UUID `id` is the stable retry key;
-`owner_id`, `fingerprint`, `source_thread_id`, `project_id` and `workspace` retain
-immutable destination/provenance. `state`, `started_at`, `finished_at`,
-`exit_code`, `error`, `output` and `truncated` describe the process receipt.
-There are deliberately no history foreign keys: deleting or restoring a thread
-cannot erase acceptance and authorize another execution. `idx_remote_jobs_active`
-indexes running receipts; `idx_remote_jobs_finished` orders settled output
-retention; `idx_remote_jobs_output` restricts cleanup to the bounded nonempty
-tails instead of scanning all historical receipts. The latest 128 output tails retain at most 128 KiB each. Older receipts
-keep their identity and provenance with output cleared and truncation marked.
-
-Personal enrollment indexes (v90): `idx_own_device_sessions_key` indexes member
-revocation, and `idx_pairing_introduction_key` finds restricted invitations for
-bounded replacement without scanning unrelated pairing history.
-
-## Remote completion watches (v91)
-
-`remote_watches` keys `(computer_id, request_id)` on the source, with immutable
-`thread_id`, request `fingerprint`, label and creation time; bounded receipt
-metadata (no output), connection error, `next_check`, and notification ownership
-(`pending`, `queued`, `dismissed`). `idx_remote_watches_pending` schedules only
-outstanding jobs; `idx_remote_watches_thread` supports conversation discovery.
-Acceptance tracking precedes the network call. Completion handoff atomically
-inserts `flush_queue_items` and marks the watch queued. It is excluded from
-history restore so snapshots cannot revive notification delivery.
+Migrations are numbered, forward-only, and append-only. Never edit a migration
+that may have shipped. Add a new migration, preserve all current columns,
+indexes, triggers, and child relationships in rebuilds, and add a test that
+proves the resulting constraint behavior. Detailed rules live in
+[sqlite-store.md](sqlite-store.md#migration-model).

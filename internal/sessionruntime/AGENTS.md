@@ -1,15 +1,13 @@
-# internal/sessionruntime
+# Provider session runtime
 
-Owns every process-local provider-session ward whose transitions must remain
-atomic with live-session registration. `Manager` owns its mutex and never calls
-provider I/O, stores, App callbacks, event emitters, or orphan-reaper operations
-while holding it.
+`Manager` owns process-local provider-session registration, start handoff,
+scoped AO-token authority, removal, and Claude live-config cleanup under one
+mutex.
 
-`Put`, removal, start handoff, scoped AO-token authority, and Claude live-config
-cleanup are one lock domain. `internal/app` owns provider creation and close,
-persistence, event routing, account selection, queue/revert policy, and Wails
-façades.
+Never call provider I/O, stores, application callbacks, event emitters, or
+orphan-reaper operations while holding the manager lock. The application owns
+session creation and close, persistence, routing, account policy, queueing, and
+revert behavior.
 
-Tests in this package must be pure runtime tests. If a future test can spawn a
-provider, install `kerneltest.IsolateSpawns`; current tests use nil or fake-free
-handles and must never invoke provider binaries.
+Tests remain pure runtime tests. If a test gains a provider spawn path, install
+`kerneltest.IsolateSpawns`.

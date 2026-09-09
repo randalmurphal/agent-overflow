@@ -684,7 +684,8 @@ engine's native compensation observation):**
 - Impl `utils/scroll/intent.ts:388` (doc `types.ts:148-159`). All 6
   production call sites are in MessageTimeline (:454, :526, :540,
   :1698, :1751, :1819), each wrapping a `listRef.scrollToIndex` /
-  `scrollTo`. Rule codified in `components/chat/AGENTS.md:21-24`.
+  `scrollTo`. The current contract is in the chat guide's
+  [scroll ownership](../../frontend/src/lib/components/chat/AGENTS.md#scroll-ownership).
   **MIGRATES if** the new engine's scroll-to-index writes through its
   own path; **DELETES if** scroll-to-index becomes a controller
   primitive (preferred, because external-writer tagging then has no
@@ -805,8 +806,8 @@ engine's native compensation observation):**
 - **`[data-row-index]` wrapper** lives at
   `MessageTimeline.svelte:1995-1996`; consumed by `paneGeometryProbe`
   (`:916`), `timelineRowElementForIndex` (`timelineScroll.ts:95-100`),
-  diagnostic traces, and browser tests. Codified
-  `components/chat/AGENTS.md:42-45`.
+  diagnostic traces, and browser tests. See the chat guide's
+  [rows and transcript identity](../../frontend/src/lib/components/chat/AGENTS.md#rows-and-transcript-identity).
 - **`data-item-id` only on TimelineLeaf's root**, at
   `TimelineLeaf.svelte:56`; structural rows deliberately unanchored.
 - **`data-row-geometry-content`** wrapper at `:2016`, paired with
@@ -833,7 +834,8 @@ engine's native compensation observation):**
   scrollEl/contentEl) persist across switches, and the
   restore/`armWarmup` `$effect.pre` choreography (:1395-1474) depends
   on that split.
-- **Row-shell stability rules** (AGENTS.md:46-56): stable outer shell
+- **Row-shell stability rules** ([rows and transcript identity](../../frontend/src/lib/components/chat/AGENTS.md#rows-and-transcript-identity)):
+  stable outer shell
   after first render, row state in pane registries keyed by item id, no
   `smooth:true`, no `scrollIntoView`.
 - **pointer-events during scroll** does **not** exist in the app
@@ -852,7 +854,7 @@ scroll-rearchitecture-inventories.md (§A4 maps the minified core names
 for patch re-rolls, obsolete at V3), settle-flicker-analysis.md
 (historical, annotate only), chat-rewrite.md,
 docs/specs/tool-call-ui-redesign/README.md, frontend/AGENTS.md (scroll
-section + Vendor Patches §virtua), components/chat/AGENTS.md,
+and dependency sections), components/chat/AGENTS.md,
 internal/store/AGENTS.md (incidental).
 
 **Build/scripts:** no virtua references in Makefile or scripts; nothing

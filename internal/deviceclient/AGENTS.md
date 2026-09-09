@@ -1,4 +1,4 @@
-# Paired Go clients
+# internal/deviceclient
 
 `Client` owns one computer's key-bound session and pinned HTTP transport.
 Production code imports neither identity nor transport; wire spellings are
@@ -63,7 +63,7 @@ RFC 7638 key identity used in proofs and never generates a key. Public catalog
 transactions sharing a profile use `WithProfileLock`; keep network work outside
 that short cross-process lock.
 
-Automatic introductions select among the target member's bounded trusted routes
+Automatic own-device introductions select among the target member's bounded trusted routes
 before redemption. Credential-free health probes verify both TLS trust and
 backend identity; the first verified route wins without waiting for a dead LAN
 or cold VPN alternative. Selection never sends the invitation token or a device
@@ -73,6 +73,6 @@ an invitation that may already have been spent.
 
 `ObserveComputerRoutes` is shared by authenticated bootstrap and verified hello
 snapshots. Identity must match this client's backend, and the profile transaction
-fences retired/replaced pairings before saving trust. A live route invalidation
+rejects retired or replaced pairings before saving trust. A live route invalidation
 causes a bootstrap refresh through the existing desktop proxy, which feeds this
 same owner; do not parse raw WebSocket bytes in the reverse proxy.

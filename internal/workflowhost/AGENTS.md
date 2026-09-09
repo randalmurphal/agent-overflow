@@ -1,95 +1,55 @@
-# internal/workflowhost/
+# Workflow execution host
 
-The app-side workflow **runner**: the `engine.Runner` implementation that
-turns one workflow element (a phase, a fan-out unit, or a join) into a
-live provider turn or a supervised command, and everything a single
-attempt needs while it runs.
+This package implements `engine.Runner`: it turns one phase, fan-out unit, or
+join into a provider turn or supervised tool command and reports one outcome to
+the engine. The engine decides what runs next.
 
-The engine (`internal/workflow/engine`) owns the FSM and decides WHAT
-runs next. This package owns HOW one attempt happens and reports exactly
-one fate back. Spec: `docs/specs/workflows-system.md`.
+## Boundary
 
-## The host seam
+- Reach application capabilities only through the consumer-side interfaces in
+  `host.go`. `workflowHostAdapter` in `internal/app` is the sole adapter and
+  remains forwarding glue.
+- Add a required application operation to the narrow owning interface. Do not
+  import or retain `*app.App` here.
+- The store is an explicit runner dependency, not a host capability.
+- Keep bound methods, scope annotations, routes, DTO conversion, and wire events
+  in `internal/app`.
 
-The runner holds `host Host` (`host.go`): nine capability-named consumer-side
-interfaces composed into one field.
-`SessionHost`, `TurnHost`, `ThreadHost`, `WorktreeHost`, `PromptHost`,
-`EventEmitter`, `EngineSource`, `ProcessLifetime`, and
-`ProviderHomeSource`, the last of which exists because an isolated boot
-(`--harness` / `--soak`) and a test fixture both pin a provider home
-that is not `$HOME`.
+## Attempt lifecycle
 
-Rules that keep the seam a seam:
+- `Runner.Start` installs exactly one tracked attempt and eventually reports
+  exactly one terminal or parked outcome. `Stop` and stale callbacks must not
+  produce a second outcome.
+- Route every provider send through `sendIfActive`; its identity and epoch checks
+  are the protection against late sends after stop, restart, or takeover.
+- Bound provider start, send shutdown, inactivity, and retry waits. Cancellation
+  must reach provider and tool subprocesses and their process groups.
+- Treat typed provider usage limits as parks rather than transient retries.
+- A continuation may reuse a provider session only after proving the expected
+  provider context still exists and belongs to the phase thread.
+- Human takeover detaches automation without discarding the reliability
+  deadline and restores the correct schema when control returns.
 
-- **`internal/app` satisfies it through exactly one adapter**,
-  `workflowHostAdapter` in `internal/app/app_workflow_host.go`. Every method is a
-  forward to the App's own unexported one and nothing else. Behavior
-  belongs on the App method; the adapter must stay pure glue. It exists
-  because an interface declared outside `internal/app` cannot name an
-  unexported method, and exporting the App methods would ripple through that package
-  further than the forwards do.
-- **Adding a capability means adding it to a seam**, not reaching around
-  it. There is no `*App` here and none may come back.
-- **The store is NOT a host capability.** It is a dependency of the
-  runner, held as `*store.Store` directly, the way every other workflow
-  collaborator in `internal/app` (`workflowProfileSource`,
-  `workflowDefinitionSource`, `workflowSpendSource`) holds it.
-- **Nothing here registers on the wire.** Bound methods stay in `internal/app`;
-  `App.workflowRunner` is the only reference into this package.
+## Workspaces, units, and artifacts
 
-## Layout
+- Provision and adopt worktrees through the shared workspace helpers. Preserve
+  branch naming and ownership across item, unit, call, and recovery paths.
+- Fan-out units receive isolated sub-worktrees when required. Retire them only
+  after their outcome is durable.
+- Tool processes use the same supervision and envelope-validation path as other
+  workflow tool execution.
+- Settle an accepted attempt's narrative from the documented ordered sources;
+  do not replace missing narrative with envelope text.
+- Capture artifacts beneath the run-owned artifact root. Listing and opening
+  must reject traversal and paths outside that root.
 
-| File | Owns |
-|---|---|
-| `runner.go` | `Runner`, its registries (`runs`, `schemas`, `workItems`, `takeovers`, `tools`, `startProgress`), `New`, `Start`, `Stop`, `installAttempt`, `finish`, the schema-restart, and the exported reads `main` uses (`SessionSchemaForThread`, `WorkItemForThread`, `DataRoot`, `WorkspaceLockRefs`). |
-| `host.go` | The seams above plus `DispatchIdentity`. |
-| `agent_turn.go` | Preparing the thread and provider session one agent turn runs on, including the continuation preflight that proves provider context still exists. |
-| `thread.go` | `ThreadSpec`, `ThreadTitle` / `UnitThreadTitle`, and the prior-thread validation a reused session must pass. |
-| `workspace.go` | Item-worktree provisioning and adoption, fan-out sub-worktrees, `PreparedWorkspace`, and the branch-layout contract (`ItemBranchPrefix`, `UnitBranch`, `UnitWorkspaceRef`). |
-| `units.go` | Fan-out unit and join planning, the per-unit start, and unit-worktree retirement. |
-| `reliability.go` | `Timer`, watchdog/backoff resolution and arming, the transient-failure allowlist, and the send-wait bound (`StopSendWait`). |
-| `send.go` | The one send chokepoint (`sendIfActive`), its epoch ladder, and the drop reasons. Every drop is logged by the door itself, never by caller discipline. |
-| `observe.go` | The provider-event observer: which events may move the turn machine and what is left armed afterwards. |
-| `quota.go` | The typed usage-limit park (never a retry) and the bounded failure-detail rendering every park cause passes through. |
-| `start_watchdog.go` | The bound on `Start`: the deadline that cancels a wedged start and the grace fallback for a wait the context cannot reach. |
-| `takeover.go` | Human takeover: detach without losing the reliability deadline, the yield wait, and the Claude schema swap. |
-| `tool.go` | `driver: tool` phases: process supervision, envelope synthesis, and the reaper. |
-| `narrative.go` | Settling an accepted attempt's narrative file from its three ordered sources. |
-| `artifacts.go` | Capture plus safe listing of per-run artifacts: `CaptureArtifact`, `ListArtifacts`, `OpenArtifactRoot`, and `ArtifactDir`. `internal/app` retains the Wails DTO conversion. |
+## Tests
 
-## Testing
+- Use `fakeHost` capabilities to state only the dependencies a test exercises.
+- Keep git behavior real where the contract depends on git answers.
+- Preserve the real observer bus default for subscription-lifetime tests.
+- Isolate provider homes and process spawning through `kerneltest`; tests must
+  never inspect the developer's provider state or launch a real provider.
+- App-level bound-method and transport behavior stays in `internal/app` tests.
 
-`fixture_test.go` holds `fakeHost` (every capability a settable func
-with an inert default) plus `newTestRunner` and `newTestStore`. A test
-states the two or three capabilities its subject actually reaches and
-leaves the rest alone; that is the whole point of the seams.
-
-Deliberate choices in the fixture:
-
-- The **git half is a real `gitops.Core`**. The provisioning rules under
-  test are decided by what git answers, and the App's own
-  implementations of those four seams are thin wrappers over the same
-  Core (`app_worktree.go`).
-- `SubscribeThreadTurnObserver` defaults to a **real observer bus**, so a
-  test can tell a fresh resubscription from a dangling reference by
-  dispatching through it.
-- `newTestRunner` installs `kerneltest.IsolateSpawns`. The runner never
-  spawns (every process it would start is behind a host seam), but the
-  continuation preflight reads a provider home directly
-  (`claude.ScanSessionLeaf`), and that read must never reach the
-  developer's real `~/.claude`. See the root guide's permanent
-  invariants.
-- Store-backed tests clone the package template via
-  `storetest.Clone` (`main_test.go` runs `storetest.Run`).
-
-Tests that exercise App-level workflow behavior through bound methods
-(engine-driven end-to-end runs, `workflowSchemaForSession`, the
-access→runtime-mode mapping, project deletion against a live run) stay
-in `internal/app`.
-
-## References
-
-- `docs/specs/workflows-system.md` describes the system this implements.
-- `docs/architecture/root-decomposition.md` § Stage 3+ describes the
-  package boundary.
-- `internal/workflow/engine/` is the FSM that calls `Start` / `Stop`.
+See `docs/specs/workflows-system.md` and `internal/workflow/engine`.

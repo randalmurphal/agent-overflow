@@ -282,7 +282,7 @@ host to its authorized phones; that relay is not implemented. Independently
 managed Firebase projects currently need matching APK builds. Core remote
 access works without FCM or a relay.
 
-See [mobile/AGENTS.md](../../mobile/AGENTS.md#push) for implementation and the
+See [mobile/AGENTS.md](../../mobile/AGENTS.md#push-notifications) for implementation and the
 optional real-push smoke.
 
 | Symptom | Check |

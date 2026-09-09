@@ -154,6 +154,15 @@ function receiveTransfer(backend: BackendKey, row: ConversationTransfer): void {
 }
 export function terminal(row: ConversationTransfer): boolean { return row.phase === 'complete' || row.phase === 'canceled'; }
 
+/**
+ * Refresh one computer without losing events delivered during the read.
+ *
+ * The initial row objects form the read boundary. After the snapshot returns,
+ * any row whose object changed during that interval wins over the snapshot,
+ * including an operation absent from the snapshot. The revision and backend
+ * identity checks prevent an older read or a reattached computer from
+ * replacing the current projection.
+ */
 export async function refreshComputerTransfers(backend: BackendKey): Promise<void> {
   if (!hasScope('threads:read', backend) || !supportsConversationTransfer(backend) || !backendReachable(backend)) return;
   const identity = getBackendIdentity(backend).backendId;

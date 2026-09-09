@@ -1,26 +1,19 @@
-# Docs
+# Documentation
 
-Index of the architecture, spec, and reference docs.
-Area-specific rules live in `AGENTS.md` next to the code; this tree is
-for cross-cutting design.
+Use the task index below to find the relevant architecture, specification or
+reference. Read the closest area guide for local instructions; follow its links
+when the named task applies.
 
-## Start Here
+## Start here
 
-- **New to the codebase?** Read the root
-  [`AGENTS.md`](../AGENTS.md) first. It defines the stack, the core
-  principles, and points at the rest.
-- **About to make a change?** Read
-  [`architecture/conventions.md`](architecture/conventions.md) and
-  [`architecture/invariants.md`](architecture/invariants.md) before
-  writing code.
-- **Doing a common task?** See
-  [`architecture/how-to.md`](architecture/how-to.md) for step-by-step
-  recipes.
-- **Wondering why we chose X?** See
-  [`architecture/adrs/`](architecture/adrs/).
-- **About to propose or "fix" a behavior?** Check
-  [`decisions.md`](decisions.md): owner rulings, rejected proposals, and
-  things built and torn out, per area.
+- Project layout and essential engineering rules: [root guide](../AGENTS.md).
+- Setup, builds, bootstrap and packaging: [Development](architecture/development.md).
+- Code organization, asynchronous tests or persistence conventions:
+  [Engineering conventions](architecture/conventions.md).
+- A change spanning several areas: [Invariants](architecture/invariants.md)
+  and the relevant recipe in [How-to](architecture/how-to.md).
+- Intentional product behavior: the owning spec or [Product decisions](decisions.md).
+- Editing guides, docs or comments: [Documentation maintenance](architecture/documentation.md).
 
 ## Architecture
 
@@ -30,17 +23,20 @@ How the app works today. Under [`architecture/`](architecture/).
 
 | File | 1-line summary |
 |---|---|
-| [`conventions.md`](architecture/conventions.md) | Contributor guardrails: file sizes, naming, error handling, tests, SQL patterns, memory hygiene, Svelte rules, and maintaining the guides themselves. |
-| [`invariants.md`](architecture/invariants.md) | Load-bearing rules with rationale and enforcement. Read before touching triage, store, or the item model. |
-| [`how-to.md`](architecture/how-to.md) | Extension playbooks: new event kind, new item kind, new tool renderer, new migration, new provider, new approval, file splits. |
+| [`conventions.md`](architecture/conventions.md) | Code organization, errors, resource ownership, tests, SQL and performance. |
+| [`documentation.md`](architecture/documentation.md) | Placement, usefulness, style and maintenance of guides, docs and code comments. |
+| [`development.md`](architecture/development.md) | Setup, generated artifacts, bootstrap, packaging and validation environments. |
+| [`invariants.md`](architecture/invariants.md) | Routes cross-area changes to their current contracts. |
+| [`how-to.md`](architecture/how-to.md) | Routes common cross-area changes to their implementation guides. |
 | [`adrs/`](architecture/adrs/) | Architecture Decision Records. One file per load-bearing choice. |
 | [`refactoring-principles.md`](architecture/refactoring-principles.md) | The five rules a behavior-preserving refactor follows. |
 | [`data-flow.md`](architecture/data-flow.md) | How provider output becomes visible state. Pipeline diagram. |
-| [`schema.md`](architecture/schema.md) | SQLite schema summary. Tables, indexes, triggers, migration policy. |
+| [`schema.md`](architecture/schema.md) | SQLite table families, constraints and indexes. |
+| [`sqlite-store.md`](architecture/sqlite-store.md) | Connections, migrations, snapshot restore, history revisions and query contracts. |
 | [`triage-routing.md`](architecture/triage-routing.md) | Routing table: every `EventKind` → handler → destination. |
 | [`turn-lifecycle.md`](architecture/turn-lifecycle.md) | The three-lifecycle mental model (tool / task / turn). Read before touching provider, triage, or any turn-state UI. |
 | [`user-message-ordering.md`](architecture/user-message-ordering.md) | Send identity, backend admission, frozen confirmation placement, and recovery without moving prompts below their responses. |
-| [`root-decomposition.md`](architecture/root-decomposition.md) | Field-ownership and seam map of the `*App` root receiver, plus the wire-compat facts that make a split byte-identical on the wire. |
+| [`root-decomposition.md`](architecture/root-decomposition.md) | Current application composition, ownership and Wails wire compatibility. |
 | [`observability.md`](architecture/observability.md) | OpenTelemetry + per-thread NDJSON event log. |
 | [`transport.md`](architecture/transport.md) | Wire mechanism deep-dives: port pinning, the gap marker, scoped-token routes, coalescing, keepalive. |
 | [`release-candidates.md`](architecture/release-candidates.md) | Build and test an untagged production candidate, then publish its exact saved bytes. |
@@ -97,9 +93,10 @@ How the app works today. Under [`architecture/`](architecture/).
 
 ## Specs
 
-Designs still being decided or built. Under [`specs/`](specs/). A spec
-that ships and stays load-bearing graduates to `architecture/`; one that
-ships and stops being cited gets deleted (git history keeps it).
+Product requirements and designs live under [`specs/`](specs/). Keep a spec
+while it supplies current requirements that code or architecture docs do not.
+Move implemented mechanism details to their architecture owner and remove
+obsolete planning material. Update incoming links when moving or retiring a doc.
 
 | File | 1-line summary |
 |---|---|
@@ -147,8 +144,9 @@ envelope, lease, ...).
 
 ## Area Guides
 
-Every Go package and the frontend area ship their own `AGENTS.md`
-(with a `CLAUDE.md` symlink):
+Area guides exist where local instructions or navigation are useful. Retained
+guides have a `CLAUDE.md` symlink; small packages may rely on their package
+comments and parent guide.
 
 - [`/AGENTS.md`](../AGENTS.md): the root guide (stack, principles, repo map).
 - [`/internal/AGENTS.md`](../internal/AGENTS.md): Go package map.

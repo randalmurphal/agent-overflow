@@ -1,5 +1,8 @@
 # internal/nearby
 
+Local-network discovery only; pairing and trust remain with their owning
+packages.
+
 Untrusted LAN DNS-SD hints, separate from pairing and all credentials.
 `Start` owns per-interface mDNS responders on the interfaces present when
 it runs; `Discover` owns a bounded two-second scan with no persistent cache.

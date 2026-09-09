@@ -1,97 +1,11 @@
-# internal/usagecost/
+# `internal/usagecost`
 
-Hardcoded per-model USD pricing, applied at query time to
-`usage_ledger` rows that carry no wire-reported cost (Codex,
-claudetui). Stdlib-only, no persistence, no store/provider imports.
+Pure, stdlib-only query-time pricing for token usage that has no wire-reported cost. `internal/usageledger` is the only caller and owns row selection and aggregation.
 
-## Pricing rule
+- Claude wire-reported cost is never repriced here.
+- Estimates are never persisted; changing rates must reprice history on the next query.
+- `Price` returns `ok=false` for unknown families. Callers must preserve that uncertainty instead of treating zero as a known price.
+- Model matching is exact first, then suffix trimming. Add explicit entries for dotted Codex versions whose family would otherwise fall through incorrectly.
+- Every rate change needs a hand-computed pricing test and a current authoritative source.
 
-Claude reports cost CLI-side (`result.modelUsage[model].costUSD`), so
-Claude's `usage_ledger.cost_usd` is wire data and is never touched here.
-Codex and claudetui rows persist tokens only (`cost_source='none'`).
-`Price` runs fresh on every query and its estimate is never written back, so
-changing this table reprices existing history on the next read.
-
-## The one caller, and why it is not this package
-
-`internal/usageledger` is the **only** caller: `usageledger.Spend`
-folds a `store.UsageDetailRow` group into `{WireUSD, EstimatedUSD,
-UnpricedRows}`, and `usageledger.PriceGroups` is what every dollar-reporting surface
-composes through: the usage dashboard (`GetUsageStats`), a workflow run's
-overlay cost (`WorkflowGetItem`, `WorkflowListItemCosts`), and the workflow
-engine's per-tree budget enforcement (`workflowSpendSource.TreeSpend`).
-
-**One pricing rule, one place.** Display and budget enforcement use the same
-fold so both surfaces report the same amount and handle unknown rates alike.
-
-The fold lives in `internal/usageledger`, not here, because it operates on
-`store.UsageDetailRow`. Keeping this package stdlib-only and store-free lets
-the ledger layer reuse the pricing rule without coupling the rate table to
-persistence or application-shell policy.
-
-## Surface
-
-| Symbol | Purpose |
-|---|---|
-| `Rate` | Per-million-token pricing: `Input`, `Output`, `CacheRead`, `CacheWrite`. |
-| `Price(model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens int64) (costUSD float64, ok bool)` | Prices one model's token usage. `ok=false` means the model has no known pricing family. Callers must count those tokens as unpriced, not silently treat 0 as a real price. |
-
-## Rate table
-
-`knownRates` in `pricing.go` maps model slug prefixes to `Rate`.
-Matching is exact-first, then progressive suffix trim (drop the
-trailing `-` or `.` segment each round) until a family prefix matches,
-the same algorithm the removed `internal/provider/cost.go` used. See
-the doc comment on `knownRates` for the pricing decisions baked into
-the numbers: Claude cache-write uses the 1h-TTL rate (not 5m) because
-Claude Code pins 1h cache in practice and the ledger can't distinguish
-TTL tiers; there is no 200k-context tier because the ledger doesn't
-store per-request context size; OpenAI cache-write is 0 unless a model
-has an explicit published `CacheWrite` rate, as the GPT-5.6 family
-does.
-
-The trim algorithm has a real gap: a future dotted Codex version
-without its own entry (e.g. `gpt-5.3-codex`) does NOT fall back to
-`gpt-5-codex`. It trims to `gpt-5.3` then `gpt-5`, landing on the
-plain non-codex family rate. `TestPrice_DottedCodexVersionMissesFamilyFallback`
-regression-guards this; a new dotted `-codex` version needs its own
-explicit table entry the day it ships, not an assumption that the
-`gpt-5-codex` fallback will catch it.
-
-## Responsibility boundary
-
-- What BELONGS here: the rate table and the pure `Price` function.
-- What does NOT belong here:
-  - Deciding which `usage_ledger` rows need pricing (that's
-    `cost_source='none'` vs `'wire'`, decided in
-    `internal/usageledger`).
-  - Deciding what an unpriced row MEANS. `Price` reports `ok=false` and
-    stops there; whether that is tolerable is the consumer's call and
-    depends on the question being asked: a token ceiling is exact
-    regardless, a dollar ceiling the tree has not obviously crossed
-    cannot be judged at all (`engine.ResolveBudget`), and a display
-    surface reports the priced lower bound and says it is one.
-    `usageledger.Spend.Estimated()` is true in that case too: a total that
-    silently omits rows must never present itself as exact.
-  - Persisting an estimate anywhere. Estimates are query-time only.
-  - Provider or store types. This package must stay stdlib-only so it
-    can be imported from the App layer without pulling in either.
-
-## Anti-patterns
-
-- Do NOT persist the result of `Price` into `usage_ledger.cost_usd` or
-  any other column. That would defeat the "rate updates reprice
-  history" property this package exists for.
-- Do NOT add a rate entry without a `Price` test that hand-computes the
-  expected dollar amount. See `pricing_test.go`.
-
-## References
-
-- `internal/store/usage_ledger.go` holds the ledger schema and
-  `QueryUsage` / `QueryUsageDetail` this package's output feeds.
-- `internal/usageledger` is the only caller; `usageledger.Spend` /
-  `usageledger.PriceGroups` merge wire cost and `Price` estimates for
-  every surface that reports dollars.
-- `docs/architecture/adrs/ADR-008-cost-computation-in-provider-adapters.md`
-  has the history of the wire-cost-only decision and why read-time
-  estimation was added on top of it instead of reverting it.
+The shared ledger fold must continue to drive both display and workflow budget enforcement.

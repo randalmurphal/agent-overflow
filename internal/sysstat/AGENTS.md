@@ -1,34 +1,11 @@
-# internal/sysstat
+# Host system statistics
 
-Host CPU + memory sampler backing the sidebar's system-stats footer.
-Wraps `gopsutil/v4` so the rest of the codebase doesn't import a vendor
-SDK directly.
+This package is a read-only adapter around gopsutil for CPU and memory samples.
+Application code owns cadence, goroutines, and event emission.
 
-## Ownership
+Prime CPU sampling once before periodic reads because the library keeps
+process-global delta state. Preserve the selected memory-used convention on the
+wire. Return sampling errors instead of partial silent values.
 
-- Pure read-only sampler. No emit, no goroutine. The App owns
-  cadence and emission (see `app_sysstat.go`).
-- Cross-platform via `gopsutil`: Linux uses `/proc`, macOS uses Mach
-  host stats, Windows uses Performance Counters. No CGo.
-- The package keeps two indirection points (`readCPUPercent`,
-  `readMem`) for test-time substitution so unit tests don't depend on
-  the developer machine's process state.
-
-## Testing
-
-- Unit tests substitute the indirection points to exercise the shape
-  mapping + error propagation. Don't reach for real gopsutil reads
-  from a test. gopsutil's first CPU read returns 0 (by design) and
-  developer-machine memory is non-deterministic.
-- `firstOrZero` is a pure helper; test it directly.
-
-## Notes
-
-- `Sample` returns the gopsutil-defined `MemUsedBytes` (on Linux:
-  total - free - buffers - cached, matches htop). If the field ever
-  feels off compared to `top`/`Activity Monitor`, the alternative is
-  `Total - Available` from the same struct, the same shape on the wire
-  with just a different convention.
-- The CPU delta state lives inside the `gopsutil/v4/cpu` package
-  (process-global). That's why we call `Prime` once at startup rather
-  than holding our own previous-tick snapshot.
+Tests replace the package read functions; do not depend on the developer
+machine's load or memory.

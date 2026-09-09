@@ -1,34 +1,23 @@
-# Nearby pairing bootstrap
+# internal/pairbootstrap
 
-This package transports an ordinary single-use invitation; identity/store still
-own pending enrollment, owner confirmation, activation and revocation. The host
-must display this exchange's independently derived comparison value for its
-mapped invitation, never the ordinary server-returned comparison value. Issuing
-the encrypted invitation before confirmation is safe only because redemption
-still creates a pending session that admits nothing until owner approval.
+Credential-free bootstrap for an ordinary single-use pairing invitation.
+Identity and storage own enrollment, confirmation, activation, and revocation.
+See [computer-pairing.md](../../docs/architecture/computer-pairing.md).
 
-The initiator commits its fresh P-256 ephemeral key, random nonce and metadata
-before seeing the responder contribution. The responder fixes its fresh reply
-before the initiator reveals; each client object accepts only that one reply.
-Both derive the comparison and encryption key from the complete ordered
-transcript and ECDH result. Do not replace this with server-returned digits,
-uncommitted short certificate hashes, or an uncommitted TLS-exporter comparison:
-those allow relay substitution or offline grinding of matching short values.
-The commitment/SAS precedent is RFC 6189 section 4.4.1.1; this is a small
-bootstrap using that pattern, not an implementation of the ZRTP media protocol.
-
-Discovery and bootstrap TLS are untrusted. Only this credential-free HTTP
-client may skip certificate verification; the decrypted invitation's pin is
-enforced by the existing device client before any token is sent. Never attach
-session headers, an authenticated transport, proxy, or cookie jar here. The
-wire never carries the plaintext invitation or comparison value. Owner-only
-Snapshot must not be returned from a public discovery/info endpoint.
-
-One owner-opened window and one requester bound memory and online guesses.
-Retries replay the same challenge/ciphertext; another commitment requires an
-explicit owner reopen. Close/expiry cancels an associated invitation, including
-a mint finishing after cancellation. The caller's cancel callback must leave
-already-confirmed pairings intact. Mint/cancel callbacks run outside the lock.
-The App retains its last-link denial fence after close/expiry and refuses a
-replacement window until cancellation is durable; a failed database write
-must not restore ordinary confirmation for a retired SAS exchange.
+- Display the comparison value derived from this exchange and its mapped
+  invitation. Do not substitute the server pairing flow's comparison value.
+- Preserve the committed P-256 ephemeral-key exchange and its ordered transcript.
+  Each client instance accepts one responder contribution. The wire carries
+  neither the plaintext invitation nor the comparison value.
+- Bootstrap discovery and TLS are unauthenticated. This package is the only
+  pairing path that may skip certificate verification. The decrypted
+  invitation's certificate pin must be checked by `internal/deviceclient`
+  before any credential is sent.
+- Do not attach cookies, session headers, an authenticated transport, or an
+  environment proxy to bootstrap requests.
+- Keep one owner-opened exchange and one requester in memory. Retries reuse its
+  challenge and ciphertext. Opening another exchange requires a new owner
+  action.
+- Close and expiry cancel any associated unconfirmed invitation, including a
+  mint that completes late. Run mint and cancellation callbacks outside the
+  package mutex. Already-confirmed pairings remain valid.

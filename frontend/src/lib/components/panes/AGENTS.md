@@ -1,62 +1,22 @@
 # components/panes/
 
-Pane host and layout components. This directory owns the boundary
-between layout metadata and mounted pane surfaces.
+This directory is the only place that turns layout items into mounted panes.
+`PaneHost.svelte` owns pane selection and lazy companion mounting;
+`PaneFrame.svelte` owns the common frame and title controls.
 
-`PaneHost.svelte` renders layout items into registered panes. Keep the
-contract explicit:
+- Preserve mounted pane identity across selection and compact-screen changes.
+  Thread state, scroll position, and observers must survive navigation.
+- A thread may appear in only one pane. Multiple panes may share a workspace.
+- Resolve workspace actions from `pane.workspace`. A terminal-only pane has no
+  workspace, so workspace controls do not render.
+- Keep conditional companion surfaces lazy. Capture the import promise once;
+  constructing it reactively remounts the surface on unrelated updates.
+- Wrap each pane body in `shared/RenderBoundary.svelte` so one render failure
+  does not stop updates in other panes.
+- Desktop owns resizers and multi-pane layout. Compact mode shows one pane at a
+  time while keeping the strip mounted; use the shared layout mode rather than
+  device or runtime detection.
 
-- Layout items come from `stores/paneLayout.svelte.ts`.
-- Runtime pane state comes from `stores/panes.svelte.ts`.
-- A source pane and its companions are ONE unit. The layout store
-  enforces it (`resnapCompanionItems` on add/move, block-wise ±1 moves);
-  drop targeting must offer only block-edge slots (`paneBlockRangeAt`) so
-  the preview and the landing agree. Never add an insert path that can
-  wedge a pane between a source and its companions.
-- A missing pane must render an explicit broken-state surface. Do not
-  fall back to `main`; that hides registry/layout drift and will
-  duplicate the wrong pane in multi-pane layouts.
-- Per-pane measurements are published through
-  `stores/layoutMetrics.svelte.ts` by pane id. Panel sizing and future
-  split constraints should read those pane-scoped metrics, not
-  `window.innerWidth` or total app-shell width.
-- Pane widths are absolute px (`PaneLayoutItem.widthPx`) rendered as the
-  flex basis: panes stretch proportionally when the window is wider than
-  their sum and horizontal-scroll when narrower. All resize semantics
-  (boundary drag, Alt zero-sum, end handle, fit-mode min-anchoring) are
-  pure functions in `utils/paneWidths.ts`; `PaneDivider.svelte` owns the
-  gesture (pointer capture, edge auto-scroll, double-click equalize).
-- Dividers are zero-width: their visible strip and hit area are absolute
-  overlays painted over the pane edges, so only pane widths contribute
-  to the strip's scrollWidth. Divider chrome that takes real width turns
-  an exactly-fitting layout into a phantom horizontal scrollbar.
-- Global app surfaces do not belong in the pane loop unless the feature
-  is intentionally one-instance-per-pane.
-- Companion body mounts and review-state reuse share `companionSubjectKey`:
-  conversation ID, ownership epoch and checkout. A moved conversation keeps
-  its ID but must retire captured requests, subscriptions and workspace state.
-  A title/token change must not remount a companion.
-- Browser companions are live, ephemeral projections of an explicitly
-  presented page on this window's local execution host. The frontend-only
-  controller's admin grant is not a native-browser capability. Never hydrate
-  a remote or ambiguously owned thread against the local browser manager;
-  native mounts remain tied to HOME, matching their bound RPC route.
-  Background pages do not open them; normal page
-  activity does not steal their selected tab. They are never layout
-  persisted, and their host rect is a real native view's airspace: the
-  mount must be released on unmount so a dead pane cannot leave a browser
-  view painted over the window. Mod+W on a focused browser companion closes
-  the ACTIVE TAB, routed from the `pane.close` command through
-  `closeFocusedBrowserTab()` (browserCompanion.svelte.ts), never from a
-  keydown handler on the pane: a click on the tab strip moves no DOM focus,
-  so a pane-scoped handler misses the chord and the window-level command
-  would destroy the pane. The pane closes with its last tab, via the
-  zero-page state push. Chords pressed while the NATIVE page view has
-  keyboard focus never reach the DOM at all; the engine hands bound ones
-  back as `accelerator` companion events and the store replays them as a
-  window keydown after focusing the companion, so the same dispatcher runs
-  ([browser-tools.md § Keyboard](../../../../../docs/architecture/browser-tools.md#keyboard)).
-
-Do not put chat behavior in this directory. Pane components mount and
-measure; chat/terminal/sidebar behavior stays in the owning feature
-surface and communicates through explicit pane contracts.
+Timeline scroll ownership belongs to
+[`components/chat/`](../chat/AGENTS.md). Generic virtualization belongs to
+[`components/virtual/`](../virtual/AGENTS.md).

@@ -1,50 +1,20 @@
-# internal/uitrace/
+# `internal/uitrace`
 
-JSONL diagnostic appenders for the frontend. Two channels share the
-validation, caps, and rotation machinery:
+Owns bounded JSONL append, rotation, and bookmarking for frontend render traces
+and runtime-error logs. Render capture is optional; the
+`NewErrors` runtime-error channel is always available after boot.
 
-- the dev-only render trace (`ui-render.jsonl`) behind the frontend's
-  debug console, for after-the-fact inspection of visual glitches;
-- the always-on frontend runtime-error log (`frontend-errors.jsonl`),
-  fed by the global `error` / `unhandledrejection` handlers plus the
-  document's `securitypolicyviolation` handler (`kind: "csp"` — a
-  refused load is silent everywhere but a devtools console, and only
-  Playwright's Chromium is watched by a fixture), so render
-  exceptions are diagnosable without devtools open (a silent render
-  throw also permanently leaks Svelte deriveds — see
-  `ReportFrontendErrorBatch` in `app_observability.go`).
+`DirName`, `FileName`, `ErrorFileName`, and the JSONL record shape are
+operator-facing contracts for tools that tail these files. Keep paths stable,
+create directories and files with private permissions, and refuse an empty
+configuration root.
 
-## Layout
+`Tracer.Append` is synchronous and concurrency-safe. It validates line,
+batch, and file bounds, reports invalid or oversized input as an error, and
+rotates before append. Frontend batching and App integration are responsible
+for keeping this disk write off UI and provider event hot paths. Redaction is
+also a caller responsibility because this package validates JSON shape and
+size, not payload meaning.
 
-- `uitrace.go` defines `Tracer` with `New(configDir)` (render trace),
-  `NewErrors(configDir)` (error log), `Path()`, and `Append(lines)`.
-  `Append` validates each line (per-line cap, JSON shape) and the
-  batch (line count + byte cap), then writes under a process-local
-  mutex. The file is rotated to `<path>.1` when the next append would
-  push it past `MaxFileBytes`.
-
-## Responsibility boundary
-
-- What BELONGS here: validation, batching limits, rotation, and the
-  atomic append. The on-disk shapes
-  (`<configDir>/ui-trace/ui-render.jsonl`,
-  `<configDir>/ui-trace/frontend-errors.jsonl`) and the JSONL format
-  are deliberately exported as constants so any tool that tails the
-  files can resolve the paths.
-- What does NOT belong here: Wails binding wiring (`app_observability.go`
-  delegates) and frontend serialisation. The render trace stays
-  dev-only by design; the error log is the one always-on channel, and
-  both bindings are exposed unconditionally because the caps make the
-  cost negligible if the frontend ever stops batching.
-
-## Anti-patterns
-
-- Do NOT break the file layout (`DirName` / `FileName` /
-  `ErrorFileName`) or the JSONL format. Tools that tail the files
-  depend on both.
-- Do NOT silently truncate or drop oversized lines/batches. Returning
-  an error keeps the misbehaviour visible to the caller instead of
-  burying it in a partial write.
-- Do NOT add a "graceful fallback" for an empty `configDir`. `New`
-  errors loudly so callers can't accidentally start tracing into the
-  process working directory.
+`Bookmark` preserves the current and rotated trace under the bounded bookmark
+policy; keep it serialized with append and rotation.

@@ -1,4 +1,4 @@
-# internal/transferclient/
+# internal/transferclient
 
 A client for one explicitly approved computer-to-computer handoff. It shares
 deviceclient's TLS comparison against the exact saved certificate bytes, but

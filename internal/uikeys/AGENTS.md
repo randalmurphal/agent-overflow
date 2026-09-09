@@ -1,31 +1,12 @@
-# internal/uikeys/
+# `internal/uikeys`
 
-WebviewWindow keybindings shared across every window Agent Overflow
-opens. Centralised so a new shortcut lands in one place instead of
-silently drifting between three call sites.
+Native `WebviewWindow` key maps shared by every window constructor.
 
-## Layout
+`Browser` supplies reload, fullscreen, history-navigation suppression, and
+native zoom suppression. Font scaling belongs to the frontend. Use
+`BrowserWithReload` when reload must restore a bootstrap-bearing URL; its
+callback is evaluated on each reload so a launcher may update the URL.
 
-- In `keys.go`, `Browser()` returns the standard zoom / reload /
-  fullscreen accelerators. Used by `main.go` (desktop window +
-  `runClient` `--connect` window) and `cmd/agent-overflow-windows/main.go`
-  (WSL launcher window). `WithDevTools()` layers the F12 →
-  OpenDevTools binding on top. It is unconditional on desktop/connect
-  windows (production builds compile OpenDevTools to a no-op), gated
-  on `launcherMode == "dev"` in the WSL launcher (one .exe for dev and
-  prod, devtools always compiled in).
-
-## Responsibility boundary
-
-- What BELONGS here: keybinding factories used by ≥2 WebviewWindow
-  surfaces.
-- What does NOT belong here: per-window-instance handlers,
-  app-feature-specific shortcuts (composer, palette, etc.) that live
-  inside the SPA, anything requiring non-Wails imports.
-
-## Anti-patterns
-
-- Do NOT inline a new browser-style binding in a call site. Add it
-  here so every window picks it up.
-- Do NOT pull in non-Wails dependencies. The launcher binary embeds
-  this package; an unrelated transitive dep would bloat the `.exe`.
+`WithDevTools` is opt-in because native and WSL launcher builds have different
+devtools availability. Return fresh maps so one window cannot mutate another
+window's bindings.

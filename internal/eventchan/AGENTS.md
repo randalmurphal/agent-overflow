@@ -1,78 +1,25 @@
-# internal/eventchan/
+# internal/eventchan
 
-The names of every event channel the backend pushes to the frontend, as
-typed constants. Dependency-free by construction. It imports nothing,
-not even from this repo, so every layer that emits can depend on it.
+Dependency-free typed constants for backend event-channel names.
 
-## Surface
+A registered channel requires:
 
-- `type Channel string` + `String() string`.
-- One exported constant per registered channel, grouped by prefix family
-  (`provider:*`, `workflow:*`, `updater:*`, …).
+1. a `Channel` constant here;
+2. a `ChannelPolicy` row in `internal/transport/event_channels.go` defining
+   audience, scope, and retention; and
+3. a constant reference in `cmd/ao-harness/channels.go` when the harness CLI
+   may name it.
 
-The `harness:*` family carries four, and two of them exist only because
-the harness now reaches INTO the frontend rather than only watching it:
+The registry and AST tests check these surfaces. Emit sites use constants rather
+than string literals. Wire-selected subscription names remain strings and are
+looked up in the registry; converting them to `Channel` does not register or
+authorize them.
 
-| Channel | What rides it |
-|---|---|
-| `harness:mock` | mock-provider progress reports |
-| `harness:replay` | replay playback state |
-| `harness:ui-query` | `{id, spec}`, one request for the frontend bridge (`HarnessUIQuery`). Ephemeral: it is a directive whose waiter is gone in 10s, so replaying it to a reconnecting client is pure waste. |
-| `harness:perf` | one folded frontend+backend sample per tick of an armed perf run (`HarnessPerfStart`). Full ring: a sample is a point in a series, and a watcher that reconnects wants what it missed. |
+Keep this package free of imports so all emitting layers can depend on it. When
+another package exports the same cross-process channel name, derive that value
+from this constant rather than spelling it twice.
 
-## The two-edit contract
-
-A channel exists only when BOTH halves are present:
-
-1. a constant here (the spelling), and
-2. a `ChannelPolicy` row in `internal/transport/event_channels.go`
-   (the audience + scope + retention decision).
-
-`internal/transport`'s `TestEveryEventChannelConstantHasAPolicyRow` and
-`TestEveryChannelPolicyRowHasAConstant` fail on either half missing. The
-constants are enumerated by AST-parsing this package's source, so no list
-of SPELLINGS is kept anywhere else.
-
-One list of CONSTANTS is: `cmd/ao-harness/channels.go`, the vocabulary
-the CLI prints and checks a `--channel` against, because Go cannot
-enumerate a package's constants at runtime. It names the constants rather
-than their strings, so a rename fails its compile, and
-`TestKnownChannelsCoversTheEventChannelRegistry` AST-parses this package
-to catch an addition that never reached it. Practically: a new channel is
-those three edits, and both cross-checks tell you which one you missed.
-
-## Why the newtype, and what it does not do
-
-`EventBus.Emit`, `(*App).emit` / `emitEvent`, `triage.NewRouter`'s emit
-callback, and `workflow/engine.Emitter` all take a `Channel`. A channel
-*variable* therefore cannot cross into an
-emit site without an explicit `eventchan.Channel(...)` conversion, which
-is exactly what the harness escape hatches spell (`HarnessEmit`,
-`harness.Replayer`). A caller-named channel that matches a registered
-name inherits that row's audience (the harness is the intended forger,
-gated by `--harness`/`--soak` + a LocalOnly receiver); an unrecognized
-name lands on the registry's fail-closed loopback-only default.
-
-What the type does NOT stop is an untyped string LITERAL: Go assigns
-those to any string type. `internal/app`'s
-`TestEmitSitesNameAnEventChannelConstant` closes that hole by AST-scanning
-every production source for an emit call with a `BasicLit` first argument.
-Both guards are required; neither is sufficient alone.
-
-## Anti-patterns
-
-- Do NOT import anything here. A dependency would make some emitting
-  package unable to use it, and the whole point is that all of them can.
-- Do NOT convert wire input into a constant's type as if it were
-  registered. Subscribe frames, replay cursors, and the launcher's
-  channel lists are peer-chosen strings; they stay `string` and look the
-  registry up directly.
-- Do NOT add a constant without its `ChannelPolicy` row (the tests will
-  say so, but the row is the part that requires a decision: who may
-  receive the frames, and how deep the replay ring is).
-- Do NOT re-spell a channel here that another package already exports as
-  a cross-process string contract. `notify.ActivatedChannel`,
-  `notify.SendChannel`, and `selfupdate.ChannelInstall` are DEFINED as
-  these constants (`string(eventchan.X)`) precisely so the two spellings
-  cannot drift; they stay `string` because the Windows launcher carries
-  them in subscribe frames.
+Choose retention from the event semantics. A directive whose waiter expires
+should not replay; a time-series sample needed after reconnect should use the
+bounded replay ring. Transport policy details are in
+[transport.md](../../docs/architecture/transport.md).

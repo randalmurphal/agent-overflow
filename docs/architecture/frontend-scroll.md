@@ -1127,7 +1127,8 @@ scroller:
    being streamed.
 
 Everything else is still ink. No CSS transitions (the app.css timeline
-kill rule zeroes them, per `components/chat/AGENTS.md` §Row Contract),
+kill rule zeroes them, per the chat guide's
+[rows and transcript identity](../../frontend/src/lib/components/chat/AGENTS.md#rows-and-transcript-identity)),
 no Svelte `transition:`/`in:`/`out:`/`animate:` directives
 (`timelineAnimationDirectives.test.ts`), and no keyframe animation on
 row content that moves anything but light

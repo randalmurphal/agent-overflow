@@ -27,7 +27,7 @@ and how the signals interact.
 **One-to-one with every `tool_use` on the wire.** Every tool
 invocation the agent makes produces exactly one `tool_call` row.
 
-### Invariant (load-bearing)
+### Required contract
 
 > Every `tool_use` emits exactly one `EventToolStart` and exactly one
 > `EventToolComplete`, both keyed by the tool's own `tool_use_id`.
@@ -57,8 +57,8 @@ invocation the agent makes produces exactly one `tool_call` row.
 | Backgrounded? | Placeholder behavior | Launch row status after completion event |
 |---|---|---|
 | No (inline) | N/A | `completed` / `errored` |
-| Yes (Claude Bash or Task) | Placeholder `tool_result` carries `backgroundTaskId` | Stays `running` per spec invariant. Sibling `tool_completion` row arrives later via task lifecycle. |
-| Flagged at launch, refused (Claude) | Ordinary `tool_result` (`is_error:true`, no marker) | `errored` / `completed`, launch flag cleared. On Claude the COMPLETION decides; on Codex the launch flag is wire-stamped (invariant 25) and stays authoritative. |
+| Yes (Claude Bash or Task) | Placeholder `tool_result` carries `backgroundTaskId` | Stays `running` under the background-launch contract. Sibling `tool_completion` row arrives later via task lifecycle. |
+| Flagged at launch, refused (Claude) | Ordinary `tool_result` (`is_error:true`, no marker) | `errored` / `completed`, launch flag cleared. On Claude the completion decides; on Codex the wire-stamped launch classification stays authoritative. |
 
 This per-spec exception exists so the timeline can render both
 "agent dispatched this tool" and "the actual work that got done" as
@@ -102,7 +102,7 @@ injected `<subagent_notification>` fragments. Direct child lifecycle
 notifications only update live/incomplete state so later explicit wait or
 notification output can own the visible transcript boundary.
 
-Every non-root Codex provider thread is fail-closed at the session boundary.
+Every non-root Codex provider thread is quarantined at the session boundary.
 Until a V1 spawn completion or V2 started activity maps it to a spawn item,
 its notifications and server requests are quarantined with bounded storage
 and an ownership deadline; expired server requests are rejected rather than
@@ -199,7 +199,7 @@ None of them is a lifecycle transition, and none may be treated as one.
   The payload's `tasks` array is the provider's FULL replacement set of
   currently-backgrounded tasks, not a delta, and the distinction between
   an ABSENT `tasks` key (no statement, dropped) and an EMPTY array (a
-  real "nothing is backgrounded now") is load-bearing, exactly as it is
+  real "nothing is backgrounded now") is critical, exactly as it is
   for `commands_changed`. It emits `EventBackgroundTasksChanged`, which
   triage forwards on the shared `provider:background_tasks_changed`
   channel Codex already uses. Consumers treat any frame as a nudge to
@@ -401,7 +401,7 @@ Implementation:
    parked** (§Parking above), writes
    the `tool_completion` sibling at the current write head and emits
    `provider:background_task_state{state:"drained"}`. An INLINE launch
-   (see above) still drains the stash (the drain is the load-bearing
+   (see above) still drains the stash (the drain is the required
    side effect keeping `pending_background_task_terminals` from
    leaking) but writes no sibling and emits no `"drained"` event; that
    is safe because `ListLiveBackgroundTasks` never surfaces a
@@ -467,9 +467,9 @@ The same settle also runs per thread while the app is alive:
 `teardownAndCloseSession` (user stop, idle reaper, config restart) and
 from `handleSessionDied` (unexpected process death). Background shells
 die with the CLI process and a resume does not revive them, so every
-still-running backgrounded launch on the closed thread — nested ones
-included, which the top-level lifecycle gates never settle
-(invariant 24) — gets its `session_died` sibling immediately instead
+still-running backgrounded launch on the closed thread, including nested
+launches that top-level turn settlement does not cover, gets its
+`session_died` sibling immediately instead
 of ticking in the tray until the next app boot. Both the per-thread
 settle and the boot sweep prune leftover stash rows afterwards
 (thread-scoped and global respectively): a stash whose launch row
@@ -506,7 +506,7 @@ turn that launched it has completed. For a top-level launch, triage
 writes the `tool_completion` row at the current thread write head when
 one is open, otherwise at the latest persisted turn. For a launch
 inside a subagent, the row stays on the launch's turn with the rest of
-the scope (invariant 10): the main thread's write head is a later turn
+the subagent scope: the main thread's write head is a later turn
 than the one the agent's rows keep landing on, so a sibling placed
 there would sort after everything the agent writes afterwards. The
 tray renders it on its own retention clock. See
@@ -598,7 +598,7 @@ Round entry points:
   `EventInit` arrives for a thread whose current logical turn is
   already settled (`settledTurns[turnKey]==true`). Calls
   `setOpenRoundSnapshot` only, and does NOT call `setOpenTurn`. This is
-  load-bearing: id-allocating counters must survive across the
+  required: id-allocating counters must survive across the
   multi-result-per-turn boundary so post-round-1 rows don't collide
   with rows already persisted under the same logical turn (see
   `internal/triage/multi_result_test.go`).
@@ -667,7 +667,7 @@ Cascade shapes pinned by fixtures/tests:
 - Soft + init + soft + init + soft + real: each init opens one new
   round; each soft closes that round; trailing real folds final payload.
 
-### Invariant (load-bearing)
+### Required contract
 
 > **Turn state is wire-pushed.** The UI's "Working…" indicator and
 > active-turn flag come exclusively from provider-pushed
@@ -968,8 +968,8 @@ working indicator clears and the user gets actionable copy:
    `expect_turn_complete` opt-in (Codex doesn't follow up with a
    `result` envelope), so the synthetic truncated turn-complete fires.
 5. **Error `result` with no open round and no open turn** (pre-init
-   startup failure, e.g. an unusable `--resume-session-at` cursor,
-   invariant 28; the process emits only the error result and lingers):
+   startup failure, e.g. an unusable `--resume-session-at` cursor, where
+   the process emits only the error result and lingers):
    `handleTurnComplete`'s orphan branch persists an error item
    attributed to the pending-send head when one exists (the send that
    triggered the doomed lazy start), else the last turn index, and
@@ -985,8 +985,9 @@ working indicator clears and the user gets actionable copy:
    recovery is a manual retry: the failure mode is deterministic, so
    auto-retry would loop silently. The error-item upsert is the single
    frontend surface (it clears the optimistic pending-send indicator);
-   no `session_died` banner fires for a session that never lived. See
-   invariant 29.
+   no `session_died` banner fires for a session that never lived. Subsequent
+   events are covered by the stopped-thread gate in
+   [`triage-routing.md`](triage-routing.md#pre-dispatch-rewrites).
 
    There is deliberately **no init watchdog**: a timer that declares a
    slow-starting session dead is liveness probing (see §Non-goals).

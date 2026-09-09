@@ -1,184 +1,28 @@
-# internal/editor/
+# External editor integration
 
-Detection and spawn for the open-in-editor binding. Owns the WSL
-bridge logic that maps a Linux-side path to the Windows-installed
-editor reachable via the vendor's WSL Remote integration.
+This package discovers supported editors and opens files, directories, or
+line-and-column locations. Keep editor-specific command construction here and
+keep UI selection and settings persistence in their owning packages.
 
-## Layout
+Detection must prove that a candidate can be invoked, not merely that a
+similarly named file exists. Resolve explicit settings first, then platform
+install locations and PATH. Preserve deterministic priority, distinguish a
+missing editor from a broken probe, and return diagnostics without turning one
+bad candidate into failure of every candidate.
 
-- `detect.go`: catalog of supported editors (VS Code family, Cursor,
-  Windsurf, Sublime, Zed) plus the `$EDITOR` / `$VISUAL` synthetic
-  fallback. `DetectEditors(ctx)` walks PATH first and falls back to
-  /mnt/c discovery on WSL.
-- `wsl.go`: WSL detection (cached read of
-  `/proc/sys/kernel/osrelease`), the well-known /mnt/c install paths
-  per editor, and the shim-script content sniff that decides whether a
-  PATH-resolved binary actually targets a Windows install.
-- `preference.go`: `Resolve(detected, preferredID)` maps the user's
-  settings preference onto the detection result, falling back through
-  the catalog priority order and ultimately the env fallback.
-- `spawn.go` + `spawn_unix.go` / `spawn_windows.go`: argv assembly
-  per launch style, OS-specific `SysProcAttr` so the child outlives
-  the parent, the child environment (inherited, minus the AppImage
-  launch artifacts via `appimage.ScrubInherited`, which returns nil on
-  every other launch shape so `exec.Cmd` inherits directly; an editor
-  outlives us, so a mount-local `PATH`/`LD_LIBRARY_PATH` would break
-  it the moment Agent Overflow exits), and `ResolvePath`, the
-  path-shape contract `Open` enforces: leading-`~/` expansion (pinned
-  under home, with `~/../…` refused), absolute-canonical pass-through
-  when no workspace is supplied, relative-against-workspace joining,
-  UNC (`\\`) rejection up front for path AND workspace, and the
-  openability rule. An existing REGULAR FILE opens from anywhere,
-  including out-of-repo links such as `~/.claude/notes.md`. An existing
-  path that is not a regular file is refused everywhere (a folder open can
-  execute `.vscode/` tasks the model authored, so in-workspace
-  directories are refused too), and a not-yet-existing target opens
-  only inside the workspace (the new-file flow; symlink escape closed
-  by ancestor resolution).
+macOS application bundles, Windows executable and shim forms, Linux desktop
+launchers, WSL interop paths, and remote editor CLIs have different invocation
+contracts. Keep those branches in platform-specific files. Build argv directly;
+paths may contain spaces, Unicode, leading dashes, and shell metacharacters.
+Never assemble a shell command.
 
-## Responsibility boundary
+Shim validation follows the final executable and rejects scripts or wrappers
+that would detach incorrectly unless that editor's integration explicitly
+supports them. Fast-exit observation distinguishes a successful handoff from an
+immediate launch failure, while allowing editors that intentionally detach.
+Always reap the observer process and bound the wait.
 
-- What BELONGS here:
-  - Editor discovery (PATH walks, /mnt/c probes, env-var lookups).
-  - The WSL bridge rule: a Linux-native install does NOT count as an
-    available editor when running inside WSL, even if it is on PATH.
-  - argv assembly for each launch style and the spawn primitives.
-  - The path-shape contract enforced before spawn: `ResolvePath` is
-    the click-surface safety floor. The inputs that reach it from
-    rendered markdown are model- or third-party-authored with no
-    render-time validation (the `OpenInEditor` binding itself carries
-    `//ao:scope host`, which no session may be granted, so a remote
-    caller never reaches it). Relative
-    inputs resolve against an absolute, canonical `workspacePath`,
-    and the openability rule holds everywhere: existing regular
-    files open, folder opens and UNC probes never, new files only
-    inside the workspace. Frontend callers supply the workspace;
-    this package owns the validation.
-- What does NOT belong here:
-  - Settings persistence. `internal/settings` owns that.
-  - Frontend toasts / error rendering. `app_editor.go` returns the
-    error and the frontend decides how to surface it.
-  - File-content opening business logic. The package doesn't read
-    or transform the file contents, it just hands the path off.
-
-## Detection contract
-
-`DetectEditors` returns the full catalog with `Available` populated.
-On WSL, an entry is `Available = true` only when one of these is true:
-
-1. PATH-resolved shim that ultimately exec's a `/mnt/c/...` Windows
-   binary (Microsoft's default `code` script is the canonical case);
-2. A direct hit under `/mnt/c/Users/<user>/AppData/Local/Programs/...`;
-3. A direct hit under the system-wide `/mnt/c/Program Files/...` path.
-
-A PATH-resolved Linux-native install (apt-installed `code-oss`, the
-flatpak `cursor`, etc.) is deliberately NOT marked available on WSL.
-Those editors render through WSLg and do not use the user's Windows
-editor environment, so falling back to them would hide the Remote-WSL
-setup requirement. Report "no editor available" instead.
-
-### Shim validation
-
-Every Microsoft-family `code` shim (VS Code, Code Insiders, Cursor,
-Windsurf, VSCodium) hardcodes `VERSIONFOLDER="..."` and dispatches
-through `<install>/<VERSIONFOLDER>/resources/app/out/cli.js`. An
-incomplete or stale uninstall can leave the `bin/code` script in
-place while removing the cli.js. The shim then exits non-zero on
-`Cannot find module .../cli.js`, but the shim's own
-`--locate-extension` invocation suppresses stderr to `/dev/null`, so
-the spawn looks successful while no editor window appears.
-
-`validateWindowsCodeShim` (in `wsl.go`) reads each candidate shim and
-stats the cli.js it points at. Broken candidates are skipped:
-
-- `detectOne`: a PATH-resolved /mnt/c shim that fails validation falls
-  through to `findWindowsInstall` instead of being accepted.
-- `findWindowsInstall`: each user/system candidate is validated before
-  being returned. The walk continues past broken installs.
-
-Shims without a `VERSIONFOLDER="..."` line (Sublime, Zed, custom
-`$EDITOR` targets) are passed through unchanged. There's no cheap
-content-based check for those, and the spawn step is the right place
-to learn whether they work. The fast-exit observer below catches their
-runtime failures.
-
-### Fast-exit observer
-
-After `cmd.Start()` succeeds, `Open` waits up to `fastExitWindow`
-(750ms) for the child to exit. Three branches:
-
-- Exit 0 inside the window → success (e.g. VS Code's CLI handing off
-  to a running window).
-- Non-zero exit inside the window → error returned with the editor
-  name and exit code. This is what surfaces `Cannot find module` and
-  similar shim failures that slipped past validation.
-- Still running at the timeout → success. The watcher goroutine
-  continues, reaping the eventual exit cleanly.
-
-The observer is the indirection seam `observeFastExit`; tests that
-fake `startCmd` also fake the observer to avoid waiting on a child
-process that was never actually started.
-
-## Extension points
-
-- To add a new editor: append it to `editorCatalog` in `detect.go`,
-  add its WSL install paths to `wslInstallTable` in `wsl.go` (only
-  needed if it ships a Windows install we need to find), and add a
-  preference test exercising the new ID.
-- To add a new launch style: add a `LaunchStyle*` constant, a
-  `buildArgs` branch, and a `spawn_test.go` case.
-
-## Testing
-
-Tests use injectable `lookPath` / `readFile` / `readDir` / `stat` /
-`envValue` hooks so the suite runs identically on macOS, Linux, and
-Windows. Real spawning is mocked through `startCmd`. The WSL branch
-is fully covered by fixtures, with no real WSL host required to verify
-the bridge logic, the shim-content sniff, or the install-path walk.
-
-## Global state (intentional)
-
-`internal/AGENTS.md` forbids global mutable state by default; this
-package keeps four globals deliberately. Each is documented here so
-the exception is easy to audit.
-
-- `detectionCache` (`detect.go`) is bounded by `detectionCacheTTL`
-  (60s). Backs `DetectEditors` so the App-level methods that call
-  it (`OpenInEditor`, `ListAvailableEditors`) don't re-walk PATH +
-  `/mnt/c` per click. On WSL each detection run crosses 9P at
-  ~10-30ms per probe; clicking through 20 path links would otherwise
-  re-walk synchronously per click. Mutated via `storeDetectionCache`
-  / `RefreshEditors` under `sync.Mutex`. Test seam: `PeekDetectionCache`.
-- WSL detection lives in `internal/platform` and is exposed here via
-  `IsWSL`. The test-friendly `isWSLEnv(env)` still bypasses the live
-  cache when fed an injected env so each test can use its own `/proc`
-  fixture without changing shared process state.
-- `lookPath` / `startCmd` (`spawn.go`) are exec.LookPath / Cmd.Start
-  indirection seams. Tests substitute fakes to record invocations
-  without spawning real processes. Production never overrides
-  these; they are package-level vars so test code can rebind them
-  for a single test under `t.Cleanup`.
-- `userHomeDir` (`spawn.go`) is the os.UserHomeDir indirection seam for
-  `~/` expansion, same pattern and same rules as `lookPath` /
-  `startCmd`: tests pin a fixture home under `t.Cleanup`, production
-  never overrides.
-
-If you add a new editor, do not add additional globals. The four
-above are the package's full exception set. Extend the catalog and the
-WSL install table instead.
-
-## Anti-patterns
-
-- Do NOT call `os.LookPath` or `os.Stat` directly from DETECTION code.
-  Go through the `detectEnv` indirection so tests can swap in
-  fixtures. Production assembles the live env via `liveDetectEnv`.
-  (`ResolvePath`'s openability stat in `spawn.go` is the deliberate
-  exception: it asks about the CLICKED TARGET, not about editor
-  installs, and its tests exercise real `t.TempDir()` filesystems.
-  A fixture seam there would test the fixture, not the rule.)
-- Do NOT hard-code file paths to user binaries inside the package
-  body. The /mnt/c table in `wsl.go` is the canonical list; new
-  editors get added there or skipped on WSL.
-- Do NOT shell out via `cmd.exe` / `bash -c`. The spawn path passes
-  the binary path and arguments directly so quoting around spaces in
-  paths can't bite us.
+Any package-level detection cache or test hook must be restored after tests and
+safe across repeated and concurrent calls. Adding an editor includes detection,
+stable identity, display metadata, invocation rules for every supported
+platform, and table tests for files, folders, and positions.

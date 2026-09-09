@@ -984,7 +984,7 @@ deleted outright along with the mermaid panzoom that set the attribute.
 The map's wave row keeps its own attribute name, `data-wave-expanded`:
 the rule is that a stylesheet from the markdown renderer must not be
 able to reach a component that has never rendered markdown
-(`frontend/src/lib/markdown/AGENTS.md` § Landmines), and staying out of
+([Markdown URL and HTML boundary](../../frontend/src/lib/markdown/AGENTS.md#url-and-html-boundary)), and staying out of
 its namespace is what keeps the next component that reaches for
 `data-expanded` from re-finding a rule like it.
 

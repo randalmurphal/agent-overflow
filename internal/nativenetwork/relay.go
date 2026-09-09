@@ -32,6 +32,12 @@ type Relay struct {
 	upstreamErr error
 }
 
+// StartRelay binds a bounded set of private Windows LAN addresses and relays
+// raw TCP to one validated private WSL IPv4 endpoint. The constructor owns
+// target admission rather than relying on caller validation. Each upstream dial
+// is bounded, concurrent relays are capped, and Close cancels both copy
+// directions and waits for every accepted connection. A client EOF is preserved
+// as a TCP half-close so the backend can finish its response.
 func StartRelay(ctx context.Context, target string, addresses []string) (*Relay, error) {
 	destination, port, err := relayTarget(target)
 	if err != nil {

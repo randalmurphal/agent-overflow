@@ -1,851 +1,304 @@
 # Transport
 
-Mechanism and rationale behind `internal/transport`, the HTTP+WebSocket wire
-shared by the embedded webview, `agent-overflow --connect`, and remote browser
-clients. The rules an agent needs on every edit live in
-`internal/transport/AGENTS.md`; this file holds the walkthroughs that guide
-points at.
-
-## Listen-port pinning
-
-### Why the port is stable per install
-
-The webview's origin is host plus port. An ephemeral port changes it every
-launch, which wipes every origin-scoped browser store: localStorage and the
-IndexedDB thread replica (`docs/architecture/thread-replica-sync.md` §6.0).
-Port obscurity was never an access control here (the page credential and the
-Host/Origin checks are), so pinning costs nothing. The page cookie's name
-carries the port, so a stable port also means a stable cookie name.
-
-### Where the pin lives
-
-`main_transport_port.go` (`pinTransportPort`) owns it, not this package.
-`transport.Config.Port` is injected and the package never reads a config file.
-
-Whenever the resolved port would be 0, which covers the desktop/WSL default and
-an explicit `--listen host:0`, the boot path
-reads `transport-port.json` from the boot settings dir, beside `client-id.json`
-and using the same `atomicfile` pattern, and injects it as `Config.Port`. After
-`Start`, `transportPortPin.adopt` re-reads `Server.Addr()` and persists whatever
-actually got bound.
-
-First boot, a missing file, and an invalid one (garbage JSON, or a port outside
-1 to 65535) are all "no pin": bind ephemeral, then record. An explicit non-zero
-`--listen host:port` wins outright and neither reads nor writes the file.
-Persistence is best effort. An unresolvable settings dir or a failed write logs
-and leaves the run ephemeral, and never blocks boot.
-
-### The saved port, and why it is the middle input
-
-`network.listenPort` (Settings → Remote access, `internal/settings/network.go`) sits
-between the two above, and behaves like neither. It LOSES to `--listen`, because
-a flag is one launch and a setting is the install. It BEATS the cache outright
-and takes no ephemeral fallback: the whole reason to set it is that every share
-URL, pairing link and paired client's stored endpoint names the number, so a
-backend that quietly moved would be unreachable at the only address anybody has.
-A bind it cannot have is a loud boot failure naming the setting.
-
-It still ADOPTS. A port the setting asked for and the kernel gave IS the previous
-bind, so recording it is what makes clearing the setting later mean "stay here
-and float from now on" rather than "jump back to whatever ephemeral port was
-cached before you set this". `SetNetworkSettings` keeps the same invariant while
-the process runs, through `app.SetBoundPortRecorder`: whenever the operator
-touches the port field, the port the listener ended up on is written to the
-cache.
-
-Every ordinary boot reads these host settings: desktop, `serve`, and the
-Windows launcher's headless backend. Only the isolated harness opts out through
-`IgnorePersistedNetwork`. The launcher requests its bootstrap channel without
-injecting a `--listen` override; an explicitly supplied CLI bind still wins over
-saved LAN preferences. Restoring a Windows host must bind the WSL backend before
-the native LAN relay can reach it; a listener on loopback alone cannot do that.
-
-An explicit IPv4 bind, including `0.0.0.0`, uses `tcp4` at the shared
-`bindListener` boundary for startup, fallback and rebind. Go's generic `tcp`
-can turn that wildcard into one IPv6 dual-stack socket. Linux can then accept
-IPv4 locally, but WSL's localhost relay preserves the socket family and binds
-Windows `::1` only, while the launcher uses `127.0.0.1`. An isolated Linux
-socket spike confirmed the family mismatch; the real transport suite checks
-that LAN rebinds retain an IPv4 wildcard. Explicit IPv6 binds keep their existing
-behavior. This is socket-family selection, never a reason to relax peer-based
-authorization. See Microsoft's [relay implementation](https://github.com/microsoft/WSL/blob/master/src/windows/wslrelay/localhost.cpp)
-(`BindRelayListener`) and [guest connection](https://github.com/microsoft/WSL/blob/master/src/linux/init/localhost.cpp)
-(`RunLocalHostRelay`).
-
-### Bind failure: `Config.EphemeralPortFallback`
-
-This is the transport half. With a non-zero `Port`, a bind that fails *because
-of the port* (`portUnavailable`: EADDRINUSE, EACCES, and their WSA spellings)
-retries exactly once on port 0 and logs both the failure and where it landed.
-Any other bind error, notably a bind address this host does not own, still fails
-`Start` loudly, since port 0 would fail identically.
-
-`adopt` then records the new port, so a permanently squatted port churns the
-origin once rather than every launch. Callers who named a port explicitly leave
-the flag off. `clearOnFailedBind` deletes the pin file when `Start` failed while
-a pinned port was requested, since reaching that point means an error class the
-fallback predicate missed, and keeping the pin would replay the identical
-failure forever.
-
-### Rebind uses a narrower predicate on purpose
-
-`Rebind` (the LAN toggle and the port field) is untouched by the above.
-`app_network.go` computes the new addr from the saved `network.listenPort`, or
-from the live `Server.Addr()` port when nothing is saved — so a host flip alone
-keeps the port, and clearing the port field moves nothing. `Rebind` never falls
-back to an ephemeral port: silently moving a live server's port would break every
-connected client's origin, which is the same reason the saved port fails loudly
-at boot.
-
-Its own recovery uses the strictly narrower `addrInUse` (EADDRINUSE,
-WSAEADDRINUSE). That path cures a bind by closing our live listener and
-retrying, which can only help when the address was in use. A permission or
-reservation refusal survives the close, so widening the predicate there would
-destroy a working listener for an error it cannot fix.
-
-### The pin can be honoured and still be wrong: `--reset-transport-port`
-
-A bind that succeeds proves nothing about reachability. Under the Windows/WSL
-launcher the backend binds inside the distro while the window connects from the
-Windows host, and Hyper-V/WSL2 excluded port ranges break that hop. Those ranges
-are re-seeded on every Windows reboot and routinely cover the ephemeral range an
-adopted pin comes from. The in-server fallback and `clearOnFailedBind` both key
-on a bind failure, so neither can see this: the pin is honoured perfectly and
-the launcher's `/connectivity-error` page comes up identically on every launch,
-forever, with the mitigation that page suggests already true.
-
-Only the launcher can observe it, so the signal is explicit rather than
-inferred. `cmd/agent-overflow-windows` (`launchAndProbe`) classifies a probe
-that never got a single HTTP response (`errBackendUnreachable`) as unreachable,
-retires that backend, and relaunches it once with `--reset-transport-port`. The
-flag name has one definition, `wsllauncher.ResetTransportPortFlag`, spelled by
-the launcher's argv and declared by the backend's flag set. The backend deletes
-`transport-port.json` before consulting it, logs the removal, and boots
-normally: ephemeral bind, then adopt.
-
-A reset with no pin is an ordinary boot. A reset alongside an explicit
-`--listen host:port` leaves the file alone, because that boot never consults it.
-One retry only: a fresh port costs the user every origin-scoped browser store.
-A second unreachable port ends the attempt; it does not establish whether
-forwarding, a socket-family mismatch, or another port restriction caused it.
-Error pages report the observed failure without asserting an OS diagnosis.
-
-## Replay rings and gap markers
-
-The per-channel ring (`eventbus.go`) is a network jitter buffer, not a history
-store (root `AGENTS.md` principle 3). The server cannot reconstruct arbitrary
-history from SQLite, so when a reconnecting client asks for something the ring
-no longer holds, the honest answer is "re-fetch through the list endpoints".
-That answer is `gap:true` on the next frame for that channel.
-
-The first hello carries `replayBaseline`: the heads of all registered channels
-visible to this connection, captured atomically with its live subscription.
-Zero heads include channels that have never emitted. The client seeds only
-missing cursors, so a channel's first event during an outage is replayable
-without fetching historical activity from before attachment. Existing cursors
-survive reconnect hello unchanged within the same launch. The local `notification:activated` channel
-keeps its separate cold-launch checkpoint instead of adopting this baseline.
-
-Every hello also carries `launchId`, the same process identity as bootstrap.
-Bootstrap can remain cached across successful reconnects; hello cannot. A new
-launch invalidates old cursors even when their numbers happen to fall inside
-the new ring. Clients clear those cursors and recover snapshots, since numeric
-overlap would otherwise silently skip new history. Older backends without this
-additive field retain gap-based recovery.
-
-Live and replay frames may interleave, and a live frame may arrive before the
-server receives the replay request. The replay completion marker closes this
-reconciliation window. Clients must reconcile by channel sequence before
-advancing their cursors: arrival-order dedup would discard older replay after
-a newer live delta, potentially losing the upsert that created the row. The
-server keeps delivering to clients that never request replay; no handshake
-wait blocks their event pump or RPCs.
-
-### A cursor can fall outside the ring at either end
-
-- **Below the oldest retained seq.** Eviction lost what the client wanted. The
-  ordinary case.
-- **Above the current head.** The client is holding a sequence space that is not
-  ours, because a restarted backend re-seeds every channel from 1. Answering
-  "nothing missed" would leave it dropping every live event below its stale
-  cursor forever, since the client dedups on seq.
-- **No ring at all.** Rings are created lazily at the channel's first `Emit`, so
-  a backend that restarted and has not yet emitted on a channel holds nothing to
-  compare a cursor against. That is the same stale sequence space as the case
-  above and gets the same marker, at seq 0; only a cursor of 0, which has missed
-  nothing by definition, is answered in silence.
-
-### The marker is a resync instruction, not a late event
-
-Because of the above-head case, a gap marker's seq can be *lower* than the
-client's cursor. Clients must therefore honour `gap:true` before their own dedup
-check, and reset the channel cursor to the marker's seq in both directions
-(`wsClient.handleEventEntry`).
-
-Event encoding always includes `seq`, including zero. Older hosts omitted
-zero on gap markers through Go's `omitempty`; the client normalizes only
-`gap:true` with an absent sequence to zero before replay ordering. Ordinary
-events with no sequence remain malformed. The wire regression inspects JSON
-field presence rather than decoding into a Go integer, which hides omission.
-
-It is also why the latest-only newest-frame substitution applies to the eviction
-side only: to an ahead cursor the newest frame's seq would read as a duplicate.
-
-Retention classes shape what `Replay` returns, not whether the rule holds.
-`RetentionEphemeral` channels answer with nothing and no gap marker, and
-`RetentionLatestOnly` channels answer with their single newest frame and no gap
-marker for an evicted cursor, because those frames are superseded state rather
-than lost history. An above-head cursor still gaps in both classes: that is a
-client-state fault, not a retention question.
-
-### Live-connection drops are announced by the server too
-
-`gap:true` also covers drops within a live connection. When an event does not
-fit a subscriber's buffer, `Subscriber.deliver` flags that channel in the
-subscriber's `gapped` set and announces the loss on the next opportunity: the
-next event that fits on the flagged channel is re-encoded for that subscriber
-with `gap:true`, and any OTHER flagged channels get standalone
-`{gap:true, data:null}` markers (the same shape `Replay` sends) flushed ahead
-of whatever delivers next. Latest-only channels are never flagged, because
-their next frame supersedes the lost one, which mirrors `Replay`'s carve-out.
-
-Before 2026-08-29 the server never recorded a drop, and detection relied
-entirely on the client noticing a seq forward-skip on a LATER same-channel
-delivery. Sustained traffic can delay that delivery: during a subagent fan-out
-burst the dropped channel's next frames were themselves dropped, so no skip
-was ever observable and a pane sat truncated for 30-40s on a healthy connection.
-
-`wsClient.handleEventEntry` keeps the client half: an event whose seq is more
-than one past the channel's cursor is treated as a gap, with the same
-synthetic `transport:gap` dispatch, and the carried event is still delivered,
-which is real data. Without it, a single drop on an edge-triggered channel
-(`git:status`, `pr:updated`, and `mcp:status` emit exactly one frame per state
-change) leaves every consumer of that entity stale until the entity next
-changes. Both detection paths persist a diagnostic through
-`reportFrontendDiagnostic`, so a storm leaves evidence in
-`frontend-errors.jsonl` when the host permits persistence. The backend registry
-installs the diagnostic sink on existing and later attachments, with the
-originating backend in the detail. Remote sessions that cannot write the host
-log retain the existing console fallback.
-
-### Forward-skip detection is scoped to one connection
-
-It fires only when the channel's previous event arrived on the current socket.
-Across a reconnect a forward skip is expected and not a drop, because `Replay`
-answers an ephemeral channel with nothing and a latest-only channel with just
-its newest frame. A client judging those against a carried-over cursor would
-resync spuriously on every reconnect.
-
-Within a connection an event on a visible channel is delivered, dropped, or
-WITHHELD, and only the middle one is a loss. Withheld is per-thread narrowing
-(below): the client asked not to receive that entity's frames, and the seq
-those frames spent still advances the channel. So the client exempts the
-forward-skip heuristic on entity-filtered channels once it has sent a watch
-frame — never on other channels, never before a set exists, and never for an
-explicit `gap:true` marker, which is the server stating a real loss rather
-than the client inferring one. `frontend/src/lib/transport/entityFilteredChannels.ts`
-is the list it exempts, pinned to the registry in both directions by
-`TestFrontendEntityFilteredChannelsMatch`.
-
-### A connection names the threads it is looking at
-
-A client sends `{"type":"watch","threads":[...]}` and the server stops
-delivering the ENTITY-FILTERED channels (`ChannelPolicy.EntityFiltered`, see
-`internal/transport/AGENTS.md`) for every thread outside that set. Nothing else
-narrows: an unwatched thread still drives the sidebar, the tray, notifications,
-and every other channel, because the filter is a property of the channel and
-not of the connection.
-
-The rules the two ends agree on:
-
-- **Absolute, not additive.** Each frame replaces the last, and `[]` is a legal
-  value meaning "no panes open". A connection that has never sent one receives
-  everything, which is where every client starts and where a client that does
-  not speak the frame stays.
-- **Per connection, and re-stated on reconnect.** The filter is socket state,
-  so a new socket starts wildcard and the client sends its set again — BEFORE
-  its replay frame, since frames are read in order and a replay answered ahead
-  of the filter would ship exactly the backlog the client no longer wants.
-- **Fail-open on attribution.** An event whose entity key is empty is delivered
-  to everyone. A payload the key extractor does not recognize degrades to the
-  old, wider behavior rather than vanishing.
-- **A withheld frame is not a gap.** The filter runs ahead of the drop
-  accounting, so withholding never flags the channel and never mints a
-  `gap:true` marker; a client that asked for less is not told it lost
-  something.
-
-The client half derives its set from surfaces that EXIST — open panes, live-tail
-registrations — and never from what is on screen, focused, or in a visible
-document (`frontend/src/lib/stores/watchedThreads.ts`). A surface that stopped
-receiving while off-screen would render stale the moment it is looked at again,
-and the recovery is a resync the user waits through.
-
-Because the filter is per connection, a client attached to several backends
-SPLITS its set rather than repeating it (`transport/backends.ts`
-`setWatchedThreadsEverywhere`): each machine is sent the thread ids it owns,
-plus every id whose owner the client does not yet know. Withholding an id from
-its owner is a surface that silently receives nothing and nothing later
-corrects it, while an unknown owner is the ordinary state of a thread reached
-by deep link or painted from the replica.
-
-### A client states whether it is running at all
-
-A client sends `{"type":"lease","state":"background"}` when the PLATFORM has
-paused it — the phone shell's app-lifecycle pause, and nothing else. The server
-then serves that connection less: `highlight:seed` is withheld entirely, and
-`provider:item_event` deltas are merged to one frame per (thread, item) per
-250ms. `{"state":"active"}` restores full streaming and flushes whatever the
-window was holding; any other spelling is a `bad_params` refusal that leaves
-the lease unchanged. Everything else — turns, approvals, errors, thread rows,
-notifications — is untouched, which is what keeps a sleeping phone's badges and
-its push mapping correct.
-
-The distinction from the watch frame above is the whole design. Watching is
-about WHICH entities a client has surfaces for; the lease is about whether the
-client is running. So it is never per pane, never `document.visibilityState`,
-never focus: a hidden tab and a minimised window keep streaming, for the same
-reason an off-screen pane keeps watching.
-
-The rules the two ends agree on:
-
-- **Active by default, and it survives nothing.** A connection that never sends
-  one behaves exactly as it did before the frame existed — every desktop
-  client, every browser client, every Go client in the tree. A reconnect starts
-  active and the client restates a non-active state after hello, beside its
-  watch set.
-- **A withheld seed is not a gap**, by the same ordering rule the watch filter
-  obeys: the check runs ahead of drop accounting. The channel is also ephemeral
-  and entity-filtered, so its advancing seq neither replays nor trips the
-  client's forward-skip heuristic.
-- **A merged frame carries the last merged frame's seq**, and the merged
-  frames of one channel never leave seq order. A client drops anything at or
-  below its channel cursor, so an out-of-order merge would be lost text rather
-  than late text; the server therefore flushes every pending row ahead of any
-  pass-through on that channel, and flushes before forwarding once resumed.
-  That same flush is what keeps a row's deltas ahead of the `meta` or `patch`
-  that re-states it.
-
-## The credential channel
-
-One launch, one session token, one validation function
-(`Credential.Authenticate`, `credential.go`). Everything below is about how
-that token reaches a request, never about a second policy.
-
-### A page URL carries a ticket, not the token — and a window we own carries neither
-
-A page URL travels: through window history, shell arguments, launcher logs,
-`--print-url-fd` output, and screenshots. So the most it ever carries is a
-**one-time page ticket** (`?t=`), and what a ticket buys is exactly one cookie.
-
-```
-Server.AppURL()  ──mint──▶  http://127.0.0.1:34567/?t=<ticket>&cid=…
-                                      │
-       browser loads the shell, SPA fetches /bootstrap.json?t=<ticket>
-                                      │
-       Credential.Exchange: validate ─▶ consume ticket ─▶ Set-Cookie
-                                      │
-       ao_page_34567=<token>; HttpOnly; SameSite=Strict; Path=/
-                                      │
-       bootstrap.ts strips ?t= from the URL; reload rides the cookie
-```
-
-A URL is the only channel that reaches a BROWSER, so that is the browser's
-path. A WEBVIEW window is a different situation: the Go process that mints the
-ticket also holds the window and can evaluate script in the document it just
-loaded, so the credential never has to enter the URL at all — and the reasons
-above are reasons not to put it there.
-
-```
-Server.WebviewPageURL()  ─────▶  http://127.0.0.1:34567/?host=webview&cid=…
-                                      │
-       page loads, announces itself, SPA waits on window.__aoPageTicket
-                                      │
-  uiwindow.DeliverPageTicket ─mint─▶ ExecJS(pagehost.DeliveryScript(ticket))
-                                      │
-       SPA fetches /bootstrap.json?t=<ticket> ─▶ same Exchange, same cookie
-```
-
-`?host=webview` is a marker, not a credential: it tells the page its ticket is
-arriving by injection so it waits for one instead of booting bare.
-`internal/pagehost` holds the marker, the two names the script writes
-(`window.__aoPageTicket` and the `ao:page-ticket` event, one per race
-direction) and the script itself, stdlib-only so the Windows launcher can link
-it. The trigger is Wails' `WindowRuntimeReady`, which the SPA raises for itself
-— it replaces `@wailsio/runtime`, so nothing else in the page will — and a
-ticket is minted per announcement, which is what gives a reloaded document a
-live one. All three window hosts share `uiwindow.DeliverPageTicket`: the
-desktop and isolated windowed boots, the Windows/WSL launcher, and the
-`--connect` stub. **No ticket appears in a webview URL.**
-
-Minted tickets are held oldest-first and bounded at `maxOutstandingTickets`
-(16). The bound matters because the settings panel's LAN share URL mints one
-per render; evicting the oldest keeps the newest URL — the one a user just
-copied — always valid.
-
-There is **one ticket mechanism** (`ticket.go`), shared by the page ticket and
-the WebSocket ticket below. Mint a CSPRNG token over an already-authenticated
-channel, let the first presentation spend it. The two users differ in exactly
-two parameters — the page ticket has no subject and no deadline, the WS ticket
-names a session and lives 30 seconds — and a third single-use token is a third
-set of parameters, never a third implementation.
-
-The exchange is single-use by construction: the second `/bootstrap.json`
-presenting the same ticket finds nothing to consume, and with no cookie either
-it gets the standard 404. A bookmarked `?t=` URL from a previous launch behaves
-identically, because tokens and tickets are both per-launch: the SPA sees a
-refused manifest and latches its existing `unauthorized` state. Nothing wedges.
-
-### Three carriers, one check
-
-| Carrier | Who uses it | Why not one of the others |
-|---|---|---|
-| `ao_page_<port>` cookie | every browser request after the exchange | script cannot read it back |
-| `Authorization: Bearer` | WSL launcher probe + notification socket, `ao-harness`, a same-host `--connect` stub's upstream hop, e2e's `/pageurl` calls | keeps the credential out of URLs, process listings, logs |
-| `?token=` | the browser and Node WebSocket APIs | those APIs build a URL and nothing else — no handshake headers |
-
-`Authenticate` reads all three and ends in the same `ConstantTimeEqual`.
-`Exchange` is `Authenticate` plus the ticket consumption and the `Set-Cookie`.
-A route that needs a credential calls one of those two; there is no third path,
-and adding one is the mistake this shape exists to prevent.
-
-### The launch credential admits an upgrade only from this machine
-
-`Authenticate` says which backend LAUNCH a client belongs to. It does not say
-WHICH client, and that is the whole difference: a connection carrying only the
-launch credential has no session id, so `CloseSession` has nothing to reach it
-by and the per-RPC gate has no grant set to read. It is unattributable and
-unrevocable by construction.
-
-That is fine while the peer is one of this host's own processes, and it is not
-fine off-host. So `handleWS` requires a non-loopback peer to NAME a live durable
-session (spec §4, "Local clients") — through the spent `?ticket=`, the
-`X-AO-Session` header, or the `ao_session_<port>` cookie, the three carriers
-`SessionForRequest` already reads. Locality is `loopback.PeerAddress` over the
-kernel-reported peer, the same predicate the event filter, the host-presence half
-of the step-up proof and `internal/app`'s `bindingAdmitsPeer` use.
-
-Naming a live session is necessary and not sufficient: the session's DEVICE also
-has a binding class, and a `loopback-only` device is one whose credential was
-never meant to leave the machine. `Config.SessionAdmitsPeer` is that second
-question, and all three carriers ask it — the header and cookie arms through
-`SessionForRequest`, the ticket arm through the hook directly, because a spent
-ticket already names its subject and takes the short path. One carrier that
-skipped it would be a full admission, since any of the three alone opens a
-socket.
-
-| Peer | Presents | Upgrade |
-|---|---|---|
-| loopback | launch credential, no session | admitted — the webview, `ao-harness`, the e2e rig, the launcher's notification socket, the `--connect` stub's carried hop when it is same-host |
-| loopback | a live session | admitted |
-| non-loopback | a live session (ticket, header, or cookie) whose device's binding class admits this peer | admitted — a paired browser, and a `--connect` stub that paired with this backend (`internal/deviceclient`), both on a ticket |
-| non-loopback | a live session bound `loopback-only` | `http.NotFound` |
-| non-loopback | launch credential alone | `http.NotFound` |
-| non-loopback | nothing | `http.NotFound` |
-
-This narrows what a sessionless credentialled connection may be; it loosens
-nothing. The launch credential is still demanded wherever it was demanded
-before, and the refusal is the same 404 a bad credential and a missing route
-both answer, so a LAN scanner still learns nothing from which rule refused it.
-
-The LAN share URL keeps loading the page — `/bootstrap.json` is unchanged, and
-the manifest must not be stricter than the socket it describes. What changes is
-what happens next: a networked page that never paired reaches a refused upgrade,
-and the SPA presents that as a pairing prompt rather than as an outage
-(`frontend/src/lib/transport/AGENTS.md`).
-
-### Why the origin check is load-bearing, not defence in depth
-
-Cookies are scoped by host and path — **not by port**. Any page served by any
-other listener on the same host therefore has our page cookie attached to
-requests it makes at us, and a WebSocket handshake is not subject to the
-cross-origin read rules that keep such a page out of `/bootstrap.json`. SameSite
-does not close this: same-site ignores ports too.
-
-So `OriginAllowed` runs first on `/ws`, `/bootstrap.json` and `/pageurl`, and it
-answers from the request rather than a stored string: scheme from the TLS state,
-authority from the `Host` header, plus whatever patterns a LAN bind added. A
-request carrying no `Origin` at all is a client that is not a browser and passes
-to the credential and peer rules — that is the exception that keeps `ao-harness`
-and the launcher on the same validation function instead of a bypass. `upgrade`
-hands coder/websocket `InsecureSkipVerify: true` precisely because this package
-has already made the decision, so one rule holds on loopback and LAN alike.
-
-The TLS state, and deliberately not the `X-Forwarded-Proto` header that the
-manifest's socket URL reads (`requestIsHTTPS`). The two are the same question
-with different stakes: a wrong scheme on `wsUrl` produces a URL the browser
-cannot connect to, while a wrong scheme here would let a caller widen an
-allow-list by describing itself. A deployment behind a TLS-terminating proxy
-therefore still allow-lists its origin explicitly.
-
-### `/pageurl`: a ticket is spent, and some clients navigate twice
-
-`PageURLPath` answers a fresh page URL to a caller that already holds the
-credential. It exists because several consumers navigate more than once per
-launch and a ticket is spent by the document it was minted for. It has two
-answer shapes, one per delivery channel:
-
-| Shape | Answer | Consumer | When it asks |
-|---|---|---|---|
-| default | plain text: one ticketed URL | `ao-harness open` / `info` / `attach` / `up` | any time it prints or opens a URL for a human |
-| default | plain text: one ticketed URL | e2e `HarnessApp.open()` | every navigation, since each test gets a fresh cookie jar |
-| `?host=webview` | JSON `{url, ticket}` | Windows/WSL launcher | the reload keybinding re-navigates WebView2 |
-
-The webview shape keeps the halves apart so the URL the launcher navigates to
-stays bare and the ticket goes to `ExecJS`. `Config.DecoratePageURL` supplies
-the renderer for both, so `main.go` keeps the single rule for what a shell adds
-to a page URL (`?cid=`, the harness marker) and this package does not restate
-it. Two binaries call the route without linking this package
-(`internal/wsllauncher`, `internal/harnessclient`); each restates the path
-behind a drift-guard test rather than pulling the server into a launcher.
-
-### `/healthz`: the one route that asks for nothing
-
-`HealthPath` answers `{version, backendId}` to any caller. Every other route
-on this listener spends a credential; this one cannot, because both consumers
-run at the moment there is no valid credential to spend. The SPA's pre-WS
-compatibility check runs before a socket exists, and the update watchdog is
-asking whether the backend it was talking to is still the same build — and a
-credentialled health route answers 404 to a *restarted* backend, which is
-indistinguishable from down and is precisely the state the probe exists to
-observe. Neither field authorizes anything, and both are already in the
-manifest the bundle serves.
-
-Two things it still does. It sends no `Access-Control-Allow-Origin`, so a
-foreign page may issue the request and can never read the reply, and it goes
-through the same `loopbackHostGuard` the credentialled routes use. Readiness
-is not folded in: `/bootstrap.json`'s 503 stays the "booting" answer, because a
-probe that reports booting as unreachable would defeat both consumers.
-
-### `--connect` carries the socket rather than handing over the credential
-
-Paired-computer boots use `internal/frontendclient`: the ordinary local
-transport serves a small connection-management receiver and carries every
-execution computer independently. It opens without probing the selected host,
-owns presentation files under `frontend/`, and reuses a persisted local port.
-The page's administrative HOME handle has no execution store or replica UUID.
-Computer catalogs and all-computer calls exclude it. Removing the first host
-leaves the controller and every other connection usable.
-
-`agent-overflow --frontend` opens that same catalog without naming a launch
-computer. It works with an empty catalog and supports `--data-dir` for an
-independent installation. Native frontend updates reuse the desktop updater,
-then reopen this durable mode with the same data root. They never replay an
-invitation or require the initially paired computer to still exist.
-
-The legacy launch-token path uses the single-upstream `internal/clientmode`
-relay. Both paths hold upstream credentials in Go. The native window injects a
-page ticket, exchanged for the local origin's HttpOnly cookie. The shared
-`backendproxy` carrier checks local admission, removes the local cookie and
-origin headers, and supplies the correct upstream credential.
-
-Which credential that is depends on how the stub was started, and it is exactly
-one of two:
-
-| Started with | Holds | Presents on the hop |
-|---|---|---|
-| `--connect ws://host:port/ws?token=…` | the upstream backend's launch token | `Authorization: Bearer <token>`, plus the backend's own local-channel session forwarded through `internal/relaysession` |
-| `--connect <pairing link>` or a paired backend name | a rotating device session and a device key (`internal/deviceclient`) | a single-use `?ticket=` minted per upgrade, over TLS pinned to the certificate the pairing payload named |
-
-The first is a SAME-HOST attach: a launch credential alone cannot admit an
-off-host upgrade, so a stub across a network has to be the second. The second
-carries nothing on the header arm — only a spent ticket both names a session and
-stands in for the launch credential, and a paired device has no launch
-credential to present — while an attached computer's bootstrap probe, which is an
-ordinary HTTP request rather than an upgrade, carries `X-AO-Session` plus a proof
-minted for that request.
-
-The alternative — point the page straight at the upstream — cannot work under a
-cookie model, because the stub cannot set a cookie for another origin; the page
-would need a credential it can read, which is the thing the design removes. The
-carry also keeps SPA code identical across embedded, `--connect`, and remote
-browser boots: one origin, one cookie, and `validateWsUrl` with no exemptions.
-
-## The scoped-token route
-
-`POST /rpc` (`ScopedRPCPath`, `httprpc.go`) is the one-shot HTTP RPC the `ao`
-CLI speaks. A CLI process makes one call and exits, so it gets a POST rather
-than a WebSocket with a replay ring: one `ClientFrame` in, one `ServerFrame`
-out, body capped at `maxScopedRPCBody`.
-
-HTTP status carries transport-level outcomes only (bad verb, unreadable body,
-unauthenticated). Everything the dispatcher can answer, including the
-authorization refusals, comes back 200 with a `ServerFrame` error envelope, so
-the CLI has exactly one place to look for a machine-readable code.
-
-`invokeScoped` takes a method NAME only. Numeric ids exist so generated bindings
-can skip a string lookup, and a CLI has no generated bindings, so accepting ids
-here would mean keying the allow-list twice. The name is filtered by
-`AuthorizeScopedMethod` against the caller's scope, then goes through the same
-`ResolveForOrigin` and `InvokeForOrigin` path the WebSocket uses, with the scope
-on the context. Non-loopback peers were already refused with a 404 before any of
-that, so `isLoopback` is true by construction and the CLI receives the method's
-real error text, which is the only diagnostic a headless caller has.
-
-The token registry lives in the app (`App.aoTokens`); this package consults it
-through the narrow `ScopedTokens` interface. `registerAOTokenLocked` and
-`revokeAOTokenLocked` are its only mutators and both run from the session-map
-mutators in `app_session_manager.go`, so a token is registered exactly when its
-session enters the map and revoked exactly when it leaves. A resolved scope
-therefore always names a live session, and an unknown token is
-indistinguishable from a revoked one: both are a bare 401.
-
-## Additional receivers
-
-`Dispatcher.Register` accepts more than one receiver, and the only one besides
-the repo-root `App` is the harness's `Harness`, registered solely by the
-`--harness` boot path with `RegisterOptions{LocalOnly: true}`. The whole
-receiver is refused for non-loopback peers, and outside harness mode its methods
-do not exist on the wire at all. `Config.Harness` is the manifest half of the
-same switch: it makes `/bootstrap.json` carry `"harness": true`, and `main.go`
-sets it from the very expression that registers the receiver, so the manifest
-can never claim a harness whose methods are absent. It announces a mode and
-grants nothing. The SPA keys its harness bridge import on it so an ordinary boot
-never loads that module.
-
-Rules for any future receiver:
-
-- Gate registration on the boot path that needs it. A receiver that exists on
-  every boot belongs on `App` instead.
-- Do not collide with `App` method names, since name-based dispatch shares one
-  namespace. Use a distinctive prefix, as `Harness*` does.
-- Receiver-level `LocalOnly` is coarse by design, and it is the ONLY locality
-  gate left on the dispatcher — there is no per-method origin partition to
-  extend. A receiver that needs per-method authorization joins the generated
-  scope table (a `receiverSpecs` entry plus an `//ao:scope` on every method) so
-  the per-call gate reads it, rather than re-checking origin in method bodies.
-
-## Event coalescing
-
-Every connection buffers pushed events for one 16 ms window or 50 events,
-whichever comes first, and ships them as a single `type:"batch"` frame.
-Single-event windows fall through to an ordinary `type:"event"` frame.
-
-Coalescing applies to loopback too. The receiving webview pays per message (a
-macrotask, a `JSON.parse`, an effect flush), so batching is what protects the
-render loop during streaming bursts, and latency stays bounded at one window.
-
-Replay (`handleReplay`) ships through the same batch envelope in chunks of the
-same 50-event threshold, but without the timer: the whole backlog is already in
-hand, so chunking adds no latency. A reconnect during heavy streaming can drain
-up to `DefaultRingCapacity` (1000) events, and per-event frames gave that worst
-case the least protection.
-
-Ordering is preserved end to end. `writeBatchFrame` writes one chunk at a time
-under `writeMu`, `spliceBatchFrame` keeps slice order, every consumer iterates
-entries in order, and the `type:"replay"` completion marker still lands last.
-
-## Keepalive and connection death
-
-Three mechanisms, one per failure mode.
-
-**Client-visible `{type:"ping"}` frames**, one per keepalive interval. Two jobs:
-they keep intermediary connection state warm, because the Windows to WSL2
-localhost relay tore down mid-session connections with a clean FIN (incident
-2026-07-28), and they give browser clients, which cannot observe protocol pings,
-a guaranteed traffic floor.
-
-The SPA's stale-socket watchdog (`wsClient.ts STALE_TRAFFIC_THRESHOLD_MS`, three
-heartbeat periods) force-closes a connected socket that has received nothing for
-that long, because a half-open TCP connection with the peer gone and no FIN
-never fires a close event on its own. It makes no silence verdict while
-`document.hidden` or the native background lease is active, when scheduling may
-delay its interval and WebSocket message delivery; resume resets the traffic
-clock before verdicts resume. The watchdog arms per connection: the first ping frame proves
-this server heartbeats, and the proof resets on close,
-so version skew in either direction cannot reconnect-loop an idle but healthy
-connection. It also stands down while a remote backend has a RECENTLY issued RPC
-outstanding, since one large response frame can legitimately silence the wire
-past the threshold. Recently, not merely outstanding: a call issued longer ago
-than the threshold is itself evidence of a dead socket, and suspending on any
-pending call meant a half-open connection whose calls all hung was the one case
-the watchdog never fired for, leaving their 60s timeouts as the only exit.
-
-The same timer independently bounds replay completion to `REPLAY_TIMEOUT_MS`
-(one RPC transfer budget). Live traffic cannot extend that deadline because it
-can overtake replay. Suspension defers this verdict too and resume grants a
-fresh window. Either failure retires the socket before requesting a graceful
-close, so a stalled close handshake cannot delay recovery. Normal close handling
-rejects pending mutations once, releases buffered events, and retries unchanged
-replay cursors. Only sockets that completed replay may reset the backoff.
-
-**Protocol-level pings**, on every third tick, with a pong timeout. These detect
-half-open connections server-side, where writes into a dead TCP window buffer
-silently. Pongs are only surfaced while the read loop sits in `ws.Read`, so a
-missed pong convicts only when the reader was actually parked in Read with no
-recent frame (`inRead` plus `lastReadAt`). A reader busy streaming a replay or
-waiting on the RPC semaphore proves nothing about the peer. On a convicting
-timeout the conn is closed so the handler tears down instead of lingering.
-
-**A write deadline** (`writeTimeout`) on every wire write through `writeRaw`. A
-peer that stops draining would otherwise block a write forever while holding
-`writeMu`, wedging the event pump and the keepalive loop with it. On expiry
-coder/websocket tears the connection down, which is exactly the teardown that
-peer needs.
-
-### Close logging
-
-Every connection close logs one line, graceful closes included, with peer
-address, duration, and close reason (`closeReason`). Close status 1005 with no
-close frame is the intermediary-teardown signature, 1006 is a network drop, and
-1000 or 1001 is a client navigation. `session revoked` is its own reason: a
-revocation tears the socket down by cancelling its context, which at the error
-alone reads identically to a server shutdown.
-
-The duration in that line is the same quantity the client's reconnect ladder
-judges itself on. `wsClient` resets its backoff only after a connection survived
-`BACKOFF_RESET_AFTER_MS`, so a relay that tears down long-lived sessions keeps
-reconnecting fast, while an accept-then-close backend backs off instead of
-storming.
-
-## The device-facing credential routes
-
-Five POSTs (`authroutes.go`) are the only routes a client reaches without the
-launch credential, because they are how a client that has never met this backend
-gets one: `/auth/pair` redeems a pairing link, `/auth/token` rotates a credential
-pair, `/auth/passkey/begin` and `/auth/passkey/finish` sign a device in with a
-registered passkey, and `/auth/ticket` mints the single-use ticket the `/ws`
-upgrade spends.
-
-```
-device                                   backend
-  │  POST /auth/pair {token, keyThumbprint}   │
-  │──────────────────────────────────────────▶│  spends the link, enrolls the key,
-  │                                           │  mints a session with activated_at unset
-  │◀── {credential, refreshSecret,            │
-  │     awaitingConfirmation, verification} ──│
-  │                                           │
-  │  (owner matches the six digits on the     │
-  │   minting surface → ConfirmPairing)       │
-  │                                           │
-  │  POST /auth/ticket   (session credential) │
-  │──────────────────────────────────────────▶│
-  │◀── {ticket, expiresAtMs} ─────────────────│
-  │  GET /ws?ticket=…                         │
-  │──────────────────────────────────────────▶│  spend, re-check liveness, upgrade
-```
-
-The passkey pair is the same exchange with the pairing link removed:
-
-```
-browser                                  backend
-  │  POST /auth/passkey/begin  (no body)      │
-  │──────────────────────────────────────────▶│  starts a discoverable ceremony,
-  │                                           │  pins the relying party beside it
-  │◀── {ceremonyId, options} ─────────────────│
-  │  (navigator.credentials.get, the person   │
-  │   verifies on their authenticator)        │
-  │  POST /auth/passkey/finish                │
-  │    {ceremonyId, response, keyThumbprint}  │
-  │    X-AO-Device-Key: <proof>               │
-  │──────────────────────────────────────────▶│  deletes the ceremony, verifies,
-  │                                           │  resolves the device, mints a LIVE session
-  │◀── {credential, refreshSecret, scopes} ───│
-```
-
-No verification number and no confirmation step: the assertion is a signature by
-a key the owner registered from a surface that already held admin, and a second
-screen adds nothing. The device proof is still required — the passkey proves the
-person, and the device row is what a revocation reaches.
-
-The transport owns the wire and nothing else: `AuthEndpoints` is a five-method
-interface it declares and the App satisfies over `internal/identity`, and the
-DTOs are dumb (the WebAuthn options and the browser's response cross as raw
-JSON, unread by either layer). A refusal is `401` with `{"reason": "<code>"}` — the typed code
-from `internal/identity`'s closed set, which the client's presentation module
-turns into a sentence. The device key rides `X-AO-Device-Key` and is never read
-from the body: a proof a caller may write into the document it is proving
-something about is not a proof.
-
-A session credential itself reaches a request two ways and is read one way
-(`SessionCredential`): the `X-AO-Session` header for a client that can set one,
-and the HttpOnly `ao_session_<port>` cookie the bootstrap exchange plants for the
-browser, which cannot set headers on a WebSocket handshake. The header wins when
-both are present — a relay forwarding a credential deliberately outranks an
-ambient cookie.
-
-## Per-peer request budgets
-
-Four budgets carry a token bucket per peer: `/bootstrap.json`, `/pageurl`,
-`/rpc`, and the five `/auth/*` routes together. `/healthz` and the SPA assets carry none, and `/ws` carries none because
-one upgrade opens a long-lived connection whose credential came from the ticket
-exchange that preceded it.
-
-The budget bounds work, not guessing. A 256-bit launch token is not reachable by
-any request rate; what a rate reaches is the backend's own cost per request, and
-on `/pageurl` the eviction of tickets other pages are about to present.
-
-The `/auth/*` routes share ONE table on purpose: they are alternative ways for
-the same peer to ask this backend for a credential, so a peer that has spent its
-budget on one must not simply move to the next.
-
-The refusal is `429` with `Retry-After` rather than the credential channel's
-`404`, and that difference is load-bearing rather than cosmetic: the SPA treats a
-401/403/404 on the manifest as terminal and stops reconnecting, so a 404 here
-would convert a burst into a permanent logout. A rate-limit refusal is transient
-and has to look like one.
-
-Loopback peers are limited on the same terms as anyone else, so the path is
-exercised continuously in development and in the e2e suite rather than running
-for the first time on a LAN bind. The peer table is bounded and self-cleaning:
-an entry whose budget has refilled is indistinguishable from a peer never seen,
-so inserts drop idle peers instead of a sweep goroutine doing it on a timer.
-
-## Revoking a live connection
-
-A revoked session row stops the next call. It does nothing to a socket that is
-already streaming, which will keep receiving events until something closes it.
-`SessionConns` (`internal/transport/sessionconns.go`) is that something: a map
-from session id to the connections carrying it, and one `CloseSession` that
-tears all of them down synchronously.
-
-Two seams keep the direction of dependency clean. `Config.SessionForRequest`
-resolves a request's session before the upgrade and may refuse it (with the same
-`404` a bad credential gets), and `SessionConns` satisfies the one-method
-interface `internal/identity` declares for itself. Neither package names a type
-from the other, so transport stays store-free.
-
-The teardown itself is three ordered steps — close the event subscriber, cancel
-the connection context, then `CloseNow` the socket — because only the first of
-those makes "delivery has stopped" true at the moment `CloseSession` returns
-rather than whenever the parked reader notices. Deregistration rides
-`ConnState.RunCleanups`, the same pass that releases every other per-connection
-resource.
-
-The registry keeps no record of a revoked session, so a later connection on that
-id attaches like any other. Refusing it is the database row's job, checked per
-call rather than latched at upgrade time.
-
-**The attach closes a window rather than opening one.** Liveness is read during
-the upgrade, before the socket joins the registry, so a revocation landing
-between those two moments iterates a registry the arriving connection is not in
-yet and reaches nothing: `CloseSession` returns having closed every socket
-except that one. So the handler asks once more immediately AFTER attaching, and
-closes with `session ended` if the answer changed. Ordered after the attach for
-the same reason a re-check before it would not help: that only moves the window,
-it does not close it.
-
-Revocation reaches open sockets synchronously, but two other ways a session stops
-reach nothing at all: it EXPIRES, or something outside this process revokes it.
-So a connection that names a session also re-validates on an interval
-(`Config.SessionRecheckInterval`, 60s) and caps its own lifetime
-(`Config.MaxRemoteConnLifetime`, 12h) to force a periodic re-ticket.
-
-**Loopback connections are exempt from the lifetime cap.** The cap exists so a
-credential that travels a network is re-presented periodically; the local page's
-session is re-minted at boot and travels none, so capping it would cost the
-webview a visible reconnect and buy nothing. The re-check still applies — a local
-session can expire like any other. `resolveWatchWindows` holds every default and
-exemption in one function so none of it is invisible at the call site.
-
-All three server-side teardowns cancel the connection context, which at the
-terminal error alone is indistinguishable from a shutdown. `connHandler.closeCause`
-is what makes the close log say which one ran: `session revoked`, `session no
-longer live`, or `connection lifetime reached`.
-
-## References
-
-- `internal/transport/AGENTS.md` for the authz, replay, and classification rules.
-- `docs/architecture/data-flow.md` for how triage events reach the bus.
-- `docs/architecture/root-decomposition.md` § Wire compatibility for why method
-  IDs hash under `main.App` regardless of where the code lives.
-- `frontend/src/lib/transport/` for the client half.
+`internal/transport` provides the HTTP and WebSocket protocol shared by the
+embedded webview, `agent-overflow --connect`, remote browsers, and attached
+backends. This document describes the protocol mechanisms. Package editing rules
+live in [internal/transport/AGENTS.md](../../internal/transport/AGENTS.md).
+
+## Listener lifecycle
+
+### Stable ports
+
+The webview origin includes the port, so changing an ephemeral port discards
+origin-scoped browser storage and changes the page-cookie name. Port stability
+is persistence, not access control.
+
+`main_transport_port.go` owns the per-install pin in
+`transport-port.json`; transport receives the selected port in `Config.Port`.
+Resolution order is:
+
+1. an explicit non-zero `--listen` port;
+2. `network.listenPort` from host settings;
+3. the saved transport pin;
+4. an ephemeral port, which is adopted after a successful bind.
+
+An explicit CLI port does not read or write the pin. A configured settings port
+fails loudly if unavailable because published endpoints already name it. The
+ordinary saved pin may use `Config.EphemeralPortFallback` for port-specific
+bind failures and then adopt the replacement. Other bind errors remain fatal.
+The isolated harness opts out of persisted network settings.
+
+`Rebind` keeps the current port for a host-only change and does not move to an
+ephemeral port. It creates the replacement listener before closing the current
+one. Its close-and-retry path applies only to address-in-use errors; other bind
+failures leave the working listener intact.
+
+Every package-created listener passes through `bindListener`. Explicit IPv4
+addresses use `tcp4`, including `0.0.0.0`, so WSL's Windows relay receives an
+IPv4 listener. The Windows launcher may perform one explicit
+`--reset-transport-port` retry when the WSL backend bound successfully but
+cannot be reached from Windows.
+
+### TLS on the same address
+
+A configured listener accepts TLS and cleartext HTTP on one address.
+`tlssniff.go` classifies the first byte within the HTTP header-read deadline
+and hands TLS connections to `tls.Server`. Classification runs outside the
+accept loop so an idle peer cannot block other accepts. Temporary accept errors
+are passed through to `http.Server` without becoming a permanent listener
+failure.
+
+`CertificateSource` selects a certificate for each handshake. The canonical
+domain receives the configured domain certificate. Other names, including
+address-based and SNI-less clients, receive the self-signed certificate that
+paired native clients pin. Both certificate slots may be swapped without a
+rebind.
+
+Auxiliary listeners are injected rather than created here. They do not gain the
+same-port TLS wrapper and must preserve their explicitly limited route and peer
+policy.
+
+## Credentials and request admission
+
+The launch credential identifies one backend process. It has three carriers:
+
+| Carrier | Use |
+|---|---|
+| `ao_page_<port>` HttpOnly cookie | browser HTTP requests after bootstrap |
+| `Authorization: Bearer` | native and same-host process clients |
+| `?token=` | browser/Node WebSocket APIs that cannot set handshake headers |
+
+`Credential.Authenticate` applies one constant-time check to all carriers.
+Routes either call it directly or use the ticket exchange built on it.
+
+### Page bootstrap
+
+Browser URLs carry a single-use page ticket, not the launch credential. The SPA
+presents `?t=` to `/bootstrap.json`, which consumes the ticket and sets the
+HttpOnly, SameSite=Strict page cookie. The SPA then removes the ticket from the
+visible URL.
+
+Native webviews load a bare URL marked `?host=webview`. Their owning process
+mints a ticket after `WindowRuntimeReady` and injects it through
+`uiwindow.DeliverPageTicket`. A reload receives a new ticket. `/pageurl`
+provides fresh URLs or separate URL/ticket values to authenticated native
+clients that need another navigation.
+
+Page tickets and session-bound WebSocket tickets use the shared single-use
+ticket implementation. A page ticket has no subject or deadline. A WebSocket
+ticket names a durable session and has a short lifetime.
+
+### Browser origin and peer locality
+
+`OriginAllowed` runs before browser credential admission on the WebSocket,
+bootstrap, and page-URL routes. Cookies are host-scoped rather than port-scoped,
+so another listener on the same host could otherwise cause a credentialed
+WebSocket request. The expected scheme comes from the request's TLS state.
+Headerless native requests proceed to their separate credential and peer checks.
+
+The launch credential alone may open a WebSocket only from a kernel-reported
+loopback peer. An off-host upgrade must name a live durable session through its
+session cookie, header, or single-use ticket. The session's binding class must
+admit the actual peer, and key-bound devices must present a request-bound device
+proof. A ticket names a session but does not replace the liveness, binding, or
+proof checks.
+
+Authentication failures on browser-facing routes use the same non-disclosing
+404 shape as an unavailable route. Structured authentication routes return
+their documented refusal codes and hints.
+
+### Health and activation
+
+`/healthz` returns version and backend identity without credentials so clients
+can distinguish restart from unavailability before they possess a valid
+credential. It provides no CORS read permission and still uses the host guard.
+
+During supervised activation trials, `Config.WaitForActivation` gates every
+other route, including credential rotation, tickets, transfers, bundles, and
+WebSocket upgrades. A disconnected request stops waiting through its context.
+Activation failure is HTTP 503, distinct from credential refusal.
+
+## HTTP RPC and additional receivers
+
+`POST /rpc` is the bounded one-shot RPC surface for the `ao` CLI. It accepts a
+method name rather than a numeric ID and returns dispatcher outcomes in the
+ordinary `ServerFrame` envelope. HTTP status represents transport failures
+such as an invalid HTTP verb, unreadable body, or missing authentication.
+
+Each scoped token contains a fixed allow-list and expiry. The dispatcher still
+applies the registered method scope, route, and argument-dependent checks. A
+token does not widen a method's authority.
+
+Additional receivers use stable package/type labels because those labels feed
+method IDs. Receiver registration exposes all generated methods for that
+receiver, so production registration is an authorization decision. Local
+harness receivers stay local-only.
+
+## Method metadata and routing
+
+`methodgen` scans bound methods and emits the Go `MethodMeta` table and the
+frontend route table. Method IDs are FNV-1a 32-bit hashes of
+`<package>.<typeName>.<methodName>`.
+
+Every exported bound method has:
+
+- a `//ao:scope <name>` annotation;
+- a route, either inferred from a supported first parameter or declared with
+  `//ao:route home|selected|all`; and
+- step-up metadata when fresh owner confirmation is required.
+
+Scope determines whether the caller may invoke a method. Route tells a
+multi-backend client which connection should carry it. The server receiving the
+frame does not forward it to another backend.
+
+`thread` and `project` routes are inferred from first parameters named
+`threadID` and `projectID`. `workspace` is inferred from a first
+`gitapp.WorkspaceRef`. An explicit route overrides inference for methods whose
+first ID is not their execution location. Run `make methodgen` after changing
+methods, vocabulary, receiver specifications, or generator inputs.
+
+## Event replay and filtering
+
+Each registered channel has one `ChannelPolicy` describing scope, retention,
+entity filtering, and background behavior. The event ring is an in-memory,
+bounded reconnect buffer. SQLite remains the authoritative history.
+
+The hello frame carries:
+
+- backend and launch identity;
+- capability flags;
+- the visible channel heads as `replayBaseline`; and
+- connection-specific authorization information.
+
+A new launch invalidates cursors from an earlier sequence space. On reconnect,
+the client asks for replay from its saved per-channel cursors. Live and replay
+frames may interleave, so clients reconcile by sequence and wait for the replay
+completion marker rather than relying on arrival order.
+
+### Gap markers
+
+`gap:true` instructs a client to reload authoritative state. It is returned
+when a cursor is below retained history, above the current head, or names a
+sequence space for a channel with no ring. The marker's `seq` may be lower than
+the client's cursor and must be encoded even at zero.
+
+Ephemeral channels do not replay retained frames. Latest-only channels return
+the current value rather than reporting an eviction gap. Both still report an
+above-head cursor because it belongs to another sequence space.
+
+When a subscriber buffer is full, the server records the affected channel. The
+next deliverable event for that channel carries `gap:true`; other affected
+channels receive standalone gap markers before later delivery. Latest-only
+channels do not need a marker because their next frame supersedes the loss.
+Client-side forward-sequence detection remains a second loss signal within one
+connection.
+
+### Watched entities and paused clients
+
+A `watch` frame replaces the connection's complete watched-thread set.
+Connections that never send one receive all events. On reconnect the client
+re-sends its set before asking for replay. Entity-filtered channels withhold
+events outside the set; other channels continue to support navigation,
+notifications, and summary state. Empty or unrecognized entity attribution
+fails open to delivery.
+
+Withheld frames are not transport loss and do not produce gap markers. The
+frontend therefore disables inferred forward-gap handling only for registered
+entity-filtered channels after it has sent a watch set.
+
+A `lease` frame reports whether the platform has paused the client. It is not
+page visibility, focus, or pane selection. New connections start active.
+Background policy may withhold highlight seeds and merge provider item deltas.
+Returning active flushes pending deltas in channel sequence order before later
+pass-through frames.
+
+## Framing, coalescing, and keepalive
+
+All messages are JSON text frames; binary frames are rejected. RPC responses,
+single events, event batches, replay completion, gap markers, watch state,
+lease state, screen presence, and keepalive have distinct frame shapes.
+Unknown additive fields remain compatible.
+
+Every connection coalesces events over a small bounded window to reduce webview
+message overhead. A single event keeps its ordinary frame shape; multiple
+events use `type:"batch"`. Non-loopback connections may also negotiate
+permessage-deflate. Coalescing preserves channel sequence order and respects
+the configured event-count bound.
+
+The server sends application-visible ping frames on the heartbeat cadence and
+periodically verifies a protocol pong while the reader is parked. Every write
+has a deadline. Close logs record peer, duration, and a specific server-side
+cause when known. The frontend's stale-socket threshold is defined relative to
+the heartbeat period and does not judge browser-hidden intervals where timers
+and delivery may be throttled.
+
+## Session lifetime and revocation
+
+`SessionConns` maps durable session IDs to current WebSockets. It exists so a
+revocation can stop event delivery immediately rather than waiting for the next
+RPC. Empty session IDs are never registered.
+
+Admission checks the session before upgrade. After registry attachment, the
+server checks it again to close the race with revocation between those steps.
+Session-bearing connections then recheck liveness periodically and enforce the
+configured maximum connection lifetime. Loopback page connections retain their
+documented exemption from the network-session lifetime cap.
+
+Revocation teardown:
+
+1. closes the event subscriber;
+2. cancels connection work; and
+3. closes the WebSocket to wake the reader.
+
+The steps are idempotent and run without holding the registry lock. Ordinary
+connection teardown uses the same cleanup stack. Transport stores no revocation
+tombstone; the durable identity rows remain authoritative for later admission.
+
+The per-RPC scope hook also consults current session liveness, so an established
+socket cannot continue invoking methods from authorization captured at upgrade
+time.
+
+## Client attribution
+
+The upgrade URL carries a durable browser-profile device ID and a per-page-load
+connection ID. Bound methods read them with
+`transport.ClientFromContext(ctx)`. The generated TypeScript signature omits
+the leading Go context parameter.
+
+The device ID supports attribution. The connection ID supports echo
+suppression. Tabs in one browser profile share a device ID and must still
+receive one another's writes. Both identifiers may be empty for background,
+in-process, and test calls.
+
+## Device-facing credential routes
+
+Invitation minting, redemption, confirmation, refresh, ticket minting,
+passkeys, recovery, and own-device enrollment use dedicated bounded HTTP
+routes. They share transport authentication and refusal encoding while
+`internal/identity` owns their durable state and cryptographic decisions.
+
+Per-peer budgets are applied before expensive parsing or cryptography and are
+bounded in memory. The accepted socket is the default source of peer identity.
+Trusted-proxy handling must be explicit and limited to the configured proxy
+boundary.
+
+Recoverable refresh is specified in
+[session-renewal.md](session-renewal.md). Remote access roles, session binding,
+pairing, and step-up behavior are specified in
+[remote-access.md](../specs/remote-access.md).
+
+## Validation map
+
+The highest-value transport tests cover:
+
+- stable-port precedence, fallback, rebind rollback, and IPv4 socket family;
+- same-port TLS classification, SNI selection, certificate swaps, and temporary
+  accept errors;
+- every credential carrier across loopback and off-host peers;
+- origin, binding, device-proof, activation, and rate-limit boundaries;
+- generated method metadata and frontend registry parity;
+- replay ordering, both directions of cursor gaps, subscriber overflow,
+  entity filtering, and background coalescing;
+- blocked writers, keepalive timeout, session revocation during upgrade, and
+  cleanup races; and
+- mixed-version hello, refusal, refresh, and additive-field compatibility.

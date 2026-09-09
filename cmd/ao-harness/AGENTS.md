@@ -1,312 +1,61 @@
-# cmd/ao-harness
+# ao-harness
 
-The shell driver for a running agent test harness (or soak) instance:
-boot one, seed it, script its mock providers, wait on its event wire,
-read its database and its evidence logs, stop it again.
+This CLI starts, discovers, drives, measures, and stops isolated harness and
+soak instances. Command syntax is generated from the descriptor tree; use
+`ao-harness help`, `ao-harness <group> -h`, and
+[ao-harness.md](../../docs/references/ao-harness.md). Regenerate that reference
+with `go generate ./cmd/ao-harness` after changing commands.
 
-- **Command surface, flags, subcommands**: `ao-harness help`,
-  `ao-harness <group> -h`, and the generated reference
-  [docs/references/ao-harness.md](../../docs/references/ao-harness.md)
-  (`go generate ./cmd/ao-harness`, which runs the undocumented
-  `--generate-docs <path>` mode over the descriptor tree `help` prints).
-  `rpc --list [pattern]` prints what one live instance exposes. Keep no
-  hand-written command table in this file: the last one drifted five
-  commands and a deleted source file behind `commands()`.
-- **Mechanism and rationale** for bench workloads, CPU profiling, the
-  health rollup, the state-clone repro rig, the typed monitor edge, and
-  the frontend bridge:
-  [agent-harness.md](../../docs/architecture/agent-harness.md)
-  § Driving an instance from a shell. Contract:
-  [testing-harness.md](../../docs/specs/testing-harness.md) §3. Soak
-  preset: [soak-rig.md](../../docs/architecture/soak-rig.md).
+Architecture and workflows are documented in
+[agent-harness.md](../../docs/architecture/agent-harness.md) and
+[soak-rig.md](../../docs/architecture/soak-rig.md).
 
-## What it is not
+## Safety and ownership
 
-A pure client. It links `internal/harnessclient` (WS peer plus process
-supervisor) and no App code, so it cannot fabricate app state: every
-capability is an RPC the backend already exposes, and every file it reads
-is one the backend already writes. One allowed out-of-band read:
-`health` samples the backend's native process ownership set directly
-(`procrss.SampleAll`), because liveness must not depend on the wire of
-the process being judged. Anything else goes through an RPC.
+- Keep this binary independent of App and transport-server code. Capabilities
+  go through harness RPCs. The only direct process read is the native health
+  sample for the owned backend responsibility.
+- Never target a developer's real app data or provider homes. Preserve the
+  canonical-path and symlink refusals for `up` and `db`. `clone --from` and
+  `up --keep-home` remain explicit operator-selected exceptions.
+- Every launch reserves host capacity, installs the platform containment
+  policy, and arms the detached watchdog before reporting success. New launch
+  paths and workloads inherit all three layers.
+- Resolve an instance from explicit ID, unique prefix, or data root before
+  consulting live/default candidates. Ambiguity is an invocation error and
+  must list candidates; never guess for reads or lifecycle operations.
+- Treat registry rows as token-free discovery records about data roots. Read
+  authentication from the selected root's instance file.
+- Before signalling, deleting, or pruning, verify namespace, PID, process birth
+  marker, executable identity, and the data root's current claim. A force flag
+  may relax only an explicitly defined missing-claim case, never contradictory
+  ownership evidence.
+- Detached browser and backend launches own process groups. Teardown kills the
+  verified group, not only the parent process. Keep live detached browser
+  profiles until the browser group is stopped.
 
-`open --browser` puts the RPC token on the browser's argv
-(`/proc/*/cmdline`) and in history. The default, printing the URL, does
-not. `attach` has the same exposure, for the same reason: the page URL
-is the authenticated one.
+## Command contracts
 
-One allowed read outside the "files the backend writes" rule, of an
-executable path only: `attach` resolves a browser through
-`$AO_HARNESS_BROWSER`, then `exec.LookPath`. It never downloads — this
-binary has no network story and must not grow one.
+- `db` remains read-only at both layers: a read-only SQLite connection and a
+  single-statement allowlist. Do not add a write path or depend on PRAGMA
+  `query_only` alone.
+- `postmortem` reads stopped-run evidence without attaching to a live instance.
+- Event `await` defaults to future events; history is opt-in. Register waits
+  before the RPC that may synchronously produce the event.
+- Resolve thread selectors before the command's main RPC. An invalid selector
+  is an error, never an empty result.
+- UI, performance, monitor, and bench commands require a registered page. CDP
+  profiling and tracing require Chromium and must state that limitation.
+- `attach` proves that its newly spawned page registered and answered the
+  bridge. Snapshot existing page IDs before launch and exclude them from the
+  result. Timeout or browser exit is failure and tears down the browser group.
+- Instruments verify an active containment/watchdog boundary before running and
+  avoid perturbing the event stream or reveal queue they measure.
+- Exit `0` means success, `2` means invalid or ambiguous invocation, and `1`
+  means operational refusal or failure. Health and baseline commands use `3`
+  when the command completed but the measured result is bad or missing.
 
-## Rules this binary enforces
-
-**Nothing here may reach the developer's real running app or real
-provider homes.** `up` refuses a data root resolving to the OS config
-root or the real app data dir, and refuses either as a symlink, because
-an isolated boot seeds and wipes those directories wholesale
-(`refuseUnsafeDataRoot`, reimplemented rather than imported since this
-binary links no App code). `db --file` refuses a path resolving through
-symlinks inside the real data dir, located through `internal/appdirs` so
-the guard cannot drift from what it guards; an unresolvable root refuses
-the flag rather than allowing it. `compare prepare` has its own refusals
-(`internal/compare/AGENTS.md`). Two operator-selected exceptions are
-explicit and loud: `clone --from <real dataDir>` reads real data by
-definition,
-and `up --keep-home` leaves the real `$HOME` visible to child processes
-while backend provider state stays in the harness home. Provider
-isolation for harness and soak alike is
-[soak-rig.md](../../docs/architecture/soak-rig.md) § Provider isolation.
-
-**Every launch is OOM-safe by construction, never by hope.** `up`
-reserves host capacity, applies the platform memory policy (2 GiB default,
-`--memory-limit-bytes` within host capacity), and arms a detached watchdog
-before it reports success. Linux and Windows add a hard kernel boundary;
-macOS enforces the application-responsibility ceiling reactively because it has
-no usable memory rlimit. The native responsibility sample includes
-launchd-parented WebKit/Chrome helpers that a parent/child walk cannot see.
-Any new workload, run adapter, or launch path inherits this or does not
-ship. Platform matrix:
-[testing-harness.md](../../docs/specs/testing-harness.md). Related:
-`bench` resets and mutates the instance it borrows, then leaves it
-running, while `run --plan` is the disposable entrypoint and owns an
-absent or empty `dataRoot`.
-
-**A soak is this binary with a preset armed, not a second mode.**
-`--soak` only selects the launcher-shaped bootstrap contract;
-`--autopilot` is what makes it a soak, which is why the registry `mode`
-follows `--autopilot` rather than the shell. `up --soak` does not start
-the Windows launcher; `make soak` does.
-
-## Memory governor and watchdog
-
-Three layers answering three questions. Do not collapse them.
-
-- `internal/harness/governor` is host-wide bookkeeping: a cross-process
-  capacity reservation under an OS file lock, so harnesses started from
-  several worktrees cannot overcommit one host. It never signals an
-  application.
-- `internal/harness/containment` is the platform policy on one instance
-  (cgroup v2, Job Object, inherited `RLIMIT_DATA`, or the explicit macOS
-  watchdog-only mode). Unsupported platforms fail closed.
-- `watchdog.go` re-execs this binary in its undocumented `--watchdog`
-  mode: a detached process sampling the lease owner's tree every 100ms
-  that, on a ceiling or host-floor crossing, writes
-  `logs/harness-watchdog.json`, calls `HarnessShutdown` over the
-  authenticated wire, and only then falls back to an identity-checked
-  tree kill. It is not a PID-only killer. `up` waits for its
-  `harness-watchdog-ready.json` handshake and rolls the launch back if it
-  never arms.
-
-Instruments that must not run unbounded verify their boundary first
-(`requireActiveHarnessBoundary`): the watchdog named by
-`harness-watchdog-state.json` has to still be the process holding the
-exact live lease, because a stale state file is not evidence anything is
-armed.
-
-## Exit codes
-
-`0` success, `2` wrong invocation, `1` anything the harness or the
-filesystem refused. `bench --baseline` and `health` add `exitBadNews`
-(`3`, defined once in `cli.go`): the command ran fine and the ANSWER is
-bad news, so a script tells that from "the harness refused" without
-parsing prose. Ambiguity is `2`, not `1`: under-specified, not refused. A
-`bench --baseline` whose run never MEASURED an explicitly budgeted metric
-is `3`, not `0`, because a gate that could not read its number is bad
-news.
-
-## Instance resolution
-
-Every command that is not `up` resolves a target first, in this order:
-
-1. `--instance` (defaulting to `$AO_HARNESS_INSTANCE`), read as a full
-   instance id, then as a unique id PREFIX (four hex characters minimum),
-   then as a data root.
-2. Exactly one LIVE registry row.
-3. Several live rows, one of which is THIS worktree's default data root.
-   A developer with a soak in one checkout and a harness in another means
-   "mine" every time.
-4. This worktree's default data root, `instanceinfo.DefaultDataRoot()`,
-   the same value `make harness` and the backend's flag default compute.
-
-Anything still ambiguous is an error listing the candidates with their
-WORKTREE column, and it exits 2, never a guess. `reset`, `down` and
-`mock exit` are destructive enough that picking the wrong one silently is
-worse than making the caller type four hex characters.
-
-Attaching then reads `<dataRoot>/agent-overflow/harness-instance.json`
-for the token; a registry row deliberately carries none. An authenticated
-transport connection is the attach-path liveness authority, because a
-native Windows CLI driving a launcher-hosted WSL backend cannot resolve
-the Linux PID. `down`, row pruning, and every other lifecycle path still
-require same-namespace PID evidence before signalling or deleting.
-
-## The registry contract
-
-Rows live in `<user cache dir>/agent-overflow/harness-instances/<id>.json`,
-written by the instance itself (`internal/harness/instanceinfo`). They are
-discovery state about a DATA ROOT, not about a process, which decides when
-`list` may delete one:
-
-- Row's pid alive: keep.
-- Pid dead, data root's own instance file missing or unreadable: delete.
-  Nothing there claims the root.
-- Pid dead, instance file names the SAME dead pid: delete. That is one
-  killed instance's whole set of leftovers.
-- Pid dead, instance file names a DIFFERENT pid: keep and list as stale.
-  A second process is involved and the row is not ours to remove.
-- Either side names a different PID namespace: keep. A WSL pid means
-  nothing to a Windows CLI and the reverse.
-
-`down` applies the same rule before it SIGNALS: pruning on a bad guess
-costs a stale listing, but SIGKILLing a recycled pid kills whatever
-inherited the number. `up` applies the mirror image, refusing a root
-whose instance file names a live process and allowing a boot over a dead
-one.
-
-**`down --force` overrides exactly one of those refusals**: the data root
-claims NO instance (its file was deleted under a living process), so the
-row is UNCONFIRMED rather than CONTRADICTED. A root naming a different
-pid, a mismatched identity, a foreign namespace: still refused, forced or
-not, because there something else is claiming the root and the row is the
-thing that is wrong. Without the flag the refusal is unchanged.
-
-Force is not "kill the pid the file says". The pid has to look like ours
-on its own evidence before anything is signalled (`decideForcedStop`):
-same PID namespace, whatever birth marker and executable the ROW recorded
-(a mismatch means the pid was recycled and is refused however much the
-occupant resembles us), and a `/proc` name AND executable base name that
-both prefix-match `agent-overflow` — prefix because the kernel caps comm
-at 15 characters, both because comm follows the path handed to execve
-while `exe` is the file actually running, and a symlink named for us
-satisfies only one. Anything else refuses and NAMES what the pid actually
-is. A confirmed pid then takes the ordinary unauthenticated escalation
-(`TerminateProcessVerified`: TERM, then KILL, re-verifying the identity
-before each), and the row is pruned afterwards; a pid already gone is
-pruned with no signal at all.
-
-## Guards worth keeping
-
-**`db` is read-only twice over, and harness-only.** The connection is
-opened `mode=ro&immutable=0&_pragma=query_only(1)`, and the statement is
-checked before it is sent: exactly one statement, first keyword in
-SELECT / PRAGMA / EXPLAIN. `WITH` is refused because
-`WITH x AS (...) DELETE FROM ...` is valid SQLite whose first keyword
-says nothing about what it does. The scan finds statement separators and
-nothing more; it is not a SQL parser and must not grow into one.
-`PRAGMA` is whitelisted, so `PRAGMA query_only=0` reaches the handle and
-SQLite honours it. `mode=ro` is what still refuses the write, and one
-invocation runs one statement so nothing can loosen the flag and then use
-it. Never drop `mode=ro` on the theory that `query_only` covers it.
-
-**`up` detaches.** The instance has to survive the CLI exiting, so the
-child gets its own session/process group, stderr goes to
-`<dataDir>/logs/backend-stderr.log` (its console, and what `logs backend`
-tails), and stdout goes to a sibling file polled for the bootstrap line.
-A pipe would hand the child SIGPIPE the moment the CLI returned.
-
-**`postmortem` never attaches.** It is deliberately independent of
-`instance.go`'s attach path: it reads a STOPPED evidence root, and
-opening a wire would make the answer time-dependent and risk talking to
-the wrong process.
-
-**`events await` waits for what happens NEXT.** `--since` defaults to
-`now`, so `await` waits for a matching event emitted after the command
-starts. `--since <seq>` or `--history` reaches back on purpose, and then
-the scan runs NEWEST-first.
-`tail` replays history by default: a tail is a reader, not an assertion.
-`tail`/`await`/`count` WARN on a channel absent from
-`internal/eventchan` and run anyway, because the harness publishes onto
-caller-named channels through an explicit escape hatch. `send --wait`
-parks its wait before calling `SendMessage`, because a mock can complete
-the turn inside that round trip.
-
-**Thread selectors resolve before the command's own RPC.** Every
-`--thread` takes the full id, `#N` (the index `threads` prints), `last`,
-or a unique case-insensitive title prefix. `items --thread garbage` used
-to print "no items" and exit 0, which reads as "that thread is empty":
-the wrong finding, and the one a caller is least likely to double-check.
-
-**`ui`, `perf`, `monitor` and `bench` need an attached page**: they ride
-`HarnessUIQuery` through the harness bridge in the document. `bench`
-probes the bridge BEFORE it resets anything, so a caller who forgot the
-window gets their instance back untouched. `profile` and `bench --trace`
-instead need a Chromium DevTools endpoint and refuse with that stated:
-WebKitGTK serves no CDP at all.
-
-**`attach` is how a shell gets that page with nobody watching.** It
-spawns a headless Chromium on the instance URL, waits for the page to
-register and its bridge to answer, and only then reports success. Four
-rules it does not bend:
-
-- The page it waits for must be NEW. `PageMarker` names the BACKEND, not
-  one document, so a bare marker match can be satisfied by an already-open
-  window. Snapshot registered page ids before spawning and exclude them
-  afterward. Any future code that answers "is my page up" from
-  `HarnessInfo` needs the same before/after pair, not a marker alone.
-
-- A wait that runs out FAILS. The budget is `--timeout`, wall-clock, and
-  the browser group is killed before the error returns — a caller must
-  never be told "attached" about a page that is not there. The browser
-  exiting on its own is likewise a failure, foreground or not.
-- Teardown is `procutil`'s group kill, never `Process.Kill`. Chromium is
-  a process TREE; killing the parent leaves renderers holding the
-  profile. `--detach` gets `Setsid` (Windows: `CREATE_NEW_PROCESS_GROUP`
-  + `DETACHED_PROCESS`) on top of the same `ConfigureGroup` contract, so
-  it survives the CLI and is still reachable by one `kill -<pid>`. It is
-  spawned on `context.Background()` for that reason; `exec` refuses a
-  `Cancel` on a command not built by `CommandContext`.
-- The argv carries no rendering flags beyond what an unattended launch
-  needs. This page is what `perf` and `bench` MEASURE, so browser-process
-  shortcuts such as `--no-zygote` and `--in-process-gpu` are deliberately
-  absent. A Chromium page is still not a fidelity model of WebView2 or
-  WebKitGTK — it is a bridge host, and cross-engine numbers are not
-  comparable.
-
-`--detach` leaves its browser profile in a temp directory, because that
-directory is the running browser's live state; the printed stop line
-names both. Only a failed or foreground attach cleans up.
-
-## Anti-patterns
-
-- Do NOT import App or transport-server code. If a capability needs
-  something the wire does not expose, add the RPC on the `Harness`
-  receiver and call it from here.
-- Do NOT type an RPC result unless a mistyped field would be silently
-  wrong. `HarnessInfo` is typed because every consumer wants a PATH;
-  `ui_diff.go` is typed because the CLI compares it. Everything the CLI
-  only prints stays `json.RawMessage`.
-- Do NOT let a read command guess between instances. Ambiguity is an
-  error with candidates.
-- Do NOT add a write door to `db`.
-- Do NOT let an instrument perturb what it measures. `bench` narrows its
-  subscription to the completion channel it awaits, and its drain probe
-  is a read that may never skip, rush or pop the reveal queue.
-
-## Testing
-
-Use raw Go strings for shell fixtures that print JSON; backslashes before
-quotes inside a shell single-quoted format become invalid wire bytes.
-`TestLaunchManagedHarnessBindsFreshRoot` exercises the actual bootstrap parser.
-
-`go test ./cmd/ao-harness/` covers the pure halves and the refusals;
-nothing here boots a backend. The real boot is `make e2e`'s job:
-`e2e/tests/harness-bench.spec.ts` runs `bench burst-stream` as a
-subprocess, and `harness-bridge.spec.ts` runs `ui snapshot` and reads its
-text rendering, the only place `ui_diff.go`'s hand-kept mirror of
-`frontend/src/lib/harness/snapshot.ts` is checked against the TS.
-
-**Size a fixture to the shape that breaks, not to the smallest thing that
-compiles.** The `clone` scrub fixture carries migration v63's uniqueness
-triggers verbatim, plus two same-provider rows, and asserts that the
-restored copy still ABORTS a duplicate claim. An inert restored trigger
-weakens the schema in silence.
-The clone rig is tested on synthetic data only, never a copy of anyone's app.
-
-Two cross-checks earn their keep here rather than in review:
-`TestKnownChannelsCoversTheEventChannelRegistry` AST-parses
-`internal/eventchan` and diffs it against `channels.go` (Go cannot
-enumerate a package's constants at runtime). Launcher-kill tests treat
-unparseable tasklist output as an ERROR rather than "the process is gone",
-so an unverified process is never reported as stopped.
+`go test ./cmd/ao-harness` covers parsing, refusals, ownership decisions, and
+client behavior without booting the backend. `make e2e` owns real isolated boot
+and frontend-bridge coverage. Test clone and scrub behavior with synthetic data
+only.

@@ -46,7 +46,20 @@ async function refreshRoutes(entry: BackendEntry, backendId: string, current: ()
   }
 }
 
-/** Refresh authoritative route hints without interrupting live traffic. */
+/**
+ * Refresh authoritative route hints without interrupting a healthy socket.
+ * Events, replay gaps, hello changes, and reconnects are coalesced per computer.
+ * Each refresh belongs to the captured client, session, and watch generation;
+ * replacement, disconnect, or teardown cancels it and prevents a late result
+ * from changing routes.
+ *
+ * Bootstrap is the primary authenticated source. If HTTP became unavailable
+ * during a listener move while WebSocket remains connected, `GetComputerRoutes`
+ * supplies current candidates. Native clients admit them through the captured
+ * pairing; desktop proxies use certificate-verified address repair before
+ * refreshing bootstrap. Missing `computer-routes.v1` means the host keeps its
+ * existing route behavior.
+ */
 export function installComputerRouteUpdates(): () => void {
   type Watch = { entry: BackendEntry; stop(): void; dirty: boolean; busy: boolean; scheduled: boolean; epoch: number;
     retry?: ReturnType<typeof setTimeout>; delay: number; abort?: AbortController };

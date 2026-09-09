@@ -22,12 +22,12 @@ and pure.
 - Invalid UTF-8 is replaced (`�`), not dropped. Bytes that are not
   text still show up as something.
 
-## Anti-patterns
+## Constraints
 
-- Do NOT compose a model-written field into a prompt raw because it
+- Do not compose a model-written field into a prompt raw because it
   "looks safe" (an id, a status). The rule is one rule precisely so
   callers do not have to make a local safety judgment.
-- Do NOT add surface-specific variants (markdown-flavoured, HTML-only).
+- Do not add surface-specific variants such as Markdown or HTML renderers.
   One rendering that is safe everywhere beats three that each assume a
   surface.
 

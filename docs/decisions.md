@@ -1,14 +1,13 @@
-# Product rulings and rejected proposals
+# Product decisions
 
-Decisions the code cannot tell you: what the owner ruled, what was built
-and then torn out, and what must not be proposed again. Mechanisms belong
-in the nearest `AGENTS.md`; this file holds only the ruling and the reason.
-Add a line when a decision is made that a future change would otherwise
-re-open; never add status, dates of verification, or numbers.
+Product choices that code alone does not establish belong here or in their
+owning spec. Mechanisms belong in architecture docs or code contracts, with
+area guides routing readers to them. Keep only current decisions and the
+reason needed to apply them; do not add work logs or verification history.
 
-Where a spec already records its rulings (the `docs/specs/*.md` Decisions
-and Non-goals sections, `workflows-system-decisions.md`), read the spec;
-this file only points there.
+Where a spec already owns a decision, link to it instead of copying the rule.
+A new user instruction can supersede a recorded decision. Existing behavior
+alone does not establish intent.
 
 ## Working style (owner rulings that shape every change)
 
@@ -17,9 +16,9 @@ this file only points there.
 - Restart of a provider session is a last resort. Never route a config
   change to the restart path when a live retry exists
   (`internal/provider/claude/AGENTS.md`).
-- Existing behavior is usually a recorded decision. Before "fixing" a
-  guard or permission as a hole, `git log -S` the symbol and look for
-  `*Allowed*` / `*Rejects*` test names pinning it.
+- Before changing behavior whose purpose is unclear, inspect the current
+  implementation, tests and relevant product decision. Use history to find
+  intent, then verify whether it still applies.
 - Codex second-opinion reviews are for large changes only (feature waves,
   subsystem reworks, wide refactors); routine fix waves get Claude-owned
   review.
@@ -84,9 +83,9 @@ fix; `NetworkServiceInProcess2` rejected.
   (`childAgentTokenSpend`); Claude's `task_progress` total is latest input
   plus cumulative output by the CLI's own construction, so the two agree
   until a compaction.
-- A finished background task's launch row stays `running` by design
-  (invariant 24); the completion sibling is its terminal. Never read the
-  launch flag as a verdict; the completion decides.
+- A finished background task's launch row keeps its launch state; the
+  completion sibling carries its terminal result. See
+  [Tool, task and turn lifecycle](architecture/turn-lifecycle.md).
 - Monitor idle-wake: the CLI writes `<task-notification>` to the
   transcript only. A transcript-tail backfill was proposed and declined.
 - Pre-existing dangling Codex child rows in old fork threads are left inert
@@ -105,7 +104,7 @@ fix; `NetworkServiceInProcess2` rejected.
   (`internal/provideraccounts/AGENTS.md` has the case table).
 - A model that exists only as probe enrichment (`claude-fable-5-1`) is not
   added to the hand catalog; the point of enrichment is that a new model
-  needs no release (`internal/claudemodels/AGENTS.md` merge rule 6).
+  needs no release (see `internal/claudemodels/AGENTS.md`).
 - Claude 2.1.257 `rate_limit_info.unifiedWindows`: not parsed yet by
   ruling (revisit once the shape is stable; supporting it adds a visible
   overage row, its own decision).
@@ -203,3 +202,16 @@ and anti-changes that live only here:
 - Proposed skills the owner declined: a commit skill, a standalone light
   review skill, a standalone unslop skill, handoff riders, a wait-what
   micro-skill. Artifacts are never offered unprompted.
+
+## Decisions still required
+
+- Mid-turn correction workflow: a dedicated correction-needed mechanic is
+  outside the current scope. It requires its own product design rather than
+  being inferred from a provider wire event.
+- Computer nicknames: retain both the Go profile nickname (`RenameBackend`)
+  and the per-frontend `computer-nicknames` preference until the owner decides
+  whether existing profile names must remain visible to connected windows
+  after an upgrade. The spec requires both frontend-local names and readable
+  legacy desktop names. Removing one system, showing Device name only during
+  access approval, and relabeling each row's local nickname to Rename depend
+  on resolving that compatibility requirement.

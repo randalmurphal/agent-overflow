@@ -1,137 +1,38 @@
-# internal/tailnet/
+# internal/tailnet
 
-This backend as a node on the owner's tailnet, using
-`tailscale.com/tsnet` in userspace (`docs/specs/remote-access.md` §7,
-"Anywhere access"). Off-network reach IS the tailnet: no public listener,
-no tunnel, no port forward, so every path a request can take is one the
-owner enrolled.
+Runs this backend as a userspace `tailscale.com/tsnet` node. It owns node
+lifecycle, status, bounded peer enumeration, listeners, and outbound dialing.
+The application reconciles settings; `internal/transport` serves every accepted
+connection.
 
-The package owns the node's lifecycle, published status, bounded peer
-enumeration and outbound dialing through its userspace network. It never serves
-a request — the listeners it hands back go
-to `internal/transport`, which answers them with the same mux, the same
-credentials and the same per-call gate its main bind uses. It knows
-nothing about settings either; `internal/app/app_tailnet.go` reconciles
-the user's preference onto it.
+## Lifecycle and state
 
-## Layout
+- Call `envknob.SetNoLogsNoSupport()` before starting tsnet. Remote support-log
+  upload is outside this feature's data path.
+- A `Node` is single-use. `Close` is idempotent, checks whether start occurred,
+  and bounds teardown. Restart by constructing a new node over the same state
+  directory.
+- The state directory contains node identity key material. Disabling keeps it;
+  only explicit `Forget` removes it, and never while a node is live.
+- `Start` must publish intermediate states and login URLs rather than blocking
+  on `tsnet.Server.Up`. Refresh identity and certificate fields on state and
+  self changes. Clear spent login URLs.
+- `Events()` is a coalesced wake channel. Consumers reread the complete current
+  status. Close it when the node stops.
 
-- `node.go`: `Node` (construct / start / listen / status / close),
-  `Options`, `Status`, `StateDir`, and `Forget`.
-- `doc.go`: the package's one-paragraph purpose.
-- `peers.go`: bounded online peer candidates and outbound `DialContext`.
-  Candidates are not identified AO hosts: the caller probes HTTPS 443 and
-  still requires ordinary owner-confirmed pairing. Never filter by hostname
-  prefix or treat a tailnet peer name as authorization. Outbound dial selection
-  is injected into the existing pinned HTTP client, never a parallel transport.
+`Listen` and `ListenTLS` require the running state. TLS additionally requires
+MagicDNS and HTTPS certificate availability. A cleartext listener still travels
+inside the authenticated tailnet.
 
-## The three properties worth knowing before editing
+Peer enumeration yields connection candidates, not trusted Agent Overflow
+computers. Never infer authorization from a hostname or tailnet membership.
+Callers still perform pairing, certificate checks, and backend identity
+verification. Outbound tailnet dialing is injected into existing pinned clients
+rather than creating another protocol.
 
-**`envknob.SetNoLogsNoSupport()` runs before Start, always, once, with no
-setting behind it.** tsnet otherwise streams backend logs to
-`log.tailscale.com` for support purposes. This feature's whole posture is
-that nothing leaves a path the owner controls, so the upload is not an
-option we offer; the knob is a process property, so it is a `sync.Once`,
-and it is documented at the call site rather than only here. Do not make
-it configurable — a switch that turns log upload back on is a different
-feature with its own consent conversation.
+Tests use the in-process Tailscale control and DERP rig and refuse ambient
+Tailscale credentials or non-loopback control URLs. Production files must not
+import `tailscale.com/tstest/integration`. Live sign-in, certificate issuance,
+and cross-network DERP behavior remain manual integration boundaries.
 
-**`Node` is SINGLE USE, and `Close` is guarded by a started flag.**
-`tsnet.Server.Close` on a server that never ran `Start` dereferences a
-nil backend and panics, which is possible when disable races a failed
-enable. `Close` therefore checks the started flag, is idempotent, and
-bounds its teardown wait so reconciliation cannot block indefinitely. A
-restart builds a NEW `Node` over the SAME directory, which keeps the
-identity; making `Node` restartable would add lifecycle states without
-benefit.
-
-**The state directory is key material.** `StateDir(configRoot)` holds
-`tailscaled.state` (the private node key, inside tsnet's persisted prefs
-blob) and `tailscaled.log.conf` (a private logging id). tsnet chmods the
-directory 0700 and the files 0600 itself and rebuilds the same node
-identity from them on every later start. AT REST THAT DIRECTORY IS THE
-NODE: possession of those bytes is possession of this backend's place on
-the owner's tailnet, so anything that copies, backs up or serves the
-config root has to treat them the way it treats the session signing key.
-Disabling the feature KEEPS them — toggling off is not the same act as
-leaving the tailnet — and `Forget` is the separate, explicit deletion.
-
-## Status, not Up
-
-`Start` returns as soon as the backend is constructed. It is deliberately
-NOT built on tsnet's `Up`: `Up` waits for `ipn.Running` and never returns
-while the node sits in `NeedsLogin`, so an app that called it would have
-no way to show the owner the link that would end the wait. The link
-arrives on the IPN bus as `Notify.BrowseToURL`, and this package
-publishes it as `Status.AuthURL`, clearing it the moment the node joins —
-a spent sign-in link left on screen is an instruction to do something
-already done.
-
-- One watcher goroutine owns the published status for the node's life,
-  and RE-SUBSCRIBES if the bus ends while the node is alive. The
-  alternative is a status frozen at whatever it last saw with nothing
-  saying so.
-- The identity fields (MagicDNS name, addresses, certificate names) are
-  re-read on State snapshots and SelfChange, never heartbeats. Toggling
-  HTTPS in the admin panel leaves State at Running; the regression is
-  covered by `TestCertificateDomainsRefreshWhileRunning`.
-- `Events()` is a coalesced depth-1 wake-up channel, closed by `Close`.
-  A reader always reads the whole current status, so two changes that
-  arrive before it looks are one thing to look at.
-- `Listen` and `ListenTLS` REFUSE unless the node is Running, and the
-  refusal names the state. That is not politeness: tsnet's own
-  `ListenTLS` calls `Up` internally, so calling it early blocks forever
-  with nothing saying why.
-- `ListenTLS` additionally needs the tailnet to have MagicDNS and HTTPS
-  enabled in its ADMIN PANEL, which no code here can substitute for.
-  `Status.CertDomains` is how a caller checks before asking; an empty
-  list means cleartext-over-WireGuard is the honest answer, and the
-  status says so.
-
-## Testing
-
-**Never the real control plane, never a real tailnet.** `rig_test.go`
-runs an in-process `testcontrol.Server` plus a loopback DERP/STUN pair,
-and enforces two things rather than assuming them: the ambient
-environment is refused if it carries `TS_CONTROL_URL`, `TS_AUTHKEY`,
-`TS_CLIENT_SECRET` or `TS_ID_TOKEN`, and the control URL is asserted
-loopback before a node is pointed at it. A test that silently registered
-a device on the developer's own tailnet would leave a machine in their
-admin panel and a node key on their disk.
-
-The rig refuses root-path probes before delegating to `testcontrol`, which
-panics on unknown routes. Local dev-server discovery can probe any listener;
-an unrelated `GET /` must not crash the test process.
-
-**`tailscale.com/tstest/integration` is TEST-ONLY.** It must never appear
-in a production file here; `go list -deps ./...` over the non-test build
-must not mention it, and the shipped binary must not link a DERP server.
-
-**A case that needs bring-up calls `requireBringUpCapableHost` first.**
-netstack needs a usable non-loopback interface with a route to build its
-endpoint set from. Without one the node registers and then parks — never
-erroring, never joining — so the case would hit its own timeout instead
-of saying why. The skip names exactly that.
-
-`integration_test.go` is the two-node story: this backend's node serving
-the real `internal/transport` through `ServeAuxiliary`, and a second
-tsnet node reaching it by tailnet address. The peer address net/http sees
-there is a real 100.64/10 address, so it is the one place the off-host
-admission rule is exercised against a peer nothing faked.
-
-What stays live-only by construction: a real Tailscale sign-in, a real
-`ts.net` certificate issuance, and DERP-relayed reach between two
-machines on different networks.
-
-## Anti-patterns
-
-- Do NOT add a setting for the log-upload opt-out, or move it out of
-  `Start`.
-- Do NOT call `tsnet.Server.Close` outside `Node.Close`'s guard.
-- Do NOT delete the state directory anywhere but `Forget`, and do not
-  call `Forget` while a node is live: it takes a config root rather than
-  a `Node` precisely because it cannot check, and deleting under a
-  running node leaves a process holding an identity nothing records.
-- Do NOT serve a request from this package. A listener goes to
-  `internal/transport`; a second HTTP surface here would be a second
-  credential story.
+See [remote-access.md](../../docs/specs/remote-access.md).

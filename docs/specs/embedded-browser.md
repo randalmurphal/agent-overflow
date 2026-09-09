@@ -401,7 +401,7 @@ every other windowless deployment.
   code: a right-click never raised `contextmenu`, an anchor `download`
   navigated instead of downloading, a statement list failed to parse
   and every script failure read "A JavaScript exception occurred"
-  (`internal/browser/AGENTS.md` § WebKit sections carry each lesson).
+  (see the engine and file-handling rules in `internal/browser/AGENTS.md`).
   Plus one engine-agnostic one: `browser_evaluate_readonly` wrapped an
   IIFE in a second call.
 - Live verification checklist (user, per platform — run it in the real

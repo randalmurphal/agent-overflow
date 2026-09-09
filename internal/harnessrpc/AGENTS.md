@@ -1,58 +1,40 @@
-# internal/harnessrpc/
+# Harness RPC receiver
 
-Application-level RPC receiver for the isolated agent harness and soak rig.
-The reusable engines remain in `internal/harness`; this package owns their
-stateful composition with the production app through `Host`.
+This package composes reusable harness engines with the production application
+through the `Host` interface. It owns the local-only `Harness*` RPC surface,
+mock control, replay, reset, seeding, UI/performance queries, and soak autopilot.
+See [agent-harness.md](../../docs/architecture/agent-harness.md).
 
-## Layout
+## Wire and lifecycle contracts
 
-- `harness.go` / `host.go` — receiver state, stable wire DTOs, `Config`, and
-  the consumer-owned production capability seam.
-- `mock.go` — scenario rules, mock-provider control server, and live commands.
-- `replay.go` — recording bundles, snapshot restore, and replay controls.
-- `seed.go` / `workflows.go` — declarative fixture creation and reset ordering.
-- `soak.go` — free-function soak autopilot over the same receiver.
-- `paths.go` — canonical path comparison shared with isolated boot setup.
-- `push.go` — `HarnessPushSent`, the ledger of what the push fan-out would
-  have sent. The recorder itself lives in `internal/app`
-  (`app_push_harness.go`): the harness boot installs it in the
-  `push.Sender` seam ONLY where no credential is configured, so everything
-  above that seam stays production and a spec can assert §9's redaction
-  rule on the real payload. `HarnessReset` clears the ledger through
-  `Host.ForgetPushSent`; device rows and their registrations survive,
-  because they are access state rather than test state.
+- Treat exported method names, parameters, result tags, and registered FNV IDs
+  as a stable wire API. Update the registration tests and every string-based
+  caller in `e2e` and `cmd/ao-harness` together.
+- Do not add exported non-RPC helpers to `Harness`; registration deliberately
+  exposes its exported method set as `main.Harness` with `LocalOnly: true`.
+- Start the provider control listener before `App.Start`. Return the narrowly
+  scoped child environment and never publish its token process-wide.
+- Resolve the store, replay manager, and native window dynamically through
+  `Host`; this receiver is constructed before application startup finishes.
+- Emit dynamic and replay events only through `Host.Emit`, whose App adapter
+  uses the shared transport.
+- After restoring a replay snapshot, publish its store identity before replay
+  can start.
 
-## Wire and lifecycle invariants
+Reset is an ownership operation. Stop harness emitters and workflow startup,
+stop sessions and settle turns, clear mock and workflow state, delete seeded
+projects, invalidate derived projections, clear harness evidence, then release
+the workflow pause. Access records such as device pairing survive unless the
+RPC explicitly owns them.
 
-- `Harness` has exactly 38 exported `Harness*` methods. Root registers the
-  receiver with `Package: "main"`, `TypeName: "Harness"`, and `LocalOnly:
-  true`; do not add exported lifecycle helpers to the receiver.
-- Keep method names and JSON tags stable. `transport_registration_test.go`
-  pins every `main.Harness.*` FNV ID and receiver-local policy.
-- The control listener starts before `App.Start` in both harness and soak
-  modes. `StartControl` returns the provider-only environment; root installs
-  it on App before startup. Never publish the token process-wide.
-- Store and replay-manager access is dynamic through `Host`: the receiver is
-  constructed before `App.Start` initializes either one.
-- Native-window access is dynamic through `Config.Window`: windowed boots fill
-  the controller only when the Wails shell is constructed; headless boots
-  return a named `--window` refusal.
-- Every dynamic event and replay frame crosses `Host.Emit`, whose `internal/app` adapter
-  calls `App.emit`; never write directly to the transport bus here.
-- After restoring a replay snapshot, publish the returned store identity
-  immediately through `Host.PublishStoreIdentity` before replay starts.
-- Reset order is required: stop harness emitters, pause/cancel/sync workflow
-  startup, stop sessions, settle turns, clear mocks, delete workflow records,
-  delete projects, clear the app-wide chat-profile seed, invalidate import
-  projection, drop the push ledger,
-  remove harness-owned files, then clear workflow pause via the deferred
-  resume closure.
+The push ledger records payloads at the `push.Sender` seam only when the
+isolated boot has no real push credential. `HarnessReset` clears the ledger but
+does not remove device registrations.
 
-## Safety boundary
+This package never resolves or spawns provider binaries. Isolated boot must pin
+provider binaries, homes, credentials, keychain behavior, catalogs, and
+background fetch before constructing this receiver. Unit tests use a fake
+`Host`; App integration uses the repository's provider-spawn isolation.
 
-- The package never resolves or spawns provider binaries. Root constructs the
-  App through `newIsolatedProviderApp`, which pins provider binaries,
-  credentials, keychain, and background fetch before this receiver exists.
-- Tests use a fake `Host`, isolated stores, and the in-process control/replay
-  engines. Real App workflow integration remains in `internal/app` under the repository's
-  provider-spawn isolation fixtures.
+Run `go test ./internal/harnessrpc` for receiver changes and `make e2e` for wire
+or lifecycle changes.

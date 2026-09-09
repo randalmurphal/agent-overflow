@@ -8,7 +8,7 @@ activity application service.
 - Symlink-canonical membership against git's registered worktree list. This
   asks `git worktree list` because callers need the worktree's branch RECORD;
   a caller that only needs membership must use `gitroot` instead, the way
-  `gitapp.ResolveWorkspace` does — that path is per-keystroke hot and cannot
+  `gitapp.ResolveWorkspace` does. That path is per-keystroke hot and cannot
   afford a subprocess.
 - Thread references by either `workspace_path` or `worktree_path`.
 - Directory-wide activity aggregated across every matching thread, including
@@ -34,7 +34,7 @@ destructive order this package exists to inform.
 - `Activity` is the one busy-thread projection workspace REMOVAL gates on
   (`App.ensureWorkspaceChangeAllowed`), so a live frontend affordance and a
   backend refusal cannot disagree. Branch changes (checkout, create-branch,
-  pull, sync) are deliberately NOT gated on it: the user owns the branch and
+  pull, sync) are not gated on it: the user owns the branch and
   switches it whenever they like, agent or no agent. Never add the check to
   them. Moving ONE thread out of its workspace
   (PrepareThreadWorktree / AttachThreadWorktree) keeps its own per-thread

@@ -1,38 +1,16 @@
-# internal/procutil/
+# Process helpers
 
-Two primitives shared by every supervised child process the app starts:
-process-group kill configuration and a bounded output tail. Stdlib-only.
+This package owns two utilities:
 
-## What this package owns
+- `ConfigureGroup` and `KillConfiguredGroup` arrange and terminate an owned
+  child process group using the platform implementation.
+- `TailBuffer` retains the last bounded bytes written to it and reports
+  whether older bytes were discarded.
 
-- `ConfigureGroup(*exec.Cmd)` puts the command in its own process group
-  (`Setpgid`) and makes `Cmd.Cancel` deliver `SIGKILL` to the whole group,
-  with a one-second `WaitDelay` bounding the reap. A setup hook or a check
-  command routinely spawns children (`sh -c 'make … & wait'`); killing only
-  the direct child leaves them holding the worktree open past the timeout
-  that was supposed to end them. The Windows build is a `WaitDelay`-only
-  stub. Workflow commands execute in the Linux backend under WSL, so the
-  Windows binary never reaches this path.
-- `KillConfiguredGroup(*exec.Cmd)` applies the same group boundary on demand,
-  for a caller that owns the command and is not going through context
-  cancellation. Use it instead of `Process.Kill`, which leaves descendants
-  behind.
-- `TailBuffer` retains the last N bytes written. Command output is
-  unbounded and its useful end is the tail. `Truncated()` reports whether
-  anything was dropped, so a narrative can say so. Writes are mutex-guarded
-  because one buffer is wired to both stdout and stderr, which os/exec pumps
-  from two goroutines. It is a ring: a write past capacity overwrites the
-  oldest bytes in place and costs its own length, never the window's (a
-  sliding linear buffer moved 128 KiB per line of a chatty command).
+Call `ConfigureGroup` before starting the command and pass the same command to
+`KillConfiguredGroup`. These APIs do not verify process identity or establish
+general descendant ownership; callers that act after PID reuse is possible need
+their own stronger identity checks.
 
-Callers pass the tail buffer as the command's only output sink. A streaming
-consumer wraps it rather than replacing it: the tail is what the failure
-message quotes, and that must not depend on a subscriber existing.
-
-## Anti-patterns
-
-- Do NOT re-implement either primitive locally. A second process-group
-  configuration is a second chance to forget the group kill.
-- Do NOT confuse this with `internal/git`'s `newLimitedBuffer`, which
-  retains the HEAD of a stream (git's diagnostics lead). This one retains
-  the tail.
+`TailBuffer` is safe for concurrent writers, accepts a non-positive limit as a
+disabled buffer, and returns a snapshot string under its lock.

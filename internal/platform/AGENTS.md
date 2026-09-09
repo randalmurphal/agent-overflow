@@ -1,19 +1,9 @@
-# internal/platform
+# WSL detection
 
-Small runtime-environment probes shared by packages that need host-specific
-behavior.
+This package answers whether the current Linux kernel reports Microsoft WSL.
+`IsWSL` reads `WSLOSReleasePath`; `IsWSLFromOSRelease` is the injectable
+form used by tests.
 
-## Ownership
-
-- Keep this package narrow. It is for facts about the current process runtime,
-  not for policy decisions or launch behavior.
-- Prefer pure helpers with injected OS reads for tests. Cache only values that
-  cannot change during the process lifetime.
-- Do not import higher-level packages from here. Platform probes sit below
-  editor, browser-opening, launcher, and transport code.
-
-## Testing
-
-- Tests should inject filesystem/env readers rather than depending on the
-  developer machine.
-- When adding a probe, cover false-on-read-error behavior explicitly.
+Detection is case-insensitive over the kernel release contents and returns
+false on read failure. Keep policy, path conversion, process launching, and
+other platform classification in their owning packages.

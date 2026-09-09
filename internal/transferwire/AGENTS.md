@@ -1,4 +1,4 @@
-# internal/transferwire/
+# internal/transferwire
 
 The versioned, bounded computer-to-computer transfer contract. Stdlib only.
 No history schemas, provider adapters, HTTP handlers or ownership policy here.

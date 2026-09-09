@@ -1,480 +1,109 @@
-# e2e/
+# End-to-end tests
 
-Playwright suite for the agent test harness: real backend, real SPA,
-headless, isolated data dir, mocked providers. Full harness guide:
-[docs/architecture/agent-harness.md](../docs/architecture/agent-harness.md).
+This Playwright suite exercises the real Go backend and compiled SPA with
+isolated data roots and mock providers. The harness architecture is documented
+in [agent-harness.md](../docs/architecture/agent-harness.md). Each spec's header
+states its own coverage; do not maintain a duplicate spec catalog here.
 
-`tests/*.spec.ts` is the index. Each file names its subject, and every
-spec's own header comment says what it proves. Do not keep a second per-spec
-catalogue here.
+## Shared infrastructure
 
-## Where the shared pieces live
+- `src/harness.ts` owns backend launch and the TypeScript harness wire client.
+- `tests/fixtures.ts` owns the worker backend and per-test reset. Before reset,
+  wait until the previous context's page registration is gone; a leaked page is
+  a test failure.
+- `frontend-client-helpers.ts` owns production frontend-controller fixtures.
+  Execution hosts remain separate harness processes, and cold-start cases reuse
+  only the intended disposable device profile.
+- Shared provider frames, pairing flows, and result narrowing belong in the
+  relevant `*-helpers.ts` or `probe-wire.ts`, not inline copies.
+- `rigs/` contains manual performance tools outside release gates. Follow
+  [rigs/README.md](rigs/README.md) for their data and scenario rules.
 
-- `src/harness.ts` is the TS client. `launchHarness()` spawns
-  `bin/agent-overflow --harness` on a temp data dir, parses the
-  `__AO_HARNESS__` bootstrap line, and returns a `HarnessApp` speaking the
-  transport wire (RPC by method name, event push) over one WebSocket. It
-  is also the reference for driving a harness from anything else, such as
-  a Playwright MCP session or an ad-hoc script.
-- `tests/fixtures.ts` owns the worker-scoped backend and the per-test
-  `harness.reset()`. Before the reset it waits for the ui bridge to hold
-  no page (`harness.awaitNoPages()`): the previous test's page leaves the
-  registry when its WebSocket is torn down, which Playwright does not
-  order before the next test's fixtures, and a ui query naming no page
-  refuses two. The wait returns the instant the count reaches zero
-  and has a 15s ceiling. A page still there at the ceiling fails the test
-  as a leaked context.
-- `frontend-client-helpers.ts` starts the compiled `frontendclient` test fixture
-  under the same containment boundary. It owns a production frontend controller
-  and no execution backend. Its `open(page)` obtains a fresh local page ticket;
-  execution hosts still come from `launchHarness`. The desktop and compact
-  specs pair both hosts from a third, throwaway harness standing in for the
-  installation's own desktop (`AddBackend` into its `device/` profile dir),
-  because a computer refuses to pair with itself; the frontend then reuses
-  that dir the way `--connect <computer>` reuses `deviceProfileDir()`. They
-  stop the original host before cold-starting that same frontend.
-  The multihost recovery flow instead keeps the frontend alive while a host
-  restarts during a turn and another host accepts work. Set
-  `AO_E2E_RECOVERY_BASELINE=/absolute/path/to/saved-release-binary` to run that
-  same flow with an actual older first host and current second host. It uses
-  the current mock provider explicitly and disposable homes/data; a changed
-  version label is not evidence of release compatibility.
-  Current hosts exercise abrupt loss. The optional saved-release leg stops
-  normally and is a graceful-restart check; it must not be reported as crash
-  recovery.
-  Harness boot intentionally ignores persisted network settings; the older
-  desktop pairing flow uses LAN, so this fixture reapplies its LAN listener
-  after restart without re-pairing. This validates saved sessions and wire
-  recovery, not the release app's listener startup configuration.
-- `ssh-computer.spec.ts` normally replaces only the SSH transport. Its manual
-  `AO_E2E_SSH_CONFIG=/absolute/isolated/config` mode instead uses real OpenSSH.
-  Supply an owned loopback sshd and a `gpu-test` alias with temporary identity
-  files and pinned `UserKnownHostsFile`; the executable path deliberately has
-  spaces and always names the isolated harness data root. It never installs a
-  service or uses the developer's normal SSH configuration. Stop the owned
-  daemon and delete its temporary keys after the manual run.
-- **A spec that asserts a mapped notification must not have a page open.**
-  The SPA states a screen presence on its socket, and the
-  backend's default `notifyQuietWhen: "focused"` holds back a notification
-  about a screen that is being looked at (`internal/app/app_notifications.go`) —
-  a Playwright page has focus, so a mapped turn-complete would simply not be
-  raised. `notifications.spec.ts` and `push.spec.ts` are page-free today and
-  that is what makes them deterministic, not luck. A spec that genuinely
-  needs both writes `UpdateSettings({ notifyQuietWhen: "never" })` first,
-  on the same connection the sender reads (a harness connection names no device, so the write lands on
-  the backend machine's own screen).
+Calls such as `harness.rpc('MethodName', ...)` are not linked to Go signatures.
+Any bound-method signature change must sweep `e2e/tests` and `cmd/ao-harness`
+and run the end-to-end gate.
 
-  The attended gate is deliberately live under the harness so `make e2e`
-  exercises notification preferences. `HarnessNotify` is the single
-  exception and it says so — it sends through `notifyOSUngated`, because a
-  send that exercises the pipe must not depend on preferences a spec never
-  set.
-- `harness.rpc('MethodName', ...)` calls bound methods by NAME STRING, so
-  no compiler connects these call sites to the Go signature. Changing a
-  bound method's parameters must sweep `e2e/tests` and `cmd/ao-harness`
-  for that name (for example, a `ListItems` `inlinePreviews` parameter
-  change; the dispatcher rejects a wrong arity with `bad_params`, which
-  compilation cannot catch). `make e2e` is the gate that catches it; run it
-  before merging any bound-signature change.
-- `tests/*-helpers.ts` and `tests/probe-wire.ts` hold the wire builders
-  and seeds their spec families share. Put a new provider wire shape
-  there, not inline in one spec. `offhost-helpers.ts` also owns the
-  pairing sequence every off-host spec starts with — mint the link,
-  redeem it on the real screen, compare the number the device shows
-  against the one the host holds, confirm — because one flow with two
-  implementations is one that drifts, and it owns
-  `answered(outcome, why)`: a wire-level spec that wants the result payload of a
-  call needs the outcome union narrowed, and `expect(outcome.ok).toBe(true)`
-  narrows nothing, so reading `.result` after it fails the launcher's
-  typecheck rather than the assertion.
-- `rigs/` holds self-driving perf measurement rigs (storm, churn,
-  heapsoak, coldload). They are operator tools outside every gate, and
-  [rigs/README.md](rigs/README.md) has the clone-root venue, the scenario
-  reinstall rules, and the storm-density caveat.
+Notification specs must account for screen presence. An open focused page can
+suppress mapped notifications under normal preferences. Keep page-free tests
+page-free, or explicitly set `notifyQuietWhen: "never"` on the connection whose
+state the sender reads.
 
-## Running
+## Running and evidence
 
-`make e2e` builds `bin/agent-overflow`, `bin/ao-mockprovider`, and the
-fixed-purpose `bin/ao-harness-e2e` launcher. The launcher typechecks the
-suite first (`tsc --noEmit` over `src/`, `tests/`, `android/`,
-`scripts/`, and all three configs — `tsconfig.json` names them), because
-Playwright and the flow runner only STRIP types: a
-typo'd property in a helper's predicate would otherwise pass an emptiness
-assertion vacuously. It then runs `pnpm exec playwright test` under one
-process-tree memory boundary and host-floor watchdog. The complete
-two-worker gate reserves 6 GiB. `pnpm test` here uses the same launcher
-through `go run`. Override the backend binary with `AO_HARNESS_BIN`.
-Chromium comes from the Playwright cache
-(`pnpm exec playwright install chromium` on a fresh machine).
+`make e2e` builds the backend, mock provider, and fixed-purpose launcher,
+typechecks all suite sources, then runs Playwright under the harness memory
+boundary. The `desktop` project runs ordinary specs; `compact` runs
+`compact-*.spec.ts` with touch and compact viewport settings. Run one file with
+`bin/ao-harness-e2e tests/<spec>`.
 
-The gate is two Playwright PROJECTS over the same harness and the same
-bundle: `desktop` (Desktop Chrome) runs every ordinary spec, and
-`compact` (Pixel 7: touch, coarse pointer, a 412px layout viewport) runs
-the `compact-*.spec.ts` files. Compact is a layout mode of the one app
-(frontend/AGENTS.md § Compact), so a surface is done only when both
-projects pass, and a fix found on one is checked on the other. Run one
-file with `bin/ao-harness-e2e tests/<spec>`; the file's name picks the
-project. Changes to the native seams (`frontend/src/lib/native/`) also
-rerun the emulator smoke, `make e2e-android`.
+Manual specs and boundary probes are evidence tools, not automatic gates. Keep
+their opt-in environment checks and report exactly which mode ran. Freeze
+reproduction fixtures may contain real conversations: generate them from a
+read-only database connection into a gitignored path and never commit them.
 
-Not everything in `tests/` runs in the gate, on purpose. A
-`*.manual.spec.ts` is `testIgnore`d by `playwright.config.ts` and needs
-`playwright.manual.config.ts` plus a locally generated fixture. The
-`*-probe.spec.ts` instruments skip themselves unless `BOUNDARY_PROBE` is
-set: they dump per-frame samples for offline analysis rather than
-asserting, so they are evidence, not a gate.
+The optional saved-release recovery leg uses
+`AO_E2E_RECOVERY_BASELINE=/absolute/path`. It proves only the exercised graceful
+restart path unless the test explicitly causes abrupt loss. A version label
+alone is not release-compatibility evidence.
 
-Freeze reproductions are manual on purpose. `scripts/generate-freeze-repro.mjs`
-reads the live DB read-only and writes a fixture for a thread and turn range
-(it refuses a non-gitignored `--out`: fixtures carry real conversation content
-and are never committed); `freeze-repro.manual.spec.ts` replays it with the
-probe armed. Run with `pnpm test:freeze-repro`. Saturation shows as a longest
-gap far above the probe floor with per-task profiles; a single-loop wedge
-shows as a pause stack. The probe arms `Debugger` up front because
-`Profiler.stop` never answers on a wedged thread.
+Real SSH mode requires `AO_E2E_SSH_CONFIG` pointing to an isolated config for an
+owned loopback sshd, temporary keys, and a pinned known-hosts file. Never use the
+developer's normal SSH configuration or install a service from a test.
 
-## The emulator smoke
+## Android emulator smoke
 
-`make e2e-android` is a third suite, not a third project: its own config
-(`playwright.android.config.ts`), its own directory (`android/`), and one
-spec, `android/shell-boot.spec.ts`. It has to be separate because its
-`page` fixture does not come from a browser Playwright launched — it is
-the shell's own WebView, reached through Playwright's Android API
-(`_android.devices()` → `device.webView({pkg})` → `webView.page()`), so a
-spec written for it is nonsense under `desktop` or `compact` and vice
-versa. Everything after that fixture is the ordinary Page API.
+`make e2e-android` drives the installed shell's own WebView through
+Playwright's Android API. It is separate from desktop/compact browser projects.
+A zero exit with no attached device is a skip and provides no emulator evidence.
 
-Do not read a green `make e2e-android` on a laptop as evidence: it exits 0
-when no device is attached, on purpose.
+The ordinary smoke may run on a real phone only when the operator explicitly
+sets both `AO_ANDROID_SERIAL` to that device and `AO_ANDROID_HUMAN_LOCK=1`.
+Every case clears Agent Overflow's app data. Human-lock mode must not provision,
+change, or guess the phone credential; it waits for the owner to answer system
+prompts. Never select a personal phone implicitly. Signed-release lifecycle
+cases remain emulator-only because they replace installations and change
+network radios.
 
-`make e2e-android` enables UI trace, then the Android runner builds a
-separate `bin/ao-android-harness` with a strictly newer release version for
-bundle-adoption tests. `build-android-bundle-fixture.ts` temporarily stamps only
-the two generated dist metadata files with the next patch above both the APK
-and source release, compiles the real SPA, and restores those files in `finally`.
-Do not run it concurrently with another build. The ordinary harness binary,
-source version, and signed APK keep their real release identity. A Go embed
-`-overlay` does not replace embedded file bytes, so it cannot build this fixture.
-The update case trims `bundle-id.txt` before comparing identities; a newline
-must never make identical bundles look different.
+The runner and spec divide ownership deliberately:
 
-The boot case also enables its isolated host's LAN listener, learns the
-advertised route, removes the original `adb reverse`, and cold-relaunches with an expired
-session. It must retain the pairing, renew over LAN, open a socket and upload an
-attachment. This case needs a LAN interface reachable from the emulator; the
-native HTTP bridge bypasses Playwright's request interception, so a browser
-route mock cannot stand in for this check.
-Removing `adb reverse` closes its listener but preserves established TCP
-streams. A WebView reload preserves the native HTTP connection pool too.
-Stop the app before removing the reverse listener, then cold-relaunch it. This
-closes those sockets while retaining the pairing and avoids ADB aborting when
-a reconnect races listener removal (`handle_packet disallowed connect`). The
-test actually loses the old route instead of sometimes renewing through it.
-After reload, cached thread rows can appear before session renewal finishes;
-wait on the renewed session itself rather than treating a visible row as proof.
-It then changes the backend's port, repairs the now-offline computer through
-Settings, and verifies that the same pairing and thread are usable afterwards.
+- `scripts/android-smoke.sh` selects the device, installs the APK, configures the
+  temporary device PIN, and clears the PIN on every exit path.
+- The page fixture clears only the target package, re-grants required test
+  permissions, launches its activity, and attaches to that package's WebView.
+- Each case owns its harness process, data root, `adb reverse` mapping, pairing,
+  app state, and teardown. Never select the first WebView, process, port, or
+  device without matching the expected package and run identity.
 
-`scripts/android-smoke.sh` owns what is per run: it installs the APK
-`make apk` built, sets a device PIN, and clears the PIN on every exit
-path. The spec owns everything per case and everything downstream of
-the port: its `page` fixture `pm clear`s the app, re-grants the
-notification permission and relaunches the activity before every case
-(the shell persists its endpoint and session in the WebView's
-localStorage, each run's harness is on a fresh port, and a case that
-failed with the credential prompt up would otherwise leave the WebView
-paused, timers and all, for the next one), and the cases own
-`launchHarness`, the `adb reverse` forward that lets the device reach it,
-and the pairing. It runs through
-`bin/ao-harness-e2e --config=playwright.android.config.ts`, which is what
-typechecks the tree and what lets `launchHarness` spawn at all.
-The page fixture depends on the harness so its teardown stops the app before
-the reverse listener is removed. Native retries must not survive a case and
-reach another test's reused port. Failure diagnostics run before that stop and
-collect only the selected computer, endpoint addresses and visible UI.
+Ordinary smoke builds and installs the debug APK. Signed-release mode is enabled
+only by an explicit absolute `AO_ANDROID_RELEASE_APK`; it requires an emulator
+and fails if unavailable. Preserve this distinction in assertions and reports.
 
-**A real phone** runs the same suite with `AO_ANDROID_HUMAN_LOCK=1`
-(wireless adb included: pair and connect in developer options, then name
-its serial with `AO_ANDROID_SERIAL`). The smoke clears the app data; use it
-only on a test installation. Without a serial, the runner selects only a
-single emulator and refuses an ambiguous device list. A real phone without
-`AO_ANDROID_HUMAN_LOCK=1` is refused before installation or PIN changes.
-`TestAndroidSmokeSelectsOnlyAnExplicitPhone` checks selection with a fake adb. The script skips PIN
-provisioning — the owner's credential is already on the device, and
-typing `1234` at their real prompt would be wrong-PIN attempts Android
-escalates into a lockout — and the spec instead waits up to two minutes
-for the owner to answer each credential prompt by hand. That hand is the
-point: it is the only way the biometric fallback
-(`allowDeviceCredential: true` with a real finger enrolled) ever gets
-exercised, since an emulator has none.
+Bundle-adoption tests build a second harness with a strictly newer fixture
+release and temporarily stamp generated dist metadata inside a `finally`
+restore. Do not run that fixture builder concurrently with another frontend or
+mobile build. Compare trimmed bundle IDs.
 
-The spec's last case is the push last hop — a real message through the
-owner's Firebase project, Google, and the phone's tray. It skips itself
-unless `AO_ANDROID_PUSH_CREDENTIAL` names a service-account key file and
-the APK was built with `google-services.json` in place (mobile/AGENTS.md
-§ google-services.json), making it a manual gate in the same sense as
-`make provider-smoke`: run it when the Firebase project or the push path
-changes.
+LAN renewal cases must prove the old route is gone. Stop the app before removing
+`adb reverse`, cold-launch it, wait for session renewal rather than cached UI,
+and verify the same pairing can resume after the advertised endpoint changes.
+The native HTTP bridge bypasses Playwright route interception, so browser mocks
+cannot prove this path.
 
-Two platform facts the spec has to answer for: the platform's credential
-prompt is an activity of its own, so it
-is answered through the focused native PIN field, then Enter,
-not at the page; and a hardware back press with the soft keyboard up
-closes the keyboard and reaches nothing else, so `pressBack` closes the
-keyboard first, by the same key.
-That helper is for app navigation only. Cancel a native picker with one
-Back and verify focus returns to the app: the paused composer's stale IME
-state can otherwise make the helper send another Back into the app itself.
-Before opening another picker, wait for the input's `cancel` event too;
-activity focus can return before WebView receives the chooser result.
-
-The first case also opens and cancels the composer's Take photo, Photos and Files
-choosers (camera capture must resolve the camera activity, not a permission dialog).
-The emulator also takes and accepts a real JPEG, verifies its uploaded attachment
-and image marker, then removes it. The case then presses Back during a gated
-mock turn and verifies that the list opens while the provider keeps running. The same turn then advances
-through real Android pause/resume and, on the emulator, disabled Wi-Fi and
-mobile data. It finishes while backgrounded and offline; restoring the radios
-must render the answer and clear Stop in the same process, without reloading.
-The outage is on the private LAN route after the loopback reverse was removed,
-so a surviving reverse connection cannot accidentally satisfy the check. Keep this native check beside
-the browser regressions (`compact-composer-polish.spec.ts` and
-`compact-reconnect-turn-completion.spec.ts`): a browser cannot prove that
-the platform picker or Android Back reaches the right app path.
-
-For a **signed release APK**, set `AO_ANDROID_RELEASE_APK` to its absolute
-path when running `make e2e-android`. The same runner verifies its signature,
-refuses a debuggable manifest, and selects `android/release-recovery.spec.ts`.
-An explicitly requested release run fails if the SDK or emulator is missing.
-The adoption check requires a strictly newer host release; the runner builds
-that isolated fixture from the real SPA. Different hashes of one release are
-intentionally not upgrades. The release test checks the host's hashed release
-metadata against the APK before pairing.
-That case drives Android accessibility directly: it never attaches CDP or adds
-debug flags to the app. Chromium forces WebView debugging on `userdebug` Android
-regardless of the app flag, so a runtime no-socket assertion applies only to a
-nondebuggable OS; APK signature, manifest and Capacitor configuration checks
-always apply. Poll node reads before acting: the Android driver can report a
-not-yet-present node as a null-node exception, and retrying mutations could send
-twice. Native taps also need enabled, stable bounds after the IME moves a form;
-they do not provide Page locator actionability. The case pairs over private
-HTTPS, adopts the current host's bundle, sends through the real composer, and
-proves active and completed turn recovery across pause/resume, screen locking
-and a real radio outage. The release case refuses physical phones, even with `AO_ANDROID_HUMAN_LOCK=1`, because it changes radios.
-The runner can replace incompatible debug/release signatures only on the
-emulator; all cases already clear their disposable app data.
-
-**The backend is reached at `127.0.0.1` over `adb reverse`, not at
-`10.0.2.2`.** Two independent walls make the emulator's host alias
-unusable and the spec's header argues both: the page's origin is
-`https://`, and Capacitor leaves the WebView at
-`MIXED_CONTENT_NEVER_ALLOW`, so an `http://10.0.2.2:<port>` fetch is
-refused by the renderer; and `transport.Server.loopbackHostGuard` answers
-404 to a non-loopback `Host` while the listener is on loopback. A reverse
-forward makes the device's own loopback the address, which Chromium
-treats as potentially trustworthy and the guard admits, so the pairing
-payload is redeemed exactly as `MintDevicePairing` wrote it. The debug
-APK carries a network security config permitting cleartext to that one
-host and nothing else (`mobile/AGENTS.md`).
-
-It is deliberately NOT a blocking gate: with nothing attached it prints
-how to create and start an AVD and exits 0, because the seams' web
-fallbacks are already covered by `pnpm test` and a check that cannot run
-on a laptop is a check people learn to skip. What it answers that nothing
-else can is whether the bundle boots under the shell's fixed origin,
-whether the Capacitor plugins register, whether the app lock gates the
-app, whether the hardware back button reaches `showCompactList`, whether a
-STAGED bundle is what the WebView serves after a cold start — including
-that the shell clears the health flag before the 30-second watchdog rolls
-it back (`mobile/AGENTS.md` § The bundle plugin) — and whether a
-NOTIFICATION TAP that cold-launched the app lands on its thread once the
-lock is answered. That last one is delivered as `am start` with the
-extras `AndroidTray` writes rather than by clicking a real tray entry:
-the extras ARE the contract, and driving the system tray would add a
-surface no assertion is about.
-
-What CAN be answered without a device is the transport half, and
-`compact-shell-origin.spec.ts` answers it: it serves `frontend/dist` from
-a throwaway `http.createServer` on its own port, so the page and the
-backend are genuinely different origins and the browser enforces CORS
-itself. Setting `window.__aoHomeEndpoint` on a page the backend served
-would exercise the URL rewriting and prove nothing, because every request
-would still be same-origin. That spec also covers the update channel's
-transport half end to end: a paired page on the other origin reads
-`/bundle/manifest.json` and `/bundle/archive.zip`, unzips the archive in
-the browser (`fflate`) and checks every file's SHA-256 against the
-manifest, whose id must equal the `bundle-id.txt` in the very tree the
-page was served from. That last equality is the Go rule
-(`internal/bundle`) and the build rule (`frontend/scripts/bundleId.ts`)
-agreeing over the whole shipped bundle, which is why neither this suite
-nor that spec implements the hash a third time.
-
-## Owning processes
-
-`src/harness-process.ts` is the only place that reads the process table,
-and everything it produces is evidence for a kill. It builds
-`ProcessIdentity` / `ProcessRow` three ways (Linux `/proc`, darwin `ps`,
-Windows CIM); a consumer that needs a field the platform branch forgot
-does not fail — it reads `undefined` and degrades, so when adding a
-field, add it in every branch, and prefer an assertion that fails on the
-missing value over one that skips. Two rules keep the evidence real:
-
-- **An identity carries its process group on Unix.** Escalation after
-  the group leader exits authenticates through a surviving member proof,
-  and `captureProcessGroupMemberProof` declines any identity without a
-  `groupId` — so a platform branch that omits the field silently disarms
-  teardown instead of failing loudly. A row only becomes a proof once its executable
-  resolves; on Linux that link is read per candidate, never per row,
-  because the memory watchdog sweeps every row on a cadence.
-- **Sweep `/proc` by name.** `readdir` with `withFileTypes` lstats the
-  entries procfs leaves untyped, so a process exiting mid-scan raises
-  ENOENT out of the whole scan; the watchdog reads that as a backend
-  fault and takes the run down with it. Numeric names plus per-process
-  reads already guarded against disappearance are enough.
+Only explicit manual cases may use external services or real credentials. The
+real Firebase delivery case self-skips unless
+`AO_ANDROID_PUSH_CREDENTIAL` names an isolated service-account key. Ordinary
+tests use mock providers and disposable homes and must not launch real provider
+binaries.
 
 ## Writing specs
 
-- **Never sleep.** Await `harness.waitForEvent('harness:mock', ...)`,
-  `'harness:replay'`, `'provider:turn_completed'`, or
-  `'workflow:item-state'` for backend progress, and Playwright's
-  auto-waiting locators for the DOM.
-- **Backend setup goes through RPCs** (`HarnessSeed`,
-  `HarnessSetScenario`, `SendMessage`, ...), not the UI, unless the UI
-  interaction is the thing under test.
-- **Assert the precondition your assertion depends on.** A surface that
-  is supposed to overflow, a fixture that is supposed to have two rows: a
-  drifted fixture should fail rather than quietly stop testing anything.
-- **An assertion that nothing happened waits for the thing that would
-  have.** Emptiness is true before the work starts, so a spec that checks
-  it without first waiting on a SETTLED rendered state is racing what it
-  is about. Wait on the state the guarded path
-  produces, and assert the capture itself saw traffic, so a broken probe
-  reads as a failure rather than as a clean bill.
-- **A listener this process opens is one the backend genuinely
-  discovers.** The harness runs on the same machine as the spec, so a
-  `node:http` server the spec binds on `127.0.0.1:0` is found by
-  `internal/devscan`'s /proc walk with nothing faked and no scanner
-  injected — and because it belongs to the Playwright process rather than
-  to anything the backend spawned, it is attributed to no thread and
-  arrives as a `seen` candidate. That is what lets the preview-gateway
-  pair drive the real allow-then-open flow, and it is also the only way
-  to assert what crosses the proxy: the fake server records the `Host`,
-  `Origin`, raw request target and cookies of every request, so a
-  rewrite that would have made a real dev server answer 403 fails on the
-  record rather than passing on a green screen. Bind port 0 and read the
-  port back; never pin one.
-- **Ask the harness RPC, not the production reader, for a negative.**
-  `App.ListThreads` hides the item-less draft row several bugs create, so
-  "no row exists" goes through `HarnessListThreadRows`. Turn liveness
-  comes from `ListItems` statuses, never `Thread.hasIncompleteTurn`, which
-  is derived against `last_read_at` and flips when the UI opens the
-  thread.
-- **Open the page before the session when live progress matters.** Ticks
-  are in-memory UI state that no reload recovers, so gate each one behind
-  a mock `waitSignal` rather than racing it.
-- **A scenario reaches only the mocks that register after it is set.**
-  That ordering is how one spec stages one behaviour for a run and a
-  different one for the session a recovery action starts.
-- Draft threads (no items yet) are hidden from the sidebar. Seed at least
-  one turn, or send the first message before navigating, when a spec needs
-  the thread visible.
-- **A seeded-and-opened thread takes the mount path; the in-app draft does
-  not.** "+ New" holds a placeholder and adopts the created row in place,
-  which is a different code path from `openThreadInPane` for everything
-  keyed on the pane's thread identity (the watched-thread set above all).
-  `draft-first-turn-render.spec.ts` drives that path through the real
-  composer and asserts the first turn renders; a change to how a pane
-  acquires its thread is not covered by the RPC-seeded specs.
-- **Each browser context owns its view preferences and layout.** `appStorage`
-  reads the legacy connection-scoped `ui_state` bucket only on first migration.
-  A fresh context can therefore inherit a seeded legacy layout, but later
-  changes stay in that context's local storage. An isolated context is the
-  boundary for frontend-independence tests; a reload preserves its cache.
-  So a spec that must see a layout write become durable before it reloads
-  polls the page's `agent-overflow:uistate:bucket` localStorage key, never
-  `GetUIState`: the backend bucket is never written, and that poll times
-  out.
-
-- **A spec boots its own backend only for state `harness.reset()` cannot
-  undo**, and then owns everything downstream of it. The LAN bind and the
-  canonical domain both persist to the settings file and rebind the
-  listener, so borrowing the worker fixture's instance hands the next
-  spec a rebound backend. Such a spec is `test.describe.serial` with its
-  own `beforeAll`/`afterAll`, restores the settings it wrote, and — when
-  its legs need different browser launch arguments, since
-  `--host-resolver-rules` is process-wide — owns its browsers too.
-  `harness-remote-device-lifecycle.spec.ts`,
-  `harness-passkey-lifecycle.spec.ts`,
-  `harness-provider-signin.spec.ts`, `compact-shell-origin.spec.ts` and
-  the preview-gateway pair (`preview-gateway.spec.ts` /
-  `compact-preview-gateway.spec.ts`, whose backend also holds a LAN
-  preview listener open on another process's port for the length of the
-  file) are the five, and each header argues its own constraints where
-  they bite. The cross-origin one owns its backend for a different reason than
-  persistence: the page origin it has to admit is an ephemeral port that
-  does not exist until a listener has one, so the backend has to be
-  launched with that origin in its environment. Read the passkey one before
-  writing any WebAuthn case: the three requirements a page has to satisfy
-  at once (secure context, a domain relying party, a non-loopback peer)
-  admit exactly one shape, and Chromium's virtual authenticator has a
-  ceiling the header names rather than stages around. The sign-in spec is
-  the other kind of unresettable state: it ADOPTS provider accounts,
-  which live in the account store rather than in anything
-  `HarnessReset` clears.
-- Otherwise each worker owns one backend. Tests share it and must leave
-  it reset (the fixture does this) rather than booting their own. Production
-  project deletion drops the workflow rows (D25), but `HarnessReset` still
-  deletes them itself first (`DeleteProjectWorkflowRecords`): reset removes
-  the generated workspace tree wholesale rather than spending a git
-  worktree removal per checkout on fixtures that are about to go anyway. A
-  spec that asserts on a global count (the overlay's attention badge, the
-  sweep total) depends on that explicit delete.
-- Transport notification replay survives `HarnessReset`. Any spec whose
-  backend state can produce a notification therefore declares a distinct
-  no-op worker fixture identity, and each cold-activation case declares
-  its own, so an activation for deleted test state cannot redirect or
-  satisfy a later spec. That population is now every spec that runs a
-  turn: the event mapping (`internal/app/app_notification_mapping.go`)
-  raises a `notification:send` when a top-level turn comes to rest, fails,
-  or opens an approval, and withdraws it when the thread resumes. A spec
-  asserting on notification traffic must therefore filter by thread id or
-  kind rather than by "the next send".
-- **Push is real up to the last hop, and that hop is a recorder.** A
-  harness boot installs one in the `push.Sender` seam
-  (`InstallHarnessPushSender`, only where no credential is configured),
-  so the mapping, the fan-out, the per-device preference gate and
-  `push.MessageFor` are all production and `HarnessPushSent` reads back
-  exactly what would have gone to Google. `HarnessReset` clears that
-  ledger with the other per-test state, but NOT the device rows or their
-  registrations — those are access state, which is why `push.spec.ts` is
-  `test.describe.serial` and pairs once. The wire's `notification:send`
-  is the BARRIER for a push assertion rather than the assertion: the
-  fan-out runs on its own queue behind the notification queue, so the
-  ledger is polled after the event, never read on it.
-- **Navigate with `harness.open(page)`, never `page.goto(harness.url)`.**
-  A page URL carries a one-time ticket the first load exchanges for an
-  HttpOnly session cookie, and each Playwright context is a fresh cookie
-  jar, so every navigation needs a ticket of its own. `open` asks the
-  running instance for one (`GET /pageurl`, session token in an
-  `Authorization` header). `harness.url` is the boot URL's identity —
-  origin, page marker, client id — not something to navigate to twice.
-- Provider homes are seeded by writing files under
-  `harness.bootstrap.homeDir`. The harness pins both `$HOME` and
-  `App.credentialHomeOverride` at `<dataRoot>/home`, so a spec cannot
-  reach the developer's real `~/.claude` or `~/.codex` even by accident.
-- The mock provider cannot shell out, so a spec that must exercise a real
-  subprocess reads a live session's `AO_*` environment through
-  `HarnessSessionEnv` (a READ of the token registry, never a mint) and
-  spawns the binary with exactly that env. Everything past the process
-  boundary is then production code.
-
-The Android credential helper waits for the actual BiometricPrompt window and
-selects its PIN field. An empty focused-window result is not readiness. Failure
-hierarchy capture uses Playwright's existing UiAutomation connection: launching
-`uiautomator dump` while the driver owns that connection cannot inspect the UI.
-
-Select Android WebViews by `webview_devtools_remote_<exact app PID>`, using the
-PID returned by `pidof` for the shell package. Playwright 1.62's package-name
-resolver keeps the last `ps` substring match for a PID, which can be another
-process or a child; a live debug socket can therefore become permanently
-invisible to a package-name selector. Re-resolve the PID after every cold start.
+- Assert the user-visible result and the production state or wire boundary that
+  caused it. Do not rely on arbitrary sleeps.
+- Use unique IDs and await specific events so parallel workers cannot satisfy
+  each other's assertions.
+- Register event waits before triggering operations that may complete inside an
+  RPC round trip.
+- Close pages, browser contexts, clients, child processes, forwards, and temp
+  roots through fixture-owned teardown, including failure paths.
+- A UI geometry or animation claim requires real Chromium or the shell WebView;
+  DOM-only tests cannot establish pixel geometry or compositor behavior.

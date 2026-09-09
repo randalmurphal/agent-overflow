@@ -28,10 +28,7 @@ on live thread/session ordering.
 - Keep background fetch non-interactive and origin-only through
   `internal/git`; this package never shells out directly.
 - Workspace-scoped git RPCs take a `WorkspaceRef`, never a thread id. A
-  workspace is a directory; a thread is a conversation that happens to sit in
-  one, and two threads sharing a checkout is first-class. Resolving a
-  directory out of a conversation is what made a draft placeholder unable to
-  ask for git status at all.
+  workspace can serve multiple threads or a draft with no thread yet.
 - Agent activity never gates a BRANCH change. Checkout, create-branch, pull
   and sync run whenever the user asks, whatever any thread in the directory is
   doing. Only deleting the directory
@@ -43,14 +40,12 @@ on live thread/session ordering.
   is refused. No RPC may keep a private path-resolution path beside it.
 - `ResolveWorkspace` MUST NOT spawn git. It runs per @-mention keystroke, per
   hunk-gap click and per status subscribe, so membership is answered by
-  `gitroot` (filesystem reads of git's own layout, never a subprocess) —
+  `gitroot` (filesystem reads of git's own layout, never a subprocess);
   `MainRoot(workspace)` equal to the project path, AND a `.git` entry on the
   workspace itself so a mere SUBDIRECTORY of the project is refused.
   `worktreeapp.Find` still asks `git worktree list`, because it needs the
   worktree's branch RECORD, which the on-disk layout does not carry.
   `TestResolveWorkspaceSpawnsNoGit` empties PATH to hold this.
-- Workspace git status arrives in TWO emissions: plain git first, then
-  forge/MR enrichment tens of milliseconds later. Anything that resolves
-  forge state once at mount latches the un-enriched answer; the review
-  pane's `prRef` is `$derived` for exactly this reason. Check the same
-  pattern before adding any once-probed forge read.
+- Workspace status emits plain Git state before asynchronous PR/MR enrichment.
+  Consumers must react to the enriched update rather than capture PR state
+  only at mount.

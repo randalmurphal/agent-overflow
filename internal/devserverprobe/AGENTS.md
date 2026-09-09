@@ -1,18 +1,17 @@
 # internal/devserverprobe
 
-Answers "is something actually listening on this loopback URL right
-now" for the dev-server chip. Triage's textual detection
+Confirms whether a loopback URL is listening for the dev-server chip. Triage's textual detection
 (`internal/triage/dev_server_url.go`) is a candidate generator (a
 `tail` of a file containing `http://localhost:5173` produces the same
 meta as a Vite startup banner), and this package's TCP dial is the
 ground truth that separates the two.
 
-## Ownership
+## Contract
 
 - Validate the input before dialing: only loopback HTTP(S) URLs
   (`localhost`, `127.0.0.0/8`, `[::1]`) are dialable. Anything else is
   an error, never a dial. The caller is a wire RPC
-  (`ProbeDevServerURL`, `//ao:scope host` — it probes THIS machine's
+  (`ProbeDevServerURL`, `//ao:scope host`), which probes this machine's
   loopback, so it has no remote form and no session may be granted it),
   and allowing arbitrary hosts would let command output direct the backend
   to probe other machines.
@@ -23,8 +22,8 @@ ground truth that separates the two.
   reserved for invalid input. Zoned addresses (`::1%eth0`) are invalid:
   meaningless on loopback and an unbounded cache-key space otherwise.
 - Verdicts cache under one mutex with two TTLs, and this cache is the
-  ONLY verdict memo. The frontend consumer (`utils/devServerProbe.ts`
-  + `CommandOutput.svelte`'s probe effect) deliberately keeps none, so
+  only verdict memo. The frontend consumer (`utils/devServerProbe.ts`
+  + `CommandOutput.svelte`'s probe effect) keeps none, so
   staleness has a single authority. Both TTLs must stay strictly below
   the frontend's probe cadences (1.5s unconfirmed retry / 5s confirmed
   re-verify) or a scheduled probe is answered from memory instead of
@@ -33,8 +32,8 @@ ground truth that separates the two.
 - The entry cap bounds MEMORY, not dial rate (keys derive from
   model/tool-authored command output); dial concurrency is bounded by
   the transport's per-connection RPC cap.
-- No single-flight, deliberately: a duplicate loopback dial is a
-  ~microsecond connect+close, and the frontend dedupes in-flight probes
+- Duplicate dials are acceptable: a loopback connect and close is cheap,
+  and the frontend dedupes in-flight probes
   per client. Add one only if a non-frontend Go caller appears for
   which duplicate dials actually cost something.
 

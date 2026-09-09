@@ -1,105 +1,28 @@
-# internal/uiwindow/
+# Wails window integration
 
-Wails glue for a live `WebviewWindow`, in three unrelated jobs. Placement: the
-GUI-free logic in `internal/windowgeom`, restored into creation options and
-wired to a debounced persistence sink. Credential delivery: handing each
-document the window loads its one-time page ticket, so the URL it navigates to
-carries none (`internal/pagehost`). Reveal: bringing the window forward
-without changing its size.
+This package joins GUI-free window geometry, Wails window creation and events,
+page-ticket delivery, and size-preserving reveal behavior. It is imported only
+by GUI binaries.
 
-## Layout
+Create app-shell windows through New. It disables unused automatic Wails event
+forwarding while retaining native hooks and explicit ExecJS delivery.
+RestoreAndTrack runs from ApplicationStarted, after Wails can materialize the
+window synchronously. Restore normal bounds before deferred maximize or
+fullscreen actions to avoid visible flashes and wrong-monitor placement.
 
-- `new.go`
-  - `New(app, options)` is the creation boundary for every app-shell window,
-    including `--connect` and the Windows launcher through `RestoreAndTrack`.
-    It disables Wails' automatic window-event JavaScript forwarding. Those
-    events have no consumer in our HTTP/WS frontend, and WebKit clears
-    transient user activation after native JavaScript evaluation: an update
-    event between mousedown and click can break code-block Copy on macOS.
-    Go hooks/listeners and explicit page-ticket `ExecJS` remain
-    active. Create shell windows here, never directly with `NewWithOptions`.
+Reveal calls Show, conditionally UnMinimise, and Focus. Do not call Restore,
+which also exits maximized or fullscreen state.
 
-- `uiwindow.go`
-  - `RestoreAndTrack(app, baseOpts, saved, sink)` creates the app window with
-    `saved` restored, reveals it (already maximized/fullscreen when that's the
-    saved mode, on the monitor it was saved on, with no normal-size flash), and
-    wires `Track`. Returns the window and the tracker flush func. **Must be
-    called from an `ApplicationStarted` handler** (`app.running == true`): only
-    then does `NewWithOptions` materialize the window synchronously, so the
-    deferred `Maximise`/`Fullscreen`/`Show` act on a live impl instead of
-    degrading to the buggy maximize-then-position start state.
-  - `prepareOptions(opts, saved, screens)` *(unexported, pure, unit-tested)* is
-    the placement decision: clamp `saved` (anchored to the saved `Display` when
-    the live screen list is empty), write position/size into the
-    `WebviewWindowOptions`, and return the geometry to seed `Track` plus the
-    deferred `actions` (maximize/fullscreen). For maximize/fullscreen it sets
-    `Hidden` and positions at the *normal* rect rather than using a start state,
-    because Wails (alpha) maximizes at creation *before* applying X/Y. There is
-    no creation-option ordering that positions first. Centers (leaves opts at
-    defaults) when a normal window sits off every known screen.
-  - `Track(window, restored, sink)` registers the move/resize/state events
-    onto a `windowgeom.Tracker` and returns a flush func (also wired to
-    `WindowClosing`; call it again after the app loop as a backstop).
-- `reveal.go`
-  - `Reveal(window)` brings the window forward without changing its size:
-    `Show`, `UnMinimise` only if minimised, `Focus`. Every "bring the app
-    forward" path (OS notification click, second launch of the binary)
-    goes through it. NEVER `Window.Restore()` for this: Wails defines
-    Restore as "undo minimised / fullscreen / maximised", so revealing a
-    maximized window through it drops the window to its normal size.
-    `reveal_test.go` fails
-    the build on any zero-arg `.Restore()` call in a file importing the
-    Wails application package.
-- `pageticket.go`
-  - `DeliverPageTicket(window, mint)` subscribes to `WindowRuntimeReady` and
-    answers each one by minting a ticket and `ExecJS`-ing
-    `pagehost.DeliveryScript`. Returns the unsubscribe. **The trigger is not a
-    free choice**: `ExecJS` QUEUES until a document announces itself to its
-    host, and this app's SPA replaces `@wailsio/runtime` with its own transport
-    shim, so nothing announces unless the page does — which it does, from
-    `frontend/src/lib/transport/pageHost.ts`, and re-announces on a bounded
-    cadence until its ticket lands. That re-announcement is what covers the one
-    race a subscription cannot: a document that finished loading before the
-    caller subscribed. Minting per ANNOUNCEMENT (not per navigation) is what
-    gives a page that reloaded itself a live ticket; re-delivering a spent one
-    is harmless, since such a page already holds the cookie and
-    `Credential.Exchange` authenticates before it looks at a ticket.
+DeliverPageTicket subscribes to WindowRuntimeReady, mints a fresh one-time
+ticket for every document announcement, and injects pagehost.DeliveryScript.
+Keep credentials out of navigation URLs. Re-announcements cover subscription
+and reload races; repeated delivery of a spent ticket is harmless only after
+the document already has its authenticated cookie.
 
-## Responsibility boundary
+All Wails geometry is in device-independent pixels. Keep placement and tracking
+math in internal/windowgeom, persistence in caller-provided sinks, and ticket
+vocabulary in internal/pagehost. Flush the tracker's in-memory state on close
+instead of reading a window during teardown.
 
-- What BELONGS here: the Wails-specific reads (`Bounds`, `IsMaximised`,
-  `GetScreen`, the event types), the options mutation, and the `ExecJS` call.
-  Like `internal/uikeys` it imports the Wails `application` package.
-- What does NOT belong here: the placement decision logic (that's
-  `windowgeom`), persistence (the sink is supplied by the caller:
-  `App.persistWindowGeometry` native, `saveWindowGeometry` launcher), or the
-  page-ticket vocabulary and the script text (that's `pagehost`, which stays
-  stdlib-only so the page contract has one definition and no Wails dependency).
-  Minting is the caller's too — each host passes the `mint` its own backend
-  reaches.
-- Every `Bounds`, creation-option size, and `Screen.WorkArea` crossing this
-  boundary is DIP. On macOS that depends on the pinned Wails fork converting
-  requested outer frames to AppKit content rects at construction and resolving
-  `GetScreen` through the laid-out screen cache; returning raw `NSScreen`
-  values recreates progressive title-bar growth and 2x Retina display records.
-
-## Importers (GUI binaries only)
-
-- `main_desktop.go` (native desktop and the `--connect` stub's window,
-  `!nogui`).
-- `internal/app/app_notifications_desktop.go` (`!nogui`): `Reveal` on a
-  notification click.
-- `cmd/agent-overflow-windows/main.go` (WSL launcher, `windows`). It gates
-  `DeliverPageTicket`'s `mint` on having a backend bootstrap, so the picker,
-  loading and error pages — which are not the SPA and never announce — cannot
-  be injected into.
-
-The nogui WSL backend never imports this, keeping Wails out of that binary.
-Same isolation rule as `internal/uikeys`.
-
-## Anti-patterns
-
-- Do NOT put placement math here; delegate to `windowgeom` so it stays
-  testable without a window.
-- Do NOT read window geometry during teardown; `Flush` persists the tracker's
-  in-memory latest, which is safe after the window is destroyed.
+The no-GUI WSL backend must not import this package. Tests retain the guard
+against direct zero-argument Window.Restore calls in Wails code.

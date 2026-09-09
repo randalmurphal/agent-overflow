@@ -1,6 +1,6 @@
 # internal/cdpclient/
 
-A minimal Chrome DevTools Protocol client: list a debugger's targets over
+A small Chrome DevTools Protocol client: list a debugger's targets over
 HTTP, pick the page, open its WebSocket, call methods with id correlation,
 and receive the domain events a caller subscribed to.
 
@@ -10,7 +10,7 @@ Chromium instruments with no bridge-side equivalent, which is the whole
 reason this package exists: everything else that CLI does reaches the page
 through the harness bridge and works on any engine.
 
-## Why not chromedp/cdproto
+## Scope
 
 `github.com/chromedp/cdproto` is already in this module.
 `internal/browser` uses it. It is generated bindings for every domain
@@ -20,9 +20,9 @@ are three fields wide (`Profiler.setSamplingInterval`, `Tracing.start`,
 type safety over six call sites and costs a large dependency in a binary
 whose point is to be droppable onto a machine and run.
 
-So the typed helpers live beside their callers (`cmd/ao-harness`'s
+Typed helpers live beside their callers (`cmd/ao-harness`'s
 `cpuprofile.go`, `bench_trace.go`) and this package stays about the wire.
-Do NOT grow domain bindings here. If a caller needs a seventh method, it
+Do not grow domain bindings here. If a caller needs another method, it
 writes the three-field map at its own call site.
 
 ## Layout
@@ -32,7 +32,7 @@ writes the three-field map at its own call site.
 - `targets.go`: `ParseEndpoint`, `ListTargets`, `SelectPageTarget`, and
   `Attach` (the three composed).
 
-## The read limit is load-bearing
+## Protocol constraints
 
 `ReadLimit` is 256 MiB against coder/websocket's 32 KiB default, which is
 off by four orders of magnitude for this protocol. `Profiler.stop` answers
@@ -42,7 +42,7 @@ asked for. A client on the default cap fails on exactly the calls it
 exists to make, and the failure reads as a protocol error rather than as
 "your frame was too big".
 
-## Target selection never guesses
+## Target selection
 
 `SelectPageTarget` resolves only an attachable page whose URL is on the exact
 ORIGIN and carries the authenticated per-instance page marker. A page with no
@@ -60,8 +60,6 @@ numbers would look perfectly plausible and describe the wrong document.
 Origin matching reconciles loopback spellings (`localhost` vs `127.0.0.1`)
 because the page may have been opened by hand while the instance publishes
 the other form, and the token query string never matches either way.
-
-## Correlation and events
 
 Replies arrive out of order (a slow `Profiler.stop` does not block a
 later call), so the id is the only thing pairing a reply to its caller.

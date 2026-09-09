@@ -1,23 +1,28 @@
 # Conversation transfers
 
-One global dialog serves the thread menu and the composer computer picker.
-Move retains the conversation identity; Copy/fork creates an independent native
-session and leaves the original usable. Keep those choices explicit.
+One dialog serves transfer entry points from thread menus and the composer.
+Keep the operation explicit: Move preserves conversation identity; Copy creates
+an independent native session and leaves the original usable.
 
-The controller in `stores/conversationTransfers.svelte.ts` captures both computers
-and one operation ID before its first await. A lost reply retries that same
-request. Recovery reads the public intent and accepted destination project;
-never store an offer grant in UI state, localStorage, logs or error messages.
-Only the computers own transfer jobs, archives and activation proof.
+The controller lives in `stores/conversationTransfers.svelte.ts`; this
+directory owns presentation and form behavior. Do not duplicate transfer
+protocol state in components.
 
-The form locks accepted coordinates. A nested Add Project browser stays on the
-destination already selected by the transfer. Offline computers stay visible.
-Completed transfers can be followed by another copy of the same original.
+- Lock accepted source and destination coordinates for an operation. Nested
+  project creation stays on the selected destination computer.
+- Keep offline computers visible and surface errors beside the affected
+  operation.
+- Never place offer grants in component state, browser storage, logs, or error
+  text.
+- Capability versions gate available operations. Unknown versions do not issue
+  transfer RPCs.
+- Mount the bounded status list only while expanded. Preserve server ordering
+  and limits.
+- On reconnect, merge the snapshot with per-computer events received while the
+  read was in flight. Do not overwrite newer rows or drop recovered operations.
+- Cancellation controls must reflect protocol state: recipient setup can be
+  discarded before preparation; prepared recipients require source
+  cancellation; committed moves can only finish.
 
-Computer status lists remain bounded to the server's 100 rows and mount their
-contents only when expanded. Events update one computer's signal; reconnect
-reads merge intervening events instead of losing other recovered operations.
-Unknown capability versions never attempt transfer RPCs. Cancellation controls
-reflect the host protocol: an unprepared recipient can discard setup, while a
-prepared recipient requires source cancellation and a committed move can only
-finish. Errors stay visible beside the affected operation.
+Protocol and persistence behavior are specified in
+[`conversation-transfer.md`](../../../../../docs/specs/conversation-transfer.md).

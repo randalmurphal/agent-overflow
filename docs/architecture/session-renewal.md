@@ -1,62 +1,79 @@
 # Recoverable session renewal
 
-A lost successful renewal response must not require pairing again. The same
-operation is recoverable across connection loss and client/backend restart.
+Session renewal remains recoverable when a successful response is lost. The
+same operation can be retried after a connection loss or client/backend restart
+without pairing again.
 
-The client chooses the next 32-byte refresh secret and saves it beside its
-current secret **before** sending the renewal. Every retry of that operation
-uses the same pair and a fresh device proof. The server atomically spends the
-old secret, records only the next secret's digest, creates its successor, and
-extends the session. Neither bearer secret is stored on the server.
+## Rotation protocol
 
-A repeated old secret is recoverable only when its recorded successor matches
-the proposed successor and that successor is still live. Device possession,
-confirmation and revocation are checked before granting recovery or declaring
-reuse. A different successor is reuse evidence and revokes the family. A
-recognized operation whose successor has already been spent must not revoke a
-newer legitimate session state. Recovery is proven by the spent
-predecessor's recorded receipt and never by possession of the successor
-alone: the pruner keeps an expired spent predecessor for as long as its
-successor is unspent, and a presented secret nothing issued is
-`unknown_credential` whatever rides beside it. (Looking the successor up
-on its own admitted any copy of the live head without spending it, which
-reuse detection cannot see.) A proposed successor that already names a
-secret is refused terminally (`malformed_proof`), because no retry of the
-same saved pair can ever succeed.
+Before sending a renewal, the client chooses and durably saves the next 32-byte
+refresh secret beside its current secret. Every retry uses that same pair and a
+fresh device proof.
 
-Recovery returns the known successor and a usable access credential. It does
-not create another refresh generation. Access to the session and device is
-checked again inside the durable transaction, so concurrent revocation cannot
-be undone by renewal.
+The server atomically:
 
-Clients learn `X-AO-Refresh-Recovery: 1` from their trusted host's auth
-responses. A Go profile with unknown capability probes `/healthz` without
-credentials and checks the backend identity. Browser/native clients instead
-GET the POST-only `/auth/token` route: its existing shell CORS works on older
-hosts too, and a GET cannot spend a secret. The 405 response advertises support
-on current hosts. The recoverable
-exchange uses **`/auth/token/recover`**, and its device proof binds that exact
-path. A separate path is essential: old servers may ignore unknown JSON
-fields on `/auth/token`. They cannot consume a recovery request sent to the
-new path. Legacy clients and hosts keep `/auth/token`; an uncertain recoverable operation must
-never silently fall back to legacy rotation. Profile writes preserve unknown
-fields. Cross-context/profile locking protects choosing the successor, and
-response application compares the current saved generation before writing or
-clearing anything. A late reply cannot overwrite a later renewal or re-pairing.
+1. verifies and spends the current secret;
+2. records the proposed successor's digest;
+3. creates the successor refresh row; and
+4. extends the session.
 
-Go profiles use OS locks for short file transactions. Legacy exchanges hold
-a separate per-computer lock while waiting on the bounded network request;
-renaming and removal remain available. Browser clients use the existing Web
-Lock/storage lease and verify that a pending successor really reached storage.
-Both clients reject auth redirects and compare the saved generation again
-after a response. Retries preserve the same successor and mint a fresh proof.
-A storage or HTTP failure leaves the pending operation intact. A newer
-pairing/removal fences the old owner. Unknown profile fields survive writes.
-Unknown future refusal codes preserve the pairing too; an older client cannot
-infer permanent revocation from a reason it does not understand.
+The server stores digests, not bearer secrets. Recovery is authorized by the
+spent predecessor's recorded receipt. Possession of a live successor alone is
+insufficient.
 
-Validation covers dropped replies, process restart after acceptance,
-parallel identical/different operations, revoked or unconfirmed devices, invalid
-proofs, storage failure before send, late responses after a newer generation,
-mixed versions, and the actual Go/browser/native HTTP seams. Native and browser
-storage remain per computer; one host's refusal cannot clear another's state.
+A repeated predecessor succeeds only when its recorded successor matches the
+proposed successor and that successor remains unspent. The response returns the
+known successor and a new access credential without creating another refresh
+generation.
+
+A different successor proves competing use of the predecessor and revokes the
+session family. A request whose proposed successor already identifies another
+refresh row is terminally refused as `malformed_proof`. A recognized operation
+whose successor has already been spent is superseded and must not revoke newer
+legitimate state. An unknown presented predecessor is `unknown_credential`
+regardless of the proposed successor.
+
+Confirmation, session and device revocation, binding, and device possession are
+checked before recovery or reuse handling. The durable rotation transaction
+checks session and device state again so concurrent revocation cannot be undone.
+Expired spent predecessors remain stored while their successor is unspent,
+which preserves the receipt needed for recovery.
+
+## Capability negotiation
+
+Current hosts advertise `X-AO-Refresh-Recovery: 1` on authentication responses.
+A Go profile with unknown capability probes `/healthz` without credentials and
+verifies backend identity. Browser and native clients issue GET to the POST-only
+`/auth/token` route; a current host advertises the capability on its 405
+response and the request cannot spend a secret.
+
+Recoverable renewal uses `POST /auth/token/recover`, and the device proof binds
+that exact path. Legacy renewal remains on `POST /auth/token`. Clients must not
+send recovery fields to the legacy path or silently fall back after an
+uncertain recoverable operation, because an older server may ignore unknown
+JSON fields and consume the predecessor.
+
+## Client persistence and concurrency
+
+Go profiles use OS locks for short file transactions. Legacy renewal also holds
+a per-computer lock for the bounded network request. Browser clients use the
+existing Web Lock or storage lease and verify that the pending successor reached
+storage before sending.
+
+Clients compare the persisted credential generation before applying or clearing
+a response. A late response cannot overwrite a newer renewal, re-pairing, or
+removal. Redirects are rejected. Storage and transport failures leave the
+pending operation intact so a later retry uses the same successor with a fresh
+proof. Profile writes preserve unknown fields, and unknown refusal codes retain
+the pairing because an older client cannot safely classify them as permanent.
+
+Credential storage remains per attached computer. One host's refusal cannot
+clear another host's state.
+
+## Validation
+
+Cover dropped successful responses, restart after server acceptance, identical
+and competing retries, an already-spent successor, unknown predecessors,
+revoked and unconfirmed devices, invalid proofs, persistence failure before
+send, late responses after a newer generation, mixed client/server versions,
+and the Go, browser, and native HTTP paths.

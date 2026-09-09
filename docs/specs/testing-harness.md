@@ -147,7 +147,8 @@ root. Ambiguity is an error listing candidates, never a guess.
 
 Command sheet (design intent; `-o json` on every read command). The
 shipped surface of record is `ao-harness --help` and
-`cmd/ao-harness/AGENTS.md`, which carry flags this sheet omits:
+[ao-harness.md](../references/ao-harness.md), which carry flags this sheet
+omits:
 
 | Command | Behavior |
 |---|---|
@@ -169,7 +170,7 @@ shipped surface of record is `ao-harness --help` and
 | `perf start\|stop\|status [--json]` / `perf watch [--json]` | Perf meters (§5). `--json` is an alias for `-o json`; watch emits NDJSON. |
 | `bench <workload> [--repeat N] [--duration D] [--baseline file] [--json]` | Attach to the selected borrowed instance's open frontend, reset it, seed + run a bench workload, collect a perf report, print/compare (§5). `--duration` applies to sustained workloads. A headless instance is refused before reset. Use `run --plan` for fresh ownership. |
 | `monitor list|start|heartbeat|overlap|status|collect|stop|cleanup|last` | List or operate the typed app-feel monitor catalog exposed by one exact attached frontend page. `status` collects a live snapshot without stopping it. `overlap` records concurrent runs. `cleanup` safely stops one named run and retains its result. |
-| `run --plan <file\|->` | Execute a strict managed workload plan with ownership, safety ceilings, and structured partial reports. Fresh plans require an absent or empty root. Copyable plans are in `cmd/ao-harness/AGENTS.md`. |
+| `run --plan <file\|->` | Execute a strict managed workload plan with ownership, safety ceilings, and structured partial reports. Fresh plans require an absent or empty root. Copyable plans are in [ao-harness.md](../references/ao-harness.md). |
 | `compare prepare\|run` | Build or execute a portable offline A/B comparison capsule. |
 | `postmortem --root <root>` | Inspect stopped-run evidence offline without attaching to a live instance. |
 | `profile --thread T --scenario N [--cdp E]` | One scripted turn under the V8 sampling profiler; writes a `.cpuprofile` and splits sampled time into Svelte flush execution / write-side marking / other. Chromium-only (see below). |

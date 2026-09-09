@@ -1,11 +1,12 @@
-# internal/workflowdefs/
+# Workflow definition watcher
 
-Live invalidation for the workflow definition catalog.
+`Watcher` invalidates the workflow definition catalog when definition files
+change.
 
-- `Watcher` recursively watches only shared `workflows/` and
-  `projects/<slug>/workflows/` trees beneath its configured root.
-- The root watch discovers newly created definition trees; unrelated database
-  and settings churn at that root must never emit an invalidation.
-- Definition changes are trailing-edge debounced. `internal/app` owns the typed frontend
-  event and passes its emitter callback into this package.
-- `Close` is idempotent and waits for the watcher goroutine to stop.
+- Watch only shared `workflows/` and project `projects/<slug>/workflows/`
+  trees. A root watch may discover new definition trees but must ignore
+  unrelated data-root changes.
+- Use trailing-edge debounce so a logical edit produces one invalidation.
+- Keep event projection in `internal/app`; this package accepts a callback and
+  owns no wire model.
+- `Close` remains idempotent and waits for the watcher goroutine to exit.

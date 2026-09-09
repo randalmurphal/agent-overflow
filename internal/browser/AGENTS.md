@@ -1,572 +1,80 @@
-# internal/browser/
+# internal/browser
 
-Built-in browser MCP over one engine behind the `driver.go` seam:
-launcher-hosted WebView2 controllers on the Windows/WSL deployment, WebKit
-views embedded in the app's own window on the native Linux (WebKitGTK) and
-macOS (WKWebView) desktops, a headless Chromium process per workspace on the
-windowless serve deployment, and a fake engine for the mocked boot modes.
+Built-in browser MCP and companion-pane manager. `driver.go` isolates engine
+implementations: launcher-hosted WebView2 on Windows/WSL, WebKitGTK on native
+Linux, WKWebView on macOS, and explicitly enabled headless Chromium in serve
+mode. Product behavior and authority are defined in
+[browser-tools.md](../../docs/architecture/browser-tools.md).
 
-**A deployment without a window OR a headless engine has NO engine and no
-browser tools.** The windowed engines live in the desktop app instance, and
-the one windowless engine — headless Chromium, `headless_engine.go` — is an
-explicit POSITIVE option only the serve boot sets. So a remote `--connect`
-backend, a serve host with no Chromium on it, and `go test` get
-`unavailableEngine`, whose one refusal sentence is the entire story. The App
-declines to construct the MCP server at all in that case, so the model reads
-an absence rather than 28 tools that could only fail.
+## Ownership and lifecycle
 
-## Ownership and isolation
+- Register the thread before spawning its provider. First registration starts
+  the loopback MCP listener because the provider receives its per-thread
+  capability URL in argv; starting it on first tool use is too late.
+  Unregistering revokes that capability and closes only that thread's pages.
+- One manager owns one engine. Profiles are per workspace, pages are per thread,
+  and every operation rechecks thread ownership. Closing the last page disposes
+  its profile; manager shutdown joins all engine work.
+- Pages start hidden. Present only the selected page for a visible companion
+  pane. The pane uses a native view positioned over the SPA; pixels do not cross
+  the transport.
+- An omitted `page_id` may resolve only when the thread owns at most one page.
+  With multiple pages, require an explicit handle. Never infer a caller or use
+  MRU selection.
+- Keep the existing resource bounds on profiles, pages, viewport size,
+  operations, snapshots, screenshots, downloads, assets, console data, and MCP
+  bodies. Do not start an engine per tool call.
+- Engine callbacks must not synchronously perform teardown that waits on the
+  callback's own event loop or UI thread.
 
-- `MCPServer` uses `internal/threadmcp` for the loopback Streamable HTTP endpoint. Every provider
-  thread receives an unguessable capability URL; unregistering the thread
-  revokes it and closes only that thread's pages.
-- The capability URL is not the only check. Before any method dispatch,
-  every request must come from a loopback peer (`r.RemoteAddr`, set from
-  the accepted socket), carry no `Origin` header, and declare
-  `Content-Type: application/json`. The client is always a provider CLI
-  this app spawned, and both real ones match; a document in a browser
-  does not. Requiring JSON is load-bearing rather than hygiene — a
-  `text/plain` POST is a CORS simple request that skips the preflight, so
-  dropping it would let a page invoke tools. Keep new endpoints on the
-  same three checks; the URL rides provider argv, so it is not secret
-  from local software.
-- The listener binds at the first thread registration, not on first use:
-  its URL rides provider argv at spawn, so it must exist before the
-  process starts. Do not make it lazy.
-- An ENGINE is reached only through the seam in `driver.go`: `browserEngine`
-  (the process and its profile factory), `engineProfile` (one workspace's
-  isolated site data), and `pageDriver` (every per-page tool operation).
-  `hosted_engine.go` is the launcher-hosted implementation of those three (its
-  per-page half is `cdp_page.go` — CDP is CDP),
-  `headless_engine.go` / `headless_profile.go` the headless Chromium one (same
-  per-page half, for the same reason), `webkit_*.go` the WebKitGTK one,
-  `wkwebview_*.go` the WKWebView one, `fake_engine.go` the mocked-boot one, and
-  `engine_unavailable.go` the null object every other deployment gets (spec
-  `docs/specs/embedded-browser.md` §6). An engine implements the seam and
-  nothing else.
-- WHICH engine is a WIRING answer, never a `runtime.GOOS` check. `selectEngine`
-  is a four-fact table: `ManagerOptions.FakeEngine` (the harness and soak
-  pins, spec §10 — default-on, and lifted only by the manual
-  `AO_HARNESS_REAL_BROWSER` gate) wins first; then `ManagerOptions.PaneHost`,
-  non-nil exactly when the executable built a CDP relay (WSL only), which selects the hosted
-  engine; then `ManagerOptions.HeadlessChromium`, which only `runServe` sets;
-  then the native one, only when `ManagerOptions.NativeWindow` answers
-  a real window AND the platform half can actually host it. Anything else is
-  `unavailableEngine`. `Manager.Available()` is how the App asks, and it is
-  what gates the MCP server. The absence of a window NEVER selects an engine —
-  that is what `TestSelectEngineWithoutAWindowHasNoEngine` pins, and it is why
-  the headless engine is an option somebody sets rather than a fallback
-  somebody falls into.
-- `unavailableEngine` is a VALUE, not a nil `browserEngine`. Every Manager path
-  — start, teardown, pane presentation, devtools — would otherwise need its own
-  nil check, and one missed check is a nil deref inside a tool call. Here the
-  refusal is one sentence in one place.
-- An engine difference the tools can feel is ANSWERED, never assumed away:
-  `pageDriver.ReadOnlyCaveat` is the pattern. Neither WebKit engine has an
-  equivalent of CDP's `throwOnSideEffect`, so both return the SAME sentence,
-  which the Manager appends to the tool result as a second content entry — the
-  JSON payload stays byte-identical on every engine, and a caller reading two
-  engines' answers never has to notice which gave it.
-- `Manager` owns POLICY and never engine mechanics: `Access` checks, the page
-  registry and its per-thread ownership, labels, session/visibility state, every
-  cap and bound, artifact quotas, the AO-managed per-tab clipboard, and the MCP
-  server. A canonical workspace gets one isolated profile, while every page is
-  tagged with its provider thread owner. A thread can never address another
-  thread's page. Policy must not migrate into a driver, and engine specifics
-  must not stay in `Manager` — an engine reports facts through `pageHooks` /
-  `engineEvents` and the Manager alone decides what they mean.
-- The engine is not started by app startup or MCP registration. The first tool
-  that needs a page starts it. It stops two minutes after the final workspace
-  profile becomes idle.
-- Pages are created hidden and stay hidden. The user-visible surface is the
-  calling thread's companion pane, presenting the exact same page the MCP tools
-  drive; do not reintroduce a separate browser window or a second session.
-- **No engine is ever downloaded, on any deployment.** This package makes no
-  network request of its own; every byte it fetches is a page a tool navigated
-  to. Engines report renderer death through `engineEvents.PageClosed`, so a dead
-  page leaves the registry rather than lingering as a plausible target. Any
-  future engine must report the same way; do not add recovery that guesses from
-  page content.
+## Engine rules
 
-## The hosted engine (Windows/WSL)
+The CDP engines use `chromedp` through the shared driver seam. The hosted
+engine reaches the Windows controller only through `internal/cdprelay`; the
+headless engine starts one Chromium process per profile with an isolated user
+data directory. Headless mode is selected explicitly by serve boot and must not
+become a fallback for an ordinary windowless process.
 
-`hosted_engine.go` is the launcher-hosted implementation of the same three
-interfaces. Page OPERATIONS are unchanged — CDP is CDP, so `cdp_page.go` drives a WebView2
-controller exactly as it drives a Chrome tab. Only LIFETIME differs.
+All GTK/WebKit calls go through `gtkDo`; all AppKit/WKWebView calls go through
+`wkDo`. Do not call either while holding a lock reachable from a native
+callback. Native callbacks carry integer IDs, never Go pointers. Keep shared
+page-operation JavaScript in `webkitjs.go` and `pagejs.go`; selectors and user
+text cross as JSON values rather than source fragments.
 
-- **Selection is a wiring fact, not a platform test.** `ManagerOptions.PaneHost`
-  is non-nil exactly when the executable built a CDP relay, which happens only
-  under WSL (`internal/app/bootstrap.go`, `SetBrowserCDPRelay`). "Which engine"
-  and "is there a launcher to host windows" therefore cannot disagree. Do not
-  add a `runtime.GOOS` branch in this package.
-- **A page id is the handle.** `hostedPage.Handle()` answers the backend's own
-  page id, never the CDP target id: the id is what directives address, what the
-  launcher's reports name, and what `Manager.removeClosedPage` and `engineEvents`
-  key on. The engine keeps a private bidirectional target↔page map and re-keys
-  browser-level CDP events before reporting them, so a target this engine never
-  created is dropped rather than reported under a handle nobody owns.
-- **Every wait is bounded.** `NewPage` emits a `create` directive and waits for
-  the launcher's `created` report (`hostCreateTimeout`), then attaches chromedp
-  through the relay (`hostAttachTimeout`, which also bounds chromedp's own
-  unbounded first attach). A launcher that never answers is an error, never a
-  hang; every failure path after the directive emits a `close`, because the
-  controller may already be real.
-- **`Start` is a deliberate no-op.** The launcher builds its WebView2
-  environment on the first directive and its tunnel dials back only after that,
-  so the CDP connection cannot exist until `NewPage` has emitted a `create`.
-  Blocking in `Start` would wait for a tunnel that `Start` is what unblocks.
-- **Show/hide/bounds/devtools are engine mechanism.** The Manager's visibility
-  path calls them through the `paneHost` interface (`syncPanePresentation`);
-  the Manager still decides WHICH page is presented. Visibility is deduped in
-  the engine because it is recomputed on every selection, focus and page-list
-  change.
-- **`PaneRect` carries a clip intersection and a background color.** A native
-  view cannot be partially cropped by the DOM, so the frontend reports the
-  visible intersection alongside the full rect and every engine crops its
-  presentation to it WITHOUT resizing the page (Windows: a per-page clip HWND;
-  Linux/macOS: a per-page clip container widget/view). Per page, never a
-  process-wide singleton: two threads can present two panes at once, and a
-  shared container (or a single "the presented view" pointer) corrupts the
-  first pane when the second presents, so the container and presentation state
-  must remain per page.
-  `SetPaneRect` normalizes a zero clip to clip == rect, so a clip-less
-  reporter still works; an empty intersection never presents. `Background`
-  ("#rrggbb") is painted where the page has not presented yet so freshly
-  exposed strips match the pane.
-- **Tab order is `tabOrder`, sorted by `sortPagesByTabOrder` everywhere.** The
-  companion "move" action renumbers it; every listing surface (companion
-  state, ambiguity errors) sorts through the one helper so the UI, the tools
-  and the errors never disagree about which tab is first.
-- **One carve-out, deliberate.** `AttachPage` fails: the launcher does not
-  surface WebView2's `NewWindowRequested`, so no popup is ever reported and a
-  driver for a controller nobody created would be worse than a loud failure.
-- **Clear site data is a directive, because the data is not here.** The
-  Manager's `browser-profiles/` tree is EMPTY on this deployment: every
-  workspace's cookie jar is a named `CoreWebView2Profile` inside the ONE
-  launcher-side WebView2 user-data folder, on the other side of the WSL
-  boundary. So `hostedEngine` implements `engineSiteData` by emitting a
-  `clear-data` directive and WAITING for the launcher's `cleared` report
-  (`hostClearTimeout`, the largest of the three bounds — it covers the
-  launcher's own 15s delete retry while the WebView2 browser process lets
-  go of its file handles). The directive names no profile: one folder is
-  every workspace. A missing or failed report is an ERROR naming what
-  happened, never a quiet success — reporting success here would tell the
-  user cookies were destroyed that are still on disk.
-- **The renderer's filesystem is NOT the backend's.** The controller renders
-  on Windows while the backend's paths are WSL paths, so paths cross the
-  boundary through `engineFileURL`, in BOTH directions. Outbound:
-  `browser_open_file` navigates via `FileURL` (`wslpath -w` → the
-  `\\wsl.localhost` UNC → `windowsFileURL`); a backend-path file URL
-  navigates a live pane to ERR_FILE_NOT_FOUND. Inbound: every
-  file URL the Manager sees back from this engine — the `fetch`-interceptor
-  authority check in `navigationAllowed`, an address-bar paste in
-  `NavigateCompanion`, the page address `RevealPageFile` resolves —
-  is renderer-form, and must come back through
-  `BackendFilePath` (`windowsPathFromFileURL` → `wslpath -u`) before being
-  authorized against workspace paths. Skipping the inverse made the
-  interceptor block the very navigation `OpenFile` had just authorized, with
-  Edge painting our own `ErrorReasonBlockedByClient` as "This page has been
-  blocked by Microsoft Edge". When a pane shows that page, suspect the
-  interceptor before Edge policy. `profileOptions.DownloadDir` remains a WSL
-  path that no Windows renderer can write; downloads on this deployment are
-  not wired to the artifact directory.
-- **The clear's correlation id is not a page.** It is minted by
-  `newHostedPageID` and rides the same watch/report machinery `createPage`
-  uses, because that machinery is keyed on a page id. `Report` therefore
-  routes `cleared` / `clear-failed` to the waiter and NOWHERE else: an
-  unmatched one is logged, never closed as a controller or retired as a
-  page the Manager never knew about.
-- **Unverified CDP support stays on the CDP path.** `Browser.cancelDownload`,
-  `Browser.setDownloadBehavior` and `Browser.setPermission` are not confirmed on
-  WebView2. The existing code path is kept rather than guessed at; if one turns
-  out unsupported, the refusal is bounded by the Manager's own caps.
+Hidden native WebKit pages must remain attached to their window in a clipped
+1x1 host so layout, animation, and snapshots remain live. Pane geometry uses
+per-page clipping and the full page rect. Do not use opacity or natural-size
+requests as substitutes.
 
-## The headless Chromium engine (serve mode)
+Platform differences remain explicit. WebKit input is programmatic and reports
+`isTrusted=false`; CDP native input must assert resulting DOM state. WKWebView
+site data uses identified WebKit stores where available and has no AO-owned
+profile directory. Unsupported platform capabilities return a clear refusal.
 
-`headless_engine.go` and `headless_profile.go` are the windowless
-implementation of the same three interfaces (spec
-`docs/specs/remote-access.md` §7, "Headless Chromium engine (serve mode)").
-Page OPERATIONS are `cdp_page.go` again, unchanged — CDP is CDP — and the
-browser-level dial and the download-event translation are literally the same
-functions the hosted engine calls (`dialCDPBrowser`, `cdpDownloadEvent`).
-Only LIFETIME differs.
+## Files, downloads, and site data
 
-- **Selection is an explicit POSITIVE option**, `ManagerOptions.HeadlessChromium`,
-  set only by `runServe`. It is never inferred from the absence of a window,
-  because that absence is what `go test`, `--connect` and every unwired boot
-  share: inferring would mean a suite silently launching browsers. Both sides
-  of the rule are pinned tag-free (`manager_test.go`,
-  `headless_engine_test.go`).
-- **No browser is ever downloaded.** `headless_binary.go` finds a SYSTEM
-  Chromium (the `browserChromiumPath` host setting, then `chromium`,
-  `chromium-browser`, `google-chrome`, `google-chrome-stable`, `chrome`, then
-  the macOS app bundles) and nothing else. A bad override is the ANSWER, never
-  a fallback to a different browser the operator did not name. Not finding one
-  is not an error state to recover from: selection logs one line and the
-  deployment gets `unavailableEngine`, exactly like a machine with no window.
-- **One Chromium process PER PROFILE**, launched by that profile's first page
-  and killed by its Dispose. A `--user-data-dir` is the whole of a workspace's
-  isolation here — there is no per-view network session to use instead — so two
-  workspaces must never share a process. The Manager already disposes a profile
-  when its last page closes, so an idle serve host runs no browser well before
-  `idleBrowserDelay` stops the engine.
-- **`--no-sandbox` is PRESENT AND FALSE, never absent.** chromedp adds
-  `--no-sandbox` by itself when the process runs as root unless the flag is
-  already in its map (`allocate.go`), so an absent flag would silently drop the
-  renderer sandbox on exactly the deployment most likely to run as root — a
-  service unit. Present-and-false makes a root install FAIL to launch, loudly,
-  with Chromium's own refusal in the error, and
-  `docs/architecture/serve-mode.md` says to run the service as a non-root user.
-  Two tests guard it: the argv assertion and the flag-set one, because the argv
-  assertion alone passes on every developer machine and fails only in
-  production.
-- **A failed launch carries what the browser said.** chromedp's error holds
-  everything the process printed before it died, which is where a sandbox
-  refusal is legible — and it is unbounded, because the process chose how much
-  to print, so it is TAILED. The operator sees only what the engine carries
-  out.
-- **`profileOptions.Persist` is a directory, not a mode.** Chromium has no
-  in-memory profile, so an ephemeral session is a real profile on a temp
-  directory `Dispose` removes, and a failed removal is an ERROR — the user was
-  promised nothing was kept.
-- **A browser that dies takes its profile with it.** chromedp cancels the
-  BROWSER context when the connection is lost (its `LostConnection`
-  goroutine calls the context's own cancel), so a per-profile watcher on
-  `browserCtx.Done()` is the whole detection — no polling, no process
-  reap of our own. It reports every page still bound to that profile
-  through `engineEvents.PageClosed` and disposes the profile, which is
-  what keeps a dead Chromium from leaving a registry full of pages every
-  later tool call would happily address. It exits silently when the
-  profile was disposed or has since adopted a newer browser, so an
-  ordinary Dispose reports nothing twice.
-- **`ensureBrowser` cancels what it replaces.** The alloc cancel is a
-  SEPARATE function from the browser cancel and it holds a goroutine, a
-  WaitGroup and the process reap, so overwriting either field without
-  calling the old one leaked both per relaunch. `adopt` is the one place
-  the pair is installed and it cancels the stale pair first.
-- **An ephemeral profile directory carries its owner's pid**
-  (`headless_ephemeral.go`). A process killed between `os.MkdirTemp` and
-  `Dispose` cannot clean up after itself, so the marker is what lets the
-  NEXT engine start reclaim the leak: `Start` sweeps
-  `ao-browser-ephemeral-*` under the same temp root and removes only the
-  ones whose owner pid is no longer alive. A directory with no marker is
-  never touched — it cannot be attributed, and deleting a root a live
-  instance is using would take a workspace's session with it. An empty
-  `tempRoot` sweeps nothing, which is what keeps a fixture from walking
-  the machine's real temp directory.
-- **Not implemented, deliberately** (omission is refusal on this seam):
-  `paneHost` and `paneDevTools` (there is no window to present in),
-  `engineUIThread` and `engineAccelerators` (no UI thread, no key events), and
-  `engineSiteData` — this engine's data is under the Manager's own
-  `browser-profiles/` tree, so the tree delete already IS the clear.
-  `ReadOnlyCaveat()` is empty here, like every CDP engine: Chromium rejects the
-  side effect itself.
-- **Downloads are pinned by `Browser.setDownloadBehavior`** with `allowAndName`
-  and events on. `allowAndName` is not a preference: the Manager renames from
-  the GUID-named file it writes (`downloads.go`), and events are what make a
-  download reportable and cappable at all.
+`browser_open_file` resolves symlinks and accepts regular files within the
+thread workspace or project root unless the explicit outside-workspace setting
+widens access. Use direct `file://` navigation.
 
-- **Never call the Manager inline from a chromedp listener.** This is one rule
-  for BOTH CDP engines, and the reason is in chromedp: browser listeners run on
-  the single goroutine reading that browser's connection, under its listeners
-  mutex. `engineEvents.PageClosed` is `Manager.removeClosedPage`, which on a
-  workspace's last page reaches `disposeScope` and then the profile's
-  `Dispose` — which waits on that same connection (the headless one blocks
-  until Chromium is reaped). Inline, that is a deadlock, not an ordering
-  choice, so both engines hand `targetDestroyed` to a goroutine. A
-  non-listener caller, such as the hosted engine's launcher report path, calls
-  it inline and should.
+Downloads use sanitized unique names under AO-owned artifact directories and
+never the user's Downloads directory. Preserve quota reservation, per-download
+bounds, page cancellation, and denial of sensitive website permissions.
 
-## The WebKitGTK engine (native Linux desktop)
+Site data belongs to the engine and is isolated per workspace. Persistent and
+ephemeral profiles must remain distinct. Clearing site data first closes pages,
+then removes AO-owned profile trees and asks engines with externally managed
+stores to clear themselves. A platform-specific silent no-op is incorrect.
 
-`webkit_cgo_linux.go` is the ONLY cgo in the engine; `webkitglue_linux.c` holds
-what needs real C function pointers (GTK/WebKit signal handlers, the two async
-completion callbacks, the window surgery). Everything else is ordinary Go.
+## Tests and references
 
-- EVERY GTK/WebKit call goes through `gtkDo` (Wails' main-thread dispatch,
-  bounded). Calling GTK from a goroutine is undefined behaviour, not a race
-  that shows up under load.
-- NEVER call into GTK while holding a lock a C callback can take. `gtkDo`
-  waits for the GTK thread, and that thread may be running a delegate that
-  wants the lock. Locks here cover map bookkeeping only.
-- No Go pointer is ever handed to C. A callback addresses a page, profile,
-  call, or download by uint64 id and the Go side resolves it — which also
-  makes a callback arriving after teardown a lookup miss, not a crash.
-- Hidden pages are MAPPED, parked in a 1x1 clipping `GtkScrolledWindow` at
-  their own slot. That keeps a real viewport and fresh snapshots at no window
-  cost. A `GtkFixed` at offscreen coordinates balloons the window, and
-  `opacity:0` kills rAF: both are banned.
-- The pane rect is four `GtkOverlay` margins with `ALIGN_FILL`, never a size
-  request: `gtk_widget_set_size_request` cannot SHRINK a WebKitWebView, whose
-  natural size sticks at its largest-ever allocation.
-- A partially occluded pane adds that view's OWN clip box (a `GtkOverlay`
-  with `overflow: hidden`, margin-positioned at the CLIP rect, stored as
-  object data on the view) whose `get-child-position` handler allocates the
-  view the FULL rect at a negative offset — the only exact, shrinkable size
-  a margin cannot express. Per view, never a shared static (two panes can be
-  clipped at once), and "is this view presented" is derived from the widget
-  tree, never a single pointer. The pane's `#rrggbb` background goes to
-  `webkit_web_view_set_background_color` before the present so a freshly
-  exposed strip already carries the pane's color.
-- Every page operation is one JS function body built in `webkitjs.go` — which
-  is deliberately tag-free and cgo-free so the builders are compiled and unit
-  tested on every platform. Same for the screenshot arithmetic in
-  `webkitimage.go`. A selector or user string crosses as a JSON literal, never
-  as spliced source, and an unframed call passes `[]` (not `null`, which is
-  not iterable).
-- Node handles do not exist: CDP addresses a node by remote object id, WebKit
-  re-resolves the frame chain and selector per operation. A selector that no
-  longer matches exactly one element is the stale-locator error, which is the
-  same answer the CDP driver gives.
-- Engine-visible differences to preserve: locator click/type/press uses the
-  programmatic JS event path (`element.click()`, focus + value + events), so
-  its DOM events have `isTrusted=false`; the viewport
-  IS the widget size (no device-metrics override), assets are read through the
-  page and capped well below the Manager's bundle cap because they cross as
-  base64, and the streamed companion pane cannot run here at all — it speaks
-  CDP directly and is replaced by the presented native view (spec §7/§9).
-- The JS input path must spell out what native input supplies. A
-  `browser_pointer` right-click dispatches `contextmenu` (a site's custom menu
-  listens for nothing else) and `auxclick` in place of `click`, and
-  `MouseEvent.buttons` is the DOM bitmask (`webkitButtonsMask`: secondary is 2,
-  auxiliary 4), not `1 << button`.
-- Evaluate is an EXPRESSION first and a statement list second
-  (`webkitEvaluate`): `return (expr);` cannot parse `const n = 1; n * 2`, which
-  CDP's Runtime.evaluate accepts, so a parse failure retries once as
-  `return eval("...")` — completion-value semantics kept, a page CSP without
-  `'unsafe-eval'` refuses it and that refusal is the answer, and a top-level
-  `await` works only in the expression form. The retry keys on the
-  `SyntaxError` name, which is why both glues must surface the page's own
-  exception text.
+Unit tests use `fake_engine.go` and fake CDP endpoints. They must not start or
+download a browser. Keep `ManagerOptions.FakeEngine` as the default for test
+boots. Real Chromium launch compatibility is covered only by the documented
+`AO_HEADLESS_CHROMIUM_SMOKE=1` manual gate.
 
-## The WKWebView engine (macOS)
-
-`wkwebview_cgo_darwin.go` is the ONLY cgo in the engine; `wkwebviewglue_darwin.m`
-holds what needs real Objective-C (the WKWebView delegates, the two async
-completion blocks, the AppKit panels, the view surgery). Everything else is
-ordinary Go, and every page operation is the SAME `webkitjs.go` /
-`pagejs.go` builder the WebKitGTK driver uses — both engines are WebKit, so the
-difference is the call that carries the body, never the body. Do not fork a
-builder for macOS.
-
-- EVERY WebKit/AppKit call goes through `wkDo` (Wails' main-thread dispatch,
-  bounded). Same rule, same reasons, same lock discipline as `gtkDo`: a lock
-  here covers map bookkeeping only, and no wkDo-backed call happens under one.
-- Teardown issued FROM the main thread disposes inline. Wails runs
-  `ServiceShutdown` on the main thread and blocks it until it returns. The engine
-  answers `OnUIThread()` (`engineUIThread` in driver.go, `ao_wkv_on_main_thread`)
-  and the Manager disposes sequentially on the caller when it is true. The
-  GTK engine has the same seam (`ao_wk_on_main_thread`) for the same reason.
-- `aoWKVKeyChord` (and `aoWebKitKeyChord` on GTK) is the one export that
-  ANSWERS: it runs inside the key event's delivery and must return before the
-  event is released, so `Manager.keyChord` is a set lookup and a goroutine,
-  never a lock that a `wkDo`-backed path could be holding. The set itself is
-  swapped in whole by the App (`refreshBrowserAccelerators`), never read
-  from disk here. See browser-tools.md § Keyboard.
-- A `//export` callback runs ON the main thread, so it must never call `wkDo`
-  itself — the dispatch would queue behind the delegate it is running inside
-  and freeze the UI for a full `wkCallTimeout`. And it must never release an
-  object the delegate is about to hand back to WebKit: the popup path returns
-  the very view a failed lookup would like to destroy, so that close goes to a
-  goroutine and lands on a LATER main-thread turn. Both traps caught the
-  WebKitGTK engine too and are fixed there in the same shape.
-- A script failure is reported as the page's own `Name: message`
-  (`WKJavaScriptExceptionMessage` in the error's userInfo), never
-  `localizedDescription`, which is the same sentence for every throw. The GTK
-  glue's `error->message` already carries the JSC text; the two must agree
-  because `webkitEvaluate`'s statement retry reads the name.
-- `decidePolicyForNavigationAction:` forwards `shouldPerformDownload`
-  (an anchor's `download` attribute) alongside the deferred decision, and an
-  allowed one is answered `AO_POLICY_DOWNLOAD` → `WKNavigationActionPolicyDownload`.
-  Allow is not enough: WebKit navigates to the href instead and no WKDownload
-  is ever created. The Manager's authority stays over the
-  URL; download-vs-navigate is what the page asked for.
-- Hidden pages are IN THE WINDOW, parked in a 1x1 layer-masked `NSView` at
-  their own slot, added BELOW the SPA webview. An unparented WKWebView is the
-  trap: WebKit only guarantees layout and snapshots for a view inside a window.
-  This is the direct analogue of the Linux 1x1 clipping `GtkScrolledWindow`.
-- The pane rect arrives as a `PaneRect` in SPA CSS pixels and is scaled by the
-  content view's bounds over the rect's viewport (same proportional rule as
-  every host), then flipped against the content view's own `isFlipped`, never
-  assumed. AppKit needs no reparenting surgery: each page's per-page clip
-  container (`clipsToBounds`, sized to the clip rect) joins Wails' content
-  view and the presented view joins the container at the full rect's size.
-  `wkwebview_pane_darwin.go` is the `paneHost` half,
-  mirroring `webkit_pane_linux.go` — and deliberately NOT `paneDevTools`:
-  WKWebView has no public call that opens its inspector, so the pane's
-  devtools button gets the Manager's explained refusal and the real
-  inspector is Safari's Develop menu against the inspectable view.
-- Two APIs decide what this engine can be. `-callAsyncJavaScript:…` (macOS 11)
-  is the one call every operation goes through, so `ao_wkv_supported()`
-  answering no leaves that Mac with NO engine and no browser tools — a
-  capability answer exactly like "is there a window". There is no fallback
-  browser to quietly launch instead. `+dataStoreForIdentifier:` (macOS 14) is the only
-  documented per-workspace persistent site data, and it lives in WebKit's own
-  directory: there is NO macOS counterpart to the AO-owned `browser-profiles/`
-  tree (spec §4), and on macOS 11–13 the site-data setting has no effect at all.
-  Do not invent a directory to make the platforms look alike.
-- Clearing is therefore WebKit's own call, never a tree delete. The engine
-  implements `engineSiteData` by removing EVERY identifier
-  `+fetchAllDataStoreIdentifiers:` reports, each through
-  `+removeDataStoreForIdentifier:completionHandler:` — and "all of them" is
-  exactly this engine's site data, because the only enumerable stores are the
-  ones `+dataStoreForIdentifier:` made inside this app's own container, while
-  the SPA webview's default store carries no identifier and is never returned.
-  Zero identifiers is SUCCESS (macOS 11–13 had only non-persistent stores, so
-  nothing persistent was ever written), and the clear needs NO started engine:
-  it is class-level API with no view, no store object, no host, and no engine
-  lock in it. The tally of the per-store answers is folded into one sentence by
-  the tag-free `wkClearSiteDataFailure`, for the usual reason — a clear that
-  misreports its outcome tells the user their cookies are gone when they are
-  not.
-- A full-page or clipped screenshot RESIZES the view, captures, and restores:
-  `WKSnapshotConfiguration` cannot reach past the view's bounds, unlike
-  WebKitGTK's `FULL_DOCUMENT` region. Frames are normalized to one image pixel
-  per CSS pixel (premultiplied BGRA, so `webkitimage.go` decodes both engines),
-  because a backing-scaled image would crop clip rects at the wrong place.
-- WKWebView ships NO dialogs and NO open panel of its own: an unimplemented
-  delegate method makes the JavaScript call return immediately, so both answers
-  are spelled out — dismissed/refused on a hidden page, a real NSAlert or
-  NSOpenPanel on the presented one. `beforeunload` has no public delegate and
-  proceeds, which is the outcome the other engines reach by accepting it.
-  Context menus need no suppression: a clipped hidden view takes no input.
-- Downloads are `WKDownload` (macOS 11.3), forced into the profile's artifact
-  directory by handing `decideDestinationUsingResponse:` a handle-named path —
-  a nil destination is how one is refused. WKDownload has no per-chunk
-  callback, so the profile SAMPLES its `NSProgress`; without that the Manager
-  could only enforce its per-download byte cap after the whole file was written.
-- No Go pointer is ever handed to Objective-C. Ids resolve Go-side, page and
-  profile identity live on the view as associated objects, and the console
-  handler reads `WKScriptMessage.webView` rather than baking an id into the
-  handler — which is what keeps a popup sharing its opener's user content
-  controller from reporting under the opener's identity.
-
-## Local files and website capabilities
-
-- `browser_open_file` resolves symlinks and requires a regular file. Default
-  access is limited to the thread workspace or project root; the explicit
-  outside-workspace setting widens that to files readable by the app process.
-- Use direct `file://` navigation. Do not add a local content server merely to
-  render HTML, PDF, images, or text.
-- Downloads land only in AO-owned artifact directories, use sanitized unique
-  names, are capped at 512 MiB each / 2 GiB reserved per live workspace, share
-  a 4 GiB per-process artifact quota with asset bundles, and
-  are canceled with their page. They never write to the user's Downloads
-  folder. Sensitive site permissions remain denied. JavaScript dialogs are
-  dismissed; beforeunload is accepted so requested navigation can continue.
-  Popups inherit the opener thread and its page limit.
-
-## Resource bounds
-
-- One engine, at most 12 live workspace profiles, 8 pages per thread.
-- Pages start hidden. PRESENT only the explicitly selected page of a thread
-  with a mounted, visible companion; ordinary agent activity must never steal
-  that selection. Keep the viewport cap (1920×1200).
-- **Pixels never cross the wire.** The pane's page content is a real native
-  view the engine positions over the pane's host rect; a `CompanionEvent`
-  carries tab state and nothing else, so a hidden pane costs no encoding and no
-  wire traffic at all. Do not reintroduce a frame stream in any form — the
-  screencast, its ack worker, its keepalive, and its four RPCs are deleted
-  (spec §7/§9), and the engines that replaced managed Chrome cannot speak CDP
-  screencast anyway.
-- Operations are serialized per page and time-bounded. Snapshot text/elements,
-  locator matches, console/clipboard data, downloads/assets, evaluation output,
-  MCP request bodies, and screenshot dimensions are capped. Preserve or
-  tighten these bounds when adding tools.
-- Do not start a fresh engine per tool call or leave a profile alive after its
-  final page closes.
-
-## Parallel-agent page selection
-
-- An open/open-file call without `page_id` creates a new background page.
-  Supplying `page_id` is the intentional existing-page path.
-- Other page-scoped tools may resolve an omitted `page_id` only with zero/one
-  owned page. Multiple pages are an error that directs the caller to
-  `browser_pages`; never restore MRU guessing.
-- Generic MCP has no portable provider-subagent identity. Keep coordination on
-  explicit page handles and short thread-unique labels rather than inventing a
-  caller identity or a second session token every model must carry.
-
-## Persisted site data
-
-- **Site data is the ENGINE's, on disk, per workspace** (spec §4). Nothing here
-  reads or writes cookies or localStorage: the hosted engine keeps a named
-  `CoreWebView2Profile`, WebKitGTK a `WebKitNetworkSession` under
-  `<data root>/browser-profiles/<workspace-hash>/`, headless Chromium a
-  `--user-data-dir` under `<data root>/browser-profiles/<workspace-hash>/chromium`,
-  and WKWebView a `+dataStoreForIdentifier:` store inside WebKit's own directory.
-- `browserPersistSiteData=false` is an EPHEMERAL session, not a suppressed
-  write. It reaches an engine as `profileOptions.Persist`.
-- Clear site data closes every engine page, then clears BOTH halves: the
-  Manager deletes the AO-owned `browser-profiles/` tree, and an engine whose
-  data lives somewhere the Manager cannot reach by path (the launcher's
-  WebView2 user-data folder, WebKit's macOS data-store directory) implements
-  `engineSiteData` and clears its own. An engine under that tree — WebKitGTK,
-  headless Chromium — implements nothing, because the tree delete already is
-  the clear. The button must clear real state on
-  every platform — a per-engine silent no-op is a bug, not a platform quirk.
-- The AES-GCM checkpoint store (`state.go`, its keyring key, the harness
-  force-file-key path) is DELETED. Its leftovers — `browser-state/` and
-  `browser-state.key` — are pruned on the first boot of this code, because they
-  were encrypted with a secret nothing reads any more. Do not reintroduce a
-  second, staler copy of state the engine already holds.
-
-## Tests
-
-- **No test starts a browser, and none downloads one.** `fake_engine.go` is production code — the
-  harness and soak boots render the pane's chrome and host rect on it (spec
-  §10) — and the same engine carries this package's policy tests
-  (`manager_test.go`): pages exist, navigate, are owned by one thread, and
-  close, with nothing rendering them. Anything needing real page content
-  (snapshot, screenshot, evaluation, locators, input) refuses BY NAME, so a
-  test that thinks it is driving a renderer fails loudly instead of asserting
-  against invented content. Do not build a second fake.
-- Windowless selection must keep choosing NO engine, and that rule is tag-free
-  (`manager_test.go`) because its only failure mode is a silently launched
-  browser. The headless engine does not weaken it: it is chosen by an option
-  the serve boot sets, and `headless_engine_test.go` proves the other side —
-  asked for and found, it is selected; asked for and missing, it is still no
-  engine.
-- The headless engine's own tests run against a FAKE Chromium: a shell script
-  that records its argv, advertises the same loopback CDP endpoint the hosted
-  engine's tests use, and sleeps until it is killed. That covers everything
-  about lifetime — the command line, one process per profile, the download
-  pin, browser reuse, the kill on Dispose and Stop, the ephemeral directory,
-  and what a refused launch says. What it CANNOT cover is whether a real
-  Chromium accepts that command line, which is the manual
-  `AO_HEADLESS_CHROMIUM_SMOKE=1` gate (`TestHeadlessChromiumReal`, documented
-  in the root CLAUDE.md beside `make provider-smoke`). Run it after a Chromium
-  major upgrade and before shipping a change to the launch flags.
-- The tag-free suite stays display-free BECAUSE the mocked boots' fake-engine
-  pin is default-ON, not because a real engine is unreachable from here. The
-  lift is one manual gate — `AO_HARNESS_REAL_BROWSER` on an attended
-  `--harness` boot (spec §10, `realBrowserEngineRequested` in
-  `main_harness.go`) — and it is the ONLY way this package's real engines run
-  outside the shipped app. A test must never set that variable, and no fixture
-  may reach the lift by another route: `ManagerOptions.FakeEngine` is the one
-  fact that keeps `go test` from touching GTK, AppKit, or a launcher.
-- Both WebKit engines' testable half is everything pure: the JS builders, the
-  screenshot pixel path, the profile identifier, the site-data clear's outcome
-  fold, and the platform half of
-  engine selection. Their live half needs a real GTK or AppKit
-  window and is proven by running the desktop app, not by the suite. A rule
-  whose only failure mode is silent belongs in the tag-free half: a malformed
-  `wkStoreIdentifier` costs a workspace its isolation with no error anywhere,
-  which is why it does not live in the darwin file that produced it.
-- Native-input keyboard tests (`isTrusted=true` events) must assert the resulting DOM state, not merely a
-  successful CDP call. Encode modifier chords as modifiers/editing commands;
-  concatenating modifier key runes presses and releases them before the key.
-
-## References
-
-- `docs/architecture/browser-tools.md`: shipped product and authority contract.
-- `docs/references/codex-browser-parity.md`: bundled Codex browser API map and validation ownership.
-- `docs/architecture/in-app-browser-spike.md`: measured engine and ownership decision evidence.
-- `docs/specs/embedded-browser.md`: the embedded-pane feature spec.
-- `internal/webview2host/AGENTS.md`: the launcher half the hosted engine's
-  directives and reports cross to.
-- `internal/cdprelay/AGENTS.md`: the tunnel the hosted engine attaches chromedp
-  through.
-
-The fake CDP listener returns 404 to ordinary HTTP discovery probes before
-checking a WebSocket handshake. Port discovery can reach test listeners too.
+- [embedded-browser.md](../../docs/specs/embedded-browser.md)
+- [codex-browser-parity.md](../../docs/references/codex-browser-parity.md)
+- [in-app-browser-spike.md](../../docs/architecture/in-app-browser-spike.md)
+- [internal/cdprelay](../cdprelay/AGENTS.md)
+- [internal/webview2host](../webview2host/AGENTS.md)

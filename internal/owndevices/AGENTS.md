@@ -1,4 +1,4 @@
-# Own-device membership
+# internal/owndevices
 
 This package is the bounded public membership shape and merge rule. It contains
 no credential, private key, signing authority, network client or replica of

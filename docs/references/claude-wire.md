@@ -912,7 +912,7 @@ and emits `EventBackgroundTaskNotification` with the same meta shape
 the structured-envelope path produces, so triage's stash-drain ->
 `tool_completion` sibling write runs in either case. Without this
 parser fallback, the launch row stays `running` indefinitely. See
-`internal/provider/claude/CLAUDE.md` §Synthetic XML extraction.
+`internal/provider/claude/parse_user_replay.go` and its focused tests.
 
 ### Injected non-user content on the `isReplay` envelope (`<agent-message>`, …)
 
@@ -4154,7 +4154,8 @@ More spike-verified behavior (A1, B):
 - Plain `--resume` with no cursor uses the CLI's own default leaf, so
   omitting `--resume-session-at` is always safe, never wrong-branch.
 
-AO enforcement: invariant 28. `sessionfork` re-chains deferred
+AO enforcement is described in the active-branch and resume-filter sections
+above. `sessionfork` re-chains deferred
 api_error tails so fork output keeps its writable tail on-branch;
 `ScanSessionLeaf` validates its file-order pick against a branch index
 and repairs picks the CLI would reject (off-branch OR filter-dropped,

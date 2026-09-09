@@ -1,303 +1,105 @@
 # Agent Overflow
 
-Desktop app for driving coding agents (Claude Code, Codex) through one
-shared UX. Optimized for performance, memory efficiency, and minimal code.
+Desktop app for Claude Code and Codex, built with Go, Wails, SQLite,
+Svelte 5 and TypeScript. Prioritize correctness, responsive rendering,
+bounded memory and simple code that is easy to maintain.
 
-## Stack
+## Working rules
 
-- **Backend**: Go 1.26, Wails v3 (system webview shell only), SQLite via
-  `modernc.org/sqlite` (pure Go, no CGO). WAL mode. Syntax-highlight
-  spans via tree-sitter (`internal/highlight`), the one cgo dependency
-  besides the platform webview glue; grammars compile in with the
-  standard toolchain (the Windows WSL payload builds with gcc in WSL).
-- **Frontend**: Svelte 5 (runes), Vite 8 (Rolldown), Tailwind CSS 4,
-  TypeScript.
-- **IPC**: HTTP+WebSocket via `internal/transport/`. Wails' binding
-  generator still emits the typed TS wrappers; in production
-  `@wailsio/runtime` resolves to `frontend/src/lib/transport/runtime.ts`,
-  which forwards calls over WS. Server push goes through the per-channel
-  event ring on the same connection. The same wire shape backs the
-  embedded webview and `agent-overflow --connect`.
-- **Providers**: Claude Code CLI (NDJSON over stdio) and Codex app-server
-  (JSON-RPC 2.0 over stdio).
+- Fix the cause in the code that owns it. Check sibling paths and callers
+  when changing a shared contract. Validate inside the API so correctness
+  does not depend on every caller remembering a precondition.
+- Keep changes cohesive. Improve adjacent code when it makes the solution
+  simpler; discuss larger refactors first. Do not add speculative modes,
+  compatibility layers or duplicated implementations.
+- Preserve visible behavior unless the requested change includes it.
+  Ask before accepting a workaround or a product tradeoff the user has not
+  approved. A question from the user is not approval to edit.
+- Treat rendering work, allocations, I/O and resource lifetimes as design
+  constraints. Test repeated calls, cancellation, partial failure and state
+  transitions, including whether disabling a feature clears prior state.
+- Handle every error explicitly. Return useful errors to the owning caller;
+  failures that affect a user operation must reach user-facing state.
+  Cleanup failures need an observable outcome. Do not silently discard them.
+- Verify claims against current code and tests. Existing patterns and green
+  checks are evidence, not proof that a design is correct. Do not bypass a
+  failing check or document a defect to avoid fixing it.
+- Test the behavior a change could break. Recheck fixes made during review
+  with the same care as the original change. Report what was verified and
+  any remaining limits.
 
-## Commands
+## Architecture constraints
 
-Requires Go 1.26.6+, Node 24+, and pnpm 10+. On Linux, install
-`libgtk-4-dev`, `libwebkitgtk-6.0-dev`, `pkg-config`, and `gcc` before
-`make install` (the GTK4 / WebKitGTK 6.0 stack ships on Ubuntu 23.04+ /
-Debian 13+).
+- The live provider owns turn execution. Provider-native session files own
+  recoverable conversation history. Keep provider-specific behavior in its
+  provider package; do not force Claude and Codex into one implementation.
+- Go connects providers, persistence and clients. Keep workflow sequencing
+  in `internal/workflow/` and conversation transfers in
+  `internal/threadtransfer/`; do not introduce another orchestration layer
+  or a second authoritative model of persisted application state.
+- Provider conversation history in SQLite is an item-granular cache;
+  streaming content can be persisted before completion. Account records, accepted message queues and coordination records
+  have independent durability requirements. Read the store guide before
+  changing restore, pruning or migration behavior.
+- Load heavy content on demand and bound retained frontend state by the
+  active surfaces. Preserve history the user explicitly loaded.
+- A project is a repository; a workspace is its root or a linked worktree.
+  Keep their identities distinct.
+- macOS, Linux, Windows through WSL, embedded webviews and connected browsers
+  are supported production paths. Use platform-aware path and process APIs;
+  check the applicable platform implementations when changing shared code.
+- Calls and events use the shared HTTP/WebSocket transport. Go emits through
+  `a.emit`; frontend code uses the typed wrappers in
+  `frontend/src/lib/stores/bindings.ts`. Binding generation and RPC metadata
+  belong to the app and transport guides.
 
-Keep the `packageManager` pins in the root, frontend and mobile package files
-identical. Corepack chooses pnpm before handling `--dir`; leaving a build root
-unpinned can select a newer incompatible pnpm on a clean runner.
+## Start with the relevant area
 
-| Target | What it does |
+| Task | Entry point |
 |---|---|
-| `make install` | `wails3` CLI (via the `go.mod` tool directive) + pnpm deps |
-| `make dev` | dev mode, hot reload (local supervisor) |
-| `make build` | production build (`wails3 build`) |
-| `make go-build` / `make go-test` | `go build ./...` / `go test ./...` with repo-standard platform env |
-| `make check` | `make go-build` + frontend `pnpm run check` |
-| `make test` | `make go-test` + frontend `pnpm test` |
-| `make verify` | full hermetic release gate, including a compile-only check of the real-provider smoke tests |
-| `make release` | direct-install artifacts in `dist/release/<version>/` |
-| `make harness` | real app, isolated data dir, mocked providers; `harness-window` / `harness-wsl` open a real window on it, `make e2e` runs Playwright against it, `bin/ao-harness` drives any instance from a shell. See [agent-harness.md](docs/architecture/agent-harness.md). |
-| `make soak` | the harness shell plus the indefinite streaming preset, for hours-long renderer reproductions beside your own app; `soak-check` summarizes, `soak-window` is the native equivalent. See [soak-rig.md](docs/architecture/soak-rig.md). |
-| `make apk` | the Android shell's debug APK from the production SPA; `make apk-release` builds a signed release APK. Needs a JDK 21 and an Android SDK, neither of which is on PATH. See [mobile/AGENTS.md](mobile/AGENTS.md). |
-| `make e2e-android` | the shell smoke inside a running emulator's own WebView; `AO_ANDROID_RELEASE_APK=/absolute/candidate.apk` selects the signed APK lifecycle case through native accessibility instead. The ordinary debug smoke skips with no device; explicit signed-release mode requires an emulator and fails if unavailable. See [e2e/AGENTS.md](e2e/AGENTS.md) § The emulator smoke for device selection and evidence limits. |
-| `make provider-smoke` | manual real-provider gate. **Spends real model tokens**; needs authenticated `claude` + `codex` on PATH. Run before a release and after upgrading either provider CLI. See [providersmoke_test.go](internal/app/providersmoke_test.go). |
-| `make service-artifact-smoke` | manual production-artifact update gate. Set `AO_SERVICE_SMOKE_BASELINE` and `AO_SERVICE_SMOKE_CANDIDATE` to absolute paths of two differently versioned binaries or macOS release ZIPs. Uses disposable state and mocked providers; spends no tokens. See [serve-mode.md](docs/architecture/serve-mode.md#validating-production-artifacts). |
-| `make import-corpus-smoke` | manual session-import gate over a **copy** of your provider homes (`AO_IMPORT_CORPUS_CLAUDE` / `AO_IMPORT_CORPUS_CODEX`; a root overlapping a live home is refused, and there is no fallback). Spends no tokens. Run after provider CLI upgrades and before importer changes. See [importcorpussmoke_test.go](internal/app/importcorpussmoke_test.go). |
-| `AO_HEADLESS_CHROMIUM_SMOKE=1 go test ./internal/browser -run TestHeadlessChromiumReal -count=1` | manual headless-browser gate, and the ONLY test that starts a real browser. Needs a system Chromium (`browserChromiumPath`, or one on PATH); downloads nothing and spends no tokens. It proves this machine's Chromium accepts the exact command line serve mode builds, sandbox included. Run after a Chromium major upgrade and before changing the launch flags. On no automatic target. See [headless_engine_test.go](internal/browser/headless_engine_test.go). |
+| Go packages and ownership | [internal/AGENTS.md](internal/AGENTS.md) |
+| Application methods and lifecycle | [internal/app/AGENTS.md](internal/app/AGENTS.md) |
+| UI and client state | [frontend/AGENTS.md](frontend/AGENTS.md) |
+| Harness and browser tests | [e2e/AGENTS.md](e2e/AGENTS.md) |
+| Android shell | [mobile/AGENTS.md](mobile/AGENTS.md) |
+| Windows launcher | [cmd/agent-overflow-windows/AGENTS.md](cmd/agent-overflow-windows/AGENTS.md) |
+| Build, bootstrap, packaging or dev watchers | [Development](docs/architecture/development.md) |
+| Cross-area design or product constraints | [Documentation index](docs/README.md) |
 
-Every task must leave `make go-build`, `make go-test`,
-`cd frontend && pnpm run check`, and `cd frontend && pnpm run build`
-passing. On macOS, use the Make targets rather than bare
-`go build ./...` / `go test ./...`: the Makefile exports the cgo
-deployment-target flags Wails needs to keep Objective-C objects and
-final binaries on the same minimum macOS version.
+Read linked material when its stated task applies. Follow child guides for
+local constraints; parent instructions remain in effect. Check the relevant
+[product decisions](docs/decisions.md) before changing intentional behavior.
+For uncertain external-tool behavior, use the provider references and
+[isolated spike policy](docs/references/spike-policy.md).
 
-## Core Principles
+## Validation
 
-1. **Go is triage + pipe.** No event sourcing, no orchestration engine,
-   no in-memory read models. The deliberate exceptions are coordination,
-   not orchestration, and are called out where they live: lightweight
-   brokering between provider processes and the frontend (deliberation
-   turn tracking); the workflows engine (`internal/workflow/`; spec:
-   `docs/specs/workflows-system.md`), which sequences phases over the same
-   thread/provider runtime; and fixed conversation handoff coordination
-   (`internal/threadtransfer/`; spec: `docs/specs/conversation-transfer.md`),
-   which moves verified files and execution ownership without replicating
-   provider state.
-2. **Provider process is the source of truth during a turn.** Don't
-   duplicate its state. Provider session files (`~/.claude/`,
-   `~/.codex/`) are the authoritative history for crash recovery.
-3. **SQLite is a history cache, not an event store.** Persist per-item on
-   completion, not per-turn. Derived, version-stamped render metadata
-   (`pathRefs`, highlight span blobs) may persist alongside history as
-   cache content: stale entries are dropped and recomputed, never
-   migrated. Raw content stays canonical.
-4. **Frontend memory is bounded by the visible thread.** Heavy payloads
-   (diffs, command output, thinking) live in SQLite and load on demand.
-5. **Errors are user-facing state, not log entries.**
-6. **Provider-specific code stays in provider-specific packages.** Don't
-   force a unified abstraction across Claude and Codex.
-7. **Project ≠ workspace.** A project is the git repo. A workspace is
-   where the provider operates (project root, or a separate worktree).
-   Threads track both.
-8. **Every platform is production.** macOS, Windows (the WSL launcher),
-   and Linux; embedded webview and `--connect` browser alike. Paths,
-   spawning, and filesystem code must hold on all of them: build paths
-   with `filepath`, assume nothing about home layout or case
-   sensitivity, and put platform behavior behind the existing
-   `*_darwin.go` / `*_windows.go` splits rather than runtime guesses.
+Every task must leave these passing:
 
-## Working In This Repo
+- `make go-build`
+- `make go-test`
+- `cd frontend && pnpm run check`
+- `cd frontend && pnpm run build`
 
-- **Fix the root cause.** If the fix you are writing is a workaround,
-  the code underneath is wrong: fix that, or surface the tradeoff and
-  get approval before settling.
-- **Close the class, not the instance.** When a bug can recur, make it
-  structural: narrow the API, validate inside the function, add the
-  regression test or lint. Then sweep for siblings of the same pattern.
-- **Consider every place.** A change to a shared shape updates every
-  caller, every sibling path with the same pattern, and both providers
-  when it applies to both. Compiling is not the same as complete.
-- **Prefer clean, simple solutions.** Minimal code is a project goal. A
-  solution that needs a paragraph of justification is usually wrong;
-  resist speculative states, modes, and knobs nobody asked for.
-- **Write through the performance lens, always.** Visual performance,
-  memory consumption, and the actual work a change causes are weighed on
-  every edit, not tuned later: do the least work needed, allocate the
-  least that suffices, and stay correct under partial failure. Applies
-  to all code, hot path or not.
-- **Visible UI behavior changes only with approval.** Perf, refactor,
-  and bug-fix work keeps pixels, motion, and interactions identical
-  unless the visible change is itself what was requested.
-- **A fixed bug ships its lesson.** When the bug's class could recur,
-  update the nearest AGENTS.md (or the doc it points to) in the same
-  change.
-- **Guides contain lasting instructions.** Write concrete engineering rules
-  in plain language. Keep work logs, completed review histories, and incident
-  narratives out of `AGENTS.md`; keep any lasting requirement and its test or
-  reference. Preserve exact API names and technical terms where precision
-  requires them.
-- **A change keeps the guides true.** Before reporting done, sweep
-  `**/AGENTS.md` and `docs/` for claims your change falsified and fix
-  them in the same commit. Full maintenance rules (fact routing, the
-  sweep, retiring enforced prose, index sync):
-  [conventions.md § Maintaining the Guides](docs/architecture/conventions.md#maintaining-the-guides).
+Use the Make targets for Go so platform build settings are applied. Run
+additional focused checks required by the affected area. `make help` lists
+supported commands; [Development](docs/architecture/development.md) routes
+manual and release checks.
 
-## Improving As You Go
+Tests use temporary homes and mock providers. They must never invoke a real
+provider or touch the developer's provider homes. Session-capable fixtures
+use [kerneltest](internal/kerneltest/AGENTS.md). Real provider execution is
+restricted to the explicitly requested manual provider smoke.
 
-Performance, memory efficiency, and minimal code are ongoing goals: if
-you spot a chance to improve architecture, cut allocations, tighten a
-hot path, or delete dead code while working on something else, take it.
-Nothing here is a cathedral yet. Don't leave the codebase slightly worse
-than you found it because the improvement wasn't in the ticket.
+## Keep context useful
 
-Guardrails:
+Guides contain only navigation and essential instructions for good changes
+in their scope. Keep each rule in one authoritative place. Update or remove
+existing guidance when code changes; a bug fix does not require new prose.
+Put mechanism details in focused docs and code-local contracts beside the
+code. Delete narration that a reader can infer from the implementation.
 
-- **Surface it.** Call out opportunistic changes alongside the primary
-  change so they can be reviewed on their own merits.
-- **Stay adjacent.** Fix what you're touching or immediately adjacent
-  to. Propose larger refactors before starting them.
-- **Don't shortcut by duplicating.** If the right fix lives in shared
-  code, change the shared code. "Not my file" isn't a reason to work
-  around a bug.
-- **Don't violate Core Principles.** A cleanup that reintroduces
-  in-memory read models or forces a unified Claude/Codex abstraction is
-  not an improvement.
-- **Reliability under partial/failure conditions counts as quality.**
-  Streaming reconnects, provider restarts, partial NDJSON lines, session
-  resume: if you notice brittle handling while you're in the area, fix
-  it.
-
-## Repo Map
-
-```
-/                             root guides + executable bootstrap (`main*.go`, `service.go`)
-/internal/app/                Wails service shell, bound methods, integration tests
-/cmd/                         alternative entry-point binaries (Windows WSL launcher, ao-mockprovider)
-/internal/                    Go packages (see internal/AGENTS.md)
-/frontend/                    Svelte 5 app (see frontend/AGENTS.md)
-/e2e/                         Playwright suite for the agent test harness (see e2e/AGENTS.md)
-/mobile/                      Capacitor shell for Android (see mobile/AGENTS.md)
-/docs/architecture/           deep-dive design docs
-/docs/GLOSSARY.md             coined vocabulary + terms with conflicting meanings across subsystems
-/docs/references/             provider wire references + spike policy
-```
-
-Release artifact handoff is checked by `TestReleaseWorkflowCarriesEveryArtifactToPackaging`:
-a build output must survive CI upload and download before checksumming/publishing.
-Manual production candidates are tested before a tag promotes their exact saved
-bytes; see [release-candidates.md](docs/architecture/release-candidates.md).
-Android setup and signing instructions live in
-[remote-access-setup.md](docs/architecture/remote-access-setup.md).
-
-Area guides live alongside their code as `AGENTS.md` (with a `CLAUDE.md`
-symlink). Start at the area closest to what you're touching; it links
-down if more depth is needed.
-
-## Conventions
-
-- Go: `internal/` for every non-main package. No `pkg/`.
-- Svelte: runes only (`$state`, `$derived`, `$effect`, `$props`). No
-  legacy stores or reactive `$:` syntax.
-- Tailwind v4: CSS-native config via `@theme` in `app.css`. No
-  `tailwind.config.js`.
-- Wails bindings live in `frontend/bindings/` and are regenerated, never
-  edited by hand. Always pass `-ts` to `wails3 generate bindings`.
-- Events go Go → frontend via `a.emit(name, data)` (the transport-aware
-  helper on `*App`); frontend calls Go via the typed wrappers in
-  `frontend/src/lib/stores/bindings.ts`. Both flow through
-  `internal/transport/` over the same WebSocket.
-
-## When Behavior Is Unclear
-
-If you're uncertain how Claude Code, Codex, or an external tool behaves,
-**do not guess from this repo**. Write a small isolated spike test
-outside the project to confirm the behavior, then port the learning in.
-See [docs/references/spike-policy.md](docs/references/spike-policy.md).
-
-## References
-
-- **Claude Code source**: a local checkout of the CLI's TypeScript
-  source. Location, caveats, and how it lags the installed binary:
-  [docs/references/claude.md](docs/references/claude.md).
-- **Codex source** (https://github.com/openai/codex): authoritative
-  Codex CLI and app-server behavior. How to use it:
-  [docs/references/codex.md](docs/references/codex.md).
-- **CodexMonitor** (https://github.com/Dimillian/CodexMonitor): Tauri,
-  feature-complete reference implementation of a Codex app-server
-  client.
-- **Wire references**: `docs/references/claude-wire.md` and
-  `docs/references/codex-wire.md` are the single sources of truth for
-  parser work on either provider.
-
-## Permanent invariants
-
-- **Never rewrite a running macOS bundle.** Build and install through the
-  shared bundle publisher, which preserves the previous bundle while in use.
-  See [conventions.md](docs/architecture/conventions.md) for the
-  lifecycle and its real code-signature regression test.
-
-- **Instance locks never cross exec.** Backend and harness lifetime locks use
-  atomic close-on-exec on Unix. A provider or orphan-reaper child may outlive
-  its parent; inheriting the lock would prevent the next app version from
-  starting. `TestInstanceLockDoesNotSurviveInAnUnrelatedChild` proves release
-  while a real child remains alive.
-
-- **Updater helpers dispatch before ordinary boot.** `main` calls
-  `updater.HandleHelperMode` before CLI/session guards, discovery and provider
-  setup. A paired desktop frontend relaunches as `--frontend` with its data
-  root, never with a consumed invitation or a computer that may be removed.
-  The shared updater owns argv preservation and rollback environment cleanup.
-
-- **Use the shared transport.** Go → frontend uses `a.emit`; frontend → Go
-  uses the generated Wails bindings in `frontend/bindings/`. Both use
-  `internal/transport/`. UI code must not add another path around that
-  transport. The embedded
-  webview, `agent-overflow --connect`, and remote browser access share
-  the same HTTP+WS wire shape. Any new App-bound method also becomes a
-  wire RPC, so it carries an `//ao:scope <name>` annotation naming the
-  required scope. Scopes describe permissions or caller restrictions;
-  `methodgen` fails without one. Dispatch enforces the named permission or
-  caller/session/host restriction. Each method also has a route, naming which attached backend the
-  call belongs to: `thread` and `project` are inferred from a first
-  parameter named `threadID` / `projectID`, `workspace` from a first
-  parameter of type `gitapp.WorkspaceRef`, and everything else declares
-  `//ao:route home|selected|all` or the same generator fails the run.
-  See `internal/transport/AGENTS.md` for the supported values, operations
-  requiring fresh user confirmation, permission checks, and event delivery.
-
-- **`.claude/` and `.playwright-mcp/` MUST stay excluded from the
-  Wails3 dev watcher.** Nested checkouts can create enough file watches to
-  crash the dev process. Keep explicit directory exclusions in
-  `build/config.yml#dev_mode.ignore.dir` and
-  `frontend/vite.config.ts#server.watch.ignored`; `git_ignore: true` alone
-  does not cover this.
-
-- **Tests MUST never reach a real provider binary or the developer's
-  real provider homes.** Tests use temporary homes and mock providers to
-  avoid changing the developer's login or incurring model charges.
-  Real CLI execution belongs only in `make provider-smoke`.
-  `internal/kerneltest` documents the shared helpers: `setupE2EApp` and
-  `newTestAppWithStore` replace provider binaries with failing test doubles,
-  stub text generation and the Codex catalog, redirect HOME/USERPROFILE,
-  and fail unexpected provider starts;
-  `resolveTextGenerationExecutor` refuses real CLI execution inside any
-  test binary; the boot prune refuses a store whose `providerHome`
-  stamp mismatches the provider account home. Any new fixture that constructs
-  a session-capable `*App`, and any new spawn path, must wire into the
-  same checks (`kerneltest.IsolateSpawns` outside package `main`).
-  Mocking is mandatory-by-default, never opt-in per test.
-
-## Deferred (Not Currently in Scope)
-
-Intentional non-goals for the current phase. Don't implement without a
-scope conversation first.
-
-- **Correction-needed / mid-turn correction flow.** A workflow/gate
-  mechanic for steering an agent mid-turn. It maps to no Codex or
-  Claude wire-level event, and t3-code (still a UX reference for some
-  surfaces, though core functionality has diverged) doesn't implement
-  one either. If a "course-correct mid-turn" primitive is wanted, it
-  becomes its own feature with its own design.
-
-- **Where a computer's nickname lives.** Two nickname systems exist for
-  an attached computer: the Go profile nickname (`RenameBackend`, carried
-  host-wide by the bootstrap manifest; today written only over the wire,
-  the harness e2e among its callers) and the per-frontend
-  `computer-nicknames` map (the only one the UI writes, via
-  `ComputerNickname`). Deleting the profile one is the clean cut, but
-  the spec says both "visible only on the frontend where you set it" and
-  "existing desktop profile nicknames remain readable", so whether a
-  legacy profile nickname must stay visible to `--connect` windows and
-  other webviews on that host after an upgrade is an owner ruling nobody
-  has made. Until it is made, neither system is removed. Held with it,
-  for the same reason: showing the Device name field once (on Allow
-  device access only) and relabeling the per-row "Nickname on this
-  device" control to "Rename", which reads wrong while two nicknames can
-  apply to one row.
+Use concise, direct engineering language in guides, docs and comments. No
+em dashes, dramatic metaphors, incident stories, work logs or review history.
+Preserve exact API names and technical terms. When editing documentation,
+follow [Documentation maintenance](docs/architecture/documentation.md).

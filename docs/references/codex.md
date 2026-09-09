@@ -155,7 +155,7 @@ cannot be combined). 0.148.0 added a third,
 history in place and emits `thread/reverted`; AO prefers it for
 edit-and-resend wherever the thread supports it, and asks for the
 paginated history it requires on `thread/start` at the same 0.148 floor
-(see `internal/provider/codex/AGENTS.md` §"History truncation").
+(see [Codex history truncation](codex-wire.md#history-truncation-threadrevert-and-historymode)).
 **All three cut on TURN boundaries**, so the consequence below is
 unchanged by any of them. codex-rs core already has a
 message-granular fork cut: `ForkSnapshot::TruncateBeforeNthUserMessage`

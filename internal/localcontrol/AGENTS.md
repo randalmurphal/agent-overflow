@@ -1,4 +1,4 @@
-# internal/localcontrol/
+# internal/localcontrol
 
 The owner-only rendezvous for a CLI on the same computer as a running backend.
 `control.json` is atomically written with private permissions under the app data

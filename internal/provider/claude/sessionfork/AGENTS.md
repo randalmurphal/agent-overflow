@@ -1,223 +1,42 @@
-# internal/provider/claude/sessionfork/
+# Claude native session files
 
-Forks a Claude Code session JSONL transcript at an arbitrary past
-message, producing a `<newID>.jsonl` that `claude --resume <newID>` loads
-with the truncated history, and moves transcripts between project slugs
-when a thread's workspace changes. Everything streams; nothing here calls
-`io.ReadAll` on a transcript.
+This package reads, forks, relocates, and copies Claude session JSONL plus its
+opaque sidecar subtree. Callers inject the projects root and decide when an
+operation is allowed. This package owns safe parsing, chain selection, UUID
+rewrites, path encoding, and crash-safe file writes.
 
-Mirrors the recipe in Anthropic's Python SDK
-(`claude-agent-sdk-python`, `_internal/session_mutations.py`,
-`fork_session(session_id, up_to_message_id)`) and the CLI's own `/branch`
-command (`claude-code-source-code/src/commands/branch/branch.ts`).
+## Reading and fork cuts
 
-`claude --fork-session` only forks at the LATEST message, which is why
-this is a JSONL transform and not a CLI call.
+Stream JSONL under the 16 MiB line limit. Never load a whole transcript into
+memory or count every `type:"user"` row as a user turn; tool results use that
+type too. Parent traversal must use the shared parent and logical-parent
+resolvers.
 
-## The projects dir is a PARAMETER, on every entry point
+Canonicalize workspace paths before computing Claude's project slug. Preserve
+the truncate-and-hash encoding for long paths. Refuse ambiguous or missing
+resume anchors rather than fabricating a session.
 
-Nothing here resolves `$HOME`. `defaultProjectsDir` is gone and must not
-come back. The app can run against an injected Claude home (credential
-override, `AO_HARNESS_KEEP_HOME`) where `$HOME` and the home a transcript
-came from are different directories, so a `$HOME` lookup here would land
-a read, and worse a WRITE, in the developer's real `~/.claude/projects`
-during an isolated boot.
+`WriteForkFileThroughUUID` takes `ForkCut`; keep path and identity inputs on
+that struct. Remap the new root session identity while preserving message UUID
+chains needed for resume. Deferred `system/api_error` rows are the only rows
+re-chained to their file predecessor. A successful `/compact` echo must rewind
+to the compact boundary's `logicalParentUuid`; otherwise timeline rollback
+and provider context diverge.
 
-- App callers get theirs from one seam, `App.claudeProjectsDir()`
-  (`app_provider_home.go`). `internal/provider/claude` threads it through
-  `Config.ProjectsDir` and its leaf-scanner parameters.
-- An EMPTY projects dir is REFUSED, or answered as "no transcript
-  available" on the leaf scanners. A missing injection must fail visibly,
-  never fall back to a real home.
-- A caller writing BESIDE an existing transcript does not use the
-  injected dir at all: `importedBranchDestDir` derives it from the source
-  file's own path, so a destination cannot leave the home the source came
-  from.
+## Relocation and transfer
 
-## Shared reading surface
+`RelocateSession` is the copy phase and overwrites a stale destination.
+`RemoveSessionTranscript` is the later delete phase. Callers must copy before
+committing a workspace change and delete the old transcript only after commit.
+Validate transcript basenames before deriving or removing a sidecar directory.
 
-Four primitives are exported because a second consumer,
-`../sessionimport/`, reads the same transcript files and must not grow
-its own copy of these rules. They stay behaviourally identical for both
-callers: if the importer ever needs different semantics it gets its own
-function, never a flag on one of these.
+Transfers include the full opaque sidecar subtree. Unsupported links and
+incomplete copies are explicit errors. Independent copies receive a new native
+root identity but preserve message UUIDs, parent chains, content, and opaque
+sidecars. A pending fork copy stops exactly at its resolved cursor and never
+retires the borrowed parent identity.
 
-| Symbol | Why it is shared |
-|---|---|
-| `SessionIDFromPath` | The filename uuid is the session's identity; a re-derivation would disagree on the `.jsonl` trim. |
-| `ParseTranscript` | Row admission (`TranscriptTypes`, empty-uuid rejection, skip-unparseable) must match what a fork would accept. |
-| `ResolveParent` | Skips progress ancestors. Walking raw `parentUuid` breaks the chain on every progress row. |
-| `ResolveLogicalParent` | `compact_boundary` rows chain through `logicalParentUuid`, since `parentUuid` is null there. |
-
-`TranscriptTypes` is shared a second way: it IS the row-admission set the
-claude package's resume-at branch validator (`sessionleaf_branch.go`)
-uses, so the fork transform and the branch walk cannot drift (invariant
-28).
-
-## The project-slug encoder is a verbatim port
-
-`claudeProjectDirName` (`locate.go`) reproduces the CLI's own encoder
-(`W9`/`z$o`/`y__`/`Act` in the 2.1.237 bundle) against the workspace's
-CANONICAL absolute path:
-
-- Every non-alphanumeric **UTF-16 code unit** becomes `-`, not just path
-  separators. A separators-only encoding misses for any path containing
-  `.`, `_` or `:`, which is nearly all of them. Code units, not runes: an
-  astral rune is two units and so two dashes, which moves where
-  truncation cuts.
-- Past `MaxSanitizedSlugLen` (200, `kie`), the SANITIZED string truncates
-  to 200 with `-<hash>` appended, where the hash is an `h = h*31 + unit`
-  fold over the ORIGINAL unsanitized path, `Math.abs`'d and rendered base
-  36. `Math.abs` is a JS double, so int32-min folds to `2147483648`
-  (`zik0zk`) and never a wrapped negative: widen to int64 before negating.
-
-`TestClaudeProjectDirName` pins this against expectations generated by
-running the CLI's own JS under node (the one-liner is in the test
-comment). Regenerate there. Never re-derive the arithmetic in Go, which
-would share a bug with the code under test.
-
-Consequences:
-
-- There is no unresolvable path. `exactWorkspaceSlug` returns
-  `(slug, error)` and errors only when the workspace cannot be
-  canonicalized. Do not reintroduce a bool "unresolvable" signal. The
-  project-dir scan stays as the fallback for a MISS: a moved workspace,
-  or a pre-2.1.224 binary that filed a long path untruncated.
-- **`CLAUDE_CODE_PROJECT_DIR_NAME` (2.1.234) is not a way out.** It is
-  honored only when `CLAUDE_CONFIG_DIR` is also set, which relocates
-  settings and credentials (a non-starter under AO's shared-`~/.claude`
-  credential model), and it is a process-wide memoized constant, so one
-  AO process would file every workspace under a single directory.
-- Do NOT skip canonical-path resolution in `LocateSessionFile`. On macOS
-  `/tmp` and `/private/tmp` produce different slugs, and this is the most
-  common cause of "session not found".
-
-## Re-chain rule (invariant 28)
-
-The CLI appends deferred `system/api_error` rows at the NEXT user send
-with a STALE `parentUuid` (upstream bug 2.1.167 to 2.1.170, see
-claude-wire.md §"deferred `system/api_error` rows"). Copied positionally,
-those rows leave the fork's writable tail off the active branch and every
-resume of the fork hard-fails. `buildLines` forces each deferred
-api_error row's parent to its file predecessor, a no-op when already
-chained (`isDeferredAPIErrorRow`, `rechain.go`). Scope is strict:
-
-- ONLY `type=="system" && subtype=="api_error"` rows re-chain.
-  Compact-boundary system rows are legitimate `parentUuid:null` chain
-  ROOTS, so a generic "system row off the chain" rule would corrupt them.
-- User and assistant rows NEVER re-chain. Claude's own branch walk
-  correctly ignores abandoned content branches.
-- Known limitation: an abandoned-branch row immediately preceding an
-  api_error becomes the forced parent. Still strictly better than the
-  hard failure.
-
-Fixture:
-`docs/references/fixtures/claude/session_api_error_offbranch.jsonl`, a
-fixture that `rechain_test.go` drives through the transform.
-
-## Compact-anchor rewind rule
-
-`WriteForkFileForUserMessageUUID` normally slices at the anchored
-message's `parentUuid`, because file order guarantees a message's effects
-come after it. A successful `/compact` INVERTS that layout: the CLI
-writes the compaction's effects BEFORE the command echo, as the echo's
-own ancestors (`compact_boundary` root, `isCompactSummary` summary,
-`isMeta` caveat, echo). Slicing at the echo's parent would keep the
-compacted provider state while the caller's timeline deletes the
-compaction divider, which is silent context/timeline divergence.
-
-`compactCommandSliceAnchor` (`compact_rewind.go`) therefore rewinds the
-anchor to the boundary's `logicalParentUuid`, the pre-compact leaf, when
-the anchored entry is a `/compact` echo whose kept ancestor chain is
-compact prelude down to a `compact_boundary`. Any off-pattern chain (a
-different command, a canceled compaction with no boundary, a boundary
-with no resolvable `logicalParentUuid`, a real content row inside the
-walk) keeps the plain parent anchor. Ordinal-walk fallbacks never reach
-this case, and a normal user message sent after a compaction anchors past
-the stdout row, so compacted state is deliberately kept there.
-
-## Fork destinations and relocation
-
-- `TransferFiles` collects a closed session's transcript and its complete opaque
-  sidecar subtree under an injected projects root. The archive mechanism lives
-  in `internal/transferfiles`; ownership and installation live in the app.
-  Unsupported links are errors, never silent partial exports. The original slug
-  travels with the snapshot and destination relocation uses the same encoder
-  as local workspace changes. See conversation-transfer.md for the transfer
-  protocol.
-
-- `WriteForkFileThroughUUID` takes a `ForkCut` STRUCT, and it is the one
-  entry point whose destination is not the source's own directory
-  (session import cuts an abandoned branch for a thread whose workspace
-  may already have changed). A blank `DestDir` means "beside the source".
-  The struct is not decoration: four adjacent strings, two of them paths,
-  let a transposed `SourcePath`/`DestDir` compile and write the fork where
-  no resume will ever look, surfacing much later as "No conversation
-  found". A new input goes on the struct, never onto a parameter list.
-- Relocation is split into the two halves of a move so the caller can
-  sequence them around its own commit. `RelocateSession` is the COPY
-  half: it writes the source (authoritative, since Claude only appends
-  under the running cwd) OVER any stale destination copy and leaves the
-  source in place. Overwriting rather than no-op-if-exists is
-  load-bearing, because a thread returning to a workspace it visited
-  before must resume the latest transcript. `RemoveSessionTranscript` is
-  the DELETE half, run on the pre-move source AFTER the workspace change
-  commits.
-- **COPY before commit, DELETE after commit.** That ordering is what
-  makes a workspace change abort-safe: a hard copy failure leaves every
-  source in place so switch/create/attach refuse and the thread stays
-  resumable where it is. Deletion cannot abort (the worktree is already
-  gone), so its hard error surfaces and resume is left to fail loudly.
-  Bricked, never fabricated.
-- `RemoveSessionTranscript` derives the `<id>/` subagent subdir from the
-  JSONL basename, so path-traversal tokens (`.`, `..`, a bare `.jsonl`, a
-  name with no `.jsonl` suffix) are refused up front. Otherwise a crafted
-  basename could steer the `RemoveAll` off the session's own subdir.
-- Error contract: `ErrSessionFileNotFound` (both paths empty) when the
-  transcript is genuinely gone, so the caller surfaces it rather than
-  fabricating. `ErrSubagentCopyIncomplete` (destFile SET) is soft, since
-  resume works and only subagent history is partial. Path LENGTH is never
-  a failure, because the truncate-and-hash slug reproduces exactly.
-
-## Responsibility boundary
-
-- Belongs here: JSONL parse, slice, UUID remap, parent-chain rewrite;
-  locating session files in the standard Claude home layout and moving
-  them between project slugs; atomic writes (`O_EXCL` composer) and
-  crash-safe streaming copies.
-- Does not: deciding WHEN to fork or relocate and the
-  copy-commit-purge sequencing (caller's job), thread row and SessionRef
-  plumbing (`app_thread_fork.go`, `app_conversation_rollback.go`),
-  provider lifecycle (`../session.go`), anything Codex.
-
-## Anti-patterns
-
-- Do NOT count `type:"user"` entries as user turns. Many are tool-result
-  echoes. Use `FindUUIDBeforeUserTurn`, which filters on the
-  `message.content` shape.
-- Do NOT call `io.ReadAll` on a session JSONL. Real sessions are
-  multi-MB. Every reader here streams under a 16 MB line ceiling.
-
-## Cross-computer independent copies
-
-`CopyTransferFiles` writes a NEW operation scratch directory and assigns an
-operation-stable root session ID. Full-history copies preserve message UUIDs
-and child agent IDs; the latter are scoped inside the root session directory.
-Copy the whole collected sidecar subtree and relocate it together with the root
-into the destination workspace slug. Rewrite only top-level `sessionId` fields,
-not history text, parent message chains or opaque sidecars. JSONL is compact:
-the installed CLI's cross-directory discovery refused a pretty-printed native
-header in isolated tests. Native homes are always injected.
-
-`CopyTransferFilesAt` also materializes a pending fork's pinned prefix. The app
-resolves the cursor through `claude.ResolveForkResumeCursor` before passing it;
-copy stops at that exact record, refuses a missing cursor, and preserves message
-UUIDs. Even a Move of a pending fork receives a new native root: the borrowed
-parent transcript is not its execution identity and must never be retired.
-The copied prefix keeps the saved context, excludes later parent turns and
-resumes with the new identity.
-
-`PlannedWorkspaceProjectDir` computes the same native slug before a NEW transfer
-worktree is published. Its parent must exist and is canonicalized; encoding a
-lexical symlink or `/tmp` path would install a transcript under a slug the CLI
-will not use. Existing workspace lookup still uses `WorkspaceProjectDir`.
+Native homes and destination workspaces are always injected. Planned
+destinations canonicalize an existing parent before slugging. See
+[conversation-transfer.md](../../../../docs/specs/conversation-transfer.md)
+for operation ownership and installation order.

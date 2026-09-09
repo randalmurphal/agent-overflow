@@ -15,29 +15,37 @@ Provider stdout
         ├── write meta + full content → SQLite payloads
         └── app.Event.Emit meta only → Frontend
 
-  Item completes → INSERT into items (frozen)
+  Item starts → INSERT streaming item and payload
+  Deltas → live event plus bounded SQLite flushes
+  Item completes → final flush and lifecycle settlement
 
 Frontend "expand" click → Wails binding → SQLite payload read → render
 ```
 
-## Item Lifecycle: Append-Only with Mutable Head
+## Item Lifecycle: Item-Granular with a Mutable Head
 
 ```
-[frozen] [frozen] [frozen] ... [active item(s)]
-└── in SQLite, immutable ─────┘ └── in frontend $state only
+[settled] [settled] ... [streaming item(s)]
+└──────────── all represented in SQLite ────────────┘
+                         └── short delta flush windows in memory
 ```
 
-- Completed items are never modified once written to SQLite.
-- The currently streaming item is frontend-only reactive state.
-- On completion: write to SQLite → frontend replaces mutable state with the
-  frozen version.
+- A streaming item and its payload are inserted when the block starts.
+- Text and thinking deltas reach the frontend immediately and accumulate in a
+  bounded persistence buffer. Command output is emitted when that buffer
+  flushes.
+- Time, byte, hydration, and lifecycle boundaries flush accumulated deltas to
+  SQLite. Completion performs the final flush and settles the existing row.
+- Later provider facts may still enrich a settled row through explicit update
+  paths. Item-granular persistence does not mean immutable rows.
 
 ## Persistence Rule
 
-**Persist per item, not per turn.** Each completed item writes immediately.
-Crash loss is bounded to the currently active item (seconds of work, not
-minutes). On recovery, resume the provider session and reconcile against
-SQLite.
+**Persist per item, not per provider event or whole turn.** Canonical item and
+payload rows are written at meaningful item boundaries. Streaming content is
+flushed by bounded time and byte thresholds instead of writing every delta or
+waiting for completion. On recovery, resume the provider session and reconcile
+against the latest persisted item state.
 
 ## Wire Projection
 
@@ -64,15 +72,12 @@ Two rules keep this from becoming a second storage shape:
 
 ## Background Tasks
 
-A backgrounded command produces two timeline items:
-
-- `background_started`: lightweight marker, rendered in the tray.
-- `background_completed`: rich result card, appended at the completion
-  position.
-
-The tray is frontend state only. Background output accumulates in Go and
-flushes to SQLite on completion as a payload. No real-time delta streaming
-for background items.
+Background behavior differs by provider and tool. Launch, process liveness,
+task completion, and tray state are separate facts; some rows stay
+`status='running'` as historical launch markers while liveness settles
+elsewhere. Command output can flush while the command is still active. See
+[`turn-lifecycle.md`](turn-lifecycle.md) for the authoritative tool, task, and
+turn contracts.
 
 ## The Second Writer: Session Import
 
@@ -92,7 +97,7 @@ live provider process behind it, which is what the differences follow from:
 - **Nothing stamps `time.Now()`.** Every row carries the provider's own clock,
   end to end, including `turns.completed_at`.
 - **It writes a whole session in one transaction** (`store.ApplyImportBatch`),
-  not per item. The persist-per-item rule above exists to bound crash loss
+  not per item. The item-granular rule above exists to bound crash loss
   during a live turn; an import has nothing in flight to lose, and a 400-row
   session costs one fsync instead of 400. A failure part-way leaves no
   half-imported thread.
@@ -109,8 +114,8 @@ See `internal/sessionimport/AGENTS.md`.
 
 ## Memory Model
 
-- **Go**: flat. Only the event currently being triaged is in memory.
-  No caching.
+- **Go**: bounded per-thread correlation, live-state, and stream-flush buffers.
+  Canonical history remains in SQLite.
 - **Frontend**: bounded by one thread's items + payload meta. ~1 MB typical.
   Thread switch is a full state replacement, not accumulation.
 - **SQLite on disk**: grows indefinitely. Designed to handle hundreds of
@@ -118,11 +123,14 @@ See `internal/sessionimport/AGENTS.md`.
 
 ## Triage Classification
 
-See `internal/triage/AGENTS.md` for the routing table. The short form:
+See [`triage-routing.md`](triage-routing.md) for the routing table. The short
+form:
 
-- Text deltas, tool notifications, approvals → passthrough to frontend.
+- Text and thinking deltas → live frontend events plus bounded SQLite flushes.
+- Explicitly live-only notifications and approvals → frontend event channels.
 - Diffs → SQLite + meta to frontend.
-- Command output → SQLite + meta to frontend, buffered per flush window (100ms / 64KB / lifecycle boundary).
-- Thinking blocks → SQLite + preview to frontend.
-- Turn metadata (cost, tokens) → inline to frontend + persist on thread.
+- Command output → buffered SQLite + item upsert flushes (100ms / 64KB /
+  lifecycle boundary).
+- Turn metadata (cost, tokens) → live event plus the appropriate turn or usage
+  rows.
 - Errors → distinct event type; frontend renders as status/alert.

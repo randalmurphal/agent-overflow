@@ -346,7 +346,8 @@ headless events, in order:
 
 1. `system/task_updated` `{patch:{status}}` → `EventBackgroundTaskTerminal`.
    triage *stashes* this as the host-side exit. It does **not** write a chat
-   row (invariant 21: `task_notification` is not a completion source, and a lone
+   row ([turn-lifecycle.md § Task lifecycle](turn-lifecycle.md#2-task-lifecycle-claude-only):
+   `task_notification` is not a completion source, and a lone
    `task_updated{completed}` only stashes).
 2. `system/task_notification` `{status, output_file, summary}` →
    `EventBackgroundTaskNotification`. triage *drains* the stash from step 1 and
@@ -617,7 +618,7 @@ bump) with an out-of-repo capture harness, per
 ## References
 
 - [`providers.md`](providers.md): the existing two-provider process model.
-- [`how-to.md#add-a-new-provider-adapter`](how-to.md#add-a-new-provider-adapter): the
+- [`how-to.md#provider-adapters`](how-to.md#provider-adapters): the
   new-provider playbook this follows.
 - [`invariants.md`](invariants.md): transport boundary, the per-call scope
   gate, dev-watcher exclusions.

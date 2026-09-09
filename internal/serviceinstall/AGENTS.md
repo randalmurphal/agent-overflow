@@ -1,82 +1,15 @@
-# internal/serviceinstall/
+# Background service installation
 
-Installs `agent-overflow supervise` as a per-user background service: a systemd
-user unit on Linux, a launchd LaunchAgent on macOS. It generates the unit file,
-hands the manager its own commands, and reports what the manager says back.
+This package renders and installs per-user service definitions for supported
+platforms. Service process behavior belongs to the root executable and
+supervisor.
 
-Reached from one place: the `service` verb in `internal/aocli`
-(`service.go`). Operator-facing documentation is
-[serve-mode.md](../../docs/architecture/serve-mode.md).
+Generated units preserve the absolute executable, data root, required mode, and
+restart policy without shell interpolation. Quote according to the target
+service manager, not a shell. `Install` writes the unit, reloads the user
+service manager, and enables and starts the service. `Uninstall`, `Stop`, and
+`Start` retain their distinct service-manager semantics.
 
-## Two rules the package is built around
-
-**The host is a string, not a build tag.** `Config.GOOS` selects the manager,
-so both unit-file formats generate on any machine and both are golden-tested in
-full on every `make go-test`. Both formats are therefore reviewed on every
-platform. Only the COMMANDS are platform-bound, and those never run in a test.
-
-**Every external command goes through `Runner`, and `New` refuses a nil one.**
-There is exactly one real implementation, `ExecRunner`, and no test may
-construct it. A test that forgot the fake fails at construction instead of
-enabling a service on the developer's own login — the same
-mocking-is-mandatory-by-default posture `internal/kerneltest` takes for
-provider spawns, for the same reason: `make go-test` runs on somebody's real
-machine.
-
-## What the generated units must keep
-
-- **`Restart=on-failure`, and its launchd equivalent
-  `KeepAlive/SuccessfulExit=false`.** Not `always`: a clean exit is the
-  operator stopping the backend, and a supervisor that restarts one of those
-  cannot be stopped. A saved `network.listenPort` that will not bind exits
-  non-zero, which IS a failure and is worth retrying.
-- **Quoting is not cosmetic.** systemd's `%` introduces a specifier and its
-  whitespace splits argv, so `systemdQuote` escapes and quotes; a newline
-  cannot be represented in a unit value at all and is refused rather than
-  mangled. The plist runs every value through `xml.EscapeText`. A home
-  directory with an ampersand in it is a valid home directory.
-- **Absolute paths only.** A service manager starts the unit with none of the
-  installing shell's context, so a relative path is refused at construction
-  rather than written into a service that silently never starts.
-- **`ConfigHome` is honored on Linux.** systemd reads user units from
-  `$XDG_CONFIG_HOME/systemd/user`. A host that sets it and a unit written to
-  `~/.config` never meet.
-- **`ExecStart` names `SuperviseVerb`, not `serve`.** The supervisor is the
-  stable process the manager owns; the backend is its child, and the supervisor
-  is what can replace it (`internal/supervise`). A unit that started `serve`
-  directly would leave the host unable to update itself, and the failure is
-  silent — it serves perfectly. `main`'s
-  `TestTheInstalledUnitStartsTheVerbThisBinaryRoutes` pins the constant against
-  the verb the binary actually routes, because a rename on one side alone
-  installs a unit whose command this binary rejects. An install over an older,
-  `serve`-shaped unit migrates it: install always rewrites.
-- **`Stop` and `Start` back service control and updates, and are deliberately not
-  `disable` / `bootout`.** An update restarts a service; it does not uninstall
-  one. On launchd that means `kill SIGTERM` plus `kickstart` rather than
-  `bootout` plus `bootstrap`, so the plist stays loaded throughout and a failed
-  update leaves a host that still comes back on reboot. `Stop` waits for a launchd PID to disappear; signal delivery alone is not
-  exit. systemd stop already waits, and its nonzero refusal is an error.
-- **`LaunchdLabel` is not the app bundle identifier.** A Mac can run the
-  desktop app and a serve agent at once, and launchd tells services apart by
-  label.
-
-## What it deliberately does not do
-
-- **It never enables lingering.** `loginctl enable-linger` changes how the
-  user's session behaves for everything on the machine. `Notes()` names the
-  command; the operator runs it. A test asserts install issues no such
-  command.
-- **It never removes data.** `uninstall` stops the service and deletes the
-  unit. The config root, its history and its credentials are untouched, and
-  the CLI says so out loud.
-- **It does not supervise Windows.** The Windows install is a launcher that
-  already supervises its backend inside WSL; `New` refuses with that as the
-  remedy. `ErrUnsupported` is an ANSWER, not a machine failure, which is why
-  the CLI exits 1 for it rather than 2.
-
-## Verification
-
-Tests must never run a real `systemctl` or `launchctl`, and never write outside
-`t.TempDir()`. Unit files are golden-tested WHOLE rather than by substring: a
-diff is a change to what gets installed on somebody's machine and should be
-seen in full. Cover both managers on whatever host the suite runs on.
+Keep system-wide installation and privilege escalation out of this package.
+Tests compare complete generated definitions and use temporary roots; they do
+not call the developer's service manager.

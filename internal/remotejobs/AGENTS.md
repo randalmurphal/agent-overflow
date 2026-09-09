@@ -1,58 +1,43 @@
-# internal/remotejobs/
+# internal/remotejobs
 
-Commands accepted by another computer. Four active processes maximum; exact argv
-or an explicit script/interpreter, destination-owned environment, registered
-workspace, bounded timeout unless `unlimited` is explicit. Reuse
-`procutil.ConfigureGroup` and `TailBuffer`. No provider sessions, task scheduler,
-queue, or frontend-lifetime ownership. Never add implicit shell detachment:
-process-group lifetime belongs to the durable job, independently of tool waits.
+Durable commands accepted from another computer. The package owns admission,
+process lifetime, receipts, and bounded output logs. It is not a provider
+session, scheduler, queue, or frontend-lifetime service.
 
-The injected process runner is mandatory. Unit tests supply a Go closure and
-never execute the developer's commands or provider binaries. Real-process tests
-must isolate HOME and use a fixed test helper executable.
+## Admission and execution
 
-Persist acceptance with full durability BEFORE spawning. Request UUID, owner,
-source conversation, destination workspace and request digest are immutable. An
-identical retry returns the existing receipt even at capacity. A changed request
-with the same UUID is refused. Boot settles orphaned receipts as interrupted;
-it must never infer that an unacknowledged command did not execute. New optional
-request fields use `omitempty` to preserve old argv request fingerprints.
+- Accept exact argv or a bounded script plus caller-selected interpreter for a
+  registered workspace. Use the destination-owned environment and
+  `procutil.ConfigureGroup`. Never interpolate scripts into another shell
+  command or detach processes implicitly.
+- Persist the immutable request identity, owner, source conversation,
+  destination workspace, and digest before spawning. An identical retry returns
+  the existing receipt, including at capacity; the same UUID with different
+  content is refused.
+- Boot marks orphaned running receipts interrupted. It must not infer that an
+  unacknowledged command never executed.
+- Four jobs may be active. Timeouts are bounded unless `unlimited` is explicit;
+  cancellation and destination shutdown still stop unlimited jobs. Shutdown
+  cancels process groups and joins them before storage closes.
+- A completion-persistence failure retains the result and capacity slot until it
+  is stored or the backend stops. Do not advise rerunning an operation with an
+  unknown completion record.
 
-Production supplies `Options.LogDir` beneath the durable private data root;
-omitting it creates disposable test storage. Every accepted job has a disk log
-reserved before spawning. Logs are byte rings, capped at 4 GiB per job and 20 GiB
-retained overall (plus small headers), with 256 MiB free-disk headroom. Acceptance
-reserves active writers' full capacities and expires completed logs oldest-first;
-it never evicts an active writer. Disk failures always drain the process, record
-lost output, and resume capture when storage recovers. A partial ring overwrite
-is explicitly unreadable after a crash, never silently presented at stale byte
-offsets; that decision and a damaged header are terminal public refusals, and
-only an unclassified I/O failure advises a retry. Logs sync at completion;
-power loss can still lose recent writes.
+## Output
 
-Inline output retains a 128 KiB memory tail and SQLite retains the latest 128
-settled tails for older peers. Disk log metadata distinguishes truncation from
-inline omission; callers reading old jobs use `ReadLog` rather than assuming the
-SQLite tail still exists. Missing log files report expiry while acceptance
-receipts remain. Log reads/searches authorize through the receipt owner before
-opening files, bound reads to 128 KiB, and use absolute byte offsets. Literal
-search returns a continuation offset with overlap to preserve boundary matches;
-no unbounded regex scan or full-file allocation. Source conversation ownership
-is additionally checked by the application adapter.
+Reserve each accepted job's private disk ring before spawning. Preserve the
+existing per-job, aggregate, and free-space limits; never evict an active
+writer. Disk failures must drain the process, record lost output, and resume
+capture when possible. A damaged ring or partial overwrite after a crash is an
+explicit terminal refusal rather than stale output.
 
-Scripts are at most 1 MiB, stored with private permissions and passed as a file
-argument to the caller-selected interpreter, never interpolated into another
-shell string. Temporary scripts are removed after execution and at boot. Explicit
-unlimited jobs still stop on cancellation or destination shutdown; they are not
-autorestarted or automatically detached with `&`/`nohup`. A cancellation or
-deadline that lands after a clean exit changes nothing: the receipt keeps the
-success the process reported.
+Inline output is a bounded tail. Durable log reads and literal searches
+authorize through the receipt owner before opening files, use absolute byte
+offsets, and return bounded chunks. Missing expired files do not remove the
+acceptance receipt. Do not add unbounded regex scans or whole-log allocation.
 
-Shutdown cancels process groups and joins them before SQLite closes. A failed
-completion write keeps the result and its bounded slot until persistence works
-or the backend stops. Remote updates must count these slots as active work.
+Expected refusals use stable `errorsx.Public` codes and recovery instructions.
+Keep private process and persistence causes in host logs.
 
-Expected refusals use errorsx.Public with stable remote_* codes and recovery
-instructions, so paired callers receive actionable errors. Process/persistence
-failures retain private causes only in host logs; receipts explain the outcome
-and safe next action. A failed completion write must not suggest rerunning.
+The process runner is mandatory and injected. Unit tests use closures; real
+process tests isolate HOME and execute only a fixed helper binary.

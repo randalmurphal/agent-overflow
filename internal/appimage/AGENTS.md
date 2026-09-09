@@ -1,82 +1,14 @@
-# internal/appimage/
+# AppImage child environment
 
-The one scrub that removes an AppImage launch's artifacts from the
-environment a child process inherits. Stdlib-only, pure, and applied at
-every spawn site Agent Overflow owns.
+This package removes AppImage runtime markers and mount-local search paths from
+environments inherited by child processes.
 
-## Why
+Scrubbing is gated by nonempty APPIMAGE or APPDIR markers, operates on POSIX
+path boundaries, preserves order, does not mutate input, and is idempotent.
+Never infer an AppImage from a mount-shaped path. APPDIR=/ disables path
+stripping. Remove an emptied search variable rather than setting it blank.
 
-The type-2 AppImage runtime mounts the app's squashfs (e.g.
-`/tmp/.mount_agentXXXXXX`), exports `APPIMAGE` / `APPDIR` / `ARGV0` /
-`OWD`, and (via the linuxdeploy AppRun hooks) prepends mount-local
-segments to `PATH`, `LD_LIBRARY_PATH`, `XDG_DATA_DIRS`, and points
-`GSETTINGS_SCHEMA_DIR` at the mount's schemas. That environment describes
-how *this* process was launched. A child is not that process:
-
-- the markers make tooling branch as if it were packaged inside the
-  AppImage;
-- the mount-local search paths shadow the user's real binaries,
-  libraries, `.desktop` entries, and gsettings schemas;
-- the mount is unmounted when Agent Overflow exits, so anything that
-  outlives us (an editor, a browser) loses the paths it resolved against.
-
-## API
-
-- `Scrub(env []string) []string`: env with the markers dropped and the
-  mount's segments stripped out of the search paths. Marker-gated: with
-  no markers present the input slice is returned as-is.
-- `ScrubInherited() []string`: the scrubbed current process environment,
-  or `nil` when nothing would change. The nil is the contract: `cmd.Env =
-  appimage.ScrubInherited()` leaves a non-AppImage launch on `exec.Cmd`'s
-  own inherit path instead of freezing a snapshot of `os.Environ()`.
-- `Running() bool`: whether this process was launched from an AppImage,
-  under the same marker gate. For callers that must refuse work assuming
-  a writable install (the self-updater's in-place binary swap), not for
-  branching child environments. That is what `Scrub` is for.
-
-Properties every caller may rely on: pure (the input is never mutated),
-order-preserving, idempotent (a second pass finds no markers), and inert
-for entries that are not `KEY=VALUE` pairs.
-
-## Rules
-
-- **Marker-gated, never heuristic.** Nothing is scrubbed unless
-  `APPIMAGE` or `APPDIR` is present with a non-empty value. A path that
-  merely *looks* mount-shaped in a dev, `.deb`, macOS, or WSL launch is
-  the user's own path.
-- **Mount matching is on path boundaries.** `/tmp/.mount_abc-backup/bin`
-  and `/opt/tmp/.mount_abc/bin` are not under `/tmp/.mount_abc`.
-  `APPDIR=/` disables path stripping entirely rather than emptying every
-  search path.
-- **An emptied search path is unset, not blanked.** An empty `PATH` has
-  implementation-defined lookup behaviour and an empty `LD_LIBRARY_PATH`
-  is a pointless extra loader search.
-- **Paths are POSIX (`path`, not `filepath`).** The AppImage runtime is
-  Linux-only; the package compiles into the Windows launcher binary,
-  where it is inert, and must not pick up Windows separator rules there.
-
-## Callers
-
-Every process Agent Overflow spawns routes its child environment through
-this package. `grep -rn 'appimage\.'` is the current list.
-
-- `provider.BuildEnvironment` / `provider.FilterEnvironment` is the
-  chokepoint for the whole provider side: sessions, probes,
-  `claude.StartLogin`, both MCP-status fetchers, `claudetui`, and
-  `textgen.ExecCLI` all reach the scrub through it and must not assemble
-  their own environment instead.
-- Windows/WSL launcher paths (`cmd/agent-overflow-windows`,
-  `internal/wsllauncher`) are deliberately untouched. AppImage is
-  Linux-only, and those spawn across the WSL boundary with their own env
-  contract.
-
-## Anti-patterns
-
-- Do NOT add a variable to `searchPathVars` without an AppRun hook that
-  actually prepends to it; the list is a claim about what the runtime
-  pollutes, not a guess.
-- Do NOT reach for `os.Getenv` inside a scrubbed assembly. Read the value
-  back off the already-scrubbed slice. `BuildEnvironment`'s additive
-  `PATH` merge is exactly the hole that reopens otherwise.
-- Do NOT make the gate an app-level setting or a `runtime.GOOS` check.
-  The environment itself is the evidence.
+ScrubInherited returns nil when unchanged so exec.Cmd keeps normal inheritance.
+Running is for operations that require a writable installation; child spawns use
+Scrub. Route provider child environments through the provider environment
+builder rather than assembling them independently.

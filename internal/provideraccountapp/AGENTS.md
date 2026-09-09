@@ -1,66 +1,41 @@
 # internal/provideraccountapp/
 
-This package is the application boundary for managed provider accounts.
-`Manager` owns the selection mutex, both provider reconcile mutexes, credential
-fingerprints, account metadata/credential stores, the audit path, native-login
-and removal sagas, external-login reconciliation, organization enrichment, and
-credential-committing usage refresh. Never split one of those locks from its
-wards. `internal/app` keeps provider session runtime and implements `SessionGateway`; a
-send holds a `SelectionLease` across the provider write so activation is
-ordered before or after that write, never through it.
+`Manager` owns managed provider-account selection, credential stores and
+fingerprints, audit, provider-specific reconcile locks, login and removal,
+external-login reconciliation, organization enrichment, transfer validation,
+and credential-committing usage refresh.
 
-Usage refresh belongs to the Manager because it commits credential rotations.
-Rate-limit storage/emission stays behind narrow injected ports owned by
-`providerlifecycleapp`. Provider event
-handling, session-account events, provider status, queue/revert/review, and the
-session runtime remain in `internal/app`.
+Keep each lock with all of its wards. `internal/app` owns live provider
+sessions and implements `SessionGateway`; sends hold a `SelectionLease`
+across provider writes so account activation occurs wholly before or after the
+write. Rate-limit persistence and emission enter through narrow
+`providerlifecycleapp` ports.
 
-## Sign-in is a session, not a call
+## Credential operations
 
-`Deps.BeginWork` admits credential-changing operations before any account or
-reconcile lock. Sign-in transfers its lease to the session driver and releases
-it only after provider teardown and credential cleanup, including cancellation,
-replacement and failed starts. Account switches/removals, identity probes,
-external-login reconciliation, transfer validation and usage refresh retain
-their lease through the complete transaction. The host's update guard must not
-observe an idle gap between a refresh consuming and saving a credential.
-Submitting/canceling an existing sign-in needs no new admission: its session
-already owns one. Fixtures use `kerneltest.IsolateSpawns` and explicitly replace
-the fail-any-spawn executable with a mock for tests that exercise native login
-transport.
+- Call `Deps.BeginWork` before any account or reconcile lock. Login transfers
+  the lease to its session driver and releases it after process teardown and
+  credential cleanup on every exit path. Switch, removal, probe, reconcile,
+  transfer validation, and usage refresh retain admission through the complete
+  transaction.
+- `loginsession.go` owns one live login per provider. Its registry lock is a
+  leaf: take no Manager lock and publish nothing while holding it.
+- Provider login is asynchronous state projected on `provider:login`.
+  `StartProviderLogin`, `GetProviderLoginState`,
+  `SubmitProviderLoginCode`, and `CancelProviderLogin` address the same
+  session. Submit and cancel need no second admission lease.
+- A rejected Claude callback consumes that CLI attempt. Start a fresh
+  `claude_authenticate` flow and publish its new URL.
+- A Codex device flow may complete on another screen. Correlate completion by
+  `loginId` through projected state rather than a blocking return.
+- Each attempt owns one provider process and closes it on success, failure,
+  cancellation, or replacement.
+- Build login and probe environments from the same layers: configured user
+  environment, boot-mode overrides, then the isolated provider-home pin.
+  Endpoint configuration is part of account identity.
+- Transfer validation uses a fresh provider-specific probe under the reconcile
+  lock. Display caches never prove that the destination can accept ownership.
+  Successful probes adopt credential rotation through the normal transaction.
 
-`loginsession.go` holds one live sign-in per provider behind a registry whose
-lock is a LEAF: no other Manager lock is taken under it, and nothing is
-published while it is held. Four bound methods drive it — `StartProviderLogin`,
-`GetProviderLoginState`, `SubmitProviderLoginCode`, `CancelProviderLogin` — and
-progress reaches every admitted client on the `provider:login` channel.
-
-Sign-in state is retained and pushed rather than returned by a blocking call.
-This gives paired clients a usable result when the link must be completed on a
-different screen; a page that cannot reach `OpenExternalURL` asks for the
-REMOTE method without being told to open a browser on the backend.
-
-Rules the drivers impose, and this layer obeys:
-
-- **A burned Claude flow is restarted, never re-prompted.** One rejected
-  callback kills the CLI's slot. The coordinator runs a fresh
-  `claude_authenticate` and publishes the NEW link with a notice, because a
-  user handed the same URL again will keep pasting the same dead code.
-- **A Codex device flow finishes on another screen**, so the completion is a
-  notification correlated by `loginId` and never a return value.
-- **One provider process per attempt, closed however the attempt ends.** Both
-  CLIs allow one login per process, and closing is what actually stops a
-  cancelled device-code poll.
-- **The spawn's environment is the probe's** (`providerLoginEnv`, `env.go`):
-  the user's configured environment under the boot-mode layer under the
-  isolated-home pin. The configured half is not optional — an
-  `ANTHROPIC_BASE_URL` that changes which backend answers changes which account
-  the person is signing in to, and adopting from a probe that ran elsewhere
-  would file one login under another's identity.
-
-Transfer readiness uses fresh account state. `ProbeRequest.Validate` skips the
-display cache and examines the stable identity/credential pair under the same
-reconcile lock before adoption. A healthy Claude credential remains usable while
-its profile is rebuilding after an account switch; a retained subscription label
-on a sign-out husk is not a login. Successful probes still adopt any native
-credential rotation through the ordinary account transaction.
+Tests use `kerneltest.IsolateSpawns`, temporary provider homes, and explicit
+mock executables for native login flows.

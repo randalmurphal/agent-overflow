@@ -100,7 +100,8 @@ behavior. These back parser replay tests and the reference docs in
   Deferred `system/api_error` rows written at the next user send with
   a stale `parentUuid` that bypasses the prior turn's tail
   (`a2`/`a3-final`), then a user row chained onto them. Backs
-  invariant 28, `sessionfork/rechain_test.go`, the
+  the active-branch and resume-filter sections of `claude-wire.md`,
+  `sessionfork/rechain_test.go`, the
   `sessionleaf_branch.go` tests, and the draft upstream report
   ([`claude-api-error-upstream-report.md`](../../claude-api-error-upstream-report.md)).
   Dropped into `~/.claude/projects/<slug>/<id>.jsonl`, resume-at

@@ -12,7 +12,7 @@ event-emitting site building a separate scope envelope.
 |---|---|
 | `ThreadIDFromEvent(data any) string` | Best-effort lookup. Tries `map[string]any` / `map[string]string` first, then reflection on a struct (or pointer-to-struct) for an exported `ThreadID` string field, then a JSON round-trip as a final fallback. Trims whitespace before returning. Returns `""` when no id is present. |
 
-## Responsibility boundary
+## Boundary
 
 - What BELONGS here: payload-shape-tolerant scope extraction. The
   helper deliberately doesn't depend on any concrete event type.
@@ -20,11 +20,11 @@ event-emitting site building a separate scope envelope.
   where to emit; this package only extracts attribution from payloads
   it didn't author.
 
-## Anti-patterns
+## Constraints
 
-- Do NOT introduce a list of "known event types" here. The whole
+- Do not introduce a list of "known event types" here. The whole
   point of the JSON-fallback branch is that anonymous struct literals
   declared next to bound methods get attributed without needing to
   thread a registration through this package.
-- Do NOT import the provider package. The test uses a local
+- Do not import the provider package. The test uses a local
   field-shape stand-in (`providerLikeEvent`) to keep this dep-free.

@@ -1,13 +1,10 @@
-# internal/claudecatalog/
+# Claude catalogs
 
-Owns the process-wide Claude model and slash-command answers captured from the
-zero-token account probe. Both catalogs are keyed by `provider.ProbeCacheKey`
-and reset together because one initialize response fills them together.
+This package holds the process-wide Claude model and command catalogs captured
+by the zero-token account probe. Account probing belongs to the application
+layer; this package owns capture, cache lifetime, and model drift reporting.
 
-Provider account probing remains in the application layer. This package owns
-only capture semantics, cache lifetime, and model-catalog drift reporting.
-
-The process-global state is deliberate: both underlying caches are bounded by
-probe identity, and their answer depends on the provider binary, account,
-workdir, and environment rather than on an `App` instance. `Reset` exists for
-tests and swaps both catalogs under the same mutex.
+Both catalogs use `provider.ProbeCacheKey`. Keep every key dimension because
+the answer depends on the provider binary, account, working directory, and
+environment. One initialize response fills both catalogs, so `Reset` must swap
+them together under the same mutex. Do not spawn a provider from this package.
