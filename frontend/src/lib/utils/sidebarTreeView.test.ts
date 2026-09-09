@@ -153,13 +153,13 @@ describe('previewSidebarThreads', () => {
     expect(result.hiddenNodes).toHaveLength(0);
   });
 
-  it('truncates to the default limit of 6 with the rest hidden', () => {
+  it('truncates to the default limit of 8 with the rest hidden', () => {
     const tree = buildAt(
       Array.from({ length: 12 }, (_, i) => mkThread(`t${i}`, { updatedAt: 100 - i })),
     );
     const result = previewSidebarThreads({ nodes: tree, openThreadIds: new Set() });
     expect(result.visibleNodes).toHaveLength(THREAD_PREVIEW_LIMIT);
-    expect(result.hiddenNodes).toHaveLength(6);
+    expect(result.hiddenNodes).toHaveLength(4);
   });
 
   it('floats the active thread back into view when it would otherwise be hidden', () => {
@@ -188,22 +188,22 @@ describe('previewSidebarThreads', () => {
     // Set insertion order is deliberately NOT tail order.
     const result = previewSidebarThreads({ nodes: tree, openThreadIds: new Set(['t11', 't2', 't8']) });
     expect(result.visibleNodes.map(nodeId)).toEqual([
-      't0', 't1', 't2', 't3', 't4', 't5', 't8', 't11',
+      't0', 't1', 't2', 't3', 't4', 't5', 't6', 't7', 't8', 't11',
     ]);
-    expect(result.hiddenNodes.map(nodeId)).toEqual(['t6', 't7', 't9', 't10']);
+    expect(result.hiddenNodes.map(nodeId)).toEqual(['t9', 't10']);
   });
 
-  it('keeps pinned threads visible without consuming preview slots', () => {
+  it('counts pinned threads toward the preview limit', () => {
     const pinned = mkThread('pinned', { pinnedAt: 1000, updatedAt: 1 });
     const rest = Array.from({ length: 9 }, (_, i) => mkThread(`t${i}`, { updatedAt: 100 - i }));
     const tree = buildAt([pinned, ...rest]);
     const result = previewSidebarThreads({ nodes: tree, openThreadIds: new Set() });
-    expect(result.visibleNodes).toHaveLength(THREAD_PREVIEW_LIMIT + 1);
+    expect(result.visibleNodes).toHaveLength(THREAD_PREVIEW_LIMIT);
     expect(nodeId(result.visibleNodes[0])).toBe('pinned');
-    expect(result.hiddenNodes).toHaveLength(3);
+    expect(result.hiddenNodes).toHaveLength(2);
   });
 
-  it('keeps both pin groups visible without consuming preview slots', () => {
+  it('counts both pin groups toward the same preview limit', () => {
     const front = mkThread('front', { pinnedAt: 1000, pinGroup: 0, updatedAt: 2 });
     const back = mkThread('back', { pinnedAt: 900, pinGroup: 1, updatedAt: 1 });
     const rest = Array.from({ length: 9 }, (_, i) => mkThread(`t${i}`, { updatedAt: 100 - i }));
@@ -211,8 +211,32 @@ describe('previewSidebarThreads', () => {
     const result = previewSidebarThreads({ nodes: tree, openThreadIds: new Set() });
 
     expect(result.visibleNodes.slice(0, 2).map(nodeId)).toEqual(['front', 'back']);
-    expect(result.visibleNodes).toHaveLength(THREAD_PREVIEW_LIMIT + 2);
+    expect(result.visibleNodes).toHaveLength(THREAD_PREVIEW_LIMIT);
     expect(result.hiddenNodes).toHaveLength(3);
+  });
+
+  it.each([7, 8, 10])('keeps all %i pins and fills only remaining preview slots', (pinCount) => {
+    const pins = Array.from({ length: pinCount }, (_, i) => mkThread(`p${i}`, {
+      pinnedAt: 1000, pinGroup: i % 2, updatedAt: 100 - i,
+    }));
+    const rest = Array.from({ length: 3 }, (_, i) => mkThread(`t${i}`, { updatedAt: 100 - i }));
+    const result = previewSidebarThreads({ nodes: buildAt([...pins, ...rest]), openThreadIds: new Set() });
+
+    expect(nodeIds(result.visibleNodes).filter((id) => id.startsWith('p'))).toHaveLength(pinCount);
+    expect(nodeIds(result.visibleNodes).filter((id) => id.startsWith('t'))).toEqual(pinCount === 7 ? ['t0'] : []);
+    expect(nodeIds(result.hiddenNodes)).toEqual(pinCount === 7 ? ['t1', 't2'] : ['t0', 't1', 't2']);
+  });
+
+  it('keeps drafts and open threads visible when pins exceed the limit', () => {
+    const pins = Array.from({ length: 10 }, (_, i) => mkThread(`p${i}`, { pinnedAt: 1000 }));
+    const tree = buildAt([
+      ...pins, mkThread('draft', { isDraft: true }), mkThread('open'), mkThread('hidden'),
+    ]);
+    const result = previewSidebarThreads({ nodes: tree, openThreadIds: new Set(['open']) });
+    expect(result.visibleNodes).toHaveLength(12);
+    expect(nodeId(result.visibleNodes[0])).toBe('draft');
+    expect(nodeId(result.visibleNodes.at(-1)!)).toBe('open');
+    expect(nodeIds(result.hiddenNodes)).toEqual(['hidden']);
   });
 
   it('keeps drafts above pinned and never hides them', () => {
@@ -221,12 +245,10 @@ describe('previewSidebarThreads', () => {
     const rest = Array.from({ length: 9 }, (_, i) => mkThread(`t${i}`, { updatedAt: 100 - i }));
     const tree = buildAt([draft, pinned, ...rest]);
     const result = previewSidebarThreads({ nodes: tree, openThreadIds: new Set() });
-    // Drafts AND pinned ride above the head; the hidden tail shrinks
-    // by the same amount whether the extras are drafts or pinned.
-    expect(result.visibleNodes).toHaveLength(THREAD_PREVIEW_LIMIT + 2);
+    expect(result.visibleNodes).toHaveLength(THREAD_PREVIEW_LIMIT + 1);
     expect(nodeId(result.visibleNodes[0])).toBe('draft');
     expect(nodeId(result.visibleNodes[1])).toBe('pinned');
-    expect(result.hiddenNodes.map(nodeId)).toEqual(['t6', 't7', 't8']);
+    expect(result.hiddenNodes.map(nodeId)).toEqual(['t7', 't8']);
   });
 
   it('does not double-include the active thread when it is already a draft', () => {
@@ -236,7 +258,7 @@ describe('previewSidebarThreads', () => {
     const result = previewSidebarThreads({ nodes: tree, openThreadIds: new Set(['draft']) });
     const ids = result.visibleNodes.map(nodeId);
     expect(ids.filter((id) => id === 'draft')).toHaveLength(1);
-    expect(result.hiddenNodes).toHaveLength(3);
+    expect(result.hiddenNodes).toHaveLength(1);
   });
 
   it('honors an explicit larger preview limit', () => {
@@ -253,6 +275,18 @@ describe('nextSidebarThreadRevealLimit', () => {
   function buildAt(threads: Thread[]) {
     return buildSidebarThreadTree({ threads, liveStatusOf: liveStatusMap({}) });
   }
+
+  it('reveals hidden rows even when pins exceed the current limit', () => {
+    const pins = Array.from({ length: 30 }, (_, i) => mkThread(`p${i}`, { pinnedAt: 1000 }));
+    const rest = Array.from({ length: 25 }, (_, i) => mkThread(`t${i}`, { updatedAt: 100 - i }));
+    const tree = buildAt([...pins, ...rest]);
+    const limit = nextSidebarThreadRevealLimit({
+      nodes: tree, openThreadIds: new Set(), currentLimit: THREAD_PREVIEW_LIMIT, revealCount: 20,
+    });
+    const result = previewSidebarThreads({ nodes: tree, openThreadIds: new Set(), limit });
+    expect(result.visibleNodes).toHaveLength(50);
+    expect(nodeIds(result.hiddenNodes)).toEqual(['t20', 't21', 't22', 't23', 't24']);
+  });
 
   it('advances far enough to reveal the requested number of currently hidden nodes', () => {
     const tree = buildAt(
@@ -273,9 +307,9 @@ describe('nextSidebarThreadRevealLimit', () => {
     const next = previewSidebarThreads({ nodes: tree, openThreadIds: new Set(['t10']), limit: nextLimit });
 
     expect(current.visibleNodes).toHaveLength(THREAD_PREVIEW_LIMIT + 1);
-    expect(current.hiddenNodes).toHaveLength(24);
-    expect(next.hiddenNodes).toHaveLength(4);
-    expect(next.visibleNodes).toHaveLength(27);
+    expect(current.hiddenNodes).toHaveLength(22);
+    expect(next.hiddenNodes).toHaveLength(2);
+    expect(next.visibleNodes).toHaveLength(29);
   });
 });
 
@@ -580,10 +614,10 @@ describe('previewSidebarThreads with groups', () => {
     expect(nodeIds(result.visibleNodes)).toContain('g1');
     // Only the unpinned top-level TAIL is cut; no member is ever hidden.
     expect(result.hiddenNodes.every((node) => node.kind === 'thread')).toBe(true);
-    expect(nodeIds(result.hiddenNodes)).toEqual(['t5', 't6', 't7', 't8']);
+    expect(nodeIds(result.hiddenNodes)).toEqual(['t7', 't8']);
   });
 
-  it('keeps a pinned group outside the cut', () => {
+  it('counts a pinned group as one preview slot', () => {
     const rest = Array.from({ length: 12 }, (_, i) => mkThread(`t${i}`, { updatedAt: 100 - i }));
     const tree = buildSidebarThreadTree({
       threads: [mkThread('m', { groupId: 'g1', updatedAt: 1 }), ...rest],
@@ -592,7 +626,8 @@ describe('previewSidebarThreads with groups', () => {
     });
     const result = previewSidebarThreads({ nodes: tree, openThreadIds: new Set() });
     expect(nodeId(result.visibleNodes[0])).toBe('g1');
-    expect(result.visibleNodes).toHaveLength(THREAD_PREVIEW_LIMIT + 1);
+    expect(result.visibleNodes).toHaveLength(THREAD_PREVIEW_LIMIT);
+    expect(nodeIds(result.hiddenNodes)).toEqual(['t7', 't8', 't9', 't10', 't11']);
   });
 
   it('floats a group whose member is open in a pane', () => {

@@ -85,8 +85,7 @@ func (a *App) DeleteThreadGroup(id string) error {
 	return nil
 }
 
-// PinThreadGroup places the group on the front burner. A pinned group sits
-// in the pin block and never consumes a preview slot.
+// PinThreadGroup places the group on the front burner.
 //
 //ao:scope threads:operate
 //ao:route home

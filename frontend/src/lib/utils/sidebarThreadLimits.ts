@@ -1,2 +1,2 @@
-export const THREAD_PREVIEW_LIMIT = 6;
+export const THREAD_PREVIEW_LIMIT = 8;
 export const THREAD_REVEAL_INCREMENT = 20;

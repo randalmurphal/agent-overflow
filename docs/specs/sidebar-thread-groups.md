@@ -19,7 +19,7 @@ running member moves the group up the list, it does not light the row.
   way a discussion parent does, so a group with a running member rises
   and a quiet one sinks. The group itself is pinnable to the front or
   back burner like a thread; a pinned group sits in the pin block and
-  never consumes a preview slot.
+  counts toward the preview limit, while always remaining visible.
 - **One pin per visible row.** Moving a pinned thread into a group
   strips its pin; the group carries the pin from then on. A grouped
   thread cannot be pinned (the schema refuses it, the row hides the pin
@@ -30,9 +30,12 @@ running member moves the group up the list, it does not light the row.
   nothing of it renders on the row (ruling 2026-09-02). A group
   auto-expands when a member becomes the focused thread, the way a
   discussion auto-expands for its participant. Groups start expanded.
-- **Preview cut.** A group takes one slot; its members take none (same
-  as discussion children). An unpinned group can fall below "Show more"
-  like any row.
+- **Preview cut.** Front- and back-burner pins share the project's preview
+  limit with unpinned rows. All pins remain visible when they exceed the
+  limit, leaving no preview slots for unpinned rows. Drafts and threads
+  open in panes retain their visibility exceptions. A group takes one
+  slot; its members take none (same as discussion children). An unpinned
+  group can fall below "Show more" like any row.
 - **No nesting.** No groups inside groups. A discussion tree moves as a
   unit: grouping a parent brings its children; a child cannot be grouped
   on its own. Render depth inside a group goes to three (group, parent,

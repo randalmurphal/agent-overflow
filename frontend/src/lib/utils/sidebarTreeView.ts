@@ -198,10 +198,9 @@ export interface PreviewThreadsResult {
 /**
  * Slice a sorted top-level node list into a preview window. A thread that
  * is open in a pane never hides behind the cut: any that land in the tail
- * float back into view after the head, in tail order (t3-code's "6 +
- * active" generalised to every pane, since the focused pane's thread is
- * one of them). Pinned rows always stay visible — they don't consume
- * preview slots; the limit only truncates the unpinned tail.
+ * float back into view after the head, in tail order. Pinned rows from
+ * both burners count toward the limit and always stay visible, even
+ * when their count exceeds it. Drafts stay visible outside the limit.
  *
  * A group is ONE slot and its members are none, the same way a discussion
  * parent is. A group floats when any thread in it is open, because a
@@ -228,8 +227,9 @@ export function previewSidebarThreads(input: {
     else rest.push(node);
   }
 
-  const head = rest.slice(0, limit);
-  const tail = rest.slice(limit);
+  const unpinnedLimit = Math.max(0, limit - pinned.length);
+  const head = rest.slice(0, unpinnedLimit);
+  const tail = rest.slice(unpinnedLimit);
 
   if (tail.length === 0) {
     return { visibleNodes: [...drafts, ...pinned, ...head], hiddenNodes: [] };

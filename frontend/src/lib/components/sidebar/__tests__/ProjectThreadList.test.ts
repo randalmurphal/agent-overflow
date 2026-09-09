@@ -166,7 +166,7 @@ describe('<ProjectThreadList>', () => {
     expect(dot.getAttribute('aria-label')).toBe('Interrupted');
   });
 
-  it('shows 6 threads before the show-more row, then reveals 20 more per click', async () => {
+  it('shows 8 threads before the show-more row, then reveals 20 more per click', async () => {
     const pane = createThreadPane();
     const threads = Array.from({ length: 31 }, (_, i) => mkThread(`t${i}`, {
       title: `Thread ${i}`,
@@ -181,19 +181,51 @@ describe('<ProjectThreadList>', () => {
     });
 
     const list = getByTestId('project-thread-list');
-    expect(list.querySelectorAll('[role="listitem"]')).toHaveLength(6);
+    expect(list.querySelectorAll('[role="listitem"]')).toHaveLength(8);
     const firstShowMore = getByTestId('project-thread-list-show-more');
-    expect(firstShowMore).toHaveTextContent('Show 20 More (25)');
+    expect(firstShowMore).toHaveTextContent('Show 20 More (23)');
     expect(firstShowMore.className).toContain('pl-6');
 
     await fireEvent.click(firstShowMore);
-    expect(list.querySelectorAll('[role="listitem"]')).toHaveLength(26);
+    expect(list.querySelectorAll('[role="listitem"]')).toHaveLength(28);
     const secondShowMore = getByTestId('project-thread-list-show-more');
-    expect(secondShowMore).toHaveTextContent('Show 5 More');
+    expect(secondShowMore).toHaveTextContent('Show 3 More');
 
     await fireEvent.click(secondShowMore);
     expect(list.querySelectorAll('[role="listitem"]')).toHaveLength(31);
     expect(queryByTestId('project-thread-list-show-more')).toBeNull();
+  });
+
+  it('updates the shared cap on pin changes and restores it after Show Less', async () => {
+    const pane = createThreadPane();
+    const pins = Array.from({ length: 9 }, (_, i) => mkThread(`p${i}`, {
+      pinnedAt: 1000, pinGroup: i % 2,
+    }));
+    const rest = [mkThread('recent', { updatedAt: 100 }), mkThread('older', { updatedAt: 50 })];
+    const draft = mkThread('draft', { isDraft: true });
+    const { getByTestId, queryByText, rerender } = render(ProjectThreadList, {
+      props: { projectId: 'p1', threads: [...pins.slice(0, 7), ...rest, draft], pane },
+    });
+    const list = getByTestId('project-thread-list');
+    expect(list.querySelectorAll('[role="listitem"]')).toHaveLength(9);
+    expect(queryByText('Thread recent')).toBeInTheDocument();
+    expect(queryByText('Thread older')).toBeNull();
+
+    await rerender({ projectId: 'p1', threads: [...pins, ...rest, draft], pane });
+    expect(list.querySelectorAll('[role="listitem"]')).toHaveLength(10);
+    expect(queryByText('Thread draft')).toBeInTheDocument();
+    expect(queryByText('Thread recent')).toBeNull();
+    expect(getByTestId('project-thread-list-show-more')).toHaveTextContent('Show 2 More');
+
+    await fireEvent.click(getByTestId('project-thread-list-show-more'));
+    expect(list.querySelectorAll('[role="listitem"]')).toHaveLength(12);
+    await fireEvent.click(getByTestId('project-thread-list-show-less'));
+    expect(list.querySelectorAll('[role="listitem"]')).toHaveLength(10);
+    expect(queryByText('Thread recent')).toBeNull();
+
+    await rerender({ projectId: 'p1', threads: [...pins.slice(0, 7), ...rest, draft], pane });
+    expect(list.querySelectorAll('[role="listitem"]')).toHaveLength(9);
+    expect(queryByText('Thread recent')).toBeInTheDocument();
   });
 
   it('reveals 20 hidden threads when the active thread is already floated into view', async () => {
@@ -214,13 +246,13 @@ describe('<ProjectThreadList>', () => {
     });
 
     const list = getByTestId('project-thread-list');
-    expect(list.querySelectorAll('[role="listitem"]')).toHaveLength(7);
+    expect(list.querySelectorAll('[role="listitem"]')).toHaveLength(9);
     const firstShowMore = getByTestId('project-thread-list-show-more');
-    expect(firstShowMore).toHaveTextContent('Show 20 More (24)');
+    expect(firstShowMore).toHaveTextContent('Show 20 More (22)');
 
     await fireEvent.click(firstShowMore);
-    expect(list.querySelectorAll('[role="listitem"]')).toHaveLength(27);
-    expect(getByTestId('project-thread-list-show-more')).toHaveTextContent('Show 4 More');
+    expect(list.querySelectorAll('[role="listitem"]')).toHaveLength(29);
+    expect(getByTestId('project-thread-list-show-more')).toHaveTextContent('Show 2 More');
   });
 
   it('floats a thread open in a NON-focused pane above the cut, marked open but not focused', async () => {
@@ -245,9 +277,9 @@ describe('<ProjectThreadList>', () => {
     const list = getByTestId('project-thread-list');
     const rows = Array.from(list.querySelectorAll<HTMLElement>('[data-sidebar-thread-id]'));
     expect(rows.map((row) => row.dataset.sidebarThreadId)).toEqual([
-      't0', 't1', 't2', 't3', 't4', 't5', 't20',
+      't0', 't1', 't2', 't3', 't4', 't5', 't6', 't7', 't20',
     ]);
-    expect(getByTestId('project-thread-list-show-more')).toHaveTextContent('Show 20 More (24)');
+    expect(getByTestId('project-thread-list-show-more')).toHaveTextContent('Show 20 More (22)');
 
     const shells = Array.from(list.querySelectorAll<HTMLElement>('[data-testid="thread-row-shell"]'));
     const shellFor = (id: string) => shells.find(

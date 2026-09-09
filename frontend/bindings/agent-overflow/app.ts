@@ -2603,11 +2603,9 @@ export function ListItemsBeforeCursor(threadID: string, before: store$0.Timeline
  * leg lists by BACKGROUNDED ANCESTRY, not top-level-ness (invariant 24):
  * nested background launches and the agent launches between them and a
  * background root are included, so the tray can indent by walking
- * parentId within the result. SQLite
- * rows cover persisted Claude launches and Codex subagent launches; the
- * latter are projected as running tray rows while the chat-history spawn
- * card remains completed. The triage router appends transient Codex
- * unified-exec tasks that intentionally do not exist in chat history.
+ * parentId within the result. SQLite rows cover persisted Claude launches.
+ * The triage router supplies current Codex agent executions and unified-exec
+ * tasks independently of immutable chat history.
  * Pending Codex unifiedExec launches surface here before they are known
  * to be backgrounded.
  */
@@ -3222,8 +3220,7 @@ export function PinThread(id: string): $CancellablePromise<store$0.Thread> {
 }
 
 /**
- * PinThreadGroup places the group on the front burner. A pinned group sits
- * in the pin block and never consumes a preview slot.
+ * PinThreadGroup places the group on the front burner.
  */
 export function PinThreadGroup(id: string): $CancellablePromise<store$0.ThreadGroup> {
     return $Call.ByID(842795367, id).then(($result: any) => {
