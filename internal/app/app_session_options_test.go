@@ -93,7 +93,7 @@ func TestSessionOptionsCoercesStaleSonnetXHigh(t *testing.T) {
 	}
 }
 
-func TestSessionOptionsCoercesStaleCodexMax(t *testing.T) {
+func TestSessionOptionsPreservesStoredCodexEffort(t *testing.T) {
 	thread := testThread("thread-stale-codex-max")
 	thread.Provider = string(provider.Codex)
 	thread.Model = "gpt-5.5"
@@ -102,11 +102,11 @@ func TestSessionOptionsCoercesStaleCodexMax(t *testing.T) {
 	opts := provider.SessionOptionsFromThread(thread, provider.AutoCompactDefaults{}, "", false)
 	cfg := codex.ConfigFromOptions(opts)
 
-	if opts.ReasoningEffort != provider.EffortMedium {
-		t.Fatalf("ReasoningEffort = %q, want medium", opts.ReasoningEffort)
+	if opts.ReasoningEffort != provider.EffortMax {
+		t.Fatalf("ReasoningEffort = %q, want max", opts.ReasoningEffort)
 	}
-	if cfg.ReasoningEffort != "medium" {
-		t.Fatalf("Codex ReasoningEffort = %q, want medium", cfg.ReasoningEffort)
+	if cfg.ReasoningEffort != "max" {
+		t.Fatalf("Codex ReasoningEffort = %q, want max", cfg.ReasoningEffort)
 	}
 }
 

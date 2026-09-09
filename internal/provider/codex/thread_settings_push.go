@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"agent-overflow/internal/provider"
@@ -100,7 +101,8 @@ func PlanThreadSettingsPush(prev, next provider.SessionOptions) ThreadSettingsPu
 // keeps it as long as AO never wrote the axis; only an AO-set tier is ever
 // cleared by AO.
 type serviceTierWrite struct {
-	include bool
+	sequence uint64
+	include  bool
 	// value is the JSON value for the key. A nil value marshals as null,
 	// which is the clear.
 	value any
@@ -126,6 +128,9 @@ func (s *Session) planServiceTierWrite() serviceTierWrite {
 	if s.turnConfig.assertedServiceTier != "" {
 		return serviceTierWrite{include: true, value: nil, clearing: s.turnConfig.assertedServiceTier}
 	}
+	if s.turnConfig.attemptedServiceTier != "" {
+		return serviceTierWrite{include: true, value: nil, clearing: s.turnConfig.attemptedServiceTier}
+	}
 	return serviceTierWrite{}
 }
 
@@ -135,8 +140,26 @@ func (s *Session) commitServiceTierWrite(write serviceTierWrite) {
 		return
 	}
 	s.mu.Lock()
+	if write.sequence != s.turnConfig.serviceTierSequence {
+		s.mu.Unlock()
+		return
+	}
 	s.turnConfig.assertedServiceTier = write.asserting
+	s.turnConfig.attemptedServiceTier = ""
 	s.mu.Unlock()
+}
+
+func (s *Session) noteServiceTierAttempt(write *serviceTierWrite) {
+	if !write.include {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.turnConfig.serviceTierSequence++
+	write.sequence = s.turnConfig.serviceTierSequence
+	if write.asserting != "" {
+		s.turnConfig.attemptedServiceTier = write.asserting
+	}
 }
 
 // settingsEchoExpectation is what a successful push expects the next
@@ -153,22 +176,22 @@ type settingsEchoExpectation struct {
 	expires      time.Time
 }
 
-// PushThreadSettings sends the named axes to Codex through
-// `thread/settings/update`.
-//
-// Contract:
-//
-//   - The caller must have applied the matching LiveUpdate first; this reads
-//     the session's current requested config, so the two cannot disagree.
-//   - The composer-change caller must only call this BETWEEN turns
-//     (`app_session_config.go#threadTurnInFlight`). Skipping the push while
-//     busy loses nothing there: the same values ride the next turn/start, and
-//     the RPC's value is the echo, not mutating a running turn.
-//   - Every failure mode degrades to today's behavior. A codex that predates
-//     the method answers with a JSON-RPC error; that is logged once per
-//     session and the method is never retried on that session, so a downgrade
-//     is neither a user-facing failure nor silent.
+// PushThreadSettings pushes requested settings between turns. ApplyLiveUpdate
+// installs the values first. This method checks turn state inside the same wire
+// lock as Send, then releases that lock before waiting for a response.
+// Unsupported methods are remembered per session; other rejections are returned
+// to the caller. QueueThreadSettings projects those rejections as timeline errors.
 func (s *Session) PushThreadSettings(ctx context.Context, push ThreadSettingsPush) error {
+	s.settingsWireMu.Lock()
+	unlock := sync.OnceFunc(s.settingsWireMu.Unlock)
+	defer unlock()
+	s.mu.Lock()
+	busy := s.turn.activeTurnID != "" || s.origins.pendingLocalTurnStarts > 0
+	s.mu.Unlock()
+	if busy || s.closing.Load() {
+		return nil
+	}
+
 	if push.Empty() {
 		return nil
 	}
@@ -224,7 +247,13 @@ func (s *Session) PushThreadSettings(ctx context.Context, push ThreadSettingsPus
 	s.settings.pendingEcho = &expectation
 	s.mu.Unlock()
 
-	if _, err := s.sendRequest(ctx, threadSettingsUpdateMethod, params); err != nil {
+	s.noteServiceTierAttempt(&tierWrite)
+	wait, err := s.startRequest(threadSettingsUpdateMethod, params)
+	unlock()
+	if err == nil {
+		_, err = wait(ctx)
+	}
+	if err != nil {
 		s.disarmSettingsEcho(&expectation)
 		if IsMethodUnsupported(err, threadSettingsUpdateMethod) {
 			s.noteThreadSettingsUpdateUnsupported()

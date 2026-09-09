@@ -13,7 +13,7 @@ import (
 	"agent-overflow/internal/store"
 )
 
-func TestModelCapabilitiesUseSuccessfulCodexCatalogAsAuthoritative(t *testing.T) {
+func TestModelCapabilitiesUseKnownCodexCatalog(t *testing.T) {
 	app := appWithCodexModelCatalog(t, func(_ context.Context, _ string) ([]provider.ModelInfo, error) {
 		return []provider.ModelInfo{{
 			Slug:     "gpt-5.5",
@@ -37,11 +37,11 @@ func TestModelCapabilitiesUseSuccessfulCodexCatalogAsAuthoritative(t *testing.T)
 	if app.reasoningEffortSupportedForModel(string(provider.Codex), "gpt-5.5", "future-effort") {
 		t.Fatal("live model should reject effort slugs the app cannot preserve")
 	}
-	if app.supportsFastModeForModel(string(provider.Codex), "gpt-5.4") {
-		t.Fatal("model omitted by successful live catalog should not use static fast-mode fallback")
+	if !app.supportsFastModeForModel(string(provider.Codex), "gpt-5.4") {
+		t.Fatal("model omitted by successful live catalog should retain static fast-mode fallback")
 	}
-	if app.reasoningEffortSupportedForModel(string(provider.Codex), "gpt-5.4", "high") {
-		t.Fatal("model omitted by successful live catalog should not use static effort fallback")
+	if !app.reasoningEffortSupportedForModel(string(provider.Codex), "gpt-5.4", "high") {
+		t.Fatal("model omitted by successful live catalog should retain static effort fallback")
 	}
 
 	profile := app.sanitizeChatModelProfile(store.ChatModelProfile{
@@ -50,8 +50,8 @@ func TestModelCapabilitiesUseSuccessfulCodexCatalogAsAuthoritative(t *testing.T)
 		ReasoningEffort: "high",
 		FastMode:        true,
 	})
-	if profile.ReasoningEffort != "ultra" || profile.FastMode {
-		t.Fatalf("sanitized profile = %+v, want live default ultra with fast mode disabled", profile)
+	if profile.ReasoningEffort != "high" || !profile.FastMode {
+		t.Fatalf("sanitized profile = %+v, want the remembered selection unchanged", profile)
 	}
 }
 
@@ -122,6 +122,10 @@ func TestBuildSessionOptionsStampsTheFastModeTier(t *testing.T) {
 		}}, nil
 	}, time.Now)
 
+	if _, err := app.GetModelsForProvider("codex"); err != nil {
+		t.Fatal(err)
+	}
+
 	thread := testThread("thread-fast-mode-tier")
 	thread.Provider = string(provider.Codex)
 	thread.Model = "gpt-fast"
@@ -159,6 +163,9 @@ func appWithCodexModelCatalog(t *testing.T, list codexmodels.Lister) *App {
 		Claude:      defaultCaches.Claude,
 		Codex:       defaultCaches.Codex,
 		CodexModels: codexmodels.NewWith(time.Minute, list, time.Now),
+	}
+	if _, err := app.GetModelsForProvider("codex"); err != nil {
+		t.Logf("injected catalog failure: %v", err)
 	}
 	return app
 }

@@ -96,6 +96,11 @@ fix; `NetworkServiceInProcess2` rejected.
 
 ## Providers and accounts
 
+- Model, effort and fast-mode selections trust previously observed capabilities
+  and remembered choices. Catalog expiry never blocks a selection. Refresh
+  contradictions are advisory toasts; keep the selection and allow sending.
+  Provider rejections remain timeline errors without a duplicate toast.
+
 - AO never calls Codex `thread/queue/add`; a mid-turn send is `turn/steer`
   (`internal/provider/codex/AGENTS.md`).
 - Rollback refuses on an unpurgeable Codex queue.

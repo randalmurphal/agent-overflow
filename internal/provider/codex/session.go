@@ -152,6 +152,10 @@ type sessionTurnConfig struct {
 	// it runs a turn. The only other writer is commitServiceTierWrite, after
 	// a write has landed.
 	assertedServiceTier string
+	// A timed-out request may have reached the provider. Keep its tier until
+	// a successful write settles it so a subsequent OFF still sends a clear.
+	attemptedServiceTier string
+	serviceTierSequence  uint64
 }
 
 // sessionSettingsState is Codex's own view of this thread's live config plus
@@ -362,6 +366,10 @@ type Session struct {
 	// codexThreadID, appServerVersion, threadHistoryMode, pendingRevert,
 	// revertEpoch, threadQueueNative, closing and nextID are atomics precisely
 	// so their readers never have to enter this order at all.
+	// settingsWireMu precedes mu and never nests with controlMu.
+	// It orders snapshots and pipe writes, not response waits.
+	settingsWireMu     sync.Mutex
+	settingsSync       settingsSyncState
 	controlMu          sync.Mutex
 	mu                 sync.Mutex
 	pending            map[int64]chan json.RawMessage
@@ -815,6 +823,10 @@ func (s *Session) PID() int {
 // Closes stdin first for graceful shutdown, then cancels the context as fallback.
 func (s *Session) Close() error {
 	s.closing.Store(true)
+	s.settingsSync.mu.Lock()
+	s.settingsSync.closing = true
+	s.settingsSync.pending = ThreadSettingsPush{}
+	s.settingsSync.mu.Unlock()
 	s.collabAsyncMu.Lock()
 	s.collabAsyncClosing = true
 	s.collabAsyncMu.Unlock()
@@ -826,6 +838,7 @@ func (s *Session) Close() error {
 	}
 	s.rolloutObserverWG.Wait()
 	s.collabAsyncWG.Wait()
+	s.settingsSync.wg.Wait()
 	// Drop the session-scoped state so the closed Session doesn't hold onto
 	// per-turn / per-child-thread entries indefinitely. The dispatch
 	// goroutine and rollout observer have exited by this point, so no

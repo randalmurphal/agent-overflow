@@ -21,6 +21,16 @@ import (
 // by dispatchLine's default branch — we cannot leak a late response
 // once the pending entry is gone.
 func (s *Session) sendRequest(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	wait, err := s.startRequest(method, params)
+	if err != nil {
+		return nil, err
+	}
+	return wait(ctx)
+}
+
+// startRequest separates ordered pipe writes from response waits. The caller
+// must invoke the returned function exactly once to settle the pending request.
+func (s *Session) startRequest(method string, params any) (func(context.Context) (json.RawMessage, error), error) {
 	id := s.nextID.Add(1)
 
 	ch := make(chan json.RawMessage, 1)
@@ -65,46 +75,48 @@ func (s *Session) sendRequest(ctx context.Context, method string, params any) (j
 		return nil, err
 	}
 
-	select {
-	case <-ctx.Done():
-		abandon()
-		return nil, ctx.Err()
-	case resp, ok := <-ch:
-		// The happy path also needs to clear the pending entry. We do
-		// it here rather than via defer so abandon's lock pattern is
-		// the single source of truth.
-		s.mu.Lock()
-		delete(s.pending, id)
-		s.mu.Unlock()
-		if !ok {
-			return nil, fmt.Errorf("codex: %s: session stopped before request completed", method)
-		}
-		var rpcResp struct {
-			Error *struct {
-				Code    int             `json:"code"`
-				Message string          `json:"message"`
-				Data    json.RawMessage `json:"data,omitempty"`
-			} `json:"error,omitempty"`
-			Result json.RawMessage `json:"result,omitempty"`
-		}
-		if err := json.Unmarshal(resp, &rpcResp); err == nil {
-			if rpcResp.Error != nil {
-				return nil, &RPCError{
-					Method:  method,
-					Code:    rpcResp.Error.Code,
-					Message: rpcResp.Error.Message,
-					Data:    rpcResp.Error.Data,
+	return func(ctx context.Context) (json.RawMessage, error) {
+		select {
+		case <-ctx.Done():
+			abandon()
+			return nil, ctx.Err()
+		case resp, ok := <-ch:
+			// The happy path also needs to clear the pending entry. We do
+			// it here rather than via defer so abandon's lock pattern is
+			// the single source of truth.
+			s.mu.Lock()
+			delete(s.pending, id)
+			s.mu.Unlock()
+			if !ok {
+				return nil, fmt.Errorf("codex: %s: session stopped before request completed", method)
+			}
+			var rpcResp struct {
+				Error *struct {
+					Code    int             `json:"code"`
+					Message string          `json:"message"`
+					Data    json.RawMessage `json:"data,omitempty"`
+				} `json:"error,omitempty"`
+				Result json.RawMessage `json:"result,omitempty"`
+			}
+			if err := json.Unmarshal(resp, &rpcResp); err == nil {
+				if rpcResp.Error != nil {
+					return nil, &RPCError{
+						Method:  method,
+						Code:    rpcResp.Error.Code,
+						Message: rpcResp.Error.Message,
+						Data:    rpcResp.Error.Data,
+					}
+				}
+				if len(rpcResp.Result) > 0 {
+					return rpcResp.Result, nil
 				}
 			}
-			if len(rpcResp.Result) > 0 {
-				return rpcResp.Result, nil
-			}
+			return resp, nil
+		case <-time.After(s.requestTimeout()):
+			abandon()
+			return nil, &RequestTimeoutError{Method: method}
 		}
-		return resp, nil
-	case <-time.After(s.requestTimeout()):
-		abandon()
-		return nil, &RequestTimeoutError{Method: method}
-	}
+	}, nil
 }
 
 // RPCError is a JSON-RPC error response from the Codex app-server, kept

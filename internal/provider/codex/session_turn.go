@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"agent-overflow/internal/provider"
 )
@@ -42,6 +43,9 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 	if err != nil {
 		return err
 	}
+	s.settingsWireMu.Lock()
+	unlockSettings := sync.OnceFunc(s.settingsWireMu.Unlock)
+	defer unlockSettings()
 
 	cfg := s.snapshotTurnConfig()
 	params := map[string]any{
@@ -111,7 +115,16 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 	// this request's response does, and an unclaimed observation is what
 	// external_turns.go reads as "somebody else started this turn".
 	s.beginLocalTurnStart()
-	resp, err := s.sendRequest(ctx, "turn/start", params)
+	s.noteServiceTierAttempt(&tierWrite)
+	s.mu.Lock()
+	s.settings.pendingEcho = nil
+	s.mu.Unlock()
+	wait, err := s.startRequest("turn/start", params)
+	unlockSettings()
+	var resp json.RawMessage
+	if err == nil {
+		resp, err = wait(ctx)
+	}
 	if err != nil {
 		s.clearPendingTurnSchema()
 		if IsAmbiguousTurnStartTimeout(err) {

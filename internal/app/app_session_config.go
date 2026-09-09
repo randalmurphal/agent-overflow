@@ -335,52 +335,13 @@ func (a *App) reconcileSessionConfigStep(threadID string) {
 	a.reconcileSessionConfig(threadID, false)
 }
 
-// codexSettingsPushTimeout bounds the `thread/settings/update` round trip.
-// The app-server answers as soon as it has queued the core op, so this is a
-// local-IPC deadline, not a model-work one — it exists so a wedged
-// app-server can't hold a binding call for the 30s default.
-const codexSettingsPushTimeout = 5 * time.Second
-
-// pushCodexThreadSettings lands the model / effort / service-tier part of a
-// live config change on the Codex thread immediately, instead of leaving it
-// to ride the next turn/start.
-//
-// Two rules, both deliberate:
-//
-//  1. **Between turns only.** A push while a turn is in flight is skipped
-//     entirely rather than deferred, and nothing is lost by skipping: the
-//     same values are already in the session's turn config, so the next
-//     turn/start asserts them exactly as it did before this call existed.
-//     (The check is best-effort against a concurrent send from another
-//     goroutine — but that race is benign in both directions, because a push
-//     that lands beside a turn/start writes the very values that turn/start
-//     is itself carrying.)
-//
-//     The carve-out this used to have — push anyway on a queue-native
-//     session — existed only because the app-server could then start the
-//     NEXT turn itself out of `thread/queue/*`, with no per-turn overrides
-//     on it. AO no longer puts messages there, so nothing starts a turn on
-//     this thread but AO's own turn/start, and the runtime-mode axes ride
-//     that. See `codex.PlanThreadSettingsPush`.
-//
-//  2. **Never user-facing on failure.** A failed or unsupported push is a
-//     lost optimization, not a lost setting. It is logged; the thread's
-//     behavior is unchanged. Codex's own rejection of an override arrives
-//     separately as an `error` notification, which is already thread error
-//     state, and an echo that disagrees with the push is surfaced by
-//     verifyThreadSettingsEcho.
+// pushCodexThreadSettings schedules optional provider synchronization. The local
+// turn configuration is already updated, so UI writes need not await its response.
 func (a *App) pushCodexThreadSettings(threadID string, sess *codex.Session, push codex.ThreadSettingsPush) {
-	if sess == nil || push.Empty() {
+	if sess == nil || push.Empty() || a.threadTurnInFlight(threadID) {
 		return
 	}
-	if a.threadTurnInFlight(threadID) {
-		return
-	}
-	ctx, cancel := context.WithTimeout(a.lifeCtx(), codexSettingsPushTimeout)
-	defer cancel()
-	if err := sess.PushThreadSettings(ctx, push); err != nil {
-		log.Printf("thread %s: codex thread/settings/update failed, change will apply on the next turn: %v", threadID, err)
-	}
+	sess.QueueThreadSettings(push)
 }
 
 // threadTurnInFlight reports whether a provider turn is currently running on

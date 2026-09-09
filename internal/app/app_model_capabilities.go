@@ -1,6 +1,9 @@
 package app
 
 import (
+	"database/sql"
+	"errors"
+	"log"
 	"strings"
 
 	"agent-overflow/internal/chatmodel"
@@ -9,20 +12,23 @@ import (
 )
 
 func (a *App) supportsFastModeForModel(providerName, model string) bool {
-	candidate, found, catalogAuthoritative := a.modelInfoForProvider(providerName, model)
-	return supportsFastModeFromModelInfo(providerName, model, candidate, found, catalogAuthoritative)
+	candidate, found := a.modelInfoForProvider(providerName, model)
+	supported := supportsFastModeFromModelInfo(providerName, model, candidate, found)
+	if !supported && providerName == string(provider.Codex) && a.store != nil {
+		if profile, ok := a.rememberedModelProfile(providerName, model); ok {
+			return profile.FastMode
+		}
+	}
+	return supported
 }
 
 func supportsFastModeFromModelInfo(
 	providerName, model string,
 	candidate provider.ModelInfo,
-	found, catalogAuthoritative bool,
+	found bool,
 ) bool {
 	if found {
 		return chatmodel.HasCapability(candidate, provider.ModelCapabilityFastMode)
-	}
-	if catalogAuthoritative {
-		return false
 	}
 	return chatmodel.SupportsStoredFastMode(providerName, model)
 }
@@ -33,7 +39,7 @@ func supportsFastModeFromModelInfo(
 // reached, or a provider without tiers — and the provider translator falls back
 // to its legacy default rather than dropping fast mode.
 func (a *App) fastModeTierIDForModel(providerName, model string) string {
-	candidate, found, _ := a.modelInfoForProvider(providerName, model)
+	candidate, found := a.modelInfoForProvider(providerName, model)
 	if !found || candidate.FastModeTier == nil {
 		return ""
 	}
@@ -41,18 +47,26 @@ func (a *App) fastModeTierIDForModel(providerName, model string) string {
 }
 
 func (a *App) reasoningEffortSupportedForModel(providerName, model, effort string) bool {
-	candidate, found, catalogAuthoritative := a.modelInfoForProvider(providerName, model)
+	candidate, found := a.modelInfoForProvider(providerName, model)
 	if found {
-		return provider.ModelInfoSupportsReasoningEffort(candidate, effort)
-	}
-	if catalogAuthoritative {
+		if provider.ModelInfoSupportsReasoningEffort(candidate, effort) {
+			return true
+		}
+		if providerName == string(provider.Codex) && a.store != nil && string(provider.NormalizeReasoningEffort(effort)) == effort {
+			if profile, ok := a.rememberedModelProfile(providerName, model); ok {
+				return profile.ReasoningEffort == effort
+			}
+		}
 		return false
 	}
 	return provider.ReasoningEffortSupportedForModel(providerName, model, effort)
 }
 
 func (a *App) coerceReasoningEffortForModel(providerName, model, effort string) string {
-	candidate, found, _ := a.modelInfoForProvider(providerName, model)
+	if providerName == string(provider.Codex) && a.reasoningEffortSupportedForModel(providerName, model, effort) {
+		return effort
+	}
+	candidate, found := a.modelInfoForProvider(providerName, model)
 	return coerceReasoningEffortFromModelInfo(providerName, model, effort, candidate, found)
 }
 
@@ -68,29 +82,27 @@ func coerceReasoningEffortFromModelInfo(
 	return string(provider.CoerceReasoningEffortForModel(providerName, model, normalized))
 }
 
-// draftModelDefaults sits on the new-thread paint path. It takes one cache
-// snapshot so effort and Fast mode cannot resolve against different catalog
-// generations. A warm Codex catalog contributes live metadata, while a cold,
-// failed, expired, or in-flight lookup falls back to the shipped registry
-// without starting or waiting for the CLI. CreateThread keeps the blocking
-// authoritative validation before the placeholder becomes a real thread.
+// draftModelDefaults preserves remembered Codex choices and uses one local
+// Claude catalog snapshot to resolve its model-derived settings.
 func (a *App) draftModelDefaults(providerName, model, effort string, fastMode bool) (string, bool) {
-	candidate, found, catalogAuthoritative := a.cachedModelInfoForProvider(providerName, model)
+	if providerName == string(provider.Codex) {
+		return string(provider.NormalizeReasoningEffort(effort)), fastMode
+	}
+	candidate, found := a.modelInfoForProvider(providerName, model)
 	effort = coerceReasoningEffortFromModelInfo(providerName, model, effort, candidate, found)
-	fastMode = fastMode && supportsFastModeFromModelInfo(providerName, model, candidate, found, catalogAuthoritative)
+	fastMode = fastMode && supportsFastModeFromModelInfo(providerName, model, candidate, found)
 	return effort, fastMode
 }
 
-// sanitizeChatModelProfile applies the pure static-registry sanitation first,
-// then lets a successful live Codex catalog override effort and Fast support.
-// A catalog failure deliberately leaves the static fallback intact.
+// sanitizeChatModelProfile normalizes stored values without revoking Codex
+// selections when catalog availability changes.
 func (a *App) sanitizeChatModelProfile(profile store.ChatModelProfile) store.ChatModelProfile {
 	profile = chatmodel.SanitizeProfile(profile)
-	candidate, found, catalogAuthoritative := a.modelInfoForProvider(profile.Provider, profile.Model)
+	if profile.Provider == string(provider.Codex) {
+		return profile
+	}
+	candidate, found := a.modelInfoForProvider(profile.Provider, profile.Model)
 	if !found {
-		if catalogAuthoritative {
-			profile.FastMode = false
-		}
 		return profile
 	}
 
@@ -107,9 +119,8 @@ func (a *App) sanitizeChatModelProfile(profile store.ChatModelProfile) store.Cha
 	return profile
 }
 
-// sanitizeThreadModelSettings coerces the thread's *model-derived* settings
-// (model slug, reasoning effort, fast mode, context window) to what the
-// resolved model actually supports.
+// sanitizeThreadModelSettings normalizes model-derived settings while
+// preserving accepted Codex effort and fast-mode selections.
 //
 // It deliberately does not touch thread.RuntimeMode. Runtime mode is the
 // access/approval axis, not a model capability: it is chosen by the user per
@@ -132,26 +143,9 @@ func (a *App) sanitizeThreadModelSettings(thread store.Thread) store.Thread {
 	return thread
 }
 
-// contextWindowOptionsForModel resolves the selectable context windows against
-// the best catalog the provider has (probe-enriched Claude, live Codex),
-// falling back to the shipped registry on a miss or a catalog error. Wire-only
-// models — a slug the CLI ships before the registry lists it — exist ONLY in
-// the merged catalog, carrying family-inherited windows; a static-only lookup
-// reports them unknown and hard-fails the context-settings surface (the
-// claude-fable-5-1 incident, 2026-09-01).
-//
-// Resolution is the CACHED, non-blocking variant: this sits on the new-thread
-// paint path (GetThreadDefaults), which must never start or wait for a Codex
-// CLI. The Claude merged catalog is process-free either way. For Codex a cold
-// cache falls back to the static registry, which is exactly what every caller
-// got before this chokepoint existed; the one Codex shape that differs
-// between warm and cold is a user-added custom model, whose live entry
-// clones the first catalog model's windows (internal/provider/codex/models.go
-// appendCustomModels). CreateThread resolves reasoning effort through the
-// BLOCKING lookup first, so by the time it validates the window the cache is
-// warm and the answer is the live one.
+// contextWindowOptionsForModel resolves known windows without provider I/O.
 func (a *App) contextWindowOptionsForModel(providerName, model string) []provider.ContextWindowOption {
-	candidate, found, _ := a.cachedModelInfoForProvider(providerName, model)
+	candidate, found := a.modelInfoForProvider(providerName, model)
 	if found && len(candidate.ContextWindows) > 0 {
 		return candidate.ContextWindows
 	}
@@ -168,58 +162,40 @@ func (a *App) fallbackChatModelProfile(providerName, model string, availableProv
 	return chatmodel.FallbackProfileWith(a.contextWindowOptionsForModel, providerName, model, availableProviders...)
 }
 
-// modelInfoForProvider resolves one model against the best catalog the
-// provider has. The final return value distinguishes a successful catalog miss
-// from a catalog error: a miss is an authoritative rejection, while an error
-// permits the bundled registry to keep the app usable when the provider cannot
-// be reached.
-//
-// Only Codex's catalog is ever authoritative. Claude's probe-enriched catalog
-// is a SUPERSET of the shipped one (the CLI's list is a picker shortlist that
-// omits older-but-usable models), so a miss there says nothing beyond what the
-// shipped list already said — and reporting it as authoritative would strip
-// capabilities off every model the CLI happens not to list.
-func (a *App) modelInfoForProvider(providerName, model string) (info provider.ModelInfo, found, catalogAuthoritative bool) {
+// modelInfoForProvider uses capability evidence already available locally.
+// Catalog expiry, refresh failure and omission cannot revoke a known choice.
+func (a *App) modelInfoForProvider(providerName, model string) (info provider.ModelInfo, found bool) {
 	providerName = strings.TrimSpace(providerName)
 	model = provider.NormalizeModelSlug(providerName, strings.TrimSpace(model))
 	if provider.CapabilitiesForProvider(providerName).ModelCatalog == provider.CodexLiveModelCatalog {
-		models, err := a.GetModelsForProvider(providerName)
-		if err == nil {
-			return findModelInCatalog(models, model, true)
+		if candidate, ok := a.providerDiscoveryService().KnownCodexModel(a.providerBinaryPath(providerName), model); ok {
+			return candidate, true
 		}
 	}
 	return a.modelInfoWithoutLiveCodex(providerName, model)
 }
 
-// cachedModelInfoForProvider is the nonblocking counterpart used by draft
-// defaults. A cold, expired, failed, or in-flight Codex catalog falls back to
-// the shipped registry. Claude's catalog is process-free, so it remains safe
-// to resolve directly.
-func (a *App) cachedModelInfoForProvider(providerName, model string) (info provider.ModelInfo, found, catalogAuthoritative bool) {
-	providerName = strings.TrimSpace(providerName)
-	model = provider.NormalizeModelSlug(providerName, strings.TrimSpace(model))
-	if provider.CapabilitiesForProvider(providerName).ModelCatalog == provider.CodexLiveModelCatalog {
-		models, err, cached := a.cachedCodexModelsForBinary(a.providerBinaryPath(providerName))
-		if cached && err == nil {
-			return findModelInCatalog(models, model, true)
-		}
-	}
-	return a.modelInfoWithoutLiveCodex(providerName, model)
-}
-
-func (a *App) modelInfoWithoutLiveCodex(providerName, model string) (info provider.ModelInfo, found, catalogAuthoritative bool) {
+func (a *App) modelInfoWithoutLiveCodex(providerName, model string) (info provider.ModelInfo, found bool) {
 	if provider.CapabilitiesForProvider(providerName).ModelCatalog == provider.ClaudeProbeEnrichedCatalog {
-		return findModelInCatalog(a.claudeModelsForProvider(providerName), model, false)
+		return findModelInCatalog(a.claudeModelsForProvider(providerName), model)
 	}
 	info, found = provider.FindModel(providerName, model)
-	return info, found, false
+	return info, found
 }
 
-func findModelInCatalog(models []provider.ModelInfo, model string, authoritative bool) (provider.ModelInfo, bool, bool) {
+func findModelInCatalog(models []provider.ModelInfo, model string) (provider.ModelInfo, bool) {
 	for _, candidate := range models {
 		if candidate.Slug == model {
-			return candidate, true, authoritative
+			return candidate, true
 		}
 	}
-	return provider.ModelInfo{}, false, authoritative
+	return provider.ModelInfo{}, false
+}
+
+func (a *App) rememberedModelProfile(providerName, model string) (store.ChatModelProfile, bool) {
+	profile, err := a.store.GetChatModelProfile(providerName, model)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		log.Printf("model capabilities: read remembered %s/%s profile: %v", providerName, model, err)
+	}
+	return profile, err == nil
 }

@@ -130,8 +130,12 @@ func (a *App) resolveTextGenerationConfigFor(providerName string) (textgen.Confi
 // without tiers up to the provider default would raise cost silently, on the
 // one surface the user never sees a control for.
 func coerceTextGenerationEffort(cfg *textgen.Config) {
-	if provider.ModelDeclaresNoReasoningEffort(cfg.Provider, cfg.Model) {
-		cfg.Effort = ""
+	if model, found := provider.FindModel(cfg.Provider, cfg.Model); found {
+		if len(model.ReasoningEfforts) == 0 {
+			cfg.Effort = ""
+		} else {
+			cfg.Effort = string(provider.CoerceReasoningEffortForModelInfo(model, provider.NormalizeReasoningEffort(cfg.Effort)))
+		}
 		return
 	}
 	cfg.Effort = string(provider.CoerceReasoningEffortForModel(

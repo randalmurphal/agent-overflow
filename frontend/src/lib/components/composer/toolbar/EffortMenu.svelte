@@ -150,7 +150,7 @@
   );
   // A model with nothing to choose (one context tier, no fast mode, no effort
   // tiers) gets a disabled trigger rather than a menu with no rows in it.
-  let hasMenuOptions = $derived(showContextSelection || fastModeSupported || showEffortSelection);
+  let hasMenuOptions = $derived(showContextSelection || fastModeSupported || currentFast || showEffortSelection);
   let triggerLabel = $derived.by(() => {
     const labelParts = [];
     if (showEffortSelection) {
@@ -222,21 +222,21 @@
   // menu's only remaining job is where the failure goes — a toast here, a
   // composer-local error when the same path runs from `/effort` or `/fast`.
   async function handleEffort(next: Effort): Promise<void> {
+    closeMenu();
     const result = await applyThreadReasoningEffort(pane, next);
     if (!result.ok && result.error) addToast('error', result.error);
-    closeMenu();
   }
 
   async function handleFastMode(on: boolean): Promise<void> {
+    closeMenu();
     const result = await applyThreadFastMode(pane, on);
     if (!result.ok && result.error) addToast('error', result.error);
-    closeMenu();
   }
 
   async function handleContextWindow(tokens: number): Promise<void> {
+    closeMenu();
     const result = await applyThreadContextWindow(pane, tokens);
     if (!result.ok && result.error) addToast('error', result.error);
-    closeMenu();
   }
 </script>
 
@@ -292,7 +292,7 @@
         <MenuDivider />
       {/if}
 
-      {#if fastModeSupported}
+      {#if fastModeSupported || currentFast}
         <MenuSectionHeader label={fastModeSectionLabel} />
         <MenuItem
           label="Off"

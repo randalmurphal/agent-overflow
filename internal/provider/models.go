@@ -494,6 +494,11 @@ func FindModel(providerName, model string) (ModelInfo, bool) {
 }
 
 func CoerceReasoningEffortForModel(providerName, model string, effort ReasoningEffort) ReasoningEffort {
+	// Stored Codex choices have already been accepted. Availability is checked
+	// by the provider on execution, not by this static projection.
+	if providerName == string(Codex) {
+		return NormalizeReasoningEffort(string(effort))
+	}
 	if ReasoningEffortSupportedForModel(providerName, model, string(effort)) {
 		return effort
 	}

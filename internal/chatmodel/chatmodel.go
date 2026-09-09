@@ -93,8 +93,7 @@ func FallbackProfile(providerName, model string, availableProviders ...string) s
 
 // ProfileFromThread projects a stored thread's chat-model settings into
 // the standalone ChatModelProfile shape used by the "remember last
-// model" cache. Fast-mode is dropped when the model doesn't support
-// it so a stale flag can't survive a model swap.
+// model" cache. Codex choices survive changes to catalog availability.
 func ProfileFromThread(thread store.Thread) store.ChatModelProfile {
 	effort := provider.CoerceReasoningEffortForModel(
 		thread.Provider,
@@ -299,16 +298,16 @@ func ValidateContextUpdate(options []provider.ContextWindowOption, rawProvider, 
 	return providerName, model, nil
 }
 
-// SupportsStoredFastMode reports whether a stored fast-mode flag
-// should be honored for the (provider, model) pair. Codex models that
-// aren't in the registry get a permissive "yes" because the live model
-// catalog is the source of truth for Codex; for everything else the
-// registry decision is authoritative.
+// SupportsStoredFastMode preserves accepted Codex flags. Claude flags follow
+// the shipped capability registry.
 func SupportsStoredFastMode(providerName, model string) bool {
 	model = provider.NormalizeModelSlug(providerName, model)
+	if providerName == string(provider.Codex) {
+		return strings.TrimSpace(model) != ""
+	}
 	candidate, found := provider.FindModel(providerName, model)
 	if !found {
-		return providerName == string(provider.Codex) && strings.TrimSpace(model) != ""
+		return false
 	}
 	return HasCapability(candidate, provider.ModelCapabilityFastMode)
 }

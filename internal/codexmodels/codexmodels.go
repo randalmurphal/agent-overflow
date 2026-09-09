@@ -8,6 +8,7 @@ package codexmodels
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -43,6 +44,7 @@ type Cache struct {
 
 type entry struct {
 	models    []provider.ModelInfo
+	known     []provider.ModelInfo
 	err       error
 	expiresAt time.Time
 }
@@ -124,12 +126,17 @@ func (c *Cache) Get(ctx context.Context, binary string) ([]provider.ModelInfo, e
 	// lookup that started after the reset.
 	if c.inflight[binary] == l {
 		delete(c.inflight, binary)
+		known := c.entries[binary].known
+		if err == nil {
+			known = rememberModels(known, models)
+		}
 		entryTTL := c.ttl
 		if err != nil {
 			entryTTL = DefaultErrorTTL
 		}
 		c.entries[binary] = entry{
 			models:    provider.CloneModels(models),
+			known:     known,
 			err:       err,
 			expiresAt: c.now().Add(entryTTL),
 		}
@@ -138,6 +145,66 @@ func (c *Cache) Get(ctx context.Context, binary string) ([]provider.ModelInfo, e
 	c.mu.Unlock()
 
 	return provider.CloneModels(models), err
+}
+
+// KnownModel returns previously observed capabilities without waiting for a refresh.
+// Expiry and refresh failures do not revoke that evidence. Reset clears it when
+// the provider identity changes. The latest catalog returned by Get stays separate.
+func (c *Cache) KnownModel(binary, slug string) (provider.ModelInfo, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, model := range c.entries[strings.TrimSpace(binary)].known {
+		if model.Slug == slug {
+			return provider.CloneModelInfo(model), true
+		}
+	}
+	return provider.ModelInfo{}, false
+}
+
+// Bound historical evidence by the same model limit as the provider catalog.
+// New entries take precedence when the limit is reached.
+func rememberModels(previous, current []provider.ModelInfo) []provider.ModelInfo {
+	const limit = 1000
+	result := provider.CloneModels(current)
+	if len(result) > limit {
+		result = result[:limit:limit]
+	}
+	indices := make(map[string]int, len(result))
+	for i, model := range result {
+		indices[model.Slug] = i
+	}
+	for _, old := range previous {
+		index, found := indices[old.Slug]
+		if !found {
+			if len(result) < limit {
+				result = append(result, provider.CloneModelInfo(old))
+			}
+			continue
+		}
+		model := &result[index]
+		for _, capability := range old.Capabilities {
+			if !slices.Contains(model.Capabilities, capability) {
+				model.Capabilities = append(model.Capabilities, capability)
+			}
+		}
+		if model.FastModeTier == nil && old.FastModeTier != nil {
+			tier := *old.FastModeTier
+			model.FastModeTier = &tier
+		}
+		for _, effort := range old.ReasoningEfforts {
+			if !slices.ContainsFunc(model.ReasoningEfforts, func(v provider.ReasoningEffortOption) bool { return v.Slug == effort.Slug }) {
+				effort.Default = false
+				model.ReasoningEfforts = append(model.ReasoningEfforts, effort)
+			}
+		}
+		for _, window := range old.ContextWindows {
+			if !slices.ContainsFunc(model.ContextWindows, func(v provider.ContextWindowOption) bool { return v.Tokens == window.Tokens }) {
+				window.Default = false
+				model.ContextWindows = append(model.ContextWindows, window)
+			}
+		}
+	}
+	return result
 }
 
 // Peek returns a fresh cached result without starting or waiting for a model

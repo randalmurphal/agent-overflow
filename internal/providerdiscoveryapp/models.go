@@ -40,3 +40,8 @@ func normalizedCodexBinary(binary string) string {
 	}
 	return settings.DefaultSettings.CodexBinaryPath
 }
+
+// KnownCodexModel returns capability evidence without starting or joining a probe.
+func (s *Service) KnownCodexModel(binary, model string) (provider.ModelInfo, bool) {
+	return s.caches.CodexModels.KnownModel(normalizedCodexBinary(binary), model)
+}

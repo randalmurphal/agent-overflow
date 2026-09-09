@@ -156,12 +156,12 @@
   ): Promise<void> {
     if (!pane.thread || applying) return;
     applying = true;
+    closeMenu();
     try {
       const result = await applyThreadModelSelection(pane, provider, slug);
       if (!result.ok && result.error) addToast('error', result.error);
     } finally {
       applying = false;
-      closeMenu();
     }
   }
 

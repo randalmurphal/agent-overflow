@@ -433,6 +433,33 @@ describe("<EffortMenu>", () => {
     ).toEqual(["thread-1", "low"]);
   });
 
+  it("closes immediately while an effort write is pending", async () => {
+    const pane = await buildPane(makeThread({ reasoningEffort: "medium" }));
+    let finish!: (thread: Thread) => void;
+    const pending = new Promise<Thread>((resolve) => { finish = resolve; });
+    setBindingMock("UpdateThreadReasoningEffort", () => pending);
+    const { getByTestId, findByRole, queryByRole } = render(EffortMenu, { props: { pane } });
+    await fireEvent.click(getByTestId("composer-effort-trigger"));
+    await fireEvent.click(await findByRole("menuitem", { name: /Low/ }));
+    expect(queryByRole("menu")).toBeNull();
+    finish(makeThread({ reasoningEffort: "low" }));
+    await pending;
+  });
+
+  it("keeps fast-mode OFF available after the catalog removes support", async () => {
+    setBindingMock("GetModelsForProvider", async () => [{
+      slug: "gpt-known", name: "Known", provider: "codex",
+      reasoningEfforts: [], capabilities: [], contextWindows: [],
+    }]);
+    await ensureProviderModels("codex");
+    const pane = await buildPane(makeThread({ provider: "codex", model: "gpt-known", fastMode: true }));
+    setBindingMock("UpdateThreadFastMode", async () => makeThread({ provider: "codex", model: "gpt-known", fastMode: false }));
+    const { getByTestId, findByRole } = render(EffortMenu, { props: { pane } });
+    await fireEvent.click(getByTestId("composer-effort-trigger"));
+    await fireEvent.click(await findByRole("menuitem", { name: /^Off$/ }));
+    expect(getBindingMock("UpdateThreadFastMode")).toHaveBeenCalledWith("thread-1", false);
+  });
+
   it("calls UpdateThreadFastMode when toggling Fast Mode", async () => {
     const pane = await buildPane(
       makeThread({

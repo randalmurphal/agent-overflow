@@ -42,8 +42,8 @@ func TestGetThreadDefaultsDoesNotLoadColdCodexCatalog(t *testing.T) {
 	if _, err := app.CreateThread(t.Context(), CreateThreadOptions{ProjectID: defaultTestProjectID, Provider: defaults.Provider, Model: defaults.Model}); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
-	if calls != 1 {
-		t.Fatalf("Codex catalog loads after materialization = %d, want 1 authoritative validation", calls)
+	if calls != 0 {
+		t.Fatalf("Codex catalog loads after materialization = %d, want no blocking probe", calls)
 	}
 }
 
@@ -74,11 +74,11 @@ func TestGetThreadDefaultsUsesWarmCodexCatalogWithoutReloading(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("Codex catalog loads = %d, want the one explicit warmup", calls)
 	}
-	if defaults.ReasoningEffort != string(provider.EffortUltra) {
-		t.Fatalf("ReasoningEffort = %q, want warm-catalog default %q", defaults.ReasoningEffort, provider.EffortUltra)
+	if defaults.ReasoningEffort != profile.ReasoningEffort {
+		t.Fatalf("ReasoningEffort = %q, want remembered effort %q", defaults.ReasoningEffort, profile.ReasoningEffort)
 	}
-	if defaults.FastMode {
-		t.Fatal("FastMode = true, want warm catalog without a fast tier to disable it")
+	if !defaults.FastMode {
+		t.Fatal("catalog refresh revoked remembered fast mode")
 	}
 }
 

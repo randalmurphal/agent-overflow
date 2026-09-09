@@ -11,10 +11,17 @@ import {
   providerIsEnabled, PROVIDER_SETTINGS_ORDER, type ProviderEnablementSettings,
 } from '../providers/catalog';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
+import { iterPanes } from './panes.svelte';
+import { threadMachine } from './attachedBackends.svelte';
+import { addToast } from './toast.svelte';
+import type { ThreadPane } from './thread.svelte';
+import { catalogContradiction } from '../utils/catalogContradiction';
 
 const models = createKeyedSignalRegistry<ModelInfo[] | null>(null);
 const inFlight = new Map<string, Promise<ModelInfo[]>>();
 const generations = new Map<string, number>();
+const refreshAfter = new Map<string, number>();
+let warnedSelections = new WeakMap<ThreadPane, string>();
 const EMPTY: ModelInfo[] = [];
 
 export function getProviderModels(provider: ProviderID, backend: BackendKey = HOME_BACKEND): ModelInfo[] {
@@ -24,7 +31,13 @@ export function getProviderModels(provider: ProviderID, backend: BackendKey = HO
 export async function ensureProviderModels(provider: ProviderID, backend: BackendKey = HOME_BACKEND): Promise<ModelInfo[]> {
   const key = compositeKey(backend, provider);
   const cached = models.get(key);
-  if (cached) return Promise.resolve(cached);
+  if (cached) {
+    if (hasScope('threads:operate', backend) && !inFlight.has(key) && Date.now() >= (refreshAfter.get(key) ?? 0)) {
+      // Retain usable data while refreshing; expiry and failure are not warnings.
+      void loadProviderModels(provider, backend).catch(() => {});
+    }
+    return Promise.resolve(cached);
+  }
   if (!hasScope('threads:operate', backend)) return Promise.resolve(EMPTY);
   return inFlight.get(key) ?? loadProviderModels(provider, backend);
 }
@@ -53,11 +66,33 @@ function loadProviderModels(provider: ProviderID, backend: BackendKey): Promise<
     }
     const list = Array.isArray(result) ? result as ModelInfo[] : [];
     models.set(key, list);
+    const emitted = new Set<string>();
+    for (const pane of iterPanes()) {
+      const thread = pane.thread;
+      if (!thread || thread.provider !== provider || threadMachine(pane.threadId ?? '', thread.projectId) !== backend) continue;
+      const contradiction = catalogContradiction(thread, list);
+      if (!contradiction) {
+        warnedSelections.delete(pane);
+        continue;
+      }
+      const selection = JSON.stringify([backend, thread.id, thread.model, thread.reasoningEffort, thread.fastMode, contradiction]);
+      if (warnedSelections.get(pane) === selection) continue;
+      warnedSelections.set(pane, selection);
+      if (!emitted.has(selection)) {
+        emitted.add(selection);
+        addToast('warning', `${contradiction} Your selection has been kept; you can still send.`);
+      }
+    }
     return list;
   })();
   inFlight.set(key, request);
-  const clear = () => { if (inFlight.get(key) === request) inFlight.delete(key); };
-  void request.then(clear, clear);
+  const clear = (delay: number) => {
+    if (inFlight.get(key) === request) {
+      inFlight.delete(key);
+      refreshAfter.set(key, Date.now() + delay);
+    }
+  };
+  void request.then(() => clear(5 * 60_000), () => clear(15_000));
   return request;
 }
 
@@ -81,6 +116,7 @@ export function invalidateProviderModels(
     generations.set(key, (generations.get(key) ?? 0) + 1);
     models.drop(key);
     inFlight.delete(key);
+    refreshAfter.delete(key);
   }
 }
 
@@ -90,6 +126,8 @@ export function resetProviderModelsForTest(): void {
   }
   models.reset();
   inFlight.clear();
+  refreshAfter.clear();
+  warnedSelections = new WeakMap();
 }
 
 onBackendDetached(({ backendId }) => invalidateProviderModels(null, backendId));

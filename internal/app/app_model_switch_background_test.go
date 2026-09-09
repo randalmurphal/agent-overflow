@@ -79,7 +79,20 @@ func TestModelSelectionPreservesSessionAndBackgroundWork(t *testing.T) {
 				starts := make(chan string, 4)
 				app.startSessionFn = func(id string) error { starts <- id; return nil }
 
+				selections := 0
 				assertPreserved := func() {
+					selections++
+					if providerName == "codex" && !activeTurn {
+						waitForCondition(t, "settings push", func() bool {
+							count := 0
+							for _, line := range capture.Lines(t) {
+								if strings.Contains(line, `"thread/settings/update"`) {
+									count++
+								}
+							}
+							return count >= selections
+						})
+					}
 					t.Helper()
 					current, ok := app.sessionManager().get(thread.ID)
 					if !ok || current.Token != entry.Token || current.Claude != entry.Claude || current.Codex != entry.Codex {
