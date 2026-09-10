@@ -21,7 +21,7 @@ import { describe, expect, it } from 'vitest';
 import '../../../app.css';
 import { tick } from 'svelte';
 import { makeItem } from '../../../test/helpers/chat';
-import { raf, wait } from '../../../test/helpers/browserFrames';
+import { wait } from '../../../test/helpers/browserFrames';
 import {
   mountTimeline,
   setupTimelineHarness,
@@ -37,12 +37,11 @@ const QUIET_BOTTOM: QuietBottomOptions = { epsilonPx: 2, stableFrames: 12, frame
 const LINE_PX = 19.5;
 // Between two samples the slide tracker moves a glyph by exactly one drain
 // step of the offset that was pending at the first sample; anything past
-// that (with slack for a sub-pixel wobble and a couple of ms of clock skew
-// between the sampler and the tracker) is a teleport.
+// that (with slack for sub-pixel geometry) is a teleport. Samples use the
+// same frame timestamp as the tracker, independent of layout-read cost.
 const GLYPH_SLACK_PX = 3;
-const GLYPH_CLOCK_SKEW_MS = 2;
 const legitGlyphMove = (pendingTy: number, dtMs: number): number =>
-  pendingTy - stepSlide(pendingTy, dtMs + GLYPH_CLOCK_SKEW_MS) + GLYPH_SLACK_PX;
+  pendingTy - stepSlide(pendingTy, dtMs) + GLYPH_SLACK_PX;
 // A scroll offset that moves once, alone, is a snap: a glide accelerates in
 // over several frames and decelerates out, so its neighbours are never this
 // much smaller.
@@ -221,7 +220,7 @@ async function runScenario(s: Scenario): Promise<Frame[]> {
   const t0 = performance.now();
   const sampler = (async () => {
     while (!stop) {
-      await raf();
+      const frameTime = await new Promise<number>((resolve) => requestAnimationFrame(resolve));
       const clips = host.querySelectorAll<HTMLElement>('[data-testid="activity-run-clip"]');
       const clip = clips[clips.length - 1] ?? null;
       const row = scrollEl.querySelector<HTMLElement>(`[data-item-id="${watched}"]`);
@@ -237,7 +236,7 @@ async function runScenario(s: Scenario): Promise<Frame[]> {
       const boxRect = body?.getBoundingClientRect() ?? null;
       frames.push({
         f: f++,
-        t: Math.round(performance.now() - t0),
+        t: frameTime - t0,
         item: watched,
         y: r(node ? glyphRect(node, idx)?.bottom : null),
         idx,

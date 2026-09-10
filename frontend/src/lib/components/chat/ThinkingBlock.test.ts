@@ -137,7 +137,7 @@ describe('<ThinkingBlock>', () => {
       // making the byte-equality assertion below load-bearing.
       const words: string[] = [];
       for (let i = 0; i < 80; i++) words.push(`tok${String(i).padStart(2, '0')}`);
-      const fullText = words.join(' ') + ' ';
+      const fullText = words.join(' ') + '\n\n';
       pane.applyItemDelta({
         threadId: 'thread-1',
         itemId: 'think:0:0',
@@ -153,7 +153,7 @@ describe('<ThinkingBlock>', () => {
       let body = container.querySelector('[data-testid="thinking-body"]');
       expect(body?.className).toMatch(/max-h-\[3lh\]/);
       const streamingText = body?.textContent ?? '';
-      expect(streamingText).toBe(fullText);
+      expect(streamingText).toBe(words.join(' '));
       expect(pane.liveThinkingTailForItem('think:0:0')).toBe(fullText);
 
       pane.applyItemPatch({
@@ -248,7 +248,7 @@ describe('<ThinkingBlock>', () => {
   });
 
   it('copies the full payload via the getter, even without an explicit expand', async () => {
-    setBindingMock('GetPayloadData', async () => ({ data: 'loaded reasoning text' }));
+    setBindingMock('GetPayloadData', async () => ({ data: 'loaded reasoning text\n\n' }));
     const writeText = vi.fn(async () => {});
     Object.defineProperty(navigator, 'clipboard', {
       value: { writeText },
@@ -256,7 +256,7 @@ describe('<ThinkingBlock>', () => {
       writable: true,
     });
 
-    const { getByLabelText } = render(ThinkingBlock, {
+    const { container, getByLabelText } = render(ThinkingBlock, {
       props: {
         item: makeItem({
           kind: 'thinking',
@@ -267,7 +267,9 @@ describe('<ThinkingBlock>', () => {
     });
 
     await fireEvent.click(getByLabelText('Copy thinking'));
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith('loaded reasoning text'));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('loaded reasoning text\n\n'));
+    expect(container.querySelector('[data-testid="thinking-body"]')?.textContent)
+      .toBe('loaded reasoning text');
   });
 
   it('streams into the expanded full body and refetches current payload after collapse', async () => {
@@ -380,7 +382,7 @@ describe('<ThinkingBlock>', () => {
 
     await waitFor(() => {
       expect(container.querySelector('[data-testid="thinking-body"]')?.textContent)
-        .toBe('The quick brown fox ');
+        .toBe('The quick brown fox');
     });
   });
 
@@ -492,8 +494,8 @@ describe('<ThinkingBlock>', () => {
       expect(body).not.toBeNull();
       const rendered = body!.textContent ?? '';
       expect(rendered.length).toBeGreaterThan(400);
-      // The DOM should mirror the live tail, not the trimmed summary.
-      expect(rendered.length).toBe(liveTail!.length);
+      // The full live tail supplies the body; only trailing whitespace is hidden.
+      expect(rendered).toBe(liveTail!.trimEnd());
       // Mid-stream samples must show monotonic growth and must already
       // exceed the 400-rune cap by the final mid-stream checkpoint —
       // otherwise the DOM only catches up at the final flush (the

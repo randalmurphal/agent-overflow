@@ -68,10 +68,13 @@
     class?: string;
   } = $props();
 
+  // Keep paragraph separators in the source, but lay them out only once text follows.
+  const displayText = $derived(text.trimEnd());
+
   let el: HTMLSpanElement | undefined = $state();
   let innerEl: HTMLSpanElement | undefined = $state();
 
-  /** Start of the wrap-stable window into `text` while collapsed. */
+  /** Start of the wrap-stable window into `displayText` while collapsed. */
   let cutOffset = $state(0);
 
   // Non-reactive bookkeeping for isMonotonicAppend (which detects the
@@ -199,7 +202,7 @@
   // full first layout and gets its measured cut after the first flush.
   // untrack: the INITIAL prop values are exactly what a mount seed
   // wants — later changes are the effect's job.
-  const initialText = untrack(() => text);
+  const initialText = untrack(() => displayText);
   if (!untrack(() => expanded) && initialText.length > TAIL_WINDOW_CAP_CHARS) {
     const initialCut = newlineCutOffset(initialText, 0, TAIL_WINDOW_MIN_KEEP_CHARS);
     if (initialCut !== null) {
@@ -208,12 +211,12 @@
     }
   }
 
-  const rendered = $derived(expanded || cutOffset === 0 ? text : text.slice(cutOffset));
+  const rendered = $derived(expanded || cutOffset === 0 ? displayText : displayText.slice(cutOffset));
 
-  // Depends on `text` and `expanded` only — `cutOffset` reads go through
+  // Depends on `displayText` and `expanded` only — `cutOffset` reads go through
   // `untrack` so the effect's own cut writes can't re-trigger it.
   $effect(() => {
-    const t = text;
+    const t = displayText;
     const renderedCut = untrack(() => cutOffset);
     let cut = renderedCut;
 
