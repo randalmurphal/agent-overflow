@@ -548,25 +548,24 @@ describe('<ProjectThreadList> thread groups', () => {
     expect(inFlightPayload()).toBeNull();
   });
 
-  it('moves the group\u2019s time label on a member beat, without reconciling the each', async () => {
-    // latestActivityAt is not part of sameSidebarVisibleNodes, so the node
-    // array stays identity-stable across a beat: the group row has to read
-    // its members' live activity itself rather than take a frozen prop.
+  it('updates member timestamps without adding a group timestamp or measuring rows', async () => {
     const member = mkThread('m1', {
       projectId: 'p1',
       groupId: 'g1',
       updatedAt: Date.now() - 7_200_000,
     });
     replaceAllThreads([member]);
-    const { getByTestId } = renderList([member], [mkGroup()]);
+    const { getByTestId, queryByTestId } = renderList([member], [mkGroup()]);
     await tick();
-    expect(getByTestId('thread-group-row-time')).toHaveTextContent('2h');
+    expect(getByTestId('thread-row-time')).toHaveTextContent('2h');
+    expect(queryByTestId('thread-group-row-time')).toBeNull();
     const spy = vi.spyOn(Element.prototype, 'getBoundingClientRect');
 
     touchThreadActivity('m1', Date.now());
     await tick();
 
-    expect(getByTestId('thread-group-row-time')).toHaveTextContent('now');
+    expect(getByTestId('thread-row-time')).toHaveTextContent('now');
+    expect(queryByTestId('thread-group-row-time')).toBeNull();
     expect(spy).not.toHaveBeenCalled();
     spy.mockRestore();
   });
