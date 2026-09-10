@@ -118,8 +118,8 @@ stale replies.
 ## The ThreadPane modules
 
 Keep `thread.svelte.ts` as the pane facade. Put timeline windows and pagination
-in `threadTimelineWindow.svelte.ts`, item application and caching in
-`threadItems.ts`, turn projection in `threadPaneTurns.svelte.ts`, and scrolling
+in `threadTimelineWindow.svelte.ts`, item merging in `threadItems.ts` and
+`threadItemUpserts.ts`, stream application in `threadItemStreamApply.ts`, turn projection in `threadPaneTurns.svelte.ts`, and scrolling
 in `threadPaneScroll.svelte.ts`. Do not add another reactive copy of timeline
 items. Detailed scroll contracts live in
 [frontend-scroll.md](../../../../docs/architecture/frontend-scroll.md).

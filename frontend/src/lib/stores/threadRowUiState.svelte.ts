@@ -5,10 +5,8 @@ import {
   type PayloadExpansionHandle,
   type PayloadExpansionOptions,
 } from '../utils/payloadExpansion.svelte';
-import type {
-  AttachmentPreviewCache,
-  ImagePreviewItem,
-} from '../utils/attachmentPreview.svelte';
+import type { AttachmentPreviewCache } from '../utils/attachmentPreview.svelte';
+import { createThreadMessageUiState } from './threadMessageUiState.svelte';
 import { compositeKey } from '../utils/compositeKey';
 import { payloadRetentionKey } from '../utils/rowUiRetention';
 import { subagentGroupKeysFor } from '../utils/subagentGrouping';
@@ -39,22 +37,8 @@ function liveDiffOverride(stored: boolean | undefined): boolean | undefined {
 
 interface ThreadRowUiStateOptions {
   getItemById(itemId: string): Item | undefined;
-  /**
-   * The rows still LOADED when a drop is committed — `disposeItems` uses
-   * them to decide whether a dropped row was the last reference to its
-   * payload. Deliberately the whole collection rather than a per-payload
-   * predicate: a prune drops hundreds of rows at once, and answering one
-   * row at a time meant a full window scan per drop.
-   *
-   * REQUIRED, and not because every caller has rows to report: an empty
-   * iterable is a perfectly good answer, and it means "nothing is loaded,
-   * release every payload this batch touches". What it must not be is a
-   * DEFAULT — a caller that forgot to wire the pane's item list would get
-   * that same release-everything behavior silently, disposing payload
-   * expansion state that surviving rows are still reading, and the only
-   * symptom is a reader's expanded row collapsing on remount.
-   */
-  loadedPayloadRefs(): Iterable<Pick<Item, 'threadId' | 'payloadId'>>;
+  /** The committed window determines whether a dropped record's message or payload still has a reader. */
+  loadedItems(): Iterable<Item>;
 }
 
 export interface ThreadRowUiState {
@@ -291,12 +275,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
   const payloadExpansionKeysByPayload = new Map<string, Set<string>>();
   let nextLeasedPrunedExpansionKey = 1;
   let subagentGroupExpanded: Set<string> = $state(new Set());
-  // Item ids whose user-message text the reader unclamped ("Show more").
-  // A Set, not an override map like the diff cards': every user message
-  // defaults to clamped and no setting moves that default, so membership IS
-  // the deviation and forgetting an id restores the default exactly.
-  // Reassigned copy-on-write like subagentGroupExpanded.
-  let userMessageExpanded: Set<string> = $state(new Set());
+  const messageUi = createThreadMessageUiState(options);
   // Per-card expand/collapse overrides for inline diff file blocks,
   // keyed itemId → filePath. An absent entry means "follow the
   // collapseDiffPreviews setting default"; a stored boolean is a reader
@@ -308,8 +287,6 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
   let diffCardExpandedOverrides: ReadonlyMap<string, ReadonlyMap<string, boolean>> = $state(
     new Map(),
   );
-  const attachmentBlobs = new Map<string, Map<string, ImagePreviewItem>>();
-  let attachmentClearGeneration = 0;
 
   function expansionStateFor(
     item: Item,
@@ -620,19 +597,10 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     for (const key of [...keys]) disposeExpansionKey(key);
   }
 
-  function disposeAttachmentBlobsForItem(itemId: string): void {
-    const inner = attachmentBlobs.get(itemId);
-    if (!inner) return;
-    for (const preview of inner.values()) {
-      revokePreview(preview);
-    }
-    inner.clear();
-    attachmentBlobs.delete(itemId);
-  }
-
   function disposeItems(items: Iterable<Item>): void {
+    const dropped = Array.isArray(items) ? items : [...items];
+    messageUi.disposeItems(dropped);
     let nextGroupExpanded: Set<string> | null = null;
-    let nextUserMessages: Set<string> | null = null;
     let nextDiffOverrides: Map<string, ReadonlyMap<string, boolean>> | null = null;
     // One snapshot of the surviving rows' payload keys serves the whole
     // batch. Built lazily: the common case is a one-row drop, often with
@@ -643,7 +611,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     function payloadStillLoaded(threadId: string, payloadId: string): boolean {
       if (loadedPayloadKeys === null) {
         loadedPayloadKeys = new Set<string>();
-        for (const loaded of options.loadedPayloadRefs()) {
+        for (const loaded of options.loadedItems()) {
           if (!loaded.payloadId) continue;
           loadedPayloadKeys.add(
             payloadExpansionRegistryKey(loaded.threadId, loaded.payloadId),
@@ -652,21 +620,16 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
       }
       return loadedPayloadKeys.has(payloadExpansionRegistryKey(threadId, payloadId));
     }
-    for (const item of items) {
+    for (const item of dropped) {
       const itemId = item.id;
       disposeItemExpansionStates(itemId);
       if (item.payloadId && !payloadStillLoaded(item.threadId, item.payloadId)) {
         disposePayloadExpansionStates(item.threadId, item.payloadId);
       }
-      disposeAttachmentBlobsForItem(itemId);
       for (const groupKey of subagentGroupKeysFor(itemId)) {
         if (!subagentGroupExpanded.has(groupKey)) continue;
         if (!nextGroupExpanded) nextGroupExpanded = new Set(subagentGroupExpanded);
         nextGroupExpanded.delete(groupKey);
-      }
-      if (userMessageExpanded.has(itemId)) {
-        if (!nextUserMessages) nextUserMessages = new Set(userMessageExpanded);
-        nextUserMessages.delete(itemId);
       }
       if (diffCardExpandedOverrides.has(itemId)) {
         if (!nextDiffOverrides) nextDiffOverrides = new Map(diffCardExpandedOverrides);
@@ -674,7 +637,6 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
       }
     }
     if (nextGroupExpanded) subagentGroupExpanded = nextGroupExpanded;
-    if (nextUserMessages) userMessageExpanded = nextUserMessages;
     if (nextDiffOverrides) diffCardExpandedOverrides = nextDiffOverrides;
   }
 
@@ -694,10 +656,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
       if (!retainedPayloads.has(entry.owner.payloadKey)) disposeExpansionKey(key);
     }
 
-    for (const itemId of attachmentBlobs.keys()) {
-      if (retainedItemIds.has(itemId)) continue;
-      disposeAttachmentBlobsForItem(itemId);
-    }
+    messageUi.prune(retainedItemIds);
 
     let nextGroupExpanded: Set<string> | null = null;
     for (const groupKey of subagentGroupExpanded) {
@@ -706,14 +665,6 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
       nextGroupExpanded.delete(groupKey);
     }
     if (nextGroupExpanded) subagentGroupExpanded = nextGroupExpanded;
-
-    let nextUserMessages: Set<string> | null = null;
-    for (const itemId of userMessageExpanded) {
-      if (retainedItemIds.has(itemId)) continue;
-      if (!nextUserMessages) nextUserMessages = new Set(userMessageExpanded);
-      nextUserMessages.delete(itemId);
-    }
-    if (nextUserMessages) userMessageExpanded = nextUserMessages;
 
     let nextDiffOverrides: Map<string, ReadonlyMap<string, boolean>> | null = null;
     for (const itemId of diffCardExpandedOverrides.keys()) {
@@ -740,18 +691,6 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     return willExpand;
   }
 
-  function isUserMessageExpanded(itemId: string): boolean {
-    return userMessageExpanded.has(itemId);
-  }
-
-  function setUserMessageExpanded(itemId: string, expanded: boolean): void {
-    if (expanded === userMessageExpanded.has(itemId)) return;
-    const next = new Set(userMessageExpanded);
-    if (expanded) next.add(itemId);
-    else next.delete(itemId);
-    userMessageExpanded = next;
-  }
-
   function diffCardExpandedOverride(itemId: string, filePath: string): boolean | undefined {
     return liveDiffOverride(diffCardExpandedOverrides.get(itemId)?.get(filePath));
   }
@@ -772,48 +711,6 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     diffCardExpandedOverrides = next;
   }
 
-  function attachmentCacheFor(itemId: string): AttachmentPreviewCache {
-    const clearGeneration = attachmentClearGeneration;
-    let inner = attachmentBlobs.get(itemId);
-    if (!inner) {
-      inner = new Map<string, ImagePreviewItem>();
-      attachmentBlobs.set(itemId, inner);
-    }
-
-    const innerRef = inner;
-    return {
-      get(attachmentId: string): ImagePreviewItem | undefined {
-        if (clearGeneration !== attachmentClearGeneration) return undefined;
-        if (attachmentBlobs.get(itemId) !== innerRef) return undefined;
-        return innerRef.get(attachmentId);
-      },
-      set(attachmentId: string, preview: ImagePreviewItem): void {
-        if (
-          clearGeneration !== attachmentClearGeneration
-          || attachmentBlobs.get(itemId) !== innerRef
-        ) {
-          revokePreview(preview);
-          return;
-        }
-        innerRef.set(attachmentId, preview);
-      },
-    };
-  }
-
-  function revokePreview(preview: ImagePreviewItem): void {
-    if (preview.url.startsWith('blob:')) URL.revokeObjectURL(preview.url);
-  }
-
-  function disposeAttachmentBlobs(): void {
-    for (const inner of attachmentBlobs.values()) {
-      for (const preview of inner.values()) {
-        revokePreview(preview);
-      }
-      inner.clear();
-    }
-    attachmentBlobs.clear();
-  }
-
   function clear(): void {
     for (const key of [...expansionStates.keys()]) {
       disposeExpansionKey(key);
@@ -826,10 +723,8 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     itemExpansionKeysByState.clear();
     payloadExpansionKeysByPayload.clear();
     subagentGroupExpanded = new Set();
-    userMessageExpanded = new Set();
     diffCardExpandedOverrides = new Map();
-    attachmentClearGeneration += 1;
-    disposeAttachmentBlobs();
+    messageUi.clear();
   }
 
   // See the interface doc. Serializes only USER deviations from default —
@@ -842,12 +737,8 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     if (subagentGroupExpanded.size > 0) {
       parts.push('g:' + [...subagentGroupExpanded].sort().join(','));
     }
-    // Unclamping a user message is a row-height deviation like any other, so
-    // a priors snapshot captured with one open must not replay onto a
-    // freshly-mounted (all-clamped) timeline.
-    if (userMessageExpanded.size > 0) {
-      parts.push('u:' + [...userMessageExpanded].sort().join(','));
-    }
+    const messageSignature = messageUi.expansionSignature();
+    if (messageSignature) parts.push(messageSignature);
     const diffs: string[] = [];
     for (const [itemId, files] of diffCardExpandedOverrides) {
       for (const [filePath, stored] of files) {
@@ -886,7 +777,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
       // cannot fire for today's only caller. It is here because the
       // contract above is stated over ITEMS, not over run membership: a
       // future caller asking about a user_text id must get the truth.
-      if (userMessageExpanded.has(itemId)) return true;
+      if (messageUi.isExpanded(itemId)) return true;
       const files = diffCardExpandedOverrides.get(itemId);
       if (files) {
         for (const stored of files.values()) {
@@ -934,13 +825,13 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     appendLivePayloadDeltaForItem,
     isSubagentGroupExpanded,
     toggleSubagentGroupExpanded,
-    isUserMessageExpanded,
-    setUserMessageExpanded,
+    isUserMessageExpanded: messageUi.isExpanded,
+    setUserMessageExpanded: messageUi.setExpanded,
     diffCardExpandedOverride,
     setDiffCardExpanded,
     expansionSignature,
     hasUserExpansionWithin,
-    attachmentCacheFor,
+    attachmentCacheFor: messageUi.attachmentCacheFor,
     disposeItems,
     pruneRowUiState,
     clear,
@@ -958,9 +849,8 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
         itemExpansionStates,
         payloadExpansionStates,
         subagentGroups: subagentGroupExpanded.size,
-        expandedUserMessages: userMessageExpanded.size,
+        ...messageUi.stats(),
         diffCardOverrideItems: diffCardExpandedOverrides.size,
-        attachmentItems: attachmentBlobs.size,
       };
     },
   };

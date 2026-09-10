@@ -1,9 +1,8 @@
 import type { Item } from '../types/models';
-import { rowUiRetentionChanged } from '../utils/rowUiRetention';
-import { activityRunSummaryFieldsChanged } from '../utils/activityRunGrouping';
-import { itemTimelineStructureChanged } from '../utils/timelineStructure';
+import { userMessageIdentity } from '../utils/userMessageIdentity';
 
 const EMPTY_ID_SET: ReadonlySet<string> = new Set<string>();
+const NO_REJECTED_ITEMS: readonly Item[] = Object.freeze([]);
 
 export interface TimelineCursorLike {
   turnIndex: number;
@@ -48,25 +47,45 @@ export function cursorsAfterItemUpserts(
 ): { oldest: TimelineCursorLike | null; newest: TimelineCursorLike | null } {
   const result = { oldest: oldest ?? null, newest: newest ?? null };
   if (!oldest || !newest) return result;
-  const movesAnchor = incoming.some((item) =>
-    (threadId === null || item.threadId === threadId)
+  if (!incoming.some(item => (threadId === null || item.threadId === threadId)
     && ((item.id === oldest.itemId && compareItemToCursor(item, oldest) !== 0)
-      || (item.id === newest.itemId && compareItemToCursor(item, newest) !== 0)));
-  if (!movesAnchor) return result;
+      || (item.id === newest.itemId && compareItemToCursor(item, newest) !== 0)
+      || userMessageIdentity(item) !== null))) return result;
   const updates = new Map(incoming
     .filter((item) => threadId === null || item.threadId === threadId)
     .map((item) => [item.id, item]));
+  const sendUpdates = new Map<string, Item>();
+  for (const item of updates.values()) {
+    const identity = userMessageIdentity(item);
+    if (identity !== null) sendUpdates.set(identity, item);
+  }
+  // Confirmation can change the backend id of any covered row, including
+  // interior rows needed to prove that the whole loaded span translated.
+  const confirmations = new Map<string, Item>();
+  if (sendUpdates.size > 0) {
+    for (const item of current) {
+      const identity = userMessageIdentity(item);
+      const confirmed = identity === null ? undefined : sendUpdates.get(identity);
+      if (confirmed && confirmed.id !== item.id) confirmations.set(item.id, confirmed);
+    }
+  }
+  const updateFor = (id: string) => updates.get(id) ?? confirmations.get(id);
+  const movesAnchor = [oldest, newest].some((cursor) => {
+    const updated = cursor.itemId ? updateFor(cursor.itemId) : undefined;
+    return updated && (updated.id !== cursor.itemId || compareItemToCursor(updated, cursor) !== 0);
+  });
+  if (!movesAnchor) return result;
   const covered = current.filter((item) => !item.parentId
     && compareItemToCursor(item, oldest) >= 0 && compareItemToCursor(item, newest) <= 0);
-  const projected = covered.map((item) => updates.get(item.id) ?? item);
+  const projected = covered.map((item) => updateFor(item.id) ?? item);
   // A suffix insertion translates the entire loaded span. Check every row,
   // not just the endpoints: an isolated moved prompt proves no such coverage.
   const offset = covered.length > 1 ? projected[0].itemIndex - covered[0].itemIndex : 0;
   const translated = offset !== 0 && covered.every((item, i) =>
     projected[i].turnIndex === item.turnIndex && projected[i].itemIndex - item.itemIndex === offset);
   function reconcile(cursor: TimelineCursorLike, direction: -1 | 1): TimelineCursorLike {
-    const anchor = cursor.itemId ? updates.get(cursor.itemId) : undefined;
-    if (!anchor || !covered.some((item) => item.id === anchor.id)) return cursor;
+    const anchor = cursor.itemId ? updateFor(cursor.itemId) : undefined;
+    if (!anchor || !covered.some((item) => item.id === cursor.itemId)) return cursor;
     let next = cursorFromItem(anchor);
     if (compareCursors(next, cursor) === 0 || translated) return next;
     // Keep all surviving covered rows inside the cuts when an anchor moves
@@ -186,7 +205,8 @@ export function itemsForThread(
 /**
  * Merge `incoming` into `current` by id, returning a fresh array sorted by
  * (turnIndex, itemIndex). Used by paging paths where the backend can
- * legitimately re-return ancestor rows already in the window.
+ * legitimately re-return ancestor rows already in the window. A top-level
+ * user send also matches its provisional representation by send identity.
  *
  * Returns the original `current` reference when `incoming` is empty or every
  * incoming row is already present by the same object reference, so callers can
@@ -195,15 +215,27 @@ export function itemsForThread(
 export function mergeItemsById(incoming: readonly Item[], current: readonly Item[]): Item[] {
   if (incoming.length === 0) return current as Item[];
   const byId = new Map<string, Item>();
-  for (const it of current) byId.set(it.id, it);
+  const idBySend = new Map<string, string>();
+  for (const it of current) {
+    byId.set(it.id, it);
+    const identity = userMessageIdentity(it);
+    if (identity !== null) idBySend.set(identity, it.id);
+  }
   let changed = false;
   for (const it of incoming) {
-    const existing = byId.get(it.id);
+    const identity = userMessageIdentity(it);
+    const previousId = identity === null ? undefined : idBySend.get(identity);
+    const existing = byId.get(it.id) ?? (previousId ? byId.get(previousId) : undefined);
     if (existing && itemsAreEqual(existing, it)) {
       continue;
     }
     if (existing !== it) {
+      const replaced = byId.get(it.id);
+      const previousIdentity = replaced ? userMessageIdentity(replaced) : null;
+      if (previousIdentity !== null && previousIdentity !== identity) idBySend.delete(previousIdentity);
+      if (previousId && previousId !== it.id) byId.delete(previousId);
       byId.set(it.id, it);
+      if (identity !== null) idBySend.set(identity, it.id);
       changed = true;
     }
   }
@@ -285,9 +317,12 @@ export function reconcileSnapshotPage(
 
   const next: Item[] = [];
   const keptIds = new Set<string>();
+  const keptSends = new Set<string>();
   for (const item of page) {
     if (liveRemovedIds.has(item.id)) continue;
     keptIds.add(item.id);
+    const identity = userMessageIdentity(item);
+    if (identity !== null) keptSends.add(identity);
     const existing = currentById.get(item.id);
     if (!existing) {
       next.push(item);
@@ -305,6 +340,8 @@ export function reconcileSnapshotPage(
   // live children and the anchor check below is transitive.
   for (const item of current) {
     if (keptIds.has(item.id)) continue;
+    const identity = userMessageIdentity(item);
+    if (identity !== null && keptSends.has(identity)) continue;
     if (!liveTouchedIds.has(item.id)) continue;
     const parentId = item.parentId ?? '';
     if (parentId && !keptIds.has(parentId)) {
@@ -340,247 +377,22 @@ export function reconcileSnapshotPage(
 export function mergeMissingItemsById(incoming: readonly Item[], current: readonly Item[]): Item[] {
   if (incoming.length === 0) return current as Item[];
   const presentIds = new Set<string>();
-  for (const it of current) presentIds.add(it.id);
+  const presentSends = new Set<string>();
+  for (const it of current) {
+    presentIds.add(it.id);
+    const identity = userMessageIdentity(it);
+    if (identity !== null) presentSends.add(identity);
+  }
   const additions: Item[] = [];
   for (const it of incoming) {
-    if (presentIds.has(it.id)) continue;
+    const identity = userMessageIdentity(it);
+    if (presentIds.has(it.id) || (identity !== null && presentSends.has(identity))) continue;
     additions.push(it);
     presentIds.add(it.id);
+    if (identity !== null) presentSends.add(identity);
   }
   if (additions.length === 0) return current as Item[];
   const merged = current.concat(additions);
   merged.sort(compareItemsByTimelinePosition);
   return merged;
-}
-
-export interface ApplyItemUpsertsToWindowOptions {
-  current: readonly Item[];
-  incoming: readonly Item[];
-  itemIndexById: ReadonlyMap<string, number>;
-  currentThreadId: string | null;
-  oldestLoadedCursor?: TimelineCursorLike | null;
-  newestLoadedCursor?: TimelineCursorLike | null;
-  oldestLoadedTurnIndex?: number | null;
-  newestLoadedTurnIndex?: number | null;
-  hasMoreHistory?: boolean;
-  hasMoreNewer: boolean;
-}
-
-export interface ApplyItemUpsertsToWindowResult {
-  items: Item[];
-  appendedItems: readonly Item[];
-  changedItems: readonly Item[];
-  indexesNeedRebuild: boolean;
-  structureChanged: boolean;
-  droppedNewerItems: boolean;
-  /**
-   * Any applied row changed what the offscreen row-UI prune retains
-   * (`utils/rowUiRetention.ts`). Computed here because the merge is the
-   * one place that holds both the previous row and its replacement; the
-   * pane turns it into a revision the prune's no-op bail reads as a
-   * scalar. Structure-independent by construction: a streaming row
-   * settling changes retention without changing structure, and a
-   * regrouping change moves structure without touching retention.
-   */
-  rowUiRetentionChanged: boolean;
-  /**
-   * Ids of REPLACED rows whose activity-run summary fields moved
-   * (`utils/activityRunGrouping.ts`). Same reason as above — the merge is
-   * the one place holding both versions — and replacements only: an
-   * appended row always sets `structureChanged`, which re-projects the
-   * runs and stamps a fresh membership epoch on the node.
-   */
-  summaryFieldsChangedIds: readonly string[];
-  /**
-   * NEW parented rows refused because their anchor is not loadable in
-   * this window — neither already loaded nor landed earlier in the same
-   * batch. Deciding this inside the merge, after the floor/ceiling
-   * filters, is what makes the no-orphan contract airtight: a pre-filter
-   * that vouched for a same-batch anchor could disagree with the filter
-   * that then strips that anchor (below the floor after a prune),
-   * landing the child as an unreachable orphan row. The caller swallows
-   * these (`threadSubagentMemory.recordAdmission`) — SQLite holds the
-   * canonical rows, and hydration renders them once the anchor is back.
-   */
-  rejectedParentedItems: readonly Item[];
-}
-
-/** Shared empty list, so the overwhelmingly common "nothing moved" batch allocates none. */
-const NO_CHANGED_IDS: readonly string[] = Object.freeze([]);
-/** Shared empty list, so batches with no refused parented rows allocate none. */
-const NO_REJECTED_ITEMS: readonly Item[] = Object.freeze([]);
-
-/**
- * Apply streamed/upserted items to the currently loaded timeline window.
- * Existing rows always win the floor guard so corrections to in-window rows
- * are not dropped; new rows below the loaded floor stay in SQLite until the
- * user pages that part of history in.
- */
-export function applyItemUpsertsToWindow({
-  current,
-  incoming,
-  itemIndexById,
-  currentThreadId,
-  oldestLoadedCursor,
-  newestLoadedCursor,
-  oldestLoadedTurnIndex,
-  newestLoadedTurnIndex,
-  hasMoreHistory,
-  hasMoreNewer,
-}: ApplyItemUpsertsToWindowOptions): ApplyItemUpsertsToWindowResult | null {
-  if (incoming.length === 0) return null;
-
-  let next: Item[] | null = null;
-  const appendedIndexById = new Map<string, number>();
-  const appendedItems: Item[] = [];
-  const changedItems: Item[] = [];
-  let changed = false;
-  let needsSort = false;
-  let structureChanged = false;
-  let droppedNewerItems = false;
-  let retentionChanged = false;
-  let summaryFieldsChangedIds: string[] | null = null;
-  let rejectedParentedItems: Item[] | null = null;
-  // MIN_SAFE_INTEGER, not 0: head-healed prompts sit at NEGATIVE item
-  // indexes, so 0 is not the start of a turn — a fallback floor at 0
-  // would misclassify those rows as below the loaded window (mirror of
-  // the ceiling's MAX_SAFE_INTEGER).
-  // A batch can shift its loaded boundary and insert a row into the newly
-  // covered coordinates. Resolve anchors before admission, independently of
-  // event ordering, so that inserted row is not refused by the old bound.
-  const moved = cursorsAfterItemUpserts(
-    oldestLoadedCursor, newestLoadedCursor, current, incoming, currentThreadId,
-  );
-  const floorCursor = moved.oldest
-    ?? (oldestLoadedTurnIndex === null || oldestLoadedTurnIndex === undefined
-      ? null
-      : { turnIndex: oldestLoadedTurnIndex, itemIndex: Number.MIN_SAFE_INTEGER });
-  const ceilingCursor = moved.newest
-    ?? (newestLoadedTurnIndex === null || newestLoadedTurnIndex === undefined
-      ? null
-      : { turnIndex: newestLoadedTurnIndex, itemIndex: Number.MAX_SAFE_INTEGER });
-
-  const workingItems = (): Item[] => {
-    if (next === null) next = current.slice();
-    return next;
-  };
-
-  for (const item of incoming) {
-    if (currentThreadId !== null && item.threadId !== currentThreadId) continue;
-
-    const existingIndex = itemIndexById.get(item.id) ?? appendedIndexById.get(item.id);
-    if (existingIndex !== undefined) {
-      const previous = (next ?? current)[existingIndex];
-      if (!previous) continue;
-      // No-op dedupe: if the backend re-emits an upsert with identical
-      // content, skip the array replace. Otherwise every redundant
-      // upsert produces a new `pane.items` reference, which cascades
-      // through `groupedNodes`, the Virtualizer's `data` prop, and the
-      // mounted row components — observed as a 103 px row oscillation
-      // every ~115 ms in plan-ready threads. See `itemsAreEqual` for
-      // the fields compared.
-      if (itemsAreEqual(previous, item)) continue;
-      workingItems()[existingIndex] = item;
-      changed = true;
-      if (itemTimelineStructureChanged(previous, item)) {
-        structureChanged = true;
-      }
-      if (rowUiRetentionChanged(previous, item)) {
-        retentionChanged = true;
-      }
-      if (activityRunSummaryFieldsChanged(previous, item)) {
-        (summaryFieldsChangedIds ??= []).push(item.id);
-      }
-      changedItems.push(item);
-      if (appendedIndexById.has(item.id)) {
-        const appendedOffset = existingIndex - current.length;
-        appendedItems[appendedOffset] = item;
-      }
-      if (compareItemsByTimelinePosition(previous, item) !== 0) {
-        needsSort = true;
-      }
-      continue;
-    }
-
-    if (
-      floorCursor
-      && compareItemToCursor(item, floorCursor) < 0
-      && (item.turnIndex < floorCursor.turnIndex || hasMoreHistory === true)
-    ) {
-      continue;
-    }
-
-    if (
-      ceilingCursor !== null
-      && hasMoreNewer
-      && compareItemToCursor(item, ceilingCursor) > 0
-    ) {
-      droppedNewerItems = true;
-      continue;
-    }
-
-    // Admission for new subagent children, checked against what actually
-    // landed (appendedIndexById excludes floor/ceiling-refused rows, and
-    // a rejected anchor never enters it, so grandchildren are refused
-    // transitively). Wire order puts a parent's upsert before its
-    // children's, so a same-batch anchor is always decided first.
-    const parentId = item.parentId ?? '';
-    if (
-      parentId
-      && itemIndexById.get(parentId) === undefined
-      && !appendedIndexById.has(parentId)
-    ) {
-      (rejectedParentedItems ??= []).push(item);
-      continue;
-    }
-
-    const source = next ?? current;
-    const previousTail = source.at(-1);
-    if (previousTail && compareItemsByTimelinePosition(previousTail, item) > 0) {
-      needsSort = true;
-    }
-    const target = workingItems();
-    appendedIndexById.set(item.id, target.length);
-    target.push(item);
-    changed = true;
-    structureChanged = true;
-    if (rowUiRetentionChanged(undefined, item)) {
-      retentionChanged = true;
-    }
-    appendedItems.push(item);
-    changedItems.push(item);
-  }
-
-  if (!changed && !droppedNewerItems && rejectedParentedItems === null) {
-    return null;
-  }
-  if (!changed) {
-    return {
-      items: current as Item[],
-      appendedItems,
-      changedItems,
-      indexesNeedRebuild: false,
-      structureChanged: false,
-      droppedNewerItems,
-      rowUiRetentionChanged: false,
-      summaryFieldsChangedIds: NO_CHANGED_IDS,
-      rejectedParentedItems: rejectedParentedItems ?? NO_REJECTED_ITEMS,
-    };
-  }
-  const result = next ?? current.slice();
-
-  if (needsSort) {
-    result.sort(compareItemsByTimelinePosition);
-  }
-  return {
-    items: result,
-    appendedItems,
-    changedItems,
-    indexesNeedRebuild: needsSort,
-    structureChanged,
-    droppedNewerItems,
-    rowUiRetentionChanged: retentionChanged,
-    summaryFieldsChangedIds: summaryFieldsChangedIds ?? NO_CHANGED_IDS,
-    rejectedParentedItems: rejectedParentedItems ?? NO_REJECTED_ITEMS,
-  };
 }

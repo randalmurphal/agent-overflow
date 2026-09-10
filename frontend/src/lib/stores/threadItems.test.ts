@@ -1,8 +1,8 @@
+import { applyItemUpsertsToWindow } from './threadItemUpserts';
 import { describe, expect, it } from 'vitest';
 import { makeItem } from '../../test/helpers/chat';
 import type { Item } from '../types/models';
 import {
-  applyItemUpsertsToWindow,
   reconcileSnapshotPage,
   compareItemsByTimelinePosition,
   cursorIsValid,

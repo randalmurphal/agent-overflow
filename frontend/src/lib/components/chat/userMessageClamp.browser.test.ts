@@ -27,7 +27,7 @@ beforeEach(() => {
 /** No windowed rows to speak of — this suite mounts one message. */
 const NO_ROWS_LOADED = {
   getItemById: () => undefined,
-  loadedPayloadRefs: () => [],
+  loadedItems: () => [],
 };
 
 const SHORT = 'ship it';

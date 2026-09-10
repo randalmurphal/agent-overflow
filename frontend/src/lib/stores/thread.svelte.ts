@@ -54,7 +54,7 @@ import { collectAgentScopeRetainedIds } from './agentScopeView.svelte';
 import type { RevealBoundary } from '../utils/subagentGrouping';
 import type { SubagentFoldAggregate } from '../utils/subagentFold';
 import { itemPayloadRetentionKey } from '../utils/rowUiRetention';
-import type { ApplyItemUpsertsToWindowResult } from './threadItems';
+import type { ApplyItemUpsertsToWindowResult } from './threadItemUpserts';
 import { createLiveTodoState } from './liveTodoState.svelte';
 import { createThreadPendingInteractiveState } from './threadPendingInteractiveState.svelte';
 import { createThreadActivityRuns } from './threadActivityRuns.svelte';
@@ -191,6 +191,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // bodies. Destructured here because these are the pane's own working
   // vocabulary and several are handed to sub-factories by reference.
   const itemWindow = createThreadItemWindow({
+    optimisticItemIds,
     streamingReveal: () => streamingReveal,
     rowUiState: () => rowUiState,
     activityRuns: () => activityRuns,
@@ -287,7 +288,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     getItemById,
     // Read at dispose time, after the caller has already replaced `items`
     // with the surviving window — so this IS the "still loaded" set.
-    loadedPayloadRefs: getItems,
+    loadedItems: getItems,
   });
   // Per-item smoother + reveal-gate machinery lives in
   // threadStreamingReveal.svelte.ts. Item-window commits finalize through
@@ -661,7 +662,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     stampLiveContent,
     armLiveContentAppendSpring,
     optimisticItemIds,
-    confirmOptimisticSend,
     timelineWindow,
     subagentMemory,
     streamingReveal,

@@ -14,6 +14,7 @@
 // aggregates, including when children have been evicted from frontend memory.
 
 import type { Item } from '../types/models';
+import { userMessageIdentity } from './userMessageIdentity';
 import type { SubagentFoldAggregate } from './subagentFold';
 import { parseJsonObject } from './parseJsonObject';
 import {
@@ -753,7 +754,7 @@ export function timelineNodeKey(node: TimelineNode): string {
   const cached = nodeKeyByNode.get(node);
   if (cached !== undefined) return cached;
   let key: string;
-  if (node.kind === 'leaf') key = `l:${node.item.threadId}:${node.item.id}`;
+  if (node.kind === 'leaf') key = userMessageIdentity(node.item) ?? `l:${node.item.threadId}:${node.item.id}`;
   else if (node.kind === 'group') key = `g:${node.parent.threadId}:${node.anchor.id}`;
   else if (node.kind === 'wait_group') key = `wg:${node.parent.threadId}:${node.groupKey}`;
   else if (node.kind === 'read_group') key = `rg:${node.threadId}:${node.groupKey}`;

@@ -23,7 +23,7 @@ import type { Item } from '../types/models';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import { rowUiRetentionChanged } from '../utils/rowUiRetention';
 import { activityRunSummaryFieldsChanged } from '../utils/activityRunGrouping';
-import type { ApplyItemUpsertsToWindowResult } from './threadItems';
+import type { ApplyItemUpsertsToWindowResult } from './threadItemUpserts';
 import type { ThreadStreamingReveal } from './threadStreamingReveal.svelte';
 import type { ThreadRowUiState } from './threadRowUiState.svelte';
 import type { ThreadActivityRuns } from './threadActivityRuns.svelte';
@@ -47,6 +47,7 @@ export interface TimelineCommitOptions {
  * take its commit entry points), and none is read during construction.
  */
 export interface ThreadItemWindowOptions {
+  optimisticItemIds: Set<string>;
   streamingReveal(): ThreadStreamingReveal;
   rowUiState(): ThreadRowUiState;
   activityRuns(): ThreadActivityRuns;
@@ -245,6 +246,9 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
       const item = nextItems[index];
       itemIndexById.set(item.id, index);
     }
+    for (const id of options.optimisticItemIds) {
+      if (!itemIndexById.has(id)) options.optimisticItemIds.delete(id);
+    }
   }
 
   function disposeDroppedItemState(
@@ -356,8 +360,8 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
       // next load of its region decorates from SQLite. Every wholesale
       // window replacement (prune, reconcile, revert, cache install,
       // eviction) flows through here, so one sweep after the index
-      // rebuild keeps the registry consistent everywhere. The upsert
-      // fast path bypasses this function but never drops existing rows.
+      // rebuild keeps the registry consistent everywhere. Streamed upserts
+      // can replace provisional user records but cannot remove fold anchors.
       // Eviction callers record their folds BEFORE replacing, with the
       // anchors still loaded, so those folds are retained.
       try {
@@ -485,16 +489,7 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
     return dropped;
   }
 
-  /**
-   * The upsert path's commit chokepoint, and the reason
-   * `threadItemStreamApply.ts` does not write `items` itself: the merge
-   * in `applyItemUpsertsToWindow` never DROPS a row, so unlike
-   * `commitTimelineItems` there is nothing to dispose and no fold to
-   * retain — but the same three revisions still have to move, and they
-   * move from what the merge already computed rather than from a fresh
-   * walk. Index maintenance rides along because the result says which
-   * of the two shapes it is (full rebuild vs. tail-append patch).
-   */
+  /** Commit the merge, including provisional identities replaced by confirmation. */
   function commitUpsertResult(
     next: ApplyItemUpsertsToWindowResult,
     afterCommit: (committed: ApplyItemUpsertsToWindowResult) => void,
@@ -514,9 +509,14 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
     if (errors.length > 0) {
       throw new AggregateError(errors, 'timeline item upsert reconciliation failed');
     }
+    const previousItems = items;
     items = next.items;
     try {
-      options.switchLoad().noteItemMutations(next.changedItems);
+      if (next.replacedItems.length > 0) {
+        options.switchLoad().noteItemWindowReplacement(previousItems, items);
+      } else {
+        options.switchLoad().noteItemMutations(next.changedItems);
+      }
     } catch (error) {
       errors.push(error);
     }
@@ -535,11 +535,23 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
     } catch (error) {
       errors.push(error);
     }
-    // The merge never drops a row, so there is nothing to un-box;
-    // `changedItems` carries the appended rows too.
+    for (const item of next.replacedItems) {
+      try {
+        itemBoxes.drop(item.id);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
     for (const item of next.changedItems) {
       try {
         itemBoxes.set(item.id, item);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (next.replacedItems.length > 0) {
+      try {
+        disposeDroppedItemState(next.replacedItems);
       } catch (error) {
         errors.push(error);
       }

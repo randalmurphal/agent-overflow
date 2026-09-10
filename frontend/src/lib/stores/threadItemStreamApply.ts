@@ -1,14 +1,10 @@
-import { parseUserMessageMeta } from '../utils/userMessageMeta';
 import type { Item, Thread } from '../types/models';
 import type {
   ItemDeltaEvent,
   ItemMetaEvent,
   ItemPatchEvent,
 } from '../types/events';
-import {
-  type ApplyItemUpsertsToWindowResult,
-  applyItemUpsertsToWindow,
-} from './threadItems';
+import { type ApplyItemUpsertsToWindowResult, applyItemUpsertsToWindow } from './threadItemUpserts';
 import type { ThreadTimelineWindow } from './threadTimelineWindow.svelte';
 import type { ThreadSubagentMemory } from './threadSubagentMemory';
 import type { ThreadStreamingReveal } from './threadStreamingReveal.svelte';
@@ -48,7 +44,6 @@ export interface ThreadItemStreamApplyOptions {
   armLiveContentAppendSpring(): void;
   /** The pane's optimistic-row ledger — discharged by a wire echo. */
   optimisticItemIds: Set<string>;
-  confirmOptimisticSend(threadId: string, sendId: string | undefined, canonicalItemId?: string): void;
   timelineWindow: ThreadTimelineWindow;
   subagentMemory: ThreadSubagentMemory;
   streamingReveal: ThreadStreamingReveal;
@@ -150,6 +145,7 @@ export function createThreadItemStreamApply(
 
   function upsertItemsBatch(
     incoming: Item[],
+    optimisticItemIds?: ReadonlySet<string>,
   ): ApplyItemUpsertsToWindowResult | null {
     if (incoming.length === 0) return null;
 
@@ -171,6 +167,7 @@ export function createThreadItemStreamApply(
         current: previousItems,
         incoming,
         itemIndexById,
+        optimisticItemIds,
         currentThreadId: thread?.id ?? null,
         oldestLoadedCursor: timelineWindow.oldestLoadedCursor,
         newestLoadedCursor: timelineWindow.newestLoadedCursor,
@@ -211,16 +208,7 @@ export function createThreadItemStreamApply(
   function applyProviderItemUpserts(
     incoming: Item[],
   ): ApplyItemUpsertsToWindowResult | null {
-    if (options.optimisticItemIds.size > 0) {
-      for (const item of incoming) {
-        if (item.kind !== 'user_text') continue;
-        const sendId = parseUserMessageMeta(item.meta).sendId;
-        if (typeof sendId === 'string') {
-          options.confirmOptimisticSend(item.threadId, sendId, item.id);
-        }
-      }
-    }
-    const applied = upsertItemsBatch(incoming);
+    const applied = upsertItemsBatch(incoming, options.optimisticItemIds);
     // Discharging an optimistic marker belongs HERE, not in
     // `upsertItemsBatch`: the marker means "this row exists only in
     // this pane's hope", and only the wire can disprove that. Doing it
@@ -230,9 +218,11 @@ export function createThreadItemStreamApply(
     // false — the failed-send rollback never fired, and the
     // cache/replica filters that exist to keep phantoms out of the
     // durable tiers had nothing to filter.
-    if (applied && options.optimisticItemIds.size > 0) {
-      for (const changed of applied.changedItems) {
-        options.optimisticItemIds.delete(changed.id);
+    if (options.optimisticItemIds.size > 0) {
+      for (const item of incoming) {
+        if (item.threadId === options.getThread()?.id && itemIndexById.has(item.id)) {
+          options.optimisticItemIds.delete(item.id);
+        }
       }
     }
     // A wire append to the loaded tail arms the structural-append

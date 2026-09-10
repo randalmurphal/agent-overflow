@@ -66,7 +66,8 @@ import type { PayloadExpansionHandle } from '../utils/payloadExpansion.svelte';
 import type { SubagentFoldAggregate } from '../utils/subagentFold';
 import type { RevealBoundary } from '../utils/subagentGrouping';
 import type { ThreadActivityRuns } from './threadActivityRuns.svelte';
-import type { ApplyItemUpsertsToWindowResult, TimelineCursorLike } from './threadItems';
+import type { ApplyItemUpsertsToWindowResult } from './threadItemUpserts';
+import type { TimelineCursorLike } from './threadItems';
 import type {
   LoadOlderResult,
   PaneErrorKind,

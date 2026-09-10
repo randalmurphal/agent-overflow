@@ -940,7 +940,10 @@ export function createThreadSwitchLoad(
         disposeDropped: true,
         afterCommit: () => {
           runWindowCommitEffects('synced thread window metadata', [
-            () => options.timelineWindow.applyWindowMetadataFromPaged(page),
+            () => {
+              for (const item of incoming) options.optimisticItemIds.delete(item.id);
+              options.timelineWindow.applyWindowMetadataFromPaged(page);
+            },
             () => {
               // A page over an existing attested paint is a reconcile, not a
               // first mount. An empty paint or a new lineage re-arms before
@@ -1512,7 +1515,10 @@ export function createThreadSwitchLoad(
         disposeDropped: true,
         afterCommit: () => {
           runWindowCommitEffects('refreshed thread window metadata', [
-            () => options.timelineWindow.applyWindowMetadataFromPaged(paged),
+            () => {
+              for (const item of snapshot) options.optimisticItemIds.delete(item.id);
+              options.timelineWindow.applyWindowMetadataFromPaged(paged);
+            },
             () => {
               if (changedDuringFetch) {
                 options.timelineWindow.refreshCursorsAfterUpserts(next.items, true, snapshot);

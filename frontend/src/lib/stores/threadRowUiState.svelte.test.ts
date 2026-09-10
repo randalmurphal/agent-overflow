@@ -16,13 +16,13 @@ import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app
 
 /**
  * "Nothing is loaded" stated explicitly, which is what most of these cases
- * want: every drop releases the payload it touched. `loadedPayloadRefs` is
+ * want: every drop releases the payload it touched. `loadedItems` is
  * REQUIRED precisely so this cannot be expressed by omission — the cases
  * that exercise the surviving-rows leg pass their own list.
  */
 const NO_ROWS_LOADED = {
   getItemById: () => undefined,
-  loadedPayloadRefs: () => [],
+  loadedItems: () => [],
 };
 
 // Diff-card overrides are read against the live collapseDiffPreviews default
@@ -44,7 +44,7 @@ describe('createThreadRowUiState', () => {
   it('keeps item-keyed expansion handles stable while reading the latest item reference', () => {
     const items = new Map<string, Item>();
     const rowUiState = createThreadRowUiState({
-      loadedPayloadRefs: () => [],
+      loadedItems: () => [],
       getItemById(itemId: string): Item | undefined {
         return items.get(itemId);
       },
@@ -71,7 +71,7 @@ describe('createThreadRowUiState', () => {
     try {
       const items = new Map<string, Item>();
       const rowUiState = createThreadRowUiState({
-        loadedPayloadRefs: () => [],
+        loadedItems: () => [],
         getItemById(itemId: string): Item | undefined {
           return items.get(itemId);
         },
@@ -107,7 +107,7 @@ describe('createThreadRowUiState', () => {
   it('lets item-keyed expansion handles use a payload-specific version', () => {
     const items = new Map<string, Item>();
     const rowUiState = createThreadRowUiState({
-      loadedPayloadRefs: () => [],
+      loadedItems: () => [],
       getItemById(itemId: string): Item | undefined {
         return items.get(itemId);
       },
@@ -193,7 +193,7 @@ describe('createThreadRowUiState', () => {
     items.set(item.id, item);
     const getPayloadData = setBindingMock('GetPayloadData', async () => ({ data: 'seed' }));
     const rowUiState = createThreadRowUiState({
-      loadedPayloadRefs: () => [],
+      loadedItems: () => [],
       getItemById(itemId: string): Item | undefined {
         return items.get(itemId);
       },
@@ -240,7 +240,7 @@ describe('createThreadRowUiState', () => {
     });
     items.set(item.id, item);
     const rowUiState = createThreadRowUiState({
-      loadedPayloadRefs: () => [],
+      loadedItems: () => [],
       getItemById(itemId: string): Item | undefined {
         return items.get(itemId);
       },
@@ -303,7 +303,7 @@ describe('createThreadRowUiState', () => {
   it('does not collide item-keyed expansion handles when ids contain key delimiters', () => {
     const items = new Map<string, Item>();
     const rowUiState = createThreadRowUiState({
-      loadedPayloadRefs: () => [],
+      loadedItems: () => [],
       getItemById(itemId: string): Item | undefined {
         return items.get(itemId);
       },
@@ -336,7 +336,7 @@ describe('createThreadRowUiState', () => {
     // regression would land on first.
     const items = new Map<string, Item>();
     const rowUiState = createThreadRowUiState({
-      loadedPayloadRefs: () => [],
+      loadedItems: () => [],
       getItemById: (itemId) => items.get(itemId),
     });
     const ids = ['a"b', 'a\\b', 'a,b', '["a"]', 'a]b['];
@@ -356,7 +356,7 @@ describe('createThreadRowUiState', () => {
   it('does not reuse item-keyed expansion handles across threads with the same item id', () => {
     const items = new Map<string, Item>();
     const rowUiState = createThreadRowUiState({
-      loadedPayloadRefs: () => [],
+      loadedItems: () => [],
       getItemById(itemId: string): Item | undefined {
         return items.get(itemId);
       },
@@ -554,7 +554,7 @@ describe('createThreadRowUiState', () => {
       threadId: 'thread-a',
     });
     const rowUiState = createThreadRowUiState({
-      loadedPayloadRefs: () => [],
+      loadedItems: () => [],
       getItemById(itemId: string): Item | undefined {
         return itemId === item.id ? item : undefined;
       },
@@ -612,7 +612,7 @@ describe('createThreadRowUiState', () => {
   it('releases payload state only once the last loaded row stops referencing it', () => {
     // Two rows share one payload — a tool_call and its completion. The
     // first drop must keep the payload's UI state alive for the survivor;
-    // the second must release it. `loadedPayloadRefs` is read once per
+    // the second must release it. `loadedItems` is read once per
     // batch, not once per dropped row: a prune drops hundreds of rows and
     // the per-row form was a full window scan each time.
     const rowA = makeItem({ id: 'tool:5:0', kind: 'tool_call', payloadId: 'payload-a', threadId: 'thread-a' });
@@ -620,10 +620,10 @@ describe('createThreadRowUiState', () => {
     const noise = Array.from({ length: 8 }, (_, i) =>
       makeItem({ id: `text:${i}`, threadId: 'thread-a' }));
     let loaded: Item[] = [rowA, rowB, ...noise];
-    const loadedPayloadRefs = vi.fn(() => loaded);
+    const loadedItems = vi.fn(() => loaded);
     const rowUiState = createThreadRowUiState({
       getItemById: (itemId) => loaded.find((item) => item.id === itemId),
-      loadedPayloadRefs,
+      loadedItems,
     });
 
     rowUiState.expansionStateForPayload('payload-a', 'thread-a');
@@ -631,25 +631,25 @@ describe('createThreadRowUiState', () => {
 
     loaded = [rowB, ...noise];
     rowUiState.disposeItems([rowA, ...noise.slice(0, 3)]);
-    expect(loadedPayloadRefs).toHaveBeenCalledTimes(1);
+    expect(loadedItems).toHaveBeenCalledTimes(1);
     expect(rowUiState.debugStats().payloadExpansionStates).toBe(1);
 
     loaded = [];
     rowUiState.disposeItems([rowB]);
-    expect(loadedPayloadRefs).toHaveBeenCalledTimes(2);
+    expect(loadedItems).toHaveBeenCalledTimes(2);
     expect(rowUiState.debugStats().payloadExpansionStates).toBe(0);
   });
 
   it('does not consult the loaded window when no dropped row carries a payload', () => {
-    const loadedPayloadRefs = vi.fn(() => [] as Item[]);
+    const loadedItems = vi.fn(() => [] as Item[]);
     const rowUiState = createThreadRowUiState({
       getItemById: () => undefined,
-      loadedPayloadRefs,
+      loadedItems,
     });
 
     rowUiState.disposeItems([makeItem({ id: 'text:0', threadId: 'thread-a' })]);
 
-    expect(loadedPayloadRefs).not.toHaveBeenCalled();
+    expect(loadedItems).not.toHaveBeenCalled();
   });
 
   it('cancels in-flight payload loads when pruning an expansion handle', async () => {
@@ -669,7 +669,7 @@ describe('createThreadRowUiState', () => {
       threadId: 'thread-a',
     });
     const rowUiState = createThreadRowUiState({
-      loadedPayloadRefs: () => [],
+      loadedItems: () => [],
       getItemById(itemId: string): Item | undefined {
         return itemId === item.id ? item : undefined;
       },
@@ -713,7 +713,7 @@ describe('createThreadRowUiState', () => {
         threadId: 'thread-a',
       });
       const rowUiState = createThreadRowUiState({
-        loadedPayloadRefs: () => [],
+        loadedItems: () => [],
         getItemById(itemId: string): Item | undefined {
           return itemId === item.id ? item : undefined;
         },
@@ -761,7 +761,7 @@ describe('createThreadRowUiState', () => {
       updatedAt: 1,
     });
     const rowUiState = createThreadRowUiState({
-      loadedPayloadRefs: () => [],
+      loadedItems: () => [],
       getItemById(itemId: string): Item | undefined {
         return itemId === item.id ? item : undefined;
       },
@@ -817,7 +817,7 @@ describe('createThreadRowUiState', () => {
     items.set(oldItem.id, oldItem);
     items.set(retainedItem.id, retainedItem);
     const rowUiState = createThreadRowUiState({
-      loadedPayloadRefs: () => [],
+      loadedItems: () => [],
       getItemById(itemId: string): Item | undefined {
         return items.get(itemId);
       },
@@ -924,7 +924,7 @@ describe('createThreadRowUiState', () => {
       threadId: 'thread-a',
     });
     const rowUiState = createThreadRowUiState({
-      loadedPayloadRefs: () => [],
+      loadedItems: () => [],
       getItemById(itemId: string): Item | undefined {
         return itemId === item.id ? item : undefined;
       },
@@ -976,7 +976,7 @@ describe('createThreadRowUiState', () => {
 
     it('drops the expansion when its item is disposed', () => {
       const item = makeItem({ id: 'user:1', kind: 'user_text', threadId: 'thread-a' });
-      const rowUiState = createThreadRowUiState({ getItemById: () => item, loadedPayloadRefs: () => [] });
+      const rowUiState = createThreadRowUiState({ getItemById: () => item, loadedItems: () => [] });
 
       rowUiState.setUserMessageExpanded(item.id, true);
       rowUiState.disposeItems([item]);
@@ -989,7 +989,7 @@ describe('createThreadRowUiState', () => {
       expect(rowUiState.expansionSignature()).toBe('');
       rowUiState.setUserMessageExpanded('user:2', true);
       rowUiState.setUserMessageExpanded('user:1', true);
-      expect(rowUiState.expansionSignature()).toContain('u:user:1,user:2');
+      expect(rowUiState.expansionSignature()).toContain('u:["item:user:1","item:user:2"]');
       rowUiState.setUserMessageExpanded('user:1', false);
       rowUiState.setUserMessageExpanded('user:2', false);
       expect(rowUiState.expansionSignature()).toBe('');
@@ -1147,7 +1147,7 @@ describe('createThreadRowUiState', () => {
       });
       items.set(item.id, item);
       const rowUiState = createThreadRowUiState({
-        loadedPayloadRefs: () => [],
+        loadedItems: () => [],
         getItemById: (itemId) => items.get(itemId),
       });
 
@@ -1182,7 +1182,7 @@ describe('createThreadRowUiState', () => {
       });
       items.set(item.id, item);
       const rowUiState = createThreadRowUiState({
-        loadedPayloadRefs: () => [],
+        loadedItems: () => [],
         getItemById: (itemId) => items.get(itemId),
       });
 
@@ -1215,7 +1215,7 @@ describe('createThreadRowUiState', () => {
       });
       items.set(item.id, item);
       const rowUiState = createThreadRowUiState({
-        loadedPayloadRefs: () => [],
+        loadedItems: () => [],
         getItemById: (itemId) => items.get(itemId),
       });
 
@@ -1251,7 +1251,7 @@ describe('createThreadRowUiState', () => {
       });
       items.set(item.id, item);
       const rowUiState = createThreadRowUiState({
-        loadedPayloadRefs: () => [],
+        loadedItems: () => [],
         getItemById: (itemId) => items.get(itemId),
       });
 
