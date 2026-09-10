@@ -256,7 +256,10 @@
   let kindLabel = $derived(launchInfo?.kind ?? 'agent');
   let agentTitle = $derived(launchInfo?.name ?? (parentToolName || 'Agent'));
   let modelLabel = $derived.by(() => {
-    if (launchInfo?.model) return displayModelLabel(launchInfo.provider, launchInfo.model);
+    if (launchInfo?.model) {
+      const model = displayModelLabel(launchInfo.provider, launchInfo.model);
+      return launchInfo.reasoningEffort ? `${model} ${launchInfo.reasoningEffort}` : model;
+    }
     const named = deriveClaudeSubagentModelLabel(inputObject, parentMeta, parentToolName);
     if (named) return named;
     if (launchInfo?.provider !== 'claude') return '';
@@ -265,7 +268,7 @@
   });
   // The one-line task beside the title. Codex spawns read their OWN
   // shape (V1's plaintext prompt; V2 adds nothing, because its prompt is
-  // encrypted and the label already is the task name it falls back to);
+  // encrypted and the label already brackets the task name);
   // a resume carrier reads the ORIGINAL agent's description off its
   // stamped meta (its SendMessage input only names the recipient id);
   // everything else reads the Claude input block.

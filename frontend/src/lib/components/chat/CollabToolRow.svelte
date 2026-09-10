@@ -109,8 +109,11 @@
     if (!launch || !isCodexSubagentLaunchItem(launch)) return null;
     return codexSubagentLaunchInfo(launch);
   });
+  // The spawn row carries the child's full identity (nickname and task
+  // name) once Codex reports it; a message row's own receiverAgents
+  // entry has at most the nickname.
   function receiverLabel(id: string): string {
-    return labelByReceiver.get(id) ?? codexSubagentReceiverLabels.get(id)
+    return codexSubagentReceiverLabels.get(id) ?? labelByReceiver.get(id)
       ?? (receivers.length === 1
         ? agentPathLabel(stringValue(input, 'target') || stringValue(input, 'agentPath')) || 'Agent'
         : 'Agent');

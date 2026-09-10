@@ -27,11 +27,18 @@ A detached launch row (a Codex spawn, a Claude background agent or background
 tool) records the launch event and provides an open-pane button. After that
 event is recorded, later activity must never change its fields, metadata,
 status, timestamps, progress, preview or transcript contents. It is not the
-agent's runtime record. Two exceptions are the launch's own state, not the
+agent's runtime record. Three exceptions are the launch's own state, not the
 execution's: a running awaited launch moved to the background mid-flight
 takes that transition once (`is_background`, `meta.subagentBackgroundedAt`,
-the bound task id), and the store maintains its `live_background_active`
-liveness index by trigger. Codex spawns never take the first.
+the bound task id); the store maintains its `live_background_active`
+liveness index by trigger; and a Codex spawn row takes the child's identity
+(`newAgentNickname`, `newAgentRole`, effective `model` and
+`reasoningEffort`, `agentPath`) when Codex reports it after the spawn
+activity, because the V2 spawn item carries only the task path and the
+profile arrives on the child's `thread/started` and a metadata-only
+`thread/resume` read (`internal/triage/codex_spawn_identity.go`). Codex
+spawns never take the first, and the runtime state riding on the same
+update stays on the live projection.
 
 The background tray represents the current execution. When that execution
 finishes, its background entry disappears and a new completion item is added

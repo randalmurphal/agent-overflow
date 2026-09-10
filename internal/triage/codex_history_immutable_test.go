@@ -55,7 +55,37 @@ func TestCodexSpawnAndCompletedExecutionsAreImmutable(t *testing.T) {
 		t.Fatalf("first completion missing: %v", err)
 	}
 	status("B", "running")
-	handle(provider.ProviderEvent{Kind: provider.EventToolStart, ItemID: "spawn", ItemType: "collab_agent", Meta: json.RawMessage(`{"meta_update_only":true,"toolName":"collab_agent","input":{"tool":"spawn_agent","newAgentNickname":"Later name"}}`)})
+	// The child's identity is the one late write a settled spawn accepts;
+	// the runtime state riding on the same update stays off the row.
+	if err := r.Handle(provider.ProviderEvent{Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "spawn", ItemType: "collab_agent", Timestamp: time.Now(), Meta: json.RawMessage(`{"meta_update_only":true,"toolName":"collab_agent","live_background_active":true,"input":{"tool":"spawn_agent","newAgentNickname":"Later name","model":"gpt-5.6-sol"}}`)}); err != nil {
+		t.Fatal(err)
+	}
+	identified, _, err := st.GetThreadItem("t1", "spawn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var identityMeta struct {
+		Active *bool `json:"live_background_active"`
+		Input  struct {
+			Nickname string `json:"newAgentNickname"`
+			Model    string `json:"model"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal([]byte(identified.Meta), &identityMeta); err != nil {
+		t.Fatal(err)
+	}
+	if identityMeta.Input.Nickname != "Later name" || identityMeta.Input.Model != "gpt-5.6-sol" {
+		t.Fatalf("identity did not land on spawn: %s", identified.Meta)
+	}
+	if identityMeta.Active != nil && *identityMeta.Active {
+		t.Fatalf("runtime state landed on spawn: %s", identified.Meta)
+	}
+	expected := spawn
+	expected.Meta = identified.Meta
+	if !reflect.DeepEqual(expected, identified) {
+		t.Fatalf("identity write changed more than meta\nbefore: %+v\nafter: %+v", spawn, identified)
+	}
+	spawn = identified
 	status("A", "completed")
 	if len(r.ListLiveCodexAgentTasks("t1")) != 1 {
 		t.Fatal("stale completion stopped current execution")

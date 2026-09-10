@@ -1486,18 +1486,21 @@ func TestCodexSpawnLabelMetaUpdatePreservesFullReceiverList(t *testing.T) {
 			ReasoningEffort   string   `json:"reasoningEffort"`
 		} `json:"input"`
 	}
-	if err := json.Unmarshal([]byte(router.codexAgentRuntimeOrLaunch(item).Meta), &persistedMeta); err != nil {
-		t.Fatalf("unmarshal persisted meta: %v", err)
-	}
-	want := []string{"child-1", "child-2"}
-	if !reflect.DeepEqual(persistedMeta.Input.ReceiverThreadIDs, want) {
-		t.Fatalf("receiverThreadIds = %+v, want %+v", persistedMeta.Input.ReceiverThreadIDs, want)
-	}
-	if persistedMeta.Input.NewAgentNickname != "Hypatia" || persistedMeta.Input.NewAgentRole != "default" {
-		t.Fatalf("agent label = %q/%q, want Hypatia/default", persistedMeta.Input.NewAgentNickname, persistedMeta.Input.NewAgentRole)
-	}
-	if persistedMeta.Input.Model != "gpt-5.6-luna" || persistedMeta.Input.ReasoningEffort != "low" {
-		t.Fatalf("effective profile = %q/%q, want gpt-5.6-luna/low", persistedMeta.Input.Model, persistedMeta.Input.ReasoningEffort)
+	// The identity lands on the persisted row and on the live projection.
+	for name, meta := range map[string]string{"persisted": item.Meta, "runtime": router.codexAgentRuntimeOrLaunch(item).Meta} {
+		if err := json.Unmarshal([]byte(meta), &persistedMeta); err != nil {
+			t.Fatalf("unmarshal %s meta: %v", name, err)
+		}
+		want := []string{"child-1", "child-2"}
+		if !reflect.DeepEqual(persistedMeta.Input.ReceiverThreadIDs, want) {
+			t.Fatalf("%s receiverThreadIds = %+v, want %+v", name, persistedMeta.Input.ReceiverThreadIDs, want)
+		}
+		if persistedMeta.Input.NewAgentNickname != "Hypatia" || persistedMeta.Input.NewAgentRole != "default" {
+			t.Fatalf("%s agent label = %q/%q, want Hypatia/default", name, persistedMeta.Input.NewAgentNickname, persistedMeta.Input.NewAgentRole)
+		}
+		if persistedMeta.Input.Model != "gpt-5.6-luna" || persistedMeta.Input.ReasoningEffort != "low" {
+			t.Fatalf("%s effective profile = %q/%q, want gpt-5.6-luna/low", name, persistedMeta.Input.Model, persistedMeta.Input.ReasoningEffort)
+		}
 	}
 }
 

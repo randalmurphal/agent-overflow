@@ -62,7 +62,15 @@ interface ParsedCodexSubagentInput {
 }
 
 export interface CodexSubagentLaunchInfo extends ParsedCodexSubagentInput {
+  /**
+   * `Heisenberg [migration_bridge]`: the Codex-generated nickname, then
+   * the parent-chosen task name (the agent path's tail) in brackets.
+   * Either half alone when the other is missing. A V1 spawn has no task
+   * name and brackets its role instead.
+   */
   agentLabel: string;
+  /** The task name alone (`migration_bridge`); empty when Codex sent none. */
+  taskLabel: string;
   modelAffix: string;
   title: string;
 }
@@ -118,10 +126,10 @@ export function agentPathLabel(agentPath: string): string {
 }
 
 /**
- * `name [role]` — but only when the two actually differ. Codex spawns are
- * routinely nicknamed after their role, and "reviewer [reviewer]" is noise
- * that also costs the row its truncation budget. Matched case-insensitively:
- * the nickname is free-form user text, the role is an enum-ish slug.
+ * `name [qualifier]` — but only when the two actually differ. The
+ * qualifier is the V2 task name or the V1 role; "reviewer [reviewer]" is
+ * noise that also costs the row its truncation budget. Matched
+ * case-insensitively: the nickname is free-form text, the qualifier a slug.
  */
 export function codexSubagentDisplayLabel(label: string, role: string, fallback: string): string {
   const base = label.trim() || fallback.trim() || 'agent';
@@ -165,9 +173,11 @@ export function codexSubagentLaunchInfo(item: Item): CodexSubagentLaunchInfo {
         ? `${parsed.receiverThreadIds.length} agents`
         : 'agent'
   );
-  const identityLabel = parsed.agentNickname.trim() || fallbackLabel;
-  const roleLabel = isV2Activity
-    ? identityLabel
+  const taskLabel = agentPathLabel(parsed.agentPath);
+  // V2 brackets the task name; its role rides in the affix. V1 has no
+  // task name and brackets the role.
+  const agentLabel = isV2Activity
+    ? codexSubagentDisplayLabel(parsed.agentNickname, taskLabel, fallbackLabel)
     : codexSubagentDisplayLabel(parsed.agentNickname, parsed.agentRole, fallbackLabel);
   const modelAffix = isV2Activity
     ? codexAgentMetadataAffix(parsed.agentRole, parsed.model, parsed.reasoningEffort)
@@ -176,9 +186,10 @@ export function codexSubagentLaunchInfo(item: Item): CodexSubagentLaunchInfo {
     ...parsed,
     prompt: isV2Activity ? '' : parsed.prompt,
     agentRole: isV2Activity ? parsed.agentRole || 'default' : parsed.agentRole,
-    agentLabel: roleLabel,
+    agentLabel,
+    taskLabel,
     modelAffix,
-    title: failedWithoutReceiver ? 'Agent spawn failed' : `Spawned ${roleLabel}`,
+    title: failedWithoutReceiver ? 'Agent spawn failed' : `Spawned ${agentLabel}`,
   };
 }
 
@@ -221,6 +232,8 @@ export interface SubagentLaunchInfo {
   name: string;
   /** Effective model when the provider reports the child-specific choice. */
   model?: string;
+  /** Codex's effective reasoning effort, read with the model. */
+  reasoningEffort?: string;
   /** Claude's `subagent_type` when the launch input carried one. */
   agentType?: string;
 }
@@ -517,6 +530,7 @@ export function subagentLaunchInfo(
       background: true,
       name: codex.agentLabel,
       ...(codex.model ? { model: codex.model } : {}),
+      ...(codex.reasoningEffort ? { reasoningEffort: codex.reasoningEffort } : {}),
       ...(agentType ? { agentType } : {}),
     };
   }
@@ -592,14 +606,13 @@ export function completionAnswerPreview(
  * MultiAgentV2 has nothing to add and returns '': the model service
  * encrypts `spawn_agent.message` and the child's NEW_TASK payload alike
  * (docs/references/codex-wire.md), so the model-chosen task name is the
- * only plaintext statement of what the agent was asked to do — and the
- * card title and the pane breadcrumb ALREADY show it, because a V2 spawn
- * carries no nickname and `agentLabel` falls back to the agent path's own
- * tail. Repeating it would render "audit_internal_tail -
- * audit_internal_tail" and spend the row's truncation budget on nothing.
+ * only plaintext statement of what the agent was asked to do, and
+ * `agentLabel` already carries it in brackets. Repeating it would spend
+ * the row's truncation budget on nothing.
  */
 export function codexSubagentTaskDescription(info: CodexSubagentLaunchInfo): string {
-  const text = info.prompt || agentPathLabel(info.agentPath);
-  if (!text || text.toLowerCase() === info.agentLabel.trim().toLowerCase()) return '';
+  const text = info.prompt || info.taskLabel;
+  const shown = text.toLowerCase();
+  if (!text || shown === info.agentLabel.trim().toLowerCase() || shown === info.taskLabel.toLowerCase()) return '';
   return text.length > 80 ? `${text.slice(0, 80)}\u2026` : text;
 }

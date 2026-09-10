@@ -4,6 +4,8 @@ import {
   agentScopeRootId,
   claudeResumeCarrierIdentity,
   claudeResumeTranscriptRootId,
+  codexSubagentLaunchInfo,
+  codexSubagentTaskDescription,
   completionAnswerPreview,
   isPotentialSubagentLaunch,
   subagentLaunchContextFrom,
@@ -422,6 +424,42 @@ describe('subagentLaunchInfo — Codex spawn_agent', () => {
         NO_CHILDREN,
       ),
     ).toBeNull();
+  });
+
+  it('brackets the V2 task name after the nickname and carries the effective profile', () => {
+    const v2 = (input: Record<string, unknown>) =>
+      mkItem({
+        id: 'spawn-v2',
+        toolName: 'collab_agent',
+        meta: meta({
+          toolName: 'collab_agent',
+          input: { tool: 'spawn_agent', activityKind: 'started', taskName: '/root/migration_bridge', receiverThreadIds: ['child'], ...input },
+        }),
+      });
+
+    // Before the child's identity lands, the task name is the label.
+    const spawnOnly = codexSubagentLaunchInfo(v2({}));
+    expect(spawnOnly.agentLabel).toBe('migration_bridge');
+    expect(spawnOnly.taskLabel).toBe('migration_bridge');
+    expect(spawnOnly.title).toBe('Spawned migration_bridge');
+    expect(spawnOnly.modelAffix).toBe('default');
+    expect(codexSubagentTaskDescription(spawnOnly)).toBe('');
+
+    const identified = v2({ newAgentNickname: 'Heisenberg', newAgentRole: 'default', model: 'gpt-5.6-sol', reasoningEffort: 'high' });
+    const info = codexSubagentLaunchInfo(identified);
+    expect(info.agentLabel).toBe('Heisenberg [migration_bridge]');
+    expect(info.title).toBe('Spawned Heisenberg [migration_bridge]');
+    expect(info.modelAffix).toBe('default - GPT 5.6 Sol - high');
+    expect(codexSubagentTaskDescription(info)).toBe('');
+    expect(subagentLaunchInfo(identified, NO_CHILDREN)).toEqual({
+      kind: 'agent',
+      provider: 'codex',
+      background: true,
+      name: 'Heisenberg [migration_bridge]',
+      model: 'gpt-5.6-sol',
+      reasoningEffort: 'high',
+      agentType: 'default',
+    });
   });
 });
 

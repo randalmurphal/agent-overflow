@@ -6,10 +6,11 @@ bounded memory and simple code that is easy to maintain.
 
 ## Working rules
 
-- Completed chat history is immutable. A Codex spawn row records only the
-  spawn event and opens the agent pane; never use it as the agent's mutable
-  runtime record. Later messages, signals, executions and completions get
-  separate events at their own timeline positions. See the
+- Completed chat history is immutable. A Codex spawn row records the spawn
+  event plus the child's identity (nickname, role, effective model, effort)
+  when Codex reports it later, and opens the agent pane; never use it as the
+  agent's mutable runtime record. Later messages, signals, executions and
+  completions get separate events at their own timeline positions. See the
   [agent history contract](docs/specs/agent-visibility.md#immutable-agent-history).
 - Fix the cause in the code that owns it. Check sibling paths and callers
   when changing a shared contract. Validate inside the API so correctness

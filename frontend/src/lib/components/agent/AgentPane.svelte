@@ -123,8 +123,16 @@
   // Nested trails keep the full ancestry, root included, because there
   // the hops are real navigation. `crumbOffset` maps a rendered index
   // back to the trail index `popTo` expects.
+  // The stored label is what the row said when the pane opened. A Codex
+  // child's nickname and profile land on its spawn row after the spawn,
+  // so a loaded Codex launch supplies its live label.
   let visibleBreadcrumb = $derived.by(() => {
-    const trail = agent?.breadcrumb ?? [];
+    void ctx.timelineRevision;
+    const trail = (agent?.breadcrumb ?? []).map((entry) => {
+      const row = entry.itemId ? ctx.getItemById(entry.itemId) : undefined;
+      if (!row || !isCodexSubagentLaunchItem(row)) return entry;
+      return { ...entry, label: codexSubagentLaunchInfo(row).agentLabel };
+    });
     return trail.length === 2 ? trail.slice(1) : trail;
   });
   let crumbOffset = $derived((agent?.breadcrumb.length ?? 0) === 2 ? 1 : 0);

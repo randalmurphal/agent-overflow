@@ -552,6 +552,38 @@ describe('<AgentPane>', () => {
     expect(queryByTestId('agent-pane-description')).toBeNull();
   });
 
+  it('relabels the crumb and model chip when the Codex child identity lands on the spawn row', async () => {
+    const launch = launchItem({
+      toolName: 'collab_agent',
+      status: 'completed',
+      summary: 'Spawn audit_internal_tail',
+      payloadMeta: JSON.stringify({
+        toolName: 'collab_agent',
+        input: { tool: 'spawn_agent', activityKind: 'started', taskName: '/root/audit_internal_tail', receiverThreadIds: ['child-1'] },
+      }),
+    });
+    const { pane, ctx } = await setup([launch]);
+    openAgentCompanion('main', THREAD_ID, 'launch-1', 'audit_internal_tail');
+    const { getByTestId, queryByTestId } = render(AgentPane, { props: { ctx } });
+    expect(getByTestId('agent-pane-breadcrumb-current').textContent?.trim()).toBe('audit_internal_tail');
+    expect(getByTestId('agent-pane-model').textContent).toContain('Model unavailable');
+
+    pane.upsertItem({
+      ...launch,
+      payloadMeta: JSON.stringify({
+        toolName: 'collab_agent',
+        input: {
+          tool: 'spawn_agent', activityKind: 'started', taskName: '/root/audit_internal_tail', receiverThreadIds: ['child-1'],
+          newAgentNickname: 'Curie', newAgentRole: 'default', model: 'gpt-5.6-sol', reasoningEffort: 'high',
+        },
+      }),
+    });
+    await tick();
+    expect(getByTestId('agent-pane-breadcrumb-current').textContent?.trim()).toBe('Curie [audit_internal_tail]');
+    expect(getByTestId('agent-pane-model').textContent).toContain('GPT 5.6 Sol');
+    expect(queryByTestId('agent-pane-description')).toBeNull();
+  });
+
   // V1 (`collabAgentToolCall`) DOES carry a plaintext prompt, and it is
   // read off the Codex input rather than through the Claude reader,
   // whose `description` branch returns unclamped text.

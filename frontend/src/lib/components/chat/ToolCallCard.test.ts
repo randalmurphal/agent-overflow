@@ -503,8 +503,9 @@ describe("<ToolCallCard> header dispatcher", () => {
     const { getByTestId, queryByText } = render(ToolCallCard, { props: { pane, item } });
     const row = getByTestId("collab-tool-row");
 
-    expect(row.textContent).toContain("Spawned Socrates");
+    expect(row.textContent).toContain("Spawned Socrates [review_security]");
     expect(row.textContent).toContain("(default - GPT 5.6 Sol - high)");
+    expect(row.textContent).not.toContain("review_security review_security");
     expect(row.textContent).not.toContain("gAAAA");
     expect(queryByText(/^└/)).toBeNull();
   });

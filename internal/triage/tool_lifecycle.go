@@ -131,15 +131,18 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 	}
 
 	if found && existing.Status != statusRunning && isCodexSpawnAgentLaunch(existing, nil) {
-		if metaUpdateOnly {
-			current := r.codexAgentRuntimeOrLaunch(existing)
-			current.Meta = mergeItemMetaJSON(current.Meta, evt.Meta)
-			if err := r.setCodexAgentRuntime(current); err != nil {
-				return err
-			}
-			r.emitBackgroundTasksChangedNudge(evt.ThreadID)
+		if !metaUpdateOnly {
+			return nil
 		}
-		return nil
+		// The whole update feeds the live projection; only the child's
+		// identity lands on the settled spawn row (codex_spawn_identity.go).
+		current := r.codexAgentRuntimeOrLaunch(existing)
+		current.Meta = mergeItemMetaJSON(current.Meta, evt.Meta)
+		if err := r.setCodexAgentRuntime(current); err != nil {
+			return err
+		}
+		r.emitBackgroundTasksChangedNudge(evt.ThreadID)
+		return r.persistCodexSpawnIdentity(existing, evt)
 	}
 
 	if metaUpdateOnly {
