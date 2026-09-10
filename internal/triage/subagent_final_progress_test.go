@@ -2,6 +2,8 @@ package triage
 
 import (
 	"encoding/json"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -141,28 +143,19 @@ func TestOrdinaryToolCompletionNeverPersistsProgress(t *testing.T) {
 }
 
 // TestBackgroundCompletionSiblingPersistsFinalProgress pins the
-// BACKGROUND launch's terminal. The launch row itself stays `running`
-// forever (invariant 24), so the sibling write is the only moment its
-// counters can settle.
+// BACKGROUND launch's terminal. The launch row is the immutable spawn
+// event (docs/specs/agent-visibility.md §Immutable agent history), so the
+// sibling write is the only record its counters can settle on, and it
+// lands there complete on the first write.
 func TestBackgroundCompletionSiblingPersistsFinalProgress(t *testing.T) {
 	r, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
-	startMeta, _ := json.Marshal(map[string]any{
-		"toolName":      "Agent",
-		"is_background": true,
-		"task_id":       "task-bg",
-		"input":         map[string]any{"description": "background review"},
-	})
-	if err := r.Handle(provider.ProviderEvent{
-		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "toolu_bg_agent",
-		ItemType: "Agent", Meta: startMeta, Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("launch: %v", err)
-	}
+	launchBackgroundAgent(t, r, "t1", "toolu_bg_agent", "task-bg")
 	tickProgress(t, r, "t1", "toolu_bg_agent", provider.SubagentProgressMeta{
 		TaskID: "task-bg", ToolUses: 12, TotalTokens: 88000, Activity: "Running tests",
 	})
+	launchBefore := launchRow(t, st, "t1", "toolu_bg_agent")
 
 	terminalMeta, _ := json.Marshal(map[string]any{
 		"task_id": "task-bg", "tool_use_id": "toolu_bg_agent",
@@ -175,18 +168,136 @@ func TestBackgroundCompletionSiblingPersistsFinalProgress(t *testing.T) {
 		t.Fatalf("terminal: %v", err)
 	}
 
-	if dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone); len(dones) != 1 {
+	dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(dones) != 1 {
 		t.Fatalf("expected the completion sibling, got %d", len(dones))
 	}
-	progress, ok := persistedProgressFor(t, st, "t1", "toolu_bg_agent")
+	progress, ok := persistedProgressFor(t, st, "t1", dones[0].ID)
 	if !ok {
-		t.Fatal("background terminal did not persist final progress onto the launch")
+		t.Fatal("background terminal did not persist final progress onto the completion sibling")
 	}
 	if progress.ToolUses != 12 || progress.TotalTokens != 88000 || progress.Activity != "" {
 		t.Fatalf("final progress = %+v", progress)
 	}
 	if _, live := r.PeekSubagentProgress("t1", "toolu_bg_agent"); live {
 		t.Fatal("the live entry must be consumed at the terminal")
+	}
+	assertLaunchRowUnchanged(t, st, "t1", launchBefore)
+}
+
+// TestBackgroundNotificationUsageLandsOnTheSiblingInEitherOrder pins the
+// authoritative task_notification `usage` against both arrival orders:
+// after the sibling exists (patched onto it) and before it exists (held
+// in the live entry, folded at the sibling write). The launch row never
+// changes in either.
+func TestBackgroundNotificationUsageLandsOnTheSiblingInEitherOrder(t *testing.T) {
+	notification := func(taskID, launchID string) provider.ProviderEvent {
+		meta, _ := json.Marshal(map[string]any{
+			"task_id": taskID, "tool_use_id": launchID, "status": "completed",
+			"usage": provider.SubagentProgressMeta{ToolUses: 9, TotalTokens: 61000, DurationMs: 365000},
+		})
+		return provider.ProviderEvent{
+			Kind: provider.EventBackgroundTaskNotification, ThreadID: "t1", ItemID: launchID,
+			Meta: meta, Content: "Agent finished", Timestamp: time.Now(),
+		}
+	}
+	terminal := func(taskID, launchID string) provider.ProviderEvent {
+		meta, _ := json.Marshal(map[string]any{
+			"task_id": taskID, "tool_use_id": launchID, "status": "completed", "source": "task_output",
+		})
+		return provider.ProviderEvent{
+			Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: launchID,
+			Meta: meta, Content: "done", Timestamp: time.Now(),
+		}
+	}
+	for name, order := range map[string][]func(taskID, launchID string) provider.ProviderEvent{
+		"terminal then notification": {terminal, notification},
+		"notification then terminal": {notification, terminal},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, st, _ := newTestRouter(t)
+			createTestThread(t, st, "t1")
+			launchBackgroundAgent(t, r, "t1", "toolu_order", "task-order")
+			tickProgress(t, r, "t1", "toolu_order", provider.SubagentProgressMeta{
+				TaskID: "task-order", ToolUses: 7, TotalTokens: 4200, Activity: "Reading",
+			})
+			launchBefore := launchRow(t, st, "t1", "toolu_order")
+
+			for _, build := range order {
+				if err := r.Handle(build("task-order", "toolu_order")); err != nil {
+					t.Fatalf("%s: %v", name, err)
+				}
+			}
+
+			progress, ok := persistedProgressFor(t, st, "t1", ToolCompletionID("toolu_order"))
+			if !ok {
+				t.Fatal("final progress missing from the completion sibling")
+			}
+			// The notification's usage is authoritative: it wins the
+			// tokens (latest) and the tool count (max), and it is the only
+			// source of the duration.
+			if progress.ToolUses != 9 || progress.TotalTokens != 61000 || progress.DurationMs != 365000 || progress.Activity != "" {
+				t.Fatalf("final progress = %+v", progress)
+			}
+			if _, live := r.PeekSubagentProgress("t1", "toolu_order"); live {
+				t.Fatal("the live entry must be consumed once the sibling carries the numbers")
+			}
+			assertLaunchRowUnchanged(t, st, "t1", launchBefore)
+		})
+	}
+}
+
+func launchBackgroundAgent(t *testing.T, r *Router, threadID, launchID, taskID string) {
+	t.Helper()
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "Agent",
+		"is_background": true,
+		"task_id":       taskID,
+		"input":         map[string]any{"description": "background review"},
+	})
+	if err := r.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: threadID, ItemID: launchID,
+		ItemType: "Agent", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+}
+
+func launchRow(t *testing.T, st *store.Store, threadID, launchID string) store.Item {
+	t.Helper()
+	launch, found, err := st.GetThreadItem(threadID, launchID)
+	if err != nil || !found {
+		t.Fatalf("launch row: found=%v err=%v", found, err)
+	}
+	return launch
+}
+
+// assertLaunchRowUnchanged is the immutable-spawn contract for a detached
+// launch: after the spawn, no terminal path may change its fields. The
+// schema's own settlement stamp (`live_background_active`, a liveness
+// index the store maintains by trigger) is the one sanctioned exception
+// and is compared separately.
+func assertLaunchRowUnchanged(t *testing.T, st *store.Store, threadID string, before store.Item) {
+	t.Helper()
+	after := launchRow(t, st, threadID, before.ID)
+	if after.Status != "running" {
+		t.Fatalf("launch status = %q, want running", after.Status)
+	}
+	strip := func(meta string) map[string]any {
+		decoded := map[string]any{}
+		if strings.TrimSpace(meta) != "" {
+			if err := json.Unmarshal([]byte(meta), &decoded); err != nil {
+				t.Fatalf("decode launch meta %q: %v", meta, err)
+			}
+		}
+		delete(decoded, "live_background_active")
+		return decoded
+	}
+	if !reflect.DeepEqual(strip(before.Meta), strip(after.Meta)) {
+		t.Fatalf("launch row meta changed after the spawn:\n before %s\n after  %s", before.Meta, after.Meta)
+	}
+	if after.Summary != before.Summary || after.UpdatedAt != before.UpdatedAt || after.IsBackground != before.IsBackground {
+		t.Fatalf("launch row changed after the spawn:\n before %+v\n after  %+v", before, after)
 	}
 }
 
@@ -217,32 +328,17 @@ func TestCodexChildTerminalPersistsFinalProgress(t *testing.T) {
 	}
 }
 
-// TestBackgroundCompletionSiblingLeavesTheLaunchSettled pins the write
-// ORDER at that same terminal. writeBackgroundCompletionSibling inserts
-// the sibling, and inserting a completion is what stamps the launch
-// `live_background_active=false` (migration v74,
-// store/background_settle_triggers.go). persistFinalSubagentProgress
-// then rewrites the launch's meta WHOLESALE from an in-memory copy read
-// BEFORE that insert. Without the AFTER UPDATE leg of the trigger set,
-// that second write restores the launch to "live" and leaves it in
-// every partial live index forever — which is the shape the whole
-// settlement change exists to remove.
+// TestBackgroundCompletionSiblingLeavesTheLaunchSettled pins that the
+// sibling write settles the launch out of the live set (migration v74's
+// trigger, store/background_settle_triggers.go) and that nothing on the
+// terminal path un-settles it afterwards. Before the numbers moved to the
+// sibling, a wholesale meta rewrite of the launch could restore it to
+// "live" and pin it in every partial live index forever.
 func TestBackgroundCompletionSiblingLeavesTheLaunchSettled(t *testing.T) {
 	r, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
-	startMeta, _ := json.Marshal(map[string]any{
-		"toolName":      "Agent",
-		"is_background": true,
-		"task_id":       "task-settle",
-		"input":         map[string]any{"description": "background review"},
-	})
-	if err := r.Handle(provider.ProviderEvent{
-		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "toolu_settle",
-		ItemType: "Agent", Meta: startMeta, Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("launch: %v", err)
-	}
+	launchBackgroundAgent(t, r, "t1", "toolu_settle", "task-settle")
 	if live, err := st.HasLiveBackgroundToolCall("t1"); err != nil || !live {
 		t.Fatalf("a just-launched background agent must read as live: live=%v err=%v", live, err)
 	}
@@ -261,10 +357,7 @@ func TestBackgroundCompletionSiblingLeavesTheLaunchSettled(t *testing.T) {
 		t.Fatalf("terminal: %v", err)
 	}
 
-	launch, found, err := st.GetThreadItem("t1", "toolu_settle")
-	if err != nil || !found {
-		t.Fatalf("launch row: found=%v err=%v", found, err)
-	}
+	launch := launchRow(t, st, "t1", "toolu_settle")
 	// Invariant 24: the launch itself never leaves `running`.
 	if launch.Status != "running" {
 		t.Fatalf("launch status = %q, want running", launch.Status)
@@ -276,18 +369,18 @@ func TestBackgroundCompletionSiblingLeavesTheLaunchSettled(t *testing.T) {
 		t.Fatalf("decode launch meta %q: %v", launch.Meta, err)
 	}
 	if meta.LiveBackgroundActive == nil || *meta.LiveBackgroundActive {
-		t.Fatalf("the wholesale meta rewrite un-settled the launch: meta = %s", launch.Meta)
+		t.Fatalf("the sibling write did not settle the launch: meta = %s", launch.Meta)
 	}
-
-	// The stamp must not have cost the progress the same write persisted.
-	progress, ok := persistedProgressFor(t, st, "t1", "toolu_settle")
+	if _, ok := persistedProgressFor(t, st, "t1", "toolu_settle"); ok {
+		t.Fatal("final progress was written onto the immutable launch row")
+	}
+	progress, ok := persistedProgressFor(t, st, "t1", ToolCompletionID("toolu_settle"))
 	if !ok {
-		t.Fatal("background terminal did not persist final progress onto the launch")
+		t.Fatal("background terminal did not persist final progress onto the sibling")
 	}
 	if progress.ToolUses != 3 || progress.TotalTokens != 4200 {
 		t.Fatalf("final progress = %+v", progress)
 	}
-
 	if live, err := st.HasLiveBackgroundToolCall("t1"); err != nil || live {
 		t.Fatalf("a settled launch must not read as live: live=%v err=%v", live, err)
 	}

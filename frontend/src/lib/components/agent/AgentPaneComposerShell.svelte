@@ -132,14 +132,15 @@
   // progress tick while running, the persisted final numbers once
   // settled (provider:subagent_progress → meta.subagentProgress).
   // Ticks are addressed to the row the provider bound the task to, which
-  // for a resumed round is the carrier — the same row the terminal
-  // numbers persist onto.
+  // for a resumed round is the carrier. The final numbers sit on that
+  // row's completion record once it exists (a detached launch never
+  // changes after the spawn), on the row itself for an awaited launch.
   let liveTick = $derived(
     lifecycle ? liveSubagentProgress(lifecycle.threadId, lifecycle.id) : undefined,
   );
   let tokensLabel = $derived.by(() => {
     if (!lifecycle) return '';
-    const progress = resolveSubagentProgress(lifecycle, liveTick, isRunning);
+    const progress = resolveSubagentProgress(lifecycle, lifecycleCompletion, liveTick, isRunning);
     return progress.totalTokens !== null ? formatTokens(progress.totalTokens) : '';
   });
 

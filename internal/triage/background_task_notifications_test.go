@@ -2608,3 +2608,26 @@ func TestWatchTaskCompletionSiblingCarriesNoCaption(t *testing.T) {
 			meta["notification_summary"], dones[0].Meta)
 	}
 }
+
+// The Claude output file is the agent's report, and its first line is the
+// card's collapsed answer line, the same preview a Codex completion carries.
+func TestBackgroundOutputFilePayloadCarriesAReportPreview(t *testing.T) {
+	outputFile := filepath.Join(t.TempDir(), "task.out")
+	if err := os.WriteFile(outputFile, []byte("\n\nReviewed 3 files.\nNo blocking issues.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	launch := store.Item{ID: "task-1", Kind: itemKindToolCall, ToolName: "Task", Meta: `{"input":{"description":"review"}}`}
+	payload, err := buildBackgroundOutputFilePayload("tool-call-result:task-1", launch, outputFile, nil, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var meta struct {
+		Preview string `json:"preview"`
+	}
+	if err := json.Unmarshal([]byte(payload.Meta), &meta); err != nil {
+		t.Fatalf("decode payload meta %s: %v", payload.Meta, err)
+	}
+	if meta.Preview != "Reviewed 3 files. No blocking issues." {
+		t.Fatalf("preview = %q from meta %s", meta.Preview, payload.Meta)
+	}
+}

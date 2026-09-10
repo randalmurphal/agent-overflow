@@ -1,7 +1,7 @@
 {
   "version": 1,
   "name": "codex-collab-send-message-queueonly",
-  "description": "MultiAgentV2 `send_message` (QueueOnly): the parent messages a running child, which queues into the child's mailbox and starts NO child turn. The typed wire shows only `subAgentActivity kind:\"interacted\"` \u2014 identical to `followup_task` \u2014 so the raw function-call name is the only verb evidence. Expect a standalone chronological send activity carrying tool `send_message`, an unchanged spawn event, and no child turn.",
+  "description": "MultiAgentV2 `send_message` (QueueOnly): the parent messages a running child, which queues into the child's mailbox and starts NO child turn. The typed wire shows only `subAgentActivity kind:\"interacted\"` — identical to `followup_task` — so the raw function-call name is the only verb evidence. Expect a standalone chronological send activity carrying tool `send_message`, an unchanged spawn event, and no child turn.",
   "provider": "codex",
   "turns": [
     {
@@ -13,8 +13,9 @@
             "lines": [
               "{\"jsonrpc\":\"2.0\",\"method\":\"turn/started\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turn\":{\"id\":\"${TURN_ID}\"}}}",
               "{\"jsonrpc\":\"2.0\",\"method\":\"rawResponseItem/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"function_call\",\"name\":\"spawn_agent\",\"namespace\":\"collaboration\",\"call_id\":\"call_spawn_reviewer\",\"arguments\":\"{\\\"agent_type\\\":\\\"reviewer\\\",\\\"task_name\\\":\\\"reviewer\\\",\\\"message\\\":\\\"<encrypted>\\\"}\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"item/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"subAgentActivity\",\"id\":\"call_spawn_reviewer\",\"kind\":\"started\",\"agentThreadId\":\"child-reviewer\",\"agentPath\":\"/root/reviewer\"}}}",
               "{\"jsonrpc\":\"2.0\",\"method\":\"rawResponseItem/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"function_call_output\",\"call_id\":\"call_spawn_reviewer\",\"output\":\"{\\\"agent_id\\\":\\\"child-reviewer\\\",\\\"task_name\\\":\\\"/root/reviewer\\\",\\\"nickname\\\":\\\"reviewer\\\"}\"}}}",
-              "{\"jsonrpc\":\"2.0\",\"method\":\"item/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"subAgentActivity\",\"id\":\"call_spawn_reviewer\",\"kind\":\"started\",\"agentThreadId\":\"child-reviewer\",\"agentPath\":\"/root/reviewer\"}}}"
+              "{\"jsonrpc\":\"2.0\",\"method\":\"turn/started\",\"params\":{\"threadId\":\"child-reviewer\",\"turn\":{\"id\":\"child-reviewer-turn-${TURN}\"}}}"
             ]
           }
         },

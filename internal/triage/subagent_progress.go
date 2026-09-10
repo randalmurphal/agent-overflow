@@ -20,9 +20,12 @@ import (
 // would write a row per round for work the provider already records.
 // Triage therefore holds the LATEST tick per launch in memory, fans it
 // out on `provider:subagent_progress`, and persists only the FINAL
-// numbers onto the launch row when that launch reaches its terminal
-// (TakeSubagentProgress is the one consumer; see
-// persistSubagentFinalProgress).
+// numbers when the launch reaches its terminal, onto the record that
+// settles it (see persistSubagentFinalProgress):
+//
+//   - an AWAITED launch settles in place, so its own row carries them;
+//   - a DETACHED launch (background Claude agent, Codex spawn) never
+//     changes after the spawn; its completion record carries them.
 //
 // This is coordination state in the same class as pendingApprovals and
 // pendingWakeupByThread, not a read model: nothing is derived from it,
@@ -31,8 +34,9 @@ import (
 // replacement process never carries the previous process's tasks).
 
 const (
-	// subagentProgressMetaKey is the launch-row meta key the final
-	// numbers persist under (a provider.SubagentProgressMeta object).
+	// subagentProgressMetaKey is the meta key the final numbers persist
+	// under (a provider.SubagentProgressMeta object) on the record that
+	// settles the launch.
 	subagentProgressMetaKey = "subagentProgress"
 	// subagentBackgroundedAtMetaKey is the launch-row meta key stamped with
 	// the epoch-ms timestamp at which a FOREGROUND agent was moved to the
@@ -69,8 +73,29 @@ func (r *Router) handleSubagentProgress(evt provider.ProviderEvent) error {
 			return fmt.Errorf("triage: decode subagent progress meta for %s/%s: %w", evt.ThreadID, itemID, err)
 		}
 	}
+	merged := r.mergeLiveSubagentProgress(evt.ThreadID, itemID, tick)
+
+	r.emit(eventchan.ProviderSubagentProgress, SubagentProgressEvent{
+		ThreadID:  evt.ThreadID,
+		ItemID:    itemID,
+		ParentID:  eventParentID(evt),
+		Progress:  merged,
+		UpdatedAt: eventTimestampMillis(evt),
+	})
+	return nil
+}
+
+const subagentProgressCap = 4096
+
+// mergeLiveSubagentProgress merges a tick into the launch's live entry
+// and returns the merged state. The terminal paths use it too: a final
+// counter that cannot land yet (a background launch whose completion
+// record is still to be written) waits in the live entry, which is the
+// one place the completion writer reads.
+func (r *Router) mergeLiveSubagentProgress(threadID, itemID string, tick provider.SubagentProgressMeta) provider.SubagentProgressMeta {
 	r.mu.Lock()
-	st := r.state(evt.ThreadID)
+	defer r.mu.Unlock()
+	st := r.state(threadID)
 	merged := mergeSubagentProgress(st.subagentProgress[itemID], tick)
 	if len(st.subagentProgress) >= subagentProgressCap {
 		if _, present := st.subagentProgress[itemID]; !present {
@@ -87,19 +112,8 @@ func (r *Router) handleSubagentProgress(evt provider.ProviderEvent) error {
 		st.subagentProgress = make(map[string]provider.SubagentProgressMeta)
 	}
 	st.subagentProgress[itemID] = merged
-	r.mu.Unlock()
-
-	r.emit(eventchan.ProviderSubagentProgress, SubagentProgressEvent{
-		ThreadID:  evt.ThreadID,
-		ItemID:    itemID,
-		ParentID:  eventParentID(evt),
-		Progress:  merged,
-		UpdatedAt: eventTimestampMillis(evt),
-	})
-	return nil
+	return merged
 }
-
-const subagentProgressCap = 4096
 
 func mergeSubagentProgress(base, tick provider.SubagentProgressMeta) provider.SubagentProgressMeta {
 	out := base
@@ -179,19 +193,55 @@ func (r *Router) PeekSubagentProgress(threadID, itemID string) (provider.Subagen
 
 // persistSubagentFinalProgress folds the launch's last live tick, plus
 // any authoritative final counters the terminal itself carried (Claude's
-// task_notification `usage`), into the launch row's meta under
-// subagentProgressMetaKey and emits the patch. Called by every terminal
-// path that settles a launch row: the inline tool completion, the
-// background completion sibling, and the Codex child terminal. A launch
-// with no tick and no final counters is left untouched.
+// task_notification `usage`), into the record that settles the launch,
+// under subagentProgressMetaKey. A launch with no tick and no final
+// counters is left untouched.
 //
-// Idempotent and order-free across the terminal paths: the persisted
-// meta's own subagentProgress is the merge base, so a task_updated
-// terminal (live tick only) followed by a task_notification (authoritative
-// usage) lands the same final numbers as the reverse order.
+// Which record depends on how the launch runs (docs/specs/agent-visibility.md
+// §Immutable agent history):
+//
+//   - AWAITED: the launch row itself settles, so the numbers land on it
+//     and the patch is emitted. Callers: the inline tool completion and
+//     the authoritative task_notification for a foreground task.
+//   - DETACHED (is_background): the launch row is the immutable spawn
+//     event and never changes; the numbers belong to the completion
+//     sibling. When that sibling already exists, it is patched here;
+//     until it exists the counters wait in the live entry, and
+//     completionMetaWithFinalProgress folds them in at the sibling's
+//     write. A Codex spawn is detached by construction and its child
+//     terminal snapshots the live entry itself
+//     (codex_background_subagents.go), so it is left alone here.
+//
+// Idempotent and order-free across the terminal paths: the settling
+// record's own subagentProgress is the merge base, so a task_updated
+// terminal (live tick only) followed by a task_notification
+// (authoritative usage) lands the same final numbers as the reverse
+// order.
 func (r *Router) persistSubagentFinalProgress(launch store.Item, final provider.SubagentProgressMeta) error {
 	if isCodexSpawnAgentLaunch(launch, nil) {
-		// Codex final counters belong on a new completion, never the spawn.
+		return nil
+	}
+	if launch.IsBackground {
+		if final != (provider.SubagentProgressMeta{}) {
+			r.mergeLiveSubagentProgress(launch.ThreadID, launch.ID, final)
+		}
+		completionID := ToolCompletionID(launch.ID)
+		completion, found, err := r.store.GetThreadItem(launch.ThreadID, completionID)
+		if err != nil {
+			return fmt.Errorf("triage: final subagent progress completion lookup %s: %w", completionID, err)
+		}
+		if !found {
+			// The sibling write folds the live entry in.
+			return nil
+		}
+		meta, changed := r.completionMetaWithFinalProgress(launch, completion.Meta)
+		if !changed {
+			return nil
+		}
+		if err := r.persistItemFieldsAndPatch(launch.ThreadID, completion.ID, completion.Kind, store.ItemPartialUpdate{Meta: &meta}); err != nil {
+			return err
+		}
+		r.TakeSubagentProgress(launch.ThreadID, launch.ID)
 		return nil
 	}
 	base := persistedSubagentProgress(launch.Meta)
@@ -209,8 +259,31 @@ func (r *Router) persistSubagentFinalProgress(launch store.Item, final provider.
 	return r.persistItemFieldsAndPatch(launch.ThreadID, launch.ID, launch.Kind, store.ItemPartialUpdate{Meta: &meta})
 }
 
-// persistedSubagentProgress reads the final numbers already on a launch
-// row's meta (zero value when absent or unreadable).
+// completionMetaWithFinalProgress folds a detached launch's live entry
+// over the final numbers a completion record already carries and
+// returns the record's meta with the result under subagentProgressMetaKey.
+// changed=false when there is nothing to write (no live entry and no
+// persisted numbers, or the fold changes nothing). It only reads the live
+// entry: the caller consumes it with TakeSubagentProgress once the record
+// is durable, so a failed write leaves the counters for the next terminal.
+func (r *Router) completionMetaWithFinalProgress(launch store.Item, completionMeta string) (string, bool) {
+	base := persistedSubagentProgress(completionMeta)
+	live, _ := r.PeekSubagentProgress(launch.ThreadID, launch.ID)
+	merged := mergeSubagentProgress(base, live)
+	merged.Activity = ""
+	if merged == (provider.SubagentProgressMeta{}) || merged == base {
+		return completionMeta, false
+	}
+	encoded, err := json.Marshal(map[string]any{subagentProgressMetaKey: merged})
+	if err != nil {
+		log.Printf("triage: marshal final subagent progress for %s: %v", launch.ID, err)
+		return completionMeta, false
+	}
+	return mergeItemMetaJSON(completionMeta, encoded), true
+}
+
+// persistedSubagentProgress reads the final numbers already on a
+// record's meta (zero value when absent or unreadable).
 func persistedSubagentProgress(meta string) provider.SubagentProgressMeta {
 	if strings.TrimSpace(meta) == "" {
 		return provider.SubagentProgressMeta{}

@@ -48,6 +48,8 @@ func TestCodexSpawnAndCompletedExecutionsAreImmutable(t *testing.T) {
 	}
 	handle(provider.ProviderEvent{Kind: provider.EventSubagentProgress, ItemID: "spawn", Meta: json.RawMessage(`{"totalTokens":10}`)})
 	status("A", "completed")
+	// The row is written when the child's answer lands (codex_answer_completion.go).
+	handle(provider.ProviderEvent{Kind: provider.EventSubagentNotification, ItemID: "spawn", Meta: rootAnswer(t, "final-1", "First answer.")})
 	first, ok, err := st.GetThreadItem("t1", "complete:spawn:turn:A")
 	if err != nil || !ok {
 		t.Fatalf("first completion missing: %v", err)

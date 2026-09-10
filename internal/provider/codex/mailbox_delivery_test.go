@@ -134,3 +134,28 @@ func TestRootMailboxTailRetainsUnknownSenderAndRejectsForeignRecipient(t *testin
 		t.Fatal("foreign recipient leaked into root timeline")
 	}
 }
+
+// The spawn handler emits `subAgentActivity started` before it returns, so
+// the typed activity precedes the spawn's function_call_output on the wire
+// (docs/references/codex-wire.md). An output that follows its activity is
+// represented already and must not mint a result row over the spawn.
+func TestSpawnOutputBehindStartedActivityEmitsNoResultRow(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := newMultiAgentV2RoutingSession(t, func(e provider.ProviderEvent) { events = append(events, e) })
+	s.recordAppServerVersion(json.RawMessage(`{"userAgent":"codex_cli_rs/0.153.4"}`))
+	s.dispatchNotification("rawResponseItem/completed", json.RawMessage(`{"threadId":"root-provider-thread","turnId":"root-turn","item":{"type":"function_call","namespace":"collaboration","name":"spawn_agent","call_id":"spawn","arguments":"{\"task_name\":\"reviewer\",\"fork_turns\":\"all\",\"message\":\"ciphertext\"}"}}`))
+	s.dispatchNotification("item/completed", json.RawMessage(`{"threadId":"root-provider-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn","kind":"started","agentThreadId":"child","agentPath":"/root/reviewer"}}`))
+	if len(events) == 0 {
+		t.Fatal("started activity produced no spawn events")
+	}
+	before := len(events)
+	s.dispatchNotification("rawResponseItem/completed", json.RawMessage(`{"threadId":"root-provider-thread","turnId":"root-turn","item":{"type":"function_call_output","call_id":"spawn","output":"{\"task_name\":\"/root/reviewer\"}"}}`))
+	for _, evt := range events[before:] {
+		if evt.ItemType == "send_input" || strings.Contains(string(evt.Meta), `"activityKind":"result"`) {
+			t.Fatalf("represented spawn output minted a result row: %+v", evt)
+		}
+	}
+	if s.collab.childParentByThread["child"] != "spawn" {
+		t.Fatalf("spawn ownership lost: %+v", s.collab.childParentByThread)
+	}
+}

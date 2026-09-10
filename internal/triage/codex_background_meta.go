@@ -225,6 +225,13 @@ func (m codexSubagentSignalMeta) isCodexMailboxProgressDelivery() bool {
 	return m.MailboxDelivery && strings.TrimSpace(m.MessageType) == "MESSAGE"
 }
 
+// isCodexMailboxAnswerDelivery reports a `FINAL_ANSWER` envelope: the
+// child's terminal answer, rendered by Codex core from its terminal
+// status (codex_answer_completion.go).
+func (m codexSubagentSignalMeta) isCodexMailboxAnswerDelivery() bool {
+	return m.MailboxDelivery && strings.TrimSpace(m.MessageType) == "FINAL_ANSWER"
+}
+
 func decodeCodexSubagentSignalMeta(raw json.RawMessage) codexSubagentSignalMeta {
 	if len(raw) == 0 {
 		return codexSubagentSignalMeta{}

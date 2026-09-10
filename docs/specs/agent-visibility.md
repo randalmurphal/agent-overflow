@@ -23,10 +23,15 @@ launch, how do progress and terminal signals arrive, which controls exist
 ## Immutable agent history
 
 Completed chat history items are immutable, including their rendered contents.
-A Codex spawn row records the spawn event and provides an open-pane button.
-After that event is recorded, later activity must never change its fields,
-metadata, status, timestamps, progress, preview or transcript contents. It is
-not the reusable agent's runtime record.
+A detached launch row (a Codex spawn, a Claude background agent or background
+tool) records the launch event and provides an open-pane button. After that
+event is recorded, later activity must never change its fields, metadata,
+status, timestamps, progress, preview or transcript contents. It is not the
+agent's runtime record. Two exceptions are the launch's own state, not the
+execution's: a running awaited launch moved to the background mid-flight
+takes that transition once (`is_background`, `meta.subagentBackgroundedAt`,
+the bound task id), and the store maintains its `live_background_active`
+liveness index by trigger. Codex spawns never take the first.
 
 The background tray represents the current execution. When that execution
 finishes, its background entry disappears and a new completion item is added
@@ -62,13 +67,20 @@ subagent model and the user explicitly authorizes the corresponding change.
   explicit placeholder; readable text remains available. Message delivery does
   not imply that either agent is currently running. The canonical task path
   remains the fallback launch label.
-- A Codex child's final answer is a NORMAL message, not a special block
-  (ruling 2026-08-23). Its transcript streams to the parent parented to
-  the launch, so the answer already renders in the card body and the
-  pane as its own assistant row. The FINAL_ANSWER on the completion
-  sibling is a 240-char preview and stays the COLLAPSED one-liner only.
-  It was briefly rendered in the body too, which showed the same text
-  twice, unformatted and cut mid-word.
+- A finished agent's collapsed line is its answer, read from the
+  completion record's payload preview (240 chars), for Claude and Codex
+  alike (ruling 2026-09-10). A Codex completion is written when the
+  child's FINAL_ANSWER lands inside the open parent turn and carries the
+  answer as its payload; a terminal whose envelope does not arrive in
+  that turn is written answerless at turn end, and an answer sampled in a
+  later turn stays a delivery activity. A Claude background completion
+  carries the `output_file` report. The answer itself is a NORMAL
+  message, not a special block (ruling 2026-08-23): a Codex child's
+  transcript streams to the parent parented to the launch, so the answer
+  already renders in the card body and the pane as its own assistant
+  row. The preview stays the COLLAPSED one-liner only; it was briefly
+  rendered in the body too, which showed the same text twice,
+  unformatted and cut mid-word.
 - Expanded body is an allowlist (ruling 2026-08-23): the initial prompt
   (first `user_text`), tool call rows, a provider refusal's reason
   (`permission_denied` notification), error rows, and the final text.
@@ -127,9 +139,12 @@ subagent model and the user explicitly authorizes the corresponding change.
 - Live progress is in-memory UI state fed by Claude `task_progress`
   (tool count, tokens, elapsed, activity line) and, for Codex, the
   child thread's `thread/tokenUsage/updated` (unsuppressed into a scoped
-  progress event) plus row counts. Codex final numbers are captured on
-  each execution completion; the spawn row never receives them. Claude
-  launch settlement retains its provider-specific progress handling.
+  progress event) plus row counts. Final numbers are captured on the
+  record that settles the launch: each execution's completion record for
+  a detached launch (Codex spawn, Claude background agent; the spawn row
+  never receives them), the launch row itself for an awaited Claude agent
+  that settles in place. The completion record also carries the
+  descendant count and preview decoration for a detached launch.
 - Attribution rule: anything a subagent causes carries its scope.
   `permission_denied` fixed (ce580f3f); `can_use_tool` approvals must
   resolve `agent_id` → launch tool_use (parser task map, triage row

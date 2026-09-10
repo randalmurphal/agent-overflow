@@ -3473,6 +3473,21 @@ describe('decoratedSubagentAggregates', () => {
     expect(decoratedSubagentAggregates(anchor({ subagentDescendantCount: 4 })).transcriptCount).toBe(4);
   });
 
+  it('reads a detached launch off its completion record and ignores the launch row', () => {
+    const completion = mkItem({
+      id: 'complete:agent-1',
+      itemIndex: 1,
+      kind: 'tool_completion',
+      toolName: 'Agent',
+      completionOf: 'agent-1',
+      meta: JSON.stringify({ subagentDescendantCount: 14, subagentLatestChildSummary: 'go test ./...' }),
+    });
+    const agg = decoratedSubagentAggregates(anchor({ subagentDescendantCount: 3, subagentLatestChildSummary: 'stale' }), completion);
+    expect(agg.count).toBe(14);
+    expect(agg.summary).toBe('go test ./...');
+    expect(decoratedSubagentAggregates(anchor({ subagentDescendantCount: 3 }), { ...completion, meta: '' }).count).toBe(0);
+  });
+
   it('never lets the transcript count drop below the round count', () => {
     expect(decoratedSubagentAggregates(anchor({
       subagentDescendantCount: 4,

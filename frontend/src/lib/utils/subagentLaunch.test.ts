@@ -4,6 +4,7 @@ import {
   agentScopeRootId,
   claudeResumeCarrierIdentity,
   claudeResumeTranscriptRootId,
+  completionAnswerPreview,
   isPotentialSubagentLaunch,
   subagentLaunchContextFrom,
   subagentLaunchInfo,
@@ -505,5 +506,59 @@ describe('isPotentialSubagentLaunch', () => {
         mkItem({ id: 'text', kind: 'assistant_text', toolName: 'Agent' }),
       ),
     ).toBe(false);
+  });
+});
+
+describe('completionAnswerPreview', () => {
+  const codexSpawn = mkItem({
+    id: 'spawn-1',
+    toolName: 'collab_agent',
+    meta: meta({ toolName: 'collab_agent', input: { tool: 'spawn_agent', newAgentNickname: 'Reviewer' } }),
+  });
+  const claudeAgent = mkItem({
+    id: 'agent-1',
+    toolName: 'Agent',
+    isBackground: true,
+    meta: meta({ toolName: 'Agent', input: { subagent_type: 'Explore' } }),
+  });
+
+  it('is the Codex completion payload preview, trimmed', () => {
+    const completion = mkItem({
+      id: 'complete:spawn-1:turn:A',
+      kind: 'tool_completion',
+      completionOf: 'spawn-1',
+      payloadMeta: meta({ preview: '  Reviewer verdict.  ' }),
+    });
+    expect(completionAnswerPreview(codexSpawn, completion)).toBe('Reviewer verdict.');
+  });
+
+  it('is the Claude report preview once the output file is the payload', () => {
+    const completion = mkItem({
+      id: 'complete:agent-1',
+      kind: 'tool_completion',
+      completionOf: 'agent-1',
+      meta: meta({ notification_output_loaded: true }),
+      payloadMeta: meta({ preview: 'Reviewed 3 files.' }),
+    });
+    expect(completionAnswerPreview(claudeAgent, completion)).toBe('Reviewed 3 files.');
+  });
+
+  it('never shows a Claude sibling payload that is not the report', () => {
+    const completion = mkItem({
+      id: 'complete:agent-1',
+      kind: 'tool_completion',
+      completionOf: 'agent-1',
+      meta: meta({ notification_output_loaded: false }),
+      payloadMeta: meta({ preview: 'Async agent launched.' }),
+    });
+    expect(completionAnswerPreview(claudeAgent, completion)).toBe('');
+    expect(completionAnswerPreview(claudeAgent, { ...completion, meta: '' })).toBe('');
+  });
+
+  it('is empty without a launch, a completion, or a preview', () => {
+    const bare = mkItem({ id: 'complete:spawn-1', kind: 'tool_completion', completionOf: 'spawn-1' });
+    expect(completionAnswerPreview(codexSpawn, bare)).toBe('');
+    expect(completionAnswerPreview(null, bare)).toBe('');
+    expect(completionAnswerPreview(codexSpawn, null)).toBe('');
   });
 });

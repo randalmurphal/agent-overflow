@@ -574,40 +574,26 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 	return r.persistFinalSubagentProgressIfLaunch(launch)
 }
 
-// persistFinalSubagentProgress folds a settling LAUNCH row's last live
-// progress tick onto the row (docs/specs/agent-visibility.md: ticks are
-// live UI state, the final numbers persist). Skipped outright when no
-// tick was ever seen for the id, which is what keeps an ordinary tool
-// result and a second drain of the same background terminal from paying
-// a write to restate numbers nobody changed.
+// persistFinalSubagentProgressIfLaunch folds a settling AWAITED launch
+// row's last live progress tick onto the row (docs/specs/agent-visibility.md:
+// ticks are live UI state, the final numbers persist). Skipped outright
+// when no tick was ever seen for the id, which is what keeps an ordinary
+// tool result from paying a write to restate numbers nobody changed.
 //
 // The AUTHORITATIVE-usage terminal (Claude's task_notification) does not
 // come through here: it carries counters of its own even when no tick
 // was seen, so it calls persistSubagentFinalProgress directly. The
-// helper is order-free, so either arriving first lands the same row.
+// helper is order-free, so either arriving first lands the same row. A
+// DETACHED launch never comes through here either: its numbers fold into
+// the completion sibling at its write (completionMetaWithFinalProgress).
 //
-// Callers are the terminals that settle a launch and already KNOW their
-// row is one: the background completion sibling and the Codex child
-// terminal. The inline tool completion, which settles every ordinary
-// tool too, goes through persistFinalSubagentProgressIfLaunch instead.
-func (r *Router) persistFinalSubagentProgress(launch store.Item) error {
-	if r == nil {
-		return nil
-	}
-	if _, live := r.PeekSubagentProgress(launch.ThreadID, launch.ID); !live {
-		return nil
-	}
-	return r.persistSubagentFinalProgress(launch, provider.SubagentProgressMeta{})
-}
-
-// persistFinalSubagentProgressIfLaunch is persistFinalSubagentProgress
-// plus the structural launch probe, for the one terminal that also
-// settles ordinary tools. `Store.IsSubagentLaunch` is the provider-
-// neutral predicate the store already anchors subagent cards on (a
-// tool_call that other rows are attributed to) rather than a list of
-// launch tool names this package would have to keep in sync with two
-// providers. It runs only after a live tick has been found, so a plain
-// Read/Edit result never reaches the store for it.
+// This terminal also settles ordinary tools, hence the structural launch
+// probe: `Store.IsSubagentLaunch` is the provider-neutral predicate the
+// store already anchors subagent cards on (a tool_call that other rows
+// are attributed to) rather than a list of launch tool names this package
+// would have to keep in sync with two providers. It runs only after a
+// live tick has been found, so a plain Read/Edit result never reaches
+// the store for it.
 func (r *Router) persistFinalSubagentProgressIfLaunch(launch store.Item) error {
 	if r == nil || r.store == nil {
 		return nil
@@ -1410,16 +1396,17 @@ func (r *Router) writeBackgroundCompletionSibling(evt provider.ProviderEvent, me
 		completion.PayloadID = existing.PayloadID
 	}
 
+	// The sibling is the background launch's record (the launch row
+	// itself never changes after the spawn — invariant 24), so this is
+	// where its live counters become durable. Folded BEFORE the write so
+	// the row lands complete: a card mounted from this frame must not
+	// grow its counters a patch later.
+	completion.Meta, _ = r.completionMetaWithFinalProgress(launch, completion.Meta)
+
 	if err := r.maybeDeferOrPersist(evt.ThreadID, completion, payload); err != nil {
 		return err
 	}
-
-	// The sibling is the background launch's terminal (the launch row
-	// itself stays `running` forever — invariant 24), so this is where
-	// its live counters become durable.
-	if err := r.persistFinalSubagentProgress(launch); err != nil {
-		return err
-	}
+	r.TakeSubagentProgress(launch.ThreadID, launch.ID)
 
 	if stashWasDrained {
 		r.emit(eventchan.ProviderBackgroundTaskState, BackgroundTaskStateEvent{

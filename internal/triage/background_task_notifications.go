@@ -131,13 +131,15 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 	// The agent's final numbers, before any of the row work below and on
 	// every path out of this handler. `task_notification` is the one
 	// envelope that reports the whole run's `usage`, so it is the
-	// authoritative half of the launch row's persisted progress —
-	// available even when no live tick survived (a backgrounded agent
-	// emits task_progress, but a session restart or a reconnect drops the
-	// in-memory ticks outright). Folded for background Bash too when it
-	// carries usage: the merge is order-free and a launch with no
-	// counters is left untouched, so the only cost of not special-casing
-	// the tool type is a comparison.
+	// authoritative half of the persisted progress — available even when
+	// no live tick survived (a backgrounded agent emits task_progress,
+	// but a session restart or a reconnect drops the in-memory ticks
+	// outright). For a detached launch the numbers land on the completion
+	// sibling: patched now when it already exists, otherwise held in the
+	// live entry for the sibling write below. Folded for background Bash
+	// too when it carries usage: the merge is order-free and a launch
+	// with no counters is left untouched, so the only cost of not
+	// special-casing the tool type is a comparison.
 	if meta.Usage != (provider.SubagentProgressMeta{}) {
 		if err := r.persistSubagentFinalProgress(launch, meta.Usage); err != nil {
 			// Never fatal to the notification: the counters are a card
@@ -601,6 +603,12 @@ func buildBackgroundOutputFilePayload(payloadID string, launch store.Item, outpu
 		}, nil
 	}
 
+	// The file IS the agent's final report, so its first line is the
+	// card's collapsed answer line, the same 240-char preview a Codex
+	// completion carries for its FINAL_ANSWER (`completionPayload`).
+	if preview := truncatePreview(string(data[:min(len(data), 4096)]), 240); preview != "" {
+		meta["preview"] = preview
+	}
 	metaJSON, err := json.Marshal(meta)
 	if err != nil {
 		return nil, fmt.Errorf("marshal output_file payload meta: %w", err)

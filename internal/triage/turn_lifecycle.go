@@ -1753,6 +1753,7 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 		pendingProgress        provider.UsageEvent
 		hasPendingProgress     bool
 		closedCodexAgents      []closedCodexAgent
+		heldCodexCompletions   map[string]pendingCodexCompletion
 	)
 	if st != nil {
 		if st.codexBackground != nil {
@@ -1761,6 +1762,7 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 					closedCodexAgents = append(closedCodexAgents, closedCodexAgent{item: item, progress: st.subagentProgress[item.ID]})
 				}
 			}
+			heldCodexCompletions = takePendingCodexCompletionsLocked(st.codexBackground)
 		}
 		orphanSpan, st.turnSpan = st.turnSpan, nil
 		// Stop the in-flight flush timers before the buffers become
@@ -1798,6 +1800,10 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 	if orphanSpan != nil {
 		r.recordTurnSpanOutcome(orphanSpan, cleanupTurnOutcome())
 	}
+	// A completion held for its answer outlives nothing: the session that
+	// would have delivered the envelope is gone, so the row is written
+	// answerless before the runtime it belonged to is forgotten.
+	r.persistHeldCodexCompletionsAnswerless(threadID, heldCodexCompletions)
 	r.finishClosedCodexAgents(closedCodexAgents, cleanupAt)
 	r.emit(eventchan.ProviderBackgroundTasksChanged, BackgroundTasksChangedEvent{ThreadID: threadID, ResetCodexAgents: true})
 

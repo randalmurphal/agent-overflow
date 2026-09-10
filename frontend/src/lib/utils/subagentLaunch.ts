@@ -548,11 +548,15 @@ export function isCodexAgentLaunchItem(item: Item): boolean {
 }
 
 /**
- * The COLLAPSED one-line summary of a Codex child's outcome, read off
- * the spawn launch's completion sibling (`payloadMeta.preview`, the
- * first 240 chars of the delivered FINAL_ANSWER — triage's
- * `completionPayload`). A settled agent's conclusion is what a reader
- * wants on the collapsed row, not its last progress beat.
+ * The COLLAPSED one-line summary of a finished agent's outcome, read off
+ * the launch's completion record (`payloadMeta.preview`, the first 240
+ * chars of the answer). A settled agent's conclusion is what a reader
+ * wants on the collapsed row, not its last progress beat. The rule is the
+ * same for both providers (ruling 2026-09-10): a Codex completion is
+ * written when the child's FINAL_ANSWER lands and carries it as payload;
+ * a Claude background agent's completion carries the `output_file`
+ * report (`notification_output_loaded`), and only then, so the ack a
+ * sibling holds before the report is read never becomes the line.
  *
  * Preview ONLY. The answer itself is not rendered from here: a Codex
  * child streams its whole transcript to the parent thread as rows
@@ -560,18 +564,17 @@ export function isCodexAgentLaunchItem(item: Item): boolean {
  * text through), so the final answer already IS a normal message in the
  * card body and the pane. Rendering the preview as a second body block
  * showed the same text twice, unformatted and cut mid-word.
- *
- * Empty for Claude launches: their sibling carries the formulaic ack
- * whose rendering the spec deletes, and the real transcript exists as
- * attributed rows.
  */
-export function codexCompletionPreview(
+export function completionAnswerPreview(
   launch: Item | null | undefined,
   completion: Item | null | undefined,
 ): string {
   if (!launch || !completion) return '';
   const info = subagentLaunchInfo(launch, NO_LOADED_SUBAGENT_CHILDREN);
-  if (info?.provider !== 'codex') return '';
+  if (!info) return '';
+  if (info.provider === 'claude' && parseJsonObject(completion.meta)?.notification_output_loaded !== true) {
+    return '';
+  }
   const preview = parseJsonObject(completion.payloadMeta)?.preview;
   return typeof preview === 'string' ? preview.trim() : '';
 }

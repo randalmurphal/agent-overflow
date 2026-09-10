@@ -337,6 +337,13 @@ func (r *Router) observeCodexSubagentStatus(evt provider.ProviderEvent) error {
 	if !active && turnID != "" && runtime.TurnID != "" && turnID != runtime.TurnID {
 		return nil
 	}
+	if active {
+		// A new execution begins: the previous one's held completion is
+		// written now, answerless, so its row precedes the new run's rows.
+		if err := r.flushPendingCodexCompletion(evt.ThreadID, launch.item.ID); err != nil {
+			return err
+		}
+	}
 	now := eventTimestampMillis(evt)
 	if active && (runtime.StartedAt == 0 || (turnID != "" && turnID != runtime.TurnID) || (runtime.Status != "running" && runtime.Status != "pendingInit")) {
 		runtime.StartedAt = now
@@ -425,7 +432,12 @@ func (r *Router) observeCodexSubagentStatus(evt provider.ProviderEvent) error {
 		}
 		completion := evt
 		completion.Meta = completionMeta
-		if err := r.synthesizeCodexBackgroundCompletion(completion, launch.item.ID, codexBackgroundCompletionOptions{completionID: completionID}); err != nil {
+		pending := pendingCodexCompletion{evt: completion, completionID: completionID}
+		if r.shouldDeferCodexCompletion(evt.ThreadID, launch.item, runtime.TurnID, status, parsed.Recovered) {
+			// The answer is on its way (codex_answer_completion.go); the
+			// row is written when it lands, with the answer as payload.
+			r.deferCodexCompletion(evt.ThreadID, launch.item.ID, pending)
+		} else if err := r.persistPendingCodexCompletion(launch.item.ID, pending, ""); err != nil {
 			return err
 		}
 	}

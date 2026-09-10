@@ -34,12 +34,26 @@ function positiveInt(value: unknown): number | null {
     : null;
 }
 
-/** The final numbers triage persisted on a settled launch row, if any. */
-export function persistedSubagentProgress(item: Item): SubagentProgress | null {
+function persistedProgressOn(item: Item): SubagentProgress | null {
   const meta = parseJsonObject(item.meta);
   const raw = meta?.subagentProgress;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   return raw as SubagentProgress;
+}
+
+/**
+ * The final numbers triage persisted for a launch, if any, read off the
+ * record that settled it (docs/specs/agent-visibility.md §Immutable agent
+ * history): a DETACHED launch's row is the immutable spawn event and its
+ * completion record carries the numbers, so once `completion` exists the
+ * launch row is not consulted; an AWAITED launch settles in place and its
+ * own row carries them.
+ */
+export function persistedSubagentProgress(
+  launch: Item,
+  completion?: Item | null,
+): SubagentProgress | null {
+  return persistedProgressOn(completion ?? launch);
 }
 
 function fromTick(tick: SubagentProgress, source: 'live' | 'persisted'): ResolvedSubagentProgress {
@@ -59,21 +73,28 @@ function fromTick(tick: SubagentProgress, source: 'live' | 'persisted'): Resolve
  * terminal must not keep showing a mid-run count. Each falls back to the
  * other when only one exists.
  *
+ * `completion` is the launch's background completion sibling once it has
+ * loaded (null/undefined for an awaited launch, which settles in place).
+ * It supplies liveness by default and is one of the two records the
+ * persisted numbers may sit on (see persistedSubagentProgress).
+ *
  * `activeOverride` lets the caller supply a better liveness answer than
- * the launch row's own status: a BACKGROUND launch row stays `running`
- * forever by design (the tray invariant — the outcome lands on a separate
- * completion sibling), so the agent card passes "is the folded completion
- * still absent/running?" here. Without it a finished background agent
+ * the rows' own status: a BACKGROUND launch row stays `running` forever
+ * by design (the tray invariant — the outcome lands on the completion
+ * sibling), so a caller that knows more than these two rows (the tray's
+ * task status) passes it here. Without it a finished background agent
  * would keep showing the last live tick's activity line.
  */
 export function resolveSubagentProgress(
-  item: Item,
+  launch: Item,
+  completion: Item | null | undefined,
   live: SubagentProgress | undefined,
   activeOverride?: boolean,
 ): ResolvedSubagentProgress {
+  const statusItem = completion ?? launch;
   const active =
-    activeOverride ?? (item.status === 'running' || item.status === 'streaming');
-  const persisted = persistedSubagentProgress(item);
+    activeOverride ?? (statusItem.status === 'running' || statusItem.status === 'streaming');
+  const persisted = persistedSubagentProgress(launch, completion);
   if (active) {
     if (live) return fromTick(live, 'live');
     return persisted ? fromTick(persisted, 'persisted') : NONE;

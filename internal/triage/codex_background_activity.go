@@ -83,7 +83,7 @@ func (r *Router) persistCodexMailboxProgress(
 	}
 	content := parsed.Message
 	if parsed.Encrypted {
-		content = "Message content is encrypted by Codex."
+		content = codexEncryptedMessagePlaceholder
 	}
 	payload := completionPayload(itemID, provider.ProviderEvent{Content: content}, ToolCompleteMeta{}, now)
 	payloadID := ""
@@ -181,7 +181,7 @@ func (r *Router) persistCodexReceivedMessage(evt provider.ProviderEvent, parsed 
 		body = "Empty message."
 	}
 	if parsed.Encrypted {
-		body = "Message content is encrypted by Codex."
+		body = codexEncryptedMessagePlaceholder
 	}
 	meta, err := json.Marshal(map[string]any{"wire_only": true, "agent_message": map[string]any{"sender": parsed.AgentPath, "recipient": parsed.Recipient, "messageType": parsed.MessageType, "encrypted": parsed.Encrypted, "deliveryId": parsed.DeliveryID}})
 	if err != nil {
@@ -190,3 +190,8 @@ func (r *Router) persistCodexReceivedMessage(evt provider.ProviderEvent, parsed 
 	now := eventTimestampMillis(evt)
 	return r.persistItem(store.Item{ID: id, ThreadID: evt.ThreadID, TurnIndex: index, ParentID: parent, Kind: itemKindUserText, Role: "user", Status: statusCompleted, Summary: body, Meta: string(meta), CreatedAt: now, UpdatedAt: now}, nil)
 }
+
+// codexEncryptedMessagePlaceholder stands in for a body Codex encrypted:
+// the delivery row, the recipient-scope message and the completion
+// payload all show the same words for the same envelope.
+const codexEncryptedMessagePlaceholder = "Message content is encrypted by Codex."

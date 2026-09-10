@@ -434,13 +434,21 @@ export function subagentActivityPreview(item: Item): string {
  * round, stamped on the root only when it has rounds, and is what the
  * agent pane (which scopes to the root and shows every round) expects
  * to have loaded; it falls back to `count` when absent.
+ *
+ * The decoration sits on the record that settled the launch
+ * (docs/specs/agent-visibility.md §Immutable agent history): a detached
+ * launch's completion sibling (the store decorates it at read time for
+ * Claude, `decorateSubagentAnchors`; Codex snapshots it at the write,
+ * `SnapshotSubagentExecutionMeta`), or the launch row itself for an
+ * awaited launch that settled in place. Once `completion` exists the
+ * launch row is not consulted.
  */
-export function decoratedSubagentAggregates(item: Item): {
+export function decoratedSubagentAggregates(launch: Item, completion?: Item | null): {
   count: number;
   transcriptCount: number;
   summary: string;
 } {
-  const meta = parseJsonObject(item.meta);
+  const meta = parseJsonObject((completion ?? launch).meta);
   const count = subagentDescendantCountFromMeta(meta);
   const rawTranscript = meta?.subagentTranscriptDescendantCount;
   const transcriptCount = Math.max(
@@ -693,7 +701,7 @@ function subagentGroupNode(
   flattenedFoldCount = 0,
 ): SubagentGroupNode {
   const historical = anchor.id !== parent.id;
-  const decorated = decoratedSubagentAggregates(historical ? anchor : parent);
+  const decorated = decoratedSubagentAggregates(parent, historical ? anchor : undefined);
   const fold = historical ? undefined : aggregates?.(parent.id);
   const liveTotal = loadedDescendantCount + (fold?.evictedCount ?? 0) + flattenedFoldCount;
   return {
@@ -1672,10 +1680,10 @@ export function groupItemsBySubagent(
         // and either a detached launch's pre-card row or a bucketless
         // non-launch. (Forked-Skill detection is cross-item, so a row can
         // become — or stop being — a launch with its own Item unchanged.)
-        // A launch's SECOND and later completion deliveries are leaves and
-        // stay in this map's absence; an earlier one paging in takes the
-        // anchor off a row that was the card, and this same check rebuilds
-        // it as the leaf it has become.
+        // Every completion of a detached launch is a card anchor, so a
+        // completion sits in this map whenever its launch is loaded; a
+        // completion whose launch pages OUT loses its anchor, and this same
+        // check rebuilds it as the leaf it has become.
         if (cardLaunchByCompletionID.has(item.id)) return false;
         if (detachedLaunchIDs.has(item.id)) return true;
         const bucket = childrenByParent.get(item.id);

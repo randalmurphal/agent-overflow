@@ -87,7 +87,10 @@ fix; `NetworkServiceInProcess2` rejected.
   plus cumulative output by the CLI's own construction, so the two agree
   until a compaction.
 - A finished background task's launch row keeps its launch state; the
-  completion sibling carries its terminal result. See
+  completion sibling carries everything about the execution: terminal
+  result, final tool and token counts, descendant count and the answer
+  preview that is the card's collapsed line. This holds for Claude and
+  Codex alike (ruling 2026-09-10). See
   [Tool, task and turn lifecycle](architecture/turn-lifecycle.md).
 - Monitor idle-wake: the CLI writes `<task-notification>` to the
   transcript only. A transcript-tail backfill was proposed and declined.

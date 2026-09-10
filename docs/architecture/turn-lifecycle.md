@@ -100,7 +100,12 @@ launch row is only the completed "spawned" event and never changes again.
 Child execution state lives in the router's bounded session projection and
 reaches clients through live events and `GetThreadLiveState`. Each native
 child turn completion creates a distinct `tool_completion` at the timeline
-write head. Its status, progress and child-history boundaries are snapshots.
+write head. Inside the open parent turn, a root-level completion whose
+status yields a FINAL_ANSWER is held until that envelope lands and is written
+with the answer as its payload; the hold is released answerless when the
+parent turn completes, the child starts a new execution or the session is
+torn down (`codex_answer_completion.go`). Its status, progress and
+child-history boundaries are snapshots.
 A later execution cannot update that completion. Mailbox receipts are
 separate events and never settle a newer execution. Legacy waits and terminal
 notifications retain their own typed completion evidence. See the
@@ -180,10 +185,13 @@ None of them is a lifecycle transition, and none may be treated as one.
   keyed `(threadId, itemId)` and fans it out on
   `provider:subagent_progress`. Nothing is written per tick: persisting
   a row per tool round for work the provider already records is exactly
-  what principle 3 forbids. The FINAL numbers land once, on the launch
-  row's `meta.subagentProgress`, when the launch reaches its terminal
-  (`persistSubagentFinalProgress`), which is also where
-  `task_notification`'s authoritative `usage` block folds in. A tick
+  what principle 3 forbids. The FINAL numbers land once, under
+  `meta.subagentProgress` on the record that settles the launch
+  (`persistSubagentFinalProgress`): the launch row for an awaited agent,
+  the completion sibling for a detached one, whose launch row never
+  changes after the spawn. `task_notification`'s authoritative `usage`
+  block folds into the same record, patching the sibling when it already
+  exists and otherwise waiting in the live entry for its write. A tick
   whose `task_id` this parser cannot resolve (it reconnected mid-agent)
   is dropped with a log line, never emitted with an empty `ItemID`,
   which would address the wrong row.

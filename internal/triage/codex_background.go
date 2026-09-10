@@ -107,6 +107,9 @@ type codexBackgroundState struct {
 	spawnAgent map[string]*spawnAgentTracker
 	// Agent runtime is session state, never a mutation of a spawn/history item.
 	agents map[string]store.Item
+	// pendingAnswer maps launchID → a terminal execution whose completion
+	// row waits for the child's FINAL_ANSWER (codex_answer_completion.go).
+	pendingAnswer map[string]pendingCodexCompletion
 }
 
 func newCodexBackgroundState() *codexBackgroundState {
@@ -117,6 +120,7 @@ func newCodexBackgroundState() *codexBackgroundState {
 		waitCarrierByProcess: make(map[string]pendingTerminalWait),
 		spawnAgent:           make(map[string]*spawnAgentTracker),
 		agents:               make(map[string]store.Item),
+		pendingAnswer:        make(map[string]pendingCodexCompletion),
 	}
 }
 
@@ -354,7 +358,11 @@ func (r *Router) observeCodexTurnComplete(threadID string) {
 		return
 	}
 	spawnChanged := clearPendingCodexSpawnTrackersLocked(state)
+	heldCompletions := takePendingCodexCompletionsLocked(state)
 	r.mu.Unlock()
+	// No envelope can land in a turn that is over: every held execution
+	// completion is written now, answerless (codex_answer_completion.go).
+	r.persistHeldCodexCompletionsAnswerless(threadID, heldCompletions)
 	if spawnChanged {
 		r.emitBackgroundTasksChangedNudge(threadID)
 	}

@@ -82,7 +82,7 @@
   import {
     agentScopeRootId,
     claudeResumeCarrierIdentity,
-    codexCompletionPreview,
+    completionAnswerPreview,
     codexSubagentLaunchInfo,
     codexSubagentTaskDescription,
     isClaudeResumeCarrierItem,
@@ -208,10 +208,10 @@
       : null,
   );
   let statusItem = $derived(completionItem ?? parent);
-  // The Codex child's delivered verdict (empty for Claude launches): the
-  // FINAL_ANSWER on the completion sibling this card sits at.
-  let completionAnswer = $derived(codexCompletionPreview(parent, completionItem));
-  let decorated = $derived(decoratedSubagentAggregates(completionItem ?? parent));
+  // The finished agent's answer line, read off the completion record this
+  // card sits at (Codex FINAL_ANSWER, Claude output-file report).
+  let completionAnswer = $derived(completionAnswerPreview(parent, completionItem));
+  let decorated = $derived(decoratedSubagentAggregates(parent, completionItem));
   // Max, not replace — the same reconciliation `subagentGroupNode` does,
   // re-run against the live anchor. The node's count already folds in
   // loaded children, the eviction fold, and whatever decoration existed
@@ -289,7 +289,7 @@
   // override because the launch row of a background agent never leaves
   // `running` — see resolveSubagentProgress.
   let liveTick = $derived(isRunning ? liveSubagentProgress(parent.threadId, parent.id) : undefined);
-  let progress = $derived(resolveSubagentProgress(completionItem ?? parent, liveTick, isRunning));
+  let progress = $derived(resolveSubagentProgress(parent, completionItem, liveTick, isRunning));
   let toolCountLabel = $derived(formatToolUses(progress.toolUses));
   let tokensLabel = $derived(
     progress.totalTokens !== null ? `${formatTokens(progress.totalTokens)} tokens` : '',
@@ -346,8 +346,8 @@
     // is doing right now (`task_progress.description`); child summaries
     // and the Initializing placeholder are the fallbacks.
     if (isRunning && progress.activity) return progress.activity;
-    // A settled Codex child's answer is its collapsed line, as the
-    // completion row showed it — the last progress message is not what a
+    // A finished agent's answer is its collapsed line (Codex FINAL_ANSWER,
+    // Claude output-file report); the last progress message is not what a
     // reader wants from a finished agent.
     if (completionAnswer) return completionAnswer;
     if (latestChildSummary) return latestChildSummary;

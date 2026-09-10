@@ -94,13 +94,15 @@
   // the tray is its live surface; the launch row never changes and the
   // card does not exist until the completion lands). Same source the card
   // reads: the live tick while running, the persisted final numbers once
-  // the completion landed. The launch row carries the persisted meta, so
-  // a completion-only entry (launch outside the live set) has none.
+  // the completion landed, off whichever record the provider persisted
+  // them to (utils/subagentProgress.ts persistedSubagentProgress).
   let progressLaunch = $derived(agentInfo !== null ? (task.launch ?? task.completion) : null);
   let progressLaunchId = $derived(task.launch?.id ?? task.completion?.completionOf ?? '');
   let liveTick = $derived(liveSubagentProgress(task.anchor.threadId, progressLaunchId));
   let progress = $derived(
-    progressLaunch ? resolveSubagentProgress(progressLaunch, liveTick, task.status === 'running') : null,
+    progressLaunch
+      ? resolveSubagentProgress(progressLaunch, task.completion, liveTick, task.status === 'running')
+      : null,
   );
   let toolCountLabel = $derived(progress ? formatToolUses(progress.toolUses) : '');
   let tokensLabel = $derived(

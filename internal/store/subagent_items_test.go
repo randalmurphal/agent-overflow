@@ -956,3 +956,73 @@ func TestCodexExecutionSnapshotExcludesOtherRunsAndLeavesSpawnUndecorated(t *tes
 		t.Fatalf("spawn acquired later history: %s", decorated[0].Meta)
 	}
 }
+
+// A detached launch's card renders at its completion sibling and the
+// launch row is the immutable spawn event, so the sibling is the row that
+// carries the descendant count and preview. It is walked from the launch,
+// whether or not the launch is in the same window.
+func TestDecorateSubagentAnchors_CompletionSiblingCarriesTheLaunchAggregate(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID: "bg-agent", ThreadID: "t", TurnIndex: 0, ItemIndex: 0,
+		Kind: "tool_call", Role: "assistant", ToolName: "Agent", Status: "running",
+		Summary: "Agent: review", IsBackground: true, CreatedAt: 1,
+	}); err != nil {
+		t.Fatalf("insert launch: %v", err)
+	}
+	seedToolChildItem(t, s, "t", "bg-read", 0, 1, "bg-agent", "read main.go", "completed")
+	seedToolChildItem(t, s, "t", "bg-test", 0, 2, "bg-agent", "go test ./...", "completed")
+	seedCompletionSibling(t, s, "t", "complete:bg-agent", "bg-agent", 3, 3000)
+
+	// Both rows in one window.
+	paged, err := s.ListThreadSliceAround("t", "", 200)
+	if err != nil {
+		t.Fatalf("list slice: %v", err)
+	}
+	completion, ok := itemByID(paged.Items, "complete:bg-agent")
+	if !ok {
+		t.Fatal("completion sibling missing from window")
+	}
+	count, summary, _, _ := decodedSubagentMeta(t, completion)
+	if count != 2 || summary != "go test ./..." {
+		t.Fatalf("completion decoration: count=%v summary=%q", count, summary)
+	}
+
+	// Completion alone in the window: the launch resolves by lookup.
+	decorated, err := s.decorateSubagentAnchors(s.reader(), "t", []Item{{
+		ID: "complete:bg-agent", ThreadID: "t", Kind: "tool_completion",
+		ToolName: "Agent", CompletionOf: "bg-agent", Meta: `{"status_source":"task_updated"}`,
+	}})
+	if err != nil {
+		t.Fatalf("decorate completion-only window: %v", err)
+	}
+	count, summary, _, _ = decodedSubagentMeta(t, decorated[0])
+	if count != 2 || summary != "go test ./..." {
+		t.Fatalf("completion-only decoration: count=%v summary=%q meta=%s", count, summary, decorated[0].Meta)
+	}
+	var kept struct {
+		StatusSource string `json:"status_source"`
+	}
+	if err := json.Unmarshal([]byte(decorated[0].Meta), &kept); err != nil || kept.StatusSource != "task_updated" {
+		t.Fatalf("decoration dropped the completion's own meta: %s", decorated[0].Meta)
+	}
+
+	// A completion whose launch has no descendants (background Bash) is
+	// left untouched, as its launch would be.
+	seedLaunchWithMeta(t, s, "t", "bg-bash", 4, `{}`)
+	seedCompletionSibling(t, s, "t", "complete:bg-bash", "bg-bash", 5, 5000)
+	paged, err = s.ListThreadSliceAround("t", "", 200)
+	if err != nil {
+		t.Fatalf("list slice: %v", err)
+	}
+	bash, ok := itemByID(paged.Items, "complete:bg-bash")
+	if !ok {
+		t.Fatal("bash completion missing from window")
+	}
+	if _, _, hasCount, _ := decodedSubagentMeta(t, bash); hasCount {
+		t.Fatalf("childless completion was decorated: %s", bash.Meta)
+	}
+}

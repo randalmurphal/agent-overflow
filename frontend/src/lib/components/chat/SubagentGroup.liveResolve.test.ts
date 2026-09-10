@@ -489,3 +489,74 @@ describe('<SubagentGroup> card affordances (agent-visibility)', () => {
     expect(shown.length).toBeLessThanOrEqual(81);
   });
 });
+
+describe('<SubagentGroup> settled background agent counters', () => {
+  beforeEach(async () => {
+    resetBindingMocks();
+    setBindingMock('GetSettings', async () => null);
+    await loadSettings();
+    resetSubagentProgressForTest();
+  });
+
+  it('reads the final numbers and entry count off the completion sibling, never the launch row', async () => {
+    // A detached launch's row is the immutable spawn event
+    // (docs/specs/agent-visibility.md §Immutable agent history): triage
+    // persists the final counters onto the `complete:<id>` sibling and the
+    // store decorates that sibling with the descendant aggregate. The card
+    // sits at the sibling and reads only it; numbers on the launch row are
+    // stale history and must not show.
+    const { pane, group } = await setup([
+      agentLaunch({
+        isBackground: true,
+        meta: JSON.stringify({
+          subagentProgress: { toolUses: 1, totalTokens: 10 },
+          subagentDescendantCount: 1,
+        }),
+      }),
+      makeItem({
+        id: 'complete:agent:1',
+        itemIndex: 1,
+        kind: 'tool_completion',
+        toolName: 'Agent',
+        isBackground: true,
+        completionOf: 'agent:1',
+        status: 'completed',
+        summary: 'Agent: done',
+        meta: JSON.stringify({
+          subagentProgress: { toolUses: 9, totalTokens: 61_000, durationMs: 365_000 },
+          subagentDescendantCount: 14,
+        }),
+      }),
+    ]);
+    expect(group.anchor.id).toBe('complete:agent:1');
+    const { getByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
+    expect(getByTestId('subagent-group-tools').textContent?.trim()).toBe('9 tools');
+    expect(getByTestId('subagent-group-tokens').textContent?.trim()).toBe('61.0k tokens');
+    expect(getByTestId('subagent-group-count').textContent).toContain('14 entries');
+  });
+
+  it('shows nothing for a settled detached agent whose sibling carries no numbers', async () => {
+    // The launch row is not a fallback: a sibling without counters means
+    // the provider reported none, and a number off the spawn row would be
+    // a claim about a different record.
+    const { pane, group } = await setup([
+      agentLaunch({
+        isBackground: true,
+        meta: JSON.stringify({ subagentProgress: { toolUses: 4, totalTokens: 900 } }),
+      }),
+      makeItem({
+        id: 'complete:agent:1',
+        itemIndex: 1,
+        kind: 'tool_completion',
+        toolName: 'Agent',
+        isBackground: true,
+        completionOf: 'agent:1',
+        status: 'completed',
+        summary: 'Agent: done',
+      }),
+    ]);
+    const { queryByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
+    expect(queryByTestId('subagent-group-tools')).toBeNull();
+    expect(queryByTestId('subagent-group-tokens')).toBeNull();
+  });
+});

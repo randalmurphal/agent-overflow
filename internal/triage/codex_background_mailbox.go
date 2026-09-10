@@ -24,6 +24,15 @@ func (r *Router) observeCodexSubagentNotification(evt provider.ProviderEvent) er
 	if parsed.MailboxDelivery && evt.ItemID == "" {
 		return r.persistCodexMailboxProgress(evt, persistedCodexSpawnLaunch{}, parsed)
 	}
+	// The root-bound FINAL_ANSWER of an execution whose completion row is
+	// waiting for it IS that row's payload and preview; the row is written
+	// here, at the answer's own timeline position, and no separate
+	// delivery row is minted for it (codex_answer_completion.go).
+	if parsed.isCodexMailboxAnswerDelivery() && evt.ItemID != "" {
+		if pending, ok := r.takePendingCodexCompletion(evt.ThreadID, evt.ItemID); ok {
+			return r.persistPendingCodexCompletion(evt.ItemID, pending, codexAnswerText(parsed))
+		}
+	}
 	if parsed.MailboxDelivery && parsed.Recipient != "" {
 		return r.recordCodexMailboxProgress(evt, parsed)
 	}

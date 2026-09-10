@@ -148,7 +148,7 @@ test(
 );
 
 test(
-  'two Codex FINAL_ANSWERs under one spawn render one card without a render throw',
+  'two Codex FINAL_ANSWERs under one spawn render one card each without a render throw',
   async ({ harness, page }) => {
     await harness.rpc('HarnessSetScenario', { name: 'codex-collab-two-deliveries' });
     const threadId = await seedAgentThread(
@@ -165,10 +165,12 @@ test(
     await harness.waitForEvent('provider:turn_completed');
 
     const timeline = page.getByTestId('message-timeline-scroll');
-    const card = timeline.getByTestId('subagent-group');
-    await expect(card).toHaveCount(1, { timeout: 20_000 });
-    // Both answers live under the one card; the preview reads from the latest.
-    await expect(card.getByTestId('subagent-group-preview')).toContainText('Second review pass.');
+    const cards = timeline.getByTestId('subagent-group');
+    // Each delivery owns its card under its own completion key
+    // (docs/specs/agent-visibility.md); the previews read from their own rows.
+    await expect(cards).toHaveCount(2, { timeout: 20_000 });
+    await expect(cards.nth(0).getByTestId('subagent-group-preview')).toContainText('First review pass.');
+    await expect(cards.nth(1).getByTestId('subagent-group-preview')).toContainText('Second review pass.');
 
     expect(watch.pageErrors).toEqual([]);
     expect(watch.duplicateKeyWarnings).toEqual([]);

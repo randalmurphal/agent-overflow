@@ -55,19 +55,16 @@ const SPAWN_LINES = [
       }),
     },
   }),
-  rpc('rawResponseItem/completed', {
-    threadId: '${THREAD_ID}',
-    turnId: '${TURN_ID}',
-    item: {
-      type: 'function_call_output',
-      call_id: SPAWN_CALL,
-      output: JSON.stringify({ task_name: '/root/reviewer' }),
-    },
-  }),
   // The ownership statement. Until this lands the child thread is
   // "unmapped foreign", and its notifications are quarantined rather
   // than routed — which is exactly why the token tick is gated behind a
   // signal instead of raced against this line.
+  //
+  // Wire order: the spawn handler emits this activity BEFORE it returns,
+  // so the started activity always precedes the function_call_output
+  // (docs/references/codex-wire.md). The session relies on that: an
+  // output with no typed activity behind it is a refusal and gets its own
+  // result row, which on a reversed order would overwrite the spawn row.
   rpc('item/completed', {
     threadId: '${THREAD_ID}',
     turnId: '${TURN_ID}',
@@ -79,6 +76,18 @@ const SPAWN_LINES = [
       agentPath: '/root/reviewer',
     },
   }),
+  rpc('rawResponseItem/completed', {
+    threadId: '${THREAD_ID}',
+    turnId: '${TURN_ID}',
+    item: {
+      type: 'function_call_output',
+      call_id: SPAWN_CALL,
+      output: JSON.stringify({ task_name: '/root/reviewer' }),
+    },
+  }),
+  // The child's own turn opens on ITS thread; the spawn output above
+  // never says so. This is what drives the running state (and Stop).
+  rpc('turn/started', { threadId: CHILD_THREAD, turn: { id: 'child-turn' } }),
 ];
 
 // Cumulative spend = fresh input (91000 - 88000) + cache writes (100) +
@@ -150,7 +159,11 @@ const CHILD_TRANSCRIPT_LINES = [
   }),
 ];
 
+// Codex core renders the FINAL_ANSWER envelope FROM the child's terminal
+// status, so the child's turn/completed always precedes it; the completion
+// record is written when the envelope lands and carries it as payload.
 const FINAL_ANSWER_LINES = [
+  rpc('turn/completed', { threadId: CHILD_THREAD, turn: { id: 'child-turn', status: 'completed' } }),
   rpc('rawResponseItem/completed', {
     threadId: '${THREAD_ID}',
     turnId: '${TURN_ID}',
@@ -266,8 +279,9 @@ test('a Codex spawn_agent child keeps its launched row, opens the same pane, and
   // "reviewer - reviewer".
   await expect(pane.getByTestId('agent-pane-description')).toHaveCount(0);
   await expect(pane.getByTestId('workspace-strip-usage')).toHaveText('3.4k');
-  // `close_agent` is a model tool, so the pane offers no Stop.
-  await expect(pane.getByTestId('agent-pane-stop')).toHaveCount(0);
+  // A running child turn is owned by this session, so the pane offers Stop
+  // (turn/interrupt on the child thread) while it runs.
+  await expect(pane.getByTestId('agent-pane-stop')).toHaveCount(1);
 
   // The full child transcript keeps both calls even though the tray shows
   // only the latest one.
@@ -279,6 +293,7 @@ test('a Codex spawn_agent child keeps its launched row, opens the same pane, and
   await advance(harness, mockId, 'answer');
   await harness.waitForEvent('provider:turn_completed');
   await expect(timeline.getByTestId('subagent-group')).toHaveCount(1);
+  await expect(pane.getByTestId('agent-pane-stop')).toHaveCount(0);
   const card = timeline.getByTestId('subagent-group').first();
   await expect(card.getByTestId('subagent-group-kind')).toHaveText('agent');
   await expect(card.getByTestId('subagent-group-label')).toContainText('reviewer');

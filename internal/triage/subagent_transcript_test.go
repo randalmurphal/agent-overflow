@@ -369,7 +369,7 @@ func TestTaskNotificationKeepsEveryWatchTaskRowEvenWhenNested(t *testing.T) {
 // The notification's `usage` is the run's authoritative final numbers.
 // ---------------------------------------------------------------------
 
-func TestTaskNotificationUsageLandsOnTheLaunchRow(t *testing.T) {
+func TestTaskNotificationUsageLandsOnTheCompletionSibling(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
@@ -389,15 +389,35 @@ func TestTaskNotificationUsageLandsOnTheLaunchRow(t *testing.T) {
 		t.Fatalf("task_progress: %v", err)
 	}
 
+	// Wire order for an async agent: task_updated{completed} settles the
+	// launch onto its completion sibling, then task_notification reports
+	// the run's usage.
+	terminalMeta, _ := json.Marshal(map[string]any{
+		"task_id": "task-usage", "tool_use_id": "agent-usage", "status": "completed", "source": "task_updated",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "agent-usage",
+		Meta: terminalMeta, Content: "done", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("task_updated terminal: %v", err)
+	}
 	notifyAgent(t, router, "t1", "agent-usage", "task-usage", "", map[string]any{
 		"totalTokens": 4321, "toolUses": 7, "durationMs": 42000,
 	})
 
+	// The launch row is the immutable spawn event: nothing lands on it.
 	launch, ok, err := st.GetThreadItem("t1", "agent-usage")
 	if err != nil || !ok {
 		t.Fatalf("lookup launch: ok=%v err=%v", ok, err)
 	}
-	progress := persistedSubagentProgress(launch.Meta)
+	if got := persistedSubagentProgress(launch.Meta); got != (provider.SubagentProgressMeta{}) {
+		t.Fatalf("launch row carries final progress %+v; the completion sibling owns it", got)
+	}
+	completion, ok, err := st.GetThreadItem("t1", ToolCompletionID("agent-usage"))
+	if err != nil || !ok {
+		t.Fatalf("lookup completion sibling: ok=%v err=%v", ok, err)
+	}
+	progress := persistedSubagentProgress(completion.Meta)
 	if progress.TotalTokens != 4321 || progress.ToolUses != 7 || progress.DurationMs != 42000 {
 		t.Fatalf("persisted progress = %+v, want the notification's numbers", progress)
 	}

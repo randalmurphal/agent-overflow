@@ -20,7 +20,8 @@
 // timelineRestoreSwitchEdge.svelte.test.ts, contentGeometrySubscription.test.ts).
 // This suite is the composite outcome claim: the whole scenario mounts,
 // settles at the true bottom inside the harness's bounded frame budget (a
-// spring chase blows it), renders ONE card for the multi-delivery launch,
+// spring chase blows it), renders one card PER DELIVERY under distinct keys
+// (each completion owns its card, docs/specs/agent-visibility.md),
 // keeps every run-child key unique, follows a live fourth delivery, and
 // crosses the entire scenario without a single window error — the freeze was
 // nothing but an uncaught throw inside an update batch.
@@ -138,10 +139,11 @@ describe('bookmarked recovery scenario', () => {
     expect(scrollEl.scrollTop).toBeGreaterThan(0);
     expect(distanceToBottom(scrollEl)).toBeLessThanOrEqual(2);
 
-    // One launch, three durable deliveries → ONE card; the later deliveries
-    // stay chronological leaves. Every keyed row in the run is unique — the
-    // duplicate that froze production cannot re-enter the DOM silently.
-    expect(host.querySelectorAll('[data-testid="subagent-group"]')).toHaveLength(1);
+    // One launch, three durable deliveries → three cards, one per
+    // completion, each under its own completion-id key. Every keyed row in
+    // the run is unique — the duplicate that froze production (three cards
+    // sharing the LAUNCH key) cannot re-enter the DOM silently.
+    expect(host.querySelectorAll('[data-testid="subagent-group"]')).toHaveLength(3);
     const keys = runChildKeys(host);
     expect(keys.length).toBeGreaterThanOrEqual(4);
     expect(new Set(keys).size).toBe(keys.length);
@@ -157,7 +159,7 @@ describe('bookmarked recovery scenario', () => {
     );
     await waitForQuietBottom(scrollEl, 'post-delivery settle', QUIET_BOTTOM);
 
-    expect(host.querySelectorAll('[data-testid="subagent-group"]')).toHaveLength(1);
+    expect(host.querySelectorAll('[data-testid="subagent-group"]')).toHaveLength(4);
     const grownKeys = runChildKeys(host);
     expect(new Set(grownKeys).size).toBe(grownKeys.length);
     expect(distanceToBottom(scrollEl)).toBeLessThanOrEqual(2);

@@ -314,26 +314,85 @@ func (s *Store) decorateSubagentAnchors(q sqlQueryer, threadID string, items []I
 	// parented to the agent's transcript ROOT like every other round's
 	// (claude-wire.md §E6), so the carrier's own subtree is empty and it
 	// would render as an ordinary tool call. It borrows the root's walk.
+	//
+	// A detached Claude launch's completion sibling is an anchor too: the
+	// launch row is the immutable spawn event and the card renders at the
+	// sibling (docs/specs/agent-visibility.md §Immutable agent history),
+	// so the sibling is the row that must carry the counts. It is walked
+	// from its LAUNCH (or the launch's transcript root), because the
+	// agent's rows are parented to the launch, never to the sibling. The
+	// launch is usually in the same window; one batched read resolves the
+	// rest. Codex completions are excluded: their aggregates are a
+	// write-time snapshot (SnapshotSubagentExecutionMeta), never read-time.
 	rootIDs := make([]string, 0, len(items))
 	seenRoot := make(map[string]struct{}, len(items))
 	var walkRootByAnchor map[string]string
-	for _, item := range items {
-		if item.Kind != "tool_call" || item.ToolName == "collab_agent" || strings.TrimSpace(item.ID) == "" {
-			continue
-		}
-		walkRoot := item.ID
-		if root := transcriptRootFromMeta(item.Meta); root != "" && root != item.ID {
+	addAnchor := func(anchorID, meta string) {
+		walkRoot := anchorID
+		if root := transcriptRootFromMeta(meta); root != "" && root != anchorID {
 			walkRoot = root
 			if walkRootByAnchor == nil {
 				walkRootByAnchor = make(map[string]string, 1)
 			}
-			walkRootByAnchor[item.ID] = root
+			walkRootByAnchor[anchorID] = root
 		}
 		if _, dup := seenRoot[walkRoot]; dup {
-			continue
+			return
 		}
 		seenRoot[walkRoot] = struct{}{}
 		rootIDs = append(rootIDs, walkRoot)
+	}
+	launchByID := make(map[string]Item, len(items))
+	var completionLaunchIDs []string
+	for _, item := range items {
+		if strings.TrimSpace(item.ID) == "" || item.ToolName == "collab_agent" {
+			continue
+		}
+		switch item.Kind {
+		case "tool_call":
+			launchByID[item.ID] = item
+			addAnchor(item.ID, item.Meta)
+		case "tool_completion":
+			// A Codex wait carrier's completion is a wait group, not an
+			// agent card; its launch is walked as a tool_call above if
+			// it ever anchors anything.
+			if item.CompletionOf != "" && item.ToolName != "wait_agent" {
+				completionLaunchIDs = append(completionLaunchIDs, item.CompletionOf)
+			}
+		}
+	}
+	// anchorByCompletion maps a completion row's id to the launch whose
+	// aggregate it carries; only completions whose launch resolved to a
+	// Claude tool_call are stamped.
+	var anchorByCompletion map[string]string
+	if len(completionLaunchIDs) > 0 {
+		missing := make([]string, 0, len(completionLaunchIDs))
+		for _, id := range completionLaunchIDs {
+			if _, inWindow := launchByID[id]; !inWindow {
+				missing = append(missing, id)
+			}
+		}
+		if len(missing) > 0 {
+			loaded, err := s.subagentLaunchRowsByID(q, threadID, missing)
+			if err != nil {
+				return nil, err
+			}
+			for id, launch := range loaded {
+				launchByID[id] = launch
+			}
+		}
+		anchorByCompletion = make(map[string]string, len(completionLaunchIDs))
+		for _, item := range items {
+			if item.Kind != "tool_completion" || item.CompletionOf == "" {
+				continue
+			}
+			launch, ok := launchByID[item.CompletionOf]
+			if !ok || launch.Kind != "tool_call" || launch.ToolName == "collab_agent" {
+				continue
+			}
+			anchorByCompletion[item.ID] = launch.ID
+			addAnchor(launch.ID, launch.Meta)
+		}
 	}
 	if len(rootIDs) == 0 {
 		return items, nil
@@ -360,11 +419,15 @@ func (s *Store) decorateSubagentAnchors(q sqlQueryer, threadID string, items []I
 		return items, nil
 	}
 	for i := range items {
-		agg, ok := aggregates[items[i].ID]
+		anchorID := items[i].ID
+		if launchID, isCompletion := anchorByCompletion[items[i].ID]; isCompletion {
+			anchorID = launchID
+		}
+		agg, ok := aggregates[anchorID]
 		if !ok {
 			// A carrier with no bounds row of its own (the no-rounds
 			// path, where the map is keyed by root) borrows the root's.
-			root, isCarrier := walkRootByAnchor[items[i].ID]
+			root, isCarrier := walkRootByAnchor[anchorID]
 			if !isCarrier {
 				continue
 			}
@@ -520,6 +583,43 @@ func subagentRoundBoundsFor(
 		add(subagentRoundBounds{anchorID: carrier, rootID: root})
 	}
 	return out
+}
+
+// subagentLaunchRowsByID resolves the launch rows behind completion
+// siblings whose launch fell outside the window: one read over the
+// logical timeline (local and imported arms), projecting only what the
+// decorator needs. Ids that do not resolve are simply absent.
+func (s *Store) subagentLaunchRowsByID(q sqlQueryer, threadID string, ids []string) (map[string]Item, error) {
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, 0, len(ids))
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	source, queryArgs := timelineArms(threadID, timelineSelection{
+		Columns: func(string) string {
+			return "items.id AS id, items.kind AS kind, items.tool_name AS tool_name, items.meta AS meta"
+		},
+		Where:     "items.id IN (" + placeholders + ")",
+		WhereArgs: args,
+	})
+	rows, err := q.Query(source, queryArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("store: resolve subagent launches for completions in %s: %w", threadID, err)
+	}
+	defer rows.Close()
+	out := make(map[string]Item, len(ids))
+	for rows.Next() {
+		var item Item
+		if err := rows.Scan(&item.ID, &item.Kind, &item.ToolName, &item.Meta); err != nil {
+			return nil, fmt.Errorf("store: scan subagent launch row: %w", err)
+		}
+		item.ThreadID = threadID
+		out[item.ID] = item
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate subagent launch rows for %s: %w", threadID, err)
+	}
+	return out, nil
 }
 
 // transcriptRootFromMeta reads a resume carrier's `transcript_root_id`

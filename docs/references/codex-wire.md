@@ -565,6 +565,11 @@ identity and `agentPath` is the canonical task path. V2 spawn output normally
 returns `{"task_name":"/root/reviewer"}` and may intentionally hide nickname
 metadata; the activity item, not the raw output, is the ownership source.
 
+The spawn handler emits `subAgentActivity started` before it returns, so the
+activity always precedes the spawn's `function_call_output` response item
+(`core/src/tools/handlers/multi_agents_v2/spawn.rs`). A collaboration output
+with no typed activity behind it is therefore a refusal or error, and the
+session renders it as its own result row; mock fixtures must keep that order.
 V2 core creates and starts the child before emitting `subAgentActivity`, so
 the child's `thread/started`, `turn/started`, or transcript deltas can arrive
 first. The session adapter must quarantine every unmapped non-root provider
@@ -761,8 +766,12 @@ Encrypted deliveries have a readable header and an `encrypted_content` block.
 Show a user-style, sender-attributed placeholder in the receiving agent scope.
 Preserve readable bodies, with bounded previews and payload hydration for
 activity rows. Outbound interactions stay in the sender scope; the child's own
-final answer stays a normal assistant message. A root FINAL_ANSWER delivery
-has its own answer-received activity without governing current execution.
+final answer stays a normal assistant message. Codex core renders
+FINAL_ANSWER from the child's terminal status, so it always follows the
+child's `turn/completed` and reaches the parent when its model next samples.
+Inside the open parent turn the pending execution completion is written at
+that delivery with the answer as its payload; a delivery in a later turn is
+its own answer-received activity. Neither governs current execution.
 
 Fresh roots and their children receive raw mailbox items. Cold resumes lack
 raw-event opt-in, so AO observes appended native records for known reusable
