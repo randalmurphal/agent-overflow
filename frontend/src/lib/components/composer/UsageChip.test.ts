@@ -70,6 +70,39 @@ describe('<UsageChip>', () => {
     expect(trigger.title).toContain('Estimated cost');
   });
 
+  it('clears usage on thread changes and restores the current accounting hint on return', async () => {
+    const pane = await buildPane(makeThread({ id: 'with-usage' }));
+    const empty = await buildPane(makeThread({ id: 'without-usage' }), [], 'empty');
+    let bucket = lifetimeBucket({ pendingRows: 1, costSource: 'provider-estimate' });
+    const read = setBindingMock('GetUsageStats', async (query: unknown) =>
+      (query as { threadId?: string }).threadId === 'with-usage' ? [bucket] : []);
+    const { findByTestId, queryByTestId, rerender } = render(UsageChip, { props: { pane } });
+    let trigger = await findByTestId('usage-chip-trigger');
+    expect(trigger.title).toContain('accounting is still pending');
+
+    applyUsageEvent({ action: 'progress', threadId: pane.threadId!, error: 'Reported usage could not be saved.' });
+    await waitFor(() => expect(trigger.title).toBe('Reported usage could not be saved.'));
+
+    await rerender({ pane: empty });
+    await waitFor(() => {
+      expect(read).toHaveBeenCalledWith(expect.objectContaining({ threadId: 'without-usage' }));
+      expect(queryByTestId('usage-chip-trigger')).toBeNull();
+    });
+
+    bucket = lifetimeBucket({ pendingRows: 0, costSource: 'provider-estimate', outputTokens: 900 });
+    await rerender({ pane });
+    trigger = await findByTestId('usage-chip-trigger');
+    expect(trigger.textContent).toContain('900');
+    expect(trigger.title).toContain('Cost estimated by Codex');
+
+    bucket = lifetimeBucket({ outputTokens: 1000 });
+    bumpUsageRefresh(pane.threadId!);
+    await waitFor(() => {
+      expect(trigger.textContent).toContain('1.0k');
+      expect(trigger.title).toContain('Estimated cost');
+    });
+  });
+
   it('suppresses the cost when costUsd is 0 and some rows are unpriced', async () => {
     const pane = await buildPane(makeThread());
     setBindingMock('GetUsageStats', async () => [

@@ -47,6 +47,7 @@ function backgroundTask(opts: {
   launchId: string;
   taskId: string;
   at: number;
+  completedAt?: number;
   parentId?: string;
   watch?: boolean;
   withBell: boolean;
@@ -57,6 +58,7 @@ function backgroundTask(opts: {
     input: { description: `${opts.launchId} work` },
     ...(opts.watch ? { watch_task: true } : {}),
   });
+  const completedAt = opts.completedAt ?? opts.at + 10;
   const rows: Item[] = [
     mkItem({
       id: opts.launchId,
@@ -71,7 +73,7 @@ function backgroundTask(opts: {
     }),
     mkItem({
       id: `complete:${opts.launchId}`,
-      itemIndex: opts.at + 10,
+      itemIndex: completedAt,
       kind: 'tool_completion',
       toolName: opts.toolName,
       isBackground: true,
@@ -85,7 +87,7 @@ function backgroundTask(opts: {
     rows.push(
       mkItem({
         id: `task-notification:${opts.taskId}`,
-        itemIndex: opts.at + 11,
+        itemIndex: completedAt + 1,
         kind: 'notification',
         summary: `Background task ${opts.taskId} completed`,
         meta,
@@ -160,7 +162,7 @@ describe('background completion visibility (filter + grouping, production order)
     // Q11: nested completions do not notify, so there is no bell to hide;
     // the completion row is still a row, inside the launching agent's body.
     const nodes = project([
-      ...backgroundTask({ toolName: 'Agent', launchId: 'outer', taskId: 'T3', at: 0, withBell: true }),
+      ...backgroundTask({ toolName: 'Agent', launchId: 'outer', taskId: 'T3', at: 0, completedAt: 12, withBell: true }),
       ...backgroundTask({ toolName: 'Agent', launchId: 'inner', taskId: 'T4', at: 1, parentId: 'outer', withBell: false }),
       mkItem({ id: 'outer-prose', itemIndex: 3, parentId: 'outer', summary: 'outer continues' }),
     ]);

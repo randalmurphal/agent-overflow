@@ -1,16 +1,24 @@
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { computerCatalogWriter } from './computerCatalogWriter';
+import * as replicaSession from '../replica/session';
 import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
 import { detachBackend } from '../transport/backends';
 import { observeCatalogStamp, resetCatalogStampsForTest } from '../replica/catalogStamp';
 import type { ThreadGroup } from '../types/models';
 
-const cache = vi.hoisted(() => ({ token: 1, write: vi.fn(async () => {}) }));
-vi.mock('../replica/session', () => ({
-  putReplicaCatalog: (...args: unknown[]) => cache.write(...args as []),
-  replicaToken: () => cache.token,
-}));
-afterEach(() => { resetCatalogStampsForTest(); resetStagedBackends(); cache.write.mockReset(); cache.token = 1; });
+const cache = { token: 1, write: vi.fn<typeof replicaSession.putReplicaCatalog>() };
+beforeEach(() => {
+  cache.write.mockResolvedValue(undefined);
+  vi.spyOn(replicaSession, 'putReplicaCatalog').mockImplementation(cache.write);
+  vi.spyOn(replicaSession, 'replicaToken').mockImplementation(() => cache.token);
+});
+afterEach(() => {
+  resetCatalogStampsForTest();
+  resetStagedBackends();
+  vi.restoreAllMocks();
+  cache.write.mockReset();
+  cache.token = 1;
+});
 const group = (id: string): ThreadGroup => ({ id, name: id, projectId: 'p', createdAt: 0, updatedAt: 0 });
 
 it('coalesces a burst, writes only its computer, and records an empty catalog after deletion', async () => {
@@ -59,4 +67,20 @@ it('keeps at most one write running and saves the newest rows after it finishes'
   done();
   await vi.waitFor(() => expect(cache.write).toHaveBeenCalledTimes(2));
   expect(cache.write).toHaveBeenLastCalledWith('gpu', 'groups', [group('last')], 'stamp', 1);
+});
+
+it('cancels queued writes on reset and accepts new changes', async () => {
+  stageBackend({ id: 'gpu' });
+  observeCatalogStamp('gpu', 'groups', 'stamp');
+  let rows = [group('before-reset')];
+  const writer = computerCatalogWriter('groups', () => rows, () => 'gpu');
+  writer.changed('gpu');
+  writer.reset();
+  await Promise.resolve();
+  expect(cache.write).not.toHaveBeenCalled();
+
+  rows = [group('after-reset')];
+  writer.changed('gpu');
+  await vi.waitFor(() => expect(cache.write).toHaveBeenCalledTimes(1));
+  expect(cache.write).toHaveBeenLastCalledWith('gpu', 'groups', rows, 'stamp', 1);
 });

@@ -70,7 +70,10 @@ it.each([0, 7])('replays a completion never received by this client (baseline %i
   second.pushFrame({ type: 'event', channel: 'provider:turn_completed',
     seq: completedBeforeConnect + 1, data: { turnId: 'turn' } });
   second.pushFrame({ type: 'replay' });
-  expect(completed).toHaveBeenCalledExactlyOnceWith({ turnId: 'turn' });
+  expect(completed).toHaveBeenCalledExactlyOnceWith({ turnId: 'turn' }, completedBeforeConnect + 1);
+  second.pushFrame({ type: 'event', channel: 'provider:turn_completed',
+    seq: completedBeforeConnect + 1, data: { turnId: 'turn' } });
+  expect(completed).toHaveBeenCalledTimes(1);
   client.close();
 });
 
@@ -93,7 +96,7 @@ it('ignores invalid baseline cursors and preserves historical notification activ
   });
   socket.pushFrame({ type: 'event', channel: 'notification:activated', seq: 1, data: 'open thread' });
   socket.pushFrame({ type: 'replay' });
-  expect(activated).toHaveBeenCalledExactlyOnceWith('open thread');
+  expect(activated).toHaveBeenCalledExactlyOnceWith('open thread', 1);
   socket.triggerClose();
   await vi.advanceTimersByTimeAsync(250);
   const next = MockWebSocket.instances[1]!;

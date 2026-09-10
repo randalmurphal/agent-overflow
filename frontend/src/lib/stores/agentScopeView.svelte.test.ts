@@ -20,6 +20,7 @@ import {
 import { installPaneMocks, makeItem, makeThread } from '../../test/helpers/chat';
 import { resetBindingMocks } from '../../test/mocks/bindings-app';
 import type { Item } from '../types/models';
+import { groupItemsBySubagent, nodeContainsItem, timelineNodeItemId } from '../utils/subagentGrouping';
 
 const THREAD_ID = 'thread-scope';
 
@@ -37,8 +38,8 @@ function fixtureItems(): Item[] {
   ];
 }
 
-async function setup(): Promise<{ pane: ThreadPane; agent: AgentPaneState }> {
-  installPaneMocks(fixtureItems());
+async function setup(items: Item[] = fixtureItems()): Promise<{ pane: ThreadPane; agent: AgentPaneState }> {
+  installPaneMocks(items);
   const pane = createThreadPane({ paneId: 'main' });
   registerPaneForTest('main', pane);
   await pane.switchThread(makeThread({ id: THREAD_ID }));
@@ -90,6 +91,29 @@ describe('createAgentScopeView', () => {
     expect(ids).toContain('nested-completion');
     expect(ids).not.toContain('scope-completion');
 
+    view.dispose();
+  });
+
+  it('shows a late nested completion in continuous history without changing the completed parent card', async () => {
+    const { pane, agent } = await setup([
+      makeItem({ id: 'launch-1', threadId: THREAD_ID, itemIndex: 0, createdAt: 0, kind: 'tool_call', toolName: 'Agent', isBackground: true }),
+      makeItem({ id: 'nested-launch', threadId: THREAD_ID, itemIndex: 1, createdAt: 1, kind: 'tool_call', toolName: 'Agent', isBackground: true, parentId: 'launch-1' }),
+      makeItem({ id: 'outer-prose', threadId: THREAD_ID, itemIndex: 3, createdAt: 3, parentId: 'launch-1' }),
+      makeItem({ id: 'scope-completion', threadId: THREAD_ID, itemIndex: 10, createdAt: 10, kind: 'tool_completion', completionOf: 'launch-1' }),
+    ]);
+    const view = createAgentScopeView(pane, agent, 'launch-1');
+    const before = groupItemsBySubagent(pane.items);
+    expect(before.map(timelineNodeItemId)).toEqual(['launch-1', 'scope-completion']);
+
+    pane.upsertItem(makeItem({
+      id: 'nested-completion', threadId: THREAD_ID, itemIndex: 11, createdAt: 11,
+      kind: 'tool_completion', completionOf: 'nested-launch', parentId: 'launch-1',
+    }));
+
+    expect(groupItemsBySubagent(pane.items)).toEqual(before);
+    const scoped = groupItemsBySubagent(view.items);
+    expect(scoped.map(timelineNodeItemId)).toEqual(['nested-launch', 'outer-prose', 'nested-completion']);
+    expect(scoped.filter((node) => nodeContainsItem(node, 'nested-completion'))).toHaveLength(1);
     view.dispose();
   });
 
