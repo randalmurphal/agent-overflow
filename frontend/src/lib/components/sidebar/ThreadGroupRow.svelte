@@ -1,21 +1,7 @@
 <script lang="ts">
-  // A thread group's own row. It is a SIBLING of ThreadRow, not a new widget:
-  // same 24px height, same leading pin gutter and indent scale
-  // (utils/sidebarRowMetrics), the same chevron button, the same status dot +
-  // label markup, the same inline-rename flow. What differs is what the row
-  // is FOR — a group has no thread of its own, so everything it shows (the
-  // status pill, the activity stamp, the sort position) is bubbled from its
-  // members by the tree builder and arrives here as props.
-  //
-  // The row body toggles expansion, the way a project header does; there is
-  // nothing else to open. Members are rendered by ProjectThreadList as
-  // ordinary ThreadRows one indent level in, not as children of this element.
-
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { ThreadGroup } from '../../types/models';
-  import { getMinuteNow } from '../../stores/minuteClock.svelte';
   import { toggleGroup } from '../../stores/sidebar.svelte';
-  import { getThreadById, getThreadLiveActivityAt } from '../../stores/threads.svelte';
   import { consumePendingGroupRename } from '../../stores/threadGroups.svelte';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import Plus from '@lucide/svelte/icons/plus';
@@ -35,9 +21,7 @@
   } from './threadGroupActions';
   import { PIN_GROUP_BACK, PIN_GROUP_FRONT } from './threadRowActions';
   import { isImeComposingEvent } from '../../utils/imeComposition';
-  import { sidebarRowPaddingLeftPx, sidebarTimeLabel } from '../../utils/sidebarRowMetrics';
-  import { threadGroupBackend } from '../../transport/entityIndex';
-  import { HOME_BACKEND } from '../../transport/backendKey';
+  import { sidebarRowPaddingLeftPx } from '../../utils/sidebarRowMetrics';
   import {
     canDropThreadInGroup,
     endThreadRowDrag,
@@ -83,26 +67,6 @@
   let memberCount = $derived(memberThreadIds.length);
   let isPinned = $derived(group.pinnedAt != null);
   let rowPaddingLeftPx = $derived(sidebarRowPaddingLeftPx(indent));
-
-  // Same contract as ThreadRow's stamp, and read the same way: from the
-  // members' own live-activity boxes. The tree's latestActivityAt is
-  // deliberately not compared by sameSidebarVisibleNodes, so taking it as a
-  // prop would freeze this label at whatever the last render-changing beat
-  // left behind while a member streams. An empty group falls back to its own
-  // last write, which is when it was created or renamed.
-  let timeLabel = $derived.by(() => {
-    getMinuteNow();
-    let latest = 0;
-    for (const id of memberThreadIds) {
-      const member = getThreadById(id);
-      if (!member) continue;
-      const at = getThreadLiveActivityAt(member);
-      if (at > latest) latest = at;
-    }
-    // A group and its members live on one machine, so the group's own
-    // backend is the clock for every stamp folded in above.
-    return sidebarTimeLabel(latest || (group.updatedAt ?? 0), threadGroupBackend(group.id) ?? HOME_BACKEND);
-  });
 
   // ── Inline rename ────────────────────────────────────────────────────────
   let editing = $state(false);
@@ -351,23 +315,14 @@
       >
         {group.name}
       </span>
-      <div class="-ml-0.5 relative shrink-0 flex items-center justify-end min-w-5">
-        {#if !expanded}
-          <span
-            class="text-[0.625rem] tabular-nums text-fg-hint"
-            data-testid="thread-group-row-count"
-          >
-            {memberCount}
-          </span>
-        {:else if memberCount > 0}
-          <span
-            class="text-[0.625rem] tabular-nums text-fg-hint"
-            data-testid="thread-group-row-time"
-          >
-            {timeLabel}
-          </span>
-        {/if}
-      </div>
+      {#if !expanded}
+        <span
+          class="-ml-0.5 shrink-0 min-w-5 text-right text-[0.625rem] tabular-nums text-fg-hint"
+          data-testid="thread-group-row-count"
+        >
+          {memberCount}
+        </span>
+      {/if}
       <button
         type="button"
         aria-label="New Thread in Group"

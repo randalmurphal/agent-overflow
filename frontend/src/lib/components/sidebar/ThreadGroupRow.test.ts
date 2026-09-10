@@ -26,10 +26,7 @@ import {
   threadDragPayloadForEvent,
 } from '../../utils/threadDragPayload';
 import type { ThreadDragPayload } from '../../utils/threadDragPayload';
-import {
-  replaceAllThreads,
-  touchThreadActivity,
-} from '../../stores/threads.svelte';
+import { replaceAllThreads } from '../../stores/threads.svelte';
 import type { Thread, ThreadGroup } from '../../types/models';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 
@@ -145,34 +142,10 @@ describe('<ThreadGroupRow>', () => {
     expect(queryByTestId('thread-group-row-time')).toBeNull();
   });
 
-  it('shows the activity time when expanded', () => {
-    const { getByTestId, queryByTestId } = renderRow({ expanded: true });
+  it('shows no activity time when expanded', () => {
+    const { queryByTestId } = renderRow({ expanded: true });
     expect(queryByTestId('thread-group-row-count')).toBeNull();
-    expect(getByTestId('thread-group-row-time')).toBeInTheDocument();
-  });
-
-  it('follows a member\'s live activity, which no prop would carry', async () => {
-    // The tree's latestActivityAt is deliberately not compared by
-    // sameSidebarVisibleNodes, so a prop would freeze this label at the last
-    // render-changing beat while a member streams. The row reads the member's
-    // own activity box instead.
-    replaceAllThreads([mkThread('t1', { updatedAt: Date.now() - 7_200_000 })]);
-    const { getByTestId } = renderRow({ memberThreadIds: ['t1'] });
-    expect(getByTestId('thread-group-row-time')).toHaveTextContent('2h');
-
-    touchThreadActivity('t1', Date.now());
-    await tick();
-
-    expect(getByTestId('thread-group-row-time')).toHaveTextContent('now');
-  });
-
-  it('falls back to the group\'s own last write when no member is in the store', () => {
-    replaceAllThreads([]);
-    const { getByTestId } = renderRow({
-      memberThreadIds: ['t1'],
-      group: mkGroup({ updatedAt: Date.now() - 7_200_000 }),
-    });
-    expect(getByTestId('thread-group-row-time')).toHaveTextContent('2h');
+    expect(queryByTestId('thread-group-row-time')).toBeNull();
   });
 
   it('shows nothing on the right for an empty expanded group', () => {

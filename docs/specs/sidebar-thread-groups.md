@@ -231,13 +231,12 @@ Names are trimmed and non-empty; a blank rename is rejected.
   is dropped from its project's group list, and a project with a
   surviving group is a visible project.
 - `components/sidebar/ThreadGroupRow.svelte`: same 24px row grammar as
-  `ThreadRow` (pin gutter, chevron, title, relative time; no status dot
+  `ThreadRow` (pin gutter, chevron, title; no timestamp, status dot
   or label), folder glyph before the name, member count when collapsed,
   inline rename on double-click / F2, its own context menu
   (`ThreadGroupContextMenu.svelte`). Members render through `ThreadRow`
-  at `indent = depth + 1`. The shared numbers and the relative-time
-  helper move to `utils/sidebarRowMetrics.ts` so the two rows cannot
-  drift, and `ThreadRowPinButton` is generalised to serve both: its
+  at `indent = depth + 1`. Shared row dimensions live in
+  `utils/sidebarRowMetrics.ts`, and `ThreadRowPinButton` serves both: its
   writes arrive as `onToggle` / `onCycleBurner` closures and its aria
   labels as `pinLabel` / `unpinLabel`, replacing the thread-only
   `buildCtx` prop. A blank inline rename CANCELS rather than round-trips
