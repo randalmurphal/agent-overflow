@@ -22,5 +22,5 @@ export function sampleScrollPosition(modeled: number, current: number, target: n
   // Wait for the path to reach the next point instead of moving backwards.
   const sampled = modeled >= current ? Math.max(current, nearest) : Math.min(current, nearest);
   const bounded = current <= target ? Math.min(sampled, target) : Math.max(sampled, target);
-  return Math.abs(bounded - current) <= scrollReadbackTolerance(grid, current) ? current : bounded;
+  return bounded !== target && Math.abs(bounded - current) <= scrollReadbackTolerance(grid, current) ? current : bounded;
 }

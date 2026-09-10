@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { frame, makeHarness, velocities, displacements } from './springTestHarness';
 
-describe('acceleration slew (onset ramp + retarget bridge + parked decay)', () => {
+describe('onset, acceleration continuity, and parked decay', () => {
   it('ramps a standstill onset geometrically from the motion floor instead of jumping to the envelope peak', () => {
     const h = makeHarness();
     h.setTarget(60);
@@ -9,9 +9,7 @@ describe('acceleration slew (onset ramp + retarget bridge + parked decay)', () =
     h.spring.start();
 
     const speeds = velocities(h, 6);
-    // Pre-slew, the first frame jumped straight to min(raw spring
-    // ≈3.8, envelope 6.6). Slewed: the 1px-per-60Hz-frame motion floor
-    // × the ramp factor, compounding ~10% per frame.
+    // The onset compounds from the base speed at roughly 10% per frame.
     expect(speeds[0]).toBeGreaterThan(1.0);
     expect(speeds[0]).toBeLessThan(1.2);
     for (let i = 1; i < speeds.length; i++) {
@@ -34,10 +32,8 @@ describe('acceleration slew (onset ramp + retarget bridge + parked decay)', () =
       moves.push(h.getScrollTop() - before);
     }
     expect(Math.abs(h.getScrollTop() - 100)).toBeLessThanOrEqual(1);
-    // The peak is the slew↔envelope crossover — mid-glide, not frame
-    // one. Rise is monotone (the ramp), fall is monotone (the
-    // envelope); the final arrival frame is excluded since it folds in
-    // the sentinel-entry exact snap.
+    // The peak occurs mid-glide. Exclude the final exact arrival write
+    // when checking the monotone acceleration and braking legs.
     const peakIndex = moves.indexOf(Math.max(...moves));
     expect(peakIndex).toBeGreaterThan(5);
     for (let i = 1; i <= peakIndex; i++) {
@@ -79,9 +75,7 @@ describe('acceleration slew (onset ramp + retarget bridge + parked decay)', () =
     const speeds: number[] = [];
     for (let i = 0; i < 12; i++) {
       if (i === 2) {
-        // A second flush lands before the first bridge reaches zero
-        // acceleration. Retargeting an active bridge must update its
-        // destination without restarting its curvature.
+        // Another flush preserves the acceleration already in progress.
         h.setTarget(h.getTarget() + 100);
         h.spring.markTargetChanged();
       }
@@ -100,7 +94,7 @@ describe('acceleration slew (onset ramp + retarget bridge + parked decay)', () =
     }
   });
 
-  it('scales the retarget bridge without nearly stopping a cap-speed glide', () => {
+  it('rounds a large retarget without nearly stopping a cap-speed glide', () => {
     const h = makeHarness();
     h.setTarget(1200);
     h.spring.markTargetChanged();
@@ -116,7 +110,7 @@ describe('acceleration slew (onset ramp + retarget bridge + parked decay)', () =
       consecutiveDecelFrames = acceleration < -0.05 ? consecutiveDecelFrames + 1 : 0;
     }
     expect(speed).toBeGreaterThan(15);
-    expect(acceleration).toBeLessThan(-1);
+    expect(acceleration).toBeLessThan(-0.4);
 
     h.setTarget(h.getTarget() + 1200);
     h.spring.markTargetChanged();
@@ -132,17 +126,14 @@ describe('acceleration slew (onset ramp + retarget bridge + parked decay)', () =
     expect(handoffAccelerations[1]).toBeLessThan(0);
     expect(handoffAccelerations.some((value) => value > 0)).toBe(true);
     expect(Math.min(...handoffSpeeds)).toBeGreaterThan(10);
-    // Relative jerk scaling keeps a large handoff responsive while still
-    // taking many intermediate acceleration steps. The old one-frame
-    // flip had only the two endpoint values.
-    const increasingSteps = handoffAccelerations
-      .slice(1)
-      .filter((value, index) => value > handoffAccelerations[index]);
-    expect(increasingSteps.length).toBeGreaterThanOrEqual(8);
+    expect(Math.max(...handoffSpeeds)).toBeCloseTo(27);
+    for (let i = 1; i < handoffAccelerations.length; i++) {
+      expect(Math.abs(handoffAccelerations[i] - handoffAccelerations[i - 1])).toBeLessThan(0.5);
+    }
   });
 
-  it.each([60, 120, 165])(
-    'bounds every braking-to-driving retarget at %iHz during repeated line growth',
+  it.each([60, 120, 144, 165, 240])(
+    'bounds acceleration changes in both directions at %iHz during repeated line growth',
     (refreshHz) => {
       const h = makeHarness();
       const frameMs = 1000 / refreshHz;
@@ -175,8 +166,8 @@ describe('acceleration slew (onset ramp + retarget bridge + parked decay)', () =
 
       const warmStart = framesPerGrowth * 4;
       for (let i = warmStart + 1; i < accelerations.length; i++) {
-        const upwardJerk = (accelerations[i] - accelerations[i - 1]) / stepFraction;
-        expect(upwardJerk, `tick ${i}`).toBeLessThanOrEqual(0.105);
+        const jerk = (accelerations[i] - accelerations[i - 1]) / stepFraction;
+        expect(Math.abs(jerk), `tick ${i}`).toBeLessThanOrEqual(0.105);
       }
       expect(speeds.slice(warmStart).every((value) => value > 0)).toBe(true);
       expect(steps.slice(warmStart).every((value) => value > 0)).toBe(true);
@@ -199,7 +190,7 @@ describe('acceleration slew (onset ramp + retarget bridge + parked decay)', () =
     }
 
     // Error diffusion turns the fractional curve into 1/2/3px writes,
-    // but the bridge must not introduce a visible pause or reversal at
+    // but acceleration shaping must not introduce a visible pause or reversal at
     // the retarget boundaries once the steady stream is established.
     for (const move of moves.slice(32)) {
       expect(move).toBeGreaterThan(0);
@@ -234,19 +225,7 @@ describe('acceleration slew (onset ramp + retarget bridge + parked decay)', () =
   });
 
   it('advances the ramp by wall time, not tick count, on high-refresh displays', () => {
-    // 60Hz vs 120Hz drives of the same chase land at ~the same position
-    // after the same wall time: the ramp compounds G^stepFraction. In
-    // this ceiling-dominated regime the tolerance pins the RAMP's time
-    // scaling only — the integrator's own composability is pinned
-    // separately by the ceiling-free test below. The motion floor is
-    // display-independent, isolating time scaling from quantized motion.
-    // 1s window over a long chase: ramp (~0.5s) + cruise. Bounded
-    // one-off artifacts — the first tick integrates a full 60Hz step in
-    // both drives (no prior timestamp), handing the finer drive ~half a
-    // frame of ramp head start — stay constant while distance grows, so
-    // the tolerance is meaningful here where a broken time scaling
-    // (e.g. per-tick instead of per-fraction compounding) would diverge
-    // by the ramp's whole shape.
+    // The same wall time must advance both the onset ramp and cruise.
     const run = (frameMs: number): number => {
       const h = makeHarness();
       h.setTarget(2000);
@@ -261,23 +240,13 @@ describe('acceleration slew (onset ramp + retarget bridge + parked decay)', () =
     expect(Math.abs(at60 - at120)).toBeLessThan(at60 * 0.05);
   });
 
-  it('integrates composably across fractional steps (60Hz vs 120Hz, ceiling-free regime)', () => {
-    // A 6px quantum keeps every velocity below the slew base ramp
-    // (1.10), the envelope min (1.6), and the motion floor — pure
-    // spring physics, so this directly pins the integrator's
-    // fractional-step composability: retention must be
-    // (damping/mass)^f, not (damping^f)/mass. The historical form's
-    // effective 120Hz retention was 0.448/frame vs the tuned 0.56 —
-    // ~20% velocity bleed per extra step — which diverges far outside
-    // this tolerance.
+  it('keeps a small glide comparable across fractional steps', () => {
     const run = (frameMs: number): number => {
       const h = makeHarness();
       h.setTarget(6);
       h.spring.markTargetChanged();
       h.spring.start();
-      // Identical first tick in both drives: a chase's first tick has
-      // no prior timestamp and integrates one full frame regardless of
-      // cadence — a start transient, not a composability property.
+      // Both drives begin with the same initial full step.
       frame();
       // Then exactly 100ms of wall time at each cadence.
       const count = Math.round(100 / frameMs);
@@ -288,19 +257,12 @@ describe('acceleration slew (onset ramp + retarget bridge + parked decay)', () =
     const at120 = run(1000 / 120);
     expect(at60).toBeGreaterThan(2); // meaningfully mid-glide, not arrived
     expect(at60).toBeLessThan(5.5);
-    // Velocity composes exactly; the ~2% residual is position sampling
-    // (displacement per step is end-of-step velocity × fraction, so
-    // finer steps undershoot slightly while velocity ramps — bounded,
-    // decaying, sub-pixel). The historical integrator's per-step mass
-    // divide bled ~20% velocity per extra step and lands far outside
-    // this bound.
     expect(Math.abs(at60 - at120)).toBeLessThan(at60 * 0.04);
   });
 
   it('re-ramps a reversal from the base: the flipped direction never opens with a hard onset', () => {
     const h = makeHarness();
-    // Build real upward speed (~9.6 px/frame at frame 20), then flip
-    // the target far below the current position mid-chase.
+    // Reverse a moving glide mid-chase.
     h.setTarget(300);
     h.spring.markTargetChanged();
     h.spring.start();
@@ -309,20 +271,19 @@ describe('acceleration slew (onset ramp + retarget bridge + parked decay)', () =
     h.setTarget(0);
     h.spring.markTargetChanged();
 
-    // The old velocity sheds through zero on the spring curve
-    // (deceleration is never slew-limited), then the downward leg
-    // ramps geometrically from the base — without the negative-side
-    // clamp the first downward frame would be ~-5 (raw spring), a
-    // visible kick.
+    // Direction changes shed the old velocity before a bounded onset.
     const speeds = velocities(h, 6);
     const firstDown = speeds.findIndex((v) => v < 0);
     expect(firstDown).toBeGreaterThanOrEqual(0);
     expect(firstDown).toBeLessThanOrEqual(2);
     expect(speeds[firstDown]).toBeGreaterThanOrEqual(-1.2);
+    let acceleration = 0;
     for (let i = firstDown + 1; i < speeds.length; i++) {
-      const ratio = speeds[i] / speeds[i - 1];
-      expect(ratio).toBeGreaterThan(1.05);
-      expect(ratio).toBeLessThan(1.2);
+      const nextAcceleration = speeds[i] - speeds[i - 1];
+      expect(nextAcceleration).toBeLessThan(0);
+      expect(Math.abs(nextAcceleration - acceleration)).toBeLessThanOrEqual(0.101);
+      expect(-nextAcceleration).toBeLessThanOrEqual(Math.max(1, -speeds[i - 1]) * 0.101);
+      acceleration = nextAcceleration;
     }
   });
 

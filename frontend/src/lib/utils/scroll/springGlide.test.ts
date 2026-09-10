@@ -2,9 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { frame, makeHarness, type Harness } from './springTestHarness';
 import { ARRIVAL_DISTANCE_PX } from './resolver';
 
-describe('glide shaping (decel envelope + quantized tail)', () => {
-  // The envelope shapes the continuous ease-out; quantization is tested
-  // separately against that path in springTrajectory.test.ts.
+describe('glide shaping and quantized landing', () => {
   function parkAt(h: Harness, target: number): void {
     h.setTarget(target);
     h.spring.markTargetChanged();
@@ -25,7 +23,7 @@ describe('glide shaping (decel envelope + quantized tail)', () => {
     return moves;
   }
 
-  it('bounds the peak with the envelope and holds the motion floor through the tail', () => {
+  it('bounds the peak and keeps easing through the tail without a crawl', () => {
     const h = makeHarness();
     parkAt(h, 100);
 
@@ -33,29 +31,18 @@ describe('glide shaping (decel envelope + quantized tail)', () => {
     h.spring.markTargetChanged();
     const moves = movesUntilNear(h, 160, 60);
 
-    // Envelope: a 60px quantum's peak is where the slew ramp crosses
-    // the falling envelope (≈2.5–3), never the raw spring's
-    // distance-proportional zoom (≈8.7 for 60px).
     for (const move of moves) {
       expect(move).toBeLessThanOrEqual(7);
     }
-    // Ease-out: once past the peak, per-frame moves only decelerate —
-    // the envelope tracks remaining distance down, decays naturally,
-    // then plateaus at the motion floor (equal frames allowed). The
-    // final frame is excluded: it combines the last decay step with
-    // the sentinel-entry exact snap (≤1px arrival band, invisible), so
-    // it reads larger than the step before it.
+    // Exclude the final exact arrival write from the monotone braking check.
     const peakIndex = moves.indexOf(Math.max(...moves));
     for (let i = peakIndex + 1; i < moves.length - 1; i++) {
       expect(moves[i]).toBeLessThanOrEqual(moves[i - 1] + 0.01);
     }
     expect(moves[moves.length - 1]).toBeLessThanOrEqual(1.55);
-    // Motion-floor hold: the deceleration parks at 1.0 CSS px per
-    // 60Hz-equivalent frame at this harness's
-    // 16.67ms cadence) instead of decaying through it.
-    const floorHold = moves.filter((m) => m > 0.98 && m < 1.02);
-    expect(floorHold.length).toBeGreaterThanOrEqual(2);
-    // The final three CSS pixels release the floor into a continuous ease-out.
+    const tail = moves.filter((move) => move < 1.2);
+    expect(tail.length).toBeGreaterThanOrEqual(2);
+    expect(tail.slice(0, -1).every((move) => move > 0.5)).toBe(true);
     expect(moves.some((move) => move > 0 && move < 0.95)).toBe(true);
   });
 

@@ -90,3 +90,55 @@ it('zero elapsed time and rejected inputs do not advance or contaminate motion',
   expect(motion.step(0, 60, 1, grid, accept)).toBe(fresh.step(0, 60, 1, grid, accept));
   expect(motion.velocity).toBe(fresh.velocity);
 });
+
+it('requests an exact crossed endpoint even when the remaining write is below readback precision', () => {
+  const precise = { ...grid, quantum: 1e-8 };
+  for (const direction of [-1, 1]) {
+    const current = 2110 - direction * 0.0001;
+    expect(sampleScrollPosition(2110 + direction * 0.1, current, 2110, precise)).toBe(2110);
+  }
+});
+
+it('lands across initial distances without reversing or stopping short of the target', () => {
+  for (const hz of [60, 144, 165, 240, 480]) {
+    for (const distance of [3, 6, 20, 60, 100, 115, 300, 600, 645, 1200, 2110, 4000]) {
+      const motion = new SpringMotion();
+      const precise = { ...grid, quantum: 1e-8 };
+      let current = 0;
+      let terminalSpeed = 0;
+      let previousSpeed = 0;
+      for (let tick = 0; tick < hz * 6 && current !== distance; tick++) {
+        const before = current;
+        previousSpeed = motion.velocity;
+        current = motion.step(current, distance, 60 / hz, precise, accept);
+        expect(current).toBeGreaterThanOrEqual(before);
+        expect(current).toBeLessThanOrEqual(distance);
+        if (current < distance) expect(motion.velocity).toBeGreaterThan(0);
+        else terminalSpeed = previousSpeed;
+      }
+      expect(current, `${hz}Hz, ${distance}px`).toBe(distance);
+      expect(terminalSpeed).toBeLessThan(1);
+    }
+  }
+});
+
+it.each([60, 144, 165, 240, 480])('mirrors the same acceleration history for upward and downward streams at %iHz', (hz) => {
+  const up = new SpringMotion();
+  const down = new SpringMotion();
+  const precise = { ...grid, quantum: 1e-8 };
+  let upPosition = 0;
+  let downPosition = 4000;
+  let target = 20;
+  let nextGrowth = 1000 / 7.5;
+  for (let tick = 1; tick <= hz * 4; tick++) {
+    const time = tick * 1000 / hz;
+    if (time >= nextGrowth - 1e-6) {
+      target += 20;
+      nextGrowth += 1000 / 7.5;
+    }
+    upPosition = up.step(upPosition, target, 60 / hz, precise, accept);
+    downPosition = down.step(downPosition, 4000 - target, 60 / hz, precise, accept);
+    expect(up.velocity).toBeCloseTo(-down.velocity, 6);
+    expect(upPosition + downPosition).toBeCloseTo(4000, 6);
+  }
+});

@@ -199,7 +199,7 @@ export function displacements(h: Harness, frames: number): number[] {
 
 /**
  * The model's velocity after each of `frames` ticks. The kinematic
- * suites (ramp ratios, envelope, retarget bridge, parked decay) pin the
+ * suites (onset, acceleration continuity, parked decay) pin the
  * MODEL: what reaches scrollTop is whole device pixels, which cannot
  * show a 10% per-frame ratio (see SpringChase.velocityForTest).
  */

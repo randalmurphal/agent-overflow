@@ -1,4 +1,3 @@
-import { createRetargetAccelerationBridge } from './retarget';
 import { sampleScrollPosition, scrollReadbackTolerance } from './position';
 import type { ScrollGrid } from './grid';
 
@@ -7,7 +6,11 @@ const RETENTION = 0.7 / 1.25;
 const FOLLOW_RATIO = 0.08 / (1.25 - 0.7);
 const SLEW = 1.1;
 const FLOOR = 1;
-const FLOOR_RELEASE_DISTANCE = 3;
+const RESPONSE = 0.18;
+const LANDING_ALLOWANCE = 5;
+const JERK_FLOOR = 0.1;
+const JERK_SPEED_RATIO = 0.02;
+const JERK_SPEED_BASE = 3;
 const CARRY_CEILING = 4;
 export const SPRING_MAX_CATCHUP_STEPS = 1;
 export const SPRING_MAX_VELOCITY_PX_PER_FRAME = 27;
@@ -17,11 +20,10 @@ export class SpringMotion {
   private speed = 0;
   private residual = 0;
   private modeled = 0;
-  private floorEngaged = false;
+  private acceleration: number | null = null;
   private readback: number | null = null;
   private quantum = 0;
   private offset = 0;
-  private readonly retarget = createRetargetAccelerationBridge();
 
   get velocity(): number { return this.speed; }
 
@@ -29,13 +31,11 @@ export class SpringMotion {
     this.speed = 0;
     this.rebase();
     this.readback = null;
-    this.retarget.reset();
   }
 
   private rebase(): void {
     this.residual = 0;
-    this.floorEngaged = false;
-    this.retarget.breakMotion();
+    this.acceleration = null;
   }
 
   step(
@@ -56,7 +56,7 @@ export class SpringMotion {
     const readback = write(current, position, position === target ? target : position + grid.writeOffset, target, overshot);
     if (!Number.isFinite(readback)) throw new RangeError('Scroll write returned a nonfinite position');
     this.accept(readback, position, target, grid);
-    if (overshot) this.retarget.breakMotion();
+    if (overshot) this.acceleration = null;
     return readback;
   }
 
@@ -73,25 +73,46 @@ export class SpringMotion {
   private advance(current: number, target: number, frames: number): number {
     const fraction = Math.min(frames, SPRING_MAX_CATCHUP_STEPS);
     const difference = target - (current + this.residual);
-    const direction = Math.sign(difference);
     const before = this.speed;
-    const slew = Math.max(FLOOR, before * direction) * SLEW ** fraction;
-    const envelope = Math.min(SPRING_MAX_VELOCITY_PX_PER_FRAME, Math.max(1.6, Math.abs(difference) * 0.09));
-    const retention = RETENTION ** fraction;
-    let candidate = retention * before + (1 - retention) * FOLLOW_RATIO * difference;
-    candidate = Math.max(-SPRING_MAX_VELOCITY_PX_PER_FRAME, Math.min(SPRING_MAX_VELOCITY_PX_PER_FRAME, candidate));
-    if (candidate * direction > 0) candidate = direction * Math.min(Math.abs(candidate), envelope, slew);
-    if (Math.abs(candidate) >= FLOOR) this.floorEngaged = true;
-    else if (this.floorEngaged && candidate * direction > 0) {
-      // A square-root speed envelope is constant-deceleration braking in
-      // distance space. It reaches the endpoint without an asymptotic crawl.
-      const landingFloor = FLOOR * Math.sqrt(Math.min(1, Math.abs(difference) / FLOOR_RELEASE_DISTANCE));
-      candidate = direction * Math.max(Math.abs(candidate), landingFloor);
-    }
-    this.speed = this.retarget.step(target, difference, before, candidate, fraction, SPRING_MAX_VELOCITY_PX_PER_FRAME);
+    this.speed = this.advanceVelocity(difference, before, fraction);
     this.residual += this.speed * fraction;
     this.modeled = current + this.residual;
     return this.modeled;
+  }
+
+  private advanceVelocity(difference: number, velocity: number, fraction: number): number {
+    const direction = Math.sign(difference);
+    if (direction === 0) {
+      this.acceleration = null;
+      return 0;
+    }
+    const toward = velocity * direction;
+    if (this.acceleration === null || toward <= 0) {
+      const retention = RETENTION ** fraction;
+      let candidate = retention * velocity + (1 - retention) * FOLLOW_RATIO * difference;
+      if (candidate * direction > 0) {
+        const onset = Math.max(FLOOR, toward) * SLEW ** fraction;
+        candidate = direction * Math.min(Math.abs(candidate), onset, Math.max(1.6, Math.abs(difference) * 0.09));
+      }
+      this.acceleration = candidate * direction > 0 ? 0 : null;
+      return Math.max(-SPRING_MAX_VELOCITY_PX_PER_FRAME, Math.min(SPRING_MAX_VELOCITY_PX_PER_FRAME, candidate));
+    }
+
+    // The unconstrained response has three equal damping poles. Braking
+    // depends on velocity as well as distance, before reaching the endpoint.
+    const desired = RESPONSE ** 2 / 3 * (Math.abs(difference) + LANDING_ALLOWANCE) - RESPONSE * toward;
+    const previous = this.acceleration * direction;
+    const response = previous + (desired - previous) * (1 - Math.exp(-3 * RESPONSE * fraction));
+    const slew = Math.max(FLOOR, toward) * (SLEW ** fraction - 1) / fraction;
+    const jerk = Math.max(JERK_FLOOR, Math.abs(previous) * 0.125, (toward - JERK_SPEED_BASE) * JERK_SPEED_RATIO);
+    // Reserve the velocity needed to bring acceleration back to zero at the cap.
+    const margin = SPRING_MAX_VELOCITY_PX_PER_FRAME - toward;
+    const capAcceleration = Math.sqrt(2 * jerk * margin + (jerk * fraction) ** 2) - jerk * fraction;
+    const wanted = Math.min(slew, response, capAcceleration);
+    const acceleration = Math.max(previous - jerk * fraction, Math.min(previous + jerk * fraction, wanted));
+    const next = Math.max(0, Math.min(SPRING_MAX_VELOCITY_PX_PER_FRAME, toward + acceleration * fraction));
+    this.acceleration = direction * (next - toward) / fraction;
+    return direction * next;
   }
 
   private accept(readback: number, position: number, target: number, grid: ScrollGrid): void {
@@ -108,7 +129,7 @@ export class SpringMotion {
     if (Math.abs(this.speed) > FLOOR) {
       this.speed = Math.sign(this.speed) * Math.max(FLOOR, Math.abs(this.speed) / SLEW ** frames);
     }
-    this.retarget.breakMotion();
+    this.acceleration = null;
   }
 
   park(frames: number, retain: boolean): void {

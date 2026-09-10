@@ -100,40 +100,27 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     scrolling, browser clamps, and authored writes can coalesce into one event,
     so the write readback may no longer describe the surface when the event is
     dispatched.
-  - `spring.ts` owns chase lifecycle; `motion.ts`, `position.ts`, and
-    `retarget.ts` own chase kinematics. They define HOW a spring
-    advances scrollTop frame to frame once the controller decides one runs. Speed each
-    step is capped by three ceilings recomputed from live geometry
-    (below all three, the spring's own decay governs): the
-    **acceleration slew** (a geometric onset ramp, ×1.10 per 60Hz frame
-    over max(ramp base, current speed toward the target), the base a
-    refresh-independent CSS-space 1.0 px/frame floored by the motion floor: a
-    standstill quantum eases in instead of jumping to its peak, and
-    glides stretch into the next quantum's arrival instead of
-    stop-starting per line), the **deceleration envelope** (0.09 ×
-    remaining, the ease-out), and the **hard velocity cap**
-    (27 px/frame); the
-    accelerate→decelerate crossover is wherever the falling envelope
-    undercuts the rising ramp, so a fixed-target glide needs no mode
-    state. A target that extends while the viewport is already braking
-    or holding a speed uses an acceleration-preserving **retarget
-    bridge**. Velocity stays forward, acceleration advances from braking
-    through zero into driving under a per-frame jerk bound, and
-    large-glide jerk scales from the endpoint accelerations so a
-    cap-speed handoff does not nearly stop. Repeated streamed-line tests
-    pin the bridge at 60, 120, and 165Hz.
-    Motion is integrated in CSS pixels and elapsed 60Hz-equivalent time.
-    Browser quantization never selects a speed: `position.ts` samples the
-    continuous position on the measured engine grid, and `motion.ts` retains
-    modeled minus accepted position on every interior write. This bounds
-    interior spatial error to half a grid quantum plus readback precision.
-    There is no displacement ladder, cadence-dependent floor, or frame-count
-    landing delay. A glide that exceeds 60 CSS px/s retains that floor until
-    the last three CSS pixels, then uses a square-root speed floor
-    (constant-deceleration braking in distance space) so landing does not become an asymptotic crawl.
-    Exact endpoint requests are selected by modeled proximity, not rounded
-    readback proximity; a fractional endpoint can add one grid quantum of
-    terminal error because the engine chooses its accepted endpoint.
+  - `spring.ts` owns chase lifecycle. `motion.ts` owns continuous position,
+    velocity, and acceleration; `position.ts` samples that trajectory onto the
+    accepted scroll grid. All motion uses CSS pixels and elapsed
+    60Hz-equivalent time, independently of display cadence.
+
+    A damped distance/velocity response anticipates braking, and a symmetric
+    jerk bound rounds acceleration changes throughout the glide, including
+    streamed target extensions. The onset retains a geometric acceleration
+    ramp. Large glides scale the jerk allowance with speed and reserve room
+    to ease acceleration back to zero at the velocity cap. A small terminal
+    distance allowance keeps landing finite without switching to a speed
+    floor; position sampling still clamps writes at the actual target.
+
+    Browser quantization never selects a speed. Interior writes retain modeled
+    minus accepted position, bounding spatial error to half a grid quantum
+    plus readback precision. Exact endpoint requests are selected by modeled
+    proximity or crossing, not rounded readback proximity. They are not
+    suppressed as redundant interior writes. A fractional endpoint can add
+    one grid quantum of terminal error because the engine chooses its
+    accepted endpoint. There is no displacement ladder, cadence-dependent
+    floor, or frame-count landing delay.
 
     `grid.ts` measures the accepted increment and interior write offset on a
     private scroller, cached per document and invalidated by resize or DPR
@@ -142,7 +129,7 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     increments. Flooring engines receive interior requests centered in their
     acceptance interval; target writes stay exact. Unexpected readbacks,
     clamping, and scale changes discard incompatible position residual.
-    Retargeting preserves compatible residual and the acceleration bridge.
+    Retargeting preserves compatible residual and acceleration.
 
     The motion step allocates nothing and adds no DOM measurements. Cadence
     estimation remains diagnostic only. At 60 CSS px/s on a one-CSS-pixel
