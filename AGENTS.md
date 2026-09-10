@@ -82,17 +82,21 @@ For uncertain external-tool behavior, use the provider references and
 Read-only investigations do not require build, type-check or test runs. Run
 focused checks only when needed to answer the question or requested by the user.
 
-Tasks that change code must leave these passing:
+Choose validation from the change's impact. Run all potentially relevant tests
+and applicable build and type checks, including affected callers, shared
+contracts, integration paths and platform behavior. Read the affected area
+guides for additional requirements. Do not run unrelated suites solely because
+code changed; run broader checks when the impact crosses areas or is uncertain.
 
-- `make go-build`
-- `make go-test`
-- `cd frontend && pnpm run check`
-- `cd frontend && pnpm run build`
+For Go changes, use the Make targets so platform build settings are applied:
+`make go-build` and `make go-test`. For frontend changes, run
+`cd frontend && pnpm run check`, `cd frontend && pnpm run build`, and the
+relevant Vitest tests. Changes to shared bindings, transport or build settings
+may require checks on both sides. Documentation-only changes need checks of
+the affected claims, links and references, not application builds or tests.
 
-Use the Make targets for Go so platform build settings are applied. Run
-additional focused checks required by the affected area. `make help` lists
-supported commands; [Development](docs/architecture/development.md) routes
-manual and release checks.
+`make help` lists supported commands; [Development](docs/architecture/development.md)
+routes manual and release checks. Report what ran and any relevant gaps.
 
 Tests use temporary homes and mock providers. They must never invoke a real
 provider or touch the developer's provider homes. Session-capable fixtures
