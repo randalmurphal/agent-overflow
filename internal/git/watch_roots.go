@@ -62,7 +62,7 @@ type WatchRoot struct {
 // maxPrunedWatchRoots caps how many roots ignored-subtree pruning may
 // produce. Real repos need room: a Python tree with __pycache__
 // scattered through every package produces one ancestor root per
-// package dir (ai-foundations-shaped repos measure 300-500 roots), and
+// package dir (sample-project-shaped repos measure 300-500 roots), and
 // a root is cheap — one notify watchpoint and one slice entry. The cap
 // exists so a pathological layout degrades deliberately instead of
 // exploding: overflow retries with only shallower boundaries (see

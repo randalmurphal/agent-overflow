@@ -11,8 +11,10 @@ confirm against the Python SDK or captured samples before coding.
 
 1. **Captured wire samples** (real NDJSON from live sessions) in
    `docs/references/fixtures/claude/`. See
-   [§Captured samples](#captured-samples).
-2. **Python SDK** at `/Users/randy/repos/claude-agent-sdk-python`.
+   [§Captured samples](#captured-samples). Host paths, device names and private service
+   configuration use synthetic values; protocol structure and correlations are
+   preserved.
+2. **[Python SDK](https://github.com/anthropics/claude-agent-sdk-python)**.
    The dataclasses in `src/claude_agent_sdk/types.py` and the parser at
    `src/claude_agent_sdk/_internal/message_parser.py` describe every
    envelope the SDK models. Shapes NOT modeled there fall through to

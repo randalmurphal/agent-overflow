@@ -80,3 +80,13 @@ frontend/src/lib/markdown/__fixtures__/freezeReplay.fixture.json
 # while replaying it. Never committable, under any circumstances. The spec
 # test.skips itself when the directory is absent, so nothing breaks without it.
 e2e/fixtures/
+
+# Private performance captures and machine diagnostics
+*.etl
+*.etl.gz
+*.dmp
+*.heapsnapshot
+*.cpuprofile
+/ao-stutter*/
+/ao-stutter*.md
+/ao-perfprobe/

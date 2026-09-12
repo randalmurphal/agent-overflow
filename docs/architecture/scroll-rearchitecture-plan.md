@@ -1,19 +1,10 @@
 # Scroll System Re-Architecture Plan
 
-Status: APPROVED 2026-07-01. In execution, stage by stage. Decisions taken
-at approval: the browser suite gates into both `make test` and `make verify`;
-adjacent cleanup and test refinement (deleting implementation-theater tests,
-adding useful coverage) fold into each stage rather than waiting.
-Baseline: commit `f42dc6e6` (virtua manual-scroll marking + fractional heights),
-branch `scroll/settle-flicker-vibration`.
-
-Inputs: six full-code inventories (stick controller: 45 mechanisms;
-MessageTimeline: ~30; geometry caches: 5 layers; virtua dependency surface:
-core verified from shipped source maps; consumer seams: all 57 raw-scroll hits
-classified; test contracts: 399 tests classified outcome-vs-implementation).
-Verbatim inventory reports:
-[`scroll-rearchitecture-inventories.md`](scroll-rearchitecture-inventories.md).
-Load-bearing claims were spot-verified against the code before inclusion.
+The implemented design uses a pure resolver and one programmatic scroll writer.
+See [frontend scrolling](frontend-scroll.md) for the current implementation and
+[scroll contracts](scroll-contracts.md) for required behavior. The staged design
+below explains the ownership decisions; implementation details belong in the
+current contract and source.
 
 ## 1. Why this system is fragile (root causes, evidence-backed)
 
@@ -52,10 +43,8 @@ Stage 3c. See the Stage-3 verdict table.)*
    systems (timeline + diff sidebar), floors duplicating virtua's size store,
    integer heights beside fractional DOM.
 
-The convergent conclusion of all six inventories: the fragility is
-architectural (multi-writer + inference), not incidental. The fix is
-ownership + observability, delivered in stages that are each independently
-green and revertible.
+Explicit ownership and observable scroll intent address these interactions.
+The staged design keeps each change independently testable and revertible.
 
 ## 2. Target architecture
 
@@ -164,12 +153,11 @@ deliberately.
   effect, attach effect, composer-RO notify, chip wiring are all duplicated
   with MessageTimeline. DEFERRED to Stage 4: `restoreToBottom()` as a
   single-call API absorbs the dance naturally; extracting a shared helper
-  now would be churned again by the API shrink. (Also corrected: the test
-  inventory's "ChannelView has zero scroll tests" claim is false.
+  now would be churned again by the API shrink.
   ChannelView.test.ts covers overflow-anchor, initial-load sync-pin, chip
   reveal/escape/forceStick, escaped-while-posting, and composer-resize
   re-pin. The only hole is the switch-dance ordering itself; cover it in
-  Stage 4 alongside the API change.)
+  Stage 4 alongside the API change.
 - Redundant self-tag pair: `ignoreScrollToTop` exact tag + token FIFO
   (`exactTagged || tokenTagged` at `:1911`) → one expected-value check under
   a single write site. **Stage-2 verdict: DONE. `ignoreScrollToTop`
@@ -398,9 +386,8 @@ deduplicating ChannelView's thread-switch dance with MessageTimeline's.
 
 ### Stage 5: Decision gate: bespoke bottom-anchored virtualizer
 
-Not scheduled. This is a decision point after 1-4 have soaked. Evidence
-from the virtua inventory tilts further toward eventual replacement than
-expected:
+The replacement is implemented in `utils/virtual/`; see
+[the virtualizer design](virtualizer-replacement-plan.md). Its rationale:
 
 - The dependency surface is small (1 mount, 6 props, 9 handle methods,
   head-only `shift`, no keepMounted/VList/horizontal; `itemSize=56` makes
@@ -422,15 +409,10 @@ expected:
   momentum, wheel inference) took years to accumulate, though most are
   out-of-scope for a desktop webview app.
 
-Criteria to pull the trigger: seam bugs persist after Stages 1-4, or a
-virtua version bump forces a painful patch re-roll, or Stage 3's applier
-proposal is rejected upstream and the patch surface grows.
-
 ## 5. Test strategy
 
-Principle (from the test-contracts inventory, 399 tests across 10 files
-classified): **outcome tests port, implementation tests are rewritten with
-the mechanism they pin.**
+**Outcome tests port; implementation tests are rewritten with the mechanism
+they pin.**
 
 **The acceptance list is 27 deduplicated must-survive contracts**, each with
 provenance (six bug-report captures, two verbatim user reports): intent

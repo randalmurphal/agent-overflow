@@ -4,7 +4,7 @@
   "purpose": "Establish that the cumulative top-level fields on `message_delta.usage` ARE what Claude's own auto-compact trigger uses, by correlating the trailing assistant `message_delta` against the immediately-following `system.compact_boundary` `compactMetadata.preTokens` across multiple production turns (with and without advisor calls).",
   "rawLog": {
     "checkedIn": false,
-    "reason": "The captures come from ~/.claude/projects/<projectslug>/<sessionId>.jsonl which contain full conversation content (file paths, code, prompts). This sanitized summary records only the usage/preTokens table and the structural relationship; no message bodies are checked in. Originals live under ~/.claude/projects/-home-rmurphy-repos-agent-overflow/ on the capturing machine (verbatim turn lines listed below)."
+    "reason": "The captures come from ~/.claude/projects/<projectslug>/<sessionId>.jsonl which contain full conversation content (file paths, code, prompts). This sanitized summary records only the usage/preTokens table and the structural relationship; no message bodies are checked in. Originals live under ~/.claude/projects/-home-user-repos-agent-overflow/ on the capturing machine (verbatim turn lines listed below)."
   },
   "context": {
     "model": "claude-opus-4-7[1m]",

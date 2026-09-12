@@ -39,10 +39,10 @@ status_line = ["current-dir", "git-branch", "model-with-reasoning"]
 [tui.model_availability_nux]
 "gpt-5.5" = 4
 
-[projects."/home/rmurphy/repos/ai-foundations"]
+[projects."/home/user/repos/sample-project"]
 trust_level = "trusted"
 
-[projects."/home/rmurphy/repos/agent-overflow"]
+[projects."/home/user/repos/agent-overflow"]
 trust_level = "trusted"
 
 [mcp_servers.atlassian]

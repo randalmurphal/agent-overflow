@@ -12,10 +12,8 @@ import (
 	"agent-overflow/internal/mcpstatus"
 )
 
-func TestParseClaudeMCPList_RealOutput(t *testing.T) {
-	// Captured verbatim from `claude mcp list` on a live machine.
-	// Locks the parser against the actual emitter without depending
-	// on the user's local configuration.
+func TestParseClaudeMCPList_OutputShapes(t *testing.T) {
+	// Preserve CLI output shapes using synthetic paths and server names.
 	output := `Checking MCP server health…
 
 claude.ai Gmail: https://gmailmcp.googleapis.com/mcp/v1 - ! Needs authentication
@@ -23,9 +21,9 @@ claude.ai Google Calendar: https://calendarmcp.googleapis.com/mcp/v1 - ! Needs a
 claude.ai Google Drive: https://drivemcp.googleapis.com/mcp/v1 - ! Needs authentication
 plugin:playwright:playwright: npx @playwright/mcp@latest - ✓ Connected
 plugin:context7:context7: npx -y @upstash/context7-mcp - ✓ Connected
-code-index: /home/rmurphy/go/bin/code-index-mcp serve - ✓ Connected
-dispatch-atlassian: podman run --rm -i -v /home/rmurphy/local_secrets.json:/home/rimm/local_secrets.json:ro,z registry.gitlab.com/fortressinfosec/ai-devtools/dispatch:latest atlassian - ✓ Connected
-dispatch-gitlab: podman run --rm -i -v /home/rmurphy/local_secrets.json:/home/rimm/local_secrets.json:ro,z -e GITLAB_TOKEN=xxxxx registry.gitlab.com/fortressinfosec/ai-devtools/dispatch:latest gitlab - ✓ Connected
+code-index: /home/user/go/bin/code-index-mcp serve - ✓ Connected
+example-issues: podman run --rm -i -v /home/user/example-config.json:/home/guest/example-config.json:ro,z registry.example.com/example/tools:latest atlassian - ✓ Connected
+example-code: podman run --rm -i -v /home/user/example-config.json:/home/guest/example-config.json:ro,z -e GITLAB_TOKEN=xxxxx registry.example.com/example/tools:latest gitlab - ✓ Connected
 `
 
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
@@ -38,8 +36,8 @@ dispatch-gitlab: podman run --rm -i -v /home/rmurphy/local_secrets.json:/home/ri
 		"plugin:playwright:playwright": mcpstatus.StatusConnected,
 		"plugin:context7:context7":     mcpstatus.StatusConnected,
 		"code-index":                   mcpstatus.StatusConnected,
-		"dispatch-atlassian":           mcpstatus.StatusConnected,
-		"dispatch-gitlab":              mcpstatus.StatusConnected,
+		"example-issues":               mcpstatus.StatusConnected,
+		"example-code":                 mcpstatus.StatusConnected,
 	}
 
 	if len(results) != len(want) {

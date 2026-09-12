@@ -70,7 +70,7 @@ function bash(id: string, turnIndex: number, threadId: string): Item {
     kind: 'tool_call',
     toolName: 'Bash',
     status: 'completed',
-    summary: `Bash: PG=ai-foundations podman exec $PG psql -U postgres -d app (${id})`,
+    summary: `Bash: PG=sample-project podman exec $PG psql -U postgres -d app (${id})`,
     createdAt: turnIndex,
     updatedAt: turnIndex,
   });

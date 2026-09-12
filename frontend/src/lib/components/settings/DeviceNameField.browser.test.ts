@@ -11,7 +11,7 @@ it.each([360, 1280])('keeps the editable device name and save control usable at 
   const view = render(DeviceNameField);
   const input = view.getByLabelText('Device name');
   const save = view.getByRole('button', { name: 'Save' });
-  await fireEvent.input(input, { target: { value: 'Randy’s Pixel — development phone' } });
+  await fireEvent.input(input, { target: { value: 'Test phone — development phone' } });
   await waitFor(() => {
     for (const element of [input, save]) {
       const rect = element.getBoundingClientRect();
@@ -21,7 +21,7 @@ it.each([360, 1280])('keeps the editable device name and save control usable at 
     }
   });
   await fireEvent.click(save);
-  expect(clientDeviceName()).toBe('Randy’s Pixel — development phone');
+  expect(clientDeviceName()).toBe('Test phone — development phone');
   expect(view.getByRole('status')).toHaveTextContent('Device name saved.');
   localStorage.removeItem('agent-overflow:deviceSession');
 });

@@ -13,7 +13,7 @@ func TestIsUnderWindowsDriveMount(t *testing.T) {
 		// Real Windows drive mounts (9p) — relocate away from these.
 		{"/mnt/c", true},
 		{"/mnt/c/", true},
-		{"/mnt/c/Users/rmurphy/AppData/Local/Programs/Agent Overflow", true},
+		{"/mnt/c/Users/user/AppData/Local/Programs/Agent Overflow", true},
 		{"/mnt/d/projects", true},
 		{"/mnt/z", true},
 		{"/mnt/C/Windows", true}, // uppercase drive (custom automount casing)
@@ -35,7 +35,7 @@ func TestIsUnderWindowsDriveMount(t *testing.T) {
 		{"/mnt/cd", false}, // two-letter segment is not a drive
 
 		// Linux-native paths and edge inputs.
-		{"/home/rmurphy/repos/agent-overflow", false},
+		{"/home/user/repos/agent-overflow", false},
 		{"/", false},
 		{"", false},
 		{"mnt/c", false},      // not rooted at /mnt/
@@ -49,9 +49,9 @@ func TestIsUnderWindowsDriveMount(t *testing.T) {
 }
 
 func TestRelocateCwd(t *testing.T) {
-	const winCwd = "/mnt/c/Users/rmurphy/AppData/Local/Programs/Agent Overflow"
-	const linuxCwd = "/home/rmurphy/repos/agent-overflow"
-	const home = "/home/rmurphy"
+	const winCwd = "/mnt/c/Users/user/AppData/Local/Programs/Agent Overflow"
+	const linuxCwd = "/home/user/repos/agent-overflow"
+	const home = "/home/user"
 
 	ok := func(s string) func() (string, error) { return func() (string, error) { return s, nil } }
 	fail := func(msg string) func() (string, error) {

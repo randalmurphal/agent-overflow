@@ -72,8 +72,8 @@ How the app works today. Under [`architecture/`](architecture/).
 | [`chat-rewrite.md`](architecture/chat-rewrite.md) | The item-model spec of record: item ID schemas, channels, the background tray. Cited by invariants and the event types. |
 | [`settle-flicker-analysis.md`](architecture/settle-flicker-analysis.md) | Root-cause record for the settle-flicker class; the standing-oracle tests cite it. |
 | [`scroll-arbitration-plan.md`](architecture/scroll-arbitration-plan.md) | Quiet-work deferral and scroll arbitration design; cited by `timelineQuietWork` and the interleaving tests. |
-| [`scroll-rearchitecture-plan.md`](architecture/scroll-rearchitecture-plan.md) | The scroll re-architecture design the resolver implements; companion [`scroll-rearchitecture-inventories.md`](architecture/scroll-rearchitecture-inventories.md). |
-| [`virtualizer-replacement-plan.md`](architecture/virtualizer-replacement-plan.md) | Design behind `utils/virtual/`; evidence in [`virtualizer-replacement-inventories.md`](architecture/virtualizer-replacement-inventories.md). |
+| [`scroll-rearchitecture-plan.md`](architecture/scroll-rearchitecture-plan.md) | The scroll re-architecture design the resolver implements. |
+| [`virtualizer-replacement-plan.md`](architecture/virtualizer-replacement-plan.md) | Design behind `utils/virtual/`. |
 | [`review-pane-design.md`](architecture/review-pane-design.md) | The review-pane surface `internal/gitdiff` feeds. |
 
 ### Workflows

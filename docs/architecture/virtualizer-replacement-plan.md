@@ -1,14 +1,10 @@
 # Bespoke Timeline Virtualizer Plan (virtua replacement)
 
-Status: SHIPPED (V0–V4 all landed); kept as the design record.
-Branch: `virtualizer/bespoke-engine`. Evidence:
-[virtualizer-replacement-inventories.md](virtualizer-replacement-inventories.md)
-(Part A: upstream anatomy; Part B: exhaustive app touchpoints).
-Prerequisite work: the scroll re-architecture
-([scroll-rearchitecture-plan.md](scroll-rearchitecture-plan.md), Stages
-0–4, merged to main at `90ba7f77`). Its pure resolver, single-writer
-chokepoint, and engine-agnostic browser outcome tests are what make
-this swap low-risk.
+The timeline virtualizer is implemented in `utils/virtual/`. This design explains
+its integration with the scroll controller. See [frontend scrolling](frontend-scroll.md)
+for current ownership and [scroll contracts](scroll-contracts.md) for required
+behavior. The scroll controller's pure resolver and single writer are described
+in [the scroll design](scroll-rearchitecture-plan.md).
 
 ## 1. Decision and why now
 
@@ -21,9 +17,9 @@ Why now rather than after a longer soak:
 
 - **The patch surface is the standing risk.** Both hunks of
   `virtua@0.49.1.patch` land in minified name-mangled core; every
-  version bump is a manual re-roll against mangled names
-  (inventories §A4 note). The bespoke engine deletes the patch, the
-  tripwire browser tests that guard it, and the version coupling.
+  version bump is a manual re-roll against mangled names. The bespoke engine
+  deletes the patch, the tripwire browser tests that guard it, and the version
+  coupling.
 - **Everything hard is already built and tested.** Intent
   classification, the spring, the pure resolver, the warm gate, and
   the browser outcome suites all live in `utils/scroll/`. The engine
@@ -103,8 +99,8 @@ inside V2, not as a follow-up (§8 D4).
   writes. Single-writer becomes literal: no marking, no store-poking
   decline protocol, no direction-latch misclassification to defend
   against.
-- **Coordinates stay top-anchored prefix sums** (inventories,
-  validation note 1). "Bottom-anchored" is policy, not coordinates:
+- **Coordinates stay top-anchored prefix sums**. Bottom anchoring is a policy
+  over those coordinates:
   - *Mount seeding*: first render mounts the **tail** window (last K
     rows / last `bufferSize` px), so the rows that determine the
     user-visible landing measure first and above-viewport estimate
@@ -182,8 +178,6 @@ today.
 
 ### Handle and props (parity contract)
 
-Adopted verbatim from inventories Part B §Cutover-surface summary:
-
 - Handle: `scrollToIndex(index, {align, offset})`, `getScrollOffset()`,
   `getViewportSize()`, `getScrollSize()`, `findItemIndex(offset)`,
   `getItemOffset(index)`, `revalidate()` (new: the explicit pane-move
@@ -197,14 +191,13 @@ Adopted verbatim from inventories Part B §Cutover-surface summary:
   container), `onscroll`, `onscrollend`, `renderAll` (first-class test
   seam replacing the `ssrCount: 100_000` shim), `getPrior(index)`.
 - `scrollToIndex` is implemented as: engine computes the target offset
-  (with virtua's lazy-recompute-on-remeasure convergence pattern,
-  inventories §A5), and the **write goes through the controller
-  chokepoint**, which retires the `runExternalScroll` wrapper
+  with lazy recomputation after remeasurement, and the **write goes through the
+  controller chokepoint**, which retires the `runExternalScroll` wrapper
   requirement for chat (the controller performs the scroll itself and
   tags it natively). `runExternalScroll` stays in the controller API
   for genuinely external writers, but chat's six wrap sites die.
 
-### DOM contracts (all preserved, per inventories §B7)
+### DOM contracts
 
 `[data-row-index]` wrappers with `contain: layout style` and
 `visibility:hidden`-until-measured; container `position:relative;
@@ -251,7 +244,7 @@ container height → controller's existing contentRO/notify path pins as
 today. No second model reacting to the scroll event, no jump
 accumulation, no frozen-range unfreeze protocol. Tail-row remeasure
 (streamdown growth) invalidates only the tail of the prefix-sum memo
-(watermark math, inventories validation note 1): O(changed rows), not
+(watermark invalidation): O(changed rows), not
 O(window).
 
 The second observation layer (the controller's contentEl RO) merges
@@ -262,7 +255,7 @@ nothing is deferred past the branch merge (§8 D4).
 
 ## 3. What we take from upstream (MIT, attributed)
 
-Per inventories Part A §9. Ported files carry a header:
+Ported files carry a header:
 `Portions derived from virtua (https://github.com/inokawa/virtua),
 Copyright (c) 2022 inokawa, MIT License` and the license text lands at
 `frontend/src/lib/utils/virtual/VIRTUA_LICENSE`.
@@ -283,7 +276,7 @@ Copyright (c) 2022 inokawa, MIT License` and the license text lands at
   harness and snapshot logic already assume.
 - Read-only edge-case references: `shouldKeep` issue taxonomy,
   scroll-to-unmeasured convergence loop, elastic-bounds guard,
-  teardown-bug do-not-reproduce list (inventories §A8).
+  cancellation of observers, timers and pending mount callbacks on teardown.
 
 ## 4. Phased build (single feature branch, commits per phase)
 
@@ -315,9 +308,8 @@ Gate: unit + browser green (existing suites untouched).
 
 ### V2: cutover
 
-- MessageTimeline: swap the mount; map the handle call sites
-  (mechanical per inventories §B3); wire `getPrior`; delete the
-  cache-replay dance, the marking wiring, the applier `$effect`, the
+- MessageTimeline: swap the mount; map the handle call sites; wire `getPrior`;
+  delete the cache-replay dance, the marking wiring, the applier `$effect`, the
   TypeError teardown guards, and the host-layout self-rewrite (new
   `revalidate()`); keep the restore/warm-up choreography untouched.
 - Controller: `applyVirtuaScrollCompensation` →
@@ -344,9 +336,8 @@ patch key; both patch fixtures + both patch browser tests +
 `threadVirtuaSizeCache.ts` (superseded by `priors.ts`). Re-justify or
 simplify: chat's `runExternalScroll` wraps (die with
 controller-performed scrollToIndex), `widthReflowActive` export,
-resolver virtua-branch comments, stale comment mentions (~35 files,
-listed in inventories §B8). Warm gate: untouched through V3 (priors
-make it near-idle on revisits); V4 re-sources it from engine
+resolver virtua-branch comments and stale comment mentions. Warm gate: untouched
+through V3 (priors make it near-idle on revisits); V4 re-sources it from engine
 settlement. Docs: frontend-scroll.md owners + virtua sections,
 the current frontend, chat, and virtual-area guides, and
 scroll-rearchitecture-plan.md Stage-5 verdict. Gate:

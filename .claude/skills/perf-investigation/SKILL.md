@@ -1,81 +1,70 @@
 ---
 name: perf-investigation
-description: Investigate memory, CPU or frame-rate cost of the running DEBUG=1 dev app (make dev-wsl), the soak rig, or a harness instance. Use when the user shows a Task Manager reading (GPU process, renderer, WebView2 Manager), asks why memory grows over hours, why a closed pane or old items are still retained, what a process's memory is made of, where idle and per-frame CPU goes, or why fps drops under a workload. Two instruments — the CDP probe toolkit in scripts/perfprobe (WebView2 targets) and ao-harness perf/bench/ui/health (any harness or soak instance, the only option on WebKitGTK) — and ends in numbers attributed to process, allocator and owning code, a list of fixes built, and a decision sheet. Never a guess from Task Manager totals.
+description: Investigate application memory, CPU, retention and frame pacing using owned harness workloads, browser probes and platform traces. Attribute measured costs to their owning code and verify fixes with controlled comparisons.
 ---
 
-# Perf investigation
+# Performance investigation
 
-Deliverable: the symptom restated as numbers, each attributed process → allocator → owner (the code in this repo that causes it), then the fixes split into built (every clear improvement) and a decision sheet (product-visible tradeoffs the user owns). [REFERENCE.md](REFERENCE.md) holds how to read a number, the standing rulings, and the mechanisms already walked to their owner; read it before calling anything new. It carries no baselines: a reading is compared only against one taken on the same build under the same load in the same session, and the user's own same-day observation is the symptom, never something to argue against with a figure from another day.
+Read [REFERENCE.md](REFERENCE.md) for measurement interpretation and probe
+constraints. Report the measured symptom, confirmed mechanisms, implemented
+fixes, verification and remaining uncertainty. Distinguish evidence from a
+hypothesis; an inconclusive trace is a valid limit, not permission to invent a
+cause.
 
-## Rulings
+## Scope and ownership
 
-User-set and standing. They decide what counts as a fix.
+- Follow the repository's [product decisions](../../../docs/decisions.md) for
+  performance and memory tradeoffs. Optimize the cost of supported behavior.
+- Reproduce and compare on an owned harness, clone or soak instance. Keep the
+  user's running app read-only unless the session authorizes a visible change.
+  Do not infer permission to restart it from permission to profile it.
+- Online CDP probes require the ownership manifest described in the
+  [probe README](../../../scripts/perfprobe/README.md). Do not bypass its guards.
+- Use `ao-harness clone` for a copy of application data and mock replay. Clones
+  contain private conversation content and remain outside tracked files.
+- `make dev-wsl` embeds the frontend. Verify the running build before claiming a
+  source edit is active, and report when a rebuild/relaunch is still needed.
 
-- Production steady state is the target: an hour of normal use with streaming panes open. Idle-only or blur-only savings are second levers and go on the decision sheet.
-- Never trade performance for memory. Making the app do less visible work (mount fewer panes, slow a ticker, drop an animation) was rejected; make the unit cheaper instead.
-- The user's running app is read-only. Dumps, profiles and snapshots are fine (`churn` forces a GC and `heapsnapshot` pauses the renderer for a moment; mention it when the user is mid-work). Injecting CSS, sending wheel or key events, anything the user can see, needs their OK first or runs on a harness/soak instance.
-- `make dev-wsl` does not hot-reload frontend edits. Every fix report says "needs a restart", and verification happens after the restart by re-running the probe that found the item.
-- Harness first (user ruling 2026-08-26): the user's live activity is never the capture instrument. Reproduce and A/B on a harness/clone/soak instance; the live app supplies only what no rig can — per-stall verdicts on their machine (always-on ui-trace diagnostics) and final confirmation after a restart. If a symptom cannot be reproduced on a rig, that is a harness feature gap to raise, not a reason to wait on the user.
+## Choose the instrument
 
-## Environment
+- Harness `perf`, `bench`, `ui` and `health` commands correlate page measurements
+  with backend and process-tree usage. They also support webviews without CDP.
+  Read the [harness architecture](../../../docs/architecture/agent-harness.md).
+- `scripts/perfprobe/probe` exposes Windows WebView2 probes for memory dumps,
+  allocation profiles, frame traces, layers, DOM retention and owned A/B runs.
+  Select the exact instance and page through its manifest.
+- Go heap and CPU profiles identify backend allocation and execution costs.
+  Use the configured diagnostic endpoint rather than assuming a port is free
+  or belongs to the target instance.
+- Platform presentation and scheduling traces are needed when page callbacks
+  look regular but displayed motion or the whole desktop stalls.
 
-- Pick the instrument by target. The user's dev app and the Windows soak
-  are WebView2 → the CDP probe toolkit below, which is the deep
-  instrument (allocator splits, heap snapshots, tracing). A harness or
-  soak instance (`make harness-window`, `make soak-window`,
-  `ao-harness up --window`) runs WebKitGTK on linux — no CDP at all —
-  and its instrument is the harness's own, which also works on WebView2
-  instances and never touches the user's app:
-  - `ao-harness perf start|watch|stop` — in-page meters (1ms-bucket
-    frame-time histogram with p50/p95/max, long tasks + LoAF, layout
-    shift, event timing, JS heap where measurable, DOM node count)
-    folded per-second with backend Go heap/goroutines and `/proc` RSS
-    of the whole process tree (webview children included) into
-    `harness:perf` frames. One clock, one timeline.
-  - `ao-harness bench <workload> [--repeat N] [--baseline file]` —
-    scripted load (burst-stream, giant-turn, subagent-fanout,
-    many-threads) with the meters armed; a report doubles as a
-    baseline and drift exits 3. This is the before/after instrument
-    for any fix on a streaming or thread-switch hot path.
-  - `ao-harness ui snapshot|diff` — what is mounted and visible, as
-    diffable text; `ao-harness health` — the ok/warn/red rollup.
-  - Contract: `docs/architecture/agent-harness.md` § Frontend bridge
-    and perf. The meters answer "how bad and where in time"; walking a
-    finding back to an allocator or retainer still needs CDP, so
-    reproduce on a WebView2 target for steps 3 and 5.
-  - Real-content replay (the clone rig) is first-class in ao-harness,
-    not a bespoke script: `ao-harness clone` builds a harness data root
-    from a COPY of the real app data dir (carries real conversation
-    content verbatim — gitignored, never committable), `up -data-dir
-    <root>` boots on it, `scenario from-thread --thread <t> -set`
-    rebuilds that thread's stored turns as a mock scenario, and `send
-    --thread <t> --wait replay` streams it through the production
-    pipeline. Gotchas: scenario rules are in-memory per boot (recreate
-    after every `up`); rules scope by cwd/session-ref, not thread, so
-    one unfiltered rule serves every pane — fine for collision loads,
-    wrong for per-thread content fidelity; the page URL needs the
-    token query from `ao-harness open`, a bare port never arms the
-    bridge; `up -binary` needs `-mock-provider` when the binary is not
-    beside a built `bin/ao-mockprovider`. For an A/B, build the
-    before-binary from clean HEAD in a temp `git worktree` (pnpm
-    install runs in `frontend/`), and run each leg twice — single runs
-    on a busy desktop carry contention noise.
-- CDP is WebView2 on Windows loopback: 9223 for the dev window (which NO online probe can currently attach to: probes need an ownership manifest naming a harness page marker the dev URL does not carry, REFERENCE.md § Instruments), 9224 for the soak rig (`make soak`, isolated profile, mock providers). WSL cannot reach it, so `scripts/perfprobe/probe <name> [args]` stages the scripts and runs them under Windows node.exe. `probe` alone lists the probes; `AO_CDP_PORT=9224` targets the soak rig. Saved traces, profiles and snapshots land in `%LOCALAPPDATA%\Temp\ao-perfprobe`; the wrapper prints the `/mnt/c/...` path.
-- One tracing session per browser. Memory dumps and frame traces both use it, so a background `sample --every` curve collides with `memdump`, `churn`, `tiles`, `frames` and `ab`. Stop the sampler first.
-- Go backend: `DEBUG=1` sets `AGENT_OVERFLOW_PPROF=1`, pprof on `127.0.0.1:6363`, reachable from WSL: `go tool pprof -top http://127.0.0.1:6363/debug/pprof/heap` and `.../profile?seconds=30`.
-- Task Manager's memory column is the private working set, close to memory-infra `private_kb`. Rows: "Agent Overflow (dev)" is the renderer, "GPU Process", "Manager" is the browser process, and "WebView2 Manager (N)" is the group sum.
-- The production bundle is minified. `probe overview` prints the live `index-*.js` name and the backend port; `curl http://127.0.0.1:<port>/assets/<name>` and read around a profile's line:col. Function names survive minification, source lines do not.
+## Investigation sequence
 
-## Process
+1. Establish process ownership, build/runtime identity and a bounded workload.
+   Record focus, visibility, viewport, workload state and competing activity.
+   Validate sustained motion before measuring scrolling.
+2. Choose the measurement that answers the symptom. Split memory by process,
+   allocator and live/committed state. Split frame pacing into callback timing,
+   content movement and physical presentation. Measure baseline and candidate
+   under the same conditions; repeat small effects with A/B/A.
+3. For growth, separate an ordinary footprint curve from forced-GC retention
+   measurements. Follow surviving objects to their retainers. For churn, use
+   allocation profiles to identify the code producing temporary objects.
+4. For frame cost, correlate JS, style, layout, paint and presentation work.
+   Trace a specific delayed frame through its owning subsystem. Verify provider
+   coverage and clock alignment before assigning a platform cause.
+5. Fix a confirmed cause in its owner and check sibling callers. Add a regression
+   test for the behavior the change could break. Use an isolated prior build to
+   prove the failure when practical; preserve unrelated local changes.
+6. Run the applicable checks from the repository and area guides, then repeat
+   the controlled measurement. Test cancellation, failure and cleanup for
+   processes, observers, timers and other resources introduced by the fix.
+7. Stop owned captures and test workloads, release temporary flags and restore
+   changed settings. Verify cleanup. Keep only useful development contracts in
+   maintained documentation; raw evidence and machine-specific notes stay out
+   of Git.
 
-Each pass ends with its attribution written down or the cause ruled out. A pass that ends on "probably" is not done.
-
-1. **Symptom as numbers.** Take the process and the number from the user (screenshot row or words). `probe overview`, then `probe memdump` (`--gpu` for the GPU process), then `probe tiles` for raster memory per composited layer (all of `cc/tile_memory` and the GPU process's `gpu/shared_images` is these tiles, matched to panes by height). Split the renderer into blink_gc (Oilpan), cc/tile_memory, v8, malloc and partition_alloc; the GPU process into tiles, skia, shared images and unattributed malloc (driver, swap chain). Take the same dump on the comparison leg (same build, same panes, same session) and diff the two; never subtract a figure from another day. Done: a table of process → allocator → MB for both legs, and the delta.
-2. **Floor or growth.** Run `probe sample --every 120 --for 28800` while the user works, then read the curve. Start it detached — a Bash `run_in_background` sampler dies when the agent session recycles, mid-capture: `systemd-run --user --unit=ao-perfsample --collect --setenv=PATH="$PATH" --setenv=WSL_INTEROP="$WSL_INTEROP" --property=Restart=always --property=RestartSec=20 --property=StandardOutput=append:<file> <repo>/scripts/perfprobe/probe sample --every 120 --for 28800`. Leave `--detached` off: it forces a full memory-reducing GC on every tick and flattens the curve it is measuring (REFERENCE.md). Each sample carries `blink_gc` (committed Oilpan) beside `blink_live` (its live subset), and the gap between them is garbage plus pooled free pages — the ceiling a GC could hand back. A renderer that swings by 150-250MB on a cycle is the GC cycle, not a leak: Oilpan garbage piles up to V8's global heap limit (live × up to 4), a normal GC frees it but leaves the pages committed, and only a memory-reducing GC (page hidden, memory pressure, `HeapProfiler.collectGarbage`) decommits them. `probe churn 30` prints the before/after of a forced GC, which splits the renderer into live and not-yet-collected garbage in one shot. Growth in `blink_live` that survives a forced GC, or a `probe detached` census that steps up and stays after a pane closes, is a leak. Done: MB/h per allocator after a forced GC, and a leak verdict.
-3. **Churn.** Find what is being allocated and freed. `probe churn 30` forces a GC and reports MB/min per blink class over the window (a GC inside the window voids the run; it says so). A class name leads to Chromium source and from there to the DOM or style feature we drive (`PlaneRootTransform` → paint transform nodes → `probe transforms`; `HarfBuzzRunGlyphData` → text reshaping of streamed rows). `probe alloc 60` gives JS allocation sites during streaming. `probe memdump --trigger-blink-gc-mb N` catches the peak. Churn matters for memory through the GC cycle above: the peak between GCs is the churn rate times the time V8 waits, so halving the top class lowers the swing. Done: each top grower named with its owner in this repo (component or util file) or in Chromium (file and function).
-4. **CPU and frames.** `probe cpu 60` (JS self and inclusive, callers of hot native reads, metric deltas), then `probe frames 20` (time per event name, busiest seconds, style recalc causes, forced layouts by JS frame, thread roster). JS under a few percent of wall means the cost is native per-frame work: `probe layers` (composited layer count and reasons), `probe animations` (running animations and transitions), `probe mutations 10` (DOM churn by parent and attribute). For a symptom stated as fps or jank rather than a process reading — or a target with no CDP — arm `ao-harness perf` and reproduce with `ao-harness bench` or a scenario: the frame histogram, long-task series and LoAF counts localize the stall in time and correlate it against the same tick's Go heap and RSS, then the CDP probes above name the mechanism. Done: each per-frame cost named by mechanism (which animation, which layer set, which mutation source).
-5. **Retention.** `probe detached` for the live census. When detached nodes stay after a close: `probe heapsnapshot <label>` (pauses the renderer for a few seconds; say so if the user is mid-work), `probe snapshot-detached <file>` for the census, retainer boundaries and paths. A path through `system / Context → <var> → reactions` is a svelte signal still holding a derived or effect from the dead pane: `probe snapshot-signal <file> <moduleVar>` lists every reaction on it with its parent chain and whether its closure DOM is detached, `probe snapshot-node <file> <ids>` dumps one. Write the retention test before the fix: `frontend/src/test/integration/chatview-dom-retention.test.ts` is the pattern (mount, drive the interaction, unmount, gc, count survivors), and `svelte-patch-*.test.ts` when the bug is inside svelte (fix via `pnpm patch`, hunk documented under Vendor Patches in `frontend/AGENTS.md`; REFERENCE.md has the red/green recipe). Done: red on the old code and green on the fix, for the internals test and the component tripwire both.
-6. **A/B.** Confirm a hypothesis by measuring B against A on the same state: `probe ab --css '<override>' [--scroll] --secs 30` runs A, B, A and reports the allocation rate and the blink classes that moved. Soak rig by default (`AO_CDP_PORT=9224`); on the user's app only after telling them what they will see, with `--allow-user-app`. Done: A/B/A rates and a confirmed or refuted mechanism.
-7. **Go.** One heap and one CPU profile on 6363. Confirm it is still lean and move on unless it moved.
-8. **Fix and verify.** Build every clear fix. Gates: `make go-build`, `make go-test`, `cd frontend && pnpm run check && pnpm run build && pnpm test`. Each commit names the mechanism. When the fix sits on a path a bench workload drives (streaming, giant turns, subagent fan-out, thread switching), run `ao-harness bench <workload>` on a windowed harness before and after the change and quote the report deltas — that verification needs no restart of the user's app and leaves a baseline file the next investigation can `--baseline` against. Report "needs a restart", then after the restart re-run the probe that found each item and quote before and after. The decision sheet carries the rest: numbered, one line each, with the measured ceiling of the win and what the user would see change.
-9. **Reference.** When a cause is closed or a ruling made, add the MECHANISM and its owner to REFERENCE.md as one line, never a dated number log; a figure belongs there only when it expresses a ratio or a mechanism, not a baseline.
+A result can identify separate application and platform contributors. Report
+what each fix improves without claiming it explains every symptom. A successful
+counter comparison does not override the user's observation of motion.

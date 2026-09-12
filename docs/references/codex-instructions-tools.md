@@ -1,6 +1,6 @@
 # Codex base instructions + tool exposure (verified against rust-v0.147.0)
 
-Source-verified in the codex repo (`/home/rmurphy/repos/codex`); file:line
+Source-verified in the [Codex repository](https://github.com/openai/codex); file:line
 refs are into `codex-rs/`. Companion to [codex.md](codex.md). Motivation:
 AO's system-prompt override + tool-toggle feature
 (see [docs/specs/prompt-tool-overrides.md](../specs/prompt-tool-overrides.md)).

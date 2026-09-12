@@ -422,7 +422,7 @@ func TestDispatcher_Invoke_MethodErrorDoesNotLeakInternals(t *testing.T) {
 	if fe.Code != ErrCodeMethodError {
 		t.Fatalf("expected method_error, got %s", fe.Code)
 	}
-	if strings.Contains(fe.Message, "/Users/randy/secret") {
+	if strings.Contains(fe.Message, "/Users/user/secret") {
 		t.Fatalf("filesystem path leaked to wire: %q", fe.Message)
 	}
 	if strings.Contains(fe.Message, "file not found") {
@@ -485,7 +485,7 @@ type leakyApp struct{}
 // shaped filesystem path. The redaction layer must keep the path out
 // of the wire frame.
 func (l *leakyApp) LeakPath() error {
-	return errors.New("/Users/randy/secret/path: file not found")
+	return errors.New("/Users/user/secret/path: file not found")
 }
 
 func TestDispatcher_Invoke_ContextInjection(t *testing.T) {

@@ -20,9 +20,9 @@ describe('Device name field', () => {
   it('lets a phone save its own name while offline without writing host settings', async () => {
     phone();
     const view = render(DeviceNameField);
-    await fireEvent.input(view.getByLabelText('Device name'), { target: { value: 'Randy’s Pixel' } });
+    await fireEvent.input(view.getByLabelText('Device name'), { target: { value: 'Test phone' } });
     await fireEvent.click(view.getByRole('button', { name: 'Save' }));
-    expect(clientDeviceName()).toBe('Randy’s Pixel');
+    expect(clientDeviceName()).toBe('Test phone');
     expect(getBindingMock('SetDeviceName')).toBeUndefined();
     expect(view.getByRole('status')).toHaveTextContent('Device name saved.');
   });

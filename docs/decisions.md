@@ -25,12 +25,15 @@ alone does not establish intent.
 
 ## Performance and memory
 
-Rulings and the closed-cause list live in
-`.claude/skills/perf-investigation/REFERENCE.md`. The standing ones:
-never trade performance for memory; any optimization conditioned on a
-pane or element being off-view, hidden, or scrolled out is banned (rejected
-repeatedly, the common case is bouncing between panes); forced GC is not a
-fix; `NetworkServiceInProcess2` rejected.
+Do not trade rendering performance for lower memory usage. Preserve the visible
+work of mounted panes. Do not
+condition optimizations on a pane being hidden or off-screen; returning to a
+pane must remain immediate. Forced garbage collection is a diagnostic, not an
+active-memory optimization. Do not enable `NetworkServiceInProcess2` as a memory
+workaround because it changes the sandbox boundary.
+
+Measurement methods and interpretation belong in
+[the performance reference](../.claude/skills/perf-investigation/REFERENCE.md).
 
 ## Streaming and reveal
 

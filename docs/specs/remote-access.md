@@ -5,7 +5,7 @@ It supersedes conflicting first-host, settings, portability, LAN, and UI rulings
 below. The historical implementation notes here describe the existing foundation.
 
 Status: draft, reviewed (robustness / architecture / completeness)
-2026-08-04. Owner: Randy. Companion doc:
+Companion doc:
 [remote-access-boundaries.md](./remote-access-boundaries.md).
 
 Goal: any of the owner's devices (desktop, browser, future phone app) can

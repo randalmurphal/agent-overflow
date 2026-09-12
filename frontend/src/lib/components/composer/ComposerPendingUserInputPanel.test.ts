@@ -232,11 +232,11 @@ describe('<ComposerPendingUserInputPanel>', () => {
     };
     const { rerender } = render(ComposerPendingUserInputPanel, { props });
 
-    await rerender({ ...props, customAnswer: 'Randy' });
-    await rerender({ ...props, customAnswer: 'Randy', submitSignal: 1 });
+    await rerender({ ...props, customAnswer: 'Alex' });
+    await rerender({ ...props, customAnswer: 'Alex', submitSignal: 1 });
 
     expect(onResolve).toHaveBeenCalledTimes(1);
-    expect(onResolve.mock.calls[0][0].answers).toEqual({ name: 'Randy' });
+    expect(onResolve.mock.calls[0][0].answers).toEqual({ name: 'Alex' });
   });
 
   it('renders a side-by-side preview pane when an option carries preview', async () => {

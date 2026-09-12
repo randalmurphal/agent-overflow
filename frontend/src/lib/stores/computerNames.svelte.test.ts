@@ -20,11 +20,11 @@ it('replaces a phone’s saved address label with its host name, including offli
   stageBackend({ id: 'mac', name: '192.168.1.55:60522' });
   const entry = attachedBackendEntry('mac')!;
   expect(backendDisplayName(entry)).toBe('192.168.1.55:60522');
-  setBackendIdentityFromBootstrap(REMOTE_BACKEND_UUID, 'generation', 'Randy’s Mac', 'mac');
-  expect(backendDisplayName(entry)).toBe('Randy’s Mac');
+  setBackendIdentityFromBootstrap(REMOTE_BACKEND_UUID, 'generation', 'Test Mac', 'mac');
+  expect(backendDisplayName(entry)).toBe('Test Mac');
   // Forget only live identity, as a fresh page starts before bootstrap.
   __resetBackendIdentityForTest();
-  expect(backendDisplayName(entry)).toBe('Randy’s Mac');
+  expect(backendDisplayName(entry)).toBe('Test Mac');
 });
 
 it('stores nicknames on this frontend by identity and clearing restores the hostname', () => {

@@ -58,30 +58,9 @@ const defaultClock: SmoothingClock = {
 export const BASE_CHARS_PER_SEC = 160;
 export const ADAPTIVE_TRIGGER_CHARS = 80;
 export const ADAPTIVE_CATCHUP_MS = 500;
-// Reveal processing is decoupled from display refresh. rAF fires at
-// panel rate, and during catch-up a 165Hz panel would re-parse
-// markdown, mutate the DOM, force layout, and re-raster the content
-// layer on every ~6ms frame — roughly 3× a 60Hz display's render work
-// for zero perceptual gain (word appearance above ~50Hz reads
-// identically). Sustained per-frame churn like that is also exactly
-// the load that aggravates system-level compositor contention
-// (2026-07-04: desktop-wide 0.2–0.5s hitches with video playback,
-// only while streaming). Ticks arriving sooner than this interval
-// re-schedule without processing; budget accrual uses real elapsed
-// time, so reveal RATES are unchanged — only the mutation cadence is
-// bounded. 15ms lets 60Hz process every frame; 165Hz every third
-// (~55Hz effective), 144Hz every third (~48Hz effective).
-//
-// The gate is a SHARED wall-clock grid (`floor(now / interval)`), not a
-// per-instance elapsed check. Independent phases meant three streaming
-// panes processed on three different frames, so at 165Hz every frame
-// carried some pane's markdown re-parse + DOM patch and the full native
-// pipeline behind it (style, layout, paint, Layerize, and Blink's
-// post-layout hover hit-test — HitTest alone averaged 0.84ms/frame in a
-// 3-pane storm trace, 2026-08-26). On the grid every active smoother
-// processes in the SAME frame — one pipeline run per interval — and the
-// frames between are quiet. Per-pane cadence is unchanged: budgets
-// accrue by real dt, so a short slot advances proportionally less.
+// Bound markdown parsing and DOM mutation cadence independently of display
+// refresh. A shared wall-clock grid batches active panes into the same frame.
+// Reveal budgets still accrue from elapsed time, preserving the reveal rate.
 export const MIN_REVEAL_TICK_INTERVAL_MS = 15;
 // Ceiling on the adaptive catch-up RATE. When a fat wire burst (an
 // Anthropic-API paragraph landing in one chunk) opens a large lag, the

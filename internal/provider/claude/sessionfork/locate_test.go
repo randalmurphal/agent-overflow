@@ -8,19 +8,15 @@ import (
 	"testing"
 )
 
-// TestClaudeProjectDirNameMatchesObservedDirs pins the encoding to real
-// directory names observed on disk under ~/.claude/projects, and to the spike
-// that confirmed the CLI's sanitizePath replaces EVERY non-alphanumeric (not
-// just separators): note the '.' in `.config` becoming a second dash, the
-// underscores in a temp path collapsing to dashes, and the Windows-reserved
-// colon. These are the <=200-char branch, where no hash is appended.
-func TestClaudeProjectDirNameMatchesObservedDirs(t *testing.T) {
+// Project slugs replace non-alphanumeric characters, including punctuation
+// within path components. Short synthetic paths exercise the unhashed branch.
+func TestClaudeProjectDirNameEscapesPathComponents(t *testing.T) {
 	cases := []struct{ in, want string }{
-		{"/Users/randy/repos/agent-overflow", "-Users-randy-repos-agent-overflow"},
-		{"/home/rmurphy/repos/m32rimm", "-home-rmurphy-repos-m32rimm"},
+		{"/Users/user/repos/agent-overflow", "-Users-user-repos-agent-overflow"},
+		{"/home/user/repos/sample-project", "-home-user-repos-sample-project"},
 		{
-			"/home/rmurphy/.config/agent-overflow/worktrees/m32rimm/tenable-test-harness",
-			"-home-rmurphy--config-agent-overflow-worktrees-m32rimm-tenable-test-harness",
+			"/home/user/.config/agent-overflow/worktrees/sample-project/example-test-harness",
+			"-home-user--config-agent-overflow-worktrees-sample-project-example-test-harness",
 		},
 		{"/tmp/ao_spike_src", "-tmp-ao-spike-src"},
 		{"/a/b:c", "-a-b-c"},
@@ -172,8 +168,8 @@ func TestClaudeProjectDirName(t *testing.T) {
 		{
 			// Under the cap: the sanitized path verbatim, no suffix.
 			"short",
-			"/home/rmurphy/repos/agent-overflow",
-			"-home-rmurphy-repos-agent-overflow",
+			"/home/user/repos/agent-overflow",
+			"-home-user-repos-agent-overflow",
 		},
 		{
 			// Exactly at the cap: `<=` keeps it verbatim (off-by-one guard).

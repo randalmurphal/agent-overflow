@@ -216,14 +216,14 @@ describe('<DirectoryBrowser>', () => {
 
   it('falls back to prefix-filtering the parent directory when the typed path is incomplete', async () => {
     vi.useFakeTimers();
-    // Direct browse of "/Users/randy/rep" returns exists=false, but
-    // "/Users/randy" is a real directory containing "repos", "rover",
+    // Direct browse of "/Users/user/rep" returns exists=false, but
+    // "/Users/user" is a real directory containing "repos", "rover",
     // and "docs".
     setBindingMock('BrowseDirectory', async (path: string) => {
       if (path === '~') return mkListing();
-      if (path === '/Users/randy') {
+      if (path === '/Users/user') {
         return mkListing({
-          path: '/Users/randy',
+          path: '/Users/user',
           parent: '/Users',
           entries: [
             { name: 'docs', isDir: true, hidden: false, isRepo: false },
@@ -242,7 +242,7 @@ describe('<DirectoryBrowser>', () => {
     for (let i = 0; i < 3; i += 1) await tick();
 
     const input = getByTestId('directory-browser-path') as HTMLInputElement;
-    await fireEvent.input(input, { target: { value: '/Users/randy/rep' } });
+    await fireEvent.input(input, { target: { value: '/Users/user/rep' } });
     await vi.advanceTimersByTimeAsync(120);
     await Promise.resolve();
     for (let i = 0; i < 4; i += 1) await tick();

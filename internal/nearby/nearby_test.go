@@ -29,7 +29,7 @@ func pack(t *testing.T, records []dns.RR) []byte {
 }
 func TestAdvertisementRoundTripReadsCurrentNameAndOnlyPublicMetadata(t *testing.T) {
 	name := "Work PC"
-	for _, want := range []string{"Work PC", "Renamed PC", `Randy’s \ PC 🖥`} {
+	for _, want := range []string{"Work PC", "Renamed PC", `Alex’s \ PC 🖥`} {
 		name = want
 		records := announcement(t, func() string { return name })
 		hosts := parseHosts(pack(t, records))

@@ -24,13 +24,13 @@ func TestWindowsToWSLPath(t *testing.T) {
 	}{
 		{
 			name: "lowercase_drive",
-			in:   `c:\users\randy\agent-overflow.exe`,
-			want: "/mnt/c/users/randy/agent-overflow.exe",
+			in:   `c:\users\user\agent-overflow.exe`,
+			want: "/mnt/c/users/user/agent-overflow.exe",
 		},
 		{
 			name: "uppercase_drive",
-			in:   `C:\Users\Randy\agent-overflow.exe`,
-			want: "/mnt/c/Users/Randy/agent-overflow.exe",
+			in:   `C:\Users\Alex\agent-overflow.exe`,
+			want: "/mnt/c/Users/Alex/agent-overflow.exe",
 		},
 		{
 			name: "non_c_drive",
@@ -39,13 +39,13 @@ func TestWindowsToWSLPath(t *testing.T) {
 		},
 		{
 			name: "double_backslashes",
-			in:   `C:\\Users\\randy\\bin`,
-			want: "/mnt/c//Users//randy//bin",
+			in:   `C:\\Users\\user\\bin`,
+			want: "/mnt/c//Users//user//bin",
 		},
 		{
 			name: "trailing_backslash",
-			in:   `C:\Users\randy\`,
-			want: "/mnt/c/Users/randy/",
+			in:   `C:\Users\user\`,
+			want: "/mnt/c/Users/user/",
 		},
 		{
 			name:    "missing_colon",
@@ -122,7 +122,7 @@ func TestParentDir(t *testing.T) {
 		in   string
 		want string
 	}{
-		{"/home/randy/.local/bin/agent-overflow", "/home/randy/.local/bin"},
+		{"/home/user/.local/bin/agent-overflow", "/home/user/.local/bin"},
 		{"/agent-overflow", "/"},
 		{"agent-overflow", "."},
 		{"/", "/"},
@@ -136,23 +136,23 @@ func TestParentDir(t *testing.T) {
 }
 
 func TestInstallPayloadScriptUsesAtomicRename(t *testing.T) {
-	tmpPath := "/home/randy/.local/bin/agent-overflow.tmp.123"
-	script := installPayloadScript("/mnt/c/tmp/payload", "/home/randy/.local/bin/agent-overflow", tmpPath)
+	tmpPath := "/home/user/.local/bin/agent-overflow.tmp.123"
+	script := installPayloadScript("/mnt/c/tmp/payload", "/home/user/.local/bin/agent-overflow", tmpPath)
 
 	required := []string{
-		"mkdir -p '/home/randy/.local/bin'",
-		"rm -f '/home/randy/.local/bin/agent-overflow.tmp.123'",
-		"cp '/mnt/c/tmp/payload' '/home/randy/.local/bin/agent-overflow.tmp.123'",
-		"chmod +x '/home/randy/.local/bin/agent-overflow.tmp.123'",
-		"mv -f '/home/randy/.local/bin/agent-overflow.tmp.123' '/home/randy/.local/bin/agent-overflow'",
-		"trap 'rm -f /home/randy/.local/bin/agent-overflow.tmp.123' EXIT",
+		"mkdir -p '/home/user/.local/bin'",
+		"rm -f '/home/user/.local/bin/agent-overflow.tmp.123'",
+		"cp '/mnt/c/tmp/payload' '/home/user/.local/bin/agent-overflow.tmp.123'",
+		"chmod +x '/home/user/.local/bin/agent-overflow.tmp.123'",
+		"mv -f '/home/user/.local/bin/agent-overflow.tmp.123' '/home/user/.local/bin/agent-overflow'",
+		"trap 'rm -f /home/user/.local/bin/agent-overflow.tmp.123' EXIT",
 	}
 	for _, fragment := range required {
 		if !strings.Contains(script, fragment) {
 			t.Fatalf("install payload script missing %q in %q", fragment, script)
 		}
 	}
-	if strings.Contains(script, "cp '/mnt/c/tmp/payload' '/home/randy/.local/bin/agent-overflow'") {
+	if strings.Contains(script, "cp '/mnt/c/tmp/payload' '/home/user/.local/bin/agent-overflow'") {
 		t.Fatalf("install payload script copies directly over destination: %q", script)
 	}
 	if strings.Contains(script, "$") {

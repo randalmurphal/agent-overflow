@@ -1,14 +1,9 @@
 # Scroll system behavioral contracts
 
-The acceptance checklist for every stage of
-[`scroll-rearchitecture-plan.md`](scroll-rearchitecture-plan.md). Each
-contract is a user-observable behavior with shipped-regression provenance,
-distilled from the full test-surface inventory (399 tests classified;
-verbatim analysis in
-[`scroll-rearchitecture-inventories.md`](scroll-rearchitecture-inventories.md)
-§A6). A change that breaks one of these is a regression regardless of which
-mechanism implements it. Contracts are numbered for review reference:
-C1..C27.
+These user-observable behaviors apply to changes in the scroll controller,
+timeline virtualizer and their consumers, regardless of implementation.
+Contracts C1 through C27 provide stable review references. See
+[frontend scrolling](frontend-scroll.md) for current ownership and mechanisms.
 
 ## Intent
 

@@ -563,7 +563,7 @@ describe("<ToolCallCard> header dispatcher", () => {
 
   it("expands Codex subagent completion payload output", async () => {
     const output = [
-      "Run `sleep 20` in /home/rmurphy/repos/agent-overflow",
+      "Run `sleep 20` in /home/user/repos/agent-overflow",
       "BASH sleep 20",
       "0",
     ].join("\n");

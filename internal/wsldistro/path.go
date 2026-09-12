@@ -10,7 +10,7 @@ import (
 
 // AppDataEnv is the env var the Windows launcher sets through WSLENV
 // before spawning the Linux backend. WSLENV's /p flag translates the
-// raw Windows path (e.g. C:\Users\rmurphy\AppData\Roaming) to its
+// raw Windows path (e.g. C:\Users\user\AppData\Roaming) to its
 // /mnt/c form on the WSL side, so by the time the backend reads it
 // the value is already a Linux-rooted path that os.ReadFile / os.Stat
 // accept directly.

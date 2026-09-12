@@ -17,7 +17,7 @@ Child-profile resolution was re-verified on 2026-08-29 against
 
 **Shape-of-truth, in priority order:**
 
-1. **codex-source** at `/home/rmurphy/repos/codex`, the
+1. **[Codex source](https://github.com/openai/codex)**, the
    upstream Codex CLI (`codex-rs/`). Typed wire definitions live in
    `codex-rs/app-server-protocol/` (Rust source +
    generated TypeScript under
@@ -116,7 +116,7 @@ handles the notification flavour.
 ### Notifications
 
 Authoritative method list from
-[`codex-rs/app-server-protocol/schema/typescript/ServerNotification.ts`](/home/rmurphy/repos/codex/codex-rs/app-server-protocol/schema/typescript/ServerNotification.ts).
+[`codex-rs/app-server-protocol/schema/typescript/ServerNotification.ts`](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/schema/typescript/ServerNotification.ts).
 
 | `method` | Destination / purpose |
 |---|---|
@@ -287,7 +287,7 @@ garbage. Also note wire `inputTokens` INCLUDES `cachedInputTokens`
 `TokenUsage::add_assign` accumulates it like every other component and
 `non_cached_input` does NOT subtract it. It is a billed class of its own
 and maps onto the shared `TokenUsage.CacheCreationInputTokens`. The
-local `/home/rmurphy/repos/codex` checkout is pinned at 0.142.5 and
+reference checkout is pinned at 0.142.5 and
 predates the field. Check the installed binary before concluding a
 field does not exist.
 
@@ -317,7 +317,7 @@ not checked in per the rule below):
 Approvals arrive as **server requests** (with a JSON-RPC `id`), not as
 notifications. The client is expected to respond with a matching
 `id`. Authoritative list from
-[`codex-rs/app-server-protocol/schema/typescript/ServerRequest.ts`](/home/rmurphy/repos/codex/codex-rs/app-server-protocol/schema/typescript/ServerRequest.ts):
+[`codex-rs/app-server-protocol/schema/typescript/ServerRequest.ts`](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/schema/typescript/ServerRequest.ts):
 
 | `method` | Purpose |
 |---|---|
@@ -925,9 +925,9 @@ Emits `EventTurnStart`. `session.go` dedupes on `turn.id` via
 `codex-cli 0.128.0` wire and upstream schema both define the payload as
 `{threadId, turn}` only:
 
-- `/home/rmurphy/repos/codex/codex-rs/app-server-protocol/src/protocol/v2.rs`
+- [Rust protocol at `rust-v0.128.0`](https://github.com/openai/codex/blob/rust-v0.128.0/codex-rs/app-server-protocol/src/protocol/v2.rs)
   `TurnCompletedNotification`
-- `/home/rmurphy/repos/codex/codex-rs/app-server-protocol/schema/typescript/v2/TurnCompletedNotification.ts`
+- [`TurnCompletedNotification.ts`](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/schema/typescript/v2/TurnCompletedNotification.ts)
 
 The adapter therefore leaves `WireTurnCompleteMeta.AssistantMessageID`
 empty for Codex turn completion.
@@ -1150,7 +1150,7 @@ generic failure.
 
 **`failureReason` is deterministically `null` for a revoked refresh
 token.** `mcp_startup_failure_reason`
-([`codex-rs/codex-mcp/src/connection_manager/startup.rs`](/home/rmurphy/repos/codex/codex-rs/codex-mcp/src/connection_manager/startup.rs),
+([`codex-rs/codex-mcp/src/connection_manager/startup.rs`](https://github.com/openai/codex/blob/main/codex-rs/codex-mcp/src/connection_manager/startup.rs),
 read at `rust-v0.147.0`) returns the variant only when the stored token
 already reads `AuthorizationRequired`, which is structurally unusable. A refresh
 token that is intact on disk but revoked server-side reads `Usable`, so
@@ -1181,12 +1181,12 @@ so retained state must be last-write-wins and self-correcting, with
 
 **This is a fresh, settled connection probe, not a read of a loaded
 thread's MCP manager.** `list_mcp_server_status`
-([`codex-rs/app-server/src/request_processors/mcp_processor.rs`](/home/rmurphy/repos/codex/codex-rs/app-server/src/request_processors/mcp_processor.rs))
+([`codex-rs/app-server/src/request_processors/mcp_processor.rs`](https://github.com/openai/codex/blob/main/codex-rs/app-server/src/request_processors/mcp_processor.rs))
 builds a new `McpConnectionSet` on every call, `threadId` only selecting
 which config applies; `collect_mcp_server_status_snapshot_with_detail`
-([`codex-rs/codex-mcp/src/mcp/mod.rs`](/home/rmurphy/repos/codex/codex-rs/codex-mcp/src/mcp/mod.rs))
+([`codex-rs/codex-mcp/src/mcp/mod.rs`](https://github.com/openai/codex/blob/main/codex-rs/codex-mcp/src/mcp/mod.rs))
 answers through `list_available_server_infos`
-([`connection_manager.rs`](/home/rmurphy/repos/codex/codex-rs/codex-mcp/src/connection_manager.rs)),
+([`connection_manager.rs`](https://github.com/openai/codex/blob/main/codex-rs/codex-mcp/src/connection_manager.rs)),
 which **awaits** every pending client's startup first. By response time
 each server's attempt has settled, so "no evidence" means failed, never
 "still starting".
@@ -1262,7 +1262,7 @@ Skills are Codex's user-invokable prompt units: a directory holding a
 replacement for custom prompts, which upstream removed in 0.118**; there is
 no `customPrompts/list` to fall back to.
 
-Types: [`codex-rs/app-server-protocol/src/protocol/v2/plugin.rs`](/home/rmurphy/repos/codex/codex-rs/app-server-protocol/src/protocol/v2/plugin.rs)
+Types: [`codex-rs/app-server-protocol/src/protocol/v2/plugin.rs`](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/v2/plugin.rs)
 (`SkillsListParams`, `SkillsListResponse`, `SkillsListEntry`,
 `SkillMetadata`, `SkillInterface`, `SkillErrorInfo`,
 `SkillsChangedNotification`). Method registration:
@@ -1358,7 +1358,7 @@ missing either, since it could be shown but not invoked.
 
 ## Code review: `review/start`
 
-Types: [`codex-rs/app-server-protocol/src/protocol/v2/review.rs`](/home/rmurphy/repos/codex/codex-rs/app-server-protocol/src/protocol/v2/review.rs).
+Types: [`codex-rs/app-server-protocol/src/protocol/v2/review.rs`](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/v2/review.rs).
 `ReviewStart => "review/start"` with `serialization:
 thread_id(params.thread_id)`; **not** `#[experimental]`. Since codex
 0.59.0; `detached` delivery since 0.64.0.
@@ -1736,7 +1736,7 @@ completion row.
 ### Authoritative wire shape
 
 Produced by `format_subagent_notification_message` at
-[`codex-rs/core/src/session_prefix.rs:8-18`](/home/rmurphy/repos/codex/codex-rs/core/src/session_prefix.rs):
+[`codex-rs/core/src/session_prefix.rs:8-18`](https://github.com/openai/codex/blob/main/codex-rs/core/src/session_prefix.rs):
 
 ```
 <subagent_notification>

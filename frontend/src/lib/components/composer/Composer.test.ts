@@ -2971,7 +2971,7 @@ describe('<Composer>', () => {
     const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
 
     expect(textarea.value).toBe('');
-    await fireEvent.input(textarea, { target: { value: 'Randy' } });
+    await fireEvent.input(textarea, { target: { value: 'Alex' } });
     await tick();
     await fireEvent.click(getByTestId('user-input-submit'));
 
@@ -2982,7 +2982,7 @@ describe('<Composer>', () => {
       {
         requestId: 'req-input',
         decision: 'accept',
-        answers: { name: 'Randy' },
+        answers: { name: 'Alex' },
       },
     ]);
   });

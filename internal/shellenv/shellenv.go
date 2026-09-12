@@ -10,11 +10,8 @@
 // result, exec.LookPath misses everything installed via nvm, asdf,
 // volta, ~/.local/bin, ~/.npm-global/bin, and so on.
 //
-// The fix is to ask the user's actual shell what PATH it computes, in
-// a login + interactive context, and merge anything new back into our
-// PATH. This is the same approach t3-code uses (see
-// /Users/randy/repos/t3-code/apps/desktop/src/syncShellEnvironment.ts);
-// keeping the shape close means downstream behaviour is consistent.
+// Probe the user's login-interactive shell and merge its PATH entries into
+// the inherited environment.
 //
 // Public API is a single function: Sync. Errors are best-effort —
 // callers log them and proceed with the unmodified PATH. There is

@@ -1789,13 +1789,8 @@ func browserArgs(mode string) []string {
 	if os.Getenv(webviewLogEnv) != "" {
 		args = append(args, "--enable-logging", "--v=1")
 	}
-	// Opt-in software rendering: removes the webview as a GPU client
-	// entirely (raster + compositing on CPU). Diagnostic for the
-	// 2026-07-04 desktop-stutter investigation — system-wide present
-	// stalls correlated with this webview's GPU load transitions;
-	// running a session without GPU work discriminates app-caused from
-	// environmental. Expect visibly degraded scrolling/streaming
-	// smoothness while enabled.
+	// Opt-in software rendering helps isolate GPU-path costs. Raster and
+	// compositing run on the CPU, so this diagnostic can reduce smoothness.
 	if os.Getenv(webviewSoftwareEnv) != "" {
 		args = append(args, "--disable-gpu")
 	}
@@ -1812,13 +1807,8 @@ func browserArgs(mode string) []string {
 // configuration. Keeping the final Wails shape pure lets tests inspect every
 // mode, including EnabledFeatures, instead of proving only one input slice.
 //
-// EnabledFeatures deliberately stays empty. The retired pair
-// --disable-lcd-text + PreferNonCompositedScrolling first disabled Blink's
-// LCD-text guard against eager scroller promotion, then tried to restore the
-// old placement policy with an internal feature. Without the companion every
-// scroller became a content-sized composited layer: renderer cc/tile_memory
-// measured 165.5MB versus an 89.9MB same-day baseline. Chromium defaults now
-// own both text antialiasing and scroller placement; neither half belongs here.
+// Chromium defaults own text antialiasing and scroller placement. Paired
+// overrides can promote content-sized layers and increase raster memory.
 func webviewBrowserOptions(mode, userDataDir, diagnosticsDir string) application.WindowsOptions {
 	return application.WindowsOptions{
 		AdditionalBrowserArgs: browserArgs(mode),

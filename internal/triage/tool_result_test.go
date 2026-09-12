@@ -267,18 +267,18 @@ func TestExtractFileChangeToolResultPreservesDisplayPathsAndDropsControlPaths(t 
 }
 
 func TestExtractFileChangeToolResultPreservesMultiFileAbsolutePathsOutsideWorkspace(t *testing.T) {
-	workspace := "/home/rmurphy/repos/agent-overflow"
+	workspace := "/home/user/repos/agent-overflow"
 	raw := json.RawMessage(`{
 		"item": {
 			"type": "fileChange",
 			"changes": [
 				{
-					"path": "/home/rmurphy/repos/dotfiles/install.sh",
+					"path": "/home/user/repos/dotfiles/install.sh",
 					"kind": {"type": "update", "move_path": null},
 					"diff": "@@ -1 +1 @@\n-old\n+new"
 				},
 				{
-					"path": "/home/rmurphy/repos/dotfiles/setup/packages.sh",
+					"path": "/home/user/repos/dotfiles/setup/packages.sh",
 					"kind": {"type": "update", "move_path": null},
 					"diff": "@@ -1 +1,2 @@\n keep\n+added"
 				}
@@ -294,8 +294,8 @@ func TestExtractFileChangeToolResultPreservesMultiFileAbsolutePathsOutsideWorksp
 		t.Fatalf("inline diff = %+v, want exact_patch", meta.InlineDiff)
 	}
 	wantPaths := []string{
-		"/home/rmurphy/repos/dotfiles/install.sh",
-		"/home/rmurphy/repos/dotfiles/setup/packages.sh",
+		"/home/user/repos/dotfiles/install.sh",
+		"/home/user/repos/dotfiles/setup/packages.sh",
 	}
 	if len(meta.InlineDiff.Files) != len(wantPaths) {
 		t.Fatalf("files = %+v, want %d", meta.InlineDiff.Files, len(wantPaths))
@@ -308,8 +308,8 @@ func TestExtractFileChangeToolResultPreservesMultiFileAbsolutePathsOutsideWorksp
 	if meta.Title != "Edited 2 files (+2 -1)" {
 		t.Fatalf("title = %q, want %q", meta.Title, "Edited 2 files (+2 -1)")
 	}
-	if diff := string(diffData); !strings.Contains(diff, "a//home/rmurphy/repos/dotfiles/install.sh") ||
-		!strings.Contains(diff, "a//home/rmurphy/repos/dotfiles/setup/packages.sh") {
+	if diff := string(diffData); !strings.Contains(diff, "a//home/user/repos/dotfiles/install.sh") ||
+		!strings.Contains(diff, "a//home/user/repos/dotfiles/setup/packages.sh") {
 		t.Fatalf("combined diff does not preserve both absolute paths: %q", diff)
 	}
 }
@@ -462,14 +462,14 @@ func TestExtractFileChangeToolResultAcceptsMatchingFullPatch(t *testing.T) {
 }
 
 func TestExtractFileChangeToolResultAcceptsMatchingExternalFullPatch(t *testing.T) {
-	workspace := "/home/rmurphy/repos/agent-overflow"
+	workspace := "/home/user/repos/agent-overflow"
 	raw := json.RawMessage(`{
 		"item": {
 			"type": "fileChange",
 			"changes": [{
-				"path": "/home/rmurphy/repos/dotfiles/install.sh",
+				"path": "/home/user/repos/dotfiles/install.sh",
 				"kind": {"type": "update", "move_path": null},
-				"diff": "diff --git a//home/rmurphy/repos/dotfiles/install.sh b//home/rmurphy/repos/dotfiles/install.sh\n--- a//home/rmurphy/repos/dotfiles/install.sh\n+++ b//home/rmurphy/repos/dotfiles/install.sh\n@@ -1 +1 @@\n-old\n+new"
+				"diff": "diff --git a//home/user/repos/dotfiles/install.sh b//home/user/repos/dotfiles/install.sh\n--- a//home/user/repos/dotfiles/install.sh\n+++ b//home/user/repos/dotfiles/install.sh\n@@ -1 +1 @@\n-old\n+new"
 			}]
 		}
 	}`)
@@ -481,10 +481,10 @@ func TestExtractFileChangeToolResultAcceptsMatchingExternalFullPatch(t *testing.
 	if meta.InlineDiff == nil || meta.InlineDiff.Availability != "exact_patch" {
 		t.Fatalf("inline diff = %+v, want exact_patch", meta.InlineDiff)
 	}
-	if got := meta.InlineDiff.Files[0].Path; got != "/home/rmurphy/repos/dotfiles/install.sh" {
+	if got := meta.InlineDiff.Files[0].Path; got != "/home/user/repos/dotfiles/install.sh" {
 		t.Fatalf("path = %q, want preserved external absolute path", got)
 	}
-	if !strings.Contains(string(diffData), "a//home/rmurphy/repos/dotfiles/install.sh") {
+	if !strings.Contains(string(diffData), "a//home/user/repos/dotfiles/install.sh") {
 		t.Fatalf("diff = %q, want external absolute header", string(diffData))
 	}
 }

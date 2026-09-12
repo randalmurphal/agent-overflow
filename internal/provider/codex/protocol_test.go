@@ -169,7 +169,7 @@ func TestClassifyNotification_ThreadTokenUsageUpdatedDoesNotFalseFireExceeded(t 
 // TestClassifyNotification_ItemUpdatedIsPhantom pins that the Codex
 // app-server wire protocol has NO `item/updated` method — it only
 // emits `item/started` and `item/completed`. Reference:
-// /home/rmurphy/repos/codex/codex-rs/app-server-protocol/schema/typescript/ServerNotification.ts.
+// https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/schema/typescript/ServerNotification.ts.
 // Any classifier branch that produces events for `item/updated` would
 // be dispatching on a phantom method; this test locks that in by
 // asserting zero events come out for such a method.
