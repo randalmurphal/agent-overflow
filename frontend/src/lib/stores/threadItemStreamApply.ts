@@ -1,3 +1,4 @@
+import { isItemStatusRegression } from './threadItems';
 import type { Item, Thread } from '../types/models';
 import type {
   ItemDeltaEvent,
@@ -337,6 +338,9 @@ export function createThreadItemStreamApply(
     if (!evt.itemId) return;
     const thread = options.getThread();
     if (thread && evt.threadId !== thread.id) return;
+    const index = itemIndexById.get(evt.itemId);
+    const current = index === undefined ? undefined : options.getItems()[index];
+    if (current && evt.patch.status && isItemStatusRegression(current, { status: evt.patch.status, updatedAt: evt.patch.updatedAt })) return;
     const next = streamingReveal.applyPatch(evt.itemId, evt.patch);
     if (!next) return;
     // Streaming children settle through THIS path, not upserts —

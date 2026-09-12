@@ -41,7 +41,7 @@ import {
   refreshWorkflowRunsSoon,
   resyncWorkflowEngineState,
 } from './workflowRuns.svelte';
-import { dropAllThreadHistoryStamps } from './threadHistoryStamps';
+
 import { threadItemCache } from './threadItemCache';
 import type { ThreadPaneIngest } from './threadPaneRoles';
 import { holdBackendRecovery } from './transportRecovery';
@@ -56,18 +56,8 @@ function ingestPanes(): Iterable<ThreadPaneIngest> {
   return iterPanes();
 }
 
-/**
- * The stamp half of gap recovery (docs/architecture/thread-replica-sync.md
- * §3.4). The registry is dropped wholesale — it holds one entry per
- * thread and re-earning it costs one window fetch — but the registry is
- * not the only place a stamp lives: every L1 snapshot carries a COPY
- * paired with its rows. An unattested copy can name a rev whose frames
- * this gap dropped, and it would spring a false `fresh` on the next warm
- * re-entry, permanently. Attested copies describe rows a sync returned
- * and stay (see `dropUnattestedStamps`).
- */
+/** Cached windows may retain only stamps that attest their own rows. */
 function dropStampsAfterGap(): void {
-  dropAllThreadHistoryStamps();
   threadItemCache.dropUnattestedStamps();
 }
 

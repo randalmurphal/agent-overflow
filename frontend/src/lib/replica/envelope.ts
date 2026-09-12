@@ -33,7 +33,8 @@ export const REPLICA_ENVELOPE_VERSION = 1;
  * changes — including a change to the wire `Item` DTO, since items ride
  * the envelope verbatim. A mismatch drops the whole database.
  */
-export const REPLICA_SCHEMA_VERSION = 1;
+// Earlier windows could pair a snapshot stamp with an older replayed row.
+export const REPLICA_SCHEMA_VERSION = 2;
 
 /**
  * Per-envelope caps, deliberately the same numbers `threadItemCache`

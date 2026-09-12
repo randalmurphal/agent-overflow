@@ -16,7 +16,6 @@ import {
   ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS,
   ACTIVE_TIMELINE_WINDOW_MAX_ITEMS,
   ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
-  SLICE_AROUND_ITEM_BUDGET,
 } from './threadPaneShared';
 
 describe('threadTimelineWindow', () => {
@@ -1677,62 +1676,6 @@ describe('threadTimelineWindow', () => {
       expect(pane.hasMoreNewer).toBe(false);
     });
 
-    it('refreshFromBackend reloads through the bounded slice API instead of the broad recent loader', async () => {
-      const pane = createThreadPane();
-      const sliceCalls: Array<{ anchor: unknown; budget: unknown }> = [];
-      setBindingMock('AutoResumeThread', async () => {});
-      setBindingMock(
-        'ListThreadSliceAround',
-        async (_threadId, anchor, budget) => {
-          sliceCalls.push({ anchor, budget });
-          if (sliceCalls.length === 1) {
-            return {
-              items: [
-                makeItem({
-                  id: 'window-ceiling',
-                  threadId: 't',
-                  turnIndex: 3,
-                  itemIndex: 0,
-                }),
-              ],
-              oldestTurnIndex: 3,
-              newestTurnIndex: 3,
-              hasMore: true,
-              hasMoreOlder: true,
-              hasMoreNewer: true,
-            };
-          }
-          return {
-            items: [
-              makeItem({
-                id: 'refreshed',
-                threadId: 't',
-                turnIndex: 4,
-                itemIndex: 0,
-              }),
-            ],
-            oldestTurnIndex: 4,
-            newestTurnIndex: 4,
-            hasMore: true,
-            hasMoreOlder: true,
-            hasMoreNewer: true,
-          };
-        },
-      );
-
-      await pane.switchThread(makeThread({ id: 't' }));
-      await pane.refreshFromBackend();
-
-      expect(sliceCalls).toEqual([
-        { anchor: '', budget: SLICE_AROUND_ITEM_BUDGET },
-        {
-          anchor: 'window-ceiling',
-          budget: ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
-        },
-      ]);
-      expect(pane.items.map((it) => it.id)).toEqual(['refreshed']);
-    });
-
     it('recovers a historical window without replacing its loaded prefix with newer history', async () => {
       const pane = createThreadPane();
       const rows = Array.from({ length: 1000 }, (_, i) => makeItem({ id: `historical-${i}`, threadId: 't', turnIndex: i + 100, itemIndex: 0 }));
@@ -2033,6 +1976,11 @@ describe('threadTimelineWindow', () => {
       // tier can carry a pending send, so the deferred fold is the only
       // way the row reaches the window.
       const pane = createThreadPane();
+      setBindingMock('AutoResumeThread', async () => {});
+      const seed = { status: 'stale', epoch: 1, rev: 1, generation: 'test-generation', page: { items: [makeItem({ id: 'persisted', threadId: 't' })], hasMoreOlder: false, hasMoreNewer: false } };
+      setBindingMock('SyncThreadWindow', async () => seed);
+      await pane.switchThread(makeThread({ id: 't' }));
+      await pane.switchThread(makeThread({ id: 'other' }));
       setBindingMock('SyncThreadWindow', async () => ({
         status: 'fresh',
         epoch: 1,
@@ -2061,7 +2009,7 @@ describe('threadTimelineWindow', () => {
 
       await pane.switchThread(makeThread({ id: 't' }));
 
-      expect(pane.items.map((item) => item.id)).toEqual(['pending-send']);
+      expect(pane.items.map((item) => item.id)).toEqual(['persisted', 'pending-send']);
       expect(pane.isOptimisticItem('pending-send')).toBe(true);
     });
 

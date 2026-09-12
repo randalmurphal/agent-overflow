@@ -18,15 +18,17 @@
 // that landed while the snapshot was in flight is newer than the snapshot
 // and wins.
 
+import { pendingBackendReplay } from './transportRecovery';
 import type { BackendKey } from '../transport/backendKey';
 import { withBackendTarget } from '../transport/backends';
-import { threadIdsForBackend } from '../transport/entityIndex';
+import { threadBackend, threadIdsForBackend } from '../transport/entityIndex';
 import { hasScope } from '../transport/scopes';
 import type { ThreadLiveActivity } from '../../../bindings/agent-overflow/internal/app/models';
 import { ListThreadLiveActivity } from './bindings';
-import { hydrateCompactingState } from './compactingState.svelte';
+import { compactingRevision, hydrateCompactingState } from './compactingState.svelte';
 import {
   getCanonicalActiveTurn as getActiveTurn,
+  interactiveRequestsRevision,
   projectTurnCompleted,
   projectTurnStarted,
   replaceInteractiveRequestsForThread,
@@ -44,19 +46,23 @@ function applyActiveTurn(threadId: string, active: ThreadLiveActivity['activeTur
   }
 }
 
-function applyRow(row: ThreadLiveActivity, atRequest: ActiveTurn | null): void {
-  applyActiveTurn(row.threadId, row.activeTurn, atRequest);
-  replaceInteractiveRequestsForThread(row.threadId, {
-    approvals: (row.approvalRequestIds ?? []).map((requestId) => ({ requestId })),
-    userInputs: (row.userInputRequestIds ?? []).map((requestId) => ({ requestId })),
-  });
-  hydrateCompactingState(row.threadId, row.compactingSinceUnixMs ?? 0);
+interface ActivityGuard {
+  turn: ActiveTurn | null;
+  interactive: number;
+  compacting: number;
 }
-
-function applyIdle(threadId: string, atRequest: ActiveTurn | null): void {
-  applyActiveTurn(threadId, null, atRequest);
-  replaceInteractiveRequestsForThread(threadId, { approvals: [], userInputs: [] });
-  hydrateCompactingState(threadId, 0);
+function captureActivity(threadId: string): ActivityGuard {
+  return { turn: getActiveTurn(threadId), interactive: interactiveRequestsRevision(threadId), compacting: compactingRevision(threadId) };
+}
+function applyRow(row: ThreadLiveActivity, guard: ActivityGuard): void {
+  applyActiveTurn(row.threadId, row.activeTurn, guard.turn);
+  if (interactiveRequestsRevision(row.threadId) === guard.interactive) {
+    replaceInteractiveRequestsForThread(row.threadId, {
+      approvals: (row.approvalRequestIds ?? []).map((requestId) => ({ requestId })),
+      userInputs: (row.userInputRequestIds ?? []).map((requestId) => ({ requestId })),
+    });
+  }
+  hydrateCompactingState(row.threadId, row.compactingSinceUnixMs ?? 0, guard.compacting);
 }
 
 /**
@@ -66,21 +72,27 @@ function applyIdle(threadId: string, atRequest: ActiveTurn | null): void {
  * transport error otherwise, for the caller to report.
  */
 export async function reconcileThreadLiveActivity(backend: BackendKey): Promise<void> {
+  const replay = pendingBackendReplay(backend);
+  if (replay) await replay;
   if (!hasScope('threads:read', backend)) return;
   // Captured before the read leaves: the guard tells a snapshot that
   // crossed a push apart from one that did not. The entity index rather
   // than the sidebar list, because it holds every thread this client has
   // attributed to the computer (rows, panes, search results, archived).
-  const turnsAtRequest = new Map<string, ActiveTurn | null>();
-  for (const threadId of threadIdsForBackend(backend)) turnsAtRequest.set(threadId, getActiveTurn(threadId));
+  const atRequest = new Map<string, ActivityGuard>();
+  for (const threadId of threadIdsForBackend(backend)) atRequest.set(threadId, captureActivity(threadId));
   const rows = (await withBackendTarget(backend, () => ListThreadLiveActivity())) as ThreadLiveActivity[] | null;
   const named = new Set<string>();
   for (const row of rows ?? []) {
     if (!row?.threadId) continue;
     named.add(row.threadId);
-    applyRow(row, turnsAtRequest.get(row.threadId) ?? null);
+    const owner = threadBackend(row.threadId);
+    if (owner !== undefined && owner !== backend) continue;
+    applyRow(row, atRequest.get(row.threadId) ?? { turn: null, interactive: 0, compacting: 0 });
   }
-  for (const [threadId, atRequest] of turnsAtRequest) {
-    if (!named.has(threadId)) applyIdle(threadId, atRequest);
+  for (const [threadId, guard] of atRequest) {
+    if (!named.has(threadId) && threadBackend(threadId) === backend) {
+      applyRow({ threadId, activeTurn: null, approvalRequestIds: [], userInputRequestIds: [], compactingSinceUnixMs: 0 } as ThreadLiveActivity, guard);
+    }
   }
 }

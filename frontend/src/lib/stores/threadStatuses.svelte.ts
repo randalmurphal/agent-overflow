@@ -120,6 +120,12 @@ export type ThreadLiveStatus =
 const statuses = createKeyedSignalRegistry<ThreadLiveStatus>('idle');
 const liveStateHydratingThreads = createKeyedSignalRegistry<boolean>(false);
 const pendingSendThreads = createKeyedSignalRegistry<boolean>(false);
+const interactiveRevisions = new Map<string, number>();
+let interactiveRevision = 0;
+export function interactiveRequestsRevision(threadId: string): number {
+  return interactiveRevisions.get(threadId) ?? 0;
+}
+
 const approvalIDsByThread = new Map<string, Set<string>>();
 const awaitingInputIDsByThread = new Map<string, Set<string>>();
 const approvalThreadByID = new Map<string, string>();
@@ -294,6 +300,7 @@ export function clearThreadStatus(threadId: string): void {
   }
   approvalIDsByThread.delete(threadId);
   awaitingInputIDsByThread.delete(threadId);
+  interactiveRevisions.delete(threadId);
   errorThreads.delete(threadId);
   interruptedThreads.delete(threadId);
   liveStateHydrationTokenByThread.delete(threadId);
@@ -394,6 +401,7 @@ export function replaceInteractiveRequestsForThread(
   },
 ): void {
   if (!threadId) return;
+  interactiveRevisions.set(threadId, ++interactiveRevision);
 
   const previousApprovalIDs = approvalIDsByThread.get(threadId);
   if (previousApprovalIDs) {
@@ -564,6 +572,7 @@ export function projectThreadReverted(threadId: string): void {
   }
   approvalIDsByThread.delete(threadId);
   awaitingInputIDsByThread.delete(threadId);
+  interactiveRevisions.delete(threadId);
   // Invalidate in-flight live-state hydrations: bump the token so a
   // snapshot requested before the revert fails its currency check on
   // resolve. The hydrating flag clears here because the stale
@@ -669,6 +678,7 @@ export function projectApprovalRequest(
   kind?: ApprovalKind,
 ): void {
   if (!threadId || !requestId) return;
+  interactiveRevisions.set(threadId, ++interactiveRevision);
   approvalThreadByID.set(requestId, threadId);
   void kind;
   trackedIDsFor(approvalIDsByThread, threadId).add(requestId);
@@ -691,6 +701,7 @@ export function projectApprovalResolution(
   if (!requestId) return;
   const ownerThreadId = threadId ?? approvalThreadByID.get(requestId);
   if (!ownerThreadId) return;
+  interactiveRevisions.set(ownerThreadId, ++interactiveRevision);
   approvalThreadByID.delete(requestId);
   removeTrackedID(approvalIDsByThread, ownerThreadId, requestId);
   removeTrackedID(awaitingInputIDsByThread, ownerThreadId, requestId);
@@ -699,6 +710,7 @@ export function projectApprovalResolution(
 
 export function projectUserInputRequest(threadId: string, requestId: string): void {
   if (!threadId || !requestId) return;
+  interactiveRevisions.set(threadId, ++interactiveRevision);
   approvalThreadByID.set(requestId, threadId);
   trackedIDsFor(awaitingInputIDsByThread, threadId).add(requestId);
   errorThreads.delete(threadId);
@@ -713,6 +725,7 @@ export function projectUserInputResolution(
   if (!requestId) return;
   const ownerThreadId = threadId ?? approvalThreadByID.get(requestId);
   if (!ownerThreadId) return;
+  interactiveRevisions.set(ownerThreadId, ++interactiveRevision);
   approvalThreadByID.delete(requestId);
   removeTrackedID(awaitingInputIDsByThread, ownerThreadId, requestId);
   recalculateThreadStatus(ownerThreadId);
@@ -746,6 +759,7 @@ export function resetForTest(): void {
   completedTurnIDsByThread.clear();
   pendingSendThreads.reset();
   approvalIDsByThread.clear();
+  interactiveRevisions.clear();
   awaitingInputIDsByThread.clear();
   approvalThreadByID.clear();
   errorThreads.clear();

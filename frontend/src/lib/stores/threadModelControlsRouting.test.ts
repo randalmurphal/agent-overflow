@@ -28,6 +28,7 @@ function client(callByID: WSClient['callByID']): WSClient {
     subscribe: vi.fn(() => () => undefined),
     installStepUpProver: vi.fn(), setWatchedThreads: vi.fn(), setPresence: vi.fn(), setLease: vi.fn(),
     getStatus: vi.fn(() => ({ status: 'connected', nextAttemptAt: null })),
+    onReplay: vi.fn(() => () => undefined),
     onStatusChange: vi.fn(() => () => undefined), getHello: vi.fn(() => null),
     onHelloChange: vi.fn(() => () => undefined), close: vi.fn(),
   } as unknown as WSClient;

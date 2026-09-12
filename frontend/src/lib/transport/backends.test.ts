@@ -13,6 +13,7 @@ const { homeClient } = vi.hoisted(() => ({
     setWatchedThreads: vi.fn(),
     setLease: vi.fn(),
     getStatus: vi.fn(() => ({ status: 'connected', nextAttemptAt: null })),
+    onReplay: vi.fn(() => () => undefined),
     onStatusChange: vi.fn(() => () => undefined),
     getHello: vi.fn(() => null),
     onHelloChange: vi.fn(() => () => undefined),
@@ -78,6 +79,7 @@ function fakeClient(): FakeClient {
     setWatchedThreads: vi.fn(),
     setLease: vi.fn(),
     getStatus: vi.fn(() => ({ status: 'connected', nextAttemptAt: null })),
+    onReplay: vi.fn(() => () => undefined),
     onStatusChange: vi.fn(() => () => undefined),
     getHello: vi.fn(() => null),
     onHelloChange: vi.fn(() => () => undefined),
@@ -142,6 +144,7 @@ beforeEach(() => {
   for (const fn of Object.values(homeClient)) (fn as { mockReset?: () => void }).mockReset?.();
   homeClient.getStatus.mockReturnValue({ status: 'connected', nextAttemptAt: null });
   homeClient.onStatusChange.mockReturnValue(() => undefined);
+  homeClient.onReplay.mockReturnValue(() => undefined);
   homeClient.subscribe.mockImplementation((channel, handler) => {
     let set = homeHandlers.get(channel);
     if (!set) {

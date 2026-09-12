@@ -1,3 +1,4 @@
+import { noteThread } from '../../transport/entityIndex';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import { mount, unmount, tick } from 'svelte';
 import '../../../app.css';
@@ -49,6 +50,7 @@ it.each([320, 360, 412])('keeps complete title and review badge visible at %ipx'
 it.each([320, 360, 412])('keeps workspace and usage inside a %ipx footer', async (width) => {
   host.style.width = `${width}px`;
   stageBackend();
+  noteThread('thread-1', '');
   const pane = await buildPane(makeThread({ branch: 'feature/remote-access-with-a-very-long-branch-name' }));
   mounted.push(mount(ComposerWorkspaceStrip, { target: host, props: { pane, readonly: true, usageLabel: '2.5M · $120.25' } }));
   await tick();

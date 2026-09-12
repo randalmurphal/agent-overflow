@@ -11,7 +11,7 @@ import { idleWorkspaceActivity } from '../../../../test/helpers/workspaceLock';
 import { resetPanesForTest } from '../../../stores/panes.svelte';
 import { refreshProjects, resetProjectsForTest } from '../../../stores/projects.svelte';
 import { __resetSelectedBackendForTest, selectedBackend } from '../../../stores/selectedBackend.svelte';
-import { __resetEntityIndexForTest, noteProject } from '../../../transport/entityIndex';
+import { __resetEntityIndexForTest, noteProject, noteThread } from '../../../transport/entityIndex';
 import { __resetBackendIdentityForTest, setBackendIdentityFromBootstrap } from '../../../transport/backendIdentity';
 import { HOME_BACKEND } from '../../../transport/backendKey';
 import { grantBackendScopes, revokeBackendScopes } from '../../../../test/helpers/scopes';
@@ -90,6 +90,7 @@ describe('<MachinePicker>', () => {
   it('names the machine the pane’s project lives on, and locks once the thread has messages', async () => {
     stageBackend();
     noteProject('project-1', 'laptop');
+    noteThread('thread-1', 'laptop');
     const pane = await buildPane(makeThread());
     const { getByTestId } = render(MachinePicker, { props: { pane } });
     const trigger = getByTestId('machine-picker-trigger');

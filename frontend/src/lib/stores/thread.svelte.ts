@@ -1084,10 +1084,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       }
     },
 
-    refreshActiveTurn(): Promise<void> {
-      return liveStateHydration.refreshActiveTurn();
-    },
-
     retryHistoryLoad(): Promise<void> {
       return switchLoad.retryHistoryLoad();
     },

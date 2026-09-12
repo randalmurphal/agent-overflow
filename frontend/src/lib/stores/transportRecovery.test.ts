@@ -1,5 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 
+vi.hoisted(() => { vi.resetModules(); });
+
 const fixture = vi.hoisted(() => {
   function client() {
     const replay = new Set<(phase: 'start' | 'complete' | 'cancel') => void>();
@@ -21,7 +23,7 @@ vi.mock('../transport/backends', () => ({
   onBackendsChanged: () => () => {},
 }));
 
-import { holdBackendRecovery, isBackendRecovering, onBackendRecovery } from './transportRecovery';
+import { holdBackendRecovery, isBackendRecovering, onBackendRecovery, pendingBackendReplay } from './transportRecovery';
 import { itemEventQueued, itemEventsSettled, resetItemEventSettlement } from './itemEventSettlement';
 
 const offs: Array<() => void> = [];
@@ -92,4 +94,30 @@ it('cancels pending snapshots on disconnect without completing a later recovery'
   expect(events).toEqual([':start', ':cancel', ':start']);
   replay(fixture.home, 'complete');
   expect(events.at(-1)).toBe(':complete');
+});
+
+it('releases the replay fence before waiting for the snapshots that joined it', async () => {
+  replay(fixture.home, 'start');
+  itemEventQueued();
+  const snapshot = vi.fn();
+  const read = pendingBackendReplay('')!.then(snapshot);
+  holdBackendRecovery('', read);
+  replay(fixture.home, 'complete');
+  expect(snapshot).not.toHaveBeenCalled();
+  itemEventsSettled(1);
+  await read;
+  await vi.waitFor(() => expect(isBackendRecovering('')).toBe(false));
+  expect(snapshot).toHaveBeenCalledTimes(1);
+});
+
+it('rejects a cancelled replay fence without releasing a newer connection', async () => {
+  replay(fixture.home, 'start');
+  const old = pendingBackendReplay('')!;
+  const rejected = expect(old).rejects.toThrow('connection changed');
+  replay(fixture.home, 'start');
+  await rejected;
+  expect(pendingBackendReplay('')).not.toBe(old);
+  expect(isBackendRecovering('')).toBe(true);
+  replay(fixture.home, 'complete');
+  expect(pendingBackendReplay('')).toBeUndefined();
 });

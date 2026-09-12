@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   applyCompactingState,
+  compactingRevision,
   clearCompactingForThread,
   hydrateCompactingState,
   isThreadCompacting,
@@ -53,4 +54,13 @@ describe('compactingState', () => {
     clearCompactingForThread('t1');
     expect(isThreadCompacting('t1')).toBe(false);
   });
+});
+
+it('does not reopen compacting after a complete open/close cycle during the read', () => {
+  resetForTest();
+  const revision = compactingRevision('t1');
+  applyCompactingState({ threadId: 't1', active: true, sinceUnixMs: 100 });
+  applyCompactingState({ threadId: 't1', active: false });
+  hydrateCompactingState('t1', 100, revision);
+  expect(isThreadCompacting('t1')).toBe(false);
 });

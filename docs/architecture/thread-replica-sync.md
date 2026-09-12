@@ -236,8 +236,8 @@ connect, plus every `SyncThreadWindow` response. The response copy
 is the one that matters for a restore that happens mid-session, since
 no reconnect refetches the manifest for a client that never
 disconnected. A generation change, from either source, wipes EVERY tier
-that holds stamps or stamp-paired rows: the replica database, the stamp
-registry, and the in-memory L1 snapshot cache (its snapshots pair a
+that holds stamp-paired rows: the replica database and the in-memory
+L1 snapshot cache (its snapshots pair a
 copied stamp with rows, so L1 is not exempt just because it is in
 memory). The publisher side has the mirror obligation: whatever
 replaces the database (today `RestoreFrom`) returns the new identity so
@@ -279,9 +279,8 @@ graded by durability:
   confirms the server's counter, not that this client received every
   frame up to it. So a `fresh` answer upgrades a stamp to persistable
   only when the sent stamp was itself attested (a replica envelope or a
-  prior sync). The client registry therefore tags every stamp with
-  whether a sync attested it: `latest` (any source) drives requests, and
-  the tag is what a `fresh` echo consults before it may upgrade.
+  prior sync). Requests send only the attested stamp paired
+  with the painted window; event-carried counters cannot validate that window.
 
   **Attestation is a property of a WINDOW, not of a thread id.** What
   may be persisted is decided by the attestation the *pane holding the
@@ -292,14 +291,15 @@ graded by durability:
   stamp is precisely the permanent false `fresh` this section exists to
   prevent. The pane's attestation is set when a sync page installs, when
   a page-less `fresh` confirms rows that came from an attested source,
-  and (the case the registry cannot express) to the ENVELOPE's own
+  and to the ENVELOPE's own
   stamp the moment a replica window is painted, so a failed sync leaves
   the pane holding what its rows actually descend from. It is cleared by
   anything that changes the window's provenance (thread install, pane
   clear, structural cut, a page-less answer over an unattested source)
-  and pinned to its lineage (§3.3). Live upserts leave it alone: they
-  arrive through the wire for this thread and only make the rows newer
-  than the stamp, which is the safe direction.
+  and pinned to its lineage (§3.3). Item mutations invalidate the window
+  attestation. Replay and reveal cursors can carry older content even when
+  their delivery occurs after the read. Windows with active smoothers are
+  also ineligible for stamped caching.
 
   A window holding an **optimistic row** (a send the wire has not
   echoed) is not a window any rev ever had, so neither stamped tier
@@ -313,17 +313,16 @@ graded by durability:
   marker is discharged only by the wire. The pane's own optimistic
   insert must never clear it, or every filter downstream is dead code.
 - **Event-carried stamps (`turn_completed`, `user_message:reverted`)
-  are adopted in memory only.** They are not full attestations: a
+  do not validate client windows.** They are not full attestations: a
   writer outside the emitting goroutine, concretely the async
   highlight-span worker, can commit a rev bump before the stamp read
   while its frame reaches the client afterward, or never (disconnect).
-  In memory that window is milliseconds and self-heals through frame
-  delivery, replay, or the gap rule; persisted, it would be a
-  permanent false `fresh` over content missing that write.
+  The client does not maintain a second revision registry from these events.
+  History validation uses the stamp paired with its actual rows.
 - **When unsure (transport gap, replay gap on any stamped or
   content-bearing channel), the client keeps the older stamp or drops
-  to unknown.** The drop must reach every place a stamp LIVES, not just
-  the registry: an L1 snapshot carries a copy paired with its rows, and
+  to unknown.** The drop must reach every cache: an L1 snapshot carries a
+  copy paired with its rows, and
   an unattested copy can name a rev whose frames the gap ate. It would
   spring a false `fresh` on the next warm re-entry and stay wrong for
   the session. Attested copies survive the gap, and that asymmetry is
@@ -339,13 +338,11 @@ Three small additions, all read in (or immediately after) the
 mutation's own transaction:
 
 - **`provider:turn_completed`** gains `historyRev`/`historyEpoch`,
-  one `SELECT` at event build (cold path). Adopted in memory only
-  (§3.4); within a session it lets a thread the user watched stream
-  and then re-opened get a `fresh` answer instead of paying one
-  convergence fetch.
+  one `SELECT` at event build (cold path). These counters describe backend
+  history; they do not attest the client's loaded window (§3.4).
 - **`user_message:reverted`** gains the post-cut stamps, read inside
-  the cut transaction. Same in-memory-only adoption; the client
-  already patches the window exactly like the backend cut
+  the cut transaction. The client invalidates cached windows and
+  patches the visible window exactly like the backend cut
   (`removeRevertedItems`).
 **Deletion carries no wire event and does not get one.** There is no
 `thread:deleted` channel. A deleted thread leaves the sidebar through
@@ -564,8 +561,8 @@ port; temporary token attachment does not create a durable pairing.
    keep `===` references and don't re-render). Replica rows are
    paint-only, and none survive into the live window past the reconcile.
    This is what makes write-back safe: the persisted rows always
-   descend from the attested page (plus later live events, which only
-   make content *newer* than the stamp, the safe direction, §3.4).
+   descend from the attested page. Concurrent item mutations or active
+   reveal cursors prevent the merged window from being attested (§3.4).
    Merging replica scrollback from an older attestation under a newer
    stamp is the one composition that could pin a stale row under a
    false `fresh`, and this rule makes it unrepresentable. `fresh`
@@ -657,8 +654,7 @@ the freshly returned window, so there is nothing stale to page into.
   the OPEN database (the sign-out contract), and a purge cancelled rather
   than deleting what a newer identity just opened.
 - **Attestation pairing (frontend)**: a replica paint whose sync then
-  FAILS must write back under the envelope's stamp even when the
-  registry holds a newer attested one for that thread; a window
+  FAILS must write back under the envelope's own stamp; a window
   carrying an optimistic row must reach neither stamped tier; a
   transport gap must strip unattested L1 stamp copies and leave
   attested ones. Each of these is a pairing, so cover the SEQUENCE that

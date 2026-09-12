@@ -4,6 +4,14 @@ import { userMessageIdentity } from '../utils/userMessageIdentity';
 const EMPTY_ID_SET: ReadonlySet<string> = new Set<string>();
 const NO_REJECTED_ITEMS: readonly Item[] = Object.freeze([]);
 
+/** An older live observation cannot reopen an item already settled by a snapshot. */
+export function isItemStatusRegression(previous: Item, incoming: Pick<Item, 'status'> & Partial<Pick<Item, 'updatedAt'>>): boolean {
+  return (previous.status === 'completed' || previous.status === 'errored'
+    || previous.status === 'declined' || previous.status === 'killed')
+    && (incoming.status === 'streaming' || incoming.status === 'running')
+    && (incoming.updatedAt ?? previous.updatedAt) <= previous.updatedAt;
+}
+
 export interface TimelineCursorLike {
   turnIndex: number;
   itemIndex: number;
@@ -287,11 +295,9 @@ export function reconcileItemWindow(incoming: readonly Item[], current: readonly
  *    the stamps attest, so it is dropped. That is what makes the
  *    subsequent write-back safe: everything persisted descends from the
  *    attested page (docs/architecture/thread-replica-sync.md §6.1 step 4).
- *  - **Live rows are newer than the page.** Anything the wire touched
- *    since the switch began post-dates the page's read snapshot, so its
- *    version wins where both have the row, and it is kept where the page
- *    does not have it at all. Without this a thread opened mid-stream
- *    would lose the row it was streaming into.
+ *  - Rows touched during the read survive missing snapshot rows and win
+ *    overlaps, except that a settled snapshot supersedes an old start or
+ *    delta for the same item. Delivery time alone does not prove freshness.
  *
  * Unchanged rows keep their existing reference so the reconcile does not
  * re-render them. `items` is `current` itself when nothing moved.
@@ -328,7 +334,9 @@ export function reconcileSnapshotPage(
       next.push(item);
       continue;
     }
-    if (liveTouchedIds.has(item.id) || itemsAreEqual(existing, item)) {
+    // Delivery time alone cannot make an old start newer than completion.
+    const settlesExisting = isItemStatusRegression(item, existing);
+    if ((!settlesExisting && liveTouchedIds.has(item.id)) || itemsAreEqual(existing, item)) {
       next.push(existing);
       continue;
     }

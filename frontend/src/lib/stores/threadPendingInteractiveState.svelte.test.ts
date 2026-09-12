@@ -34,53 +34,30 @@ function makeUserInput(overrides: Partial<UserInputRequest> = {}): UserInputRequ
 }
 
 describe('createThreadPendingInteractiveState', () => {
-  it('applies backend snapshots before existing local requests and de-dupes by request id', () => {
+  it('removes old requests absent from the snapshot and prefers arrivals during the read', () => {
     const state = createThreadPendingInteractiveState();
-    state.addApproval(makeApproval({ requestId: 'local-only', title: 'Local only' }));
-    state.addApproval(makeApproval({ requestId: 'overlap', title: 'Local overlap' }));
-
-    const filtered = state.registrySnapshotFor({
-      approvals: [
-        makeApproval({ requestId: 'overlap', title: 'Snapshot overlap' }),
-        makeApproval({ requestId: 'snapshot-only', title: 'Snapshot only' }),
-      ],
+    state.addApproval(makeApproval({ requestId: 'stale' }));
+    state.addApproval(makeApproval({ requestId: 'overlap', title: 'Before read' }));
+    const apply = state.beginSnapshot();
+    state.addApproval(makeApproval({ requestId: 'overlap', title: 'During read' }));
+    state.addUserInput(makeUserInput());
+    const projected = apply({
+      approvals: [makeApproval({ requestId: 'overlap', title: 'Snapshot' }), makeApproval({ requestId: 'snapshot-only' })],
       userInputs: [],
     });
-    state.applySnapshot({
-      approvals: [
-        makeApproval({ requestId: 'overlap', title: 'Snapshot overlap' }),
-        makeApproval({ requestId: 'snapshot-only', title: 'Snapshot only' }),
-      ],
-      userInputs: [],
-    });
-
-    expect(filtered.approvals.map((approval) => approval.requestId)).toEqual([
-      'overlap',
-      'snapshot-only',
-    ]);
-    expect(state.approvals.map((approval) => approval.requestId)).toEqual([
-      'overlap',
-      'snapshot-only',
-      'local-only',
-    ]);
-    expect(state.approvals[0]?.title).toBe('Snapshot overlap');
+    expect(projected).toEqual({ approvals: state.approvals, userInputs: state.userInputs });
+    expect(state.approvals.map(request => request.requestId)).toEqual(['overlap', 'snapshot-only']);
+    expect(state.approvals[0].title).toBe('During read');
+    expect(state.userInputs.map(request => request.requestId)).toEqual(['input-1']);
   });
 
   it('does not revive requests resolved while a snapshot is in flight', () => {
     const state = createThreadPendingInteractiveState();
-
+    const apply = state.beginSnapshot();
     state.removeApproval('approval-1');
     state.removeUserInput('input-1');
-    const filtered = state.registrySnapshotFor({
-      approvals: [makeApproval({ requestId: 'approval-1' })],
-      userInputs: [makeUserInput({ requestId: 'input-1' })],
-    });
-    state.applySnapshot({
-      approvals: [makeApproval({ requestId: 'approval-1' })],
-      userInputs: [makeUserInput({ requestId: 'input-1' })],
-    });
-
-    expect(filtered).toEqual({ approvals: [], userInputs: [] });
+    expect(apply({ approvals: [makeApproval()], userInputs: [makeUserInput()] }))
+      .toEqual({ approvals: [], userInputs: [] });
     expect(state.approvals).toEqual([]);
     expect(state.userInputs).toEqual([]);
   });
@@ -94,29 +71,11 @@ describe('createThreadPendingInteractiveState', () => {
     expect(state.userInputs.map((request) => request.requestId)).toEqual(['input-1']);
   });
 
-  it('can prepare for live-state hydration without forgetting resolved request ids', () => {
+  it('keeps requests visible if the snapshot read fails', () => {
     const state = createThreadPendingInteractiveState();
-    state.addApproval(makeApproval({ requestId: 'local-only' }));
-    state.removeApproval('resolved-late');
-
-    state.prepareForLiveStateHydration();
-    const filtered = state.registrySnapshotFor({
-      approvals: [
-        makeApproval({ requestId: 'local-only' }),
-        makeApproval({ requestId: 'resolved-late' }),
-      ],
-      userInputs: [],
-    });
-    state.applySnapshot({
-      approvals: [
-        makeApproval({ requestId: 'local-only' }),
-        makeApproval({ requestId: 'resolved-late' }),
-      ],
-      userInputs: [],
-    });
-
-    expect(filtered.approvals.map((approval) => approval.requestId)).toEqual(['local-only']);
-    expect(state.approvals.map((approval) => approval.requestId)).toEqual(['local-only']);
+    state.addApproval(makeApproval());
+    state.beginSnapshot();
+    expect(state.approvals.map(request => request.requestId)).toEqual(['approval-1']);
   });
 
   it('clear resets pending arrays and resolved request ids for a new thread', () => {
@@ -124,7 +83,7 @@ describe('createThreadPendingInteractiveState', () => {
     state.removeApproval('approval-1');
 
     state.clear();
-    state.applySnapshot({
+    state.beginSnapshot()({
       approvals: [makeApproval({ requestId: 'approval-1' })],
       userInputs: [],
     });

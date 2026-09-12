@@ -551,20 +551,8 @@ describe('threadPaneScroll', () => {
           hasMoreOlder: false,
           hasMoreNewer: false,
         }));
-        // While the row is still STREAMING, a page that lacks it is
-        // expected — streaming rows persist per-item on completion, so
-        // the refresh retains it (and its gate) rather than tearing the
-        // block being streamed out of the timeline.
-        await pane.refreshFromBackend();
-        expect(pane.items.map((item) => item.id)).toEqual(['frontier']);
-        expect(pane.revealBoundary).toEqual({ turnIndex: 1, itemIndex: 0 });
-
-        // Once the row has SETTLED, the backend page is authoritative:
-        // a refresh whose page lacks it removes the row and the gate
-        // cannot outlive its frontier.
-        pane.applyProviderItemUpserts([
-          { ...frontier, status: 'completed', summary: 'streamed words arriving' },
-        ]);
+        // Streaming rows are persisted from creation. A successful recovery
+        // that no longer contains this row must remove its reveal gate too.
         await pane.refreshFromBackend();
 
         expect(pane.items).toEqual([]);

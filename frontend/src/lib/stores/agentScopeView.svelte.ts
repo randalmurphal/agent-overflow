@@ -454,7 +454,6 @@ export function createAgentScopeView(
     get switchGeneration() { return sourcePane.switchGeneration; },
     get switchThread() { return sourcePane.switchThread; },
     get refreshFromBackend() { return sourcePane.refreshFromBackend; },
-    get refreshActiveTurn() { return sourcePane.refreshActiveTurn; },
     get refreshOwnership() { return sourcePane.refreshOwnership; },
     get retryHistoryLoad() { return sourcePane.retryHistoryLoad; },
     get snapshotForClose() { return sourcePane.snapshotForClose; },

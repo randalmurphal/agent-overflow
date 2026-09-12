@@ -7,7 +7,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it('announces reconnect replay boundaries and cancels an interrupted recovery', async () => {
+it('announces initial and reconnect replay boundaries and cancels an interrupted recovery', async () => {
   vi.useFakeTimers();
   vi.spyOn(Math, 'random').mockReturnValue(0.5);
   MockWebSocket.reset();
@@ -21,22 +21,22 @@ it('announces reconnect replay boundaries and cancels an interrupted recovery', 
   const first = MockWebSocket.instances[0]!;
   first.acceptOpen();
   first.pushFrame({ type: 'replay' });
-  expect(phases).toEqual([]);
+  expect(phases).toEqual(['start', 'complete']);
   first.triggerClose();
   await vi.advanceTimersByTimeAsync(125);
   const second = MockWebSocket.instances[1]!;
   second.acceptOpen();
-  expect(phases).toEqual(['start']);
+  expect(phases).toEqual(['start', 'complete', 'start']);
   second.pushFrame({ type: 'replay' });
   second.pushFrame({ type: 'replay' });
-  expect(phases).toEqual(['start', 'complete']);
+  expect(phases).toEqual(['start', 'complete', 'start', 'complete']);
   second.triggerClose();
   await vi.advanceTimersByTimeAsync(500);
   const third = MockWebSocket.instances[2]!;
   third.acceptOpen();
   client.close();
   third.pushFrame({ type: 'replay' });
-  expect(phases).toEqual(['start', 'complete', 'start', 'cancel']);
+  expect(phases).toEqual(['start', 'complete', 'start', 'complete', 'start', 'cancel']);
 });
 
 it.each([0, 7])('replays a completion never received by this client (baseline %i)', async (completedBeforeConnect) => {

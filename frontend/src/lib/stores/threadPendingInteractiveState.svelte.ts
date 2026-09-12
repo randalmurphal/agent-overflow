@@ -7,16 +7,19 @@ import type {
 function mergePendingRequests<T extends { requestId: string }>(
   snapshot: T[],
   current: T[],
+  atRequest: Set<T>,
   resolvedRequestIds: Set<string>,
 ): T[] {
   const merged: T[] = [];
   const seen = new Set<string>();
-  for (const request of snapshot) {
+  // Only arrivals since the read began outrank its authoritative answer.
+  for (const request of current) {
+    if (atRequest.has(request)) continue;
     if (!request.requestId || resolvedRequestIds.has(request.requestId)) continue;
     merged.push(request);
     seen.add(request.requestId);
   }
-  for (const request of current) {
+  for (const request of snapshot) {
     if (!request.requestId || resolvedRequestIds.has(request.requestId)) continue;
     if (seen.has(request.requestId)) continue;
     merged.push(request);
@@ -29,9 +32,7 @@ export interface ThreadPendingInteractiveState {
   readonly approvals: ApprovalRequest[];
   readonly userInputs: UserInputRequest[];
   clear(): void;
-  prepareForLiveStateHydration(): void;
-  applySnapshot(snapshot: PendingInteractiveRequests | null | undefined): void;
-  registrySnapshotFor(snapshot: PendingInteractiveRequests | null | undefined): PendingInteractiveRequests;
+  beginSnapshot(): (snapshot: PendingInteractiveRequests | null | undefined) => PendingInteractiveRequests;
   addApproval(approval: ApprovalRequest): void;
   removeApproval(requestId: string): void;
   addUserInput(request: UserInputRequest): void;
@@ -51,28 +52,15 @@ export function createThreadPendingInteractiveState(): ThreadPendingInteractiveS
     resolvedUserInputIds.clear();
   }
 
-  function prepareForLiveStateHydration(): void {
-    approvals = [];
-    userInputs = [];
-  }
-
-  function registrySnapshotFor(
-    snapshot: PendingInteractiveRequests | null | undefined,
-  ): PendingInteractiveRequests {
-    return {
-      approvals: (snapshot?.approvals ?? [])
-        .filter((request) => request.requestId && !resolvedApprovalIds.has(request.requestId)),
-      userInputs: (snapshot?.userInputs ?? [])
-        .filter((request) => request.requestId && !resolvedUserInputIds.has(request.requestId)),
+  function beginSnapshot(): (snapshot: PendingInteractiveRequests | null | undefined) => PendingInteractiveRequests {
+    const approvalsAtRequest = new Set(approvals);
+    const inputsAtRequest = new Set(userInputs);
+    return (snapshot) => {
+      approvals = mergePendingRequests(snapshot?.approvals ?? [], approvals, approvalsAtRequest, resolvedApprovalIds);
+      userInputs = mergePendingRequests(snapshot?.userInputs ?? [], userInputs, inputsAtRequest, resolvedUserInputIds);
+      // The pane and sidebar must project the same reconciled requests.
+      return { approvals, userInputs };
     };
-  }
-
-  function applySnapshot(
-    snapshot: PendingInteractiveRequests | null | undefined,
-  ): void {
-    const filtered = registrySnapshotFor(snapshot);
-    approvals = mergePendingRequests(filtered.approvals, approvals, resolvedApprovalIds);
-    userInputs = mergePendingRequests(filtered.userInputs, userInputs, resolvedUserInputIds);
   }
 
   function addApproval(approval: ApprovalRequest): void {
@@ -105,9 +93,7 @@ export function createThreadPendingInteractiveState(): ThreadPendingInteractiveS
     get approvals() { return approvals; },
     get userInputs() { return userInputs; },
     clear,
-    prepareForLiveStateHydration,
-    applySnapshot,
-    registrySnapshotFor,
+    beginSnapshot,
     addApproval,
     removeApproval,
     addUserInput,

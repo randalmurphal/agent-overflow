@@ -48,12 +48,11 @@ export function installComputerHydration(): () => void {
     resyncDraftsForBackend(backend);
     for (const pane of iterPanes()) {
       const threadId = pane.threadId;
-      if (!threadId || threadBackend(threadId) !== backend) continue;
-      void pane.retryHistoryLoad();
+      if (!threadId || threadBackend(threadId) !== backend || !hasScope('threads:read', backend)) continue;
       const generation = pane.switchGeneration;
-      holdBackendRecovery(backend, pane.refreshActiveTurn().catch((error: unknown) => {
+      holdBackendRecovery(backend, pane.refreshFromBackend(true).catch((error: unknown) => {
         if (pane.threadId === threadId && pane.switchGeneration === generation && !isPassiveConnectionFailure(error)) {
-          pane.setSessionError(`Could not refresh conversation activity: ${String(error)}`);
+          pane.setSessionError(`Could not synchronize conversation: ${String(error)}`);
         }
       }));
     }

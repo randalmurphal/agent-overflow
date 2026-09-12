@@ -352,6 +352,7 @@ export function loadOlderResult(
 }
 
 export interface LiveStateHydrationGuard {
+  compactingRevisionAtRequest: number;
   codexAgentRevisionAtRequest: number;
   activeTurnAtRequest: ActiveTurn | null;
   queueRevisionAtRequest: number;

@@ -20,6 +20,7 @@ export const REMOTE_BACKEND_UUID = '99999999-8888-4777-8666-555555555555';
 
 export interface StagedBackend {
   readonly reconnect: () => void;
+  replay(phase: 'start' | 'complete' | 'cancel'): void;
   /** Flip the backend's reachability; the status box wakes synchronously. */
   setStatus: (status: TransportStatusSnapshot['status']) => void;
   /** State this backend's hello; the hello box and its edge listeners wake. */
@@ -41,12 +42,16 @@ export function stageBackend(
   // nothing.
   let helloSnapshot: TransportHello | null = hello;
   const helloListeners = new Set<(next: TransportHello | null) => void>();
+  const replayListeners = new Set<(phase: 'start' | 'complete' | 'cancel') => void>();
   const client = {
     callByID: vi.fn(async () => undefined),
     callByName: vi.fn(async () => undefined),
     subscribe: vi.fn(() => () => undefined),
     installStepUpProver: vi.fn(),
-    onReplay: vi.fn(() => () => undefined),
+    onReplay: vi.fn((listener: (phase: 'start' | 'complete' | 'cancel') => void) => {
+      replayListeners.add(listener);
+      return () => replayListeners.delete(listener);
+    }),
     setWatchedThreads: vi.fn(),
     getStatus: vi.fn(() => snapshot),
     onStatusChange: vi.fn((listener: (next: TransportStatusSnapshot) => void) => {
@@ -77,6 +82,7 @@ export function stageBackend(
   );
   return {
     reconnect: client.triggerReconnect,
+    replay(phase) { for (const listener of replayListeners) listener(phase); },
     setStatus(next) {
       snapshot = { status: next, nextAttemptAt: null } as TransportStatusSnapshot;
       for (const listener of listeners) listener(snapshot);

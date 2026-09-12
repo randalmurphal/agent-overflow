@@ -7,7 +7,7 @@ import type { UserMessageRevertedEvent } from '../types/messageRevert';
 import { iterPanes } from './panes.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import { projectSendStarted, projectThreadReverted } from './threadStatuses.svelte';
-import { adoptEventStamp, dropThreadHistoryStamp } from './threadHistoryStamps';
+
 import { threadItemCache } from './threadItemCache';
 import { removeReplicaWindow } from '../replica';
 import { compositeKey } from '../utils/compositeKey';
@@ -160,7 +160,6 @@ export function applyUserMessageReverted(payload: UserMessageRevertedEvent | nul
   // them unconditionally (and the stamp with them): a cached window
   // under a post-cut stamp is the one shape that would answer `fresh`
   // over rows the backend removed.
-  dropThreadHistoryStamp(payload.threadId);
   threadItemCache.evict(payload.threadId);
   void removeReplicaWindow(payload.threadId);
   for (const pane of ingestPanes()) {
@@ -174,10 +173,5 @@ export function applyUserMessageReverted(payload: UserMessageRevertedEvent | nul
       void draft.reloadFromBackend(payload.threadId);
     }
   }
-  // After the cut has been applied everywhere, not before: the stamp
-  // describes post-cut history, and adopting it while a pane still held
-  // pre-cut rows would let the next sync call them fresh. In-memory
-  // only, like every event-carried stamp (§3.4).
-  adoptEventStamp(payload.threadId, payload.historyEpoch, payload.historyRev);
   if (revision !== null) appliedRevertRevByThread.set(payload.threadId, revision);
 }

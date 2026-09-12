@@ -16,6 +16,7 @@ const { homeClient } = vi.hoisted(() => ({
     installStepUpProver: vi.fn(),
     setWatchedThreads: vi.fn(),
     getStatus: vi.fn(() => ({ status: 'connected', nextAttemptAt: null })),
+    onReplay: vi.fn(() => () => undefined),
     onStatusChange: vi.fn(() => () => undefined),
     getHello: vi.fn(() => null),
     onHelloChange: vi.fn(() => () => undefined),
@@ -61,6 +62,7 @@ function fakeClient(): FakeClient {
     installStepUpProver: vi.fn(),
     setWatchedThreads: vi.fn(),
     getStatus: vi.fn(() => ({ status: 'connected', nextAttemptAt: null })),
+    onReplay: vi.fn(() => () => undefined),
     onStatusChange: vi.fn(() => () => undefined),
     getHello: vi.fn(() => null),
     onHelloChange: vi.fn(() => () => undefined),
@@ -90,6 +92,7 @@ beforeEach(() => {
   for (const fn of Object.values(homeClient)) (fn as { mockReset?: () => void }).mockReset?.();
   homeClient.getStatus.mockReturnValue({ status: 'connected', nextAttemptAt: null });
   homeClient.onStatusChange.mockReturnValue(() => undefined);
+  homeClient.onReplay.mockReturnValue(() => undefined);
   homeClient.subscribe.mockReturnValue(() => undefined);
 });
 

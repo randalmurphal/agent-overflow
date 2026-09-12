@@ -1,3 +1,5 @@
+import { pendingBackendReplay } from './transportRecovery';
+import { requireEntityBackend, withBackendTarget } from '../transport/backends';
 import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { threadHasScope } from '../transport/entityScopes';
 import { threadBackend } from '../transport/entityIndex';
@@ -59,14 +61,7 @@ import {
   removeReplicaWindow,
   type ReplicaBody,
 } from '../replica';
-import {
-  UNKNOWN_STAMP_VALUE,
-  adoptEventStamp,
-  dropThreadHistoryStamp,
-  getThreadHistoryStamp,
-  recordAttestedStamp,
-  type ThreadHistoryStamp,
-} from './threadHistoryStamps';
+import { UNKNOWN_STAMP_VALUE, type ThreadHistoryStamp } from './threadHistoryStamps';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { getBackendIdentity, observeBackendGeneration } from '../transport/backendIdentity';
 import {
@@ -326,6 +321,7 @@ export function createThreadSwitchLoad(
     anchorItemId: string;
   } | null = null;
   let historyRetryPromise: Promise<void> | null = null;
+  let initialLoad: Promise<void> | null = null;
   /**
    * Serialized single-flight for backend refreshes. The old hand-rolled
    * ++generation supersede was a livelock under a transport-gap storm:
@@ -360,14 +356,12 @@ export function createThreadSwitchLoad(
    * the ENVELOPE's own stamp the moment a replica window is painted, so
    * a sync failure leaves the pane holding what its rows actually
    * descend from. Cleared by anything that changes the window's
-   * provenance (thread install, clear, structural cut). Live upserts
-   * leave it alone: they arrive through the wire for this thread and
-   * only make the rows newer than the stamp, which is the safe
-   * direction.
+   * provenance, including item mutations. Replay and reveal cursors can
+   * carry older content despite being delivered after a snapshot.
    *
    * `generation` pins it to the backend history lineage it was minted
    * under. A restored database re-mints the generation and wipes the
-   * stamp registry, the replica and L1; this field is how a pane that
+   * replica and L1; this field is how a pane that
    * was not syncing at that moment declines to write its dead-lineage
    * rows into the new replica.
    */
@@ -422,7 +416,6 @@ export function createThreadSwitchLoad(
   function dropCachedWindow(threadId: string): void {
     threadItemCache.evict(threadId);
     clearThreadSizePriors(threadId);
-    dropThreadHistoryStamp(threadId);
     // The pane's own attestation describes the window we are dropping,
     // so it dies with it — a structural cut leaves rows no sync ever
     // returned, and re-using the pre-cut stamp for them would persist a
@@ -507,7 +500,7 @@ export function createThreadSwitchLoad(
   function persistReplicaWindow(threadId: string): void {
     if (options.getThread()?.id !== threadId) return;
     const attestation = windowAttestation;
-    if (!attestation) return;
+    if (!attestation || options.streamingReveal.smootherCount() > 0) return;
     // A generation re-mint invalidated every stamp read from the old
     // lineage, including this one; the rows it names belong to a history
     // the backend no longer has.
@@ -634,7 +627,8 @@ export function createThreadSwitchLoad(
         // it was read. See ThreadItemSnapshot#historyStamp. Dropping a
         // row drops the pairing with it — these rows are no longer the
         // window any stamp described.
-        historyStamp: l1.dropped ? null : getThreadHistoryStamp(outgoingThreadId),
+        historyStamp: l1.dropped || !windowAttestation || options.streamingReveal.smootherCount() > 0
+          ? null : { epoch: windowAttestation.epoch, rev: windowAttestation.rev, attested: true },
       });
       persistReplicaWindow(outgoingThreadId);
     }
@@ -979,13 +973,13 @@ export function createThreadSwitchLoad(
     // echo of an event-carried stamp confirms the server's counter, not
     // that this client received every frame up to it, so upgrading it to
     // attested here would incorrectly mark incomplete replica data as current.
-    if (page || sentStamp?.attested) {
-      recordAttestedStamp(threadId, response.epoch, response.rev);
+    if ((page || sentStamp?.attested)
+      && !liveTouchedDuringSync?.size && !liveRemovedDuringSync?.size
+      && options.streamingReveal.smootherCount() === 0) {
       // The pane's own copy: this answer attested the window it is
       // holding, which is what a write-back may pair rows with.
       attestCurrentWindow(response.epoch, response.rev);
     } else {
-      adoptEventStamp(threadId, response.epoch, response.rev);
       // A page-less answer over an unattested source leaves the pane
       // with rows nothing has attested — including whatever earlier
       // attestation the install carried, which this answer did not
@@ -1026,31 +1020,32 @@ export function createThreadSwitchLoad(
     liveStateFetch: Promise<LiveStateFetchResult> | null,
   ): Promise<void> {
     const threadId = newThread.id;
+    const backend = requireEntityBackend(threadBackend(threadId));
     let paintSource: ColdLoadPaintSource = cached ? 'l1' : 'none';
-    let haveStamp: ThreadHistoryStamp | null = cached?.historyStamp ?? null;
+    let haveStamp: ThreadHistoryStamp | null = cached?.historyStamp?.attested && windowAttestation
+      && options.streamingReveal.smootherCount() === 0 ? cached.historyStamp : null;
 
     const ask = (stamp: ThreadHistoryStamp | null): Promise<SyncThreadWindowResult> =>
-      SyncThreadWindow(threadId, {
+      withBackendTarget(backend, () => SyncThreadWindow(threadId, {
         anchorItemId: sliceAnchorId,
         itemBudget: SLICE_AROUND_ITEM_BUDGET,
         haveEpoch: stamp ? stamp.epoch : UNKNOWN_STAMP_VALUE,
         haveRev: stamp ? stamp.rev : UNKNOWN_STAMP_VALUE,
         inlinePreviews: wantsInlinePreviews(),
-      });
+      }));
 
     try {
       if (!cached) {
         const body = await getReplicaWindow(threadId);
         if (gen !== options.getSwitchGeneration()) return;
-        if (body) {
+        if (body && options.getItems().length === 0 && !liveTouchedDuringSync?.size && !liveRemovedDuringSync?.size) {
           paintReplicaWindow(body, threadId);
           paintSource = 'replica';
           haveStamp = { epoch: body.epoch, rev: body.rev, attested: true };
           // The envelope's own stamp, paired with the envelope's own
           // rows. If the sync below never lands (transport hiccup) the
           // pane keeps the paint — and must keep the stamp that
-          // describes it, not whatever the registry happens to hold for
-          // this thread from a page this pane never received.
+          // describes these rows.
           attestCurrentWindow(body.epoch, body.rev);
           // Replica rows are structural content mounting into an empty
           // pane, so they re-close the warm gate exactly as an initial
@@ -1069,9 +1064,8 @@ export function createThreadSwitchLoad(
       // first to answer moves it, and the second would be told "no
       // change" about the very lineage change that invalidates its
       // painted rows. The global observation still has to happen — it
-      // is what wipes the replica, the stamp registry and L1 — but the
+      // is what wipes the replica and L1 — but the
       // decision this leg makes is per-leg.
-      const backend = threadBackend(threadId) ?? HOME_BACKEND;
       const believed = getBackendIdentity(backend);
       let sentStamp = haveStamp;
       let response = await ask(sentStamp);
@@ -1079,7 +1073,7 @@ export function createThreadSwitchLoad(
       // The response carries the backend's LIVE generation — the one
       // channel that observes a mid-session database restore, since the
       // manifest is only refetched on reconnect. A change here has
-      // already wiped the replica, the stamp registry, and the L1 cache
+      // already wiped the replica and the L1 cache
       // (subscribers run synchronously); what remains is this leg's own
       // state: the stamp it sent and the rows it painted belong to the
       // dead lineage, so a page-less answer — even `fresh`, ESPECIALLY
@@ -1093,7 +1087,8 @@ export function createThreadSwitchLoad(
           typeof response.generation === 'string' &&
           response.generation !== '' &&
           response.generation !== believed.generation);
-      if (response.status !== 'gone' && !response.page && (lineageChanged || paintSource === 'none')) {
+      const validatesPaint = sentStamp?.attested && response.epoch === sentStamp.epoch && response.rev === sentStamp.rev;
+      if (response.status !== 'gone' && !response.page && (lineageChanged || paintSource === 'none' || !validatesPaint)) {
         if (!lineageChanged) {
           // A page-less answer means "keep what you have" and we have
           // nothing — the stamp we sent outlived its rows. The pairing
@@ -1101,23 +1096,25 @@ export function createThreadSwitchLoad(
           // and re-ask without a stamp rather than leaving the pane
           // empty.
           console.error(
-            `replica: sync answered "${response.status}" with no page and nothing painted; refetching`,
+            `replica: sync answered "${response.status}" without a matching painted snapshot; refetching`,
           );
           reportFrontendDiagnostic(
-            'replica: page-less sync answer with nothing painted',
+            'replica: page-less sync answer without matching paint',
             `thread=${threadId} status=${response.status}`,
           );
         }
         sentStamp = null;
         response = await ask(sentStamp);
         if (gen !== options.getSwitchGeneration()) return;
+        if (response.status !== 'gone' && !response.page) {
+          throw new Error('Conversation synchronization returned no history for an unverified window');
+        }
       }
       // Runs in parallel with the sync ask; never rejects (a failed
       // fetch resolves with empty deferredItems). The retry path passes
       // null — its pane self-heals through the next refresh or echo.
-      const deferredItems = liveStateFetch
-        ? (await liveStateFetch).deferredItems
-        : [];
+      const liveState = liveStateFetch ? await liveStateFetch : null;
+      const deferredItems = liveState?.deferredItems ?? [];
       if (gen !== options.getSwitchGeneration()) return;
       applySyncResponse(
         response,
@@ -1127,6 +1124,7 @@ export function createThreadSwitchLoad(
         lineageChanged,
         deferredItems,
       );
+      liveState?.apply();
       if (gen === options.getSwitchGeneration()) {
         failedHistoryLoad = null;
         options.clearPaneError('history-load');
@@ -1136,8 +1134,7 @@ export function createThreadSwitchLoad(
       failedHistoryLoad = { threadId, generation: gen, anchorItemId: sliceAnchorId };
       if (!isPassiveConnectionFailure(err)) console.error('Failed to sync thread window:', err);
       if (paintSource !== 'none' || options.getItems().length > 0) {
-        // A painted window is what the pane had a moment ago and is
-        // strictly better than blanking it; reconnect retries this sync.
+        options.setPaneError(`Could not verify conversation history: ${errString(err)}`, 'history-load');
         return;
       }
       try {
@@ -1197,6 +1194,13 @@ export function createThreadSwitchLoad(
     liveStateHydrationToken: number,
   ): Promise<{ liveStateHydrationConsumed: boolean }> {
     let liveStateHydrationConsumed = false;
+    const backend = requireEntityBackend(threadBackend(newThread.id));
+    const replay = pendingBackendReplay(backend);
+    if (replay) await replay;
+    if (gen !== options.getSwitchGeneration()) return { liveStateHydrationConsumed };
+    // Replay arrivals are older than the reads about to leave.
+    liveTouchedDuringSync = new Set();
+    liveRemovedDuringSync = new Set();
     // Focus bookkeeping, not a read: SwitchThread stamps the thread read
     // and AutoResumeThread is a retained no-op, and both ride
     // `threads:operate`. A session without that grant opens threads all
@@ -1207,7 +1211,7 @@ export function createThreadSwitchLoad(
     const switchPromise = (async () => {
       if (!mayOperate) return;
       try {
-        const switched = (await SwitchThread(newThread.id)) as
+        const switched = (await withBackendTarget(backend, () => SwitchThread(newThread.id))) as
           | Thread
           | undefined;
         if (gen !== options.getSwitchGeneration()) return;
@@ -1230,7 +1234,7 @@ export function createThreadSwitchLoad(
     const autoResumePromise = (async () => {
       if (!mayOperate) return;
       try {
-        await AutoResumeThread(newThread.id);
+        await withBackendTarget(backend, () => AutoResumeThread(newThread.id));
       } catch (err) {
         // The Go binding only returns an error for the GetThread DB lookup
         // or a transport failure — both root causes the parallel SwitchThread
@@ -1251,18 +1255,6 @@ export function createThreadSwitchLoad(
       gen,
       liveStateHydrationToken,
     );
-    const liveStatePromise = (async () => {
-      try {
-        (await liveStateFetch).apply();
-      } finally {
-        // apply() consumes the token on every path it runs (its own
-        // finally), so by the time we get here the token is consumed.
-        // Flag it so the outer switchThread finally doesn't
-        // double-finish.
-        liveStateHydrationConsumed = true;
-      }
-    })();
-
     // Single initial window via `SyncThreadWindow`. Empty anchor id
     // resolves to the tail at the backend, so it covers both
     // bottom-snapshot and saved-anchor restores. Older items page in
@@ -1276,12 +1268,30 @@ export function createThreadSwitchLoad(
       liveStateFetch,
     );
 
+    const liveStatePromise = (async () => {
+      try {
+        const liveState = await liveStateFetch;
+        await loadItemsPromise;
+        liveState.apply();
+        if (gen === options.getSwitchGeneration() && liveState.error && !failedHistoryLoad
+          && !isPassiveConnectionFailure(liveState.error)) {
+          options.setPaneError(`Could not synchronize live conversation state: ${errString(liveState.error)}`, 'general');
+        }
+      } finally {
+        // apply() consumes the token on every path it runs (its own
+        // finally), so by the time we get here the token is consumed.
+        // Flag it so the outer switchThread finally doesn't
+        // double-finish.
+        liveStateHydrationConsumed = true;
+      }
+    })();
+
     // Two rows of safety so a crashed-then-completed sequence can skip
     // over the in-flight row and still find the prior settled one.
     const recentTurnsPromise = withGenGuard(
       'rehydrate recent turns',
       gen,
-      () => ListRecentTurns(newThread.id, 2) as Promise<TurnRow[] | null>,
+      () => withBackendTarget(backend, () => ListRecentTurns(newThread.id, 2)) as Promise<TurnRow[] | null>,
       (recent) => {
         if (recent && recent.length > 0) {
           const settled = recent.find(
@@ -1305,17 +1315,15 @@ export function createThreadSwitchLoad(
   }
 
   async function switchThread(newThread: Thread): Promise<void> {
+    let finishLoad!: () => void;
+    const load = new Promise<void>((resolve) => { finishLoad = resolve; });
+    initialLoad = load;
     // Bump the switch generation BEFORE any synchronous mutation so
     // any in-flight prior switch's late resolutions are invalidated
     // before we touch pane state. `gen` is read by every async leg
     // below and by the outer finally to decide whether the spinner
     // can be cleared (a concurrent switch keeps it up).
     const gen = options.bumpSwitchGeneration();
-    const placeholder = options.getDraftPlaceholder();
-    if (placeholder) {
-      closeDraftPlaceholderTerminals(placeholder.id);
-    }
-    options.clearDraftPlaceholder();
     // Live-state hydration token. The live-state leg always consumes
     // it through the fetch result's `apply()` finally; the outer
     // finally below only finishes it as defense-in-depth against a
@@ -1323,6 +1331,11 @@ export function createThreadSwitchLoad(
     let liveStateHydrationConsumed = false;
     let liveStateHydrationToken = 0;
     try {
+      const placeholder = options.getDraftPlaceholder();
+      if (placeholder) {
+        closeDraftPlaceholderTerminals(placeholder.id);
+      }
+      options.clearDraftPlaceholder();
       snapshotOutgoingPane(newThread.id);
       // Dispose before any incoming-state mutation. The operation clears all
       // reveal state even when a sink reset reports an error, so a failure can
@@ -1373,6 +1386,8 @@ export function createThreadSwitchLoad(
       if (liveStateHydrationToken !== 0 && !liveStateHydrationConsumed) {
         finishThreadLiveStateHydration(newThread.id, liveStateHydrationToken);
       }
+      if (initialLoad === load) initialLoad = null;
+      finishLoad();
     }
   }
 
@@ -1420,21 +1435,25 @@ export function createThreadSwitchLoad(
   /**
    * One backend refresh: the SQLite page and the live-state snapshot are
    * fetched in parallel, then committed back-to-back with no await
-   * between the install and the live-state apply. Two row classes exist
-   * only in live state — pending sends (their SQLite row lands on the
-   * wire echo) and streaming partials (persisted on completion) — so a
-   * page-only install would briefly evict the user's own just-sent
-   * message and the block being streamed; the deferred-item merge and
-   * the status-based retention below close that window.
+   * between the install and the live-state apply. Pending sends can lack
+   * a SQLite row until their wire echo. Streaming rows are persisted from
+   * creation; only mutations arriving during the read need retention.
    */
   async function runBackendRefresh(token: RefreshToken, requireItems: boolean): Promise<unknown> {
     const currentThread = options.getThread();
     if (!currentThread) return;
     const gen = options.getSwitchGeneration();
+    const backend = requireEntityBackend(threadBackend(currentThread.id));
     const refreshIsCurrent = (): boolean =>
       token.isCurrent()
       && gen === options.getSwitchGeneration()
       && options.getThread()?.id === currentThread.id;
+    if (initialLoad) await initialLoad;
+    if (historyRetryPromise) await historyRetryPromise;
+    if (!refreshIsCurrent()) return;
+    const replay = pendingBackendReplay(backend);
+    if (replay) await replay;
+    if (!refreshIsCurrent()) return;
     const refreshMutations = {
       ids: new Set<string>(),
       removedIds: new Set<string>(),
@@ -1457,27 +1476,25 @@ export function createThreadSwitchLoad(
           : '';
         // Recovery must revalidate the history already loaded by the reader.
         // Keep its existing budget, using bounded RPC pages for large windows.
-        const retainedBudget = requireItems
-          ? Math.max(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS, options.getItems().filter(item => !item.parentId).length)
-          : ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS;
+        const retainedBudget = Math.max(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS, options.getItems().filter(item => !item.parentId).length);
         const ceiling = options.timelineWindow.newestLoadedCursor;
-        paged = requireItems && options.timelineWindow.hasMoreNewer && ceiling
-          ? await ListItemsBeforeCursor(currentThread.id,
+        paged = options.timelineWindow.hasMoreNewer && ceiling
+          ? await withBackendTarget(backend, () => ListItemsBeforeCursor(currentThread.id,
             { turnIndex: ceiling.turnIndex, itemIndex: ceiling.itemIndex + 1, itemId: '' },
-            Math.min(retainedBudget, 2000), wantsInlinePreviews())
-          : await ListThreadSliceAround(currentThread.id, anchorItemId,
-            Math.min(retainedBudget, 2000), wantsInlinePreviews());
-        let remaining = retainedBudget - (paged.items?.length ?? 0);
-        while (requireItems && remaining > 0 && paged.hasMoreOlder && paged.oldestCursor?.itemId) {
+            Math.min(retainedBudget, 2000), wantsInlinePreviews()))
+          : await withBackendTarget(backend, () => ListThreadSliceAround(currentThread.id, anchorItemId,
+            Math.min(retainedBudget, 2000), wantsInlinePreviews()));
+        let remaining = retainedBudget - (paged.items?.filter(item => !item.parentId).length ?? 0);
+        while (remaining > 0 && paged.hasMoreOlder && paged.oldestCursor?.itemId) {
           if (!refreshIsCurrent()) return;
-          const older = await ListItemsBeforeCursor(currentThread.id, paged.oldestCursor, Math.min(remaining, 2000), wantsInlinePreviews());
+          const older = await withBackendTarget(backend, () => ListItemsBeforeCursor(currentThread.id, paged.oldestCursor!, Math.min(remaining, 2000), wantsInlinePreviews()));
           if (!older.items?.length) break;
           if (compareCursors(older.oldestCursor, paged.oldestCursor) >= 0) {
             throw new Error('Conversation recovery did not advance through loaded history');
           }
           paged = { ...paged, items: [...older.items, ...(paged.items ?? [])], oldestCursor: older.oldestCursor,
             oldestTurnIndex: older.oldestTurnIndex, hasMore: older.hasMoreOlder, hasMoreOlder: older.hasMoreOlder };
-          remaining -= older.items.length;
+          remaining -= older.items.filter(item => !item.parentId).length;
         }
       } catch (err) {
         if (!refreshIsCurrent()) return;
@@ -1497,7 +1514,7 @@ export function createThreadSwitchLoad(
         (paged.items ?? []) as Item[],
         currentThread.id,
       );
-      // Rows the page is structurally blind to, part 1: pending sends
+      // Pending sends can lack a persisted row until their wire echo.
       // the backend holds deferred (no SQLite row until the wire echo).
       const merged = mergeMissingItemsById(liveState.deferredItems, snapshot);
       const currentItems = options.getItems();
@@ -1507,7 +1524,7 @@ export function createThreadSwitchLoad(
       const next = reconcileSnapshotPage(
         merged,
         currentItems,
-        liveRetainedIds(currentItems, refreshMutations.ids),
+        refreshMutations.ids,
         refreshMutations.removedIds,
       );
       options.subagentMemory.recordAdmission([], next.orphanedLiveChildren);
@@ -1529,11 +1546,12 @@ export function createThreadSwitchLoad(
       });
       // Live-state apply immediately after the install, synchronously:
       // no frame can paint the page-only intermediate state.
-      options.pendingInteractiveState.prepareForLiveStateHydration();
       liveStateApplied = true;
       liveState.apply();
+      failedHistoryLoad = null;
+      options.clearPaneError('history-load');
       try {
-        const recent = (await ListRecentTurns(currentThread.id, 2)) as
+        const recent = (await withBackendTarget(backend, () => ListRecentTurns(currentThread.id, 2))) as
           | TurnRow[]
           | null;
         if (!refreshIsCurrent()) return;
@@ -1563,31 +1581,6 @@ export function createThreadSwitchLoad(
         );
       }
     }
-  }
-
-  /**
-   * Ids of current rows the SQLite page is structurally blind to, part
-   * 2: streaming and running rows persist per-item on COMPLETION (root
-   * AGENTS.md principle 3), so a page read mid-stream lacks them and a
-   * page-trusting install would tear the block being streamed out of
-   * the timeline. Retaining by status keeps them across the install;
-   * the stream's own settle (or the next refresh after it) converges
-   * them with SQLite. A retained row whose backing was truly deleted
-   * server-side mid-turn is the accepted residual — deletion mid-stream
-   * only happens on lineage changes, which go through switch/sync, not
-   * this path.
-   */
-  function liveRetainedIds(
-    currentItems: readonly Item[],
-    touched: ReadonlySet<string>,
-  ): ReadonlySet<string> {
-    let retained: Set<string> | null = null;
-    for (const item of currentItems) {
-      if (item.status === 'streaming' || item.status === 'running') {
-        (retained ??= new Set(touched)).add(item.id);
-      }
-    }
-    return retained ?? touched;
   }
 
   /**
@@ -1629,9 +1622,12 @@ export function createThreadSwitchLoad(
 
     const retry = (async () => {
       options.setLoading(true);
-      liveTouchedDuringSync = new Set();
-      liveRemovedDuringSync = new Set();
       try {
+        const replay = pendingBackendReplay(requireEntityBackend(threadBackend(currentThread.id)));
+        if (replay) await replay;
+        if (options.getSwitchGeneration() !== failed.generation) return;
+        liveTouchedDuringSync = new Set();
+        liveRemovedDuringSync = new Set();
         await runItemWindowSync(
           currentThread,
           failed.generation,
@@ -1696,11 +1692,13 @@ export function createThreadSwitchLoad(
   }
 
   function noteItemMutation(itemId: string): void {
+    windowAttestation = null;
     if (!liveTouchedDuringSync && !liveMutationDuringRefresh) return;
     recordItemMutation(itemId);
   }
 
   function noteItemMutations(items: readonly Item[]): void {
+    if (items.length > 0) windowAttestation = null;
     if (!liveTouchedDuringSync && !liveMutationDuringRefresh) return;
     for (const item of items) recordItemMutation(item.id);
   }
@@ -1723,6 +1721,7 @@ export function createThreadSwitchLoad(
       previous: readonly Item[],
       next: readonly Item[],
     ): void => {
+      if (previous !== next) windowAttestation = null;
       if (!liveTouchedDuringSync && !liveMutationDuringRefresh) return;
       const previousById = new Map(previous.map((item) => [item.id, item]));
       const nextIds = new Set(next.map((item) => item.id));

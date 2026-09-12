@@ -6,10 +6,11 @@ import {
   getActiveTurn,
   getThreadStatus,
   projectApprovalRequest,
+  projectApprovalResolution,
   projectTurnStarted,
   resetForTest,
 } from './threadStatuses.svelte';
-import { isThreadCompacting } from './compactingState.svelte';
+import { applyCompactingState, isThreadCompacting } from './compactingState.svelte';
 import { hasScope } from '../transport/scopes';
 
 vi.mock('../transport/scopes', async (original) => ({ ...await original<object>(), hasScope: vi.fn(() => true) }));
@@ -83,4 +84,32 @@ it('rejects with the transport error and leaves the registries untouched', async
   await expect(reconcileThreadLiveActivity('gpu')).rejects.toThrow('offline');
 
   expect(getActiveTurn('gpu-stale')?.turnId).toBe('round-old');
+});
+
+it('preserves requests and compaction events arriving during a sidebar snapshot', async () => {
+  let answer!: (rows: unknown[]) => void;
+  setBindingMock('ListThreadLiveActivity', () => new Promise(resolve => { answer = resolve; }));
+  const pending = reconcileThreadLiveActivity('gpu');
+  projectApprovalRequest('gpu-blocked', 'new-request');
+  projectApprovalRequest('gpu-running', 'answered-request');
+  projectApprovalResolution('gpu-running', 'answered-request');
+  applyCompactingState({ threadId: 'gpu-running', active: true, sinceUnixMs: 100 });
+  applyCompactingState({ threadId: 'gpu-running', active: false });
+  applyCompactingState({ threadId: 'gpu-blocked', active: true, sinceUnixMs: 200 });
+  answer([{ threadId: 'gpu-running', approvalRequestIds: ['answered-request'], compactingSinceUnixMs: 100 }]);
+  await pending;
+  expect(getThreadStatus('gpu-blocked')).toBe('pending-approval');
+  expect(getThreadStatus('gpu-running')).toBe('idle');
+  expect(isThreadCompacting('gpu-running')).toBe(false);
+  expect(isThreadCompacting('gpu-blocked')).toBe(true);
+});
+
+it('discards a response for a thread moved to another computer during the read', async () => {
+  let answer!: (rows: unknown[]) => void;
+  setBindingMock('ListThreadLiveActivity', () => new Promise(resolve => { answer = resolve; }));
+  const pending = reconcileThreadLiveActivity('gpu');
+  noteThread('gpu-running', 'laptop', 2);
+  answer([{ threadId: 'gpu-running', approvalRequestIds: ['old-owner'] }]);
+  await pending;
+  expect(getThreadStatus('gpu-running')).toBe('idle');
 });

@@ -1,3 +1,5 @@
+import { requireEntityBackend, withBackendTarget } from '../transport/backends';
+import { threadBackend } from '../transport/entityIndex';
 import { codexAgentRevision, hydrateCodexAgents } from './subagentProgress.svelte';
 import { threadHasScope } from '../transport/entityScopes';
 import type { Item, Thread } from '../types/models';
@@ -28,7 +30,7 @@ import {
 } from './sendQueue.svelte';
 import type { ThreadPendingInteractiveState } from './threadPendingInteractiveState.svelte';
 import type { LiveTodoState } from './liveTodoState.svelte';
-import { hydrateCompactingState } from './compactingState.svelte';
+import { compactingRevision, hydrateCompactingState } from './compactingState.svelte';
 
 export interface ThreadLiveStateHydrationOptions {
   getThread(): Thread | null;
@@ -79,8 +81,6 @@ export interface LiveStateFetchResult {
 }
 
 export interface ThreadLiveStateHydration {
-  /** Reconcile provider activity on reconnect without reloading a healthy timeline. */
-  refreshActiveTurn(): Promise<void>;
   /**
    * Fetch the thread's live state (active turn, send queue, pending
    * interactive requests, live todos, deferred pending-send rows);
@@ -112,16 +112,6 @@ export interface ThreadLiveStateHydration {
 export function createThreadLiveStateHydration(
   options: ThreadLiveStateHydrationOptions,
 ): ThreadLiveStateHydration {
-  function applyPendingInteractiveSnapshot(
-    threadID: string,
-    snapshot: PendingInteractiveRequests | null | undefined,
-  ): void {
-    const registrySnapshot =
-      options.pendingInteractiveState.registrySnapshotFor(snapshot);
-    options.pendingInteractiveState.applySnapshot(snapshot);
-    replaceInteractiveRequestsForThread(threadID, registrySnapshot);
-  }
-
   function deferredItemsForThread(
     snapshot: ThreadLiveState,
     threadID: string,
@@ -147,34 +137,15 @@ export function createThreadLiveStateHydration(
     }
   }
 
-  let activityRequest = 0;
-  async function refreshActiveTurn(): Promise<void> {
-    const request = ++activityRequest;
-    const threadID = options.getThread()?.id;
-    if (!threadID || !threadHasScope('threads:operate', threadID)) return;
-    const gen = options.getSwitchGeneration();
-    const active = getActiveTurn(threadID);
-    const current = (): boolean => request === activityRequest
-      && gen === options.getSwitchGeneration() && options.getThread()?.id === threadID;
-    try {
-      const snapshot = await GetThreadLiveState(threadID) as ThreadLiveState;
-      if (current()) applyActiveTurnSnapshot(snapshot, threadID, active);
-    } catch (error) {
-      if (current()) throw error;
-    }
-  }
-
   function applyThreadLiveStateSnapshot(
     snapshot: ThreadLiveState,
     threadID: string,
     guard: LiveStateHydrationGuard,
-    activityRequestAtStart: number,
+    applyInteractive: (snapshot: PendingInteractiveRequests | null | undefined) => void,
   ): void {
     if (snapshot.threadId !== threadID) return;
     hydrateCodexAgents(threadID, (snapshot.codexAgents ?? []) as Item[], guard.codexAgentRevisionAtRequest);
-    if (activityRequestAtStart === activityRequest) {
-      applyActiveTurnSnapshot(snapshot, threadID, guard.activeTurnAtRequest);
-    }
+    applyActiveTurnSnapshot(snapshot, threadID, guard.activeTurnAtRequest);
 
     if (getQueueRevisionForThread(threadID) === guard.queueRevisionAtRequest) {
       const queueItems: SendQueueItem[] = (snapshot.queueItems ?? [])
@@ -197,10 +168,7 @@ export function createThreadLiveStateHydration(
       }
     }
 
-    applyPendingInteractiveSnapshot(
-      threadID,
-      snapshot.interactive as PendingInteractiveRequests,
-    );
+    applyInteractive(snapshot.interactive as PendingInteractiveRequests);
 
     options.liveTodoState.hydrateSnapshotIfUnchanged(
       snapshot.todo,
@@ -219,7 +187,7 @@ export function createThreadLiveStateHydration(
     // Compacting can span minutes of wire silence, so a refresh inside the
     // window has no upcoming frame to learn it from — the snapshot is the
     // only source. 0 clears a flag the window's close outran.
-    hydrateCompactingState(threadID, snapshot.compactingSinceUnixMs ?? 0);
+    hydrateCompactingState(threadID, snapshot.compactingSinceUnixMs ?? 0, guard.compactingRevisionAtRequest);
     options.hydrateBinaryStaleBanner(
       snapshot.sessionCliVersion ?? '',
       snapshot.installedCliVersion ?? '',
@@ -231,11 +199,16 @@ export function createThreadLiveStateHydration(
     gen: number,
     hydrationToken: number,
   ): Promise<LiveStateFetchResult> {
-    const activityRequestAtStart = ++activityRequest;
     // Guard values captured BEFORE the RPC leaves, exactly like the
     // single-phase form: apply-time comparisons against these detect
     // registries that moved while the snapshot was in flight.
+    const backend = requireEntityBackend(threadBackend(threadID));
+    const reconcileInteractive = options.pendingInteractiveState.beginSnapshot();
+    const applyInteractive = (snapshot: PendingInteractiveRequests | null | undefined): void => {
+      replaceInteractiveRequestsForThread(threadID, reconcileInteractive(snapshot));
+    };
     const guard: LiveStateHydrationGuard = {
+      compactingRevisionAtRequest: compactingRevision(threadID),
       codexAgentRevisionAtRequest: codexAgentRevision(threadID),
       activeTurnAtRequest: getActiveTurn(threadID),
       queueRevisionAtRequest: getQueueRevisionForThread(threadID),
@@ -264,7 +237,7 @@ export function createThreadLiveStateHydration(
     // so a thread opened mid-turn still fills in as the turn streams.
     if (threadHasScope('threads:operate', threadID)) {
       try {
-        snapshot = (await GetThreadLiveState(threadID)) as ThreadLiveState;
+        snapshot = (await withBackendTarget(backend, () => GetThreadLiveState(threadID))) as ThreadLiveState;
       } catch (err) {
         snapshotError = err;
         if (currentTarget()) {
@@ -276,9 +249,7 @@ export function createThreadLiveStateHydration(
     // get their own fetch when the full snapshot did not land.
     if (snapshot === null && threadHasScope('approvals:respond', threadID)) {
       try {
-        fallbackInteractive = (await ListPendingInteractiveRequests(
-          threadID,
-        )) as PendingInteractiveRequests;
+        fallbackInteractive = (await withBackendTarget(backend, () => ListPendingInteractiveRequests(threadID))) as PendingInteractiveRequests;
       } catch (fallbackErr) {
         if (currentTarget()) {
           console.error(
@@ -301,9 +272,9 @@ export function createThreadLiveStateHydration(
             return;
           }
           if (snapshot) {
-            applyThreadLiveStateSnapshot(snapshot, threadID, guard, activityRequestAtStart);
+            applyThreadLiveStateSnapshot(snapshot, threadID, guard, applyInteractive);
           } else if (fallbackInteractive) {
-            applyPendingInteractiveSnapshot(threadID, fallbackInteractive);
+            applyInteractive(fallbackInteractive);
           }
         } finally {
           tokenConsumed = true;
@@ -313,5 +284,5 @@ export function createThreadLiveStateHydration(
     };
   }
 
-  return { startLiveStateFetch, refreshActiveTurn };
+  return { startLiveStateFetch };
 }

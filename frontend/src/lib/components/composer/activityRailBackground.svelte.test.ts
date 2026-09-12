@@ -29,6 +29,7 @@ describe('background tray recovery', () => {
 
   it('ignores other computers, fences an old reply, and rehydrates its owner without item events', async () => {
     attachOwner();
+    noteThread('thread-1', remote, 2);
     const pane = await buildPane();
     noteThread(pane.threadId!, remote, 2);
     let finish!: (items: ReturnType<typeof launch>[]) => void;
@@ -58,6 +59,7 @@ describe('background tray recovery', () => {
 
   it('keeps running rows through model edits and failed refreshes until a successful removal', async () => {
     attachOwner();
+    noteThread('thread-1', remote, 2);
     const pane = await buildPane();
     noteThread(pane.threadId!, remote, 2);
     const read = setBindingMock('ListLiveBackgroundTasks', async () => [launch('running')]);
@@ -89,6 +91,7 @@ describe('background tray recovery', () => {
 
   it('recovers only relevant owner gaps and removes all recovery listeners on unmount', async () => {
     attachOwner();
+    noteThread('thread-1', remote, 2);
     const pane = await buildPane();
     noteThread(pane.threadId!, remote, 2);
     const read = setBindingMock('ListLiveBackgroundTasks', async () => [launch('running')]);

@@ -27,6 +27,14 @@ const NOT_COMPACTING: number | undefined = undefined;
 
 const sinceByThread = createKeyedSignalRegistry<number | undefined>(NOT_COMPACTING);
 
+// Revisions distinguish an in-flight read from later open/close events,
+// including a complete open/close cycle with the same final flag.
+const revisions = new Map<string, number>();
+let revision = 0;
+export function compactingRevision(threadId: string): number {
+  return revisions.get(threadId) ?? 0;
+}
+
 /** Tracked read: is the provider compacting this thread's context right now? */
 export function isThreadCompacting(threadId: string | null | undefined): boolean {
   if (!threadId) return false;
@@ -36,6 +44,7 @@ export function isThreadCompacting(threadId: string | null | undefined): boolean
 /** Apply a `provider:compacting` frame. */
 export function applyCompactingState(evt: CompactingStatePayload | undefined): void {
   if (!evt || !evt.threadId) return;
+  revisions.set(evt.threadId, ++revision);
   if (evt.active) {
     sinceByThread.set(evt.threadId, evt.sinceUnixMs ?? 0);
   } else {
@@ -49,8 +58,9 @@ export function applyCompactingState(evt: CompactingStatePayload | undefined): v
  * flag with no frame coming, and a stale local flag must drop when the
  * snapshot says the window closed while we were disconnected.
  */
-export function hydrateCompactingState(threadId: string, sinceUnixMs: number): void {
-  if (!threadId) return;
+export function hydrateCompactingState(threadId: string, sinceUnixMs: number, expectedRevision?: number): void {
+  if (!threadId || (expectedRevision !== undefined && compactingRevision(threadId) !== expectedRevision)) return;
+  revisions.set(threadId, ++revision);
   if (sinceUnixMs > 0) {
     sinceByThread.set(threadId, sinceUnixMs);
   } else {
@@ -62,9 +72,11 @@ export function hydrateCompactingState(threadId: string, sinceUnixMs: number): v
 export function clearCompactingForThread(threadId: string): void {
   if (!threadId) return;
   sinceByThread.drop(threadId);
+  revisions.delete(threadId);
 }
 
 /** Test-only fixture isolation, matching the sibling stores. */
 export function resetForTest(): void {
   sinceByThread.reset();
+  revisions.clear();
 }

@@ -81,6 +81,7 @@ function stageMachine(overrides: Partial<BackendDescriptor> = {}): {
     setWatchedThreads: vi.fn(),
     setLease: vi.fn(),
     getStatus: vi.fn(() => ({ status: 'connected', nextAttemptAt: null })),
+    onReplay: vi.fn(() => () => undefined),
     onStatusChange: vi.fn(() => () => undefined),
     getHello: vi.fn(() => null),
     onHelloChange: vi.fn(() => () => undefined),

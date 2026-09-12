@@ -1314,7 +1314,7 @@ describe('WSClient', () => {
     expect(second.readyState).toBe(2); // close callback has not arrived
     expect(client.getStatus().status).toBe('reconnecting');
     expect(client.getStatus().nextAttemptAt! - Date.now()).toBe(250); // incomplete replay earned no backoff reset
-    expect(recovery).toEqual(['start', 'cancel']);
+    expect(recovery).toEqual(['start', 'complete', 'start', 'cancel']);
     expect(items).toEqual(['before']);
     expect(diagnostics).toHaveBeenCalledWith('transport: replay did not complete; forcing reconnect');
     // No user action or close callback is required to restart recovery.
@@ -1334,7 +1334,7 @@ describe('WSClient', () => {
     ] });
     third.pushFrame({ type: 'replay' });
     expect(items).toEqual(['before', 'missed', 'live']);
-    expect(recovery).toEqual(['start', 'cancel', 'start', 'complete']);
+    expect(recovery).toEqual(['start', 'complete', 'start', 'cancel', 'start', 'complete']);
     // Completing recovery disarms its deadline, including on legacy servers
     // without heartbeats. There is no stale timer from the retired socket.
     await vi.advanceTimersByTimeAsync(REPLAY_TIMEOUT_MS * 2);

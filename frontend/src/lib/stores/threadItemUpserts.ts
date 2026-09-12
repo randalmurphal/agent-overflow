@@ -3,7 +3,7 @@ import { rowUiRetentionChanged } from '../utils/rowUiRetention';
 import { activityRunSummaryFieldsChanged } from '../utils/activityRunGrouping';
 import { itemTimelineStructureChanged } from '../utils/timelineStructure';
 import { userMessageIdentity } from '../utils/userMessageIdentity';
-import { compareItemsByTimelinePosition, compareItemToCursor, cursorsAfterItemUpserts, itemsAreEqual, type TimelineCursorLike } from './threadItems';
+import { compareItemsByTimelinePosition, compareItemToCursor, cursorsAfterItemUpserts, isItemStatusRegression, itemsAreEqual, type TimelineCursorLike } from './threadItems';
 
 export interface ApplyItemUpsertsToWindowOptions {
   current: readonly Item[];
@@ -141,7 +141,7 @@ export function applyItemUpsertsToWindow({
       ?? (identity === null ? undefined : optimisticIndexByIdentity.get(identity));
     if (existingIndex !== undefined) {
       const previous = (next ?? current)[existingIndex];
-      if (!previous) continue;
+      if (!previous || isItemStatusRegression(previous, item)) continue;
       // No-op dedupe: if the backend re-emits an upsert with identical
       // content, skip the array replace. Otherwise every redundant
       // upsert produces a new `pane.items` reference, which cascades

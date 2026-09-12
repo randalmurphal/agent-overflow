@@ -16,13 +16,7 @@ import {
   removeReplicaWindow,
   __resetReplicaForTest,
 } from '../replica';
-import {
-  __resetThreadHistoryStampsForTest,
-  adoptEventStamp,
-  dropThreadHistoryStamp,
-  getThreadHistoryStamp,
-  recordAttestedStamp,
-} from './threadHistoryStamps';
+
 import { installPaneMocks, makeItem, makeThread } from '../../test/helpers/chat';
 import {
   __resetBackendIdentityForTest,
@@ -140,7 +134,6 @@ function replicaBody(items: Item[], epoch: number, rev: number) {
 describe('cold-open window sync', () => {
   beforeEach(async () => {
     __resetReplicaForTest();
-    __resetThreadHistoryStampsForTest();
     installPaneMocks();
     await initReplica({
       backendId: `backend-${Math.random().toString(36).slice(2)}`,
@@ -178,7 +171,6 @@ describe('cold-open window sync', () => {
     expect(requests[0].haveRev).toBe(11);
     // A fresh answer applies nothing; the painted rows ARE the window.
     expect(pane.items.map((it) => it.id)).toEqual(['i0']);
-    expect(getThreadHistoryStamp(THREAD_ID)).toEqual({ epoch: 3, rev: 11, attested: true });
   });
 
   it('asks with unknown stamps when nothing is cached', async () => {
@@ -213,7 +205,6 @@ describe('cold-open window sync', () => {
     expect(pane.items.find((it) => it.id === 'i1')?.summary).toBe('changed');
     // Unchanged rows keep their reference so the reconcile re-renders nothing.
     expect(pane.items.find((it) => it.id === 'i0')).toBe(paintedRow);
-    expect(getThreadHistoryStamp(THREAD_ID)).toEqual({ epoch: 2, rev: 9, attested: true });
   });
 
   it('keeps rows the wire delivered while the page was in flight', async () => {
@@ -375,14 +366,13 @@ describe('cold-open window sync', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     await pane.switchThread(makeThread({ id: THREAD_ID }));
     pane.applyProviderItemUpserts([row('i0')]);
-    recordAttestedStampForAnotherThread();
     await pane.switchThread(makeThread({ id: 'other-thread' }));
 
     expect(await getReplicaWindow(THREAD_ID)).toBeNull();
     vi.restoreAllMocks();
   });
 
-  it('uses a turn_completed stamp for the next request but persists only the attested one', async () => {
+  it('uses the painted window stamp for validation even after a newer turn_completed stamp', async () => {
     const dispose = setupEventListeners();
     const pane = createThreadPane();
     registerPaneForTest('sync-pane', pane);
@@ -399,7 +389,6 @@ describe('cold-open window sync', () => {
       historyEpoch: 1,
       historyRev: 30,
     });
-    expect(getThreadHistoryStamp(THREAD_ID)).toEqual({ epoch: 1, rev: 30, attested: false });
 
     // Switch away: the window persists, but under the sync-attested
     // stamp (rev 2), never the event-carried one (rev 30). An event
@@ -410,10 +399,10 @@ describe('cold-open window sync', () => {
     expect(envelope).not.toBeNull();
     expect(envelope).toMatchObject({ epoch: 1, rev: 2 });
 
-    // …and the unattested stamp is still what the next request carries.
-    const requests = installSync(() => ({ status: 'fresh', epoch: 1, rev: 30 }));
+    const requests = installSync(() => ({ status: 'stale', epoch: 1, rev: 30, page: page([row('i0'), row('i1')]) }));
     await pane.switchThread(makeThread({ id: THREAD_ID }));
-    expect(requests.at(-1)).toMatchObject({ haveEpoch: 1, haveRev: 30 });
+    expect(requests.at(-1)).toMatchObject({ haveEpoch: 1, haveRev: 2 });
+    expect(pane.items.map(item => item.id)).toEqual(['i0', 'i1']);
 
     dispose();
   });
@@ -452,20 +441,14 @@ describe('cold-open window sync', () => {
     expect(await getReplicaWindow('other-thread')).toBeNull();
     // …and the L1 snapshot (its paired stamp claimed the dead lineage).
     expect(threadItemCache.get('other-thread')).toBeNull();
-    // The new lineage's page attested normally.
-    expect(getThreadHistoryStamp(THREAD_ID)).toEqual({ epoch: 4, rev: 50, attested: true });
 
     __resetBackendIdentityForTest();
     dispose();
   });
 
-  it('persists a failed-sync replica paint under the ENVELOPE stamp, not the registry one', async () => {
+  it('preserves the envelope stamp when validating its painted rows fails', async () => {
     // The durable copy is at rev 100…
     await putReplicaWindow(THREAD_ID, replicaBody([row('i0')], 1, 100));
-    // …while a sync earlier in the session attested rev 150 for this
-    // thread and its write-back never fired (the pane was cleared, or
-    // the app went away). The registry still holds that attestation.
-    recordAttestedStamp(THREAD_ID, 5, 150);
     const pane = createThreadPane();
     setBindingMock('SyncThreadWindow', async () => {
       throw new Error('transport hiccup');
@@ -654,13 +637,10 @@ describe('cold-open window sync', () => {
     expect(pane.__syncLedgerArmedForTest()).toBe(false);
   });
 
-  it('does not upgrade a fresh echo of an event stamp into an attested one', async () => {
+  it('rejects a page-less answer that does not validate the painted window', async () => {
     const dispose = setupEventListeners();
     const pane = createThreadPane();
     registerPaneForTest('sync-pane', pane);
-    // No sync ever attested this thread: its only stamp is event-carried
-    // (adopted while the thread streamed in another session state), and
-    // the L1 snapshot pairs that stamp with the window on switch-away.
     installSync(() => ({ status: 'stale', epoch: 1, rev: 2, page: page([row('i0')]) }));
     await pane.switchThread(makeThread({ id: THREAD_ID }));
     emitWailsEvent('provider:turn_completed', {
@@ -675,24 +655,14 @@ describe('cold-open window sync', () => {
     });
     await pane.switchThread(makeThread({ id: 'other-thread' }));
     await removeReplicaWindow(THREAD_ID);
-    dropThreadHistoryStamp(THREAD_ID);
-    adoptEventStamp(THREAD_ID, 1, 30);
 
-    // The server echoes the event stamp as fresh. That confirms the
-    // SERVER's counter — not that this client received every frame up
-    // to rev 30 — so the echo must not unlock a replica write.
+    // A malformed fresh echo cannot attest rows the client never received.
     installSync(() => ({ status: 'fresh', epoch: 1, rev: 30 }));
     await pane.switchThread(makeThread({ id: THREAD_ID }));
+    expect(pane.generalErrorKind).toBe('history-load');
     await pane.switchThread(makeThread({ id: 'other-thread' }));
-    expect(await getReplicaWindow(THREAD_ID)).toBeNull();
-    expect(getThreadHistoryStamp(THREAD_ID)).toEqual({ epoch: 1, rev: 30, attested: false });
+    expect(await getReplicaWindow(THREAD_ID)).toMatchObject({ epoch: 1, rev: 2 });
 
     dispose();
   });
 });
-
-/** Attest an unrelated thread, so a global stamp cannot be mistaken for
- *  the gating this test is about. */
-function recordAttestedStampForAnotherThread(): void {
-  recordAttestedStamp('unrelated-thread', 1, 1);
-}

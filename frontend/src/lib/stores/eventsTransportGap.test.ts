@@ -20,11 +20,7 @@ import {
   resetForTest as resetSendQueueForTest,
 } from './sendQueue.svelte';
 import { applyQueueStateChanged } from './eventsQueue';
-import {
-  __resetThreadHistoryStampsForTest,
-  getThreadHistoryStamp,
-  recordAttestedStamp,
-} from './threadHistoryStamps';
+
 import { threadItemCache } from './threadItemCache';
 import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
 import {
@@ -82,7 +78,6 @@ function snapshot(threadId: string, stamp: ThreadHistoryStamp): ThreadItemSnapsh
 
 describe('transport gap', () => {
   beforeEach(() => {
-    __resetThreadHistoryStampsForTest();
     threadItemCache.clear();
     resetThreadTitleGenerationForTest();
     // The gap handler resyncs the sidebar; both legs swallow their own
@@ -134,13 +129,9 @@ describe('transport gap', () => {
   it('strips unattested stamps from cached snapshots and keeps attested ones', () => {
     threadItemCache.set('t-event', snapshot('t-event', { epoch: 1, rev: 30, attested: false }));
     threadItemCache.set('t-sync', snapshot('t-sync', { epoch: 1, rev: 12, attested: true }));
-    recordAttestedStamp('t-sync', 1, 12);
 
     applyTransportGap({ channel: 'provider:item_event', seq: 7 });
 
-    // The registry is dropped wholesale — it is one entry per thread and
-    // re-earning it costs one window fetch.
-    expect(getThreadHistoryStamp('t-sync')).toBeNull();
     // The unattested COPY paired with L1 rows would otherwise outlive the
     // drop and name a rev whose frames this gap ate.
     expect(threadItemCache.get('t-event')?.historyStamp).toBeNull();
@@ -183,7 +174,6 @@ describe('transport gap', () => {
 
   it('leaves stamps alone on the self-repairing channels', () => {
     threadItemCache.set('t-event', snapshot('t-event', { epoch: 1, rev: 30, attested: false }));
-    recordAttestedStamp('t-sync', 1, 12);
 
     applyTransportGap({ channel: 'system:stats', seq: 3 });
 
@@ -192,7 +182,6 @@ describe('transport gap', () => {
       rev: 30,
       attested: false,
     });
-    expect(getThreadHistoryStamp('t-sync')).not.toBeNull();
   });
 });
 

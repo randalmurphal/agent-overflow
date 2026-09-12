@@ -1279,7 +1279,7 @@ export class WSClient {
     };
   }
 
-  /** Reconnect replay boundaries, excluding the initial connection. */
+  /** Replay boundaries for every connection, including initial attachment. */
   onReplay(handler: (phase: 'start' | 'complete' | 'cancel') => void): () => void {
     this.replayHandlers.add(handler);
     return () => { this.replayHandlers.delete(handler); };
@@ -2037,7 +2037,7 @@ export class WSClient {
     // seq jump the replay answer may legitimately produce on this
     // channel isn't mistaken for a mid-connection drop (see ChannelCursor).
     this.connectionEpoch += 1;
-    if (this.connectionEpoch > 1) this.publishReplay('start');
+    this.publishReplay('start');
     // NOT a backoff reset: reaching OPEN only proves the handshake
     // succeeded, and an accept-then-close server would pin the ladder
     // at its floor. handleSocketClose resets it once the connection

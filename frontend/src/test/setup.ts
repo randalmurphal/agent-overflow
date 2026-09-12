@@ -30,7 +30,7 @@ import { __resetPRReviewStoreForTest } from '../lib/stores/prReviewStore.svelte'
 import { __resetMcpServersStoreForTest } from '../lib/stores/mcpServers.svelte';
 import { __resetChatBarFavoritesForTest } from '../lib/stores/chatBarFavorites.svelte';
 import { __resetWorkspaceChangeLockForTest } from '../lib/stores/workspaceChangeLock.svelte';
-import { __resetThreadHistoryStampsForTest } from '../lib/stores/threadHistoryStamps';
+
 import { __resetReplicaForTest } from '../lib/replica';
 import { __resetBackendIdentityForTest } from '../lib/transport/backendIdentity';
 import { setPageGrantsFromBootstrap } from '../lib/transport/scopes';
@@ -278,7 +278,6 @@ afterEach(() => {
   // History stamps, the replica session and the backend identity that
   // keys it are module-level singletons that outlive a test the same
   // way the item cache does.
-  __resetThreadHistoryStampsForTest();
   __resetReplicaForTest();
   __resetBackendIdentityForTest();
   // Shared provider model metadata is a real app cache. Tests mock the

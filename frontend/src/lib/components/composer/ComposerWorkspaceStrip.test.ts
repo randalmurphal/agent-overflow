@@ -1,3 +1,4 @@
+import { noteThread } from '../../transport/entityIndex';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
@@ -75,6 +76,7 @@ describe('<ComposerWorkspaceStrip>', () => {
     // "Where am I" reads outer to inner: machine, then the project on it,
     // then the checkout.
     stageBackend();
+    noteThread('thread-1', '');
     try {
       const pane = await buildPane(makeThread());
       const { getByTestId } = render(ComposerWorkspaceStrip, { props: { pane } });

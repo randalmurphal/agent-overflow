@@ -61,18 +61,17 @@ it('restores provider activity on ordinary reconnect even when history loaded su
   await buildPane(makeThread({ id: 'remote-active' }));
   noteThread('remote-active', 'gpu');
   const gpu = stageBackend({ id: 'gpu', status: 'reconnecting', hello: { backendId: 'gpu' } as TransportHello });
-  setCarriedSessionScopes('gpu', ['threads:operate']);
+  setCarriedSessionScopes('gpu', ['threads:read', 'threads:operate']);
   const read = vi.fn(async () => ({ threadId: 'remote-active', activeTurn: { threadId: 'remote-active', turnId: 'provider-running', turnIndex: 4, startedAt: 100 } }));
   setBindingMock('GetThreadLiveState', read);
-  const history = vi.fn();
-  setBindingMock('SyncThreadWindow', history);
+  setBindingMock('ListThreadLiveActivity', async () => []);
+  setBindingMock('GetRateLimitsSnapshots', async () => []);
   stop = installComputerHydration();
   await Promise.resolve();
   expect(getActiveTurn('remote-active')).toBeNull();
   gpu.setStatus('connected');
   await vi.waitFor(() => expect(getActiveTurn('remote-active')?.turnId).toBe('provider-running'));
   expect(read).toHaveBeenCalledTimes(1);
-  expect(history).not.toHaveBeenCalled();
 });
 
 it('reconciles every thread of a computer with threads:read, panes or not', async () => {
@@ -102,15 +101,18 @@ it('rechecks the owning computer grants on every reconnect', async () => {
   const gpu = stageBackend({ id: 'gpu', status: 'reconnecting', hello: { backendId: 'gpu' } as TransportHello });
   const read = setBindingMock('GetThreadLiveState', async () => ({ threadId: 'remote-scoped' }));
   const activity = setBindingMock('ListThreadLiveActivity', async () => []);
+  setBindingMock('GetRateLimitsSnapshots', async () => []);
   stop = installComputerHydration();
 
   for (const granted of [false, true, false, true]) {
     gpu.setStatus('reconnecting');
-    setCarriedSessionScopes('gpu', granted ? ['threads:operate'] : []);
+    setCarriedSessionScopes('gpu', granted ? ['threads:read', 'threads:operate'] : []);
     read.mockClear();
+    activity.mockClear();
     gpu.setStatus('connected');
     await Promise.resolve();
-    expect(read).toHaveBeenCalledTimes(granted ? 1 : 0);
-    expect(activity).not.toHaveBeenCalled();
+    if (granted) await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+    else expect(read).not.toHaveBeenCalled();
+    expect(activity).toHaveBeenCalledTimes(granted ? 1 : 0);
   }
 });

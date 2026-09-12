@@ -15,7 +15,7 @@ import { dropActivityRailUiPrefs, dropLiveTodoUiPrefs } from './liveTodoState.sv
 import { threadItemCache } from './threadItemCache';
 import { removeReplicaWindow } from '../replica';
 import { invalidateReplicaCatalog } from '../replica/session';
-import { dropThreadHistoryStamp } from './threadHistoryStamps';
+
 import { clearLiveUsageSnapshot } from './threadContextWindow';
 import { clearThreadStatus } from './threadStatuses.svelte';
 import { addToast } from './toast.svelte';
@@ -144,7 +144,6 @@ export function removeThread(id: string): void {
   // leave a paintable window (or a stamp claiming one) behind in
   // IndexedDB, where it would outlive the process.
   void removeReplicaWindow(id);
-  dropThreadHistoryStamp(id);
   clearThreadScrollSnapshot(id);
   clearThreadSizePriors(id);
   evictDiffSpansForThread(id);
