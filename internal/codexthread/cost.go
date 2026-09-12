@@ -392,7 +392,7 @@ func (a *Service) OverlayProviderThreadCost(query store.UsageQuery, buckets []st
 		buckets = append(buckets, store.UsageBucket{})
 	}
 	buckets[0].CostUSD = cost.CostUSD()
-	buckets[0].UnpricedRows = buckets[0].PendingRows
+	buckets[0].UnpricedRows = 0
 	buckets[0].CostSource = cost.CostSource
 	return buckets
 }

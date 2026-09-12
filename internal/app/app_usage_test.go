@@ -241,7 +241,9 @@ func TestGetUsageStats_NilStoreReturnsError(t *testing.T) {
 	}
 }
 
-func TestGetUsageStatsReportedTokensAwaitFinalCost(t *testing.T) {
+// Reported tokens are estimated from the rate table while the turn runs;
+// the provider's final accounting replaces them at settlement.
+func TestGetUsageStatsReportedTokensAreEstimatedUntilFinalCost(t *testing.T) {
 	app := newTestAppWithStore(t)
 	row := store.UsageLedgerRow{ThreadID: "live-usage", TurnID: "turn", Provider: "claude", Model: "claude-haiku-4-5", CreatedAt: 100, OutputTokens: 50}
 	if _, err := app.store.PutUsageProgress("scope", "0", []store.UsageLedgerRow{row}); err != nil {
@@ -249,7 +251,7 @@ func TestGetUsageStatsReportedTokensAwaitFinalCost(t *testing.T) {
 	}
 	for _, group := range []string{"", "model"} {
 		b, err := app.GetUsageStats(store.UsageQuery{ThreadID: row.ThreadID, GroupBy: group})
-		if err != nil || len(b) != 1 || b[0].OutputTokens != 50 || b[0].PendingRows != 1 || b[0].CostUSD != 0 || b[0].UnpricedRows != 1 {
+		if err != nil || len(b) != 1 || b[0].OutputTokens != 50 || b[0].PendingRows != 1 || !almostEqualUSD(b[0].CostUSD, 0.00025) || b[0].UnpricedRows != 0 {
 			t.Fatalf("pending %q: %+v %v", group, b, err)
 		}
 	}

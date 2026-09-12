@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"math"
 	"strings"
-
-	"agent-overflow/internal/usagecost"
 )
 
 // Usage queries combine settled ledger rows with reported pending tokens.
@@ -23,7 +21,6 @@ type UsageLedgerRow struct {
 	// AccountingModel identifies pending snapshots consumed at settlement.
 	// Model retains the provider's final spelling in the ledger.
 	AccountingModel          string  `json:"-"`
-	PricingVersion           string  `json:"-"`
 	CreatedAt                int64   `json:"createdAt"`
 	ThreadID                 string  `json:"threadId"`
 	ProjectID                string  `json:"projectId"`
@@ -40,11 +37,10 @@ type UsageLedgerRow struct {
 	// CostSource is 'wire' when CostUSD came from the provider (Claude
 	// reports cost CLI-side) and 'none' when the row carries no
 	// wire-reported per-turn cost (Codex turn reports and claudetui
-	// synthesized results carry none). GetUsageStats (app_usage.go)
-	// prices 'none' rows at query time from internal/usagecost when the
-	// model is recognized; rows whose model isn't in that rate table
-	// surface as UnpricedRows so a $ total can be labeled "partial"
-	// instead of silently reading as complete.
+	// synthesized results carry none). internal/usageledger prices 'none'
+	// rows at query time from internal/usagecost by the row's UTC day;
+	// rows whose model has no rate surface as UnpricedRows so a $ total
+	// can be labeled "partial" instead of silently reading as complete.
 	CostSource string `json:"costSource"`
 }
 
@@ -84,18 +80,14 @@ func appendUsageTx(tx *sql.Tx, rows []UsageLedgerRow) (err error) {
         created_at, thread_id, project_id, work_item_id, turn_id, provider, model,
         input_tokens, output_tokens, cache_read_input_tokens,
         cache_creation_input_tokens, reasoning_output_tokens,
-        cost_usd, cost_source, pricing_version)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        cost_usd, cost_source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("store: usage append prepare: %w", err)
 	}
 	defer func() { err = errors.Join(err, stmt.Close()) }()
 
 	for _, row := range rows {
-		version := row.PricingVersion
-		if version == "" {
-			version = usagecost.CurrentVersion
-		}
 		source := row.CostSource
 		if source == "" {
 			if row.CostUSD > 0 {
@@ -109,7 +101,7 @@ func appendUsageTx(tx *sql.Tx, rows []UsageLedgerRow) (err error) {
 			row.Provider, row.Model,
 			row.InputTokens, row.OutputTokens, row.CacheReadInputTokens,
 			row.CacheCreationInputTokens, row.ReasoningOutputTokens,
-			row.CostUSD, source, version,
+			row.CostUSD, source,
 		); err != nil {
 			return fmt.Errorf("store: usage append insert: %w", err)
 		}
@@ -213,12 +205,12 @@ func queryWorkItemTreeUsageDetail(q sqlQueryer, rootItemID string) ([]UsageDetai
 		return nil, fmt.Errorf("store: query work item tree usage detail: empty work item id")
 	}
 	rows, err := q.Query(
-		workItemTreeCTE+`SELECT model, cost_source, pricing_version,
+		workItemTreeCTE+`SELECT model, cost_source, `+usageDayExpr+`,
 		 SUM(input_tokens), SUM(output_tokens), SUM(cache_read_input_tokens),
 		 SUM(cache_creation_input_tokens), SUM(reasoning_output_tokens),
 		 SUM(cost_usd), COUNT(*)
 		 FROM usage_records WHERE work_item_id IN (SELECT id FROM tree)
-		 GROUP BY model, cost_source, pricing_version ORDER BY model, cost_source`, rootItemID,
+		 GROUP BY model, cost_source, `+usageDayExpr+` ORDER BY model, cost_source`, rootItemID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: query work item tree usage detail %s: %w", rootItemID, err)
@@ -228,7 +220,7 @@ func queryWorkItemTreeUsageDetail(q sqlQueryer, rootItemID string) ([]UsageDetai
 	for rows.Next() {
 		var detail UsageDetailRow
 		if err := rows.Scan(
-			&detail.Model, &detail.CostSource, &detail.PricingVersion,
+			&detail.Model, &detail.CostSource, &detail.Day,
 			&detail.InputTokens, &detail.OutputTokens,
 			&detail.CacheReadInputTokens, &detail.CacheCreationInputTokens,
 			&detail.ReasoningOutputTokens, &detail.CostUSD, &detail.Rows,
@@ -256,13 +248,13 @@ type WorkItemCostGroup struct {
 // One query keeps overview loads constant-time in query count instead of
 // issuing an aggregate per visible run; the split is what makes the answer
 // truthful for a Codex-heavy run, whose `cost_usd` is zero in every row.
-const queryWorkItemCostsSQL = `SELECT work_item_id, model, cost_source, pricing_version,
+const queryWorkItemCostsSQL = `SELECT work_item_id, model, cost_source, ` + usageDayExpr + `,
 	 SUM(input_tokens), SUM(output_tokens), SUM(cache_read_input_tokens),
 	 SUM(cache_creation_input_tokens), SUM(reasoning_output_tokens),
 	 SUM(cost_usd), COUNT(*)
 	 FROM usage_records
 	 WHERE project_id = ? AND work_item_id <> ''
-	 GROUP BY work_item_id, model, cost_source, pricing_version`
+	 GROUP BY work_item_id, model, cost_source, ` + usageDayExpr
 
 func (s *Store) QueryWorkItemCosts(projectID string) ([]WorkItemCostGroup, error) {
 	if projectID == "" {
@@ -278,7 +270,7 @@ func (s *Store) QueryWorkItemCosts(projectID string) ([]WorkItemCostGroup, error
 	for rows.Next() {
 		var group WorkItemCostGroup
 		if err := rows.Scan(
-			&group.WorkItemID, &group.Model, &group.CostSource, &group.PricingVersion,
+			&group.WorkItemID, &group.Model, &group.CostSource, &group.Day,
 			&group.InputTokens, &group.OutputTokens,
 			&group.CacheReadInputTokens, &group.CacheCreationInputTokens,
 			&group.ReasoningOutputTokens, &group.CostUSD, &group.Rows,
@@ -302,12 +294,12 @@ func (s *Store) QueryWorkItemUsageDetail(workItemID string) ([]UsageDetailRow, e
 		return nil, fmt.Errorf("store: query work item usage detail: empty work item id")
 	}
 	rows, err := s.reader().Query(
-		`SELECT model, cost_source, pricing_version,
+		`SELECT model, cost_source, `+usageDayExpr+`,
 		 SUM(input_tokens), SUM(output_tokens), SUM(cache_read_input_tokens),
 		 SUM(cache_creation_input_tokens), SUM(reasoning_output_tokens),
 		 SUM(cost_usd), COUNT(*)
 		 FROM usage_records WHERE work_item_id = ?
-		 GROUP BY model, cost_source, pricing_version ORDER BY model, cost_source`, workItemID,
+		 GROUP BY model, cost_source, `+usageDayExpr+` ORDER BY model, cost_source`, workItemID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: query work item usage detail %s: %w", workItemID, err)
@@ -318,7 +310,7 @@ func (s *Store) QueryWorkItemUsageDetail(workItemID string) ([]UsageDetailRow, e
 	for rows.Next() {
 		var detail UsageDetailRow
 		if err := rows.Scan(
-			&detail.Model, &detail.CostSource, &detail.PricingVersion,
+			&detail.Model, &detail.CostSource, &detail.Day,
 			&detail.InputTokens, &detail.OutputTokens,
 			&detail.CacheReadInputTokens, &detail.CacheCreationInputTokens,
 			&detail.ReasoningOutputTokens, &detail.CostUSD, &detail.Rows,
@@ -409,13 +401,20 @@ type UsageBucket struct {
 	CostSource string `json:"costSource"`
 }
 
-// UsageDetailRow is one (bucket, model, cost-source) group of the
+// usageDayExpr is the UTC day a row falls in, as Unix millis at midnight.
+// Rates are dated by UTC day, so grouping on it keeps every row of a group
+// priced at one rate.
+const usageDayExpr = "(created_at / 86400000) * 86400000"
+
+// UsageDetailRow is one (bucket, model, cost-source, UTC day) group of the
 // ledger. QueryUsageDetail shares QueryUsage's filters and bucket
 // expression, so every row's Bucket matches a Bucket already present in
 // the corresponding QueryUsage call's result — GetUsageStats merges the
 // two by that key rather than re-deriving bucket boundaries.
 type UsageDetailRow struct {
-	PricingVersion           string `json:"-"`
+	// Day is the group's UTC day start in Unix millis; internal/usagecost
+	// prices the group at the rate in effect that day.
+	Day                      int64  `json:"-"`
 	Bucket                   string `json:"bucket"`
 	Model                    string `json:"model"`
 	CostSource               string `json:"costSource"`
@@ -576,7 +575,7 @@ func queryUsageDetail(db sqlQueryer, q UsageQuery) ([]UsageDetailRow, error) {
 	}
 	where, args := usageWhereFilters(q)
 
-	query := fmt.Sprintf(`SELECT %s AS bucket, model, cost_source, pricing_version,
+	query := fmt.Sprintf(`SELECT %s AS bucket, model, cost_source, `+usageDayExpr+`,
         SUM(input_tokens), SUM(output_tokens),
         SUM(cache_read_input_tokens), SUM(cache_creation_input_tokens),
         SUM(reasoning_output_tokens), SUM(cost_usd), COUNT(*)
@@ -584,7 +583,7 @@ func queryUsageDetail(db sqlQueryer, q UsageQuery) ([]UsageDetailRow, error) {
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
 	}
-	query += " GROUP BY bucket, model, cost_source, pricing_version ORDER BY bucket ASC, model ASC"
+	query += " GROUP BY bucket, model, cost_source, " + usageDayExpr + " ORDER BY bucket ASC, model ASC"
 
 	rows, err := db.Query(query, args...)
 	if err != nil {
@@ -597,7 +596,7 @@ func queryUsageDetail(db sqlQueryer, q UsageQuery) ([]UsageDetailRow, error) {
 		var d UsageDetailRow
 		var bucket sql.NullString
 		if err := rows.Scan(
-			&bucket, &d.Model, &d.CostSource, &d.PricingVersion,
+			&bucket, &d.Model, &d.CostSource, &d.Day,
 			&d.InputTokens, &d.OutputTokens,
 			&d.CacheReadInputTokens, &d.CacheCreationInputTokens,
 			&d.ReasoningOutputTokens, &d.CostUSD, &d.Rows,

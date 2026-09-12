@@ -6,19 +6,21 @@ package usageledger
 import (
 	"fmt"
 	"math"
+	"time"
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/usagecost"
 )
 
-// Spend combines provider-reported estimates with versioned standard-rate
-// estimates for token-only rows. All usage surfaces and workflow budgets share
-// this rule; cumulative provider thread totals are overlaid separately.
+// Spend combines provider-reported estimates with standard-rate estimates
+// for token-only rows. All usage surfaces and workflow budgets share this
+// rule; cumulative provider thread totals are overlaid separately.
 type Spend struct {
 	// WireUSD is what the providers themselves reported.
 	WireUSD float64
 	// EstimatedUSD is what the internal/usagecost rate table priced token-only
-	// rows at, using the catalog version stored with each ledger row.
+	// rows at, settled and pending alike, at the rate in effect on each
+	// group's UTC day.
 	EstimatedUSD float64
 	// UnpricedRows counts rows whose model resolves to no rate at all. Their
 	// tokens are real and counted everywhere tokens are; their dollars are
@@ -34,9 +36,10 @@ func (s Spend) TotalUSD() float64 { return s.WireUSD + s.EstimatedUSD }
 // amounts are estimates too, not settled invoices.
 func (s Spend) Estimated() bool { return s.WireUSD != 0 || s.EstimatedUSD != 0 || s.UnpricedRows > 0 }
 
-// Add folds one (model, cost_source) ledger group into the running total. An
-// unrecognized cost_source is an error rather than silently missing cost.
-// Pending snapshots are reported tokens awaiting authoritative accounting.
+// Add folds one (model, cost_source, day) ledger group into the running
+// total. An unrecognized cost_source is an error rather than silently missing
+// cost. Pending groups are in-flight tokens: they are priced like settled
+// token-only rows and replaced by the turn's final accounting at settlement.
 func (s *Spend) Add(group store.UsageDetailRow) error {
 	if group.CostUSD < 0 || math.IsNaN(group.CostUSD) || math.IsInf(group.CostUSD, 0) {
 		return fmt.Errorf("usage ledger: invalid cost for model %q", group.Model)
@@ -44,14 +47,9 @@ func (s *Spend) Add(group store.UsageDetailRow) error {
 	switch group.CostSource {
 	case "wire":
 		s.WireUSD += group.CostUSD
-	case "pending":
-		// These tokens were reported before authoritative cost accounting.
-		// Keep existing cost sources until settlement, including when an
-		// interrupted turn left token counts without a price.
-		s.UnpricedRows += group.Rows
-	case "none":
-		estimate, priced := usagecost.PriceVersion(
-			group.PricingVersion, group.Model, group.InputTokens, group.OutputTokens,
+	case "none", "pending":
+		estimate, priced := usagecost.Price(
+			group.Model, time.UnixMilli(group.Day).UTC(), group.InputTokens, group.OutputTokens,
 			group.CacheReadInputTokens, group.CacheCreationInputTokens,
 		)
 		if !priced {

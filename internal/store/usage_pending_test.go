@@ -56,7 +56,7 @@ func TestUsagePendingInterruptionAndReconciliation(t *testing.T) {
 	}
 }
 
-func TestUsagePendingSurvivesReopenAndIsolatesScopes(t *testing.T) {
+func TestUsagePendingSurvivesReopenUntilItsTurnSettles(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "usage.db")
 	s, err := New(path)
 	if err != nil {
@@ -77,34 +77,44 @@ func TestUsagePendingSurvivesReopenAndIsolatesScopes(t *testing.T) {
 			t.Error(err)
 		}
 	})
+	b, _, err := s.ReadUsageStats(UsageQuery{ThreadID: "thread"})
+	if err != nil || len(b) != 1 || b[0].OutputTokens != 7 || b[0].PendingRows != 1 {
+		t.Fatalf("reopen: %+v %v", b, err)
+	}
 	if err := s.AppendUsageAndReconcile("new-process", []UsageLedgerRow{progressRow(5)}); err != nil {
 		t.Fatal(err)
 	}
-	b, _, err := s.ReadUsageStats(UsageQuery{ThreadID: "thread"})
-	if err != nil || len(b) != 1 || b[0].OutputTokens != 12 || b[0].PendingRows != 1 {
-		t.Fatalf("reopen: %+v %v", b, err)
+	b, _, err = s.ReadUsageStats(UsageQuery{ThreadID: "thread"})
+	if err != nil || len(b) != 1 || b[0].OutputTokens != 5 || b[0].PendingRows != 0 {
+		t.Fatalf("settled after reopen: %+v %v", b, err)
 	}
 }
 
-func TestUsagePendingPartialSettlementAndRollback(t *testing.T) {
+// A turn's final accounting replaces its reported tokens even when it is
+// smaller; an invalid settlement rolls back and leaves the report intact.
+func TestUsagePendingFinalAccountingWinsAndInvalidSettlementRollsBack(t *testing.T) {
 	s := newTestStore(t)
 	row := progressRow(10)
 	if _, err := s.PutUsageProgress("p", "0", []UsageLedgerRow{row}); err != nil {
 		t.Fatal(err)
 	}
-	partial := row
-	partial.OutputTokens = 4
+	smaller := row
+	smaller.OutputTokens = 4
 	invalid := row
 	invalid.OutputTokens = -1
-	if err := s.AppendUsageAndReconcile("p", []UsageLedgerRow{partial, invalid}); err == nil {
+	if err := s.AppendUsageAndReconcile("p", []UsageLedgerRow{smaller, invalid}); err == nil {
 		t.Fatal("accepted negative settlement")
 	}
-	if err := s.AppendUsageAndReconcile("p", []UsageLedgerRow{partial}); err != nil {
+	b, _, err := s.ReadUsageStats(UsageQuery{ThreadID: "thread"})
+	if err != nil || len(b) != 1 || b[0].OutputTokens != 10 || b[0].PendingRows != 1 {
+		t.Fatalf("rolled back settlement changed the report: %+v %v", b, err)
+	}
+	if err := s.AppendUsageAndReconcile("p", []UsageLedgerRow{smaller}); err != nil {
 		t.Fatal(err)
 	}
 	b, details, err := s.ReadUsageStats(UsageQuery{ThreadID: "thread"})
-	if err != nil || len(b) != 1 || b[0].OutputTokens != 10 || b[0].PendingRows != 1 || len(details) != 2 {
-		t.Fatalf("partial: %+v %+v %v", b, details, err)
+	if err != nil || len(b) != 1 || b[0].OutputTokens != 4 || b[0].PendingRows != 0 || len(details) != 1 {
+		t.Fatalf("final accounting: %+v %+v %v", b, details, err)
 	}
 	bad := row
 	bad.CostUSD = 1
@@ -171,5 +181,29 @@ func TestUsagePendingSnapshotRestore(t *testing.T) {
 	b, _, err := s.ReadUsageStats(UsageQuery{ThreadID: row.ThreadID})
 	if err != nil || len(b) != 1 || b[0].OutputTokens != 7 || b[0].PendingRows != 1 {
 		t.Fatalf("restored pending usage: %+v %v", b, err)
+	}
+}
+
+// A settled turn's pending rows are retired even when a different provider
+// process reported them, so an interrupted-and-resumed turn cannot leave
+// tokens pending forever beside its final accounting.
+func TestUsagePendingIsRetiredWhenItsTurnSettlesInAnotherScope(t *testing.T) {
+	s := newTestStore(t)
+	if _, err := s.PutUsageProgress("old-process", "0", []UsageLedgerRow{progressRow(7)}); err != nil {
+		t.Fatal(err)
+	}
+	other := progressRow(3)
+	other.TurnID = "other-turn"
+	if _, err := s.PutUsageProgress("old-process", "1", []UsageLedgerRow{other}); err != nil {
+		t.Fatal(err)
+	}
+	final := progressRow(5)
+	final.CostUSD = 0.2
+	if err := s.AppendUsageAndReconcile("new-process", []UsageLedgerRow{final}); err != nil {
+		t.Fatal(err)
+	}
+	b, _, err := s.ReadUsageStats(UsageQuery{ThreadID: "thread"})
+	if err != nil || len(b) != 1 || b[0].OutputTokens != 8 || b[0].PendingRows != 1 || b[0].TurnCount != 1 {
+		t.Fatalf("settled turn kept pending tokens: %+v %v", b, err)
 	}
 }

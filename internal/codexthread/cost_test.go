@@ -572,7 +572,7 @@ func TestFailedThreadCostDeleteIsHarmlessAcrossARestart(t *testing.T) {
 	}
 }
 
-func TestProviderCostWithPendingTokensRemainsPartial(t *testing.T) {
+func TestProviderCostReplacesPendingEstimatesWithoutALowerBoundMarker(t *testing.T) {
 	h := newCostTestHarness(t)
 	thread := codexCostThread("pending-cost", "provider-pending")
 	if err := h.store.CreateThread(thread); err != nil {
@@ -581,8 +581,8 @@ func TestProviderCostWithPendingTokensRemainsPartial(t *testing.T) {
 	if err := h.store.PutProviderThreadCost(store.ProviderThreadCost{ThreadID: thread.ID, Provider: "codex", SessionRef: thread.SessionRef, CostSource: "provider-estimate", CostUSDMicros: 1_000_000, UpdatedAt: 100}); err != nil {
 		t.Fatal(err)
 	}
-	b := h.OverlayProviderThreadCost(store.UsageQuery{ThreadID: thread.ID}, []store.UsageBucket{{OutputTokens: 50, PendingRows: 1}})
-	if len(b) != 1 || b[0].CostUSD != 1 || b[0].UnpricedRows != 1 || b[0].OutputTokens != 50 {
+	b := h.OverlayProviderThreadCost(store.UsageQuery{ThreadID: thread.ID}, []store.UsageBucket{{OutputTokens: 50, PendingRows: 1, UnpricedRows: 1}})
+	if len(b) != 1 || b[0].CostUSD != 1 || b[0].UnpricedRows != 0 || b[0].PendingRows != 1 || b[0].OutputTokens != 50 {
 		t.Fatalf("pending provider cost: %+v", b)
 	}
 }

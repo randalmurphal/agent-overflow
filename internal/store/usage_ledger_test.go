@@ -1,8 +1,8 @@
 package store
 
 import (
-	"agent-overflow/internal/usagecost"
 	"testing"
+	"time"
 )
 
 func seedUsageRows(t *testing.T, s *Store) {
@@ -174,11 +174,11 @@ func TestUsageLedger_GroupByModelAndFilters(t *testing.T) {
 	}
 }
 
-// TestUsageLedgerDetail_LifetimeGroupsByModelAndCostSource — the two
-// wire-priced haiku rows (turn-1, turn-2) fold into one (model,
-// cost_source) group even though they came from separate turns; the
-// sonnet and codex rows each stay their own group.
-func TestUsageLedgerDetail_LifetimeGroupsByModelAndCostSource(t *testing.T) {
+// TestUsageLedgerDetail_LifetimeGroupsByModelCostSourceAndDay — the two
+// wire-priced haiku rows (turn-1 on Jul 1 UTC, turn-2 on Jul 2 UTC) stay
+// separate groups because rates are dated by UTC day; the sonnet and codex
+// rows each stay their own group.
+func TestUsageLedgerDetail_LifetimeGroupsByModelCostSourceAndDay(t *testing.T) {
 	s := newTestStore(t)
 	seedUsageRows(t, s)
 
@@ -186,22 +186,21 @@ func TestUsageLedgerDetail_LifetimeGroupsByModelAndCostSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("detail query: %v", err)
 	}
-	if len(details) != 3 {
-		t.Fatalf("detail groups = %d, want 3: %+v", len(details), details)
+	if len(details) != 4 {
+		t.Fatalf("detail groups = %d, want 4: %+v", len(details), details)
 	}
 
-	haiku := details[0]
-	if haiku.Model != "claude-haiku-4-5" || haiku.CostSource != "wire" {
-		t.Fatalf("haiku group: %+v", haiku)
+	jul1 := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
+	jul2 := time.Date(2026, 7, 2, 0, 0, 0, 0, time.UTC).UnixMilli()
+	haiku1, haiku2 := details[0], details[1]
+	if haiku1.Model != "claude-haiku-4-5" || haiku1.CostSource != "wire" || haiku1.Day != jul1 || haiku1.Rows != 1 || haiku1.OutputTokens != 42 {
+		t.Fatalf("haiku Jul 1 group: %+v", haiku1)
 	}
-	if haiku.Rows != 2 || haiku.InputTokens != 15 || haiku.OutputTokens != 62 {
-		t.Fatalf("haiku group did not fold both turns: %+v", haiku)
-	}
-	if haiku.CostUSD < 0.029 || haiku.CostUSD > 0.031 {
-		t.Fatalf("haiku group cost = %g, want ~0.03 (0.02+0.01)", haiku.CostUSD)
+	if haiku2.Model != "claude-haiku-4-5" || haiku2.CostSource != "wire" || haiku2.Day != jul2 || haiku2.Rows != 1 || haiku2.OutputTokens != 20 {
+		t.Fatalf("haiku Jul 2 group: %+v", haiku2)
 	}
 
-	sonnet := details[1]
+	sonnet := details[2]
 	if sonnet.Model != "claude-sonnet-4-6" || sonnet.CostSource != "wire" || sonnet.Rows != 1 {
 		t.Fatalf("sonnet group: %+v", sonnet)
 	}
@@ -209,7 +208,7 @@ func TestUsageLedgerDetail_LifetimeGroupsByModelAndCostSource(t *testing.T) {
 		t.Fatalf("sonnet group cache creation: %+v", sonnet)
 	}
 
-	codex := details[2]
+	codex := details[3]
 	if codex.Model != "gpt-5.2-codex" || codex.CostSource != "none" || codex.Rows != 1 {
 		t.Fatalf("codex group: %+v", codex)
 	}
@@ -283,8 +282,8 @@ func TestUsageLedgerDetail_FiltersLikeQueryUsage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("thread filter query: %v", err)
 	}
-	if len(details) != 2 {
-		t.Fatalf("thread ta detail groups = %d, want 2 (haiku+sonnet, no codex): %+v", len(details), details)
+	if len(details) != 3 {
+		t.Fatalf("thread ta detail groups = %d, want 3 (haiku on two days + sonnet, no codex): %+v", len(details), details)
 	}
 }
 
@@ -382,7 +381,6 @@ func TestQueryWorkItemCostsGroupsByProjectAndItem(t *testing.T) {
 	for _, group := range costs {
 		key := group.WorkItemID + "/" + group.Model + "/" + group.CostSource
 		expected, known := want[key]
-		expected.PricingVersion = usagecost.CurrentVersion
 		if !known {
 			t.Fatalf("unexpected group %q: %#v", key, group)
 		}

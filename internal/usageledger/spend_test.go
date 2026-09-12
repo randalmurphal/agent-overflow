@@ -3,6 +3,7 @@ package usageledger
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/store"
 )
@@ -87,23 +88,37 @@ func TestPriceGroups_FailsWholeOnOneBadGroup(t *testing.T) {
 	}
 }
 
-func TestPendingUsageDoesNotInventInterimCost(t *testing.T) {
+func TestPendingUsageIsEstimatedLikeSettledTokenOnlyRows(t *testing.T) {
 	spend, err := PriceGroups([]store.UsageDetailRow{
 		{Model: "claude-haiku-4-5", CostSource: "wire", CostUSD: 0.5, Rows: 1},
 		{Model: "gpt-5.2-codex", CostSource: "pending", OutputTokens: 1_000_000, Rows: 2},
+		{Model: "no-such-model", CostSource: "pending", OutputTokens: 10, Rows: 1},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if spend.TotalUSD() != 0.5 || spend.EstimatedUSD != 0 || spend.UnpricedRows != 2 {
+	if spend.WireUSD != 0.5 || spend.EstimatedUSD != 14 || spend.UnpricedRows != 1 {
 		t.Fatalf("pending spend: %+v", spend)
 	}
 }
 
-func TestReportedZeroAndMissingSnapshotRemainDistinct(t *testing.T) {
+// Groups are priced at the rate in effect on their own UTC day, so a
+// day before a model's first dated rate is unpriced rather than guessed.
+func TestGroupsPriceByTheirOwnDay(t *testing.T) {
+	launch := time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC).UnixMilli()
+	spend, err := PriceGroups([]store.UsageDetailRow{
+		{Model: "gpt-6-astra", CostSource: "none", Day: launch, InputTokens: 1_000_000, Rows: 1},
+		{Model: "gpt-6-astra", CostSource: "none", Day: 0, InputTokens: 1_000_000, Rows: 1},
+	})
+	if err != nil || spend.EstimatedUSD != 20 || spend.UnpricedRows != 0 {
+		t.Fatalf("dated groups: %+v %v", spend, err)
+	}
+}
+
+func TestReportedZeroAndMissingRateRemainDistinct(t *testing.T) {
 	spend, err := PriceGroups([]store.UsageDetailRow{
 		{Model: "gpt-6-astra", CostSource: "wire", InputTokens: 1_000_000, Rows: 1},
-		{Model: "gpt-6-astra", CostSource: "none", PricingVersion: "unavailable", InputTokens: 1_000_000, Rows: 1},
+		{Model: "gpt-7-unknown", CostSource: "none", InputTokens: 1_000_000, Rows: 1},
 	})
 	if err != nil || spend.TotalUSD() != 0 || spend.UnpricedRows != 1 {
 		t.Fatalf("zero/missing conflated: %+v %v", spend, err)

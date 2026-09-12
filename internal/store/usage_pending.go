@@ -86,12 +86,12 @@ func rollbackUsageTx(tx *sql.Tx, result *error) {
 
 // AppendUsageAndReconcile atomically exchanges pending tokens for the final
 // accounting that includes them. Only this process's matching model is
-// consumed. An empty or partial interrupt result leaves unaccounted tokens
-// available to usage queries. Cost is never subtracted from token progress.
+// consumed, since a provider's final deltas can cover earlier interrupted
+// turns of the same process. A settled turn's own pending rows are then
+// retired whatever scope reported them: the ledger row is that turn's final
+// accounting. An empty interrupt result leaves unaccounted tokens available
+// to usage queries. Cost is never subtracted from token progress.
 func (s *Store) AppendUsageAndReconcile(scope string, rows []UsageLedgerRow) (err error) {
-	if scope == "" {
-		return s.AppendUsage(rows)
-	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("store: usage settlement begin: %w", err)
@@ -101,12 +101,23 @@ func (s *Store) AppendUsageAndReconcile(scope string, rows []UsageLedgerRow) (er
 		if row.ThreadID == "" || row.Model == "" {
 			return fmt.Errorf("store: usage settlement requires thread and model")
 		}
+		if scope == "" {
+			continue
+		}
 		if err := consumeUsagePending(tx, scope, row); err != nil {
 			return err
 		}
 	}
 	if err := appendUsageTx(tx, rows); err != nil {
 		return err
+	}
+	for _, row := range rows {
+		if row.TurnID == "" {
+			continue
+		}
+		if _, err := tx.Exec(`DELETE FROM usage_pending WHERE thread_id = ? AND turn_id = ?`, row.ThreadID, row.TurnID); err != nil {
+			return fmt.Errorf("store: retire settled pending usage: %w", err)
+		}
 	}
 	return tx.Commit()
 }
