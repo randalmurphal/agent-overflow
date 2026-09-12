@@ -11,18 +11,17 @@ import {
   setUiRenderTraceEnabled,
 } from '../uiRenderTrace';
 
-// Deterministic clock + rAF queue. `performance.now` is stubbed to the
-// same counter the rAF callbacks receive, matching the production
-// contract (scroll/time.ts nowMs reads the clock rAF timestamps are on).
+// Deterministic clock + rAF queue. Tests can supply a separate animation
+// timestamp to model browser timing on displays with different refresh rates.
 export let now = 0;
 export function advanceClock(ms: number): void { now += ms; }
 export let rafQueue: FrameRequestCallback[] = [];
 
-export function frame(ms = 16.67): void {
+export function frame(ms = 16.67, animationTimestamp?: number): void {
   now += ms;
   const callbacks = rafQueue;
   rafQueue = [];
-  for (const cb of callbacks) cb(now);
+  for (const cb of callbacks) cb(animationTimestamp ?? now);
 }
 
 export interface Harness {

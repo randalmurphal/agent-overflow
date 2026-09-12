@@ -3,23 +3,28 @@
 package main
 
 import (
-	"bytes"
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/wsllauncher"
+	"golang.org/x/sys/windows"
 )
 
 var wslMemoryWatchInterval = 100 * time.Millisecond
 
-const wslMemoryMaxOutput = 4 << 20
+const wslMemoryStderrTail = 16 << 10
 
 type wslProcStat struct {
 	PID       int
@@ -115,23 +120,12 @@ type wslBackendSample struct {
 	RSSBytes   uint64
 }
 
-var runWSLMemoryProbe = runWSLMemoryProbeCommand
-
-var errWSLMemoryProbeOutputLimit = errors.New("WSL memory probe output limit exceeded")
-
-type cappedProbeOutput struct {
-	bytes.Buffer
-	limit    int
-	overflow bool
+type wslMemorySampler interface {
+	Sample(context.Context) (wslBackendSample, error)
+	Close() error
 }
 
-func (b *cappedProbeOutput) Write(p []byte) (int, error) {
-	if b.Len()+len(p) > b.limit {
-		b.overflow = true
-		return 0, errWSLMemoryProbeOutputLimit
-	}
-	return b.Buffer.Write(p)
-}
+var openWSLMemoryProbe = openWSLMemoryProbeCommand
 
 // startWSLMemoryWatchdog monitors the Linux backend from Windows. The
 // launcher's Job Object covers the Windows process tree, while this watcher
@@ -140,22 +134,41 @@ func (b *cappedProbeOutput) Write(p []byte) (int, error) {
 // the harness backend.
 func startWSLMemoryWatchdog(parent context.Context, distro, executable string, bs *wsllauncher.Bootstrap, limit uint64, stop func()) context.CancelFunc {
 	ctx, cancel := context.WithCancel(parent)
+	var stopOnce sync.Once
+	fail := func() { stopOnce.Do(stop) }
 	go func() {
 		defer cancel()
 		if bs == nil || bs.PID <= 0 {
 			log.Printf("harness memory watchdog: backend bootstrap has no Linux pid")
-			stop()
+			fail()
 			return
 		}
-		sample, err := runWSLMemoryProbe(ctx, distro, bs.PID, executable)
+		probe, err := openWSLMemoryProbe(ctx, distro, bs.PID, executable)
 		if err != nil {
+			if ctx.Err() == nil {
+				log.Printf("harness memory watchdog: start WSL probe: %v", err)
+				fail()
+			}
+			return
+		}
+		defer func() {
+			if err := probe.Close(); err != nil {
+				log.Printf("harness memory watchdog: close WSL probe: %v", err)
+				fail()
+			}
+		}()
+		sample, err := probe.Sample(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			log.Printf("harness memory watchdog: initial WSL identity probe failed: %v", err)
-			stop()
+			fail()
 			return
 		}
 		if sample.PID != bs.PID || sample.RSSBytes > limit {
 			log.Printf("harness memory watchdog: initial WSL sample is unsafe (pid=%d rss=%d limit=%d)", sample.PID, sample.RSSBytes, limit)
-			stop()
+			fail()
 			return
 		}
 		identity := sample
@@ -168,20 +181,23 @@ func startWSLMemoryWatchdog(parent context.Context, distro, executable string, b
 				return
 			case <-ticker.C:
 			}
-			sample, err := runWSLMemoryProbe(ctx, distro, identity.PID, identity.Executable)
+			sample, err := probe.Sample(ctx)
 			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
 				log.Printf("harness memory watchdog: WSL identity probe failed: %v", err)
-				stop()
+				fail()
 				return
 			}
-			if sample.StartTime != identity.StartTime || sample.Executable != identity.Executable {
+			if sample.PID != identity.PID || sample.StartTime != identity.StartTime || sample.Executable != identity.Executable {
 				log.Printf("harness memory watchdog: WSL backend identity changed (pid=%d start=%s executable=%s)", sample.PID, sample.StartTime, sample.Executable)
-				stop()
+				fail()
 				return
 			}
 			if sample.RSSBytes > limit {
 				log.Printf("harness memory watchdog: WSL process tree exceeded limit (rss=%d limit=%d)", sample.RSSBytes, limit)
-				stop()
+				fail()
 				return
 			}
 		}
@@ -189,45 +205,146 @@ func startWSLMemoryWatchdog(parent context.Context, distro, executable string, b
 	return cancel
 }
 
-func runWSLMemoryProbeCommand(ctx context.Context, distro string, pid int, executable string) (wslBackendSample, error) {
+type wslMemoryProbeProcess struct {
+	ctx        context.Context
+	cancel     context.CancelFunc
+	stdin      io.WriteCloser
+	stdout     io.ReadCloser
+	lines      chan string
+	done       chan struct{}
+	readErr    error
+	waitErr    error
+	stderr     *procutil.TailBuffer
+	pid        int
+	executable string
+	closeOnce  sync.Once
+	closeErr   error
+}
+
+func openWSLMemoryProbeCommand(parent context.Context, distro string, pid int, executable string) (wslMemorySampler, error) {
 	if strings.TrimSpace(distro) == "" || pid <= 0 || strings.TrimSpace(executable) == "" {
-		return wslBackendSample{}, errors.New("invalid WSL memory probe target")
+		return nil, errors.New("invalid WSL memory probe target")
 	}
-	// --exec, never --: the -- form re-parses the joined argv through the
-	// user's login shell, destroying the script's quoting and positional
-	// args (wsllauncher.buildLaunchArgs has the incident note). A mangled
-	// probe reads as a failed probe, and a failed probe stops the backend.
+	ctx, cancel := context.WithCancel(parent)
+	// --exec preserves the explicit shell's script and positional arguments.
 	cmd := exec.CommandContext(ctx, "wsl.exe", "-d", distro, "--exec", "/bin/sh", "-c", wslMemoryProbeScript, "agent-overflow-memory-watchdog", strconv.Itoa(pid), executable)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	var output cappedProbeOutput
-	output.limit = wslMemoryMaxOutput
-	cmd.Stdout = &output
-	// Capture stderr too: the script's diagnostics and wsl.exe's own
-	// error text both land there, and a probe failure STOPS THE BACKEND,
-	// so an error that swallows them turns a diagnosable kill into
-	// "exit status 1" (observed 2026-08-30).
-	var stderr cappedProbeOutput
-	stderr.limit = wslMemoryMaxOutput
-	cmd.Stderr = &stderr
-	err := cmd.Run()
+	// A hidden console still takes the desktop's window-management lock.
+	// Keep one pipe-only WSL session for all samples instead of relaunching it.
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: windows.CREATE_NO_WINDOW}
+	cmd.WaitDelay = 2 * time.Second
+	p := &wslMemoryProbeProcess{ctx: ctx, cancel: cancel, lines: make(chan string, 1), done: make(chan struct{}), pid: pid, executable: executable}
+	p.stderr = procutil.NewTailBuffer(wslMemoryStderrTail)
+	cmd.Stderr = p.stderr
+	var err error
+	p.stdin, err = cmd.StdinPipe()
 	if err != nil {
-		if output.overflow {
-			return wslBackendSample{}, errWSLMemoryProbeOutputLimit
+		cancel()
+		return nil, fmt.Errorf("WSL probe stdin: %w", err)
+	}
+	p.stdout, err = cmd.StdoutPipe()
+	if err != nil {
+		cancel()
+		return nil, errors.Join(fmt.Errorf("WSL probe stdout: %w", err), p.stdin.Close())
+	}
+	if err := cmd.Start(); err != nil {
+		cancel()
+		return nil, errors.Join(fmt.Errorf("start WSL probe: %w", err), p.stdin.Close(), p.stdout.Close())
+	}
+	go func() {
+		defer close(p.done)
+		// A response contains only PID, birth time and RSS. ReadSlice bounds
+		// retained output and requires a complete line before accepting it.
+		reader := bufio.NewReaderSize(p.stdout, 128)
+		for {
+			line, err := reader.ReadSlice('\n')
+			if err != nil {
+				p.readErr = err
+				if errors.Is(err, io.EOF) {
+					p.readErr = nil
+					if len(line) > 0 {
+						p.readErr = io.ErrUnexpectedEOF
+					}
+				}
+				break
+			}
+			select {
+			case p.lines <- string(line):
+			case <-ctx.Done():
+				p.readErr = ctx.Err()
+				close(p.lines)
+				p.waitErr = cmd.Wait()
+				return
+			}
 		}
-		return wslBackendSample{}, fmt.Errorf("wsl memory probe: %w (stdout: %q, stderr: %q)",
-			err, output.Bytes(), stderr.Bytes())
+		if p.readErr != nil {
+			cancel()
+		}
+		close(p.lines)
+		p.waitErr = cmd.Wait()
+	}()
+	return p, nil
+}
+
+func (p *wslMemoryProbeProcess) Sample(ctx context.Context) (sample wslBackendSample, err error) {
+	defer func() {
+		if err != nil {
+			p.cancel()
+		}
+	}()
+	if err := p.ctx.Err(); err != nil {
+		return wslBackendSample{}, err
 	}
-	out := output.Bytes()
-	if len(out) > wslMemoryMaxOutput {
-		return wslBackendSample{}, fmt.Errorf("wsl memory probe output exceeds %d bytes", wslMemoryMaxOutput)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return wslBackendSample{}, err
 	}
-	fields := strings.Fields(string(out))
+	if _, err := io.WriteString(p.stdin, "sample\n"); err != nil {
+		return wslBackendSample{}, fmt.Errorf("request WSL memory sample: %w", err)
+	}
+	select {
+	case <-ctx.Done():
+		return wslBackendSample{}, ctx.Err()
+	case line, ok := <-p.lines:
+		if ok {
+			return parseWSLMemorySample(line, p.pid, p.executable)
+		}
+		select {
+		case <-ctx.Done():
+			return wslBackendSample{}, ctx.Err()
+		case <-p.done:
+			return wslBackendSample{}, fmt.Errorf("WSL memory probe ended: %w (stderr: %q)", errors.Join(io.EOF, p.readErr, p.waitErr), p.stderr.String())
+		}
+	}
+}
+
+func (p *wslMemoryProbeProcess) Close() error {
+	p.closeOnce.Do(func() {
+		p.cancel()
+		for _, pipe := range []io.Closer{p.stdin, p.stdout} {
+			if err := pipe.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+				p.closeErr = errors.Join(p.closeErr, err)
+			}
+		}
+		<-p.done
+		if errors.Is(p.waitErr, exec.ErrWaitDelay) {
+			p.closeErr = errors.Join(p.closeErr, p.waitErr)
+		}
+	})
+	return p.closeErr
+}
+
+func parseWSLMemorySample(line string, pid int, executable string) (wslBackendSample, error) {
+	fields := strings.Fields(line)
 	if len(fields) != 3 {
-		return wslBackendSample{}, fmt.Errorf("wsl memory probe returned %d fields", len(fields))
+		return wslBackendSample{}, fmt.Errorf("WSL memory probe returned %d fields", len(fields))
 	}
 	gotPID, err := strconv.Atoi(fields[0])
-	if err != nil {
-		return wslBackendSample{}, fmt.Errorf("parse WSL pid: %w", err)
+	if err != nil || gotPID != pid {
+		return wslBackendSample{}, fmt.Errorf("WSL memory probe returned unexpected pid %q", fields[0])
+	}
+	if _, err := strconv.ParseUint(fields[1], 10, 64); err != nil {
+		return wslBackendSample{}, fmt.Errorf("parse WSL birth time: %w", err)
 	}
 	rss, err := strconv.ParseUint(fields[2], 10, 64)
 	if err != nil {
@@ -241,6 +358,9 @@ func runWSLMemoryProbeCommand(ctx context.Context, distro string, pid int, execu
 // the parser removes the final `)` before reading the stable numeric fields.
 const wslMemoryProbeScript = `
 set -eu
+target_pid="$1"
+target_executable="$2"
+sample() {
 pid="$1"
 expected="$2"
 stat="/proc/$pid/stat"
@@ -283,4 +403,9 @@ for member in $pids; do
   total=$((total + rssPages * pagesize))
 done
 printf '%s %s %s\n' "$pid" "$start" "$total"
+}
+while IFS= read -r request; do
+  [ "$request" = sample ] || exit 46
+  sample "$target_pid" "$target_executable"
+done
 `

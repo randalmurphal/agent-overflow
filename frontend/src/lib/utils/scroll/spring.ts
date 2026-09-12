@@ -309,8 +309,11 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
     deps.forceNextSpringTickTrace();
     beginChaseTelemetry();
 
-    const tick = (now: number): void => {
+    const tick = (): void => {
       if (springToken !== myToken) return;
+      // A browser can deliver frames on this display while its animation
+      // timestamps follow another display. Integrate actual elapsed time.
+      const now = nowMs();
       springFrameHandle = null;
       const el = deps.getScrollEl();
       if (!el) {
