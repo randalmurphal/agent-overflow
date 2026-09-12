@@ -25,14 +25,17 @@ type peer struct {
 	mu         sync.Mutex
 	credential string
 	refusal    string
-	rotations  atomic.Int32
+	// window is how long each issued credential lasts; an hour unless a
+	// test shortens it to bring the next renewal due.
+	window    time.Duration
+	rotations atomic.Int32
 }
 
 // newPeer honours nothing until its first rotation: the credential a test
 // seeds is one that has aged out.
 func newPeer(t *testing.T) *peer {
 	t.Helper()
-	p := &peer{}
+	p := &peer{window: time.Hour}
 	p.Server = httptest.NewServer(http.HandlerFunc(p.route))
 	t.Cleanup(p.Close)
 	return p
@@ -72,7 +75,7 @@ func (p *peer) route(w http.ResponseWriter, r *http.Request) {
 		if refusal == "" {
 			p.credential = "credential-" + strconv.Itoa(issued)
 		}
-		credential := p.credential
+		credential, window := p.credential, p.window
 		p.mu.Unlock()
 		if refusal != "" {
 			w.WriteHeader(http.StatusUnauthorized)
@@ -82,7 +85,7 @@ func (p *peer) route(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"sessionId":          "session",
 			"credential":         credential,
-			"expiresAtMs":        time.Now().Add(time.Hour).UnixMilli(),
+			"expiresAtMs":        time.Now().Add(window).UnixMilli(),
 			"refreshSecret":      "refresh-" + strconv.Itoa(issued),
 			"refreshExpiresAtMs": time.Now().Add(24 * time.Hour).UnixMilli(),
 		})

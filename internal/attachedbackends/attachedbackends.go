@@ -30,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"golang.org/x/sync/singleflight"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -147,11 +148,13 @@ func (m *Manager) carrier(id string) (*carrier, error) {
 	return built, nil
 }
 
-// wire attaches this manager's hooks to a freshly built carrier.
+// wire attaches this manager's hooks to a freshly built carrier and starts
+// its session renewal, which reports through those hooks.
 func (m *Manager) wire(built *carrier, id string) {
 	built.labelGetter, built.platform = m.localLabel, m.platform
 	built.nameSyncChanged = func() { m.notifyChanged(SetChange{Action: SetDeviceNameSync, ID: id}) }
 	built.onEnded = func() { m.endSession(id, built) }
+	built.keepRenewed(id)
 }
 
 // endSession is the verdict path: the far side stopped honouring one
@@ -171,6 +174,7 @@ func (m *Manager) endSession(id string, held *carrier) {
 	if !current {
 		return
 	}
+	held.stopRenewal()
 	_ = m.writeAgentAccess(id, false)
 	m.notifyChanged(SetChange{Action: SetRemoved, ID: id, Reason: RemovedByComputer})
 }
@@ -325,6 +329,7 @@ func (m *Manager) Add(ctx context.Context, pairingLink string) (Attachment, erro
 func (m *Manager) addLinkLocked(ctx context.Context, link deviceclient.Link) (Attachment, error) {
 	m.mu.Lock()
 	if old := m.carriers[link.BackendID]; old != nil {
+		old.stopRenewal()
 		old.client.Retire()
 	}
 	delete(m.carriers, link.BackendID)
@@ -411,6 +416,7 @@ func (m *Manager) forgetLocked(id string) error {
 	if held == nil {
 		return deviceclient.ForgetSession(m.dir, id)
 	}
+	held.stopRenewal()
 	if err := held.client.Forget(); err != nil {
 		held.client.Retire()
 		return err
@@ -462,6 +468,8 @@ type carrier struct {
 	ownSyncError  string
 	client        *deviceclient.Client
 	proxy         *backendproxy.Carrier
+	// stopRenewal ends keepRenewed when this carrier leaves the manager.
+	stopRenewal context.CancelFunc
 
 	// lastReachedMs is when this machine last answered, Unix
 	// milliseconds. One atomic, written where an answer arrives and read
@@ -487,7 +495,27 @@ func newCarrier(client *deviceclient.Client, name string) (*carrier, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &carrier{client: client, proxy: proxy}, nil
+	return &carrier{client: client, proxy: proxy, stopRenewal: func() {}}, nil
+}
+
+// keepRenewed rotates the session before each access window closes for
+// as long as this carrier is held. The page's sockets ride one session for
+// hours, and the far side judges every call on that session's current
+// window; a rotation only at dial time left them refused for age between
+// the window closing and the next dial. A verdict from the far side takes
+// the same path a refused manifest does.
+func (c *carrier) keepRenewed(id string) {
+	ctx, cancel := context.WithCancel(context.Background())
+	c.stopRenewal = cancel
+	go func() {
+		err := c.client.KeepRenewed(ctx, func(err error) {
+			log.Printf("attachedbackends: renew the session with %s: %v", id, err)
+		})
+		if ctx.Err() != nil || c.ended(err) {
+			return
+		}
+		log.Printf("attachedbackends: session renewal with %s stopped: %v", id, err)
+	}()
 }
 
 func (c *carrier) reached() { c.lastReachedMs.Store(time.Now().UnixMilli()) }

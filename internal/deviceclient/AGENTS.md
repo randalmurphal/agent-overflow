@@ -27,6 +27,12 @@ Retain a pending renewal unchanged. Failed socket upgrades invalidate a route
 even if that proxy still answers ordinary HTTP; 401/403 remain auth handling,
 and so does 404, the upgrade's own answer for a spent ticket or a dead session.
 
+`Ticket` rotates a credential inside `renewMargin` before the mint. An owner
+whose sockets outlive one access window also runs `KeepRenewed`, which rotates
+before each window closes: a renewal extends the session row every open socket
+keys on, so a carried socket stays authorized without a re-dial. Transient
+failures are reported and retried; a terminal refusal returns `ErrSessionEnded`.
+
 Renewal's shared contract is [session-renewal.md](../../docs/architecture/session-renewal.md).
 Save the proposed successor before sending to `/auth/token/recover`. Never
 fall back to the legacy endpoint with a pending operation. Transient HTTP or
