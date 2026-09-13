@@ -1629,6 +1629,7 @@ CREATE INDEX idx_flush_queue_send_id ON flush_queue_items(thread_id, send_id)
 	{Version: 95, Name: "subagent_progress_on_completion", SQL: subagentProgressCompletionV95SQL},
 	{Version: 96, Name: "usage_dated_pricing", SQL: usageDatedPricingV96SQL},
 	{Version: 97, Name: "remote_jobs_warning", SQL: remoteJobsWarningV97SQL},
+	{Version: 98, Name: "remote_watches_command", SQL: remoteWatchesCommandV98SQL},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

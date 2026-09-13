@@ -277,6 +277,7 @@ const COLOR_ENTRIES: readonly TokenEntry[] = [
   entry('colors', 'app.css', 'ico-eye', 'Tool-kind icon: reads and views.'),
   entry('colors', 'app.css', 'ico-search', 'Tool-kind icon: search and pattern matching.'),
   entry('colors', 'app.css', 'ico-globe', 'Tool-kind icon: network and web fetches.'),
+  entry('colors', 'app.css', 'ico-monitor', 'Tool-kind icon: commands and tools run on another computer.'),
   entry('colors', 'app.css', 'ico-robot', 'Tool-kind icon: subagents and delegated work.'),
   entry('colors', 'app.css', 'ico-speech-bubble', 'Tool-kind icon: conversation and messaging tools.'),
   entry('colors', 'app.css', 'ico-checklist', 'Tool-kind icon: task lists and plans.'),

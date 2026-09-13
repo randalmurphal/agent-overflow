@@ -85,6 +85,7 @@ export const TOKYO_NIGHT: BuiltinThemeSpec = {
       'ico-eye': '#7dcfff',
       'ico-search': '#7aa2f7',
       'ico-globe': '#2ac3de',
+      'ico-monitor': '#73daca',
       'ico-robot': '#9d7cd8',
       'ico-speech-bubble': '#f7768e',
       'ico-checklist': '#9ece6a',

@@ -333,7 +333,7 @@ const statusRunningBackgroundWork = "running"
 // launch id — which is the same branch every existing caller of those
 // RPCs has to make.
 func backgroundWorkHandle(providerName string, item store.Item) (kind, stopID string) {
-	if item.ToolName == "remote_command" {
+	if item.ToolName == remoteTrayToolName {
 		var meta struct {
 			RemoteJob struct {
 				ComputerID string `json:"computerId"`

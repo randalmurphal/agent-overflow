@@ -649,18 +649,19 @@ describe('<GenericToolCallRow> browser tools on another machine', () => {
       props: { pane: makeFakePane({ threadId: THREAD }), item: browserItem() },
     });
 
-    const badge = getByTestId('tool-call-card-browser-machine');
-    expect(badge.getAttribute('title')).toBe(
+    const where = getByTestId('tool-call-card-where');
+    expect(where.getAttribute('title')).toBe(
       'Browsing on Laptop. The page is only visible there.',
     );
-    expect(badge.dataset.machine).toBe('Laptop');
+    expect(where.dataset.machine).toBe('Laptop');
+    expect(where.textContent).toContain('Laptop');
   });
 
   it('says nothing on the machine the page is actually on', () => {
     const { queryByTestId } = render(GenericToolCallRow, {
       props: { pane: makeFakePane({ threadId: 'thread-at-home' }), item: browserItem() },
     });
-    expect(queryByTestId('tool-call-card-browser-machine')).toBeNull();
+    expect(queryByTestId('tool-call-card-where')).toBeNull();
   });
 
   it('says nothing for an unrelated MCP server on the same machine', () => {
@@ -669,7 +670,7 @@ describe('<GenericToolCallRow> browser tools on another machine', () => {
     const { queryByTestId } = render(GenericToolCallRow, {
       props: { pane: makeFakePane({ threadId: THREAD }), item: browserItem('docs') },
     });
-    expect(queryByTestId('tool-call-card-browser-machine')).toBeNull();
+    expect(queryByTestId('tool-call-card-where')).toBeNull();
   });
 
   it('keeps the row actions the host passed alongside it', () => {
@@ -678,8 +679,63 @@ describe('<GenericToolCallRow> browser tools on another machine', () => {
     const { getByTestId } = render(GenericToolCallRow, {
       props: { pane: makeFakePane({ threadId: THREAD }), item: browserItem() },
     });
-    expect(getByTestId('tool-call-card-browser-machine')).toBeTruthy();
+    expect(getByTestId('tool-call-card-where')).toBeTruthy();
     expect(getByTestId('tool-call-card-status-slot')).toBeTruthy();
+  });
+});
+
+// A tool AO serves itself presents as a proper tool call: the family icon,
+// a verb in the gutter, the computer it acts on, and the argument that
+// matters, with the wire tool name kept for a hover.
+describe('<GenericToolCallRow> AO tools', () => {
+  beforeEach(() => {
+    resetBindingMocks();
+    resetStagedBackends();
+    __resetEntityIndexForTest();
+    setBindingMock('GetPayloadPreview', vi.fn(async () => ({ data: '', size: 0, isComplete: true })));
+  });
+
+  function remoteRun(input: Record<string, unknown>): Item {
+    return makeItem({
+      id: 'tool-remote',
+      kind: 'tool_call',
+      toolName: 'MCP/remote_run',
+      summary: 'MCP/remote_run: …',
+      meta: JSON.stringify({ mcp: { server: 'ao-remote-tools', tool: 'remote_run' }, input }),
+    });
+  }
+
+  it('shows the command and the attached computer it runs on', () => {
+    stageBackend();
+    const { getByTestId } = render(GenericToolCallRow, {
+      props: { item: remoteRun({ computer_id: 'laptop', argv: ['go', 'test', './...'] }) },
+    });
+    expect(getByTestId('tool-call-card').dataset.toolKind).toBe('monitor');
+    expect(getByTestId('tool-call-card-label').textContent).toBe('run');
+    expect(getByTestId('tool-call-card-label').getAttribute('title')).toBe('remote_run');
+    expect(getByTestId('tool-call-card-where').dataset.machine).toBe('Laptop');
+    expect(getByTestId('tool-call-card-preview').textContent).toBe('go test ./...');
+  });
+
+  it('shows the command alone when the computer is not one this client is attached to', () => {
+    const { getByTestId, queryByTestId } = render(GenericToolCallRow, {
+      props: { item: remoteRun({ computer_id: 'elsewhere', argv: ['make'] }) },
+    });
+    expect(queryByTestId('tool-call-card-where')).toBeNull();
+    expect(getByTestId('tool-call-card-preview').textContent).toBe('make');
+  });
+
+  it('presents a browser tool by verb and target', () => {
+    const item = makeItem({
+      id: 'tool-click',
+      kind: 'tool_call',
+      toolName: 'MCP/browser_click',
+      meta: JSON.stringify({ mcp: { server: BROWSER_TOOLS_SERVER, tool: 'browser_click' }, input: { selector: '#submit' } }),
+    });
+    const { getByTestId } = render(GenericToolCallRow, { props: { item } });
+    expect(getByTestId('tool-call-card').dataset.toolKind).toBe('globe');
+    expect(getByTestId('tool-call-card-label').textContent).toBe('click');
+    expect(getByTestId('tool-call-card-preview').textContent).toBe('#submit');
   });
 });
 

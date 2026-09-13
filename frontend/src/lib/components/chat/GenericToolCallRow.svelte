@@ -31,15 +31,14 @@
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
   import { createRunningElapsed } from './useRunningElapsed.svelte';
   import { useLeasedItemExpansion } from './useLeasedPayloadExpansion.svelte';
-  import { isBrowserToolMeta } from '../../utils/browserTools';
+  import { aoToolPresentation } from './aoTools';
+  import { BROWSER_TOOLS_SERVER } from '../../utils/browserTools';
   import {
     attachedBackendEntry,
     backendDisplayName,
     threadMachine,
   } from '../../stores/attachedBackends.svelte';
   import { previewRouted } from '../../stores/devServers.svelte';
-  import Icon from '../primitives/Icon.svelte';
-  import Monitor from '@lucide/svelte/icons/monitor';
 
   let {
     pane,
@@ -61,7 +60,16 @@
   let effectiveDisplayItem = $derived(displayItem ?? item);
   let effectiveStatusItem = $derived(statusItem ?? item);
 
-  let classification = $derived(classifyToolName(effectiveDisplayItem.toolName ?? effectiveDisplayItem.summary));
+  let displayMeta = $derived(parseJsonObject(effectiveDisplayItem.meta));
+  // A tool AO itself serves (remote, browser) presents by its own table:
+  // family icon, verb, the argument that matters. Everything else goes by
+  // tool name.
+  let aoTool = $derived(aoToolPresentation(displayMeta));
+  let classification = $derived(
+    aoTool
+      ? { icon: aoTool.icon, label: aoTool.label, isSubagent: false }
+      : classifyToolName(effectiveDisplayItem.toolName ?? effectiveDisplayItem.summary),
+  );
   const localFallback = untrack(() =>
     pane
       ? null
@@ -79,7 +87,6 @@
   const expansion = $derived(expansionRef.current!);
 
   let summaryMeta = $derived(parseJsonObject(effectiveDisplayItem.payloadMeta));
-  let displayMeta = $derived(parseJsonObject(effectiveDisplayItem.meta));
   let itemMeta = $derived(parseJsonObject(item.meta));
   // Auto-denied before the provider could ask (Claude
   // `system/permission_denied`). Triage stamps the reason onto the tool row
@@ -179,38 +186,29 @@ let hasExpandableBody = $derived(
     await expansion.toggle();
   }
 
-  // A browser tool drives a real page on the machine the agent runs on.
-  // On the owner's own screen that page is the companion browser and there
-  // is nothing to say. Read anywhere else, the row is the only sign the
+  // Where an AO tool acts, when that is not simply "here". A remote tool
+  // names the computer its input targets, when this client is attached to
+  // it. A browser tool drives a real page on the machine the agent runs on:
+  // on the owner's own screen that page is the companion browser and there
+  // is nothing to say, but read anywhere else the row is the only sign the
   // page exists at all, so it names the machine it is on.
-  let browserMachine = $derived.by(() => {
-    if (!isBrowserToolMeta(itemMeta)) return '';
-    const threadId = pane?.threadId ?? '';
-    if (!threadId || !previewRouted(threadId)) return '';
-    const entry = attachedBackendEntry(threadMachine(threadId, null));
-    return entry ? backendDisplayName(entry) : 'that computer';
+  let where = $derived.by(() => {
+    if (!aoTool) return { name: '', title: '' };
+    if (aoTool.computerId) {
+      const entry = attachedBackendEntry(aoTool.computerId);
+      const name = entry ? backendDisplayName(entry) : aoTool.computerName;
+      return { name, title: name ? `On ${name}` : '' };
+    }
+    if (aoTool.server === BROWSER_TOOLS_SERVER) {
+      const threadId = pane?.threadId ?? '';
+      if (!threadId || !previewRouted(threadId)) return { name: '', title: '' };
+      const entry = attachedBackendEntry(threadMachine(threadId, null));
+      const name = entry ? backendDisplayName(entry) : 'that computer';
+      return { name, title: `Browsing on ${name}. The page is only visible there.` };
+    }
+    return { name: '', title: '' };
   });
-  let browsingLabel = $derived(
-    browserMachine ? `Browsing on ${browserMachine}. The page is only visible there.` : '',
-  );
 </script>
-
-{#snippet browserOnAnotherMachine()}
-  <span
-    class="inline-flex shrink-0 items-center text-fg-hint"
-    title={browsingLabel}
-    aria-label={browsingLabel}
-    data-testid="tool-call-card-browser-machine"
-    data-machine={browserMachine}
-  >
-    <Icon icon={Monitor} class="size-3" />
-  </span>
-{/snippet}
-
-{#snippet metaActions()}
-  {#if browserMachine}{@render browserOnAnotherMachine()}{/if}
-  {#if hostActions}{@render hostActions()}{/if}
-{/snippet}
 
 {#snippet headerActions()}
   <ToolDecisionChip decision={item.decision} reason={permissionDenialReason} />
@@ -223,7 +221,7 @@ let hasExpandableBody = $derived(
     timestamp={showTimestamp
       ? { testId: 'tool-call-card-time', value: effectiveStatusItem.createdAt, label: time }
       : undefined}
-    actions={browserMachine || hostActions ? metaActions : undefined}
+    actions={hostActions}
   >
     {#snippet status()}
       <ToolRowStatusIndicator item={effectiveStatusItem} state={indicatorState} testId="tool-call-card-status" />
@@ -245,9 +243,17 @@ let hasExpandableBody = $derived(
     class="rounded-[var(--radius-control)] px-1 py-1 {hasExpandableBody ? 'hover:bg-surface-2/20' : ''}"
     onToggle={(event) => preservePaneScrollAnchor(pane, event, toggle)}
   >
-    {#snippet icon()}<ToolKindIcon kind={classification.icon} ariaLabel={classification.label} />{/snippet}
-    {#snippet label()}<span data-testid="tool-call-card-label">{classification.label}</span>{/snippet}
+    {#snippet icon()}<ToolKindIcon kind={classification.icon} ariaLabel={aoTool ? aoTool.tool : classification.label} />{/snippet}
+    {#snippet label()}<span data-testid="tool-call-card-label" title={aoTool?.tool}>{classification.label}</span>{/snippet}
     {#snippet body()}
+      {#if where.name}
+        <span
+          class="max-w-[45%] shrink truncate text-[0.75rem] text-fg-hint"
+          title={where.title}
+          data-testid="tool-call-card-where"
+          data-machine={where.name}
+        >{where.name}<span class="text-fg-subtle" aria-hidden="true">&nbsp;›&nbsp;</span></span>
+      {/if}
       <span class={previewClass} data-testid="tool-call-card-preview">
         {#if preview.path}
           <EditorLink backend={threadMachine(item.threadId, pane?.thread?.projectId)}

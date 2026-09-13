@@ -4,7 +4,7 @@
      Source: frontend/src/lib/theme/tokenRegistry.ts + the app stylesheets.
      Regenerate: cd frontend && node scripts/generate-theme-reference.mjs -->
 
-Every color this app paints, and the name a theme file calls it by. 84 tokens: 45 in `colors`, 21 in `syntax`, 16 in `ansi`, 2 in `code`.
+Every color this app paints, and the name a theme file calls it by. 85 tokens: 46 in `colors`, 21 in `syntax`, 16 in `ansi`, 2 in `code`.
 
 ## Where theme files live
 
@@ -146,6 +146,7 @@ whatever base the mode has).
 | `ico-eye` | Tool-kind icon: reads and views. | `oklch(0.78 0.1 220)` | `oklch(0.5 0.1 220)` |
 | `ico-search` | Tool-kind icon: search and pattern matching. | `oklch(0.74 0.13 240)` | `oklch(0.48 0.15 240)` |
 | `ico-globe` | Tool-kind icon: network and web fetches. | `oklch(0.78 0.12 215)` | `oklch(0.5 0.12 215)` |
+| `ico-monitor` | Tool-kind icon: commands and tools run on another computer. | `oklch(0.78 0.11 165)` | `oklch(0.5 0.12 165)` |
 | `ico-robot` | Tool-kind icon: subagents and delegated work. | `oklch(0.72 0.16 280)` | `oklch(0.5 0.18 280)` |
 | `ico-speech-bubble` | Tool-kind icon: conversation and messaging tools. | `oklch(0.76 0.14 330)` | `oklch(0.52 0.16 330)` |
 | `ico-checklist` | Tool-kind icon: task lists and plans. | `oklch(0.76 0.12 255)` | `oklch(0.5 0.12 255)` |

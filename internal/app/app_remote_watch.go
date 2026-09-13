@@ -73,7 +73,8 @@ func (a *App) refuseRemoteWatch(computerID, requestID, threadID string, refusal 
 }
 
 func (a *App) registerRemoteWatch(input AgentRemoteRequest) (bool, error) {
-	label, err := remoteJobLabel(input.Label, input.Request)
+	command := remoteJobCommand(input.Request)
+	label, err := remoteJobLabel(input.Label, command)
 	if err != nil {
 		return false, err
 	}
@@ -108,12 +109,17 @@ func (a *App) registerRemoteWatch(input AgentRemoteRequest) (bool, error) {
 		return false, err
 	}
 	digest := sha256.Sum256(raw)
-	return a.store.RegisterRemoteWatch(store.RemoteWatch{ComputerID: input.ComputerID, RequestID: input.Request.ID, ThreadID: input.Request.SourceThreadID, Fingerprint: hex.EncodeToString(digest[:]), Label: label})
+	return a.store.RegisterRemoteWatch(store.RemoteWatch{ComputerID: input.ComputerID, RequestID: input.Request.ID, ThreadID: input.Request.SourceThreadID, Fingerprint: hex.EncodeToString(digest[:]), Label: label, Command: command})
 }
 
 const remoteJobLabelMaxRunes = 120
 
-func remoteJobLabel(label string, request RemoteCommandRequest) (string, error) {
+// remoteJobCommandMaxRunes bounds the stored display text; the store caps the
+// column at 1024 bytes.
+const remoteJobCommandMaxRunes = 240
+
+// remoteJobLabel is the caller's label, or the command text when omitted.
+func remoteJobLabel(label, command string) (string, error) {
 	if !utf8.ValidString(label) || strings.ContainsFunc(label, func(r rune) bool {
 		return unicode.IsControl(r) || r == '\u2028' || r == '\u2029'
 	}) {
@@ -126,6 +132,15 @@ func remoteJobLabel(label string, request RemoteCommandRequest) (string, error) 
 	if label != "" {
 		return label, nil
 	}
+	return truncateRunes(command, remoteJobLabelMaxRunes), nil
+}
+
+// remoteJobCommand renders what a request runs for people: argv with
+// arguments quoted where boundaries would otherwise be ambiguous, or the
+// interpreter plus "script" for an inline script. It is display text, never
+// an executable shell string. The frontend renders the same text from a live
+// tool call's arguments (`frontend/src/lib/components/chat/aoTools.ts`).
+func remoteJobCommand(request RemoteCommandRequest) string {
 	argv := request.Argv
 	if request.Script != "" {
 		argv = request.Interpreter
@@ -135,8 +150,6 @@ func remoteJobLabel(label string, request RemoteCommandRequest) (string, error) 
 		if i > 0 {
 			command.WriteByte(' ')
 		}
-		// Preserve argument boundaries without suggesting the display is an
-		// executable shell string. Quoting also escapes multiline script argv.
 		if arg == "" || strings.ContainsAny(arg, "\"'\\") || strings.ContainsFunc(arg, func(r rune) bool {
 			return unicode.IsSpace(r) || unicode.IsControl(r)
 		}) {
@@ -148,18 +161,21 @@ func remoteJobLabel(label string, request RemoteCommandRequest) (string, error) 
 	if request.Script != "" {
 		command.WriteString(" script")
 	}
-	label = command.String()
-	if utf8.RuneCountInString(label) > remoteJobLabelMaxRunes {
-		n := 0
-		for offset := range label {
-			if n == remoteJobLabelMaxRunes-1 {
-				label = label[:offset] + "…"
-				break
-			}
-			n++
-		}
+	return truncateRunes(command.String(), remoteJobCommandMaxRunes)
+}
+
+func truncateRunes(text string, max int) string {
+	if utf8.RuneCountInString(text) <= max {
+		return text
 	}
-	return label, nil
+	n := 0
+	for offset := range text {
+		if n == max-1 {
+			return text[:offset] + "…"
+		}
+		n++
+	}
+	return text
 }
 
 func (a *App) startRemoteWatches() {
@@ -436,7 +452,46 @@ func (a *App) CancelThreadRemoteCommand(ctx context.Context, threadID, computerI
 	if err == nil {
 		err = a.observeRemoteCommand(computerID, requestID, threadID, receipt)
 	}
-	return receipt, remoteOperationError("cancel", computerID, requestID, err)
+	if err != nil {
+		return receipt, remoteOperationError("cancel", computerID, requestID, err)
+	}
+	// Cancel only asks; the destination gives the process a TERM grace
+	// before KILL (remotejobs.Manager). The caller pressed Stop and is
+	// watching the row, so stay until the receipt settles or the grace has
+	// clearly passed. A settle wait that fails leaves the cancel delivered
+	// and the watcher to observe the outcome.
+	deadline := time.Now().Add(remoteCancelSettleWait)
+	for receipt.State == "running" && time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return receipt, nil
+		case <-time.After(remoteCancelSettlePoll):
+		}
+		status, statusErr := a.remoteCommandStatus(ctx, computerID, requestID)
+		if statusErr != nil {
+			break
+		}
+		receipt = status
+		if observeErr := a.observeRemoteCommand(computerID, requestID, threadID, receipt); observeErr != nil {
+			return receipt, remoteOperationError("cancel", computerID, requestID, observeErr)
+		}
+	}
+	return receipt, nil
+}
+
+// The TERM grace is five seconds (remotejobs.Manager); one more poll after it
+// sees the KILL land.
+const (
+	remoteCancelSettleWait = 8 * time.Second
+	remoteCancelSettlePoll = 500 * time.Millisecond
+)
+
+func (a *App) remoteCommandStatus(ctx context.Context, computerID, requestID string) (RemoteCommand, error) {
+	call, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	var receipt RemoteCommand
+	err := a.backends.CallAgentPeer(call, computerID, "RemoteCommandStatus", &receipt, requestID)
+	return receipt, err
 }
 
 // cancelThreadRemoteCommands stops every remote command a conversation still
@@ -476,6 +531,10 @@ func (a *App) cancelThreadRemoteCommands(ctx context.Context, threadID string) e
 	return nil
 }
 
+// remoteTrayToolName is the tray projection's tool name: the remote_run call
+// the job came from, in the `MCP/<tool>` form both providers normalize to.
+const remoteTrayToolName = "MCP/remote_run"
+
 func (a *App) remoteTrayItems(threadID string, cutoff int64) ([]store.Item, error) {
 	rows, err := a.store.ListRemoteWatches(threadID, 0, 256)
 	if err != nil {
@@ -492,7 +551,16 @@ func (a *App) remoteTrayItems(threadID string, cutoff int64) ([]store.Item, erro
 		if finished && r.FinishedAt < cutoff {
 			continue
 		}
-		meta, _ := json.Marshal(map[string]any{"remoteJob": map[string]any{"computerId": w.ComputerID, "requestId": w.RequestID, "notification": w.Notification, "error": w.Error, "warning": r.Warning, "workspace": r.Workspace}})
+		// The row is a remote_run tool call as far as presentation goes:
+		// `mcp` and `input` are what a live MCP row carries, with the
+		// command pre-rendered, so the tray reads through the same table
+		// as the transcript (frontend aoTools.ts). `remoteJob` is the
+		// tray's own handle for Stop and the log.
+		meta, _ := json.Marshal(map[string]any{
+			"mcp":       map[string]string{"server": remoteMCPName, "tool": "remote_run"},
+			"input":     map[string]any{"computer_id": w.ComputerID, "computer_name": names[w.ComputerID], "request_id": w.RequestID, "label": w.Label, "command": w.Command},
+			"remoteJob": map[string]any{"computerId": w.ComputerID, "requestId": w.RequestID, "notification": w.Notification, "error": w.Error, "warning": r.Warning, "workspace": r.Workspace},
+		})
 		id := "remote-job:" + w.ComputerID + ":" + w.RequestID
 		label := w.Label
 		if name := names[w.ComputerID]; name != "" {
@@ -502,7 +570,7 @@ func (a *App) remoteTrayItems(threadID string, cutoff int64) ([]store.Item, erro
 		if r.StartedAt != 0 {
 			start = r.StartedAt
 		}
-		item := store.Item{ID: id, ThreadID: threadID, Kind: "tool_call", Role: "assistant", Status: "running", ToolName: "remote_command", Summary: label, CreatedAt: start, IsBackground: true, Meta: string(meta)}
+		item := store.Item{ID: id, ThreadID: threadID, Kind: "tool_call", Role: "assistant", Status: "running", ToolName: remoteTrayToolName, Summary: label, CreatedAt: start, IsBackground: true, Meta: string(meta)}
 		out = append(out, item)
 		if finished {
 			item.ID = id + ":done"

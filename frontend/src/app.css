@@ -103,6 +103,7 @@
   --ico-eye: oklch(0.78 0.1 220);
   --ico-search: oklch(0.74 0.13 240);
   --ico-globe: oklch(0.78 0.12 215);
+  --ico-monitor: oklch(0.78 0.11 165);
   --ico-robot: oklch(0.72 0.16 280);
   --ico-speech-bubble: oklch(0.76 0.14 330);
   --ico-checklist: oklch(0.76 0.12 255);
@@ -210,6 +211,7 @@ html.light {
   --ico-eye: oklch(0.5 0.1 220);
   --ico-search: oklch(0.48 0.15 240);
   --ico-globe: oklch(0.5 0.12 215);
+  --ico-monitor: oklch(0.5 0.12 165);
   --ico-robot: oklch(0.5 0.18 280);
   --ico-speech-bubble: oklch(0.52 0.16 330);
   --ico-checklist: oklch(0.5 0.12 255);
@@ -364,6 +366,7 @@ html.light {
   --color-ico-eye: var(--ico-eye);
   --color-ico-search: var(--ico-search);
   --color-ico-globe: var(--ico-globe);
+  --color-ico-monitor: var(--ico-monitor);
   --color-ico-robot: var(--ico-robot);
   --color-ico-speech-bubble: var(--ico-speech-bubble);
   --color-ico-checklist: var(--ico-checklist);

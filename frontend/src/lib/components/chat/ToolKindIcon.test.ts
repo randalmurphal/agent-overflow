@@ -18,6 +18,7 @@ const CASES: Array<{ kind: Kind; colorClass: string }> = [
   { kind: 'eye', colorClass: 'text-ico-eye' },
   { kind: 'search', colorClass: 'text-ico-search' },
   { kind: 'globe', colorClass: 'text-ico-globe' },
+  { kind: 'monitor', colorClass: 'text-ico-monitor' },
   { kind: 'robot', colorClass: 'text-ico-robot' },
   { kind: 'speech-bubble', colorClass: 'text-ico-speech-bubble' },
   { kind: 'checklist', colorClass: 'text-ico-checklist' },

@@ -12,6 +12,8 @@ import type { Item } from '../../types/models';
 import type { ProviderID } from '../../types/providers';
 import { fileChangeDisplayRowCount } from '../../utils/fileChangeRows';
 import { classifyToolName, type ToolKindIcon } from './toolCardHeader';
+import { aoToolPresentation } from './aoTools';
+import { parseJsonObject } from '../../utils/parseJsonObject';
 
 const THINKING_LABEL = 'thinking';
 const UNNAMED_TOOL_LABEL = 'Tool';
@@ -92,6 +94,10 @@ function capitalizedHeaderLabel(label: string): string {
  * categories (`command_execution`, `file_change`, `collab_agent`), so its
  * header uses the same classifier aliases as the rows. Terminal interactions
  * carry no tool name at all and need their item-kind label explicitly.
+ *
+ * A tool one of AO's own MCP servers served presents by family and verb
+ * (`Remote run`, `Browser click`) on both providers: the wire name
+ * `MCP/remote_run` is an encoding, not vocabulary.
  */
 function activityRunPresentation(
   item: Item,
@@ -105,32 +111,16 @@ function activityRunPresentation(
   if (item.kind === 'notification') return NOTIFICATION_PRESENTATION;
 
   const rawName = item.toolName?.trim() ?? '';
-  const sourceKey = rawName || UNNAMED_TOOL_LABEL;
+  // Only MCP rows carry `meta.mcp`; parsing every native tool's meta on
+  // each streaming delta would be waste.
+  const ao = rawName.startsWith('MCP') ? aoToolPresentation(parseJsonObject(item.meta)) : null;
+  const sourceKey = ao ? `${rawName}@${ao.server}` : rawName || UNNAMED_TOOL_LABEL;
   const cached = cache.get(sourceKey);
   if (cached) return cached;
 
-  let label: string;
-  let icon: ToolKindIcon;
-  switch (provider) {
-    case 'codex': {
-      const visual = classifyToolName(rawName);
-      label = capitalizedHeaderLabel(visual.label);
-      icon = visual.icon;
-      break;
-    }
-    case 'claude':
-    case 'claude-tui':
-    case null:
-    case undefined:
-      label = capitalizedHeaderLabel(rawName || UNNAMED_TOOL_LABEL);
-      icon = classifyToolName(rawName).icon;
-      break;
-    default: {
-      const exhaustive: never = provider;
-      return exhaustive;
-    }
-  }
-
+  const { label, icon } = ao
+    ? { label: ao.headerLabel, icon: ao.icon }
+    : nativeToolPresentation(rawName, provider);
   const presentation: ActivityRunPresentation = {
     key: `tool:${icon}:${label}`,
     label,
@@ -139,6 +129,30 @@ function activityRunPresentation(
   };
   cache.set(sourceKey, presentation);
   return presentation;
+}
+
+function nativeToolPresentation(
+  rawName: string,
+  provider: ProviderID | null | undefined,
+): { label: string; icon: ToolKindIcon } {
+  switch (provider) {
+    case 'codex': {
+      const visual = classifyToolName(rawName);
+      return { label: capitalizedHeaderLabel(visual.label), icon: visual.icon };
+    }
+    case 'claude':
+    case 'claude-tui':
+    case null:
+    case undefined:
+      return {
+        label: capitalizedHeaderLabel(rawName || UNNAMED_TOOL_LABEL),
+        icon: classifyToolName(rawName).icon,
+      };
+    default: {
+      const exhaustive: never = provider;
+      return exhaustive;
+    }
+  }
 }
 
 function isFailedStatus(status: Item['status']): boolean {

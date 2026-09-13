@@ -996,6 +996,12 @@ export class RemoteWatch {
     "requestId": string;
     "threadId": string;
     "label": string;
+
+    /**
+     * Command is the display text of what runs: quoted argv, or the
+     * interpreter plus "script". The label defaults to it when omitted.
+     */
+    "command": string;
     "receipt": RemoteJob;
     "error"?: string;
     "notification": string;
@@ -1015,6 +1021,9 @@ export class RemoteWatch {
         if (!("label" in $$source)) {
             this["label"] = "";
         }
+        if (!("command" in $$source)) {
+            this["command"] = "";
+        }
         if (!("receipt" in $$source)) {
             this["receipt"] = (new RemoteJob());
         }
@@ -1032,10 +1041,10 @@ export class RemoteWatch {
      * Creates a new RemoteWatch instance from a string or object.
      */
     static createFrom($$source: any = {}): RemoteWatch {
-        const $$createField4_0 = $$createType11;
+        const $$createField5_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("receipt" in $$parsedSource) {
-            $$parsedSource["receipt"] = $$createField4_0($$parsedSource["receipt"]);
+            $$parsedSource["receipt"] = $$createField5_0($$parsedSource["receipt"]);
         }
         return new RemoteWatch($$parsedSource as Partial<RemoteWatch>);
     }

@@ -1347,8 +1347,8 @@ held" replaces the inline `metaKey || ctrlKey` sites.
 
 **Browser tool rows say where the page is.** A tool call from the
 `ao-browser-tools` server rendered on a page that is not the thread's
-machine (or holds no `host`) carries an indicator in its header
-actions: "Browsing on <machine>. The page is only visible there."
+machine (or holds no `host`) leads its body with the machine's name,
+titled "Browsing on <machine>. The page is only visible there."
 The sidebar machine chip may explain when browser tools are unavailable.
 The composer's machine picker describes execution reachability/access only;
 a backend without browser tools is still a valid thread destination.

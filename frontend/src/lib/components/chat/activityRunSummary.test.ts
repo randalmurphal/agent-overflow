@@ -204,6 +204,25 @@ describe('counts', () => {
     expect(counts.entries[0].label).toBe('MCP');
   });
 
+  it.each(['claude', 'codex'] as const)('names an AO tool by family and verb in a %s header', (provider) => {
+    const remote = JSON.stringify({ mcp: { server: 'ao-remote-tools', tool: 'remote_run' }, input: { argv: ['make'] } });
+    const browser = JSON.stringify({ mcp: { server: 'ao-browser-tools', tool: 'browser_click' }, input: { selector: '#go' } });
+    const { counts, runningLabel } = activityRunSummary([
+      tool('run-1', 'MCP/remote_run', { meta: remote }),
+      tool('run-2', 'MCP/remote_run', { meta: remote, status: 'running' }),
+      tool('click', 'MCP/browser_click', { meta: browser }),
+      // The same tool name from a user-configured server is not an AO tool.
+      tool('other', 'MCP/browser_click', { meta: JSON.stringify({ mcp: { server: 'playwright', tool: 'browser_click' } }) }),
+    ], provider);
+
+    expect(counts.entries.map((e) => ({ label: e.label, icon: e.icon, count: e.count }))).toEqual([
+      { label: 'Remote run', icon: 'monitor', count: 2 },
+      { label: 'Browser click', icon: 'globe', count: 1 },
+      { label: provider === 'codex' ? 'MCP' : 'MCP/browser_click', icon: 'puzzle', count: 1 },
+    ]);
+    expect(runningLabel).toBe('Remote run');
+  });
+
   it('keeps agent waiting distinct from a terminal wait', () => {
     const summary = activityRunSummary([
       makeItem({

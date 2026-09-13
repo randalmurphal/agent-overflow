@@ -85,6 +85,7 @@ export const DRACULA: BuiltinThemeSpec = {
       'ico-eye': '#a4ffff',
       'ico-search': '#d6acff',
       'ico-globe': '#8be9fd',
+      'ico-monitor': '#5af78e',
       'ico-robot': '#bd93f9',
       'ico-speech-bubble': '#ff79c6',
       'ico-checklist': '#50fa7b',

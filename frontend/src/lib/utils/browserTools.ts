@@ -28,13 +28,3 @@ export const BROWSER_CAPABILITY = 'browser';
 export function backendHasBrowser(key: BackendKey): boolean {
   return getTransportHelloFor(key)?.capabilities.includes(BROWSER_CAPABILITY) ?? false;
 }
-
-/**
- * Whether a tool row is one of the browser tools, read from the `meta.mcp`
- * pair both providers' parsers stamp onto the item.
- */
-export function isBrowserToolMeta(itemMeta: Record<string, unknown> | null): boolean {
-  const mcp = itemMeta?.mcp;
-  if (!mcp || typeof mcp !== 'object' || Array.isArray(mcp)) return false;
-  return (mcp as Record<string, unknown>).server === BROWSER_TOOLS_SERVER;
-}

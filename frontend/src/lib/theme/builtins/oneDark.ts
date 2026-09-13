@@ -91,6 +91,7 @@ export const ONE_DARK: BuiltinThemeSpec = {
       'ico-eye': '#61afef',
       'ico-search': '#4aa5f0',
       'ico-globe': '#42b3c2',
+      'ico-monitor': '#56b6c2',
       'ico-robot': '#c162de',
       'ico-speech-bubble': '#e06c75',
       'ico-checklist': '#98c379',

@@ -76,6 +76,7 @@ export const NORD: BuiltinThemeSpec = {
       'ico-eye': '#88c0d0',
       'ico-search': '#81a1c1',
       'ico-globe': '#5e81ac',
+      'ico-monitor': '#8fbcbb',
       'ico-robot': '#b48ead',
       'ico-speech-bubble': '#d08770',
       'ico-checklist': '#a3be8c',

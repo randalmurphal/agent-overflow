@@ -403,6 +403,19 @@ describe('presentToolCardInputPreview', () => {
     });
   });
 
+  it('presents an AO tool by its own argument, untouched by the path passes', () => {
+    const item = makeItem({ toolName: 'MCP/remote_run', summary: 'MCP/remote_run: ...' });
+    const itemMeta = {
+      mcp: { server: 'ao-remote-tools', tool: 'remote_run' },
+      input: { computer_id: 'mac', argv: ['ls', '/workspace/src'] },
+    };
+    expect(toolCardInputPreview(item, null, itemMeta)).toBe('ls /workspace/src');
+    expect(presentToolCardInputPreview(item, null, itemMeta, '/workspace')).toEqual({ text: 'ls /workspace/src' });
+    const open = makeItem({ toolName: 'MCP/browser_open_file' });
+    const openMeta = { mcp: { server: 'ao-browser-tools', tool: 'browser_open_file' }, input: { path: '/workspace/out/report.html' } };
+    expect(presentToolCardInputPreview(open, null, openMeta, '/workspace')).toEqual({ text: '/workspace/out/report.html' });
+  });
+
   it('strips the MCP/<tool>: prefix on legacy MCP rows that fall through to the summary', () => {
     // Pre-redesign Items don't carry meta.mcp, so the synthesizer
     // declines and the preview falls back to item.summary. That

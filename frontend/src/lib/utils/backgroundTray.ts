@@ -52,10 +52,14 @@ export interface RemoteTrayJob {
   workspace: string;
 }
 
-/** Remote receipts are tray projections, never provider tasks or timeline rows. */
+/**
+ * Remote receipts are tray projections, never provider tasks or timeline
+ * rows. `meta.remoteJob` is the projection's handle for Stop and the log
+ * (`internal/app/app_remote_watch.go` remoteTrayItems); the row otherwise
+ * presents as the `remote_run` call it came from.
+ */
 export function trayRemoteJob(task: TrayTask): RemoteTrayJob | null {
   const item = task.completion ?? task.launch ?? task.anchor;
-  if (item.toolName !== 'remote_command') return null;
   const value = parseJsonObject(item.meta)?.remoteJob;
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const meta = value as Record<string, unknown>;

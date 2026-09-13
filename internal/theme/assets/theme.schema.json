@@ -256,6 +256,12 @@
               "maxLength": 256,
               "description": "Tool-kind icon: network and web fetches."
             },
+            "ico-monitor": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Tool-kind icon: commands and tools run on another computer."
+            },
             "ico-robot": {
               "type": "string",
               "minLength": 1,

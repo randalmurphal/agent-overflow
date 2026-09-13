@@ -21,6 +21,7 @@ export type ToolKindIcon =
   | "eye"
   | "search"
   | "globe"
+  | "monitor"
   | "robot"
   | "speech-bubble"
   | "checklist"
@@ -46,6 +47,7 @@ export const TOOL_KIND_COLOR_CLASS: Record<ToolKindIcon, string> = {
   eye: "text-ico-eye",
   search: "text-ico-search",
   globe: "text-ico-globe",
+  monitor: "text-ico-monitor",
   robot: "text-ico-robot",
   "speech-bubble": "text-ico-speech-bubble",
   checklist: "text-ico-checklist",

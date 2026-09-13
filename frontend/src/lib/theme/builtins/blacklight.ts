@@ -71,6 +71,7 @@ export const BLACKLIGHT: BuiltinThemeSpec = {
       'ico-eye': '#4d9fff',
       'ico-search': '#00b3ff',
       'ico-globe': '#00e5ff',
+      'ico-monitor': '#00ffc8',
       'ico-robot': '#c77dff',
       'ico-speech-bubble': '#ff6ec7',
       'ico-checklist': '#3dff8f',

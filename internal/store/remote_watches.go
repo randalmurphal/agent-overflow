@@ -15,11 +15,14 @@ import (
 // destination receipt remains authoritative for execution. Queued means the
 // ordinary message queue owns delivery/recovery, not that the agent read it.
 type RemoteWatch struct {
-	ComputerID   string    `json:"computerId"`
-	RequestID    string    `json:"requestId"`
-	ThreadID     string    `json:"threadId"`
-	Fingerprint  string    `json:"-"`
-	Label        string    `json:"label"`
+	ComputerID  string `json:"computerId"`
+	RequestID   string `json:"requestId"`
+	ThreadID    string `json:"threadId"`
+	Fingerprint string `json:"-"`
+	Label       string `json:"label"`
+	// Command is the display text of what runs: quoted argv, or the
+	// interpreter plus "script". The label defaults to it when omitted.
+	Command      string    `json:"command"`
 	Receipt      RemoteJob `json:"receipt"`
 	Error        string    `json:"error,omitempty"`
 	Notification string    `json:"notification"`
@@ -38,12 +41,14 @@ const remoteWatchesV91SQL = `CREATE TABLE remote_watches (
 CREATE INDEX idx_remote_watches_pending ON remote_watches(next_check) WHERE notification='pending';
 CREATE INDEX idx_remote_watches_thread ON remote_watches(thread_id,created_at DESC);`
 
-const remoteWatchColumns = `computer_id,request_id,thread_id,fingerprint,label,receipt,error,notification,next_check,created_at`
+const remoteWatchesCommandV98SQL = `ALTER TABLE remote_watches ADD COLUMN command TEXT NOT NULL DEFAULT '';`
+
+const remoteWatchColumns = `computer_id,request_id,thread_id,fingerprint,label,command,receipt,error,notification,next_check,created_at`
 
 func scanRemoteWatch(row rowScanner) (RemoteWatch, error) {
 	var w RemoteWatch
 	var raw string
-	err := row.Scan(&w.ComputerID, &w.RequestID, &w.ThreadID, &w.Fingerprint, &w.Label, &raw, &w.Error, &w.Notification, &w.NextCheck, &w.CreatedAt)
+	err := row.Scan(&w.ComputerID, &w.RequestID, &w.ThreadID, &w.Fingerprint, &w.Label, &w.Command, &raw, &w.Error, &w.Notification, &w.NextCheck, &w.CreatedAt)
 	if err == nil {
 		err = json.Unmarshal([]byte(raw), &w.Receipt)
 	}
@@ -59,7 +64,7 @@ func (s *Store) GetRemoteWatch(computerID, requestID string) (RemoteWatch, error
 // True permits cleanup on a definite refusal (new or previously refused).
 // False preserves an earlier accepted/uncertain attempt, even if a retry fails.
 func (s *Store) RegisterRemoteWatch(w RemoteWatch) (bool, error) {
-	if !entityid.Valid(w.ComputerID) || !entityid.Valid(w.RequestID) || !entityid.Valid(w.ThreadID) || !validTransferDigest(w.Fingerprint) || len(w.Label) > 1024 {
+	if !entityid.Valid(w.ComputerID) || !entityid.Valid(w.RequestID) || !entityid.Valid(w.ThreadID) || !validTransferDigest(w.Fingerprint) || len(w.Label) > 1024 || len(w.Command) > 1024 {
 		return false, errors.New("invalid remote job watch")
 	}
 	tx, release, err := s.beginDurableTx(context.Background())
@@ -94,7 +99,7 @@ func (s *Store) RegisterRemoteWatch(w RemoteWatch) (bool, error) {
 		}
 		return true, tx.Commit()
 	}
-	_, err = tx.Exec(`INSERT INTO remote_watches(computer_id,request_id,thread_id,fingerprint,label,next_check,created_at) VALUES(?,?,?,?,?,?,?)`, w.ComputerID, w.RequestID, w.ThreadID, w.Fingerprint, w.Label, time.Now().Add(25*time.Second).UnixMilli(), time.Now().UnixMilli())
+	_, err = tx.Exec(`INSERT INTO remote_watches(computer_id,request_id,thread_id,fingerprint,label,command,next_check,created_at) VALUES(?,?,?,?,?,?,?,?)`, w.ComputerID, w.RequestID, w.ThreadID, w.Fingerprint, w.Label, w.Command, time.Now().Add(25*time.Second).UnixMilli(), time.Now().UnixMilli())
 	if err != nil {
 		return false, err
 	}

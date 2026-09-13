@@ -19,7 +19,8 @@ function attachOwner() {
   } as never);
 }
 function launch(id: string) {
-  return makeItem({ id, status: 'running', isBackground: true, toolName: 'remote_command' });
+  return makeItem({ id, status: 'running', isBackground: true, toolName: 'MCP/remote_run',
+    meta: JSON.stringify({ remoteJob: { computerId: remote, requestId: id } }) });
 }
 async function flush() { await tick(); await Promise.resolve(); await tick(); }
 

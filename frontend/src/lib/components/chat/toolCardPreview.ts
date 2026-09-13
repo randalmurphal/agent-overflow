@@ -2,6 +2,7 @@ import type { Item } from '../../types/models';
 import { findPathRanges } from '../../utils/pathLinkify';
 import { waitAgentDisplayReceiverIds } from '../../utils/waitAgentDisplay';
 import { isCommandToolName } from './commandDisplay';
+import { aoToolPresentation } from './aoTools';
 
 const STRUCTURED_FILE_EDIT_TOOLS = new Set([
   'Edit',
@@ -48,6 +49,8 @@ export function toolCardInputPreview(
     const peer = sendMessagePreview(itemMeta);
     if (peer) return peer;
   }
+  const ao = aoToolPresentation(itemMeta);
+  if (ao) return ao.what;
   const mcp = mcpPreviewFromMeta(itemMeta);
   if (mcp) return mcp;
   const fromSummary = (item.summary ?? '').trim();
@@ -105,6 +108,12 @@ export function presentToolCardInputPreview(
 ): ToolCardPreview {
   const fromStructuredPath = structuredPathPreview(item, itemMeta, workspacePath);
   if (fromStructuredPath) return fromStructuredPath;
+
+  // An AO tool's body is already the one argument worth reading, and it is
+  // not a local path: a remote command or artifact lives on another
+  // computer, a browser URL is not a file. No prefix strip, no linkify.
+  const ao = aoToolPresentation(itemMeta);
+  if (ao) return { text: ao.what };
 
   const raw = toolCardInputPreview(item, summaryMeta, itemMeta);
   const afterPrefix = stripToolNamePrefix(raw, item.toolName);

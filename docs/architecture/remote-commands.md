@@ -83,8 +83,10 @@ reboot survival or automatic restart.
 Use a short job label such as “Windows integration tests” or “Train image model”.
 Labels accept at most 120 Unicode characters on one line. They are source-only
 presentation metadata: the first label is retained and changing or omitting it
-on a retry does not alter command identity. Without one, AO displays quoted argv
-or the interpreter plus “script”, bounded without splitting Unicode characters.
+on a retry does not alter command identity. The watch also keeps the command
+as display text (quoted argv, or the interpreter plus “script”, bounded without
+splitting Unicode characters); the label defaults to it, and the tray and
+`remote_jobs` show it beside a custom label.
 
 Choose the request UUID before calling. After a lost reply, inspect the same
 ID or retry exactly the same arguments with it. Changing the ID can run twice;
@@ -94,7 +96,13 @@ after execution. AO appends the script path to the explicitly supplied interpret
 argv; it never guesses a shell.
 
 The background tray shows jobs and offers Stop plus an on-demand bounded log
-view. The source backend tracks outstanding jobs across frontend disconnects
+view. A tray row is the `remote_run` call it came from: the projection carries
+`meta.mcp` and `meta.input` (computer, command, label) like a transcript row,
+so both present through the AO tool table in
+`frontend/src/lib/components/chat/aoTools.ts`. Stop from the tray delivers the
+cancel, then holds the row at “Stopping…” until the receipt leaves running or
+the destination's TERM grace has clearly passed.
+The source backend tracks outstanding jobs across frontend disconnects
 and source restarts. It polls only outstanding jobs, four checks at a time,
 with a slower retry after connection errors. An unreachable host is not an
 exited process. A start whose reply was lost is checked against the destination

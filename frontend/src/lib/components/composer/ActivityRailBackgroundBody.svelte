@@ -111,8 +111,24 @@
   let remoteTasks = $derived(tasks.filter((task) => task.status === 'running' && trayRemoteJob(task)));
   let canStopAll = $derived(claudeStoppableTaskIDs.length > 0 || hasCodexStoppable || remoteTasks.length > 0);
 
+  // Rows whose Stop was pressed. A row stays "Stopping…" until it leaves
+  // running: a remote cancel is only delivered by its RPC, the process
+  // gets a TERM grace on the far computer, and the row's status is the
+  // receipt the watcher observes afterwards. Marks for rows that settled
+  // or left the list are dropped on the next task change.
   let stoppingRows = $state<Set<string>>(new Set());
   let stopAllInFlight = $state(false);
+
+  $effect(() => {
+    const stale = [...stoppingRows].filter((rowId) => {
+      const task = tasks.find((task) => task.rowId === rowId);
+      return !task || task.status !== 'running';
+    });
+    if (stale.length === 0) return;
+    const next = new Set(stoppingRows);
+    for (const rowId of stale) next.delete(rowId);
+    stoppingRows = next;
+  });
 
   function markStopping(rowId: string, on: boolean) {
     const next = new Set(stoppingRows);
@@ -124,12 +140,16 @@
   async function onStopRow(rowId: string, stopTarget: string) {
     if (!threadId) return;
     markStopping(rowId, true);
+    // A remote row keeps its mark past the RPC (see stoppingRows); a
+    // provider row's stop settles with its call.
+    let keepMark = false;
     try {
       const task = tasks.find((task) => task.rowId === rowId);
       const remote = task ? trayRemoteJob(task) : null;
       if (!task) return;
       if (remote) {
         await CancelThreadRemoteCommand(threadId, remote.computerId, remote.requestId);
+        keepMark = true;
       } else if (backgroundStop === 'claude-task') {
         await StopClaudeTask(threadId, stopTarget);
       } else if (backgroundStop === 'codex-background-terminals') {
@@ -150,7 +170,7 @@
     } catch (err) {
       addToast('error', `Failed to stop task: ${errString(err)}`);
     } finally {
-      markStopping(rowId, false);
+      if (!keepMark) markStopping(rowId, false);
     }
   }
 
