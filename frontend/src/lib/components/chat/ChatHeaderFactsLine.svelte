@@ -106,9 +106,15 @@
       title={`Worktree: ${worktreeLabel}`}
       data-testid="chat-header-worktree"
       data-at-base={atBase || undefined}
-      class="{headerSegmentClasses} shrink-0 {atBase ? 'text-text-secondary' : 'text-accent enabled:hover:text-accent'}"
+      class="{headerSegmentClasses} {atBase ? 'shrink-0 text-text-secondary' : 'min-w-0 shrink-[100] text-accent enabled:hover:text-accent'}"
     >
-      <Icon icon={atBase ? Folder : FolderGit2} size={12} strokeWidth={2} class={atBase ? 'opacity-80' : ''} />
+      <Icon icon={atBase ? Folder : FolderGit2} size={12} strokeWidth={2} class="shrink-0 {atBase ? 'opacity-80' : ''}" />
+      {#if !atBase}
+        <!-- The name shows while there is room. Its shrink weight dwarfs the
+             branch's, so it gives way to the ellipsis first and the branch
+             only starts truncating once the name is down to its icon. -->
+        <span class="truncate" data-testid="chat-header-worktree-label">{worktreeLabel}</span>
+      {/if}
     </button>
     <EnvPicker bind:this={envPicker} {pane} {workspaceLock} hideTrigger anchor={worktreeEl} />
   </div>

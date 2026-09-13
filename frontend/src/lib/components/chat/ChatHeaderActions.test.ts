@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
+import { closeMessageSearch, getMessageSearchTargetPaneId, isMessageSearchOpen } from '../../stores/messageSearch.svelte';
 import { render, fireEvent, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ChatHeaderActions from './ChatHeaderActions.svelte';
@@ -393,6 +394,21 @@ describe('<ChatHeaderActions> compact header menu', () => {
     await fireEvent.click(terminal);
     await flush();
     expect(pane.showTerminal).toBe(true);
+  });
+
+  it('offers message search as a row: the phone has no chord for it', async () => {
+    installSubscribeMock(status({}));
+    const pane = await buildPane();
+    setCompactLayoutForTest(true);
+    const { getByTestId } = render(ChatHeaderActions, { props: { pane } });
+    await flush();
+    await fireEvent.click(getByTestId('chat-header-more'));
+    await flush();
+    await fireEvent.click(within(document.body).getByRole('menuitem', { name: 'Search messages' }));
+    await flush();
+    expect(isMessageSearchOpen()).toBe(true);
+    expect(getMessageSearchTargetPaneId()).toBe(pane.paneId);
+    closeMessageSearch();
   });
 
   it('carries no Browser row: the companion is a native view on the host', async () => {

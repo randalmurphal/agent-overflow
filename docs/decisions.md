@@ -200,7 +200,10 @@ and anti-changes that live only here:
   ladder, and a context menu or modal claims the press before anything under
   it; a long press on the terminal no longer pastes, the key row has Paste;
   a remote client sees an inert, labelled control for anything its grants
-  refuse, never a live one that fails afterwards.
+  refuse, never a live one that fails afterwards. Follow-ups the same day:
+  the facts line shows a linked worktree's name and truncates it before the
+  branch; the compact header menu carries Search messages; pin, multi-select
+  and project reorder stay off the phone (hold-only, not offered, not built).
 
 ## Review pane
 

@@ -38,7 +38,7 @@
 {#if open}
   <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
   <div
-    class="fixed inset-0 z-40 flex items-stretch justify-center bg-overlay p-4 backdrop-blur-sm md:p-8 compact:p-0"
+    class="fixed inset-0 z-40 flex items-stretch justify-center bg-overlay p-4 backdrop-blur-sm md:p-8 compact:p-0 compact:pt-[env(safe-area-inset-top)] compact:pb-[env(safe-area-inset-bottom)]"
     data-testid={scrimTestId}
     use:airspaceSurface
     onclick={handleScrimClick}

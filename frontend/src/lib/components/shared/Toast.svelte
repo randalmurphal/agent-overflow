@@ -34,7 +34,7 @@
 </script>
 
 {#if toasts.length > 0}
-  <div class="fixed bottom-4 right-4 z-[80] flex flex-col gap-2 max-w-[min(24rem,calc(100vw-2rem))]" aria-live="polite" aria-relevant="additions">
+  <div class="fixed bottom-4 compact:bottom-[max(1rem,env(safe-area-inset-bottom))] right-4 z-[80] flex flex-col gap-2 max-w-[min(24rem,calc(100vw-2rem))]" aria-live="polite" aria-relevant="additions">
     {#each toasts as toast (toast.id)}
       <div
         in:fly={{ x: 80, duration: 200 }}

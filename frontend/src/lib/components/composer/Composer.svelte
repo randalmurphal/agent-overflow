@@ -965,7 +965,7 @@
   });
 </script>
 
-<div class="relative px-6 pb-4 pointer-events-none">
+<div class="relative px-6 pb-4 compact:pb-[max(1rem,env(safe-area-inset-bottom))] pointer-events-none">
   {#if !railVisible}
     <!--
       Reserve the ActivityRail's single-row height here, ABOVE the card and

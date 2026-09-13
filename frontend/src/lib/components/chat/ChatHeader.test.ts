@@ -804,6 +804,11 @@ describe('<ChatHeader> under compact', () => {
     expect(worktree.dataset.atBase).toBeUndefined();
     expect(worktree.getAttribute('aria-label')).toBe('Worktree: wt-1');
     expect(worktree.classList.contains('text-accent')).toBe(true);
+    // The name shows beside the icon and is the segment that gives way
+    // first: it may shrink, while the base-workspace icon never does.
+    expect(getByTestId('chat-header-worktree-label')).toHaveTextContent('wt-1');
+    expect(worktree.classList.contains('min-w-0')).toBe(true);
+    expect(worktree.classList.contains('shrink-0')).toBe(false);
     setCompactLayoutForTest(false);
   });
 
@@ -817,7 +822,7 @@ describe('<ChatHeader> under compact', () => {
       const { getByTestId } = render(ChatHeader, { props: { pane } });
       await tick();
       const segments = Array.from(
-        getByTestId('chat-header-facts').querySelectorAll<HTMLElement>('[data-testid^="chat-header-"]'),
+        getByTestId('chat-header-facts').querySelectorAll<HTMLElement>(':scope > [data-testid^="chat-header-"]'),
       ).map((el) => el.dataset.testid);
       expect(segments).toEqual([
         'chat-header-machine',

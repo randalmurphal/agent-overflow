@@ -71,7 +71,7 @@
 </script>
 
 <div
-  class="flex items-center gap-1 px-1 py-1 shrink-0 overflow-x-auto bg-surface-1
+  class="flex items-center gap-1 px-1 py-1 pb-[max(0.25rem,env(safe-area-inset-bottom))] shrink-0 overflow-x-auto bg-surface-1
          border-t border-border"
   style="touch-action: pan-x; overscroll-behavior-x: contain;"
   data-testid="terminal-key-row"

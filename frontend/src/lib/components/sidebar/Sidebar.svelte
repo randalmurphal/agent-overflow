@@ -107,7 +107,7 @@
     data-testid="sidebar"
     use:trackSidebarJumpRows
   >
-    <div class="flex items-center gap-1 px-3 pt-3 pb-2">
+    <div class="flex items-center gap-1 px-3 pt-3 pb-2 compact:pt-[max(0.75rem,env(safe-area-inset-top))]">
       <SidebarSearch {registerFocusSearch} />
       {#if !compact}
         <SidebarToggleButton />

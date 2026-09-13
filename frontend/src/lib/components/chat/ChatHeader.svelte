@@ -44,7 +44,7 @@
        that overlap. -->
   <div
     data-testid="chat-header"
-    class="relative z-10 flex items-center gap-2 border-b border-border-subtle bg-transparent px-5 py-2 shrink-0 min-w-0 flex-nowrap compact:flex-wrap compact:gap-y-1 compact:px-3"
+    class="relative z-10 flex items-center gap-2 border-b border-border-subtle bg-transparent px-5 py-2 shrink-0 min-w-0 flex-nowrap compact:flex-wrap compact:gap-y-1 compact:px-3 compact:pt-[max(0.5rem,env(safe-area-inset-top))]"
   >
     <PaneHeaderLine paneId={pane.paneId} thread={pane.thread} />
     {#if compact}

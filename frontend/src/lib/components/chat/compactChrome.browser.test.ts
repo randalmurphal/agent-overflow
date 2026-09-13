@@ -63,6 +63,30 @@ it.each([320, 360, 412])('keeps the title on one swipeable line beside the badge
   }
 });
 
+it.each([320, 360, 412])('truncates a worktree name before the branch at %ipx', async (width) => {
+  host.style.width = `${width}px`;
+  const pane = await buildPane(makeThread({
+    title: LONG_TITLE,
+    branch: 'feature/remote-access',
+    workspacePath: '/tmp/proj/.worktrees/a-worktree-with-a-very-long-descriptive-name',
+    projectPath: '/tmp/proj',
+  }));
+  mounted.push(mount(ChatHeader, { target: host, props: { pane } }));
+  await tick();
+  const facts = host.querySelector('[data-testid="chat-header-facts"]') as HTMLElement;
+  const branch = host.querySelector('[data-testid="chat-header-branch"]') as HTMLElement;
+  const worktree = host.querySelector('[data-testid="chat-header-worktree"]') as HTMLElement;
+  const label = host.querySelector('[data-testid="chat-header-worktree-label"]') as HTMLElement;
+  expect(facts.scrollWidth).toBeLessThanOrEqual(facts.clientWidth + 1);
+  // The short branch is whole; the long worktree name is what ellipsized,
+  // and the icon in front of it keeps its box.
+  const branchText = branch.querySelector('.truncate') as HTMLElement;
+  expect(branchText.scrollWidth).toBeLessThanOrEqual(branchText.clientWidth + 1);
+  expect(label.scrollWidth).toBeGreaterThan(label.clientWidth + 1);
+  expect(label.getBoundingClientRect().left).toBeGreaterThanOrEqual(worktree.getBoundingClientRect().left + 12);
+  expect(worktree.getBoundingClientRect().right).toBeLessThanOrEqual(host.getBoundingClientRect().right + 1);
+});
+
 it.each([320, 360, 412])('keeps the facts line on its own row with the worktree icon pinned at %ipx', async (width) => {
   host.style.width = `${width}px`;
   stageBackend();

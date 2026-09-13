@@ -34,6 +34,7 @@
   import MenuItem from '../primitives/MenuItem.svelte';
   import MenuDivider from '../primitives/MenuDivider.svelte';
   import { openTerminalThread } from '../../stores/threadCreation.svelte';
+  import { openMessageSearch } from '../../stores/messageSearch.svelte';
   import { openReviewCompanion, reviewSubjectForPane } from '../../stores/reviewPane.svelte';
   import { attachGitStatus } from '../../stores/gitStatusStore.svelte';
   import { workspaceKeyForThread } from '../../utils/workspaceKey';
@@ -301,6 +302,10 @@
           disabled={terminalUngranted}
           title={terminalUngrantedTitle}
           onSelect={() => pick(() => runTerminalToggle(pane))}
+        />
+        <MenuItem
+          label="Search messages"
+          onSelect={() => pick(() => openMessageSearch(pane.paneId))}
         />
         <MenuItem
           label="Regenerate title"
