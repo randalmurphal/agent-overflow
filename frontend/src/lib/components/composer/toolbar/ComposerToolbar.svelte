@@ -164,8 +164,8 @@
          showed at the compact rung. Only an unshrinkable box pushes the
          right cluster past the edge and lets the ladder see the
          overflow. The pickers stay mounted under the roll-up, keeping
-         their registry handles, so a roll-up row opens the same sheet a
-         chord would. -->
+         their registry handles, so a roll-up row opens the same menu a
+         chord would, anchored to the roll-up button. -->
     <div class="flex items-center gap-0.5 shrink-0" data-composer-toolbar-pickers>
       <EffortMenu {pane} />
       {#if !isDiscussionThread && supportsPlanMode}

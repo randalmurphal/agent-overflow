@@ -123,7 +123,7 @@ describe('ProjectItem compact layout', () => {
     expect(getByTestId('project-item').querySelector('[draggable]')?.getAttribute('draggable')).toBe('false');
     await fireEvent.click(getByTestId('project-item-menu'));
     await tick();
-    expect(document.querySelector('[data-popover-sheet]')).not.toBeNull();
+    expect(document.querySelector('[data-popover] [role="menu"]')).not.toBeNull();
     await fireEvent.click(getByRole('menuitem', { name: 'New Terminal' }));
     expect(onNewTerminal).toHaveBeenCalledWith('a');
   });

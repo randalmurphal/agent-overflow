@@ -20,7 +20,7 @@
     mcpTargetFor,
     peekMcpServers,
   } from '../../../stores/mcpServers.svelte';
-  import { registerComposerPicker } from '../../../stores/composerPickerRegistry.svelte';
+  import { registerComposerPicker, resolvePickerAnchor } from '../../../stores/composerPickerRegistry.svelte';
   import { restorePickerFocus } from '../../panes/paneComposerFocus';
   import type { PopoverCloseReason } from '../../../utils/popoverOwnership';
   import McpServersMenu from './McpServersMenu.svelte';
@@ -34,14 +34,21 @@
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
   let open = $state(false);
 
-  function openMenu(): void {
+  // See EffortMenu: the roll-up opens this menu at its own button while
+  // the trigger is hidden by the minimal rung.
+  let anchorOverride: HTMLElement | undefined = $state(undefined);
+
+  function openMenu(anchor?: HTMLElement): void {
     if (!pane.thread) return;
+    anchorOverride = resolvePickerAnchor(pane.paneId, anchor, triggerEl);
     open = true;
   }
 
   function closeMenu(reason?: PopoverCloseReason): void {
     open = false;
-    restorePickerFocus(reason, { paneId: pane.paneId, triggerEl });
+    const returnTo = anchorOverride ?? triggerEl;
+    anchorOverride = undefined;
+    restorePickerFocus(reason, { paneId: pane.paneId, triggerEl: returnTo });
   }
 
   function handleTrigger(): void {
@@ -137,7 +144,7 @@
 </button>
 
 <McpServersMenu
-  anchor={triggerEl}
+  anchor={anchorOverride ?? triggerEl}
   {open}
   {pane}
   onClose={closeMenu}

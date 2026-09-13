@@ -25,8 +25,8 @@
 // After a handled press, the compatibility `mousedown` / `mouseup` / `click`
 // an engine may send on release are swallowed at window capture, ahead of
 // every document listener. Without that the row's click would open the
-// thread under the sheet, and the Popover's outside-mousedown would close
-// the sheet the same instant it opened.
+// thread under the menu, and the Popover's outside-mousedown would close
+// the menu the same instant it opened.
 //
 // Editable targets are left alone entirely: a long press in the composer is
 // the engine's paste menu, and nothing here has a better one.

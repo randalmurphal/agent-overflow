@@ -2253,12 +2253,13 @@ third breakpoint, not a new app. Compact rules:
   registry holds exactly one pane at all times, so the watched set is
   that thread plus its live-tail children — the narrowing from 6d/6d2 is
   what makes a phone-sized connection affordable.
-- Popovers become bottom sheets. (A popover is the small floating menu
-  anchored to the button that opened it; a sheet is a panel that slides
-  up from the bottom edge and is dismissed by dragging down. Same
-  content, touch-native chrome.) Project / worktree / branch / machine /
-  model / mode / effort pickers, the approval card, the plan decision
-  card, and the interactive-request prompts are all sheets.
+- Popovers stay anchored, as on desktop: a menu opens at the control
+  that raised it, or at the pressed point for a long press, clamped
+  inside the viewport. (Ruling 2026-09-13, reversing the earlier
+  bottom-sheet default: a menu at the bottom edge for a control at the
+  top of the screen reads as unrelated to the tap.) The approval card,
+  the plan decision card, and the interactive-request prompts keep their
+  own panels.
 - Settings, devices, workflows, and git views are stacked screens, not
   modals.
 - The composer pins to the bottom above the keyboard. Opening a thread
@@ -2266,7 +2267,7 @@ third breakpoint, not a new app. Compact rules:
   input, never over the transcript they came to read. Send is a button;
   Return inserts a newline (phone keyboards have no modifier). The
   context strip scrolls horizontally as chips. Slash commands and
-  mentions keep their menus, rendered as a sheet above the keyboard.
+  mentions keep their menus on the caret, above the keyboard.
 - Transcript components are the desktop ones unchanged. Width-driven
   adjustments only: code blocks and diffs keep monospace with horizontal
   scroll inside the card (never re-wrapped, so alignment survives), tool
@@ -2419,8 +2420,9 @@ text above was deviated from:
   the usage chip takes the right end of the activity rail, which steps
   down its own measured density ladder so nothing clips. On every
   platform the project is the header's crumb before the title.
-  Popovers are bottom sheets by default (`Popover`'s `sheet`
-  prop; the composer's completion lists and the header menu opt out), overlays fill the
+  Popovers anchor to their trigger as on desktop (`Popover` has no sheet
+  mode; a picker opened from the toolbar roll-up anchors to the roll-up
+  button, the one control of its that is on screen), overlays fill the
   screen, Return inserts a newline (`enterSends`), the nav rail and its
   gutter are gone. Deviation from the design text above: the terminal is
   a stacked screen over the chat column rather than a route of its own,
@@ -3758,8 +3760,8 @@ menu it just raised. Editable targets are left to the engine (the
 selection handles), and a press nobody handled is forgotten. Because
 the hold is hidden, every sidebar row (thread, group, project header)
 carries a 36px `SidebarRowMenuButton` under compact that raises the
-same handler; `ContextMenu` renders as a bottom sheet there, matching
-`Popover`; rows are 36px and `select-none`; nothing is draggable
+same handler; `ContextMenu` opens at the pressed point there, as
+`Popover` opens at its trigger; rows are 36px and `select-none`; nothing is draggable
 under compact (rows, project headers, pane title); the project
 header keeps only `+`, its menu gaining New Thread and New Terminal
 (scope-gated); the chat header's action cluster becomes one dropdown

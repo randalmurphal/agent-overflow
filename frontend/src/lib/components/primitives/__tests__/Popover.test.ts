@@ -117,6 +117,18 @@ describe('<Popover>', () => {
     expect(onClose).toHaveBeenCalledWith('outside-click');
   });
 
+  it('an outside pointerdown closes once, even when no mousedown follows (a touch tap)', async () => {
+    const onClose = vi.fn();
+    render(Harness, { props: { open: true, onClose } });
+    await tick();
+    await fireEvent.pointerDown(document.body, { pointerType: 'touch' });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledWith('outside-click');
+    // The compatibility mousedown for the same press is not a second dismissal.
+    await fireEvent.mouseDown(document.body);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it('mousedown on the anchor does NOT close (anchor toggling is caller-owned)', async () => {
     const onClose = vi.fn();
     const { getByTestId } = render(Harness, { props: { open: true, onClose } });
@@ -723,35 +735,19 @@ describe('<Popover>', () => {
   });
 });
 
-// Compact layout: a popover is a bottom sheet unless the caller opts out
-// (the composer's completion lists must stay on the caret).
-describe('compact sheet', () => {
-  it('pins to the bottom edge with no anchor geometry', async () => {
+// Compact layout: a popover keeps its anchored placement. There is no
+// bottom-sheet mode (owner ruling 2026-09-13: a menu opens where it was
+// tapped, not at the bottom edge).
+describe('compact placement', () => {
+  it('anchors under compact exactly as on the desktop', async () => {
     setCompactLayoutForTest(true);
-    const { getByTestId } = render(Harness, { props: { open: true, role: 'menu' } });
-    await tick();
-    const floating = getByTestId('popover-content').closest('[data-popover]') as HTMLElement;
-    expect(floating.hasAttribute('data-popover-sheet')).toBe(true);
-    expect(floating.dataset.placement).toBe('sheet');
-    expect(floating.style.bottom).toBe('0px');
-    expect(floating.style.left).toBe('0px');
-    expect(floating.style.right).toBe('0px');
-    expect(floating.style.visibility).not.toBe('hidden');
-  });
-
-  it('sheet={false} keeps anchored placement', async () => {
-    setCompactLayoutForTest(true);
-    const { getByTestId } = render(Harness, { props: { open: true, sheet: false } });
+    const { getByTestId } = render(Harness, { props: { open: true, role: 'menu', placement: 'bottom-start' } });
     await tick();
     const floating = getByTestId('popover-content').closest('[data-popover]') as HTMLElement;
     expect(floating.hasAttribute('data-popover-sheet')).toBe(false);
-    expect(floating.dataset.placement).not.toBe('sheet');
-  });
-
-  it('full layout never renders a sheet', async () => {
-    const { getByTestId } = render(Harness, { props: { open: true, role: 'menu' } });
-    await tick();
-    const floating = getByTestId('popover-content').closest('[data-popover]') as HTMLElement;
-    expect(floating.hasAttribute('data-popover-sheet')).toBe(false);
+    expect(floating.dataset.placement).toMatch(/^bottom/);
+    expect(floating.style.position).toBe('fixed');
+    expect(floating.style.right).toBe('');
+    expect(floating.style.bottom).toBe('');
   });
 });

@@ -1,12 +1,15 @@
 // devtools.timeline trace of the renderer: where frame time goes, style recalcs, forced layouts.
-// usage: probe frames [seconds=20] [label] [--invalidations]  |  probe frames --file <wsl path to a saved trace.json>
+// usage: probe frames [seconds=20] [label] [--invalidations] [--gpu]  |  probe frames --file <wsl path to a saved trace.json>
 // offline-with --file
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { pad, ms, fail } from './lib/format.mjs';
 import { createFrameResolver } from './lib/sourcemap.mjs';
 
 const invalidations = process.argv.includes('--invalidations');
-const args = process.argv.slice(2).filter((arg) => arg !== '--invalidations');
+// --gpu adds the compositor scheduler, viz and GPU-process categories so a
+// frame outage with an idle renderer can be followed into the GPU process.
+const gpu = process.argv.includes('--gpu');
+const args = process.argv.slice(2).filter((arg) => arg !== '--invalidations' && arg !== '--gpu');
 const fileIdx = args.indexOf('--file');
 let data, LABEL, SECS = 0;
 
@@ -27,6 +30,7 @@ if (fileIdx >= 0) {
   // Full invalidation/GC detail exhausted the native harness's 2 GiB boundary
   // on a sustained four-pane run. Start with frame/JS/layout attribution.
   if (invalidations) cats.push('disabled-by-default-devtools.timeline.invalidationTracking');
+  if (gpu) cats.push('cc', 'viz', 'gpu', 'benchmark', 'toplevel', 'disabled-by-default-gpu.service');
   try {
     await b.send('Tracing.start', { traceConfig: { includedCategories: cats, excludedCategories: ['*'] }, transferMode: 'ReturnAsStream' });
     await sleep(SECS * 1000);

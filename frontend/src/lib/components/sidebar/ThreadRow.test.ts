@@ -1543,13 +1543,14 @@ describe('<ThreadRow> compact layout', () => {
     registerPaneForTest('main', pane);
     const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
     expect(getByTestId('thread-row').getAttribute('draggable')).toBe('false');
-    expect(document.querySelector('[data-popover-sheet]')).toBeNull();
+    expect(document.querySelector('[data-popover]')).toBeNull();
 
     await fireEvent.click(getByTestId('thread-row-menu'));
     await tick();
-    const sheet = document.querySelector('[data-popover-sheet]');
-    expect(sheet).not.toBeNull();
-    expect(sheet?.querySelector('[role="menu"]')).not.toBeNull();
+    const menu = document.querySelector('[data-popover]');
+    expect(menu).not.toBeNull();
+    expect(menu?.hasAttribute('data-popover-sheet')).toBe(false);
+    expect(menu?.querySelector('[role="menu"]')).not.toBeNull();
     expect(pane.threadId).toBeNull();
   });
 

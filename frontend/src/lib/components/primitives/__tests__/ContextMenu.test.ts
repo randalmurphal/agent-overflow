@@ -1,6 +1,6 @@
-// ContextMenu's placement contract: a point-anchored menu on the desktop,
-// a bottom sheet under the compact layout (where a finger, not a cursor,
-// raised it), and the same outside-mousedown / Escape dismissal in both.
+// ContextMenu's placement contract: a point-anchored menu in both layouts
+// (a long press is a point too), and the same outside-mousedown / Escape
+// dismissal in both.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
@@ -26,15 +26,23 @@ describe('<ContextMenu>', () => {
     expect(el.style.top).toBe('60px');
   });
 
-  it('is a bottom sheet under the compact layout', () => {
+  it('anchors to the point under the compact layout too', () => {
     setCompactLayoutForTest(true);
     const { container } = render(Harness, { props: { x: 40, y: 60 } });
     const el = surface(container);
-    expect(el.dataset.placement).toBe('sheet');
-    expect(el.style.left).toBe('0px');
-    expect(el.style.right).toBe('0px');
-    expect(el.style.bottom).toBe('0px');
-    expect(el.style.top).toBe('');
+    expect(el.dataset.placement).toBe('point');
+    expect(el.style.left).toBe('40px');
+    expect(el.style.top).toBe('60px');
+    expect(el.style.bottom).toBe('');
+  });
+
+  it('dismisses on an outside pointerdown once, with no second dismissal from the compatibility mousedown', async () => {
+    const onDismiss = vi.fn();
+    render(Harness, { props: { x: 40, y: 60, onDismiss } });
+    await fireEvent.pointerDown(document.body, { pointerType: 'touch' });
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+    await fireEvent.mouseDown(document.body);
+    expect(onDismiss).toHaveBeenCalledTimes(1);
   });
 
   it('dismisses on an outside mousedown and on Escape, in both layouts', async () => {

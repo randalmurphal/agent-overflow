@@ -345,9 +345,9 @@ describe('<ChatHeaderActions> subscription effect', () => {
   });
 });
 
-describe('<ChatHeaderActions> compact header sheet', () => {
+describe('<ChatHeaderActions> compact header menu', () => {
   // The desktop cluster is a row of icon buttons that does not fit a phone
-  // header; compact rolls the same actions into one sheet. No command
+  // header; compact rolls the same actions into one menu. No command
   // palette button: the phone has no chords for it to stand in for.
   beforeEach(async () => {
     resetPanesForTest();

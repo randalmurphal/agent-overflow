@@ -21,14 +21,25 @@ test('phone meters, attachments, workspace and command details remain usable', a
   await harness.rpc('SendMessage', threadId, 'show command details', null);
   await harness.waitForEvent('provider:turn_completed');
 
-  await page.getByTestId('composer-rate-limit-7d').getByRole('button').tap();
-  await expect(page.getByRole('tooltip')).toBeVisible();
+  const ring = page.getByTestId('composer-rate-limit-7d').getByRole('button');
+  await ring.tap();
+  const tooltip = page.getByRole('tooltip');
+  await expect(tooltip).toBeVisible();
   // The shared hover-close timer is 140ms. Observe beyond it so a synthetic
   // touch mouseleave cannot make a transient opening pass this assertion.
   await page.waitForTimeout(300);
-  await expect(page.getByRole('tooltip')).toBeVisible();
+  await expect(tooltip).toBeVisible();
+  // Anchored at the ring, not a sheet at the bottom edge.
+  const ringBox = (await ring.boundingBox())!;
+  const tipBox = (await tooltip.boundingBox())!;
+  expect(Math.abs(tipBox.y + tipBox.height - ringBox.y)).toBeLessThanOrEqual(16);
+  // A tap anywhere else closes it; a tap on the ring again closes it too.
   await page.getByTestId('chat-header-title').tap();
-  await expect(page.getByRole('tooltip')).toHaveCount(0);
+  await expect(tooltip).toHaveCount(0);
+  await ring.tap();
+  await expect(tooltip).toBeVisible();
+  await ring.tap();
+  await expect(tooltip).toHaveCount(0);
 
   // No workspace strip on the phone: the cost rides the activity rail and
   // the workspace facts are the header's own line.

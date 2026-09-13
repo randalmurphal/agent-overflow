@@ -153,20 +153,34 @@ test('Return inserts a newline and Send is the way to send', async ({ harness, p
   await expect(page.getByTestId('composer-interrupt')).toHaveCount(0);
 });
 
-test('a menu opens as a bottom sheet', async ({ harness, page }) => {
+/** The menu sits against one edge of its anchor, inside the viewport. */
+async function expectAnchored(page: Page, menu: Locator, anchor: Locator): Promise<void> {
+  await expect(menu).toBeVisible();
+  await expect(menu).not.toHaveAttribute('data-popover-sheet', /.*/);
+  const m = (await menu.boundingBox())!;
+  const a = (await anchor.boundingBox())!;
+  const vp = page.viewportSize()!;
+  expect(m.x).toBeGreaterThanOrEqual(0);
+  expect(m.y).toBeGreaterThanOrEqual(0);
+  expect(m.x + m.width).toBeLessThanOrEqual(vp.width + 1);
+  expect(m.y + m.height).toBeLessThanOrEqual(vp.height + 1);
+  const hangsBelow = Math.abs(m.y - (a.y + a.height)) <= 16;
+  const hangsAbove = Math.abs(m.y + m.height - a.y) <= 16;
+  const overlaps = m.y < a.y + a.height && m.y + m.height > a.y;
+  expect(hangsBelow || hangsAbove || overlaps, 'the menu must open at its anchor').toBe(true);
+}
+
+// A menu opens where it was tapped (owner ruling 2026-09-13), never as a
+// bottom sheet: the composer's model picker hangs from its trigger at the
+// bottom of the screen, and a menu for a control at the top hangs there.
+test('a menu opens anchored to the control that raised it', async ({ harness, page }) => {
   await harness.open(page);
   await page.getByTestId('thread-row').filter({ hasText: 'First task' }).click();
-  await page.getByTestId('composer-model-menu-trigger').click();
-  const sheet = page.locator('[data-popover-sheet]');
-  await expect(sheet).toBeVisible();
-  await expect(sheet).toHaveAttribute('data-placement', 'sheet');
-  const box = await sheet.evaluate((el) => {
-    const r = el.getBoundingClientRect();
-    return { left: r.left, right: r.right, bottom: r.bottom, vw: innerWidth, vh: innerHeight };
-  });
-  expect(box.left).toBe(0);
-  expect(box.right).toBe(box.vw);
-  expect(box.bottom).toBe(box.vh);
+  const trigger = page.getByTestId('composer-model-menu-trigger');
+  await trigger.click();
+  const menu = page.locator('[data-popover]');
+  await expectAnchored(page, menu, trigger);
+  await expect(menu).toHaveAttribute('data-placement', /^top/);
 });
 
 /**
@@ -197,22 +211,22 @@ async function longPress(page: Page, target: Locator, opens: Locator): Promise<v
   }
 }
 
-test('a long press on a thread row opens its menu as a sheet and leaves the thread closed', async ({
+test('a long press on a thread row opens its menu at the row and leaves the thread closed', async ({
   harness,
   page,
 }) => {
   await harness.open(page);
   const row = page.getByTestId('thread-row').filter({ hasText: 'First task' });
-  const sheet = page.locator('[data-popover-sheet]');
-  await longPress(page, row, sheet);
-  await expect(sheet).toBeVisible();
-  await expect(sheet.getByRole('menu', { name: 'Thread Actions' })).toBeVisible();
-  await expect(sheet.getByRole('menuitem', { name: 'Rename Thread' })).toBeVisible();
-  // The release did not open the thread under the sheet, and the sheet
+  const menu = page.locator('[data-popover]');
+  await longPress(page, row, menu);
+  await expectAnchored(page, menu, row);
+  await expect(menu.getByRole('menu', { name: 'Thread Actions' })).toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: 'Rename Thread' })).toBeVisible();
+  // The release did not open the thread under the menu, and the menu
   // survived the release.
   await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'list');
   await page.keyboard.press('Escape');
-  await expect(sheet).toHaveCount(0);
+  await expect(menu).toHaveCount(0);
   await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'list');
 });
 
@@ -225,8 +239,9 @@ test('the row menu button is the visible way into the same menu', async ({ harne
   expect(size!.width).toBeGreaterThanOrEqual(36);
   expect(size!.height).toBeGreaterThanOrEqual(36);
   await button.tap();
-  const sheet = page.locator('[data-popover-sheet]');
-  await expect(sheet.getByRole('menuitem', { name: 'Rename Thread' })).toBeVisible();
+  const menu = page.locator('[data-popover]');
+  await expect(menu.getByRole('menuitem', { name: 'Rename Thread' })).toBeVisible();
+  await expectAnchored(page, menu, button);
   await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'list');
 });
 
@@ -254,20 +269,20 @@ test('both New Thread actions reveal the reused composer from the list', async (
 
 test('the project header carries its menu, with New Terminal inside', async ({ harness, page }) => {
   await harness.open(page);
-  await page.getByTestId('project-item-menu').first().tap();
-  const sheet = page.locator('[data-popover-sheet]');
-  await expect(sheet.getByRole('menuitem', { name: 'New Terminal' })).toBeVisible();
-  await expect(sheet.getByRole('menuitem', { name: 'Rename Project' })).toBeVisible();
+  const button = page.getByTestId('project-item-menu').first();
+  await button.tap();
+  const menu = page.locator('[data-popover]');
+  await expect(menu.getByRole('menuitem', { name: 'New Terminal' })).toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: 'Rename Project' })).toBeVisible();
+  await expectAnchored(page, menu, button);
 });
 
 // The desktop header's row of icon buttons does not fit beside a title on
 // a phone, and the first real-phone session (2026-09-04) found it there
 // with the title clipped, an open-in-editor button the device cannot
 // act on, and a command-palette button standing in for chords the phone
-// does not have. Compact rolls the actions into one sheet.
-// The header's one button opens a menu that drops from the button, not a
-// bottom sheet (owner ruling, 2026-09-04): a control at the top of the
-// screen answers where the finger is.
+// does not have. Compact rolls the actions into one menu that drops from
+// the button, where the finger is.
 test('the chat header rolls its actions into one dropdown at the button', async ({
   harness,
   page,
@@ -289,7 +304,7 @@ test('the chat header rolls its actions into one dropdown at the button', async 
 
   const button = page.getByTestId('chat-header-more');
   await button.tap();
-  const menu = page.locator('[data-popover]:not([data-popover-sheet])');
+  const menu = page.locator('[data-popover]');
   await expect(menu.getByRole('menu', { name: 'Thread actions' })).toBeVisible();
   await expect(menu).toHaveAttribute('data-placement', /^bottom/);
   const buttonBox = await button.boundingBox();
@@ -351,14 +366,30 @@ test('the composer\'s densest rung keeps the model and the meters and rolls the 
   });
   expect(overlaps, 'toolbar controls must not overlap').toEqual([]);
 
-  await page.getByTestId('composer-pickers-rollup').tap();
-  const sheet = page.locator('[data-popover-sheet]');
-  await expect(sheet.getByRole('menuitem', { name: 'Model…' })).toHaveCount(0);
-  await sheet.getByRole('menuitem', { name: 'Effort…' }).tap();
-  // The row opened the picker itself: its (hidden) trigger reports open
-  // and a sheet with the picker's menu is up.
+  const rollup = page.getByTestId('composer-pickers-rollup');
+  await rollup.tap();
+  const menu = page.locator('[data-popover]');
+  await expect(menu.getByRole('menuitem', { name: 'Model…' })).toHaveCount(0);
+  await menu.getByRole('menuitem', { name: 'Effort…' }).tap();
+  // The row opened the picker itself: its (hidden) trigger reports open,
+  // and the picker's menu hangs from the roll-up button, the one control
+  // of the picker's that is on screen.
   await expect(page.getByTestId('composer-effort-trigger')).toHaveAttribute('aria-expanded', 'true');
-  await expect(page.locator('[data-popover-sheet]').getByRole('menu')).toBeVisible();
+  const picker = page.locator('[data-popover]');
+  await expect(picker.getByRole('menu')).toBeVisible();
+  await expectAnchored(page, picker, rollup);
+  await page.keyboard.press('Escape');
+  await expect(picker).toHaveCount(0);
+
+  // The slash command opens the same picker with no anchor of its own.
+  // Its trigger is hidden by the rung, so the menu still hangs from the
+  // roll-up rather than from a button with no geometry.
+  const input = page.getByLabel('Message Input');
+  await input.fill('/effort');
+  // Return inserts a newline on the phone; Send runs the command.
+  await page.getByTestId('composer-send').tap();
+  await expect(page.getByTestId('composer-effort-trigger')).toHaveAttribute('aria-expanded', 'true');
+  await expectAnchored(page, page.locator('[data-popover]'), rollup);
 });
 
 // The soft keyboard shrinks the layout viewport (index.html asks for that

@@ -4,12 +4,16 @@
   // context) and Send keep their place on a phone-width composer instead
   // of yielding to the pickers. Each row hands off to the picker it
   // names — the picker components stay mounted (CSS-hidden by the rung)
-  // and keep their registry handles, so a row opens exactly the sheet
-  // the chord would. The two toggles (agent mode, plan sidebar) act in
-  // place, the way their buttons do.
+  // and keep their registry handles, so a row opens exactly the menu
+  // the chord would, anchored to this button since the picker's own
+  // trigger is hidden. The two toggles (agent mode, plan sidebar) act
+  // in place, the way their buttons do.
   import SlidersHorizontal from '@lucide/svelte/icons/sliders-horizontal';
   import type { ThreadPane } from '../../../stores/thread.svelte';
-  import { openComposerPicker } from '../../../stores/composerPickerRegistry.svelte';
+  import {
+    openComposerPicker,
+    registerComposerPickerFallbackAnchor,
+  } from '../../../stores/composerPickerRegistry.svelte';
   import { currentAgentMode, cycleAgentMode } from './agentModeCycle';
   import { restorePickerFocus } from '../../panes/paneComposerFocus';
   import type { PopoverCloseReason } from '../../../utils/popoverOwnership';
@@ -30,6 +34,12 @@
 
   let open = $state(false);
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
+  // A chord or slash command opens a picker with no anchor of its own;
+  // while the rung hides the picker's trigger, its menu hangs from here.
+  $effect(() => {
+    if (!triggerEl) return;
+    return registerComposerPickerFallbackAnchor(pane.paneId, triggerEl);
+  });
   let modeLabel = $derived(currentAgentMode(pane) === 'plan' ? 'Plan' : 'Build');
 
   function close(reason?: PopoverCloseReason): void {
@@ -67,7 +77,7 @@
 <Popover anchor={triggerEl} {open} onClose={close} placement="top-start" role="none">
   {#snippet children()}
     <Menu ariaLabel="Composer options" onClose={close}>
-      <MenuItem label="Effort…" onSelect={() => pick(() => openComposerPicker(pane.paneId, 'effort'))} />
+      <MenuItem label="Effort…" onSelect={() => pick(() => openComposerPicker(pane.paneId, 'effort', triggerEl))} />
       {#if showMode}
         <MenuItem
           label="Agent mode"
@@ -76,10 +86,10 @@
         />
       {/if}
       {#if showAccess}
-        <MenuItem label="Access…" onSelect={() => pick(() => openComposerPicker(pane.paneId, 'access'))} />
+        <MenuItem label="Access…" onSelect={() => pick(() => openComposerPicker(pane.paneId, 'access', triggerEl))} />
       {/if}
       {#if showMcp}
-        <MenuItem label="MCP servers…" onSelect={() => pick(() => openComposerPicker(pane.paneId, 'mcp'))} />
+        <MenuItem label="MCP servers…" onSelect={() => pick(() => openComposerPicker(pane.paneId, 'mcp', triggerEl))} />
       {/if}
       {#if showPlan}
         <MenuItem

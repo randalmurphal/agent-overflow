@@ -260,7 +260,6 @@
     open={showMore}
     onClose={closeMore}
     placement="bottom-end"
-    sheet={false}
     role="none"
   >
     {#snippet children()}

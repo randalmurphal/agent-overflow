@@ -6,7 +6,7 @@ import { measureDensity } from '../densityLadder';
  *  - `full`    — every label shown.
  *  - `compact` — collapsible labels hidden; the icons carry the meaning.
  *  - `minimal` — every picker but the model (effort, mode, access, MCP,
- *    plan) folds into one roll-up trigger whose sheet opens each picker.
+ *    plan) folds into one roll-up trigger whose menu opens each picker.
  *    This rung exists for phone widths: even icon-only controls plus
  *    three meters exceed a 411px viewport, and the overflow clipped the
  *    one control that must never leave the screen — Send (found on the

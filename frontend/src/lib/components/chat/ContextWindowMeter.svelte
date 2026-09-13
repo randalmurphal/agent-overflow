@@ -72,7 +72,7 @@
   aria-label={ariaLabel}
   onmouseenter={popover.open}
   onpointerdown={popover.pointerDown}
-  onclick={popover.open}
+  onclick={popover.click}
   onmouseleave={popover.scheduleClose}
   onfocus={popover.open}
   onblur={popover.scheduleClose}

@@ -12,8 +12,8 @@ mentions, slash commands, and keyboard behavior.
   effects such as queueing, model selection, or follow changes.
 - Preserve selection and composition behavior across controlled-value updates.
   Test IME and multiline edits when changing input events.
-- Mention and slash menus are caret-owned popovers and remain anchored in
-  compact mode rather than becoming sheets.
+- Mention and slash menus are caret-owned popovers anchored on the input in
+  both layouts.
 
 ## Attachments and sending
 

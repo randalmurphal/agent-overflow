@@ -43,9 +43,9 @@
   import type { WorkspaceRef } from '../../types/git';
 
   // `trigger` false renders no split button: the compact chat header
-  // rolls every action into one sheet and opens this menu from a row in
+  // rolls every action into one menu and opens this menu from a row in
   // it through `openMenu`, so the dialogs and the popover stay mounted
-  // here, outside that sheet, and survive its close.
+  // here, outside that menu, and survive its close.
   let { pane, trigger = true }: { pane: ThreadPane; trigger?: boolean } = $props();
 
   // Removing this thread's own worktree reattaches it to the project root —
@@ -167,7 +167,7 @@
     restorePickerFocus(reason, { triggerEl: menuTriggerEl });
   }
 
-  /** Open the actions menu from outside (the compact header's sheet). */
+  /** Open the actions menu from outside (the compact header's menu). */
   export function openMenu(): void {
     showDropdown = true;
   }

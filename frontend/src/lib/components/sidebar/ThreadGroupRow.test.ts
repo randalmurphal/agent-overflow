@@ -416,8 +416,8 @@ describe('<ThreadGroupRow> compact layout', () => {
     const wasExpanded = isGroupExpanded('group-1');
     await fireEvent.click(getByTestId('thread-group-row-menu'));
     await tick();
-    const sheet = document.querySelector('[data-popover-sheet]');
-    expect(sheet?.querySelector('[role="menu"]')).not.toBeNull();
+    const menu = document.querySelector('[data-popover]');
+    expect(menu?.querySelector('[role="menu"]')).not.toBeNull();
     expect(isGroupExpanded('group-1')).toBe(wasExpanded);
   });
 });

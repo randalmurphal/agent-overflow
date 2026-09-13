@@ -25,7 +25,7 @@
   import Popover from '../../primitives/Popover.svelte';
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
-  import { registerComposerPicker } from '../../../stores/composerPickerRegistry.svelte';
+  import { registerComposerPicker, resolvePickerAnchor } from '../../../stores/composerPickerRegistry.svelte';
   import { restorePickerFocus } from '../../panes/paneComposerFocus';
   import type { PopoverCloseReason } from '../../../utils/popoverOwnership';
   import { chordHintSuffix } from '../../../stores/keybindings.svelte';
@@ -41,6 +41,9 @@
   let backend = $derived(threadMachine(pane.threadId ?? '', pane.thread?.projectId));
 
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
+  // See EffortMenu: the roll-up opens this menu at its own button while
+  // the trigger is hidden by the minimal rung.
+  let anchorOverride: HTMLElement | undefined = $state(undefined);
   let open = $state(false);
 
   interface TierMeta {
@@ -125,7 +128,9 @@
 
   function closeMenu(reason?: PopoverCloseReason): void {
     open = false;
-    restorePickerFocus(reason, { paneId: pane.paneId, triggerEl });
+    const returnTo = anchorOverride ?? triggerEl;
+    anchorOverride = undefined;
+    restorePickerFocus(reason, { paneId: pane.paneId, triggerEl: returnTo });
   }
 
   // Loads the provider catalog so autoModeUnsupported has an answer while
@@ -179,8 +184,9 @@
   $effect(() => {
     return registerComposerPicker(pane.paneId, 'access', {
       isOpen: () => open,
-      open: () => {
+      open: (anchor) => {
         if (!pane.thread) return;
+        anchorOverride = resolvePickerAnchor(pane.paneId, anchor, triggerEl);
         open = true;
         warmModelCapabilities();
       },
@@ -215,7 +221,7 @@
 </button>
 
 <Popover
-  anchor={triggerEl}
+  anchor={anchorOverride ?? triggerEl}
   {open}
   onClose={closeMenu}
   placement="top-start"

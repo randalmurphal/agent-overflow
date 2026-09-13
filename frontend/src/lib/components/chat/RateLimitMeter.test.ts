@@ -67,6 +67,30 @@ describe('<RateLimitMeter>', () => {
     expect(queryByRole('tooltip')).toBeNull();
   });
 
+  it('a second tap on a tapped meter closes it; a mouse click never does', async () => {
+    const { getByRole, queryByRole } = render(RateLimitMeter, { props: { windowMins: 300, provider: 'claude' } });
+    const trigger = getByRole('button');
+    // A device tap: pointerdown, then the compatibility mouseenter and
+    // focus (which already open the card), then click. The first tap
+    // must leave it open; the second must close it.
+    await fireEvent.pointerDown(trigger, { pointerType: 'touch' });
+    await fireEvent.mouseEnter(trigger);
+    await fireEvent.focus(trigger);
+    await fireEvent.click(trigger);
+    expect(queryByRole('tooltip')).not.toBeNull();
+    await fireEvent.pointerDown(trigger, { pointerType: 'touch' });
+    await fireEvent.mouseEnter(trigger);
+    await fireEvent.click(trigger);
+    expect(queryByRole('tooltip')).toBeNull();
+
+    // Mouse: hover opened it; a click keeps it open (the keyboard path).
+    await fireEvent.mouseEnter(trigger);
+    expect(queryByRole('tooltip')).not.toBeNull();
+    await fireEvent.pointerDown(trigger, { pointerType: 'mouse' });
+    await fireEvent.click(trigger);
+    expect(queryByRole('tooltip')).not.toBeNull();
+  });
+
   it('derives the 7-day label and header from windowMins=10080', () => {
     const { getByLabelText } = render(RateLimitMeter, {
       props: { windowMins: 10080, provider: 'claude' as const },

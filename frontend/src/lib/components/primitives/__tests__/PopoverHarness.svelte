@@ -20,7 +20,6 @@
     claimTab = false,
     restoreFocusToAnchor = false,
     withClipBoundary = false,
-    sheet = true,
     dismissOnAnchorClick = false,
   }: {
     open?: boolean;
@@ -33,7 +32,6 @@
     restoreFocusToAnchor?: boolean;
     /** Wrap the anchor in a `[data-popover-clip-boundary]` container. */
     withClipBoundary?: boolean;
-    sheet?: boolean;
     dismissOnAnchorClick?: boolean;
   } = $props();
 
@@ -57,7 +55,6 @@
   {claimTab}
   {dismissOnAnchorClick}
   restoreFocusTo={restoreFocusToAnchor ? anchor : undefined}
-  {sheet}
 >
   {#snippet children()}
     <div data-testid="popover-content">

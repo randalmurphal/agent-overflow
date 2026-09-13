@@ -188,6 +188,10 @@ and anti-changes that live only here:
   every built-in theme; they are not dimmed to the hint tier, and the
   title is not enlarged. Opening a thread on the phone never focuses the
   composer; the keyboard rises only on a tap into the input.
+- Phone menus (2026-09-13): every popover and context menu opens where it
+  was tapped, anchored to its control or to the pressed point and clamped
+  into the viewport. No bottom-sheet menus; the earlier sheet default is
+  reversed.
   `docs/specs/remote-access.md` (6f).
 
 ## Review pane

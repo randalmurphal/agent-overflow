@@ -15,8 +15,45 @@ export type ComposerPickerId = 'model' | 'effort' | 'access' | 'mcp' | 'branch';
 
 export interface ComposerPickerHandle {
   isOpen: () => boolean;
-  open: () => void;
+  /**
+   * `anchor` is where the menu hangs instead of the picker's own trigger.
+   * The roll-up passes its button; a chord or slash command passes
+   * nothing and the picker resolves the anchor itself
+   * (`resolvePickerAnchor`).
+   */
+  open: (anchor?: HTMLElement) => void;
   close: () => void;
+}
+
+// The toolbar's minimal rung hides every picker but the model behind one
+// roll-up button, and a menu anchored to a hidden trigger has no geometry
+// to sit on. The roll-up registers its button per pane so a picker opened
+// while its trigger is hidden can hang from the one control that is on
+// screen, whichever path opened it (roll-up row, chord, slash command).
+const fallbackAnchors = new Map<string, HTMLElement>();
+
+export function registerComposerPickerFallbackAnchor(paneId: string, el: HTMLElement): () => void {
+  fallbackAnchors.set(paneId, el);
+  return () => {
+    if (fallbackAnchors.get(paneId) === el) fallbackAnchors.delete(paneId);
+  };
+}
+
+/**
+ * The element a picker's menu hangs from: the explicit anchor when the
+ * opener gave one, else the trigger when it is rendered, else the pane's
+ * fallback (the roll-up button). A trigger with no client rects is not on
+ * screen (`display: none` up its chain); `offsetParent` is unreliable for
+ * fixed ancestors, `getClientRects` is not.
+ */
+export function resolvePickerAnchor(
+  paneId: string,
+  explicit: HTMLElement | undefined,
+  trigger: HTMLElement | undefined,
+): HTMLElement | undefined {
+  if (explicit) return explicit;
+  if (trigger && trigger.getClientRects().length > 0) return trigger;
+  return fallbackAnchors.get(paneId) ?? trigger;
 }
 
 // Plain Map (no $state) — the chord handlers call these imperatively
@@ -56,11 +93,15 @@ export function toggleComposerPicker(paneId: string | null, pickerId: ComposerPi
  * while its menu is already up must not dismiss it. Returns false when the
  * pane has no such picker mounted (a placeholder with nothing to choose).
  */
-export function openComposerPicker(paneId: string | null, pickerId: ComposerPickerId): boolean {
+export function openComposerPicker(
+  paneId: string | null,
+  pickerId: ComposerPickerId,
+  anchor?: HTMLElement,
+): boolean {
   if (!paneId) return false;
   const handle = entries.get(entryKey(paneId, pickerId));
   if (!handle) return false;
-  handle.open();
+  handle.open(anchor);
   return true;
 }
 
@@ -73,4 +114,5 @@ export function isAnyComposerPickerOpen(): boolean {
 
 export function resetComposerPickerRegistryForTest(): void {
   entries.clear();
+  fallbackAnchors.clear();
 }

@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   isAnyComposerPickerOpen,
   registerComposerPicker,
+  registerComposerPickerFallbackAnchor,
   resetComposerPickerRegistryForTest,
+  resolvePickerAnchor,
   toggleComposerPicker,
   type ComposerPickerHandle,
 } from './composerPickerRegistry.svelte';
@@ -139,5 +141,59 @@ describe('composerPickerRegistry', () => {
       b.setOpen(true);
       expect(isAnyComposerPickerOpen()).toBe(true);
     });
+  });
+});
+
+// Where a picker's menu hangs. The toolbar's minimal rung hides the
+// picker triggers behind one roll-up button, so a picker opened by a chord
+// or a slash command (no anchor of its own) must not anchor to a hidden
+// trigger, which has no geometry: it hangs from the roll-up instead.
+describe('resolvePickerAnchor', () => {
+  afterEach(() => {
+    resetComposerPickerRegistryForTest();
+    document.body.innerHTML = '';
+  });
+
+  function rendered(hidden = false): HTMLElement {
+    const el = document.createElement('button');
+    if (hidden) el.style.display = 'none';
+    document.body.appendChild(el);
+    // happy-dom reports no client rects for a display:none element; a
+    // visible one still gets a (zero-sized) rect, which is what the
+    // resolver keys on.
+    el.getClientRects = () => (hidden ? ([] as unknown as DOMRectList) : ([new DOMRect()] as unknown as DOMRectList));
+    return el;
+  }
+
+  it('an explicit anchor wins over everything', () => {
+    const explicit = rendered();
+    const trigger = rendered();
+    expect(resolvePickerAnchor('main', explicit, trigger)).toBe(explicit);
+  });
+
+  it('a rendered trigger anchors itself', () => {
+    const trigger = rendered();
+    registerComposerPickerFallbackAnchor('main', rendered());
+    expect(resolvePickerAnchor('main', undefined, trigger)).toBe(trigger);
+  });
+
+  it('a hidden trigger yields to the pane\'s fallback, and to itself when there is none', () => {
+    const trigger = rendered(true);
+    expect(resolvePickerAnchor('main', undefined, trigger)).toBe(trigger);
+    const rollup = rendered();
+    const dispose = registerComposerPickerFallbackAnchor('main', rollup);
+    expect(resolvePickerAnchor('main', undefined, trigger)).toBe(rollup);
+    expect(resolvePickerAnchor('other', undefined, trigger)).toBe(trigger);
+    dispose();
+    expect(resolvePickerAnchor('main', undefined, trigger)).toBe(trigger);
+  });
+
+  it('a stale disposer does not remove a newer registration', () => {
+    const first = rendered();
+    const second = rendered();
+    const disposeFirst = registerComposerPickerFallbackAnchor('main', first);
+    registerComposerPickerFallbackAnchor('main', second);
+    disposeFirst();
+    expect(resolvePickerAnchor('main', undefined, rendered(true))).toBe(second);
   });
 });

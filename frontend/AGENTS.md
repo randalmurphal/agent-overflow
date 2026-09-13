@@ -51,8 +51,10 @@ mode. Every component must work in desktop and compact layouts.
   layout store instead of remounting surfaces.
 - Use the shared long-press context-menu bridge and shared menu primitives. Do
   not add component-specific long-press handlers.
-- Popovers become sheets by default. Caret-owned composer lists and explicitly
-  anchored controls may opt out.
+- Popovers and context menus stay anchored under compact: at the trigger, or
+  at the pressed point. There is no bottom-sheet mode. A picker opened while
+  its trigger is hidden (the toolbar roll-up) is given the visible button as
+  its anchor through the picker registry.
 - Android Back dismisses surfaces through `native/lifecycle.ts`. Only commands
   marked `dismissesSurface` may run from that path.
 

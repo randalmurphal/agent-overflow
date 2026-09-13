@@ -58,7 +58,11 @@ Env:
 `frames` records frame, JS and layout attribution by default. Use
 `--invalidations` only for short captures that need individual style
 invalidation causes; full invalidation and detailed GC tracing exhausted
-the native harness ceiling during a 75-second four-pane capture.
+the native harness ceiling during a 75-second four-pane capture. Use
+`--gpu` when the renderer main thread is idle across a long frame: it adds
+the `cc`, `viz`, `gpu` and `toplevel` categories so the GPU process's
+compositor, presenter and vsync threads are in the same trace (about
+400 MB for 20 seconds of four-pane streaming).
 
 ### Prepare a probe manifest
 

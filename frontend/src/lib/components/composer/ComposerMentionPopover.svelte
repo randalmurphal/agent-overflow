@@ -50,7 +50,7 @@
   });
 </script>
 
-<Popover {anchor} {open} {onClose} placement="top-start" role="listbox" ariaLabel="Workspace File Mentions" sheet={false}>
+<Popover {anchor} {open} {onClose} placement="top-start" role="listbox" ariaLabel="Workspace File Mentions">
   {#snippet children()}
     <div
       bind:this={listEl}

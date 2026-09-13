@@ -26,7 +26,7 @@
   import MenuDivider from '../../primitives/MenuDivider.svelte';
   import MenuSectionHeader from '../../primitives/MenuSectionHeader.svelte';
   import Icon from '../../primitives/Icon.svelte';
-  import { registerComposerPicker } from '../../../stores/composerPickerRegistry.svelte';
+  import { registerComposerPicker, resolvePickerAnchor } from '../../../stores/composerPickerRegistry.svelte';
   import { restorePickerFocus } from '../../panes/paneComposerFocus';
   import type { PopoverCloseReason } from '../../../utils/popoverOwnership';
   import { chordHintSuffix } from '../../../stores/keybindings.svelte';
@@ -42,6 +42,11 @@
 
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
   let open = $state(false);
+  // Set when the registry opens the menu: the opener's anchor (the
+  // roll-up row), else the trigger, else the roll-up button when the rung
+  // hides the trigger (`resolvePickerAnchor`). The menu hangs there and
+  // focus returns there. Cleared on close.
+  let anchorOverride: HTMLElement | undefined = $state(undefined);
 
   // Publish an imperative handle so the global mod+shift+e chord can
   // toggle this picker. The registry keys by (paneId, pickerId) so
@@ -49,10 +54,11 @@
   $effect(() => {
     return registerComposerPicker(pane.paneId, 'effort', {
       isOpen: () => open,
-      open: () => {
+      open: (anchor) => {
         // Same gate as the trigger's disabled state: the chord must not open a
         // menu with no rows in it either.
         if (!pane.thread || !hasMenuOptions) return;
+        anchorOverride = resolvePickerAnchor(pane.paneId, anchor, triggerEl);
         open = true;
         void ensureModelMetadata();
       },
@@ -214,7 +220,9 @@
 
   function closeMenu(reason?: PopoverCloseReason): void {
     open = false;
-    restorePickerFocus(reason, { paneId: pane.paneId, triggerEl });
+    const returnTo = anchorOverride ?? triggerEl;
+    anchorOverride = undefined;
+    restorePickerFocus(reason, { paneId: pane.paneId, triggerEl: returnTo });
   }
 
   // Each handler drives the shared apply path in threadModelControls, which
@@ -265,7 +273,7 @@
 </button>
 
 <Popover
-  anchor={triggerEl}
+  anchor={anchorOverride ?? triggerEl}
   {open}
   onClose={closeMenu}
   placement="top-start"

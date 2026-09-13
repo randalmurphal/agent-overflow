@@ -8,16 +8,15 @@
    * Paired with `Menu` (roles + roving tabindex + arrow nav) rather than
    * `Popover`, which anchors to an element rather than a point.
    *
-   * Under the compact layout the point is meaningless (a finger, not a
-   * cursor, raised the menu) and the menu is a bottom sheet, the same
-   * shape Popover takes there: full width, pinned to the bottom edge,
-   * no clamp. The dismissal rules are unchanged.
+   * The same on the phone: a long press is a point too, and the menu
+   * opens where the finger is, clamped into the viewport (owner ruling
+   * 2026-09-13; it was a bottom sheet before, which put every menu at
+   * the bottom edge regardless of where the press was).
    */
 
   import { onMount, type Snippet } from 'svelte';
   import Menu from './Menu.svelte';
   import { airspaceSurface } from '../../utils/paneAirspace.svelte';
-  import { isCompactLayout } from '../../stores/layoutMode.svelte';
 
   interface Props {
     /** Viewport coordinates of the invoking pointer event. */
@@ -33,8 +32,6 @@
 
   const MARGIN_PX = 4;
 
-  let asSheet = $derived(isCompactLayout());
-
   // Menu dimensions are only known once it is in the DOM, so the clamp runs
   // in an effect rather than at init: effects flush after the insert and
   // before paint, so the menu is never seen at the unclamped position — and,
@@ -45,7 +42,6 @@
   let adjustedY = $state(0);
 
   $effect(() => {
-    if (asSheet) return;
     const rect = menuEl?.getBoundingClientRect();
     const maxX = window.innerWidth - (rect?.width ?? 0) - MARGIN_PX;
     const maxY = window.innerHeight - (rect?.height ?? 0) - MARGIN_PX;
@@ -53,20 +49,31 @@
     adjustedY = Math.max(MARGIN_PX, Math.min(y, maxY));
   });
 
-  let style = $derived(
-    asSheet
-      ? 'left: 0; right: 0; bottom: 0; max-height: 70vh; overflow-y: auto; padding-bottom: env(safe-area-inset-bottom);'
-      : `left: ${adjustedX}px; top: ${adjustedY}px;`,
-  );
+  let style = $derived(`left: ${adjustedX}px; top: ${adjustedY}px;`);
 
   onMount(() => {
     // Capture phase so dismissal runs before any child click handler.
     // A right-click elsewhere dismisses and re-opens at the new spot —
     // the owning host re-raises with fresh coordinates.
-    const handleDocPointer = (e: MouseEvent): void => {
+    // `pointerdown` first (a touch tap may never raise its compatibility
+    // mousedown; see Popover), `mousedown` for mouse-only paths, one
+    // dismissal per press.
+    let pointerDownHandled = false;
+    const handleOutside = (e: Event): void => {
       if (menuEl && e.target instanceof Node && !menuEl.contains(e.target)) {
         onDismiss();
       }
+    };
+    const handleDocPointerDown = (e: PointerEvent): void => {
+      pointerDownHandled = true;
+      handleOutside(e);
+    };
+    const handleDocPointer = (e: MouseEvent): void => {
+      if (pointerDownHandled) {
+        pointerDownHandled = false;
+        return;
+      }
+      handleOutside(e);
     };
     // Escape anywhere in the document closes the menu. Without it a user
     // who opened via keyboard (or tabbed in) could only leave by picking
@@ -74,9 +81,11 @@
     const handleDocKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') onDismiss();
     };
+    document.addEventListener('pointerdown', handleDocPointerDown, true);
     document.addEventListener('mousedown', handleDocPointer, true);
     document.addEventListener('keydown', handleDocKey, true);
     return () => {
+      document.removeEventListener('pointerdown', handleDocPointerDown, true);
       document.removeEventListener('mousedown', handleDocPointer, true);
       document.removeEventListener('keydown', handleDocKey, true);
     };
@@ -88,7 +97,7 @@
   class="fixed z-[80]"
   {style}
   data-context-menu
-  data-placement={asSheet ? 'sheet' : 'point'}
+  data-placement="point"
   use:airspaceSurface
 >
   <Menu {ariaLabel} onClose={onDismiss} {minWidthClass}>
