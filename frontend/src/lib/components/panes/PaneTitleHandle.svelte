@@ -1,10 +1,10 @@
 <script lang="ts">
-  // Shared pane title: the renameable, draggable, focus-outlined title that
-  // sits at the start of a pane header. Extracted from ChatHeader so the
-  // terminal pane header (and any future pane surface) gets the exact same
-  // behavior — left-click is the drag handle (reorder the pane), right-click
-  // renames inline (Enter submits via RenameThread, Escape/blur cancels), and
-  // the title gains an accent ring when its pane is the focused one.
+  // Shared pane title: the renameable, draggable title that sits at the
+  // start of a pane header. Extracted from ChatHeader so the terminal pane
+  // header (and any future pane surface) gets the exact same behavior —
+  // left-click is the drag handle (reorder the pane), right-click renames
+  // inline (Enter submits via RenameThread, Escape/blur cancels). Pane focus
+  // is marked on the header's separator by PaneHeaderLine, not here.
   //
   // Wrapper-less on purpose: it emits the input-or-button directly into the
   // parent header's flex so callers keep their own layout. Each consumer
@@ -17,15 +17,12 @@
     registerPaneTitleRename,
     renameThreadTitle,
   } from '../../stores/paneTitleRename';
-  import { getFocusedPaneId } from '../../stores/panes.svelte';
   import { isImeComposingEvent } from '../../utils/imeComposition';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
 
   interface Props {
     pane: ThreadPane;
     onPaneDragStart?: (event: DragEvent) => void;
-    /** Extra classes for the title button (e.g. an attention glow). */
-    glowClass?: string;
     /** Allow the complete title to wrap in compact chat headers. */
     wrap?: boolean;
     titleTestId?: string;
@@ -35,17 +32,10 @@
   let {
     pane,
     onPaneDragStart,
-    glowClass = '',
     wrap = false,
     titleTestId = 'pane-title',
     inputTestId = 'pane-title-input',
   }: Props = $props();
-
-  // Deliberately the RAW focused pane id (not getFocusedThreadPaneId): the
-  // accent ring marks the pane that literally holds focus. When a companion
-  // is focused its ring lives on the companion, so the source thread's
-  // title must NOT light up too.
-  let isFocusedPane = $derived(getFocusedPaneId() === pane.paneId);
 
   // Inline-rename state: a local string buffer + editing toggle so the input
   // is controlled without disturbing the pane/thread state until commit.
@@ -148,16 +138,11 @@
       draggable={onPaneDragStart != null && !isCompactLayout()}
       ondragstart={(event) => onPaneDragStart?.(event)}
       data-testid={titleTestId}
-      data-focused={isFocusedPane}
       title={`${pane.thread.title} (right-click to rename)`}
       class={[
-        'text-sm font-medium min-w-0 text-left bg-transparent border-none px-1.5 py-0.5 rounded-[var(--radius-field)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
+        'text-sm font-medium min-w-0 text-left bg-transparent border-none px-1.5 py-0.5 rounded-[var(--radius-field)] text-fg transition-colors hover:bg-surface-2/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
         wrap ? 'flex-1 whitespace-normal [overflow-wrap:anywhere]' : 'truncate',
         onPaneDragStart ? 'cursor-grab active:cursor-grabbing' : 'cursor-default',
-        isFocusedPane
-          ? 'bg-accent/15 text-fg ring-1 ring-accent/40'
-          : 'text-fg hover:bg-surface-2/40',
-        glowClass,
       ].join(' ')}
     >
       {pane.thread.title}

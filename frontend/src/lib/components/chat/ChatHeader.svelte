@@ -1,11 +1,12 @@
 <script lang="ts">
   // Chat header: the shared pane title (PaneTitleHandle — renameable,
-  // draggable, focus-outlined) plus an attention dot on the left, and the
-  // action cluster on the right (ChatHeaderActions: PR/diff badges, Open,
-  // git actions, terminal). Nothing here needs to render mode chrome.
+  // draggable), the action cluster on the right (ChatHeaderActions: PR/diff
+  // badges, Open, git actions, terminal), and the status line over the
+  // bottom border (PaneHeaderLine: focus, or a background pane's attention
+  // state). Nothing here needs to render mode chrome.
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { resolvePaneAttentionDot } from '../panes/paneAttention';
   import PaneTitleHandle from '../panes/PaneTitleHandle.svelte';
+  import PaneHeaderLine from '../panes/PaneHeaderLine.svelte';
   import PaneCloseButton from '../panes/PaneCloseButton.svelte';
   import ThreadTitleRegenerateButton from './ThreadTitleRegenerateButton.svelte';
   import ChatHeaderActions from './ChatHeaderActions.svelte';
@@ -20,8 +21,6 @@
   }
 
   let { pane, onPaneDragStart }: Props = $props();
-  let attentionDot = $derived(resolvePaneAttentionDot(pane.thread ?? null));
-  let titleGlow = $derived(attentionDot?.pill.glowClass ?? '');
   // Compact: the way back to the list leads the header, and the pane
   // close control goes, because the only pane closing would leave the
   // thread screen empty with no list under it.
@@ -30,37 +29,23 @@
 
 {#if pane.thread}
   <!-- The timeline fade overdraws its composited clip by one pixel. Keep the
-       header's existing bottom border above that overlap. -->
+       header's existing bottom border (and the status line over it) above
+       that overlap. -->
   <div
     data-testid="chat-header"
     class="relative z-10 flex items-center gap-2 border-b border-border-subtle bg-transparent px-5 py-2 shrink-0 min-w-0 flex-nowrap compact:flex-wrap compact:gap-y-1 compact:px-3"
   >
+    <PaneHeaderLine paneId={pane.paneId} thread={pane.thread} />
     <div class="contents compact:flex min-w-0 items-center gap-2 compact:w-full compact:items-start" data-testid="chat-header-title-row">
     {#if compact}
       <PaneHeaderIconButton label="Back to threads" testId="compact-back" onclick={showCompactList}>
         <Icon icon={ArrowLeft} size={14} strokeWidth={2} />
       </PaneHeaderIconButton>
     {/if}
-    {#if attentionDot}
-      <span
-        aria-label={attentionDot.pill.label}
-        title={attentionDot.pill.label}
-        class={[
-          'shrink-0 h-2.5 w-2.5 rounded-full',
-          attentionDot.pill.dotClass,
-          attentionDot.pill.pulse ? 'animate-pulse' : '',
-          attentionDot.pill.glowClass ?? '',
-        ].join(' ')}
-        data-testid="pane-attention-dot"
-        data-pane-id={pane.paneId}
-        data-status={attentionDot.status}
-      ></span>
-    {/if}
     <PaneTitleHandle
       {pane}
       {onPaneDragStart}
       wrap={compact}
-      glowClass={titleGlow}
       titleTestId="chat-header-title"
       inputTestId="chat-header-title-input"
     />

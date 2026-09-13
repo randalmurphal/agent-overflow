@@ -1082,9 +1082,14 @@ input[type="search"]::-webkit-search-cancel-button {
 }
 
 /*
- * Activity-rail working indicator: a static accent hairline across the
- * top edge of the composer card (presence) plus a three-LED
- * left-to-right chase in the rail's working chip (liveness).
+ * Accent hairline: a static 1px gradient that fades at both ends, drawn in
+ * --hairline-color (accent unless the caller sets it). Two surfaces draw it
+ * and must stay identical: the activity rail lays it across the top edge of
+ * the composer card while a turn runs (presence), and the pane header lays
+ * it over its bottom border to mark the focused pane or a background
+ * pane's attention state (components/panes/PaneHeaderLine.svelte). The
+ * working indicator adds a three-LED left-to-right chase in the rail's
+ * working chip (liveness).
  *
  * This replaced the smooth shimmer sweep, which was the app's last
  * standing per-vsync compositor client — a continuously-eased
@@ -1105,11 +1110,11 @@ input[type="search"]::-webkit-search-cancel-button {
  * back the same way through the global reset at the bottom of this
  * file.
  */
-.working-hairline {
+.accent-hairline {
   background: linear-gradient(
     90deg,
     transparent,
-    color-mix(in oklab, var(--accent) 55%, transparent),
+    color-mix(in oklab, var(--hairline-color, var(--accent)) 90%, transparent),
     transparent
   );
 }

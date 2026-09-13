@@ -4,6 +4,7 @@
   import Icon from '../primitives/Icon.svelte';
   import SquareTerminal from '@lucide/svelte/icons/square-terminal';
   import PaneTitleHandle from '../panes/PaneTitleHandle.svelte';
+  import PaneHeaderLine from '../panes/PaneHeaderLine.svelte';
   import PaneCloseButton from '../panes/PaneCloseButton.svelte';
   import TerminalSurface from './TerminalSurface.svelte';
   import type { ThreadTerminalSurfaceContext } from './terminalDrawerTypes';
@@ -48,11 +49,13 @@
   data-thread-id={pane.thread?.id}
 >
   <!-- Header mirrors a chat pane's: a leading glyph, then the shared
-       PaneTitleHandle (renameable / draggable / focus-outlined), the project
-       name, and the close-pane X grouped right beside it (not far-right). -->
+       PaneTitleHandle (renameable / draggable), the project name, the
+       close-pane X grouped right beside it (not far-right), and the focus
+       line over the bottom border. A terminal has no attention states. -->
   <header
-    class="flex items-center gap-2 h-8 shrink-0 px-2 bg-surface-1 border-b border-border text-xs min-w-0"
+    class="relative flex items-center gap-2 h-8 shrink-0 px-2 bg-surface-1 border-b border-border text-xs min-w-0"
   >
+    <PaneHeaderLine paneId={pane.paneId} />
     <Icon
       icon={SquareTerminal}
       size={12}

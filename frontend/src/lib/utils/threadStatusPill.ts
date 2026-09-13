@@ -4,8 +4,9 @@
 // apart by its dot (color, filled or hollow, pulsing or still), by the
 // row glow for a provider blocked on the user, and by a thin row ring for
 // the two "needs your attention" states (Completed, Plan Ready). `label`
-// is the accessible name and tooltip only. The palette picker and the
-// pane attention dot read the same record.
+// is the accessible name and tooltip only. The palette picker reads the
+// same record; the pane header line (components/panes/paneHeaderLine.ts)
+// maps the same live statuses to a color of its own.
 //
 // Keep this file free of Svelte imports so its behaviour stays
 // table-drivable from unit tests.

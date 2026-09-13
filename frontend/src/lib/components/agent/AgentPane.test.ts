@@ -12,7 +12,7 @@ import AgentPane from './AgentPane.svelte';
 import { installPaneMocks, makeItem, makeThread } from '../../../test/helpers/chat';
 import { makeSettings } from '../../../test/helpers/settings';
 import { createThreadPane, type ThreadPane } from '../../stores/thread.svelte';
-import { registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
+import { focusPane, registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 import {
@@ -606,5 +606,40 @@ describe('<AgentPane>', () => {
     const shown = getByTestId('agent-pane-description').textContent ?? '';
     expect(shown).toContain('Audit Audit');
     expect(shown.length).toBeLessThanOrEqual(81);
+  });
+
+  it('shares the chat header chrome: a stacking context above the timeline fade and the h-5 close button', async () => {
+    const { ctx } = await setup([launchItem()]);
+    openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
+    const { getByTestId } = render(AgentPane, { props: { ctx } });
+    await tick();
+
+    // MessageTimeline's top fade overdraws its clip by one pixel; without
+    // the header's own stacking context that pixel hides the separator
+    // across the transcript's width.
+    const header = getByTestId('agent-pane-header');
+    expect(header.className).toContain('relative');
+    expect(header.className).toContain('z-10');
+    expect(header.className).toContain('border-b');
+    // The close affordance is the shared pane-header icon button, so the
+    // header measures the same as a chat pane's instead of taller.
+    expect(getByTestId('agent-pane-close').className).toContain('h-5');
+  });
+
+  it('marks the header separator when the companion pane itself holds focus', async () => {
+    const { ctx } = await setup([launchItem()]);
+    openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
+    const { getByTestId, queryByTestId } = render(AgentPane, { props: { ctx } });
+    await tick();
+    // Opening leaves focus on the source thread: no mark on the companion.
+    expect(queryByTestId('pane-header-line')).toBeNull();
+
+    focusPane('agent-main');
+    await tick();
+    expect(getByTestId('agent-pane-header')).toContainElement(getByTestId('pane-header-line'));
+
+    focusPane('main');
+    await tick();
+    expect(queryByTestId('pane-header-line')).toBeNull();
   });
 });

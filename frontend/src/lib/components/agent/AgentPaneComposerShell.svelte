@@ -200,7 +200,7 @@
     >
       {#if isRunning && identity}
         <span
-          class="working-hairline pointer-events-none absolute inset-x-0 top-0 z-10 block h-px"
+          class="accent-hairline pointer-events-none absolute inset-x-0 top-0 z-10 block h-px"
           aria-hidden="true"
           data-testid="agent-pane-hairline"
         ></span>

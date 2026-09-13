@@ -28,6 +28,9 @@
   import { createAgentScopeView } from '../../stores/agentScopeView.svelte';
   import MessageTimeline from '../chat/MessageTimeline.svelte';
   import Icon from '../primitives/Icon.svelte';
+  import PaneHeaderIconButton from '../panes/PaneHeaderIconButton.svelte';
+  import PaneHeaderLine from '../panes/PaneHeaderLine.svelte';
+  import { companionForSource } from '../../stores/companionPanes.svelte';
   import AgentPaneComposerShell from './AgentPaneComposerShell.svelte';
   import { decoratedSubagentAggregates } from '../../utils/subagentGrouping';
   import {
@@ -55,6 +58,9 @@
   const agent = ctx.threadId ? agentStateForPane(ctx.paneId, ctx.threadId) : null;
 
   let sourcePane = $derived(getPane(ctx.paneId));
+  // ctx.paneId is the SOURCE pane. Focus is held by this companion's own
+  // layout pane, so the header's focus mark keys on that id.
+  let companionPaneId = $derived(companionForSource(ctx.paneId, 'agent')?.paneId ?? null);
   let scopeItemId = $derived(agent?.scopeItemId ?? '');
   let launch = $derived.by(() => {
     void ctx.timelineRevision;
@@ -204,9 +210,20 @@
   aria-label="Agent Transcript"
 >
   {#if agent && scopeItemId}
-    <header class="flex items-center gap-2 border-b border-border px-3 py-2">
+    <!-- Same chrome as ChatHeader: padding, separator, h-5 icon button, and
+         the relative z-10 stacking context that keeps the separator above the
+         timeline's top fade (which overdraws its clip by one pixel). The nav's
+         py-0.5 matches the chat title button's box so both headers measure
+         the same height. -->
+    <header
+      class="relative z-10 flex shrink-0 items-center gap-2 border-b border-border-subtle px-5 py-2 min-w-0"
+      data-testid="agent-pane-header"
+    >
+      {#if companionPaneId}
+        <PaneHeaderLine paneId={companionPaneId} />
+      {/if}
       <nav
-        class="flex min-w-0 flex-1 items-center gap-1 text-sm"
+        class="flex min-w-0 flex-1 items-center gap-1 py-0.5 text-sm"
         aria-label="Agent Scope"
         data-testid="agent-pane-breadcrumb"
       >
@@ -242,15 +259,9 @@
           </span>
         {/if}
       </nav>
-      <button
-        type="button"
-        class="shrink-0 rounded-[var(--radius-control)] p-1 text-fg-muted hover:bg-surface-2/40 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-        onclick={() => ctx.close()}
-        aria-label="Close Agent Pane"
-        data-testid="agent-pane-close"
-      >
-        <Icon icon={X} size={16} />
-      </button>
+      <PaneHeaderIconButton label="Close Agent Pane" testId="agent-pane-close" onclick={() => ctx.close()}>
+        <Icon icon={X} size={12} strokeWidth={2} />
+      </PaneHeaderIconButton>
     </header>
 
     <div class="flex min-h-0 flex-1 flex-col" data-testid="agent-pane-timeline">

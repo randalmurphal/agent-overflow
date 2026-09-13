@@ -330,33 +330,6 @@ describe('<ChatHeader>', () => {
     expect(queryByTestId('chat-header-open-editor')).toBeNull();
   });
 
-  it('renders the attention dot when the thread reports live status', async () => {
-    const pane = await buildPane(makeThread({ id: 'attention-thread', title: 'Running' }));
-    projectTurnStarted('attention-thread', 'turn:attention-thread', 0, 0);
-    const { getByTestId } = render(ChatHeader, { props: { pane } });
-    await tick();
-    const dot = getByTestId('pane-attention-dot');
-    expect(dot).toHaveAttribute('data-status', 'running');
-    expect(dot.getAttribute('class')).toContain('bg-success');
-  });
-
-  it('omits the dot when the thread has no attention status', async () => {
-    // makeThread leaves lastReadAt / latestTurnCompletedAt undefined →
-    // hasUnread is false → no pill → no dot.
-    const pane = await buildPane(makeThread({ id: 'idle-thread' }));
-    const { queryByTestId } = render(ChatHeader, { props: { pane } });
-    await tick();
-    expect(queryByTestId('pane-attention-dot')).toBeNull();
-  });
-
-  it('applies the attention glow class to the title', async () => {
-    const pane = await buildPane(makeThread({ id: 'pending-thread', title: 'Pending' }));
-    setThreadStatus('pending-thread', 'pending-approval');
-    const { getByTestId } = render(ChatHeader, { props: { pane } });
-    await tick();
-    expect(getByTestId('chat-header-title').className).toContain('status-glow-warning');
-  });
-
   it('renders a draggable title that fires onPaneDragStart on dragstart', async () => {
     const pane = await buildPane();
     const onPaneDragStart = vi.fn();
@@ -392,7 +365,10 @@ describe('<ChatHeader>', () => {
     expect(getAllPanes().has('to-close')).toBe(false);
   });
 
-  it('accent-tints and rings the title when the pane is focused', async () => {
+  // The header's status line (PaneHeaderLine): accent on the focused pane,
+  // the thread's attention color on an unfocused one, shown only when there
+  // is more than one pane to tell apart and never in compact layout.
+  async function renderTwoPaneHeader(): Promise<{ focused: ReturnType<typeof createThreadPane>; other: ReturnType<typeof createThreadPane> }> {
     const focused = createThreadPane({ paneId: 'main' });
     await focused.switchThread(makeThread({ id: 'focused-thread', title: 'Focused' }));
     const other = createThreadPane({ paneId: 'other' });
@@ -404,16 +380,47 @@ describe('<ChatHeader>', () => {
       { id: 'other-item', paneId: 'other', kind: 'thread', widthPx: 1 },
     ]);
     focusPane('main');
+    return { focused, other };
+  }
 
+  it('lays the accent line over the separator of the focused pane', async () => {
+    const { focused } = await renderTwoPaneHeader();
     const { getByTestId } = render(ChatHeader, { props: { pane: focused } });
     await tick();
+    const header = getByTestId('chat-header');
+    const line = getByTestId('pane-header-line');
+    expect(header).toContainElement(line);
+    expect(line).toHaveAttribute('data-line', 'accent');
+    expect(line.className).toContain('accent-hairline');
+    expect(line.className).toContain('-bottom-px');
+    expect(getByTestId('pane-header-line-label')).toHaveTextContent('Focused pane');
+    // The title itself carries no focus styling any more.
     const title = getByTestId('chat-header-title');
-    expect(title).toHaveAttribute('data-focused', 'true');
-    expect(title.className).toContain('bg-accent/15');
-    expect(title.className).toContain('ring-accent/40');
+    expect(title).not.toHaveAttribute('data-focused');
+    expect(title.className).not.toContain('bg-accent/15');
   });
 
-  it('shows the focus highlight even in single-pane mode so the input target is unambiguous', async () => {
+  it('omits the line from an unfocused idle pane', async () => {
+    const { other } = await renderTwoPaneHeader();
+    const { queryByTestId } = render(ChatHeader, { props: { pane: other } });
+    await tick();
+    expect(queryByTestId('pane-header-line')).toBeNull();
+  });
+
+  it('follows focus as it moves between panes', async () => {
+    const { other } = await renderTwoPaneHeader();
+    const { queryByTestId } = render(ChatHeader, { props: { pane: other } });
+    await tick();
+    expect(queryByTestId('pane-header-line')).toBeNull();
+    focusPane('other');
+    await tick();
+    expect(queryByTestId('pane-header-line')).not.toBeNull();
+    focusPane('main');
+    await tick();
+    expect(queryByTestId('pane-header-line')).toBeNull();
+  });
+
+  it('omits the line when the strip holds a single pane', async () => {
     const pane = createThreadPane({ paneId: 'main' });
     await pane.switchThread(makeThread({ id: 'solo-thread', title: 'Solo' }));
     registerPaneForTest('main', pane);
@@ -421,31 +428,79 @@ describe('<ChatHeader>', () => {
       { id: 'main-item', paneId: 'main', kind: 'thread', widthPx: 1 },
     ]);
     focusPane('main');
-    const { getByTestId } = render(ChatHeader, { props: { pane } });
+    const { queryByTestId } = render(ChatHeader, { props: { pane } });
     await tick();
-    const title = getByTestId('chat-header-title');
-    expect(title).toHaveAttribute('data-focused', 'true');
-    expect(title.className).toContain('bg-accent/15');
-  });
-
-  it('drops the focus highlight from an unfocused pane', async () => {
-    const focused = createThreadPane({ paneId: 'main' });
-    await focused.switchThread(makeThread({ id: 'main-thread', title: 'Main' }));
-    const other = createThreadPane({ paneId: 'other' });
-    other.replaceThread(makeThread({ id: 'other-thread', title: 'Other' }));
-    registerPaneForTest('main', focused);
-    registerPaneForTest('other', other);
+    expect(queryByTestId('pane-header-line')).toBeNull();
+    // A second pane appearing makes the mark meaningful again.
     setPaneLayoutItemsForTest([
       { id: 'main-item', paneId: 'main', kind: 'thread', widthPx: 1 },
       { id: 'other-item', paneId: 'other', kind: 'thread', widthPx: 1 },
     ]);
-    focusPane('main');
-
-    const { getByTestId } = render(ChatHeader, { props: { pane: other } });
     await tick();
-    const title = getByTestId('chat-header-title');
-    expect(title).toHaveAttribute('data-focused', 'false');
-    expect(title.className).not.toContain('bg-accent/15');
+    expect(queryByTestId('pane-header-line')).not.toBeNull();
+  });
+
+  it('colors an unfocused pane by its attention state, and never by a running turn', async () => {
+    const { other } = await renderTwoPaneHeader();
+    const { queryByTestId, getByTestId } = render(ChatHeader, { props: { pane: other } });
+    await tick();
+    expect(queryByTestId('pane-header-line')).toBeNull();
+
+    setThreadStatus('other-thread', 'pending-approval');
+    await tick();
+    expect(getByTestId('pane-header-line')).toHaveAttribute('data-line', 'warning');
+    expect(getByTestId('pane-header-line-label')).toHaveTextContent('Pending Approval');
+
+    setThreadStatus('other-thread', 'awaiting-input');
+    await tick();
+    expect(getByTestId('pane-header-line')).toHaveAttribute('data-line', 'info');
+
+    setThreadStatus('other-thread', 'error');
+    await tick();
+    expect(getByTestId('pane-header-line')).toHaveAttribute('data-line', 'error');
+
+    setThreadStatus('other-thread', 'idle');
+    other.replaceThread({ ...other.thread!, lastReadAt: 1, latestTurnCompletedAt: 2 });
+    await tick();
+    expect(getByTestId('pane-header-line')).toHaveAttribute('data-line', 'success');
+    expect(getByTestId('pane-header-line-label')).toHaveTextContent('Completed');
+
+    // A background turn is the composer rail's job, not the header's: a
+    // running turn outranks the unread completion and draws nothing.
+    projectTurnStarted('other-thread', 'turn:other-thread', 0, 0);
+    await tick();
+    expect(queryByTestId('pane-header-line')).toBeNull();
+  });
+
+  it('keeps the focused pane accent whatever its thread is doing', async () => {
+    const { focused } = await renderTwoPaneHeader();
+    setThreadStatus('focused-thread', 'pending-approval');
+    const { getByTestId } = render(ChatHeader, { props: { pane: focused } });
+    await tick();
+    expect(getByTestId('pane-header-line')).toHaveAttribute('data-line', 'accent');
+  });
+
+  it('shows no attention line on a lone pane', async () => {
+    const pane = createThreadPane({ paneId: 'main' });
+    await pane.switchThread(makeThread({ id: 'lone-thread', title: 'Lone' }));
+    registerPaneForTest('main', pane);
+    setPaneLayoutItemsForTest([{ id: 'main-item', paneId: 'main', kind: 'thread', widthPx: 1 }]);
+    setThreadStatus('lone-thread', 'pending-approval');
+    const { queryByTestId } = render(ChatHeader, { props: { pane } });
+    await tick();
+    expect(queryByTestId('pane-header-line')).toBeNull();
+  });
+
+  it('omits the line in compact layout even with several panes', async () => {
+    const { focused } = await renderTwoPaneHeader();
+    setCompactLayoutForTest(true);
+    try {
+      const { queryByTestId } = render(ChatHeader, { props: { pane: focused } });
+      await tick();
+      expect(queryByTestId('pane-header-line')).toBeNull();
+    } finally {
+      setCompactLayoutForTest(false);
+    }
   });
 
   // --- placeholder (draft) thread coverage ---

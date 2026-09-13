@@ -1,8 +1,8 @@
-// PaneTitleHandle's rename / drag / focus-ring behavior is exercised
-// end-to-end by ChatHeader.test (chat header) and TerminalView.test (terminal
-// header), both of which render the real component. This file locks the parts
-// those don't touch: the parameterized testids that let each pane surface keep
-// its own identity, and the no-thread gate.
+// PaneTitleHandle's rename / drag behavior is exercised end-to-end by
+// ChatHeader.test (chat header) and TerminalView.test (terminal header), both
+// of which render the real component. This file locks the parts those don't
+// touch: the parameterized testids that let each pane surface keep its own
+// identity, and the no-thread gate.
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';

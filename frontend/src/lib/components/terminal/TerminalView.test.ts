@@ -6,6 +6,7 @@ import { destroyPane, getFocusedPaneId } from '../../stores/panes.svelte';
 import { getProject } from '../../stores/projects.svelte';
 import { resetThreadTerminalStatesForTest } from './terminalStore.svelte';
 import { setupEventListeners } from '../../stores/events';
+import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { resetWailsMocks } from '../../../test/mocks/wailsio-runtime';
 
 // Same mock layer as ThreadTerminalDrawer.test.ts: control the Wails bindings
@@ -68,8 +69,8 @@ vi.mock('../../stores/toast.svelte', () => ({ addToast: vi.fn() }));
 vi.mock('../../stores/panes.svelte', () => ({
   addPaneThreadMountedObserver: vi.fn(() => () => {}),
   destroyPane: vi.fn(),
-  // The header's shared PaneTitleHandle reads pane focus (for the outline) and
-  // writes the row back after a rename.
+  // The header's PaneHeaderLine reads pane focus, and the shared
+  // PaneTitleHandle writes the row back after a rename.
   getFocusedPaneId: vi.fn(() => null),
   syncThread: vi.fn(),
 }));
@@ -122,6 +123,7 @@ beforeEach(() => {
   vi.mocked(getFocusedPaneId).mockReturnValue(null);
   vi.mocked(getProject).mockReturnValue(undefined as never);
   resetWailsMocks();
+  resetPaneLayoutForTest();
   cleanupEvents = setupEventListeners();
 });
 
@@ -157,19 +159,25 @@ describe('TerminalView', () => {
     expect(getByTestId('terminal-pane-project')).toHaveTextContent('agent-overflow');
   });
 
-  it('makes the title a drag handle and reflects pane focus for the outline', async () => {
+  it('makes the title a drag handle and marks pane focus on the header separator', async () => {
     vi.mocked(getFocusedPaneId).mockReturnValue('pane-term');
+    setPaneLayoutItemsForTest([
+      { id: 'pane-term', paneId: 'pane-term', kind: 'thread', widthPx: 1 },
+      { id: 'other', paneId: 'other', kind: 'thread', widthPx: 1 },
+    ]);
     const onPaneDragStart = vi.fn();
     const pane = makePane();
-    const { getByTestId } = render(TerminalView, {
+    const { getByTestId, queryByTestId } = render(TerminalView, {
       pane: pane as never,
       onPaneDragStart,
     });
     await tick();
     const title = getByTestId('terminal-pane-title');
-    // Focus-outline parity with a chat pane: data-focused + the accent ring.
-    expect(title).toHaveAttribute('data-focused', 'true');
-    expect(title.className).toContain('ring-accent/40');
+    // Focus-mark parity with a chat pane: the hairline sits in the header,
+    // and the title carries no focus styling of its own.
+    expect(queryByTestId('pane-header-line')).not.toBeNull();
+    expect(title).not.toHaveAttribute('data-focused');
+    expect(title.className).not.toContain('bg-accent/15');
     // Drag-handle parity: dragging the title reorders the pane.
     expect(title.getAttribute('draggable')).toBe('true');
     await fireEvent.dragStart(title);
