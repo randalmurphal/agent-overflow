@@ -759,7 +759,9 @@ user gesture is classified by the intent machine, the controller keeps a
 one-field **provenance ledger**: the last explained `scrollTop` (the
 chokepoint's browser-rounded readback, or the position of the last
 user-classified scroll event, with resize-correlated events deliberately
-excluded, since a clamp's own scroll event is one). During a spring
+excluded, since a clamp's own scroll event is one; an untagged event that
+lands at the scroll maximum from a ledger position beyond it is that clamp
+whether or not its geometry sample has arrived yet). During a spring
 sentinel the only mover the ledger cannot account for is the browser's
 max-scroll clamp, so "live scrollTop differs from the ledger" is
 witnessed clamp EVIDENCE. Both stranded-oscillation recoveries (the

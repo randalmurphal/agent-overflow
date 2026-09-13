@@ -4066,6 +4066,9 @@ describe('WSClient', () => {
       MockWebSocket.instances[0]!.acceptOpen();
       await flushMicrotasks();
       expect(calls).toEqual(['/auth/ticket']);
+      // A healthy socket answers the replay; one left pending is
+      // force-reconnected at REPLAY_TIMEOUT_MS and would dial again.
+      MockWebSocket.instances[0]!.pushFrame({ type: 'replay' });
 
       await vi.advanceTimersByTimeAsync(SESSION_RENEWAL_CHECK_INTERVAL_MS);
       await vi.waitFor(() => expect(calls).toEqual(['/auth/ticket', '/auth/token']));

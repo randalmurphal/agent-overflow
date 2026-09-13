@@ -38,6 +38,7 @@ interface Harness {
     escaped: boolean;
     distanceFromBottom: number;
     resizeCorrelated: boolean;
+    lastExplained: number | null;
   };
   spring: {
     requestStop: ReturnType<typeof vi.fn>;
@@ -73,6 +74,7 @@ function harness(
     // immediate re-stick branch; the tests that want that branch set it to 0.
     distanceFromBottom: 100,
     resizeCorrelated: false,
+    lastExplained: null as number | null,
   };
 
   const spring = {
@@ -102,6 +104,7 @@ function harness(
     sampleResizeCorrelation: () => state.resizeCorrelated,
     resizeDifferenceNow: () => 0,
     noteUserScroll,
+    lastExplainedScrollTop: () => state.lastExplained,
   };
 
   const intent = createScrollIntent(deps);
@@ -666,6 +669,41 @@ describe('provenance ledger classification (noteUserScroll)', () => {
     h.scrollEl.dispatchEvent(new Event('scroll'));
 
     expect(h.noteUserScroll).not.toHaveBeenCalled();
+  });
+
+  it('does not record the browser clamp onto a shrunken scroll range, even before its geometry sample', () => {
+    const h = build();
+    // The ledger holds the pinned bottom; a viewport that grew by a banner
+    // row clamps scrollTop beneath it before any sample classifies the resize.
+    h.state.lastExplained = 500;
+    h.state.distanceFromBottom = 0;
+    h.scrollEl.scrollTop = 468;
+
+    h.scrollEl.dispatchEvent(new Event('scroll'));
+
+    expect(h.noteUserScroll).not.toHaveBeenCalled();
+  });
+
+  it('records a gesture that lands at the bottom from above it', () => {
+    const h = build();
+    h.state.lastExplained = 400;
+    h.state.distanceFromBottom = 0;
+    h.scrollEl.scrollTop = 500;
+
+    h.scrollEl.dispatchEvent(new Event('scroll'));
+
+    expect(h.noteUserScroll).toHaveBeenCalledWith(500);
+  });
+
+  it('records a gesture that leaves the bottom for a position short of it', () => {
+    const h = build();
+    h.state.lastExplained = 500;
+    h.state.distanceFromBottom = 40;
+    h.scrollEl.scrollTop = 460;
+
+    h.scrollEl.dispatchEvent(new Event('scroll'));
+
+    expect(h.noteUserScroll).toHaveBeenCalledWith(460);
   });
 });
 

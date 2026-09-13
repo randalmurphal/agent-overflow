@@ -64,6 +64,34 @@ func TestEventBus_ReplayBaselineAndLiveDeliveryHaveOneBoundary(t *testing.T) {
 	}
 }
 
+func TestEventBus_DropRetainedKeepsSequenceAndReplaysNothing(t *testing.T) {
+	bus := NewEventBus(0)
+	defer bus.Close()
+	channel := string(eventchan.NotificationActivated)
+	bus.Emit(eventchan.NotificationActivated, "before reset")
+	bus.Emit(eventchan.NotificationActivated, "also before reset")
+	bus.DropRetained()
+	if replay := bus.Replay(map[string]uint64{channel: 0}); len(replay) != 0 {
+		t.Fatalf("a cold cursor must replay nothing after the drop, got %+v", replay)
+	}
+	if replay := bus.Replay(map[string]uint64{channel: 2}); len(replay) != 0 {
+		t.Fatalf("a cursor at the old head must stay valid, got %+v", replay)
+	}
+	event, err := bus.Emit(eventchan.NotificationActivated, "after reset")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.Seq != 3 {
+		t.Fatalf("seq after drop = %d, want 3", event.Seq)
+	}
+	for _, cursor := range []uint64{0, 1, 2} {
+		replay := bus.Replay(map[string]uint64{channel: cursor})
+		if len(replay) != 1 || replay[0].Seq != 3 || replay[0].Gap {
+			t.Fatalf("cursor %d: only the post-drop event replays, without a gap: %+v", cursor, replay)
+		}
+	}
+}
+
 func TestEventBus_EmitAssignsSeq(t *testing.T) {
 	bus := NewEventBus(0)
 	defer bus.Close()

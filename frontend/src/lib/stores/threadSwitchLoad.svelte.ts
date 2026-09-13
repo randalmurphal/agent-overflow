@@ -1,4 +1,4 @@
-import { pendingBackendReplay } from './transportRecovery';
+import { awaitBackendReplay } from './transportRecovery';
 import { requireEntityBackend, withBackendTarget } from '../transport/backends';
 import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { threadHasScope } from '../transport/entityScopes';
@@ -1195,7 +1195,7 @@ export function createThreadSwitchLoad(
   ): Promise<{ liveStateHydrationConsumed: boolean }> {
     let liveStateHydrationConsumed = false;
     const backend = requireEntityBackend(threadBackend(newThread.id));
-    const replay = pendingBackendReplay(backend);
+    const replay = awaitBackendReplay(backend);
     if (replay) await replay;
     if (gen !== options.getSwitchGeneration()) return { liveStateHydrationConsumed };
     // Replay arrivals are older than the reads about to leave.
@@ -1451,7 +1451,7 @@ export function createThreadSwitchLoad(
     if (initialLoad) await initialLoad;
     if (historyRetryPromise) await historyRetryPromise;
     if (!refreshIsCurrent()) return;
-    const replay = pendingBackendReplay(backend);
+    const replay = awaitBackendReplay(backend);
     if (replay) await replay;
     if (!refreshIsCurrent()) return;
     const refreshMutations = {
@@ -1623,7 +1623,7 @@ export function createThreadSwitchLoad(
     const retry = (async () => {
       options.setLoading(true);
       try {
-        const replay = pendingBackendReplay(requireEntityBackend(threadBackend(currentThread.id)));
+        const replay = awaitBackendReplay(requireEntityBackend(threadBackend(currentThread.id)));
         if (replay) await replay;
         if (options.getSwitchGeneration() !== failed.generation) return;
         liveTouchedDuringSync = new Set();

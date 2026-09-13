@@ -18,7 +18,7 @@
 // that landed while the snapshot was in flight is newer than the snapshot
 // and wins.
 
-import { pendingBackendReplay } from './transportRecovery';
+import { awaitBackendReplay } from './transportRecovery';
 import type { BackendKey } from '../transport/backendKey';
 import { withBackendTarget } from '../transport/backends';
 import { threadBackend, threadIdsForBackend } from '../transport/entityIndex';
@@ -72,7 +72,7 @@ function applyRow(row: ThreadLiveActivity, guard: ActivityGuard): void {
  * transport error otherwise, for the caller to report.
  */
 export async function reconcileThreadLiveActivity(backend: BackendKey): Promise<void> {
-  const replay = pendingBackendReplay(backend);
+  const replay = awaitBackendReplay(backend);
   if (replay) await replay;
   if (!hasScope('threads:read', backend)) return;
   // Captured before the read leaves: the guard tells a snapshot that

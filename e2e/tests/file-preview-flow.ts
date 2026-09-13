@@ -61,7 +61,9 @@ export function filePreviewFlow(): void {
       await expect(preview.locator('h1')).toHaveCSS('color', 'rgb(10, 20, 30)');
       expect(await preview.evaluate(() => Object.keys(localStorage))).toEqual([]);
       await harness.rpc('SetNetworkSettings', { bindAll: false });
-      await expect(preview.reload()).rejects.toThrow();
+      // A fetch, not a navigation: a refused page load commits Chromium's error
+      // page after the promise rejects and would interrupt the next goto.
+      await expect(preview.request.get(remoteURL.href)).rejects.toThrow();
       // The same change must leave on-host pages usable.
       await preview.goto(localURL);
       await expect(preview.getByText('Script ready', { exact: true })).toBeVisible();

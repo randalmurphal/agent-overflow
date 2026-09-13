@@ -15,7 +15,7 @@
 // (attach/detach), the down-intent and drag-session windows, and the
 // one-shot restore consent.
 
-import { AUTO_FOLLOW_BOTTOM_EPSILON_PX } from './resolver';
+import { ARRIVAL_DISTANCE_PX, AUTO_FOLLOW_BOTTOM_EPSILON_PX, withinArrivalBand } from './resolver';
 import type { SpringChase } from './springTypes';
 import { nowMs } from './time';
 import { trace } from './trace';
@@ -137,6 +137,8 @@ export interface ScrollIntentDeps {
    * requires.
    */
   noteUserScroll(top: number): void;
+  /** The provenance ledger's last explained scrollTop (chokepoint). */
+  lastExplainedScrollTop(): number | null;
   /** Accepted outer-scroll intent, before the browser moves. */
   onScrollInput?(): void;
 }
@@ -166,6 +168,25 @@ export interface ScrollIntent {
     scrollbarDragSessionVersion: number;
     restoreSnapArmed: boolean;
   };
+}
+
+// A scroll range shrinking beneath scrollTop (a banner row growing the
+// viewport, a spacer remeasure) makes the browser clamp scrollTop to the
+// new maximum and report it as one untagged scroll event. The observers
+// classify that clamp through resizeDifference when their geometry sample
+// precedes the event; a sample delivered after it would leave the clamp
+// read as reader input, which cancels a pending reconnect catch-up. The
+// event's shape is exclusive either way: it lands at the maximum from an
+// explained position beyond it, which no gesture reaches because a gesture
+// ends at or short of the maximum that already held.
+export function isNativeClampEvent(
+  top: number,
+  distanceFromBottom: number,
+  explained: number | null,
+): boolean {
+  return explained !== null
+    && withinArrivalBand(distanceFromBottom, 0)
+    && explained - (top + distanceFromBottom) > ARRIVAL_DISTANCE_PX;
 }
 
 export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
@@ -540,7 +561,10 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
       isNearBottomState: deps.isNearBottom(),
     }));
     const resizeCorrelatedScroll = deps.sampleResizeCorrelation();
-    if (!resizeCorrelatedScroll) deps.noteUserScroll(scrollTopAtEvent);
+    if (
+      !resizeCorrelatedScroll
+      && !isNativeClampEvent(scrollTopAtEvent, distFromBottomAtEvent, deps.lastExplainedScrollTop())
+    ) deps.noteUserScroll(scrollTopAtEvent);
     const previousObserved = lastObservedScrollTopForRestick;
     const downIntentVersionAtEvent = recentDownIntentVersion;
     const scrollbarDragSessionAtEvent = scrollbarDragSessionActive;

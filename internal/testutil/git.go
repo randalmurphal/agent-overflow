@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -83,11 +84,27 @@ func RunGit(t *testing.T, cwd string, args ...string) {
 	}
 }
 
+// isolatedGitEnv drops inherited GIT_* variables. Git exports GIT_DIR to the
+// processes it spawns from a linked worktree (hooks, aliases, `git bisect
+// run`), and a test repo initialised under it would reinitialise that
+// worktree and write into its shared config instead.
+func isolatedGitEnv() []string {
+	env := os.Environ()
+	kept := env[:0]
+	for _, kv := range env {
+		if !strings.HasPrefix(kv, "GIT_") {
+			kept = append(kept, kv)
+		}
+	}
+	return kept
+}
+
 // RunGitAllowError executes a git command, returning any error instead of
 // failing the test.
 func RunGitAllowError(cwd string, args ...string) error {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = cwd
+	cmd.Env = isolatedGitEnv()
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("%w\n%s", err, string(output))
 	}

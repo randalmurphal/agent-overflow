@@ -5,7 +5,8 @@ Svelte 5 with runes, TypeScript, Vite 8, and Tailwind CSS 4. The root
 
 Use `pnpm run check:file <file.ts> ...` while editing plain TypeScript. It does
 not check `.svelte` files or component props. Before completion run
-`pnpm run check`, `pnpm run build`, and the relevant Vitest project. There is no
+`pnpm run check`, `pnpm run build`, the relevant Vitest project, and the
+Playwright specs that cover the changed behavior (root Validation). There is no
 repository formatter; preserve the surrounding style.
 
 ## Navigation

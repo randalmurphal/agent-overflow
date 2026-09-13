@@ -568,6 +568,7 @@ export function createUseStickToBottomController(
       scrollInputRevision += 1;
       chokepoint.noteUserScroll(top);
     },
+    lastExplainedScrollTop: () => chokepoint.lastExplainedScrollTop(),
     onScrollInput: () => { scrollInputRevision += 1; },
   });
 

@@ -133,9 +133,32 @@ func writeWorkspaceFiles(root string, files map[string]string) error {
 	return nil
 }
 
+// fixtureGitEnv pins a fixture git command to the repository at dir. Git
+// exports GIT_DIR to processes it spawns from a linked worktree (hooks,
+// aliases, `git bisect run`); inherited, it would point the fixture's init,
+// config and commits at that worktree and its shared config instead of a
+// new repository. Global and system config stay out for the same reason:
+// the fixture must not run a developer's hooks path or signing setup.
+func fixtureGitEnv(dir string) []string {
+	env := os.Environ()
+	kept := env[:0]
+	for _, kv := range env {
+		if !strings.HasPrefix(kv, "GIT_") {
+			kept = append(kept, kv)
+		}
+	}
+	return append(kept,
+		"GIT_DIR="+filepath.Join(dir, ".git"),
+		"GIT_WORK_TREE="+dir,
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL="+os.DevNull,
+	)
+}
+
 func runGit(dir string, args ...string) error {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
+	cmd.Env = fixtureGitEnv(dir)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("harness: git %s in %s: %w: %s", strings.Join(args, " "), dir, err, strings.TrimSpace(string(out)))

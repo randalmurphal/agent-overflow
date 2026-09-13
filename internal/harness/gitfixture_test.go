@@ -101,3 +101,42 @@ func gitOut(t *testing.T, dir string, args ...string) string {
 	}
 	return string(out)
 }
+
+// Git exports GIT_DIR to the processes it spawns from a linked worktree
+// (hooks, aliases, `git bisect run`). A fixture created under that
+// environment must still be its own repository: the enclosing worktree's
+// history and shared config stay untouched.
+func TestCreateRepoIgnoresInheritedGitDir(t *testing.T) {
+	outer := filepath.Join(t.TempDir(), "outer")
+	if err := CreateRepo(outer, RepoSpec{Commits: []CommitSpec{{Message: "outer", Files: map[string]string{"outer.txt": "x"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	outerHead := strings.TrimSpace(gitOut(t, outer, "rev-parse", "HEAD"))
+	outerConfig, err := os.ReadFile(filepath.Join(outer, ".git", "config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_DIR", filepath.Join(outer, ".git"))
+	t.Setenv("GIT_WORK_TREE", outer)
+	t.Setenv("GIT_INDEX_FILE", filepath.Join(outer, ".git", "index"))
+
+	dir := filepath.Join(t.TempDir(), "fixture")
+	if err := CreateRepo(dir, RepoSpec{Commits: []CommitSpec{{Message: "init", Files: map[string]string{"README.md": "# fixture\n"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".git", "HEAD")); err != nil {
+		t.Fatalf("fixture has no repository of its own: %v", err)
+	}
+	os.Unsetenv("GIT_DIR")
+	os.Unsetenv("GIT_WORK_TREE")
+	os.Unsetenv("GIT_INDEX_FILE")
+	if got := strings.TrimSpace(gitOut(t, outer, "rev-parse", "HEAD")); got != outerHead {
+		t.Fatalf("fixture committed onto the enclosing repository: %s -> %s", outerHead, got)
+	}
+	if got, err := os.ReadFile(filepath.Join(outer, ".git", "config")); err != nil || string(got) != string(outerConfig) {
+		t.Fatalf("fixture rewrote the enclosing repository config:\n%s", got)
+	}
+	if log := gitOut(t, dir, "log", "--format=%s"); strings.TrimSpace(log) != "init" {
+		t.Fatalf("fixture history = %q, want init", log)
+	}
+}

@@ -100,6 +100,15 @@ relevant Vitest tests. Changes to shared bindings, transport or build settings
 may require checks on both sides. Documentation-only changes need checks of
 the affected claims, links and references, not application builds or tests.
 
+Behavior the Playwright suite covers is validated by that suite, not by unit
+tests alone: transport reconnect and recovery, timeline scroll and windowing,
+compact layout, the harness wire, and any spec whose header names the changed
+behavior. Run the affected specs with `bin/ao-harness-e2e tests/<spec>` and
+`make e2e` when the affected set is unclear. No CI runs these suites; the
+author's run is the gate. A failing check in a relevant suite belongs to the
+change whether the code or the test is wrong: fix it before committing, never
+record it as pre-existing.
+
 `make help` lists supported commands; [Development](docs/architecture/development.md)
 routes manual and release checks. Report what ran and any relevant gaps.
 

@@ -90,6 +90,9 @@ type ring struct {
 	seq      uint64
 	capacity int
 	backing  []Event
+	// dropped is the head at the last DropRetained. A cursor below it
+	// missed nothing: that history was discarded, not evicted.
+	dropped uint64
 	// envPrefix is the fixed leading portion of every live event
 	// envelope on this channel: `{"type":"event","channel":<escaped>,"seq":`.
 	// Cached so Emit can assemble WireBytes with plain appends under the
@@ -179,6 +182,9 @@ func (r *ring) grow() {
 // (the client's cursor is ahead of ours) — so the caller can emit a
 // single gap marker instead of partial history.
 func (r *ring) replayAfter(lastSeq uint64) (events []Event, hadGap bool) {
+	if lastSeq < r.dropped {
+		lastSeq = r.dropped
+	}
 	if lastSeq > r.seq {
 		// The client's cursor is above our head, so its sequence space
 		// is not ours: a restarted backend re-seeds every channel from
@@ -601,6 +607,22 @@ func (b *EventBus) LocalScreenPresence(threadID string) (focused, threadVisible 
 //
 // Caller must cap the input map size before invoking — see
 // MaxReplayChannels in frame.go for the wire-level cap.
+// DropRetained discards every ring's history and keeps each channel's
+// sequence: a cursor from before the drop missed nothing, later emits
+// continue the same sequence space, and only they replay. A harness
+// reset uses it: a retained activation from one test would otherwise
+// reach the next test's fresh loopback page, which replays that channel
+// from zero.
+func (b *EventBus) DropRetained() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, r := range b.rings {
+		clear(r.backing)
+		r.head, r.count = 0, 0
+		r.dropped = r.seq
+	}
+}
+
 func (b *EventBus) Replay(lastSeqByChannel map[string]uint64) []Event {
 	if len(lastSeqByChannel) == 0 {
 		return nil

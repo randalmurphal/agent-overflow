@@ -56,6 +56,9 @@ type Host interface {
 	RecoverOrphanedBackgroundTasks() error
 	ClearUIState() error
 	ResetSessionImporter()
+	// DropRetainedEvents empties the event bus replay rings so nothing
+	// emitted before a reset is replayable by the next test's page.
+	DropRetainedEvents()
 	HasWorkflowEngine() bool
 	RequireWorkflowEngine() error
 	ResolveProjectWorkflow(projectID, workflowID string) error

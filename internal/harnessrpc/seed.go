@@ -589,6 +589,11 @@ func (h *Harness) HarnessReset() (err error) {
 	// is a ledger with the same per-test lifetime as the mock registrations
 	// above, and an unbounded one, so nothing else would ever drop it.
 	h.config.Host.ForgetPushSent()
+	// Retained events are the previous test's history. A fresh loopback
+	// page replays notification:activated from zero by design (a click can
+	// launch the window before its first connection), so an activation one
+	// test sent would open its target, or toast its absence, on the next.
+	h.config.Host.DropRetainedEvents()
 	// Generated seed workspaces live under <dataRoot>/workspaces only —
 	// removing the tree lets the next test seed the same project names
 	// (CreateRepo refuses a surviving .git). User-supplied Path projects

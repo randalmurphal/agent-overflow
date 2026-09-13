@@ -23,7 +23,7 @@ vi.mock('../transport/backends', () => ({
   onBackendsChanged: () => () => {},
 }));
 
-import { holdBackendRecovery, isBackendRecovering, onBackendRecovery, pendingBackendReplay } from './transportRecovery';
+import { awaitBackendReplay, holdBackendRecovery, isBackendRecovering, onBackendRecovery, pendingBackendReplay } from './transportRecovery';
 import { itemEventQueued, itemEventsSettled, resetItemEventSettlement } from './itemEventSettlement';
 
 const offs: Array<() => void> = [];
@@ -120,4 +120,33 @@ it('rejects a cancelled replay fence without releasing a newer connection', asyn
   expect(isBackendRecovering('')).toBe(true);
   replay(fixture.home, 'complete');
   expect(pendingBackendReplay('')).toBeUndefined();
+});
+
+it('awaitBackendReplay follows a superseding connection instead of failing', async () => {
+  replay(fixture.home, 'start');
+  let settled = false;
+  const wait = awaitBackendReplay('')!.then(() => { settled = true; });
+  // The old fence rejects; the read must now wait for the new connection's replay.
+  replay(fixture.home, 'start');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(settled).toBe(false);
+  replay(fixture.home, 'complete');
+  await wait;
+  expect(settled).toBe(true);
+});
+
+it('awaitBackendReplay resolves after a disconnect so the read fails on its own transport', async () => {
+  replay(fixture.home, 'start');
+  const wait = awaitBackendReplay('');
+  for (const fn of fixture.home.status) fn({ status: 'reconnecting' });
+  await expect(wait).resolves.toBeUndefined();
+  expect(pendingBackendReplay('')).toBeUndefined();
+});
+
+it('awaitBackendReplay is undefined while no replay is pending so idle reads leave synchronously', () => {
+  expect(awaitBackendReplay('')).toBeUndefined();
+  replay(fixture.home, 'start');
+  expect(awaitBackendReplay('')).toBeInstanceOf(Promise);
+  replay(fixture.home, 'complete');
+  expect(awaitBackendReplay('')).toBeUndefined();
 });

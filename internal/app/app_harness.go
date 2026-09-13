@@ -268,6 +268,12 @@ func (h *harnessHost) ResetSessionImporter() {
 	h.app.sessionImporter().Reset()
 }
 
+func (h *harnessHost) DropRetainedEvents() {
+	if bus := h.app.eventBus.Load(); bus != nil {
+		bus.DropRetained()
+	}
+}
+
 func (h *harnessHost) HasWorkflowEngine() bool { return h.app.workflowApplication().HasEngine() }
 
 func (h *harnessHost) RequireWorkflowEngine() error {

@@ -204,6 +204,33 @@ describe('createUseStickToBottomController', () => {
       recovery.finish();
       expect(geom.scrollTop).toBe(wheel ? 368 : 1568);
     });
+
+    it('a viewport clamp whose scroll event precedes its geometry sample still catches up', () => {
+      controller.detach();
+      controller = createUseStickToBottomController({ externalContentGeometry: true });
+      controller.attach(scrollEl, contentEl);
+      const sample = () => controller.deliverContentGeometry({
+        height: geom.contentHeight, width: 400,
+        viewportHeight: geom.clientHeight - 200,
+        windowMeasured: true, maxFirstMeasureCorrectionPx: 0,
+      });
+      sample();
+      controller.skipWarmup();
+      // The reader's own scroll to the bottom leaves the ledger there.
+      fireScroll(scrollEl);
+      const recovery = controller.beginReconnectRecovery();
+      // The banner row's text change grows the viewport; the virtualizer's
+      // sample for it lands a frame after the browser's clamp event.
+      geom.clientHeight += 32;
+      geom.scrollTop -= 32;
+      fireScroll(scrollEl);
+      sample();
+      geom.contentHeight += 1200;
+      geom.scrollHeight += 1200;
+      sample();
+      recovery.finish();
+      expect(geom.scrollTop).toBe(1568);
+    });
   });
 
   function getRO(): MockResizeObserver {

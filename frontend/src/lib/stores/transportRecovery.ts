@@ -112,3 +112,25 @@ export function pendingBackendReplay(backend: BackendKey): Promise<void> | undef
   const recovery = active.get(backend);
   return recovery?.replayPending ? recovery.replay : undefined;
 }
+
+/**
+ * The fence to await before a read leaves for `backend`, or undefined when
+ * no replay is pending so an idle backend costs the caller no extra tick.
+ * A fence cancelled by a connection change is not a failure of the read
+ * behind it: a newer connection's replay is waited for in its place, and a
+ * dead connection fails that read itself, through the caller's own
+ * transport posture.
+ */
+export function awaitBackendReplay(backend: BackendKey): Promise<void> | undefined {
+  const replay = pendingBackendReplay(backend);
+  return replay ? followBackendReplay(backend, replay) : undefined;
+}
+
+async function followBackendReplay(backend: BackendKey, replay: Promise<void>): Promise<void> {
+  for (let pending: Promise<void> | undefined = replay; pending; pending = pendingBackendReplay(backend)) {
+    try { await pending; }
+    catch (error) {
+      if (!(error instanceof DisconnectedError)) throw error;
+    }
+  }
+}

@@ -34,6 +34,7 @@ type testHost struct {
 	browserScroll     func(string, string, float64, float64) error
 	browserScreenshot func(string, string) ([]byte, error)
 	pushSent          []PushMessage
+	droppedRetained   int
 }
 
 func newHarnessTestHost(t *testing.T) (*Harness, *testHost) {
@@ -144,6 +145,7 @@ func (h *testHost) ClearUIState() error {
 	return h.store.ClearUIState()
 }
 func (h *testHost) ResetSessionImporter()        {}
+func (h *testHost) DropRetainedEvents()          { h.droppedRetained++ }
 func (h *testHost) HasWorkflowEngine() bool      { return false }
 func (h *testHost) RequireWorkflowEngine() error { return fmt.Errorf("workflow engine unavailable") }
 func (h *testHost) ResolveProjectWorkflow(string, string) error {

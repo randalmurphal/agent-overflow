@@ -175,7 +175,12 @@ test('a menu opens as a bottom sheet', async ({ harness, page }) => {
  * is what turns it into a menu. Playwright's `tap` is a tap, and no engine
  * under emulation raises `contextmenu` for a hold on its own.
  */
-async function longPress(page: Page, target: Locator): Promise<void> {
+async function longPress(page: Page, target: Locator, opens: Locator): Promise<void> {
+  // A raw touch has none of the actionability waits Playwright's `tap`
+  // makes. The list renders during the initial sync, while the transport
+  // banner still occupies a row above it in compact layout; a box measured
+  // then is stale by the time the banner leaves.
+  await expect(page.getByTestId('transport-status-banner')).toHaveCount(0);
   const box = await target.boundingBox();
   if (!box) throw new Error('long-press target is not visible');
   const x = box.x + box.width / 2;
@@ -183,7 +188,9 @@ async function longPress(page: Page, target: Locator): Promise<void> {
   const cdp = await page.context().newCDPSession(page);
   try {
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
-    await page.waitForTimeout(700);
+    // Hold until the app has answered the press, so the release cannot race
+    // the detector's timer.
+    await expect(opens).toBeVisible();
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
   } finally {
     await cdp.detach();
@@ -196,8 +203,8 @@ test('a long press on a thread row opens its menu as a sheet and leaves the thre
 }) => {
   await harness.open(page);
   const row = page.getByTestId('thread-row').filter({ hasText: 'First task' });
-  await longPress(page, row);
   const sheet = page.locator('[data-popover-sheet]');
+  await longPress(page, row, sheet);
   await expect(sheet).toBeVisible();
   await expect(sheet.getByRole('menu', { name: 'Thread Actions' })).toBeVisible();
   await expect(sheet.getByRole('menuitem', { name: 'Rename Thread' })).toBeVisible();

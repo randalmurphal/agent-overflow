@@ -67,6 +67,9 @@ export interface WriteChokepoint {
   writeScrollTop(caller: ScrollWriteCaller, value: number, bottomTarget?: number): number | undefined;
   /** Ledger check: live scrollTop differs from the last explained position. */
   scrollTopUnexplained(): boolean;
+  /** The ledger's last explained scrollTop; null until the first write or
+   * classified scroll after attach. */
+  lastExplainedScrollTop(): number | null;
   /** Intent-machine hook: a user-classified scroll event explains its position. */
   noteUserScroll(top: number): void;
   /** Detach-path ledger reset (null until the next write/classified scroll). */
@@ -207,6 +210,7 @@ export function createWriteChokepoint(deps: WriteChokepointDeps): WriteChokepoin
   return {
     writeScrollTop,
     scrollTopUnexplained,
+    lastExplainedScrollTop: (): number | null => lastExplainedScrollTop,
     noteUserScroll: (top: number): void => {
       lastExplainedScrollTop = top;
     },
