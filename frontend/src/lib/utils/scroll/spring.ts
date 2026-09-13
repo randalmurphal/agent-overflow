@@ -11,7 +11,7 @@ import {
 } from '../animationFrameBatcher';
 import type { ScrollWriteCaller } from './types';
 import type { SpringChase, SpringChaseDeps } from './springTypes';
-import { createFrameCadence } from './cadence';
+import { createFrameCadence, createFrameStep } from './cadence';
 import { scrollReadbackTolerance } from './position';
 
 const SIXTY_FPS_INTERVAL_MS = 1000 / 60;
@@ -80,6 +80,8 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
   let lastTickAt: number | null = null;
   let selectionPauseTraced = false;
   const sampleFrameCadence = createFrameCadence();
+  const frameStep = createFrameStep();
+  let lastFrameTimestamp: number | null = null;
   let frameIntervalEmaMs: number | null = null;
   let springToken = 0;
   let springGen = 0;
@@ -209,6 +211,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
     springToken = 0;
     motion.reset();
     lastTickAt = null;
+    lastFrameTimestamp = null;
     selectionPauseTraced = false;
     deps.arrival.clear();
     springStartedFromStructuralAppend = false;
@@ -306,14 +309,14 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
     const myToken = ++springGen;
     springToken = myToken;
     lastTickAt = null;
+    lastFrameTimestamp = null;
     deps.forceNextSpringTickTrace();
     beginChaseTelemetry();
 
-    const tick = (): void => {
+    const tick = (rawFrameTimestamp: number): void => {
       if (springToken !== myToken) return;
-      // A browser can deliver frames on this display while its animation
-      // timestamps follow another display. Integrate actual elapsed time.
       const now = nowMs();
+      const frameTimestamp = Number.isFinite(rawFrameTimestamp) ? rawFrameTimestamp : now;
       springFrameHandle = null;
       const el = deps.getScrollEl();
       if (!el) {
@@ -326,6 +329,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       }
       if (deps.selectionActive()) {
         lastTickAt = now;
+        lastFrameTimestamp = frameTimestamp;
         if (chaseTelemetry) chaseTelemetry.selectionPausedTicks += 1;
         if (!selectionPauseTraced) {
           selectionPauseTraced = true;
@@ -340,11 +344,14 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       selectionPauseTraced = false;
 
       const previousTickAt = lastTickAt;
-      const rawDtFrames =
-        previousTickAt === null ? 1 : (now - previousTickAt) / SIXTY_FPS_INTERVAL_MS;
-      const dtFrames = Number.isFinite(rawDtFrames) ? Math.max(rawDtFrames, 0) : 1;
+      const previousFrameTimestamp = lastFrameTimestamp;
       lastTickAt = now;
+      lastFrameTimestamp = frameTimestamp;
       if (previousTickAt !== null) frameIntervalEmaMs = sampleFrameCadence(now - previousTickAt);
+      const rawDtFrames = previousTickAt === null || previousFrameTimestamp === null
+        ? 1
+        : frameStep(now - previousTickAt, frameTimestamp - previousFrameTimestamp) / SIXTY_FPS_INTERVAL_MS;
+      const dtFrames = Number.isFinite(rawDtFrames) ? Math.max(rawDtFrames, 0) : 1;
       if (chaseTelemetry) recordChaseFrame(now, previousTickAt, dtFrames);
       const integrationFrames = Math.min(dtFrames, SPRING_MAX_CATCHUP_STEPS);
 

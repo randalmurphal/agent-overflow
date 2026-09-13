@@ -103,7 +103,14 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
   - `spring.ts` owns chase lifecycle. `motion.ts` owns continuous position,
     velocity, and acceleration; `position.ts` samples that trajectory onto the
     accepted scroll grid. All motion uses CSS pixels and elapsed
-    60Hz-equivalent time, independently of display cadence.
+    60Hz-equivalent time, independently of display cadence. Each tick's
+    elapsed time is the animation-frame timestamp delta, which is
+    vsync-aligned; callback time jitters with main-thread scheduling and
+    would turn even motion into uneven pixel steps. `cadence.ts`
+    (`createFrameStep`) falls back to whole delivered frames of callback
+    time only while the timestamp clock demonstrably follows another
+    display (repeated timestamps, or frame counts that disagree with
+    callback time).
 
     A damped distance/velocity response anticipates braking, and a symmetric
     jerk bound rounds acceleration changes throughout the glide, including
