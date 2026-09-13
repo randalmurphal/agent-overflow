@@ -43,6 +43,11 @@ input is expected across rolling upgrades: count and debug-log it, but do not
 throw, warn, advance a cursor from malformed input, or partially apply a malformed
 batch.
 
+A paired session is renewed on a schedule while a socket is open
+(`SESSION_RENEWAL_CHECK_INTERVAL_MS`), and a dial renews a due credential before
+its ticket mint. The backend judges every call on the session's current access
+window, so an open socket must never outlive an unrenewed window.
+
 Per-channel cursors are scoped to a server `launchId`. Seed missing cursors from
 `replayBaseline`, preserve existing cursors within a launch, and clear them when
 the launch changes. Normalize only a legacy `gap:true` frame with missing `seq`

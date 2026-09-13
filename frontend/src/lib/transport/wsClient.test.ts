@@ -86,6 +86,7 @@ import {
   REPLAY_TIMEOUT_MS,
   RETRY_ON_TRANSIENT_CLOSE,
   RPC_TIMEOUT_MS,
+  SESSION_RENEWAL_CHECK_INTERVAL_MS,
   STALE_TRAFFIC_THRESHOLD_MS,
   STALE_CHECK_INTERVAL_MS,
   TransportError,
@@ -95,7 +96,7 @@ import {
 import { __resetRunModeForTest } from './runMode';
 import { grantedScopes, hasScope } from './scopes';
 import { getConnectionId, getDeviceId } from './clientIdentity';
-import { clearPairedSession, hasPairedSession, redeemPairing } from './deviceSession';
+import { clearPairedSession, hasPairedSession, pairedSessionHeaders, redeemPairing } from './deviceSession';
 
 // The fake socket, the constructor cast and the microtask flush live in
 // src/test/helpers/mockWebSocket.ts: the step-up interception suite
@@ -4022,6 +4023,65 @@ describe('WSClient', () => {
 
     client.close();
     vi.useRealTimers();
+  });
+
+  // The backend judges every call on the session's current access
+  // window, and an open socket outlives one. The client renews the stored
+  // session before the window closes; a renewal extends the session row
+  // the socket is keyed on, so nothing is re-dialled. Stops with the
+  // client, so a closed page presents nothing again.
+  it('renews the paired session before its access window closes while the socket is open', async () => {
+    localStorage.clear();
+    vi.useFakeTimers();
+    try {
+      const grant = (credential: string, refreshSecret: string, expiresInMs: number) => async () =>
+        new Response(
+          JSON.stringify({
+            sessionId: 'sess-1',
+            credential,
+            expiresAtMs: Date.now() + expiresInMs,
+            refreshSecret,
+            refreshExpiresAtMs: Date.now() + 3600_000,
+          }),
+          { status: 200 },
+        );
+      // 85s: outside the one-minute renewal margin at the dial, inside it
+      // one renewal tick later.
+      await redeemPairing(
+        { v: 1, backendId: 'b', endpoint: 'http://example', token: 'link-token' },
+        'Test browser',
+        grant('cred-1', 'refresh-1', 85_000) as unknown as typeof fetch,
+      );
+      const calls: string[] = [];
+      const authFetch = vi.fn(async (path: string) => {
+        calls.push(path);
+        if (path === '/auth/token') return grant('cred-2', 'refresh-2', 900_000)();
+        return new Response(JSON.stringify({ ticket: 'tik-1' }), { status: 200 });
+      });
+      vi.stubGlobal('fetch', authFetch);
+
+      const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+      void client.callByID(123, ['arg']).catch(() => {});
+      await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
+      MockWebSocket.instances[0]!.acceptOpen();
+      await flushMicrotasks();
+      expect(calls).toEqual(['/auth/ticket']);
+
+      await vi.advanceTimersByTimeAsync(SESSION_RENEWAL_CHECK_INTERVAL_MS);
+      await vi.waitFor(() => expect(calls).toEqual(['/auth/ticket', '/auth/token']));
+      expect((await pairedSessionHeaders())['X-AO-Session']).toBe('cred-2');
+      // The fresh credential lasts fifteen minutes: nothing renews again.
+      await vi.advanceTimersByTimeAsync(SESSION_RENEWAL_CHECK_INTERVAL_MS);
+      expect(calls).toHaveLength(2);
+
+      client.close();
+      await vi.advanceTimersByTimeAsync(900_000);
+      expect(calls).toHaveLength(2);
+      expect(MockWebSocket.instances).toHaveLength(1);
+    } finally {
+      clearPairedSession();
+      vi.unstubAllGlobals();
+    }
   });
 
   // The paired-device dial: a browser that holds its session credential

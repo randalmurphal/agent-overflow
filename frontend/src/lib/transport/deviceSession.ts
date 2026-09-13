@@ -104,11 +104,17 @@ function sessionStoreKey(backend: BackendKey): string {
   return backend === HOME_BACKEND ? SESSION_STORE_KEY : `${SESSION_STORE_KEY}:${backend}`;
 }
 
-// How close to the access credential's expiry a dial triggers renewal
-// first. One minute: far enough that the ticket minted with the old
-// credential cannot outlive it mid-upgrade, small against the shortest
-// access window the backend issues (15 minutes).
+// How close to the access credential's expiry a renewal is due. One
+// minute: far enough that the ticket minted with the old credential
+// cannot outlive it mid-upgrade, small against the shortest access window
+// the backend issues (15 minutes). A dial renews a due credential before
+// its mint, and an open socket's client renews it on a schedule, since the
+// backend judges every call on the session's current window.
 const RENEW_MARGIN_MS = 60_000;
+
+function renewalDue(held: StoredSession): boolean {
+  return held.expiresAtMs > 0 && held.expiresAtMs - Date.now() < RENEW_MARGIN_MS;
+}
 
 // The pairing payload as PairingPayload.Encode() produced it
 // (internal/identity/pairing.go). Additive-only on the Go side; unknown
@@ -410,6 +416,22 @@ export function renewPairedSession(
   fetcher: typeof fetch = networkFetch,
   backend: BackendKey = HOME_BACKEND,
 ): Promise<boolean> {
+  return renewSession(fetcher, backend);
+}
+
+/**
+ * Renew the stored session if its access credential is inside
+ * RENEW_MARGIN_MS of expiry, for a client whose socket outlives one access
+ * window. A renewal extends the session row the backend keys every open
+ * socket on, so the socket stays authorized without a re-dial. Answers
+ * whether a fresh credential is now stored; false when nothing was due.
+ */
+export function renewPairedSessionIfDue(
+  fetcher: typeof fetch = networkFetch,
+  backend: BackendKey = HOME_BACKEND,
+): Promise<boolean> {
+  const held = readStoredSession(backend);
+  if (!held || !renewalDue(held)) return Promise.resolve(false);
   return renewSession(fetcher, backend);
 }
 
@@ -935,7 +957,7 @@ export function mintDialTicket(
   const run = (async () => {
     let held = readStoredSession(backend);
     if (!held) return null;
-    if (held.expiresAtMs > 0 && held.expiresAtMs - Date.now() < RENEW_MARGIN_MS) {
+    if (renewalDue(held)) {
       await renewSession(fetcher, backend);
       held = readStoredSession(backend);
       if (!held) return null;

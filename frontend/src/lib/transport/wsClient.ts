@@ -56,7 +56,7 @@ import {
 } from './frames';
 import { isEntityFilteredChannel } from './entityFilteredChannels';
 import { getConnectionId, getDeviceId } from './clientIdentity';
-import { hasPairedSession, mintDialTicket } from './deviceSession';
+import { hasPairedSession, mintDialTicket, renewPairedSessionIfDue } from './deviceSession';
 import { HOME_BACKEND, type BackendKey } from './backendKey';
 import { homeWsUrl } from './homeEndpoint';
 import { refreshGrantedScopes } from './scopes';
@@ -113,6 +113,12 @@ export const RECONNECT_MAX_REMOTE_MS = 30_000;
 // coarse — precision is not the point.
 export const STALE_TRAFFIC_THRESHOLD_MS = 30_000;
 export const STALE_CHECK_INTERVAL_MS = 10_000;
+// Paired-session renewal. The backend judges every call on the session's
+// current access window, and an open socket outlives one (15 minutes for
+// a browser). Each tick renews the stored session once it is inside
+// deviceSession's renewal margin, so the socket stays authorized without
+// a re-dial. Coarse on purpose: the check is one localStorage read.
+export const SESSION_RENEWAL_CHECK_INTERVAL_MS = 30_000;
 // Live events and heartbeats can overtake replay; only its completion marker
 // proves recovery finished. Bound that wait separately from socket traffic,
 // allowing the same full transfer budget as an RPC on a slow remote link.
@@ -796,6 +802,9 @@ export class WSClient {
   // lastFrameAt is refreshed on every inbound message.
   private lastFrameAt = 0;
   private staleTimer: ReturnType<typeof setInterval> | null = null;
+  // Armed per open socket that named a paired session; see
+  // SESSION_RENEWAL_CHECK_INTERVAL_MS.
+  private sessionRenewalTimer: ReturnType<typeof setInterval> | null = null;
   // True from a resume onto an OPEN socket until the first frame after it.
   // A socket that survived a phone's sleep only in the browser's opinion
   // (the network moved underneath it) delivers nothing, ever, and the
@@ -1037,6 +1046,9 @@ export class WSClient {
       // staleness from fresh post-thaw evidence, otherwise every thaw
       // whose socket survived suspension force-closes it spuriously.
       this.resumeWatchdog();
+      // The renewal ticks froze too, and the window may have closed
+      // while the page slept.
+      void this.renewSessionIfDue();
     }
     this.wakeReconnectLadder();
   }
@@ -1477,6 +1489,7 @@ export class WSClient {
     this.connectPromise = null;
     this.socketNamedPairedSession = false;
     this.stopStaleWatchdog();
+    this.stopSessionRenewal();
     this.serverSendsHeartbeats = false;
     this.serverAnswersHeartbeatProbes = false;
     this.connectedAt = 0;
@@ -1516,6 +1529,31 @@ export class WSClient {
     if (this.staleTimer !== null) {
       clearInterval(this.staleTimer);
       this.staleTimer = null;
+    }
+  }
+
+  private startSessionRenewal(): void {
+    if (this.sessionRenewalTimer !== null || !hasPairedSession(this.backend)) return;
+    this.sessionRenewalTimer = setInterval(() => {
+      void this.renewSessionIfDue();
+    }, SESSION_RENEWAL_CHECK_INTERVAL_MS);
+  }
+
+  private stopSessionRenewal(): void {
+    if (this.sessionRenewalTimer !== null) {
+      clearInterval(this.sessionRenewalTimer);
+      this.sessionRenewalTimer = null;
+    }
+  }
+
+  // One renewal check. A renewal that did not land while the session is
+  // still held is retried on the next tick, and the next dial renews too;
+  // the sink records it so a persistent failure has a trace.
+  private async renewSessionIfDue(): Promise<void> {
+    if (this.sessionRenewalTimer === null) return;
+    const renewed = await renewPairedSessionIfDue(networkFetch, this.backend);
+    if (!renewed && this.sessionRenewalTimer !== null && hasPairedSession(this.backend)) {
+      this.diagnosticsSink?.('transport: paired session renewal did not land');
     }
   }
 
@@ -1628,6 +1666,7 @@ export class WSClient {
     this.closed = true;
     this.detachLifecycleListeners?.();
     this.stopStaleWatchdog();
+    this.stopSessionRenewal();
     if (this.queuedAttempt !== null) {
       clearTimeout(this.queuedAttempt.timer);
       this.queuedAttempt = null;
@@ -2115,6 +2154,7 @@ export class WSClient {
     this.connectPromise = null;
     this.preOpenFailures = 0;
     this.startStaleWatchdog();
+    this.startSessionRenewal();
     this.setStatus({ status: 'connected', nextAttemptAt: null });
     if (this.outage !== null) {
       const downSeconds = ((Date.now() - this.outage.startedAt) / 1000).toFixed(1);
@@ -2216,6 +2256,7 @@ export class WSClient {
     }
     this.publishReplay('cancel');
     this.stopStaleWatchdog();
+    this.stopSessionRenewal();
     this.serverSendsHeartbeats = false;
     this.serverAnswersHeartbeatProbes = false;
     // Backoff reset on STABILITY, not on open: a connection that

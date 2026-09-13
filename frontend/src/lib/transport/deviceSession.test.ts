@@ -15,9 +15,11 @@ import {
   hasPairedSession,
   mintDialTicket,
   pairedSessionId,
+  pairedSessionHeaders,
   parsePairingFragment,
   probeActivation,
   redeemPairing,
+  renewPairedSessionIfDue,
   signInWithPasskey,
   unpairHome,
   type PairingPayload,
@@ -169,6 +171,30 @@ async function pairFirst(): Promise<void> {
   const fetcher = vi.fn(async () => grantResponse());
   await redeemPairing(PAYLOAD, 'My phone', fetcher as unknown as typeof fetch);
 }
+
+describe('renewPairedSessionIfDue', () => {
+  it('answers false with nothing stored or a credential outside the margin, without touching the network', async () => {
+    const fetcher = vi.fn();
+    expect(await renewPairedSessionIfDue(fetcher as unknown as typeof fetch)).toBe(false);
+    await pairFirst();
+    expect(await renewPairedSessionIfDue(fetcher as unknown as typeof fetch)).toBe(false);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it('rotates a credential inside the margin and stores the fresh pair', async () => {
+    const fetcher = vi.fn(async () => grantResponse({ expiresAtMs: Date.now() + 1000 }));
+    await redeemPairing(PAYLOAD, 'My phone', fetcher as unknown as typeof fetch);
+
+    const renewFetcher = vi.fn(async () => grantResponse({ credential: 'cred-2', refreshSecret: 'refresh-2' }));
+    expect(await renewPairedSessionIfDue(renewFetcher as unknown as typeof fetch)).toBe(true);
+    const [path] = renewFetcher.mock.calls[0] as unknown as [string];
+    expect(path).toBe('/auth/token');
+    expect((await pairedSessionHeaders())['X-AO-Session']).toBe('cred-2');
+    // The fresh credential is outside the margin: nothing rotates again.
+    expect(await renewPairedSessionIfDue(renewFetcher as unknown as typeof fetch)).toBe(false);
+    expect(renewFetcher).toHaveBeenCalledOnce();
+  });
+});
 
 describe('mintDialTicket', () => {
   it('answers null with nothing stored, without touching the network', async () => {

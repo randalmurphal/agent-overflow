@@ -15,6 +15,10 @@ bounded memory and simple code that is easy to maintain.
 - Fix the cause in the code that owns it. Check sibling paths and callers
   when changing a shared contract. Validate inside the API so correctness
   does not depend on every caller remembering a precondition.
+- A bug found on one surface or platform is fixed on every surface and
+  platform it applies to in the same change: embedded webview, connected
+  browser, native shell, carried backends, macOS, Linux and Windows. Do not
+  leave a sibling path with the same defect for later.
 - Keep changes cohesive. Improve adjacent code when it makes the solution
   simpler; discuss larger refactors first. Do not add speculative modes,
   compatibility layers or duplicated implementations.
