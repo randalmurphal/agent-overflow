@@ -7,6 +7,9 @@ import type { Settings } from '../../types/settings';
 import { makeSettings } from '../../../test/helpers/settings';
 import { setPageGrantsFromBootstrap } from '../../transport/scopes';
 import { HOST_TIER_REASON } from './settingsComputer';
+import PerformanceSettingsOnComputer from './__tests__/PerformanceSettingsOnComputer.svelte';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { applySettingsSnapshot } from '../../stores/settings.svelte';
 
 async function seed(overrides: Partial<Settings> = {}): Promise<Settings> {
   const merged = makeSettings(overrides);
@@ -59,6 +62,26 @@ describe('<PerformanceSettings>', () => {
       expect(lowPower.disabled).toBe(false);
     } finally {
       setPageGrantsFromBootstrap(false);
+    }
+  });
+
+  it('keeps keep-awake live for an attached computer off the host: presence is the server\'s call there', async () => {
+    // The page knows whether it sits at its OWN backend; whether an attached
+    // computer sees this connection as present (a loopback peer is the
+    // host) is judged there per connection and carried in no snapshot, so
+    // the control stays live and a refusal runs the passkey ceremony.
+    const gpu = 'gpu-backend';
+    stageBackend({ id: gpu, backendId: gpu, name: 'GPU' });
+    applySettingsSnapshot(makeSettings(), gpu);
+    setPageGrantsFromBootstrap(true);
+    try {
+      const { getByRole } = render(PerformanceSettingsOnComputer, { props: { backend: gpu } });
+      const keepAwake = getByRole('switch', { name: 'Toggle Keep-Awake Screen' }) as HTMLButtonElement;
+      expect(keepAwake.disabled).toBe(false);
+      expect(keepAwake.title).toBe('');
+    } finally {
+      setPageGrantsFromBootstrap(false);
+      resetStagedBackends();
     }
   });
 

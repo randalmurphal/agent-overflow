@@ -161,8 +161,7 @@ export function connectedComputersFlow(): void {
 
       await settingsPage(page, 'Typography');
       const size = page.getByTestId('settings-font-size');
-      await size.fill('17');
-      await size.press('Tab');
+      await size.selectOption('17');
       await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).fontSize)).not.toBe(initialFont);
       const changedFont = await page.evaluate(() => getComputedStyle(document.documentElement).fontSize);
       expect(await second.evaluate(() => getComputedStyle(document.documentElement).fontSize)).toBe(initialFont);

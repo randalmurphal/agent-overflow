@@ -156,9 +156,9 @@ const STATIC_FIELDS = [
   {
     id: 'typography.font-size',
     section: 'typography',
-    label: 'Font size',
-    hint: 'Base text size in pixels. Scales the entire UI.',
-    keywords: ['zoom', 'scale', 'text size', 'bigger', 'smaller'],
+    label: 'Interface scale',
+    hint: 'Scales the entire interface, text and controls alike. Ctrl/Cmd + and − step it; Ctrl/Cmd 0 resets.',
+    keywords: ['zoom', 'scale', 'font size', 'text size', 'bigger', 'smaller'],
   },
 
   // --- Chat ---------------------------------------------------------------

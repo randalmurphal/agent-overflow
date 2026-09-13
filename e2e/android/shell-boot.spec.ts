@@ -845,8 +845,7 @@ test('new pairings preserve a legacy first computer and removing it preserves th
     await page.getByTestId('compact-back').click();
     await settings('Typography');
     const font = page.getByTestId('settings-font-size');
-    await font.fill('17');
-    await font.press('Tab');
+    await font.selectOption('17');
     const size = await page.evaluate(() => getComputedStyle(document.documentElement).fontSize);
     // Fixture for an already-installed phone: older builds stored their
     // first pairing under the empty key. The signing key is per frontend;

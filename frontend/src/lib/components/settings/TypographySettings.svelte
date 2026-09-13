@@ -1,22 +1,41 @@
 <script lang="ts">
-  // Settings → Typography: the two typefaces and the base text size.
+  // Settings → Typography: the two typefaces and the interface scale.
   //
-  // Font size scales the whole UI, so it is clamped to the same bounds the
-  // backend enforces rather than trusting the number input's own `min`/`max`
-  // (a typed value bypasses them).
+  // The scale is stored as the base text size in pixels (`fontSize`,
+  // default 13) because that is what `utils/zoom.ts` puts on <html> and
+  // what the zoom chord steps by one. It is SHOWN as a percentage of the
+  // default, since it scales every part of the interface, chrome and
+  // text alike, and "font size" undersold that. Every stored value has a
+  // row, so a chord-stepped size always shows as selected.
 
   import { settingsComputer } from './settingsComputer';
   const { getSettings, updateSetting } = settingsComputer();
   import type { MonoFont, SansFont } from '../../types/settings';
   import SettingsField from './SettingsField.svelte';
-  import { INPUT_CLASS, SELECT_CLASS } from './styles';
+  import { SELECT_CLASS } from './styles';
 
   // Mirrors internal/settings.{Min,Max}FontSize and DefaultSettings.FontSize.
   const MIN_FONT_SIZE = 10;
   const MAX_FONT_SIZE = 20;
   const DEFAULT_FONT_SIZE = 13;
 
+  const SCALE_OPTIONS = Array.from(
+    { length: MAX_FONT_SIZE - MIN_FONT_SIZE + 1 },
+    (_, i) => MIN_FONT_SIZE + i,
+  ).map((px) => ({
+    px,
+    label: `${Math.round((px / DEFAULT_FONT_SIZE) * 100)}%${px === DEFAULT_FONT_SIZE ? ' (default)' : ''}`,
+  }));
+
   let settings = $derived(getSettings());
+
+  function pickScale(raw: string): void {
+    const parsed = parseInt(raw, 10);
+    let next = Number.isFinite(parsed) ? parsed : DEFAULT_FONT_SIZE;
+    if (next < MIN_FONT_SIZE) next = MIN_FONT_SIZE;
+    if (next > MAX_FONT_SIZE) next = MAX_FONT_SIZE;
+    void updateSetting('fontSize', next);
+  }
 </script>
 
 <div class="settings-sections">
@@ -64,28 +83,21 @@
 
       <SettingsField
         id="typography.font-size"
-        label="Font size"
-        hint="Base text size in pixels. Scales the entire UI."
+        label="Interface scale"
+        hint="Scales the entire interface, text and controls alike. Ctrl/Cmd + and − step it; Ctrl/Cmd 0 resets."
         htmlFor="font-size-input"
       >
-        <input
+        <select
           id="font-size-input"
           data-testid="settings-font-size"
-          type="number"
-          min={MIN_FONT_SIZE}
-          max={MAX_FONT_SIZE}
-          step="1"
-          value={settings.fontSize}
-          onchange={(e) => {
-            const raw = (e.target as HTMLInputElement).value;
-            const parsed = parseInt(raw, 10);
-            let next = Number.isFinite(parsed) ? parsed : DEFAULT_FONT_SIZE;
-            if (next < MIN_FONT_SIZE) next = MIN_FONT_SIZE;
-            if (next > MAX_FONT_SIZE) next = MAX_FONT_SIZE;
-            void updateSetting('fontSize', next);
-          }}
-          class="{INPUT_CLASS} max-w-[6rem]"
-        />
+          value={String(settings.fontSize)}
+          onchange={(e) => pickScale((e.target as HTMLSelectElement).value)}
+          class={SELECT_CLASS}
+        >
+          {#each SCALE_OPTIONS as option (option.px)}
+            <option value={String(option.px)}>{option.label}</option>
+          {/each}
+        </select>
       </SettingsField>
     </div>
   </section>

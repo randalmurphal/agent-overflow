@@ -17,69 +17,51 @@ async function seed(overrides: Partial<Settings> = {}): Promise<Settings> {
   return merged;
 }
 
-describe('<TypographySettings> — Font size', () => {
+describe('<TypographySettings> — Interface scale', () => {
   beforeEach(async () => {
     await seed();
   });
 
-  it('renders the font size input with the default value', async () => {
+  it('shows the stored size as a percentage of the default, default selected', async () => {
     const { getByTestId } = render(TypographySettings);
-    const input = getByTestId('settings-font-size') as HTMLInputElement;
-    expect(input.value).toBe('13');
+    const select = getByTestId('settings-font-size') as HTMLSelectElement;
+    expect(select.value).toBe('13');
+    expect(select.selectedOptions[0].textContent).toBe('100% (default)');
+    const labels = Array.from(select.options).map((o) => o.textContent);
+    expect(labels[0]).toBe('77%');
+    expect(labels[labels.length - 1]).toBe('154%');
+    expect(labels).toHaveLength(11);
   });
 
-  it('dispatches fontSize patch on change', async () => {
+  it('dispatches the pixel size behind the picked percentage', async () => {
     const { getByTestId } = render(TypographySettings);
-    const input = getByTestId('settings-font-size') as HTMLInputElement;
-    input.value = '16';
-    await fireEvent.change(input);
+    const select = getByTestId('settings-font-size') as HTMLSelectElement;
+    select.value = '16';
+    await fireEvent.change(select);
 
     const mock = getBindingMock('UpdateSettings');
     expect(mock).toBeDefined();
     expect(mock!.mock.calls[0][0]).toEqual({ fontSize: 16 });
   });
 
-  it('clamps below-minimum input to 10', async () => {
+  it('reflects a chord-stepped size that is not a round percentage', async () => {
+    await seed({ fontSize: 17 });
     const { getByTestId } = render(TypographySettings);
-    const input = getByTestId('settings-font-size') as HTMLInputElement;
-    input.value = '5';
-    await fireEvent.change(input);
-
-    const mock = getBindingMock('UpdateSettings');
-    expect(mock!.mock.calls[0][0]).toEqual({ fontSize: 10 });
+    const select = getByTestId('settings-font-size') as HTMLSelectElement;
+    expect(select.value).toBe('17');
+    expect(select.selectedOptions[0].textContent).toBe('131%');
   });
 
-  it('clamps above-maximum input to 20', async () => {
+  it('falls back to the default when the select carries no value', async () => {
     const { getByTestId } = render(TypographySettings);
-    const input = getByTestId('settings-font-size') as HTMLInputElement;
-    input.value = '30';
-    await fireEvent.change(input);
-
-    const mock = getBindingMock('UpdateSettings');
-    expect(mock!.mock.calls[0][0]).toEqual({ fontSize: 20 });
-  });
-
-  it('falls back to 13 on non-numeric input', async () => {
-    const { getByTestId } = render(TypographySettings);
-    const input = getByTestId('settings-font-size') as HTMLInputElement;
-    input.value = 'banana';
-    await fireEvent.change(input);
-
-    const mock = getBindingMock('UpdateSettings');
-    expect(mock!.mock.calls[0][0]).toEqual({ fontSize: 13 });
-  });
-
-  it('falls back to 13 on empty input', async () => {
-    const { getByTestId } = render(TypographySettings);
-    const input = getByTestId('settings-font-size') as HTMLInputElement;
-    input.value = '';
-    await fireEvent.change(input);
+    const select = getByTestId('settings-font-size') as HTMLSelectElement;
+    select.value = '';
+    await fireEvent.change(select);
 
     const mock = getBindingMock('UpdateSettings');
     expect(mock!.mock.calls[0][0]).toEqual({ fontSize: 13 });
   });
 });
-
 describe('<TypographySettings> — Font selectors', () => {
   beforeEach(async () => {
     await seed();

@@ -37,8 +37,15 @@ export function settingsComputer() {
      * `HOST_TIER_REASON` instead of offering a write that is refused after
      * the fact. Reactive on the scope subscription when read from a
      * `$derived`.
+     *
+     * Only the HOME backend is judged here. Presence is a fact the server
+     * reads off each connection (a loopback peer is the host), and this
+     * page knows it about its own backend alone; an attached computer's
+     * verdict is not carried in any snapshot, so its controls stay live and
+     * the server answers, with the passkey ceremony behind a refusal.
      */
-    hostTierWritable: () => hasScope('host', backend) || passkeysUsable(),
+    hostTierWritable: () =>
+      backend !== HOME_BACKEND || hasScope('host', backend) || passkeysUsable(),
     getSettings: () => settings.getSettings(backend),
     updateSetting: <K extends keyof Settings>(key: K, value: Settings[K]) =>
       settings.updateSetting(key, value, backend),
