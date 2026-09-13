@@ -438,3 +438,36 @@ func TestRemoteOnlyWorkRemainsVisibleUntilLifecycleCancelsIt(t *testing.T) {
 		t.Fatalf("normal queue transfer guard not retained: %v", err)
 	}
 }
+
+// A tray row is background work once no tool call waits on its job: the
+// transcript row is the running one until then. The record a client names
+// jobs and computers by carries the label, the command and the computer's
+// name, never only ids.
+func TestRemoteTrayRowIsBackgroundedOnlyOnceTheWaitEnds(t *testing.T) {
+	a, rec := newAppForFlushQueueRPC(t)
+	thread := remoteWatchThread(t, a, string(provider.Codex))
+	watch := registeredRemoteWatch(t, a, thread)
+	receipt := store.RemoteJob{ID: watch.RequestID, SourceThreadID: thread.ID, State: "running", StartedAt: time.Now().UnixMilli()}
+	if err := a.store.ObserveRemoteWatch(watch.ComputerID, watch.RequestID, receipt, "", 0); err != nil {
+		t.Fatal(err)
+	}
+	_, endWait := a.beginRemoteWait(context.Background(), thread.ID, watch.ComputerID, watch.RequestID)
+	items, err := a.remoteTrayItems(thread.ID, 0)
+	if err != nil || len(items) != 1 || items[0].IsBackground {
+		t.Fatalf("waiting job projected as backgrounded: %+v %v", items, err)
+	}
+	endWait()
+	items, err = a.remoteTrayItems(thread.ID, 0)
+	if err != nil || len(items) != 1 || !items[0].IsBackground {
+		t.Fatalf("job with no wait not backgrounded: %+v %v", items, err)
+	}
+	_ = rec
+	records, err := a.ListThreadRemoteCommands(thread.ID)
+	if err != nil || len(records) != 1 {
+		t.Fatalf("records: %+v %v", records, err)
+	}
+	record := records[0]
+	if record.ComputerID != watch.ComputerID || record.RequestID != watch.RequestID || record.ThreadID != thread.ID || record.Label != watch.Label || record.Receipt.State != "running" || record.Notification != "pending" {
+		t.Fatalf("record: %+v", record)
+	}
+}

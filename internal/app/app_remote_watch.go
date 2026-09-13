@@ -268,7 +268,7 @@ func (a *App) checkRemoteWatch(w store.RemoteWatch) {
 	}
 	issue := ""
 	if err != nil {
-		issue = remoteErrorText(remoteOperationError("status", w.ComputerID, w.RequestID, err))
+		issue = remoteIssueText("status", err)
 		receipt = w.Receipt
 	} else if receipt.ID != w.RequestID || receipt.SourceThreadID != w.ThreadID {
 		issue = "The destination returned a receipt for a different conversation. Completion delivery is paused."
@@ -312,7 +312,7 @@ func (a *App) probeUnacceptedRemoteWatch(ctx context.Context, w store.RemoteWatc
 	if !errors.As(err, &remote) || remote.Code != "remote_job_not_found" {
 		return false, err
 	}
-	return true, a.refuseRemoteWatch(w.ComputerID, w.RequestID, w.ThreadID, remoteOperationError("status", w.ComputerID, w.RequestID, err))
+	return true, a.refuseRemoteWatch(w.ComputerID, w.RequestID, w.ThreadID, a.remoteOperationError("status", w.ComputerID, w.RequestID, err))
 }
 
 // Serialize admission and optional lazy start against archive/transfer/stop,
@@ -425,9 +425,22 @@ func remoteCompletionSendID(w store.RemoteWatch) string {
 	return "remote-completion:" + w.ComputerID + ":" + w.RequestID
 }
 
+// ListThreadRemoteCommands lists a conversation's tracked remote jobs, pending
+// first, with each computer's name. The transcript resolves job labels and
+// computer names from it; the tray reads its own projection.
+//
 //ao:scope threads:read
-func (a *App) ListThreadRemoteCommands(threadID string) ([]store.RemoteWatch, error) {
-	return a.store.ListRemoteWatches(threadID, 0, 256)
+func (a *App) ListThreadRemoteCommands(threadID string) ([]RemoteJobRecord, error) {
+	watches, err := a.store.ListRemoteWatches(threadID, 0, 256)
+	if err != nil {
+		return nil, err
+	}
+	names := a.remoteComputerNames()
+	rows := make([]RemoteJobRecord, 0, len(watches))
+	for _, w := range watches {
+		rows = append(rows, remoteJobRecord(w, names[w.ComputerID]))
+	}
+	return rows, nil
 }
 
 //ao:scope terminal:operate
@@ -453,7 +466,7 @@ func (a *App) CancelThreadRemoteCommand(ctx context.Context, threadID, computerI
 		err = a.observeRemoteCommand(computerID, requestID, threadID, receipt)
 	}
 	if err != nil {
-		return receipt, remoteOperationError("cancel", computerID, requestID, err)
+		return receipt, a.remoteUserError("stop", computerID, requestID, err)
 	}
 	// Cancel only asks; the destination gives the process a TERM grace
 	// before KILL (remotejobs.Manager). The caller pressed Stop and is
@@ -473,7 +486,7 @@ func (a *App) CancelThreadRemoteCommand(ctx context.Context, threadID, computerI
 		}
 		receipt = status
 		if observeErr := a.observeRemoteCommand(computerID, requestID, threadID, receipt); observeErr != nil {
-			return receipt, remoteOperationError("cancel", computerID, requestID, observeErr)
+			return receipt, a.remoteUserError("stop", computerID, requestID, observeErr)
 		}
 	}
 	return receipt, nil
@@ -570,7 +583,11 @@ func (a *App) remoteTrayItems(threadID string, cutoff int64) ([]store.Item, erro
 		if r.StartedAt != 0 {
 			start = r.StartedAt
 		}
-		item := store.Item{ID: id, ThreadID: threadID, Kind: "tool_call", Role: "assistant", Status: "running", ToolName: remoteTrayToolName, Summary: label, CreatedAt: start, IsBackground: true, Meta: string(meta)}
+		// A job is background work once no tool call is parked on it. While
+		// remote_run still waits, the transcript row is the running one and
+		// this row reads as running too; the wait's end backgrounds both.
+		backgrounded := !a.remoteWaitActive(w.ComputerID, w.RequestID)
+		item := store.Item{ID: id, ThreadID: threadID, Kind: "tool_call", Role: "assistant", Status: "running", ToolName: remoteTrayToolName, Summary: label, CreatedAt: start, IsBackground: backgrounded, Meta: string(meta)}
 		out = append(out, item)
 		if finished {
 			item.ID = id + ":done"

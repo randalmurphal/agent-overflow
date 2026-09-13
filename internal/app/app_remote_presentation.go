@@ -20,9 +20,25 @@ func (a *App) remoteComputerNames() map[string]string {
 	return names
 }
 
-type remoteMCPWatch struct {
-	store.RemoteWatch
-	ComputerName string `json:"computerName,omitempty"`
+// RemoteJobRecord is one of a conversation's tracked remote jobs as the
+// transcript, the tray and remote_jobs read it: the durable watch plus the
+// computer's name as this computer knows it. A client naming a job or a
+// computer reads it from here rather than showing an id.
+type RemoteJobRecord struct {
+	ComputerID   string          `json:"computerId"`
+	ComputerName string          `json:"computerName,omitempty"`
+	RequestID    string          `json:"requestId"`
+	ThreadID     string          `json:"threadId"`
+	Label        string          `json:"label"`
+	Command      string          `json:"command"`
+	Receipt      store.RemoteJob `json:"receipt"`
+	Error        string          `json:"error,omitempty"`
+	Notification string          `json:"notification"`
+	CreatedAt    int64           `json:"createdAt"`
+}
+
+func remoteJobRecord(w store.RemoteWatch, computerName string) RemoteJobRecord {
+	return RemoteJobRecord{ComputerID: w.ComputerID, ComputerName: computerName, RequestID: w.RequestID, ThreadID: w.ThreadID, Label: w.Label, Command: w.Command, Receipt: w.Receipt, Error: w.Error, Notification: w.Notification, CreatedAt: w.CreatedAt}
 }
 
 func remoteOutputHint(result remoteMCPResult) string {

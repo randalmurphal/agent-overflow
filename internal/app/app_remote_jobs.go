@@ -135,7 +135,7 @@ func (a *App) RemoteCommandProjects(ctx context.Context) ([]RemoteCommandProject
 		if _, err := os.Lstat(filepath.Join(row.Path, ".git")); err == nil {
 			worktrees, err := a.gitCore().ListWorktreesContext(scan, row.Path)
 			if err != nil {
-				project.WorktreesError = remoteErrorText(remoteOperationError("inspect project worktrees", "", "", err))
+				project.WorktreesError = remoteErrorText(a.remoteOperationError("inspect project worktrees", "", "", err))
 			}
 			for _, worktree := range worktrees {
 				if info, err := os.Stat(worktree.Path); err != nil || !info.IsDir() {
@@ -264,7 +264,7 @@ func (a *App) AgentRemoteComputers(ctx context.Context) ([]AgentComputer, error)
 	}
 	rows, err := a.ListAgentComputers()
 	if err != nil {
-		return nil, remoteOperationError("discover", "", "", err)
+		return nil, a.remoteOperationError("discover", "", "", err)
 	}
 	return a.probeAgentComputers(ctx, rows), nil
 }
@@ -292,7 +292,7 @@ func (a *App) probeAgentComputers(ctx context.Context, rows []AgentComputer) []A
 			probe, cancel := context.WithTimeout(ctx, 3*time.Second)
 			defer cancel()
 			if err := a.backends.CallAgentPeer(probe, out[i].ID, "RemoteCommandProjects", &out[i].Projects); err != nil {
-				out[i].Error = remoteErrorText(remoteOperationError("discover", out[i].ID, "", err))
+				out[i].Error = remoteErrorText(a.remoteOperationError("discover", out[i].ID, "", err))
 				return
 			}
 			var environment RemoteCommandEnvironment
@@ -301,7 +301,7 @@ func (a *App) probeAgentComputers(ctx context.Context, rows []AgentComputer) []A
 			} else {
 				var remote *rpcclient.Error
 				if !errors.As(err, &remote) || remote.Code != transport.ErrCodeMethodNotFound {
-					out[i].EnvironmentError = remoteErrorText(remoteOperationError("inspect environment", out[i].ID, "", err))
+					out[i].EnvironmentError = remoteErrorText(a.remoteOperationError("inspect environment", out[i].ID, "", err))
 				}
 			}
 		}()
@@ -330,7 +330,7 @@ func (a *App) AgentRemoteStart(ctx context.Context, input AgentRemoteRequest) (R
 	// ignore it. Derived here so every caller and retry encodes it alike.
 	input.Request.Unlimited = input.Request.TimeoutSeconds == 0
 	if err := remotejobs.Validate(input.Request); err != nil {
-		return RemoteCommand{}, remoteOperationError("run", input.ComputerID, input.Request.ID, err)
+		return RemoteCommand{}, a.remoteOperationError("run", input.ComputerID, input.Request.ID, err)
 	}
 	if !entityid.Valid(input.Workspace.ProjectID) {
 		return RemoteCommand{}, errorsx.Public("remote_invalid_project", "project_id must be a destination project UUID from remote_computers.", nil)
@@ -359,7 +359,7 @@ func (a *App) AgentRemoteStart(ctx context.Context, input AgentRemoteRequest) (R
 		}
 	}
 	if err != nil {
-		publicErr := remoteOperationError("run", input.ComputerID, input.Request.ID, err)
+		publicErr := a.remoteOperationError("run", input.ComputerID, input.Request.ID, err)
 		code, _, _ := errorsx.PublicDetails(publicErr)
 		// Every code here is answered before the destination accepts anything,
 		// so a fresh attempt refused this way never started. A lost reply keeps
@@ -404,7 +404,7 @@ func (a *App) agentRemoteResult(ctx context.Context, computerID, id string, canc
 	defer cancel()
 	var result RemoteCommand
 	if err = a.backends.CallAgentPeer(call, computerID, "RemoteCommandStatus", &result, id); err != nil {
-		return result, remoteOperationError(action, computerID, id, err)
+		return result, a.remoteOperationError(action, computerID, id, err)
 	}
 	if err = a.observeRemoteCommand(computerID, id, scope.ThreadID, result); err != nil {
 		return RemoteCommand{}, err
@@ -415,5 +415,5 @@ func (a *App) agentRemoteResult(ctx context.Context, computerID, id string, canc
 			err = a.observeRemoteCommand(computerID, id, scope.ThreadID, result)
 		}
 	}
-	return result, remoteOperationError(action, computerID, id, err)
+	return result, a.remoteOperationError(action, computerID, id, err)
 }

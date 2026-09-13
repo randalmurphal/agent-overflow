@@ -12,7 +12,11 @@ import {
   stageBackend,
 } from '../../../test/helpers/backends';
 import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
+import { HOME_BACKEND } from '../../transport/backendKey';
 import { BROWSER_TOOLS_SERVER } from '../../utils/browserTools';
+import { __resetRemoteJobsForTest } from '../../stores/remoteJobs.svelte';
+import { applyBrowserCompanionState, resetBrowserCompanionForTest } from '../../stores/browserCompanion.svelte';
+import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
 
 // Minimal fake pane that satisfies the expansion-registry surface
 // GenericToolCallRow reads from. Shared between tests that need a pane
@@ -685,27 +689,44 @@ describe('<GenericToolCallRow> browser tools on another machine', () => {
 });
 
 // A tool AO serves itself presents as a proper tool call: the family icon,
-// a verb in the gutter, the computer it acts on, and the argument that
-// matters, with the wire tool name kept for a hover.
+// a verb in the gutter, the argument that matters, the computer it acts on
+// after it, with the wire tool name kept for a hover. Ids the model used
+// read as what they name: a computer, a job, a page.
 describe('<GenericToolCallRow> AO tools', () => {
+  const THREAD = 'thread-remote';
+  const REQUEST = '98312d67-2222-4222-8222-222222222222';
+  const record = (receipt: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
+    computerId: 'far', computerName: 'Macaroni-air', requestId: REQUEST, threadId: THREAD,
+    label: 'Go tests', command: 'go test ./...', notification: 'pending', createdAt: 1,
+    receipt: { id: REQUEST, sourceThreadId: THREAD, state: 'running', startedAt: 1000, exitCode: -1, ...receipt },
+    ...extra,
+  });
+
   beforeEach(() => {
     resetBindingMocks();
     resetStagedBackends();
     __resetEntityIndexForTest();
+    __resetRemoteJobsForTest();
+    resetBrowserCompanionForTest();
     setBindingMock('GetPayloadPreview', vi.fn(async () => ({ data: '', size: 0, isComplete: true })));
+    setBindingMock('ListThreadRemoteCommands', vi.fn(async () => []));
+    noteThread(THREAD, HOME_BACKEND);
   });
 
-  function remoteRun(input: Record<string, unknown>): Item {
+  function remoteTool(tool: string, input: Record<string, unknown>, overrides: Partial<Item> = {}): Item {
     return makeItem({
       id: 'tool-remote',
+      threadId: THREAD,
       kind: 'tool_call',
-      toolName: 'MCP/remote_run',
-      summary: 'MCP/remote_run: …',
-      meta: JSON.stringify({ mcp: { server: 'ao-remote-tools', tool: 'remote_run' }, input }),
+      toolName: `MCP/${tool}`,
+      summary: `MCP/${tool}: …`,
+      meta: JSON.stringify({ mcp: { server: 'ao-remote-tools', tool }, input }),
+      ...overrides,
     });
   }
+  const remoteRun = (input: Record<string, unknown>, overrides: Partial<Item> = {}) => remoteTool('remote_run', input, overrides);
 
-  it('shows the command and the attached computer it runs on', () => {
+  it('shows the command, then the attached computer it runs on', () => {
     stageBackend();
     const { getByTestId } = render(GenericToolCallRow, {
       props: { item: remoteRun({ computer_id: 'laptop', argv: ['go', 'test', './...'] }) },
@@ -713,29 +734,120 @@ describe('<GenericToolCallRow> AO tools', () => {
     expect(getByTestId('tool-call-card').dataset.toolKind).toBe('monitor');
     expect(getByTestId('tool-call-card-label').textContent).toBe('run');
     expect(getByTestId('tool-call-card-label').getAttribute('title')).toBe('remote_run');
-    expect(getByTestId('tool-call-card-where').dataset.machine).toBe('Laptop');
+    const where = getByTestId('tool-call-card-where');
+    expect(where.dataset.machine).toBe('Laptop');
+    expect(where.textContent).toBe('(Laptop)');
+    expect(where.getAttribute('title')).toBe('On Laptop');
+    expectBefore(getByTestId('tool-call-card-preview'), where);
     expect(getByTestId('tool-call-card-preview').textContent).toBe('go test ./...');
   });
 
-  it('shows the command alone when the computer is not one this client is attached to', () => {
-    const { getByTestId, queryByTestId } = render(GenericToolCallRow, {
-      props: { item: remoteRun({ computer_id: 'elsewhere', argv: ['make'] }) },
+  it('still tells two computers apart by a short id when nobody here can name one', () => {
+    const { getByTestId } = render(GenericToolCallRow, {
+      props: { item: remoteRun({ computer_id: 'c0ffee11-1111-4111-8111-111111111111', argv: ['make'] }) },
     });
-    expect(queryByTestId('tool-call-card-where')).toBeNull();
+    const where = getByTestId('tool-call-card-where');
+    expect(where.textContent).toBe('(computer c0ffee11)');
+    expect(where.getAttribute('title')).toContain('not paired');
     expect(getByTestId('tool-call-card-preview').textContent).toBe('make');
   });
 
-  it('presents a browser tool by verb and target', () => {
-    const item = makeItem({
+  it("names the computer and the job from the thread's job listing", async () => {
+    const list = setBindingMock('ListThreadRemoteCommands', vi.fn(async () => [record({ state: 'succeeded', finishedAt: 4000, exitCode: 0 })]));
+    const { getByTestId } = render(GenericToolCallRow, {
+      props: { item: remoteTool('remote_search_log', { computer_id: 'far', request_id: REQUEST, query: 'FAIL' }) },
+    });
+    await waitFor(() => expect(getByTestId('tool-call-card-preview').textContent).toBe('"FAIL" in Go tests'));
+    expect(list).toHaveBeenCalledWith(THREAD);
+    expect(getByTestId('tool-call-card-where').textContent).toBe('(Macaroni-air)');
+  });
+
+  it('reads a returned remote_run as backgrounded while its job runs, then as the job\'s own outcome', async () => {
+    setBindingMock('ListThreadRemoteCommands', vi.fn(async () => [record({})]));
+    const item = remoteRun({ computer_id: 'far', request_id: REQUEST, argv: ['go', 'test', './...'] }, {
+      status: 'completed', createdAt: Date.now() - 60_000,
+      payloadMeta: JSON.stringify({ durationMs: 300_000 }),
+    });
+    const { getByTestId, queryByText } = render(GenericToolCallRow, { props: { item } });
+    // Before the listing answers, the row is the completed five-minute call it is.
+    expect(getByTestId('tool-call-card-duration').textContent?.trim()).toBe('5m 0s');
+    const indicator = () => getByTestId('tool-call-card-status-slot').querySelector('[data-testid="indicator"]');
+    await waitFor(() => expect(indicator()?.getAttribute('data-state')).toBe('backgrounded'));
+    expect(getByTestId('tool-call-card-duration').textContent?.trim()).toBe('');
+
+    setBindingMock('ListThreadRemoteCommands', vi.fn(async () => [record({ state: 'canceled', finishedAt: 4000 })]));
+    emitWailsEvent('provider:background_tasks_changed', { threadId: THREAD });
+    await waitFor(() => expect(indicator()?.getAttribute('data-state')).toBe('error'));
+    expect(queryByText('Remote job stopped')).not.toBeNull();
+    expect(getByTestId('tool-call-card-duration').textContent?.trim()).toBe('3.0s');
+
+    setBindingMock('ListThreadRemoteCommands', vi.fn(async () => [record({ state: 'failed', finishedAt: 4000, exitCode: 2, error: 'tests failed' })]));
+    emitWailsEvent('provider:background_tasks_changed', { threadId: THREAD });
+    await waitFor(() => expect(queryByText('tests failed')).not.toBeNull());
+    expect(queryByText('exit 2')).not.toBeNull();
+  });
+
+  it('keeps a job in another thread\'s listing out of this row', async () => {
+    setBindingMock('ListThreadRemoteCommands', vi.fn(async () => []));
+    const item = remoteRun({ computer_id: 'far', request_id: REQUEST, argv: ['make'] }, { status: 'completed' });
+    const { getByTestId } = render(GenericToolCallRow, { props: { item } });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(getByTestId('tool-call-card-status-slot').querySelector('[data-testid="indicator"]')).toBeNull();
+  });
+
+  it('opens to the full text the header clipped and the inputs it left out', async () => {
+    stageBackend();
+    const long = ['bash', '-lc', `for i in ${Array.from({ length: 40 }, (_, i) => `step${i}`).join(' ')}; do echo $i; done`];
+    const item = remoteRun({ computer_id: 'laptop', project_id: 'proj-uuid', request_id: REQUEST, argv: long, timeout_seconds: 600 });
+    const { getByTestId, queryByTestId, getAllByTestId } = render(GenericToolCallRow, { props: { item } });
+    const toggle = getByTestId('tool-call-card-toggle');
+    expect(toggle).not.toHaveAttribute('aria-disabled', 'true');
+    expect(getByTestId('tool-call-card-preview').textContent?.endsWith('…')).toBe(true);
+    await fireEvent.click(toggle);
+    const full = getByTestId('tool-call-card-ao-full');
+    expect(full.textContent).toContain('step39; do echo $i; done');
+    const facts = getAllByTestId('tool-call-card-ao-fact').map((el) => [el.dataset.fact, el.textContent]);
+    expect(facts).toEqual([['computer', 'Laptop'], ['timeout', '600']]);
+    expect(queryByTestId('tool-call-card-body')).toBeNull();
+  });
+
+  it('renders a remote reply as its outcome and output rather than the JSON the model read', async () => {
+    const reply = JSON.stringify({ id: REQUEST, computerId: 'far', state: 'succeeded', exitCode: 0, startedAt: 1000, finishedAt: 13500, output: 'ok  \tagent-overflow/internal/app\n' });
+    setBindingMock('GetPayloadPreview', vi.fn(async () => ({ data: reply, size: reply.length, isComplete: true })));
+    const item = remoteRun({ computer_id: 'far', request_id: REQUEST, argv: ['go', 'test'] }, { status: 'completed', payloadId: 'p-remote' });
+    const { getByTestId, findByTestId } = render(GenericToolCallRow, { props: { item } });
+    await fireEvent.click(getByTestId('tool-call-card-toggle'));
+    expect((await findByTestId('tool-call-card-remote-outcome')).textContent).toBe('succeeded · exit 0 · 12.5s');
+    expect(getByTestId('tool-call-card-output').textContent).toContain('agent-overflow/internal/app');
+    expect(getByTestId('tool-call-card-output').textContent).not.toContain('"state"');
+  });
+
+  it('presents a browser tool by verb and target, naming a page by its label', () => {
+    applyBrowserCompanionState({
+      kind: 'state', threadId: THREAD,
+      pages: [{ id: 'page-1', label: 'Checkout', url: 'https://shop.test/checkout', title: 'Cart', canGoBack: false, canGoForward: false }],
+    });
+    const click = makeItem({
       id: 'tool-click',
+      threadId: THREAD,
       kind: 'tool_call',
       toolName: 'MCP/browser_click',
       meta: JSON.stringify({ mcp: { server: BROWSER_TOOLS_SERVER, tool: 'browser_click' }, input: { selector: '#submit' } }),
     });
-    const { getByTestId } = render(GenericToolCallRow, { props: { item } });
-    expect(getByTestId('tool-call-card').dataset.toolKind).toBe('globe');
-    expect(getByTestId('tool-call-card-label').textContent).toBe('click');
-    expect(getByTestId('tool-call-card-preview').textContent).toBe('#submit');
+    const clicked = render(GenericToolCallRow, { props: { item: click } });
+    expect(clicked.getByTestId('tool-call-card').dataset.toolKind).toBe('globe');
+    expect(clicked.getByTestId('tool-call-card-label').textContent).toBe('click');
+    expect(clicked.getByTestId('tool-call-card-preview').textContent).toBe('#submit');
+    clicked.unmount();
+    const select = makeItem({
+      id: 'tool-select',
+      threadId: THREAD,
+      kind: 'tool_call',
+      toolName: 'MCP/browser_select_page',
+      meta: JSON.stringify({ mcp: { server: BROWSER_TOOLS_SERVER, tool: 'browser_select_page' }, input: { page_id: 'page-1' } }),
+    });
+    const selected = render(GenericToolCallRow, { props: { item: select } });
+    expect(selected.getByTestId('tool-call-card-preview').textContent).toBe('Checkout');
   });
 });
 

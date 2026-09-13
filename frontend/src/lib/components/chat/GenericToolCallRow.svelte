@@ -31,7 +31,15 @@
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
   import { createRunningElapsed } from './useRunningElapsed.svelte';
   import { useLeasedItemExpansion } from './useLeasedPayloadExpansion.svelte';
-  import { aoToolPresentation } from './aoTools';
+  import {
+    aoToolFacts,
+    aoToolPresentation,
+    aoToolServer,
+    computerName as aoComputerName,
+    REMOTE_TOOLS_SERVER,
+    type AoToolNames,
+  } from './aoTools';
+  import AoToolBody from './AoToolBody.svelte';
   import { BROWSER_TOOLS_SERVER } from '../../utils/browserTools';
   import {
     attachedBackendEntry,
@@ -39,6 +47,12 @@
     threadMachine,
   } from '../../stores/attachedBackends.svelte';
   import { previewRouted } from '../../stores/devServers.svelte';
+  import { browserCompanionState } from '../../stores/browserCompanion.svelte';
+  import {
+    attachRemoteJobs,
+    remoteJobComputerName,
+    remoteJobRecord,
+  } from '../../stores/remoteJobs.svelte';
 
   let {
     pane,
@@ -63,8 +77,28 @@
   let displayMeta = $derived(parseJsonObject(effectiveDisplayItem.meta));
   // A tool AO itself serves (remote, browser) presents by its own table:
   // family icon, verb, the argument that matters. Everything else goes by
-  // tool name.
-  let aoTool = $derived(aoToolPresentation(displayMeta));
+  // tool name. The ids its input carries are shown by name: a computer this
+  // client is attached to, or one the thread's job listing names; a job by
+  // its label; a page by its label or title.
+  let aoServer = $derived(aoToolServer(displayMeta));
+  $effect(() => {
+    if (aoServer !== REMOTE_TOOLS_SERVER || !item.threadId) return;
+    const held = attachRemoteJobs(item.threadId);
+    return () => held.release();
+  });
+  const aoNames: AoToolNames = {
+    computer: (id) => {
+      const entry = attachedBackendEntry(id);
+      return entry ? backendDisplayName(entry) : remoteJobComputerName(item.threadId, id);
+    },
+    job: (requestId) => remoteJobRecord(item.threadId, requestId)?.label ?? '',
+    page: (pageId) => {
+      const page = browserCompanionState(item.threadId)?.pages?.find((p) => p.id === pageId);
+      return page?.label || page?.title || '';
+    },
+  };
+  let aoTool = $derived(aoServer ? aoToolPresentation(displayMeta, aoNames) : null);
+  let aoFacts = $derived(aoServer ? aoToolFacts(displayMeta, aoNames) : []);
   let classification = $derived(
     aoTool
       ? { icon: aoTool.icon, label: aoTool.label, isSubagent: false }
@@ -99,10 +133,57 @@
   });
   let statusMeta = $derived(parseJsonObject(effectiveStatusItem.payloadMeta));
 
+  // A remote_run row is the job it started. While the call itself waits it
+  // is a running tool call like any other; once the call has returned and
+  // the job is still running on the far computer, the row reads as
+  // backgrounded, with no timer, until the job's receipt settles it with
+  // the job's own outcome and run time. The receipt is the thread's job
+  // listing, which the watcher keeps current.
+  let remoteJob = $derived(
+    aoTool?.tool === 'remote_run' && aoTool.requestId && effectiveStatusItem.status === 'completed'
+      ? remoteJobRecord(item.threadId, aoTool.requestId)
+      : null,
+  );
+  let jobProjection = $derived.by<{
+    status: Item['status'];
+    isBackground: boolean;
+    durationMs: number | null;
+    error: { tone: 'error'; msg: string; code?: string } | null;
+  } | null>(() => {
+    const receipt = remoteJob?.receipt;
+    if (!receipt?.id) return null;
+    if (receipt.state === 'running') {
+      return { status: 'running', isBackground: true, durationMs: null, error: null };
+    }
+    const finishedAt = receipt.finishedAt ?? 0;
+    const durationMs = receipt.startedAt > 0 && finishedAt >= receipt.startedAt
+      ? finishedAt - receipt.startedAt
+      : null;
+    const code = receipt.exitCode >= 0 ? `exit ${receipt.exitCode}` : undefined;
+    switch (receipt.state) {
+      case 'succeeded':
+        return { status: 'completed', isBackground: false, durationMs, error: null };
+      case 'canceled':
+        return { status: 'killed', isBackground: false, durationMs, error: { tone: 'error', msg: 'Remote job stopped' } };
+      default:
+        return {
+          status: 'errored',
+          isBackground: false,
+          durationMs,
+          error: { tone: 'error', msg: receipt.error || `Remote job ${receipt.state}`, code },
+        };
+    }
+  });
+  let projectedStatusItem = $derived<Item>(
+    jobProjection
+      ? { ...effectiveStatusItem, status: jobProjection.status, isBackground: jobProjection.isBackground }
+      : effectiveStatusItem,
+  );
+
   let time = $derived(formatTimeOfDay(effectiveStatusItem.createdAt));
 
   let preview = $derived(
-    presentToolCardInputPreview(effectiveDisplayItem, summaryMeta, displayMeta, paneWorkspacePath(pane)),
+    presentToolCardInputPreview(effectiveDisplayItem, summaryMeta, displayMeta, paneWorkspacePath(pane), aoNames),
   );
   let previewClass = $derived(
     preview.path
@@ -111,6 +192,7 @@
   );
 
   let durationMs = $derived.by<number | null>(() => {
+    if (jobProjection) return jobProjection.durationMs;
     if (!summaryMeta) return null;
     const d = summaryMeta.durationMs;
     if (typeof d === 'number' && d >= 0) return d;
@@ -118,7 +200,7 @@
   });
 
   let isBackgroundedLaunch = $derived(
-    effectiveStatusItem.kind === 'tool_call' && effectiveStatusItem.isBackground === true,
+    projectedStatusItem.kind === 'tool_call' && projectedStatusItem.isBackground === true,
   );
   let isCodexSubagentLaunch = $derived(isCodexSubagentLaunchItem(effectiveStatusItem));
 
@@ -132,7 +214,7 @@
       && (effectiveStatusItem.status === 'running' || effectiveStatusItem.status === 'streaming'),
   );
 
-  let indicatorState = $derived(indicatorStateForItem(effectiveStatusItem, { meta: statusMeta }));
+  let indicatorState = $derived(indicatorStateForItem(projectedStatusItem, { meta: statusMeta }));
   // Claude's SendMessage ack, stamped by triage as `send_reply`: the one
   // line the CLI's own TUI prints under the call ("Message queued for
   // …", "No agent named …"). Red as the row error when the CLI refused
@@ -143,10 +225,12 @@
     return typeof reply === 'string' ? reply.trim() : '';
   });
   let rowError = $derived(
-    rowErrorWithFallback(effectiveStatusItem, {
-      meta: statusMeta,
-      fallback: sendReply || 'Tool call failed',
-    }),
+    jobProjection
+      ? jobProjection.error
+      : rowErrorWithFallback(effectiveStatusItem, {
+        meta: statusMeta,
+        fallback: sendReply || 'Tool call failed',
+      }),
   );
   const ticker = createRunningElapsed(
     () => isRunning && durationLabel === '' && !isBackgroundedLaunch,
@@ -170,12 +254,17 @@
   // `controls` and the body's `id` must be the same string, and pane-scoped
   // (utils/chatDomIds.ts).
   let bodyDomId = $derived(chatRowDomId(pane, 'tool-call-card-body', item.id));
-let hasExpandableBody = $derived(
-    !suppressBodyExpansion &&
-      (Boolean(item.payloadId) ||
-        deferredOutputState === 'loading' ||
-        deferredOutputState === 'error'),
+  let hasPayloadBody = $derived(
+    Boolean(item.payloadId) ||
+      deferredOutputState === 'loading' ||
+      deferredOutputState === 'error',
   );
+  // An AO tool row opens whenever it has more to say than its header: the
+  // text the header clipped, the inputs it left out, or the result.
+  let hasAoBody = $derived(
+    aoTool !== null && (aoTool.fullWhat !== aoTool.what || aoFacts.length > 0),
+  );
+  let hasExpandableBody = $derived(!suppressBodyExpansion && (hasPayloadBody || hasAoBody));
 
   keepExpandedPayloadFresh(
     () => expansion,
@@ -187,17 +276,20 @@ let hasExpandableBody = $derived(
   }
 
   // Where an AO tool acts, when that is not simply "here". A remote tool
-  // names the computer its input targets, when this client is attached to
-  // it. A browser tool drives a real page on the machine the agent runs on:
-  // on the owner's own screen that page is the companion browser and there
-  // is nothing to say, but read anywhere else the row is the only sign the
-  // page exists at all, so it names the machine it is on.
+  // names the computer its input targets: by name when this client or the
+  // thread's job listing knows it, else by a short id, so two computers
+  // still read apart. A browser tool drives a real page on the machine the
+  // agent runs on: on the owner's own screen that page is the companion
+  // browser and there is nothing to say, but read anywhere else the row is
+  // the only sign the page exists at all, so it names the machine it is on.
   let where = $derived.by(() => {
     if (!aoTool) return { name: '', title: '' };
     if (aoTool.computerId) {
-      const entry = attachedBackendEntry(aoTool.computerId);
-      const name = entry ? backendDisplayName(entry) : aoTool.computerName;
-      return { name, title: name ? `On ${name}` : '' };
+      const name = aoTool.computerName || aoComputerName(aoTool.computerId, aoNames);
+      const title = aoTool.computerName
+        ? `On ${aoTool.computerName}`
+        : `On computer ${aoTool.computerId}, which this device is not paired with`;
+      return { name, title };
     }
     if (aoTool.server === BROWSER_TOOLS_SERVER) {
       const threadId = pane?.threadId ?? '';
@@ -224,7 +316,7 @@ let hasExpandableBody = $derived(
     actions={hostActions}
   >
     {#snippet status()}
-      <ToolRowStatusIndicator item={effectiveStatusItem} state={indicatorState} testId="tool-call-card-status" />
+      <ToolRowStatusIndicator item={projectedStatusItem} state={indicatorState} testId="tool-call-card-status" />
     {/snippet}
   </ToolHeaderMeta>
 {/snippet}
@@ -246,14 +338,6 @@ let hasExpandableBody = $derived(
     {#snippet icon()}<ToolKindIcon kind={classification.icon} ariaLabel={aoTool ? aoTool.tool : classification.label} />{/snippet}
     {#snippet label()}<span data-testid="tool-call-card-label" title={aoTool?.tool}>{classification.label}</span>{/snippet}
     {#snippet body()}
-      {#if where.name}
-        <span
-          class="max-w-[45%] shrink truncate text-[0.75rem] text-fg-hint"
-          title={where.title}
-          data-testid="tool-call-card-where"
-          data-machine={where.name}
-        >{where.name}<span class="text-fg-subtle" aria-hidden="true">&nbsp;›&nbsp;</span></span>
-      {/if}
       <span class={previewClass} data-testid="tool-call-card-preview">
         {#if preview.path}
           <EditorLink backend={threadMachine(item.threadId, pane?.thread?.projectId)}
@@ -271,6 +355,14 @@ let hasExpandableBody = $derived(
           {preview.text}
         {/if}
       </span>
+      {#if where.name}
+        <span
+          class="ml-1.5 max-w-[45%] shrink-0 truncate text-[0.75rem] text-fg-hint"
+          title={where.title}
+          data-testid="tool-call-card-where"
+          data-machine={where.name}
+        >({where.name})</span>
+      {/if}
     {/snippet}
     {#snippet actions()}
       {@render headerActions()}
@@ -279,7 +371,7 @@ let hasExpandableBody = $derived(
 
   {#if rowError}
     <div class="ml-[5.25rem] compact:ml-5 px-3 pb-1">
-      <RowError tone={rowError.tone} msg={rowError.msg} />
+      <RowError tone={rowError.tone} msg={rowError.msg} code={rowError.code} />
     </div>
   {:else if sendReply}
     <div
@@ -289,14 +381,28 @@ let hasExpandableBody = $derived(
   {/if}
 
   {#if hasExpandableBody && expansion.expanded}
-    <ExpandablePayloadBody
-      {pane}
-      {expansion}
-      id={bodyDomId}
-      testPrefix="tool-call-card"
-      emptyMessage={importUnavailableLabel(item) ?? 'No stored payload for this tool result.'}
-      {deferredOutputState}
-      {deferredOutputError}
-    />
+    {#if aoTool}
+      <AoToolBody
+        {pane}
+        {expansion}
+        id={bodyDomId}
+        tool={aoTool}
+        facts={aoFacts}
+        hasPayload={hasPayloadBody}
+        emptyMessage={importUnavailableLabel(item) ?? 'No stored payload for this tool result.'}
+        {deferredOutputState}
+        {deferredOutputError}
+      />
+    {:else}
+      <ExpandablePayloadBody
+        {pane}
+        {expansion}
+        id={bodyDomId}
+        testPrefix="tool-call-card"
+        emptyMessage={importUnavailableLabel(item) ?? 'No stored payload for this tool result.'}
+        {deferredOutputState}
+        {deferredOutputError}
+      />
+    {/if}
   {/if}
 </div>

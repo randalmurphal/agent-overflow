@@ -2,7 +2,7 @@ import type { Item } from '../../types/models';
 import { findPathRanges } from '../../utils/pathLinkify';
 import { waitAgentDisplayReceiverIds } from '../../utils/waitAgentDisplay';
 import { isCommandToolName } from './commandDisplay';
-import { aoToolPresentation } from './aoTools';
+import { aoToolPresentation, type AoToolNames } from './aoTools';
 
 const STRUCTURED_FILE_EDIT_TOOLS = new Set([
   'Edit',
@@ -105,6 +105,7 @@ export function presentToolCardInputPreview(
   summaryMeta: Record<string, unknown> | null,
   itemMeta: Record<string, unknown> | null,
   workspacePath: string,
+  aoNames?: AoToolNames,
 ): ToolCardPreview {
   const fromStructuredPath = structuredPathPreview(item, itemMeta, workspacePath);
   if (fromStructuredPath) return fromStructuredPath;
@@ -112,7 +113,8 @@ export function presentToolCardInputPreview(
   // An AO tool's body is already the one argument worth reading, and it is
   // not a local path: a remote command or artifact lives on another
   // computer, a browser URL is not a file. No prefix strip, no linkify.
-  const ao = aoToolPresentation(itemMeta);
+  // The ids it carries read by name when the caller can resolve them.
+  const ao = aoToolPresentation(itemMeta, aoNames);
   if (ao) return { text: ao.what };
 
   const raw = toolCardInputPreview(item, summaryMeta, itemMeta);

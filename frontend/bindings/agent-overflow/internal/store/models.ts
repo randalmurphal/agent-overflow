@@ -987,70 +987,6 @@ export class RemoteJob {
 }
 
 /**
- * RemoteWatch owns completion delivery on the originating computer. The
- * destination receipt remains authoritative for execution. Queued means the
- * ordinary message queue owns delivery/recovery, not that the agent read it.
- */
-export class RemoteWatch {
-    "computerId": string;
-    "requestId": string;
-    "threadId": string;
-    "label": string;
-
-    /**
-     * Command is the display text of what runs: quoted argv, or the
-     * interpreter plus "script". The label defaults to it when omitted.
-     */
-    "command": string;
-    "receipt": RemoteJob;
-    "error"?: string;
-    "notification": string;
-    "createdAt": number;
-
-    /** Creates a new RemoteWatch instance. */
-    constructor($$source: Partial<RemoteWatch> = {}) {
-        if (!("computerId" in $$source)) {
-            this["computerId"] = "";
-        }
-        if (!("requestId" in $$source)) {
-            this["requestId"] = "";
-        }
-        if (!("threadId" in $$source)) {
-            this["threadId"] = "";
-        }
-        if (!("label" in $$source)) {
-            this["label"] = "";
-        }
-        if (!("command" in $$source)) {
-            this["command"] = "";
-        }
-        if (!("receipt" in $$source)) {
-            this["receipt"] = (new RemoteJob());
-        }
-        if (!("notification" in $$source)) {
-            this["notification"] = "";
-        }
-        if (!("createdAt" in $$source)) {
-            this["createdAt"] = 0;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new RemoteWatch instance from a string or object.
-     */
-    static createFrom($$source: any = {}): RemoteWatch {
-        const $$createField5_0 = $$createType11;
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("receipt" in $$parsedSource) {
-            $$parsedSource["receipt"] = $$createField5_0($$parsedSource["receipt"]);
-        }
-        return new RemoteWatch($$parsedSource as Partial<RemoteWatch>);
-    }
-}
-
-/**
  * Thread represents a conversation thread.
  * 
  * ID is minted by internal/entityid and is unique across BACKENDS, not
@@ -1326,7 +1262,7 @@ export class Thread {
      * Creates a new Thread instance from a string or object.
      */
     static createFrom($$source: any = {}): Thread {
-        const $$createField36_0 = $$createType12;
+        const $$createField36_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("origin" in $$parsedSource) {
             $$parsedSource["origin"] = $$createField36_0($$parsedSource["origin"]);
@@ -2113,5 +2049,4 @@ const $$createType7 = Item.createFrom;
 const $$createType8 = $Create.Array($$createType7);
 const $$createType9 = TimelineCursor.createFrom;
 const $$createType10 = Project.createFrom;
-const $$createType11 = RemoteJob.createFrom;
-const $$createType12 = ThreadOrigin.createFrom;
+const $$createType11 = ThreadOrigin.createFrom;

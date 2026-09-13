@@ -109,7 +109,7 @@ func (m *Manager) callAgentPeer(ctx context.Context, id, method string, result a
 	held, err := m.carrier(id)
 	if err != nil {
 		if errors.Is(err, deviceclient.ErrNoSession) {
-			return errorsx.Public("remote_not_paired", "This computer is no longer paired. Reconnect it in Remote access before retrying; keep existing request IDs.", err)
+			return errorsx.Public("remote_not_paired", "This computer is no longer paired. Reconnect it in Remote access before retrying.", err)
 		}
 		return errorsx.Public("remote_pairing_unavailable", "The originating computer could not load this pairing. Check its Remote access settings and local configuration file permissions before retrying.", err)
 	}
@@ -121,7 +121,7 @@ func (m *Manager) callAgentPeer(ctx context.Context, id, method string, result a
 		case errors.Is(err, deviceclient.ErrAwaitingConfirmation):
 			return errorsx.Public("remote_pairing_pending", "Pairing is waiting for approval. Confirm the matching verification number on the destination computer.", err)
 		case errors.Is(err, deviceclient.ErrSessionEnded), errors.Is(err, deviceclient.ErrNoSession):
-			return errorsx.Public("remote_pairing_expired", "The destination no longer accepts this pairing. Reconnect it in Remote access; keep existing request IDs.", err)
+			return errorsx.Public("remote_pairing_expired", "The destination no longer accepts this pairing. Reconnect it in Remote access.", err)
 		}
 		return err
 	}

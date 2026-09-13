@@ -10,7 +10,7 @@
   import { attachedBackendEntry, backendDisplayName, backendReachable } from '../../stores/attachedBackends.svelte';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import { nestedScroll } from '../../utils/scroll/wheelAttribution';
-  import { aoToolPresentation } from '../chat/aoTools';
+  import { aoToolPresentation, computerName as aoComputerName, NO_AO_NAMES } from '../chat/aoTools';
   import { indicatorStateForItem, rowErrorForStatus } from '../chat/rowState';
   import AnsiText from '../chat/AnsiText.svelte';
   import CopyFooter from '../chat/CopyFooter.svelte';
@@ -57,22 +57,31 @@
   // The computer the job runs on. This client names it itself when it is
   // attached there; a phone reading a desktop's receipt knows the computer
   // only by the desktop's profile id, so it takes the name the desktop
-  // wrote into the projection. Stop stays live either way: the desktop
-  // relays it whether or not this client can reach the far computer.
+  // wrote into the projection. A computer nobody can name still reads as
+  // one, by a short id, so two jobs on different machines stay apart.
+  // Stop stays live either way: the desktop relays it whether or not this
+  // client can reach the far computer.
   let computer = $derived(attachedBackendEntry(job.computerId));
   let computerName = $derived(
-    computer ? backendDisplayName(computer) : (presentation?.computerName ?? ''),
+    computer
+      ? backendDisplayName(computer)
+      : presentation?.computerName || aoComputerName(job.computerId, NO_AO_NAMES),
   );
   let offline = $derived(computer !== undefined && !backendReachable(computer.id));
 
   let indicatorState = $derived(indicatorStateForItem(statusItem));
+  // A failed check on the job (the watcher could not reach the computer)
+  // reads as the plain message: the row already names the computer and the
+  // job. A settled job reports its own outcome.
   let rowError = $derived(
     job.error
       ? { tone: 'error' as const, msg: job.error }
-      : rowErrorForStatus(statusItem.status, 'Remote command failed'),
+      : statusItem.status === 'killed'
+        ? { tone: 'error' as const, msg: 'Remote job stopped' }
+        : rowErrorForStatus(statusItem.status, 'Remote job failed'),
   );
   let durationLabel = $derived(task.elapsedMs === null ? '' : formatElapsed(task.elapsedMs));
-  let describes = $derived([computerName, command].filter(Boolean).join(' › '));
+  let describes = $derived(computerName ? `${command} (${computerName})` : command);
 
   // A tray expansion owns one bounded log window. Closing it releases the
   // bytes and fences an in-flight read; it never subscribes to the full log.
@@ -140,19 +149,19 @@
     {#snippet icon()}<ToolKindIcon kind={iconKind} ariaLabel={presentation?.tool ?? 'remote_run'} />{/snippet}
     {#snippet label()}<span data-testid="remote-job-tray-row-label" title={presentation?.tool}>{gutterLabel}</span>{/snippet}
     {#snippet body()}
-      {#if computerName}
-        <span
-          class="max-w-[45%] shrink truncate text-[0.75rem] text-fg-hint"
-          title={`On ${computerName}`}
-          data-testid="remote-job-tray-row-where"
-          data-machine={computerName}
-        >{computerName}<span class="text-fg-subtle" aria-hidden="true">&nbsp;›&nbsp;</span></span>
-      {/if}
       <span
         class="min-w-16 flex-1 truncate font-mono text-[0.75rem] text-fg-muted"
         title={describes}
         data-testid="remote-job-tray-row-command"
       >{command}</span>
+      {#if computerName}
+        <span
+          class="ml-1.5 max-w-[45%] shrink-0 truncate text-[0.75rem] text-fg-hint"
+          title={`On ${computerName}`}
+          data-testid="remote-job-tray-row-where"
+          data-machine={computerName}
+        >({computerName})</span>
+      {/if}
       {#if jobLabel}
         <span class="ml-2 shrink-0 truncate text-[0.6875rem] text-fg-hint" data-testid="remote-job-tray-row-job-label">{jobLabel}</span>
       {/if}

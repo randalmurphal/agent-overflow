@@ -163,12 +163,12 @@ func withRemoteMCPClaudeEnv(env map[string]string) map[string]string {
 func (a *App) callRemoteMCP(w http.ResponseWriter, ctx context.Context, req threadmcp.Request, access remoteMCPAccess) {
 	live, ok := a.sessionManager().get(access.ThreadID)
 	if !ok || live.Token != access.SessionToken {
-		threadmcp.WriteToolError(w, req.ID, remoteOperationError("authorize", "", "", errorsx.Public("remote_session_inactive", "The agent session is no longer active. Resume the conversation before using remote tools. Accepted remote jobs keep running.", nil)))
+		threadmcp.WriteToolError(w, req.ID, a.remoteOperationError("authorize", "", "", errorsx.Public("remote_session_inactive", "The agent session is no longer active. Resume the conversation before using remote tools. Accepted remote jobs keep running.", nil)))
 		return
 	}
 	ctx, err := a.remoteMCPContext(ctx, access.ThreadID)
 	if err != nil {
-		threadmcp.WriteToolError(w, req.ID, remoteOperationError("authorize", "", "", err))
+		threadmcp.WriteToolError(w, req.ID, a.remoteOperationError("authorize", "", "", err))
 		return
 	}
 	call, err := threadmcp.DecodeToolCall(req.Params)
@@ -195,8 +195,16 @@ func (a *App) callRemoteMCP(w http.ResponseWriter, ctx context.Context, req thre
 	// registered until the reply is written, then the queued completion is
 	// dismissed; a reply that could not be written leaves it pending.
 	var settled *remoteMCPResult
+	backgrounded := false
 	endWait := func() {}
-	defer func() { endWait() }()
+	defer func() {
+		endWait()
+		// The wait's end is what moves a running job into the background:
+		// the tray row changes state without the job itself changing.
+		if backgrounded {
+			a.emit(eventchan.ProviderBackgroundTasksChanged, map[string]any{"threadId": access.ThreadID})
+		}
+	}()
 	waitFor := func(command RemoteCommand, options remoteResultOptions) {
 		var waitCtx context.Context
 		waitCtx, endWait = a.beginRemoteWait(ctx, access.ThreadID, computerID, requestID)
@@ -211,6 +219,8 @@ func (a *App) callRemoteMCP(w http.ResponseWriter, ctx context.Context, req thre
 			result = reply
 			if reply.State != "running" {
 				settled = &reply
+			} else {
+				backgrounded = true
 			}
 		}
 	}
@@ -284,14 +294,7 @@ func (a *App) callRemoteMCP(w http.ResponseWriter, ctx context.Context, req thre
 		}
 	case "remote_jobs":
 		if decode(&struct{}{}) {
-			var watches []store.RemoteWatch
-			watches, err = a.ListThreadRemoteCommands(access.ThreadID)
-			names := a.remoteComputerNames()
-			rows := make([]remoteMCPWatch, 0, len(watches))
-			for _, watch := range watches {
-				rows = append(rows, remoteMCPWatch{RemoteWatch: watch, ComputerName: names[watch.ComputerID]})
-			}
-			result = rows
+			result, err = a.ListThreadRemoteCommands(access.ThreadID)
 		}
 	case "remote_read_log", "remote_search_log":
 		var args struct {
@@ -326,7 +329,7 @@ func (a *App) callRemoteMCP(w http.ResponseWriter, ctx context.Context, req thre
 		return
 	}
 	if err != nil {
-		threadmcp.WriteToolError(w, req.ID, remoteOperationError(remoteToolActions[call.Name], computerID, requestID, err))
+		threadmcp.WriteToolError(w, req.ID, a.remoteOperationError(remoteToolActions[call.Name], computerID, requestID, err))
 		return
 	}
 	threadmcp.WriteToolJSON(w, req.ID, result)

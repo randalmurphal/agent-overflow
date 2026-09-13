@@ -23,7 +23,6 @@ export {
     ProposedPlanCommentUpdate,
     ProposedPlanSourceRef,
     RemoteJob,
-    RemoteWatch,
     Thread,
     ThreadGroup,
     ThreadMessageHit,

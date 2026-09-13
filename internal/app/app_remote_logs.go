@@ -41,11 +41,13 @@ func (a *App) RemoteCommandSearchLog(ctx context.Context, id, query string, offs
 func (a *App) ReadThreadRemoteLog(ctx context.Context, threadID, computerID, requestID string, offset int64, maxBytes int) (RemoteLogChunk, error) {
 	var result RemoteLogChunk
 	err := a.callThreadRemoteJob(ctx, threadID, computerID, requestID, "RemoteCommandReadLog", &result, requestID, offset, maxBytes)
-	return result, err
+	return result, a.remoteUserError("read the log of", computerID, requestID, err)
 }
 
 // callThreadRemoteJob rechecks the destination receipt before any output read.
 // A claimed thread ID or a local watch alone is not destination authority.
+// Errors come back unwrapped; the tool and the tray each name the job in
+// their own words.
 func (a *App) callThreadRemoteJob(ctx context.Context, threadID, computerID, requestID, method string, result any, args ...any) error {
 	if a.backends == nil {
 		return errNoBackendProfiles
@@ -54,10 +56,10 @@ func (a *App) callThreadRemoteJob(ctx context.Context, threadID, computerID, req
 	defer cancel()
 	var receipt RemoteCommand
 	if err := a.backends.CallAgentPeer(call, computerID, "RemoteCommandStatus", &receipt, requestID); err != nil {
-		return remoteOperationError("read", computerID, requestID, err)
+		return err
 	}
 	if receipt.ID != requestID || receipt.SourceThreadID != threadID {
 		return errorsx.Public("remote_wrong_conversation", "This command belongs to another conversation. Read it from the conversation that submitted it.", nil)
 	}
-	return remoteOperationError("read", computerID, requestID, a.backends.CallAgentPeer(call, computerID, method, result, args...))
+	return a.backends.CallAgentPeer(call, computerID, method, result, args...)
 }

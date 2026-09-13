@@ -162,7 +162,7 @@ func TestRemoteMCPExtendedToolsCrossPairedTLS(t *testing.T) {
 		t.Fatalf("search: %+v", search)
 	}
 
-	var watches []remoteMCPWatch
+	var watches []RemoteJobRecord
 	if err = json.Unmarshal(remoteMCPCall(t, endpoint, "remote_jobs", map[string]any{}, false), &watches); err != nil {
 		t.Fatal(err)
 	}

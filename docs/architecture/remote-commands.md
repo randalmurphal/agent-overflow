@@ -99,9 +99,32 @@ The background tray shows jobs and offers Stop plus an on-demand bounded log
 view. A tray row is the `remote_run` call it came from: the projection carries
 `meta.mcp` and `meta.input` (computer, command, label) like a transcript row,
 so both present through the AO tool table in
-`frontend/src/lib/components/chat/aoTools.ts`. Stop from the tray delivers the
-cancel, then holds the row at “Stopping…” until the receipt leaves running or
-the destination's TERM grace has clearly passed.
+`frontend/src/lib/components/chat/aoTools.ts`. Both name the computer after
+the command, as `(Macaroni-air)`, and a tray row reads a failed check as a
+plain sentence. Stop from the tray delivers the cancel, then holds the row at
+“Stopping…” until the receipt leaves running or the destination's TERM grace
+has clearly passed.
+
+People read names, the model reads ids. A transcript row shows the ids in a
+tool's input as what they name: a computer by the name this client's
+attachment or the thread's job listing gives it, a job by its label, a page by
+its label or title, with an eight-character id only when nothing here can
+name it. `ListThreadRemoteCommands` returns `RemoteJobRecord` rows that carry
+`computerName` from the source desktop's profiles, so a phone reading the
+transcript learns the name too; `frontend/src/lib/stores/remoteJobs.svelte.ts`
+holds one listing per thread while its rows need it and re-reads it on the
+thread's `provider:background_tasks_changed`. The `remote_run` row is
+projected from that listing after the call returns: a running receipt shows
+the backgrounded mark with no timer, and a terminal receipt shows the job's
+own state, run time and exit code. Expanding an AO row shows the full text
+the header clipped, the inputs it left out, and a remote reply as its outcome
+and output rather than the JSON the model read.
+
+A tray row is backgrounded only once no `remote_run`, `remote_status` or
+`remote_cancel` call is waiting on the job; while a call waits, the row and
+the transcript both show a running call. The tool server emits
+`provider:background_tasks_changed` when a wait ends with the job still
+running, so both surfaces flip together.
 The source backend tracks outstanding jobs across frontend disconnects
 and source restarts. It polls only outstanding jobs, four checks at a time,
 with a slower retry after connection errors. An unreachable host is not an
@@ -207,7 +230,11 @@ receipt survives. Old output can expire while its receipt remains.
 Expected refusals carry stable codes and actionable prose across the paired
 connection: invalid requests, access/ownership refusals, unavailable projects
 or workspaces, missing receipts, occupied command slots, and conflicting IDs.
-MCP replies include the operation and valid computer/request IDs. Argument
+MCP replies name the operation, the computer and the job, keeping the ids
+beside the names so the model can retry with them, as in `Remote status on
+Macaroni-air (computer c0ffee11-…) for "Go tests" (request 98312d67-…): …`.
+Errors a person reads, on a tray row or from a Stop or log action, carry
+only the names: `Could not stop "Go tests" on Macaroni-air: …`. Argument
 errors identify the field without echoing its value. Raw internal errors stay
 in host logs behind a reference; they are never marked as public failures.
 

@@ -167,7 +167,7 @@ func (a *App) AgentRemoteFetchArtifact(ctx context.Context, computerID, id, path
 		return chunk, err
 	})
 	if err != nil {
-		return RemoteArtifact{}, remoteOperationError("fetch artifact", computerID, id, err)
+		return RemoteArtifact{}, a.remoteOperationError("fetch artifact", computerID, id, err)
 	}
 	result.ComputerID, result.RequestID = computerID, id
 	return result, nil
@@ -333,7 +333,7 @@ func (a *App) AgentRemoteFetchLog(ctx context.Context, computerID, id string) (R
 		return chunk, err
 	})
 	if err != nil {
-		return RemoteLogArtifact{}, remoteOperationError("fetch log", computerID, id, err)
+		return RemoteLogArtifact{}, a.remoteOperationError("fetch log", computerID, id, err)
 	}
 	result.ComputerID, result.RequestID = computerID, id
 	return RemoteLogArtifact{RemoteArtifact: result, Log: info}, nil

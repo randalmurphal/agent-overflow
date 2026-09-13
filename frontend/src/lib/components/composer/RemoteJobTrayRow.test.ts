@@ -49,12 +49,30 @@ describe('remote jobs in the background tray', () => {
     expect(view.getByTestId('remote-job-tray-row-job-label')).toHaveTextContent('Train image model');
   });
 
+  it('names the computer after the command and reads a failed check as a plain message', () => {
+    stageBackend({ id: 'nexus', name: 'Nexus' });
+    const failed = { ...job, error: 'This computer is no longer paired. Reconnect it in Remote access before retrying.' };
+    const view = render(RemoteJobTrayRow, { task: remoteTask({}, failed), job: failed, threadId: 'thread', isStopping: false, onStop: vi.fn() });
+    const command = view.getByTestId('remote-job-tray-row-command');
+    const where = view.getByTestId('remote-job-tray-row-where');
+    expect(command.compareDocumentPosition(where) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(where).toHaveTextContent('(Nexus)');
+    expect(command).toHaveAttribute('title', 'python train.py (Nexus)');
+    expect(view.getByText('This computer is no longer paired. Reconnect it in Remote access before retrying.')).toBeInTheDocument();
+  });
+
   it('shows a receipt warning beside the row', () => {
     const warned = { ...job, warning: 'The command left background processes running in its process group; they were stopped when it exited.' };
     const task = remoteTask({}, warned);
     expect(trayRemoteJob(task)).toEqual(warned);
     const view = render(RemoteJobTrayRow, { task, job: warned, threadId: 'thread', isStopping: false, onStop: vi.fn() });
     expect(view.getByText(/left background processes/)).toBeInTheDocument();
+  });
+
+  it('still tells a computer nobody here can name by a short id', () => {
+    const far = { ...job, computerId: 'deadbeef-5555-4555-8555-555555555555' };
+    const view = render(RemoteJobTrayRow, { task: remoteTask({ computer_id: far.computerId, computer_name: '' }, far), job: far, threadId: 'thread', isStopping: false, onStop: vi.fn() });
+    expect(view.getByTestId('remote-job-tray-row-where')).toHaveTextContent('(computer deadbeef)');
   });
 
   it('names the computer as the desktop knew it when this client is not attached there', () => {
@@ -70,7 +88,7 @@ describe('remote jobs in the background tray', () => {
     const view = render(RemoteJobTrayRow, { task, job, threadId: 'thread', isStopping: false, onStop: vi.fn() });
     expect(view.queryByRole('button', { name: 'Stop Remote Job' })).toBeNull();
     expect(view.getByTestId('remote-job-tray-row-status').dataset.state).toBe('error');
-    expect(view.getByText('Tool call stopped')).toBeInTheDocument();
+    expect(view.getByText('Remote job stopped')).toBeInTheDocument();
   });
 
   it('loads only a bounded tail on expansion and discards a read closed before completion', async () => {

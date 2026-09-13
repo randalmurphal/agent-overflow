@@ -2897,7 +2897,12 @@ export function ListThreadProposedPlans(threadID: string): $CancellablePromise<s
     });
 }
 
-export function ListThreadRemoteCommands(threadID: string): $CancellablePromise<store$0.RemoteWatch[]> {
+/**
+ * ListThreadRemoteCommands lists a conversation's tracked remote jobs, pending
+ * first, with each computer's name. The transcript resolves job labels and
+ * computer names from it; the tray reads its own projection.
+ */
+export function ListThreadRemoteCommands(threadID: string): $CancellablePromise<app$0.RemoteJobRecord[]> {
     return $Call.ByID(1165681857, threadID).then(($result: any) => {
         return $$createType153($result);
     });
@@ -6030,7 +6035,7 @@ const $$createType148 = app$0.ThreadLiveActivity.createFrom;
 const $$createType149 = $Create.Array($$createType148);
 const $$createType150 = app$0.ThreadMCPServer.createFrom;
 const $$createType151 = $Create.Array($$createType150);
-const $$createType152 = store$0.RemoteWatch.createFrom;
+const $$createType152 = app$0.RemoteJobRecord.createFrom;
 const $$createType153 = $Create.Array($$createType152);
 const $$createType154 = wsllauncher$0.Distro.createFrom;
 const $$createType155 = $Create.Array($$createType154);
