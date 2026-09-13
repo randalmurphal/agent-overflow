@@ -518,6 +518,13 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
   function handleScroll(event: Event): void {
     const scrollEl = deps.getScrollEl();
     if (!scrollEl) return;
+    // Capture-phase registration (see `attach`) also delivers every
+    // descendant scroller's events here: scroll does not bubble, but the
+    // capture phase still passes through ancestors. Those are not this
+    // machine's scrolls. Handling them cost a forced geometry read per
+    // nested-clip spring frame (bug-report-20260913T200555Z: 99.5% of the
+    // pane's untagged scroll events had an unchanged scrollTop).
+    if (event.target !== scrollEl) return;
     const scrollTopAtEvent = scrollEl.scrollTop;
     // Bug A fix (Change 1): capture distance-from-bottom synchronously
     // at scroll-event time. The deferred re-stick check (below) must

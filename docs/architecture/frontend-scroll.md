@@ -1327,6 +1327,14 @@ attributes correctly against both levels.
 Adding a new scrollable row body means adding `use:nestedScroll` to it.
 Contract: [`scroll-contracts.md`](scroll-contracts.md) C7.
 
+Scroll events do not bubble, but the intent machine's listener is
+capture-phase (so it runs before the virtualizer's and can stamp the one
+shared scrollTop read on the event), and the capture phase visits
+ancestors. `handleScroll` therefore drops any event whose target is not
+its own scroller. Without that gate every nested-clip spring frame ran
+the pane's untagged path, a forced geometry read against a dirty tree
+(bug-report-20260913T200555Z).
+
 ### The activity run: a nested scroller with the pane's physics
 
 Most nested bodies are inert boxes. An activity run's clip is not: the run

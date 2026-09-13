@@ -651,6 +651,19 @@ describe('provenance ledger classification (noteUserScroll)', () => {
     expect(h.noteUserScroll).toHaveBeenCalledWith(600);
   });
 
+  it('ignores a descendant scroller\'s event that the capture-phase listener receives', () => {
+    const h = build();
+    h.scrollEl.scrollTop = 600;
+    const nested = document.createElement('div');
+    h.child.appendChild(nested);
+
+    // Scroll does not bubble; the capture phase still visits the pane.
+    nested.dispatchEvent(new Event('scroll'));
+
+    expect(h.noteUserScroll).not.toHaveBeenCalled();
+    expect(h.refreshIsNearBottom).not.toHaveBeenCalled();
+  });
+
   it('does not record a tagged programmatic scroll (the write already explained it)', () => {
     const h = build();
     h.intent.noteProgrammaticWrite(600);
