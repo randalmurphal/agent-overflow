@@ -7,6 +7,7 @@ import {
   resetPanesForTest,
 } from './panes.svelte';
 import { REVEAL_PANE_EVENT } from './eventNames';
+import { setCompactLayoutForTest } from './layoutMode.svelte';
 import {
   getPaneLayoutItems,
   resetPaneLayoutForTest,
@@ -26,6 +27,10 @@ import {
 
 function threadItem(paneId: string, widthPx = 560): PaneLayoutItem {
   return { id: paneId, paneId, kind: 'thread', widthPx };
+}
+
+function rect(left: number, right: number): DOMRect {
+  return { left, right, top: 0, bottom: 800, width: right - left, height: 800, x: left, y: 0, toJSON: () => ({}) };
 }
 
 function paneIds(): string[] {
@@ -150,6 +155,60 @@ describe('companionPanes store', () => {
     closeCompanion('review-main');
 
     expect(getFocusedPaneId()).toBe('main');
+  });
+
+  it('closing the companion on screen under compact reveals its source thread', () => {
+    setCompactLayoutForTest(true);
+    setPaneLayoutItemsForTest([threadItem('main')]);
+    createPane('main');
+    openCompanion('main', 'plan');
+    openCompanion('main', 'review');
+    // The strip as compact renders it, with the review pane under its
+    // centre. happy-dom has no layout, so each section states its extent.
+    const strip = document.createElement('div');
+    strip.className = 'compact-screen-thread';
+    strip.getBoundingClientRect = () => rect(0, 412);
+    for (const [paneId, onScreen] of [['main', false], ['plan-main', false], ['review-main', true]] as const) {
+      const section = document.createElement('section');
+      section.dataset.paneId = paneId;
+      section.getBoundingClientRect = () => (onScreen ? rect(0, 412) : rect(412, 824));
+      strip.appendChild(section);
+    }
+    document.body.appendChild(strip);
+    const revealed: string[] = [];
+    const onReveal = ((event: CustomEvent<{ paneId: string }>) => {
+      revealed.push(event.detail.paneId);
+    }) as EventListener;
+    window.addEventListener(REVEAL_PANE_EVENT, onReveal);
+    try {
+      // The companion's own close control: the thread comes back, not the
+      // plan pane that is left beside it.
+      closeCompanion('review-main');
+      expect(revealed).toEqual(['main']);
+      expect(isCompanionOpen('main', 'plan')).toBe(true);
+
+      // Closing a companion that is NOT on screen moves nothing.
+      closeCompanion('plan-main');
+      expect(revealed).toEqual(['main']);
+    } finally {
+      window.removeEventListener(REVEAL_PANE_EVENT, onReveal);
+      strip.remove();
+      setCompactLayoutForTest(false);
+    }
+  });
+
+  it('closing a companion on the desktop never reveals anything', () => {
+    setPaneLayoutItemsForTest([threadItem('main')]);
+    createPane('main');
+    openCompanion('main', 'review');
+    const onReveal = vi.fn();
+    window.addEventListener(REVEAL_PANE_EVENT, onReveal);
+    try {
+      closeCompanion('review-main');
+      expect(onReveal).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener(REVEAL_PANE_EVENT, onReveal);
+    }
   });
 
   it('closing an unfocused companion leaves focus alone', () => {

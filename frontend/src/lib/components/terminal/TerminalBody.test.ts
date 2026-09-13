@@ -749,6 +749,48 @@ describe('TerminalBody copy/paste', () => {
       expect(vi.mocked(copyToClipboard)).toHaveBeenCalledTimes(1);
       expect(term.pastes).toEqual(['next']);
     });
+
+    // Under compact a `contextmenu` is the long-press bridge's synthetic
+    // event: a held finger must neither paste nor be swallowed (nothing
+    // prevented, so the engine keeps its own touch selection).
+    it('under compact neither pastes nor suppresses the event', async () => {
+      setCompactLayoutForTest(true);
+      try {
+        readText.mockResolvedValue('held');
+        const { term } = await handlerFor('t-rc-compact');
+        expect(rightClick(mountFor('t-rc-compact'))).toBe(false);
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(readText).not.toHaveBeenCalled();
+        expect(vi.mocked(copyToClipboard)).not.toHaveBeenCalled();
+        expect(term.pastes).toEqual([]);
+      } finally {
+        setCompactLayoutForTest(false);
+      }
+    });
+  });
+
+  // A plain-HTTP remote page has no navigator.clipboard at all. Reading
+  // `.readText` off undefined must land on the same toast as a rejected
+  // read, not escape the event handler as an uncaught TypeError.
+  it('toasts when the clipboard API is absent instead of throwing', async () => {
+    consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    Object.defineProperty(globalThis.navigator, 'clipboard', {
+      value: undefined,
+      configurable: true,
+      writable: true,
+    });
+    const { term, handler } = await handlerFor('t-paste-no-api');
+    const event = clip({ key: 'v', ctrlKey: true, shiftKey: true });
+    expect(() => handler(event)).not.toThrow();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(term.pastes).toEqual([]);
+    expect(vi.mocked(addToast)).toHaveBeenCalledWith(
+      'error',
+      expect.stringContaining('Paste failed'),
+    );
   });
 });
 
@@ -868,6 +910,23 @@ describe('TerminalBody compact key row', () => {
         encodeTerminalInput(data),
       );
     }
+  });
+
+  it('Paste reads the clipboard through the widget paste route', async () => {
+    const readText = vi.fn(async () => 'from row');
+    Object.defineProperty(globalThis.navigator, 'clipboard', {
+      value: { readText },
+      configurable: true,
+      writable: true,
+    });
+    const { term } = await mountCompact('t-row-paste');
+    key('paste').click();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(readText).toHaveBeenCalledTimes(1);
+    // term.paste, so bracketed-paste mode and the onData gate apply; the row
+    // never writes bytes of its own.
+    expect(term.pastes).toEqual(['from row']);
   });
 
   it('arms Ctrl without writing anything and shows it as pressed', async () => {

@@ -55,8 +55,21 @@ mode. Every component must work in desktop and compact layouts.
   at the pressed point. There is no bottom-sheet mode. A picker opened while
   its trigger is hidden (the toolbar roll-up) is given the visible button as
   its anchor through the picker registry.
-- Android Back dismisses surfaces through `native/lifecycle.ts`. Only commands
-  marked `dismissesSurface` may run from that path.
+- Android Back dismisses surfaces through `native/lifecycle.ts`, which runs
+  the ladder in `utils/stepBack.ts`. Only commands marked `dismissesSurface`
+  may run from that path.
+- Tailwind emits `hover:` and `group-hover:` inside `@media (hover: hover)`,
+  so a control revealed only on hover never appears on a touch screen. Any
+  hover-revealed action carries `compact:opacity-100` (and
+  `compact:pointer-events-auto` when hidden that way) or has a menu row.
+- Shared primitives carry the compact hit-target size (`IconButton`, `Button`,
+  `TranscriptDisclosureHeader`, `headerSegmentClasses`, `triggerClasses`,
+  `activityRailClasses`, `settings/styles.ts`). Size a control there, not per
+  call site. Text controls take `compact:select-none` so a long press opens
+  the menu instead of selecting the label.
+- A browser's Back runs the same ladder through the history sentinel in
+  `utils/compactHistoryBack.svelte.ts`. "Away from root" is the layout
+  store's screen plus the airspace registry; do not add a second surface list.
 
 ## Rendering and diagnostics
 

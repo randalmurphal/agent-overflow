@@ -7,6 +7,7 @@
 export const composerTriggerClasses = [
   'inline-flex min-w-0 items-center gap-1.5 rounded-[var(--radius-field)]',
   'px-1.5 py-1 text-[0.6875rem] text-fg-muted',
+  'compact:min-h-9 compact:px-2 compact:select-none',
   'transition-colors cursor-pointer',
   'hover:text-fg hover:bg-surface-2/30',
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',

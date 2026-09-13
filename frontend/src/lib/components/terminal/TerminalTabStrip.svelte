@@ -105,13 +105,13 @@
   }
 </script>
 
-<div class="flex items-center h-8 bg-surface-1 border-b border-border text-xs select-none shrink-0">
-  <div class="flex items-center gap-1 overflow-x-auto flex-1 px-1">
+<div class="flex items-center h-8 compact:h-11 bg-surface-1 border-b border-border text-xs select-none shrink-0">
+  <div class="flex items-center gap-1 overflow-x-auto flex-1 px-1" style="touch-action: pan-x; overscroll-behavior-x: contain;">
     {#each handle.tabs as tab (tab.terminalID)}
       {@const isActive = tab.terminalID === handle.activeTerminalID}
       {@const running = tab.summary.running}
       <div
-        class="flex items-center gap-1.5 pl-2 pr-1 h-6 rounded cursor-pointer border"
+        class="flex items-center gap-1.5 pl-2 pr-1 h-6 compact:h-9 rounded cursor-pointer border"
         class:bg-surface-2={isActive}
         class:border-accent={isActive}
         class:border-transparent={!isActive}
@@ -145,7 +145,7 @@
         </span>
         <button
           type="button"
-          class="w-4 h-4 rounded hover:bg-surface-3 text-text-secondary hover:text-text-primary leading-none text-[0.6875rem]"
+          class="w-4 h-4 compact:w-7 compact:h-7 rounded hover:bg-surface-3 text-text-secondary hover:text-text-primary leading-none text-[0.6875rem]"
           data-testid={`terminal-tab-close-${tab.terminalID}`}
           onclick={(e) => { e.stopPropagation(); onClose(tab.terminalID); }}
           aria-label={`Close terminal ${labelFor(tab.summary.shell)}`}
@@ -156,7 +156,7 @@
 
   <button
     type="button"
-    class="h-6 px-2 rounded hover:bg-surface-2 text-text-secondary hover:text-text-primary mx-1"
+    class="h-6 compact:h-9 px-2 compact:px-3 rounded hover:bg-surface-2 text-text-secondary hover:text-text-primary mx-1"
     data-testid="terminal-open"
     onclick={onOpen}
     aria-label="Open New Terminal"
@@ -169,7 +169,7 @@
          render desync without the user reaching for a manual window resize. -->
     <button
       type="button"
-      class="h-6 px-2 rounded hover:bg-surface-2 text-text-secondary hover:text-text-primary mr-1"
+      class="h-6 compact:h-9 px-2 compact:px-3 rounded hover:bg-surface-2 text-text-secondary hover:text-text-primary mr-1"
       data-testid="terminal-refresh"
       onclick={() => onRefresh?.()}
       aria-label="Refresh Terminal"
@@ -194,7 +194,7 @@
   {#if onCollapse}
     <button
       type="button"
-      class="h-6 px-2 rounded hover:bg-surface-2 text-text-secondary hover:text-text-primary mr-1"
+      class="h-6 compact:h-9 px-2 compact:px-3 rounded hover:bg-surface-2 text-text-secondary hover:text-text-primary mr-1"
       data-testid="terminal-collapse"
       onclick={onCollapse}
       aria-label="Hide Terminal Drawer"

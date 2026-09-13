@@ -37,6 +37,9 @@
   let mountEl: HTMLDivElement | undefined = $state();
   let term: Terminal | null = null;
   let fit: FitAddon | null = null;
+  // The widget's clipboard paste, handed to the compact key row. Null until
+  // hydrate() has built the term; a press before then does nothing.
+  let paste: (() => void) | null = null;
   let resizeObserver: ResizeObserver | null = null;
   let dataDisposable: { dispose(): void } | null = null;
   // Unregisters this xterm from the store handle (terminal.clear reaches the
@@ -116,12 +119,17 @@
     ctrlArmed = !ctrlArmed;
   }
 
+  function pasteKeyRow(): void {
+    paste?.();
+  }
+
   async function hydrate() {
     if (!mountEl || destroyed) return;
 
     const built = buildTerminal(mountEl, { onInput: writeInput, isDisposed: () => destroyed });
     term = built.term;
     fit = built.fit;
+    paste = built.paste;
     detachXterm = handle.attachXterm(terminalID, term);
 
     // Wire focus/blur listeners on the xterm mount. xterm puts a focusable
@@ -283,6 +291,7 @@
     term?.dispose();
     term = null;
     fit = null;
+    paste = null;
   });
 
   export function focus() {
@@ -305,6 +314,6 @@
 <div class="flex-1 min-h-0 flex flex-col bg-terminal-bg" data-testid={`terminal-body-${terminalID}`}>
   <div bind:this={mountEl} class="flex-1 min-h-0 bg-terminal-bg"></div>
   {#if compact}
-    <TerminalKeyRow onKey={pressKeyRow} {ctrlArmed} onToggleCtrl={toggleStickyCtrl} />
+    <TerminalKeyRow onKey={pressKeyRow} {ctrlArmed} onToggleCtrl={toggleStickyCtrl} onPaste={pasteKeyRow} />
   {/if}
 </div>

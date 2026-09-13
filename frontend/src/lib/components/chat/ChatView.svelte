@@ -81,8 +81,13 @@
   // 'function'`), so the gate lands on every rendered user message from
   // this single point. Both share the `fork` capability flag: they are
   // the same message-anchor class and both are off for claude-tui.
+  //
+  // Both also WRITE the thread (ForkThreadFromMessage, the edit's revert
+  // and resend) under `threads:operate`, so a session without it is
+  // offered neither: the gate lands here, on the same single point.
   const supportsMessageAnchorActions = $derived(
-    providerSupports(pane.thread?.provider, 'fork'),
+    providerSupports(pane.thread?.provider, 'fork')
+      && threadHasScope('threads:operate', pane.threadId, pane.thread?.projectId),
   );
   const userMessageActions = $derived<UserMessageActions>({
     onForkMessage: supportsMessageAnchorActions ? forkFromUserMessage : undefined,

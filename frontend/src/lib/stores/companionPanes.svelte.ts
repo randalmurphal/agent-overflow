@@ -18,6 +18,7 @@ import {
   removePaneLayoutItem,
   type CompanionPaneKind,
 } from './paneLayout.svelte';
+import { isCompactLayout, onScreenCompactPaneId } from './layoutMode.svelte';
 import {
   addPaneDestroyedObserver,
   closeFocusedPane,
@@ -127,12 +128,17 @@ export function openCompanion(
 export function closeCompanion(paneId: string): void {
   const state = companionPanes.get(paneId);
   if (!state) return;
+  // Read before the section leaves the DOM: under compact the strip shows
+  // one pane, and closing the one on screen must bring its thread back
+  // rather than glide to whichever sibling companion is left.
+  const wasOnScreen = isCompactLayout() && onScreenCompactPaneId() === paneId;
   unregisterCompanionPane(paneId);
   removePaneLayoutItem(paneId, { persist: !isEphemeralCompanionKind(state.kind) });
   // A focused companion hands focus back to its source. During a source-pane
   // destroy cascade the source is already gone — focusPane no-ops on the
   // missing id and destroyPane's own dangling-focus fixup takes over.
   if (getFocusedPaneId() === paneId) focusPane(state.sourcePaneId);
+  if (wasOnScreen) revealPane(state.sourcePaneId);
 }
 
 /**

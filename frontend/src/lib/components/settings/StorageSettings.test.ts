@@ -5,6 +5,8 @@ import { loadSettingsFixture as loadSettings } from '../../../test/helpers/setti
 import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
 import type { Settings } from '../../types/settings';
 import { makeSettings } from '../../../test/helpers/settings';
+import { setPageGrantsFromBootstrap } from '../../transport/scopes';
+import { HOST_TIER_REASON } from './settingsComputer';
 
 async function seed(overrides: Partial<Settings> = {}): Promise<Settings> {
   const merged = makeSettings(overrides);
@@ -28,6 +30,21 @@ describe('<StorageSettings> — Retention', () => {
     expect(getByTestId('settings-retention')).toBeTruthy();
     const input = getByTestId('settings-retention-days') as HTMLInputElement;
     expect(input.value).toBe('30');
+  });
+
+  it('renders the retention input inert, saying why, off the host without a passkey', async () => {
+    // `retention` is host tier (internal/settings/tier.go): the backend takes
+    // the write only under a step-up proof, which a networked page with no
+    // host presence and no passkey cannot give.
+    setPageGrantsFromBootstrap(true);
+    try {
+      const { getByTestId } = render(StorageSettings);
+      const input = getByTestId('settings-retention-days') as HTMLInputElement;
+      expect(input.disabled).toBe(true);
+      expect(input.title).toBe(HOST_TIER_REASON);
+    } finally {
+      setPageGrantsFromBootstrap(false);
+    }
   });
 
   it('shows the disabled-cleanup hint when retention days is 0', async () => {

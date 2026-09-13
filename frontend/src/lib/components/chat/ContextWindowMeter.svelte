@@ -100,7 +100,7 @@
           onclick={openContextSettings}
           title="Context settings"
           aria-label="Context settings"
-          class="absolute right-2 top-2 inline-flex h-6 w-6 items-center justify-center rounded-[var(--radius-field)] text-fg-hint hover:text-fg hover:bg-surface-2/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors cursor-pointer"
+          class="absolute right-2 top-2 inline-flex h-6 w-6 compact:h-9 compact:w-9 compact:right-1 compact:top-1 items-center justify-center rounded-[var(--radius-field)] text-fg-hint hover:text-fg hover:bg-surface-2/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors cursor-pointer"
         >
           <Icon icon={SlidersHorizontal} size={13} strokeWidth={1.8} />
         </button>

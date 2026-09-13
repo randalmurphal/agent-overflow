@@ -297,7 +297,9 @@ test('the chat header rolls its actions into one dropdown at the button', async 
   // facts line is its own full-width row underneath.
   const title = page.getByTestId('chat-header-title');
   const titleBox = (await title.boundingBox())!;
-  expect(titleBox.height, 'the title must stay one line').toBeLessThan(30);
+  // One line at the compact tap height (32px); a wrapped second line
+  // would push it past 40.
+  expect(titleBox.height, 'the title must stay one line').toBeLessThan(40);
   const factsBox = (await page.getByTestId('chat-header-facts').boundingBox())!;
   expect(factsBox.y).toBeGreaterThanOrEqual(titleBox.y + titleBox.height - 1);
   expect(factsBox.width).toBeGreaterThan(page.viewportSize()!.width * 0.8);

@@ -37,6 +37,7 @@ import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 import { resetEditResendExecutionForTest } from './editResendFlow.svelte';
 import { SRC_ROOT } from '../../../test/sourceScan';
 import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
+import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
 
 const appCss = readFileSync(join(SRC_ROOT, 'app.css'), 'utf8');
 
@@ -208,6 +209,34 @@ describe('<ChatView>', () => {
     const { queryByLabelText } = render(ChatView, { props: { pane } });
 
     expect(queryByLabelText('Fork from this message')).toBeNull();
+  });
+
+  it('offers neither fork nor edit on a user message without threads:operate', async () => {
+    // Both actions write on the thread's computer (ForkThreadFromMessage,
+    // RevertConversationAndResendMessage). A view-only device gets no
+    // anchor affordance at all rather than one that is refused on click.
+    await pairViewOnly();
+    try {
+      const thread = seedThread();
+      const userItem = makeItem({
+        id: 'user:1',
+        threadId: thread.id,
+        turnIndex: 1,
+        itemIndex: 0,
+        kind: 'user_text',
+        role: 'user',
+        summary: 'Update one of the lines',
+      });
+      const pane = await buildPane(thread, [userItem]);
+      mockDrafts(new Map([[thread.id, '']]));
+
+      const { queryByLabelText } = render(ChatView, { props: { pane } });
+
+      expect(queryByLabelText('Fork from this message')).toBeNull();
+      expect(queryByLabelText('Edit message and resend from here')).toBeNull();
+    } finally {
+      resetToLocalPage();
+    }
   });
 
   it('forks from a user-message action through the chat-level handler', async () => {

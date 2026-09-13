@@ -29,6 +29,7 @@ import type { ThreadDragPayload } from '../../utils/threadDragPayload';
 import { replaceAllThreads } from '../../stores/threads.svelte';
 import type { Thread, ThreadGroup } from '../../types/models';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
+import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
 
 function mkThread(id: string, overrides: Partial<Thread> = {}): Thread {
   return {
@@ -392,6 +393,48 @@ describe('<ThreadGroupRow>', () => {
     await fireEvent.mouseDown(getByTestId('thread-group-row-expand'));
     await tick();
     expect(queryByRole('menu', { name: 'Group Actions' })).toBeNull();
+  });
+});
+
+describe('<ThreadGroupRow> without threads:operate', () => {
+  // Inline rename, the gutter pin and New Thread in Group all write under
+  // `threads:operate` on the group's project.
+  const INERT = 'Not granted to this device';
+
+  beforeEach(async () => {
+    resetPanesForTest();
+    resetProjectsForTest();
+    resetSidebarForTest();
+    resetThreadGroupsForTest();
+    resetBindingMocks();
+    replaceAllThreads([mkThread('t1'), mkThread('t2')]);
+    setBindingMock('GetSettings', async () => null);
+    await loadSettings();
+    await pairViewOnly();
+  });
+
+  afterEach(() => {
+    resetToLocalPage();
+  });
+
+  it('does not open the inline rename on double-click', async () => {
+    const { getByTestId, queryByLabelText } = renderRow();
+    await fireEvent.dblClick(getByTestId('thread-group-row'));
+    await tick();
+    expect(queryByLabelText('Rename Group')).toBeNull();
+  });
+
+  it('renders the pin and New Thread in Group controls inert with the reason', async () => {
+    const pin = setBindingMock('PinThreadGroup', vi.fn());
+    const { getByTestId, getByRole } = renderRow();
+    const pinBtn = getByTestId('thread-row-pin') as HTMLButtonElement;
+    expect(pinBtn.disabled).toBe(true);
+    await fireEvent.click(pinBtn);
+    await flush();
+    expect(pin).not.toHaveBeenCalled();
+    const create = getByRole('button', { name: 'New Thread in Group' }) as HTMLButtonElement;
+    expect(create.disabled).toBe(true);
+    expect(create.title).toBe(INERT);
   });
 });
 

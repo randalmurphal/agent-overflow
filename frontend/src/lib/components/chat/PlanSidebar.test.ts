@@ -9,6 +9,7 @@ import { setupEventListeners } from '../../stores/events';
 import { resetProposedPlanCacheForTests } from '../../stores/proposedPlans.svelte';
 import { makePanelContext } from '../../stores/panelContext.svelte';
 import { installAnimateShim } from '../../../test/integration/_helpers';
+import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
 
 beforeAll(installAnimateShim);
 
@@ -190,6 +191,49 @@ describe('<PlanSidebar>', () => {
 
     const send = await findByTestId('plan-comments-send');
     expect(send).toHaveTextContent('Send 2 comments');
+  });
+
+  it('renders the Send button inert, saying why, without threads:operate', async () => {
+    setBindingMock('ListThreadProposedPlans', async () => [
+      makeItem({
+        id: 'plan-1',
+        turnIndex: 0,
+        itemIndex: 0,
+        kind: 'tool_call',
+        payloadId: 'payload-1',
+        payloadKind: 'proposed_plan',
+        payloadMeta: JSON.stringify({ title: 'A plan', preview: 'preview', lineCount: 1, charCount: 6 }),
+      }),
+    ]);
+    setBindingMock('ListProposedPlanComments', async () => [
+      {
+        id: 'c1',
+        threadId: 't',
+        planItemId: 'plan-1',
+        status: 'draft',
+        startLine: 1,
+        endLine: 1,
+        selectedText: '# A plan',
+        body: 'first',
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    ]);
+    const sendBinding = setBindingMock('SendPlanRevisionComments', async () => undefined);
+    await pairViewOnly();
+    try {
+      const pane = await buildPane();
+      pane.setShowPlanSidebar(true);
+      const { findByTestId } = await renderSidebar(pane);
+
+      const send = (await findByTestId('plan-comments-send')) as HTMLButtonElement;
+      expect(send.disabled).toBe(true);
+      expect(send.title).toBe('Not granted to this device');
+      await fireEvent.click(send);
+      expect(sendBinding).not.toHaveBeenCalled();
+    } finally {
+      resetToLocalPage();
+    }
   });
 
   it('hides the Send button when no drafts exist', async () => {

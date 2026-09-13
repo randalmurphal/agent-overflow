@@ -33,6 +33,9 @@
     /** "Pin Thread" / "Pin Group" — the row names its own entity. */
     pinLabel: string;
     unpinLabel: string;
+    /** The session lacks `threads:operate` for the row's computer: the
+     *  affordance stays where it is, inert, and says why. */
+    disabled?: boolean;
   }
 
   let {
@@ -42,6 +45,7 @@
     onCycleBurner,
     pinLabel,
     unpinLabel,
+    disabled = false,
   }: Props = $props();
 
   let isBackBurner = $derived(isPinned && pinGroup === PIN_GROUP_BACK);
@@ -56,7 +60,7 @@
     // An unpinned affordance keeps the row's normal context menu. Once
     // pinned, right-click is the direct two-tier toggle promised by the
     // pin control itself.
-    if (!isPinned) return;
+    if (!isPinned || disabled) return;
     e.preventDefault();
     e.stopPropagation();
     onCycleBurner();
@@ -67,11 +71,12 @@
   type="button"
   onclick={handleToggle}
   oncontextmenu={handleContextMenu}
+  {disabled}
   data-testid="thread-row-pin"
   data-pin-group={isPinned ? (isBackBurner ? 'back' : 'front') : undefined}
   aria-label={label}
   aria-pressed={isPinned}
-  title={label}
+  title={disabled ? 'Not granted to this device' : label}
   class={
     'flex items-center justify-center h-4 w-4 rounded-[var(--radius-field)] shrink-0 cursor-pointer ' +
     'hover:text-fg hover:bg-surface-2/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 ' +

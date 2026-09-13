@@ -15,6 +15,7 @@
 export const headerSegmentClasses = [
   'inline-flex min-w-0 items-center gap-1 rounded-[var(--radius-field)]',
   'px-1 py-0.5 text-[0.8125rem] compact:text-[0.6875rem] whitespace-nowrap',
+  'compact:min-h-8 compact:px-1.5 compact:select-none',
   'transition-colors cursor-pointer enabled:hover:text-fg enabled:hover:bg-surface-2/40',
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
   'disabled:cursor-default',

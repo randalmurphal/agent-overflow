@@ -49,7 +49,11 @@
   let { project, anchor, open, onClose, onRename, onNewThread, onNewTerminal }: Props = $props();
   let compact = $derived(isCompactLayout());
   // The same gates the header's own controls use: visible, inert, and saying why.
-  let newThreadUngranted = $derived(!projectHasScope('threads:operate', project.project.id));
+  // Rename, New Group, Archive and Delete all ride `threads:operate`; Delete
+  // first asks ProjectDeletionPreview, which rides `git:operate`.
+  let operateUngranted = $derived(!projectHasScope('threads:operate', project.project.id));
+  let deleteUngranted = $derived(operateUngranted || !projectHasScope('git:operate', project.project.id));
+  let ungrantedTitle = $derived(operateUngranted ? 'Not granted to this device' : undefined);
   let newTerminalUngranted = $derived(!projectHasScope('terminal:operate', project.project.id));
   // The one gated entry here opens an editor on the host desktop.
   let noHost = $derived(!hasScope('host', projectBackend(project.project.id) ?? HOME_BACKEND));
@@ -157,8 +161,8 @@
                hover, so the menu is where they live there, and only there. -->
           <MenuItem
             label="New Thread"
-            disabled={newThreadUngranted}
-            title={newThreadUngranted ? 'Not granted to this device' : undefined}
+            disabled={operateUngranted}
+            title={ungrantedTitle}
             onSelect={() => {
               onClose();
               onNewThread?.();
@@ -177,6 +181,8 @@
         {/if}
         <MenuItem
           label="Rename Project"
+          disabled={operateUngranted}
+          title={ungrantedTitle}
           onSelect={() => {
             onClose();
             onRename();
@@ -193,6 +199,8 @@
         {/if}
         <MenuItem
           label="New Group…"
+          disabled={operateUngranted}
+          title={ungrantedTitle}
           onSelect={() => {
             onClose();
             void doNewGroup();
@@ -200,6 +208,8 @@
         />
         <MenuItem
           label="Archive Project"
+          disabled={operateUngranted}
+          title={ungrantedTitle}
           onSelect={() => {
             onClose();
             showArchiveConfirm = true;
@@ -209,6 +219,8 @@
         <MenuItem
           label="Delete Project"
           variant="danger"
+          disabled={deleteUngranted}
+          title={deleteUngranted ? 'Not granted to this device' : undefined}
           onSelect={() => {
             onClose();
             void startDelete();

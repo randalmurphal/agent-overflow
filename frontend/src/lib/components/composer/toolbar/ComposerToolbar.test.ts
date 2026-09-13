@@ -75,6 +75,9 @@ function installToolbarDimensions(
   // scripted here: hiding the collapsible labels saves this many pixels,
   // mirroring the real coupling where data-density changes scrollWidth.
   compactSavings = 140,
+  // Rolling the pickers up saves this much more; the tight rung below it
+  // is not scripted, so a case that expects `minimal` must fit here.
+  minimalSavings = 200,
 ) {
   const clientSpy = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get')
     .mockImplementation(function clientWidth(this: HTMLElement) {
@@ -86,9 +89,9 @@ function installToolbarDimensions(
         ? requiredFullWidth()
         : requiredFullWidth;
       if (this.dataset.testid !== 'composer-toolbar') return 0;
-      return this.dataset.density === 'full' || this.dataset.density === undefined
-        ? width
-        : width - compactSavings;
+      if (this.dataset.density === 'full' || this.dataset.density === undefined) return width;
+      if (this.dataset.density === 'compact') return width - compactSavings;
+      return width - compactSavings - minimalSavings;
     });
 
   return () => {

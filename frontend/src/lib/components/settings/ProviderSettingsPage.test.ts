@@ -1,6 +1,6 @@
 // The shared provider page, driven through the two pages that mount it, so
 // what is asserted is what the settings router actually renders.
-import { describe, expect, it, beforeEach } from "vitest";
+import { afterEach, describe, expect, it, beforeEach } from "vitest";
 import { render, fireEvent, waitFor } from "@testing-library/svelte";
 import ClaudeSettings from "./ClaudeSettings.svelte";
 import CodexSettings from "./CodexSettings.svelte";
@@ -17,6 +17,9 @@ import { resetForTest as resetProviderAccounts } from "../../stores/providerAcco
 import { resetForTest as resetAccountInfo } from "../../stores/accountInfo.svelte";
 import { resetForTest as resetRateLimits } from "../../stores/rateLimitsInfo.svelte";
 import { resetProviderModelsForTest } from "../../stores/providerModels.svelte";
+import { OBSERVE_SCOPES, pairWithScopes, resetToLocalPage } from "../../../test/helpers/scopes";
+import { setPageGrantsFromBootstrap } from "../../transport/scopes";
+import { HOST_TIER_REASON } from "./settingsComputer";
 
 const BASE_SETTINGS: Settings = makeSettings();
 
@@ -235,7 +238,82 @@ describe("provider page — when a change takes effect", () => {
   });
 });
 
+describe("provider page — host-tier keys off the host", () => {
+  // claudeEnabled / claudeTuiEnabled and the binary path are host tier
+  // (internal/settings/tier.go): the backend refuses the write without a
+  // step-up proof, so a networked page with no host presence and no
+  // passkey shows the control inert with the reason.
+  afterEach(() => {
+    setPageGrantsFromBootstrap(false);
+  });
+
+  it("disables the enable toggle, the TUI toggle and the path input with the reason", async () => {
+    await seed({ claudeEnabled: true });
+    setPageGrantsFromBootstrap(true);
+    const { findByRole, container } = render(ClaudeSettings);
+    for (const name of ["Toggle Claude", "Toggle Claude TUI"]) {
+      const toggle = (await findByRole("switch", { name })) as HTMLButtonElement;
+      expect(toggle.disabled, name).toBe(true);
+      expect(toggle.title, name).toBe(HOST_TIER_REASON);
+    }
+    const path = container.querySelector("#claude-path") as HTMLInputElement;
+    expect(path.disabled).toBe(true);
+    expect(path.title).toBe(HOST_TIER_REASON);
+  });
+});
+
 describe("provider page — provider accounts", () => {
+  it("renders the log-in control inert, saying why, without access:admin", async () => {
+    // Every account RPC rides `access:admin`, the listing included, so a
+    // device without it sees no account cards; the one control that still
+    // renders is the log-in button, inert with the reason.
+    await seed();
+    await pairWithScopes([...OBSERVE_SCOPES, "threads:operate"]);
+    try {
+      const { findByRole, queryByTestId } = render(CodexSettings);
+      const login = (await findByRole("button", { name: "Log in to another account" })) as HTMLButtonElement;
+      expect(login.disabled).toBe(true);
+      expect(login.title).toBe("Not granted to this device");
+      expect(queryByTestId("provider-account-codex-secondary")).toBeNull();
+    } finally {
+      resetToLocalPage();
+    }
+  });
+
+  it("renders the switch, refresh and remove controls inert, saying why, without access:admin", async () => {
+    // The card controls, exercised on a listing that arrived while the
+    // grant was held and is still on screen after it lapsed.
+    await seed();
+    setBindingMock("ListProviderAccounts", async () => [{
+      id: "codex-secondary",
+      provider: "codex",
+      email: "second@example.com",
+      addedAt: 1,
+      lastUsedAt: 2,
+      active: false,
+    }]);
+    const { findByRole, findByTestId } = render(CodexSettings);
+    await findByTestId("provider-account-codex-secondary");
+    await pairWithScopes([...OBSERVE_SCOPES, "threads:operate"]);
+    try {
+      for (const name of [
+        "Switch to second@example.com",
+        "Refresh usage for second@example.com",
+        "Remove second@example.com",
+      ]) {
+        await waitFor(() => {
+          const control = document.querySelector(`button[aria-label="${name}"]`) as HTMLButtonElement | null;
+          expect(control, name).not.toBeNull();
+          expect(control!.disabled, name).toBe(true);
+          expect(control!.title, name).toBe("Not granted to this device");
+        });
+      }
+      expect((await findByRole("button", { name: "Log in to another account" }) as HTMLButtonElement).disabled).toBe(true);
+    } finally {
+      resetToLocalPage();
+    }
+  });
+
   it("renders dynamic account-scoped usage buckets", async () => {
     await seed();
     setBindingMock("ListProviderAccounts", async () => [{

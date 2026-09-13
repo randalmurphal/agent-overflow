@@ -46,6 +46,7 @@
   import Icon from '../primitives/Icon.svelte';
   import SendToBack from '@lucide/svelte/icons/send-to-back';
   import { BackgroundClaudeTask } from '../../stores/bindings';
+  import { threadHasScope } from '../../transport/entityScopes';
 
   let {
     pane,
@@ -139,9 +140,12 @@
   // tool_use_id — what the `background_tasks` control takes). Codex
   // command rows (`command_execution`) never qualify: backgrounding
   // there is model-initiated (invariant 25), not a client control.
+  // BackgroundClaudeTask rides `threads:operate`; a session without it is
+  // not offered the control (hidden, like the other rows this button has).
   let canBackground = $derived(
     pane !== undefined &&
       isRunning &&
+      threadHasScope('threads:operate', item.threadId) &&
       !isBackgroundedLaunch &&
       effectiveStatusItem.kind === 'tool_call' &&
       item.toolName === 'Bash' &&
@@ -321,7 +325,7 @@
         title="Move to background"
         aria-label="Move command to background"
         data-testid="command-output-background-button"
-        class="inline-flex items-center justify-center opacity-0 group-hover/tool:opacity-100 focus-visible:opacity-100 rounded p-0.5 text-text-secondary hover:text-text-primary cursor-pointer disabled:cursor-default disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+        class="inline-flex items-center justify-center opacity-0 group-hover/tool:opacity-100 focus-visible:opacity-100 compact:opacity-100 rounded p-0.5 text-text-secondary hover:text-text-primary cursor-pointer disabled:cursor-default disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
       >
         <Icon icon={SendToBack} size={12} />
       </button>
@@ -381,7 +385,7 @@
   <!-- Output content -->
   {#if hasBody && expansion.expanded}
     <div id={outputDomId} class="ml-5 border-l border-border-subtle bg-surface-0/35">
-      <div class="max-h-96 overflow-auto px-3 py-2" use:nestedScroll>
+      <div class="max-h-96 compact:max-h-none overflow-auto px-3 py-2" use:nestedScroll>
         {#if displayCommand}
           <code class="mb-2 block whitespace-pre-wrap break-words border-b border-border-subtle pb-2 font-mono text-[0.6875rem] leading-relaxed text-fg" data-testid="command-output-full-command">{displayCommand}</code>
         {/if}

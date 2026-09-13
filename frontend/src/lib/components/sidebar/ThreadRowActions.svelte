@@ -10,10 +10,15 @@
   let {
     onArchive,
     onDelete,
+    disabled = false,
   }: {
     onArchive?: (e: MouseEvent) => void;
     onDelete?: (e: MouseEvent) => void;
+    /** The session lacks the write; the button stays, inert, and says why. */
+    disabled?: boolean;
   } = $props();
+
+  const UNGRANTED = 'Not granted to this device';
 
   const btnClass =
     'flex items-center justify-center h-5 w-5 rounded-[var(--radius-field)] shrink-0 ' +
@@ -25,10 +30,11 @@
   <button
     type="button"
     onclick={onDelete}
+    {disabled}
     data-testid="thread-row-delete"
     class={btnClass}
     aria-label="Delete Terminal"
-    title="Delete Terminal"
+    title={disabled ? UNGRANTED : 'Delete Terminal'}
   >
     <Icon icon={X} size={12} strokeWidth={2} class="opacity-90" />
   </button>
@@ -36,10 +42,11 @@
   <button
     type="button"
     onclick={onArchive}
+    {disabled}
     data-testid="thread-row-archive"
     class={btnClass}
     aria-label="Archive Thread"
-    title="Archive Thread"
+    title={disabled ? UNGRANTED : 'Archive Thread'}
   >
     <Icon icon={Archive} size={12} strokeWidth={2} class="opacity-90" />
   </button>

@@ -5,6 +5,8 @@ import { loadSettingsFixture as loadSettings } from '../../../test/helpers/setti
 import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
 import type { Settings } from '../../types/settings';
 import { makeSettings } from '../../../test/helpers/settings';
+import { setPageGrantsFromBootstrap } from '../../transport/scopes';
+import { HOST_TIER_REASON } from './settingsComputer';
 
 async function seed(overrides: Partial<Settings> = {}): Promise<Settings> {
   const merged = makeSettings(overrides);
@@ -43,6 +45,21 @@ describe('<PerformanceSettings>', () => {
 
     const mock = getBindingMock('UpdateSettings');
     expect(mock!.mock.calls[0][0]).toEqual({ streamingEnabled: false });
+  });
+
+  it('renders keep-awake inert, saying why, off the host while the device keys stay live', async () => {
+    // keepAwake* are host tier; lowPowerMode and streamingEnabled are not.
+    setPageGrantsFromBootstrap(true);
+    try {
+      const { getByRole } = render(PerformanceSettings);
+      const keepAwake = getByRole('switch', { name: 'Toggle Keep-Awake Screen' }) as HTMLButtonElement;
+      expect(keepAwake.disabled).toBe(true);
+      expect(keepAwake.title).toBe(HOST_TIER_REASON);
+      const lowPower = getByRole('switch', { name: 'Toggle Low Power Mode' }) as HTMLButtonElement;
+      expect(lowPower.disabled).toBe(false);
+    } finally {
+      setPageGrantsFromBootstrap(false);
+    }
   });
 
   it('dispatches keepAwakeScreen patch from its default-on state', async () => {

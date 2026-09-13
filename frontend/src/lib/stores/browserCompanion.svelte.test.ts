@@ -16,6 +16,7 @@ import { __resetScopesForTest, setPageGrantsFromBootstrap } from '../transport/s
 import { noteThread, forgetBackendEntities } from '../transport/entityIndex';
 import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
 import * as runMode from '../transport/runMode';
+import { setCompactLayoutForTest } from './layoutMode.svelte';
 
 const page = (url: string, title: string) => ({ id: 'page-1', url, title, canGoBack: false, canGoForward: false });
 
@@ -47,6 +48,54 @@ describe('browser companion state routing', () => {
 
     applyBrowserCompanionState({ kind: 'state', threadId: 'thread-browser', pages: [] });
     expect(companionForSource('main', 'browser')).toBeNull();
+  });
+
+  // The companion is a native view on the host; the compact screen never
+  // shows it, and opening it there would reveal the pane and yank the phone
+  // to the thread. State is still recorded, so a later desktop layout can
+  // restore it; only the open is withheld.
+  describe('under compact layout', () => {
+    beforeEach(() => setCompactLayoutForTest(true));
+    afterEach(() => setCompactLayoutForTest(false));
+
+    it('does not open the companion from a state push', () => {
+      applyBrowserCompanionState({
+        kind: 'state',
+        threadId: 'thread-browser',
+        activePageId: 'page-1',
+        visible: true,
+        pages: [page('file:///repo/demo.html', 'Demo')],
+      });
+      expect(companionForSource('main', 'browser')).toBeNull();
+      expect(getFocusedPaneId()).not.toBe('browser-main');
+    });
+
+    it('does not open the companion from the pane reconcile', () => {
+      applyBrowserCompanionState({
+        kind: 'state',
+        threadId: 'returning-thread',
+        visible: true,
+        pages: [page('https://example.com', 'Example')],
+      });
+      createPane('main').replaceThread(makeThread({ id: 'returning-thread' }));
+      reconcileBrowserCompanionForPane('main', 'returning-thread');
+      expect(companionForSource('main', 'browser')).toBeNull();
+    });
+
+    it('still closes a companion the desktop layout opened before the resize', () => {
+      setCompactLayoutForTest(false);
+      applyBrowserCompanionState({
+        kind: 'state',
+        threadId: 'thread-browser',
+        activePageId: 'page-1',
+        visible: true,
+        pages: [page('file:///repo/demo.html', 'Demo')],
+      });
+      expect(companionForSource('main', 'browser')?.kind).toBe('browser');
+      setCompactLayoutForTest(true);
+      applyBrowserCompanionState({ kind: 'state', threadId: 'thread-browser', pages: [] });
+      expect(companionForSource('main', 'browser')).toBeNull();
+    });
   });
 
   it('ignores pages owned by an unmounted thread', () => {

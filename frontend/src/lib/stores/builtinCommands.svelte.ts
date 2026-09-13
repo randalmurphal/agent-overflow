@@ -98,6 +98,7 @@ import {
   isSettingsOpen,
   openSettingsOverlay,
 } from './settingsOverlay.svelte';
+import { isCompactLayout } from './layoutMode.svelte';
 import { hasScope } from '../transport/scopes';
 
 export interface BuiltinCommandHooks {
@@ -276,7 +277,9 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'thread.newPane',
     label: 'Thread: New in New Pane',
     icon: '+',
-    when: 'threadsOperate',
+    // Compact shows one thread pane; a second one is a screen Back can
+    // only leave for the list.
+    when: 'threadsOperate && !compactLayout',
     editableReachable: true,
     run: () => openThreadFormInNewPane?.(),
   });
@@ -628,7 +631,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     label: 'Sidebar: Open Cursor Thread in New Pane',
     description: 'Open the thread under the sidebar cursor in a new pane.',
     icon: '↵',
-    when: 'sidebarCursorActive',
+    when: 'sidebarCursorActive && !compactLayout',
     editableReachable: true,
     run: () => {
       const id = getSidebarCursorThreadId();
@@ -1178,6 +1181,7 @@ export function makeCommandContext(pane: ThreadPane | null, extra: Partial<Comma
     settingsOpen: isSettingsOpen(),
     workflowsOverlayOpen: isWorkflowsOverlayOpen(),
     workflowsRunDetail: isWorkflowsOverlayOpen() && getWorkflowsOverlayTop().level === 'run',
+    compactLayout: isCompactLayout(),
     // Derived here, not passed in, for the same reason as the overlay flags:
     // the palette, per-keypress dispatch and tests must all see one answer for
     // "was this session granted that".

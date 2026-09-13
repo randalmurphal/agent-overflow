@@ -69,6 +69,15 @@ export function hasActiveFocusTrap(): boolean {
   return trapStack.length > 0;
 }
 
+/**
+ * Whether `node` is the trap on top of the stack: the surface that owns the
+ * keyboard right now. A dialog under another dialog answers false, which is
+ * what keeps one Escape from closing both when each listens on the document.
+ */
+export function isTopFocusTrap(node: HTMLElement): boolean {
+  return trapStack[trapStack.length - 1]?.node === node;
+}
+
 interface FocusTrapInstance {
   node: HTMLElement;
   previousFocus: Element | null;

@@ -27,6 +27,7 @@
     endThreadRowDrag,
     threadDragPayloadForEvent,
   } from '../../utils/threadDragPayload';
+  import { projectHasScope } from '../../transport/entityScopes';
 
   interface Props {
     group: ThreadGroup;
@@ -67,6 +68,9 @@
   let memberCount = $derived(memberThreadIds.length);
   let isPinned = $derived(group.pinnedAt != null);
   let rowPaddingLeftPx = $derived(sidebarRowPaddingLeftPx(indent));
+  // Rename, pin, new-thread and the menu's rows all write on the project's
+  // computer under `threads:operate`. The controls stay and go inert.
+  let operateUngranted = $derived(!projectHasScope('threads:operate', group.projectId));
 
   // ── Inline rename ────────────────────────────────────────────────────────
   let editing = $state(false);
@@ -75,6 +79,9 @@
   let saving = $state(false);
 
   function startRename(): void {
+    // Double-click, F2 and the menu all land here; a session that cannot
+    // write the name must not be handed an editor whose save is refused.
+    if (operateUngranted) return;
     editing = true;
     editValue = group.name;
     requestAnimationFrame(() => {
@@ -262,6 +269,7 @@
         pinGroup={group.pinGroup}
         pinLabel="Pin Group"
         unpinLabel="Unpin Group"
+        disabled={operateUngranted}
         onToggle={() => {
           if (isPinned) void unpinThreadGroupAction(group.id);
           else void pinThreadGroupAction(group.id);
@@ -304,7 +312,7 @@
         onblur={saveRename}
         disabled={saving}
         aria-label="Rename Group"
-        class="text-xs flex-1 min-w-0 bg-surface-0 border border-accent/50 rounded-[var(--radius-field)] px-1 py-0.5 text-fg focus:outline-none"
+        class="text-xs compact:text-base flex-1 min-w-0 bg-surface-0 border border-accent/50 rounded-[var(--radius-field)] px-1 py-0.5 text-fg focus:outline-none"
         onclick={(e) => e.stopPropagation()}
       />
     {:else}
@@ -326,7 +334,8 @@
       <button
         type="button"
         aria-label="New Thread in Group"
-        title="New Thread in Group"
+        title={operateUngranted ? 'Not granted to this device' : 'New Thread in Group'}
+        disabled={operateUngranted}
         data-testid="thread-group-new-thread"
         onclick={(e) => {
           e.stopPropagation();

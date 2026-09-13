@@ -281,7 +281,7 @@
     <div class="mt-1 flex items-center justify-end gap-1.5 pr-1 text-[0.625rem] text-fg-hint">
       {#if showMessageActions && pane}
         {#if canRequestEdit}
-          <span class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
+          <span class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100 compact:opacity-100">
             <IconButton
               label="Edit message and resend from here"
               size="sm"
@@ -296,7 +296,7 @@
           </span>
         {/if}
         {#if canRequestFork}
-          <span class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
+          <span class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100 compact:opacity-100">
             <IconButton
               label="Fork from this message"
               size="sm"
@@ -312,7 +312,7 @@
         {/if}
       {/if}
       {#if visibleSummary}
-        <span class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
+        <span class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100 compact:opacity-100">
           <CopyButton
             text={visibleSummary}
             label="Copy message"

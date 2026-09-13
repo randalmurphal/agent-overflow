@@ -1,7 +1,7 @@
 <script lang="ts">
   import { ClearBrowserSiteData } from '../../stores/bindings';
-  import { settingsComputer } from './settingsComputer';
-  const { getSettings, updateSetting, call } = settingsComputer();
+  import { HOST_TIER_REASON, settingsComputer } from './settingsComputer';
+  const { getSettings, updateSetting, call, hostTierWritable } = settingsComputer();
   import { addToast } from '../../stores/toast.svelte';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import SettingsField from './SettingsField.svelte';
@@ -9,6 +9,10 @@
   import { DANGER_BUTTON_CLASS, INPUT_CLASS, SECONDARY_BUTTON_CLASS } from './styles';
 
   let settings = $derived(getSettings());
+  // Every browser key is host tier: each grants a provider session an
+  // authority over THIS machine (internal/settings/tier.go).
+  let hostWritable = $derived(hostTierWritable());
+  let hostReason = $derived(hostWritable ? undefined : HOST_TIER_REASON);
   let clearArmed = $state(false);
   let clearing = $state(false);
 
@@ -35,13 +39,13 @@
   <section>
     <div class="flex flex-col gap-1">
       <SettingsField id="browser.enabled" label="Built-in browser tools" hint="Give Claude and Codex a browser in a companion pane.">
-        <ToggleSwitch checked={settings.browserEnabled} ariaLabel="Toggle Built-in Browser Tools" onToggle={(value) => updateSetting('browserEnabled', value)} />
+        <ToggleSwitch checked={settings.browserEnabled} disabled={!hostWritable} title={hostReason} ariaLabel="Toggle Built-in Browser Tools" onToggle={(value) => updateSetting('browserEnabled', value)} />
       </SettingsField>
       <SettingsField id="browser.persist-site-data" label="Remember site data" hint="Keep encrypted cookies and local storage separately for each workspace.">
-        <ToggleSwitch checked={settings.browserPersistSiteData} disabled={!settings.browserEnabled} ariaLabel="Toggle Browser Site Data" onToggle={(value) => updateSetting('browserPersistSiteData', value)} />
+        <ToggleSwitch checked={settings.browserPersistSiteData} disabled={!settings.browserEnabled || !hostWritable} title={hostReason} ariaLabel="Toggle Browser Site Data" onToggle={(value) => updateSetting('browserPersistSiteData', value)} />
       </SettingsField>
       <SettingsField id="browser.outside-workspace" label="Files outside workspace" hint="Allow browser tools to open any regular file your OS account can read.">
-        <ToggleSwitch checked={settings.browserAllowOutsideWorkspace} disabled={!settings.browserEnabled} ariaLabel="Toggle Outside Workspace Browser Files" onToggle={(value) => updateSetting('browserAllowOutsideWorkspace', value)} />
+        <ToggleSwitch checked={settings.browserAllowOutsideWorkspace} disabled={!settings.browserEnabled || !hostWritable} title={hostReason} ariaLabel="Toggle Outside Workspace Browser Files" onToggle={(value) => updateSetting('browserAllowOutsideWorkspace', value)} />
       </SettingsField>
       <SettingsField
         id="browser.chromium-path"
@@ -54,6 +58,8 @@
           type="text"
           data-testid="settings-browser-chromium-path"
           value={settings.browserChromiumPath}
+          disabled={!hostWritable}
+          title={hostReason}
           onchange={(e) => updateSetting('browserChromiumPath', (e.target as HTMLInputElement).value)}
           placeholder="Found on PATH when empty"
           class="{INPUT_CLASS} max-w-[16rem]"

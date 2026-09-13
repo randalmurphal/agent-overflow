@@ -352,7 +352,7 @@
         onclick={() => void handleSignIn()}
         disabled={signingIn}
         data-testid="transport-status-passkey"
-        class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 disabled:cursor-default disabled:opacity-60"
+        class="text-xs px-2 py-0.5 compact:px-3 compact:py-2 rounded border border-current/30 hover:bg-fg/10 cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 disabled:cursor-default disabled:opacity-60"
       >
         Sign in with a passkey
       </button>
@@ -362,7 +362,7 @@
         type="button"
         onclick={handlePairAgain}
         data-testid="transport-status-pair-again"
-        class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+        class="text-xs px-2 py-0.5 compact:px-3 compact:py-2 rounded border border-current/30 hover:bg-fg/10 cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
       >
         Pair again
       </button>
@@ -372,7 +372,7 @@
         type="button"
         onclick={handleChooseComputer}
         data-testid="transport-status-choose-computer"
-        class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+        class="text-xs px-2 py-0.5 compact:px-3 compact:py-2 rounded border border-current/30 hover:bg-fg/10 cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
       >
         Choose computer
       </button>
@@ -382,7 +382,7 @@
         type="button"
         onclick={handleRetry}
         data-testid="transport-status-retry"
-        class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+        class="text-xs px-2 py-0.5 compact:px-3 compact:py-2 rounded border border-current/30 hover:bg-fg/10 cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
       >
         Retry
       </button>

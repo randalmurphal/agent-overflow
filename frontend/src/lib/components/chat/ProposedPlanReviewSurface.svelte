@@ -14,6 +14,7 @@
     UpdateProposedPlanComment,
   } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
+  import { threadHasScope } from '../../transport/entityScopes';
   import type { PathRef, ProposedPlanComment } from '../../types/models';
 
   interface Props {
@@ -64,6 +65,11 @@
   let composerOpen = $state(false);
   let editingCommentId = $state<string | null>(null);
   let editBody = $state('');
+  // Create, edit and delete all write the thread's comments under
+  // `threads:operate`. Without it the selection never grows a comment
+  // trigger, and a draft's edit/delete controls go inert with a reason.
+  let operateUngranted = $derived(!threadHasScope('threads:operate', threadId));
+  let ungrantedTitle = $derived(operateUngranted ? 'Not granted to this device' : undefined);
 
   const sourceBlocks = $derived(splitProposedPlanMarkdownBlocks(markdown));
   const blockCommentViews = $derived.by<BlockCommentView[]>(() => {
@@ -100,6 +106,7 @@
   }
 
   function handleMouseUp(): void {
+    if (operateUngranted) return;
     const selection = window.getSelection();
     if (!selection || selection.isCollapsed || !selectionIsInsideSurface(selection)) return;
     const selectedText = selection.toString().trim();
@@ -274,10 +281,10 @@
                   </span>
                   {#if comment.status === 'draft'}
                     <div class="flex items-center gap-0.5">
-                      <IconButton label="Edit comment" size="sm" onClick={() => beginEdit(comment)}>
+                      <IconButton label="Edit comment" size="sm" disabled={operateUngranted} title={ungrantedTitle} onClick={() => beginEdit(comment)}>
                         {#snippet children()}<Icon icon={Pencil} size={12} />{/snippet}
                       </IconButton>
-                      <IconButton label="Delete comment" size="sm" onClick={() => void deleteComment(comment)}>
+                      <IconButton label="Delete comment" size="sm" disabled={operateUngranted} title={ungrantedTitle} onClick={() => void deleteComment(comment)}>
                         {#snippet children()}<Icon icon={X} size={12} />{/snippet}
                       </IconButton>
                     </div>

@@ -380,7 +380,7 @@
         onclick={(e) => e.stopPropagation()}
         disabled={renameSaving}
         aria-label="Rename Project"
-        class="text-[0.78125rem] flex-1 min-w-0 bg-surface-0 border border-accent/50 rounded-[var(--radius-field)] px-1 py-0.5 text-fg focus:outline-none"
+        class="text-[0.78125rem] compact:text-base flex-1 min-w-0 bg-surface-0 border border-accent/50 rounded-[var(--radius-field)] px-1 py-0.5 text-fg focus:outline-none"
       />
     {:else}
       {#if label.prefix}
@@ -414,7 +414,8 @@
       <button
         type="button"
         onclick={handleNewGroupClick}
-        title="New Group in This Project"
+        disabled={newThreadUngranted}
+        title={newThreadUngranted ? 'Not granted to this device' : 'New Group in This Project'}
         aria-label="New Group in This Project"
         data-testid="project-item-new-group"
         class="compact:hidden opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity shrink-0 flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:text-fg hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"

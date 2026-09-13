@@ -193,6 +193,14 @@ and anti-changes that live only here:
   into the viewport. No bottom-sheet menus; the earlier sheet default is
   reversed.
   `docs/specs/remote-access.md` (6f).
+- Phone touch pass (2026-09-13): every action a mouse reveals on hover is
+  visible on the phone; shared primitives carry a compact hit size; the
+  timeline's nested output boxes have no height cap under compact so a swipe
+  never latches inside a tool row; a browser's Back and Android Back run one
+  ladder, and a context menu or modal claims the press before anything under
+  it; a long press on the terminal no longer pastes, the key row has Paste;
+  a remote client sees an inert, labelled control for anything its grants
+  refuse, never a live one that fails afterwards.
 
 ## Review pane
 

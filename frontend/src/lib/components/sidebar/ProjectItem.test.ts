@@ -64,6 +64,10 @@ describe('ProjectItem create controls', () => {
     const newThread = getByTestId('project-item-new-thread') as HTMLButtonElement;
     expect(newThread.disabled).toBe(true);
     expect(newThread.title).toBe('Not granted to this device');
+    // New Group writes under the same grant (CreateThreadGroup).
+    const newGroup = getByTestId('project-item-new-group') as HTMLButtonElement;
+    expect(newGroup.disabled).toBe(true);
+    expect(newGroup.title).toBe('Not granted to this device');
   });
 });
 

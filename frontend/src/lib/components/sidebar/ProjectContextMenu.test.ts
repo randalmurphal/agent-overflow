@@ -6,7 +6,7 @@ import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import ProjectContextMenu from './ProjectContextMenu.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
-import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
+import { OBSERVE_SCOPES, pairViewOnly, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import {
   resetBindingMocks,
   setBindingMock,
@@ -344,5 +344,50 @@ describe('<ProjectContextMenu> compact create items', () => {
     const item = getByRole('menuitem', { name: 'New Terminal' });
     expect(item.getAttribute('aria-disabled')).toBe('true');
     expect(item.getAttribute('title')).toBe('Not granted to this device');
+  });
+});
+
+describe('<ProjectContextMenu> project writes without the grant', () => {
+  // Rename, New Group… and Archive write under `threads:operate`. Delete
+  // also previews the cleanup through ProjectDeletionPreview (`git:operate`),
+  // so it stays inert until both are held.
+  const INERT = 'Not granted to this device';
+
+  beforeEach(() => {
+    resetBindingMocks();
+  });
+
+  afterEach(() => {
+    resetToLocalPage();
+  });
+
+  function item(baseElement: HTMLElement, label: string): HTMLElement {
+    const node = Array.from(baseElement.querySelectorAll('[role="menuitem"]'))
+      .find((el) => el.textContent?.trim() === label);
+    if (!node) throw new Error(`${label} not rendered`);
+    return node as HTMLElement;
+  }
+
+  it('renders every write inert, saying why, for a view-only session', async () => {
+    await pairViewOnly();
+    const preview = setBindingMock('ProjectDeletionPreview', vi.fn(async () => emptyPreview()));
+    const { baseElement } = renderMenu();
+    for (const label of ['Rename Project', 'New Group…', 'Archive Project', 'Delete Project']) {
+      const row = item(baseElement, label);
+      expect(row.getAttribute('aria-disabled'), label).toBe('true');
+      expect(row.getAttribute('title'), label).toBe(INERT);
+    }
+    await fireEvent.click(item(baseElement, 'Delete Project'));
+    expect(preview).not.toHaveBeenCalled();
+  });
+
+  it('keeps Delete inert with threads:operate but no git:operate', async () => {
+    await pairWithScopes([...OBSERVE_SCOPES, 'threads:operate']);
+    const { baseElement } = renderMenu();
+    expect(item(baseElement, 'Rename Project').getAttribute('aria-disabled')).not.toBe('true');
+    expect(item(baseElement, 'Archive Project').getAttribute('aria-disabled')).not.toBe('true');
+    const del = item(baseElement, 'Delete Project');
+    expect(del.getAttribute('aria-disabled')).toBe('true');
+    expect(del.getAttribute('title')).toBe(INERT);
   });
 });

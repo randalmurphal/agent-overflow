@@ -17,6 +17,7 @@ import {
   buildPane as buildRegisteredPane,
   makeThread as makeBaseThread,
 } from '../../../test/helpers/chat';
+import { OBSERVE_SCOPES, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 
 vi.mock('../../stores/threadCreation.svelte', () => ({ openTerminalThread: vi.fn() }));
 
@@ -392,5 +393,73 @@ describe('<ChatHeaderActions> compact header menu', () => {
     await fireEvent.click(terminal);
     await flush();
     expect(pane.showTerminal).toBe(true);
+  });
+
+  it('carries no Browser row: the companion is a native view on the host', async () => {
+    installSubscribeMock(status({}));
+    const pane = await buildPane();
+    setCompactLayoutForTest(true);
+    const { getByTestId } = render(ChatHeaderActions, { props: { pane } });
+    await flush();
+    await fireEvent.click(getByTestId('chat-header-more'));
+    await flush();
+    expect(within(document.body).queryByRole('menuitem', { name: /Browser/ })).toBeNull();
+  });
+});
+
+describe('<ChatHeaderActions> terminal controls without terminal:operate', () => {
+  // Opening the drawer terminal and taking control of a claude-tui session
+  // both write under `terminal:operate`; a device paired without it keeps
+  // the controls, inert and saying why, instead of a refused round-trip.
+  const INERT = 'Not granted to this device';
+
+  beforeEach(async () => {
+    resetPanesForTest();
+    resetEditorsForTest();
+    setBindingMock('GetSettings', async () => null);
+    setBindingMock('GetProviderStatuses', async () => []);
+    setBindingMock('ListAvailableEditors', async () => []);
+    setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
+    await loadSettings();
+    await pairWithScopes([...OBSERVE_SCOPES, 'threads:operate']);
+  });
+
+  afterEach(() => {
+    setCompactLayoutForTest(false);
+    resetToLocalPage();
+  });
+
+  it('disables the desktop terminal toggle and take-control with the reason', async () => {
+    installSubscribeMock(status({}));
+    const pane = await buildPane(makeThread({ provider: 'claude-tui' }));
+    const { getByTestId } = render(ChatHeaderActions, { props: { pane } });
+    await flush();
+    const toggle = getByTestId('terminal-toggle') as HTMLButtonElement;
+    expect(toggle.disabled).toBe(true);
+    expect(toggle.title).toBe(INERT);
+    await fireEvent.click(toggle);
+    await flush();
+    expect(pane.showTerminal).toBe(false);
+    const take = getByTestId('take-control-toggle') as HTMLButtonElement;
+    expect(take.disabled).toBe(true);
+    expect(take.title).toBe(INERT);
+  });
+
+  it('renders the compact Terminal and Take control rows inert with the reason', async () => {
+    installSubscribeMock(status({}));
+    const pane = await buildPane(makeThread({ provider: 'claude-tui' }));
+    setCompactLayoutForTest(true);
+    const { getByTestId } = render(ChatHeaderActions, { props: { pane } });
+    await flush();
+    await fireEvent.click(getByTestId('chat-header-more'));
+    await flush();
+    for (const name of ['Terminal', 'Take control']) {
+      const row = within(document.body).getByRole('menuitem', { name });
+      expect(row.getAttribute('aria-disabled'), name).toBe('true');
+      expect(row.getAttribute('title'), name).toBe(INERT);
+    }
+    await fireEvent.click(within(document.body).getByRole('menuitem', { name: 'Terminal' }));
+    await flush();
+    expect(pane.showTerminal).toBe(false);
   });
 });

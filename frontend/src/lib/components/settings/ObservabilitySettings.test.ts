@@ -5,6 +5,8 @@ import { loadSettingsFixture as loadSettings } from '../../../test/helpers/setti
 import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
 import type { Settings } from '../../types/settings';
 import { makeSettings } from '../../../test/helpers/settings';
+import { setPageGrantsFromBootstrap } from '../../transport/scopes';
+import { HOST_TIER_REASON } from './settingsComputer';
 
 const BASE_SETTINGS: Settings = makeSettings();
 
@@ -30,6 +32,26 @@ describe('<ObservabilitySettings>', () => {
     expect(switches.length).toBe(2);
     expect(switches[0].getAttribute('aria-label')).toBe('Toggle OpenTelemetry tracing');
     expect(switches[1].getAttribute('aria-label')).toBe('Toggle Event Replay Log');
+  });
+
+  it('renders every control inert, saying why, off the host without a passkey', async () => {
+    // The observability* keys are host tier (internal/settings/tier.go).
+    await seed({ observabilityTracingEnabled: true });
+    setPageGrantsFromBootstrap(true);
+    try {
+      const { getAllByRole, getByLabelText } = render(ObservabilitySettings);
+      for (const toggle of getAllByRole('switch') as HTMLButtonElement[]) {
+        expect(toggle.disabled).toBe(true);
+        expect(toggle.title).toBe(HOST_TIER_REASON);
+      }
+      const input = getByLabelText('OTLP endpoint') as HTMLInputElement;
+      expect(input.disabled).toBe(true);
+      expect(input.title).toBe(HOST_TIER_REASON);
+      await fireEvent.click(getAllByRole('switch')[0]);
+      expect(getBindingMock('UpdateSettings')?.mock.calls).toHaveLength(0);
+    } finally {
+      setPageGrantsFromBootstrap(false);
+    }
   });
 
   it('disables the OTLP endpoint input when tracing is off', async () => {

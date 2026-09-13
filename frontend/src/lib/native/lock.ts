@@ -83,6 +83,17 @@ export function lockWindowMs(): number {
   return parsed;
 }
 
+// Whether the lock screen is up, published for the code that runs on a
+// hardware key rather than a tap: `inert` on the app root stops focus and
+// pointers, not store calls, so the back button asks here before it
+// navigates behind the cover. One lock is installed per document.
+let lockedNow = false;
+
+/** Whether the app lock cover is up. Always false off the shell. */
+export function isAppLocked(): boolean {
+  return lockedNow;
+}
+
 export interface AppLock {
   /** Whether the lock screen should be showing right now. */
   locked: () => boolean;
@@ -125,6 +136,7 @@ export async function installAppLock(options: AppLockOptions = {}): Promise<AppL
   // dismissed) is still owed after it. Folding them into one flag let a
   // three-second trip to another app lift a prompt nobody had passed.
   let covered = true;
+  lockedNow = true;
   let owed = true;
   let lastPausedAt: number | null = null;
   // The prompt in flight, so a second request joins it. The platform's
@@ -142,7 +154,10 @@ export async function installAppLock(options: AppLockOptions = {}): Promise<AppL
   // dismissed prompt was raised again on the spot, with no way out of it
   // short of killing the app.
   let pausedForPrompt = false;
-  const publish = (): void => options.onChange?.(covered);
+  const publish = (): void => {
+    lockedNow = covered;
+    options.onChange?.(covered);
+  };
 
   const prompt = async (): Promise<boolean> => {
     try {
@@ -238,6 +253,7 @@ export async function installAppLock(options: AppLockOptions = {}): Promise<AppL
     unlock,
     dispose: () => {
       for (const handle of handles) void handle.remove();
+      lockedNow = false;
     },
   };
 }

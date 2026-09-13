@@ -18,6 +18,7 @@ import {
 import { emitWailsEvent, resetWailsMocks } from '../../../test/mocks/wailsio-runtime';
 import { forgetThread, noteThread } from '../../transport/entityIndex';
 import { initDevServers, resetDevServersForTest } from '../../stores/devServers.svelte';
+import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
 import type { DevServerList } from '../../stores/devServers.svelte';
 
 // Some Svelte transitions call Element.prototype.animate; jsdom doesn't
@@ -1152,6 +1153,21 @@ describe('<CommandOutput> background button (agent-visibility)', () => {
     });
     await fireEvent.click(getByTestId('command-output-background-button'));
     await waitFor(() => expect(background).toHaveBeenCalledWith('thread-1', 'bash-1'));
+  });
+
+  it('hides the button without threads:operate on the thread', async () => {
+    // BackgroundClaudeTask writes under `threads:operate`; a view-only
+    // device gets no control rather than a refused round-trip.
+    await pairViewOnly();
+    try {
+      const item = makeItem({ id: 'bash-ro', kind: 'tool_call', status: 'running', toolName: 'Bash' });
+      const { queryByTestId } = render(CommandOutput, {
+        props: { pane: fakePane(), item, meta: commandMeta() },
+      });
+      expect(queryByTestId('command-output-background-button')).toBeNull();
+    } finally {
+      resetToLocalPage();
+    }
   });
 
   it('hides the button once the launch is already backgrounded, settled, or Codex', () => {

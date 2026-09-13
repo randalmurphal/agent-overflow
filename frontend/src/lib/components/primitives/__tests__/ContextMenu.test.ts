@@ -59,4 +59,44 @@ describe('<ContextMenu>', () => {
       unmount();
     }
   });
+
+  it('claims Escape so a hardware back press that closed the menu is reported as absorbed', () => {
+    const onDismiss = vi.fn();
+    render(Harness, { props: { onDismiss } });
+    // Dispatched at the body, which is where focus sits after a long press
+    // on a non-focusable row, and which is where `native/lifecycle.ts` sends
+    // its synthetic Escape; the answer it reads is `defaultPrevented`.
+    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    let reachedWindow = false;
+    const atWindow = () => {
+      reachedWindow = true;
+    };
+    window.addEventListener('keydown', atWindow);
+    try {
+      document.body.dispatchEvent(event);
+    } finally {
+      window.removeEventListener('keydown', atWindow);
+    }
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+    expect(event.defaultPrevented).toBe(true);
+    expect(reachedWindow).toBe(false);
+  });
+
+  it('clamps the menu into the visual viewport rather than the layout viewport', () => {
+    const original = Object.getOwnPropertyDescriptor(window, 'visualViewport');
+    Object.defineProperty(window, 'visualViewport', {
+      value: { width: window.innerWidth, height: 300 },
+      configurable: true,
+    });
+    try {
+      const { container } = render(Harness, { props: { x: 40, y: 700 } });
+      const el = surface(container);
+      // happy-dom measures the menu at zero height, so the clamp is the
+      // viewport height less the margin.
+      expect(el.style.top).toBe('296px');
+    } finally {
+      if (original) Object.defineProperty(window, 'visualViewport', original);
+      else delete (window as { visualViewport?: unknown }).visualViewport;
+    }
+  });
 });

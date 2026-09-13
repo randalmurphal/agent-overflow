@@ -26,6 +26,7 @@
   import type { StreamingAssistantRenderContext } from '../../stores/streamingAssistantReveal';
   import { previewRewriteKey } from '../../stores/devServers.svelte';
   import { hasScope } from '../../transport/scopes';
+  import { threadMachine } from '../../stores/attachedBackends.svelte';
   import { isHarnessSession } from '../../transport/harnessMode';
 
   type AssistantMarkdownDiagnostics = {
@@ -138,7 +139,9 @@
   const parserRenderContext = $derived.by(() => {
     const nextStreaming = streaming;
     const nextVolatileTailVisible = !nextStreaming || getSettings().streamingEnabled;
-    const nextPathLinksInert = !hasScope('host');
+    // The same per-machine question ChatMarkdown asks for its own path
+    // links, so the two decisions cannot disagree on one row.
+    const nextPathLinksInert = !hasScope('host', threadMachine(threadId, null));
     const nextWorkspacePath = workspacePath;
     const nextPreviewKey = previewRewriteKey(threadId);
     if (
@@ -331,7 +334,7 @@
         class="flex h-7 w-7 shrink-0 items-center justify-center"
       >
         {#if canCopy}
-          <span class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
+          <span class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100 compact:opacity-100">
             <CopyButton
               text={item.summary}
               write={copyMarkdownToClipboard}

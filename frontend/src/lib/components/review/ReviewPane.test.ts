@@ -9,6 +9,7 @@ import { resetAppStorageForTest } from '../../stores/appStorage';
 import type { DiffReviewComment, DiffReviewCommentInput, PRDetail, Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { applyPRReviewUpdated } from '../../stores/eventsPRReview';
+import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
 
 function makeCtx(): PanelContext {
   return makeStubPanelContext();
@@ -361,6 +362,49 @@ describe('<ReviewPane>', () => {
       expect(send).toHaveBeenCalledWith('thread-1', 'workspace', expect.stringMatching(/^fnv1a:/), ['comment-1'], { pr: undefined });
       expect(view.queryByTestId('review-send-strip')).not.toBeInTheDocument();
     });
+  });
+
+  it('withholds the gutter affordance and disables Send without threads:operate', async () => {
+    // Drafting and sending both write under `threads:operate` on the
+    // thread's computer. The diff and existing comments still render.
+    const draft: DiffReviewComment = {
+      id: 'comment-1',
+      threadId: 'thread-1',
+      scope: 'workspace',
+      sourceKey: 'fnv1a:0',
+      filePath: 'src/app.ts',
+      status: 'draft',
+      oldLine: undefined,
+      newLine: 1,
+      side: 'new',
+      selectedText: 'new',
+      body: 'Please revisit this line.',
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    setBindingMock('ListDiffReviewComments', async () => [draft]);
+    const send = setBindingMock('SendDiffReviewComments', vi.fn(async () => ({})));
+    await pairViewOnly();
+    try {
+      const view = render(ReviewPane, { ctx: makeCtx() });
+      await waitFor(() => {
+        expect(view.getAllByTestId('review-line-block').length).toBeGreaterThan(0);
+        expect(view.getByTestId('review-send-strip')).toBeInTheDocument();
+      });
+
+      for (const block of view.getAllByTestId('review-line-block')) {
+        await fireEvent.mouseOver(block);
+      }
+      expect(view.queryAllByTestId('review-add-comment')).toHaveLength(0);
+
+      const sendButton = view.getByRole('button', { name: 'Send comments' }) as HTMLButtonElement;
+      expect(sendButton.disabled).toBe(true);
+      expect(sendButton.title).toBe('Not granted to this device');
+      await fireEvent.click(sendButton);
+      expect(send).not.toHaveBeenCalled();
+    } finally {
+      resetToLocalPage();
+    }
   });
 
   it('carries the PR state + branch refs in the toolbar, not a second header stats line', async () => {

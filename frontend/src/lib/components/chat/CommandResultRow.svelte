@@ -164,7 +164,7 @@
     <div class="mt-1.5 flex items-center gap-1.5 text-[0.625rem] text-fg-hint">
       <time class="tabular-nums" datetime={isoTime}>{time}</time>
       <span class="flex h-7 w-7 shrink-0 items-center justify-center" data-testid="command-result-copy-slot">
-        <span class="opacity-0 transition-opacity duration-150 group-hover/command-result:opacity-100 focus-within:opacity-100">
+        <span class="opacity-0 transition-opacity duration-150 group-hover/command-result:opacity-100 focus-within:opacity-100 compact:opacity-100">
           <CopyButton
             text={getCopyText}
             write={copyMarkdownToClipboard}
@@ -187,7 +187,7 @@
         data-testid="command-result-copy-slot"
       >
         <span
-          class="opacity-0 transition-opacity duration-150 group-hover/command-result:opacity-100 focus-within:opacity-100"
+          class="opacity-0 transition-opacity duration-150 group-hover/command-result:opacity-100 focus-within:opacity-100 compact:opacity-100"
         >
           <CopyButton
             text={getCopyText}
@@ -201,7 +201,7 @@
 
     <div
       id={bodyDomId}
-      class="ml-5 max-h-60 min-w-0 max-w-full overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-words border-l border-border-subtle bg-surface-0/35 px-3 py-2 font-mono text-[0.6875rem] leading-relaxed text-fg-muted"
+      class="ml-5 max-h-60 compact:max-h-none min-w-0 max-w-full overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-words border-l border-border-subtle bg-surface-0/35 px-3 py-2 font-mono text-[0.6875rem] leading-relaxed text-fg-muted"
       use:nestedScroll
       data-testid="command-result-output">{outputText}</div>
   {/if}

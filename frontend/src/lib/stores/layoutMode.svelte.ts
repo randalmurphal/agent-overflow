@@ -47,6 +47,27 @@ export function showCompactThread(): void {
   stamp();
 }
 
+/**
+ * The pane the compact thread screen is showing. Compact lays every pane
+ * out at the strip's full width and glides between them, so "which pane"
+ * is the one under the strip's centre, read from geometry rather than
+ * focus: opening a companion deliberately leaves focus on the thread it
+ * was opened from. Null off the thread screen or before the strip renders.
+ */
+export function onScreenCompactPaneId(): string | null {
+  if (typeof document === 'undefined') return null;
+  const strip = document.querySelector('.compact-screen-thread');
+  if (!strip) return null;
+  const stripRect = strip.getBoundingClientRect();
+  const centre = stripRect.left + stripRect.width / 2;
+  for (const section of strip.querySelectorAll<HTMLElement>('[data-pane-id]')) {
+    const rect = section.getBoundingClientRect();
+    if (rect.left > centre || rect.right <= centre) continue;
+    return section.dataset.paneId ?? null;
+  }
+  return null;
+}
+
 function stamp(): void {
   if (typeof document === 'undefined') return;
   const root = document.documentElement;

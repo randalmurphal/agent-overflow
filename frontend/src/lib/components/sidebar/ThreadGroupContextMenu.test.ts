@@ -3,7 +3,8 @@
 // disable rather than vanish on an empty group, and Delete Group ungroups —
 // which is what its dialog has to say.
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
 import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ThreadGroupContextMenu from './ThreadGroupContextMenu.svelte';
@@ -75,6 +76,49 @@ async function flush(): Promise<void> {
   for (let i = 0; i < 5; i += 1) await Promise.resolve();
   await tick();
 }
+
+describe('<ThreadGroupContextMenu> without threads:operate', () => {
+  // Every row writes under `threads:operate` on the group's project. A
+  // view-only device sees the same rows, inert, with the reason.
+  const INERT = 'Not granted to this device';
+
+  beforeEach(async () => {
+    resetPanesForTest();
+    resetProjectsForTest();
+    resetThreadGroupsForTest();
+    resetBindingMocks();
+    replaceAllThreads([mkThread('t1'), mkThread('t2')]);
+    await primeSettings();
+    await pairViewOnly();
+  });
+
+  afterEach(() => {
+    resetToLocalPage();
+  });
+
+  it('renders every row inert with the reason and runs nothing', async () => {
+    const rename = setBindingMock('RenameThreadGroup', vi.fn());
+    const del = setBindingMock('DeleteThreadGroup', vi.fn());
+    const { baseElement, getByRole } = renderMenu();
+    for (const label of [
+      'New Thread',
+      'Rename Group',
+      'Pin Group',
+      'Archive Threads (2)',
+      'Ungroup All',
+      'Delete Group',
+    ]) {
+      const row = getByRole('menuitem', { name: label });
+      expect(row.getAttribute('aria-disabled'), label).toBe('true');
+      expect(row.getAttribute('title'), label).toBe(INERT);
+    }
+    expect(visibleLabels(baseElement)).toHaveLength(6);
+    await fireEvent.click(getByRole('menuitem', { name: 'Delete Group' }));
+    await flush();
+    expect(rename).not.toHaveBeenCalled();
+    expect(del).not.toHaveBeenCalled();
+  });
+});
 
 describe('<ThreadGroupContextMenu>', () => {
   beforeEach(async () => {

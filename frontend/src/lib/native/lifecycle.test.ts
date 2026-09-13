@@ -4,8 +4,13 @@
 // session would have: the compact layout, a thread pane, a companion,
 // and the DOM the strip renders them into.
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const lockState = vi.hoisted(() => ({ locked: false }));
+vi.mock('./lock', () => ({ isAppLocked: () => lockState.locked }));
+
 import { answerBackPress } from './lifecycle';
+import { stepBack } from '../utils/stepBack';
 import {
   getCompactScreen,
   setCompactLayoutForTest,
@@ -61,6 +66,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  lockState.locked = false;
   document.body.innerHTML = '';
   setCompactLayoutForTest(false);
   showCompactList();
@@ -134,6 +140,57 @@ describe('answerBackPress', () => {
     expect(isCompanionOpen('main', 'review')).toBe(false);
     expect(revealed).toEqual(['main']);
     expect(getCompactScreen()).toBe('thread');
+  });
+
+  it('closes the companion on screen before a terminal the source thread still holds', () => {
+    setPaneLayoutItemsForTest([threadItem('main')]);
+    const pane = createPane('main');
+    focusPane('main');
+    pane.setShowTerminal(true);
+    // Opening a companion leaves focus on the source, so the focused pane
+    // is the one with the terminal while the review pane is what is seen.
+    const review = openCompanion('main', 'review')!;
+    mountStrip([
+      { paneId: 'main', kind: 'thread', onScreen: false },
+      { paneId: review.paneId, kind: 'review', onScreen: true },
+    ]);
+    const revealed: string[] = [];
+    window.addEventListener(REVEAL_PANE_EVENT, ((event: CustomEvent<{ paneId: string }>) => {
+      revealed.push(event.detail.paneId);
+    }) as EventListener);
+
+    expect(answerBackPress()).toBe(true);
+    expect(isCompanionOpen('main', 'review')).toBe(false);
+    expect(pane.showTerminal).toBe(true);
+    expect(revealed).toEqual(['main']);
+
+    // With the thread back on screen the next press takes the terminal.
+    document.body.innerHTML = '';
+    mountStrip([{ paneId: 'main', kind: 'thread', onScreen: true }]);
+    expect(answerBackPress()).toBe(true);
+    expect(pane.showTerminal).toBe(false);
+    expect(getCompactScreen()).toBe('thread');
+  });
+
+  it('absorbs every press while the app lock is up, and moves nothing', () => {
+    setPaneLayoutItemsForTest([threadItem('main')]);
+    createPane('main');
+    mountStrip([{ paneId: 'main', kind: 'thread', onScreen: true }]);
+    lockState.locked = true;
+
+    expect(answerBackPress()).toBe(true);
+    expect(getCompactScreen()).toBe('thread');
+
+    // The root too: a locked list screen must not exit the app either.
+    showCompactList();
+    expect(answerBackPress()).toBe(true);
+    expect(getCompactScreen()).toBe('list');
+
+    // The bare ladder is what a browser's Back runs, and it has no lock.
+    lockState.locked = false;
+    showCompactThread();
+    expect(stepBack()).toBe(true);
+    expect(getCompactScreen()).toBe('list');
   });
 
   it('goes from a thread with nothing stacked on it to the list', () => {

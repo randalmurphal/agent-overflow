@@ -41,6 +41,7 @@ import { refreshProjects, resetProjectsForTest } from '../../stores/projects.sve
 import { __resetBackendIdentityForTest, setBackendIdentityFromBootstrap } from '../../transport/backendIdentity';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { resetSidebarForTest, setShowProviderIcons } from '../../stores/sidebar.svelte';
+import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -198,6 +199,58 @@ describe('<ThreadRow> open / focused marker', () => {
     expect(shell.dataset.open).toBeUndefined();
     expect(shell.dataset.focused).toBeUndefined();
     expect(getByTestId('thread-row').classList.contains('text-fg-muted')).toBe(true);
+  });
+});
+
+describe('<ThreadRow> inline actions without threads:operate', () => {
+  // The pin toggle and the hover Archive / Delete write under
+  // `threads:operate`; a view-only device keeps the affordances but they are
+  // inert and say why, so nothing round-trips only to be refused.
+  const INERT = 'Not granted to this device';
+
+  beforeEach(async () => {
+    resetPanesForTest();
+    resetPaneLayoutForTest();
+    await primeSettings();
+    setBindingMock('ListThreads', async () => []);
+    await refreshThreads();
+    resetKeybindingsStore();
+    resetKeyboardModifiersForTest();
+    await pairViewOnly();
+  });
+
+  afterEach(() => {
+    resetToLocalPage();
+  });
+
+  it('disables pin and archive on a chat thread with the reason', async () => {
+    const archive = setBindingMock('ArchiveThread', vi.fn(async () => {}));
+    const pin = setBindingMock('PinThread', vi.fn(async () => {}));
+    const { getByTestId } = render(ThreadRow, { props: { thread: makeThread(), pane: createThreadPane() } });
+    const pinBtn = getByTestId('thread-row-pin') as HTMLButtonElement;
+    const archiveBtn = getByTestId('thread-row-archive') as HTMLButtonElement;
+    expect(pinBtn.disabled).toBe(true);
+    expect(pinBtn.title).toBe(INERT);
+    expect(archiveBtn.disabled).toBe(true);
+    expect(archiveBtn.title).toBe(INERT);
+    await fireEvent.click(pinBtn);
+    await fireEvent.click(archiveBtn);
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    expect(pin).not.toHaveBeenCalled();
+    expect(archive).not.toHaveBeenCalled();
+  });
+
+  it('disables delete on a terminal thread with the reason', async () => {
+    const del = setBindingMock('DeleteThread', vi.fn(async () => {}));
+    const { getByTestId } = render(ThreadRow, {
+      props: { thread: makeThread({ mode: 'terminal' }), pane: createThreadPane() },
+    });
+    const deleteBtn = getByTestId('thread-row-delete') as HTMLButtonElement;
+    expect(deleteBtn.disabled).toBe(true);
+    expect(deleteBtn.title).toBe(INERT);
+    await fireEvent.click(deleteBtn);
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    expect(del).not.toHaveBeenCalled();
   });
 });
 

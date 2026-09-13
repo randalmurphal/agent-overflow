@@ -603,7 +603,7 @@
   <!-- Keep in step with CODE_OVERLAY_CLASS in staticCodeBlock.ts: the settled
        block renders the same overlay as static HTML. -->
   <div
-    class="absolute top-1 right-1 z-10 flex items-center gap-0.5 opacity-0 transition-opacity duration-150 ease-out group-hover/codeblock:opacity-100 focus-within:opacity-100"
+    class="absolute top-1 right-1 z-10 flex items-center gap-0.5 opacity-0 transition-opacity duration-150 ease-out group-hover/codeblock:opacity-100 focus-within:opacity-100 compact:opacity-100"
   >
     <IconButton label={codeWrapLabel(unwrapped)} size="sm" onClick={toggleWrap}>
       {#snippet children()}

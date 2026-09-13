@@ -148,7 +148,7 @@
       aria-haspopup="menu"
       aria-expanded={menuOpen}
       class={[
-        'inline-flex h-8 w-7 items-center justify-center rounded-r-full border-l border-surface-0/20',
+        'inline-flex h-8 w-7 compact:h-10 compact:w-9 items-center justify-center rounded-r-full border-l border-surface-0/20',
         'bg-accent text-surface-0 hover:bg-accent/85 transition-colors cursor-pointer',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:ring-accent/50',
         'disabled:opacity-30 disabled:cursor-not-allowed',
@@ -185,8 +185,8 @@
     aria-label={showStop ? interruptLabel : idleLabel}
     title={showStop ? interruptLabel : (disabledReason ?? idleLabel)}
     class={[
-      'inline-flex h-8 items-center justify-center rounded-full shrink-0',
-      label && !showStop ? 'gap-1.5 px-3 text-xs font-medium' : 'w-8',
+      'inline-flex h-8 compact:h-10 items-center justify-center rounded-full shrink-0',
+      label && !showStop ? 'gap-1.5 px-3 text-xs font-medium' : 'w-8 compact:w-10',
       'transition-[background-color,transform,opacity] duration-150 cursor-pointer',
       'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:ring-accent/50',
       'hover:scale-105 active:scale-95',

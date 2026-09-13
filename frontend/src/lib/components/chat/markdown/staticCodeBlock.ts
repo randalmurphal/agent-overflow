@@ -86,13 +86,13 @@ const COPY_BUTTON_CLASS = [
   'transition-colors cursor-pointer hover:text-text-primary',
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
   'disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent',
-  'disabled:hover:text-text-secondary h-7 w-7 bg-transparent hover:bg-surface-2/60',
+  'disabled:hover:text-text-secondary h-7 w-7 compact:h-9 compact:w-9 bg-transparent hover:bg-surface-2/60',
 ].join(' ');
 
 const CODE_OVERLAY_CLASS = [
   'absolute top-1 right-1 z-10 flex items-center gap-0.5',
   'opacity-0 transition-opacity duration-150 ease-out',
-  'group-hover/codeblock:opacity-100 focus-within:opacity-100',
+  'group-hover/codeblock:opacity-100 focus-within:opacity-100 compact:opacity-100',
 ].join(' ');
 
 function escapeHtml(value: unknown): string {

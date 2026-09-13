@@ -53,8 +53,8 @@
   // inner icon sizing is the caller's responsibility — the button just
   // guarantees the box is consistent.
   const SIZE_CLASSES: Record<NonNullable<Props['size']>, string> = {
-    sm: 'h-7 w-7',
-    md: 'h-8 w-8',
+    sm: 'h-7 w-7 compact:h-9 compact:w-9',
+    md: 'h-8 w-8 compact:h-10 compact:w-10',
   };
 
   // Ghost = transparent until hover. Subtle = shows a low-contrast fill

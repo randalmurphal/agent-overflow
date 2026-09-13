@@ -22,6 +22,7 @@
   import { runTerminalToggle } from '../terminal/terminalToggle';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { hasScope } from '../../transport/scopes';
+  import { threadHasScope } from '../../transport/entityScopes';
   import { openInEditor } from '../../stores/openInEditor';
   import { errString } from '../../utils/errors';
   import { forgeLabels } from '../../utils/forgeLabels';
@@ -48,6 +49,7 @@
   import {
     browserCompanionAct,
     browserCompanionState,
+    canUseNativeBrowser,
     hydrateBrowserCompanionState,
   } from '../../stores/browserCompanion.svelte';
 
@@ -65,6 +67,12 @@
 
   let terminalToggleSuffix = $derived(chordHintSuffix('terminal.toggle'));
   let reviewToggleChord = $derived(chordHintForCommand('diff.panel.toggle'));
+  // The drawer terminal, a fresh terminal thread and the take-control
+  // mirror all open a PTY on the thread's computer under `terminal:operate`:
+  // the same gate the palette's terminal.toggle command reads. Inert with a
+  // reason rather than absent, like every other ungranted control.
+  let terminalUngranted = $derived(!threadHasScope('terminal:operate', pane.threadId, pane.thread?.projectId));
+  let terminalUngrantedTitle = $derived(terminalUngranted ? 'Not granted to this device' : undefined);
 
   // Attach deps as $derived primitives so the effect re-runs only when the
   // values actually change — pane.replaceThread() fires for unrelated metadata
@@ -141,8 +149,15 @@
   // only say "there is nothing to show" is noise. The state read is per-key
   // reactive, and the hydration read fills in what the ephemeral
   // `browser:companion-state` channel cannot replay to a fresh UI.
+  // The chip's own gate, not only the hydration read's: the pane is a native
+  // view this machine paints, so a page that cannot host one offers no chip
+  // however many pages the thread has.
   let threadIdForBrowser = $derived(pane.threadId ?? '');
-  let browserState = $derived(threadIdForBrowser ? browserCompanionState(threadIdForBrowser) : null);
+  let browserState = $derived(
+    threadIdForBrowser && canUseNativeBrowser(threadIdForBrowser)
+      ? browserCompanionState(threadIdForBrowser)
+      : null,
+  );
   let browserVisible = $derived(browserState?.visible === true);
 
   $effect(() => {
@@ -247,7 +262,7 @@
       title="Thread actions"
       onclick={() => (showMore = !showMore)}
       testId="chat-header-more"
-      class="shrink-0 w-6 px-0"
+      class="shrink-0 w-6 compact:w-9 px-0"
     >
       {#snippet children()}
         <Icon icon={Ellipsis} size={12} strokeWidth={2} class="opacity-90" />
@@ -283,6 +298,8 @@
         <MenuItem
           label="Terminal"
           checked={pane.showTerminal}
+          disabled={terminalUngranted}
+          title={terminalUngrantedTitle}
           onSelect={() => pick(() => runTerminalToggle(pane))}
         />
         <MenuItem
@@ -299,16 +316,14 @@
           <MenuItem
             label="Take control"
             checked={takeControlOpen}
+            disabled={terminalUngranted}
+            title={terminalUngrantedTitle}
             onSelect={() => pick(() => void ensureThreadThenToggle(() => toggleCompanion(pane.paneId, 'take-control')))}
           />
         {/if}
-        {#if browserState}
-          <MenuItem
-            label="Browser"
-            checked={browserVisible}
-            onSelect={() => pick(() => void toggleBrowserCompanion())}
-          />
-        {/if}
+        <!-- No Browser row: the companion is a native view on the host, which
+             the compact screen never shows (docs/specs/remote-access.md,
+             "Hidden on the phone"), and the store never opens it there. -->
         {#if projectBadge && onHost}
           <MenuItem label="Open in editor" onSelect={() => pick(() => void openProjectInEditor())} />
         {/if}
@@ -346,11 +361,12 @@
       variant="secondary"
       size="xs"
       pressed={takeControlOpen}
+      disabled={terminalUngranted}
       ariaLabel="Toggle take-control terminal"
-      title="Take control — open the live Claude TUI terminal"
+      title={terminalUngrantedTitle ?? 'Take control — open the live Claude TUI terminal'}
       onclick={() => void ensureThreadThenToggle(() => toggleCompanion(pane.paneId, 'take-control'))}
       testId="take-control-toggle"
-      class="shrink-0 w-6 px-0"
+      class="shrink-0 w-6 compact:w-9 px-0"
     >
       {#snippet children()}
         <ProviderIcon provider="claude-tui" size={13} />
@@ -370,7 +386,7 @@
       title="Toggle browser pane"
       onclick={() => void toggleBrowserCompanion()}
       testId="browser-companion-toggle"
-      class="shrink-0 w-6 px-0"
+      class="shrink-0 w-6 compact:w-9 px-0"
     >
       {#snippet children()}
         <Icon icon={Globe} size={12} strokeWidth={2} class="opacity-90" />
@@ -388,9 +404,11 @@
     variant="secondary"
     size="xs"
     pressed={pane.showTerminal}
+    disabled={terminalUngranted}
     ariaLabel="Toggle Terminal"
-    title={`Toggle Terminal${terminalToggleSuffix}`}
+    title={terminalUngrantedTitle ?? `Toggle Terminal${terminalToggleSuffix}`}
     onclick={(e) => {
+      if (terminalUngranted) return;
       if (e.metaKey || e.ctrlKey) {
         void openTerminalThread({
           projectId: pane.thread?.projectId,
@@ -401,7 +419,7 @@
       }
     }}
     testId="terminal-toggle"
-    class="shrink-0 w-6 px-0"
+    class="shrink-0 w-6 compact:w-9 px-0"
   >
     {#snippet children()}
       <Icon icon={SquareTerminal} size={12} strokeWidth={2} class="opacity-90" />

@@ -43,6 +43,7 @@
     refreshScreenPresence,
   } from './lib/stores/screenPresence';
   import { installLongPressContextMenu } from './lib/utils/longPressContextMenu';
+  import { installCompactHistoryBack } from './lib/utils/compactHistoryBack.svelte';
   import { syncUsagePeriodFromSettings } from './lib/stores/usagePeriod.svelte';
   import { preloadProviderModelsForSettings } from './lib/stores/providerModels.svelte';
   import { applyThemeClass } from './lib/utils/theme';
@@ -514,6 +515,9 @@
     // The phone's right-click: a held touch under the compact layout raises
     // `contextmenu` at the pressed element, so every menu opens on the phone.
     const cleanupLongPress = installLongPressContextMenu();
+    // The phone browser's Back: a history sentinel under compact that runs
+    // the shell's back ladder. No-op in the native shell and off compact.
+    const cleanupCompactHistoryBack = installCompactHistoryBack();
     const cleanupZoomKeys = installZoomKeybindings();
     const cleanupScreenPresence = installScreenPresence();
     const cleanupDeviceNames = installDeviceNameSync();
@@ -593,6 +597,7 @@
       cleanupDevServers();
       cleanupExternalLinks();
       cleanupLongPress();
+      cleanupCompactHistoryBack();
       cleanupZoomKeys();
       cleanupScreenPresence();
       cleanupDeviceNames();
@@ -614,7 +619,7 @@
   });
 </script>
 
-<main class="app-shell relative h-screen w-screen overflow-hidden text-text-primary flex flex-col">
+<main class="app-shell relative h-dvh w-screen overflow-hidden text-text-primary flex flex-col">
   <TransportStatusBanner />
   <div bind:this={appContentEl} class="relative flex flex-1 min-h-0 w-full">
     <Sidebar

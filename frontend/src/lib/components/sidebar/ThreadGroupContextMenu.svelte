@@ -35,6 +35,7 @@
     PIN_GROUP_BACK,
     PIN_GROUP_FRONT,
   } from './threadRowActions';
+  import { projectHasScope } from '../../transport/entityScopes';
 
   interface Props {
     group: ThreadGroup;
@@ -65,6 +66,10 @@
   let memberCount = $derived(memberThreadIds.length);
   let isPinned = $derived(group.pinnedAt != null);
   let isBackBurner = $derived(isPinned && group.pinGroup === PIN_GROUP_BACK);
+  // Every row writes the group or its members on the project's computer;
+  // all of it rides `threads:operate`. Inert with a reason, never hidden.
+  let operateUngranted = $derived(!projectHasScope('threads:operate', group.projectId));
+  let ungrantedTitle = $derived(operateUngranted ? 'Not granted to this device' : undefined);
 
   /**
    * Archive every member, sequentially and for the same reason
@@ -112,6 +117,8 @@
       {#snippet children()}
         <MenuItem
           label="New Thread"
+          disabled={operateUngranted}
+          title={ungrantedTitle}
           onSelect={() => {
             onClose();
             void newThreadInGroupAction(group, pane);
@@ -119,6 +126,8 @@
         />
         <MenuItem
           label="Rename Group"
+          disabled={operateUngranted}
+          title={ungrantedTitle}
           onSelect={() => {
             onClose();
             onRename();
@@ -127,6 +136,8 @@
         {#if isPinned}
           <MenuItem
             label={isBackBurner ? 'Move to Front Burner' : 'Move to Back Burner'}
+            disabled={operateUngranted}
+            title={ungrantedTitle}
             onSelect={() => {
               onClose();
               void setThreadGroupPinGroupAction(
@@ -137,6 +148,8 @@
           />
           <MenuItem
             label="Unpin Group"
+            disabled={operateUngranted}
+            title={ungrantedTitle}
             onSelect={() => {
               onClose();
               void unpinThreadGroupAction(group.id);
@@ -145,6 +158,8 @@
         {:else}
           <MenuItem
             label="Pin Group"
+            disabled={operateUngranted}
+            title={ungrantedTitle}
             onSelect={() => {
               onClose();
               void pinThreadGroupAction(group.id);
@@ -153,19 +168,27 @@
         {/if}
         <MenuItem
           label={`Archive Threads (${memberCount})`}
-          disabled={memberCount === 0}
+          disabled={memberCount === 0 || operateUngranted}
+          title={ungrantedTitle}
           onSelect={handleArchive}
         />
         <MenuItem
           label="Ungroup All"
-          disabled={memberCount === 0}
+          disabled={memberCount === 0 || operateUngranted}
+          title={ungrantedTitle}
           onSelect={() => {
             onClose();
             void removeThreadsFromGroupAction(memberThreadIds);
           }}
         />
         <MenuDivider />
-        <MenuItem label="Delete Group" variant="danger" onSelect={handleDelete} />
+        <MenuItem
+          label="Delete Group"
+          variant="danger"
+          disabled={operateUngranted}
+          title={ungrantedTitle}
+          onSelect={handleDelete}
+        />
       {/snippet}
     </Menu>
   {/snippet}

@@ -63,6 +63,7 @@
 
   import type { Snippet } from 'svelte';
   import { airspaceSurface } from '../../utils/paneAirspace.svelte';
+  import { viewportSize } from '../../utils/viewportSize';
   import {
     hasOpenPopoverOwnedBy,
     popoverAnchorChainReaches,
@@ -258,8 +259,9 @@
   // movement tracking from the same read.
   function fitPosition(): DOMRect | undefined {
     if (!anchor || !floatingEl) return undefined;
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
+    // The visual viewport: with the soft keyboard up a caret menu near the
+    // bottom would otherwise be clamped under it (utils/viewportSize.ts).
+    const { width: vw, height: vh } = viewportSize();
     const rect = anchor.getBoundingClientRect();
     const floatRect = {
       width: floatingEl.offsetWidth,
@@ -513,6 +515,9 @@
     document.addEventListener('focusin', handleFocusIn);
     window.addEventListener('scroll', handleScroll, { passive: true, capture: true });
     window.addEventListener('resize', handleResize, { passive: true });
+    // The soft keyboard resizes the visual viewport without a window
+    // resize; the clamp bounds moved, so refit.
+    window.visualViewport?.addEventListener('resize', handleResize, { passive: true });
 
     const anchorObserver = new ResizeObserver(() => refit());
     anchorObserver.observe(anchor);
@@ -530,6 +535,7 @@
       document.removeEventListener('focusin', handleFocusIn);
       window.removeEventListener('scroll', handleScroll, true);
       window.removeEventListener('resize', handleResize);
+      window.visualViewport?.removeEventListener('resize', handleResize);
       anchorObserver.disconnect();
       floatObserver.disconnect();
     };

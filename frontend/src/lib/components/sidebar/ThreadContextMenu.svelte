@@ -90,6 +90,7 @@
   }: Props = $props();
 
   let showDeleteConfirm = $state(false);
+  let showArchiveConfirm = $state(false);
   let showBulkDeleteConfirm = $state(false);
   // Provider-update check: in flight while the backend reads the session
   // file (it builds the rows a refresh WOULD write, so it is a real read of
@@ -142,7 +143,6 @@
   // "this thread wasn't imported", which is a different fact.
   // CheckThreadImportUpdates re-reads the provider session file and writes
   // what it finds into the thread.
-  let importUpdatesUngranted = $derived(!threadHasScope('threads:operate', thread.id, thread.projectId));
   // The backend ships user-facing prose for the verdict it returned; it
   // knows the turn count and the exact wording, so it wins. The fallback
   // only covers a backend that sends none — and says the same two numbers.
@@ -161,6 +161,7 @@
   // deleted in isolation — the parent thread owns the subtree's
   // lifecycle.
   let canDelete = $derived(!thread.parentThreadId);
+  let canArchive = $derived(thread.mode !== 'terminal');
   let isPinned = $derived(thread.pinnedAt != null);
   let isBackBurner = $derived(isPinned && thread.pinGroup === PIN_GROUP_BACK);
   let selectedThreads = $derived.by(() => {
@@ -172,6 +173,15 @@
     }
     return out;
   });
+  // Every write here rides `threads:operate`, judged per thread on the
+  // computer that owns it. A bulk menu is inert when ANY selected row
+  // lacks it: the walk would otherwise succeed on some and refuse the rest.
+  let operateUngranted = $derived(
+    inBulkContext
+      ? selectedThreads.some((t) => !threadHasScope('threads:operate', t.id, t.projectId))
+      : !threadHasScope('threads:operate', thread.id, thread.projectId),
+  );
+  let ungrantedTitle = $derived(operateUngranted ? 'Not granted to this device' : undefined);
 
   /**
    * Run an async per-thread action across the selection sequentially —
@@ -254,6 +264,17 @@
     }
   }
 
+  // Same shape as ThreadRow's hover Archive: the confirmArchive setting
+  // decides whether the dialog comes first.
+  function handleArchive(): void {
+    onClose();
+    if (getSettings().confirmArchive) {
+      showArchiveConfirm = true;
+    } else {
+      void archiveThreadAction(ctx());
+    }
+  }
+
   // ── Groups ───────────────────────────────────────────────────────────────
   //
   // Only a TOP-LEVEL row can move: a discussion tree joins a group as a unit
@@ -320,7 +341,8 @@
     <MenuItem
       label={group.name}
       checked={group.id === currentGroupId}
-      disabled={group.id === currentGroupId}
+      disabled={group.id === currentGroupId || operateUngranted}
+      title={ungrantedTitle}
       onSelect={() => {
         onClose();
         void moveThreadsToGroupAction(moveTargetIds, group.id);
@@ -332,6 +354,8 @@
   {/if}
   <MenuItem
     label="New Group…"
+    disabled={operateUngranted}
+    title={ungrantedTitle}
     onSelect={() => {
       onClose();
       void createGroupAndMove();
@@ -356,19 +380,23 @@
         {#if inBulkContext}
           <MenuItem
             label={`Mark unread (${selectedIds.size})`}
+            disabled={operateUngranted}
+            title={ungrantedTitle}
             onSelect={() => {
               onClose();
               void runBulk(markThreadUnreadAction);
             }}
           />
           {#if canMoveToGroup}
-            <MenuSubmenuItem label="Move to Group">
+            <MenuSubmenuItem label="Move to Group" disabled={operateUngranted}>
               {@render groupTargets()}
             </MenuSubmenuItem>
           {/if}
           {#if canRemoveFromGroup}
             <MenuItem
               label="Remove from Group"
+              disabled={operateUngranted}
+              title={ungrantedTitle}
               onSelect={() => {
                 onClose();
                 void removeThreadsFromGroupAction(removeTargetIds);
@@ -377,6 +405,8 @@
           {/if}
           <MenuItem
             label={`Archive (${selectedIds.size})`}
+            disabled={operateUngranted}
+            title={ungrantedTitle}
             onSelect={() => {
               onClose();
               void runBulk(archiveThreadAction);
@@ -386,6 +416,8 @@
           <MenuItem
             label={`Delete (${selectedIds.size})`}
             variant="danger"
+            disabled={operateUngranted}
+            title={ungrantedTitle}
             onSelect={() => {
               onClose();
               showBulkDeleteConfirm = true;
@@ -401,6 +433,8 @@
           />
           <MenuItem
             label="Rename Thread"
+            disabled={operateUngranted}
+            title={ungrantedTitle}
             onSelect={() => {
               onClose();
               onRename();
@@ -409,6 +443,8 @@
           {#if canFork}
             <MenuItem
               label="Fork Thread"
+              disabled={operateUngranted}
+              title={ungrantedTitle}
               onSelect={() => {
                 onClose();
                 void forkThreadAction(ctx());
@@ -425,26 +461,30 @@
           {#if canCheckImportUpdates}
             <MenuItem
               label={checkingUpdates ? 'Checking for Provider Updates…' : 'Check for Provider Updates'}
-              disabled={checkingUpdates || importUpdatesUngranted}
-              title={importUpdatesUngranted ? 'Not granted to this device' : undefined}
+              disabled={checkingUpdates || operateUngranted}
+              title={ungrantedTitle}
               onSelect={() => void handleCheckImportUpdates()}
             />
           {/if}
           <MenuItem
             label="Mark Unread"
+            disabled={operateUngranted}
+            title={ungrantedTitle}
             onSelect={() => {
               onClose();
               void markThreadUnreadAction(ctx());
             }}
           />
           {#if canMoveToGroup}
-            <MenuSubmenuItem label="Move to Group">
+            <MenuSubmenuItem label="Move to Group" disabled={operateUngranted}>
               {@render groupTargets()}
             </MenuSubmenuItem>
           {/if}
           {#if canRemoveFromGroup}
             <MenuItem
               label="Remove from Group"
+              disabled={operateUngranted}
+              title={ungrantedTitle}
               onSelect={() => {
                 onClose();
                 void removeThreadsFromGroupAction(removeTargetIds);
@@ -458,6 +498,8 @@
             {#if isPinned}
               <MenuItem
                 label={isBackBurner ? 'Move to Front Burner' : 'Move to Back Burner'}
+                disabled={operateUngranted}
+                title={ungrantedTitle}
                 onSelect={() => {
                   onClose();
                   void setThreadPinGroupAction(
@@ -468,6 +510,8 @@
               />
               <MenuItem
                 label="Unpin Thread"
+                disabled={operateUngranted}
+                title={ungrantedTitle}
                 onSelect={() => {
                   onClose();
                   void unpinThreadAction(ctx());
@@ -476,6 +520,8 @@
             {:else}
               <MenuItem
                 label="Pin Thread"
+                disabled={operateUngranted}
+                title={ungrantedTitle}
                 onSelect={() => {
                   onClose();
                   void pinThreadAction(ctx());
@@ -497,9 +543,27 @@
               void copyThreadIdAction(ctx());
             }}
           />
-          {#if canDelete}
+          {#if canArchive || canDelete}
             <MenuDivider />
-            <MenuItem label="Delete" variant="danger" onSelect={handleDelete} />
+          {/if}
+          <!-- The row's hover Archive is unreachable without a pointer, so
+               the menu carries it too. Terminals are not archivable. -->
+          {#if canArchive}
+            <MenuItem
+              label="Archive Thread"
+              disabled={operateUngranted}
+              title={ungrantedTitle}
+              onSelect={handleArchive}
+            />
+          {/if}
+          {#if canDelete}
+            <MenuItem
+              label="Delete"
+              variant="danger"
+              disabled={operateUngranted}
+              title={ungrantedTitle}
+              onSelect={handleDelete}
+            />
           {/if}
         {/if}
       {/snippet}
@@ -519,6 +583,20 @@
   }}
   onCancel={() => {
     showDeleteConfirm = false;
+  }}
+/>
+
+<ConfirmDialog
+  open={showArchiveConfirm}
+  title="Archive Thread"
+  description="This will hide the thread from the sidebar. Open Settings → Storage to find it later."
+  confirmLabel="Archive"
+  onConfirm={() => {
+    showArchiveConfirm = false;
+    void archiveThreadAction(ctx());
+  }}
+  onCancel={() => {
+    showArchiveConfirm = false;
   }}
 />
 

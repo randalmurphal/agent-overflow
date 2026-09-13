@@ -41,5 +41,7 @@
 >
   <ProviderIcon {provider} size={13} />
   <span class="truncate max-w-[200px] text-fg">{modelLabel}</span>
-  <Icon icon={ChevronDown} size={12} strokeWidth={2} class="opacity-60" />
+  <span class="flex" data-composer-toolbar-model-chevron>
+    <Icon icon={ChevronDown} size={12} strokeWidth={2} class="opacity-60" />
+  </span>
 </button>

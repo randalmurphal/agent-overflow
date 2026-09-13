@@ -62,6 +62,12 @@ export interface CommandFlags {
   /** True while the workflows overlay is showing a run detail level. */
   workflowsRunDetail: boolean;
   /**
+   * True under the compact (phone) layout, where the strip shows one
+   * thread at a time. Commands that open a second thread pane gate on it:
+   * a second pane under compact is one Back can only reach the list from.
+   */
+  compactLayout: boolean;
+  /**
    * Whether this session holds `access:admin` (`transport/scopes.ts`), which
    * covers the device list and the provider-account surface. A command whose
    * RPCs need it gates on this flag so it is *disabled* without it — absent

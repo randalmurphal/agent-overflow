@@ -8,6 +8,8 @@ import {
 } from "../../../test/mocks/bindings-app";
 import type { Settings } from "../../types/settings";
 import { makeSettings } from "../../../test/helpers/settings";
+import { setPageGrantsFromBootstrap } from "../../transport/scopes";
+import { HOST_TIER_REASON } from "./settingsComputer";
 
 const BASE_SETTINGS: Settings = makeSettings();
 
@@ -80,5 +82,31 @@ describe("<BrowserSettings> — Chromium path", () => {
 
     const mock = getBindingMock("UpdateSettings");
     expect(mock!.mock.calls.at(-1)![0]).toEqual({ browserChromiumPath: "" });
+  });
+});
+
+// Every browser* key is host tier (internal/settings/tier.go): a networked
+// page with no host presence and no passkey cannot give the step-up proof
+// the backend demands, so the controls show inert with the reason.
+describe("<BrowserSettings> — off the host without a passkey", () => {
+  it("renders the toggles and the path input inert, saying why", async () => {
+    await seed({ browserEnabled: true });
+    setPageGrantsFromBootstrap(true);
+    try {
+      const { findByTestId, getAllByRole } = render(BrowserSettings);
+      const input = (await findByTestId("settings-browser-chromium-path")) as HTMLInputElement;
+      expect(input.disabled).toBe(true);
+      expect(input.title).toBe(HOST_TIER_REASON);
+      const switches = getAllByRole("switch") as HTMLButtonElement[];
+      expect(switches.length).toBeGreaterThan(0);
+      for (const toggle of switches) {
+        expect(toggle.disabled).toBe(true);
+        expect(toggle.title).toBe(HOST_TIER_REASON);
+      }
+      await fireEvent.click(switches[0]);
+      expect(getBindingMock("UpdateSettings")?.mock.calls ?? []).toHaveLength(0);
+    } finally {
+      setPageGrantsFromBootstrap(false);
+    }
   });
 });

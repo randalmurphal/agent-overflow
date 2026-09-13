@@ -109,7 +109,7 @@
     </div>
     <button
       onclick={onClose}
-      class="ml-auto text-fg-subtle hover:text-fg cursor-pointer p-1 rounded-[var(--radius-field)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors"
+      class="ml-auto text-fg-subtle hover:text-fg cursor-pointer p-1 compact:p-2.5 rounded-[var(--radius-field)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors"
       aria-label="Close Settings"
     >
       <Icon icon={X} size={14} strokeWidth={2} class="opacity-90" />

@@ -41,11 +41,23 @@ describe('measureComposerToolbarDensity', () => {
   });
 
   it('switches to minimal when even the compact rung overflows', () => {
-    const el = elementWithWidths(360, (density) => (density === 'full' ? 600 : 430));
+    const el = elementWithWidths(360, (density) =>
+      density === 'full' ? 600 : density === 'compact' ? 430 : 300,
+    );
     el.dataset.density = 'compact';
 
     expect(measureComposerToolbarDensity(el)).toBe('minimal');
     expect(el.dataset.density).toBe('compact');
+  });
+
+  it('switches to tight when the minimal rung\'s model floor overflows', () => {
+    const el = elementWithWidths(269, (density) =>
+      density === 'full' ? 600 : density === 'compact' ? 430 : density === 'minimal' ? 300 : 269,
+    );
+    el.dataset.density = 'minimal';
+
+    expect(measureComposerToolbarDensity(el)).toBe('tight');
+    expect(el.dataset.density).toBe('minimal');
   });
 
   it('preserves the current mode when the toolbar has no measurable width', () => {

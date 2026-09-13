@@ -4,6 +4,8 @@ import { makeItem } from '../../../test/helpers/chat';
 import { getSettings, resetSettingsForTest } from '../../stores/settings.svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import AssistantMessage from './AssistantMessage.svelte';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { forgetBackendEntities, noteThread } from '../../transport/entityIndex';
 
 const codeSource = (host: Element | null | undefined): string =>
   host?.querySelector('code')?.textContent ?? '';
@@ -1307,6 +1309,56 @@ describe('<AssistantMessage>', () => {
     });
     await fireEvent.click(getByLabelText('Copy message'));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(summary));
+  });
+});
+
+describe('<AssistantMessage> path links per machine', () => {
+  // The `host` question is asked of the thread's computer, the way
+  // ChatMarkdown asks it, so a thread attached from another machine gets
+  // inert paths even though this page is the local host of its own.
+  function paneFor(threadId: string): ThreadPane {
+    return {
+      threadId,
+      thread: { id: threadId, workspacePath: '/repo' },
+      isItemSmoothing: () => false,
+    } as unknown as ThreadPane;
+  }
+
+  function pathItem(threadId: string) {
+    return makeItem({
+      id: `${threadId}-row`,
+      threadId,
+      status: 'completed',
+      summary: 'See src/foo.ts:42 here',
+      meta: JSON.stringify({ pathRefs: [{ path: 'src/foo.ts' }] }),
+    });
+  }
+
+  it('links paths for a thread on this computer', async () => {
+    const { container } = render(AssistantMessage, {
+      props: { pane: paneFor('thread-local'), item: pathItem('thread-local') },
+    });
+    await waitFor(() => {
+      expect(container.querySelector('a[href^="agent-overflow:open"]')).not.toBeNull();
+    });
+  });
+
+  it('renders paths inert for a thread on another attached computer', async () => {
+    stageBackend({ id: 'remote', backendId: 'remote' });
+    noteThread('thread-remote', 'remote');
+    try {
+      const { container } = render(AssistantMessage, {
+        props: { pane: paneFor('thread-remote'), item: pathItem('thread-remote') },
+      });
+      await waitFor(() => {
+        expect(container.textContent).toContain('src/foo.ts');
+      });
+      await new Promise((resolve) => setTimeout(resolve, 16));
+      expect(container.querySelector('a[href^="agent-overflow:open"]')).toBeNull();
+    } finally {
+      forgetBackendEntities('remote');
+      resetStagedBackends();
+    }
   });
 });
 

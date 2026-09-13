@@ -76,6 +76,7 @@
   import { sidebarRowPaddingLeftPx, sidebarTimeLabel } from '../../utils/sidebarRowMetrics';
   import { threadBackend } from '../../transport/entityIndex';
   import { HOME_BACKEND } from '../../transport/backendKey';
+  import { threadHasScope } from '../../transport/entityScopes';
 
   let {
     thread,
@@ -279,6 +280,10 @@
   // and the schema refuses a pin on a grouped row).
   let showPinAffordance = $derived(indent <= 1 && !thread.groupId);
   let isPinned = $derived(thread.pinnedAt != null);
+  // The pin, archive and delete controls write the row; inert with a reason
+  // when the session lacks the grant, the same treatment the context menu
+  // gives its rows.
+  let operateUngranted = $derived(!threadHasScope('threads:operate', thread.id, thread.projectId));
   let isJumpTarget = $derived(
     showPinAffordance && !inGroup && sidebarPinGroup(thread) === 'front',
   );
@@ -466,6 +471,7 @@
         pinGroup={thread.pinGroup}
         pinLabel="Pin Thread"
         unpinLabel="Unpin Thread"
+        disabled={operateUngranted}
         onToggle={() => { if (isPinned) void unpinThreadAction(ctx()); else void pinThreadAction(ctx()); }}
         onCycleBurner={() => void setThreadPinGroupAction(
           ctx(),
@@ -516,7 +522,7 @@
       onblur={saveRename}
       disabled={saving}
       aria-label="Rename Thread"
-      class="text-xs flex-1 min-w-0 bg-surface-0 border border-accent/50 rounded-[var(--radius-field)] px-1 py-0.5 text-fg focus:outline-none"
+      class="text-xs compact:text-base flex-1 min-w-0 bg-surface-0 border border-accent/50 rounded-[var(--radius-field)] px-1 py-0.5 text-fg focus:outline-none"
       onclick={(e) => e.stopPropagation()}
     />
   {:else}
@@ -614,6 +620,7 @@
             <ThreadRowActions
               onArchive={isTerminal ? undefined : handleArchive}
               onDelete={isTerminal ? handleDelete : undefined}
+              disabled={operateUngranted}
             />
           </div>
         {/if}

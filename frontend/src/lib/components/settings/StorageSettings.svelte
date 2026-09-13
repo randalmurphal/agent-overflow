@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { settingsComputer } from './settingsComputer';
-  const { getSettings, updateSetting } = settingsComputer();
+  import { HOST_TIER_REASON, settingsComputer } from './settingsComputer';
+  const { getSettings, updateSetting, hostTierWritable } = settingsComputer();
   import SettingsField from './SettingsField.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
   import ArchivedThreads from './ArchivedThreads.svelte';
@@ -12,6 +12,8 @@
   const MAX_RETENTION_DAYS = 36500;
 
   let settings = $derived(getSettings());
+  // `retention` is host tier: it decides what THIS backend deletes.
+  let hostWritable = $derived(hostTierWritable());
 </script>
 
 <div class="settings-sections">
@@ -34,6 +36,8 @@
           max={MAX_RETENTION_DAYS}
           step="1"
           value={settings.retention.days}
+          disabled={!hostWritable}
+          title={hostWritable ? undefined : HOST_TIER_REASON}
           onblur={(e) => {
             const raw = (e.target as HTMLInputElement).value;
             const parsed = parseInt(raw, 10);

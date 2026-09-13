@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { settingsComputer } from './settingsComputer';
-  const { getSettings, updateSetting } = settingsComputer();
+  import { HOST_TIER_REASON, settingsComputer } from './settingsComputer';
+  const { getSettings, updateSetting, hostTierWritable } = settingsComputer();
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import SettingsCallout from './SettingsCallout.svelte';
   import SettingsField from './SettingsField.svelte';
@@ -8,6 +8,9 @@
   import { INPUT_CLASS } from './styles';
 
   let settings = $derived(getSettings());
+  // All three keys are host tier: they configure THIS backend's exporters
+  // and its replay log on disk.
+  let hostWritable = $derived(hostTierWritable());
 
   // We snapshot the tracing state on mount so we can tell the user whether
   // flipping the toggle now requires a restart. Tracing is wired up once at
@@ -49,6 +52,8 @@
       >
         <ToggleSwitch
           checked={settings.observabilityTracingEnabled}
+          disabled={!hostWritable}
+          title={hostWritable ? undefined : HOST_TIER_REASON}
           ariaLabel="Toggle OpenTelemetry tracing"
           onToggle={(value) => updateSetting('observabilityTracingEnabled', value)}
         />
@@ -65,7 +70,8 @@
           id="otlp-endpoint"
           type="text"
           value={settings.observabilityOtlpEndpoint}
-          disabled={!settings.observabilityTracingEnabled}
+          disabled={!settings.observabilityTracingEnabled || !hostWritable}
+          title={hostWritable ? undefined : HOST_TIER_REASON}
           placeholder="localhost:4317"
           onchange={(e) => handleEndpointChange((e.target as HTMLInputElement).value)}
           class="{INPUT_CLASS} max-w-md disabled:opacity-50 disabled:cursor-not-allowed"
@@ -88,6 +94,8 @@
       >
         <ToggleSwitch
           checked={settings.observabilityEventLogEnabled}
+          disabled={!hostWritable}
+          title={hostWritable ? undefined : HOST_TIER_REASON}
           ariaLabel="Toggle Event Replay Log"
           onToggle={(value) => updateSetting('observabilityEventLogEnabled', value)}
         />

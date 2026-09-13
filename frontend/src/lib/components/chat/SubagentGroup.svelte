@@ -97,6 +97,7 @@
     resolveSubagentProgress,
   } from '../../utils/subagentProgress';
   import { BackgroundClaudeTask } from '../../stores/bindings';
+  import { threadHasScope } from '../../transport/entityScopes';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
   import ToolRowStatusIndicator from './ToolRowStatusIndicator.svelte';
   import RowError from './RowError.svelte';
@@ -306,11 +307,13 @@
 
   // Background button (spec Q9): Claude foreground Agent/Task only, while
   // it runs. Forks have no task to detach, a resume carrier is already
-  // background, and Codex children are always async.
+  // background, and Codex children are always async. BackgroundClaudeTask
+  // rides `threads:operate`; a session without it gets no button.
   let canBackground = $derived(
     pane !== undefined
       && isRunning
       && !isBackgroundNode
+      && threadHasScope('threads:operate', parent.threadId)
       && (parentToolName === 'Agent' || parentToolName === 'Task'),
   );
   let backgrounding = $state(false);
@@ -568,7 +571,7 @@
             title="Move to background"
             aria-label="Move agent to background"
             data-testid="subagent-group-background-button"
-            class="opacity-0 group-hover/tool:opacity-100 focus-visible:opacity-100 rounded p-0.5 text-text-secondary hover:text-text-primary cursor-pointer disabled:cursor-default disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+            class="opacity-0 group-hover/tool:opacity-100 focus-visible:opacity-100 compact:opacity-100 rounded p-0.5 text-text-secondary hover:text-text-primary cursor-pointer disabled:cursor-default disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
           >
             <Icon icon={SendToBack} size={12} />
           </button>
@@ -580,7 +583,7 @@
             title="Open in agent pane"
             aria-label="Open {agentTitle} in agent pane"
             data-testid="subagent-group-open-pane"
-            class={[navigationOnly ? 'opacity-100' : 'opacity-0 group-hover/tool:opacity-100 focus-visible:opacity-100', 'rounded p-0.5 text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50'].join(' ')}
+            class={[navigationOnly ? 'opacity-100' : 'opacity-0 group-hover/tool:opacity-100 focus-visible:opacity-100 compact:opacity-100', 'rounded p-0.5 text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50'].join(' ')}
           >
             <Icon icon={PanelRightOpen} size={12} />
           </button>

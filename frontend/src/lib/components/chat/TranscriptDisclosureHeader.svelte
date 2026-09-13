@@ -58,7 +58,7 @@
   <button
     type="button"
     class={[
-      'flex min-w-0 items-center gap-2 compact:gap-1 bg-transparent p-0 text-left',
+      'flex min-w-0 items-center gap-2 compact:gap-1 bg-transparent p-0 text-left compact:min-h-9 compact:select-none',
       'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
       expandable ? 'cursor-pointer' : 'cursor-default',
       interactiveBody ? 'shrink-0' : 'flex-1',

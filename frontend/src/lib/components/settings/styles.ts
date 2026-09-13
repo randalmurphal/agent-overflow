@@ -10,29 +10,29 @@ export const CONTROL_BASE =
 
 export const SELECT_CLASS =
   CONTROL_BASE +
-  ' min-w-[8rem] text-[0.75rem] px-2.5 py-1 cursor-pointer';
+  ' min-w-[8rem] text-[0.75rem] px-2.5 py-1 cursor-pointer compact:text-base compact:py-2';
 
 export const INPUT_CLASS =
-  CONTROL_BASE + ' w-full text-[0.75rem] px-2.5 py-1.5';
+  CONTROL_BASE + ' w-full text-[0.75rem] px-2.5 py-1.5 compact:text-base compact:py-2';
 
 export const NUMBER_CLASS =
-  CONTROL_BASE + ' w-14 text-[0.75rem] px-2 py-1 text-right tabular-nums';
+  CONTROL_BASE + ' w-14 text-[0.75rem] px-2 py-1 text-right tabular-nums compact:text-base compact:w-20 compact:py-2';
 
 export const PRIMARY_BUTTON_CLASS =
-  'rounded-[var(--radius-field)] bg-accent px-3 py-1.5 text-[0.75rem] font-medium ' +
+  'rounded-[var(--radius-field)] bg-accent px-3 py-1.5 compact:py-2.5 text-[0.75rem] font-medium ' +
   'text-accent-fg hover:brightness-105 disabled:opacity-50 ' +
   'disabled:cursor-not-allowed cursor-pointer transition focus:outline-none ' +
   'focus-visible:ring-2 focus-visible:ring-accent/50';
 
 export const SECONDARY_BUTTON_CLASS =
   'rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 ' +
-  'px-3 py-1.5 text-[0.75rem] font-medium text-fg hover:border-accent/40 ' +
+  'px-3 py-1.5 compact:py-2.5 text-[0.75rem] font-medium text-fg hover:border-accent/40 ' +
   'disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer transition-colors ' +
   'focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40';
 
 export const DANGER_BUTTON_CLASS =
   'rounded-[var(--radius-field)] border border-error/40 bg-error/10 ' +
-  'px-3 py-1.5 text-[0.75rem] font-medium text-error hover:bg-error/15 ' +
+  'px-3 py-1.5 compact:py-2.5 text-[0.75rem] font-medium text-error hover:bg-error/15 ' +
   'disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer transition-colors ' +
   'focus:outline-none focus-visible:ring-2 focus-visible:ring-error/40';
 
@@ -49,7 +49,7 @@ export const SECTION_PROSE_CLASS =
 // two had already drifted (the empty-state prose) by the time the second
 // section shipped.
 export const CHIP_BASE_CLASS =
-  'rounded-[var(--radius-field)] border px-2 py-0.5 text-[0.6875rem] ' +
+  'rounded-[var(--radius-field)] border px-2 py-0.5 compact:py-1.5 text-[0.6875rem] ' +
   'transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 ' +
   'focus-visible:ring-accent/40';
 
@@ -68,6 +68,6 @@ export const CHIP_EXCLUDED_CLASS =
 export const CHIP_EMPTY_PROSE_CLASS = 'text-[0.75rem] text-fg-muted';
 
 export const GHOST_BUTTON_CLASS =
-  'rounded-[var(--radius-field)] px-2 py-1 text-[0.71875rem] text-fg-hint ' +
+  'rounded-[var(--radius-field)] px-2 py-1 compact:py-2 text-[0.71875rem] text-fg-hint ' +
   'hover:text-fg-muted hover:bg-surface-2/40 cursor-pointer transition-colors ' +
   'focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40';

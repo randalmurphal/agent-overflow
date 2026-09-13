@@ -298,7 +298,7 @@
           disabled={rechecking || accountsUngranted}
           title={accountsUngranted ? 'Not granted to this device' : undefined}
           data-testid="provider-status-recheck"
-          class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+          class="text-xs px-2 py-0.5 compact:px-3 compact:py-2 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
         >
           {rechecking ? 'Checking…' : 'Recheck'}
         </button>
@@ -309,7 +309,7 @@
           disabled={signingIn || accountsUngranted}
           title={accountsUngranted ? 'Not granted to this device' : undefined}
           data-testid="provider-status-signin"
-          class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+          class="text-xs px-2 py-0.5 compact:px-3 compact:py-2 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
         >
           {signingIn ? 'Signing in…' : 'Sign in'}
         </button>
@@ -320,7 +320,7 @@
           disabled={reconnecting || operateUngranted}
           title={operateUngranted ? 'Not granted to this device' : undefined}
           data-testid="provider-status-restart"
-          class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+          class="text-xs px-2 py-0.5 compact:px-3 compact:py-2 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
         >
           {reconnecting ? 'Restarting…' : 'Restart session'}
         </button>
@@ -331,7 +331,7 @@
           disabled={rechecking || accountsUngranted}
           title={accountsUngranted ? 'Not granted to this device' : undefined}
           data-testid="provider-status-action"
-          class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+          class="text-xs px-2 py-0.5 compact:px-3 compact:py-2 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
         >
           {rechecking ? 'Checking…' : primaryActionLabel}
         </button>
@@ -357,7 +357,7 @@
             onclick={handleReconnect}
             disabled={reconnecting || operateUngranted}
             title={operateUngranted ? 'Not granted to this device' : undefined}
-            class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+            class="text-xs px-2 py-0.5 compact:px-3 compact:py-2 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
           >
             {reconnecting ? 'Reconnecting...' : 'Reconnect'}
           </button>
@@ -365,7 +365,7 @@
           <button
             onclick={handleHistoryRetry}
             disabled={retryingHistory}
-            class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+            class="text-xs px-2 py-0.5 compact:px-3 compact:py-2 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
           >
             {retryingHistory ? 'Retrying…' : 'Retry'}
           </button>

@@ -14,8 +14,8 @@
   // so nothing here repeats the provider's name at the top.
 
   import { GetProviderStatuses } from '../../stores/bindings';
-  import { settingsComputer } from './settingsComputer';
-  const { getSettings, updateSetting, call, backend } = settingsComputer();
+  import { HOST_TIER_REASON, settingsComputer } from './settingsComputer';
+  const { getSettings, updateSetting, call, backend, hostTierWritable } = settingsComputer();
   import { addToast } from '../../stores/toast.svelte';
   import type { ProviderStatus } from '../../types/settings';
   import {
@@ -58,6 +58,10 @@
   };
 
   let definition = $derived(getProviderDefinition(provider));
+  // The enable flags and the binary path are host tier: they decide which
+  // binaries THIS backend spawns (internal/settings/tier.go).
+  let hostWritable = $derived(hostTierWritable());
+  let hostReason = $derived(hostWritable ? undefined : HOST_TIER_REASON);
   let settings = $derived(getSettings());
   let models = $derived(getProviderModels(provider, backend));
   let dependents = $derived(dependentProviders(provider));
@@ -158,6 +162,8 @@
       >
         <ToggleSwitch
           checked={settings[definition.settings.enabledKey]}
+          disabled={!hostWritable}
+          title={hostReason}
           ariaLabel={`Toggle ${definition.label}`}
           onToggle={(value) => updateSetting(definition.settings.enabledKey, value)}
         />
@@ -181,7 +187,8 @@
           >
             <ToggleSwitch
               checked={settings[dependent.settings.enabledKey]}
-              disabled={!settings[definition.settings.enabledKey]}
+              disabled={!settings[definition.settings.enabledKey] || !hostWritable}
+              title={hostReason}
               ariaLabel={`Toggle ${dependent.label}`}
               onToggle={(value) => updateSetting(dependent.settings.enabledKey, value)}
             />
@@ -199,6 +206,8 @@
           id="{provider}-path"
           type="text"
           value={settings[definition.settings.pathKey]}
+          disabled={!hostWritable}
+          title={hostReason}
           onchange={(e) =>
             updateSetting(definition.settings.pathKey, (e.target as HTMLInputElement).value)}
           placeholder="Auto-detect"

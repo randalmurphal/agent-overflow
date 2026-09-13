@@ -95,9 +95,9 @@
   }: Props = $props();
 
   const SIZE: Record<Size, string> = {
-    xs: 'h-6 px-2 text-[0.6875rem] gap-1',
-    sm: 'h-7 px-2.5 text-xs gap-1.5',
-    md: 'h-8 px-3 text-sm gap-2',
+    xs: 'h-6 compact:h-9 px-2 compact:px-2.5 text-[0.6875rem] gap-1',
+    sm: 'h-7 compact:h-9 px-2.5 text-xs gap-1.5',
+    md: 'h-8 compact:h-10 px-3 text-sm gap-2',
   };
 
   const VARIANT: Record<Variant, string> = {

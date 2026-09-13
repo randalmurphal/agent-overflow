@@ -2,14 +2,16 @@
   // Settings → Performance: how much work rendering a turn is allowed to do,
   // and whether keep-awake also holds the display on.
 
-  import { settingsComputer } from './settingsComputer';
-  const { backend, getSettings, updateSetting } = settingsComputer();
+  import { HOST_TIER_REASON, settingsComputer } from './settingsComputer';
+  const { backend, getSettings, updateSetting, hostTierWritable } = settingsComputer();
   import { hasComputerSettings } from '../../stores/settings.svelte';
   import { backendReachable } from '../../stores/attachedBackends.svelte';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import SettingsField from './SettingsField.svelte';
 
   let settings = $derived(getSettings());
+  // keepAwakeScreen is host tier: it inhibits THIS machine's display sleep.
+  let hostWritable = $derived(hostTierWritable());
 </script>
 
 <div class="settings-sections">
@@ -46,7 +48,8 @@
       >
         <ToggleSwitch
           checked={settings.keepAwakeScreen}
-          disabled={!hasComputerSettings(backend) || !backendReachable(backend)}
+          disabled={!hasComputerSettings(backend) || !backendReachable(backend) || !hostWritable}
+          title={hostWritable ? undefined : HOST_TIER_REASON}
           ariaLabel="Toggle Keep-Awake Screen"
           onToggle={(value) => updateSetting('keepAwakeScreen', value)}
         />

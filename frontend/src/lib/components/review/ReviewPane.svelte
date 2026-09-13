@@ -35,6 +35,7 @@
     commentTally,
   } from '../../utils/reviewComments';
   import { fileExtensionLabel } from '../../utils/reviewTree';
+  import { threadHasScope } from '../../transport/entityScopes';
   import Icon from '../primitives/Icon.svelte';
   import RenderBoundary from '../shared/RenderBoundary.svelte';
 
@@ -48,6 +49,11 @@
   // body, and the selection survives rail tab switches.
   const activeExtensions = new SvelteSet<string>();
   let extensionsFilterDiff = $state(false);
+  // Drafting, sending and submitting comments all write under
+  // `threads:operate` on the thread's computer (Create/SendDiffReviewComments).
+  // The gutter affordance is withheld and the send button goes inert with a
+  // reason; reading the diff and existing comments is unaffected.
+  let operateUngranted = $derived(!threadHasScope('threads:operate', ctx.threadId, ctx.thread?.projectId));
   // Captured at init, NOT $derived: the subject is fixed for this instance
   // (CompanionPane keys the body on conversation, ownership epoch and checkout,
   // so a move, workspace change or draft materialization remounts it), and
@@ -282,7 +288,7 @@
 </script>
 
 <section bind:this={rootEl} class="flex h-full min-h-0 flex-col bg-surface-1" data-testid="review-pane">
-  <div class="flex shrink-0 items-center gap-2 border-b border-border-subtle px-3 py-2">
+  <div class="flex shrink-0 items-center gap-2 compact:flex-wrap border-b border-border-subtle px-3 py-2">
     <select
       class="rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-1 text-xs text-fg"
       aria-label="Review scope"
@@ -390,7 +396,7 @@
 
     <button
       type="button"
-      class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle disabled:opacity-50 {treeVisible ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:text-fg'}"
+      class="inline-flex h-7 w-7 compact:h-9 compact:w-9 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle disabled:opacity-50 {treeVisible ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:text-fg'}"
       aria-label="Toggle file tree"
       aria-pressed={treeVisible}
       title="File tree"
@@ -403,7 +409,7 @@
 
     <button
       type="button"
-      class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle disabled:opacity-50 {review?.viewMode === 'split' ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:text-fg'}"
+      class="inline-flex h-7 w-7 compact:h-9 compact:w-9 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle disabled:opacity-50 {review?.viewMode === 'split' ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:text-fg'}"
       aria-label="Toggle split view"
       aria-pressed={review?.viewMode === 'split'}
       title="Split view"
@@ -416,7 +422,7 @@
 
     <button
       type="button"
-      class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle disabled:opacity-50 {review?.wordWrap ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:text-fg'}"
+      class="inline-flex h-7 w-7 compact:h-9 compact:w-9 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle disabled:opacity-50 {review?.wordWrap ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:text-fg'}"
       aria-label="Toggle word wrap"
       aria-pressed={review?.wordWrap}
       title="Word wrap"
@@ -429,7 +435,7 @@
 
     <button
       type="button"
-      class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle disabled:opacity-50 {review?.ignoreWhitespace ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:text-fg'}"
+      class="inline-flex h-7 w-7 compact:h-9 compact:w-9 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle disabled:opacity-50 {review?.ignoreWhitespace ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:text-fg'}"
       aria-label="Toggle hide whitespace changes"
       aria-pressed={review?.ignoreWhitespace}
       title={review && !review.canIgnoreWhitespace
@@ -444,7 +450,7 @@
 
     <button
       type="button"
-      class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle text-fg-muted hover:text-fg disabled:opacity-50"
+      class="inline-flex h-7 w-7 compact:h-9 compact:w-9 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle text-fg-muted hover:text-fg disabled:opacity-50"
       aria-label={review?.allCollapsed ? 'Expand all files' : 'Collapse all files'}
       title={review?.allCollapsed ? 'Expand all files' : 'Collapse all files'}
       data-testid="review-collapse-all-toggle"
@@ -457,7 +463,7 @@
     {#if review?.scope === 'pr'}
       <button
         type="button"
-        class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle text-fg-muted hover:text-fg disabled:opacity-50"
+        class="inline-flex h-7 w-7 compact:h-9 compact:w-9 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle text-fg-muted hover:text-fg disabled:opacity-50"
         aria-label="Refresh PR comments"
         title="Refresh comments (diff stays put)"
         data-testid="review-refresh-comments"
@@ -498,7 +504,7 @@
     <span class="h-[18px] w-px shrink-0 bg-border-subtle" aria-hidden="true"></span>
     <button
       type="button"
-      class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle text-fg-muted hover:text-fg"
+      class="inline-flex h-7 w-7 compact:h-9 compact:w-9 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle text-fg-muted hover:text-fg"
       aria-label="Close review pane"
       title="Close review pane"
       data-testid="review-close"
@@ -669,7 +675,7 @@
           openEditors={review.openEditors}
           prThreads={review.prThreads}
           expandedPRThreadIds={review.expandedPRThreadIds}
-          onAddComment={ctx.threadId ? (anchor) => review?.openDraftEditor(anchor) : undefined}
+          onAddComment={ctx.threadId && !operateUngranted ? (anchor) => review?.openDraftEditor(anchor) : undefined}
           onExpandGap={(path, gap, dir) => { void review?.expandDiffContext(path, gap, dir); }}
           jumpToFilePath={jumpFilePath ?? review.pendingJumpFilePath}
           onJumpConsumed={onJumpConsumed}
@@ -749,8 +755,8 @@
             <button
               type="button"
               class="rounded border border-accent/45 px-2 py-1 text-[0.6875rem] font-medium text-accent hover:bg-accent/10 disabled:opacity-45"
-              disabled={review.sendingComments || (review.effectiveSubmitTarget === 'agent' && review.isTurnActive)}
-              title={review.isTurnActive && review.effectiveSubmitTarget === 'agent' ? 'Send from the chat box while the agent is working' : 'Send comments'}
+              disabled={operateUngranted || review.sendingComments || (review.effectiveSubmitTarget === 'agent' && review.isTurnActive)}
+              title={operateUngranted ? 'Not granted to this device' : review.isTurnActive && review.effectiveSubmitTarget === 'agent' ? 'Send from the chat box while the agent is working' : 'Send comments'}
               onclick={() => { void (review?.effectiveSubmitTarget === 'pr' ? review?.submitPRReview() : review?.sendComments()); }}
             >
               Send comments

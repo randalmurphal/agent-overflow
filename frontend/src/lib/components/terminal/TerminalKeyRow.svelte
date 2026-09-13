@@ -21,9 +21,13 @@
     ctrlArmed: boolean;
     /** Arm / disarm sticky Ctrl. */
     onToggleCtrl: () => void;
+    /** Paste the clipboard through the terminal's own paste route. The
+     *  right-click paste is off under compact (a long press must not
+     *  paste), so this key is the layout's only paste. */
+    onPaste: () => void;
   }
 
-  let { onKey, ctrlArmed, onToggleCtrl }: Props = $props();
+  let { onKey, ctrlArmed, onToggleCtrl, onPaste }: Props = $props();
 
   interface KeyDef {
     id: string;
@@ -52,7 +56,7 @@
   const BEFORE_CTRL = 2;
 
   const BUTTON_CLASS =
-    'h-8 min-w-8 px-2.5 shrink-0 rounded border font-mono text-xs leading-none ' +
+    'h-10 min-w-10 px-3 shrink-0 rounded border font-mono text-xs leading-none ' +
     'select-none';
 
   function press(data: string): void {
@@ -69,7 +73,7 @@
 <div
   class="flex items-center gap-1 px-1 py-1 shrink-0 overflow-x-auto bg-surface-1
          border-t border-border"
-  style="touch-action: pan-x;"
+  style="touch-action: pan-x; overscroll-behavior-x: contain;"
   data-testid="terminal-key-row"
 >
   {#each KEYS.slice(0, BEFORE_CTRL) as key (key.id)}
@@ -110,4 +114,15 @@
       onclick={() => press(key.data)}>{key.label}</button
     >
   {/each}
+
+  <!-- Not a key: it reads the clipboard rather than emitting bytes. -->
+  <button
+    type="button"
+    tabindex="-1"
+    class="{BUTTON_CLASS} bg-surface-2 border-border text-text-secondary"
+    data-testid="terminal-key-paste"
+    aria-label="Paste"
+    onpointerdown={keepTerminalFocus}
+    onclick={onPaste}>Paste</button
+  >
 </div>

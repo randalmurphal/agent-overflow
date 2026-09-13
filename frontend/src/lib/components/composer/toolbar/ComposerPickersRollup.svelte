@@ -63,7 +63,7 @@
   aria-expanded={open}
   title="Composer options"
   class={[
-    'relative inline-flex items-center rounded-[var(--radius-field)] px-1.5 py-1',
+    'relative inline-flex items-center justify-center rounded-[var(--radius-field)] px-1.5 py-1 compact:size-9',
     'text-[0.6875rem] transition-colors cursor-pointer',
     open
       ? 'bg-surface-2/60 text-fg ring-1 ring-inset ring-border-subtle'

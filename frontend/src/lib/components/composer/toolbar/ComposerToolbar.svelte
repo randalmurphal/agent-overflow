@@ -189,7 +189,7 @@
       />
     </div>
   {/if}
-  <div class="ml-auto flex shrink-0 items-center gap-1.5">
+  <div data-composer-toolbar-cluster class="ml-auto flex shrink-0 items-center gap-1.5">
     {#if showLimitRings}
       <div
         class="shrink-0 flex items-center"
@@ -251,8 +251,16 @@
   /* Reserve readable model text while measuring the expanded pickers.
      Only after they roll up may the model ellipsize into the remaining
      space. Otherwise flex shrink hides overflow by erasing the label. */
-  :global([data-composer-toolbar]:not([data-density='minimal']) [data-composer-toolbar-model]) {
+  :global([data-composer-toolbar]:not([data-density='minimal']):not([data-density='tight']) [data-composer-toolbar-model]) {
     flex-shrink: 0;
+  }
+  /* Once the model may shrink, the trigger keeps a readable floor (icon,
+     a few characters, chevron) so an overflow shows up as an overflow
+     of the row rather than as an erased label. The floor is on the
+     button, not the label: a child's overflow stays inside the button's
+     box and never reaches the row's scrollWidth. */
+  :global([data-composer-toolbar][data-density='minimal'] [data-composer-toolbar-model]) {
+    min-width: 6.5rem;
   }
   :global(
     [data-composer-toolbar]:not([data-density='full'])
@@ -264,10 +272,19 @@
      trigger so the model, Send and the meters stay on screen at phone
      widths. The roll-up exists only there; everywhere else the pickers
      are the controls. */
-  :global([data-composer-toolbar][data-density='minimal'] [data-composer-toolbar-pickers]) {
+  :global([data-composer-toolbar][data-density='minimal'] [data-composer-toolbar-pickers]),
+  :global([data-composer-toolbar][data-density='tight'] [data-composer-toolbar-pickers]) {
     display: none;
   }
-  :global([data-composer-toolbar]:not([data-density='minimal']) [data-composer-toolbar-rollup]) {
+  :global([data-composer-toolbar]:not([data-density='minimal']):not([data-density='tight']) [data-composer-toolbar-rollup]) {
     display: none;
+  }
+  /* The tight rung: the chevron goes and the right cluster closes its
+     gaps; the label ellipsizes into whatever is left. */
+  :global([data-composer-toolbar][data-density='tight'] [data-composer-toolbar-model-chevron]) {
+    display: none;
+  }
+  :global([data-composer-toolbar][data-density='tight'] [data-composer-toolbar-cluster]) {
+    gap: 0.125rem;
   }
 </style>

@@ -126,7 +126,7 @@
                 {/if}
               </p>
             </div>
-            <div class="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+            <div class="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 compact:opacity-100 transition-opacity">
               <button
                 type="button"
                 onclick={() => handleUnarchive(thread)}

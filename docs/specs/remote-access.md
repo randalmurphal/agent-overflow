@@ -2407,7 +2407,17 @@ text above was deviated from:
   stand in for (first real-phone pass, the same day). Panes are one
   screen wide with no dividers, so companions still open and the reveal
   glide is the screen switch; the hardware back closes the companion
-  on screen and reveals its thread before it goes to the list. The
+  on screen and reveals its thread before it goes to the list. A
+  phone-sized BROWSER pointed at a remote host answers its own Back
+  (swipe or button) the same way: `utils/compactHistoryBack.svelte.ts`
+  keeps one sentinel `pushState` entry while the app is away from root
+  (the thread screen, or any registered overlay surface: settings and
+  workflows overlays, companions, modals, popovers, context menus), a
+  `popstate` over it runs the shell's `stepBack` ladder, and the sentinel
+  is re-pushed while there is still somewhere to go back to. At the
+  list with nothing open there is no sentinel, so Back leaves the page,
+  as the shell exits. Nothing is pushed off compact or in the native
+  shell; URL scrubs use `replaceState` and are untouched. The
   composer's densest rung folds every picker but the model into a
   roll-up and keeps the model, the rate-limit and context meters, and
   Send (owner ruling, same day). The header is two rows (owner ruling,

@@ -300,7 +300,7 @@
             title="Open in review pane"
             aria-label="Open diff in review pane: {file.path}"
             data-testid="diff-file-open-sidebar"
-            class="opacity-0 group-hover/tool:opacity-100 focus-visible:opacity-100 rounded p-0.5 text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+            class="opacity-0 group-hover/tool:opacity-100 focus-visible:opacity-100 compact:opacity-100 rounded p-0.5 text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
           >
             <Icon icon={PanelRightOpen} size={12} />
           </button>

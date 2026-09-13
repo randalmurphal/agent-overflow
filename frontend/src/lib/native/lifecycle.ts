@@ -11,101 +11,28 @@
 //     is a rejected design in this codebase and the one case the frame
 //     exists for is the platform having stopped running the app.
 //   - **The hardware back button** is Android's spelling of "one step
-//     back", and `answerBackPress` is the whole stack, in order: an open
-//     overlay or sheet closes first; a terminal drawer stacked over the
-//     chat closes; a companion screen (review, browser, plan) closes and
-//     the thread it was opened from comes back; the thread screen goes
-//     back to the list (`stores/layoutMode`'s `showCompactList`); and the
-//     list screen is the root, where the platform's own answer is to
-//     leave the app. The first real-phone session (2026-09-04) had only
-//     the last two rungs, so back from the review pane skipped the thread
-//     it came from and landed on the list.
-//
-// **The overlay case dispatches Escape rather than reaching into
-// components.** Every overlay, sheet, popover and dialog in this app
-// already closes on Escape through the keybinding path, and there are
-// enough of them that a registry here would be a second list to keep in
-// sync — one that is wrong the first time somebody adds a sheet. So the
-// button sends a marked surface-dismissal Escape, not a keyboard shortcut,
-// and whether anything consumed it is read off `defaultPrevented`, which
-// is the same answer the browser gives any other key handler. The one
-// target it avoids is a focused terminal: xterm turns Escape into an ESC
-// byte for the shell and reports the key consumed, which is a keystroke
-// nobody pressed. From there the key goes to the pane instead, where the
-// same window-level handlers still see it.
+//     back", and `utils/stepBack.ts` is the whole stack (it also answers
+//     a browser's Back in a phone-sized browser through
+//     `utils/compactHistoryBack.svelte.ts`). `answerBackPress` wraps the
+//     stack for the shell: while the app lock is up the press is
+//     absorbed, because `inert` on the app root stops pointers and focus
+//     but not store calls, and a Back that navigated behind the cover
+//     would leak the next screen when it came down.
 
-import { closeCompanion, getCompanionPane } from '../stores/companionPanes.svelte';
-import { getCompactScreen, isCompactLayout, showCompactList } from '../stores/layoutMode.svelte';
-import { getFocusedPaneOrNull, revealPane } from '../stores/panes.svelte';
 import { setClientLease } from '../transport/lease';
-import { runTerminalToggle } from '../components/terminal/terminalToggle';
 import { appPlugin } from './plugins';
 import { isNativeShell } from './platform';
-import { createSurfaceDismissalEvent } from '../utils/surfaceDismissal';
+import { isAppLocked } from './lock';
+import { stepBack } from '../utils/stepBack';
 
 /**
- * Ask the page to close whatever is on top, and report whether anything
- * did. A synthetic Escape at the active element, so it walks exactly the
- * component dismissal path a real key press walks. Global dispatch admits
- * only surface dismissal commands; Back must never become Interrupt Turn.
- */
-function dismissTopSurface(): boolean {
-  if (typeof document === 'undefined') return false;
-  const active = document.activeElement;
-  const target = active?.closest('.xterm')
-    ? (active.closest('[data-pane-id]') ?? document.body)
-    : (active ?? document.body);
-  if (!target) return false;
-  const event = createSurfaceDismissalEvent();
-  target.dispatchEvent(event);
-  return event.defaultPrevented;
-}
-
-/**
- * The companion pane the thread screen is showing, if that is what is on
- * screen. Compact lays every pane out at the strip's full width and glides
- * between them, so "which pane" is the one under the strip's centre —
- * read from geometry rather than focus, because opening a companion
- * deliberately leaves focus on the thread it was opened from.
- */
-function onScreenCompanion(): { paneId: string; sourcePaneId: string } | null {
-  if (typeof document === 'undefined') return null;
-  const strip = document.querySelector('.compact-screen-thread');
-  if (!strip) return null;
-  const stripRect = strip.getBoundingClientRect();
-  const centre = stripRect.left + stripRect.width / 2;
-  for (const section of strip.querySelectorAll<HTMLElement>('[data-pane-id]')) {
-    const rect = section.getBoundingClientRect();
-    if (rect.left > centre || rect.right <= centre) continue;
-    if (section.dataset.paneKind === 'thread') return null;
-    const paneId = section.dataset.paneId ?? '';
-    const companion = getCompanionPane(paneId);
-    return companion ? { paneId, sourcePaneId: companion.sourcePaneId } : null;
-  }
-  return null;
-}
-
-/**
- * One step back. Answers whether the press was absorbed by the page; a
- * `false` means the list screen is showing and the platform should leave
- * the app. Each rung answers for itself, so a press never does two things.
+ * The shell's hardware back press. Answers whether the press was absorbed
+ * by the page; a `false` means the platform should leave the app. While
+ * the lock cover is up every press is absorbed and nothing moves.
  */
 export function answerBackPress(): boolean {
-  if (dismissTopSurface()) return true;
-  if (!isCompactLayout() || getCompactScreen() !== 'thread') return false;
-  const focused = getFocusedPaneOrNull();
-  if (focused?.showTerminal) {
-    runTerminalToggle(focused);
-    return true;
-  }
-  const companion = onScreenCompanion();
-  if (companion) {
-    closeCompanion(companion.paneId);
-    revealPane(companion.sourcePaneId);
-    return true;
-  }
-  showCompactList();
-  return true;
+  if (isAppLocked()) return true;
+  return stepBack();
 }
 
 /**

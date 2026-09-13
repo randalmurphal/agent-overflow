@@ -1,6 +1,6 @@
 <script lang="ts">
   import { settingsComputer } from './settingsComputer';
-  const { backend } = settingsComputer();
+  const { backend, hasScope } = settingsComputer();
   // The Accounts section of a provider's settings page. The account
   // logic itself lives in stores/providerAccounts.svelte.ts — shared with the
   // account-switcher picker, so a switch made in either surface is the same
@@ -40,6 +40,11 @@
   let { provider }: { provider: SettingsProvider } = $props();
 
   let providerLabel = $derived(resolveProviderLabel(provider));
+  // Every credential write here (StartProviderLogin, SwitchProviderAccount,
+  // RefreshProviderAccountUsage, RemoveProviderAccount) rides `access:admin`
+  // on this computer. The cards still list; their controls go inert.
+  let admin = $derived(hasScope('access:admin'));
+  let ungrantedTitle = $derived(admin ? undefined : 'Not granted to this device');
   let accounts = $derived(getProviderAccountsFor(provider, backend));
   let loading = $derived(isProviderAccountsLoading(backend));
   let actions = $derived(getProviderAccountActions(provider, backend));
@@ -104,7 +109,8 @@
       <button
         type="button"
         class={PRIMARY_BUTTON_CLASS}
-        disabled={credentialOpInFlight}
+        disabled={credentialOpInFlight || !admin}
+        title={ungrantedTitle}
         onclick={() => void startProviderLogin(provider, backend)}
       >
         {actions.loggingIn ? 'Signing in…' : 'Log in to another account'}
@@ -139,7 +145,8 @@
             <button
               type="button"
               class="min-w-0 flex-1 cursor-pointer text-left disabled:cursor-default"
-              disabled={(account.active && !account.needsLogin) || credentialOpInFlight}
+              disabled={(account.active && !account.needsLogin) || credentialOpInFlight || !admin}
+              title={ungrantedTitle}
               onclick={cardAction(account)}
               aria-label={providerAccountActionLabel(account)}
             >
@@ -185,11 +192,11 @@
               <button
                 type="button"
                 class={GHOST_BUTTON_CLASS}
-                disabled={account.needsLogin || !!actions.refreshingID || credentialOpInFlight}
+                disabled={account.needsLogin || !!actions.refreshingID || credentialOpInFlight || !admin}
                 onclick={() => void refreshProviderAccountUsage(provider, account, backend)}
-                title={account.needsLogin
+                title={ungrantedTitle ?? (account.needsLogin
                   ? 'Sign in again to refresh usage limits'
-                  : 'Refresh usage limits'}
+                  : 'Refresh usage limits')}
                 aria-label={`Refresh usage for ${providerAccountName(account)}`}
               >
                 <Icon
@@ -202,9 +209,9 @@
               <button
                 type="button"
                 class="{GHOST_BUTTON_CLASS} hover:text-error"
-                disabled={credentialOpInFlight}
+                disabled={credentialOpInFlight || !admin}
                 onclick={() => requestRemoval(account)}
-                title="Remove saved account"
+                title={ungrantedTitle ?? 'Remove saved account'}
                 aria-label={`Remove ${providerAccountName(account)}`}
               >
                 <Icon icon={Trash2} size={12} strokeWidth={1.75} />

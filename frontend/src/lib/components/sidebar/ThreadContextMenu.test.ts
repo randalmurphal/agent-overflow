@@ -24,6 +24,7 @@ import {
 } from '../../stores/sidebar.svelte';
 import type { Thread } from '../../types/models';
 import type { Settings } from '../../types/settings';
+import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -82,6 +83,7 @@ describe('<ThreadContextMenu> single-row menu', () => {
       'Pin Thread',
       'Copy Path',
       'Copy Thread ID',
+      'Archive Thread',
       'Delete',
     ]);
   });
@@ -110,8 +112,17 @@ describe('<ThreadContextMenu> single-row menu', () => {
     const { baseElement } = renderMenu(makeThread({ parentThreadId: 'parent-1' }));
     const labels = visibleLabels(baseElement);
     expect(labels).not.toContain('Delete');
-    // Delete-divider is paired with Delete in the template, so it must
-    // also be absent — visually a child-thread menu has no trailing rule.
+    // Archive is still offered (a child hides on its own), so the trailing
+    // rule stays for it; a child terminal has neither and no rule.
+    expect(labels).toContain('Archive Thread');
+    expect(baseElement.querySelectorAll('[role="separator"]').length).toBe(1);
+  });
+
+  it('omits Archive Thread and the trailing rule for a child terminal thread', () => {
+    const { baseElement } = renderMenu(makeThread({ parentThreadId: 'parent-1', mode: 'terminal' }));
+    const labels = visibleLabels(baseElement);
+    expect(labels).not.toContain('Archive Thread');
+    expect(labels).not.toContain('Delete');
     expect(baseElement.querySelectorAll('[role="separator"]').length).toBe(0);
   });
 
@@ -126,6 +137,7 @@ describe('<ThreadContextMenu> single-row menu', () => {
       'Unpin Thread',
       'Copy Path',
       'Copy Thread ID',
+      'Archive Thread',
       'Delete',
     ]);
   });
@@ -145,6 +157,142 @@ describe('<ThreadContextMenu> single-row menu', () => {
     expect(labels).not.toContain('Pin Thread');
     expect(labels).not.toContain('Unpin Thread');
     expect(labels.some((label) => label.startsWith('Move to '))).toBe(false);
+  });
+});
+
+describe('<ThreadContextMenu> Archive Thread', () => {
+  async function primeSettings(overrides: Partial<Settings>) {
+    setBindingMock('GetSettings', async () => overrides);
+    await loadSettings();
+  }
+
+  beforeEach(() => {
+    resetBindingMocks();
+    clearThreadSelection();
+  });
+
+  it('archives immediately and closes the menu when confirmArchive is off', async () => {
+    await primeSettings({ confirmArchive: false });
+    const archive = setBindingMock('ArchiveThread', vi.fn(async () => {}));
+    const onClose = vi.fn();
+    setBindingMock('SwitchThread', async () => {});
+    setBindingMock('ListItems', async () => []);
+    const anchor = document.createElement('div');
+    document.body.appendChild(anchor);
+    const { getByRole, queryByRole } = render(ThreadContextMenu, {
+      props: {
+        thread: makeThread({ id: 'arch-off' }),
+        pane: createThreadPane(),
+        anchor,
+        open: true,
+        onClose,
+        onRename: () => {},
+        isActive: false,
+      },
+    });
+    await fireEvent.click(getByRole('menuitem', { name: 'Archive Thread' }));
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(archive).toHaveBeenCalledWith('arch-off');
+    expect(queryByRole('button', { name: 'Archive' })).toBeNull();
+  });
+
+  it('confirms first when confirmArchive is on, archiving only after confirm', async () => {
+    await primeSettings({ confirmArchive: true });
+    const archive = setBindingMock('ArchiveThread', vi.fn(async () => {}));
+    const { getByRole } = renderMenu(makeThread({ id: 'arch-on' }));
+    await fireEvent.click(getByRole('menuitem', { name: 'Archive Thread' }));
+    await tick();
+
+    const confirmBtn = getByRole('button', { name: 'Archive' });
+    expect(archive).not.toHaveBeenCalled();
+    await fireEvent.click(confirmBtn);
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    expect(archive).toHaveBeenCalledWith('arch-on');
+  });
+
+  it('is not offered for a terminal thread', () => {
+    const { baseElement } = renderMenu(makeThread({ mode: 'terminal' }));
+    expect(visibleLabels(baseElement)).not.toContain('Archive Thread');
+  });
+});
+
+describe('<ThreadContextMenu> without threads:operate', () => {
+  // Every write in the menu rides `threads:operate`; a view-only device sees
+  // the rows but they are inert and say why. The Copy rows stay live.
+  const INERT = 'Not granted to this device';
+
+  beforeEach(async () => {
+    resetBindingMocks();
+    clearThreadSelection();
+    resetThreadGroupsForTest();
+    upsertThreadGroup({ id: 'g-1', projectId: 'project-1', name: 'One', createdAt: 0, updatedAt: 0 });
+    await pairViewOnly();
+  });
+
+  afterEach(() => {
+    resetToLocalPage();
+    resetThreadGroupsForTest();
+  });
+
+  function item(el: HTMLElement, label: string): HTMLElement {
+    const node = Array.from(el.querySelectorAll('[role="menuitem"]'))
+      .find((node) => node.textContent?.trim().replace(/[▸\s]+$/u, '') === label);
+    if (!node) throw new Error(`${label} not rendered`);
+    return node as HTMLElement;
+  }
+
+  it('disables every mutating single-thread row with the reason, leaving Copy live', () => {
+    const { baseElement } = renderMenu(makeThread({ projectId: 'project-1', pinnedAt: 1, pinGroup: 0 }));
+    for (const label of [
+      'Rename Thread',
+      'Fork Thread',
+      'Mark Unread',
+      'Move to Back Burner',
+      'Unpin Thread',
+      'Archive Thread',
+      'Delete',
+    ]) {
+      const row = item(baseElement, label);
+      expect(row.getAttribute('aria-disabled'), label).toBe('true');
+      expect(row.getAttribute('title'), label).toBe(INERT);
+    }
+    // The submenu trigger carries no title of its own; its targets do.
+    expect(item(baseElement, 'Move to Group').getAttribute('aria-disabled')).toBe('true');
+    for (const label of ['Copy Path', 'Copy Thread ID']) {
+      const row = item(baseElement, label);
+      expect(row.getAttribute('aria-disabled'), label).not.toBe('true');
+    }
+  });
+
+  it('does not run the archive action from an inert row', async () => {
+    const archive = setBindingMock('ArchiveThread', vi.fn(async () => {}));
+    const { baseElement } = render(ThreadContextMenu, {
+      props: {
+        thread: makeThread(),
+        pane: createThreadPane(),
+        anchor: document.body,
+        open: true,
+        onClose: () => {},
+        onRename: () => {},
+        isActive: false,
+      },
+    });
+    await fireEvent.click(item(baseElement, 'Archive Thread'));
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    expect(archive).not.toHaveBeenCalled();
+  });
+
+  it('disables the bulk rows when any selected thread lacks the grant', () => {
+    replaceAllThreads([makeThread({ id: 'a' }), makeThread({ id: 'b' })]);
+    setThreadSelection(['a', 'b']);
+    const { baseElement } = renderMenu(makeThread({ id: 'a' }));
+    for (const label of ['Mark unread (2)', 'Archive (2)', 'Delete (2)']) {
+      const row = item(baseElement, label);
+      expect(row.getAttribute('aria-disabled'), label).toBe('true');
+      expect(row.getAttribute('title'), label).toBe(INERT);
+    }
   });
 });
 

@@ -10,6 +10,7 @@ import {
   setSidebarCollapsed,
 } from './sidebarLayout.svelte';
 import { resetSidebarCursorStore, setSidebarCursorForTest } from './sidebarCursor.svelte';
+import { setCompactLayoutForTest } from './layoutMode.svelte';
 import { resetAppStorageForTest } from './appStorage';
 import {
   getActiveTurn,
@@ -1891,6 +1892,33 @@ describe('settings commands', () => {
     runCommand('settings.open', makeCommandContext(null, {}) as CommandContext);
     expect(isSettingsOpen()).toBe(true);
     expect(isWorkflowsOverlayOpen()).toBe(false);
+  });
+});
+
+// Compact shows one thread pane. The two commands that open a second one
+// are disabled there, so Back from a thread always reaches the list.
+describe('compact-gated commands', () => {
+  afterEach(() => {
+    setCompactLayoutForTest(false);
+    resetSidebarCursorStore();
+  });
+
+  it('disables the new-pane commands under the compact layout only', () => {
+    const pane = readyPane();
+    setSidebarCursorForTest('thread-1');
+    const desktop = makeCommandContext(pane, {}) as CommandContext;
+    expect(desktop.flags.compactLayout).toBe(false);
+    expect(isCommandEnabled('thread.newPane', desktop)).toBe(true);
+    expect(isCommandEnabled('sidebar.cursor.openInNewPane', desktop)).toBe(true);
+
+    setCompactLayoutForTest(true);
+    const compact = makeCommandContext(pane, {}) as CommandContext;
+    expect(compact.flags.compactLayout).toBe(true);
+    expect(isCommandEnabled('thread.newPane', compact)).toBe(false);
+    expect(isCommandEnabled('sidebar.cursor.openInNewPane', compact)).toBe(false);
+    // The single-pane siblings stay available.
+    expect(isCommandEnabled('thread.new', compact)).toBe(true);
+    expect(isCommandEnabled('sidebar.cursor.open', compact)).toBe(true);
   });
 });
 

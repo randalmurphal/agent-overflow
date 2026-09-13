@@ -44,7 +44,9 @@ it.each([320, 360, 412])('keeps the title on one swipeable line beside the badge
   // The whole title is in the DOM on one line, no ellipsis: the scroller
   // has text past its edge, fades that edge, and swipes to it.
   expect(scroller.innerText).toBe(LONG_TITLE);
-  expect(titleEl.getBoundingClientRect().height).toBeLessThan(30);
+  // One line: the row is its compact tap height (32px), and a wrapped
+  // second line would push it past 40.
+  expect(titleEl.getBoundingClientRect().height).toBeLessThan(40);
   expect(scroller.scrollWidth).toBeGreaterThan(scroller.clientWidth + 1);
   expect(scroller.style.getPropertyValue('--fade-right')).toBe('24px');
   expect(scroller.style.getPropertyValue('--fade-left')).toBe('0px');
@@ -76,7 +78,7 @@ it.each([320, 360, 412])('keeps the facts line on its own row with the worktree 
   const factsBox = facts.getBoundingClientRect();
   // A full-width row under the title row.
   expect(factsBox.top).toBeGreaterThanOrEqual(titleEl.getBoundingClientRect().bottom);
-  expect(factsBox.height).toBeLessThan(30);
+  expect(factsBox.height).toBeLessThan(40);
   // Nothing scrolls: the branch ellipsizes instead, and the icon keeps its
   // full box at the end of the line.
   expect(facts.scrollWidth).toBeLessThanOrEqual(facts.clientWidth + 1);

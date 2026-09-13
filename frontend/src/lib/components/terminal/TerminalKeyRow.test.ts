@@ -8,10 +8,11 @@ afterEach(() => cleanup());
 function mount(over: { ctrlArmed?: boolean } = {}) {
   const onKey = vi.fn();
   const onToggleCtrl = vi.fn();
+  const onPaste = vi.fn();
   render(TerminalKeyRow, {
-    props: { onKey, onToggleCtrl, ctrlArmed: over.ctrlArmed ?? false },
+    props: { onKey, onToggleCtrl, onPaste, ctrlArmed: over.ctrlArmed ?? false },
   });
-  return { onKey, onToggleCtrl };
+  return { onKey, onToggleCtrl, onPaste };
 }
 
 function key(id: string): HTMLButtonElement {
@@ -59,7 +60,17 @@ describe('TerminalKeyRow', () => {
       'terminal-key-slash',
       'terminal-key-pipe',
       'terminal-key-tilde',
+      'terminal-key-paste',
     ]);
+  });
+
+  it('routes Paste to onPaste and emits no bytes of its own', () => {
+    const { onKey, onPaste } = mount();
+    key('paste').click();
+    expect(onPaste).toHaveBeenCalledTimes(1);
+    // Paste reads the clipboard through the terminal's own route; the row
+    // never sees the bytes.
+    expect(onKey).not.toHaveBeenCalled();
   });
 
   it('reports Ctrl through onToggleCtrl and emits no bytes of its own', () => {

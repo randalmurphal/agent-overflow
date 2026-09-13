@@ -10,7 +10,7 @@
 
   import type { Snippet } from 'svelte';
   import { fade, scale } from 'svelte/transition';
-  import { focusTrap } from '../../utils/focusTrap';
+  import { focusTrap, isTopFocusTrap } from '../../utils/focusTrap';
   import { airspaceSurface } from '../../utils/paneAirspace.svelte';
   import { hasOpenPopoverOwnedBy } from '../../utils/popoverOwnership';
   import { randomId } from '../../utils/randomId';
@@ -110,8 +110,19 @@
     }
   }
 
+  // Escape is heard on the DOCUMENT, not the backdrop. Focus does not stay in
+  // the panel: a tap on non-focusable dialog content moves it to <body> on
+  // the phone, and the phone shell's hardware back button dispatches its
+  // synthetic Escape at the active element (`native/lifecycle.ts`). A
+  // backdrop listener never saw that press, so Back closed the thread under
+  // the still-open dialog instead.
   function handleKeydown(e: KeyboardEvent): void {
     if (e.key !== 'Escape') return;
+    if (!panelEl) return;
+    // Only the topmost dialog answers. Every open dialog listens on the
+    // document, and `stopPropagation` does not stop sibling listeners on the
+    // same target, so each asks the focus-trap stack whether it is on top.
+    if (!isTopFocusTrap(panelEl)) return;
     // A popover THIS dialog opened is layered over it, and owns the press:
     // Escape dismisses the topmost surface, and closing the whole dialog out
     // from under an open picker loses work the user was in the middle of.
@@ -120,18 +131,23 @@
     // popover: after portaling every floating element is a body child, so a
     // picker inside this panel and a menu belonging to a pane behind the
     // backdrop are indistinguishable by ancestry — and declining for the
-    // second one would leave this dialog unable to close at all.
-    // Ordering makes `stopPropagation` no help here — this handler sits on
-    // the backdrop, which the event reaches BEFORE Popover's document-level
-    // listener — so the dialog has to decline rather than be pre-empted.
-    if (panelEl && hasOpenPopoverOwnedBy(panelEl)) return;
+    // second one would leave this dialog unable to close at all. Popover's
+    // own document listener runs after this one and does not stop it, so
+    // the dialog has to decline rather than be pre-empted.
+    if (hasOpenPopoverOwnedBy(panelEl)) return;
     e.preventDefault();
     onClose();
   }
+
+  $effect(() => {
+    if (!open) return;
+    document.addEventListener('keydown', handleKeydown);
+    return () => document.removeEventListener('keydown', handleKeydown);
+  });
 </script>
 
 {#if open}
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
   <div
     class={[
       'fixed inset-0 z-[60] flex justify-center bg-overlay backdrop-blur-md',
@@ -141,7 +157,6 @@
     data-modal-align={align}
     use:airspaceSurface
     onclick={handleBackdropClick}
-    onkeydown={handleKeydown}
     transition:fade={{ duration: 140 }}
   >
     <div
@@ -155,7 +170,7 @@
       data-popover-clip-boundary="none"
       class={[
         'w-full mx-4 bg-surface-1 border border-border-subtle rounded-[var(--radius-card)] shadow-modal',
-        'flex flex-col max-h-[calc(100vh-2rem)]',
+        'flex flex-col max-h-[calc(100dvh-2rem)]',
         WIDTH_CLASS[width],
       ].join(' ')}
       transition:scale={{ duration: 160, start: 0.96, opacity: 0 }}

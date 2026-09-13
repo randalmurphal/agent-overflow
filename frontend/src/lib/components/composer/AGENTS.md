@@ -37,7 +37,7 @@ Composer controls register with the shared picker registry so keyboard commands,
 compact rollups, and visible triggers invoke the same handlers. The density
 ladder in `composerToolbarDensity.ts` preserves the model picker, context and
 rate-limit meters, Send, and compact rollup. Keep those controls non-shrinking;
-only the minimal model label may ellipsize.
+only the model label may ellipsize, and only at the tight rung below minimal.
 
 Remote jobs use the shared background tray and retain their owning computer.
 Closing or navigating the composer must not redirect a completion to the newly

@@ -233,7 +233,7 @@
         placeholder={inputPlaceholder}
         aria-label={dialogTitle}
         data-testid="message-search-input"
-        class="w-full text-[0.8125rem] rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg placeholder:text-fg-hint focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors mb-3"
+        class="w-full text-[0.8125rem] compact:text-base rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-1.5 compact:py-2 text-fg placeholder:text-fg-hint focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors mb-3"
       />
 
       {#if loading}

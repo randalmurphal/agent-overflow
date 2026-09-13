@@ -40,6 +40,7 @@ import { addToast } from '../../stores/toast.svelte';
 import { errString } from '../../utils/errors';
 import { clipboardChordFor, isFontZoomChord } from './terminalKeys';
 import { isMacPlatform } from '../../utils/platform';
+import { isCompactLayout } from '../../stores/layoutMode.svelte';
 
 const isMac = isMacPlatform();
 
@@ -61,10 +62,13 @@ export interface BuildTerminalOptions {
 // so the long renderer-choice rationale doesn't bury the replay/drain ordering
 // in each terminal surface, and so both surfaces share identical glyph + key
 // handling.
+// `paste` is the clipboard-to-PTY route the widget's own chord and right-click
+// use, exposed so the compact key row (which has neither) offers the same
+// action with the same failure toast.
 export function buildTerminal(
   mount: HTMLDivElement,
   { onInput, isDisposed }: BuildTerminalOptions,
-): { term: Terminal; fit: FitAddon } {
+): { term: Terminal; fit: FitAddon; paste: () => void } {
   const terminal = new Terminal({
     convertEol: false,
     cursorBlink: true,
@@ -119,9 +123,20 @@ export function buildTerminal(
   // Read the clipboard and feed it through term.paste so xterm honors
   // bracketed-paste mode (multi-line safety) and the caller's onData gate sees
   // it. readText can reject (permission/focus) — surface it, never swallow.
+  //
+  // A plain-HTTP remote page has no `navigator.clipboard` at all (the API is
+  // secure-context only), and reading `.readText` off undefined would throw
+  // synchronously out of the event handler; fold it into the same rejection
+  // so it reaches the same toast.
+  function readClipboardText(): Promise<string> {
+    if (!navigator.clipboard) {
+      return Promise.reject(new Error('clipboard unavailable on this connection'));
+    }
+    return navigator.clipboard.readText();
+  }
+
   function pasteClipboard(): void {
-    navigator.clipboard
-      .readText()
+    readClipboardText()
       .then((text) => {
         // The surface may have unmounted while the clipboard read was in
         // flight; never write into a disposed xterm.
@@ -137,7 +152,14 @@ export function buildTerminal(
   // copies and clears it; without one it pastes. The webview's own context
   // menu is suppressed either way. xterm's own contextmenu listener (on its
   // inner element, so it runs first) only repositions the hidden textarea.
+  //
+  // Not under compact: there a `contextmenu` is the long-press bridge's
+  // synthetic event (utils/longPressContextMenu.ts), and a held finger must
+  // not paste the clipboard into the shell. Nothing is prevented either, so
+  // an unhandled synthetic event is forgotten and the engine keeps its own
+  // touch selection. The key row carries Paste on that layout.
   mount.addEventListener('contextmenu', (event) => {
+    if (isCompactLayout()) return;
     event.preventDefault();
     if (terminal.hasSelection()) copySelection();
     else pasteClipboard();
@@ -224,5 +246,5 @@ export function buildTerminal(
     );
   }
 
-  return { term: terminal, fit: fitAddon };
+  return { term: terminal, fit: fitAddon, paste: pasteClipboard };
 }

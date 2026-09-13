@@ -250,7 +250,8 @@ const AUTHORIZED_SCROLL_PRESENTATION_STATE = [
   'lib/components/chat/ProposedPlanReviewSurface.svelte|transform declaration or keyframe|style={`top: ${pendingSelection.triggerTop}px; left: ${pendingSelection.triggerLeft}px; transform: translate(-50%, -100%);`}',
   "lib/components/chat/ScrollToBottomButton.svelte|Tailwind transform utility|'hover:bg-surface-2/80 hover:text-text-primary hover:scale-105 active:scale-95',",
   "lib/components/chat/TailClampedText.svelte|DOM transform property assignment|inner.style.transform = slideOffset > 0 ? `translateY(${slideOffset}px)` : '';",
-  "lib/components/chat/ThreadTitleRegenerateButton.svelte|continuous spin animation|<Icon icon={RefreshCw} size={12} strokeWidth={2} class={pending ? 'animate-spin' : ''} />",
+  "lib/components/chat/ChatHeaderActions.svelte|continuous spin animation|<Icon icon={RefreshCw} size={12} strokeWidth={2} class={regenerate.pending ? 'animate-spin' : ''} />",
+  "lib/components/chat/ThreadTitleRegenerateButton.svelte|continuous spin animation|<Icon icon={RefreshCw} size={12} strokeWidth={2} class={regenerate.pending ? 'animate-spin' : ''} />",
   'lib/components/chat/TranscriptDisclosureHeader.svelte|Tailwind transform utility|class:rotate-90={expandable && expanded}',
   "lib/components/chat/messageNavRailSync.ts|DOM transform property assignment|strip.style.transform = clip > 0 ? `translateY(${-clip}px)` : '';",
 ] as const;

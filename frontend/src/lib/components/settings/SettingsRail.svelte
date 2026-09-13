@@ -128,7 +128,7 @@
         autocomplete="off"
         spellcheck="false"
         onkeydown={handleSearchKeydown}
-        class="w-full rounded-[var(--radius-control)] border border-border-subtle bg-surface-0/60 py-1.5 pl-8 pr-7 text-[0.75rem] text-fg placeholder:text-fg-hint transition-colors focus:border-border focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        class="w-full rounded-[var(--radius-control)] border border-border-subtle bg-surface-0/60 py-1.5 compact:py-2 pl-8 pr-7 text-[0.75rem] compact:text-base text-fg placeholder:text-fg-hint transition-colors focus:border-border focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
       />
       {#if searching}
         <button
@@ -136,7 +136,7 @@
           onclick={clearQuery}
           aria-label="Clear search"
           data-testid="settings-search-clear"
-          class="absolute right-1.5 top-1/2 flex h-5 w-5 -translate-y-1/2 cursor-pointer items-center justify-center rounded-[var(--radius-field)] text-fg-subtle transition-colors hover:bg-surface-2/40 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          class="absolute right-1.5 top-1/2 flex h-5 w-5 compact:h-9 compact:w-9 compact:right-1 -translate-y-1/2 cursor-pointer items-center justify-center rounded-[var(--radius-field)] text-fg-subtle transition-colors hover:bg-surface-2/40 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
         >
           <Icon icon={X} size={12} strokeWidth={2.5} class="opacity-90" />
         </button>
@@ -202,7 +202,7 @@
               aria-selected={activeSection === section.id}
               aria-controls="settings-panel-{section.id}"
               tabindex={activeSection === section.id ? 0 : -1}
-              class="w-full cursor-pointer rounded-[var(--radius-field)] px-3 py-1 text-left text-[0.8125rem] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40
+              class="w-full cursor-pointer rounded-[var(--radius-field)] px-3 py-1 compact:py-2.5 compact:select-none text-left text-[0.8125rem] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40
                 {activeSection === section.id
                   ? 'bg-accent/10 font-medium text-fg'
                   : 'text-fg-muted hover:bg-surface-2/30 hover:text-fg'}"

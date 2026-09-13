@@ -18,6 +18,7 @@ import { tick } from 'svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { buildPane, makeItem } from '../../../test/helpers/chat';
+import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import type { Item } from '../../types/models';
 import {
@@ -305,6 +306,20 @@ describe('<SubagentGroup> card affordances (agent-visibility)', () => {
     await tick();
 
     expect(calls).toEqual([['thread-1', 'agent:1']]);
+  });
+
+  it('offers no background button without threads:operate on the thread', async () => {
+    await pairViewOnly();
+    try {
+      const { pane, group } = await setup([
+        agentLaunch(),
+        makeItem({ id: 'child:1', itemIndex: 1, parentId: 'agent:1', status: 'running', summary: 'w' }),
+      ]);
+      const { queryByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
+      expect(queryByTestId('subagent-group-background-button')).toBeNull();
+    } finally {
+      resetToLocalPage();
+    }
   });
 
   it('surfaces a background refusal on the card instead of swallowing it', async () => {

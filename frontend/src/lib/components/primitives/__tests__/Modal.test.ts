@@ -1,8 +1,9 @@
 // Modal primitive contract:
 //   - renders only when `open=true`.
 //   - panel is role=dialog + aria-modal=true + aria-labelledby wired.
-//   - Escape on the backdrop calls onClose, unless a popover the dialog
-//     OWNS (anchor chain reaching its panel) is layered over it.
+//   - Escape anywhere in the document calls onClose (focus may have left the
+//     panel), unless a popover the dialog OWNS (anchor chain reaching its
+//     panel) is layered over it, or another dialog is open on top of it.
 //   - backdrop click calls onClose; click inside the panel does not.
 //   - focus trap: Shift+Tab from the first focusable wraps to the last.
 //   - width prop maps to the configured max-w-[] class.
@@ -48,6 +49,53 @@ describe('<Modal>', () => {
     expect(backdrop).toBeTruthy();
     await fireEvent.keyDown(backdrop!, { key: 'Escape' });
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it('closes and claims an Escape dispatched at the body once focus has left the panel', async () => {
+    const onClose = vi.fn();
+    render(Harness, { props: { onClose } });
+    await flushFocus();
+    // A tap on non-focusable dialog content on the phone moves focus to the
+    // body, and the hardware back button dispatches its Escape there.
+    (document.activeElement as HTMLElement | null)?.blur();
+    expect(document.activeElement).toBe(document.body);
+
+    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    document.body.dispatchEvent(event);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('only the dialog on top answers an Escape while two are open', async () => {
+    const closeUnder = vi.fn();
+    const closeOver = vi.fn();
+    const under = render(Harness, { props: { onClose: closeUnder, title: 'Under' } });
+    await flushFocus();
+    const over = render(Harness, { props: { onClose: closeOver, title: 'Over' } });
+    await flushFocus();
+
+    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    document.body.dispatchEvent(event);
+    expect(closeOver).toHaveBeenCalledTimes(1);
+    expect(closeUnder).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(true);
+
+    // With the top one gone, the next press reaches the one underneath.
+    over.unmount();
+    await tick();
+    await fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(closeUnder).toHaveBeenCalledTimes(1);
+    under.unmount();
+  });
+
+  it('stops listening once closed', async () => {
+    const onClose = vi.fn();
+    const { rerender } = render(Harness, { props: { onClose, open: true } });
+    await flushFocus();
+    await rerender({ onClose, open: false });
+    await tick();
+    await fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   // Stand-in for an open Popover: it portals to <body> and carries its

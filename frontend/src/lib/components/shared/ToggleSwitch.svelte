@@ -1,8 +1,10 @@
 <script lang="ts">
-  let { checked, disabled = false, ariaLabel, onToggle }: {
+  let { checked, disabled = false, ariaLabel, title, onToggle }: {
     checked: boolean;
     disabled?: boolean;
     ariaLabel?: string;
+    /** Hover text; a disabled switch uses it to say why. */
+    title?: string;
     onToggle: (value: boolean) => void;
   } = $props();
 
@@ -18,6 +20,7 @@
   role="switch"
   aria-checked={checked}
   aria-label={ariaLabel}
+  {title}
   disabled={disabled}
   onclick={handleToggle}
   class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 disabled:cursor-not-allowed disabled:opacity-50

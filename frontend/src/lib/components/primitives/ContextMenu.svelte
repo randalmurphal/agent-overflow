@@ -17,6 +17,7 @@
   import { onMount, type Snippet } from 'svelte';
   import Menu from './Menu.svelte';
   import { airspaceSurface } from '../../utils/paneAirspace.svelte';
+  import { viewportSize } from '../../utils/viewportSize';
 
   interface Props {
     /** Viewport coordinates of the invoking pointer event. */
@@ -43,8 +44,11 @@
 
   $effect(() => {
     const rect = menuEl?.getBoundingClientRect();
-    const maxX = window.innerWidth - (rect?.width ?? 0) - MARGIN_PX;
-    const maxY = window.innerHeight - (rect?.height ?? 0) - MARGIN_PX;
+    // The visual viewport, not the layout one: with the soft keyboard up a
+    // long-press menu near the bottom would otherwise be clamped under it.
+    const viewport = viewportSize();
+    const maxX = viewport.width - (rect?.width ?? 0) - MARGIN_PX;
+    const maxY = viewport.height - (rect?.height ?? 0) - MARGIN_PX;
     adjustedX = Math.max(MARGIN_PX, Math.min(x, maxX));
     adjustedY = Math.max(MARGIN_PX, Math.min(y, maxY));
   });
@@ -78,8 +82,15 @@
     // Escape anywhere in the document closes the menu. Without it a user
     // who opened via keyboard (or tabbed in) could only leave by picking
     // an action, which violates the WAI-ARIA menu pattern.
+    // Claimed, not merely handled, the way Popover claims it: the phone
+    // shell's hardware back button reads `defaultPrevented` to learn whether
+    // the press was absorbed (`native/lifecycle.ts`). Without the claim one
+    // back press closed the long-press menu AND the thread under it.
     const handleDocKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') onDismiss();
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      e.preventDefault();
+      onDismiss();
     };
     document.addEventListener('pointerdown', handleDocPointerDown, true);
     document.addEventListener('mousedown', handleDocPointer, true);

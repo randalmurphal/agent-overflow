@@ -29,7 +29,7 @@ vi.mock('./plugins', () => ({
   }),
 }));
 
-import { DEFAULT_LOCK_WINDOW_MS, installAppLock, shouldLock } from './lock';
+import { DEFAULT_LOCK_WINDOW_MS, installAppLock, isAppLocked, shouldLock } from './lock';
 
 function fire(event: 'pause' | 'resume'): void {
   const handler = plugins.listeners.get(event);
@@ -59,6 +59,35 @@ describe('shouldLock', () => {
 });
 
 describe('installAppLock', () => {
+  it('publishes the cover state to isAppLocked for the back button', async () => {
+    expect(isAppLocked()).toBe(false);
+    plugins.authenticate.mockImplementation(() => new Promise(() => {}));
+    const lock = await installAppLock();
+    // The cold-start prompt is still up: the cover is on.
+    expect(isAppLocked()).toBe(true);
+    expect(isAppLocked()).toBe(lock.locked());
+    lock.dispose();
+    expect(isAppLocked()).toBe(false);
+
+    plugins.authenticate.mockResolvedValue(undefined);
+    const passed = await installAppLock();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(passed.locked()).toBe(false);
+    expect(isAppLocked()).toBe(false);
+    fire('pause');
+    expect(isAppLocked()).toBe(true);
+    passed.dispose();
+    expect(isAppLocked()).toBe(false);
+  });
+
+  it('never reports locked off the shell', async () => {
+    plugins.nativeShell = false;
+    const lock = await installAppLock();
+    expect(lock.locked()).toBe(false);
+    expect(isAppLocked()).toBe(false);
+  });
+
   it('covers the screen on pause, before any resume can run', async () => {
     const changes: boolean[] = [];
     const lock = await installAppLock({ onChange: (locked) => changes.push(locked) });

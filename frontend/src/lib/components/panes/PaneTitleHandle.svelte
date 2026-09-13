@@ -157,7 +157,7 @@
       disabled={renamePending}
       data-testid={inputTestId}
       aria-label="Rename Thread"
-      class="text-sm font-medium text-fg bg-surface-2/60 rounded-[var(--radius-field)] px-1.5 py-0.5 min-w-0 flex-1 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-60"
+      class="text-sm compact:text-base font-medium text-fg bg-surface-2/60 rounded-[var(--radius-field)] px-1.5 py-0.5 min-w-0 flex-1 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-60"
     />
   {:else}
     <!-- Title is the pane drag-handle. Right-click renames; mousedown + drag
@@ -174,7 +174,7 @@
       data-testid={titleTestId}
       title={`${pane.thread.title} (right-click to rename)`}
       class={[
-        'text-sm font-medium min-w-0 text-left bg-transparent border-none px-1.5 py-0.5 rounded-[var(--radius-field)] text-fg transition-colors hover:bg-surface-2/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
+        'text-sm font-medium min-w-0 text-left bg-transparent border-none px-1.5 py-0.5 compact:py-1.5 compact:select-none rounded-[var(--radius-field)] text-fg transition-colors hover:bg-surface-2/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
         fade ? 'flex-1 overflow-hidden' : 'truncate',
         onPaneDragStart ? 'cursor-grab active:cursor-grabbing' : 'cursor-default',
       ].join(' ')}

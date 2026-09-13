@@ -77,7 +77,7 @@
           <button
             type="button"
             aria-label={`Remove ${attachment.filename}`}
-            class="shrink-0 rounded-full p-0.5 text-text-secondary transition hover:bg-surface-2 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+            class="shrink-0 rounded-full p-0.5 compact:p-2 text-text-secondary transition hover:bg-surface-2 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
             onclick={() => onRemove(attachment.id)}
           >
             <Icon icon={X} size={12} strokeWidth={2.5} />
@@ -111,7 +111,7 @@
           <button
             type="button"
             aria-label={`Remove ${attachment.filename}`}
-            class="absolute right-1 top-1 rounded-full bg-scrim/65 p-0.5 text-scrim-fg opacity-90 transition hover:bg-scrim/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-scrim-fg/70"
+            class="absolute right-1 top-1 rounded-full bg-scrim/65 p-0.5 compact:p-2 text-scrim-fg opacity-90 transition hover:bg-scrim/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-scrim-fg/70"
             onclick={() => onRemove(attachment.id)}
           >
             <Icon icon={X} size={12} strokeWidth={2.5} class="opacity-100" />

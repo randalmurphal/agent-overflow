@@ -264,7 +264,7 @@
               title="Open in review pane"
               aria-label="Open patch in review pane"
               data-testid="tool-result-patch-open-sidebar"
-              class="opacity-0 group-hover/patch:opacity-100 focus-visible:opacity-100 rounded p-1 text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+              class="opacity-0 group-hover/patch:opacity-100 focus-visible:opacity-100 compact:opacity-100 rounded p-1 text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
             >
               <Icon icon={PanelRightOpen} size={14} />
             </button>
@@ -280,7 +280,7 @@
             {:else if expansion.error}
               <p class="text-xs text-error" role="alert">Failed to load patch: {expansion.error}</p>
             {:else if patchLines}
-              <pre class="max-h-[32em] overflow-auto font-mono text-xs leading-tight text-fg {wrapClass}" use:nestedScroll>{#each patchLines as line}<span
+              <pre class="max-h-[32em] compact:max-h-none overflow-auto font-mono text-xs leading-tight text-fg {wrapClass}" use:nestedScroll>{#each patchLines as line}<span
                   class={lineTintClass(line.type)}
                 >{line.content}
 </span>{/each}</pre>
