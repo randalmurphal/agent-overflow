@@ -56,6 +56,13 @@ developer's normal SSH configuration or install a service from a test.
 Playwright's Android API. It is separate from desktop/compact browser projects.
 A zero exit with no attached device is a skip and provides no emulator evidence.
 
+Start the emulator with `e2e/scripts/android-emulator.sh start`, never bare.
+Emulator 37.1 leaks gigabytes of host memory from its adb proxy on every
+Playwright session and has OOM-killed a whole WSL VM; the script contains it
+under a memory cap. Restart the emulator between test batches. The diagnosis,
+the cap rationale and WebView-driving pitfalls are in
+[android-emulator.md](../docs/references/android-emulator.md).
+
 The ordinary smoke may run on a real phone only when the operator explicitly
 sets both `AO_ANDROID_SERIAL` to that device and `AO_ANDROID_HUMAN_LOCK=1`.
 Every case clears Agent Overflow's app data. Human-lock mode must not provision,

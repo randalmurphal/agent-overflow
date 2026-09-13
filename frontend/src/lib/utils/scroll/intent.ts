@@ -188,6 +188,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
   let scrollbarDragSessionFailsafeTimer: ReturnType<typeof setTimeout> | null = null;
   let detachScrollbarDragEnd: (() => void) | undefined;
   let touchStartY: number | null = null;
+  let touchStartX: number | null = null;
   // Baseline so `scrolledDown` can be computed for the re-stick path.
   // Re-stick requires both recent down input and a real downward scroll
   // event landing at the bottom; this baseline keeps layout clamps from
@@ -636,12 +637,21 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
   }
   function handleTouchStart(e: TouchEvent): void {
     touchStartY = e.touches[0]?.clientY ?? null;
+    touchStartX = e.touches[0]?.clientX ?? null;
   }
   function handleTouchMove(e: TouchEvent): void {
     if (touchStartY === null) return;
     const y = e.touches[0]?.clientY ?? touchStartY;
+    const x = e.touches[0]?.clientX ?? touchStartX ?? 0;
     const dy = y - touchStartY;
+    const dx = touchStartX === null ? 0 : x - touchStartX;
     touchStartY = y;
+    touchStartX = x;
+    // A sideways drag pans a nested horizontal box (a wide table, an
+    // unwrapped code block); its vertical jitter is not an intent to leave
+    // the bottom. Both baselines still advance so a gesture that turns
+    // vertical is measured from where it turned.
+    if (Math.abs(dx) > Math.abs(dy)) return;
     const scrollEl = deps.getScrollEl();
     // Same attribution as wheel — a drag inside a nested box moves that box,
     // not this one. The baseline above is still advanced so the gesture
@@ -656,6 +666,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
   }
   function handleTouchEnd(): void {
     touchStartY = null;
+    touchStartX = null;
   }
 
   function attach(el: HTMLElement): void {

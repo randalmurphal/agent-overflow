@@ -361,8 +361,15 @@
       {/if}
       {#if hasBody}
         <div class="ml-5 border-l border-border-subtle bg-surface-0/35 relative">
+          <!-- Lines keep their layout (`whitespace-pre` rows). A line wider
+               than the column pans inside this scroller (app.css pan-x)
+               instead of being clipped by the card. The body sizes to its
+               widest row so row tints span the whole pannable width. The
+               scroller is a separate element so the fade overlay below
+               stays anchored to the card, not to the scrolled content. -->
+          <div class="pan-x" data-testid="diff-file-scroller">
           <div
-            class="font-mono text-xs leading-tight py-1 text-fg"
+            class="font-mono text-xs leading-tight py-1 text-fg w-max min-w-full"
             data-testid="diff-file-body"
             style="--gutter-w: {gutterChars + 1}ch"
           >
@@ -388,6 +395,7 @@
                 </div>
               {/if}
             {/each}
+          </div>
           </div>
 
           {#if isLong || hasMoreDiffContent}

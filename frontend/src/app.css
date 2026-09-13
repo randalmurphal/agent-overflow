@@ -542,6 +542,60 @@ pre, code, kbd, samp, .ansi-body {
 }
 
 /*
+ * Horizontal pan for blocks that can be wider than their column: markdown
+ * tables, unwrapped fenced code and inline diff bodies. `overflow-x: auto`
+ * is inert until the content actually overflows, so a block that fits
+ * renders exactly as before on every layout, and one that does not pans
+ * inside its own box instead of being clipped by the pane. Vertical wheel
+ * and touch input chain through to the pane because the box never
+ * overflows vertically; the timeline intent machine ignores
+ * horizontal-dominant touch drags (utils/scroll/intent.ts) and wheel
+ * events with no vertical delta.
+ *
+ * The edge fade is the affordance on touch, where the bar is invisible
+ * until it moves: a mask whose fade widths follow the box's own horizontal
+ * scroll timeline. The timeline is inactive while the box does not
+ * overflow, so the registered initial values (no fade) apply; an engine
+ * without scroll-driven animations keeps the thin bar and no fade.
+ */
+@property --pan-x-fade-start {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@property --pan-x-fade-end {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@keyframes pan-x-fade {
+  0% { --pan-x-fade-start: 0px; --pan-x-fade-end: 1.5rem; }
+  1%, 99% { --pan-x-fade-start: 1.5rem; --pan-x-fade-end: 1.5rem; }
+  100% { --pan-x-fade-start: 1.5rem; --pan-x-fade-end: 0px; }
+}
+.pan-x,
+.markdown-body [data-streamdown-table],
+.markdown-body .streamdown-code-host[data-code-unwrapped] pre {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    black var(--pan-x-fade-start),
+    black calc(100% - var(--pan-x-fade-end)),
+    transparent 100%
+  );
+  animation: pan-x-fade linear both;
+  animation-timeline: scroll(self x);
+}
+.pan-x::-webkit-scrollbar,
+.markdown-body [data-streamdown-table]::-webkit-scrollbar,
+.markdown-body .streamdown-code-host[data-code-unwrapped] pre::-webkit-scrollbar {
+  height: 6px;
+}
+
+/*
  * Sibling overlays and composited scroll clips can snap to opposite device-
  * pixel edges in WebKit. The opaque extra pixel crosses that seam while the
  * declared depth still measures from the viewport edge to transparent.
@@ -807,6 +861,16 @@ input[type="search"]::-webkit-search-cancel-button {
   border-radius: 0;
   font-size: inherit;
 }
+/* Per-block unwrap (the code host's overlay toggle): long lines keep their
+   layout and the pre pans horizontally (see the pan-x rules above). The
+   inner code element carries the inline-code wrap rules above, so it is
+   unwrapped too. */
+.markdown-body .streamdown-code-host[data-code-unwrapped] pre,
+.markdown-body .streamdown-code-host[data-code-unwrapped] pre code {
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
+}
 .markdown-body blockquote {
   border-left: 3px solid var(--border);
   padding-left: 0.75rem;
@@ -834,7 +898,8 @@ input[type="search"]::-webkit-search-cancel-button {
      to ~1ch — which starves narrow columns (#, Sev) and splits short values
      mid-token. `break-word` keeps min-content at the longest word so columns
      size to their content, while still breaking truly overlong tokens as a
-     last resort (no horizontal scrollbar). `word-break` is omitted on
+     last resort; a table whose columns still cannot fit pans inside its
+     wrapper (pan-x rules above). `word-break` is omitted on
      purpose: its legacy `break-word` value re-introduces the anywhere
      collapse in some engines. Inline code keeps `anywhere` (above) so long
      code tokens still wrap rather than force column width. */
@@ -850,12 +915,12 @@ input[type="search"]::-webkit-search-cancel-button {
 
 /*
  * Streamdown wraps tables in a dedicated container (`[data-streamdown-table]`).
- * Keep it constrained to the markdown width and wrap cell contents instead of
- * introducing a nested horizontal scroller.
+ * It is constrained to the markdown width; cells wrap first, and only a table
+ * whose min-content width still exceeds the column pans inside the container
+ * (the pan-x rules above own the scroller and its fade).
  */
 .markdown-body [data-streamdown-table] {
   max-width: 100%;
-  overflow-x: visible;
 }
 
 .markdown-body [data-streamdown-table] table {

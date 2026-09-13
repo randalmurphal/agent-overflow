@@ -5,6 +5,8 @@ import ChatMarkdown from './ChatMarkdown.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { CHAT_MARKDOWN_SETTLED_CONTEXT } from './markdownSettledContext';
 import { resetCodeSpanCacheForTest } from './markdown/codeSpanCache';
+import { isCodeBlockUnwrapped, resetCodeWrapStateForTest } from './markdown/codeWrapState';
+import { installDiagnosticsCapture } from '../../../test/helpers/diagnostics';
 import {
   __resetStreamdownCodeHostForTest,
   __streamdownCodeHostStatsForTest,
@@ -40,6 +42,7 @@ function keywordSpans() {
 beforeEach(() => {
   resetCodeSpanCacheForTest();
   resetLiveCodeSeedsForTest();
+  resetCodeWrapStateForTest();
   __resetStreamdownCodeHostForTest();
   setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
   setBindingMock('HighlightClassNames', async () => ['none', 'keyword', 'string']);
@@ -533,6 +536,105 @@ describe('<ChatMarkdown> code-block spans', () => {
     } finally {
       error.mockRestore();
     }
+  });
+
+  it('unwraps a settled block through the delegated toggle and remembers the choice by content', async () => {
+    setBindingMock('HighlightCode', async () => keywordSpans());
+    const { container } = render(ChatMarkdown, {
+      props: { source: '```python\n' + SOURCE + '\n```', pathRefs: [] },
+    });
+    const button = await waitFor(() => {
+      const found = container.querySelector<HTMLButtonElement>('button[data-static-code-wrap]');
+      expect(found).not.toBeNull();
+      return found!;
+    });
+    const host = container.querySelector('.streamdown-code-host')!;
+    expect(host.hasAttribute('data-code-unwrapped')).toBe(false);
+    expect(button.getAttribute('aria-label')).toBe('Unwrap lines');
+
+    await fireEvent.click(button);
+    expect(host.hasAttribute('data-code-unwrapped')).toBe(true);
+    expect(button.getAttribute('aria-label')).toBe('Wrap lines');
+    expect(button.title).toBe('Wrap lines');
+    expect(isCodeBlockUnwrapped('python', SOURCE)).toBe(true);
+
+    // A remount of the same block (virtualizer, settle rerender) renders
+    // from the span cache without a host and keeps the choice.
+    const again = render(ChatMarkdown, {
+      props: { source: '```python\n' + SOURCE + '\n```', pathRefs: [] },
+    });
+    const remounted = await waitFor(() => {
+      const found = again.container.querySelector('.streamdown-code-host');
+      expect(found?.querySelector('button[data-static-code-wrap]')).not.toBeNull();
+      return found!;
+    });
+    expect(remounted.hasAttribute('data-code-unwrapped')).toBe(true);
+    expect(
+      remounted.querySelector('button[data-static-code-wrap]')?.getAttribute('aria-label'),
+    ).toBe('Wrap lines');
+
+    await fireEvent.click(button);
+    expect(host.hasAttribute('data-code-unwrapped')).toBe(false);
+    expect(isCodeBlockUnwrapped('python', SOURCE)).toBe(false);
+  });
+
+  it('carries a live host unwrap into the static block it retires to', async () => {
+    let resolveHighlight!: (value: ReturnType<typeof keywordSpans>) => void;
+    setBindingMock(
+      'HighlightCode',
+      () => new Promise((resolve) => {
+        resolveHighlight = resolve;
+      }),
+    );
+    const { container } = render(ChatMarkdown, {
+      props: { source: '```python\n' + SOURCE + '\n```', pathRefs: [] },
+    });
+    const liveButton = await waitFor(() => {
+      const found = container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Unwrap lines"]:not([data-static-code-wrap])',
+      );
+      expect(found).not.toBeNull();
+      return found!;
+    });
+    await fireEvent.click(liveButton);
+    await waitFor(() => {
+      expect(container.querySelector('.streamdown-code-host')?.hasAttribute('data-code-unwrapped')).toBe(true);
+    });
+    expect(liveButton.getAttribute('aria-label')).toBe('Wrap lines');
+
+    await waitFor(() => expect(resolveHighlight).toBeTypeOf('function'));
+    resolveHighlight(keywordSpans());
+    const staticButton = await waitFor(() => {
+      const found = container.querySelector<HTMLButtonElement>('button[data-static-code-wrap]');
+      expect(found).not.toBeNull();
+      return found!;
+    });
+    const host = container.querySelector('.streamdown-code-host')!;
+    expect(host.hasAttribute('data-code-unwrapped')).toBe(true);
+    expect(staticButton.getAttribute('aria-label')).toBe('Wrap lines');
+    expect(isCodeBlockUnwrapped('python', SOURCE)).toBe(true);
+  });
+
+  describe('delegated wrap toggle diagnostics', () => {
+    const diagnostics = installDiagnosticsCapture();
+
+    it('reports an incomplete host instead of flipping it silently', async () => {
+      const { container } = render(ChatMarkdown, {
+        props: { source: '```\nsource\n```', pathRefs: [] },
+      });
+      const button = await waitFor(() => {
+        const found = container.querySelector<HTMLButtonElement>('button[data-static-code-wrap]');
+        expect(found).not.toBeNull();
+        return found!;
+      });
+      container.querySelector('.streamdown-code-host pre')?.remove();
+      await fireEvent.click(button);
+
+      expect(await diagnostics.messages()).toContain('[static-code-wrap] handler failed');
+      expect(diagnostics.warnings().some((w) => w.includes('[static-code-wrap]'))).toBe(true);
+      expect(container.querySelector('.streamdown-code-host')?.hasAttribute('data-code-unwrapped')).toBe(false);
+      expect(button.getAttribute('aria-label')).toBe('Unwrap lines');
+    });
   });
 
   it('settled code keeps no per-line Svelte control nodes', async () => {

@@ -112,6 +112,7 @@ export default defineConfig({
             '@testing-library/svelte',
             '@lucide/svelte/icons/circle',
             '@lucide/svelte/icons/circle-check',
+            '@lucide/svelte/icons/text-wrap',
           ],
           entries: [
             'src/**/*.browser.{test,spec}.{ts,js}',

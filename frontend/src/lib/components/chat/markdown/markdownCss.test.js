@@ -14,9 +14,36 @@ describe('markdown CSS', () => {
     expect(appCss).toMatch(/\.markdown-body\s+pre\s*\{[^}]*overflow-x:\s*visible;/s);
   });
 
+  it('pans wide blocks inside their own box instead of clipping them', () => {
+    // One rule owns the scroller for every block that can be wider than its
+    // column: the table wrapper, an unwrapped code pre, and `.pan-x` hosts
+    // (inline diff bodies). `overflow-x: auto` is inert until content
+    // overflows, so nothing changes for a block that fits.
+    const panRule = /\.pan-x,\s*\n\.markdown-body\s+\[data-streamdown-table\],\s*\n\.markdown-body\s+\.streamdown-code-host\[data-code-unwrapped\]\s+pre\s*\{([^}]*)\}/s;
+    expect(appCss).toMatch(panRule);
+    const body = appCss.match(panRule)[1];
+    expect(body).toMatch(/overflow-x:\s*auto;/);
+    expect(body).toMatch(/overscroll-behavior-x:\s*contain;/);
+    expect(body).toMatch(/scrollbar-width:\s*thin;/);
+    // The edge fade follows the box's own horizontal scroll timeline, so it
+    // is absent while nothing overflows and flips sides at the far edge.
+    expect(body).toMatch(/mask-image:\s*linear-gradient\(/);
+    expect(body).toMatch(/animation-timeline:\s*scroll\(self x\);/);
+    expect(appCss).toMatch(/@keyframes pan-x-fade\s*\{/);
+    // Unwrapped code keeps line layout: no wrapping of any kind, on the pre
+    // AND on the inner code element (which otherwise inherits the inline
+    // code wrap rules).
+    const unwrapRule = /\.markdown-body\s+\.streamdown-code-host\[data-code-unwrapped\]\s+pre,\s*\n\.markdown-body\s+\.streamdown-code-host\[data-code-unwrapped\]\s+pre code\s*\{([^}]*)\}/s;
+    expect(appCss).toMatch(unwrapRule);
+    const unwrapBody = appCss.match(unwrapRule)[1];
+    expect(unwrapBody).toMatch(/white-space:\s*pre;/);
+    expect(unwrapBody).toMatch(/overflow-wrap:\s*normal;/);
+    expect(unwrapBody).toMatch(/word-break:\s*normal;/);
+  });
+
   it('wraps Streamdown tables within the markdown width', () => {
     expect(appCss).toMatch(/\.markdown-body\s+\[data-streamdown-table\]\s*\{[^}]*max-width:\s*100%;/s);
-    expect(appCss).toMatch(/\.markdown-body\s+\[data-streamdown-table\]\s*\{[^}]*overflow-x:\s*visible;/s);
+    expect(appCss).not.toMatch(/\.markdown-body\s+\[data-streamdown-table\]\s*\{[^}]*overflow-x:\s*visible;/s);
     expect(appCss).toMatch(/\.markdown-body\s+\[data-streamdown-table\]\s+table\s*\{[^}]*display:\s*table;/s);
     expect(appCss).toMatch(/\.markdown-body\s+\[data-streamdown-table\]\s+table\s*\{[^}]*overflow:\s*visible;/s);
     expect(appCss).toMatch(/\.markdown-body\s+\[data-streamdown-table\]\s+table\s*\{[^}]*table-layout:\s*auto;/s);

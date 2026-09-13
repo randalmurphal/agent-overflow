@@ -1,9 +1,11 @@
 import type { Tokens } from '../../../markdown';
 import { addToast } from '../../../stores/toast.svelte';
 import { copyToClipboard, reportCopyFailure } from '../../../utils/clipboard';
+import { reportFrontendDiagnostic } from '../../../utils/frontendErrorCapture';
 import { maskSpriteRef } from '../../../utils/maskSprite';
 import { spanSegments, type EncodedLine } from '../../../utils/syntaxSpans';
 import { getCachedBlockSpans } from './codeSpanCache';
+import { isCodeBlockUnwrapped, setCodeBlockUnwrapped } from './codeWrapState';
 
 type StreamdownContext = ReturnType<
   (typeof import('../../../markdown'))['useStreamdown']
@@ -74,6 +76,11 @@ export function codeFenceInfoWord(lang: string): string {
   return lang;
 }
 
+/** Overlay toggle label: the action it performs from the current state. */
+export function codeWrapLabel(unwrapped: boolean): string {
+  return unwrapped ? 'Wrap lines' : 'Unwrap lines';
+}
+
 const COPY_BUTTON_CLASS = [
   'inline-flex items-center justify-center rounded-md text-text-secondary',
   'transition-colors cursor-pointer hover:text-text-primary',
@@ -82,8 +89,9 @@ const COPY_BUTTON_CLASS = [
   'disabled:hover:text-text-secondary h-7 w-7 bg-transparent hover:bg-surface-2/60',
 ].join(' ');
 
-const CODE_COPY_OVERLAY_CLASS = [
-  'absolute top-1 right-1 z-10 opacity-0 transition-opacity duration-150 ease-out',
+const CODE_OVERLAY_CLASS = [
+  'absolute top-1 right-1 z-10 flex items-center gap-0.5',
+  'opacity-0 transition-opacity duration-150 ease-out',
   'group-hover/codeblock:opacity-100 focus-within:opacity-100',
 ].join(' ');
 
@@ -121,10 +129,29 @@ function checkIconRef(): string {
   );
 }
 
+function wrapIconRef(): string {
+  return maskSpriteRef(
+    'static-code-wrap',
+    24,
+    24,
+    'fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"',
+    '<path d="m16 16-3 3 3 3"/>' +
+      '<path d="M3 12h14.5a1 1 0 0 1 0 7H13"/>' +
+      '<path d="M3 19h6"/>' +
+      '<path d="M3 5h18"/>',
+  );
+}
+
 function copyIconHtml(): string {
   return '<span aria-hidden="true" data-static-code-copy-icon' +
     attribute('style', `width:13px;height:13px;--mask-icon:${copyIconRef()}`) +
     ' class="lucide-icon lucide lucide-copy inline-block shrink-0 opacity-80"></span>';
+}
+
+function wrapIconHtml(): string {
+  return '<span aria-hidden="true"' +
+    attribute('style', `width:13px;height:13px;--mask-icon:${wrapIconRef()}`) +
+    ' class="lucide-icon lucide lucide-text-wrap inline-block shrink-0 opacity-80"></span>';
 }
 
 /**
@@ -140,6 +167,7 @@ export function renderStaticCodeBlockHtml(
   streamdown: StreamdownContext,
   lines: readonly string[],
   lineSpans: (index: number) => EncodedLine | null,
+  unwrapped: boolean,
 ): string {
   const code: string[] = [];
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
@@ -157,8 +185,10 @@ export function renderStaticCodeBlockHtml(
     }
   }
 
+  const wrapLabel = codeWrapLabel(unwrapped);
   return '<div class="streamdown-code-host group/codeblock relative" data-code-source=""' +
     attribute('data-code-lang', token.lang ?? '') +
+    (unwrapped ? ' data-code-unwrapped=""' : '') +
     '><div' +
       attribute('data-streamdown-code', id) +
       attribute('class', streamdown.theme.code.base) +
@@ -167,7 +197,13 @@ export function renderStaticCodeBlockHtml(
     '><pre' + attribute('class', streamdown.theme.code.pre) + '><code>' +
       code.join('') +
     '</code></pre></div></div>' +
-    '<div' + attribute('class', CODE_COPY_OVERLAY_CLASS) + '>' +
+    '<div' + attribute('class', CODE_OVERLAY_CLASS) + '>' +
+      '<button type="button"' +
+        attribute('aria-label', wrapLabel) + attribute('title', wrapLabel) +
+        attribute('class', COPY_BUTTON_CLASS) +
+        ' data-icon-button data-static-code-wrap>' +
+        wrapIconHtml() +
+      '</button>' +
       '<button type="button" aria-label="Copy code" title="Copy code"' +
         attribute('class', COPY_BUTTON_CLASS) +
         ' data-icon-button data-static-code-copy>' +
@@ -207,10 +243,11 @@ export function renderCachedStaticCodeBlockHtml(
     streamdown,
     lines,
     (index) => spans?.[index] ?? null,
+    isCodeBlockUnwrapped(lang, token.text),
   );
 }
 
-let copyDelegateInstalled = false;
+let delegateInstalled = false;
 const copyResetTimers = new WeakMap<HTMLButtonElement, ReturnType<typeof setTimeout>>();
 
 function reportStaticCodeCopyFailure(error: unknown): void {
@@ -218,13 +255,13 @@ function reportStaticCodeCopyFailure(error: unknown): void {
   addToast('error', 'Failed to copy');
 }
 
-function codeCopyButtonFor(target: EventTarget | null): HTMLButtonElement | null {
+function codeButtonFor(target: EventTarget | null, selector: string): HTMLButtonElement | null {
   const element = target instanceof Element
     ? target
     : target instanceof Node
       ? target.parentElement
       : null;
-  return element?.closest<HTMLButtonElement>('button[data-static-code-copy]') ?? null;
+  return element?.closest<HTMLButtonElement>(selector) ?? null;
 }
 
 function setCopiedState(button: HTMLButtonElement, copied: boolean): void {
@@ -241,7 +278,7 @@ function setCopiedState(button: HTMLButtonElement, copied: boolean): void {
 }
 
 async function handleStaticCodeCopy(event: MouseEvent): Promise<void> {
-  const button = codeCopyButtonFor(event.target);
+  const button = codeButtonFor(event.target, 'button[data-static-code-copy]');
   if (!button) return;
   const host = button.closest<HTMLElement>('.streamdown-code-host');
   const code = host?.querySelector('pre > code');
@@ -276,11 +313,44 @@ async function handleStaticCodeCopy(event: MouseEvent): Promise<void> {
   copyResetTimers.set(button, timer);
 }
 
-/** One document listener replaces one Svelte CopyButton instance per fence. */
-export function ensureStaticCodeCopyDelegate(): void {
-  if (copyDelegateInstalled) return;
+/**
+ * Flips one settled block between wrapped and unwrapped. The DOM attribute
+ * drives the cascade for this mount; the keyed record survives retirement
+ * and virtualizer remounts (see codeWrapState.ts). The code element's
+ * textContent equals the fence source by the copy contract, so it is the
+ * source for the key.
+ */
+function handleStaticCodeWrap(event: MouseEvent): void {
+  const button = codeButtonFor(event.target, 'button[data-static-code-wrap]');
+  if (!button) return;
+  const host = button.closest<HTMLElement>('.streamdown-code-host');
+  const code = host?.querySelector('pre > code');
+  if (!host || !code) {
+    // Console line paired with the report: a non-loopback session cannot
+    // persist diagnostics, so the console is then the only evidence.
+    console.warn('[static-code-wrap] handler failed: code host is incomplete');
+    reportFrontendDiagnostic('[static-code-wrap] handler failed', 'code host is incomplete');
+    addToast('error', 'Failed to change line wrapping');
+    return;
+  }
+  const next = !host.hasAttribute('data-code-unwrapped');
+  host.toggleAttribute('data-code-unwrapped', next);
+  const label = codeWrapLabel(next);
+  button.setAttribute('aria-label', label);
+  button.title = label;
+  setCodeBlockUnwrapped(
+    codeFenceInfoWord(host.dataset.codeLang ?? ''),
+    code.textContent ?? '',
+    next,
+  );
+}
+
+/** One document listener replaces one Svelte button pair per settled fence. */
+export function ensureStaticCodeDelegate(): void {
+  if (delegateInstalled) return;
   document.addEventListener('click', (event) => {
+    handleStaticCodeWrap(event);
     void handleStaticCodeCopy(event).catch(reportStaticCodeCopyFailure);
   });
-  copyDelegateInstalled = true;
+  delegateInstalled = true;
 }

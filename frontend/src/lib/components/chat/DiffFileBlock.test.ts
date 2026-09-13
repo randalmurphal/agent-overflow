@@ -232,7 +232,7 @@ describe('<DiffFileBlock>', () => {
     expect(getByTestId('diff-file-path').textContent).toBe('src/old.ts → src/new.ts');
   });
 
-  it('renders the body without scroll containers (no max-height, no overflow scroll)', () => {
+  it('renders the body without vertical scroll containers (no max-height, no overflow scroll)', () => {
     const file = makePatchFile();
     const { getByTestId } = render(DiffFileBlock, {
       props: { file, threadId: 'thread-1' },
@@ -241,6 +241,21 @@ describe('<DiffFileBlock>', () => {
     const cls = body.className;
     expect(cls).not.toMatch(/max-h/);
     expect(cls).not.toMatch(/overflow-(auto|scroll|y-auto|y-scroll)/);
+    expect(getByTestId('diff-file-scroller').className).not.toMatch(/max-h|overflow-y/);
+  });
+
+  it('pans a wide line inside the card instead of clipping it', () => {
+    const file = makePatchFile();
+    const { getByTestId } = render(DiffFileBlock, {
+      props: { file, threadId: 'thread-1' },
+    });
+    // The scroller carries the shared pan-x rule (app.css); the body sizes
+    // to its widest row so row tints span the pannable width.
+    const scroller = getByTestId('diff-file-scroller');
+    expect(scroller.className.split(/\s+/)).toContain('pan-x');
+    const body = getByTestId('diff-file-body');
+    expect(body.parentElement).toBe(scroller);
+    expect(body.className.split(/\s+/)).toEqual(expect.arrayContaining(['w-max', 'min-w-full']));
   });
 
   it('renders the full body when the file is at the inline preview cap', () => {

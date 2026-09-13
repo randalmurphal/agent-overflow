@@ -35,7 +35,8 @@ function normalizeElement(root: Element): NormalizedElement {
     // delegate. These markers express ownership, not rendered semantics.
     .filter(({ name }) =>
       name !== 'data-static-code-copy' &&
-      name !== 'data-static-code-copy-icon'
+      name !== 'data-static-code-copy-icon' &&
+      name !== 'data-static-code-wrap'
     )
     .map(({ name, value }): [string, string] => [
       name,

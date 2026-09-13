@@ -138,8 +138,10 @@ export const chatMarkdownTheme: Theme = {
   table: {
     // No outer border / rounded shell — definition comes from the header bg
     // plus the per-row separators below. `border-border-subtle` for the same
-    // width-vs-color reason as `code.base`.
-    base: 'md-blk overflow-visible max-w-full my-3 border-0 border-border-subtle rounded-none',
+    // width-vs-color reason as `code.base`. `overflow-x-auto` agrees with the
+    // app.css pan-x rule that owns the wrapper: a table whose columns cannot
+    // fit pans inside it instead of being clipped by the pane.
+    base: 'md-blk overflow-x-auto max-w-full my-3 border-0 border-border-subtle rounded-none',
     // table-auto (not fixed): app.css `.markdown-body … table` already forces
     // table-layout:auto via higher specificity, so `table-fixed` here was a
     // silently-overridden no-op. Keep them in agreement — columns size to

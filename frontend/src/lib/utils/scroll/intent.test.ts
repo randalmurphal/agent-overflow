@@ -134,10 +134,10 @@ function key(target: Element, k: string): void {
   target.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: k }));
 }
 
-function touch(target: Element, type: string, clientY: number): void {
+function touch(target: Element, type: string, clientY: number, clientX = 0): void {
   const event = new Event(type, { bubbles: true });
   Object.defineProperty(event, 'touches', {
-    value: [{ clientY }],
+    value: [{ clientY, clientX }],
   });
   target.dispatchEvent(event);
 }
@@ -415,6 +415,27 @@ describe('touch', () => {
     touch(h.scrollEl, 'touchmove', 140);
 
     expect(h.state.escaped).toBe(false);
+  });
+
+  it('a sideways drag (panning a wide block) does not escape on its vertical jitter', () => {
+    const h = build();
+
+    touch(h.child, 'touchstart', 100, 100);
+    touch(h.child, 'touchmove', 104, 160);
+    touch(h.child, 'touchmove', 107, 220);
+
+    expect(h.state.escaped).toBe(false);
+  });
+
+  it('a drag that turns vertical escapes from where it turned', () => {
+    const h = build();
+
+    touch(h.child, 'touchstart', 100, 100);
+    touch(h.child, 'touchmove', 102, 160);
+    expect(h.state.escaped).toBe(false);
+    touch(h.child, 'touchmove', 140, 165);
+
+    expect(h.state.escaped).toBe(true);
   });
 });
 

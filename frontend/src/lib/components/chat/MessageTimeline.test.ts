@@ -556,7 +556,9 @@ describe('<MessageTimeline>', () => {
 
     const tableWrapper = container.querySelector('[data-streamdown-table]');
     expect(tableWrapper).not.toBeNull();
-    expect(tableWrapper).toHaveClass('overflow-visible');
+    // The wrapper pans a table whose columns cannot fit (app.css pan-x);
+    // `overflow-x: auto` is inert for a table that wraps within the width.
+    expect(tableWrapper).toHaveClass('overflow-x-auto');
     expect(tableWrapper).toHaveClass('max-w-full');
     expect(tableWrapper?.querySelector('table')).not.toBeNull();
   });

@@ -70,8 +70,11 @@ No Android device or emulator is attached, so the shell smoke is skipped.
 To run it:
   $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "system-images;android-36;google_apis;$abi"
   $ANDROID_HOME/cmdline-tools/latest/bin/avdmanager create avd -n ao -k "system-images;android-36;google_apis;$abi"
-  $ANDROID_HOME/emulator/emulator -avd ao &
+  e2e/scripts/android-emulator.sh start
   make apk && make e2e-android
+
+Start the emulator through the script, not bare: emulator 37.1 leaks host
+memory per adb session and the script caps it (docs/references/android-emulator.md).
 MSG
   exit 0
 fi

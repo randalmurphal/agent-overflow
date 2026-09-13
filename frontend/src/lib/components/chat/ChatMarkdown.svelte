@@ -75,7 +75,7 @@
     restoreStreamingAssistantSelection,
     type StreamingAssistantSelectionSnapshot,
   } from './markdown/streamingAssistantSelection';
-  import { ensureStaticCodeCopyDelegate } from './markdown/staticCodeBlock';
+  import { ensureStaticCodeDelegate } from './markdown/staticCodeBlock';
   import { registerFootnoteSource } from './markdown/footnoteDefinitions';
   import type { PathRef } from '../../types/models';
   import { StreamingBoundarySplitter } from '../../markdown/boundary';
@@ -168,7 +168,7 @@
   $effect(() => {
     ensureMarkdownCopyDelegate();
     ensurePathLinkClickDelegate();
-    ensureStaticCodeCopyDelegate();
+    ensureStaticCodeDelegate();
   });
 
   // Marked inline extension derived from the validated allowlist. The

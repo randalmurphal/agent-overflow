@@ -207,6 +207,13 @@ and anti-changes that live only here:
   `defaultOrigin` to Streamdown.
 - Voice dictation: not built; the researched options and their auth
   constraints are in `docs/references/voice-dictation.md`.
+- Wide blocks pan inside their own box on every layout: markdown tables,
+  inline diff bodies and unwrapped fenced code scroll horizontally only
+  when they overflow (the `pan-x` rules in `frontend/src/app.css`), with
+  an edge fade as the touch affordance. Nothing is clipped by the pane and
+  nothing changes for a block that fits. Fenced code wraps by default; the
+  block overlay toggles unwrap per block, recorded by content identity so
+  it survives retirement and remounts.
 - Rejected from the t3-code survey, do not re-propose: hard steer, codex
   shadow homes, workspace file browser, changed-files card, global word
   wrap (per-block opt-in only), top-edge fade, favicon fetching, settled

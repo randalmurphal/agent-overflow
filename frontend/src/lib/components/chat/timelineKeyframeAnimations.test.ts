@@ -71,8 +71,14 @@ const APP_CSS = resolve(CHAT_DIR, '../../../app.css');
  * animate — they resolve as UNKNOWN and fail closed into the allowlist. */
 const TAILWIND_ANIMATE_UTILITIES = ['spin', 'ping', 'bounce', 'pulse'];
 
-/** The one property an animation inside the scroller may touch. */
-const PAINT_ONLY = 'opacity';
+/** Properties an animation inside the scroller may touch: they move light,
+ * never geometry. `opacity` is the general case. The two `--pan-x-fade-*`
+ * lengths are consumed only by the pan-x edge-fade `mask-image` (app.css):
+ * a mask changes what is painted, not where anything sits, and that
+ * animation is driven by the box's own horizontal scroll timeline rather
+ * than by time, so it ticks only while the reader pans that box sideways
+ * and never holds a begin-frame open on its own. */
+const PAINT_ONLY = new Set(['opacity', '--pan-x-fade-start', '--pan-x-fade-end']);
 
 const OUTSIDE_SCROLLER_ALLOWLIST: Record<string, Record<string, string>> = {
   'ThreadTitleRegenerateButton.svelte': {
@@ -245,7 +251,7 @@ describe('timeline keyframe animations', () => {
           offenders.push(`${file}: ${hit} (keyframes not in app.css — cannot tell what it animates)`);
           continue;
         }
-        const moving = [...properties].filter((property) => property !== PAINT_ONLY);
+        const moving = [...properties].filter((property) => !PAINT_ONLY.has(property));
         if (moving.length > 0) offenders.push(`${file}: ${hit} animates ${moving.join(', ')}`);
       }
     }

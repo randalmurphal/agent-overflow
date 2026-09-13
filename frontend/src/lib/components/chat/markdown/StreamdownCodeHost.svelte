@@ -121,7 +121,10 @@
   } from '../../../markdown';
   import type { Tokens } from '../../../markdown';
   import { onDestroy, onMount, untrack } from 'svelte';
+  import TextWrap from '@lucide/svelte/icons/text-wrap';
   import CopyButton from '../../primitives/CopyButton.svelte';
+  import Icon from '../../primitives/Icon.svelte';
+  import IconButton from '../../primitives/IconButton.svelte';
   import { addToast } from '../../../stores/toast.svelte';
   import { spanSegments } from '../../../utils/syntaxSpans';
   import {
@@ -134,9 +137,11 @@
   import {
     clearCompletedCodeBlockRenderer,
     codeFenceInfoWord,
+    codeWrapLabel,
     publishCompletedCodeBlockRenderer,
     renderStaticCodeBlockHtml,
   } from './staticCodeBlock';
+  import { isCodeBlockUnwrappedByKey, setCodeBlockUnwrappedByKey } from './codeWrapState';
   import { liveCodeSeedGeneration, matchLiveCodeSeed } from './liveCodeSeeds.svelte';
 
   let {
@@ -173,6 +178,17 @@
   let sourceIdentity = createCodeSourceIdentity(initialText);
   let lines = $state(initialText.split('\n'));
   let codeRoot = $state<HTMLElement>();
+  // Per-block wrap choice. Seeded from the keyed record so a remounted or
+  // re-rendered block keeps the reader's choice; the toggle records the
+  // CURRENT identity, and the completed renderer reads this state when the
+  // island retires, so a choice made on a still-streaming block also lands
+  // in its static HTML.
+  let unwrapped = $state(isCodeBlockUnwrappedByKey(renderedLang, sourceIdentity.contentKey));
+
+  function toggleWrap(): void {
+    unwrapped = !unwrapped;
+    setCodeBlockUnwrappedByKey(highlightLang, sourceIdentity.contentKey, unwrapped);
+  }
   const completedRendererOwner = {};
   let documentInteraction: DocumentInteraction | undefined;
   let pendingAdoption: {
@@ -326,13 +342,17 @@
     const staticLineSpans = settledSpans === undefined
       ? lineSpans
       : (index: number): EncodedLine | null => settledSpans?.[index] ?? null;
+    // A choice made while the block was still streaming was recorded under
+    // an earlier identity; record it under the final one so a remount from
+    // the span cache (no host) renders it the same way.
+    if (unwrapped) setCodeBlockUnwrappedByKey(lang, sourceIdentity.contentKey, true);
     publishCompletedCodeBlockRenderer(
       completedRendererOwner,
       streamdown,
       lang,
       text,
       (staticID) =>
-        renderStaticCodeBlockHtml(token, staticID, streamdown, lines, staticLineSpans),
+        renderStaticCodeBlockHtml(token, staticID, streamdown, lines, staticLineSpans, unwrapped),
     );
     streamdown.requestStaticRetry();
   }
@@ -567,6 +587,7 @@
   class="streamdown-code-host group/codeblock relative"
   data-code-source=""
   data-code-lang={token.lang ?? ''}
+  data-code-unwrapped={unwrapped ? '' : undefined}
 >
   <div
     data-streamdown-code={id}
@@ -579,9 +600,16 @@
     </div>
   </div>
 
+  <!-- Keep in step with CODE_OVERLAY_CLASS in staticCodeBlock.ts: the settled
+       block renders the same overlay as static HTML. -->
   <div
-    class="absolute top-1 right-1 z-10 opacity-0 transition-opacity duration-150 ease-out group-hover/codeblock:opacity-100 focus-within:opacity-100"
+    class="absolute top-1 right-1 z-10 flex items-center gap-0.5 opacity-0 transition-opacity duration-150 ease-out group-hover/codeblock:opacity-100 focus-within:opacity-100"
   >
+    <IconButton label={codeWrapLabel(unwrapped)} size="sm" onClick={toggleWrap}>
+      {#snippet children()}
+        <Icon icon={TextWrap} size={13} />
+      {/snippet}
+    </IconButton>
     <CopyButton
       text={token.text}
       label="Copy code"
