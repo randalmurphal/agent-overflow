@@ -157,6 +157,22 @@
         />
       </SettingsField>
 
+      <!-- Not a kind: a narrowing of the kinds above for threads the sidebar
+           does not list. Off by default, unlike every row above it, because a
+           thread you cannot click is not worth an interruption until you say
+           so. -->
+      <SettingsField
+        id="notifications.hidden-threads"
+        label="Threads not in the sidebar"
+        hint="Workflow threads and other threads the sidebar does not list. Off keeps them silent even when their kind is on."
+      >
+        <ToggleSwitch
+          checked={settings.notifyHiddenThreads}
+          ariaLabel="Toggle notifications for threads not in the sidebar"
+          onToggle={(value) => updateSetting('notifyHiddenThreads', value)}
+        />
+      </SettingsField>
+
       <!-- The second stack, headed rather than sectioned: it belongs to the
            same question the toggles above answer, one step further in, and
            the phone-push block stays at the foot of the whole thing. -->

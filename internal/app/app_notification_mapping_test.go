@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/provideraccountapp"
 	"agent-overflow/internal/providerstatus"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/triage"
 )
 
@@ -492,20 +493,145 @@ func TestARetractionIsNeverSuppressed(t *testing.T) {
 	}
 }
 
-// TestAThreadWithNoRowStillNotifies: the title read is best-effort, and a
-// turn the user is waiting on is worth a generic heading.
-func TestAThreadWithNoRowStillNotifies(t *testing.T) {
+// hiddenThreads writes the opt-in for threads the sidebar does not list onto
+// the backend machine's own screen, which is the screen the gate reads.
+func hiddenThreads(t *testing.T, app *App, on bool) {
+	t.Helper()
+	if _, err := app.settings.BackendScreen().Update(map[string]any{
+		"notifyHiddenThreads": on,
+	}); err != nil {
+		t.Fatalf("update hidden-threads setting: %v", err)
+	}
+}
+
+// TestAThreadWithNoRowIsNotInTheSidebar: a thread that is gone, or one that
+// was never persisted (an agent's ephemeral question), is one the sidebar
+// cannot show, so it is judged by the hidden-thread opt-in. With it on, the
+// title read is still best-effort and the notification carries the generic
+// heading.
+func TestAThreadWithNoRowIsNotInTheSidebar(t *testing.T) {
 	app, recorder := newNotificationMappingApp(t)
-	sends := settled(t, app, recorder, func() {
+	completed := func() {
 		app.emit(eventchan.ProviderTurnCompleted, triage.TurnCompletedEvent{
 			ThreadID: "thread-that-was-deleted", CountsAsActivity: true,
 		})
-	})
+	}
+	if sends := settled(t, app, recorder, completed); len(sends) != 0 {
+		t.Fatalf("a thread with no row notified by default: %#v", sends)
+	}
+
+	hiddenThreads(t, app, true)
+	sends := settled(t, app, recorder, completed)
 	if len(sends) != 1 {
-		t.Fatalf("sends = %#v, want one", sends)
+		t.Fatalf("sends = %#v, want one once the screen opted in", sends)
 	}
 	if sends[0].Title != notify.UntitledThread {
 		t.Fatalf("title = %q, want %q", sends[0].Title, notify.UntitledThread)
+	}
+	if !sends[0].HiddenThread {
+		t.Fatalf("send = %#v, want it marked as a hidden thread's", sends[0])
+	}
+}
+
+// TestAWorkflowThreadIsSilentUntilTheScreenOptsIn is the moment this opt-in
+// exists for: a workflow phase thread is a real thread with a real title, the
+// sidebar does not list it, and its turn completing, failing or asking for
+// approval must not interrupt anyone who cannot click it. Every thread-scoped
+// kind is covered by the one toggle, and the per-kind toggles still apply on
+// top of it.
+func TestAWorkflowThreadIsSilentUntilTheScreenOptsIn(t *testing.T) {
+	const workflowThreadID = "thread-workflow-phase"
+	app, recorder := newNotificationMappingApp(t)
+	phase := testThread(workflowThreadID)
+	phase.Title = "Phase 2: implement"
+	phase.Mode = threadmode.ModeWorkflow
+	if err := app.store.CreateThread(phase); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	moments := []func(){
+		func() {
+			app.emit(eventchan.ProviderTurnCompleted, triage.TurnCompletedEvent{
+				ThreadID: workflowThreadID, TurnID: "turn-1", CountsAsActivity: true,
+			})
+		},
+		func() {
+			app.emit(eventchan.ProviderTurnCompleted, triage.TurnCompletedEvent{
+				ThreadID: workflowThreadID, TurnID: "turn-2", CountsAsActivity: true,
+				ErrorMessage: "the provider returned 529",
+			})
+		},
+		func() {
+			app.emit(eventchan.ProviderSessionDied, triage.SessionDiedEvent{ThreadID: workflowThreadID})
+		},
+		func() {
+			app.emit(eventchan.ProviderApproval, provider.ApprovalEvent{
+				Action: "request",
+				Request: &provider.ApprovalRequest{
+					RequestID: "req-1", ThreadID: workflowThreadID, ToolName: "Bash",
+				},
+			})
+		},
+	}
+	if sends := settled(t, app, recorder, moments...); len(sends) != 0 {
+		t.Fatalf("a workflow thread interrupted by default: %#v", sends)
+	}
+
+	// The ordinary thread beside it is untouched by the opt-in being off.
+	if sends := settled(t, app, recorder, turnCompleted(app, false)); len(sends) != 1 {
+		t.Fatalf("sends = %#v, want the visible thread's completion", sends)
+	}
+
+	hiddenThreads(t, app, true)
+	sends := settled(t, app, recorder, moments...)
+	if len(sends) != 5 {
+		t.Fatalf("sends = %d, want the four workflow moments after the earlier one: %#v", len(sends), sends)
+	}
+	for _, send := range sends[1:] {
+		if !send.HiddenThread || send.Target.ThreadID != workflowThreadID {
+			t.Fatalf("send = %#v, want a hidden-thread send about the workflow thread", send)
+		}
+		if send.Title != "Phase 2: implement" {
+			t.Fatalf("title = %q, want the workflow thread's own", send.Title)
+		}
+	}
+
+	// The opt-in narrows the kinds; it does not replace them. A screen that
+	// turned turn completions off hears nothing about a hidden thread's
+	// completion even with the opt-in on.
+	if _, err := app.settings.BackendScreen().Update(map[string]any{"notifyTurnComplete": false}); err != nil {
+		t.Fatalf("update turn-complete setting: %v", err)
+	}
+	if sends := settled(t, app, recorder, moments[0]); len(sends) != 5 {
+		t.Fatalf("sends = %#v, want the kind toggle still to apply", sends)
+	}
+}
+
+// TestAHiddenThreadsRetractionIsNeverGated: the rest notification a screen
+// opted into hearing is withdrawn when the thread resumes, even if the
+// opt-in was flipped off in between.
+func TestAHiddenThreadsRetractionIsNeverGated(t *testing.T) {
+	const workflowThreadID = "thread-workflow-phase"
+	app, recorder := newNotificationMappingApp(t)
+	phase := testThread(workflowThreadID)
+	phase.Mode = threadmode.ModeWorkflow
+	if err := app.store.CreateThread(phase); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	hiddenThreads(t, app, true)
+	sends := settled(t, app, recorder, func() {
+		app.emit(eventchan.ProviderTurnCompleted, triage.TurnCompletedEvent{
+			ThreadID: workflowThreadID, TurnID: "turn-1", CountsAsActivity: true,
+		})
+	})
+	if len(sends) != 1 {
+		t.Fatalf("sends = %#v, want the opted-in completion", sends)
+	}
+	hiddenThreads(t, app, false)
+	sends = settled(t, app, recorder, func() {
+		app.emit(eventchan.ProviderTurnStarted, triage.TurnStartedEvent{ThreadID: workflowThreadID, TurnID: "turn-2"})
+	})
+	if len(sends) != 2 || !sends[1].Retract || sends[1].ID != sends[0].ID {
+		t.Fatalf("sends = %#v, want the retraction to survive the opt-in being turned off", sends)
 	}
 }
 

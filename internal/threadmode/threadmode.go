@@ -87,7 +87,8 @@ func IsSagaOwned(mode string) bool {
 }
 
 // IsHidden reports whether normal thread listings, global search, and pickers
-// must exclude the mode.
+// must exclude the mode. The OS-notification gate reads it too: a hidden
+// thread's moments interrupt a screen only when that screen opted in.
 func IsHidden(mode string) bool {
 	_, ok := hiddenModeSet[strings.TrimSpace(mode)]
 	return ok

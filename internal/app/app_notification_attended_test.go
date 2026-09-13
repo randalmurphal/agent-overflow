@@ -187,8 +187,9 @@ func TestNeitherGateOutcomeIsLoggedAsAFailure(t *testing.T) {
 	app, _ := newNotificationMappingApp(t)
 	app.logNotificationFailure(&NotificationError{Code: NotificationScreenAttended})
 	app.logNotificationFailure(&NotificationError{Code: NotificationSuppressed})
+	app.logNotificationFailure(&NotificationError{Code: NotificationHiddenThread})
 	if len(app.notifications.loggedCodes) != 0 {
-		t.Fatalf("logged codes = %v, want neither gate outcome recorded", app.notifications.loggedCodes)
+		t.Fatalf("logged codes = %v, want no gate outcome recorded", app.notifications.loggedCodes)
 	}
 	app.logNotificationFailure(&NotificationError{Code: NotificationDeliveryFailed})
 	if _, logged := app.notifications.loggedCodes[NotificationDeliveryFailed]; !logged {

@@ -2181,9 +2181,14 @@ Prerequisite sweep, valuable standalone:
   synchronously and dispatching on a serial queue (order is the
   retraction contract); the thread-title SQLite read runs on the
   queue, and shutdown drains it before the store closes. `notifyOS` is
-  the one preference gate (five device-tier keys, §6, all default ON;
-  read from the backend machine's own screen via
-  `settings.Service.BackendScreen()`); a RETRACTION IS NEVER GATED, so
+  the one preference gate (the device-tier keys of §6, read from the
+  backend machine's own screen via `settings.Service.BackendScreen()`;
+  the master switch and per-kind toggles default ON, and the one opt-in,
+  `notifyHiddenThreads`, defaults OFF: a thread the sidebar does not
+  list, a hidden-mode thread or one with no row, passes its kind's
+  toggle AND that one, on the desktop and per phone alike, because a
+  thread nobody can click is not worth an interruption until the screen
+  says so); a RETRACTION IS NEVER GATED, so
   a toggle flipped mid-flight cannot strand an alert. Presenters
   (desktop + Windows launcher) pass the stable id through verbatim and
   branch on retract — `UpdateNotification` to replace,

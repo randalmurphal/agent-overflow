@@ -197,6 +197,34 @@ func TestAPhoneIsWokenOnItsOwnPreferences(t *testing.T) {
 	}
 }
 
+// A hidden thread's send is judged per phone by the phone's own opt-in, the
+// same narrowing the desktop applies to its own screen: silent by default,
+// woken once that phone asks for threads the sidebar does not list, and its
+// retraction reaches the phone either way.
+func TestAPhoneDecidesHiddenThreadsOnItsOwn(t *testing.T) {
+	app, sender := pushApp(t)
+	pairPhone(t, app, "thumb-quiet", "token-quiet")
+	loud := pairPhone(t, app, "thumb-loud", "token-loud")
+	if _, err := app.UpdateSettings(callFrom(loud.ID, false), map[string]any{
+		"notifyHiddenThreads": true,
+	}); err != nil {
+		t.Fatalf("UpdateSettings on the loud phone: %v", err)
+	}
+
+	hidden := turnCompleteSend()
+	hidden.HiddenThread = true
+	firedPush(t, app, hidden)
+	if got := sender.tokens(); len(got) != 1 || got[0] != "token-loud" {
+		t.Fatalf("woken = %v, want only the phone that opted into hidden threads", got)
+	}
+
+	before := len(sender.messages())
+	firedPush(t, app, retractSend())
+	if len(sender.messages()) != before+2 {
+		t.Fatalf("messages = %d, want both phones told to withdraw", len(sender.messages())-before)
+	}
+}
+
 // The two kinds that reach no event tap ride the SAME per-phone gate, because
 // there is one switch and not a copy per screen. A phone that silenced
 // workflow attention still buzzes for an update notice.

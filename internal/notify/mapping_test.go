@@ -648,3 +648,52 @@ func TestTargetJSONIsTheSameSpellingTargetToMapProduces(t *testing.T) {
 		t.Error("TargetJSON encoded a target ValidateTarget refuses")
 	}
 }
+
+// TestAHiddenThreadIsMarkedOnEveryThreadScopedSend: the sidebar-visibility
+// fact the caller read rides each presentation about the thread, so the
+// gate can narrow every thread-scoped kind by one preference. A retraction
+// never carries it, since it carries nothing, and ValidateSend refuses one that
+// does.
+func TestAHiddenThreadIsMarkedOnEveryThreadScopedSend(t *testing.T) {
+	hidden := ThreadRef{ID: threadID, Title: "Phase 2: implement", Hidden: true}
+	sends := []struct {
+		name string
+		got  func() (Notification, bool)
+	}{
+		{"turn complete", func() (Notification, bool) { return MapTurnRest(TurnRest{Thread: hidden, TopLevel: true}) }},
+		{"turn failed", func() (Notification, bool) {
+			return MapTurnRest(TurnRest{Thread: hidden, TopLevel: true, Failed: true})
+		}},
+		{"provider exited", func() (Notification, bool) { return MapProviderExit(ProviderExit{Thread: hidden}) }},
+		{"approval needed", func() (Notification, bool) {
+			return MapApproval(ApprovalMoment{Thread: hidden, RequestID: "req-7", ToolName: "Bash"})
+		}},
+	}
+	for _, tt := range sends {
+		t.Run(tt.name, func(t *testing.T) {
+			notification, ok := tt.got()
+			if !ok {
+				t.Fatal("a hidden thread's moment still maps; the GATE decides, not the mapping")
+			}
+			if !notification.Send.HiddenThread {
+				t.Fatalf("send = %#v, want HiddenThread", notification.Send)
+			}
+			if err := ValidateSend(notification.Send); err != nil {
+				t.Fatalf("valid hidden-thread send refused: %v", err)
+			}
+		})
+	}
+
+	visible, _ := MapTurnRest(TurnRest{Thread: thread(), TopLevel: true})
+	if visible.Send.HiddenThread {
+		t.Fatalf("a visible thread's send is marked hidden: %#v", visible.Send)
+	}
+	resumed, _ := MapThreadResumed(ThreadResumed{ThreadID: threadID})
+	if resumed.Send.HiddenThread {
+		t.Fatalf("a retraction carries the hidden mark: %#v", resumed.Send)
+	}
+	retraction := Send{ID: "thread:" + threadID, Kind: KindTurnComplete, Retract: true, HiddenThread: true}
+	if err := ValidateSend(retraction); err == nil {
+		t.Fatal("a retraction carrying the hidden mark was accepted")
+	}
+}

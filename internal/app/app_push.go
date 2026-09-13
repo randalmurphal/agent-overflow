@@ -189,7 +189,7 @@ func (a *App) pushAllowed(token store.PushToken, send notify.Send) bool {
 	if a.settings != nil {
 		current = a.settings.For("device:"+token.DeviceID, settingsDeviceClass(token.DeviceClass)).Get()
 	}
-	return notificationKindEnabledIn(current, send.Kind)
+	return notificationPreferenceRefusalIn(current, send) == nil
 }
 
 // sendOnePush delivers to one device and reacts to the one failure that has

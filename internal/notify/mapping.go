@@ -157,6 +157,13 @@ const UntitledThread = "New Thread"
 type ThreadRef struct {
 	ID    string
 	Title string
+	// Hidden is a thread the sidebar does not list: one of the hidden
+	// modes (internal/threadmode, workflow-owned threads today) or a thread
+	// with no row at all. A thread nobody can click in the sidebar is one
+	// whose completion, failure or approval is not worth an interruption
+	// unless the screen opted in (settings.NotifyHiddenThreads), and the
+	// caller that read the row is the one that knows which it is.
+	Hidden bool
 }
 
 // TurnRest is a turn arriving at rest — the `provider:turn_completed`
@@ -349,11 +356,12 @@ func threadNotification(kind Kind, thread ThreadRef, body string) Notification {
 		title = UntitledThread
 	}
 	return Notification{Send: Send{
-		ID:     threadNotificationID(thread.ID),
-		Kind:   kind,
-		Title:  title,
-		Body:   SummaryLine(body, MaxBodyRunes),
-		Target: Target{Kind: TargetThread, ThreadID: thread.ID},
+		ID:           threadNotificationID(thread.ID),
+		Kind:         kind,
+		Title:        title,
+		Body:         SummaryLine(body, MaxBodyRunes),
+		Target:       Target{Kind: TargetThread, ThreadID: thread.ID},
+		HiddenThread: thread.Hidden,
 	}}
 }
 

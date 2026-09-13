@@ -491,12 +491,13 @@ type Settings struct {
 	// launcher's "update didn't apply" notice), which used to have the
 	// master switch as their only silencer.
 	//
-	// ALL SEVEN DEFAULT TRUE, and are therefore all present in
-	// DefaultSettings. That is the KeepAwakeScreen pattern and it is what
-	// makes an absent key read as ON — which matters more here than
-	// anywhere else, because notifications were unconditional before these
-	// keys existed. A user upgrading into them must keep exactly the
-	// behaviour they had, and only then narrow it.
+	// THE MASTER SWITCH AND THE SIX PER-KIND TOGGLES DEFAULT TRUE, and are
+	// therefore all present in DefaultSettings. That is the KeepAwakeScreen
+	// pattern and it is what makes an absent key read as ON — which matters
+	// more here than anywhere else, because notifications were
+	// unconditional before these keys existed. A user upgrading into them
+	// must keep exactly the behaviour they had, and only then narrow it.
+	// NotifyHiddenThreads is the one opt-in and stays absent.
 	//
 	// The defaults are also the honest answer to "what is worth
 	// interrupting someone for": every one of these moments is one where
@@ -522,6 +523,15 @@ type Settings struct {
 	// NotifyAppUpdate covers the WSL launcher's "update didn't apply"
 	// notice. Same reasoning as NotifyWorkflowAttention.
 	NotifyAppUpdate bool `json:"notifyAppUpdate"`
+	// NotifyHiddenThreads lets a thread the sidebar does not list (a
+	// workflow-owned mode, or a thread with no row) interrupt this screen.
+	// It narrows the per-kind toggles above rather than adding a kind: a
+	// hidden thread's turn, failure or approval passes its kind's toggle
+	// AND this one. Default OFF, and therefore absent from DefaultSettings:
+	// a thread nobody can click in the sidebar is not worth an
+	// interruption until the user says it is (an ephemeral companion pane
+	// is the case that can be visible and still off the sidebar).
+	NotifyHiddenThreads bool `json:"notifyHiddenThreads"`
 
 	// The ATTENDED-SCREEN preference: not "which moments are worth an
 	// interruption" but "is this screen already being looked at". Read by

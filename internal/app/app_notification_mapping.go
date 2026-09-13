@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/provideraccountapp"
 	"agent-overflow/internal/providerstatus"
 	"agent-overflow/internal/serialqueue"
+	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/triage"
 )
 
@@ -39,8 +40,8 @@ import (
 // WHAT IS PROJECTED SYNCHRONOUSLY, AND WHY. The tap type-asserts and reads
 // the two or three fields the mapping needs before enqueuing, so the queue
 // never retains a whole wire payload (a TurnCompletedEvent carries its
-// turn's raw token-usage JSON). Only the thread TITLE is resolved on the
-// queue, because only it needs the database.
+// turn's raw token-usage JSON). Only the thread's title and sidebar
+// visibility are resolved on the queue, because only they need the database.
 
 // notificationDispatch is the App's notification coordination: the ordered
 // queue mapped moments run on, the provider sign-in edges the mapping needs
@@ -91,7 +92,7 @@ func (a *App) tapNotification(name eventchan.Channel, data any) {
 			Aborted:  event.Aborted,
 		}
 		a.queueNotification(func() (notify.Notification, bool) {
-			rest.Thread.Title = a.notificationThreadTitle(rest.Thread.ID)
+			rest.Thread = a.notificationThreadRef(rest.Thread.ID)
 			return notify.MapTurnRest(rest)
 		})
 
@@ -118,7 +119,7 @@ func (a *App) tapNotification(name eventchan.Channel, data any) {
 		// which is what the redaction line keeps off a lock screen.
 		exit := notify.ProviderExit{Thread: notify.ThreadRef{ID: event.ThreadID}}
 		a.queueNotification(func() (notify.Notification, bool) {
-			exit.Thread.Title = a.notificationThreadTitle(exit.Thread.ID)
+			exit.Thread = a.notificationThreadRef(exit.Thread.ID)
 			return notify.MapProviderExit(exit)
 		})
 
@@ -133,7 +134,7 @@ func (a *App) tapNotification(name eventchan.Channel, data any) {
 		}
 		a.queueNotification(func() (notify.Notification, bool) {
 			if !moment.Answered {
-				moment.Thread.Title = a.notificationThreadTitle(moment.Thread.ID)
+				moment.Thread = a.notificationThreadRef(moment.Thread.ID)
 			}
 			return notify.MapApproval(moment)
 		})
@@ -236,20 +237,29 @@ func (a *App) queueNotification(build func() (notify.Notification, bool)) {
 	})
 }
 
-// notificationThreadTitle reads the one thing a notification may say about a
-// thread. A missing row or an unreadable one answers "", which the mapping
-// renders as its untitled fallback: a notification with a generic heading is
-// better than no notification about a turn the user is waiting on.
-func (a *App) notificationThreadTitle(threadID string) string {
+// notificationThreadRef reads the two things a notification may know about a
+// thread: its title, and whether the sidebar lists it.
+//
+// A thread with no row is HIDDEN: the sidebar cannot show it, so its
+// completion is judged by the same opt-in as a workflow-owned thread's
+// (settings.NotifyHiddenThreads). That is what makes a chat that is never
+// persisted, an agent's ephemeral question, silent by default without a
+// row to mark it. An unreadable row answers a visible, untitled thread: a
+// database fault must not swallow a notification the user may be waiting on,
+// and the mapping renders the missing title as its untitled fallback.
+func (a *App) notificationThreadRef(threadID string) notify.ThreadRef {
+	ref := notify.ThreadRef{ID: threadID}
 	if a.store == nil || threadID == "" {
-		return ""
+		return ref
 	}
-	title, err := a.store.GetThreadTitle(threadID)
+	facts, err := a.store.GetThreadNotificationFacts(threadID)
 	if err != nil {
-		log.Printf("notifications: read title for thread %s: %v", threadID, err)
-		return ""
+		log.Printf("notifications: read thread %s for its notification: %v", threadID, err)
+		return ref
 	}
-	return title
+	ref.Title = facts.Title
+	ref.Hidden = !facts.Exists || threadmode.IsHidden(facts.Mode)
+	return ref
 }
 
 // notificationBackendID is this backend's UUID, the attribution half of §9's
@@ -279,7 +289,7 @@ func (a *App) logNotificationFailure(err error) {
 	if errors.As(err, &notificationErr) {
 		code = notificationErr.Code
 	}
-	if code == NotificationSuppressed || code == NotificationScreenAttended {
+	if code == NotificationSuppressed || code == NotificationScreenAttended || code == NotificationHiddenThread {
 		return
 	}
 	if a.notifications.loggedCodes == nil {

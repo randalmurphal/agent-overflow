@@ -33,6 +33,14 @@ const (
 	// did I not get a notification". "You turned it off" and "you were
 	// watching" have different answers.
 	NotificationScreenAttended NotificationErrorCode = "screen_attended"
+	// NotificationHiddenThread is the third preference answer: the kind was
+	// allowed, but the thread is one the sidebar does not list and this
+	// screen has not opted into hearing about those
+	// (settings.NotifyHiddenThreads). Its own code for the same reason
+	// NotificationScreenAttended has one: "you turned the kind off" and
+	// "that thread is not on your sidebar" are different answers to "why did
+	// I not get a notification".
+	NotificationHiddenThread NotificationErrorCode = "hidden_thread"
 )
 
 // NotificationError is the visible typed failure returned by notifyOS when
@@ -61,6 +69,8 @@ func (e *NotificationError) Error() string {
 		return "OS notifications for this kind are turned off"
 	case NotificationScreenAttended:
 		return "the screen is already looking"
+	case NotificationHiddenThread:
+		return "OS notifications for threads not in the sidebar are turned off"
 	case NotificationUnavailable:
 		if e.Cause != nil {
 			return fmt.Sprintf("OS notifications are unavailable: %v", e.Cause)
@@ -101,9 +111,10 @@ type osNotificationSender interface {
 // through the Windows launcher on WSL — one machine either way).
 //
 // TWO QUESTIONS, ONE GATE. The per-kind toggles answer "is this moment worth
-// an interruption"; the attended-screen rules answer "is this screen already
-// looking". Both live here for the same reason: a sender that could reach a
-// presenter without passing them is a sender that can forget one.
+// an interruption" (narrowed, for a thread the sidebar does not list, by the
+// hidden-thread opt-in); the attended-screen rules answer "is this screen
+// already looking". Both live here for the same reason: a sender that could
+// reach a presenter without passing them is a sender that can forget one.
 //
 // A RETRACTION IS NEVER GATED, by either half. The gate answers "may I
 // interrupt you", and withdrawing something already on screen is the opposite
@@ -116,14 +127,54 @@ func (a *App) notifyOS(send notify.Send) error {
 		return err
 	}
 	if !send.Retract {
-		if !a.notificationKindEnabled(send.Kind) {
-			return &NotificationError{Code: NotificationSuppressed}
+		if err := a.notificationPreferenceRefusal(send); err != nil {
+			return err
 		}
 		if a.screenIsAlreadyLooking(send) {
 			return &NotificationError{Code: NotificationScreenAttended}
 		}
 	}
 	return a.notifyOSUngated(send)
+}
+
+// notificationPreferenceRefusal answers the PER-KIND half of the gate for the
+// backend machine's own screen, as the typed refusal notifyOS returns, or nil
+// when the screen's preferences let the send through.
+//
+// A settings service that is not wired yet answers from DefaultSettings,
+// which has every kind ON: an App that has not finished booting must not
+// silently start swallowing the notices it does raise during boot (the WSL
+// "update didn't apply" notice is exactly one).
+func (a *App) notificationPreferenceRefusal(send notify.Send) error {
+	current := settings.DefaultSettings
+	if a.settings != nil {
+		current = a.settings.BackendScreen().Get()
+	}
+	return notificationPreferenceRefusalIn(current, send)
+}
+
+// notificationPreferenceRefusalIn is the per-kind gate plus the one
+// narrowing that sits inside it, with the screen taken out: given ONE
+// screen's settings, may this send interrupt it?
+//
+// ONE COPY, TWO SCREENS, the same rule notificationKindEnabledIn states: the
+// desktop asks it of the backend machine's own settings and the push fan-out
+// asks it of each phone's bucket (app_push.go pushAllowed). The hidden-thread
+// question lives here rather than beside the kind switch because it is not a
+// kind. A hidden thread's turn is still a turn; the thread is simply one the
+// sidebar does not list, so it passes its kind's toggle AND the opt-in for
+// threads off the sidebar (settings.NotifyHiddenThreads, default off).
+//
+// A RETRACTION IS NEVER GATED, and this function is only ever asked about a
+// presentation; both callers branch on Retract before reaching it.
+func notificationPreferenceRefusalIn(current settings.Settings, send notify.Send) error {
+	if !notificationKindEnabledIn(current, send.Kind) {
+		return &NotificationError{Code: NotificationSuppressed}
+	}
+	if send.HiddenThread && !current.NotifyHiddenThreads {
+		return &NotificationError{Code: NotificationHiddenThread}
+	}
+	return nil
 }
 
 // notifyOSUngated is the presentation half of notifyOS with the two gates
@@ -219,22 +270,8 @@ func (a *App) screenIsAlreadyLooking(send notify.Send) bool {
 	}
 }
 
-// notificationKindEnabled answers the user's preference for one kind.
-//
-// A settings service that is not wired yet answers from DefaultSettings,
-// which has every notification preference ON: an App that has not finished
-// booting must not silently start swallowing the notices it does raise
-// during boot (the WSL "update didn't apply" notice is exactly one).
-func (a *App) notificationKindEnabled(kind notify.Kind) bool {
-	current := settings.DefaultSettings
-	if a.settings != nil {
-		current = a.settings.BackendScreen().Get()
-	}
-	return notificationKindEnabledIn(current, kind)
-}
-
-// notificationKindEnabledIn is that question with the screen taken out of
-// it: given ONE screen's settings, may this kind interrupt it?
+// notificationKindEnabledIn answers the user's preference for one kind on
+// ONE screen's settings: may this kind interrupt it?
 //
 // ONE COPY, TWO SCREENS. The desktop asks it of the backend machine's own
 // settings; the push fan-out asks it of each registered phone's device-tier

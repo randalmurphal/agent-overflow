@@ -3105,3 +3105,46 @@ func TestHistoricalCodexMetadataDoesNotClaimWorkspaceLiveness(t *testing.T) {
 		t.Fatalf("blocked refs=%+v", refs)
 	}
 }
+
+// GetThreadNotificationFacts is the OS-notification mapping's one read: the
+// label it may say, and the mode that decides whether the sidebar lists the
+// thread. A thread that is gone is a fact, not an error.
+func TestGetThreadNotificationFacts(t *testing.T) {
+	s := newTestStore(t)
+	visible := makeThread("thread-visible", "claude")
+	visible.Title = "Rewrite the parser"
+	visible.Mode = "chat"
+	if err := s.CreateThread(visible); err != nil {
+		t.Fatalf("create visible thread: %v", err)
+	}
+	hidden := makeThread("thread-workflow", "claude")
+	hidden.Title = "Phase 2: implement"
+	hidden.Mode = "workflow"
+	if err := s.CreateThread(hidden); err != nil {
+		t.Fatalf("create workflow thread: %v", err)
+	}
+
+	got, err := s.GetThreadNotificationFacts("thread-visible")
+	if err != nil {
+		t.Fatalf("visible: %v", err)
+	}
+	if want := (ThreadNotificationFacts{Title: "Rewrite the parser", Mode: "chat", Exists: true}); got != want {
+		t.Fatalf("visible = %+v, want %+v", got, want)
+	}
+
+	got, err = s.GetThreadNotificationFacts("thread-workflow")
+	if err != nil {
+		t.Fatalf("workflow: %v", err)
+	}
+	if want := (ThreadNotificationFacts{Title: "Phase 2: implement", Mode: "workflow", Exists: true}); got != want {
+		t.Fatalf("workflow = %+v, want %+v", got, want)
+	}
+
+	got, err = s.GetThreadNotificationFacts("thread-that-was-deleted")
+	if err != nil {
+		t.Fatalf("missing: %v", err)
+	}
+	if got != (ThreadNotificationFacts{}) {
+		t.Fatalf("missing = %+v, want the zero facts with Exists=false", got)
+	}
+}

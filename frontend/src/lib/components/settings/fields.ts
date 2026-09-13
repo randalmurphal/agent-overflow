@@ -724,6 +724,15 @@ const STATIC_FIELDS = [
     conditional: true,
   },
   {
+    id: 'notifications.hidden-threads',
+    section: 'notifications',
+    heading: 'Notifications',
+    label: 'Threads not in the sidebar',
+    hint: 'Workflow threads and other threads the sidebar does not list. Off keeps them silent even when their kind is on.',
+    keywords: ['hidden', 'invisible', 'workflow thread', 'ephemeral', 'sidebar', 'side chat'],
+    conditional: true,
+  },
+  {
     id: 'notifications.quiet-when',
     section: 'notifications',
     heading: 'Quiet when',

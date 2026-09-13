@@ -95,6 +95,13 @@ type Send struct {
 	Title   string `json:"title"`
 	Body    string `json:"body"`
 	Target  Target `json:"target"`
+	// HiddenThread marks a presentation about a thread the sidebar does not
+	// list (ThreadRef.Hidden). It rides the wire for the same reason Kind
+	// does: the preference that decides whether such a thread may interrupt
+	// (settings.NotifyHiddenThreads, default off) belongs to the screen being
+	// interrupted, and the presenter applying it is not always this process.
+	// Never set on a retraction; ValidateSend refuses one that carries it.
+	HiddenThread bool `json:"hiddenThread,omitempty"`
 }
 
 // NewID allocates a throwaway identifier for a notification that names no
@@ -191,7 +198,7 @@ func ValidateSend(send Send) error {
 		return fmt.Errorf("notification kind %q is unsupported", send.Kind)
 	}
 	if send.Retract {
-		if send.Title != "" || send.Body != "" || send.Target != (Target{}) {
+		if send.Title != "" || send.Body != "" || send.Target != (Target{}) || send.HiddenThread {
 			return errors.New("notification retraction must carry only an id and a kind")
 		}
 		return nil

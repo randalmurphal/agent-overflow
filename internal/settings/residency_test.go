@@ -351,10 +351,10 @@ func TestBackendScreenWithoutAStoreAnswersDefaults(t *testing.T) {
 	}
 }
 
-// Every notification preference defaults ON. Notifications were
-// unconditional before these keys existed, so a default of off would be a
-// silent behaviour change for every existing install.
-func TestNotificationPreferencesDefaultOn(t *testing.T) {
+// Every notification preference except the hidden-thread opt-in defaults ON.
+// Notifications were unconditional before these keys existed, so a default of
+// off would be a silent behaviour change for every existing install.
+func TestNotificationPreferencesDefaultOnExceptTheHiddenThreadOptIn(t *testing.T) {
 	for key, on := range map[string]bool{
 		"notificationsEnabled":    DefaultSettings.NotificationsEnabled,
 		"notifyTurnComplete":      DefaultSettings.NotifyTurnComplete,
@@ -384,6 +384,15 @@ func TestNotificationPreferencesDefaultOn(t *testing.T) {
 	}
 	if tier, ok := TierForKey("notifyQuietWhen"); !ok || tier != TierDevice {
 		t.Errorf("notifyQuietWhen is tier %q (known=%t), want %q", tier, ok, TierDevice)
+	}
+	// The one OPT-IN: threads the sidebar does not list stay silent until a
+	// screen asks to hear about them. Same tier, same reason. Absent from
+	// DefaultSettings so the sparse host file never has to spell out "off".
+	if DefaultSettings.NotifyHiddenThreads {
+		t.Error("notifyHiddenThreads defaults on; a thread nobody can click in the sidebar is opt-in")
+	}
+	if tier, ok := TierForKey("notifyHiddenThreads"); !ok || tier != TierDevice {
+		t.Errorf("notifyHiddenThreads is tier %q (known=%t), want %q", tier, ok, TierDevice)
 	}
 }
 

@@ -85,6 +85,7 @@ export const SETTINGS_DEFAULTS = {
   notifyProviderSignedOut: true,
   notifyWorkflowAttention: true,
   notifyAppUpdate: true,
+  notifyHiddenThreads: false,
   notifyQuietWhen: "focused",
 } satisfies Settings;
 
@@ -107,6 +108,7 @@ export const FRONTEND_SETTINGS_KEYS = [
   "notifyAppUpdate",
   "notifyApprovalNeeded",
   "notifyError",
+  "notifyHiddenThreads",
   "notifyProviderSignedOut",
   "notifyQuietWhen",
   "notifyTurnComplete",
@@ -139,6 +141,7 @@ export const FRONTEND_DEVICE_SETTINGS_KEYS = [
   "notifyAppUpdate",
   "notifyApprovalNeeded",
   "notifyError",
+  "notifyHiddenThreads",
   "notifyProviderSignedOut",
   "notifyQuietWhen",
   "notifyTurnComplete",

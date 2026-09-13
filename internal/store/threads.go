@@ -387,27 +387,38 @@ func (s *Store) GetThreadProviderWorkspace(id string) (provider, workspacePath s
 	return provider, workspacePath, nil
 }
 
-// GetThreadTitle reads only the title column. It is the narrow read for
-// callers that need a thread's LABEL and nothing else — the OS-notification
-// mapping, which is allowed to say a thread's title and nothing more about
-// it — and it exists for the same reason GetThreadProviderWorkspace does:
-// GetThread's projection computes four derived sidebar-state subqueries per
-// call that such a caller would compute and throw away.
+// ThreadNotificationFacts is what an OS notification may learn about a
+// thread: its label, and whether the sidebar lists it (Mode, judged by
+// threadmode.IsHidden). Exists is false for a thread that is gone.
+type ThreadNotificationFacts struct {
+	Title  string
+	Mode   string
+	Exists bool
+}
+
+// GetThreadNotificationFacts reads only the title and mode columns. It is
+// the narrow read for the OS-notification mapping, which is allowed to say a
+// thread's title and to know whether the thread is on the sidebar, and
+// nothing more about it — and it exists for the same reason
+// GetThreadProviderWorkspace does: GetThread's projection computes four
+// derived sidebar-state subqueries per call that such a caller would compute
+// and throw away.
 //
-// A thread that is gone answers "" with no error. The caller is reacting to
-// an event about a thread that may since have been deleted, and a deleted
-// thread is not a failure to report — it is a notification with a fallback
-// label, or none at all.
-func (s *Store) GetThreadTitle(id string) (string, error) {
-	var title string
-	err := s.reader().QueryRow(`SELECT title FROM threads WHERE id = ?`, id).Scan(&title)
+// A thread that is gone answers Exists=false with no error. The caller is
+// reacting to an event about a thread that may since have been deleted, and
+// a deleted thread is not a failure to report — it is a thread the sidebar
+// cannot show, which the notification gate treats like any other hidden one.
+func (s *Store) GetThreadNotificationFacts(id string) (ThreadNotificationFacts, error) {
+	var facts ThreadNotificationFacts
+	err := s.reader().QueryRow(`SELECT title, mode FROM threads WHERE id = ?`, id).Scan(&facts.Title, &facts.Mode)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
+		return ThreadNotificationFacts{}, nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("store: get thread title %s: %w", id, err)
+		return ThreadNotificationFacts{}, fmt.Errorf("store: get thread notification facts %s: %w", id, err)
 	}
-	return title, nil
+	facts.Exists = true
+	return facts, nil
 }
 
 // ThreadExists reports whether a thread row is still present. It is the narrow

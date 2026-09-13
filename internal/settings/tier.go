@@ -179,6 +179,7 @@ var tierByKey = map[string]Tier{
 	"notifyProviderSignedOut": TierDevice,
 	"notifyWorkflowAttention": TierDevice,
 	"notifyAppUpdate":         TierDevice,
+	"notifyHiddenThreads":     TierDevice,
 	// The "quiet when" key is the same tier for the same reason, one step
 	// further in: it does not ask which moments matter, it asks whether
 	// THIS screen is already being looked at. That question has no answer

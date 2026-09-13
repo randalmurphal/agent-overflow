@@ -93,6 +93,26 @@ describe('<NotificationsSection>', () => {
     expect(queryByRole('radiogroup', { name: 'Quiet when' })).toBeNull();
   });
 
+  // Not a kind: the one narrowing of the kinds above, and the one row that
+  // defaults OFF, because a thread the sidebar does not list is not worth an
+  // interruption until the user says so.
+  it('renders threads-not-in-the-sidebar off by default and dispatches it as its own key', async () => {
+    const { getByRole } = render(NotificationsSection);
+    const toggle = getByRole('switch', { name: 'Toggle notifications for threads not in the sidebar' });
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    await fireEvent.click(toggle);
+
+    const mock = getBindingMock('UpdateSettings');
+    expect(mock).toBeDefined();
+    expect(mock!.mock.calls[0][0]).toEqual({ notifyHiddenThreads: true });
+  });
+
+  it('hides the threads-not-in-the-sidebar row beneath the master switch too', async () => {
+    await seed({ notificationsEnabled: false, notifyHiddenThreads: true });
+    const { queryByRole } = render(NotificationsSection);
+    expect(queryByRole('switch', { name: 'Toggle notifications for threads not in the sidebar' })).toBeNull();
+  });
+
   it('reflects a single kind turned off without touching the others', async () => {
     await seed({ notifyTurnComplete: false });
     const { getByRole } = render(NotificationsSection);

@@ -271,6 +271,13 @@ export interface Settings {
   /** OS notification when an app update did not apply. Default on. */
   notifyAppUpdate: boolean;
   /**
+   * Let threads the sidebar does not list (workflow-owned modes, or a thread
+   * with no row) raise the per-kind notifications above. Default off: a
+   * thread you cannot click in the sidebar is not worth an interruption
+   * until you say so.
+   */
+  notifyHiddenThreads: boolean;
+  /**
    * When a notification about this screen is held back: never; while the
    * app window is focused (the default); while the thread it is about is
    * open in a visible pane, focused or not; or only when both hold, so a
