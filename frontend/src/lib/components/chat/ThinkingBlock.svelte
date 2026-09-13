@@ -1,7 +1,7 @@
 <script lang="ts">
   // The model's reasoning, streamed as a tail-clamped disclosure row. Thin
   // config wrapper over ReasoningTailRow (shared with CompactionReasoning) — the
-  // expansion wiring, live-tail sourcing, and hover-reveal group live there.
+  // expansion wiring and live-tail sourcing live there.
   // This wrapper only supplies the think-specific icon, label, ids, and
   // payload-expansion namespace.
   import type { Item } from '../../types/models';
@@ -26,5 +26,4 @@
   labelText="think"
   idPrefix="thinking"
   toggleAriaLabel="Toggle Thinking Block"
-  copyLabel="Copy thinking"
 />

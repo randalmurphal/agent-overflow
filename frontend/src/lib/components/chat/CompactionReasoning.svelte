@@ -28,5 +28,4 @@
   labelText="compact"
   idPrefix="compaction-reasoning"
   toggleAriaLabel="Toggle Compaction Reasoning"
-  copyLabel="Copy reasoning"
 />

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import { flushSync, tick } from 'svelte';
 import ThinkingBlock from './ThinkingBlock.svelte';
@@ -196,8 +196,8 @@ describe('<ThinkingBlock>', () => {
     expect(body?.textContent).toContain('live delta text');
   });
 
-  it('exposes the copy button when there is non-empty content', () => {
-    const { getByLabelText } = render(ThinkingBlock, {
+  it('renders only the timestamp in the trailing slot; no copy button', () => {
+    const { container, queryByLabelText, getAllByRole } = render(ThinkingBlock, {
       props: {
         item: makeItem({
           kind: 'thinking',
@@ -206,70 +206,9 @@ describe('<ThinkingBlock>', () => {
         }),
       },
     });
-    expect(getByLabelText('Copy thinking')).toBeInTheDocument();
-  });
-
-  it('omits the copy button while streaming', () => {
-    const { queryByLabelText } = render(ThinkingBlock, {
-      props: {
-        item: makeItem({
-          kind: 'thinking',
-          status: 'streaming',
-          summary: 'live partial reasoning',
-          payloadId: 'thinking-payload',
-        }),
-      },
-    });
     expect(queryByLabelText('Copy thinking')).toBeNull();
-  });
-
-  it('reserves the copy button slot before completed content can be copied', async () => {
-    const streamingItem = makeItem({
-      kind: 'thinking',
-      status: 'streaming',
-      summary: 'live partial reasoning',
-      payloadId: 'thinking-payload',
-    });
-    const completedItem = { ...streamingItem, status: 'completed' as const };
-    const { container, getByLabelText, queryByLabelText, rerender } = render(ThinkingBlock, {
-      props: { item: streamingItem },
-    });
-
-    const streamingSlot = container.querySelector('[data-testid="thinking-copy-slot"]');
-    expect(streamingSlot?.className).toContain('h-7');
-    expect(streamingSlot?.className).toContain('w-7');
-    expect(queryByLabelText('Copy thinking')).toBeNull();
-
-    await rerender({ item: completedItem });
-
-    const completedSlot = container.querySelector('[data-testid="thinking-copy-slot"]');
-    expect(completedSlot?.className).toBe(streamingSlot?.className);
-    expect(getByLabelText('Copy thinking')).toBeInTheDocument();
-  });
-
-  it('copies the full payload via the getter, even without an explicit expand', async () => {
-    setBindingMock('GetPayloadData', async () => ({ data: 'loaded reasoning text\n\n' }));
-    const writeText = vi.fn(async () => {});
-    Object.defineProperty(navigator, 'clipboard', {
-      value: { writeText },
-      configurable: true,
-      writable: true,
-    });
-
-    const { container, getByLabelText } = render(ThinkingBlock, {
-      props: {
-        item: makeItem({
-          kind: 'thinking',
-          summary: 'preview only',
-          payloadId: 'thinking-payload',
-        }),
-      },
-    });
-
-    await fireEvent.click(getByLabelText('Copy thinking'));
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith('loaded reasoning text\n\n'));
-    expect(container.querySelector('[data-testid="thinking-body"]')?.textContent)
-      .toBe('loaded reasoning text');
+    expect(getAllByRole('button')).toHaveLength(1);
+    expect(container.querySelector('time')).not.toBeNull();
   });
 
   it('streams into the expanded full body and refetches current payload after collapse', async () => {
@@ -508,45 +447,5 @@ describe('<ThinkingBlock>', () => {
     } finally {
       __setSmoothingClockForTest(undefined);
     }
-  });
-
-  it('copies the refreshed completed payload when a row settles while expanded', async () => {
-    const thinking = makeItem({
-      id: 'think:0:0',
-      kind: 'thinking',
-      status: 'streaming',
-      summary: 'seed',
-      payloadId: 'thinking-payload',
-      updatedAt: 1,
-    });
-    const pane = await buildPane(makeThread({ id: 'thread-1' }), [thinking]);
-    const payloads = ['seed', 'seed final'];
-    setBindingMock('GetPayloadData', async () => ({
-      data: payloads.shift() ?? 'seed final',
-    }));
-    const writeText = vi.fn(async () => {});
-    Object.defineProperty(navigator, 'clipboard', {
-      value: { writeText },
-      configurable: true,
-      writable: true,
-    });
-
-    const { getByRole, getByLabelText, rerender } = render(ThinkingBlock, {
-      props: { pane, item: pane.items[0] },
-    });
-
-    await fireEvent.click(getByRole('button', { name: /toggle thinking block/i }));
-    await waitFor(() => expect(getByRole('button', { name: /toggle thinking block/i }).getAttribute('aria-expanded')).toBe('true'));
-
-    pane.upsertItem({
-      ...pane.items[0],
-      status: 'completed',
-      summary: 'seed final',
-      updatedAt: 2,
-    });
-    await rerender({ pane, item: pane.items[0] });
-    await fireEvent.click(getByLabelText('Copy thinking'));
-
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith('seed final'));
   });
 });

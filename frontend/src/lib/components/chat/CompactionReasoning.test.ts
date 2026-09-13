@@ -147,10 +147,11 @@ describe('<CompactionReasoning>', () => {
     }
   });
 
-  it('omits the copy button while streaming', () => {
-    const { queryByLabelText } = render(CompactionReasoning, {
-      props: { item: reasoningItem({ status: 'streaming' }) },
+  it('renders no copy button', () => {
+    const { queryByLabelText, getAllByRole } = render(CompactionReasoning, {
+      props: { item: reasoningItem({ status: 'completed' }) },
     });
     expect(queryByLabelText('Copy reasoning')).toBeNull();
+    expect(getAllByRole('button')).toHaveLength(1);
   });
 });

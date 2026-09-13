@@ -22,8 +22,6 @@
     keepExpandedPayloadFresh,
   } from '../../utils/payloadExpansion.svelte';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
-  import CopyButton from '../primitives/CopyButton.svelte';
-  import { addToast } from '../../stores/toast.svelte';
   import ToolKindIcon from './ToolKindIcon.svelte';
   // The component above is the SVG dispatcher; this is its `kind` union. Aliased
   // because the value import and the type share the name `ToolKindIcon`.
@@ -47,7 +45,6 @@
     labelText,
     idPrefix,
     toggleAriaLabel,
-    copyLabel,
   }: {
     pane?: PaneSession & RevealRead & RowUiRegistry & ScrollHost;
     item: Item;
@@ -62,7 +59,6 @@
     // TailClampedText body id (e.g. 'thinking' → thinking-toggle / thinking-body).
     idPrefix: string;
     toggleAriaLabel: string;
-    copyLabel: string;
   } = $props();
 
   const localFallback = untrack(() =>
@@ -138,64 +134,28 @@
 
   const time = $derived(formatTimeOfDay(item.createdAt));
   const isoTime = $derived(new Date(item.createdAt).toISOString());
-
-  // CopyButton getter — eagerly fetch the full payload before copying so the
-  // hover-only affordance always yields complete content, regardless of whether
-  // the row was previously expanded.
-  async function getCopyText(): Promise<string> {
-    if (!expansion.expanded) await expansion.expand();
-    await expansion.ensureLoaded();
-    return expansion.displayData ?? item.summary ?? '';
-  }
-
-  const canCopy = $derived(!isStreaming && /\S/.test(item.summary ?? ''));
 </script>
 
-<!--
-  Both reasoning kinds share one group name. The copy button's hover reveal is
-  scoped to its own row's `group/reasoning-row` ancestor, and these rows are
-  always sibling timeline leaves (never nested in one another), so a single
-  static name can't cross-talk — and Tailwind only generates the variant from a
-  literal it can scan, which is why it lives here, not in a prop.
--->
-<div class="group/reasoning-row">
-  <TranscriptDisclosureHeader
-    {expanded}
-    controls={bodyDomId}
-    ariaLabel={toggleAriaLabel}
-    testId={`${idPrefix}-toggle`}
-    class="!items-start rounded-[var(--radius-control)] px-1 py-1 hover:bg-surface-2/20"
-    buttonClass="!items-start"
-    onToggle={(event) => preservePaneScrollAnchor(pane, event, handleToggle)}
-  >
-    {#snippet icon()}<ToolKindIcon kind={iconKind} ariaLabel={iconAriaLabel} />{/snippet}
-    {#snippet label()}<span data-testid={`${idPrefix}-label`}>{labelText}</span>{/snippet}
-    {#snippet body()}
-      <TailClampedText
-        text={bodyText}
-        {expanded}
-        id={bodyDomId}
-        testId={`${idPrefix}-body`}
-      />
-    {/snippet}
-    {#snippet actions()}
-      <div class="shrink-0 flex items-center gap-1.5 text-[0.625rem] text-fg-hint pt-[2px]">
-        <span
-          data-testid={`${idPrefix}-copy-slot`}
-          class="flex h-7 w-7 shrink-0 items-center justify-center"
-        >
-          {#if canCopy}
-            <span class="opacity-0 transition-opacity duration-150 group-hover/reasoning-row:opacity-100 focus-within:opacity-100">
-              <CopyButton
-                text={getCopyText}
-                label={copyLabel}
-                onError={() => addToast('error', 'Failed to copy')}
-              />
-            </span>
-          {/if}
-        </span>
-        <time class="tabular-nums" datetime={isoTime}>{time}</time>
-      </div>
-    {/snippet}
-  </TranscriptDisclosureHeader>
-</div>
+<TranscriptDisclosureHeader
+  {expanded}
+  controls={bodyDomId}
+  ariaLabel={toggleAriaLabel}
+  testId={`${idPrefix}-toggle`}
+  class="!items-start rounded-[var(--radius-control)] px-1 py-1 hover:bg-surface-2/20"
+  buttonClass="!items-start"
+  onToggle={(event) => preservePaneScrollAnchor(pane, event, handleToggle)}
+>
+  {#snippet icon()}<ToolKindIcon kind={iconKind} ariaLabel={iconAriaLabel} />{/snippet}
+  {#snippet label()}<span data-testid={`${idPrefix}-label`}>{labelText}</span>{/snippet}
+  {#snippet body()}
+    <TailClampedText
+      text={bodyText}
+      {expanded}
+      id={bodyDomId}
+      testId={`${idPrefix}-body`}
+    />
+  {/snippet}
+  {#snippet actions()}
+    <time class="shrink-0 pt-[2px] text-[0.625rem] tabular-nums text-fg-hint" datetime={isoTime}>{time}</time>
+  {/snippet}
+</TranscriptDisclosureHeader>
