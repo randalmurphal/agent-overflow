@@ -116,7 +116,9 @@ it('uses the tighter trailing gap on group rows without adding a provider icon',
   });
   view.container.style.width = '240px';
   const title = view.getByTestId('thread-group-row-name').getBoundingClientRect();
-  const slot = view.getByTestId('thread-group-row-count').parentElement!.getBoundingClientRect();
+  // The count span is the trailing slot itself: it carries the same -ml-0.5
+  // and min-w-5 as ThreadRow's trailing slot, so the two row kinds align.
+  const slot = view.getByTestId('thread-group-row-count').getBoundingClientRect();
   expect(slot.left - title.right).toBe(4);
   expect(slot.width).toBe(20);
   expect(view.queryByTestId('thread-row-provider')).toBeNull();
