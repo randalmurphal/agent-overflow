@@ -13,6 +13,13 @@
    * this card is disabled with a spinner and MessageTimeline dims the rows
    * this edit is about to destroy.
    *
+   * Where the editor sits is the host's call (`placement`). On a desktop
+   * it replaces the bubble's body in the timeline row. On a phone that
+   * row hides behind the keyboard and the composer, so ChatView mounts it
+   * in the composer's slot instead as a sheet with its own header; the
+   * bubble stays in place, outlined, and the session is the same object
+   * either way.
+   *
    * Everything durable — the draft store, what was seeded, which
    * attachments this session uploaded, the stage, and the row's own view
    * state (`ui`: focus intent, caret, open discard confirm, the inline
@@ -32,7 +39,10 @@
     ComposerInputSurfaceHandle,
     ComposerInputValueInfo,
   } from '../composer/composerInputSurface';
+  import X from '@lucide/svelte/icons/x';
   import Button from '../primitives/Button.svelte';
+  import Icon from '../primitives/Icon.svelte';
+  import IconButton from '../primitives/IconButton.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import type { UserMessageEditSession } from './userMessageActions';
 
@@ -45,9 +55,12 @@
      */
     onCancel: () => void;
     onImageExpand?: (preview: ExpandedImagePreview) => void;
+    /** `inline` inside the message bubble; `sheet` in the composer's slot. */
+    placement?: 'inline' | 'sheet';
   }
 
-  let { pane, session, onCancel, onImageExpand }: Props = $props();
+  let { pane, session, onCancel, onImageExpand, placement = 'inline' }: Props = $props();
+  const sheet = $derived(placement === 'sheet');
 
   let surface: ComposerInputSurfaceHandle | undefined = $state(undefined);
 
@@ -185,14 +198,34 @@
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-  class="-mx-2 -my-1 rounded-[14px] border border-border-subtle bg-surface-1/70"
+  class={sheet
+    ? 'rounded-[var(--radius-composer)] border border-border-subtle bg-card shadow-sheet overflow-hidden'
+    : '-mx-2 -my-1 rounded-[14px] border border-border-subtle bg-surface-1/70'}
   data-testid="user-message-editor"
+  data-placement={placement}
   onkeydown={handleEditorKeydown}
   ondragenter={(event) => surface?.handleDragEnter(event)}
   ondragover={(event) => surface?.handleDragOver(event)}
   ondragleave={(event) => surface?.handleDragLeave(event)}
   ondrop={(event) => surface?.handleDrop(event)}
 >
+  {#if sheet}
+    <div class="flex items-center gap-2 border-b border-border-subtle pl-4 pr-2 py-1">
+      <span class="min-w-0 flex-1 truncate text-xs font-medium text-fg-muted">Editing message</span>
+      <IconButton
+        label="Cancel edit"
+        size="sm"
+        variant="ghost"
+        disabled={busy}
+        testId="user-message-edit-cancel"
+        onClick={requestCancel}
+      >
+        {#snippet children()}
+          <Icon icon={X} size={14} strokeWidth={2.2} />
+        {/snippet}
+      </IconButton>
+    </div>
+  {/if}
   <ComposerInputSurface
     bind:this={surface}
     {pane}
@@ -220,15 +253,17 @@
         {session.ui.commandError}
       </span>
     {/if}
-    <Button
-      variant="ghost"
-      size="sm"
-      disabled={busy}
-      testId="user-message-edit-cancel"
-      onclick={requestCancel}
-    >
-      {#snippet children()}Cancel{/snippet}
-    </Button>
+    {#if !sheet}
+      <Button
+        variant="ghost"
+        size="sm"
+        disabled={busy}
+        testId="user-message-edit-cancel"
+        onclick={requestCancel}
+      >
+        {#snippet children()}Cancel{/snippet}
+      </Button>
+    {/if}
     <!-- Destructive, not primary: sending here deletes every row after
          this message. Same red as the confirm dialogs it can open. -->
     <Button

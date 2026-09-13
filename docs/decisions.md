@@ -203,7 +203,12 @@ and anti-changes that live only here:
   refuse, never a live one that fails afterwards. Follow-ups the same day:
   the facts line shows a linked worktree's name and truncates it before the
   branch; the compact header menu carries Search messages; pin, multi-select
-  and project reorder stay off the phone (hold-only, not offered, not built).
+  and project reorder stay off the phone (hold-only, not offered, not built);
+  Settings opens with focus on the card, not the search field; editing a past
+  message on the phone happens in the composer's slot with the bubble
+  outlined, because the timeline row sits behind the keyboard; a touch tap
+  on Send keeps the input focused, so the keyboard's relayout cannot swallow
+  the tap and the keyboard stays up for the next message.
 
 ## Review pane
 

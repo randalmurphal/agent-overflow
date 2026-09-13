@@ -29,6 +29,8 @@
   import { userFacingError } from '../../utils/userFacingError';
   import type { UserMessageActions } from './userMessageActions';
   import { createEditResendFlow } from './editResendFlow.svelte';
+  import UserMessageEditor from './UserMessageEditor.svelte';
+  import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { providerSupports } from '../../providers/catalog';
   import {
     isUiRenderTraceEnabled,
@@ -89,6 +91,10 @@
     providerSupports(pane.thread?.provider, 'fork')
       && threadHasScope('threads:operate', pane.threadId, pane.thread?.projectId),
   );
+  // On a phone the edit happens in the composer's slot, where the keyboard
+  // already fits: the timeline row would sit behind it. The composer stays
+  // mounted underneath, hidden, so its draft and prompts survive the edit.
+  const editSheetSession = $derived(isCompactLayout() ? editResend.editSession : null);
   const userMessageActions = $derived<UserMessageActions>({
     onForkMessage: supportsMessageAnchorActions ? forkFromUserMessage : undefined,
     forkingItemId: forkingMessageItemId,
@@ -502,12 +508,27 @@
             </div>
           {/await}
         {/if}
-        <Composer
-          {pane}
-          {draft}
-          onImageExpand={openImagePreview}
-          sendSuspended={editResend.stage === 'executing'}
-        />
+        {#if editSheetSession}
+          <div class="relative px-6 pb-4 compact:pb-[max(1rem,env(safe-area-inset-bottom))]">
+            <div class="pointer-events-auto mx-auto w-full max-w-[68rem]" data-testid="composer-edit-sheet">
+              <UserMessageEditor
+                {pane}
+                session={editSheetSession}
+                placement="sheet"
+                onCancel={editSheetSession.onCancel}
+                onImageExpand={openImagePreview}
+              />
+            </div>
+          </div>
+        {/if}
+        <div class:hidden={editSheetSession !== null}>
+          <Composer
+            {pane}
+            {draft}
+            onImageExpand={openImagePreview}
+            sendSuspended={editResend.stage === 'executing'}
+          />
+        </div>
       </div>
     </div>
     <ThreadTerminalPlacement {pane} />

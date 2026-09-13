@@ -15,6 +15,7 @@ import type { ComposerDraftSnapshot } from '../../stores/composerDraftSnapshots'
 import UserMessage from './UserMessage.svelte';
 import type { UserMessageActions, UserMessageEditSession } from './userMessageActions';
 import { createUserMessageEditUiState } from './userMessageEditUi.svelte';
+import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { USER_MESSAGE_CLAMP_LINES } from './userMessageClamp';
 
 describe('<UserMessage>', () => {
@@ -428,6 +429,29 @@ describe('<UserMessage>', () => {
     expect(editButton).toBeDisabled();
     await fireEvent.click(editButton);
     expect(onEditMessage).not.toHaveBeenCalled();
+  });
+
+  it('keeps its read-only body and marks itself under compact, where the editor lives in the composer slot', () => {
+    setCompactLayoutForTest(true);
+    try {
+      const pane = makeActionsPane();
+      const item = makeItem({
+        id: 'user:1',
+        threadId: 'thread-1',
+        turnIndex: 1,
+        kind: 'user_text',
+        role: 'user',
+        summary: 'editable',
+      });
+      const { getByTestId, queryByTestId } = render(UserMessage, {
+        props: { pane, item, actions: { onEditMessage: vi.fn(), editSession: makeEditSession('user:1') } },
+      });
+      expect(queryByTestId('user-message-editor')).toBeNull();
+      expect(getByTestId('user-message-summary')).toHaveTextContent('editable');
+      expect(getByTestId('user-message-bubble')).toHaveAttribute('data-editing', 'true');
+    } finally {
+      setCompactLayoutForTest(false);
+    }
   });
 
   it('does not show the edit action for wire-only user messages', () => {

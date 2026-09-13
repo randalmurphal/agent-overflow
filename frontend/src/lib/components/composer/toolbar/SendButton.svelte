@@ -73,6 +73,16 @@
   let operationBlocked = $derived(Boolean(disabledReason));
   let showStop = $derived(!operationBlocked && (isTurnActive || sendInFlight) && !canSend);
 
+  // A touch tap must not blur the textarea. The blur closes the keyboard,
+  // the layout viewport grows (`interactive-widget=resizes-content`) and
+  // the bottom-anchored composer drops before the synthesized click lands,
+  // which reads as "the keyboard closed and nothing was sent". Keeping
+  // focus also keeps the keyboard up for the next message, as phone chat
+  // apps do. A mouse click still moves focus to the button, as before.
+  function keepInputFocus(event: PointerEvent): void {
+    if (event.pointerType !== 'mouse') event.preventDefault();
+  }
+
   function handleClick(): void {
     if (showStop) {
       onInterrupt();
@@ -115,6 +125,7 @@
     <button
       type="button"
       onclick={handleClick}
+      onpointerdown={keepInputFocus}
       {disabled}
       data-testid="composer-send"
       aria-label={idleLabel}
@@ -180,6 +191,7 @@
   <button
     type="button"
     onclick={handleClick}
+    onpointerdown={keepInputFocus}
     {disabled}
     data-testid={showStop ? 'composer-interrupt' : 'composer-send'}
     aria-label={showStop ? interruptLabel : idleLabel}

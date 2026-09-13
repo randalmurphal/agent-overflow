@@ -424,6 +424,40 @@ test('a viewport that shrinks under a pinned reader keeps the tail on screen', a
 // stacked screen on compact (docs/specs/remote-access.md § The phone
 // client): the rail is its own full-width screen, a section drills into
 // its page, and the page header's back affordance returns to the rail.
+// Editing a past message on a phone happens in the composer's slot, where
+// the keyboard already fits; the timeline row stays put, outlined. The
+// keyboard itself cannot be raised here, so this proves the placement and
+// that the main composer is out of the way, not the keyboard geometry.
+test('editing a past message on the phone happens in the composer slot', async ({
+  harness,
+  page,
+}) => {
+  await harness.open(page);
+  await page.getByTestId('thread-row').filter({ hasText: 'First task' }).click();
+  await expect(page.getByTestId('composer-root')).toBeVisible();
+  await page.getByLabel('Edit message and resend from here').tap();
+
+  const editor = page.getByTestId('user-message-editor');
+  await expect(editor).toBeVisible();
+  await expect(editor).toHaveAttribute('data-placement', 'sheet');
+  await expect(page.getByTestId('composer-root')).toBeHidden();
+  const bubble = page.getByTestId('user-message-bubble');
+  await expect(bubble).toHaveAttribute('data-editing', 'true');
+  await expect(bubble).toContainText('one');
+  await expect(editor.getByLabel('Message Input')).toBeFocused();
+  await expect(editor.getByLabel('Message Input')).toHaveValue('one');
+  // The sheet sits at the bottom of the screen, inside the viewport.
+  const box = (await editor.boundingBox())!;
+  const viewport = page.viewportSize()!;
+  expect(box.y + box.height).toBeLessThanOrEqual(viewport.height + 1);
+  expect(box.y + box.height).toBeGreaterThan(viewport.height * 0.6);
+
+  await page.getByTestId('user-message-edit-cancel').tap();
+  await expect(editor).toHaveCount(0);
+  await expect(page.getByTestId('composer-root')).toBeVisible();
+  await expect(bubble).not.toHaveAttribute('data-editing', 'true');
+});
+
 test('Settings is stacked screens on compact, with every control in reach', async ({
   harness,
   page,

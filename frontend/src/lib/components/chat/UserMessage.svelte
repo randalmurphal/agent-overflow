@@ -32,6 +32,7 @@
   import { commandSegments } from '../../utils/commandWords';
   import { formatTimeOfDay } from '../../utils/format';
   import type { UserMessageActions } from './userMessageActions';
+  import { isCompactLayout } from '../../stores/layoutMode.svelte';
 
   interface Props {
     item: Item;
@@ -93,6 +94,11 @@
   const editSession = $derived(
     actions?.editSession?.itemId === item.id ? actions.editSession : null,
   );
+  // On a phone the editor lives in the composer's slot (ChatView mounts
+  // it there): the row would sit behind the keyboard. The bubble then
+  // keeps its read-only body and is outlined as the message being edited.
+  const editsInline = $derived(editSession !== null && !isCompactLayout());
+  const editsElsewhere = $derived(editSession !== null && !editsInline);
   const canRequestFork = $derived(typeof actions?.onForkMessage === 'function');
   const forkBusy = $derived(actions?.forkingItemId === item.id);
 
@@ -261,13 +267,16 @@
   <div class="flex max-w-[82%] flex-col items-end">
     <div
       bind:this={bubbleEl}
-      class="rounded-[18px] rounded-br-[8px] border border-accent/20 bg-accent/15
-             px-4 py-2.5 text-[0.8125rem] leading-[1.55] text-fg shadow-sheet"
-      class:w-[46rem]={editSession !== null}
-      class:max-w-full={editSession !== null}
+      class={[
+        'rounded-[18px] rounded-br-[8px] border border-accent/20 bg-accent/15',
+        'px-4 py-2.5 text-[0.8125rem] leading-[1.55] text-fg shadow-sheet',
+        editsInline && 'w-[46rem] max-w-full',
+        editsElsewhere && 'ring-2 ring-accent/50',
+      ]}
       data-testid="user-message-bubble"
+      data-editing={editsElsewhere ? 'true' : undefined}
     >
-      {#if editSession && pane}
+      {#if editsInline && editSession && pane}
         <UserMessageEditor
           {pane}
           session={editSession}

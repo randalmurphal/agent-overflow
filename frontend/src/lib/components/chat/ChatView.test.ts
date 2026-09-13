@@ -30,6 +30,7 @@ import type { Item, Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { installPaneMocks, installThreadSwitchMocks, makeItem } from '../../../test/helpers/chat';
 import { resetLayoutMetricsForTest } from '../../stores/layoutMetrics.svelte';
+import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import {
   resetPaneLayoutForTest,
 } from '../../stores/paneLayout.svelte';
@@ -330,6 +331,32 @@ describe('<ChatView>', () => {
     await waitFor(() => expect(view.queryByTestId('user-message-editor')).toBeNull());
     expect(view.queryByText('Discard changes?')).toBeNull();
     expect(resend).not.toHaveBeenCalled();
+  });
+
+  it('edits in the composer slot under compact, with the composer hidden underneath and the row outlined', async () => {
+    setCompactLayoutForTest(true);
+    try {
+      const thread = seedThread();
+      const item = userItem('user:1', 1, 'Update one of the lines');
+      const pane = await buildPane(thread, [item]);
+      mockDrafts(new Map([[thread.id, '']]));
+
+      const view = render(ChatView, { props: { pane } });
+      const editor = await openMessageEditor(view);
+      expect(editor).toHaveAttribute('data-placement', 'sheet');
+      expect(within(view.getByTestId('composer-edit-sheet')).getByTestId('user-message-editor')).toBe(editor);
+      expect(within(view.getByTestId('user-message-bubble')).queryByTestId('user-message-editor')).toBeNull();
+      expect(view.getByTestId('user-message-bubble')).toHaveAttribute('data-editing', 'true');
+      expect(view.getByTestId('composer-root').closest('.hidden')).not.toBeNull();
+
+      await fireEvent.click(view.getByTestId('user-message-edit-cancel'));
+      await waitFor(() => expect(view.queryByTestId('user-message-editor')).toBeNull());
+      expect(view.queryByTestId('composer-edit-sheet')).toBeNull();
+      expect(view.getByTestId('composer-root').closest('.hidden')).toBeNull();
+      expect(view.getByTestId('user-message-bubble')).not.toHaveAttribute('data-editing');
+    } finally {
+      setCompactLayoutForTest(false);
+    }
   });
 
   it('confirms before discarding an edited message', async () => {

@@ -16,6 +16,19 @@ describe('<SendButton>', () => {
     expect(onInterrupt).not.toHaveBeenCalled();
   });
 
+  it('keeps the textarea focused under a touch tap, and yields it to a mouse click', async () => {
+    const { getByTestId } = render(SendButton, {
+      props: { canSend: true, isTurnActive: false, onSend: vi.fn(), onInterrupt: vi.fn() },
+    });
+    const btn = getByTestId('composer-send');
+    const touch = new PointerEvent('pointerdown', { pointerType: 'touch', bubbles: true, cancelable: true });
+    btn.dispatchEvent(touch);
+    expect(touch.defaultPrevented).toBe(true);
+    const mouse = new PointerEvent('pointerdown', { pointerType: 'mouse', bubbles: true, cancelable: true });
+    btn.dispatchEvent(mouse);
+    expect(mouse.defaultPrevented).toBe(false);
+  });
+
   it('is disabled when idle and canSend is false', () => {
     const { getByTestId } = render(SendButton, {
       props: {
