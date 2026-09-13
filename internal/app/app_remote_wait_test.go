@@ -130,7 +130,7 @@ func TestRemoteRunBackgroundsAfterWaitAndCompletionArrivesAsMessage(t *testing.T
 	f := newRemoteWaitFixture(t)
 	id := uuid.NewString()
 	receipt := f.run(t, id, 0.3)
-	if receipt.State != "running" || !receipt.Backgrounded || !strings.Contains(receipt.BackgroundHint, "background") {
+	if receipt.State != "running" || !receipt.Backgrounded || receipt.Notification != "pending" || !strings.Contains(receipt.BackgroundHint, "background") {
 		t.Fatalf("not backgrounded: %+v", receipt)
 	}
 	if !strings.HasPrefix(receipt.OutputHead, "banner line\n") || !strings.HasSuffix(receipt.Output, "x\n") || receipt.OmittedOutputBytes == 0 || !strings.Contains(receipt.OutputHint, "outputHead") {
@@ -203,7 +203,7 @@ func TestRemoteWaitReplyIsTheOnlyDelivery(t *testing.T) {
 	close(f.release)
 	select {
 	case receipt := <-done:
-		if receipt.State != "succeeded" || receipt.Backgrounded || !strings.Contains(receipt.Output, "done line") || !strings.HasPrefix(receipt.OutputHead, "banner line") {
+		if receipt.State != "succeeded" || receipt.Backgrounded || receipt.Notification != "dismissed" || !strings.Contains(receipt.Output, "done line") || !strings.HasPrefix(receipt.OutputHead, "banner line") {
 			t.Fatalf("parked call reply: %+v", receipt)
 		}
 	case <-time.After(5 * time.Second):

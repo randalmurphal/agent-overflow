@@ -203,6 +203,11 @@ func (a *App) callRemoteMCP(w http.ResponseWriter, ctx context.Context, req thre
 		var reply remoteMCPResult
 		reply, err = a.waitRemoteResult(ctx, waitCtx, computerID, command, options)
 		if err == nil {
+			if reply.State != "running" && reply.Notification == "pending" {
+				// This reply is the delivery; say so instead of promising a
+				// message that the dismissal below prevents.
+				reply.Notification = "dismissed"
+			}
 			result = reply
 			if reply.State != "running" {
 				settled = &reply
