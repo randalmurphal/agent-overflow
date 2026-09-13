@@ -78,6 +78,18 @@ describe('App integration — settings launcher', () => {
     expect(rendered.getByTestId('pane-host')).toBeInTheDocument();
   }, LAZY_CASE_TIMEOUT_MS);
 
+  it('opens with focus on the card, not the search field, so no keyboard is raised', async () => {
+    const rendered = render(App);
+    await flush(10);
+
+    await openSettingsFromSidebar(rendered);
+    await flush(2);
+
+    const card = rendered.getByTestId(SETTINGS_TESTID);
+    expect(document.activeElement).toBe(card);
+    expect(rendered.getByTestId('settings-search')).not.toBe(document.activeElement);
+  }, LAZY_CASE_TIMEOUT_MS);
+
   it('closes settings on a scrim click', async () => {
     const rendered = render(App);
     await flush(10);

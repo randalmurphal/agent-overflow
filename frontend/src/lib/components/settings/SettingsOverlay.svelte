@@ -27,6 +27,7 @@
   onScrimClick={onClose}
   scrimTestId="settings-overlay-scrim"
   testId="settings-overlay"
+  initialFocus="container"
 >
   <SettingsView {initialSection} {onClose} />
 </OverlayShell>

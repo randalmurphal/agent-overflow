@@ -25,10 +25,24 @@
     onScrimClick: () => void;
     scrimTestId?: string;
     testId?: string;
+    /**
+     * Where focus lands on open. `container` keeps the card itself focused
+     * so a surface that leads with a text field does not raise the phone
+     * keyboard; the user reaches the field by tapping it or with Tab.
+     */
+    initialFocus?: 'first' | 'container';
     children: Snippet;
   }
 
-  let { open, ariaLabel, onScrimClick, scrimTestId, testId, children }: Props = $props();
+  let {
+    open,
+    ariaLabel,
+    onScrimClick,
+    scrimTestId,
+    testId,
+    initialFocus = 'first',
+    children,
+  }: Props = $props();
 
   function handleScrimClick(event: MouseEvent): void {
     if (event.target === event.currentTarget) onScrimClick();
@@ -45,7 +59,7 @@
     transition:fade={{ duration: 120 }}
   >
     <div
-      use:focusTrap={{ active: open }}
+      use:focusTrap={{ active: open, initialFocus }}
       class="flex h-full w-full max-w-5xl flex-col overflow-hidden rounded-[var(--radius-card)] border border-border-subtle bg-surface-1 shadow-modal compact:max-w-none compact:rounded-none compact:border-0"
       role="dialog"
       aria-modal="true"

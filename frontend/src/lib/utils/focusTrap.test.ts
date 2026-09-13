@@ -95,6 +95,17 @@ describe('focusTrap', () => {
     expect(document.activeElement?.id).toBe('b');
   });
 
+  it('focuses the container itself under initialFocus: container, even past [data-autofocus]', async () => {
+    const host = mountTrap(
+      '<button id="a">A</button><input data-autofocus id="b" /><button id="c">C</button>',
+      { active: true, initialFocus: 'container' },
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(document.activeElement).toBe(host);
+    expect(host.tabIndex).toBe(-1);
+  });
+
   it('restores focus to the previously active element on destroy', async () => {
     const trigger = document.createElement('button');
     trigger.id = 'trigger';

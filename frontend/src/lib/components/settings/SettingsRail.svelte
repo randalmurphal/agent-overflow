@@ -124,7 +124,6 @@
         placeholder="Search settings"
         aria-label="Search settings"
         data-testid="settings-search"
-        data-autofocus
         autocomplete="off"
         spellcheck="false"
         onkeydown={handleSearchKeydown}

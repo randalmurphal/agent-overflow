@@ -38,6 +38,14 @@ export interface FocusTrapOptions {
    * otherwise picks the first focusable element.
    */
   autoFocus?: boolean;
+  /**
+   * Where the initial focus lands. `first` (default) prefers a
+   * `data-autofocus` descendant, then the first focusable element.
+   * `container` focuses the trapped node itself, so a surface whose first
+   * control is a text field opens without raising the phone keyboard; Tab
+   * then enters at the first focusable as usual.
+   */
+  initialFocus?: 'first' | 'container';
 }
 
 const FOCUSABLE_SELECTOR = [
@@ -147,7 +155,18 @@ function removeListenerIfIdle(): void {
   listenerInstalled = false;
 }
 
-function focusInitial(node: HTMLElement): void {
+function focusContainer(node: HTMLElement): void {
+  if (node.tabIndex < 0) {
+    node.tabIndex = -1;
+  }
+  node.focus();
+}
+
+function focusInitial(node: HTMLElement, where: 'first' | 'container'): void {
+  if (where === 'container') {
+    focusContainer(node);
+    return;
+  }
   const explicit = node.querySelector<HTMLElement>('[data-autofocus]');
   if (explicit) {
     explicit.focus();
@@ -160,10 +179,7 @@ function focusInitial(node: HTMLElement): void {
   }
   // Fall back to focusing the modal container itself so the browser
   // doesn't leave focus on whatever was active before.
-  if (node.tabIndex < 0) {
-    node.tabIndex = -1;
-  }
-  node.focus();
+  focusContainer(node);
 }
 
 export const focusTrap: Action<HTMLElement, FocusTrapOptions | undefined> = (node, options) => {
@@ -186,7 +202,7 @@ export const focusTrap: Action<HTMLElement, FocusTrapOptions | undefined> = (nod
       // (e.g. `bind:this` populations) before we look for focusables.
       queueMicrotask(() => {
         if (!instance) return;
-        focusInitial(node);
+        focusInitial(node, opts?.initialFocus ?? 'first');
       });
     }
   }
