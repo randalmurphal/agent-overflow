@@ -1,6 +1,9 @@
 <script lang="ts">
-  // Per-thread usage chip for the composer strip — the "what has this
-  // cost" counterpart to ComposerWorkspaceStrip's "where am I" cluster.
+  // Per-thread usage chip: the "what has this cost" counterpart to the
+  // header's "where am I". Two hosts: the composer's workspace strip on
+  // desktop (`strip`), and the right end of the activity rail under
+  // compact (`rail`), where it wears the rail's chip box so the row stays
+  // the height twin of the composer's reservation spacer.
   // Hidden until the lifetime usage bucket has data, matching
   // SystemStatsFooter's hide-until-data approach for a fresh thread with
   // no settled turns yet. Click opens a popover with the full token/cost
@@ -8,28 +11,42 @@
   // the closed chip never needs it.
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { UsageQuery } from '../../stores/bindings';
-  import { createUsageStats } from '../../stores/usageQuery.svelte';
+  import { createUsageStats, type UsageStats } from '../../stores/usageQuery.svelte';
   import { formatTokens } from '../../utils/format';
   import { displayUsageModelLabel } from '../../utils/modelLabels';
   import { formatUsageCostOrNull, USAGE_COST_EXPLANATION } from '../../utils/usageDisplay';
   import { composerTriggerClasses } from './triggerClasses';
+  import { activityRailChipClasses } from './activityRailClasses';
   import Popover from '../primitives/Popover.svelte';
 
   interface Props {
     pane: ThreadPane;
+    variant?: 'strip' | 'rail';
+    /** A host-owned lifetime query to render from instead of fetching one
+     *  here (the activity rail host shares its own with its predicate). */
+    stats?: UsageStats;
   }
 
-  let { pane }: Props = $props();
+  let { pane, variant = 'strip', stats }: Props = $props();
+
+  const railTriggerClasses = [
+    activityRailChipClasses,
+    'shrink-0 text-fg-muted transition-colors cursor-pointer hover:bg-surface-2/45 hover:text-fg',
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35',
+  ].join(' ');
+  let triggerClasses = $derived(variant === 'rail' ? railTriggerClasses : composerTriggerClasses);
 
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
   let open = $state(false);
 
-  // Both queries subscribe to reported usage while mounted.
-  const lifetime = createUsageStats(() => {
+  // Both queries subscribe to reported usage while mounted. The chip's own
+  // lifetime query stays null (no fetch) while a host supplies `stats`.
+  const ownLifetime = createUsageStats(() => {
     const threadId = pane.threadId;
-    if (!threadId) return null;
+    if (stats || !threadId) return null;
     return new UsageQuery({ threadId });
   });
+  let lifetime = $derived(stats ?? ownLifetime);
 
   let lifetimeBucket = $derived(lifetime.buckets?.[0] ?? null);
 
@@ -121,7 +138,7 @@
     aria-expanded={open}
     data-testid="usage-chip-trigger"
     title={chipTitle}
-    class="{composerTriggerClasses} tabular-nums"
+    class="{triggerClasses} tabular-nums"
   >
     {chipLabel}
   </button>
@@ -181,5 +198,5 @@
     {/snippet}
   </Popover>
 {:else if lifetime.error}
-  <span role="status" class="text-xs text-fg-hint" title={lifetime.error}>Usage unavailable</span>
+  <span role="status" class="{variant === 'rail' ? `${activityRailChipClasses} shrink-0` : ''} text-xs text-fg-hint" title={lifetime.error}>Usage unavailable</span>
 {/if}

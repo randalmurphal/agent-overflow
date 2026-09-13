@@ -31,13 +31,27 @@
   // hidden, so segments must never wrap. Every segment is shrink-0 except
   // the todos toggle, which shrinks so its preview can ellipsize when the
   // pane is too narrow to fit everything (see activityRailClasses.ts).
+  // Past that, the row steps down a measured density ladder
+  // (activityRailDensity.ts): the preview and the working verb go first,
+  // then the segment names, so at phone widths the row is icons, counts,
+  // the timer and the cost, and nothing clips.
+  //
+  // Under compact the row also carries the thread's usage chip at its
+  // right end (the workspace strip does not mount there); the host owns
+  // the usage query and mounts the rail whenever the chip has usage to show.
 
+  import { onMount } from 'svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { UserInputRequest } from '../../types/events';
+  import { isCompactLayout } from '../../stores/layoutMode.svelte';
+  import { watchDensity } from './densityLadder';
+  import { measureActivityRailDensity, type ActivityRailDensity } from './activityRailDensity';
+  import UsageChip from './UsageChip.svelte';
   import { getActiveTurn, isThreadWorking } from '../../stores/threadStatuses.svelte';
   import { isThreadCompacting } from '../../stores/compactingState.svelte';
   import { formatElapsedSeconds } from '../../utils/format';
   import type { SharedNowClock } from '../chat/useRunningElapsed.svelte';
+  import type { UsageStats } from '../../stores/usageQuery.svelte';
   import { activityRailChipClasses, activityRailRowClasses } from './activityRailClasses';
   import type { BackgroundController } from './activityRailBackground.svelte';
   import { stableTurnKey } from '../../spinners/pick';
@@ -54,6 +68,8 @@
     bg: BackgroundController;
     /** Composer-owned shared 1Hz clock for elapsed labels + retention. */
     clock: SharedNowClock;
+    /** Composer-owned lifetime usage for the compact usage chip. */
+    usage: UsageStats;
     /** Active pending user-input request, or null when none is pending or an
      *  approval is blocking. Drives the accent "Input requested" chip and,
      *  while present, suppresses the working timer (the agent is blocked on
@@ -67,6 +83,7 @@
     pane,
     bg,
     clock,
+    usage,
     inputRequest = null,
     inputCollapsed = false,
     onToggleInput = () => {},
@@ -130,6 +147,17 @@
   // working hairline/LEDs/timer are suppressed and only the "Input requested"
   // chip shows. `showWorking` gates every working-segment render below.
   let showWorking = $derived(isWorking && inputRequest === null);
+
+  let rowEl: HTMLDivElement | undefined = $state(undefined);
+  let density = $state<ActivityRailDensity>('full');
+  onMount(() => {
+    const el = rowEl;
+    if (!el) return;
+    return watchDensity(el, () => {
+      if (rowEl !== el) return;
+      density = measureActivityRailDensity(el);
+    });
+  });
 </script>
 
 <div
@@ -145,7 +173,7 @@
       data-testid="activity-rail-hairline"
     ></span>
   {/if}
-  <div class={activityRailRowClasses}>
+  <div bind:this={rowEl} class={activityRailRowClasses} data-density={density} data-activity-rail-row>
     {#if inputRequest}
       <button
         type="button"
@@ -195,6 +223,7 @@
         aria-controls="activity-rail-todos-body"
         aria-expanded={todosOpen}
         data-testid="activity-rail-todos-toggle"
+        data-activity-rail-shrinker
       >
         <Icon
           icon={todosOpen ? ChevronDown : ChevronRight}
@@ -202,7 +231,7 @@
           strokeWidth={2.25}
           class="shrink-0 text-fg-hint/70"
         />
-        <span class="shrink-0">Todos</span>
+        <span class="shrink-0" data-activity-rail-name>Todos</span>
         <span
           class="shrink-0 rounded-[var(--radius-field)] bg-accent/15 px-1 text-[0.625rem] font-medium text-accent"
           data-testid="activity-rail-todos-count"
@@ -211,6 +240,7 @@
           <span
             class="min-w-0 truncate text-fg-hint/70"
             data-testid="activity-rail-todos-preview"
+            data-activity-rail-preview
           >{inProgressPreview}</span>
         {/if}
       </button>
@@ -234,7 +264,7 @@
           strokeWidth={2.25}
           class="shrink-0 text-fg-hint/70"
         />
-        <span>Background</span>
+        <span data-activity-rail-name>Background</span>
         <span
           class="rounded-[var(--radius-field)] bg-accent/15 px-1 text-[0.625rem] font-medium text-accent"
           data-testid="activity-rail-background-count"
@@ -247,6 +277,12 @@
           ></span>
         {/if}
       </button>
+    {/if}
+
+    {#if isCompactLayout()}
+      <span class="ml-auto flex shrink-0 items-center pl-2" data-testid="activity-rail-usage">
+        <UsageChip {pane} variant="rail" stats={usage} />
+      </span>
     {/if}
   </div>
 
@@ -264,3 +300,19 @@
     />
   {/if}
 </div>
+
+<style>
+  /* The density rungs (activityRailDensity.ts). `full` holds the todos
+     toggle open to a readable preview rather than letting it ellipsize to
+     nothing (the toggle clips its own content, so the minimum has to sit
+     on the toggle for the row's overflow read to see it); the measure
+     then only calls the rung a fit when the words actually show. */
+  :global([data-activity-rail-row][data-density='full'] [data-activity-rail-shrinker]:has([data-activity-rail-preview])) {
+    min-width: 11rem;
+  }
+  :global([data-activity-rail-row]:not([data-density='full']) [data-activity-rail-preview]),
+  :global([data-activity-rail-row]:not([data-density='full']) [data-activity-rail-verb]),
+  :global([data-activity-rail-row][data-density='minimal'] [data-activity-rail-name]) {
+    display: none;
+  }
+</style>

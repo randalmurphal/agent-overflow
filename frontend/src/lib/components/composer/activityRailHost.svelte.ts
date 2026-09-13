@@ -20,6 +20,9 @@
 
 import type { ThreadPane } from '../../stores/thread.svelte';
 import { getActiveTurn, isThreadWorking } from '../../stores/threadStatuses.svelte';
+import { isCompactLayout } from '../../stores/layoutMode.svelte';
+import { UsageQuery } from '../../stores/bindings';
+import { createUsageStats, type UsageStats } from '../../stores/usageQuery.svelte';
 import {
   createSharedNowClock,
   type SharedNowClock,
@@ -32,6 +35,9 @@ import {
 export interface ActivityRailHost {
   readonly bg: BackgroundController;
   readonly clock: SharedNowClock;
+  /** The thread's lifetime usage, fetched only under compact, where the
+   *  rail carries the usage chip; the chip renders from this same query. */
+  readonly usage: UsageStats;
   readonly railVisible: boolean;
   /** Subscribe the background controller; returns a disposer. */
   mount(): () => void;
@@ -58,16 +64,30 @@ export function createActivityRailHost(
     return wantsClockForWorking || wantsClockForBackground;
   });
 
+  // Under compact the rail also carries the thread's usage chip (the
+  // workspace strip does not mount there), so it shows whenever the chip
+  // has something to say: a lifetime bucket, or the error the chip reports
+  // in its place. The host owns the query so the predicate and the chip
+  // read one fetch; on desktop the query is null and never runs.
+  const usage = createUsageStats(() => {
+    const threadId = getPane().threadId;
+    if (!isCompactLayout() || !threadId) return null;
+    return new UsageQuery({ threadId });
+  });
+  const hasSpend = $derived((usage.buckets?.[0] ?? null) !== null || usage.error !== null);
+
   const railVisible = $derived(
     hasInputRequest() ||
       isThreadWorking(getPane().threadId) ||
       getPane().liveTodo !== null ||
-      bg.count > 0,
+      bg.count > 0 ||
+      hasSpend,
   );
 
   return {
     get bg() { return bg; },
     get clock() { return clock; },
+    get usage() { return usage; },
     get railVisible() { return railVisible; },
     mount: () => bg.mount(),
   };

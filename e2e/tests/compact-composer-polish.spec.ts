@@ -1,5 +1,6 @@
 // Phone gestures and geometry over the production SPA: a meter stays open,
-// workspace/cost fit without horizontal overflow, a picked file lands in the draft, and an
+// the header's facts line and the rail's cost fit without horizontal
+// overflow and open their pickers, a picked file lands in the draft, and an
 // expanded Bash row exposes the full command before its output.
 import { test, expect } from './fixtures.js';
 import {
@@ -29,22 +30,39 @@ test('phone meters, attachments, workspace and command details remain usable', a
   await page.getByTestId('chat-header-title').tap();
   await expect(page.getByRole('tooltip')).toHaveCount(0);
 
-  await expect(page.getByTestId('usage-chip-trigger')).toBeVisible();
+  // No workspace strip on the phone: the cost rides the activity rail and
+  // the workspace facts are the header's own line.
+  await expect(page.getByTestId('composer-workspace-strip')).toHaveCount(0);
+  const rail = page.getByTestId('activity-rail');
+  await expect(rail.getByTestId('usage-chip-trigger')).toBeVisible();
   for (const width of [412, 360, 320]) {
     await page.setViewportSize({ width, height: 850 });
-    const strip = page.getByTestId('composer-workspace-strip');
-    await expect.poll(() => strip.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
-    for (const id of ['workspace-picker-trigger', 'usage-chip-trigger', 'composer-attach']) {
+    const railRow = rail.locator('[data-activity-rail-row]');
+    await expect.poll(() => railRow.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+    const facts = page.getByTestId('chat-header-facts');
+    await expect.poll(() => facts.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+    for (const id of ['chat-header-project', 'chat-header-branch', 'chat-header-worktree', 'usage-chip-trigger', 'composer-attach']) {
       const box = await page.getByTestId(id).boundingBox();
-      expect(box).not.toBeNull();
-      expect(box!.x).toBeGreaterThanOrEqual(0);
-      expect(box!.x + box!.width).toBeLessThanOrEqual(width);
+      expect(box, id).not.toBeNull();
+      expect(box!.x, id).toBeGreaterThanOrEqual(0);
+      expect(box!.x + box!.width, id).toBeLessThanOrEqual(width);
     }
+    // The worktree icon keeps its box at the end of the line at every width.
+    const worktree = (await page.getByTestId('chat-header-worktree').boundingBox())!;
+    const branch = (await page.getByTestId('chat-header-branch').boundingBox())!;
+    expect(worktree.width).toBeGreaterThanOrEqual(20);
+    expect(worktree.x).toBeGreaterThanOrEqual(branch.x + branch.width - 1);
   }
-  await page.getByTestId('workspace-picker-trigger').tap();
-  await expect(page.getByRole('menu', { name: 'Workspace options' })).toBeVisible();
-  await page.getByRole('menuitem', { name: /Branch/ }).tap();
+  await page.getByTestId('chat-header-branch').tap();
   await expect(page.getByRole('menu', { name: 'Branches', exact: true })).toBeVisible();
+  await page.getByTestId('chat-header-title').tap();
+  await expect(page.getByRole('menu', { name: 'Branches', exact: true })).toHaveCount(0);
+  await page.getByTestId('chat-header-worktree').tap();
+  await expect(page.getByRole('menu', { name: 'Workspace', exact: true })).toBeVisible();
+  await expect(page.getByRole('menuitem', { name: /New Worktree/i })).toBeVisible();
+  await page.getByTestId('chat-header-title').tap();
+  await page.getByTestId('usage-chip-trigger').tap();
+  await expect(page.getByTestId('usage-chip-popover')).toBeVisible();
   await page.getByTestId('chat-header-title').tap();
 
   const chooser = page.waitForEvent('filechooser');

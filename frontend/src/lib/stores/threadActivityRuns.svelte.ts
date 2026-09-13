@@ -105,12 +105,10 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
   expandForReveal(runId: string): void;
   /**
    * What a run with no explicit state does in this thread: the bulk override
-   * if one has been taken, otherwise the `activityRunDefault` setting.
-   *
-   * The header's collapse-all control renders from this rather than from a
-   * survey of the runs, so the button means one thing at all times. A survey
-   * would have to answer "all of WHICH runs" — only the loaded window holds
-   * any — and would flip its own label as older history paged in.
+   * if one has been taken, otherwise the `activityRunDefault` setting. No
+   * chrome surfaces the bulk override today (the chat header's toggle was
+   * removed 2026-09-13; the setting is the reader's control); the layer
+   * remains the registry's one thread-wide default.
    */
   readonly bulkCollapsed: boolean;
   /**
@@ -507,9 +505,9 @@ export function createThreadActivityRuns(
   let nextRunId = 1;
 
   // The thread's own collapse default, or null to follow the setting. Set by
-  // the header's collapse-all control and reset on thread switch: it is a view
-  // action taken on a thread ("I don't want to read activity in THIS one"),
-  // and carrying it into an unrelated thread would surprise.
+  // `setAllCollapsed` and reset on thread switch: it is a view action taken
+  // on a thread ("I don't want to read activity in THIS one"), and carrying
+  // it into an unrelated thread would surprise.
   let bulkCollapsed = $state<boolean | null>(null);
 
   // Collapse state and the mount window both ride on the projected node, so

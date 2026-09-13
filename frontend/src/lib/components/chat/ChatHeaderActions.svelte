@@ -12,10 +12,9 @@
   // is a view onto the same entry — so two panes on one worktree share one
   // subscription and can never show different Commit/Push state.
   import SquareTerminal from '@lucide/svelte/icons/square-terminal';
-  import ChevronsDownUp from '@lucide/svelte/icons/chevrons-down-up';
-  import ChevronsUpDown from '@lucide/svelte/icons/chevrons-up-down';
   import Globe from '@lucide/svelte/icons/globe';
   import Ellipsis from '@lucide/svelte/icons/ellipsis';
+  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getProject, getProjectLabelText } from '../../stores/projects.svelte';
   import { addToast } from '../../stores/toast.svelte';
@@ -41,6 +40,7 @@
   import PrBadge from '../git/PrBadge.svelte';
   import WorkspaceDiffBadge from '../git/WorkspaceDiffBadge.svelte';
   import OpenInEditorControl from './OpenInEditorControl.svelte';
+  import { createThreadTitleRegenerate } from './threadTitleRegenerate.svelte';
   import Button from '../primitives/Button.svelte';
   import Icon from '../primitives/Icon.svelte';
   import ProviderIcon from '../shared/ProviderIcon.svelte';
@@ -53,6 +53,9 @@
 
   let { pane }: { pane: ThreadPane } = $props();
   let compact = $derived(isCompactLayout());
+  // Under compact the title's regenerate glyph has no row to sit on, so
+  // the action is a row of the menu instead (same state, same run).
+  const regenerate = createThreadTitleRegenerate(() => pane);
 
   // Take-control is a claude-tui-only affordance: it opens a paired terminal
   // pane mirroring the live TUI session. Absent for other providers (an
@@ -130,22 +133,6 @@
       return;
     }
     toggle();
-  }
-
-  // One control, not two. Its meaning comes from the thread's current default
-  // rather than a survey of the rendered runs: only the loaded window holds
-  // any, so a survey would answer "all of which runs" differently as older
-  // history pages in — and a button that relabels itself while you scroll is
-  // worse than one that always says what it will do.
-  let runsCollapsed = $derived(pane.activityRuns.bulkCollapsed);
-  let runsToggleLabel = $derived(
-    runsCollapsed ? 'Expand all activity runs' : 'Collapse all activity runs',
-  );
-
-  function toggleAllRuns(): void {
-    // The viewport-bottom hold is the registry's own (see
-    // `ThreadActivityRuns.setAllCollapsed`) — do not wrap.
-    pane.activityRuns.setAllCollapsed(!runsCollapsed);
   }
 
   // The browser chip renders only while this thread has live browser pages,
@@ -299,7 +286,16 @@
           checked={pane.showTerminal}
           onSelect={() => pick(() => runTerminalToggle(pane))}
         />
-        <MenuItem label={runsToggleLabel} onSelect={() => pick(toggleAllRuns)} />
+        <MenuItem
+          label="Regenerate title"
+          disabled={regenerate.pending || regenerate.ungranted}
+          title={regenerate.title}
+          onSelect={() => pick(() => regenerate.run())}
+        >
+          {#snippet icon()}
+            <Icon icon={RefreshCw} size={12} strokeWidth={2} class={regenerate.pending ? 'animate-spin' : ''} />
+          {/snippet}
+        </MenuItem>
         {#if isClaudeTui}
           <MenuItem
             label="Take control"
@@ -336,31 +332,6 @@
       onActivate={toggleWorkspaceReview}
     />
   {/if}
-
-  <!-- Collapse/expand every activity run in this thread. Also the only
-         VISIBLE affordance for the run collapse mechanic: a single run is
-         toggled by its rail, which consumes no width and so shows nothing
-         until you find it. The setting under Settings → Chat → Activity
-         runs is the durable default; this is the per-thread override. -->
-    <Button
-      variant="secondary"
-      size="xs"
-      pressed={runsCollapsed}
-      ariaLabel={runsToggleLabel}
-      title={runsToggleLabel}
-      onclick={toggleAllRuns}
-      testId="activity-runs-toggle"
-      class="shrink-0 w-6 px-0"
-    >
-      {#snippet children()}
-        <Icon
-          icon={runsCollapsed ? ChevronsUpDown : ChevronsDownUp}
-          size={12}
-          strokeWidth={2}
-          class="opacity-90"
-        />
-      {/snippet}
-  </Button>
 
   {#if projectBadge}
     <OpenInEditorControl backend={threadMachine(pane.threadId ?? '', pane.thread?.projectId)} path={projectBadge.path} name={projectBadge.name} />

@@ -23,8 +23,12 @@
   interface Props {
     pane: ThreadPane;
     onPaneDragStart?: (event: DragEvent) => void;
-    /** Allow the complete title to wrap in compact chat headers. */
-    wrap?: boolean;
+    /**
+     * Compact chat header: the title keeps one line and takes the row's
+     * spare width. Instead of an ellipsis, the text fades at the edge it
+     * runs past and the line swipes sideways to read the rest.
+     */
+    fade?: boolean;
     titleTestId?: string;
     inputTestId?: string;
   }
@@ -32,7 +36,7 @@
   let {
     pane,
     onPaneDragStart,
-    wrap = false,
+    fade = false,
     titleTestId = 'pane-title',
     inputTestId = 'pane-title-input',
   }: Props = $props();
@@ -98,6 +102,36 @@
     }
   }
 
+  // The fade is two custom properties on the scroller, set from its
+  // scroll position: a fade appears only on an edge with text beyond it,
+  // so a title that fits shows none and a swiped-to-the-end title fades
+  // on the left alone. Measured on scroll, on resize and on a title change.
+  const FADE_PX = 24;
+  let scrollerEl: HTMLElement | undefined = $state(undefined);
+  const titleText = $derived(pane.thread?.title ?? '');
+
+  function updateFade(): void {
+    const el = scrollerEl;
+    if (!el) return;
+    const beyondRight = el.scrollWidth - el.clientWidth - el.scrollLeft;
+    el.style.setProperty('--fade-left', el.scrollLeft > 1 ? `${FADE_PX}px` : '0px');
+    el.style.setProperty('--fade-right', beyondRight > 1 ? `${FADE_PX}px` : '0px');
+  }
+
+  $effect(() => {
+    const el = scrollerEl;
+    if (!el) return;
+    if (typeof ResizeObserver === 'undefined') return;
+    const sizes = new ResizeObserver(() => updateFade());
+    sizes.observe(el);
+    return () => sizes.disconnect();
+  });
+
+  $effect(() => {
+    void titleText;
+    updateFade();
+  });
+
   function handleKeydown(e: KeyboardEvent): void {
     // Enter confirms the IME candidate while composing a CJK title; committing
     // the rename here would save the pre-composition text and exit edit mode.
@@ -141,11 +175,47 @@
       title={`${pane.thread.title} (right-click to rename)`}
       class={[
         'text-sm font-medium min-w-0 text-left bg-transparent border-none px-1.5 py-0.5 rounded-[var(--radius-field)] text-fg transition-colors hover:bg-surface-2/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
-        wrap ? 'flex-1 whitespace-normal [overflow-wrap:anywhere]' : 'truncate',
+        fade ? 'flex-1 overflow-hidden' : 'truncate',
         onPaneDragStart ? 'cursor-grab active:cursor-grabbing' : 'cursor-default',
       ].join(' ')}
     >
-      {pane.thread.title}
+      {#if fade}
+        <span
+          bind:this={scrollerEl}
+          onscroll={updateFade}
+          class="pane-title-fade block overflow-x-auto overflow-y-hidden whitespace-nowrap"
+          data-testid="{titleTestId}-scroller"
+        >{pane.thread.title}</span>
+      {:else}
+        {pane.thread.title}
+      {/if}
     </button>
   {/if}
 {/if}
+
+<style>
+  /* A swipeable line, not a scrollbar: hide the bar, keep the swipe from
+     pulling the screen sideways, and mask the edge that has more text
+     behind it. The fade widths are set from the scroll position. */
+  .pane-title-fade {
+    scrollbar-width: none;
+    overscroll-behavior-x: contain;
+    -webkit-mask-image: linear-gradient(
+      to right,
+      transparent,
+      black var(--fade-left, 0px),
+      black calc(100% - var(--fade-right, 0px)),
+      transparent
+    );
+    mask-image: linear-gradient(
+      to right,
+      transparent,
+      black var(--fade-left, 0px),
+      black calc(100% - var(--fade-right, 0px)),
+      transparent
+    );
+  }
+  .pane-title-fade::-webkit-scrollbar {
+    display: none;
+  }
+</style>

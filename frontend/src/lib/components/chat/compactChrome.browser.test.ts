@@ -29,37 +29,64 @@ afterEach(async () => {
   setCompactLayoutForTest(false);
 });
 
-it.each([320, 360, 412])('keeps complete title and review badge visible at %ipx', async (width) => {
+const LONG_TITLE = 'Prepare Remote Access Deployment and Validate Every Connected Device IncludingVeryLongUnbrokenNames';
+
+it.each([320, 360, 412])('keeps the title on one swipeable line beside the badge and menu at %ipx', async (width) => {
   host.style.width = `${width}px`;
-  const title = 'Prepare Remote Access Deployment and Validate Every Connected Device IncludingVeryLongUnbrokenNames';
-  const pane = await buildPane(makeThread({ title }));
+  const pane = await buildPane(makeThread({ title: LONG_TITLE }));
   mounted.push(mount(ChatHeader, { target: host, props: { pane } }));
   await tick();
   const titleEl = host.querySelector('[data-testid="chat-header-title"]') as HTMLElement;
+  const scroller = host.querySelector('[data-testid="chat-header-title-scroller"]') as HTMLElement;
   const badge = host.querySelector('[data-testid="review-toggle"]') as HTMLElement;
+  const more = host.querySelector('[data-testid="chat-header-more"]') as HTMLElement;
   const rect = host.getBoundingClientRect();
-  expect(titleEl.innerText).toBe(title);
-  expect(titleEl.scrollWidth).toBeLessThanOrEqual(titleEl.clientWidth + 1);
-  expect(titleEl.getBoundingClientRect().height).toBeGreaterThan(35);
-  expect(badge.getBoundingClientRect().top).toBeGreaterThanOrEqual(titleEl.getBoundingClientRect().bottom);
+  // The whole title is in the DOM on one line, no ellipsis: the scroller
+  // has text past its edge, fades that edge, and swipes to it.
+  expect(scroller.innerText).toBe(LONG_TITLE);
+  expect(titleEl.getBoundingClientRect().height).toBeLessThan(30);
+  expect(scroller.scrollWidth).toBeGreaterThan(scroller.clientWidth + 1);
+  expect(scroller.style.getPropertyValue('--fade-right')).toBe('24px');
+  expect(scroller.style.getPropertyValue('--fade-left')).toBe('0px');
+  scroller.scrollLeft = scroller.scrollWidth;
+  scroller.dispatchEvent(new Event('scroll'));
+  expect(scroller.style.getPropertyValue('--fade-left')).toBe('24px');
+  expect(scroller.style.getPropertyValue('--fade-right')).toBe('0px');
+  // Badge and menu share the title's row and stay inside the viewport.
+  const titleBox = titleEl.getBoundingClientRect();
+  expect(badge.getBoundingClientRect().top).toBeLessThan(titleBox.bottom);
+  expect(more.getBoundingClientRect().top).toBeLessThan(titleBox.bottom);
   for (const button of host.querySelectorAll('button')) {
     expect(button.getBoundingClientRect().right).toBeLessThanOrEqual(rect.right + 1);
   }
 });
 
-it.each([320, 360, 412])('keeps workspace and usage inside a %ipx footer', async (width) => {
+it.each([320, 360, 412])('keeps the facts line on its own row with the worktree icon pinned at %ipx', async (width) => {
   host.style.width = `${width}px`;
   stageBackend();
   noteThread('thread-1', '');
-  const pane = await buildPane(makeThread({ branch: 'feature/remote-access-with-a-very-long-branch-name' }));
-  mounted.push(mount(ComposerWorkspaceStrip, { target: host, props: { pane, readonly: true, usageLabel: '2.5M · $120.25' } }));
+  const pane = await buildPane(makeThread({ title: LONG_TITLE, branch: 'feature/remote-access-with-a-very-long-branch-name' }));
+  mounted.push(mount(ChatHeader, { target: host, props: { pane } }));
   await tick();
-  const workspace = host.querySelector('[data-testid="workspace-picker-trigger"]') as HTMLElement;
-  const project = host.querySelector('[data-testid="project-picker-trigger"]') as HTMLElement;
-  const usage = host.querySelector('[data-testid="workspace-strip-usage"]') as HTMLElement;
-  expect(workspace.getBoundingClientRect().top).toBeGreaterThanOrEqual(project.getBoundingClientRect().bottom);
-  expect(workspace.scrollWidth).toBeLessThanOrEqual(workspace.clientWidth + 1);
-  expect(workspace.getBoundingClientRect().right).toBeLessThanOrEqual(usage.getBoundingClientRect().left);
+  const titleEl = host.querySelector('[data-testid="chat-header-title"]') as HTMLElement;
+  const facts = host.querySelector('[data-testid="chat-header-facts"]') as HTMLElement;
+  const machine = host.querySelector('[data-testid="chat-header-machine"]') as HTMLElement;
+  const branch = host.querySelector('[data-testid="chat-header-branch"]') as HTMLElement;
+  const worktree = host.querySelector('[data-testid="chat-header-worktree"]') as HTMLElement;
+  const factsBox = facts.getBoundingClientRect();
+  // A full-width row under the title row.
+  expect(factsBox.top).toBeGreaterThanOrEqual(titleEl.getBoundingClientRect().bottom);
+  expect(factsBox.height).toBeLessThan(30);
+  // Nothing scrolls: the branch ellipsizes instead, and the icon keeps its
+  // full box at the end of the line.
+  expect(facts.scrollWidth).toBeLessThanOrEqual(facts.clientWidth + 1);
+  const branchText = branch.querySelector('.truncate') as HTMLElement;
+  expect(branchText.scrollWidth).toBeGreaterThan(branchText.clientWidth + 1);
+  expect(machine.getBoundingClientRect().right).toBeLessThanOrEqual(branch.getBoundingClientRect().left + 1);
+  const worktreeBox = worktree.getBoundingClientRect();
+  expect(worktreeBox.left).toBeGreaterThanOrEqual(branch.getBoundingClientRect().right - 1);
+  expect(worktreeBox.width).toBeGreaterThanOrEqual(20);
+  expect(worktreeBox.right).toBeLessThanOrEqual(host.getBoundingClientRect().right + 1);
   expect(host.scrollWidth).toBeLessThanOrEqual(width + 1);
 });
 
@@ -88,16 +115,20 @@ it('restores the desktop header and single-row footer when leaving compact mode'
   mounted.push(mount(ChatHeader, { target: host, props: { pane } }));
   mounted.push(mount(ComposerWorkspaceStrip, { target: host, props: { pane, readonly: true, usageLabel: '2.5M' } }));
   await tick();
+  expect(host.querySelector('[data-testid="composer-workspace-strip"]')).toBeNull();
   setCompactLayoutForTest(false);
   await tick();
-  const titleRow = host.querySelector('[data-testid="chat-header-title-row"]')!;
-  const actionsRow = host.querySelector('[data-testid="chat-header-actions-row"]')!;
-  expect(getComputedStyle(titleRow).display).toBe('contents');
-  expect(getComputedStyle(actionsRow).display).toBe('contents');
+  expect(host.querySelector('[data-testid="chat-header-facts"]')).toBeNull();
+  expect(host.querySelector('[data-testid="chat-header-title-scroller"]')).toBeNull();
+  const crumb = host.querySelector('[data-testid="chat-header-project"]')!;
+  const title = host.querySelector('[data-testid="chat-header-title"]')!;
+  expect(crumb.getBoundingClientRect().right).toBeLessThanOrEqual(title.getBoundingClientRect().left + 1);
   const strip = host.querySelector('[data-testid="composer-workspace-strip"]')!;
-  const project = strip.querySelector('[data-testid="project-picker-trigger"]')!;
   const branch = strip.querySelector('[data-testid="branch-picker-trigger"]')!;
-  expect(branch.getBoundingClientRect().top).toBe(project.getBoundingClientRect().top);
+  const env = strip.querySelector('[data-testid="env-picker-trigger"]')!;
+  const usage = strip.querySelector('[data-testid="workspace-strip-usage"]')!;
+  expect(env.getBoundingClientRect().top).toBe(branch.getBoundingClientRect().top);
+  expect(usage.getBoundingClientRect().top).toBe(branch.getBoundingClientRect().top);
   expect(host.querySelector('[data-testid="compact-back"]')).toBeNull();
   expect(host.scrollWidth).toBeLessThanOrEqual(1101);
 });

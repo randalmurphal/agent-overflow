@@ -85,6 +85,10 @@ const OUTSIDE_SCROLLER_ALLOWLIST: Record<string, Record<string, string>> = {
     'animate-spin':
       'the regenerate affordance mounts in ChatHeader, a sibling of MessageTimeline in ChatView, outside the scroller; Tailwind owns the keyframes (transform), and it is transient — visible for the seconds a title takes to regenerate, never standing',
   },
+  'ChatHeaderActions.svelte': {
+    'animate-spin':
+      "the compact header menu's Regenerate title row, the same transient spin as the button above: the menu is a popover portaled under <body>, and the cluster itself mounts in ChatHeader outside the scroller",
+  },
   'MessageTimeline.svelte': {
     'animation: nav-jump-flash-fade':
       "the explicit-jump landing flash is an overlay on the NON-SCROLLING wrapper, a sibling after the scroller in source order, placed there deliberately so no row gains an animation; its keyframes are local to the component (opacity only, one shot, fill-mode forwards) and a jump is an instant teleport, not a compensated move",

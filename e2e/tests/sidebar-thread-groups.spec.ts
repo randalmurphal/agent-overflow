@@ -80,7 +80,6 @@ test('drag onto a group moves in, drag onto the list outside it moves out', asyn
     const rows = await harness.rpc<ThreadRow[]>('HarnessListThreadRows');
     return rows.find((row) => row.id === alphaId)?.groupId ?? null;
   }).toBeNull();
-  await expect(groupRow.getByTestId('thread-group-row-time')).toBeVisible();
   // Leaving a group does not restore the pin.
   await expect(alphaRow.getByTestId('thread-row-pin')).toHaveAttribute('aria-label', 'Pin Thread');
 });

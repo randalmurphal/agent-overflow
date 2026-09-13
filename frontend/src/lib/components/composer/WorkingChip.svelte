@@ -118,7 +118,7 @@
   <!-- Keep the DOM and initial timer width stable: visibility reserves
        the elapsed column without showing a clock. -->
   <span class="text-fg-muted" data-testid="{testIdPrefix}-label">
-    {workingLabel} <span
+    <span data-activity-rail-verb>{workingLabel}</span> <span
       class="tabular-nums text-fg"
       class:invisible={!showElapsed}
       aria-hidden={!showElapsed}

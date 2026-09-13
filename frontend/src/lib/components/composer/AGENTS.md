@@ -45,6 +45,11 @@ focused pane.
 
 Use the stepped working indicator. Do not add a continuously animated spinner.
 
-The workspace strip resolves from the pane's `WorkspaceRef`. Its nested pickers
-must preserve computer, project, and worktree ownership and remain mounted when
-represented by the compact combined trigger.
+The workspace strip resolves from the pane's `WorkspaceRef` and mounts only in
+the desktop layout: machine, branch, worktree, cost. The project is the chat
+header's crumb before the title. Under compact the chat header's facts line
+(`chat/ChatHeaderFactsLine.svelte`) mounts the same pickers trigger-less behind
+its own segments, and the usage chip sits at the right end of the activity
+rail. `activityRailHost.svelte.ts` owns the rail's visibility, and
+`densityLadder.ts` owns the measured density ladders of the toolbar and the
+rail; keep every rung a single line and never clip Send or the cost.

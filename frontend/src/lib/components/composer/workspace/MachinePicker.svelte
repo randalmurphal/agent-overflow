@@ -10,6 +10,7 @@
   import Popover from '../../primitives/Popover.svelte';
   import { restorePickerFocus } from '../../panes/paneComposerFocus';
   import type { PopoverCloseReason } from '../../../utils/popoverOwnership';
+  import type { PopoverPlacement } from '../../../utils/popoverGeometry';
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
   import { getProject, projectSiblingOn } from '../../../stores/projects.svelte';
@@ -34,9 +35,13 @@
 
   interface Props {
     pane: ThreadPane;
+    /** Host-owned trigger the menu anchors to when `hideTrigger` is set. */
+    anchor?: HTMLElement;
+    hideTrigger?: boolean;
+    placement?: PopoverPlacement;
   }
 
-  let { pane }: Props = $props();
+  let { pane, anchor, hideTrigger = false, placement = 'top-start' }: Props = $props();
 
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
   let open = $state(false);
@@ -60,6 +65,13 @@
   });
   let canTransfer = $derived(Boolean(pane.thread && isLocked && canOfferConversationTransfer(pane.thread) && hasScope('threads:operate', activeKey)));
   let selectable = $derived(!isLocked || canTransfer);
+  // Read by a host that draws its own trigger (the compact chat header's
+  // facts line): the label, and whether a tap does anything.
+  export function label(): string { return activeLabel; }
+  export function canPick(): boolean { return selectable; }
+  export function openPicker(): void {
+    if (!open && selectable && !switching) open = true;
+  }
 
   function handleTrigger(): void {
     if (!selectable) return;
@@ -68,7 +80,7 @@
 
   function closeMenu(reason?: PopoverCloseReason): void {
     open = false;
-    restorePickerFocus(reason, { triggerEl });
+    restorePickerFocus(reason, { triggerEl: anchor ?? triggerEl });
   }
 
   async function selectMachine(key: BackendKey): Promise<void> {
@@ -129,6 +141,7 @@
 </script>
 
 {#if pane.thread}
+  {#if !hideTrigger}
   <button
     bind:this={triggerEl}
     type="button"
@@ -152,13 +165,14 @@
       <Icon icon={ChevronDown} size={12} strokeWidth={2} class="opacity-60" />
     {/if}
   </button>
+  {/if}
 
   {#if selectable}
     <Popover
-      anchor={triggerEl}
+      anchor={anchor ?? triggerEl}
       {open}
       onClose={closeMenu}
-      placement="top-start"
+      {placement}
       role="none"
     >
       <Menu ariaLabel="Computer" onClose={closeMenu}>

@@ -10,6 +10,7 @@
   import ComposerWorkspaceStrip from '../composer/ComposerWorkspaceStrip.svelte';
   import WorkingChip from '../composer/WorkingChip.svelte';
   import { activityRailChipClasses, activityRailRowClasses } from '../composer/activityRailClasses';
+  import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { createSharedNowClock } from '../chat/useRunningElapsed.svelte';
   import { formatElapsedSeconds } from '../../utils/format';
   import { StopClaudeTask, StopCodexSubagent } from '../../stores/bindings';
@@ -220,6 +221,12 @@
                trick): a zero-width space gives the chip box its line box, so
                the shell's height is the same whether the agent runs or not. -->
           <span class="{activityRailChipClasses} shrink-0" aria-hidden="true" data-testid="agent-pane-activity-reserve">{'\u200B'}</span>
+        {/if}
+        {#if isCompactLayout() && tokensLabel}
+          <!-- The strip does not mount under compact; the subagent's spend
+               takes the rail's right end, as the thread's chip does in the
+               live composer. -->
+          <span class="{activityRailChipClasses} ml-auto shrink-0 tabular-nums text-fg-muted" data-testid="agent-pane-usage">{tokensLabel}</span>
         {/if}
       </div>
     </div>

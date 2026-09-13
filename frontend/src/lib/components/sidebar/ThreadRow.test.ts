@@ -601,33 +601,52 @@ describe('<ThreadRow> worktree metadata', () => {
     expect(queryByTestId('thread-row-worktree')).toBeNull();
   });
 
-  it('exposes the full worktree path without making the metadata row interactive', async () => {
+  it('exposes the full worktree path, and the sublabel is part of the tap target', async () => {
+    // The sublabel is a sibling under the one-line row, inside the shell.
+    // The shell takes the pointer, so a tap on the sublabel opens the
+    // thread exactly like a tap on the title (found on a phone, 2026-09-13:
+    // taps on the lower half of a row did nothing).
     const thread = makeThread({
       id: 'worktree-thread',
       worktreePath: '/tmp/agent-overflow-worktrees/feature-demo',
     });
-    let rowSelectCalled = 0;
     const pane = createThreadPane();
-    const { getByTestId } = render(ThreadRow, {
-      props: {
-        thread,
-        pane,
-        onSelectClick: () => {
-          rowSelectCalled += 1;
-          return true;
-        },
-      },
-    });
+    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
 
     const worktreeMeta = getByTestId('thread-row-worktree');
     expect(worktreeMeta.getAttribute('title')).toBe('Worktree: /tmp/agent-overflow-worktrees/feature-demo');
     expect(worktreeMeta.getAttribute('aria-label')).toBe('Worktree feature-demo');
+    expect(worktreeMeta.getAttribute('role')).toBeNull();
 
     await fireEvent.click(worktreeMeta);
-    await Promise.resolve();
+    await tick();
 
-    expect(rowSelectCalled).toBe(0);
-    expect(pane.threadId).toBeNull();
+    expect(pane.threadId).toBe('worktree-thread');
+  });
+
+  it('a long press (contextmenu) on the sublabel opens this row\'s menu, not the project\'s', async () => {
+    const thread = makeThread({
+      id: 'worktree-thread',
+      worktreePath: '/tmp/agent-overflow-worktrees/feature-demo',
+    });
+    const pane = createThreadPane();
+    const { getByTestId, queryByRole } = render(ThreadRow, { props: { thread, pane } });
+    // Svelte delegates contextmenu to the mount root, so "did it escape the
+    // row" is measured past that root: the project item's own handler sits
+    // on an ancestor and must never see this press.
+    let escaped = 0;
+    const count = () => { escaped += 1; };
+    document.addEventListener('contextmenu', count);
+    try {
+      await fireEvent.contextMenu(getByTestId('thread-row-worktree'));
+      await tick();
+    } finally {
+      document.removeEventListener('contextmenu', count);
+    }
+
+    expect(queryByRole('menu', { name: 'Thread Actions' })).not.toBeNull();
+    expect(escaped).toBe(0);
+    expect(getByTestId('thread-row-shell').classList.contains('compact:select-none')).toBe(true);
   });
 });
 

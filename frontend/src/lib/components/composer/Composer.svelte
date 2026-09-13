@@ -419,6 +419,12 @@
     // point-in-time check like the terminal guard above — the one-shot is
     // already consumed, so later focus changes must not re-arm it.
     if (untrack(getFocusedPaneId) !== pane.paneId) return;
+    // Never on the phone. Focus there raises the keyboard over the
+    // transcript the reader just opened the thread to see; the keyboard
+    // comes up when they tap the input (owner ruling 2026-09-13). The
+    // one-shot is already consumed, so a later layout flip cannot re-arm
+    // it. Untracked for the same reason as the guards above.
+    if (untrack(isCompactLayout)) return;
     surface?.focusInputAtEnd();
   });
 
@@ -994,6 +1000,7 @@
         {pane}
         bg={activityRail.bg}
         clock={activityRail.clock}
+        usage={activityRail.usage}
         inputRequest={hasUserInputPrompt ? activeUserInput : null}
         inputCollapsed={userInputCollapsed}
         onToggleInput={() => pane.toggleActivityRailInputCollapsed()}

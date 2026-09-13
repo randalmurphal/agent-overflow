@@ -1,4 +1,4 @@
-const OVERFLOW_EPSILON_PX = 1;
+import { measureDensity } from '../densityLadder';
 
 /**
  * The toolbar's density ladder; the cheapest sufficient rung wins.
@@ -17,24 +17,8 @@ const OVERFLOW_EPSILON_PX = 1;
  */
 export type ComposerToolbarDensity = 'full' | 'compact' | 'minimal';
 
-export function measureComposerToolbarDensity(toolbar: HTMLElement): ComposerToolbarDensity {
-  const previous = toolbar.dataset.density;
-  const availableWidth = toolbar.clientWidth;
-  if (availableWidth <= 0) {
-    return previous === 'compact' || previous === 'minimal' ? previous : 'full';
-  }
-  const fits = (): boolean => toolbar.scrollWidth <= availableWidth + OVERFLOW_EPSILON_PX;
+const RUNGS: readonly ComposerToolbarDensity[] = ['full', 'compact', 'minimal'];
 
-  // Force each rung for its read so a denser toolbar can expand again the
-  // moment the roomier content fits. Restore the attribute afterward;
-  // Svelte remains the final owner of data-density.
-  toolbar.dataset.density = 'full';
-  let result: ComposerToolbarDensity = 'full';
-  if (!fits()) {
-    toolbar.dataset.density = 'compact';
-    result = fits() ? 'compact' : 'minimal';
-  }
-  if (previous === undefined) delete toolbar.dataset.density;
-  else toolbar.dataset.density = previous;
-  return result;
+export function measureComposerToolbarDensity(toolbar: HTMLElement): ComposerToolbarDensity {
+  return measureDensity(toolbar, RUNGS);
 }

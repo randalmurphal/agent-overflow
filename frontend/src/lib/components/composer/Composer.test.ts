@@ -47,6 +47,8 @@ import { focusPane, registerPaneForTest, resetPanesForTest } from '../../stores/
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
+import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
+import { UsageBucket } from '../../stores/bindings';
 import { resetThreadInterruptStateForTest } from '../../stores/threadInterruptState.svelte';
 import { resetResendRevertMarkersForTest } from '../../stores/eventsMessageRevert';
 
@@ -2534,6 +2536,39 @@ describe('<Composer>', () => {
     expect(queryByTestId('composer-activity-reserve')).toBeNull();
   });
 
+  it('under compact, a thread with usage keeps the rail (with the cost) and never the spacer; one without keeps the spacer', async () => {
+    // The strip does not mount under compact, so the rail is where the
+    // cost lives, and it must hold the row whenever the chip has usage to
+    // show — the exact complement of the spacer, as ever
+    // (createActivityRailHost owns the query the chip renders from).
+    setCompactLayoutForTest(true);
+    try {
+      setBindingMock('ListLiveBackgroundTasks', async () => []);
+      const draft = await buildDraft();
+      const sent = await buildPane(makeTestThread());
+      setBindingMock('GetUsageStats', async () => [new UsageBucket({
+        bucket: '', inputTokens: 10, outputTokens: 5, cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0, reasoningOutputTokens: 0, costUsd: 0.01, turnCount: 1, unpricedRows: 0,
+      })]);
+      const first = render(Composer, { props: { pane: sent, draft } });
+      const chip = await first.findByTestId('usage-chip-trigger');
+      expect(first.getByTestId('activity-rail').contains(chip)).toBe(true);
+      expect(first.queryByTestId('composer-activity-reserve')).toBeNull();
+      expect(first.queryByTestId('composer-workspace-strip')).toBeNull();
+      first.unmount();
+
+      const fresh = await buildPane(makeTestThread({ id: 'fresh-1' }));
+      setBindingMock('GetUsageStats', async () => []);
+      const { getByTestId, queryByTestId } = render(Composer, { props: { pane: fresh, draft } });
+      await tick();
+      await tick();
+      expect(queryByTestId('activity-rail')).toBeNull();
+      expect(getByTestId('composer-activity-reserve')).toBeInTheDocument();
+    } finally {
+      setCompactLayoutForTest(false);
+    }
+  });
+
   it('scopes pointer-events and drag-and-drop to the visible card', async () => {
     // The outer wrapper is pointer-events-none so the transparent
     // moat around the visible card is click-through. Clicks on the
@@ -3054,6 +3089,31 @@ describe('<Composer>', () => {
       expect(textarea.selectionStart).toBe(0);
       expect(textarea.selectionEnd).toBe(0);
     });
+  });
+
+  it('under compact, thread entry never focuses the textarea (the keyboard would cover the transcript)', async () => {
+    // Same setup as the desktop case above, which focuses; the layout is
+    // the only difference. The one-shot is consumed either way, so a
+    // later layout flip cannot retro-focus.
+    setCompactLayoutForTest(true);
+    try {
+      const pane = await buildPane();
+      const draft = await buildDraft();
+      const { getByLabelText } = render(Composer, { props: { pane, draft } });
+      const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+
+      await tick();
+      await tick();
+      expect(textarea.disabled).toBe(false);
+      expect(document.activeElement).not.toBe(textarea);
+
+      setCompactLayoutForTest(false);
+      await tick();
+      await tick();
+      expect(document.activeElement).not.toBe(textarea);
+    } finally {
+      setCompactLayoutForTest(false);
+    }
   });
 
   it('does not focus the textarea while the draft is still hydrating', async () => {

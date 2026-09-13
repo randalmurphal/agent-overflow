@@ -20,6 +20,8 @@ import { resetForTest as resetSendQueue, replaceQueueForThread } from '../../sto
 import { __resetActivityRailUiPrefsForTest, __resetLiveTodoUiPrefsForTest, LIVE_TODO_AUTOHIDE_MS } from '../../stores/liveTodoState.svelte';
 import type { QueueItem } from '../../stores/sendQueue.svelte';
 import { applyItemStreamEvent, flushItemEventQueue } from '../../stores/eventsItemStream';
+import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
+import { UsageBucket } from '../../stores/bindings';
 
 function backgroundLaunch(overrides = {}) {
   return makeItem({
@@ -69,6 +71,7 @@ describe('<ActivityRail>', () => {
   afterEach(() => {
     vi.useRealTimers();
     resetSettingsForTest();
+    setCompactLayoutForTest(false);
   });
 
   it('renders nothing when idle, no todos, no background', async () => {
@@ -473,6 +476,78 @@ describe('<ActivityRail>', () => {
     const preview = await findByTestId('activity-rail-todos-preview');
     expect(preview.classList.contains('truncate')).toBe(true);
     expect(preview.classList.contains('hidden')).toBe(false);
+  });
+
+  it('steps down a measured density ladder: the preview and verb go first, the segment names last', async () => {
+    // jsdom has no layout engine, so assert the CSS contract: the row
+    // carries the measured rung, and each word that a rung gives up is
+    // tagged for the rung's selector (ActivityRail.svelte's style block).
+    // The measured rung itself is covered by densityLadder.test.ts.
+    const launch = backgroundLaunch();
+    setBindingMock('ListLiveBackgroundTasks', async () => [launch]);
+    const pane = await buildPane();
+    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: Date.now() - 3_000 });
+    pane.setLiveTodo([{ step: 'rebalance loader windows', status: 'inProgress' }]);
+    pane.upsertItem(launch);
+    const { findByTestId } = render(ActivityRailHost, { props: { pane } });
+    await tick();
+    await tick();
+    const row = (await findByTestId('activity-rail')).querySelector<HTMLElement>('[data-activity-rail-row]');
+    expect(row).not.toBeNull();
+    expect(row!.dataset.density).toBe('full');
+    expect((await findByTestId('activity-rail-todos-preview')).hasAttribute('data-activity-rail-preview')).toBe(true);
+    expect((await findByTestId('activity-rail-todos-toggle')).hasAttribute('data-activity-rail-shrinker')).toBe(true);
+    expect((await findByTestId('activity-rail-working-label')).querySelector('[data-activity-rail-verb]')).not.toBeNull();
+    const names = Array.from(row!.querySelectorAll('[data-activity-rail-name]')).map((el) => el.textContent);
+    expect(names).toEqual(['Todos', 'Background']);
+    // The counts and the timer are never tagged: they survive every rung.
+    expect((await findByTestId('activity-rail-todos-count')).hasAttribute('data-activity-rail-name')).toBe(false);
+    expect((await findByTestId('activity-rail-working-elapsed')).closest('[data-activity-rail-verb]')).toBeNull();
+  });
+
+  it('carries the usage chip at its right end under compact, and not on desktop', async () => {
+    const pane = await buildPane(makeThread({ isDraft: false }));
+    // After buildPane: its pane mocks default GetUsageStats to no buckets.
+    setBindingMock('GetUsageStats', async () => [new UsageBucket({
+      bucket: '', inputTokens: 1000, outputTokens: 500, cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0, reasoningOutputTokens: 0, costUsd: 0.32, turnCount: 3, unpricedRows: 0,
+    })]);
+    pane.setLiveTodo([{ step: 'in flight', status: 'inProgress' }]);
+    const desktop = render(ActivityRailHost, { props: { pane } });
+    await tick();
+    expect(desktop.queryByTestId('activity-rail-usage')).toBeNull();
+    desktop.unmount();
+
+    setCompactLayoutForTest(true);
+    const { findByTestId } = render(ActivityRailHost, { props: { pane } });
+    const usage = await findByTestId('activity-rail-usage');
+    expect(usage.classList.contains('ml-auto')).toBe(true);
+    expect(usage.classList.contains('shrink-0')).toBe(true);
+    const chip = await findByTestId('usage-chip-trigger');
+    expect(chip.textContent?.trim()).toBe('500 · $0.32');
+    // The chip wears the rail's chip box so the row stays the height twin
+    // of the composer's reservation spacer.
+    expect(chip.className).toContain('px-1.5 py-0.5');
+    expect(chip.className).not.toContain('py-1 ');
+  });
+
+  it('under compact, a thread with usage shows the rail for its cost even when idle; one without does not', async () => {
+    setCompactLayoutForTest(true);
+    const pane = await buildPane(makeThread());
+    setBindingMock('GetUsageStats', async () => [new UsageBucket({
+      bucket: '', inputTokens: 10, outputTokens: 5, cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0, reasoningOutputTokens: 0, costUsd: 0.01, turnCount: 1, unpricedRows: 0,
+    })]);
+    const withSpend = render(ActivityRailHost, { props: { pane } });
+    expect(await withSpend.findByTestId('activity-rail')).toBeInTheDocument();
+    withSpend.unmount();
+
+    const fresh = await buildPane(makeThread({ id: 'fresh-thread' }));
+    setBindingMock('GetUsageStats', async () => []);
+    const { queryByTestId } = render(ActivityRailHost, { props: { pane: fresh } });
+    await tick();
+    await tick();
+    expect(queryByTestId('activity-rail')).toBeNull();
   });
 
   it('input-requested chip stays shrink-0 alongside todos', async () => {

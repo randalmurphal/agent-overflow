@@ -2261,7 +2261,9 @@ third breakpoint, not a new app. Compact rules:
   card, and the interactive-request prompts are all sheets.
 - Settings, devices, workflows, and git views are stacked screens, not
   modals.
-- The composer pins to the bottom above the keyboard. Send is a button;
+- The composer pins to the bottom above the keyboard. Opening a thread
+  does not focus it: the keyboard rises only when the reader taps the
+  input, never over the transcript they came to read. Send is a button;
   Return inserts a newline (phone keyboards have no modifier). The
   context strip scrolls horizontally as chips. Slash commands and
   mentions keep their menus, rendered as a sheet above the keyboard.
@@ -2395,8 +2397,9 @@ text above was deviated from:
   stay MOUNTED and swap `visibility` plus `inert`, so a trip back to the
   list keeps the timeline's observers and scroll position. `revealPane`
   flips to the thread screen; the chat header grows a back button and
-  loses the pane close control, and rolls its action cluster into one
-  menu (`chat-header-more`) so the title keeps its width — a dropdown
+  loses the pane close control, and rolls its action cluster (title
+  regeneration included) into one menu (`chat-header-more`) so the
+  title keeps its width — a dropdown
   at the button rather than a bottom sheet, since a control at the top
   of the screen answers where the finger is (owner ruling, 2026-09-04);
   no command-palette button, since the phone has no chords for one to
@@ -2406,7 +2409,17 @@ text above was deviated from:
   on screen and reveals its thread before it goes to the list. The
   composer's densest rung folds every picker but the model into a
   roll-up and keeps the model, the rate-limit and context meters, and
-  Send (owner ruling, same day). Popovers are bottom sheets by default (`Popover`'s `sheet`
+  Send (owner ruling, same day). The header is two rows (owner ruling,
+  2026-09-13): the title, which fades at its edge and swipes rather
+  than wrapping, the diff badge and the menu; then a full-width facts
+  line, `machine · project · branch · worktree`, each segment a direct
+  tap into its picker (`chat/ChatHeaderFactsLine.svelte`), the branch
+  the only segment that ellipsizes and the worktree an icon pinned at
+  the end. The composer's workspace strip does not mount under compact;
+  the usage chip takes the right end of the activity rail, which steps
+  down its own measured density ladder so nothing clips. On every
+  platform the project is the header's crumb before the title.
+  Popovers are bottom sheets by default (`Popover`'s `sheet`
   prop; the composer's completion lists and the header menu opt out), overlays fill the
   screen, Return inserts a newline (`enterSends`), the nav rail and its
   gutter are gone. Deviation from the design text above: the terminal is
@@ -2843,8 +2856,9 @@ system stats and provider accounts stay home-only reads until a
 surface needs otherwise.
 
 **7c LANDED 2026-09-01.** `MachinePicker.svelte` leads the composer's
-workspace strip and mounts only while more than one backend is
-attached; the single-backend app is pixel-identical. In this wave a
+workspace strip (the compact header's facts line since 2026-09-13) and
+mounts only while more than one backend is attached; the single-backend
+app is pixel-identical. In this wave a
 project lives on exactly one machine, so the picker's label is the
 owner of the pane's project and choosing another machine flips the
 draft to that machine's first project (a machine with none says so and

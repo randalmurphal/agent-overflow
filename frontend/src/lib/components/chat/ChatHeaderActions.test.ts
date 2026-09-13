@@ -16,7 +16,6 @@ import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
 import {
   buildPane as buildRegisteredPane,
   makeThread as makeBaseThread,
-  stubScrollController,
 } from '../../../test/helpers/chat';
 
 vi.mock('../../stores/threadCreation.svelte', () => ({ openTerminalThread: vi.fn() }));
@@ -135,61 +134,6 @@ describe('<ChatHeaderActions> badge gating', () => {
     expect(getByTestId('review-toggle')).toBeTruthy();
     expect(getByTestId('workspace-diff-counts').textContent).toContain('+4');
     expect(getByTestId('workspace-diff-counts').textContent).toContain('-1');
-  });
-
-  it('toggles every activity run in the thread, and says which way', async () => {
-    // The one visible affordance for the collapse mechanic: a single run is
-    // toggled by its rail, which consumes no width and so shows nothing.
-    const pane = await buildPane();
-    installSubscribeMock(status({}));
-    const { getByTestId } = render(ChatHeaderActions, { props: { pane } });
-    await flush();
-    const toggle = getByTestId('activity-runs-toggle');
-
-    // Runs start collapsed by default, so the control opens with the
-    // expand-all direction.
-    expect(pane.activityRuns.bulkCollapsed).toBe(true);
-    expect(toggle.getAttribute('aria-label')).toBe('Expand all activity runs');
-
-    await fireEvent.click(toggle);
-    await flush();
-
-    expect(pane.activityRuns.bulkCollapsed).toBe(false);
-    expect(toggle.getAttribute('aria-label')).toBe('Collapse all activity runs');
-
-    await fireEvent.click(toggle);
-    await flush();
-
-    expect(pane.activityRuns.bulkCollapsed).toBe(true);
-  });
-
-  it('runs the bulk toggle inside the viewport-bottom transaction', async () => {
-    // The bulk toggle is the largest height change in the app, in either
-    // direction. Applied bare it moves the reader's rows up or down the page
-    // and, from the bottom, springs the viewport across the whole delta.
-    const pane = await buildPane();
-    const held: Array<() => void> = [];
-    pane.attachScrollController(
-      stubScrollController({
-        preserveViewportBottom: (change) => {
-          held.push(change);
-        },
-      }),
-    );
-    installSubscribeMock(status({}));
-    const { getByTestId } = render(ChatHeaderActions, { props: { pane } });
-    await flush();
-
-    await fireEvent.click(getByTestId('activity-runs-toggle'));
-    await flush();
-
-    // Withheld, so the toggle demonstrably did not reach the registry on its
-    // own — the transaction owns when it applies.
-    expect(held).toHaveLength(1);
-    expect(pane.activityRuns.bulkCollapsed).toBe(true);
-
-    held[0]();
-    expect(pane.activityRuns.bulkCollapsed).toBe(false);
   });
 
   it('hides the PR badge but keeps the workspace +/- when there is no open PR', async () => {
@@ -433,7 +377,6 @@ describe('<ChatHeaderActions> compact header sheet', () => {
     await flush();
     expect(getByTestId('chat-header-more')).toBeInTheDocument();
     expect(queryByTestId('terminal-toggle')).toBeNull();
-    expect(queryByTestId('activity-runs-toggle')).toBeNull();
     expect(queryByTestId('palette-open')).toBeNull();
   });
 

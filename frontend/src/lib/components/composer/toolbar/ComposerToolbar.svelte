@@ -29,6 +29,7 @@
     measureComposerToolbarDensity,
     type ComposerToolbarDensity,
   } from './composerToolbarDensity';
+  import { watchDensity } from '../densityLadder';
   import { getProviderAccount } from '../../../stores/accountInfo.svelte';
 
   interface Props {
@@ -127,69 +128,17 @@
   let hasComposableSurface = $derived(pane.canCompose);
   let toolbarEl: HTMLDivElement | undefined = $state(undefined);
   let toolbarDensity = $state<ComposerToolbarDensity>('compact');
-  let measureFrame = 0;
 
-  function measureToolbarDensity(): void {
-    if (!toolbarEl) return;
-    toolbarDensity = measureComposerToolbarDensity(toolbarEl);
-  }
-
-  function scheduleToolbarDensityMeasure(): void {
-    const el = toolbarEl;
-    if (!el) return;
-    if (typeof requestAnimationFrame === 'undefined') {
-      measureToolbarDensity();
-      return;
-    }
-    if (measureFrame) return;
-    measureFrame = requestAnimationFrame(() => {
-      measureFrame = 0;
-      if (toolbarEl !== el) return;
-      measureToolbarDensity();
-    });
-  }
-
+  // Measured density (densityLadder.ts): the width read and the
+  // data-density write are frame-queued, and only a width move can
+  // re-measure — never a streaming text beat.
   onMount(() => {
     const el = toolbarEl;
     if (!el) return;
-    scheduleToolbarDensityMeasure();
-    // Re-measure only when a width can have moved. Queue the read and the
-    // data-compact write for the next frame rather than mutating layout from
-    // inside the ResizeObserver delivery. A three-to-four-pane transition
-    // otherwise changes the toolbar height while ancestor observers are
-    // being delivered and WebView2 drops the remaining notifications as a
-    // ResizeObserver loop. The
-    // toolbar's own box covers pane resizes; one observed entry per
-    // direct child covers every control whose rendered width moves (the
-    // context meter growing a digit, the send label flipping) — a text
-    // beat that moves no width delivers nothing at all. The old subtree
-    // MutationObserver (childList + characterData) scheduled a rAF
-    // measure on EVERY streaming beat — the token text mutates per beat
-    // whether or not any width changed — and rAF runs BEFORE layout, so
-    // each measure forced a full pass against the flush-dirty tree
-    // (19-21 forced passes per 3-pane storm run, 2026-08-26).
-    const sizes = new ResizeObserver(() => scheduleToolbarDensityMeasure());
-    const observeChildren = () => {
-      sizes.observe(el);
-      for (const child of el.children) sizes.observe(child);
-    };
-    observeChildren();
-    // Controls mount and unmount with provider/mode changes, not with
-    // streaming beats. A new child needs observing (its initial RO
-    // delivery then runs the measure); a removal delivers nothing, so
-    // schedule a measure directly.
-    const mutationObserver = typeof MutationObserver === 'undefined'
-      ? undefined
-      : new MutationObserver(() => {
-          observeChildren();
-          scheduleToolbarDensityMeasure();
-        });
-    mutationObserver?.observe(el, { childList: true });
-    return () => {
-      sizes.disconnect();
-      mutationObserver?.disconnect();
-      if (measureFrame) cancelAnimationFrame(measureFrame);
-    };
+    return watchDensity(el, () => {
+      if (toolbarEl !== el) return;
+      toolbarDensity = measureComposerToolbarDensity(el);
+    });
   });
 </script>
 

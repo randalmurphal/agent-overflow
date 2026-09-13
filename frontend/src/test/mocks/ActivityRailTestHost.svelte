@@ -36,6 +36,7 @@
     {pane}
     bg={host.bg}
     clock={host.clock}
+    usage={host.usage}
     {inputRequest}
     {inputCollapsed}
     {onToggleInput}

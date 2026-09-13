@@ -403,8 +403,24 @@
   that is also blocked on the user needs both, and one pseudo-element
   cannot be a 2px bar and a full-row ring at once.
 -->
+<!--
+  The shell, not the row, takes the pointer: click, double-click and
+  contextmenu (which is also the phone's long press, via the window-level
+  bridge). The row is the focusable, draggable, ARIA button, but it is one
+  line tall and the worktree / computer sublabel under it is a sibling
+  inside the shell. A tap on that sublabel must still open the thread and
+  a long press on it must still open THIS row's menu, not select the
+  label's text and fall through to the project's menu behind it. So the
+  whole shell is the target and selection is off across it under compact.
+  Controls inside the row that own their click stop propagation as before.
+-->
+<!-- Keyboard activation lives on the focusable row inside. -->
+<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
 <div
-  class="group/thread-item relative rounded-[var(--radius-field)] transition-colors
+  onclick={(e) => handleClick(e)}
+  ondblclick={startRename}
+  oncontextmenu={handleContextMenu}
+  class="group/thread-item relative rounded-[var(--radius-field)] transition-colors cursor-pointer compact:select-none
     {selected ? 'bg-accent/15' : isActive ? 'bg-accent/20' : 'hover:bg-surface-2/30'}
     {isOpen ? 'after:absolute after:left-0 after:inset-y-1 after:w-0.5 after:rounded-full after:bg-accent' : ''}
     {isOpen && !isActive ? 'after:opacity-70' : ''}
@@ -418,9 +434,6 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     bind:this={rowEl}
-    onclick={(e) => handleClick(e)}
-    ondblclick={startRename}
-    oncontextmenu={handleContextMenu}
     ondragstart={handleDragStart}
     ondragend={endThreadRowDrag}
     onkeydown={(e) => { if (!editing && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); handleClick(); } if (!editing && e.key === 'F2') { e.preventDefault(); startRename(); } }}

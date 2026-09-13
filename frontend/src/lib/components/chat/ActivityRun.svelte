@@ -332,8 +332,8 @@
   // clip is written to the bottom, the rows inside then grow, and the `scroll`
   // event from that write arrives AFTER the growth — reporting, correctly, a
   // position that is no longer at the bottom. Re-deriving from it dropped the
-  // follow on the first row that resolved, which is why a run reopened by the
-  // header's collapse-all landed near its top and stayed there. Growth moves
+  // follow on the first row that resolved, which is why a run reopened by a
+  // bulk expand landed near its top and stayed there. Growth moves
   // the bottom away from the reader; only the reader can decide to leave it.
   let followingBottom = $state(false);
 

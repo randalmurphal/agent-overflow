@@ -27,33 +27,32 @@ describe('<ComposerWorkspaceStrip>', () => {
     setBindingMock('GitListBranches', async () => []);
   });
 
-  it('renders the env and branch pickers when a thread is active', async () => {
+  it('renders the branch and env pickers when a thread is active, and no project', async () => {
+    // The project is the chat header's crumb before the title
+    // (chat/ChatHeaderProject.svelte), not a strip control.
     const pane = await buildPane(makeThread());
-    const { getByTestId } = render(ComposerWorkspaceStrip, { props: { pane } });
+    const { getByTestId, queryByTestId } = render(ComposerWorkspaceStrip, { props: { pane } });
     expect(getByTestId('composer-workspace-strip')).toBeInTheDocument();
-    expect(getByTestId('env-picker-trigger')).toBeInTheDocument();
     expect(getByTestId('branch-picker-trigger')).toBeInTheDocument();
+    expect(getByTestId('env-picker-trigger')).toBeInTheDocument();
+    expect(queryByTestId('chat-header-project')).toBeNull();
   });
 
-  it('combines the compact workspace controls and opens the existing branch picker', async () => {
+  it('does not mount under compact: the header facts line and the rail carry its facts', async () => {
     setCompactLayoutForTest(true);
     const pane = await buildPane(makeThread({ branch: 'feature/mobile' }));
-    const { getByTestId, queryByTestId, getByRole, findByRole } = render(ComposerWorkspaceStrip, { props: { pane } });
-    expect(queryByTestId('env-picker-trigger')).toBeNull();
+    const { queryByTestId } = render(ComposerWorkspaceStrip, { props: { pane } });
+    await tick();
+    expect(queryByTestId('composer-workspace-strip')).toBeNull();
     expect(queryByTestId('branch-picker-trigger')).toBeNull();
-    expect(getByTestId('workspace-picker-trigger')).toHaveTextContent('feature/mobile');
-    await fireEvent.click(getByTestId('workspace-picker-trigger'));
-    await fireEvent.click(getByRole('menuitem', { name: /Branch/ }));
-    expect(await findByRole('menu', { name: 'Branches' })).toBeInTheDocument();
+    expect(queryByTestId('env-picker-trigger')).toBeNull();
+    expect(queryByTestId('usage-chip-trigger')).toBeNull();
   });
 
-  it('renders env and branch pickers in DOM order', async () => {
-    // Env (worktree), then branch — both
-    // on the left so the strip reads as a single "where am I" group.
-    // (The project picker also renders here when a projectId is set
-    // on the thread; this fixture intentionally omits it.) A revert
-    // or accidental re-order would otherwise sail past the
-    // existence-only assertion above.
+  it('renders branch then env pickers in DOM order', async () => {
+    // Branch, then the worktree — the same order as the compact header's
+    // facts line, so the two surfaces read alike. A revert or accidental
+    // re-order would otherwise sail past the existence-only assertion above.
     const pane = await buildPane(makeThread({ projectId: undefined }));
     const { getByTestId } = render(ComposerWorkspaceStrip, { props: { pane } });
     const strip = getByTestId('composer-workspace-strip');
@@ -61,8 +60,8 @@ describe('<ComposerWorkspaceStrip>', () => {
       strip.querySelectorAll<HTMLElement>('[data-testid$="-picker-trigger"]'),
     );
     expect(triggers.map((el) => el.getAttribute('data-testid'))).toEqual([
-      'env-picker-trigger',
       'branch-picker-trigger',
+      'env-picker-trigger',
     ]);
   });
 
@@ -73,8 +72,8 @@ describe('<ComposerWorkspaceStrip>', () => {
   });
 
   it('leads the strip with the machine picker once a second backend is attached', async () => {
-    // "Where am I" reads outer to inner: machine, then the project on it,
-    // then the checkout.
+    // "Where am I" reads outer to inner: machine, then the branch, then
+    // the checkout.
     stageBackend();
     noteThread('thread-1', '');
     try {
@@ -85,17 +84,15 @@ describe('<ComposerWorkspaceStrip>', () => {
       );
       expect(triggers.map((el) => el.getAttribute('data-testid'))).toEqual([
         'machine-picker-trigger',
-        'project-picker-trigger',
-        'env-picker-trigger',
         'branch-picker-trigger',
+        'env-picker-trigger',
       ]);
     } finally {
       resetStagedBackends();
     }
   });
 
-  it.each([false, true])('keeps staged worktree naming available (compact=%s)', async (compact) => {
-    setCompactLayoutForTest(compact);
+  it('keeps staged worktree naming available', async () => {
     // Two-step disclosure: picking "New worktree" surfaces the toggle
     // adjacent to the BranchPicker so the user can opt into creating a
     // new branch; entering creating-branch mode (via the toggle, or
@@ -103,7 +100,7 @@ describe('<ComposerWorkspaceStrip>', () => {
     // turns the slot into the actual text input.
     const thread = makeThread();
     const pane = await buildPane(thread);
-    const { queryByTestId, findByTestId } = render(ComposerWorkspaceStrip, { props: { pane } });
+    const { queryByTestId, findByTestId, getByTestId } = render(ComposerWorkspaceStrip, { props: { pane } });
     expect(queryByTestId('worktree-branch-name-input')).toBeNull();
     expect(queryByTestId('new-branch-toggle')).toBeNull();
 
@@ -114,8 +111,7 @@ describe('<ComposerWorkspaceStrip>', () => {
 
     enterCreateBranchMode(thread, { workspaceDirty: false, currentBranch: 'main' });
     await tick();
-    expect(await findByTestId('worktree-branch-name-input')).toBeInTheDocument();
-    expect(queryByTestId('composer-workspace-strip')?.contains(await findByTestId('worktree-branch-name-input'))).toBe(!compact);
+    expect(getByTestId('composer-workspace-strip').contains(await findByTestId('worktree-branch-name-input'))).toBe(true);
     expect(await findByTestId('cancel-new-branch-button')).toBeInTheDocument();
     expect(queryByTestId('new-branch-toggle')).toBeNull();
   });

@@ -41,6 +41,9 @@ import {
 import type { Project, Thread } from '../../types/models';
 import { setCompactLayoutForTest, getCompactScreen, showCompactThread } from '../../stores/layoutMode.svelte';
 import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
+import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { noteThread } from '../../transport/entityIndex';
 
 // The terminal button's ctrl/cmd-click opens a fresh terminal pane via
 // openTerminalThread; stub it so the gesture can be asserted without standing
@@ -328,6 +331,49 @@ describe('<ChatHeader>', () => {
     const { queryByTestId } = render(ChatHeader, { props: { pane } });
     await tick();
     expect(queryByTestId('chat-header-open-editor')).toBeNull();
+  });
+
+  it('leads with the project crumb before the title, a label once the thread has messages', async () => {
+    const now = Date.now();
+    addProjectLocal({
+      id: 'project-1',
+      path: '/tmp/proj',
+      name: 'Alpha',
+      sortPosition: 0,
+      createdAt: now,
+      updatedAt: now,
+      archived: false,
+    });
+    const pane = await buildPane(makeThread({ isDraft: false }));
+    const { getByTestId } = render(ChatHeader, { props: { pane } });
+    await tick();
+    const crumb = getByTestId('chat-header-project') as HTMLButtonElement;
+    expect(crumb).toHaveTextContent('Alpha');
+    expect(crumb.disabled).toBe(true);
+    expect(crumb.dataset.locked).toBe('true');
+    // Crumb, then the title: `project / title`.
+    const title = getByTestId('chat-header-title');
+    expect(crumb.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('lets a draft change project from the crumb', async () => {
+    const now = Date.now();
+    addProjectLocal({
+      id: 'project-1',
+      path: '/tmp/proj',
+      name: 'Alpha',
+      sortPosition: 0,
+      createdAt: now,
+      updatedAt: now,
+      archived: false,
+    });
+    const pane = await buildPane(makeThread({ isDraft: true }));
+    const { getByTestId, findByRole } = render(ChatHeader, { props: { pane } });
+    await tick();
+    const crumb = getByTestId('chat-header-project') as HTMLButtonElement;
+    expect(crumb.disabled).toBe(false);
+    await fireEvent.click(crumb);
+    expect(await findByRole('menu', { name: 'Project' })).toBeInTheDocument();
   });
 
   it('renders a draggable title that fires onPaneDragStart on dragstart', async () => {
@@ -688,6 +734,101 @@ describe('<ChatHeader> under compact', () => {
     await fireEvent.click(getByTestId('compact-back'));
     expect(getCompactScreen()).toBe('list');
     setCompactLayoutForTest(false);
+  });
+
+  it('moves title regeneration into the actions menu and off the title row', async () => {
+    const pane = await buildPane(makeThread({ title: 'New Thread' }));
+    const regenerate = setBindingMock('RegenerateThreadTitle', async () => undefined);
+    const { getByTestId, queryByTestId, findByRole } = render(ChatHeader, { props: { pane } });
+    await tick();
+    expect(queryByTestId('thread-title-regenerate')).toBeNull();
+    await fireEvent.click(getByTestId('chat-header-more'));
+    const row = await findByRole('menuitem', { name: /Regenerate title/ });
+    await fireEvent.click(row);
+    await vi.waitFor(() => expect(regenerate).toHaveBeenCalledWith('thread-1'));
+    setCompactLayoutForTest(false);
+  });
+
+  it('shows the facts line: project, branch and a pinned worktree icon, each opening its picker', async () => {
+    setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
+    setBindingMock('GitListBranches', async () => []);
+    setBindingMock('GitListWorktrees', async () => []);
+    const now = Date.now();
+    addProjectLocal({
+      id: 'project-1',
+      path: '/tmp/proj',
+      name: 'Alpha',
+      sortPosition: 0,
+      createdAt: now,
+      updatedAt: now,
+      archived: false,
+    });
+    const pane = await buildPane(makeThread({ branch: 'feature/a-very-long-branch-name', isDraft: false, workspacePath: '/tmp/proj' }));
+    const { getByTestId, queryByTestId, findByRole } = render(ChatHeader, { props: { pane } });
+    await tick();
+    const facts = getByTestId('chat-header-facts');
+    // Its own full-width row under the title row, not squeezed beside it.
+    expect(getByTestId('chat-header-title-row').contains(facts)).toBe(false);
+    expect(getByTestId('chat-header-title-row').compareDocumentPosition(facts) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Single backend: no machine segment.
+    expect(queryByTestId('chat-header-machine')).toBeNull();
+    expect(getByTestId('chat-header-project')).toHaveTextContent('Alpha');
+    const branch = getByTestId('chat-header-branch');
+    expect(branch).toHaveTextContent('feature/a-very-long-branch-name');
+    // The branch is the one segment that ellipsizes; the worktree icon never shrinks.
+    expect(branch.classList.contains('min-w-0')).toBe(true);
+    expect(branch.querySelector('.truncate')).not.toBeNull();
+    const worktree = getByTestId('chat-header-worktree');
+    expect(worktree.classList.contains('shrink-0')).toBe(true);
+    expect(worktree.getAttribute('aria-label')).toBe('Worktree: Base');
+    expect(worktree.dataset.atBase).toBe('true');
+    // No strip controls anywhere in the header.
+    expect(queryByTestId('branch-picker-trigger')).toBeNull();
+    expect(queryByTestId('env-picker-trigger')).toBeNull();
+
+    await fireEvent.click(branch);
+    expect(await findByRole('menu', { name: 'Branches' })).toBeInTheDocument();
+    await fireEvent.click(getByTestId('chat-header-title'));
+    await fireEvent.click(worktree);
+    expect(await findByRole('menu', { name: 'Workspace' })).toBeInTheDocument();
+    setCompactLayoutForTest(false);
+  });
+
+  it('marks a linked worktree with the accent git folder', async () => {
+    setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
+    setBindingMock('GitListBranches', async () => []);
+    const pane = await buildPane(makeThread({ workspacePath: '/tmp/proj/.worktrees/wt-1', projectPath: '/tmp/proj' }));
+    const { getByTestId } = render(ChatHeader, { props: { pane } });
+    await tick();
+    const worktree = getByTestId('chat-header-worktree');
+    expect(worktree.dataset.atBase).toBeUndefined();
+    expect(worktree.getAttribute('aria-label')).toBe('Worktree: wt-1');
+    expect(worktree.classList.contains('text-accent')).toBe(true);
+    setCompactLayoutForTest(false);
+  });
+
+  it('leads the facts line with the machine once a second backend is attached', async () => {
+    setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
+    setBindingMock('GitListBranches', async () => []);
+    stageBackend();
+    noteThread('thread-1', '');
+    try {
+      const pane = await buildPane(makeThread());
+      const { getByTestId } = render(ChatHeader, { props: { pane } });
+      await tick();
+      const segments = Array.from(
+        getByTestId('chat-header-facts').querySelectorAll<HTMLElement>('[data-testid^="chat-header-"]'),
+      ).map((el) => el.dataset.testid);
+      expect(segments).toEqual([
+        'chat-header-machine',
+        'chat-header-project',
+        'chat-header-branch',
+        'chat-header-worktree',
+      ]);
+    } finally {
+      resetStagedBackends();
+      setCompactLayoutForTest(false);
+    }
   });
 
   it('full layout has no back button', async () => {

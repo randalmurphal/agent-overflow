@@ -58,6 +58,39 @@ describe('<PaneTitleHandle>', () => {
     expect(queryByTestId('pane-title')).toBeNull();
   });
 
+  it('fade mode keeps the title on one line in a swipeable scroller instead of truncating', async () => {
+    // The compact chat header: the whole title stays in the DOM on one
+    // line; the scroller fades the edge with more text behind it and
+    // swipes sideways. jsdom does no layout, so the contract is the
+    // structure and the fade custom properties a scroll drives.
+    const pane = await buildPane(makeThread({ title: 'A title long enough to run past a phone header' }));
+    const { getByTestId } = render(PaneTitleHandle, { props: { pane, fade: true } });
+    await tick();
+    const title = getByTestId('pane-title');
+    expect(title.classList.contains('truncate')).toBe(false);
+    expect(title.classList.contains('flex-1')).toBe(true);
+    const scroller = getByTestId('pane-title-scroller');
+    expect(scroller.textContent).toBe('A title long enough to run past a phone header');
+    expect(scroller.classList.contains('whitespace-nowrap')).toBe(true);
+    expect(scroller.classList.contains('overflow-x-auto')).toBe(true);
+    // No text beyond either edge in jsdom: no fade on either side.
+    expect(scroller.style.getPropertyValue('--fade-left')).toBe('0px');
+    expect(scroller.style.getPropertyValue('--fade-right')).toBe('0px');
+
+    // Text beyond the right edge, none scrolled past the left: fade right only.
+    Object.defineProperty(scroller, 'scrollWidth', { configurable: true, get: () => 400 });
+    Object.defineProperty(scroller, 'clientWidth', { configurable: true, get: () => 200 });
+    await fireEvent.scroll(scroller);
+    expect(scroller.style.getPropertyValue('--fade-left')).toBe('0px');
+    expect(scroller.style.getPropertyValue('--fade-right')).toBe('24px');
+
+    // Swiped to the end: fade left only.
+    scroller.scrollLeft = 200;
+    await fireEvent.scroll(scroller);
+    expect(scroller.style.getPropertyValue('--fade-left')).toBe('24px');
+    expect(scroller.style.getPropertyValue('--fade-right')).toBe('0px');
+  });
+
   it('renders nothing when the pane has no thread', async () => {
     const pane = createThreadPane({ paneId: 'empty' });
     registerPaneForTest('empty', pane);

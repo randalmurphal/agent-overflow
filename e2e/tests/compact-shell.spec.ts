@@ -277,10 +277,15 @@ test('the chat header rolls its actions into one dropdown at the button', async 
   await expect(page.getByTestId('palette-open')).toHaveCount(0);
   await expect(page.getByTestId('terminal-toggle')).toHaveCount(0);
   await expect(page.getByTestId('chat-header-open-editor')).toHaveCount(0);
-  // The title gets the width the cluster used to take.
+  await expect(page.getByTestId('thread-title-regenerate')).toHaveCount(0);
+  // The title keeps one line with the badge and the menu beside it; the
+  // facts line is its own full-width row underneath.
   const title = page.getByTestId('chat-header-title');
-  const clipped = await title.evaluate((el) => el.scrollWidth > el.clientWidth + 1);
-  expect(clipped, 'the title must not be clipped beside one button').toBe(false);
+  const titleBox = (await title.boundingBox())!;
+  expect(titleBox.height, 'the title must stay one line').toBeLessThan(30);
+  const factsBox = (await page.getByTestId('chat-header-facts').boundingBox())!;
+  expect(factsBox.y).toBeGreaterThanOrEqual(titleBox.y + titleBox.height - 1);
+  expect(factsBox.width).toBeGreaterThan(page.viewportSize()!.width * 0.8);
 
   const button = page.getByTestId('chat-header-more');
   await button.tap();
@@ -294,6 +299,8 @@ test('the chat header rolls its actions into one dropdown at the button', async 
   expect(menuBox!.y).toBeGreaterThanOrEqual(buttonBox!.y + buttonBox!.height - 1);
   expect(menuBox!.y).toBeLessThan(buttonBox!.y + buttonBox!.height + 16);
   expect(menuBox!.x + menuBox!.width).toBeLessThanOrEqual(page.viewportSize()!.width + 1);
+  // Title regeneration is a row of this menu on the phone.
+  await expect(menu.getByRole('menuitem', { name: 'Regenerate title' })).toBeVisible();
   await menu.getByRole('menuitem', { name: /Review changes/ }).tap();
   await expect(menu).toHaveCount(0);
   await expect(page.locator('section[data-pane-kind="review"]')).toBeVisible();

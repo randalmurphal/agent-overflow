@@ -284,10 +284,6 @@ everything else. It was a labelled button while the header was conditional,
 because then it really was the only control left when a run expanded; that
 premise is gone.
 
-The chat header's **collapse-all toggle** (`activity-runs-toggle` in
-`ChatHeaderActions.svelte`) is the THREAD-level bulk action, one button whose
-direction comes from `activityRuns.bulkCollapsed`.
-
 ### The header speaks in tool hues
 
 Each term of the count line wears its own tool's colour (`14 Bash` in the
@@ -311,7 +307,7 @@ named `thinking` cannot inherit reasoning's hue or sort position.
 Collapsing a thread should compress its history, not blind the reader to the
 work in front of them. So a run whose collapse comes from a DEFAULT renders open
 while it is the timeline's newest revealed run: the default (the
-`activityRunDefault` setting, or the thread's collapse-all state) says how a
+`activityRunDefault` setting, or the thread's bulk default) says how a
 run should sit once the reader has moved past it, and the newest run is the one
 in front of them.
 
@@ -340,11 +336,12 @@ Four facts, ranked once, in the registry
 3. **The recorded hold.** A run that opened as the newest keeps rendering
    open after prose displaces it, until the timeline's auto-collapse gate
    releases it (below) or the reader answers directly.
-4. **The thread's collapse-all state**, then the setting behind it. Both are
+4. **The thread's bulk default**, then the setting behind it. Both are
    defaults (`setAllCollapsed` sets the thread's and DROPS per-run overrides,
    which is what lets a later flip reach every run), so both are answers about
    how runs sit, not about the one that is working or the one nobody has
-   moved past yet.
+   moved past yet. No chrome sets the bulk default today; the setting is the
+   reader's control.
 
 Everything downstream then reads one field. `collapsed` on the node means
 "renders without its clip", and the row's template, the structure signature and
@@ -494,8 +491,8 @@ its own header, and that click is instant.
 
 ### A toggle opens upward
 
-Every path that flips collapse state (the header, the rail, the chat header's
-bulk toggle, and the auto-collapse gate's batch release) runs inside
+Every path that flips collapse state (the header, the rail, `setAllCollapsed`,
+and the auto-collapse gate's batch release) runs inside
 `withViewportBottomHeld`, which holds the viewport's BOTTOM edge across the
 change. The hold lives inside the registry's mutators, not at the call
 sites; the one hold-free write is `expandForReveal`, for jumps that retarget
@@ -548,7 +545,7 @@ settle: the clip is written to the bottom, a row inside then resolves and grows
 it, and the `scroll` event from the write is delivered after that growth,
 correctly reporting a position that is no longer the bottom. Re-deriving from
 it dropped the follow on the very first row to resolve, which is what left a
-run reopened by the header's collapse-all sitting near its top and staying
+run reopened by a bulk expand sitting near its top and staying
 there. So growth never clears the flag; only a reader gesture does
 (`readerScrolling`, armed by wheel / touch / key / bar drag), and every write
 the component makes states the flag rather than measuring it, via
@@ -990,9 +987,9 @@ of N estimated ones.
   collapsed-but-open state comes from: with `collapsed`, a streaming run shows
   its header AND its work, keeps showing it after it settles, and collapses
   only once the reader is provably past it (the auto-collapse gate). This is
-  the durable
-  layer under the chat header's per-thread bulk toggle, which overrides it for
-  one thread and dies with the pane.
+  the durable layer under the registry's per-thread bulk default
+  (`setAllCollapsed`), which overrides it for one thread and dies with the
+  pane. No chrome sets that default today.
 - `activityRunWindowRows`: default 30, clamped `[10, 200]`, validated
   strictly on update and clamped leniently on load.
 

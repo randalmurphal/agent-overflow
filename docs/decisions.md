@@ -174,6 +174,21 @@ and anti-changes that live only here:
 - Every thread/workspace event reaches any client with visibility; channel
   audience is by data class, loopback-only is for host directives only. A
   mutation that persists without emitting is a bug.
+- Phone chat chrome (2026-09-13): header row one is back, title, diff
+  badge, menu; row two is the full-width `machine · project · branch ·
+  worktree` line with every segment a direct tap into its picker. The
+  title fades and swipes rather than wrapping or truncating; only the
+  branch ellipsizes; the worktree is an icon that never scrolls away
+  (it is the way to New worktree). No workspace strip on the phone; the
+  cost sits right-aligned on the activity rail, which shows whenever
+  there is usage to report. Desktop shows the project
+  as `project / title` in the header, and its strip is machine, branch,
+  worktree, cost. The desktop crumb and every segment of the phone's facts
+  line wear the secondary text color, one visible tier under the title in
+  every built-in theme; they are not dimmed to the hint tier, and the
+  title is not enlarged. Opening a thread on the phone never focuses the
+  composer; the keyboard rises only on a tap into the input.
+  `docs/specs/remote-access.md` (6f).
 
 ## Review pane
 
