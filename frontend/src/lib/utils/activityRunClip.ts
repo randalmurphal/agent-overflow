@@ -209,8 +209,17 @@ export function activityRunExpandedHeight(bodies: readonly HTMLElement[]): numbe
  * tree the caller's effect (or a toggle's flush) just dirtied, and its
  * `offsetHeight` loop was the timeline's only source of full forced layouts,
  * once per window advance while streaming (2026-08-26, the 165Hz frame-drop
- * attribution). The height still lands before the same frame paints: the
- * initial RO delivery is part of that frame's rendering update.
+ * attribution).
+ *
+ * The height is reported on the next animation frame, not from inside the
+ * delivery. The bodies are the deepest observed targets in the run; the cap
+ * they lift is `style:max-height` on the clip, an observed ancestor. A
+ * resize of a shallower target caused by a delivery is what Chromium reports
+ * as "ResizeObserver loop completed with undelivered notifications", and it
+ * then delivers the clip's, row's and content's observations one frame late
+ * anyway. Reporting a frame later moves the cap write ahead of that frame's
+ * deliveries, so every observer above the bodies sees the lifted cap in the
+ * same frame. Deliveries within a frame coalesce to the last measurement.
  */
 export function observeActivityRunExpansion(
   clip: HTMLElement,
@@ -221,8 +230,16 @@ export function observeActivityRunExpansion(
     activityRunRecordCollapsedHeights(bodies.collapsed);
     return bodies;
   }
+  let reportFrame: number | null = null;
+  function reportNextFrame(px: number): void {
+    if (reportFrame !== null) cancelAnimationFrame(reportFrame);
+    reportFrame = requestAnimationFrame(() => {
+      reportFrame = null;
+      onHeight(px);
+    });
+  }
   const sizes = new ResizeObserver(() => {
-    onHeight(activityRunExpandedHeight(measure().expanded));
+    reportNextFrame(activityRunExpandedHeight(measure().expanded));
   });
   function retarget(): void {
     const bodies = activityRunDisclosureBodies(clip);
@@ -244,6 +261,10 @@ export function observeActivityRunExpansion(
   return () => {
     disclosures.disconnect();
     sizes.disconnect();
+    if (reportFrame !== null) {
+      cancelAnimationFrame(reportFrame);
+      reportFrame = null;
+    }
   };
 }
 

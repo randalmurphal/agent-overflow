@@ -45,9 +45,11 @@ function expectHeightNear(actual: number, expected: number): void {
  * would read the pre-delivery value. Two rAFs: the first fires before the
  * same frame's RO deliveries, the second lands after them.
  */
+/** Two frames for the observers to deliver, one more for the deferred report
+ *  (`observeActivityRunExpansion` reports on the frame after delivery). */
 function afterDelivery(): Promise<void> {
   return new Promise((resolve) => {
-    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
   });
 }
 
