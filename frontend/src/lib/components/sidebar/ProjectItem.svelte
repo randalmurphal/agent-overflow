@@ -1,7 +1,7 @@
 <script lang="ts">
   import { projectHasScope } from '../../transport/entityScopes';
-  // A single project row. Chevron + folder + name + new-thread action on the
-  // right for "new thread here". Right-click opens a small context menu
+  // A single project row. Chevron + folder + name + new-group and new-thread
+  // actions on the right. Right-click opens a small context menu
   // (Rename / Archive / Delete) rendered via ProjectContextMenu.
   //
   // Keeping the rename flow inline (not in the context menu component)
@@ -35,7 +35,6 @@
   import FolderOpen from '@lucide/svelte/icons/folder-open';
   import FolderPlus from '@lucide/svelte/icons/folder-plus';
   import Plus from '@lucide/svelte/icons/plus';
-  import Terminal from '@lucide/svelte/icons/terminal';
   import Icon from '../primitives/Icon.svelte';
   import ProjectContextMenu from './ProjectContextMenu.svelte';
   import SidebarRowMenuButton from './SidebarRowMenuButton.svelte';
@@ -70,8 +69,10 @@
     /** Called with the project id when the user clicks the new-thread button
      * (or otherwise signals "create a new thread in this project"). */
     onNewThread?: ProjectNewThreadHandler;
-    /** Called with the project id when the user clicks the new-terminal
-     *  button — opens a fresh terminal pane rooted at this project. */
+    /** Called with the project id when the user picks New Terminal from the
+     *  compact context menu — opens a fresh terminal pane rooted at this
+     *  project. Desktop has no per-project terminal control; terminals open
+     *  from the palette, the chat header or the global control. */
     onNewTerminal?: ProjectNewTerminalHandler;
     /** Current rendered ordering of project ids (visible projects in
      *  ProjectsSection). Required for DnD to compute the new order on
@@ -95,13 +96,11 @@
     separatedFromPrevious = false,
   }: Props = $props();
 
-  // Creating a thread rides `threads:operate`; a terminal thread also
-  // starts a PTY, which rides `terminal:operate`. Both controls stay in the
-  // row and go inert rather than disappearing — a project whose row lost
-  // half its affordances reads as a broken sidebar, not as a read-only one.
+  // Creating a thread rides `threads:operate`. The control stays in the
+  // row and goes inert rather than disappearing — a project whose row lost
+  // an affordance reads as a broken sidebar, not as a read-only one.
   // The hover-reveal is untouched, so nothing new is visible at rest.
   let newThreadUngranted = $derived(!projectHasScope('threads:operate', project.project.id));
-  let newTerminalUngranted = $derived(!projectHasScope('terminal:operate', project.project.id));
   // Compact: no drag (a phone's long press is the menu, and Android starts a
   // drag on a held draggable), no text selection under a hold, a taller
   // header, and the create controls the hover would have revealed.
@@ -181,11 +180,6 @@
     e.stopPropagation();
     lastNewThreadContextMenuAt = Date.now();
     onNewThread?.(project.project.id, { openInNewPane: true });
-  }
-
-  function handleNewTerminalClick(e: MouseEvent): void {
-    e.stopPropagation();
-    onNewTerminal?.(project.project.id);
   }
 
   function handleNewGroupClick(e: MouseEvent): void {
@@ -423,20 +417,9 @@
         title="New Group in This Project"
         aria-label="New Group in This Project"
         data-testid="project-item-new-group"
-        class="compact:hidden opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ml-1 shrink-0 flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:text-fg hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        class="compact:hidden opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity shrink-0 flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:text-fg hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
       >
         <Icon icon={FolderPlus} size={12} strokeWidth={2} class="opacity-90" />
-      </button>
-      <button
-        type="button"
-        onclick={handleNewTerminalClick}
-        disabled={newTerminalUngranted}
-        title={newTerminalUngranted ? 'Not granted to this device' : 'New Terminal in This Project'}
-        aria-label="New Terminal in This Project"
-        data-testid="project-item-new-terminal"
-        class="compact:hidden opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ml-1 shrink-0 flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:text-fg hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:text-fg-subtle disabled:hover:text-fg-subtle disabled:hover:bg-surface-2/0"
-      >
-        <Icon icon={Terminal} size={12} strokeWidth={2} class="opacity-90" />
       </button>
       <button
         type="button"
@@ -446,7 +429,7 @@
         title={newThreadUngranted ? 'Not granted to this device' : 'New Thread in This Project'}
         aria-label="New Thread in This Project"
         data-testid="project-item-new-thread"
-        class="compact:opacity-100 compact:h-9 compact:w-9 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ml-1 shrink-0 flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:text-fg hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:text-fg-subtle disabled:hover:text-fg-subtle disabled:hover:bg-surface-2/0"
+        class="compact:opacity-100 compact:h-9 compact:w-9 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity shrink-0 flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:text-fg hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:text-fg-subtle disabled:hover:text-fg-subtle disabled:hover:bg-surface-2/0"
       >
         <Icon icon={Plus} size={12} strokeWidth={2} class="opacity-90" />
       </button>

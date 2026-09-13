@@ -42,19 +42,21 @@ afterEach(() => {
   resetToLocalPage();
 });
 
-// The row's two create controls stay in place for a session that cannot use
-// them — a project whose row lost half its affordances reads as a broken
-// sidebar rather than a read-only one — and go inert instead.
+// The row's new-thread control stays in place for a session that cannot use
+// it — a project whose row lost an affordance reads as a broken sidebar
+// rather than a read-only one — and goes inert instead.
 describe('ProjectItem create controls', () => {
-  it('offers both on the local page', () => {
+  it('offers new-thread on the local page and no per-project terminal button', () => {
     const p = makeProject('a', 'web', '/work/web');
     addProjectLocal(p);
-    const { getByTestId } = renderItem(p);
+    const { getByTestId, queryByTestId } = renderItem(p);
     expect((getByTestId('project-item-new-thread') as HTMLButtonElement).disabled).toBe(false);
-    expect((getByTestId('project-item-new-terminal') as HTMLButtonElement).disabled).toBe(false);
+    // Terminals open from the palette, the chat header or the compact menu;
+    // the header carries no terminal control of its own.
+    expect(queryByTestId('project-item-new-terminal')).toBeNull();
   });
 
-  it('renders them inert for a view-only session', async () => {
+  it('renders it inert for a view-only session', async () => {
     const p = makeProject('a', 'web', '/work/web');
     addProjectLocal(p);
     await pairViewOnly();
@@ -62,7 +64,6 @@ describe('ProjectItem create controls', () => {
     const newThread = getByTestId('project-item-new-thread') as HTMLButtonElement;
     expect(newThread.disabled).toBe(true);
     expect(newThread.title).toBe('Not granted to this device');
-    expect((getByTestId('project-item-new-terminal') as HTMLButtonElement).disabled).toBe(true);
   });
 });
 

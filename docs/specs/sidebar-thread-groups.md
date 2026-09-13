@@ -55,7 +55,7 @@ running member moves the group up the list, it does not light the row.
   project's groups plus "New Group…"; a grouped row also gets "Remove
   from Group". Multi-select gets the same two when every selected thread
   shares one project. Project header: "New Group…", also a hover-revealed
-  folder-plus button beside New Terminal / New Thread. Group row: New Thread, Rename
+  folder-plus button beside New Thread. Group row: New Thread, Rename
   Group, Pin / Unpin / burner move, Archive Threads, Ungroup All, Delete
   Group.
 - **New thread.** The group row's plus button and New Thread menu item open

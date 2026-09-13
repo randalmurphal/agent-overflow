@@ -270,7 +270,7 @@
     }
   };
 
-  // Per-project +terminal (rooted at the project). openTerminalThread owns
+  // Per-project New Terminal from the compact menu (rooted at the project). openTerminalThread owns
   // its own error toast, so there's nothing to catch here.
   const handleNewTerminal: ProjectNewTerminalHandler = (projectId) => {
     void openTerminalThread({ projectId });
