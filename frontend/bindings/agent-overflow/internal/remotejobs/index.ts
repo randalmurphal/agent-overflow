@@ -3,6 +3,7 @@
 
 export {
     LogChunk,
+    LogInfo,
     LogMatch,
     LogSearch,
     Request

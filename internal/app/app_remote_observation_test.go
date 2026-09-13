@@ -23,13 +23,13 @@ func TestRemoteCommandRepliesImmediatelyUpdateSourceWatch(t *testing.T) {
 			source, receiver, ctx, input := remoteAdmissionFixture(t)
 			receiver.remoteJobs.Close()
 			finish := make(chan struct{})
-			manager, err := remotejobs.New(ctx, receiver.store, func(ctx context.Context, _ string, _ []string, out io.Writer) (int, error) {
+			manager, err := remotejobs.New(ctx, receiver.store, func(ctx context.Context, _ string, _ []string, out io.Writer) (remotejobs.Outcome, error) {
 				select {
 				case <-finish:
 					_, _ = io.WriteString(out, "finished output")
-					return 0, nil
+					return remotejobs.Outcome{ExitCode: 0}, nil
 				case <-ctx.Done():
-					return -1, ctx.Err()
+					return remotejobs.Outcome{ExitCode: -1}, ctx.Err()
 				}
 			})
 			if err != nil {
@@ -69,7 +69,7 @@ func TestRemoteCommandRepliesImmediatelyUpdateSourceWatch(t *testing.T) {
 			case "wait":
 				wait := 2.0
 				var mcp remoteMCPResult
-				mcp, err = source.waitRemoteResult(ctx, input.ComputerID, started, remoteResultOptions{WaitSeconds: &wait})
+				mcp, err = source.waitRemoteResult(ctx, ctx, input.ComputerID, started, remoteResultOptions{WaitSeconds: &wait})
 				result = mcp.RemoteCommand
 			case "retry":
 				result, err = source.AgentRemoteStart(ctx, input)
@@ -126,7 +126,7 @@ func TestRemoteCompletionUsesCanonicalReceiptWithoutDependingOnDestination(t *te
 			if lateReply {
 				w.Receipt.State = "failed"
 				w.Receipt.Output = "obsolete output"
-				if err := a.deliverRemoteCompletion(context.Background(), w, false); err != nil {
+				if err := a.deliverRemoteCompletion(context.Background(), w, remoteCompletionOutput{Tail: w.Receipt.Output}); err != nil {
 					t.Fatal(err)
 				}
 			} else {
@@ -158,7 +158,7 @@ func TestRemoteCompletionDeliveryWaitIsBounded(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	began := time.Now()
-	err := a.deliverRemoteCompletion(ctx, w, false)
+	err := a.deliverRemoteCompletion(ctx, w, remoteCompletionOutput{Tail: w.Receipt.Output})
 	if !errors.Is(err, context.DeadlineExceeded) || time.Since(began) > 2*time.Second {
 		t.Fatalf("held action lock did not bound delivery: %v after %s", err, time.Since(began))
 	}
@@ -169,7 +169,7 @@ func TestRemoteCompletionDeliveryWaitIsBounded(t *testing.T) {
 		t.Fatalf("queued without the lock: %+v", rows)
 	}
 	unlock()
-	if err := a.deliverRemoteCompletion(context.Background(), w, false); err != nil {
+	if err := a.deliverRemoteCompletion(context.Background(), w, remoteCompletionOutput{Tail: w.Receipt.Output}); err != nil {
 		t.Fatal(err)
 	}
 	if rows := durableQueueRows(t, a, thread.ID); len(rows) != 1 {

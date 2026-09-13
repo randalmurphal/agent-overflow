@@ -15,6 +15,7 @@ import (
 
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/errorsx"
+	"agent-overflow/internal/store"
 	"github.com/shirou/gopsutil/v4/disk"
 )
 
@@ -33,7 +34,9 @@ type Options struct {
 	MaxJobBytes      int64
 	MaxRetainedBytes int64
 	MinFreeBytes     uint64
-	freeBytes        func(string) (uint64, error)
+	// OwnerGrace overrides DefaultOwnerGrace; tests shorten it.
+	OwnerGrace time.Duration
+	freeBytes  func(string) (uint64, error)
 }
 
 type LogInfo struct {
@@ -323,17 +326,9 @@ func (s *logStore) withLog(id string, fn func(*jobLog) error) error {
 		return err
 	}
 	defer file.Close()
-	var h [logHeaderBytes]byte
-	if _, err = io.ReadFull(file, h[:]); err != nil {
+	l, err := readSettledHeader(file)
+	if err != nil {
 		return err
-	}
-	l := &jobLog{file: file, capacity: int64(binary.LittleEndian.Uint64(h[8:16])), total: int64(binary.LittleEndian.Uint64(h[16:24])), retained: int64(binary.LittleEndian.Uint64(h[24:32])), lost: h[32] != 0}
-	// Both refusals are permanent facts about the file: no retry answers them.
-	if h[33] != 0 {
-		return errorsx.Public("remote_log_unavailable", "This job's log cannot be read: the destination stopped during a log overwrite, so its byte offsets are unreliable. The output is unrecoverable; do not rerun the command to recover it.", nil)
-	}
-	if string(h[:8]) != "AOLOG001" || l.capacity < 1 || l.capacity > DefaultMaxJobBytes || l.total < 0 || l.retained < 0 || l.retained > l.capacity || l.retained > l.total {
-		return errorsx.Public("remote_log_unavailable", "This job's log cannot be read: its saved file is damaged. The output is unrecoverable; do not rerun the command to recover it.", nil)
 	}
 	return fn(l)
 }
@@ -446,3 +441,84 @@ func (m *Manager) SearchLog(ownerID, id, query string, offset int64, maxBytes in
 	}
 	return result, nil
 }
+
+// SettledLog is a read handle on a finished command's retained output. Settled
+// files are immutable, so the handle reads outside the store lock; a running
+// command's log is refused because a transfer needs a fixed size and digest.
+type SettledLog struct {
+	Receipt  store.RemoteJob
+	Info     LogInfo
+	file     *os.File
+	capacity int64
+}
+
+// OpenSettledLog authorizes through the receipt owner, then opens the saved
+// file directly. Callers must Close the handle.
+func (m *Manager) OpenSettledLog(ownerID, id string) (*SettledLog, error) {
+	receipt, err := m.Get(ownerID, id)
+	if err != nil {
+		return nil, err
+	}
+	if receipt.State == "running" {
+		return nil, errorsx.Public("remote_log_running", "The command is still running, so its log has no final size yet. Read it with remote_read_log, or wait for the command to finish before fetching the whole log.", nil)
+	}
+	m.logs.mu.Lock()
+	_, active := m.logs.active[id]
+	m.logs.mu.Unlock()
+	if active {
+		return nil, errorsx.Public("remote_log_running", "The command's log is still being written. Retry once its receipt is settled.", nil)
+	}
+	file, err := os.Open(m.logs.path(id))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, errorsx.Public("remote_log_expired", "The saved log has expired on the destination; it cannot be fetched. Rerun the command if its output is still needed.", err)
+	}
+	if err != nil {
+		return nil, logReadError(err)
+	}
+	log, err := readSettledHeader(file)
+	if err != nil {
+		file.Close()
+		return nil, logReadError(err)
+	}
+	return &SettledLog{Receipt: receipt, Info: log.info(id), file: file, capacity: log.capacity}, nil
+}
+
+func readSettledHeader(file *os.File) (*jobLog, error) {
+	var h [logHeaderBytes]byte
+	if _, err := io.ReadFull(file, h[:]); err != nil {
+		return nil, err
+	}
+	l := &jobLog{file: file, capacity: int64(binary.LittleEndian.Uint64(h[8:16])), total: int64(binary.LittleEndian.Uint64(h[16:24])), retained: int64(binary.LittleEndian.Uint64(h[24:32])), lost: h[32] != 0}
+	if h[33] != 0 {
+		return nil, errorsx.Public("remote_log_unavailable", "This job's log cannot be read: the destination stopped during a log overwrite, so its byte offsets are unreliable. The output is unrecoverable; do not rerun the command to recover it.", nil)
+	}
+	if string(h[:8]) != "AOLOG001" || l.capacity < 1 || l.capacity > DefaultMaxJobBytes || l.total < 0 || l.retained < 0 || l.retained > l.capacity || l.retained > l.total {
+		return nil, errorsx.Public("remote_log_unavailable", "This job's log cannot be read: its saved file is damaged. The output is unrecoverable; do not rerun the command to recover it.", nil)
+	}
+	return l, nil
+}
+
+// ReadAt fills p from the retained output starting at position off, counted
+// from the retained start rather than the absolute stream offset.
+func (l *SettledLog) ReadAt(p []byte, off int64) (int, error) {
+	if off < 0 || off > l.Info.RetainedBytes {
+		return 0, io.EOF
+	}
+	size := min(int64(len(p)), l.Info.RetainedBytes-off)
+	if size == 0 {
+		return 0, io.EOF
+	}
+	pos := (l.Info.StartOffset + off) % l.capacity
+	first := min(size, l.capacity-pos)
+	if _, err := l.file.ReadAt(p[:first], logHeaderBytes+pos); err != nil {
+		return 0, err
+	}
+	if first < size {
+		if _, err := l.file.ReadAt(p[first:size], logHeaderBytes); err != nil {
+			return 0, err
+		}
+	}
+	return int(size), nil
+}
+
+func (l *SettledLog) Close() error { return l.file.Close() }

@@ -108,8 +108,9 @@ rather than prose, so every line parses.
 `agent-overflow remote list` returns enabled paired computers and their registered
 projects as JSON, including an error for an unavailable computer. Use
 `remote run --computer <uuid> --project <uuid> [--workspace <registered-worktree>]
-[--id <request-uuid>] [--timeout <seconds>] -- <command> [args...]`. The default
-timeout is one hour, maximum seven days, with four concurrent commands per host.
+[--id <request-uuid>] [--timeout <seconds>] -- <command> [args...]`. There is
+no time limit by default; `--timeout` allows up to seven days, with four
+concurrent commands per host.
 The generated request ID is printed before dispatch. After a missing reply,
 `remote status --computer <uuid> <request-uuid>` reconciles it; retrying run must
 reuse the same ID and exact arguments. `remote cancel` takes the same selectors.

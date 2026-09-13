@@ -43,11 +43,11 @@ func startLogJob(t *testing.T, m *Manager) string {
 
 func TestDiskLogRingOffsetsRetentionAndRestart(t *testing.T) {
 	o := logOptions(t, 16)
-	m, st := logManager(t, o, func(_ context.Context, _ string, _ []string, out io.Writer) (int, error) {
+	m, st := logManager(t, o, func(_ context.Context, _ string, _ []string, out io.Writer) (Outcome, error) {
 		for _, part := range []string{"0123456789", "ABCDEFGHIJK", "LMNOPQRSTUVWXYZ"} {
 			_, _ = io.WriteString(out, part)
 		}
-		return 0, nil
+		return Outcome{ExitCode: 0}, nil
 	})
 	id := startLogJob(t, m)
 	receipt := settled(t, m, id)
@@ -69,9 +69,9 @@ func TestDiskLogRingOffsetsRetentionAndRestart(t *testing.T) {
 		t.Fatal("unauthorized log search")
 	}
 	m.Close()
-	restarted, err := New(context.Background(), st, func(context.Context, string, []string, io.Writer) (int, error) {
+	restarted, err := New(context.Background(), st, func(context.Context, string, []string, io.Writer) (Outcome, error) {
 		t.Error("restarted manager reran accepted job")
-		return 0, nil
+		return Outcome{ExitCode: 0}, nil
 	}, o)
 	if err != nil {
 		t.Fatal(err)
@@ -90,9 +90,9 @@ func TestDiskLogRingOffsetsRetentionAndRestart(t *testing.T) {
 func TestLogRetentionExpiresOnlyCompletedLogsAndPreservesReceipt(t *testing.T) {
 	o := logOptions(t, 16)
 	o.MaxRetainedBytes = 32
-	m, _ := logManager(t, o, func(_ context.Context, _ string, _ []string, out io.Writer) (int, error) {
+	m, _ := logManager(t, o, func(_ context.Context, _ string, _ []string, out io.Writer) (Outcome, error) {
 		_, _ = io.WriteString(out, "abcdefghijklmnop")
-		return 0, nil
+		return Outcome{ExitCode: 0}, nil
 	})
 	first := startLogJob(t, m)
 	settled(t, m, first)
@@ -164,15 +164,15 @@ func TestLogSearchPageBoundaryAndConcurrentReads(t *testing.T) {
 	o := logOptions(t, 1024)
 	release := make(chan struct{})
 	started := make(chan struct{})
-	m, _ := logManager(t, o, func(ctx context.Context, _ string, _ []string, out io.Writer) (int, error) {
+	m, _ := logManager(t, o, func(ctx context.Context, _ string, _ []string, out io.Writer) (Outcome, error) {
 		_, _ = io.WriteString(out, "12345needle890needleEND")
 		close(started)
 		select {
 		case <-release:
 		case <-ctx.Done():
-			return -1, ctx.Err()
+			return Outcome{ExitCode: -1}, ctx.Err()
 		}
-		return 0, nil
+		return Outcome{ExitCode: 0}, nil
 	})
 	id := startLogJob(t, m)
 	<-started
@@ -216,7 +216,7 @@ func TestLogSearchPageBoundaryAndConcurrentReads(t *testing.T) {
 func TestExplicitScriptsAndUnlimitedJobs(t *testing.T) {
 	script := "printf '%s\\n' '$literal; no interpolation'\n" + strings.Repeat("# long script\n", 10000)
 	var savedPath string
-	m, _ := logManager(t, logOptions(t, 1024), func(ctx context.Context, cwd string, argv []string, out io.Writer) (int, error) {
+	m, _ := logManager(t, logOptions(t, 1024), func(ctx context.Context, cwd string, argv []string, out io.Writer) (Outcome, error) {
 		if _, deadline := ctx.Deadline(); deadline {
 			t.Error("unlimited context had deadline")
 		}
@@ -232,14 +232,13 @@ func TestExplicitScriptsAndUnlimitedJobs(t *testing.T) {
 		if err != nil || info.Mode().Perm() != 0600 {
 			t.Errorf("script permissions=%v %v", info, err)
 		}
-		return 0, nil
+		return Outcome{ExitCode: 0}, nil
 	})
 	req := request()
 	req.Argv = nil
 	req.Script = script
 	req.Interpreter = []string{"explicit-interpreter", "--option"}
 	req.TimeoutSeconds = 0
-	req.Unlimited = true
 	if _, err := m.Start("owner", uuid.NewString(), t.TempDir(), req); err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +246,7 @@ func TestExplicitScriptsAndUnlimitedJobs(t *testing.T) {
 	if _, err := os.Stat(savedPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("script retained: %v", err)
 	}
-	for _, change := range []func(*Request){func(r *Request) { r.Argv = []string{"also-argv"} }, func(r *Request) { r.Interpreter = nil }, func(r *Request) { r.TimeoutSeconds = 1 }, func(r *Request) { r.Script = strings.Repeat("x", (1<<20)+1) }, func(r *Request) { r.Interpreter = []string{"bad\x00arg"} }} {
+	for _, change := range []func(*Request){func(r *Request) { r.Argv = []string{"also-argv"} }, func(r *Request) { r.Interpreter = nil }, func(r *Request) { r.TimeoutSeconds = -1 }, func(r *Request) { r.Script = strings.Repeat("x", (1<<20)+1) }, func(r *Request) { r.Interpreter = []string{"bad\x00arg"} }} {
 		bad := req
 		change(&bad)
 		if Validate(bad) == nil {
@@ -258,7 +257,7 @@ func TestExplicitScriptsAndUnlimitedJobs(t *testing.T) {
 
 func TestLogIncompleteOverwriteAndAdmissionFailureAreExplicit(t *testing.T) {
 	o := logOptions(t, 16)
-	m, _ := logManager(t, o, func(context.Context, string, []string, io.Writer) (int, error) { return 0, nil })
+	m, _ := logManager(t, o, func(context.Context, string, []string, io.Writer) (Outcome, error) { return Outcome{ExitCode: 0}, nil })
 	id := startLogJob(t, m)
 	settled(t, m, id)
 	file, err := os.OpenFile(filepath.Join(o.LogDir, id+".log"), os.O_RDWR, 0600)
@@ -294,7 +293,7 @@ func TestLogIncompleteOverwriteAndAdmissionFailureAreExplicit(t *testing.T) {
 	// ID is still usable once space is available; no phantom running receipt.
 	var free atomic.Uint64
 	o.freeBytes = func(string) (uint64, error) { return free.Load(), nil }
-	m2, st := logManager(t, o, func(context.Context, string, []string, io.Writer) (int, error) { return 0, nil })
+	m2, st := logManager(t, o, func(context.Context, string, []string, io.Writer) (Outcome, error) { return Outcome{ExitCode: 0}, nil })
 	req := request()
 	project := uuid.NewString()
 	workspace := t.TempDir()
@@ -315,13 +314,13 @@ func TestActiveLogReservationsCannotBeEvicted(t *testing.T) {
 	o := logOptions(t, 64)
 	o.MaxRetainedBytes = 64
 	release := make(chan struct{})
-	m, _ := logManager(t, o, func(ctx context.Context, _ string, _ []string, out io.Writer) (int, error) {
+	m, _ := logManager(t, o, func(ctx context.Context, _ string, _ []string, out io.Writer) (Outcome, error) {
 		_, _ = io.WriteString(out, "active")
 		select {
 		case <-release:
-			return 0, nil
+			return Outcome{ExitCode: 0}, nil
 		case <-ctx.Done():
-			return -1, ctx.Err()
+			return Outcome{ExitCode: -1}, ctx.Err()
 		}
 	})
 	first := startLogJob(t, m)
@@ -335,4 +334,55 @@ func TestActiveLogReservationsCannotBeEvicted(t *testing.T) {
 	}
 	close(release)
 	settled(t, m, first)
+}
+
+// A settled log is copied whole, in stream order, from a ring that wrapped;
+// a running or expired job is refused with a stable code.
+func TestSettledLogCopiesRetainedBytesAndRefusesRunningOrExpired(t *testing.T) {
+	release := make(chan struct{})
+	o := logOptions(t, 16)
+	m, _ := logManager(t, o, func(ctx context.Context, _ string, _ []string, out io.Writer) (Outcome, error) {
+		_, _ = io.WriteString(out, "0123456789ABCDEFGHIJ")
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		_, _ = io.WriteString(out, "KLMNOPQRSTUVWXYZ")
+		return Outcome{ExitCode: 0}, nil
+	})
+	id := startLogJob(t, m)
+	if _, err := m.OpenSettledLog("owner", id); err == nil || !strings.Contains(err.Error(), "still running") {
+		t.Fatalf("running job opened its log: %v", err)
+	}
+	close(release)
+	settled(t, m, id)
+	if _, err := m.OpenSettledLog("intruder", id); err == nil {
+		t.Fatal("unauthorized settled log")
+	}
+	log, err := m.OpenSettledLog("owner", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+	if log.Info.RetainedBytes != 16 || log.Info.TotalBytes != 36 || !log.Info.Truncated || log.Receipt.ID != id {
+		t.Fatalf("settled info: %+v receipt=%+v", log.Info, log.Receipt)
+	}
+	buf := make([]byte, 64)
+	n, err := log.ReadAt(buf, 0)
+	if err != nil || string(buf[:n]) != "KLMNOPQRSTUVWXYZ" {
+		t.Fatalf("whole copy=%q err=%v", buf[:n], err)
+	}
+	n, err = log.ReadAt(buf[:5], 13)
+	if err != nil || string(buf[:n]) != "XYZ" {
+		t.Fatalf("partial copy=%q err=%v", buf[:n], err)
+	}
+	if _, err = log.ReadAt(buf, 16); err != io.EOF {
+		t.Fatalf("read past retained end: %v", err)
+	}
+	if err = os.Remove(filepath.Join(o.LogDir, id+".log")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = m.OpenSettledLog("owner", id); err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("missing file not reported as expired: %v", err)
+	}
 }

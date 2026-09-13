@@ -78,7 +78,9 @@ func remoteAdmissionFixture(t *testing.T) (*App, *remoteAdmissionReceiver, conte
 	if err != nil {
 		t.Fatal(err)
 	}
-	backend.app.remoteJobs, err = remotejobs.New(ctx, backend.app.store, func(context.Context, string, []string, io.Writer) (int, error) { return 0, nil })
+	backend.app.remoteJobs, err = remotejobs.New(ctx, backend.app.store, func(context.Context, string, []string, io.Writer) (remotejobs.Outcome, error) {
+		return remotejobs.Outcome{ExitCode: 0}, nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,9 +235,9 @@ func TestRemoteAdmissionRefusesConversationReservedForTransfer(t *testing.T) {
 func TestRemoteCompletionRecoversSavedLogTailAfterDirectStatus(t *testing.T) {
 	source, receiver, ctx, input := remoteAdmissionFixture(t)
 	receiver.remoteJobs.Close()
-	manager, err := remotejobs.New(ctx, receiver.store, func(_ context.Context, _ string, _ []string, out io.Writer) (int, error) {
-		_, _ = io.WriteString(out, strings.Repeat("x", 3000)+"\nfinal line\n")
-		return 0, nil
+	manager, err := remotejobs.New(ctx, receiver.store, func(_ context.Context, _ string, _ []string, out io.Writer) (remotejobs.Outcome, error) {
+		_, _ = io.WriteString(out, "first line\n"+strings.Repeat("x", 6000)+"\nfinal line\n")
+		return remotejobs.Outcome{ExitCode: 0}, nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -270,8 +272,74 @@ func TestRemoteCompletionRecoversSavedLogTailAfterDirectStatus(t *testing.T) {
 		t.Fatalf("completion queue: %+v", rows)
 	}
 	message := rows[0].Message
-	if !strings.Contains(message, "final line") || !strings.Contains(message, "Output omitted") || strings.Contains(message, "Output was not retrieved") || len(message) > 4<<10 {
-		t.Fatalf("completion lost the saved tail: %s", message)
+	if !strings.Contains(message, "first line") || !strings.Contains(message, "final line") || !strings.Contains(message, "Output omitted") || strings.Contains(message, "Output was not retrieved") || len(message) > 4<<10 {
+		t.Fatalf("completion lost the saved head and tail: %s", message)
+	}
+}
+
+// Deleting, archiving or moving a conversation stops the commands it still
+// owns on the other computer and drops their pending notifications; the
+// destination receipt records the cancellation.
+func TestConversationLifecycleCancelsItsRemoteCommands(t *testing.T) {
+	for _, action := range []string{"delete", "archive", "move"} {
+		t.Run(action, func(t *testing.T) {
+			source, receiver, ctx, input := remoteAdmissionFixture(t)
+			receiver.remoteJobs.Close()
+			manager, err := remotejobs.New(ctx, receiver.store, func(ctx context.Context, _ string, _ []string, out io.Writer) (remotejobs.Outcome, error) {
+				_, _ = io.WriteString(out, "still running")
+				<-ctx.Done()
+				return remotejobs.Outcome{ExitCode: -1}, ctx.Err()
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			receiver.remoteJobs = manager
+			t.Cleanup(manager.Close)
+			started, err := source.AgentRemoteStart(ctx, input)
+			if err != nil || started.State != "running" {
+				t.Fatalf("start: %+v %v", started, err)
+			}
+			threadID := started.SourceThreadID
+			switch action {
+			case "delete":
+				err = source.DeleteThread(threadID)
+			case "archive":
+				err = source.ArchiveThread(threadID)
+			case "move":
+				source.configDir = t.TempDir()
+				if err := source.startThreadTransfers(); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(source.transfers.close)
+				_, err = source.BeginThreadTransfer(ctx, threadID, uuid.NewString(), uuid.NewString(), "move", false)
+			}
+			if err != nil {
+				t.Fatalf("%s: %v", action, err)
+			}
+			// Cancellation is acknowledged before the process group exits;
+			// the receipt settles once it has.
+			deadline := time.Now().Add(3 * time.Second)
+			for {
+				destination, err := receiver.store.GetRemoteJob(input.Request.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if destination.State == "canceled" {
+					break
+				}
+				if destination.State != "running" || time.Now().After(deadline) {
+					t.Fatalf("destination job after %s: %+v", action, destination)
+				}
+				time.Sleep(time.Millisecond)
+			}
+			watch, err := source.store.GetRemoteWatch(input.ComputerID, input.Request.ID)
+			if err != nil || watch.Notification != "dismissed" {
+				t.Fatalf("watch after %s: %+v %v", action, watch, err)
+			}
+			if pending, err := source.store.HasUnfinishedRemoteWatches(threadID); err != nil || pending {
+				t.Fatalf("unfinished work remained after %s: %v %v", action, pending, err)
+			}
+		})
 	}
 }
 

@@ -61,11 +61,11 @@ func TestRemoteMCPExtendedToolsCrossPairedTLS(t *testing.T) {
 	artifact := "<html><body>training result λ</body></html>"
 	var starts atomic.Int32
 	scriptPaths := make(chan string, 1)
-	destination.app.remoteJobs, err = remotejobs.New(context.Background(), destination.app.store, func(runCtx context.Context, cwd string, argv []string, out io.Writer) (int, error) {
+	destination.app.remoteJobs, err = remotejobs.New(context.Background(), destination.app.store, func(runCtx context.Context, cwd string, argv []string, out io.Writer) (remotejobs.Outcome, error) {
 		starts.Add(1)
 		if cwd != project.Path || len(argv) != 3 || !reflect.DeepEqual(argv[:2], []string{"test-interpreter", "--literal flag"}) {
 			t.Errorf("execution changed: cwd=%q argv=%v", cwd, argv)
-			return 1, nil
+			return remotejobs.Outcome{ExitCode: 1}, nil
 		}
 		if _, limited := runCtx.Deadline(); limited {
 			t.Error("explicit unlimited run received a deadline")
@@ -77,10 +77,10 @@ func TestRemoteMCPExtendedToolsCrossPairedTLS(t *testing.T) {
 			t.Errorf("script changed: bytes=%d err=%v", len(actual), readErr)
 		}
 		if writeErr := os.WriteFile(filepath.Join(cwd, "report.html"), []byte(artifact), 0o600); writeErr != nil {
-			return 1, writeErr
+			return remotejobs.Outcome{ExitCode: 1}, writeErr
 		}
 		_, writeErr := io.WriteString(out, output)
-		return 0, writeErr
+		return remotejobs.Outcome{ExitCode: 0}, writeErr
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -90,7 +90,7 @@ func TestRemoteMCPExtendedToolsCrossPairedTLS(t *testing.T) {
 	endpoint := remoteMCPEndpoint(t, source, thread, token)
 	id := uuid.NewString()
 	run := map[string]any{"computer_id": peer.ID, "project_id": project.ID, "request_id": id,
-		"script": script, "interpreter": []string{"test-interpreter", "--literal flag"}, "unlimited": true,
+		"script": script, "interpreter": []string{"test-interpreter", "--literal flag"},
 		"wait_seconds": 1, "max_output_bytes": 32, "label": "Training checkpoints"}
 	run["label"] = "Training\ncheckpoints"
 	remoteMCPCall(t, endpoint, "remote_run", run, true)
@@ -216,4 +216,5 @@ func TestRemoteMCPExtendedToolsCrossPairedTLS(t *testing.T) {
 	}
 	remoteMCPCall(t, endpoint, "remote_read_log", args, true)
 	remoteMCPCall(t, endpoint, "remote_fetch_artifact", artifactArgs, true)
+	remoteMCPCall(t, endpoint, "remote_fetch_log", map[string]any{"computer_id": peer.ID, "request_id": id}, true)
 }

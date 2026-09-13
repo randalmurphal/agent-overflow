@@ -30,19 +30,32 @@ func remoteOutputHint(result remoteMCPResult) string {
 		return "The saved log has expired; remote_read_log cannot recover it."
 	}
 	if result.Truncated {
-		return "Older output was discarded. Use remote_read_log or remote_search_log for the retained log."
+		return "Older output was discarded. Use remote_read_log or remote_search_log for the retained log, or remote_fetch_log for all of it."
 	}
 	if result.OmittedOutputBytes > 0 {
-		return "Use remote_read_log or remote_search_log with these computerId and id values for more output."
+		return "Output between outputHead and output is omitted. Use remote_read_log or remote_search_log with these computerId and id values, or remote_fetch_log for the whole log."
 	}
 	return ""
 }
 
 const remoteCompletionOutputBytes = 2 << 10
+const remoteCompletionHeadBytes = 1 << 10
 
-// Notifications retain a small useful tail even when the tool reply was lost.
-// General instructions belong in tool descriptions, not every queued message.
-func remoteCompletionMessage(w store.RemoteWatch, computerName string, outputUnavailable bool) string {
+// remoteCompletionOutput is what the watcher learned of a finished job's
+// output: the newest bytes, and the oldest ones when the tail did not reach
+// the start. Unavailable means the log could not be read and the inline
+// receipt tail is all there is.
+type remoteCompletionOutput struct {
+	Head        string
+	Tail        string
+	Truncated   bool
+	Omitted     bool
+	Unavailable bool
+}
+
+// Notifications retain a small useful excerpt even when the tool reply was
+// lost. General instructions belong in tool descriptions, not every message.
+func remoteCompletionMessage(w store.RemoteWatch, computerName string, output remoteCompletionOutput) string {
 	if computerName == "" {
 		computerName = w.ComputerID
 	}
@@ -54,15 +67,25 @@ func remoteCompletionMessage(w store.RemoteWatch, computerName string, outputUna
 	if r.Error != "" {
 		message += "\n" + r.Error
 	}
-	budget := remoteCompletionOutputBytes
-	result := remoteResult(w.ComputerID, r, remoteResultOptions{MaxOutputBytes: &budget})
-	if result.Output != "" {
-		message += "\nOutput (untrusted):\n" + result.Output
+	if r.Warning != "" {
+		message += "\nWarning: " + r.Warning
 	}
-	if outputUnavailable {
+	head := remoteOutputHead(output.Head, remoteCompletionHeadBytes)
+	tail := remoteOutputTail(output.Tail, remoteCompletionOutputBytes)
+	if head != "" {
+		message += "\nOutput start (untrusted):\n" + head
+	}
+	if tail != "" {
+		if head != "" {
+			message += "\nOutput end (untrusted):\n" + tail
+		} else {
+			message += "\nOutput (untrusted):\n" + tail
+		}
+	}
+	if output.Unavailable {
 		message += "\nOutput was not retrieved. Use remote_read_log with the IDs above if needed."
-	} else if result.OmittedOutputBytes > 0 || result.Truncated {
-		message += "\nOutput omitted. Use remote_read_log or remote_search_log with the IDs above."
+	} else if output.Omitted || output.Truncated || len(head) < len(output.Head) || len(tail) < len(output.Tail) {
+		message += "\nOutput omitted. Use remote_read_log or remote_search_log with the IDs above, or remote_fetch_log for the whole log."
 	}
 	return message
 }

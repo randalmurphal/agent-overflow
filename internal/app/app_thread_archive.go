@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"log"
 	"time"
 
@@ -46,6 +47,15 @@ import (
 //ao:scope threads:operate
 //ao:route thread
 func (a *App) ArchiveThread(id string) error {
+	if err := a.archiveThreadLocked(id); err != nil {
+		return err
+	}
+	// The session is stopped, so nothing can admit another remote command.
+	// Cancel outside the lock: reaching the other computer may take a while.
+	return a.cancelThreadRemoteCommands(context.Background(), id)
+}
+
+func (a *App) archiveThreadLocked(id string) error {
 	// Stamped BEFORE the lock, because waiting for the lock is exactly
 	// the window in which this archive can go stale: a send already
 	// holding it can dispatch a whole turn before this call gets its

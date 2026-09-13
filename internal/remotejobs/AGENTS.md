@@ -16,9 +16,15 @@ session, scheduler, queue, or frontend-lifetime service.
   content is refused.
 - Boot marks orphaned running receipts interrupted. It must not infer that an
   unacknowledged command never executed.
-- Four jobs may be active. Timeouts are bounded unless `unlimited` is explicit;
-  cancellation and destination shutdown still stop unlimited jobs. Shutdown
+- Four jobs may be active. A job has no time limit unless the request sets
+  `timeout_seconds`. The owner's status polls are its lease: a job nobody has
+  asked about for `OwnerGrace` is canceled with a receipt saying so.
+  Cancellation, the lease and destination shutdown stop every job. Shutdown
   cancels process groups and joins them before storage closes.
+- The runner owns the output pipe so grandchildren's output is captured,
+  stops the group with SIGTERM then SIGKILL, and sweeps processes left in the
+  group after the leader exits. The receipt keeps the leader's exit code and
+  records the sweep in `warning`.
 - A completion-persistence failure retains the result and capacity slot until it
   is stored or the backend stops. Do not advise rerunning an operation with an
   unknown completion record.

@@ -59,6 +59,48 @@ export class LogChunk {
     }
 }
 
+export class LogInfo {
+    "requestId": string;
+    "totalBytes": number;
+    "startOffset": number;
+    "retainedBytes": number;
+    "truncated": boolean;
+    "expired": boolean;
+    "error"?: string;
+
+    /** Creates a new LogInfo instance. */
+    constructor($$source: Partial<LogInfo> = {}) {
+        if (!("requestId" in $$source)) {
+            this["requestId"] = "";
+        }
+        if (!("totalBytes" in $$source)) {
+            this["totalBytes"] = 0;
+        }
+        if (!("startOffset" in $$source)) {
+            this["startOffset"] = 0;
+        }
+        if (!("retainedBytes" in $$source)) {
+            this["retainedBytes"] = 0;
+        }
+        if (!("truncated" in $$source)) {
+            this["truncated"] = false;
+        }
+        if (!("expired" in $$source)) {
+            this["expired"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new LogInfo instance from a string or object.
+     */
+    static createFrom($$source: any = {}): LogInfo {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new LogInfo($$parsedSource as Partial<LogInfo>);
+    }
+}
+
 export class LogMatch {
     "offset": number;
     "text": string;
@@ -145,6 +187,10 @@ export class LogSearch {
 /**
  * Request names exact argv, never shell text to interpolate. Explicitly using
  * a shell is possible (e.g. bash -lc), with the same destination authority.
+ * TimeoutSeconds zero means no time limit; the calling computer's lease and
+ * explicit cancellation still end the command. Unlimited is wire
+ * compatibility with destinations that required it for a zero timeout; a
+ * source sets it from TimeoutSeconds and a destination ignores it.
  */
 export class Request {
     "id": string;

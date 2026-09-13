@@ -944,6 +944,12 @@ export class RemoteJob {
     "truncated"?: boolean;
     "error"?: string;
 
+    /**
+     * Warning describes something the command did that the caller should
+     * know about, without changing its result: leftover processes were stopped.
+     */
+    "warning"?: string;
+
     /** Creates a new RemoteJob instance. */
     constructor($$source: Partial<RemoteJob> = {}) {
         if (!("id" in $$source)) {

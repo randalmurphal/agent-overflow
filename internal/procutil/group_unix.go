@@ -20,16 +20,7 @@ import (
 // grandchild that ignored SIGKILL delivery ordering cannot wedge the reaper.
 func ConfigureGroup(command *exec.Cmd) {
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	command.Cancel = func() error {
-		if command.Process == nil {
-			return os.ErrProcessDone
-		}
-		err := syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
-		if errors.Is(err, syscall.ESRCH) {
-			return os.ErrProcessDone
-		}
-		return err
-	}
+	command.Cancel = func() error { return signalConfiguredGroup(command, syscall.SIGKILL) }
 	command.WaitDelay = time.Second
 }
 
@@ -40,8 +31,42 @@ func KillConfiguredGroup(command *exec.Cmd) error {
 	if command == nil || command.Process == nil {
 		return os.ErrProcessDone
 	}
-	if command.Cancel == nil {
+	if command.SysProcAttr == nil || !command.SysProcAttr.Setpgid {
 		return errors.New("process group was not configured")
 	}
-	return command.Cancel()
+	return signalConfiguredGroup(command, syscall.SIGKILL)
+}
+
+// TerminateConfiguredGroup asks every member of the configured group to exit
+// with SIGTERM. Callers pair it with KillConfiguredGroup after a grace period.
+func TerminateConfiguredGroup(command *exec.Cmd) error {
+	if command == nil || command.Process == nil {
+		return os.ErrProcessDone
+	}
+	if command.SysProcAttr == nil || !command.SysProcAttr.Setpgid {
+		return errors.New("process group was not configured")
+	}
+	return signalConfiguredGroup(command, syscall.SIGTERM)
+}
+
+// ConfiguredGroupAlive reports whether any process still belongs to the
+// command's group. It is meaningful after Wait returned: the leader is reaped,
+// so a live group means descendants outlived the command.
+func ConfiguredGroupAlive(command *exec.Cmd) bool {
+	if command == nil || command.Process == nil {
+		return false
+	}
+	err := syscall.Kill(-command.Process.Pid, 0)
+	return !errors.Is(err, syscall.ESRCH)
+}
+
+func signalConfiguredGroup(command *exec.Cmd, signal syscall.Signal) error {
+	if command.Process == nil {
+		return os.ErrProcessDone
+	}
+	err := syscall.Kill(-command.Process.Pid, signal)
+	if errors.Is(err, syscall.ESRCH) {
+		return os.ErrProcessDone
+	}
+	return err
 }

@@ -27,6 +27,9 @@ type RemoteJob struct {
 	Output         string `json:"output,omitempty"`
 	Truncated      bool   `json:"truncated,omitempty"`
 	Error          string `json:"error,omitempty"`
+	// Warning describes something the command did that the caller should
+	// know about, without changing its result: leftover processes were stopped.
+	Warning string `json:"warning,omitempty"`
 }
 
 const RemoteJobOutputLimit = 128 << 10
@@ -45,13 +48,15 @@ CREATE INDEX idx_remote_jobs_active ON remote_jobs(state) WHERE state = 'running
 CREATE INDEX idx_remote_jobs_finished ON remote_jobs(finished_at DESC) WHERE state != 'running';
 CREATE INDEX idx_remote_jobs_output ON remote_jobs(finished_at DESC) WHERE output != '' AND state != 'running';`
 
+const remoteJobsWarningV97SQL = `ALTER TABLE remote_jobs ADD COLUMN warning TEXT NOT NULL DEFAULT '';`
+
 const remoteJobColumns = `id, owner_id, fingerprint, source_thread_id, project_id, workspace,
- state, started_at, finished_at, exit_code, output, truncated, error`
+ state, started_at, finished_at, exit_code, output, truncated, error, warning`
 
 func scanRemoteJob(row interface{ Scan(...any) error }) (RemoteJob, error) {
 	var job RemoteJob
 	err := row.Scan(&job.ID, &job.OwnerID, &job.Fingerprint, &job.SourceThreadID, &job.ProjectID,
-		&job.Workspace, &job.State, &job.StartedAt, &job.FinishedAt, &job.ExitCode, &job.Output, &job.Truncated, &job.Error)
+		&job.Workspace, &job.State, &job.StartedAt, &job.FinishedAt, &job.ExitCode, &job.Output, &job.Truncated, &job.Error, &job.Warning)
 	return job, err
 }
 
@@ -89,10 +94,10 @@ func (s *Store) AcceptRemoteJob(job RemoteJob) (accepted RemoteJob, fresh bool, 
 		return RemoteJob{}, false, err
 	}
 	job.State, job.StartedAt, job.ExitCode = "running", time.Now().UnixMilli(), -1
-	job.FinishedAt, job.Output, job.Error, job.Truncated = 0, "", "", false
-	_, err = tx.Exec(`INSERT INTO remote_jobs (`+remoteJobColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	job.FinishedAt, job.Output, job.Error, job.Warning, job.Truncated = 0, "", "", "", false
+	_, err = tx.Exec(`INSERT INTO remote_jobs (`+remoteJobColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		job.ID, job.OwnerID, job.Fingerprint, job.SourceThreadID, job.ProjectID, job.Workspace,
-		job.State, job.StartedAt, job.FinishedAt, job.ExitCode, job.Output, job.Truncated, job.Error)
+		job.State, job.StartedAt, job.FinishedAt, job.ExitCode, job.Output, job.Truncated, job.Error, job.Warning)
 	if err != nil {
 		return RemoteJob{}, false, err
 	}
@@ -106,7 +111,7 @@ func (s *Store) FinishRemoteJob(job RemoteJob) error {
 	if job.State != "succeeded" && job.State != "failed" && job.State != "canceled" && job.State != "interrupted" {
 		return errors.New("remote command: invalid terminal state")
 	}
-	if len(job.Output) > RemoteJobOutputLimit || len(job.Error) > 4096 {
+	if len(job.Output) > RemoteJobOutputLimit || len(job.Error) > 4096 || len(job.Warning) > 4096 {
 		return errors.New("remote command: output exceeds its bound")
 	}
 	tx, err := s.db.Begin()
@@ -114,8 +119,8 @@ func (s *Store) FinishRemoteJob(job RemoteJob) error {
 		return err
 	}
 	defer tx.Rollback()
-	result, err := tx.Exec(`UPDATE remote_jobs SET state = ?, finished_at = ?, exit_code = ?, output = ?, truncated = ?, error = ? WHERE id = ? AND state = 'running'`,
-		job.State, time.Now().UnixMilli(), job.ExitCode, job.Output, job.Truncated, job.Error, job.ID)
+	result, err := tx.Exec(`UPDATE remote_jobs SET state = ?, finished_at = ?, exit_code = ?, output = ?, truncated = ?, error = ?, warning = ? WHERE id = ? AND state = 'running'`,
+		job.State, time.Now().UnixMilli(), job.ExitCode, job.Output, job.Truncated, job.Error, job.Warning, job.ID)
 	if err != nil {
 		return err
 	}
@@ -123,7 +128,7 @@ func (s *Store) FinishRemoteJob(job RemoteJob) error {
 		// A commit error can leave an acknowledged-by-SQLite result. Retrying
 		// settlement is safe only for that exact result, never another state.
 		previous, readErr := scanRemoteJob(tx.QueryRow(`SELECT `+remoteJobColumns+` FROM remote_jobs WHERE id = ?`, job.ID))
-		if readErr == nil && previous.State == job.State && previous.ExitCode == job.ExitCode && previous.Output == job.Output && previous.Truncated == job.Truncated && previous.Error == job.Error {
+		if readErr == nil && previous.State == job.State && previous.ExitCode == job.ExitCode && previous.Output == job.Output && previous.Truncated == job.Truncated && previous.Error == job.Error && previous.Warning == job.Warning {
 			return nil
 		}
 		return fmt.Errorf("remote command: no active receipt to finish: %s", job.ID)

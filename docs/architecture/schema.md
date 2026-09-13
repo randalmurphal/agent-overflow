@@ -97,7 +97,7 @@ atomic revocation.
 | `flush_queue_items` | Messages accepted by the UI while a turn blocks dispatch. The row may be the only durable copy. Successful provider dispatch or restoration into the composer removes it. Boot restores remaining rows to drafts and does not redispatch them. `send_id` supports idempotency but is empty for internal injection. |
 | `thread_transfers` | Move/copy journal, ownership epoch, sealed-manifest identity, retries, cancellation, and cleanup status. It intentionally has no thread foreign key so history deletion cannot erase ownership. Pending incoming rows reserve their project. |
 | `thread_transfer_sessions` | Native provider-session closure reserved by a transfer. The latest non-canceled reservation fences execution and import independently of cached AO history. |
-| `remote_jobs` | Destination-side command acceptance and bounded receipt. Request ID and immutable fingerprint prevent a delayed retry from executing twice. Output retention may clear old tails but keeps acceptance and provenance. Boot interrupts unfinished jobs and never replays them. |
+| `remote_jobs` | Destination-side command acceptance and bounded receipt, including a `warning` for background processes the command left behind. Request ID and immutable fingerprint prevent a delayed retry from executing twice. Output retention may clear old tails but keeps acceptance and provenance. Boot interrupts unfinished jobs and never replays them. |
 | `remote_watches` | Source-side monitoring and notification ownership. Registration precedes the network call. Terminal observations are monotonic. Queueing a completion and inserting its `flush_queue_items` row is one transaction. |
 
 `RestoreFrom` refuses replacement while active commands or transfer phases make

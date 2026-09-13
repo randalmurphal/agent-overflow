@@ -64,11 +64,21 @@ not deliberate escape by arbitrary commands.
 
 Run long-lived commands in the **foreground on the destination**: do not append
 `&`, use `nohup`, or otherwise detach from AO's process group. AO backgrounds
-the job and manages cancellation. `remote_run` normally waits one second;
-`wait_seconds` independently selects zero through ten seconds on run/status/cancel.
-The command timeout defaults to one hour, up to seven days. Explicit
-`unlimited: true` with no timeout removes that duration limit for training or
-services. It does not add reboot survival or automatic restart.
+the job and manages cancellation. A process left in the job's process group
+after the command exits is stopped when it exits; the receipt keeps the real
+exit code and carries a `warning` naming the sweep. Stop is SIGTERM to the
+group, then SIGKILL after five seconds.
+
+`remote_run` waits for the result like a normal tool call: five minutes by
+default, `wait_seconds` up to fifteen minutes on run/status/cancel. A command
+that outlasts the wait returns a `backgrounded` receipt with the output so far;
+the job continues on the destination and its completion arrives as a message.
+Interrupting the turn ends a parked wait the same way. The providers are
+configured to tolerate a call of that length (`CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS`
+and the server `timeout` for Claude, `tool_timeout_sec` for Codex); AO's wait,
+not the provider, decides when a remote call returns. The command itself has
+no time limit unless `timeout_seconds` sets one, up to seven days. Neither adds
+reboot survival or automatic restart.
 
 Use a short job label such as “Windows integration tests” or “Train image model”.
 Labels accept at most 120 Unicode characters on one line. They are source-only
@@ -102,23 +112,25 @@ the network mutation; one durable transaction inserts the completion message
 and transfers notification responsibility to the queue. Stable send identity
 and this handoff prevent repeated observations from injecting duplicates.
 `notification: queued` means queue ownership, not proof the agent read it.
-The notification remains even when a tool returned the finished result: writing
-an HTTP response is not an acknowledgement from the provider, and suppressing
-notification then could lose the only completion after a dropped reply. Notices
-name the computer and job, retain the exact routing IDs, and include at most
-2 KiB of untrusted output. Log-tool guidance appears only when output is omitted;
-general usage instructions stay in tool descriptions.
+A tool reply that carried the finished receipt is the delivery: the watcher
+leaves a job alone while a call is parked on it, and the watch is dismissed
+once that reply is written, so the agent never receives the same result twice.
+A reply the provider's request abandoned before it was written keeps the watch,
+and the completion still arrives as a message. Notices name the computer and
+job, retain the exact routing IDs, and include at most 1 KiB of the output's
+start plus 2 KiB of its end, untrusted. Log-tool guidance appears only when
+output is omitted; general usage instructions stay in tool descriptions.
 After handoff, normal queue crash recovery applies: undelivered text is recovered
 into the composer, never independently sent again by the remote-job watcher.
-Archived/deleted/moved conversations and finished workflow phases are not
-reopened. Transfer waits for outstanding remote work and its notification
-handoff, like the existing queued/background-work checks.
-Deletion is refused while a remote command is running or its acceptance is
-uncertain; stop it and wait for confirmation first. Registration and final
-deletion share the thread mutation lock so a concurrent send cannot leave an
-orphaned command. Archived threads retain job monitoring but do not start a
-completion turn.
-Forgetting a computer also waits for outstanding jobs and notification handoff;
+Finished workflow phases are not reopened.
+The conversation that called `remote_run` owns the job. Deleting, archiving or
+moving it cancels the commands it still owns and drops their pending
+notifications; a copy waits for outstanding remote work and its notification
+handoff like the existing queued/background-work checks. The cancel is
+delivered on a best-effort basis and logged when the destination cannot be
+reached. Deletion runs it before provider cleanup and again under the thread
+mutation lock, so a concurrent send cannot leave an orphaned command.
+Forgetting a computer waits for outstanding jobs and notification handoff;
 reconnect an offline computer and stop its jobs first. Pairing credentials must
 remain available while AO still needs to confirm or cancel its work.
 
@@ -143,14 +155,19 @@ active job. SQLite keeps 128 recent inline tails for old-client compatibility.
 
 Command replies include the saved computer name and job label. An `outputHint`
 appears only for omitted, discarded or expired output, distinguishing what the
-log tools can still recover. Replies default to 8 KiB of output; `max_output_bytes: 0` requests metadata,
-and the maximum is 128 KiB. `omittedOutputBytes` counts retained bytes omitted
-from that reply; `truncated` identifies discarded destination output. New peers
+log tools can still recover. Replies default to 8 KiB of output: the newest
+bytes in `output` and, when they did not reach the start, up to a quarter of
+the budget from the start in `outputHead`. `max_output_bytes: 0` requests
+metadata, and the maximum is 128 KiB. `omittedOutputBytes` counts retained
+bytes omitted from that reply; `truncated` identifies discarded destination output. New peers
 also return `log` metadata with absolute `startOffset`, `totalBytes`, and
 `retainedBytes`. Log readers use absolute byte offsets and `nextOffset`;
-`offset: -1` reads the tail. Literal search scans bounded pages and returns
-bounded match contexts. Follow `nextOffset` until `done`; it preserves overlap
-for matches spanning pages. Expired logs report `expired`, not empty success.
+`offset: -1` reads the tail, including a running job's latest output. Literal
+search scans bounded pages and returns bounded match contexts. Follow
+`nextOffset` until `done`; it preserves overlap for matches spanning pages.
+Expired logs report `expired`, not empty success. `remote_fetch_log` copies a
+finished job's whole retained log to a local file through the artifact
+transfer below; a running job is refused with `remote_log_running`.
 
 Artifact retrieval accepts one regular file up to 1 GiB relative to the original
 job workspace. Internal symlinks work; paths/symlinks escaping that workspace,
@@ -165,10 +182,14 @@ The session-scoped `agent-overflow remote` CLI remains a compatibility entry
 point into the same execution/authorization methods. Agents use MCP directly;
 they need no repository instructions or knowledge of the CLI.
 
-A phone disconnect or source-backend restart does not cancel an accepted job.
-Status and cancellation belong to the original source conversation and the
-paired source device. The destination bounds active processes, run duration
-and retained disk output, with truncation reported explicitly.
+A phone disconnect does not cancel an accepted job: the source backend, not
+the screen driving it, owns the job, and its five-second polls are the lease.
+A destination stops a running job that no owner has asked about for an hour,
+which covers a source that quit uncleanly or lost its pairing; the receipt
+says so. A clean source restart resumes polling within that grace. Status and
+cancellation belong to the original source conversation and the paired source
+device. The destination bounds active processes and retained disk output, with
+truncation reported explicitly.
 After a destination restart, unfinished receipts say interrupted and are never
 automatically rerun. A process crash during a log overwrite reports the incomplete log explicitly; the acceptance
 receipt survives. Old output can expire while its receipt remains.
@@ -209,8 +230,10 @@ Update admission must count remote jobs, including a completed process whose
 result is still awaiting persistence, before treating a destination as idle.
 
 The extended MCP test crosses real HTTP MCP and paired TLS with an injected
-runner: scripts/unlimited lifetime, retry identity, full logs, search, artifacts,
-opt-out and conversation ownership. Watch integration tests use real mocked
+runner: scripts, retry identity, full logs, search, artifacts, opt-out and
+conversation ownership. The wait tests cover backgrounded replies, single
+delivery, interrupts and the log copy; the lifecycle test cancels a real
+destination job through delete, archive and move. Watch integration tests use real mocked
 Claude/Codex subprocess adapters for queued dispatch, provider echoes and idle
 startup. Store tests cover atomic handoff/rollback and history restore. Browser
 tests exercise narrow/wide log views; tray lifecycle tests cover lost events,

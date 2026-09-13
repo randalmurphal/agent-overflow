@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/errorsx"
+	"agent-overflow/internal/remotejobs"
 )
 
 const remoteArtifactMaxBytes int64 = 1 << 30
@@ -30,6 +31,8 @@ type RemoteArtifactChunk struct {
 	Stamp          string `json:"stamp"`
 	SHA256         string `json:"sha256,omitempty"`
 	SourceThreadID string `json:"sourceThreadId"`
+	// Log describes a fetched command log; file artifacts leave it nil.
+	Log *remotejobs.LogInfo `json:"log,omitempty"`
 }
 type RemoteArtifact struct {
 	Path       string `json:"path"`
@@ -246,4 +249,92 @@ func receiveRemoteArtifact(ctx context.Context, directory, path, threadID string
 	}
 	complete = true
 	return RemoteArtifact{Path: final, Name: expected.Name, Size: expected.Size, SHA256: digest}, nil
+}
+
+// RemoteCommandLogArtifact serves a finished command's retained log through
+// the artifact chunk protocol. The receipt owner authorizes it; the log's
+// fixed size, retention metadata and digest replace a file's stat stamp.
+//
+//ao:scope terminal:operate
+//ao:route selected
+func (a *App) RemoteCommandLogArtifact(ctx context.Context, id string, request RemoteArtifactRequest) (RemoteArtifactChunk, error) {
+	if a.remoteJobs == nil {
+		return RemoteArtifactChunk{}, errorsx.Public("remote_not_ready", "Remote commands are not ready on this computer.", nil)
+	}
+	owner, err := a.remoteCommandOwner(ctx)
+	if err != nil {
+		return RemoteArtifactChunk{}, err
+	}
+	saved, err := a.remoteJobs.OpenSettledLog(owner, id)
+	if err != nil {
+		return RemoteArtifactChunk{}, err
+	}
+	defer saved.Close()
+	fail := func(code, message string, err error) (RemoteArtifactChunk, error) {
+		return RemoteArtifactChunk{}, errorsx.Public(code, message, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return fail("remote_artifact_canceled", "Log retrieval was canceled; no complete local copy was published.", err)
+	}
+	stampSource := sha256.Sum256(fmt.Appendf(nil, "log:%d:%d:%t", saved.Info.TotalBytes, saved.Info.RetainedBytes, saved.Info.Truncated))
+	stamp := hex.EncodeToString(stampSource[:])
+	if request.Offset < 0 || request.Offset > saved.Info.RetainedBytes || (request.Offset > 0 && request.Stamp == "") {
+		return fail("remote_artifact_transfer", "Log retrieval lost its transfer position. Retry remote_fetch_log; if this repeats, update both computers.", nil)
+	}
+	if request.Stamp != "" && request.Stamp != stamp {
+		return fail("remote_artifact_changed", "The saved log changed between chunks. Retry remote_fetch_log; no complete local copy was published.", nil)
+	}
+	info := saved.Info
+	result := RemoteArtifactChunk{Name: id + ".log", Size: info.RetainedBytes, Stamp: stamp, SourceThreadID: saved.Receipt.SourceThreadID, Log: &info}
+	if request.Offset == 0 {
+		hash := sha256.New()
+		if _, err = io.Copy(hash, &remoteArtifactReader{ctx: ctx, reader: io.NewSectionReader(saved, 0, info.RetainedBytes)}); err != nil {
+			return fail("remote_artifact_read", "Reading the saved log failed. Retry when the destination storage is available.", err)
+		}
+		result.SHA256 = hex.EncodeToString(hash.Sum(nil))
+	}
+	length := min(int64(remoteArtifactChunkBytes), info.RetainedBytes-request.Offset)
+	result.Data = make([]byte, int(length))
+	if length > 0 {
+		if _, err = saved.ReadAt(result.Data, request.Offset); err != nil {
+			return fail("remote_artifact_read", "Reading the saved log failed. Retry when the destination storage is available.", err)
+		}
+	}
+	return result, nil
+}
+
+type RemoteLogArtifact struct {
+	RemoteArtifact
+	Log remotejobs.LogInfo `json:"log"`
+}
+
+// AgentRemoteFetchLog copies a finished command's whole retained log into this
+// computer's private artifact directory, for inspection with local tools.
+//
+//ao:scope terminal:operate
+//ao:route selected
+func (a *App) AgentRemoteFetchLog(ctx context.Context, computerID, id string) (RemoteLogArtifact, error) {
+	job, err := a.AgentRemoteStatus(ctx, computerID, id)
+	if err != nil {
+		return RemoteLogArtifact{}, err
+	}
+	if a.configDir == "" {
+		return RemoteLogArtifact{}, errorsx.Public("remote_artifact_storage", "Local artifact storage is not ready. Wait for Agent Overflow startup to finish.", nil)
+	}
+	var info remotejobs.LogInfo
+	result, err := receiveRemoteArtifact(ctx, filepath.Join(a.configDir, "remote-artifacts"), "", job.SourceThreadID, func(ctx context.Context, request RemoteArtifactRequest) (RemoteArtifactChunk, error) {
+		call, cancel := context.WithTimeout(ctx, time.Minute)
+		defer cancel()
+		var chunk RemoteArtifactChunk
+		err := a.backends.CallAgentPeer(call, computerID, "RemoteCommandLogArtifact", &chunk, id, request)
+		if err == nil && chunk.Log != nil {
+			info = *chunk.Log
+		}
+		return chunk, err
+	})
+	if err != nil {
+		return RemoteLogArtifact{}, remoteOperationError("fetch log", computerID, id, err)
+	}
+	result.ComputerID, result.RequestID = computerID, id
+	return RemoteLogArtifact{RemoteArtifact: result, Log: info}, nil
 }

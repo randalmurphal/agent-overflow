@@ -90,6 +90,7 @@
     {/if}
   </div>
   {#if job.error}<p class="mt-1 break-words text-[0.6875rem] text-error">{job.error}</p>{/if}
+  {#if job.warning}<p class="mt-1 break-words text-[0.6875rem] text-warning">{job.warning}</p>{/if}
   {#if expanded}
     <div class="mt-2 min-w-0 border-t border-border-subtle pt-1 text-[0.6875rem]">
       {#if job.workspace}<p class="break-all text-fg-hint">{job.workspace}</p>{/if}

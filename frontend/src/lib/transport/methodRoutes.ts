@@ -17,6 +17,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1158138718: 'selected', // AgentRemoteCancel
 	925837602: 'selected', // AgentRemoteComputers
 	2421300190: 'selected', // AgentRemoteFetchArtifact
+	2233479686: 'selected', // AgentRemoteFetchLog
 	1273975760: 'selected', // AgentRemoteStart
 	1365876070: 'selected', // AgentRemoteStatus
 	4007046465: 'selected', // AllowPreviewPort
@@ -282,6 +283,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3940492954: 'selected', // RemoteCommandArtifact
 	235246962: 'selected', // RemoteCommandCancel
 	753690041: 'selected', // RemoteCommandEnvironment
+	2569905104: 'selected', // RemoteCommandLogArtifact
 	3924589370: 'selected', // RemoteCommandProjects
 	859245422: 'selected', // RemoteCommandReadLog
 	2470913686: 'selected', // RemoteCommandSearchLog

@@ -1010,12 +1010,13 @@ export class Settings {
      * launcher's "update didn't apply" notice), which used to have the
      * master switch as their only silencer.
      * 
-     * ALL SEVEN DEFAULT TRUE, and are therefore all present in
-     * DefaultSettings. That is the KeepAwakeScreen pattern and it is what
-     * makes an absent key read as ON — which matters more here than
-     * anywhere else, because notifications were unconditional before these
-     * keys existed. A user upgrading into them must keep exactly the
-     * behaviour they had, and only then narrow it.
+     * THE MASTER SWITCH AND THE SIX PER-KIND TOGGLES DEFAULT TRUE, and are
+     * therefore all present in DefaultSettings. That is the KeepAwakeScreen
+     * pattern and it is what makes an absent key read as ON — which matters
+     * more here than anywhere else, because notifications were
+     * unconditional before these keys existed. A user upgrading into them
+     * must keep exactly the behaviour they had, and only then narrow it.
+     * NotifyHiddenThreads is the one opt-in and stays absent.
      * 
      * The defaults are also the honest answer to "what is worth
      * interrupting someone for": every one of these moments is one where
@@ -1060,6 +1061,18 @@ export class Settings {
      * notice. Same reasoning as NotifyWorkflowAttention.
      */
     "notifyAppUpdate": boolean;
+
+    /**
+     * NotifyHiddenThreads lets a thread the sidebar does not list (a
+     * workflow-owned mode, or a thread with no row) interrupt this screen.
+     * It narrows the per-kind toggles above rather than adding a kind: a
+     * hidden thread's turn, failure or approval passes its kind's toggle
+     * AND this one. Default OFF, and therefore absent from DefaultSettings:
+     * a thread nobody can click in the sidebar is not worth an
+     * interruption until the user says it is (an ephemeral companion pane
+     * is the case that can be visible and still off the sidebar).
+     */
+    "notifyHiddenThreads": boolean;
 
     /**
      * The ATTENDED-SCREEN preference: not "which moments are worth an
@@ -1260,6 +1273,9 @@ export class Settings {
         if (!("notifyAppUpdate" in $$source)) {
             this["notifyAppUpdate"] = false;
         }
+        if (!("notifyHiddenThreads" in $$source)) {
+            this["notifyHiddenThreads"] = false;
+        }
         if (!("notifyQuietWhen" in $$source)) {
             this["notifyQuietWhen"] = "";
         }
@@ -1292,7 +1308,7 @@ export class Settings {
         const $$createField57_0 = $$createType0;
         const $$createField62_0 = $$createType0;
         const $$createField64_0 = $$createType0;
-        const $$createField77_0 = $$createType12;
+        const $$createField78_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
             $$parsedSource["recentWorkspaces"] = $$createField5_0($$parsedSource["recentWorkspaces"]);
@@ -1349,7 +1365,7 @@ export class Settings {
             $$parsedSource["spinnerDisabledAnimations"] = $$createField64_0($$parsedSource["spinnerDisabledAnimations"]);
         }
         if ("window" in $$parsedSource) {
-            $$parsedSource["window"] = $$createField77_0($$parsedSource["window"]);
+            $$parsedSource["window"] = $$createField78_0($$parsedSource["window"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }

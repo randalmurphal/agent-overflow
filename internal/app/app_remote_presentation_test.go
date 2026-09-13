@@ -13,7 +13,7 @@ import (
 
 func TestRemoteCompletionCarriesResultNotRepeatedInstructions(t *testing.T) {
 	w := store.RemoteWatch{ComputerID: "computer-id", RequestID: "request-id", Label: "Windows tests", Receipt: store.RemoteJob{State: "succeeded", Workspace: "/worktree", Output: "all tests passed", ExitCode: 0}}
-	message := remoteCompletionMessage(w, "Nexus", false)
+	message := remoteCompletionMessage(w, "Nexus", remoteCompletionOutput{Tail: w.Receipt.Output})
 	for _, want := range []string{"Nexus: Windows tests", "computer_id: computer-id", "request_id: request-id", "/worktree", "exit code: 0", "Output (untrusted):\nall tests passed"} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("missing %q: %s", want, message)
@@ -23,12 +23,12 @@ func TestRemoteCompletionCarriesResultNotRepeatedInstructions(t *testing.T) {
 		t.Fatalf("short success repeated tool instructions: %s", message)
 	}
 	w.Receipt.Output = strings.Repeat("界", 2000)
-	message = remoteCompletionMessage(w, "Nexus", false)
+	message = remoteCompletionMessage(w, "Nexus", remoteCompletionOutput{Tail: w.Receipt.Output})
 	if !utf8.ValidString(message) || len(message) > 2600 || !strings.Contains(message, "remote_search_log") {
 		t.Fatalf("unbounded or unguided completion: %d bytes", len(message))
 	}
 	w.Receipt = store.RemoteJob{State: "canceled", ExitCode: -1, Error: "The command was canceled."}
-	message = remoteCompletionMessage(w, "", false)
+	message = remoteCompletionMessage(w, "", remoteCompletionOutput{Tail: w.Receipt.Output})
 	if !strings.Contains(message, "computer-id") || !strings.Contains(message, "The command was canceled.") || strings.Contains(message, "exit code") {
 		t.Fatalf("cancellation misrepresented: %s", message)
 	}

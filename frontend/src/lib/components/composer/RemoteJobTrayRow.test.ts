@@ -7,7 +7,7 @@ import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-
 import { deriveTrayTasks, trayRemoteJob } from '../../utils/backgroundTray';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 
-const job = { computerId: 'nexus', requestId: 'job-1', workspace: '/workspace', error: '', notification: '' };
+const job = { computerId: 'nexus', requestId: 'job-1', workspace: '/workspace', error: '', warning: '', notification: '' };
 function remoteTask(summary = 'Nexus · python train.py') {
   return deriveTrayTasks([makeItem({ id: 'remote-job:nexus:job-1', toolName: 'remote_command', isBackground: true,
     status: 'running', summary, meta: JSON.stringify({ remoteJob: job }) })], Date.now(), 200)[0];
@@ -28,6 +28,15 @@ describe('remote jobs in the background tray', () => {
     staged.setStatus('connected');
     await waitFor(() => expect(stop).toBeEnabled());
     expect(stop).not.toHaveAttribute('title');
+  });
+
+  it('shows a receipt warning beside the row', () => {
+    const warned = { ...job, warning: 'The command left background processes running in its process group; they were stopped when it exited.' };
+    const task = deriveTrayTasks([makeItem({ id: 'remote-job:nexus:job-1', toolName: 'remote_command', isBackground: true,
+      status: 'running', summary: 'Nexus · make serve', meta: JSON.stringify({ remoteJob: warned }) })], Date.now(), 200)[0];
+    expect(trayRemoteJob(task)).toEqual(warned);
+    const view = render(RemoteJobTrayRow, { task, job: warned, threadId: 'thread', isStopping: false, onStop: vi.fn() });
+    expect(view.getByText(/left background processes/)).toBeInTheDocument();
   });
 
   it('does not repeat a computer the receipt already names', () => {

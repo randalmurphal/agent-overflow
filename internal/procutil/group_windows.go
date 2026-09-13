@@ -35,3 +35,15 @@ func KillConfiguredGroup(command *exec.Cmd) error {
 	}
 	return nil
 }
+
+// TerminateConfiguredGroup has no graceful tree signal on Windows; the forced
+// tree kill is the only termination available to the launcher-side harness.
+func TerminateConfiguredGroup(command *exec.Cmd) error {
+	return KillConfiguredGroup(command)
+}
+
+// ConfiguredGroupAlive cannot enumerate descendants without a Job Object; the
+// tree kill above is synchronous, so nothing is reported as left behind.
+func ConfiguredGroupAlive(command *exec.Cmd) bool {
+	return false
+}

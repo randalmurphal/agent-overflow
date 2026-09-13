@@ -184,7 +184,9 @@ func TestRemoteArtifactRetrievalUsesPairedOwnerAndConversationAfterOptOut(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	backend.app.remoteJobs, err = remotejobs.New(context.Background(), backend.app.store, func(context.Context, string, []string, io.Writer) (int, error) { return 0, nil })
+	backend.app.remoteJobs, err = remotejobs.New(context.Background(), backend.app.store, func(context.Context, string, []string, io.Writer) (remotejobs.Outcome, error) {
+		return remotejobs.Outcome{ExitCode: 0}, nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

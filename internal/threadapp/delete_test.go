@@ -80,16 +80,16 @@ func TestDeleteTreeContinuesCleanupButPreservesRowOnFailure(t *testing.T) {
 	}
 }
 
-func TestDeleteTreeRechecksAdmissionBeforeRemovingFiles(t *testing.T) {
+func TestDeleteTreeStopsRemoteWorkAdmittedDuringCleanup(t *testing.T) {
 	service, database, _ := newServiceFixture(t)
 	thread, err := service.Create(CreateOptions{ProjectID: "project"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	admitted := false
-	busy := errors.New("remote command admitted during cleanup")
+	busy := errors.New("remote command admitted during cleanup could not be stopped")
 	err = service.DeleteTree(thread.ID, false, DeletePorts{
-		CheckDelete: func(string) error {
+		StopRemoteWork: func(string) error {
 			if admitted {
 				return busy
 			}

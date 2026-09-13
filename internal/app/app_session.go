@@ -230,11 +230,13 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 		}
 	}()
 	if browserServers == nil {
-		browserServers = remoteServers
-	} else {
-		for name, config := range remoteServers {
-			browserServers[name] = config
-		}
+		browserServers = map[string]any{}
+	}
+	for name, config := range remoteServers {
+		browserServers[name] = remoteMCPServerConfig(t.Provider, config)
+	}
+	if len(browserServers) == 0 {
+		browserServers = nil
 	}
 
 	// The one side effect a rendered system-prompt override carries. Gated
@@ -518,6 +520,9 @@ func (a *App) spawnProviderSession(
 		}
 		cfg.Binary = a.providerBinaryPath(t.Provider)
 		cfg.Env = a.sessionProcessEnv(t.Provider, cfg.Env, credential)
+		if mcpServers[remoteMCPName] != nil {
+			cfg.Env = withRemoteMCPClaudeEnv(cfg.Env)
+		}
 		cfg.EventLogger = a.logger
 		cfg.MCPServers = mcpServers
 		// Injected, never resolved inside the provider package: a session
@@ -800,6 +805,9 @@ func (a *App) interruptTurnCtx(ctx context.Context, threadID string) error {
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown
 	}
+	// A tool call parked on a remote command returns at once as backgrounded;
+	// the command itself keeps running and the tray still owns stopping it.
+	a.cancelRemoteWaits(threadID)
 	// Capture before waiting on the app-level thread lock. A Codex revert holds
 	// that lock across its provider and SQLite halves; an interrupt that entered
 	// before or during the cut must not wake afterward and hit the reloaded

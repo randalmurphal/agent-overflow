@@ -27,7 +27,7 @@ func remoteCommand(args []string, lookupEnv func(string) (string, bool), stdout,
 		project := flags.String("project", "", "destination project UUID")
 		workspace := flags.String("workspace", "", "registered worktree path (default: project root)")
 		id := flags.String("id", "", "stable request UUID; reuse after a lost reply")
-		timeout := flags.Int("timeout", 3600, "command time limit in seconds")
+		timeout := flags.Int("timeout", 0, "command time limit in seconds; 0 means no limit")
 		return func(c *client, positionals []string, out io.Writer) (int, error) {
 			method := "AgentRemoteComputers"
 			var params []any

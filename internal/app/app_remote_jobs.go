@@ -326,6 +326,9 @@ func (a *App) AgentRemoteStart(ctx context.Context, input AgentRemoteRequest) (R
 	}
 	// The authenticated source session owns this provenance, not argv/JSON.
 	input.Request.SourceThreadID = scope.ThreadID
+	// Older destinations refuse a zero timeout without this flag; newer ones
+	// ignore it. Derived here so every caller and retry encodes it alike.
+	input.Request.Unlimited = input.Request.TimeoutSeconds == 0
 	if err := remotejobs.Validate(input.Request); err != nil {
 		return RemoteCommand{}, remoteOperationError("run", input.ComputerID, input.Request.ID, err)
 	}

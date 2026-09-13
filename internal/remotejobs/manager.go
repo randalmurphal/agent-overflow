@@ -29,6 +29,10 @@ const MaxTimeoutSeconds = 7 * 24 * 60 * 60
 
 // Request names exact argv, never shell text to interpolate. Explicitly using
 // a shell is possible (e.g. bash -lc), with the same destination authority.
+// TimeoutSeconds zero means no time limit; the calling computer's lease and
+// explicit cancellation still end the command. Unlimited is wire
+// compatibility with destinations that required it for a zero timeout; a
+// source sets it from TimeoutSeconds and a destination ignores it.
 type Request struct {
 	ID             string   `json:"id"`
 	SourceThreadID string   `json:"sourceThreadId"`
@@ -39,26 +43,27 @@ type Request struct {
 	Unlimited      bool     `json:"unlimited,omitempty"`
 }
 
-type Run func(context.Context, string, []string, io.Writer) (int, error)
-
 type liveJob struct {
-	receipt  store.RemoteJob
-	tail     *procutil.TailBuffer
-	output   *jobLog
-	cancel   context.CancelFunc
-	finished bool
+	receipt     store.RemoteJob
+	tail        *procutil.TailBuffer
+	output      *jobLog
+	cancel      context.CancelFunc
+	finished    bool
+	lastContact time.Time
+	abandoned   bool
 }
 
 type Manager struct {
-	store  *store.Store
-	logs   *logStore
-	ctx    context.Context
-	cancel context.CancelFunc
-	run    Run
-	mu     sync.Mutex
-	jobs   map[string]*liveJob
-	closed bool
-	wg     sync.WaitGroup
+	store      *store.Store
+	logs       *logStore
+	ctx        context.Context
+	cancel     context.CancelFunc
+	run        Run
+	ownerGrace time.Duration
+	mu         sync.Mutex
+	jobs       map[string]*liveJob
+	closed     bool
+	wg         sync.WaitGroup
 }
 
 // New repairs previous accepted work before accepting anything. The owner
@@ -83,23 +88,48 @@ func New(parent context.Context, st *store.Store, run Run, options ...Options) (
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(parent)
-	return &Manager{store: st, logs: logs, ctx: ctx, cancel: cancel, run: run, jobs: make(map[string]*liveJob)}, nil
+	m := &Manager{store: st, logs: logs, ctx: ctx, cancel: cancel, run: run, ownerGrace: option.OwnerGrace, jobs: make(map[string]*liveJob)}
+	if m.ownerGrace == 0 {
+		m.ownerGrace = DefaultOwnerGrace
+	}
+	m.wg.Add(1)
+	go m.expireAbandoned()
+	return m, nil
 }
 
-// ProcessRunner uses the same process-group and bounded-output primitives as
-// workflow commands. Environment belongs to the destination; a requesting
-// frontend or agent never supplies credentials or environment overrides.
-func ProcessRunner(environment func() []string) Run {
-	return func(ctx context.Context, cwd string, argv []string, output io.Writer) (int, error) {
-		cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-		cmd.Dir, cmd.Stdout, cmd.Stderr = cwd, output, output
-		cmd.Env = environment()
-		procutil.ConfigureGroup(cmd)
-		err := cmd.Run()
-		if cmd.ProcessState != nil {
-			return cmd.ProcessState.ExitCode(), err
+// DefaultOwnerGrace is how long a running command outlives its last contact
+// from the calling computer. That computer polls every running command, so
+// silence this long means it is gone: closed, crashed, asleep or unreachable.
+const DefaultOwnerGrace = time.Hour
+
+// expireAbandoned stops commands whose owner stopped checking in. It is the
+// destination half of source ownership; the source half is the poll itself.
+func (m *Manager) expireAbandoned() {
+	defer m.wg.Done()
+	ticker := time.NewTicker(min(m.ownerGrace/4, 30*time.Second))
+	defer ticker.Stop()
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-ticker.C:
 		}
-		return -1, err
+		m.mu.Lock()
+		for _, job := range m.jobs {
+			if !job.finished && !job.abandoned && time.Since(job.lastContact) > m.ownerGrace {
+				job.abandoned = true
+				job.cancel()
+			}
+		}
+		m.mu.Unlock()
+	}
+}
+
+// touchLocked records owner contact. Every authenticated status, cancel and
+// log read from the owner counts; nothing else does.
+func (m *Manager) touchLocked(id string) {
+	if job := m.jobs[id]; job != nil {
+		job.lastContact = time.Now()
 	}
 }
 
@@ -112,10 +142,8 @@ func Validate(request Request) error {
 		message = "request_id must be a UUID chosen before calling remote_run. Reuse it only for an identical retry."
 	case !entityid.Valid(request.SourceThreadID):
 		message = "The source conversation identity is invalid. Reopen the conversation before running a command."
-	case request.Unlimited && request.TimeoutSeconds != 0:
-		message = "unlimited requires timeout_seconds: 0. Otherwise use a bounded timeout without unlimited."
-	case !request.Unlimited && (request.TimeoutSeconds < 1 || request.TimeoutSeconds > MaxTimeoutSeconds):
-		message = "timeout_seconds must be between 1 and 604800 (seven days), or use unlimited with timeout_seconds: 0. It limits the job independently of wait_seconds."
+	case request.TimeoutSeconds < 0 || request.TimeoutSeconds > MaxTimeoutSeconds:
+		message = "timeout_seconds must be between 0 (no limit) and 604800 (seven days). It limits the job independently of wait_seconds."
 	case request.Script != "" && (len(request.Argv) > 0 || len(request.Interpreter) == 0 || request.Interpreter[0] == ""):
 		message = "script requires an explicit interpreter argv and cannot be combined with argv. The script file path is appended to the interpreter arguments."
 	case request.Script == "" && len(request.Interpreter) > 0:
@@ -193,12 +221,12 @@ func (m *Manager) Start(ownerID, projectID, workspace string, request Request) (
 	}
 	var ctx context.Context
 	var cancel context.CancelFunc
-	if request.Unlimited {
+	if request.TimeoutSeconds == 0 {
 		ctx, cancel = context.WithCancel(m.ctx)
 	} else {
 		ctx, cancel = context.WithTimeout(m.ctx, time.Duration(request.TimeoutSeconds)*time.Second)
 	}
-	job := &liveJob{receipt: receipt, tail: procutil.NewTailBuffer(store.RemoteJobOutputLimit), output: output, cancel: cancel}
+	job := &liveJob{receipt: receipt, tail: procutil.NewTailBuffer(store.RemoteJobOutputLimit), output: output, cancel: cancel, lastContact: time.Now()}
 	m.jobs[request.ID] = job
 	m.wg.Add(1)
 	go m.execute(ctx, job, request)
@@ -209,11 +237,12 @@ func (m *Manager) execute(ctx context.Context, job *liveJob, request Request) {
 	defer m.wg.Done()
 	defer job.cancel()
 	argv, cleanup, err := m.command(request)
-	code := -1
+	outcome := Outcome{ExitCode: -1}
 	if err == nil {
-		code, err = m.run(ctx, job.receipt.Workspace, argv, io.MultiWriter(job.tail, job.output))
+		outcome, err = m.run(ctx, job.receipt.Workspace, argv, io.MultiWriter(job.tail, job.output))
 		cleanup()
 	}
+	code := outcome.ExitCode
 	m.logs.finish(job.receipt.ID)
 	if err != nil {
 		log.Printf("remote command %s failed: %v", job.receipt.ID, err)
@@ -245,9 +274,15 @@ func (m *Manager) execute(ctx context.Context, job *liveJob, request Request) {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			receipt.State, receipt.Error = "failed", "The command exceeded its time limit."
 		}
+		if job.abandoned {
+			receipt.Error = "The calling computer stopped checking on this command, so the destination stopped it. Start it again from a connected conversation if it is still needed."
+		}
 		if m.ctx.Err() != nil {
 			receipt.State, receipt.Error = "interrupted", "The computer stopped before this command finished."
 		}
+	}
+	if outcome.Leftovers {
+		receipt.Warning = "The command left background processes running in its process group; they were stopped when it exited. Start a long-lived process as its own remote_run instead of detaching it."
 	}
 	receipt.Output = job.tail.String()
 	job.output.mu.Lock()
@@ -305,6 +340,7 @@ func (m *Manager) Get(ownerID, id string) (store.RemoteJob, error) {
 	if receipt.OwnerID != ownerID {
 		return store.RemoteJob{}, errorsx.Public("remote_wrong_owner", "This command belongs to another paired device. Read or cancel it from the device that submitted it.", nil)
 	}
+	m.touchLocked(id)
 	return m.snapshotLocked(receipt), nil
 }
 
@@ -321,6 +357,7 @@ func (m *Manager) Cancel(ownerID, id string) (store.RemoteJob, error) {
 	if receipt.OwnerID != ownerID {
 		return store.RemoteJob{}, errorsx.Public("remote_wrong_owner", "This command belongs to another paired device. Read or cancel it from the device that submitted it.", nil)
 	}
+	m.touchLocked(id)
 	if live := m.jobs[id]; live != nil && !live.finished {
 		live.cancel()
 	}

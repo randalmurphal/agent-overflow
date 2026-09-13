@@ -208,6 +208,12 @@ func (a *App) checkRemoteWatch(w store.RemoteWatch) {
 		return
 	}
 	w = current
+	// A tool call parked on this job polls it and will deliver its result in
+	// the reply; the watcher takes over only once that call has returned.
+	if a.remoteWaitActive(w.ComputerID, w.RequestID) {
+		_ = a.store.ObserveRemoteWatch(w.ComputerID, w.RequestID, w.Receipt, w.Error, time.Now().Add(5*time.Second).UnixMilli())
+		return
+	}
 	thread, err := a.store.GetThread(w.ThreadID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -228,16 +234,11 @@ func (a *App) checkRemoteWatch(w store.RemoteWatch) {
 	ctx, cancel := context.WithTimeout(a.lifeCtx(), 10*time.Second)
 	defer cancel()
 	receipt := w.Receipt
-	outputUnavailable := receipt.ID != "" && receipt.State != "running"
 	switch {
-	case outputUnavailable:
+	case receipt.ID != "" && receipt.State != "running":
 		// A direct reply settled the canonical receipt without retaining its
-		// tail. The saved log supplies one when reachable; delivery never waits
+		// tail. The saved log supplies the excerpt below; delivery never waits
 		// on it, and an older destination simply omits it.
-		var chunk RemoteLogChunk
-		if a.backends != nil && a.backends.CallAgentPeer(ctx, w.ComputerID, "RemoteCommandReadLog", &chunk, w.RequestID, int64(-1), 2*remoteCompletionOutputBytes) == nil && !chunk.Expired {
-			receipt.Output, outputUnavailable = chunk.Text, false
-		}
 	case receipt.ID != "":
 		err = a.backends.CallAgentPeer(ctx, w.ComputerID, "RemoteCommandStatus", &receipt, w.RequestID)
 	default:
@@ -272,9 +273,10 @@ func (a *App) checkRemoteWatch(w store.RemoteWatch) {
 		return
 	}
 	w.Receipt = receipt
+	output := a.remoteCompletionExcerpt(ctx, w.ComputerID, w.RequestID, receipt)
 	// An expired context means the action lock stayed busy; the scheduled
 	// recheck above retries without reporting a transient wait as an error.
-	if err = a.deliverRemoteCompletion(ctx, w, outputUnavailable); err != nil && ctx.Err() == nil {
+	if err = a.deliverRemoteCompletion(ctx, w, output); err != nil && ctx.Err() == nil {
 		_ = a.store.ObserveRemoteWatch(w.ComputerID, w.RequestID, receipt, "Completion could not enter the message queue: "+remoteErrorText(err), next)
 	}
 }
@@ -301,7 +303,21 @@ func (a *App) probeUnacceptedRemoteWatch(ctx context.Context, w store.RemoteWatc
 // using the same action→mutation lock order as ordinary sends. Never hold a
 // thread lock while waiting on the destination network. ctx bounds only the
 // lock wait; admitted work runs on the app lifetime.
-func (a *App) deliverRemoteCompletion(ctx context.Context, w store.RemoteWatch, outputUnavailable bool) error {
+// remoteCompletionExcerpt prefers the saved log, which has both ends of the
+// output; the inline receipt tail is the fallback for an unreachable or older
+// destination, and an empty one is reported as unavailable.
+func (a *App) remoteCompletionExcerpt(ctx context.Context, computerID, requestID string, receipt RemoteCommand) remoteCompletionOutput {
+	if excerpt, ok := a.remoteLogExcerpt(ctx, computerID, requestID, remoteCompletionHeadBytes, remoteCompletionOutputBytes); ok && !excerpt.Info.Expired {
+		omitted := excerpt.Info.RetainedBytes > int64(len(excerpt.Head)+len(excerpt.Tail))
+		return remoteCompletionOutput{Head: excerpt.Head, Tail: excerpt.Tail, Truncated: excerpt.Info.Truncated, Omitted: omitted}
+	}
+	if receipt.Output == "" {
+		return remoteCompletionOutput{Unavailable: true}
+	}
+	return remoteCompletionOutput{Tail: receipt.Output, Truncated: receipt.Truncated, Omitted: len(receipt.Output) > remoteCompletionOutputBytes}
+}
+
+func (a *App) deliverRemoteCompletion(ctx context.Context, w store.RemoteWatch, output remoteCompletionOutput) error {
 	unlock, err := a.threadLocks().LockCtx(ctx, w.ThreadID)
 	if err != nil {
 		return err
@@ -315,14 +331,12 @@ func (a *App) deliverRemoteCompletion(ctx context.Context, w store.RemoteWatch, 
 		return nil
 	}
 	// A direct status/cancel can finish while this watcher is in flight. The
-	// durable receipt wins; only reuse this response's unretained output when
-	// it describes that same receipt.
+	// durable receipt wins; only reuse this excerpt when it describes that
+	// same receipt.
 	metadata := w.Receipt
 	metadata.Output = ""
-	if metadata == current.Receipt {
-		current.Receipt.Output = w.Receipt.Output
-	} else {
-		outputUnavailable = true
+	if metadata != current.Receipt {
+		output = remoteCompletionOutput{Unavailable: true}
 	}
 	w = current
 	if w.Receipt.ID == "" || w.Receipt.State == "running" {
@@ -367,7 +381,7 @@ func (a *App) deliverRemoteCompletion(ctx context.Context, w store.RemoteWatch, 
 			return a.store.DismissRemoteWatch(w.ComputerID, w.RequestID)
 		}
 	}
-	if err = a.queueRemoteCompletion(w, outputUnavailable); err != nil {
+	if err = a.queueRemoteCompletion(w, output); err != nil {
 		return err
 	}
 	if _, live := a.sessionManager().get(w.ThreadID); !live {
@@ -380,8 +394,8 @@ func (a *App) deliverRemoteCompletion(ctx context.Context, w store.RemoteWatch, 
 	return nil
 }
 
-func (a *App) queueRemoteCompletion(w store.RemoteWatch, outputUnavailable bool) error {
-	message := remoteCompletionMessage(w, a.remoteComputerNames()[w.ComputerID], outputUnavailable)
+func (a *App) queueRemoteCompletion(w store.RemoteWatch, output remoteCompletionOutput) error {
+	message := remoteCompletionMessage(w, a.remoteComputerNames()[w.ComputerID], output)
 	_, err := a.registerQueueItem(w.ThreadID, message, SendMessageOptions{SendID: remoteCompletionSendID(w)}, injectedQueueOptions{
 		preserveDraft: true,
 		persist: func(item store.FlushQueueItem) error {
@@ -425,6 +439,43 @@ func (a *App) CancelThreadRemoteCommand(ctx context.Context, threadID, computerI
 	return receipt, remoteOperationError("cancel", computerID, requestID, err)
 }
 
+// cancelThreadRemoteCommands stops every remote command a conversation still
+// owns and drops their pending notifications. Deleting, archiving or moving
+// the conversation calls it: nothing remains here to receive the result.
+// Parked tool calls return at once. Reaching the destination is best effort;
+// a job whose cancel could not be delivered is logged and still ends there
+// once this computer stops polling it, so the caller's operation proceeds.
+// Only store failures are returned.
+func (a *App) cancelThreadRemoteCommands(ctx context.Context, threadID string) error {
+	a.cancelRemoteWaits(threadID)
+	rows, err := a.store.ListRemoteWatches(threadID, 0, 256)
+	if err != nil {
+		return err
+	}
+	for _, w := range rows {
+		if w.Notification != "pending" {
+			continue
+		}
+		unfinished := w.Receipt.ID == "" || w.Receipt.State == "running"
+		if unfinished && a.backends != nil {
+			call, cancel := context.WithTimeout(ctx, 20*time.Second)
+			var receipt RemoteCommand
+			err := a.backends.CallAgentPeer(call, w.ComputerID, "RemoteCommandCancel", &receipt, w.RequestID)
+			cancel()
+			if err != nil {
+				log.Printf("remote command %s on %s: cancel for conversation %s not delivered; the destination stops it after the owner grace: %v", w.RequestID, w.ComputerID, threadID, err)
+			}
+		}
+		if err := a.store.DismissRemoteWatch(w.ComputerID, w.RequestID); err != nil {
+			return err
+		}
+	}
+	if len(rows) > 0 {
+		a.emit(eventchan.ProviderBackgroundTasksChanged, map[string]any{"threadId": threadID})
+	}
+	return nil
+}
+
 func (a *App) remoteTrayItems(threadID string, cutoff int64) ([]store.Item, error) {
 	rows, err := a.store.ListRemoteWatches(threadID, 0, 256)
 	if err != nil {
@@ -441,7 +492,7 @@ func (a *App) remoteTrayItems(threadID string, cutoff int64) ([]store.Item, erro
 		if finished && r.FinishedAt < cutoff {
 			continue
 		}
-		meta, _ := json.Marshal(map[string]any{"remoteJob": map[string]any{"computerId": w.ComputerID, "requestId": w.RequestID, "notification": w.Notification, "error": w.Error, "workspace": r.Workspace}})
+		meta, _ := json.Marshal(map[string]any{"remoteJob": map[string]any{"computerId": w.ComputerID, "requestId": w.RequestID, "notification": w.Notification, "error": w.Error, "warning": r.Warning, "workspace": r.Workspace}})
 		id := "remote-job:" + w.ComputerID + ":" + w.RequestID
 		label := w.Label
 		if name := names[w.ComputerID]; name != "" {

@@ -46,6 +46,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "AgentRemoteCancel", ID: 1158138718, Scope: "terminal:operate", Route: "selected"},                        // main.App.AgentRemoteCancel
 	{Name: "AgentRemoteComputers", ID: 925837602, Scope: "terminal:operate", Route: "selected"},                      // main.App.AgentRemoteComputers
 	{Name: "AgentRemoteFetchArtifact", ID: 2421300190, Scope: "terminal:operate", Route: "selected"},                 // main.App.AgentRemoteFetchArtifact
+	{Name: "AgentRemoteFetchLog", ID: 2233479686, Scope: "terminal:operate", Route: "selected"},                      // main.App.AgentRemoteFetchLog
 	{Name: "AgentRemoteStart", ID: 1273975760, Scope: "terminal:operate", Route: "selected"},                         // main.App.AgentRemoteStart
 	{Name: "AgentRemoteStatus", ID: 1365876070, Scope: "terminal:operate", Route: "selected"},                        // main.App.AgentRemoteStatus
 	{Name: "AllowPreviewPort", ID: 4007046465, Scope: "access:admin", Route: "selected"},                             // main.App.AllowPreviewPort
@@ -311,6 +312,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "RemoteCommandArtifact", ID: 3940492954, Scope: "terminal:operate", Route: "selected"},                    // main.App.RemoteCommandArtifact
 	{Name: "RemoteCommandCancel", ID: 235246962, Scope: "terminal:operate", Route: "selected"},                       // main.App.RemoteCommandCancel
 	{Name: "RemoteCommandEnvironment", ID: 753690041, Scope: "terminal:operate", Route: "selected"},                  // main.App.RemoteCommandEnvironment
+	{Name: "RemoteCommandLogArtifact", ID: 2569905104, Scope: "terminal:operate", Route: "selected"},                 // main.App.RemoteCommandLogArtifact
 	{Name: "RemoteCommandProjects", ID: 3924589370, Scope: "terminal:operate", Route: "selected"},                    // main.App.RemoteCommandProjects
 	{Name: "RemoteCommandReadLog", ID: 859245422, Scope: "terminal:operate", Route: "selected"},                      // main.App.RemoteCommandReadLog
 	{Name: "RemoteCommandSearchLog", ID: 2470913686, Scope: "terminal:operate", Route: "selected"},                   // main.App.RemoteCommandSearchLog

@@ -16,8 +16,6 @@ import (
 	"github.com/google/uuid"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Run(m)) }
-
 func request() Request {
 	return Request{ID: uuid.NewString(), SourceThreadID: uuid.NewString(), Argv: []string{"injected-test-command"}, TimeoutSeconds: 60}
 }
@@ -51,16 +49,16 @@ func settled(t *testing.T, m *Manager, id string) store.RemoteJob {
 func TestAcceptedCommandSurvivesCallerLossAndDuplicateRequests(t *testing.T) {
 	started, release := make(chan struct{}), make(chan struct{})
 	var executions atomic.Int32
-	m, _ := manager(t, func(ctx context.Context, _ string, _ []string, out io.Writer) (int, error) {
+	m, _ := manager(t, func(ctx context.Context, _ string, _ []string, out io.Writer) (Outcome, error) {
 		executions.Add(1)
 		close(started)
 		select {
 		case <-ctx.Done():
-			return -1, ctx.Err()
+			return Outcome{ExitCode: -1}, ctx.Err()
 		case <-release:
 		}
 		_, _ = io.WriteString(out, "finished after frontend disconnected")
-		return 0, nil
+		return Outcome{ExitCode: 0}, nil
 	})
 	r := request()
 	project := uuid.NewString()
@@ -98,10 +96,10 @@ func TestAcceptedCommandSurvivesCallerLossAndDuplicateRequests(t *testing.T) {
 // A cancellation that lands after the process already exited cleanly changed
 // nothing: the receipt keeps the success the process reported.
 func TestCancelAfterCleanExitReportsSuccess(t *testing.T) {
-	m, _ := manager(t, func(ctx context.Context, _ string, _ []string, out io.Writer) (int, error) {
+	m, _ := manager(t, func(ctx context.Context, _ string, _ []string, out io.Writer) (Outcome, error) {
 		<-ctx.Done()
 		_, _ = io.WriteString(out, "done")
-		return 0, nil
+		return Outcome{ExitCode: 0}, nil
 	})
 	r := request()
 	if _, err := m.Start("owner", uuid.NewString(), t.TempDir(), r); err != nil {
@@ -116,10 +114,10 @@ func TestCancelAfterCleanExitReportsSuccess(t *testing.T) {
 }
 
 func TestCancellationAndShutdownKeepReceipts(t *testing.T) {
-	m, st := manager(t, func(ctx context.Context, _ string, _ []string, out io.Writer) (int, error) {
+	m, st := manager(t, func(ctx context.Context, _ string, _ []string, out io.Writer) (Outcome, error) {
 		_, _ = io.WriteString(out, "partial")
 		<-ctx.Done()
-		return -1, ctx.Err()
+		return Outcome{ExitCode: -1}, ctx.Err()
 	})
 	r := request()
 	project, dir := uuid.NewString(), t.TempDir()
@@ -137,9 +135,9 @@ func TestCancellationAndShutdownKeepReceipts(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.Close()
-	restarted, err := New(context.Background(), st, func(context.Context, string, []string, io.Writer) (int, error) {
+	restarted, err := New(context.Background(), st, func(context.Context, string, []string, io.Writer) (Outcome, error) {
 		t.Error("retry spawned after restart")
-		return 0, nil
+		return Outcome{ExitCode: 0}, nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -153,11 +151,11 @@ func TestCancellationAndShutdownKeepReceipts(t *testing.T) {
 
 func TestBoundedSlotsAndOutput(t *testing.T) {
 	ready := make(chan struct{}, MaxActive)
-	m, _ := manager(t, func(ctx context.Context, _ string, _ []string, out io.Writer) (int, error) {
+	m, _ := manager(t, func(ctx context.Context, _ string, _ []string, out io.Writer) (Outcome, error) {
 		_, _ = io.WriteString(out, strings.Repeat("x", store.RemoteJobOutputLimit*3)+"tail")
 		ready <- struct{}{}
 		<-ctx.Done()
-		return -1, ctx.Err()
+		return Outcome{ExitCode: -1}, ctx.Err()
 	})
 	project, dir := uuid.NewString(), t.TempDir()
 	var requests []Request
@@ -189,9 +187,9 @@ func TestCrashAfterAcceptanceNeverExecutesAgain(t *testing.T) {
 	if _, fresh, err := st.AcceptRemoteJob(r); err != nil || !fresh {
 		t.Fatalf("accept: %v %v", fresh, err)
 	}
-	m, err := New(context.Background(), st, func(context.Context, string, []string, io.Writer) (int, error) {
+	m, err := New(context.Background(), st, func(context.Context, string, []string, io.Writer) (Outcome, error) {
 		t.Error("recovered command executed")
-		return 0, nil
+		return Outcome{ExitCode: 0}, nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -204,14 +202,14 @@ func TestCrashAfterAcceptanceNeverExecutesAgain(t *testing.T) {
 }
 
 func TestInvalidRequestsNeverExecute(t *testing.T) {
-	m, _ := manager(t, func(context.Context, string, []string, io.Writer) (int, error) {
+	m, _ := manager(t, func(context.Context, string, []string, io.Writer) (Outcome, error) {
 		t.Error("invalid request executed")
-		return 0, nil
+		return Outcome{ExitCode: 0}, nil
 	})
 	for _, mutate := range []func(*Request){
 		func(r *Request) { r.ID = "../bad" }, func(r *Request) { r.SourceThreadID = "" }, func(r *Request) { r.Argv = nil },
 		func(r *Request) { r.Argv = []string{"cmd", "a\x00b"} }, func(r *Request) { r.Argv = []string{strings.Repeat("x", 64<<10+1)} },
-		func(r *Request) { r.TimeoutSeconds = 0 }, func(r *Request) { r.TimeoutSeconds = MaxTimeoutSeconds + 1 },
+		func(r *Request) { r.TimeoutSeconds = -1 }, func(r *Request) { r.TimeoutSeconds = MaxTimeoutSeconds + 1 },
 	} {
 		r := request()
 		mutate(&r)
@@ -234,7 +232,9 @@ func TestCommandFailureMessagesDescribeRecoveryWithoutPrivateCauses(t *testing.T
 		{"start failure", -1, errors.New("private process detail"), "workspace availability"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			m, _ := manager(t, func(context.Context, string, []string, io.Writer) (int, error) { return tc.code, tc.err })
+			m, _ := manager(t, func(context.Context, string, []string, io.Writer) (Outcome, error) {
+				return Outcome{ExitCode: tc.code}, tc.err
+			})
 			r := request()
 			if _, err := m.Start("owner", uuid.NewString(), t.TempDir(), r); err != nil {
 				t.Fatal(err)
@@ -244,5 +244,50 @@ func TestCommandFailureMessagesDescribeRecoveryWithoutPrivateCauses(t *testing.T
 				t.Fatalf("%+v", result)
 			}
 		})
+	}
+}
+
+// The calling computer's polls are the lease. A job it stops asking about is
+// stopped; a job it keeps asking about runs on past the grace.
+func TestAbandonedJobsStopAfterOwnerGraceWhilePolledJobsContinue(t *testing.T) {
+	o := logOptions(t, 1024)
+	o.OwnerGrace = 300 * time.Millisecond
+	m, _ := logManager(t, o, func(ctx context.Context, _ string, _ []string, out io.Writer) (Outcome, error) {
+		<-ctx.Done()
+		return Outcome{ExitCode: -1}, ctx.Err()
+	})
+	project, dir := uuid.NewString(), t.TempDir()
+	abandoned, polled := request(), request()
+	abandoned.TimeoutSeconds, polled.TimeoutSeconds = 0, 0
+	for _, r := range []Request{abandoned, polled} {
+		if _, err := m.Start("owner", project, dir, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deadline := time.Now().Add(3 * o.OwnerGrace)
+	for time.Now().Before(deadline) {
+		if _, err := m.Get("owner", polled.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := m.Get("other-owner", abandoned.ID); err == nil {
+			t.Fatal("another device's read counted as owner contact")
+		}
+		time.Sleep(o.OwnerGrace / 4)
+	}
+	got, err := m.Get("owner", abandoned.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != "canceled" || !strings.Contains(got.Error, "stopped checking") {
+		t.Fatalf("abandoned job: %+v", got)
+	}
+	if still, err := m.Get("owner", polled.ID); err != nil || still.State != "running" {
+		t.Fatalf("polled job: %+v %v", still, err)
+	}
+	if _, err := m.Cancel("owner", polled.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := settled(t, m, polled.ID); got.State != "canceled" || strings.Contains(got.Error, "stopped checking") {
+		t.Fatalf("explicit cancel: %+v", got)
 	}
 }

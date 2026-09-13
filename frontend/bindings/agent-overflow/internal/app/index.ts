@@ -100,6 +100,7 @@ export {
     RemoteCommandProject,
     RemoteCommandRequest,
     RemoteCommandWorktree,
+    RemoteLogArtifact,
     RemoteLogChunk,
     RemoteLogSearch,
     RetainedWorktree,

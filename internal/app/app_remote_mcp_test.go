@@ -125,18 +125,18 @@ func TestRemoteMCPCommandsCrossPairedTLSAndRespectOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	var starts atomic.Int32
-	destination.app.remoteJobs, err = remotejobs.New(ctx, destination.app.store, func(ctx context.Context, cwd string, argv []string, out io.Writer) (int, error) {
+	destination.app.remoteJobs, err = remotejobs.New(ctx, destination.app.store, func(ctx context.Context, cwd string, argv []string, out io.Writer) (remotejobs.Outcome, error) {
 		starts.Add(1)
 		if len(argv) == 2 && argv[1] == "--quick" {
 			_, _ = io.WriteString(out, "quick result")
-			return 0, nil
+			return remotejobs.Outcome{ExitCode: 0}, nil
 		}
 		if cwd != project.Path || strings.Join(argv, " ") != "test-helper --wait" {
 			t.Errorf("wrong execution: %s %v", cwd, argv)
 		}
 		_, _ = io.WriteString(out, strings.Repeat("é", 12000))
 		<-ctx.Done()
-		return -1, ctx.Err()
+		return remotejobs.Outcome{ExitCode: -1}, ctx.Err()
 	})
 	if err != nil {
 		t.Fatal(err)

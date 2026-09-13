@@ -46,7 +46,7 @@ func TestAgentRemoteCommandUsesItsOwnPairedIdentityAndSurvivesSourceLoss(t *test
 	}
 	started, finish := make(chan struct{}), make(chan struct{})
 	var executions atomic.Int32
-	backend.app.remoteJobs, err = remotejobs.New(context.Background(), backend.app.store, func(ctx context.Context, cwd string, argv []string, out io.Writer) (int, error) {
+	backend.app.remoteJobs, err = remotejobs.New(context.Background(), backend.app.store, func(ctx context.Context, cwd string, argv []string, out io.Writer) (remotejobs.Outcome, error) {
 		executions.Add(1)
 		close(started)
 		if cwd != project.Path || strings.Join(argv, " ") != "train --gpu" {
@@ -54,11 +54,11 @@ func TestAgentRemoteCommandUsesItsOwnPairedIdentityAndSurvivesSourceLoss(t *test
 		}
 		select {
 		case <-ctx.Done():
-			return -1, ctx.Err()
+			return remotejobs.Outcome{ExitCode: -1}, ctx.Err()
 		case <-finish:
 		}
 		_, _ = io.WriteString(out, "GPU result")
-		return 0, nil
+		return remotejobs.Outcome{ExitCode: 0}, nil
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -73,6 +73,14 @@ func (a *App) BeginThreadTransfer(ctx context.Context, threadID, operationID, de
 	if destinationBackendID == backendID {
 		return ThreadTransferIntent{}, errors.New("Choose another computer for this transfer.")
 	}
+	// A move takes the conversation away from the computer that owns its
+	// remote commands; stop them before fencing the thread. A copy leaves
+	// the original in place and waits for them like any other pending work.
+	if kind == "move" {
+		if err := a.cancelThreadRemoteCommands(ctx, threadID); err != nil {
+			return ThreadTransferIntent{}, err
+		}
+	}
 	unlock, err := a.threadLocks().LockCtx(ctx, threadID)
 	if err != nil {
 		return ThreadTransferIntent{}, err

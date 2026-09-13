@@ -47,6 +47,8 @@ export interface RemoteTrayJob {
   requestId: string;
   notification: string;
   error: string;
+  /** Receipt warning, such as background processes the command left behind. */
+  warning: string;
   workspace: string;
 }
 
@@ -64,6 +66,7 @@ export function trayRemoteJob(task: TrayTask): RemoteTrayJob | null {
     requestId: meta.requestId,
     notification: typeof meta.notification === 'string' ? meta.notification : '',
     error: typeof meta.error === 'string' ? meta.error : '',
+    warning: typeof meta.warning === 'string' ? meta.warning : '',
     workspace: typeof meta.workspace === 'string' ? meta.workspace : '',
   };
 }
