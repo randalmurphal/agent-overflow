@@ -30,6 +30,12 @@ function zeroTotals(): GlideTotals {
   };
 }
 
+// Page-wide totals the harness perf meter reads. A chase counts while it
+// runs, so a glide that outlives the perf window is still measured.
+let totals = zeroTotals();
+let runMaxHoleFrames = 0;
+const live = new Set<ChaseCadence>();
+
 /** One record per tick; the arrays are what a trace reader replays. */
 export class ChaseCadence implements ChaseCadenceStats {
   ticks = 0;
@@ -45,6 +51,10 @@ export class ChaseCadence implements ChaseCadenceStats {
   private lastWriteInterval = 0;
   private previousStep = 0;
 
+  constructor() {
+    live.add(this);
+  }
+
   /** Delivered frame period so far, 0 until measured. */
   get periodMs(): number { return this.period.median; }
 
@@ -59,6 +69,7 @@ export class ChaseCadence implements ChaseCadenceStats {
       if (frames >= 2) {
         this.droppedFrames += frames - 1;
         if (frames > this.maxHoleFrames) this.maxHoleFrames = frames;
+        if (frames > runMaxHoleFrames) runMaxHoleFrames = frames;
       }
     }
     if (period > 0 && lateMs > period / 2) this.lateTicks += 1;
@@ -78,45 +89,55 @@ export class ChaseCadence implements ChaseCadenceStats {
   }
 }
 
-// Page-wide totals the harness perf meter reads; a chase folds in at its end.
-let totals = zeroTotals();
-let runMaxHoleFrames = 0;
-
-export function foldGlideChase(chase: ChaseCadenceStats): void {
+function add(into: GlideTotals, chase: ChaseCadenceStats): void {
   if (chase.ticks === 0) return;
-  totals.chases += 1;
-  totals.ticks += chase.ticks;
-  totals.writes += chase.writes;
-  totals.droppedFrames += chase.droppedFrames;
-  totals.lateTicks += chase.lateTicks;
-  totals.unevenWrites += chase.unevenWrites;
-  totals.stepJumps += chase.stepJumps;
-  totals.fallbackTicks += chase.fallbackTicks;
-  if (chase.maxHoleFrames > totals.maxHoleFrames) totals.maxHoleFrames = chase.maxHoleFrames;
+  into.chases += 1;
+  into.ticks += chase.ticks;
+  into.writes += chase.writes;
+  into.droppedFrames += chase.droppedFrames;
+  into.lateTicks += chase.lateTicks;
+  into.unevenWrites += chase.unevenWrites;
+  into.stepJumps += chase.stepJumps;
+  into.fallbackTicks += chase.fallbackTicks;
+  if (chase.maxHoleFrames > into.maxHoleFrames) into.maxHoleFrames = chase.maxHoleFrames;
+}
+
+/** Folds an ended chase into the page totals; it stops counting as live. */
+export function foldGlideChase(chase: ChaseCadenceStats): void {
+  if (chase instanceof ChaseCadence) live.delete(chase);
+  add(totals, chase);
   if (chase.maxHoleFrames > runMaxHoleFrames) runMaxHoleFrames = chase.maxHoleFrames;
+}
+
+function snapshot(): GlideTotals {
+  const sum = { ...totals };
+  for (const chase of live) add(sum, chase);
+  return sum;
 }
 
 /** Snapshot at the start of a perf run; `readGlideRun` reports against it. */
 export function beginGlideRun(): GlideTotals {
   runMaxHoleFrames = 0;
-  return { ...totals };
+  return snapshot();
 }
 
 export function readGlideRun(start: GlideTotals): GlideTotals {
+  const now = snapshot();
   return {
-    chases: totals.chases - start.chases,
-    ticks: totals.ticks - start.ticks,
-    writes: totals.writes - start.writes,
-    droppedFrames: totals.droppedFrames - start.droppedFrames,
+    chases: now.chases - start.chases,
+    ticks: now.ticks - start.ticks,
+    writes: now.writes - start.writes,
+    droppedFrames: now.droppedFrames - start.droppedFrames,
     maxHoleFrames: runMaxHoleFrames,
-    lateTicks: totals.lateTicks - start.lateTicks,
-    unevenWrites: totals.unevenWrites - start.unevenWrites,
-    stepJumps: totals.stepJumps - start.stepJumps,
-    fallbackTicks: totals.fallbackTicks - start.fallbackTicks,
+    lateTicks: now.lateTicks - start.lateTicks,
+    unevenWrites: now.unevenWrites - start.unevenWrites,
+    stepJumps: now.stepJumps - start.stepJumps,
+    fallbackTicks: now.fallbackTicks - start.fallbackTicks,
   };
 }
 
 export function __resetGlideTotalsForTest(): void {
   totals = zeroTotals();
   runMaxHoleFrames = 0;
+  live.clear();
 }

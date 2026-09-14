@@ -61,3 +61,21 @@ it('folds chases into run totals scoped by the run start', () => {
     lateTicks: 0, unevenWrites: 0, stepJumps: 0, fallbackTicks: 0,
   });
 });
+
+it('counts a chase that is still running when the run is read', () => {
+  const start = beginGlideRun();
+  const running = new ChaseCadence();
+  warm(running, 6.06);
+  running.tick(18.18, 0.1, 1, true, false);
+  running.tick(6.06, 0.1, 1, true, false);
+  expect(readGlideRun(start)).toEqual({
+    chases: 1, ticks: 10, writes: 2, droppedFrames: 2, maxHoleFrames: 3,
+    lateTicks: 0, unevenWrites: 0, stepJumps: 0, fallbackTicks: 0,
+  });
+  foldGlideChase(running);
+  expect(readGlideRun(start).ticks).toBe(10);
+  expect(readGlideRun(start).chases).toBe(1);
+  const later = beginGlideRun();
+  expect(readGlideRun(later).chases).toBe(0);
+  expect(readGlideRun(later).maxHoleFrames).toBe(0);
+});

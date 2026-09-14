@@ -89,7 +89,7 @@ export function createFrameStep(): FrameStep {
     if (evidence) mismatchTicks = Math.min(CLOCK_MISMATCH_HOLD_TICKS, mismatchTicks + CLOCK_MISMATCH_EVIDENCE_TICKS);
     else if (mismatchTicks > 0) mismatchTicks -= 1;
     if (mismatchTicks === 0) return presentedMs;
-    const deliveredFrames = Math.max(1, Math.round(elapsedMs / unit.median));
+    const deliveredFrames = Math.max(1, Math.round(elapsedMs / delivered.median));
     const frames = presentedMs <= 0 ? deliveredFrames : Math.min(presentedFrames, deliveredFrames);
     return Math.max(1, frames) * delivered.median;
   };
