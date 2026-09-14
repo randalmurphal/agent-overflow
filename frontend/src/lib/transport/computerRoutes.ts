@@ -35,6 +35,13 @@ interface State {
 // Match the native connection budget: DNS and a cold VPN path may take
 // several seconds. Racing routes still returns immediately on first success.
 const ROUTE_PROBE_TIMEOUT_MS = 20_000;
+// How long the verified just-failed route waits for an alternative before it
+// is reused. Preferring alternatives is real — a middlebox can serve health
+// checks while dropping sockets, so the route that just failed a live request
+// is the least trustworthy verified candidate — but holding its verified
+// answer until dead candidates burn the whole deadline turned every tailnet
+// flap into a 20-second reconnect stall. Mirrors deviceclient's grace.
+const ROUTE_FALLBACK_GRACE_MS = 1_000;
 const KEY = 'agent-overflow:computerRoutes:';
 const states = new Map<BackendKey, State>();
 const responseURLs = new WeakMap<Response, string>();
@@ -95,19 +102,33 @@ async function choose(state: State): Promise<ComputerRoute> {
   if (!routes.some((route) => route.endpoint === state.context.primary.endpoint)) routes.push(state.context.primary);
   const previous = state.active;
   state.selection = (async () => {
-    // Prefer another working route after a failure. Keep a successful probe
-    // of the old route as a fallback if the alternatives all fail.
-    let fallback: ComputerRoute | undefined;
-    const alternative = routes.filter((route) => !sameRoute(route, previous));
+    // The first verified ALTERNATIVE wins immediately. The route that just
+    // failed a live request is the least trustworthy verified candidate (a
+    // middlebox can serve health checks while dropping sockets), so it is
+    // answered as the fallback — once every other candidate settles or a
+    // short grace passes, whichever is first. A dead address cannot win,
+    // and dead addresses hanging toward the deadline cannot starve the one
+    // route that works: after a tailnet flap the tailnet route verifies in
+    // a second while unroutable LAN candidates hang.
     const check = async (route: ComputerRoute) => {
       await verifyComputerRoute(route, state.context.backendId, controller.signal);
       return route;
     };
-    const old = routes.find((route) => sameRoute(route, previous));
-    const previousProbe = old ? check(old).then((route) => { fallback = route; }).catch(() => undefined) : Promise.resolve();
-    let selected: ComputerRoute | undefined;
-    try { selected = await Promise.any(alternative.map(check)); }
-    catch { await previousProbe; selected = fallback; }
+    let grace: ReturnType<typeof setTimeout> | undefined;
+    const selected = await new Promise<ComputerRoute | undefined>((resolve) => {
+      let fallback: ComputerRoute | undefined;
+      let pending = routes.length;
+      for (const route of routes) {
+        check(route).then((verified) => {
+          if (sameRoute(verified, previous) && routes.length > 1) {
+            fallback = verified;
+            grace ??= setTimeout(() => resolve(fallback), ROUTE_FALLBACK_GRACE_MS);
+          } else {
+            resolve(verified);
+          }
+        }, () => undefined).finally(() => { if (--pending === 0) resolve(fallback); });
+      }
+    }).finally(() => clearTimeout(grace));
     assertCurrent(state);
     if (state.revision !== revision) throw new Error('Computer addresses changed while checking the connection. Retry.');
     if (!selected) throw new Error('No verified address for this computer is reachable.');

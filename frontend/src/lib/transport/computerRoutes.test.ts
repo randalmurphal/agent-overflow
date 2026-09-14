@@ -227,6 +227,28 @@ it('allows a cold VPN route to take several seconds without timing out every ret
   expect(mocks.probe.mock.calls.every((call) => call[2].aborted)).toBe(true);
 });
 
+it('reuses the verified just-failed route after a short grace while dead candidates still hang', async () => {
+  vi.useFakeTimers();
+  const routes = await import('./computerRoutes');
+  const ctx = context();
+  await routes.learnComputerRoutes(ctx, [alternate]);
+  routes.failComputerRoute(ctx, primary.endpoint);
+  mocks.probe.mockImplementation((route, _id, signal: AbortSignal) => new Promise<void>((resolve, reject) => {
+    // The active route (a tailnet flap just reset its socket) verifies in
+    // 100ms; the LAN candidate is unroutable and hangs until aborted.
+    const timer = route.endpoint === primary.endpoint ? setTimeout(resolve, 100) : undefined;
+    signal.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
+  }));
+  const original = vi.fn<typeof fetch>().mockResolvedValue(new Response('{}'));
+  const pending = routes.fetchComputerRoute(ctx, original, request).then(() => 'connected', () => 'failed');
+  // Grace for a live alternative, not the 20s deadline the hung probe holds.
+  await vi.advanceTimersByTimeAsync(1_300);
+  expect(await pending).toBe('connected');
+  expect(original).toHaveBeenCalledWith(request, undefined);
+  expect(mocks.pinned).not.toHaveBeenCalled();
+  expect(mocks.probe.mock.calls.every((call) => call[2].aborted)).toBe(true);
+});
+
 it('bounds stalled route selection and cancels every probe without sending credentials', async () => {
   vi.useFakeTimers();
   const routes = await import('./computerRoutes');

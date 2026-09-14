@@ -86,7 +86,10 @@ pairing address. A selection has a 20-second deadline and a short retry floor;
 health bodies are capped at 64 KiB. Native checks also share eight bridge slots
 and a queue capped at 32, so simultaneous reconnects leave room for app traffic.
 The deadline allows DNS and a cold VPN path to establish; the first verified
-alternative still wins immediately. A shorter health deadline than ordinary
+alternative still wins immediately. The just-failed route, verified, is the
+fallback, answered once the other candidates settle or a one-second grace
+passes — dead candidates hanging toward the deadline never hold back the one
+verified route that works. A shorter health deadline than ordinary
 connection establishment can reject a reachable route on every retry.
 The last-working address is a hint that must be verified again after reopening.
 

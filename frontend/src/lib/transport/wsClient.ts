@@ -135,6 +135,14 @@ export const BOOTSTRAP_INVALIDATE_AFTER_FAILURES = 2;
 // connection that lasted this long proves the far side was actually
 // serving, which is what the ladder is supposed to measure.
 export const BACKOFF_RESET_AFTER_MS = 30_000;
+// How many floor-delay retries an outage gets for sockets that OPENED and
+// then died inside the stability window. A completed upgrade proves route,
+// credential and ticket all work, so the likely cause is a transient reset
+// under an established connection (a phone's VPN rebuilding its tunnel as
+// Tailscale settles) — worth two immediate retries before the ladder
+// treats it as the accept-then-close storm and climbs. Refilled only by a
+// connection that stays up past BACKOFF_RESET_AFTER_MS.
+export const OPEN_FLAP_FAST_RETRIES = 2;
 // How long the ladder may climb before it goes DORMANT.
 //
 // The exponential ladder is sized for an outage measured in seconds: a
@@ -777,6 +785,12 @@ export class WSClient {
   private socketNamedPairedSession = false;
   private closed = false;
   private reconnectAttempt = 0;
+  // Floor-delay retries spent on connections that OPENED and then died
+  // inside the stability window (a VPN reconfiguring under an established
+  // socket resets it seconds after a successful upgrade). Bounded so an
+  // accept-then-close backend still climbs the ladder after the
+  // allowance, and refilled only by a connection that proved stable.
+  private openFlapRetries = 0;
   // Non-null exactly while a backoff timer is queued (no attempt in
   // flight). fire() cancels the timer and runs the scheduled attempt
   // NOW, settling the same connectPromise the timer would have — so
@@ -2264,6 +2278,7 @@ export class WSClient {
     // healthy, so its eventual drop deserves a fresh ladder. A socket
     // that opened and died immediately keeps climbing — that is the
     // accept-then-close storm the ladder exists for.
+    const opened = this.connectedAt !== 0;
     const connectedFor = this.connectedAt === 0 ? 0 : Date.now() - this.connectedAt;
     // Nothing to record here: lastConnectedAt was stamped on open and by
     // every frame since, so it already names the last moment bytes crossed.
@@ -2275,8 +2290,21 @@ export class WSClient {
       this.reconnectAttempt = 0;
       // A connection that proved stable retires the ladder's age with its
       // height: the next outage is a NEW one and earns its own five
-      // minutes before going dormant again.
+      // minutes before going dormant again. It also refills the flap
+      // allowance below — proof the far side serves is what distinguishes
+      // a flapping network from an accept-then-close backend.
       this.ladderStartedAt = 0;
+      this.openFlapRetries = 0;
+    } else if (opened && connectedFor < BACKOFF_RESET_AFTER_MS
+        && this.openFlapRetries < OPEN_FLAP_FAST_RETRIES) {
+      // The socket completed its upgrade and then died young — the shape a
+      // VPN rebuild (Tailscale settling on a phone) leaves behind. The path
+      // just proved it works, so the next attempt goes out at the floor
+      // instead of a climbed delay. Bounded per outage run: an
+      // accept-then-close storm spends the allowance and climbs as before,
+      // and only a stably served connection refills it.
+      this.openFlapRetries += 1;
+      this.reconnectAttempt = 0;
     }
     // Outage bookkeeping: the first close opens the outage record
     // (its code names the original cause — 1006 network death vs

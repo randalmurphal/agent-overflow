@@ -20,6 +20,14 @@ import (
 // The first verified alternative wins immediately; this only bounds failures.
 const routeProbeTimeout = 20 * time.Second
 
+// How long a verified just-failed route waits for an alternative before it
+// is reused. The preference for alternatives is real — a proxy can serve
+// health checks while dropping socket upgrades, so the route that just
+// failed a live request is the least trustworthy verified candidate — but
+// holding its verified answer until dead candidates burn the whole probe
+// deadline turned every tailnet flap into a 20-second reconnect stall.
+const routeFallbackGrace = time.Second
+
 // A route and its verifier are immutable together. The carrier keeps its
 // original target URL; this transport selects before sending, never retries a
 // request that may already have crossed the wire, and rewrites only authority.
@@ -249,9 +257,11 @@ func (t *routeTransport) selectRoute(flight *routeSelection, candidates []*dialR
 }
 
 // firstVerifiedRoute probes every candidate at once and answers the first
-// that verifies, without waiting for a dead LAN or a cold VPN alternative.
-// `avoid` is the route that just failed: it is answered only as the fallback
-// when nothing else verifies. Nil when none does, or the context ends first.
+// verified alternative immediately. `avoid` is the route that just failed a
+// live request: verified, it becomes the fallback, answered once every other
+// candidate has settled or routeFallbackGrace passes — whichever is first —
+// so dead candidates hanging toward the deadline cannot starve the one
+// route that works. Nil when none verifies, or the context ends first.
 func firstVerifiedRoute(ctx context.Context, candidates []*dialRoute, backendID string, avoid *dialRoute) *dialRoute {
 	results := make(chan *dialRoute, len(candidates))
 	for _, candidate := range candidates {
@@ -264,6 +274,7 @@ func firstVerifiedRoute(ctx context.Context, candidates []*dialRoute, backendID 
 		}()
 	}
 	var fallback *dialRoute
+	var grace <-chan time.Time
 	for remaining := len(candidates); remaining > 0; remaining-- {
 		select {
 		case route := <-results:
@@ -274,6 +285,11 @@ func firstVerifiedRoute(ctx context.Context, candidates []*dialRoute, backendID 
 				return route
 			}
 			fallback = route
+			timer := time.NewTimer(routeFallbackGrace)
+			defer timer.Stop()
+			grace = timer.C
+		case <-grace:
+			return fallback
 		case <-ctx.Done():
 			return fallback
 		}

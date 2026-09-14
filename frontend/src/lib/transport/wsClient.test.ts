@@ -3279,6 +3279,38 @@ describe('WSClient', () => {
     client.close();
   });
 
+  // A socket that OPENED and then died inside the stability window is the
+  // VPN-rebuild flap (Tailscale settling under an established connection):
+  // the upgrade proved route, credential and ticket, so the next attempts
+  // go out at the floor — twice — before the ladder resumes climbing.
+  it('retries at the floor after an opened socket dies young, twice, then climbs', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.999);
+
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+
+    const flap = async (): Promise<number> => {
+      const ws = MockWebSocket.instances.at(-1)!;
+      ws.acceptOpen();
+      await vi.advanceTimersByTimeAsync(5_000);
+      ws.triggerClose();
+      const snap = client.getStatus();
+      expect(snap.status).toBe('reconnecting');
+      const delay = snap.nextAttemptAt! - Date.now();
+      await vi.advanceTimersByTimeAsync(RECONNECT_MAX_LOCAL_MS);
+      return delay;
+    };
+
+    expect(await flap()).toBeLessThanOrEqual(RECONNECT_INITIAL_MS);
+    expect(await flap()).toBeLessThanOrEqual(RECONNECT_INITIAL_MS);
+    // The allowance is spent: the third flap climbs like any failure.
+    expect(await flap()).toBeGreaterThan(RECONNECT_INITIAL_MS);
+
+    client.close();
+  });
+
   it('resets the backoff after a connection that stayed up past the stability window', async () => {
     vi.useFakeTimers();
     vi.spyOn(Math, 'random').mockReturnValue(0.999);

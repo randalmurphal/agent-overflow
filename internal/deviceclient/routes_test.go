@@ -279,6 +279,50 @@ func TestComputerRouteSelectionCoalescesAndDoesNotWaitForAStalledRoute(t *testin
 	}
 }
 
+// A route that flapped is raced like any other candidate: when it is the only
+// one that verifies, reconnecting must not wait for dead candidates to burn
+// the probe deadline before reusing it. A tailnet flap leaves the tailnet
+// route healthy while unroutable LAN candidates hang to the deadline.
+func TestComputerRouteReusesAFlappedRouteWithoutWaitingForDeadCandidates(t *testing.T) {
+	first := newBackend(t)
+	client, _ := openAgainst(t, first, nil)
+	var fail atomic.Bool
+	var served atomic.Int32
+	_, flapRoute := candidateServer(t, client.Session().BackendID, func(w http.ResponseWriter, r *http.Request) {
+		if fail.Swap(false) {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		served.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	stalled := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
+	t.Cleanup(stalled.Close)
+	learnRoutes(t, client, flapRoute,
+		computerroute.Route{Endpoint: stalled.URL, CertFingerprint: servercert.Fingerprint(stalled.Certificate().Raw)})
+	first.Close()
+	if err := routeRequest(client, http.MethodGet, "/next"); err == nil {
+		t.Fatal("closed initial route succeeded")
+	}
+	if err := routeRequest(client, http.MethodGet, "/next"); err != nil {
+		t.Fatalf("first selection: %v", err)
+	}
+	fail.Store(true) // One 500 marks the now-current route failed without changing its health.
+	if err := routeRequest(client, http.MethodGet, "/next"); err != nil {
+		t.Fatalf("flapping answer: %v", err)
+	}
+	start := time.Now()
+	if err := routeRequest(client, http.MethodGet, "/next"); err != nil {
+		t.Fatalf("reselection: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("verified flapped route waited %s behind dead candidates", elapsed)
+	}
+	if served.Load() != 2 {
+		t.Fatalf("served=%d, want 2", served.Load())
+	}
+}
+
 func TestComputerRoutesAllowColdVPNPath(t *testing.T) {
 	first := newBackend(t)
 	client, _ := openAgainst(t, first, nil)
