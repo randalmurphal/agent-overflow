@@ -507,17 +507,43 @@ func TestCatalogStampsTheRequestedProvider(t *testing.T) {
 	}
 }
 
-func TestCatalogServesOnlyTheMatchingIdentity(t *testing.T) {
+// TestCatalogServesTheNewestSameBinaryAnswerToAnUnprobedIdentity covers an
+// account switch: the new account's key has no entry until its own probe
+// lands, and serving the shipped catalog in that window drops every wire-only
+// model from the picker and contradicts threads already running one. The
+// newest answer from the same binary is the best available estimate; the
+// identity's own probe replaces it, and a different binary shares nothing.
+func TestCatalogServesTheNewestSameBinaryAnswerToAnUnprobedIdentity(t *testing.T) {
 	catalog := NewCatalog()
 	catalog.Store(testKey("account-a"), []claude.WireModel{{
+		Value: "claude-oldthing-1", DisplayName: "Oldthing",
+	}}, nil)
+	catalog.Store(testKey("account-b"), []claude.WireModel{{
 		Value: "claude-newthing-1", DisplayName: "Newthing",
 	}}, nil)
 
-	if _, ok := findModel(catalog.ModelsFor(testKey("account-a"), string(provider.Claude)), "claude-newthing-1"); !ok {
-		t.Error("the storing identity must see its own enrichment")
+	unprobed := catalog.ModelsFor(testKey("account-c"), string(provider.Claude))
+	if _, ok := findModel(unprobed, "claude-newthing-1"); !ok {
+		t.Error("an unprobed identity must be served the newest same-binary answer")
 	}
-	if _, ok := findModel(catalog.ModelsFor(testKey("account-b"), string(provider.Claude)), "claude-newthing-1"); ok {
-		t.Error("another identity must not be served this account's model list")
+	if _, ok := findModel(unprobed, "claude-oldthing-1"); ok {
+		t.Error("an unprobed identity must not be served an older identity's answer")
+	}
+
+	catalog.Store(testKey("account-c"), []claude.WireModel{{
+		Value: "claude-ownthing-1", DisplayName: "Ownthing",
+	}}, nil)
+	own := catalog.ModelsFor(testKey("account-c"), string(provider.Claude))
+	if _, ok := findModel(own, "claude-ownthing-1"); !ok {
+		t.Error("a probed identity must see its own enrichment")
+	}
+	if _, ok := findModel(own, "claude-newthing-1"); ok {
+		t.Error("a probed identity must stop borrowing another identity's answer")
+	}
+
+	other := provider.ProbeCacheKey{Binary: "/opt/claude", AccountID: "account-c", WorkDir: "/home/u"}
+	if !slices.Equal(slugs(catalog.ModelsFor(other, string(provider.Claude))), slugs(provider.ClaudeModels)) {
+		t.Error("a binary that never reported must serve the shipped catalog, not another binary's answer")
 	}
 }
 

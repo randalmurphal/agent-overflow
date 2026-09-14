@@ -29,7 +29,9 @@ type AccountProbeRequest struct {
 	Probe           func(context.Context) (provider.AccountInfo, error)
 	Unauthenticated func(provider.AccountInfo) bool
 	EmitUnauth      func()
-	AfterAdopt      func(provideraccounts.Account)
+	// AfterAdopt runs once the runner has accepted and cached the identity,
+	// before it emits `provider:account` for it.
+	AfterAdopt func(provideraccounts.Account)
 }
 
 // Deps names the root capabilities used by provider discovery. Provider-

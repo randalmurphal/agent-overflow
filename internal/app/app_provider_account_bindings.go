@@ -3,7 +3,9 @@ package app
 import (
 	"context"
 	"errors"
+	"log"
 
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provideraccountapp"
 	"agent-overflow/internal/provideraccounts"
 )
@@ -44,7 +46,28 @@ func (a *App) SwitchProviderAccount(providerName, accountID string) (ManagedProv
 		return ManagedProviderAccount{}, errors.New("provider account storage is unavailable")
 	}
 	account, err := a.providerAccounts.SwitchProviderAccount(providerName, accountID)
+	if err == nil {
+		a.probeSwitchedProviderAccount(providerName)
+	}
 	return managedProviderAccount(account), err
+}
+
+// probeSwitchedProviderAccount runs the zero-token identity probe for the
+// account a switch just activated. The switch emits `provider:account` from
+// saved metadata without probing, and Claude's model catalog is learned per
+// probe identity, so until this lands the new account is served the previous
+// identity's catalog. Codex's catalog is keyed by binary, so its switch needs
+// no probe. Fire-and-forget like the startup probe: nothing waits on it, and
+// the runner reports failures on `provider:status`.
+func (a *App) probeSwitchedProviderAccount(providerName string) {
+	if providerName != string(provider.Claude) || a.shuttingDown.Load() {
+		return
+	}
+	go func() {
+		if _, err := a.ProbeClaudeAccount(); err != nil {
+			log.Printf("provider accounts: probe switched claude account: %v", err)
+		}
+	}()
 }
 
 // The four sign-in calls. A provider login is a SESSION rather than one long

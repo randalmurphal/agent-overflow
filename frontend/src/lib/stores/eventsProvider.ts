@@ -354,10 +354,11 @@ export function applyProviderAccount(evt: ProviderAccountEvent, backend: Backend
   if (!evt) return;
   const provider = asProviderID(evt.provider);
   if (!provider) return;
-  // The model catalog is account-scoped on both providers — Claude's is
-  // enriched from the very probe that emits this event, and Codex's list is
-  // whatever the signed-in account may run. So an account transition is
-  // exactly when the cached catalog stops being the right answer. Refresh
+  // Claude's model catalog is learned per probe identity, and the backend
+  // commits a probe's catalog before emitting this event; a switch emits it
+  // from saved metadata and follows with a probe of its own, so the refresh
+  // here reads the same-binary answer until that probe re-emits. Codex's list
+  // is keyed by binary and refreshes into the same cached answer. Refresh
   // (load, then swap) rather than invalidate: the composer's context/effort
   // labels read the store synchronously, and an emptied cache would blank them
   // until something happened to re-fetch.

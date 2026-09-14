@@ -649,10 +649,7 @@ func (c *Catalog) Store(key provider.ProbeCacheKey, wire []claude.WireModel, wir
 		binary:  key.Binary,
 		learned: learned,
 	}
-	if !existed {
-		c.order = append(c.order, encoded)
-		c.evictOldestLocked()
-	}
+	c.touchOrderLocked(encoded, existed)
 	if existed && previous.drift == report {
 		return nil
 	}
@@ -688,6 +685,19 @@ func (c *Catalog) DropBinary(binary string) int {
 	return dropped
 }
 
+// touchOrderLocked makes encoded the newest entry: appended when first
+// stored, moved to the end when re-stored, so eviction and the same-binary
+// fallback both read c.order as least-recently-stored first.
+func (c *Catalog) touchOrderLocked(encoded string, existed bool) {
+	if existed {
+		if i := slices.Index(c.order, encoded); i >= 0 {
+			c.order = slices.Delete(c.order, i, i+1)
+		}
+	}
+	c.order = append(c.order, encoded)
+	c.evictOldestLocked()
+}
+
 func (c *Catalog) evictOldestLocked() {
 	for len(c.order) > maxCatalogEntries {
 		oldest := c.order[0]
@@ -697,9 +707,15 @@ func (c *Catalog) evictOldestLocked() {
 }
 
 // ModelsFor returns the picker catalog for one probe identity, stamped for
-// providerName. Falls back to the un-enriched catalog when no probe has
-// reported yet — never to an empty list, and never to a spawn: this type only
-// ever reads what a probe already handed it.
+// providerName. An identity no probe has reported for yet is served the
+// newest answer learned from the same binary, and only when the binary has
+// never reported at all does it fall back to the un-enriched catalog — never
+// to an empty list, and never to a spawn: this type only ever reads what a
+// probe already handed it.
+//
+// The same-binary fallback is what keeps an account switch from demoting the
+// picker: learned models are claims about the binary (see DropBinary), and
+// the new identity's own probe replaces the borrowed answer when it lands.
 //
 // providerName must be a provider whose ModelCatalog is
 // provider.ClaudeProbeEnrichedCatalog (claude, claude-tui). Anything else
@@ -714,6 +730,8 @@ func (c *Catalog) ModelsFor(key provider.ProbeCacheKey, providerName string) []p
 	source := c.base
 	if entry, ok := c.entries[key.String()]; ok {
 		source = entry.models
+	} else if entry, ok := c.newestForBinaryLocked(key.Binary); ok {
+		source = entry.models
 	}
 	models := provider.CloneModels(source)
 	c.mu.Unlock()
@@ -722,4 +740,15 @@ func (c *Catalog) ModelsFor(key provider.ProbeCacheKey, providerName string) []p
 		models[i].Provider = providerName
 	}
 	return models
+}
+
+// newestForBinaryLocked finds the most recently stored entry learned from one
+// binary path. Caller holds mu.
+func (c *Catalog) newestForBinaryLocked(binary string) (catalogEntry, bool) {
+	for i := len(c.order) - 1; i >= 0; i-- {
+		if entry, ok := c.entries[c.order[i]]; ok && entry.binary == binary {
+			return entry, true
+		}
+	}
+	return catalogEntry{}, false
 }

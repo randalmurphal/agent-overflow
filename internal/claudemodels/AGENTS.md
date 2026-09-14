@@ -5,7 +5,9 @@ catalog and caches by `provider.ProbeCacheKey`. It does not spawn the CLI.
 
 The wire is an enrichment source, not a complete catalog. Preserve shipped
 order and models, including learned wire-only models. `DropBinary` is the only
-subtraction path.
+subtraction path. An identity without an entry is served the newest entry
+learned from the same binary; the shipped list alone is only for a binary that
+never reported.
 
 The shipped catalog owns model names and context windows. The wire owns feature
 flags for rows it reports. Add wire-only models, deriving names from slugs and

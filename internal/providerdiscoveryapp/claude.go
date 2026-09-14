@@ -6,12 +6,15 @@ import (
 
 	"agent-overflow/internal/claudecatalog"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/providerstatus"
 )
 
 // ProbeClaudeAccount runs the zero-token Claude identity probe. The initialize
 // response's model and command catalogs are committed only after the managed-
-// account runner accepts the corresponding identity.
+// account runner accepts the corresponding identity, and before it emits
+// `provider:account`, so a client refreshing the catalog on that event reads
+// the enriched answer.
 func (s *Service) ProbeClaudeAccount() (provider.AccountInfo, error) {
 	if s == nil || s.deps.ProviderBinary == nil || s.deps.Selection == nil ||
 		s.deps.ProbeKey == nil || s.deps.RunAccountProbe == nil || s.deps.ClaudeConfig == nil {
@@ -36,12 +39,14 @@ func (s *Service) ProbeClaudeAccount() (provider.AccountInfo, error) {
 		},
 		Unauthenticated: providerstatus.ClaudeUnauthenticated,
 		EmitUnauth:      s.EmitClaudeUnauthenticatedStatus,
+		AfterAdopt: func(provideraccounts.Account) {
+			wire.Store(key)
+			wireCommands.Store(key)
+		},
 	})
 	if err != nil {
 		return provider.AccountInfo{}, err
 	}
-	wire.Store(key)
-	wireCommands.Store(key)
 	return info, nil
 }
 

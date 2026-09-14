@@ -30,7 +30,9 @@ type ProbeRequest struct {
 	Probe           func(ctx context.Context) (provider.AccountInfo, error)
 	Unauthenticated func(provider.AccountInfo) bool
 	EmitUnauth      func()
-	AfterAdopt      func(provideraccounts.Account)
+	// AfterAdopt runs once the identity is accepted and cached, before the
+	// `provider:account` emit for it.
+	AfterAdopt func(provideraccounts.Account)
 	// Validate runs on a fresh identity/credential pair under the reconcile
 	// lock. Admission checks must never be satisfied by a display cache hit.
 	Validate func(provider.AccountInfo, *provideraccounts.CredentialSnapshot) error
@@ -80,10 +82,13 @@ func (m *Manager) RunAccountProbe(r ProbeRequest) (provider.AccountInfo, error) 
 	if r.Cache != nil {
 		r.Cache.Set(r.Key, info)
 	}
-	m.emitProviderAccountIfCurrent(r.ProviderName, account, info)
+	// AfterAdopt commits what the probe learned beside the identity (Claude's
+	// model and command catalogs, Codex's rate-limit snapshot) before the
+	// account event tells clients to re-read it.
 	if r.AfterAdopt != nil {
 		r.AfterAdopt(account)
 	}
+	m.emitProviderAccountIfCurrent(r.ProviderName, account, info)
 	return info, nil
 }
 

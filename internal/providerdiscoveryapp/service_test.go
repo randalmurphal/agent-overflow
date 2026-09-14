@@ -80,6 +80,55 @@ func TestClaudeProbeCachesAndRecheckInvalidates(t *testing.T) {
 	}
 }
 
+// The runner emits `provider:account` right after AfterAdopt, and clients
+// refresh the model catalog on that event; the wire catalog must be readable
+// by then, and not before the identity is accepted.
+func TestClaudeProbeCommitsWireCatalogInAfterAdopt(t *testing.T) {
+	claudecatalog.Reset()
+	t.Cleanup(claudecatalog.Reset)
+	key := testProbeKey("", "/mock/claude", "account")
+	var enrichedBeforeAdopt, enrichedAfterAdopt bool
+	service := New(Deps{
+		ProviderBinary: func(string) string { return "/mock/claude" },
+		Selection:      func(string) AccountSelection { return AccountSelection{AccountID: "account"} },
+		ProbeKey:       testProbeKey,
+		RunAccountProbe: func(request AccountProbeRequest) (provider.AccountInfo, error) {
+			info, err := request.Probe(context.Background())
+			if err != nil {
+				return provider.AccountInfo{}, err
+			}
+			enrichedBeforeAdopt = hasModel(claudecatalog.Models(key, string(provider.Claude)), "claude-newthing-1")
+			request.AfterAdopt(provideraccounts.Account{ID: "account"})
+			enrichedAfterAdopt = hasModel(claudecatalog.Models(key, string(provider.Claude)), "claude-newthing-1")
+			return info, nil
+		},
+		ClaudeConfig: func(string) claude.ProbeConfig { return claude.ProbeConfig{} },
+		ProbeClaude: func(_ context.Context, cfg claude.ProbeConfig) (provider.AccountInfo, error) {
+			cfg.OnModels([]claude.WireModel{{Value: "claude-newthing-1", DisplayName: "Newthing"}}, nil)
+			return provider.AccountInfo{SubscriptionType: "max"}, nil
+		},
+	}, testCaches())
+
+	if _, err := service.ProbeClaudeAccount(); err != nil {
+		t.Fatal(err)
+	}
+	if enrichedBeforeAdopt {
+		t.Error("wire catalog was committed before the identity was adopted")
+	}
+	if !enrichedAfterAdopt {
+		t.Error("wire catalog was not committed by the time AfterAdopt returned")
+	}
+}
+
+func hasModel(models []provider.ModelInfo, slug string) bool {
+	for _, model := range models {
+		if model.Slug == slug {
+			return true
+		}
+	}
+	return false
+}
+
 func TestCodexProbePublishesAdoptedSnapshotOnlyOnMiss(t *testing.T) {
 	var calls atomic.Int32
 	var published []provider.RateLimitsSnapshot
