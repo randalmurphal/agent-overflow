@@ -153,3 +153,72 @@ describe('chase telemetry', () => {
     ).toHaveLength(0);
   });
 });
+
+describe('per-tick chase records', () => {
+  it('reports every tick of a chase with frame gaps, lateness, steps and flags, plus cadence totals', () => {
+    setUiRenderTraceEnabled(true);
+    clearUiRenderTrace();
+    const h = makeHarness({ quantize: true });
+    h.setTarget(300);
+    h.spring.markTargetChanged();
+    h.spring.start();
+    for (let i = 0; i < 20; i++) frame(6.06);
+    // One dropped frame, then a target extension.
+    frame(12.12);
+    h.setTarget(340);
+    h.spring.markTargetChanged();
+    for (let i = 0; i < 10; i++) frame(6.06);
+    h.spring.cancel();
+
+    const records = getUiRenderTraceRecords();
+    const chunks = records.filter((r) => r.label === 'scroll.spring.ticks');
+    expect(chunks).toHaveLength(1);
+    const ticks = chunks[0].data as {
+      chaseId: number; chunk: number; periodMs: number; frame: number[]; late: number[]; step: number[]; flags: number[];
+    };
+    expect(ticks.chunk).toBe(0);
+    expect(ticks.chaseId).toBeGreaterThan(0);
+    expect(ticks.periodMs).toBeCloseTo(6.06, 1);
+    expect(ticks.frame).toHaveLength(31);
+    expect(ticks.late).toHaveLength(31);
+    expect(ticks.step).toHaveLength(31);
+    expect(ticks.flags).toHaveLength(31);
+    expect(ticks.frame[0]).toBe(0);
+    expect(ticks.frame[1]).toBe(61);
+    expect(ticks.frame[20]).toBe(121);
+    expect(ticks.flags[21] & 1, 'the target change lands on the next tick').toBe(1);
+    expect(ticks.step.reduce((sum, step) => sum + step, 0)).toBe(h.getScrollTop());
+    for (let i = 0; i < ticks.step.length; i++) {
+      expect((ticks.flags[i] & 2) !== 0).toBe(ticks.step[i] !== 0);
+    }
+
+    const chase = records.filter((r) => r.label === 'scroll.spring.chase');
+    expect(chase).toHaveLength(1);
+    const data = chase[0].data as {
+      chaseId: number; ticks: number; droppedFrames: number; maxHoleFrames: number; lateTicks: number;
+      fallbackTicks: number; periodMs: number;
+    };
+    expect(data.chaseId).toBe(ticks.chaseId);
+    expect(data.ticks).toBe(31);
+    expect(data.droppedFrames).toBe(1);
+    expect(data.maxHoleFrames).toBe(2);
+    expect(data.lateTicks).toBe(0);
+    expect(data.fallbackTicks).toBe(0);
+    expect(data.periodMs).toBeCloseTo(6.06, 1);
+  });
+
+  it('flushes long chases in chunks below the trace line cap', () => {
+    setUiRenderTraceEnabled(true);
+    clearUiRenderTrace();
+    const h = makeHarness({ quantize: true });
+    h.setTarget(100_000);
+    h.spring.markTargetChanged();
+    h.spring.start();
+    for (let i = 0; i < 1100; i++) frame(6.06);
+    h.spring.cancel();
+    const chunks = getUiRenderTraceRecords().filter((r) => r.label === 'scroll.spring.ticks');
+    expect(chunks.map((r) => (r.data as { chunk: number }).chunk)).toEqual([0, 1, 2]);
+    expect(chunks.map((r) => (r.data as { frame: number[] }).frame.length)).toEqual([512, 512, 76]);
+    for (const chunk of chunks) expect(JSON.stringify(chunk).length).toBeLessThan(16_000);
+  });
+});

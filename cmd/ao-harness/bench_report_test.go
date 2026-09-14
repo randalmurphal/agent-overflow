@@ -126,13 +126,37 @@ func TestAggregateBenchMetricsOmitsUnselectedFrontendScalars(t *testing.T) {
 	report.Frontend.LayoutShift = 0.5
 	report.Frontend.DomNodes = perfSeries{Count: 1, Max: 900}
 	agg := aggregateBenchMetrics([]perfReport{report})
-	for _, name := range []string{"frames.fps", "frames.p95Ms", "longTasks", "layoutShift"} {
+	for _, name := range []string{"frames.fps", "frames.p95Ms", "longTasks", "layoutShift", "glide.droppedFrames"} {
 		if _, ok := agg[name]; ok {
 			t.Errorf("%s was aggregated even though its meter was not selected", name)
 		}
 	}
 	if _, ok := agg["domNodes.max"]; !ok {
 		t.Fatal("domNodes.max missing for the selected dom meter")
+	}
+}
+
+func TestAggregateBenchMetricsReportsGlideCadence(t *testing.T) {
+	report := benchTestReport(1000, 60, 12, 8<<20)
+	report.Frontend.Meters = []string{"glide"}
+	report.Frontend.Glide = perfGlideSummary{Chases: 2, Ticks: 900, Writes: 400, DroppedFrames: 7, MaxHoleFrames: 4, LateTicks: 30, UnevenWrites: 55, StepJumps: 3, FallbackTicks: 0}
+	agg := aggregateBenchMetrics([]perfReport{report})
+	want := map[string]float64{
+		"glide.droppedFrames": 7, "glide.maxHoleFrames": 4, "glide.lateTicks": 30,
+		"glide.unevenWrites": 55, "glide.stepJumps": 3, "glide.fallbackTicks": 0,
+	}
+	for name, value := range want {
+		got, ok := agg[name]
+		if !ok {
+			t.Fatalf("%s missing for the selected glide meter", name)
+		}
+		if got.Max != value {
+			t.Errorf("%s = %v, want %v", name, got.Max, value)
+		}
+	}
+	text := renderPerfReport(report)
+	if !strings.Contains(text, "glide   2 chases") {
+		t.Errorf("rendered report lacks the glide line:\n%s", text)
 	}
 }
 

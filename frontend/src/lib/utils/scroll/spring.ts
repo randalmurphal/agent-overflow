@@ -12,6 +12,7 @@ import {
 import type { ScrollWriteCaller } from './types';
 import type { SpringChase, SpringChaseDeps } from './springTypes';
 import { createFrameCadence, createFrameStep } from './cadence';
+import { ChaseCadence, foldGlideChase } from './glideMeter';
 import { scrollReadbackTolerance } from './position';
 
 const SIXTY_FPS_INTERVAL_MS = 1000 / 60;
@@ -28,8 +29,17 @@ export const SPRING_WRITE_REFUSAL_RETRY_INTERVAL_MS = 250;
 const STRUCTURAL_APPEND_SPRING_WINDOW_MS = 250;
 
 const CHASE_GAP_BUCKET_BOUNDS_MS = [9, 13, 18, 26, 42] as const;
+// Per-tick trace arrays flush in chunks well under the trace line cap.
+const CHASE_TICK_CHUNK = 512;
+const TICK_FLAG_TARGET_CHANGED = 1;
+const TICK_FLAG_WROTE = 2;
+const TICK_FLAG_FALLBACK = 4;
+const TICK_FLAG_PARKED = 8;
+
+let nextChaseId = 0;
 
 interface ChaseTelemetry {
+  chaseId: number;
   startedAt: number;
   ticks: number;
   writeTicks: number;
@@ -45,6 +55,11 @@ interface ChaseTelemetry {
   longTaskMs: number;
   refusedWrites: number;
   selectionPausedTicks: number;
+  chunk: number;
+  tickFrame: number[];
+  tickLate: number[];
+  tickStep: number[];
+  tickFlags: number[];
 }
 
 let springFrameBatcher = createAnimationFrameBatcher(
@@ -111,12 +126,15 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
     return sentinelEntryTarget + (sentinelEntryClientHeight - clientHeightNow);
   }
   let lastChaseTarget = -1;
+  let lastTickTarget = -1;
   let chaseTelemetry: ChaseTelemetry | null = null;
+  let chaseCadence: ChaseCadence | null = null;
   let longTaskObserver: PerformanceObserver | null = null;
 
   function beginChaseTelemetry(): void {
     if (!isUiRenderTraceEnabled()) return;
     chaseTelemetry = {
+      chaseId: ++nextChaseId,
       startedAt: nowMs(),
       ticks: 0,
       writeTicks: 0,
@@ -132,6 +150,11 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       longTaskMs: 0,
       refusedWrites: 0,
       selectionPausedTicks: 0,
+      chunk: 0,
+      tickFrame: [],
+      tickLate: [],
+      tickStep: [],
+      tickFlags: [],
     };
     if (
       typeof PerformanceObserver !== 'undefined'
@@ -173,17 +196,76 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
     stats.gapBuckets[bucket] += 1;
   }
 
+  function flushChaseTicks(stats: ChaseTelemetry, cadence: ChaseCadence | null): void {
+    if (stats.tickFrame.length === 0) return;
+    const chunk = stats.chunk;
+    const frame = stats.tickFrame;
+    const late = stats.tickLate;
+    const step = stats.tickStep;
+    const flags = stats.tickFlags;
+    stats.chunk += 1;
+    stats.tickFrame = [];
+    stats.tickLate = [];
+    stats.tickStep = [];
+    stats.tickFlags = [];
+    trace('scroll.spring.ticks', () => ({
+      chaseId: stats.chaseId,
+      chunk,
+      periodMs: cadence ? Math.round(cadence.periodMs * 100) / 100 : 0,
+      // Tenths of a millisecond per tick: frame timestamp delta, callback
+      // lateness after that timestamp; grid quanta moved; flag bits
+      // 1 target changed, 2 wrote, 4 foreign-clock fallback, 8 parked.
+      frame,
+      late,
+      step,
+      flags,
+    }));
+  }
+
+  function recordChaseTick(
+    frameGapMs: number | null, lateMs: number, stepQuanta: number, wrote: boolean,
+    fallback: boolean, targetChanged: boolean, parked: boolean,
+  ): void {
+    const cadence = chaseCadence;
+    if (cadence) cadence.tick(frameGapMs, lateMs, stepQuanta, wrote, fallback);
+    const stats = chaseTelemetry;
+    if (!stats) return;
+    stats.tickFrame.push(frameGapMs === null ? 0 : Math.round(frameGapMs * 10));
+    stats.tickLate.push(Math.round(lateMs * 10));
+    stats.tickStep.push(stepQuanta);
+    stats.tickFlags.push(
+      (targetChanged ? TICK_FLAG_TARGET_CHANGED : 0)
+      | (wrote ? TICK_FLAG_WROTE : 0)
+      | (fallback ? TICK_FLAG_FALLBACK : 0)
+      | (parked ? TICK_FLAG_PARKED : 0),
+    );
+    if (stats.tickFrame.length >= CHASE_TICK_CHUNK) flushChaseTicks(stats, cadence);
+  }
+
   function endChaseTelemetry(): void {
     const stats = chaseTelemetry;
     chaseTelemetry = null;
+    const cadence = chaseCadence;
+    chaseCadence = null;
+    lastTickTarget = -1;
+    if (cadence) foldGlideChase(cadence);
     if (longTaskObserver) {
       longTaskObserver.disconnect();
       longTaskObserver = null;
     }
     if (!stats || !isUiRenderTraceEnabled()) return;
     if (stats.ticks < 3 && stats.selectionPausedTicks === 0) return;
+    flushChaseTicks(stats, cadence);
     trace('scroll.spring.chase', () => ({
+      chaseId: stats.chaseId,
       durationMs: Math.round(nowMs() - stats.startedAt),
+      periodMs: cadence ? Math.round(cadence.periodMs * 100) / 100 : 0,
+      droppedFrames: cadence ? cadence.droppedFrames : 0,
+      maxHoleFrames: cadence ? cadence.maxHoleFrames : 0,
+      lateTicks: cadence ? cadence.lateTicks : 0,
+      unevenWrites: cadence ? cadence.unevenWrites : 0,
+      stepJumps: cadence ? cadence.stepJumps : 0,
+      fallbackTicks: cadence ? cadence.fallbackTicks : 0,
       ticks: stats.ticks,
       writeTicks: stats.writeTicks,
       zeroStepTicks: stats.zeroStepTicks,
@@ -312,6 +394,8 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
     lastFrameTimestamp = null;
     deps.forceNextSpringTickTrace();
     beginChaseTelemetry();
+    chaseCadence = new ChaseCadence();
+    lastTickTarget = -1;
 
     const tick = (rawFrameTimestamp: number): void => {
       if (springToken !== myToken) return;
@@ -350,7 +434,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       if (previousTickAt !== null) frameIntervalEmaMs = sampleFrameCadence(now - previousTickAt);
       const rawDtFrames = previousTickAt === null || previousFrameTimestamp === null
         ? 1
-        : frameStep(now - previousTickAt, frameTimestamp - previousFrameTimestamp) / SIXTY_FPS_INTERVAL_MS;
+        : frameStep.step(now - previousTickAt, frameTimestamp - previousFrameTimestamp) / SIXTY_FPS_INTERVAL_MS;
       const dtFrames = Number.isFinite(rawDtFrames) ? Math.max(rawDtFrames, 0) : 1;
       if (chaseTelemetry) recordChaseFrame(now, previousTickAt, dtFrames);
       const integrationFrames = Math.min(dtFrames, SPRING_MAX_CATCHUP_STEPS);
@@ -368,6 +452,10 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       const forceGeometryRead = sentinelEntryTarget >= 0 || writeRefusalLatched;
       const target = deps.targetScrollTop(forceGeometryRead);
       let current = deps.currentScrollTop(forceGeometryRead);
+      const tickStartTop = current;
+      const tickTargetChanged = lastTickTarget >= 0 && target !== lastTickTarget;
+      lastTickTarget = target;
+      let tickParked = false;
       deps.arrival.invalidateStale(target);
       witnessClampIfUnexplained();
 
@@ -424,7 +512,17 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
         }
       } else {
         motion.park(dtFrames, withinTargetChangeRetainWindow);
+        tickParked = true;
       }
+      recordChaseTick(
+        previousFrameTimestamp === null ? null : frameTimestamp - previousFrameTimestamp,
+        now - frameTimestamp,
+        Math.round((current - tickStartTop) / grid.quantum),
+        current !== tickStartTop,
+        frameStep.fallbackActive(),
+        tickTargetChanged,
+        tickParked,
+      );
 
       const arrived =
         (Math.abs(current - target) <= scrollReadbackTolerance(grid, target)

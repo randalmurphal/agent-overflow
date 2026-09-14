@@ -6,6 +6,7 @@ import {
   summarizeFrames,
 } from './perfStats';
 import { heapBytes } from './perf_observers';
+import { readGlideRun } from '../utils/scroll/glideMeter';
 import type { Counter, PerfRun, PerfSample, PerfSummary } from './perf_types';
 
 // A full DOM census walks every element. Its cost scales with the thing it is
@@ -179,6 +180,7 @@ export function summarizePerfRun(state: PerfRun, now: number, duration: number):
     layoutShift: round2(state.layoutShift.total),
     slowEvents: state.slowEvents.total,
     worstEventLatencyMs: round2(state.worstEventMs),
+    glide: readGlideRun(state.glideStart),
     domNodes: state.domNodes,
     heapBytes: state.heapBytes,
     panes: [...state.panes.entries()]

@@ -710,7 +710,10 @@ mounted window is what the DOM contains, the intersecting subset is what
 a human sees, and most timeline bugs live in the difference.
 
 **Perf runs are backend-clocked.** `HarnessPerfStart` arms the in-page
-meters through one ui-query, then samples on its own ticker (default
+meters (`frames`, `busy`, `longtask`, `loaf`, `layout-shift`, `event`,
+`memory`, `dom`, and `glide`, which folds the scroll spring's per-chase
+cadence: dropped frames, late callbacks, uneven pixel writes, step jumps)
+through one ui-query, then samples on its own ticker (default
 1000ms, floor 250ms): each tick reads Go heap/goroutines through
 `runtime/metrics`, reads the backend's own RSS and its owned WebKit helpers
 through `internal/procrss` (`/proc` on Linux; process table + responsible

@@ -116,9 +116,26 @@ type perfFrontendSummary struct {
 	LayoutShift             float64          `json:"layoutShift"`
 	SlowEvents              int              `json:"slowEvents"`
 	WorstEventLatencyMs     float64          `json:"worstEventLatencyMs"`
+	Glide                   perfGlideSummary `json:"glide"`
 	DomNodes                perfSeries       `json:"domNodes"`
 	HeapBytes               perfSeries       `json:"heapBytes"`
 	Samples                 int              `json:"samples"`
+}
+
+// perfGlideSummary folds the scroll spring's per-chase cadence over the run:
+// what the display presented (holes in delivered frames), when the tick ran
+// (late callbacks) and what reached the scroller (uneven write intervals,
+// multi-quantum step jumps, foreign-clock fallback ticks).
+type perfGlideSummary struct {
+	Chases        int `json:"chases"`
+	Ticks         int `json:"ticks"`
+	Writes        int `json:"writes"`
+	DroppedFrames int `json:"droppedFrames"`
+	MaxHoleFrames int `json:"maxHoleFrames"`
+	LateTicks     int `json:"lateTicks"`
+	UnevenWrites  int `json:"unevenWrites"`
+	StepJumps     int `json:"stepJumps"`
+	FallbackTicks int `json:"fallbackTicks"`
 }
 
 type perfBackendReport struct {

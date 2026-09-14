@@ -64,6 +64,7 @@ import {
   type PerfTeardownReceipt,
 } from './perf_types';
 import { collectPerfSampleForRun, summarizePerfRun } from './perf_summary';
+import { beginGlideRun } from '../utils/scroll/glideMeter';
 
 export { perfMeterNames, unknownPerfMeters } from './perf_types';
 export type { PerfSample, PerfStartOptions, PerfSummary, PerfTeardownReceipt } from './perf_types';
@@ -211,6 +212,7 @@ export function startPerfRun(opts: PerfStartOptions = {}): PerfSummary | null {
     windowMaxMs: 0,
     windowBusyMaxMs: 0,
     windowBusySumMs: 0,
+    glideStart: beginGlideRun(),
     domNodes: newSeries(),
     heapBytes: newSeries(),
     panes: new Map(),

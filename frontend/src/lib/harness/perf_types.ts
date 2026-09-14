@@ -5,6 +5,7 @@ import type {
   FrameSummary,
   Series,
 } from './perfStats';
+import type { GlideTotals } from '../utils/scroll/glideMeter';
 
 export interface PerfStartOptions {
   longFrameMs?: number;
@@ -76,6 +77,12 @@ export interface PerfSummary {
   layoutShift: number;
   slowEvents: number;
   worstEventLatencyMs: number;
+  /**
+   * Scroll glide cadence over the run: delivered-frame holes, late
+   * callbacks, uneven pixel write intervals and step jumps, folded from
+   * every spring chase that ended during the run.
+   */
+  glide: GlideTotals;
   domNodes: Series;
   heapBytes: Series;
   panes: Array<{ paneId: string; rows: Series }>;
@@ -100,6 +107,7 @@ export const ALL_METERS = [
   'event',
   'memory',
   'dom',
+  'glide',
 ] as const;
 export type MeterName = (typeof ALL_METERS)[number];
 
@@ -195,6 +203,8 @@ export interface PerfRun {
    */
   windowBusyMaxMs: number;
   windowBusySumMs: number;
+  /** Glide totals at arm; the summary reports what accrued since. */
+  glideStart: GlideTotals;
   domNodes: Series;
   heapBytes: Series;
   panes: Map<string, Series>;

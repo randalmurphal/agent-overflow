@@ -46,7 +46,7 @@ func perfStart(e *env, args []string) error {
 	budgets := flags.String("budgets", "",
 		"comma-separated main-thread budgets in ms for the busy-time fit report (bridge default 6,8,16)")
 	var meters stringList
-	flags.Var(&meters, "meter", "arm only this meter (repeatable: frames, busy, longtask, loaf, layout-shift, event, memory, dom)")
+	flags.Var(&meters, "meter", "arm only this meter (repeatable: frames, busy, longtask, loaf, layout-shift, event, memory, dom, glide)")
 	var monitors stringList
 	flags.Var(&monitors, "monitor", "arm a typed app-feel monitor (repeatable; use `monitor list` in the page bridge)")
 	compatibilityLeg := flags.String("leg", "", "compatibility leg required by selected monitors")

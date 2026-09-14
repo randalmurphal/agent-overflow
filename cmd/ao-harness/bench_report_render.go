@@ -124,6 +124,9 @@ func renderPerfReport(report perfReport) string {
 		if frontendMeterMeasured(*f, "longtask") || frontendMeterMeasured(*f, "layout-shift") || frontendMeterMeasured(*f, "event") {
 			fmt.Fprintf(&b, "  tasks   %s\n", renderFrontendTaskSummary(*f))
 		}
+		if frontendMeterMeasured(*f, "glide") && f.Glide.Chases > 0 {
+			fmt.Fprintf(&b, "  glide   %s\n", renderFrontendGlideSummary(f.Glide))
+		}
 		if frontendMeterMeasured(*f, "dom") || frontendMeterMeasured(*f, "memory") {
 			fmt.Fprintf(&b, "  page    %s\n", renderFrontendPageSummary(*f))
 		}
@@ -159,6 +162,11 @@ func renderFrontendTaskSummary(f perfFrontendSummary) string {
 		parts = append(parts, fmt.Sprintf("%d slow events", f.SlowEvents))
 	}
 	return strings.Join(parts, "; ")
+}
+
+func renderFrontendGlideSummary(g perfGlideSummary) string {
+	return fmt.Sprintf("%d chases, %d ticks, %d writes; %d dropped frames (worst hole %d), %d late ticks; %d uneven writes, %d step jumps, %d fallback ticks",
+		g.Chases, g.Ticks, g.Writes, g.DroppedFrames, g.MaxHoleFrames, g.LateTicks, g.UnevenWrites, g.StepJumps, g.FallbackTicks)
 }
 
 func renderFrontendPageSummary(f perfFrontendSummary) string {

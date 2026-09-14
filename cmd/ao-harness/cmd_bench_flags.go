@@ -57,7 +57,7 @@ func newBenchFlagSet(e *env) (*flag.FlagSet, *benchCLIOptions) {
 	opts.budgets = flags.String("budgets", "",
 		"comma-separated main-thread budgets in ms for the busy-time fit report (bridge default 6,8,16)")
 	flags.Var(opts.meters, "meter",
-		"arm only this meter (repeatable: frames, busy, longtask, loaf, layout-shift, event, memory, dom)")
+		"arm only this meter (repeatable: frames, busy, longtask, loaf, layout-shift, event, memory, dom, glide)")
 	flags.Var(opts.monitors, "monitor", "arm a typed app-feel monitor (repeatable; persisted in the perf and bench report)")
 	opts.monitorLeg = flags.String("monitor-leg", "", "compatibility leg required by selected app-feel monitors")
 	opts.baselineFile = flags.String("baseline", "", "compare the aggregate against this baseline (a budget file or a previous bench report)")

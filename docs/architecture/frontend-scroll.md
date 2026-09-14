@@ -1621,9 +1621,21 @@ streaming.
 
 Useful trace records:
 
+- `scroll.spring.ticks` is the per-tick record of a chase, flushed in
+  chunks of 512 ticks keyed by `chaseId` (shared with the chase summary): `frame` (frame timestamp
+  delta, tenths of a millisecond; holes are multiples of `periodMs`),
+  `late` (callback time after that timestamp, tenths), `step` (grid quanta
+  the scroller moved) and `flags` (1 target changed, 2 wrote, 4
+  foreign-clock fallback, 8 parked). This is the record that shows a
+  chunky glide: uneven pixel rhythm, dropped frames and late callbacks
+  are all visible per tick. `scripts/uitrace/chase-ticks.mjs` replays it
+  from a bookmark.
 - `scroll.spring.chase` is one summary per spring chase (emitted at
   cancel; chases under 3 ticks are skipped unless they paused for a
-  selection): tick counts (write / sentinel / `selectionPausedTicks`,
+  selection): cadence totals from `glideMeter.ts` (`periodMs`,
+  `droppedFrames`, `maxHoleFrames`, `lateTicks`, `unevenWrites`,
+  `stepJumps`, `fallbackTicks`; the harness `glide` perf meter reports the
+  same totals over a run), tick counts (write / sentinel / `selectionPausedTicks`,
   the frames that re-armed without moving because a selection drag
   crossed the element), a frame-gap histogram (`gapBuckets`, bounds
   `[<9, 9–13, 13–18, 18–26, 26–42, >42]` ms, per

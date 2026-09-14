@@ -25,12 +25,15 @@ export function createFrameCadence(): (gapMs: number) => number | null {
 }
 
 // A browser can present on one display while its animation timestamps follow
-// another. Evidence of a foreign clock (a repeated timestamp, or a timestamp
-// delta whose frame count disagrees with callback time) holds whole-frame
-// stepping past the longest beat between such clocks (144Hz timestamps on a
-// 165Hz display repeat one every 8 frames); an isolated glitch releases fast.
+// another. The signature is in the clocks themselves: a repeated timestamp,
+// or a timestamp unit that runs a different rate from the delivered period
+// (144Hz on 165Hz differs by 13%). Callback lateness under load moves single
+// gaps, never the medians, so load is not mistaken for a foreign clock.
+// Evidence holds whole-frame stepping past the longest beat between such
+// clocks; an isolated glitch releases fast.
 const CLOCK_MISMATCH_EVIDENCE_TICKS = 8;
 const CLOCK_MISMATCH_HOLD_TICKS = 64;
+const CLOCK_RATE_TOLERANCE = 0.08;
 // Recent-window medians: the timestamp unit follows a refresh-rate change
 // within the window, and the delivered period ignores symmetric callback
 // jitter and occasional dropped frames where an average drifts.
@@ -38,7 +41,7 @@ const PERIOD_WINDOW = 32;
 const PERIOD_REFRESH_TICKS = 8;
 const PERIOD_WARMUP_SAMPLES = 8;
 
-class MedianWindow {
+export class MedianWindow {
   private readonly values = new Float64Array(PERIOD_WINDOW);
   private readonly sorted = new Float64Array(PERIOD_WINDOW);
   private samples = 0;
@@ -56,20 +59,23 @@ class MedianWindow {
   }
 }
 
-// Callback time may land most of a frame early or late; only a timestamp
-// that disagrees with it by more than this many frames is foreign evidence.
-const FRAME_DISAGREEMENT = 0.75;
 
 /** Elapsed animation time for one tick. Frame timestamps are vsync-aligned
  * while callback time jitters with main-thread scheduling, so the timestamp
  * delta is the step whenever the timestamp clock tracks delivery. Under a
  * foreign clock the step is whole delivered frames, counted from the
  * timestamp when it advanced and from callback time when it repeated. */
-export function createFrameStep(): (elapsedMs: number, presentedMs: number) => number {
+export interface FrameStep {
+  step(elapsedMs: number, presentedMs: number): number;
+  /** True while the last step fell back to whole delivered frames. */
+  fallbackActive(): boolean;
+}
+
+export function createFrameStep(): FrameStep {
   const unit = new MedianWindow();
   const delivered = new MedianWindow();
   let mismatchTicks = 0;
-  return (elapsedMs, presentedMs) => {
+  const step = (elapsedMs: number, presentedMs: number): number => {
     if (!Number.isFinite(elapsedMs) || !Number.isFinite(presentedMs)) throw new RangeError('Frame step requires finite times');
     // Gaps beyond 50ms are stalls or suspension, not display cadence.
     if (presentedMs >= 1 && presentedMs <= 50) unit.push(presentedMs);
@@ -78,15 +84,14 @@ export function createFrameStep(): (elapsedMs: number, presentedMs: number) => n
     const presentedFrames = Math.round(presentedMs / unit.median);
     // A timestamp under one unit can only be a faster refresh rate; follow it.
     if (presentedMs > 0 && presentedFrames === 0) return presentedMs;
-    const elapsedFrames = elapsedMs / unit.median;
     const evidence = presentedMs <= 0
-      || (Math.min(presentedFrames, elapsedFrames) <= 2.5
-        && Math.abs(presentedFrames - elapsedFrames) > FRAME_DISAGREEMENT);
+      || Math.abs(unit.median - delivered.median) > delivered.median * CLOCK_RATE_TOLERANCE;
     if (evidence) mismatchTicks = Math.min(CLOCK_MISMATCH_HOLD_TICKS, mismatchTicks + CLOCK_MISMATCH_EVIDENCE_TICKS);
     else if (mismatchTicks > 0) mismatchTicks -= 1;
     if (mismatchTicks === 0) return presentedMs;
-    const deliveredFrames = Math.max(1, Math.round(elapsedFrames));
+    const deliveredFrames = Math.max(1, Math.round(elapsedMs / unit.median));
     const frames = presentedMs <= 0 ? deliveredFrames : Math.min(presentedFrames, deliveredFrames);
     return Math.max(1, frames) * delivered.median;
   };
+  return { step, fallbackActive: () => mismatchTicks > 0 };
 }
