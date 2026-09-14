@@ -65,9 +65,18 @@ per-platform no-op.
   operations serialize per page; unrelated pages run concurrently.
 - The companion presents a page's real view only while a pane is mounted with a
   paintable host rect AND the thread's session is visible. AO presents only the
-  thread's explicitly selected tab and caps the viewport at 1920×1200. No pixels
-  cross the wire in either direction, so a hidden pane costs nothing and no
-  connection can receive browser image data.
+  thread's explicitly selected tab. No pixels cross the wire in either
+  direction, so a hidden pane costs nothing and no connection can receive
+  browser image data.
+- Every page lays out at the thread's viewport, `browser_viewport` or the
+  1280×720 default, capped at 1920×1200, whether or not a pane shows it. The
+  pane is a viewer: it draws the page scaled down to fit its host rect (never
+  up, centered with margins when the rect is larger) and labels the viewport
+  and scale in its address row. Resizing the pane changes only that scale;
+  screenshots, coordinates, and layout always mean the viewport the agent set.
+  Hidden pages keep rendering, so screenshots and scrolls work with the pane
+  closed, and a screenshot that produces no frame fails with a bounded error
+  instead of hanging.
 - `pane.close` (Mod+W) on a focused browser companion closes the active tab;
   the companion closes when its last tab does. Closing the companion any other
   way hides the session and keeps its pages, so reopening shows the same tabs.
@@ -264,13 +273,21 @@ so the differences are only where the platform itself differs:
 - **Context menus need no suppression.** A hidden page is clipped out of the
   window and receives no mouse input, so the real site menu appears on the
   presented page and nowhere else.
+- **Presentation scales the view's bounds.** The page's viewport is the
+  view's bounds size; presenting sets the frame to the fitted rect and keeps
+  the bounds, so AppKit draws the page scaled and maps input through the same
+  transform. WebKitGTK reaches the same result with an exact allocation under
+  a scale transform inside a per-page host widget.
 
 The Windows/WSL deployment uses the hosted engine
 (`docs/specs/embedded-browser.md`): a page is a WebView2 controller in the
 Windows launcher's process, and the backend drives it over CDP through the
 launcher's relay tunnel. The tool surface is identical, because the operations
 are the same CDP calls; the user-visible half is a real browser view the
-launcher positions over the pane's host rect.
+launcher positions over the pane's fitted rect, with the page's viewport and
+presentation scale set through the CDP device-metrics override. Hidden pages
+keep a visible controller inside a hidden container window so they keep
+producing frames.
 
 **Serve mode drives a headless Chromium** (`docs/specs/remote-access.md` §7,
 and the operator's copy in [serve-mode.md](serve-mode.md) § Browser tools). A

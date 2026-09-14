@@ -208,10 +208,10 @@ type pageDriver interface {
 	// WaitVisible blocks until a selector is visible or the context ends.
 	WaitVisible(ctx context.Context, selector string) error
 
-	// SetViewport pins the page to a device-metrics override.
+	// SetViewport pins the page's viewport to width x height CSS pixels:
+	// what the page lays out and captures at, presented or not. The pane
+	// never changes it; a presented page is shown scaled to fit.
 	SetViewport(ctx context.Context, width, height int) error
-	// ClearViewport drops the override.
-	ClearViewport(ctx context.Context) error
 
 	// AssetInventory reports the page's referenced assets, unshaped.
 	AssetInventory(ctx context.Context) (pageAssets, error)

@@ -20,13 +20,16 @@ const (
 	// OpCreate creates a hidden controller for PageID on ProfileID.
 	OpCreate Op = "create"
 	// OpBounds positions the controller inside the launcher window.
-	// X/Y/W/H are DIPs in the host window's client coordinates.
+	// X/Y/W/H is the page's FITTED rect (the page scaled to fit the pane;
+	// the backend sets the matching scale on the page over CDP), in the
+	// SPA's CSS pixels when VW/VH are set.
 	OpBounds Op = "bounds"
-	// OpShow makes the controller visible and raises it to the top of the
-	// host's child z-order.
+	// OpShow shows the page's clip container and raises it to the top of
+	// the host's child z-order.
 	OpShow Op = "show"
-	// OpHide makes the controller invisible without destroying it. A
-	// hidden controller keeps its page, and stays drivable over CDP.
+	// OpHide hides the page's clip container without destroying anything.
+	// The controller inside stays visible to Chromium, so a hidden page
+	// keeps compositing and capturing; only the window is gone.
 	OpHide Op = "hide"
 	// OpClose destroys the controller.
 	OpClose Op = "close"

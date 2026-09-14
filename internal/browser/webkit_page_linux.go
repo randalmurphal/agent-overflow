@@ -424,14 +424,11 @@ func (p *webkitPage) WaitVisible(ctx context.Context, selector string) error {
 	}
 }
 
-// SetViewport resizes the view itself: WebKit has no device-metrics override,
-// so the page's viewport IS the widget's size.
+// SetViewport sizes the view itself: WebKit has no device-metrics override,
+// so the page's viewport IS the widget's allocation, and the host keeps that
+// allocation whether the page is parked or presented scaled in the pane.
 func (p *webkitPage) SetViewport(_ context.Context, width, height int) error {
 	return webkitSetViewSize(p.view, width, height)
-}
-
-func (p *webkitPage) ClearViewport(context.Context) error {
-	return webkitSetViewSize(p.view, webkitHiddenWidth, webkitHiddenHeight)
 }
 
 func (p *webkitPage) Screenshot(ctx context.Context, opts ScreenshotOptions) ([]byte, error) {

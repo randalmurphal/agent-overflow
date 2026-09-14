@@ -81,10 +81,12 @@ type hostRelay interface {
 type paneHost interface {
 	ShowPage(handle string)
 	HidePage(handle string)
-	// SetPageBounds carries the whole PaneRect: the host scales the
-	// CSS-pixel rect by its own client size over the rect's viewport, so
-	// no engine ever equates CSS pixels with its native units.
-	SetPageBounds(handle string, rect PaneRect)
+	// SetPageBounds carries the placement the Manager computed: the page's
+	// own viewport, the scale the pane shows it at, and the fitted rect in
+	// the SPA's CSS pixels. The host scales that rect by its own client
+	// size over the rect's viewport, so no engine ever equates CSS pixels
+	// with its native units. Always sent before a show.
+	SetPageBounds(handle string, placement PanePlacement)
 }
 
 // paneDevTools is the OPTIONAL inspector half, split from paneHost because
@@ -133,7 +135,27 @@ type hostedEngine struct {
 	pageByTarget  map[string]string
 	targetByPage  map[string]string
 	shown         map[string]bool
-	bounds        map[string]PaneRect
+	bounds        map[string]PanePlacement
+	// drivers reaches a page's CDP half from its handle, for the one
+	// presentation fact the launcher cannot apply: the scale the device
+	// metrics override draws a presented page at.
+	drivers map[string]*cdpPage
+	// ratios caches each page's devicePixelRatio against the pane ratio it
+	// was read under: a rect report arrives per changed frame while the pane
+	// is dragged, and the page's ratio (the OS scale) only changes when the
+	// window changes monitor, which changes the pane's ratio with it.
+	ratios map[string]pageRatio
+	// scales is the latest-wins queue behind applyViewScale: one CDP override
+	// in flight per page, and every scale asked for while it runs collapses
+	// into the next one.
+	scales map[string]*viewScaleState
+}
+
+type pageRatio struct{ pane, page float64 }
+
+type viewScaleState struct {
+	want float64
+	busy bool
 }
 
 func newHostedEngine(relay hostRelay, send func(webview2host.Directive), accelerators func() keybindings.AcceleratorSet, events engineEvents) *hostedEngine {
@@ -151,7 +173,10 @@ func newHostedEngine(relay hostRelay, send func(webview2host.Directive), acceler
 		pageByTarget: make(map[string]string),
 		targetByPage: make(map[string]string),
 		shown:        make(map[string]bool),
-		bounds:       make(map[string]PaneRect),
+		bounds:       make(map[string]PanePlacement),
+		drivers:      make(map[string]*cdpPage),
+		ratios:       make(map[string]pageRatio),
+		scales:       make(map[string]*viewScaleState),
 	}
 }
 
@@ -229,7 +254,10 @@ func (e *hostedEngine) Stop() {
 	e.pageByTarget = make(map[string]string)
 	e.targetByPage = make(map[string]string)
 	e.shown = make(map[string]bool)
-	e.bounds = make(map[string]PaneRect)
+	e.bounds = make(map[string]PanePlacement)
+	e.drivers = make(map[string]*cdpPage)
+	e.ratios = make(map[string]pageRatio)
+	e.scales = make(map[string]*viewScaleState)
 	e.mu.Unlock()
 	if browserCancel != nil {
 		browserCancel()
@@ -463,6 +491,11 @@ func (e *hostedEngine) createPage(ctx context.Context, profile *hostedProfile, h
 		return nil, err
 	}
 	e.bind(pageID, targetID)
+	if cdp, ok := driver.(*cdpPage); ok {
+		e.mu.Lock()
+		e.drivers[pageID] = cdp
+		e.mu.Unlock()
+	}
 	return &hostedPage{pageDriver: driver, engine: e, id: pageID}, nil
 }
 
@@ -642,6 +675,9 @@ func (e *hostedEngine) retirePage(pageID string) {
 	delete(e.pageByTarget, targetID)
 	delete(e.shown, pageID)
 	delete(e.bounds, pageID)
+	delete(e.drivers, pageID)
+	delete(e.ratios, pageID)
+	delete(e.scales, pageID)
 	e.mu.Unlock()
 	if !known {
 		return
@@ -708,6 +744,9 @@ func (e *hostedEngine) closePage(pageID string) {
 	delete(e.pageByTarget, targetID)
 	delete(e.shown, pageID)
 	delete(e.bounds, pageID)
+	delete(e.drivers, pageID)
+	delete(e.ratios, pageID)
+	delete(e.scales, pageID)
 	e.mu.Unlock()
 	e.dispatch(webview2host.Directive{Op: webview2host.OpClose, PageID: pageID})
 }
@@ -715,40 +754,175 @@ func (e *hostedEngine) closePage(pageID string) {
 func (e *hostedEngine) ShowPage(handle string) {
 	if e.setShown(handle, true) {
 		e.dispatch(webview2host.Directive{Op: webview2host.OpShow, PageID: handle})
+		// A hide put the override back at 1; a re-show at an unchanged
+		// placement sends no bounds, so the placement's scale is restored
+		// here or the page would draw at 1:1 and be cropped by the pane.
+		e.syncViewScale(handle)
 	}
 }
 
+// HidePage hides the page's clip container. The controller itself stays
+// visible to Chromium, so a hidden page keeps compositing: screenshots and
+// scroll state stay live exactly as on the WebKit engines' 1x1 park.
 func (e *hostedEngine) HidePage(handle string) {
 	if e.setShown(handle, false) {
 		e.dispatch(webview2host.Directive{Op: webview2host.OpHide, PageID: handle})
+		e.syncViewScale(handle)
 	}
 }
 
-func (e *hostedEngine) SetPageBounds(handle string, rect PaneRect) {
-	if e.setBounds(handle, rect) {
-		e.dispatch(webview2host.Directive{
-			Op: webview2host.OpBounds, PageID: handle,
-			X: rect.X, Y: rect.Y, W: rect.Width, H: rect.Height,
-			CX: rect.ClipX, CY: rect.ClipY, CW: rect.ClipWidth, CH: rect.ClipHeight,
-			VW: rect.ViewportWidth, VH: rect.ViewportHeight,
-			Bg: rect.Background,
-		})
+// SetPageBounds positions the controller at the FITTED rect (the page scaled
+// to fit the pane) and tells the page's device-metrics override the same
+// scale, so the emulated viewport draws exactly into that rect. The launcher
+// scales the rect by its client size over the SPA viewport (OS scale times
+// webview zoom); the override draws at the OS scale alone, so the zoom is
+// recovered from the two device pixel ratios.
+func (e *hostedEngine) SetPageBounds(handle string, placement PanePlacement) {
+	if !e.setBounds(handle, placement) {
+		return
+	}
+	rect := placement.Rect
+	e.dispatch(webview2host.Directive{
+		Op: webview2host.OpBounds, PageID: handle,
+		X: rect.X, Y: rect.Y, W: rect.Width, H: rect.Height,
+		CX: rect.ClipX, CY: rect.ClipY, CW: rect.ClipWidth, CH: rect.ClipHeight,
+		VW: rect.ViewportWidth, VH: rect.ViewportHeight,
+		Bg: rect.Background,
+	})
+	e.syncViewScale(handle)
+}
+
+// syncViewScale asks the page's override for the scale its presentation
+// state calls for: the placement's scale times the pane zoom while shown,
+// 1 while hidden.
+func (e *hostedEngine) syncViewScale(handle string) {
+	e.mu.Lock()
+	shown := e.shown[handle]
+	placement, hasBounds := e.bounds[handle]
+	e.mu.Unlock()
+	if !shown || !hasBounds {
+		e.applyViewScale(handle, 1)
+		return
+	}
+	rect := placement.Rect
+	e.applyViewScale(handle, placement.Scale*paneZoom(rect.DevicePixelRatio, e.pageDevicePixelRatio(handle, rect.DevicePixelRatio)))
+}
+
+// paneZoom is the SPA's webview zoom: its device pixel ratio over the page's
+// own (the OS scale). Unknown ratios mean no zoom.
+func paneZoom(paneRatio, pageRatio float64) float64 {
+	if paneRatio <= 0 || pageRatio <= 0 {
+		return 1
+	}
+	return paneRatio / pageRatio
+}
+
+func (e *hostedEngine) driverFor(handle string) *cdpPage {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.drivers[handle]
+}
+
+// pageDevicePixelRatio answers the page's own devicePixelRatio, read once per
+// pane ratio it is asked under (see ratios) so a drag costs no CDP round trip
+// per frame. 0 means unknown, which paneZoom treats as no zoom.
+func (e *hostedEngine) pageDevicePixelRatio(handle string, paneRatio float64) float64 {
+	e.mu.Lock()
+	cached, ok := e.ratios[handle]
+	p := e.drivers[handle]
+	e.mu.Unlock()
+	if ok && cached.pane == paneRatio && cached.page > 0 {
+		return cached.page
+	}
+	if p == nil {
+		return 0
+	}
+	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
+	defer cancel()
+	ratio, err := p.devicePixelRatio(ctx)
+	if err != nil {
+		e.logf("browser: pane page %s device pixel ratio: %v", handle, err)
+		return 0
+	}
+	e.mu.Lock()
+	if _, known := e.drivers[handle]; known {
+		e.ratios[handle] = pageRatio{pane: paneRatio, page: ratio}
+	}
+	e.mu.Unlock()
+	return ratio
+}
+
+// applyViewScale asks the page's override for a scale and returns at once.
+// A pane drag reports a rect per frame, and each one is a CDP round trip;
+// applied inline and in order they queued behind one another for seconds
+// after the drag ended, with the controller already at its final rect and the
+// page drawn at every stale scale on the way. So the call is latest-wins:
+// one override in flight per page, and the newest scale asked for while it
+// runs is the only one applied after it. Failures are logged rather than
+// returned: the caller (a pane rect report) has nothing to do with one, and a
+// page that refuses is one that is closing.
+func (e *hostedEngine) applyViewScale(handle string, scale float64) {
+	e.mu.Lock()
+	if _, known := e.drivers[handle]; !known {
+		e.mu.Unlock()
+		return
+	}
+	st := e.scales[handle]
+	if st == nil {
+		st = &viewScaleState{}
+		e.scales[handle] = st
+	}
+	st.want = scale
+	if st.busy {
+		e.mu.Unlock()
+		return
+	}
+	st.busy = true
+	e.mu.Unlock()
+	go e.drainViewScale(handle, st)
+}
+
+func (e *hostedEngine) drainViewScale(handle string, st *viewScaleState) {
+	for {
+		e.mu.Lock()
+		want := st.want
+		p := e.drivers[handle]
+		e.mu.Unlock()
+		if p == nil {
+			e.mu.Lock()
+			st.busy = false
+			e.mu.Unlock()
+			return
+		}
+		ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
+		err := p.SetViewScale(ctx, want)
+		cancel()
+		if err != nil && p.ctx.Err() == nil {
+			e.logf("browser: pane page %s view scale: %v", handle, err)
+		}
+		e.mu.Lock()
+		if st.want == want || p.ctx.Err() != nil {
+			st.busy = false
+			e.mu.Unlock()
+			return
+		}
+		e.mu.Unlock()
 	}
 }
 
 // setBounds is the bounds half of the setShown dedupe: the presentation sync
-// re-sends the active page's rect on every selection, focus and page-list
-// change, and only an actually-moved rect should cost a directive.
-func (e *hostedEngine) setBounds(handle string, rect PaneRect) bool {
+// re-sends the active page's placement on every selection, focus and
+// page-list change, and only an actually-changed one should cost a directive.
+func (e *hostedEngine) setBounds(handle string, placement PanePlacement) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if _, known := e.targetByPage[handle]; !known {
 		return false
 	}
-	if e.bounds[handle] == rect {
+	if e.bounds[handle] == placement {
 		return false
 	}
-	e.bounds[handle] = rect
+	e.bounds[handle] = placement
 	return true
 }
 

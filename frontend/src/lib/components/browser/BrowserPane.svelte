@@ -38,6 +38,10 @@
   let lastSentKey = '';
   let bgRaw = '';
   let bgHex = '';
+  // The host rect's own size, read off the same report as the geometry, so
+  // the size label can say how far the page is scaled down to fit.
+  let hostWidth = $state(0);
+  let hostHeight = $state(0);
 
   let view = $derived(attachment?.current ?? null);
   let pages = $derived(view?.state.pages ?? []);
@@ -48,6 +52,21 @@
   // Boolean, not the view object: the re-report effect below must fire on
   // attach, never on every page-state push.
   let attached = $derived(view !== null);
+  // The page is always laid out at the thread's viewport and the pane only
+  // shows it scaled to fit (never up), so the label carries that size and, when
+  // the host rect is smaller, the percentage it is shown at.
+  let viewportWidth = $derived(view?.state.viewportWidth ?? 0);
+  let viewportHeight = $derived(view?.state.viewportHeight ?? 0);
+  let viewScale = $derived(
+    viewportWidth > 0 && viewportHeight > 0 && hostWidth > 0 && hostHeight > 0
+      ? Math.min(1, hostWidth / viewportWidth, hostHeight / viewportHeight)
+      : 1,
+  );
+  let sizeLabel = $derived(
+    viewportWidth > 0 && viewportHeight > 0
+      ? `${viewportWidth} × ${viewportHeight}` + (viewScale < 1 ? ` · ${Math.round(viewScale * 100)}%` : '')
+      : '',
+  );
 
   $effect(() => {
     const threadId = ctx.threadId;
@@ -128,6 +147,8 @@
     const threadId = ctx.threadId;
     if (!el || !threadId) return;
     const rect = el.getBoundingClientRect();
+    hostWidth = rect.width;
+    hostHeight = rect.height;
     const clip = visibleClip(el, rect);
     const clipWidth = Math.max(0, clip.right - clip.left);
     const clipHeight = Math.max(0, clip.bottom - clip.top);
@@ -150,13 +171,18 @@
       clipHeight: round2(clipHeight),
       viewportWidth: window.innerWidth,
       viewportHeight: window.innerHeight,
+      // The SPA's own pixel ratio (DPI times webview zoom): the host draws the
+      // page's CSS pixels at its own ratio, and the difference is the zoom the
+      // presentation must carry so the page fills the fitted rect.
+      devicePixelRatio: window.devicePixelRatio,
       visible,
       background: paneBackground(el),
     };
     const key =
       `${report.x},${report.y},${report.width},${report.height},` +
       `${report.clipX},${report.clipY},${report.clipWidth},${report.clipHeight},` +
-      `${report.viewportWidth},${report.viewportHeight},${report.visible},${report.background}`;
+      `${report.viewportWidth},${report.viewportHeight},${report.devicePixelRatio},` +
+      `${report.visible},${report.background}`;
     if (key === lastSentKey) return;
     lastSentKey = key;
     reportBrowserPaneRect(threadId, report);
@@ -352,6 +378,13 @@
         }
       }}
     />
+    {#if sizeLabel}
+      <span
+        class="shrink-0 whitespace-nowrap px-1 font-mono text-[0.65rem] tabular-nums text-fg-muted"
+        data-testid="browser-pane-size"
+        title="The page is laid out at the agent's viewport and shown scaled to fit"
+      >{sizeLabel}</span>
+    {/if}
     {#if activeIsLocalFile}
       <button
         class="rounded p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg"

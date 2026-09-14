@@ -25,6 +25,12 @@ import (
 // data under (spec §4). Clearing site data deletes it wholesale.
 const browserProfileDir = "browser-profiles"
 
+// screenshotTimeout bounds the frame wait inside one capture. It is shorter
+// than operationTimeout because a page that produces no frame is a fault to
+// report, not a slow operation to wait out. A variable so a test can shorten
+// the wait it asserts on.
+var screenshotTimeout = 10 * time.Second
+
 const (
 	operationTimeout          = 30 * time.Second
 	idleBrowserDelay          = 2 * time.Minute
@@ -528,7 +534,7 @@ func (m *Manager) createPage(ctx context.Context, access Access) (*managedPage, 
 		return nil, err
 	}
 	p.attach(driver)
-	if err := m.applyConfiguredViewport(p); err != nil {
+	if err := m.applyViewport(p); err != nil {
 		driver.Close()
 		abandon()
 		return nil, err
@@ -625,7 +631,7 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 		return
 	}
 	p.attach(driver)
-	if err := m.applyConfiguredViewport(p); err != nil {
+	if err := m.applyViewport(p); err != nil {
 		driver.Close()
 		return
 	}

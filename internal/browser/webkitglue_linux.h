@@ -27,38 +27,36 @@ int ao_wk_host_attach(void *gtk_window);
 // teardown over a fanned-out one. 0 until the host has attached once.
 int ao_wk_on_main_thread(void);
 
-// ao_wk_host_park puts a view into the background host at its own slot. The
-// host clips to 1x1, so a parked view is mapped (real viewport, fresh
-// snapshots) while costing the window no size at all. A GtkFixed at offscreen
-// coordinates would instead propagate its size and balloon the window.
-void ao_wk_host_park(void *view, int slot, int width, int height);
+// ao_wk_host_park puts a view's host into the background park at its own
+// slot. The park clips to 1x1, so a parked view is mapped at its full
+// viewport (real layout, fresh snapshots) while costing the window no size at
+// all. A GtkFixed at offscreen coordinates would instead propagate its size
+// and balloon the window.
+void ao_wk_host_park(void *view, int slot);
 
-// ao_wk_host_unpark removes a view from the background host.
+// ao_wk_host_unpark removes a view's host from whichever container holds it.
 void ao_wk_host_unpark(void *view);
 
-// ao_wk_host_present positions one view over the pane's content rect, always as
-// four GtkOverlay margins with ALIGN_FILL. gtk_widget_set_size_request cannot
-// SHRINK a WebKitWebView — its natural size sticks at the largest-ever
-// allocation — so a size-request pane would only ever grow.
-// The rect is in the SPA's CSS pixels; vw/vh are the SPA viewport it was
-// measured in. The overlay's own size over that viewport is the scale, which
-// keeps the view aligned under webview zoom without either side knowing the
-// zoom factor. vw/vh <= 0 means the rect is already in overlay units.
-// clip_* is the VISIBLE intersection of that rect, same units. clip == rect is
-// the unclipped presentation and is byte-for-byte the path above; a smaller
-// clip moves the view into a clipping box sized to the intersection, where it
-// keeps the FULL rect's size so a half-occluded page does not relayout.
+// ao_wk_host_present shows one view inside the pane: its host becomes an
+// overlay child filling the pane's VISIBLE clip rect (four margins with
+// ALIGN_FILL), and the view is drawn inside it at the FITTED rect's offset,
+// scaled. The view's own allocation stays its viewport (ao_wk_view_set_size);
+// the pane never resizes a page, it shows it scaled to fit.
+// x/y/width/height is the fitted rect and clip_* its visible intersection,
+// both in the SPA's CSS pixels; vw/vh are the SPA viewport they were measured
+// in, and the overlay's own size over that viewport is the CSS-to-overlay
+// proportion. vw/vh <= 0 means the rects are already in overlay units. scale
+// is the fitted rect's size over the viewport, in CSS pixels.
 void ao_wk_host_present(void *view, double x, double y, double width,
                         double height, double clip_x, double clip_y,
                         double clip_width, double clip_height, double vw,
-                        double vh);
+                        double vh, double scale);
 
-// ao_wk_host_hide returns a presented view to the background host without
-// tearing anything down.
+// ao_wk_host_hide ends a presentation; the caller parks the view next.
 void ao_wk_host_hide(void *view);
 
-// ao_wk_host_presented reports whether this view is the presented one, which is
-// what decides whether a dialog, picker, or context menu is shown or answered.
+// ao_wk_host_presented reports whether this view is presented, which is what
+// decides whether a dialog, picker, or context menu is shown or answered.
 int ao_wk_host_presented(void *view);
 
 // ---- session -------------------------------------------------------------
@@ -87,6 +85,8 @@ void ao_wk_view_close(void *view);
 // ao_wk_view_set_background sets the view's base color (opaque), which is what
 // the page paints over and what shows where it has not painted yet.
 void ao_wk_view_set_background(void *view, double red, double green, double blue);
+// ao_wk_view_set_size sets the page's viewport: the exact size its host
+// allocates it, parked or presented.
 void ao_wk_view_set_size(void *view, int width, int height);
 // ao_wk_view_open_inspector shows the WebKit inspector for one view.
 // Developer extras are enabled at view construction, so the inspector is

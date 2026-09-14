@@ -355,24 +355,32 @@ func TestHostedEngineShowAndHideAreDedupedAndPageScoped(t *testing.T) {
 func TestHostedEngineBoundsAndDevToolsEmitValidDirectives(t *testing.T) {
 	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
 	engine.bind("page1", "TARGET-1")
-	rect := PaneRect{X: 12, Y: 34, Width: 800, Height: 600, ViewportWidth: 1600, ViewportHeight: 900, Visible: true}
-	engine.SetPageBounds("page1", rect)
+	// An 800x600 pane showing a 1280x720 page: the placement is the fitted,
+	// centered rect (scale 0.625 -> 800x450, 75px down) and that is what the
+	// launcher positions the controller at.
+	pane := PaneRect{X: 12, Y: 34, Width: 800, Height: 600, ClipX: 12, ClipY: 34, ClipWidth: 800, ClipHeight: 600, ViewportWidth: 1600, ViewportHeight: 900, Visible: true}
+	placement, ok := placePage(pane, 1280, 720)
+	if !ok {
+		t.Fatal("an 800x600 pane must place a 1280x720 page")
+	}
+	engine.SetPageBounds("page1", placement)
 	engine.OpenPageDevTools("page1")
 	sink.expectOps(t, webview2host.OpBounds, webview2host.OpDevTools)
 
 	bounds := sink.next(t)
-	if bounds.X != 12 || bounds.Y != 34 || bounds.W != 800 || bounds.H != 600 || bounds.VW != 1600 || bounds.VH != 900 {
-		t.Fatalf("bounds directive lost its rectangle: %+v", bounds)
+	if bounds.X != 12 || bounds.Y != 109 || bounds.W != 800 || bounds.H != 450 || bounds.VW != 1600 || bounds.VH != 900 {
+		t.Fatalf("bounds directive lost its fitted rectangle: %+v", bounds)
 	}
 	// The presentation sync re-sends the active rect on every selection and
 	// page-list change; an unmoved rect costs no directive.
-	engine.SetPageBounds("page1", rect)
+	engine.SetPageBounds("page1", placement)
 	sink.expectOps(t, webview2host.OpBounds, webview2host.OpDevTools)
 	// A page this engine does not own is not a directive, same as show/hide.
-	engine.SetPageBounds("page2", PaneRect{X: 1, Y: 2, Width: 300, Height: 400})
+	other, _ := placePage(PaneRect{X: 1, Y: 2, Width: 300, Height: 400, ClipX: 1, ClipY: 2, ClipWidth: 300, ClipHeight: 400}, 300, 400)
+	engine.SetPageBounds("page2", other)
 	sink.expectOps(t, webview2host.OpBounds, webview2host.OpDevTools)
 	// A rectangle the launcher would refuse never reaches the wire.
-	engine.SetPageBounds("page1", PaneRect{})
+	engine.SetPageBounds("page1", PanePlacement{})
 	sink.expectOps(t, webview2host.OpBounds, webview2host.OpDevTools)
 }
 
@@ -899,5 +907,97 @@ func TestHostedEngineShipsAcceleratorsAndRoutesAMatch(t *testing.T) {
 	engine.Report("page1", webview2host.ReportAccelerator, `not json`)
 	if len(chords) != 1 || chords[0] != (keybindings.Accelerator{Key: "w", Ctrl: true}) {
 		t.Fatalf("KeyChord saw %#v", chords)
+	}
+}
+
+// A pane drag asks for a scale per frame. Each is a CDP round trip, so they
+// must collapse: the override ends at the LAST scale asked for, never queued
+// through every intermediate one after the drag has stopped.
+func TestHostedEngineViewScaleIsLatestWins(t *testing.T) {
+	engine, _ := newTestHostedEngine(t, stubRelay{}, engineEvents{})
+	engine.bind("page1", "TARGET-1")
+	// No viewport yet, so SetViewScale records the scale without a CDP call.
+	page := &cdpPage{ctx: t.Context()}
+	engine.mu.Lock()
+	engine.drivers["page1"] = page
+	engine.mu.Unlock()
+
+	for i := 1; i <= 50; i++ {
+		engine.applyViewScale("page1", float64(i)/100)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		engine.mu.Lock()
+		busy := engine.scales["page1"].busy
+		engine.mu.Unlock()
+		if !busy {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the scale drain never went idle")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	page.metricsMu.Lock()
+	got := page.viewScale
+	page.metricsMu.Unlock()
+	if got != 0.5 {
+		t.Fatalf("the page must end at the last scale asked for, got %v", got)
+	}
+	// A page this engine no longer owns gets no drain at all.
+	engine.applyViewScale("page2", 0.25)
+	engine.mu.Lock()
+	_, queued := engine.scales["page2"]
+	engine.mu.Unlock()
+	if queued {
+		t.Fatal("an unknown page must not be queued")
+	}
+}
+
+// A hide puts the override back to 1, and a re-show at the SAME placement
+// sends no bounds directive, so the show itself must restore the placement's
+// scale. Losing that drew the page 1:1, cropped by the pane, until a resize.
+func TestHostedEngineReShowRestoresThePlacementScale(t *testing.T) {
+	engine, _ := newTestHostedEngine(t, stubRelay{}, engineEvents{})
+	engine.bind("page1", "TARGET-1")
+	page := &cdpPage{ctx: t.Context()}
+	engine.mu.Lock()
+	engine.drivers["page1"] = page
+	engine.mu.Unlock()
+	scaleOf := func() float64 {
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			engine.mu.Lock()
+			st := engine.scales["page1"]
+			busy := st != nil && st.busy
+			engine.mu.Unlock()
+			if !busy {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("the scale drain never went idle")
+			}
+			time.Sleep(time.Millisecond)
+		}
+		page.metricsMu.Lock()
+		defer page.metricsMu.Unlock()
+		return page.viewScale
+	}
+
+	pane := PaneRect{X: 0, Y: 0, Width: 640, Height: 360, ClipX: 0, ClipY: 0, ClipWidth: 640, ClipHeight: 360, ViewportWidth: 1600, ViewportHeight: 900, Visible: true}
+	placement, _ := placePage(pane, 1280, 720)
+	engine.SetPageBounds("page1", placement)
+	engine.ShowPage("page1")
+	if got := scaleOf(); got != 0.5 {
+		t.Fatalf("shown page must draw at the placement scale, got %v", got)
+	}
+	engine.HidePage("page1")
+	if got := scaleOf(); got != 1 {
+		t.Fatalf("hidden page must draw at 1, got %v", got)
+	}
+	engine.SetPageBounds("page1", placement)
+	engine.ShowPage("page1")
+	if got := scaleOf(); got != 0.5 {
+		t.Fatalf("re-show at an unchanged placement must restore its scale, got %v", got)
 	}
 }

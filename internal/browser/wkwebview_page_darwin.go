@@ -449,14 +449,11 @@ func (p *wkPage) WaitVisible(ctx context.Context, selector string) error {
 	}
 }
 
-// SetViewport resizes the view itself: WebKit has no device-metrics override,
-// so the page's viewport IS the view's size.
+// SetViewport sizes the view's bounds: WebKit has no device-metrics override,
+// so the page's viewport IS the view's bounds, and the host keeps those bounds
+// whether the page is parked or presented scaled in the pane.
 func (p *wkPage) SetViewport(_ context.Context, width, height int) error {
 	return wkSetViewSize(p.view, width, height)
-}
-
-func (p *wkPage) ClearViewport(context.Context) error {
-	return wkSetViewSize(p.view, wkHiddenWidth, wkHiddenHeight)
 }
 
 func (p *wkPage) Screenshot(ctx context.Context, opts ScreenshotOptions) ([]byte, error) {

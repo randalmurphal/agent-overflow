@@ -20,7 +20,7 @@ type recordingPaneHost struct {
 	*fakeEngine
 	mu       sync.Mutex
 	calls    []string
-	onBounds func(PaneRect)
+	onBounds func(PanePlacement)
 }
 
 func (e *recordingPaneHost) record(call string) {
@@ -31,13 +31,13 @@ func (e *recordingPaneHost) record(call string) {
 
 func (e *recordingPaneHost) ShowPage(handle string) { e.record("show:" + handle) }
 func (e *recordingPaneHost) HidePage(handle string) { e.record("hide:" + handle) }
-func (e *recordingPaneHost) SetPageBounds(handle string, rect PaneRect) {
+func (e *recordingPaneHost) SetPageBounds(handle string, placement PanePlacement) {
 	e.record("bounds:" + handle)
 	e.mu.Lock()
 	onBounds := e.onBounds
 	e.mu.Unlock()
 	if onBounds != nil {
-		onBounds(rect)
+		onBounds(placement)
 	}
 }
 
@@ -159,8 +159,8 @@ func TestPaneRectClipDefaultsAndEmptyClipHides(t *testing.T) {
 	}
 	engine.take()
 
-	var got []PaneRect
-	engine.onBounds = func(rect PaneRect) { got = append(got, rect) }
+	var got []PanePlacement
+	engine.onBounds = func(placement PanePlacement) { got = append(got, placement) }
 	rect := PaneRect{X: 10, Y: 20, Width: 800, Height: 600, ViewportWidth: 1920, ViewportHeight: 1080, Visible: true}
 	if err := manager.SetPaneRect(mount.ID, rect); err != nil {
 		t.Fatalf("set pane rect: %v", err)
@@ -168,9 +168,17 @@ func TestPaneRectClipDefaultsAndEmptyClipHides(t *testing.T) {
 	if len(got) == 0 {
 		t.Fatal("no bounds reached the engine")
 	}
+	// The default 1280x720 page fits an 800x600 pane at 0.625: 800x450,
+	// centered 75px down, and the defaulted full-rect clip crops to that.
 	last := got[len(got)-1]
-	if last.ClipX != 10 || last.ClipY != 20 || last.ClipWidth != 800 || last.ClipHeight != 600 {
-		t.Fatalf("zero clip was not defaulted to the full rect: %+v", last)
+	if last.PageWidth != 1280 || last.PageHeight != 720 || last.Scale != 0.625 {
+		t.Fatalf("placement did not keep the thread viewport: %+v", last)
+	}
+	if last.Rect.X != 10 || last.Rect.Y != 95 || last.Rect.Width != 800 || last.Rect.Height != 450 {
+		t.Fatalf("page was not fitted and centered in the pane: %+v", last.Rect)
+	}
+	if last.Rect.ClipX != 10 || last.Rect.ClipY != 95 || last.Rect.ClipWidth != 800 || last.Rect.ClipHeight != 450 {
+		t.Fatalf("zero clip was not defaulted to the fitted rect: %+v", last.Rect)
 	}
 
 	engine.take()

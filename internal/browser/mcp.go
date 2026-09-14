@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	browserMCPInstructions = "Browser pages are shared only within this AO thread. browser_open and browser_open_file create a new background page when page_id is omitted; retain the returned page_id and pass it on later calls. When multiple pages exist, implicit page selection fails safely: call browser_pages and pass the intended page_id. Use browser_visibility with visible=true and page_id only when the user should see that page."
+	browserMCPInstructions = "Browser pages are shared only within this AO thread. browser_open and browser_open_file create a new background page when page_id is omitted; retain the returned page_id and pass it on later calls. When multiple pages exist, implicit page selection fails safely: call browser_pages and pass the intended page_id. Use browser_visibility with visible=true and page_id only when the user should see that page. Every page lays out at the thread viewport (browser_viewport, default 1280x720) whether or not the user is watching; the user's pane shows a presented page scaled to fit and never resizes it, so screenshots and coordinates always mean the viewport you set."
 )
 
 var cachedToolDefinitions = toolDefinitions()
@@ -471,8 +471,8 @@ func toolDefinitions() []map[string]any {
 		{"name": "browser_select_page", "description": "Explicitly pin an owned page as the companion tab without changing companion visibility.", "inputSchema": object(page, "page_id")},
 		{"name": "browser_label_page", "description": "Set or clear a short thread-unique label on an owned page so agents can coordinate around it.", "inputSchema": object(map[string]any{"page_id": stringProp, "label": stringProp}, "page_id", "label")},
 		{"name": "browser_close_page", "description": "Close one browser page.", "inputSchema": object(page, "page_id")},
-		{"name": "browser_visibility", "description": "Get visibility, hide the companion, or explicitly present one page. Showing requires page_id when multiple pages exist; ordinary browser activity never steals the visible tab.", "inputSchema": object(map[string]any{"visible": boolProp, "page_id": stringProp})},
-		{"name": "browser_viewport", "description": "Get, set, or reset the bounded browser viewport override.", "inputSchema": object(map[string]any{"action": enumProp("get", "set", "reset"), "width": integerProp, "height": integerProp}, "action")},
+		{"name": "browser_visibility", "description": "Get visibility, hide the companion, or explicitly present one page. Showing requires page_id when multiple pages exist; ordinary browser activity never steals the visible tab. Presenting does not change the page's viewport.", "inputSchema": object(map[string]any{"visible": boolProp, "page_id": stringProp})},
+		{"name": "browser_viewport", "description": "Get, set, or reset the thread viewport every page lays out at (default 1280x720, bounded). It is the page's real size whether or not the user is watching; the user's pane shows the page scaled to fit and never resizes it.", "inputSchema": object(map[string]any{"action": enumProp("get", "set", "reset"), "width": integerProp, "height": integerProp}, "action")},
 		{"name": "browser_snapshot", "description": "Read bounded visible text and interactive elements with reusable DOM node IDs and CSS selectors.", "inputSchema": object(page)},
 		{"name": "browser_screenshot", "description": "Capture the viewport, a bounded clip, or a height-capped full page as JPEG.", "inputSchema": object(map[string]any{"page_id": stringProp, "full_page": boolProp, "clip": clipProp})},
 		{"name": "browser_locator", "description": "Playwright-like locator query/action: count, all, all_text_contents, click, double_click, fill, type, press, check, uncheck, set_checked, select_option, get_attribute, inner_text, text_content, is_enabled, is_visible, or wait. Actions are strict and require exactly one match.", "inputSchema": locatorSchema},

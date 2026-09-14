@@ -106,6 +106,7 @@ export function reportBrowserPaneRect(
     clipHeight: number;
     viewportWidth: number;
     viewportHeight: number;
+    devicePixelRatio: number;
     visible: boolean;
     background: string;
   },

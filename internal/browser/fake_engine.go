@@ -145,6 +145,11 @@ type fakePage struct {
 	history []string
 	index   int
 	closed  bool
+	// viewports records every SetViewport, newest last, so a test can assert
+	// what size the Manager laid the page out at.
+	viewports [][2]int
+	// screenshot, when set, answers Screenshot instead of the no-page error.
+	screenshot func(context.Context) ([]byte, error)
 }
 
 func (p *fakePage) Lifetime() context.Context { return p.ctx }
@@ -233,7 +238,13 @@ func (p *fakePage) Snapshot(context.Context) (Snapshot, error) {
 	return Snapshot{}, errFakeEngineHasNoPage
 }
 
-func (p *fakePage) Screenshot(context.Context, ScreenshotOptions) ([]byte, error) {
+func (p *fakePage) Screenshot(ctx context.Context, _ ScreenshotOptions) ([]byte, error) {
+	p.mu.Lock()
+	capture := p.screenshot
+	p.mu.Unlock()
+	if capture != nil {
+		return capture(ctx)
+	}
 	return nil, errFakeEngineHasNoPage
 }
 
@@ -276,10 +287,24 @@ func (p *fakePage) Scroll(context.Context, string, float64, float64) error {
 
 func (p *fakePage) WaitVisible(context.Context, string) error { return errFakeEngineHasNoPage }
 
-// SetViewport and ClearViewport succeed: a viewport is AO state the Manager
-// applies to every new page, and refusing it would fail page creation itself.
-func (p *fakePage) SetViewport(context.Context, int, int) error { return nil }
-func (p *fakePage) ClearViewport(context.Context) error         { return nil }
+// SetViewport succeeds: a viewport is AO state the Manager applies to every
+// page, and refusing it would fail page creation itself.
+func (p *fakePage) SetViewport(_ context.Context, width, height int) error {
+	p.mu.Lock()
+	p.viewports = append(p.viewports, [2]int{width, height})
+	p.mu.Unlock()
+	return nil
+}
+
+func (p *fakePage) lastViewport() (int, int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.viewports) == 0 {
+		return 0, 0
+	}
+	last := p.viewports[len(p.viewports)-1]
+	return last[0], last[1]
+}
 
 func (p *fakePage) AssetInventory(context.Context) (pageAssets, error) {
 	return pageAssets{}, errFakeEngineHasNoPage

@@ -9,20 +9,21 @@ import (
 
 // The engine half of the Manager's pane presentation (`paneHost`), the
 // direct analogue of webkit_pane_linux.go: present moves the view over the
-// host rect as a subview of Wails' content view, hide re-parks it at its
-// slot in the 1x1 clipping park view. There is deliberately no
+// placement's fitted rect as a subview of Wails' content view, drawn scaled
+// over its own viewport, and hide re-parks it at its slot in the 1x1 clipping
+// park view. The page's viewport is never touched here; SetViewport owns it. There is deliberately no
 // OpenPageDevTools — WKWebView has no public call that opens its inspector,
 // so this engine does not implement `paneDevTools` and the Manager's refusal
 // stands as the true answer (devtools here are Safari's Develop menu against
 // the inspectable view).
 //
 // The Manager always sends bounds before a show, so ShowPage presents at the
-// recorded rect and SetPageBounds on an already-presented page repositions
-// it. Both are deduped under e.mu — bookkeeping only, the AppKit call
-// happens after the lock is released (the same locking rule the Linux
-// engine states). The dedupe compares the WHOLE PaneRect, so a rect that
-// moved only its clip or its background colour still reaches AppKit, and one
-// that changed nothing still costs no main-thread dispatch.
+// recorded placement and SetPageBounds on an already-presented page
+// repositions it. Both are deduped under e.mu — bookkeeping only, the AppKit
+// call happens after the lock is released (the same locking rule the Linux
+// engine states). The dedupe compares the WHOLE PanePlacement, so one that
+// moved only its clip, its scale or its background colour still reaches
+// AppKit, and one that changed nothing still costs no main-thread dispatch.
 
 // wkNoBackground is what a pane with no resolved colour reports to the
 // Objective-C half, which then leaves the engine default in place.
@@ -58,15 +59,15 @@ func wkBackgroundCode(value string) int {
 // wkPaneState is the desired presentation of one page, plus what was last
 // pushed to AppKit so an unchanged sync costs no main-thread dispatch.
 type wkPaneState struct {
-	rect         PaneRect
+	placement    PanePlacement
 	hasRect      bool
 	shown        bool
-	applied      PaneRect
+	applied      PanePlacement
 	appliedShown bool
 }
 
 func wkPaneApplied(st wkPaneState) bool {
-	return st.appliedShown && st.applied == st.rect
+	return st.appliedShown && st.applied == st.placement
 }
 
 // wkPaneTarget answers the page a pane call addresses, or nil for a handle
@@ -80,24 +81,24 @@ func wkPaneTarget(handle string) *wkPage {
 	return wkLookupPage(id)
 }
 
-func (e *wkEngine) SetPageBounds(handle string, rect PaneRect) {
+func (e *wkEngine) SetPageBounds(handle string, placement PanePlacement) {
 	p := wkPaneTarget(handle)
 	if p == nil {
 		return
 	}
 	e.mu.Lock()
 	st := e.pane[p.id]
-	st.rect = rect
+	st.placement = placement
 	st.hasRect = true
 	present := st.shown && !wkPaneApplied(st)
 	if present {
 		st.appliedShown = true
-		st.applied = st.rect
+		st.applied = st.placement
 	}
 	e.pane[p.id] = st
 	e.mu.Unlock()
 	if present {
-		_ = wkPresentView(p.view, rect)
+		_ = wkPresentView(p.view, placement)
 	}
 }
 
@@ -114,13 +115,13 @@ func (e *wkEngine) ShowPage(handle string) {
 	present := st.hasRect && !wkPaneApplied(st)
 	if present {
 		st.appliedShown = true
-		st.applied = st.rect
+		st.applied = st.placement
 	}
-	rect := st.rect
+	placement := st.placement
 	e.pane[p.id] = st
 	e.mu.Unlock()
 	if present {
-		_ = wkPresentView(p.view, rect)
+		_ = wkPresentView(p.view, placement)
 	}
 }
 
@@ -140,7 +141,7 @@ func (e *wkEngine) HidePage(handle string) {
 		p.mu.Lock()
 		slot := p.slot
 		p.mu.Unlock()
-		_ = wkHideView(p.view, slot, wkHiddenWidth, wkHiddenHeight)
+		_ = wkHideView(p.view, slot)
 	}
 }
 

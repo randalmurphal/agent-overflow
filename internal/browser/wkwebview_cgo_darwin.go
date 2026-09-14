@@ -343,15 +343,18 @@ func wkAttachHost(window unsafe.Pointer) error {
 	return nil
 }
 
-func wkParkView(view unsafe.Pointer, slot, width, height int) {
-	wkDo(func() { C.ao_wkv_host_park(view, C.int(slot), C.int(width), C.int(height)) })
+func wkParkView(view unsafe.Pointer, slot int) {
+	wkDo(func() { C.ao_wkv_host_park(view, C.int(slot)) })
 }
 
-// wkPresentView moves the view over the pane's rect, cropped to the rect's
-// visible intersection and carrying the pane's background colour. The colour is
-// parsed HERE rather than on the main thread: the Objective-C half takes the
-// packed value and never a string.
-func wkPresentView(view unsafe.Pointer, rect PaneRect) error {
+// wkPresentView moves the view over the placement's fitted rect, cropped to
+// its visible intersection and carrying the pane's background colour. The
+// page's viewport was set by SetViewport and stays its bounds, so the fitted
+// frame over those bounds is the scale. The colour is parsed HERE rather than
+// on the main thread: the Objective-C half takes the packed value and never a
+// string.
+func wkPresentView(view unsafe.Pointer, placement PanePlacement) error {
+	rect := placement.Rect
 	background := C.int(wkBackgroundCode(rect.Background))
 	if !wkDo(func() {
 		C.ao_wkv_host_present(view, C.double(rect.X), C.double(rect.Y),
@@ -366,10 +369,10 @@ func wkPresentView(view unsafe.Pointer, rect PaneRect) error {
 	return nil
 }
 
-func wkHideView(view unsafe.Pointer, slot, width, height int) error {
+func wkHideView(view unsafe.Pointer, slot int) error {
 	if !wkDo(func() {
 		C.ao_wkv_host_hide(view)
-		C.ao_wkv_host_park(view, C.int(slot), C.int(width), C.int(height))
+		C.ao_wkv_host_park(view, C.int(slot))
 	}) {
 		return errWKUnavailable
 	}

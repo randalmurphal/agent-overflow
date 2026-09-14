@@ -26,6 +26,14 @@ export class CompanionEvent {
     "sessionName"?: string;
 
     /**
+     * ViewportWidth/Height ride a Kind "state" event: the size every page of
+     * the thread lays out at (the agent's override or the default), which
+     * the pane shows scaled to fit and labels.
+     */
+    "viewportWidth"?: number;
+    "viewportHeight"?: number;
+
+    /**
      * Accelerator rides a Kind "accelerator" event: a bound chord pressed
      * while the thread's page view held keyboard focus, for the frontend to
      * dispatch as if the SPA had received it.
@@ -49,13 +57,13 @@ export class CompanionEvent {
      */
     static createFrom($$source: any = {}): CompanionEvent {
         const $$createField2_0 = $$createType1;
-        const $$createField8_0 = $$createType3;
+        const $$createField10_0 = $$createType3;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pages" in $$parsedSource) {
             $$parsedSource["pages"] = $$createField2_0($$parsedSource["pages"]);
         }
         if ("accelerator" in $$parsedSource) {
-            $$parsedSource["accelerator"] = $$createField8_0($$parsedSource["accelerator"]);
+            $$parsedSource["accelerator"] = $$createField10_0($$parsedSource["accelerator"]);
         }
         return new CompanionEvent($$parsedSource as Partial<CompanionEvent>);
     }
@@ -158,6 +166,11 @@ export class PageInfo {
  * Background is the pane surface's resolved CSS color ("#rrggbb"); engines
  * paint it where the page has not presented yet, so freshly exposed strips
  * match the pane instead of flashing the engine default.
+ * 
+ * DevicePixelRatio is the SPA's window.devicePixelRatio: OS scale times
+ * webview zoom. An engine whose page renders at the OS scale alone (the
+ * hosted WebView2) divides by the page's own ratio to recover the zoom.
+ * Zero means unknown, which every consumer treats as 1.
  */
 export class PaneRect {
     "x": number;
@@ -170,6 +183,7 @@ export class PaneRect {
     "clipHeight": number;
     "viewportWidth": number;
     "viewportHeight": number;
+    "devicePixelRatio"?: number;
     "visible": boolean;
     "background"?: string;
 

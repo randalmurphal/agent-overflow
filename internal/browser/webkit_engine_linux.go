@@ -26,15 +26,6 @@ import (
 // being held. So a lock here only ever covers map bookkeeping, and every
 // gtkDo-backed call happens after it is released.
 
-const (
-	// A background page still needs a real viewport: layout, media queries,
-	// and element geometry are all read from it, and a screenshot of a hidden
-	// page is taken at this size. It is the size the pane opens at, so
-	// presenting a page does not reflow everything it has already measured.
-	webkitHiddenWidth  = 1280
-	webkitHiddenHeight = 800
-)
-
 // newNativeEngine answers a WebKitGTK engine only when the caller supplied a
 // desktop window to host views inside. The same Linux binary also runs with no
 // window at all — `--connect`, the harness, `go test` — and those keep managed
@@ -302,7 +293,7 @@ func (p *webkitProfile) newPageShell(hooks pageHooks) (*webkitPage, error) {
 // space. Hiding by opacity is banned — it stops rAF, which stops the page.
 func (p *webkitProfile) parkNew(page *webkitPage) {
 	page.slot = p.engine.claimSlot()
-	webkitParkView(page.view, page.slot, webkitHiddenWidth, webkitHiddenHeight)
+	webkitParkView(page.view, page.slot)
 }
 
 func (p *webkitProfile) registerDownload(handle string, download unsafe.Pointer) {

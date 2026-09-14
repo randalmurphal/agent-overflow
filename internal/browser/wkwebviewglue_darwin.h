@@ -37,10 +37,11 @@ int ao_wkv_on_main_thread(void);
 // Returns 1 on success, 0 when the window has no content view.
 int ao_wkv_host_attach(void *ns_window);
 
-// ao_wkv_host_park puts a view into the park view at its own slot. The park
-// view is 1x1 with a masked layer, so a parked view is IN THE WINDOW (real
-// viewport, snapshot-able) while costing the window no space at all.
-void ao_wkv_host_park(void *view, int slot, int width, int height);
+// ao_wkv_host_park puts a view into the park view at its own slot, at its
+// viewport (ao_wkv_view_set_size) and scale 1. The park view is 1x1 with a
+// masked layer, so a parked view is IN THE WINDOW (real viewport,
+// snapshot-able) while costing the window no space at all.
+void ao_wkv_host_park(void *view, int slot);
 
 // ao_wkv_host_unpark removes a view from whichever AO host holds it.
 void ao_wkv_host_unpark(void *view);
@@ -121,8 +122,11 @@ void ao_wkv_view_adopt(void *view, uint64_t page_id, uint64_t profile_id,
                        const char *download_dir);
 
 void ao_wkv_view_close(void *view);
+// ao_wkv_view_set_size sets the page's viewport: its bounds size, parked or
+// presented. A presented view keeps its fitted frame and lays out at the new
+// size until the next placement carries the matching scale.
 void ao_wkv_view_set_size(void *view, int width, int height);
-// ao_wkv_view_get_size reads the view's current size, which a full-document
+// ao_wkv_view_get_size reads the page's viewport, which a full-document
 // screenshot restores after capturing at the document's size.
 void ao_wkv_view_get_size(void *view, int *width, int *height);
 void ao_wkv_view_load_uri(void *view, const char *uri);

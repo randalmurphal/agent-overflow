@@ -135,21 +135,17 @@ func (m *Manager) Viewport(_ context.Context, access Access, opts ViewportOption
 	m.sessions[access.ThreadID] = info
 	m.mu.Unlock()
 	if opts.Action != "get" && opts.Action != "" {
+		// Every page of the thread lays out at the session's viewport, hidden
+		// or presented; a reset is the default size applied, not an absence.
 		for _, p := range m.ownedPages(access.ThreadID) {
 			p.mu.Lock()
-			opCtx, cancel := operationContext(context.Background(), p.ctx, 5*time.Second)
-			var err error
-			if info.ViewportSet {
-				err = p.driver.SetViewport(opCtx, info.ViewportW, info.ViewportH)
-			} else {
-				err = p.driver.ClearViewport(opCtx)
-			}
-			cancel()
+			err := m.applyViewportLocked(p)
 			p.mu.Unlock()
 			if err != nil {
-				return SessionInfo{}, fmt.Errorf("browser: apply viewport: %w", err)
+				return SessionInfo{}, err
 			}
 		}
+		m.emitThreadState(access.ThreadID)
 		m.syncPanePresentation(access.ThreadID)
 	}
 	return info, nil
@@ -214,16 +210,24 @@ func (m *Manager) repairActivePage(threadID string) {
 	m.mu.Unlock()
 }
 
-func (m *Manager) applyConfiguredViewport(p *managedPage) error {
+// applyViewport pins a page to its thread's viewport: the agent's override
+// or the default. Every page gets one at creation, so a hidden page lays out
+// and captures at a real size instead of whatever its parked view happens to
+// measure, and the size is the same on every engine.
+func (m *Manager) applyViewport(p *managedPage) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return m.applyViewportLocked(p)
+}
+
+// applyViewportLocked is applyViewport with p.mu held by the caller.
+func (m *Manager) applyViewportLocked(p *managedPage) error {
 	m.mu.Lock()
-	info, ok := m.sessions[p.owner]
+	width, height := sessionViewport(m.sessionLocked(p.owner))
 	m.mu.Unlock()
-	if !ok || !info.ViewportSet {
-		return nil
-	}
 	ctx, cancel := operationContext(context.Background(), p.ctx, 5*time.Second)
 	defer cancel()
-	if err := p.driver.SetViewport(ctx, info.ViewportW, info.ViewportH); err != nil {
+	if err := p.driver.SetViewport(ctx, width, height); err != nil {
 		return fmt.Errorf("browser: apply viewport: %w", err)
 	}
 	return nil

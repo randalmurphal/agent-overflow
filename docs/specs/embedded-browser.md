@@ -133,8 +133,15 @@ Spike-verified recipes, all load-bearing:
   `document.visibilityState` can keep reporting `"hidden"` for
   seconds — nothing gates on `visibilitychange`; the host's own
   visibility signal is authoritative.
-- The visible page's controller is positioned over the pane's content
-  rect and resized with it; hidden pages are `IsVisible=false`.
+- The visible page's controller is positioned over the pane's FITTED
+  rect (the viewport scaled down to fit, centered). The page's size is
+  never the controller's: `Emulation.setDeviceMetricsOverride` pins
+  the thread viewport and its `scale` draws it to fit, and screenshots
+  divide the clip by the page's `devicePixelRatio` so they stay one
+  image pixel per CSS pixel. Hidden pages keep `IsVisible=true` inside
+  a hidden clip container: `IsVisible=false` stops compositing, which
+  froze presented views and hung `Page.captureScreenshot` until the
+  pane reopened.
 - Per-workspace isolation: prefer one pane environment + a named
   `CoreWebView2Profile` per workspace (one browser process, one CDP
   port); verify cross-profile cookie isolation at implementation
@@ -243,17 +250,24 @@ positioned over.
   slides this one sideways without resizing it, which no observer or
   event reports) and reports it over a binding, together with the
   VISIBLE CLIP INTERSECTION and the pane's resolved background color;
-  the platform host positions the native view at the full rect and
-  crops it to the clip through a per-page clip container, so a pane
-  half behind the sidebar shows its visible half without the page
-  relayouting. Rect updates coalesce per frame. On Linux the rect is
-  expressed as four `GtkOverlay` margins with `ALIGN_FILL`
-  (spike-verified: `gtk_widget_set_size_request` cannot SHRINK a
-  WebKitWebView — natural size sticks at the largest-ever allocation
-  — while margins+fill track shrink and grow exactly), recomputed on
-  every window resize. Wails window surgery: ref the existing child,
-  `set_child(NULL)`, wrap in a `GtkOverlay`, re-set — the SPA
-  survives without a reload.
+  the Manager fits the page's viewport into that rect (`placePage`:
+  scale = min(rect/viewport, 1), centered, clip intersected) and the
+  platform host positions the native view at the fitted rect, drawn
+  at that scale, and crops it to the clip, so a pane half behind the
+  sidebar shows its visible half without the page relayouting. The
+  rect also carries the SPA's `devicePixelRatio`, which the hosted
+  engine folds into the CDP scale so webview zoom and DPI cancel out.
+  Rect updates coalesce per frame. On Linux each page lives in its
+  own `AoViewHost` widget: an overlay child at the clip rect through
+  four margins with `ALIGN_FILL`, allocating the view at exactly the
+  viewport under a translate+scale `GskTransform` (spike-verified:
+  `gtk_widget_set_size_request` cannot SHRINK a WebKitWebView —
+  natural size sticks at the largest-ever allocation — while an
+  explicit `gtk_widget_allocate` takes any size, and GTK maps pointer
+  input back through the transform). On macOS the view's frame is the
+  fitted rect and its bounds stay the viewport. Wails window surgery:
+  ref the existing child, `set_child(NULL)`, wrap in a `GtkOverlay`,
+  re-set — the SPA survives without a reload.
 - **Airspace**: the native view always paints above the SPA. Any AO
   overlay (popover, modal, palette, menu) that would intersect the
   browser rect requires the view to be clipped or hidden for the
@@ -264,7 +278,10 @@ positioned over.
   choice, decided by feel). This is the one place the embed is
   visibly not-a-DOM-element; every native embed has it.
 - Pane hidden / thread switched / layout drag in progress → view
-  hidden. Nothing is torn down; page state lives on.
+  hidden. Nothing is torn down; page state lives on, the page keeps
+  its viewport and keeps producing frames, and the address row shows
+  `1280 × 720 · 62%` style labels so a scaled presentation is visible
+  as such. The pane never changes a page's size.
 - DevTools: Windows — `OpenDevToolsWindow` on the pane controller
   (full Chromium devtools). Linux — WebKitGTK inspector,
   spike-verified opening docked in-app. macOS — `isInspectable`,
@@ -284,7 +301,7 @@ mechanism:
 | Tool | CDP driver (Windows) | WebKit driver (mac/linux) |
 |---|---|---|
 | open / new_page / open_file / pages / select_page / label_page / session / close_page | as today | view lifecycle + Manager registry (no engine variance) |
-| visibility / viewport | as today; pane owns visible page's size | show/hide views; viewport = view frame size for hidden pages |
+| visibility / viewport | show/hide controllers; the thread viewport is always the device-metrics override, the pane only scales | show/hide views; viewport = the view's allocation (Linux) or bounds (macOS), parked or presented |
 | snapshot / dom / locator | as today (CDP) | shared JS expressions |
 | click / type / press / pointer / scroll | CDP Input (trusted) | JS-driven default (untrusted); XTest escalation for the visible pane; parity note |
 | screenshot | CDP capture | engine snapshot API |

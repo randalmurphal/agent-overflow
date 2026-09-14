@@ -218,10 +218,20 @@ func (h *Host) Apply(directive Directive) {
 		})
 	case OpHide:
 		h.withPage(directive.PageID, func(page *hostPage) {
+			// Hiding is the CONTAINER's: the controller stays IsVisible so
+			// Chromium keeps compositing the page (rAF, scroll state, and
+			// the frame a screenshot copies). IsVisible=false stops all of
+			// that and evicts the surface, so a hidden page's first
+			// capture would wait for a frame that never comes (spike
+			// 2026-09-14). Only the unclipped fallback, with no container
+			// to hide, has to hide the controller itself.
+			if page.container != 0 {
+				showWindow(page.container, false)
+				return
+			}
 			if err := page.controller.putIsVisible(false); err != nil {
 				h.config.Logf("browser host: page %s hide: %v", page.id, err)
 			}
-			showWindow(page.container, false)
 		})
 	case OpDevTools:
 		h.withPage(directive.PageID, func(page *hostPage) {
@@ -787,9 +797,11 @@ func (h *Host) controllerCompleted(page *hostPage, hwnd uintptr, hr uintptr, con
 	// for, not now, so a runtime that never sees a Bg stays quiet.
 	page.controller2 = controller.queryController2()
 
-	// Pages start hidden. browser_visibility is what presents one.
-	if err := controller.putIsVisible(false); err != nil {
-		h.config.Logf("browser host: page %s initial hide: %v", page.id, err)
+	// Pages start hidden: the clip container is created unshown, and
+	// browser_visibility is what shows it. The controller itself is visible
+	// from the start, for the reason OpHide gives.
+	if err := controller.putIsVisible(page.container != 0); err != nil {
+		h.config.Logf("browser host: page %s initial visibility: %v", page.id, err)
 	}
 
 	if page.container != 0 {

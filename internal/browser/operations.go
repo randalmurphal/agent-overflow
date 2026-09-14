@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -37,8 +38,6 @@ func (m *Manager) Screenshot(ctx context.Context, access Access, opts Screenshot
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
-	defer cancel()
 	if opts.FullPage && opts.Clip != nil {
 		return nil, fmt.Errorf("browser: screenshot clip and full_page are mutually exclusive")
 	}
@@ -47,10 +46,21 @@ func (m *Manager) Screenshot(ctx context.Context, access Access, opts Screenshot
 			return nil, fmt.Errorf("browser: screenshot clip is outside the bounded capture area")
 		}
 	}
-	data, err := p.driver.Screenshot(opCtx, opts)
+	// A capture waits for the engine to produce a frame. It gets its own,
+	// shorter bound than the page operation: a page that never paints must
+	// answer quickly and by name, not hold the page's lock for the full
+	// operation timeout while every other tool on it queues.
+	captureCtx, cancelCapture := operationContext(ctx, p.ctx, screenshotTimeout)
+	data, err := p.driver.Screenshot(captureCtx, opts)
+	cancelCapture()
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil && p.ctx.Err() == nil {
+			return nil, fmt.Errorf("browser: screenshot: the page produced no frame within %s", screenshotTimeout)
+		}
 		return nil, err
 	}
+	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
+	defer cancel()
 	if len(data) > maxScreenshotBytes {
 		return nil, fmt.Errorf("browser: screenshot exceeds %d bytes; use a viewport capture or reduce the page size", maxScreenshotBytes)
 	}

@@ -40,6 +40,7 @@ static const char kAODownloadProfileKey;
 static const char kAODownloadPathKey;
 static const char kAOBackgroundKey;
 static const char kAOClipKey;
+static const char kAOPageSizeKey;
 static int kAOObserverContext;
 
 // ao_dup copies a UTF-8 string into malloc'd memory the Go half owns from that
@@ -211,7 +212,13 @@ void ao_wkv_view_press_key(void *view, const char *key, int ctrl, int meta, int 
 //       ├── park view : 1x1, layer-masked, BELOW everything  (hidden pages)
 //       ├── the Wails SPA WKWebView (unchanged, still live)
 //       └── one clip view PER PRESENTED PAGE, ABOVE everything
-//           └── that page, at the FULL rect's size
+//           └── that page: frame at the FITTED rect, bounds at its viewport
+//
+// A page's viewport is its BOUNDS size (ao_wkv_view_set_size), parked or
+// presented. Presenting sets the frame to the fitted rect and keeps the bounds
+// at the viewport, so AppKit draws the page scaled to fit and maps pointer
+// input back through the same bounds transform. The pane never resizes a
+// page; only the Manager's viewport does.
 //
 // Order matters: the park view is added beneath the existing subviews so the
 // SPA paints over its 1px footprint and it can never take a click, and clip
@@ -245,6 +252,29 @@ static NSView *ao_park = nil;
 // static, which is what lets two threads present at once.
 static NSView *ao_view_clip(NSView *view) {
   return (NSView *)objc_getAssociatedObject(view, &kAOClipKey);
+}
+
+// The viewport a view lays out at before the Manager applies one. It is
+// applied on page creation, so this only covers the moments in between.
+#define AO_PAGE_DEFAULT_W 1280
+#define AO_PAGE_DEFAULT_H 720
+
+// ao_page_size answers the page's viewport: the bounds size every placement
+// keeps, whatever frame the view is drawn into.
+static NSSize ao_page_size(NSView *view) {
+  NSValue *stored = objc_getAssociatedObject(view, &kAOPageSizeKey);
+  if (stored == nil) {
+    return NSMakeSize(AO_PAGE_DEFAULT_W, AO_PAGE_DEFAULT_H);
+  }
+  return [stored sizeValue];
+}
+
+// ao_place puts a view at a frame and restores its viewport as the bounds.
+// setFrame: resets the bounds to the frame's size, so the bounds are set
+// after it on every placement, not only when the scale changes.
+static void ao_place(NSView *view, NSRect frame) {
+  [view setFrame:frame];
+  [view setBoundsSize:ao_page_size(view)];
 }
 
 int ao_wkv_on_main_thread(void) { return [NSThread isMainThread] ? 1 : 0; }
@@ -284,16 +314,17 @@ int ao_wkv_host_attach(void *ns_window) {
   }
 }
 
-void ao_wkv_host_park(void *view, int slot, int width, int height) {
+void ao_wkv_host_park(void *view, int slot) {
   @autoreleasepool {
     if (ao_park == nil || view == NULL) {
       return;
     }
     NSView *v = (NSView *)view;
-    // Slots are stacked vertically inside the 1x1 clip, so two parked pages
-    // never overlap and each keeps a viewport of its own.
-    [v setFrame:NSMakeRect(0, (CGFloat)slot * (CGFloat)(height + 10), (CGFloat)width,
-                           (CGFloat)height)];
+    // Parked is drawn whole at scale 1 into the clip, at the page's own
+    // viewport. Slots are stacked vertically so two parked pages never
+    // overlap.
+    NSSize page = ao_page_size(v);
+    ao_place(v, NSMakeRect(0, (CGFloat)slot * (page.height + 10), page.width, page.height));
     [v setHidden:NO];
     if ([v superview] == ao_park) {
       return;
@@ -463,8 +494,9 @@ void ao_wkv_host_present(void *view, double x, double y, double width, double he
     // rect, exactly where the whole view used to go.
     CGFloat clipOriginY = [ao_host isFlipped] ? cy : bounds.size.height - (cy + ch);
     [clip setFrame:NSMakeRect(cx, clipOriginY, cw, ch)];
-    // The page view keeps the FULL rect's size, placed inside the container.
-    // Horizontally that is just the offset between the two left edges. The
+    // The page view's FRAME is the fitted rect, placed inside the container,
+    // and ao_place keeps its BOUNDS at the viewport, which is the scale.
+    // Horizontally the offset is just the one between the two left edges. The
     // derivation vertically, with H the host's height:
     //
     //   host NOT flipped (bottom-left, the AppKit default)
@@ -481,7 +513,7 @@ void ao_wkv_host_present(void *view, double x, double y, double width, double he
     // allocate here, so it is never flipped — but it is asked anyway, for the
     // same reason the host is.
     CGFloat childY = [clip isFlipped] ? (fy - cy) : (cy + ch) - (fy + fh);
-    [v setFrame:NSMakeRect(fx - cx, childY, fw, fh)];
+    ao_place(v, NSMakeRect(fx - cx, childY, fw, fh));
     ao_apply_background((WKWebView *)v, clip, bg);
     [v setHidden:NO];
     [clip setHidden:NO];
@@ -1103,12 +1135,23 @@ void ao_wkv_view_close(void *view) {
 
 void ao_wkv_view_set_size(void *view, int width, int height) {
   @autoreleasepool {
-    if (view == NULL) {
+    if (view == NULL || width <= 0 || height <= 0) {
       return;
     }
-    NSRect frame = [(NSView *)view frame];
-    frame.size = NSMakeSize((CGFloat)width, (CGFloat)height);
-    [(NSView *)view setFrame:frame];
+    NSView *v = (NSView *)view;
+    NSSize page = NSMakeSize((CGFloat)width, (CGFloat)height);
+    objc_setAssociatedObject(v, &kAOPageSizeKey, [NSValue valueWithSize:page],
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    NSRect frame = [v frame];
+    if (ao_wkv_host_presented(view)) {
+      // Presented: the frame is the fitted rect the Manager placed and stays
+      // put until the next placement carries the new scale; only the layout
+      // size changes here.
+      ao_place(v, frame);
+      return;
+    }
+    frame.size = page;
+    ao_place(v, frame);
   }
 }
 
@@ -1117,12 +1160,12 @@ void ao_wkv_view_get_size(void *view, int *width, int *height) {
     if (view == NULL) {
       return;
     }
-    NSRect frame = [(NSView *)view frame];
+    NSSize page = ao_page_size((NSView *)view);
     if (width != NULL) {
-      *width = (int)frame.size.width;
+      *width = (int)page.width;
     }
     if (height != NULL) {
-      *height = (int)frame.size.height;
+      *height = (int)page.height;
     }
   }
 }

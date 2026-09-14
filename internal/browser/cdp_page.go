@@ -36,6 +36,17 @@ type cdpPage struct {
 	networkMu   sync.Mutex
 	requests    map[network.RequestID]struct{}
 	lastNetwork time.Time
+
+	// The device-metrics override is one value with two owners: the
+	// Manager sets the viewport (SetViewport, under the page lock) and the
+	// pane host sets the presentation scale (SetViewScale, from the
+	// presentation sync). Both go through applyMetrics under metricsMu so
+	// neither can send the other's stale half.
+	metricsMu   sync.Mutex
+	viewportW   int
+	viewportH   int
+	viewScale   float64
+	metricsSent bool
 }
 
 func startCDPPage(controller, pageCtx context.Context, pageCancel context.CancelFunc, hooks pageHooks) (pageDriver, error) {
@@ -367,10 +378,36 @@ func (p *cdpPage) Snapshot(ctx context.Context) (Snapshot, error) {
 
 func (p *cdpPage) Screenshot(ctx context.Context, opts ScreenshotOptions) ([]byte, error) {
 	params := page.CaptureScreenshot().WithFormat(page.CaptureScreenshotFormatJpeg).WithQuality(85).WithFromSurface(true)
+	ratio, err := p.devicePixelRatio(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("browser: screenshot metrics: %w", err)
+	}
+	// Every capture is a clip in document coordinates at 1/ratio, so the
+	// image is one pixel per CSS pixel whatever the display's scale.
+	//
+	// Only a capture that reaches past the viewport asks Chromium to
+	// captureBeyondViewport. That flag lays the page out at the document's
+	// size for the capture, which moves sticky and fixed elements and, on a
+	// page that relayouts under it, leaves the scroll offset somewhere else
+	// afterwards (measured live: a capture moved a page from 2000 to 2390).
+	// The plain viewport capture is the clip at the current scroll offset
+	// under the page's own layout, and the other two put the scroll back.
+	imageScale := 1 / ratio
+	var view struct{ X, Y, Width, Height float64 }
+	if err := chromedp.Run(ctx, chromedp.Evaluate(`({x: window.scrollX, y: window.scrollY, width: window.innerWidth, height: window.innerHeight})`, &view)); err != nil {
+		return nil, fmt.Errorf("browser: screenshot metrics: %w", err)
+	}
+	restoreScroll := false
 	if opts.Clip != nil {
 		clip := opts.Clip
-		params = params.WithCaptureBeyondViewport(true).WithClip(&page.Viewport{X: clip.X, Y: clip.Y, Width: clip.Width, Height: clip.Height, Scale: 1})
-	} else if opts.FullPage {
+		restoreScroll = true
+		params = params.WithCaptureBeyondViewport(true).WithClip(&page.Viewport{X: clip.X, Y: clip.Y, Width: clip.Width, Height: clip.Height, Scale: imageScale})
+	} else if !opts.FullPage {
+		if view.Width > 0 && view.Height > 0 {
+			params = params.WithClip(&page.Viewport{X: view.X, Y: view.Y, Width: view.Width, Height: view.Height, Scale: imageScale})
+		}
+	} else {
+		restoreScroll = true
 		_, _, contentSize, _, _, cssContentSize, metricsErr := page.GetLayoutMetrics().Do(targetCommandContext(ctx))
 		if metricsErr != nil {
 			return nil, fmt.Errorf("browser: screenshot metrics: %w", metricsErr)
@@ -388,12 +425,19 @@ func (p *cdpPage) Screenshot(ctx context.Context, opts ScreenshotOptions) ([]byt
 			if width > maxFullScreenshotWidth {
 				width = maxFullScreenshotWidth
 			}
-			params = params.WithCaptureBeyondViewport(true).WithClip(&page.Viewport{X: 0, Y: 0, Width: width, Height: height, Scale: 1})
+			params = params.WithCaptureBeyondViewport(true).WithClip(&page.Viewport{X: 0, Y: 0, Width: width, Height: height, Scale: imageScale})
 		}
 	}
 	data, err := params.Do(targetCommandContext(ctx))
 	if err != nil {
 		return nil, fmt.Errorf("browser: screenshot: %w", err)
+	}
+	if restoreScroll {
+		restore := fmt.Sprintf(`(() => { if (window.scrollX !== %f || window.scrollY !== %f) window.scrollTo({left: %f, top: %f, behavior: "instant"}); return true; })()`, view.X, view.Y, view.X, view.Y)
+		var ok bool
+		if err := chromedp.Run(ctx, chromedp.Evaluate(restore, &ok)); err != nil {
+			return nil, fmt.Errorf("browser: screenshot: restore scroll: %w", err)
+		}
 	}
 	return data, nil
 }
@@ -427,10 +471,59 @@ func (p *cdpPage) EvaluateReadOnly(ctx context.Context, expression string) (json
 // engine, so the tool result needs no qualifier.
 func (p *cdpPage) ReadOnlyCaveat() string { return "" }
 
+// SetViewport pins the page's layout viewport. The override's device scale
+// factor is 0 (the display's own), so a presented page rasters at native
+// DPI; screenshots normalize to one image pixel per CSS pixel themselves.
+// The controller's window size is irrelevant to layout and capture under
+// the override (spike 2026-09-14), which is what lets a hidden page keep a
+// real viewport inside a 1x1 clip.
 func (p *cdpPage) SetViewport(ctx context.Context, width, height int) error {
-	return emulation.SetDeviceMetricsOverride(int64(width), int64(height), 1, false).Do(targetCommandContext(ctx))
+	p.metricsMu.Lock()
+	defer p.metricsMu.Unlock()
+	p.viewportW, p.viewportH = width, height
+	return p.applyMetricsLocked(ctx)
 }
 
-func (p *cdpPage) ClearViewport(ctx context.Context) error {
-	return emulation.ClearDeviceMetricsOverride().Do(targetCommandContext(ctx))
+// SetViewScale sets the factor the presented view is drawn at: the pane
+// shows the page scaled to fit rather than resizing it. 1 while hidden.
+func (p *cdpPage) SetViewScale(ctx context.Context, scale float64) error {
+	p.metricsMu.Lock()
+	defer p.metricsMu.Unlock()
+	if scale <= 0 {
+		scale = 1
+	}
+	if p.metricsSent && p.viewScale == scale {
+		return nil
+	}
+	p.viewScale = scale
+	if p.viewportW <= 0 || p.viewportH <= 0 {
+		// No viewport yet: the Manager's SetViewport follows page creation
+		// and carries the scale with it.
+		return nil
+	}
+	return p.applyMetricsLocked(ctx)
+}
+
+func (p *cdpPage) applyMetricsLocked(ctx context.Context) error {
+	scale := p.viewScale
+	if scale <= 0 {
+		scale = 1
+	}
+	err := emulation.SetDeviceMetricsOverride(int64(p.viewportW), int64(p.viewportH), 0, false).WithScale(scale).Do(targetCommandContext(ctx))
+	p.metricsSent = err == nil
+	return err
+}
+
+// devicePixelRatio is the ratio the page rasters at under the native
+// device scale factor, which every capture divides out so an image pixel
+// is a CSS pixel on any display.
+func (p *cdpPage) devicePixelRatio(ctx context.Context) (float64, error) {
+	var ratio float64
+	if err := chromedp.Run(ctx, chromedp.Evaluate(`window.devicePixelRatio`, &ratio)); err != nil {
+		return 0, err
+	}
+	if ratio <= 0 {
+		ratio = 1
+	}
+	return ratio, nil
 }

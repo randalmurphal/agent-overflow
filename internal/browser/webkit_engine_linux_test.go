@@ -98,22 +98,29 @@ func TestPaneBackgroundIsPushedOnlyWhenItChanges(t *testing.T) {
 	}
 }
 
-// The dedupe compares the whole rect, so a clip that moves while the rect holds
-// still still re-presents. Losing that would freeze the crop against a scroll.
+// The dedupe compares the whole placement, so a clip that moves while the rect
+// holds still, or a scale that changes, still re-presents. Losing that would
+// freeze the crop against a scroll.
 func TestPaneDedupeSeesAClipThatMovedUnderAStillRect(t *testing.T) {
 	rect := PaneRect{X: 10, Y: 20, Width: 300, Height: 400, ClipX: 10, ClipY: 20, ClipWidth: 300, ClipHeight: 400}
-	st := webkitPaneState{rect: rect, applied: rect, appliedShown: true, shown: true}
+	placement := PanePlacement{Rect: rect, PageWidth: 1280, PageHeight: 720, Scale: 0.5}
+	st := webkitPaneState{placement: placement, applied: placement, appliedShown: true, shown: true}
 	if !webkitPaneApplied(st) {
-		t.Fatal("an unchanged rect must stay deduped")
+		t.Fatal("an unchanged placement must stay deduped")
 	}
-	st.rect.ClipY, st.rect.ClipHeight = 60, 360
+	st.placement.Rect.ClipY, st.placement.Rect.ClipHeight = 60, 360
 	if webkitPaneApplied(st) {
 		t.Fatal("a moved clip must not be treated as already applied")
 	}
-	st.rect = rect
-	st.rect.Background = "#101010"
+	st.placement = placement
+	st.placement.Rect.Background = "#101010"
 	if webkitPaneApplied(st) {
 		t.Fatal("a changed background must not be treated as already applied")
+	}
+	st.placement = placement
+	st.placement.Scale = 0.25
+	if webkitPaneApplied(st) {
+		t.Fatal("a changed scale must not be treated as already applied")
 	}
 }
 

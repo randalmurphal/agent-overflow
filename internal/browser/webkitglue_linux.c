@@ -47,48 +47,162 @@ static uint64_t ao_view_page_id(gpointer view) {
 //   GtkWindow
 //   └── GtkOverlay
 //       ├── main child : the Wails SPA WebKitWebView (unchanged, still live)
-//       ├── overlay 1  : 1x1 clipping GtkScrolledWindow -> GtkFixed  (parked)
-//       └── overlay 2..N : the presented pages, each one of
-//                        · UNCLIPPED (clip == rect): the view itself, exactly as
-//                          before clipping existed — ALIGN_FILL + four margins.
-//                        · CLIPPED: THAT VIEW'S OWN clip box (ALIGN_FILL + four
-//                          margins at the CLIP rect, overflow HIDDEN) with the
-//                          view inside it, allocated the FULL rect at a
-//                          negative offset.
+//       ├── overlay 1  : 1x1 clipping GtkScrolledWindow -> GtkFixed (the park)
+//       │                └── one AoViewHost per hidden page
+//       └── overlay 2..N : one AoViewHost per PRESENTED page, ALIGN_FILL +
+//                          four margins at the pane's visible clip rect,
+//                          overflow hidden.
 //
-// Order matters: the background host is added BEFORE anything else so the SPA
-// paints over its 1px footprint, and a presented page is added last so it sits
-// on top.
+// AoViewHost is the one widget a page view ever lives in. It allocates the
+// view at EXACTLY the page's viewport — gtk_widget_allocate takes the size it
+// is given, where a size request could never SHRINK a WebKitWebView (its
+// natural size sticks at the largest-ever allocation) — under a translate +
+// scale transform. That transform is the whole pane presentation: the page
+// keeps its viewport and is drawn scaled to fit, centered by the offset, and
+// GTK maps pointer input back through the same transform. Parked, the host
+// draws at scale 1 into the 1x1 clip, so a hidden page stays mapped with a
+// real viewport and fresh snapshots.
 //
-// MORE THAN ONE view can be presented at once — one per thread with a visible
-// pane — so nothing here is "the presented view". A clip box belongs to its
-// view (AO_CLIP_KEY) and never to the process; a single shared box, or a single
-// "presented" pointer whose eviction hides the other pane, corrupts the first
-// pane the moment a second one shows.
+// Order matters: the park is added BEFORE anything else so the SPA paints
+// over its 1px footprint, and a presented host is added last so it sits on
+// top.
+//
+// MORE THAN ONE page can be presented at once — one per thread with a
+// visible pane — so nothing here is "the presented view". A host belongs to
+// its view (AO_HOST_KEY) and never to the process.
 //
 // Every view is g_object_ref_sink'd by the engine (ao_wk_view_new, and the
-// popup handler below), so moving one between the park, the overlay and its
-// clip box drops a PARENT's reference and can never destroy it. A view owns its
-// box the same way: one sunk reference held as object data, dropped on close
-// (or by the destroy notify if the view is finalized another way), and the box
-// always leaves the overlay before that reference goes.
+// popup handler below), so parenting it into its host and back out drops a
+// PARENT's reference and can never destroy it. A view owns its host the same
+// way: one sunk reference held as object data, dropped on close (or by the
+// destroy notify if the view is finalized another way), and the host always
+// leaves the tree before that reference goes.
 // ---------------------------------------------------------------------------
 
-// AO_CLIP_KEY holds a view's clip box; AO_CLIP_RECT_KEY the allocation that box
-// gives it. Both live on the VIEW, which is what makes them per-page.
-#define AO_CLIP_KEY "ao-clip-box"
-#define AO_CLIP_RECT_KEY "ao-clip-rect"
+#define AO_HOST_KEY "ao-view-host"
+
+// The page size a host allocates before the Manager applies a viewport. It
+// is applied on page creation, so this only covers the moments in between.
+#define AO_HOST_DEFAULT_W 1280
+#define AO_HOST_DEFAULT_H 720
+
+typedef struct {
+  GtkWidget parent;
+  GtkWidget *view;
+  int page_w;
+  int page_h;
+  double scale;
+  double off_x;
+  double off_y;
+} AoViewHost;
+
+typedef struct {
+  GtkWidgetClass parent;
+} AoViewHostClass;
+
+G_DEFINE_TYPE(AoViewHost, ao_view_host, GTK_TYPE_WIDGET)
+
+static void ao_view_host_measure(GtkWidget *w, GtkOrientation orientation, int for_size,
+                                 int *minimum, int *natural, int *minimum_baseline,
+                                 int *natural_baseline) {
+  (void)w;
+  (void)orientation;
+  (void)for_size;
+  // A host asks for nothing: in the park that keeps the window's own size
+  // request untouched, and in the overlay ALIGN_FILL hands it the margin box.
+  *minimum = 0;
+  *natural = 0;
+  *minimum_baseline = -1;
+  *natural_baseline = -1;
+}
+
+static void ao_view_host_size_allocate(GtkWidget *w, int width, int height, int baseline) {
+  (void)width;
+  (void)height;
+  (void)baseline;
+  AoViewHost *host = (AoViewHost *)w;
+  if (host->view == NULL) {
+    return;
+  }
+  GskTransform *t = gsk_transform_translate(NULL, &GRAPHENE_POINT_INIT((float)host->off_x, (float)host->off_y));
+  t = gsk_transform_scale(t, (float)host->scale, (float)host->scale);
+  gtk_widget_allocate(host->view, host->page_w, host->page_h, -1, t);
+}
+
+static void ao_view_host_dispose(GObject *object) {
+  AoViewHost *host = (AoViewHost *)object;
+  if (host->view != NULL) {
+    gtk_widget_unparent(host->view);
+    host->view = NULL;
+  }
+  G_OBJECT_CLASS(ao_view_host_parent_class)->dispose(object);
+}
+
+static void ao_view_host_class_init(AoViewHostClass *klass) {
+  GTK_WIDGET_CLASS(klass)->measure = ao_view_host_measure;
+  GTK_WIDGET_CLASS(klass)->size_allocate = ao_view_host_size_allocate;
+  G_OBJECT_CLASS(klass)->dispose = ao_view_host_dispose;
+}
+
+static void ao_view_host_init(AoViewHost *host) {
+  host->page_w = AO_HOST_DEFAULT_W;
+  host->page_h = AO_HOST_DEFAULT_H;
+  host->scale = 1.0;
+  gtk_widget_set_overflow(GTK_WIDGET(host), GTK_OVERFLOW_HIDDEN);
+}
 
 static GtkWidget *ao_overlay = NULL;
 static GtkWidget *ao_park = NULL; // the GtkFixed inside the clipping scroller
 
-static void ao_clip_unuse(GtkWidget *box);
+// ao_view_host answers a view's host, or NULL — a plain cast, never
+// GTK_WIDGET(): glib warns on a NULL instance cast.
+static AoViewHost *ao_view_host_of(GtkWidget *view) {
+  return (AoViewHost *)g_object_get_data(G_OBJECT(view), AO_HOST_KEY);
+}
 
-// ao_view_clip answers the clip box a view already has, or NULL — a view never
-// presented while occluded has none. A plain cast, never GTK_WIDGET(): glib
-// warns on a NULL instance cast, and NULL is the common answer here.
-static GtkWidget *ao_view_clip(GtkWidget *w) {
-  return (GtkWidget *)g_object_get_data(G_OBJECT(w), AO_CLIP_KEY);
+// ao_host_for answers a view's host, creating it on the view's first park.
+// The VIEW owns the host: one sunk reference held as object data, released by
+// ao_host_forget on close or by the destroy notify if the view is finalized
+// another way. The view is parented into the host here and stays there for
+// the host's whole life.
+static AoViewHost *ao_host_for(GtkWidget *view) {
+  AoViewHost *host = ao_view_host_of(view);
+  if (host != NULL) {
+    return host;
+  }
+  host = g_object_new(ao_view_host_get_type(), NULL);
+  g_object_set_data_full(G_OBJECT(view), AO_HOST_KEY, g_object_ref_sink(host), g_object_unref);
+  host->view = view;
+  gtk_widget_set_parent(view, GTK_WIDGET(host));
+  return host;
+}
+
+// ao_host_detach takes a host out of whichever AO container holds it.
+static void ao_host_detach(AoViewHost *host) {
+  GtkWidget *w = GTK_WIDGET(host);
+  GtkWidget *parent = gtk_widget_get_parent(w);
+  if (parent == NULL) {
+    return;
+  }
+  if (parent == ao_park && ao_park != NULL) {
+    gtk_fixed_remove(GTK_FIXED(ao_park), w);
+  } else if (parent == ao_overlay && ao_overlay != NULL) {
+    gtk_overlay_remove_overlay(GTK_OVERLAY(ao_overlay), w);
+  }
+}
+
+// ao_host_forget drops a view's host on the way to closing the view. The host
+// leaves the tree FIRST: dropping the view's reference while a container still
+// held one would leave an orphan host over the pane rect.
+static void ao_host_forget(GtkWidget *view) {
+  AoViewHost *host = ao_view_host_of(view);
+  if (host == NULL) {
+    return;
+  }
+  ao_host_detach(host);
+  // Setting the data to NULL runs the destroy notify, which drops the view's
+  // reference; the host's dispose unparents the view.
+  g_object_set_data(G_OBJECT(view), AO_HOST_KEY, NULL);
 }
 
 static GThread *ao_main_thread = NULL;
@@ -137,42 +251,43 @@ int ao_wk_host_attach(void *gtk_window) {
   return 1;
 }
 
-void ao_wk_host_park(void *view, int slot, int width, int height) {
+void ao_wk_host_park(void *view, int slot) {
   if (ao_park == NULL) {
     return;
   }
-  GtkWidget *w = GTK_WIDGET(view);
-  gtk_widget_set_size_request(w, width, height);
+  AoViewHost *host = ao_host_for(GTK_WIDGET(view));
+  GtkWidget *w = GTK_WIDGET(host);
+  // Parked is drawn whole at scale 1 into the clip; the presentation offset
+  // and scale are the overlay's alone.
+  host->scale = 1.0;
+  host->off_x = 0;
+  host->off_y = 0;
   if (gtk_widget_get_parent(w) == ao_park) {
+    gtk_widget_queue_allocate(w);
     return;
   }
-  ao_wk_host_unpark(view);
-  gtk_fixed_put(GTK_FIXED(ao_park), w, 0, slot * (height + 10));
+  ao_host_detach(host);
+  gtk_widget_set_halign(w, GTK_ALIGN_START);
+  gtk_widget_set_valign(w, GTK_ALIGN_START);
+  gtk_widget_set_margin_start(w, 0);
+  gtk_widget_set_margin_top(w, 0);
+  gtk_widget_set_margin_end(w, 0);
+  gtk_widget_set_margin_bottom(w, 0);
+  // Slots keep parked hosts off one another; the clip hides all of them.
+  gtk_fixed_put(GTK_FIXED(ao_park), w, 0, slot * 10);
 }
 
 void ao_wk_host_unpark(void *view) {
-  GtkWidget *w = GTK_WIDGET(view);
-  GtkWidget *parent = gtk_widget_get_parent(w);
-  if (parent == NULL) {
-    return;
-  }
-  if (parent == ao_park && ao_park != NULL) {
-    gtk_fixed_remove(GTK_FIXED(ao_park), w);
-  } else if (parent == ao_view_clip(w)) {
-    gtk_overlay_remove_overlay(GTK_OVERLAY(parent), w);
-    ao_clip_unuse(parent);
-  } else if (parent == ao_overlay && ao_overlay != NULL) {
-    gtk_overlay_remove_overlay(GTK_OVERLAY(ao_overlay), w);
+  AoViewHost *host = ao_view_host_of(GTK_WIDGET(view));
+  if (host != NULL) {
+    ao_host_detach(host);
   }
 }
 
-// ao_fill_at is the ONE positioning primitive for a widget inside a GtkOverlay:
-// ALIGN_FILL plus four margins, never a size request. gtk_widget_set_size_request
-// cannot SHRINK a WebKitWebView — its natural size sticks at its largest-ever
-// allocation — while a filled overlay child is handed exactly the box the
+// ao_fill_at is the ONE positioning primitive for a host inside the overlay:
+// ALIGN_FILL plus four margins, so the host is handed exactly the box the
 // margins leave, growing and shrinking alike.
 static void ao_fill_at(GtkWidget *w, int x, int y, int right, int bottom) {
-  gtk_widget_set_size_request(w, -1, -1);
   gtk_widget_set_halign(w, GTK_ALIGN_FILL);
   gtk_widget_set_valign(w, GTK_ALIGN_FILL);
   gtk_widget_set_margin_start(w, x < 0 ? 0 : x);
@@ -181,133 +296,18 @@ static void ao_fill_at(GtkWidget *w, int x, int y, int right, int bottom) {
   gtk_widget_set_margin_bottom(w, bottom < 0 ? 0 : bottom);
 }
 
-// ao_clip_position allocates a clip box's one child — the view that owns the
-// box — at the FULL pane rect in the box's own coordinates, which is negative
-// wherever the pane is occluded. Answering get-child-position is what keeps the
-// view's size EXACT in both directions: margins cannot be negative, and a size
-// request cannot shrink a WebKitWebView, so neither could place a view that has
-// to extend past the box cropping it. The rect is read off the CHILD, so two
-// panes clipped at once cannot read each other's.
-static gboolean ao_clip_position(GtkOverlay *overlay, GtkWidget *widget,
-                                 GdkRectangle *allocation, gpointer data) {
-  (void)overlay;
-  (void)data;
-  const GdkRectangle *rect = g_object_get_data(G_OBJECT(widget), AO_CLIP_RECT_KEY);
-  if (rect == NULL) {
-    return FALSE;
-  }
-  *allocation = *rect;
-  return TRUE;
-}
-
-// ao_clip_box_for answers a VIEW's own clip box, creating it on that view's
-// first clipped present. The box has NO main child: an overlay only requests
-// the size of children whose measure-overlay is set, so it measures nothing,
-// can be allocated any clip rect, and never contributes to the window's own
-// size request.
-static GtkWidget *ao_clip_box_for(GtkWidget *w) {
-  GtkWidget *box = ao_view_clip(w);
-  if (box != NULL) {
-    return box;
-  }
-  box = gtk_overlay_new();
-  gtk_widget_set_overflow(box, GTK_OVERFLOW_HIDDEN);
-  g_signal_connect(box, "get-child-position", G_CALLBACK(ao_clip_position), NULL);
-  g_object_set_data_full(G_OBJECT(w), AO_CLIP_RECT_KEY, g_new0(GdkRectangle, 1), g_free);
-  // The VIEW owns the box: one sunk reference held as object data, released by
-  // ao_clip_forget on close or by this destroy notify if the view is finalized
-  // another way. Either way the box has already left the overlay, so no
-  // reference of ours can be the one that outlives the window.
-  g_object_set_data_full(G_OBJECT(w), AO_CLIP_KEY, g_object_ref_sink(box), g_object_unref);
-  return box;
-}
-
-// ao_clip_unuse takes an emptied clip box back out of the overlay. Left in
-// place it would be an invisible widget sitting over the pane rect, and adding
-// it back on the next clipped present costs nothing.
-static void ao_clip_unuse(GtkWidget *box) {
-  if (box == NULL || ao_overlay == NULL) {
-    return;
-  }
-  if (gtk_widget_get_first_child(box) != NULL) {
-    return;
-  }
-  if (gtk_widget_get_parent(box) == ao_overlay) {
-    gtk_overlay_remove_overlay(GTK_OVERLAY(ao_overlay), box);
-  }
-}
-
-// ao_clip_forget drops a view's clip box on the way to closing the view. The
-// box leaves the overlay FIRST: dropping the view's reference while the overlay
-// still held one would leave an orphan box over the pane rect, cropping a view
-// that no longer exists.
-static void ao_clip_forget(GtkWidget *w) {
-  GtkWidget *box = ao_view_clip(w);
-  if (box == NULL) {
-    return;
-  }
-  if (gtk_widget_get_parent(w) == box) {
-    gtk_overlay_remove_overlay(GTK_OVERLAY(box), w);
-  }
-  ao_clip_unuse(box);
-  // Setting the data to NULL runs the destroy notify above, which drops the
-  // view's reference and finalizes the box.
-  g_object_set_data(G_OBJECT(w), AO_CLIP_KEY, NULL);
-  g_object_set_data(G_OBJECT(w), AO_CLIP_RECT_KEY, NULL);
-}
-
-// ao_present_whole is the unclipped presentation, unchanged: the view is the
-// overlay child, positioned by its own four margins.
-static void ao_present_whole(GtkWidget *w, int x, int y, int width, int height,
-                             int overlay_w, int overlay_h) {
-  if (gtk_widget_get_parent(w) != ao_overlay) {
-    ao_wk_host_unpark(w);
-    gtk_overlay_add_overlay(GTK_OVERLAY(ao_overlay), w);
-  }
-  ao_fill_at(w, x, y, overlay_w - (x + width), overlay_h - (y + height));
-}
-
-// ao_present_clipped presents a PARTIALLY occluded pane. The view keeps the
-// full rect's size — a page must not relayout because it scrolled half behind
-// the sidebar — and only the clip intersection is painted.
-static void ao_present_clipped(GtkWidget *w, int x, int y, int width, int height,
-                               int cx, int cy, int cw, int ch, int overlay_w,
-                               int overlay_h) {
-  GtkWidget *box = ao_clip_box_for(w);
-  GdkRectangle *child = g_object_get_data(G_OBJECT(w), AO_CLIP_RECT_KEY);
-  child->x = x - cx;
-  child->y = y - cy;
-  child->width = width;
-  child->height = height;
-  if (gtk_widget_get_parent(w) != box) {
-    ao_wk_host_unpark(w);
-    // Inside the box the allocation is answered whole by ao_clip_position, so
-    // the unclipped path's margins have to go: GTK subtracts a child's margins
-    // from whatever box it is allocated, stale ones included.
-    ao_fill_at(w, 0, 0, 0, 0);
-    gtk_overlay_add_overlay(GTK_OVERLAY(box), w);
-  }
-  if (gtk_widget_get_parent(box) != ao_overlay) {
-    gtk_overlay_add_overlay(GTK_OVERLAY(ao_overlay), box);
-  }
-  ao_fill_at(box, cx, cy, overlay_w - (cx + cw), overlay_h - (cy + ch));
-  // A pane scrolling under a fixed header changes the child's OFFSET while the
-  // clip rect keeps its size, and nothing about the box itself changed then, so
-  // the re-allocation has to be asked for.
-  gtk_widget_queue_allocate(box);
-}
-
 void ao_wk_host_present(void *view, double x, double y, double width,
                         double height, double clip_x, double clip_y,
                         double clip_width, double clip_height, double vw,
-                        double vh) {
+                        double vh, double scale) {
   if (ao_overlay == NULL) {
     return;
   }
   // No view is hidden on the way in. Two threads can each present a pane at
   // once, and the Manager already hides every page it does not want shown
   // (syncPanePresentation); evicting "the other one" here blanked a live pane.
-  GtkWidget *w = GTK_WIDGET(view);
+  AoViewHost *host = ao_host_for(GTK_WIDGET(view));
+  GtkWidget *w = GTK_WIDGET(host);
   int overlay_w = gtk_widget_get_width(ao_overlay);
   int overlay_h = gtk_widget_get_height(ao_overlay);
   // CSS pixels -> overlay logical pixels by proportion (see header).
@@ -340,53 +340,39 @@ void ao_wk_host_present(void *view, double x, double y, double width,
     cw = iw;
     ch = ih;
   }
-  if (cx == ix && cy == iy && cw == iw && ch == ih) {
-    ao_present_whole(w, ix, iy, iw, ih, overlay_w, overlay_h);
-  } else {
-    ao_present_clipped(w, ix, iy, iw, ih, cx, cy, cw, ch, overlay_w, overlay_h);
+  if (gtk_widget_get_parent(w) != ao_overlay) {
+    ao_host_detach(host);
+    gtk_overlay_add_overlay(GTK_OVERLAY(ao_overlay), w);
   }
-  gtk_widget_set_visible(w, TRUE);
+  // The host is the clip box; the view is drawn inside it at the fitted
+  // rect's offset from the clip, scaled by the pane's scale times the
+  // CSS-to-overlay proportion (the page's CSS pixels are overlay pixels).
+  ao_fill_at(w, cx, cy, overlay_w - (cx + cw), overlay_h - (cy + ch));
+  host->off_x = ix - cx;
+  host->off_y = iy - cy;
+  host->scale = (scale > 0.0 ? scale : 1.0) * sx;
+  // A pane scrolling under a fixed header changes the offset while the clip
+  // keeps its size, and nothing about the host's own box changed then, so
+  // the re-allocation has to be asked for.
+  gtk_widget_queue_allocate(w);
 }
 
-// ao_wk_host_hide returns a presented view to the background host. Nothing is
-// torn down: page state lives on.
 void ao_wk_host_hide(void *view) {
-  GtkWidget *w = GTK_WIDGET(view);
-  // A clipped view leaves its own clip box first, because the caller parks it
-  // next and the box must not keep a view it no longer presents.
-  GtkWidget *box = ao_view_clip(w);
-  if (box != NULL && ao_overlay != NULL && gtk_widget_get_parent(w) == box) {
-    gtk_overlay_remove_overlay(GTK_OVERLAY(box), w);
-    gtk_overlay_add_overlay(GTK_OVERLAY(ao_overlay), w);
-    ao_clip_unuse(box);
-  }
-  gtk_widget_set_margin_start(w, 0);
-  gtk_widget_set_margin_top(w, 0);
-  gtk_widget_set_margin_end(w, 0);
-  gtk_widget_set_margin_bottom(w, 0);
-  gtk_widget_set_halign(w, GTK_ALIGN_START);
-  gtk_widget_set_valign(w, GTK_ALIGN_START);
+  // Presentation ends when the caller parks the host; nothing to undo here
+  // beyond the offset and scale, which park resets.
+  (void)view;
 }
 
 // ao_wk_host_presented is read off the WIDGET TREE, never a pointer: a view is
-// presented when it is an overlay child, or is inside its own clip box while
-// that box is in the overlay. More than one view answers yes at a time, which
-// is exactly why no single "the presented view" pointer can live here. (A view
-// between hide and park is briefly still an overlay child; both run in one
-// main-thread turn, so no callback observes that window.)
+// presented when its host is an overlay child. More than one view answers yes
+// at a time, which is exactly why no single "the presented view" pointer can
+// live here.
 int ao_wk_host_presented(void *view) {
-  GtkWidget *w = GTK_WIDGET(view);
-  GtkWidget *parent = gtk_widget_get_parent(w);
-  if (parent == NULL || ao_overlay == NULL) {
+  AoViewHost *host = ao_view_host_of(GTK_WIDGET(view));
+  if (host == NULL || ao_overlay == NULL) {
     return 0;
   }
-  if (parent == ao_overlay) {
-    return 1;
-  }
-  if (parent == ao_view_clip(w)) {
-    return gtk_widget_get_parent(parent) == ao_overlay ? 1 : 0;
-  }
-  return 0;
+  return gtk_widget_get_parent(GTK_WIDGET(host)) == ao_overlay ? 1 : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -787,10 +773,9 @@ void ao_wk_view_close(void *view) {
     return;
   }
   GtkWidget *w = GTK_WIDGET(view);
-  // Unpark first — it takes the view out of whichever host holds it — then drop
-  // the clip box, which by then is empty and out of the overlay.
-  ao_wk_host_unpark(view);
-  ao_clip_forget(w);
+  // The host leaves the tree and is dropped first; its dispose unparents the
+  // view, which the engine's own reference keeps alive for the close.
+  ao_host_forget(w);
   webkit_web_view_try_close(WEBKIT_WEB_VIEW(view));
   g_object_unref(G_OBJECT(view));
 }
@@ -804,8 +789,16 @@ void ao_wk_view_set_background(void *view, double red, double green, double blue
   webkit_web_view_set_background_color(WEBKIT_WEB_VIEW(view), &color);
 }
 
+// ao_wk_view_set_size is the page's viewport: the exact allocation its host
+// gives it, parked or presented. Never a size request, which cannot shrink a
+// WebKitWebView.
 void ao_wk_view_set_size(void *view, int width, int height) {
-  gtk_widget_set_size_request(GTK_WIDGET(view), width, height);
+  AoViewHost *host = ao_host_for(GTK_WIDGET(view));
+  if (width > 0 && height > 0) {
+    host->page_w = width;
+    host->page_h = height;
+  }
+  gtk_widget_queue_allocate(GTK_WIDGET(host));
 }
 
 void ao_wk_view_open_inspector(void *view) {

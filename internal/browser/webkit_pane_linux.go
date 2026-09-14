@@ -9,24 +9,27 @@ import (
 
 // The engine half of the Manager's pane presentation (`paneHost`). Where the
 // hosted engine answers these calls with directives to the launcher, this
-// engine moves its own GTK widgets: present is the GtkOverlay margin surgery
-// (plus a clipping box when the rect is only partly visible), hide is a re-park
-// into the 1x1 clipping slot, and devtools is the WebKit inspector (docked
-// in-app; developer extras are enabled at view creation). The pane's own
-// background color rides the same rect and is pushed to the view, not the host.
+// engine moves its own GTK widgets: present puts the page's host over the
+// pane's clip rect and draws the page scaled to the placement, hide is a
+// re-park into the 1x1 clipping slot, and devtools is the WebKit inspector
+// (docked in-app; developer extras are enabled at view creation). The page's
+// viewport is never touched here; SetViewport owns it, parked or presented.
+// The pane's own background color rides the same rect and is pushed to the
+// view, not the host.
 //
 // The Manager always sends bounds before a show, so ShowPage presents at the
-// recorded rect and SetPageBounds on an already-presented page repositions it.
+// recorded placement and SetPageBounds on an already-presented page
+// repositions it.
 // Both are deduped under e.mu — bookkeeping only, the GTK call happens after
 // the lock is released (the one locking rule this engine has).
 
 // webkitPaneState is the desired presentation of one page, plus what was last
 // pushed to GTK so an unchanged sync costs no main-thread dispatch.
 type webkitPaneState struct {
-	rect         PaneRect
+	placement    PanePlacement
 	hasRect      bool
 	shown        bool
-	applied      PaneRect
+	applied      PanePlacement
 	appliedShown bool
 	// The background is its own dedupe: it is pushed to the view rather than to
 	// the host, it survives hide/park, and it must be right BEFORE the first
@@ -35,11 +38,12 @@ type webkitPaneState struct {
 	hasBackground bool
 }
 
-// webkitPaneApplied compares the WHOLE rect, so the clip and the background
-// ride along: any change to either re-presents, which is exactly what a moved
-// clip needs, and a background-only change costs one extra margin write.
+// webkitPaneApplied compares the WHOLE placement, so the clip, the scale and
+// the background ride along: any change to any of them re-presents, which is
+// exactly what a moved clip needs, and a background-only change costs one
+// extra margin write.
 func webkitPaneApplied(st webkitPaneState) bool {
-	return st.appliedShown && st.applied == st.rect
+	return st.appliedShown && st.applied == st.placement
 }
 
 // webkitRGB is one parsed pane background in GdkRGBA's 0..1 space.
@@ -87,21 +91,21 @@ func webkitPaneTarget(handle string) *webkitPage {
 	return webkitLookupPage(id)
 }
 
-func (e *webkitEngine) SetPageBounds(handle string, rect PaneRect) {
+func (e *webkitEngine) SetPageBounds(handle string, placement PanePlacement) {
 	p := webkitPaneTarget(handle)
 	if p == nil {
 		return
 	}
 	e.mu.Lock()
 	st := e.pane[p.id]
-	st.rect = rect
+	st.placement = placement
 	st.hasRect = true
 	present := st.shown && !webkitPaneApplied(st)
 	if present {
 		st.appliedShown = true
-		st.applied = st.rect
+		st.applied = st.placement
 	}
-	color, paint := st.takeBackground(rect)
+	color, paint := st.takeBackground(placement.Rect)
 	e.pane[p.id] = st
 	e.mu.Unlock()
 	// Background first: a present that exposes new pixels must find the pane's
@@ -110,7 +114,7 @@ func (e *webkitEngine) SetPageBounds(handle string, rect PaneRect) {
 		webkitSetViewBackground(p.view, color)
 	}
 	if present {
-		_ = webkitPresentView(p.view, rect)
+		_ = webkitPresentView(p.view, placement)
 	}
 }
 
@@ -127,17 +131,17 @@ func (e *webkitEngine) ShowPage(handle string) {
 	present := st.hasRect && !webkitPaneApplied(st)
 	if present {
 		st.appliedShown = true
-		st.applied = st.rect
+		st.applied = st.placement
 	}
-	rect := st.rect
-	color, paint := st.takeBackground(rect)
+	placement := st.placement
+	color, paint := st.takeBackground(placement.Rect)
 	e.pane[p.id] = st
 	e.mu.Unlock()
 	if paint {
 		webkitSetViewBackground(p.view, color)
 	}
 	if present {
-		_ = webkitPresentView(p.view, rect)
+		_ = webkitPresentView(p.view, placement)
 	}
 }
 
@@ -154,7 +158,7 @@ func (e *webkitEngine) HidePage(handle string) {
 	e.pane[p.id] = st
 	e.mu.Unlock()
 	if unpresent {
-		_ = webkitHideView(p.view, p.slot, webkitHiddenWidth, webkitHiddenHeight)
+		_ = webkitHideView(p.view, p.slot)
 	}
 }
 

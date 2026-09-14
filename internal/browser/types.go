@@ -28,6 +28,11 @@ type CompanionEvent struct {
 	Error        string     `json:"error,omitempty"`
 	Visible      *bool      `json:"visible,omitempty"`
 	SessionName  string     `json:"sessionName,omitempty"`
+	// ViewportWidth/Height ride a Kind "state" event: the size every page of
+	// the thread lays out at (the agent's override or the default), which
+	// the pane shows scaled to fit and labels.
+	ViewportWidth  int `json:"viewportWidth,omitempty"`
+	ViewportHeight int `json:"viewportHeight,omitempty"`
 	// Accelerator rides a Kind "accelerator" event: a bound chord pressed
 	// while the thread's page view held keyboard focus, for the frontend to
 	// dispatch as if the SPA had received it.

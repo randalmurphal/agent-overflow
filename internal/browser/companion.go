@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"fmt"
+	"math"
 	"net"
 	"net/url"
 	"os"
@@ -43,19 +44,68 @@ const (
 // Background is the pane surface's resolved CSS color ("#rrggbb"); engines
 // paint it where the page has not presented yet, so freshly exposed strips
 // match the pane instead of flashing the engine default.
+//
+// DevicePixelRatio is the SPA's window.devicePixelRatio: OS scale times
+// webview zoom. An engine whose page renders at the OS scale alone (the
+// hosted WebView2) divides by the page's own ratio to recover the zoom.
+// Zero means unknown, which every consumer treats as 1.
 type PaneRect struct {
-	X              float64 `json:"x"`
-	Y              float64 `json:"y"`
-	Width          float64 `json:"width"`
-	Height         float64 `json:"height"`
-	ClipX          float64 `json:"clipX"`
-	ClipY          float64 `json:"clipY"`
-	ClipWidth      float64 `json:"clipWidth"`
-	ClipHeight     float64 `json:"clipHeight"`
-	ViewportWidth  float64 `json:"viewportWidth"`
-	ViewportHeight float64 `json:"viewportHeight"`
-	Visible        bool    `json:"visible"`
-	Background     string  `json:"background,omitempty"`
+	X                float64 `json:"x"`
+	Y                float64 `json:"y"`
+	Width            float64 `json:"width"`
+	Height           float64 `json:"height"`
+	ClipX            float64 `json:"clipX"`
+	ClipY            float64 `json:"clipY"`
+	ClipWidth        float64 `json:"clipWidth"`
+	ClipHeight       float64 `json:"clipHeight"`
+	ViewportWidth    float64 `json:"viewportWidth"`
+	ViewportHeight   float64 `json:"viewportHeight"`
+	DevicePixelRatio float64 `json:"devicePixelRatio,omitempty"`
+	Visible          bool    `json:"visible"`
+	Background       string  `json:"background,omitempty"`
+}
+
+// PanePlacement is where a presented page's view goes: the page keeps its
+// own viewport (PageWidth x PageHeight, the size the agent works against)
+// and the pane shows it scaled by Scale, never resized. Rect is the FITTED
+// rect in the SPA's CSS pixels — the page scaled to fit inside the pane's
+// host rect and centered — with its clip already intersected with the host
+// rect's visible clip. Rect's viewport, background and device pixel ratio
+// are the host rect's own.
+type PanePlacement struct {
+	Rect       PaneRect
+	PageWidth  int
+	PageHeight int
+	Scale      float64
+}
+
+// placePage fits a page of pageW x pageH CSS pixels inside a host rect: it is
+// scaled down to fit (never up, so text stays sharp) and centered, and the
+// fitted rect is cropped by the host's visible clip. ok is false when nothing
+// of the page would be visible, which the caller treats as hidden.
+func placePage(rect PaneRect, pageW, pageH int) (PanePlacement, bool) {
+	if pageW <= 0 || pageH <= 0 || rect.Width < 1 || rect.Height < 1 {
+		return PanePlacement{}, false
+	}
+	scale := math.Min(rect.Width/float64(pageW), rect.Height/float64(pageH))
+	if scale > 1 {
+		scale = 1
+	}
+	fitted := rect
+	fitted.Width = float64(pageW) * scale
+	fitted.Height = float64(pageH) * scale
+	fitted.X = rect.X + (rect.Width-fitted.Width)/2
+	fitted.Y = rect.Y + (rect.Height-fitted.Height)/2
+	left := math.Max(fitted.X, rect.ClipX)
+	top := math.Max(fitted.Y, rect.ClipY)
+	right := math.Min(fitted.X+fitted.Width, rect.ClipX+rect.ClipWidth)
+	bottom := math.Min(fitted.Y+fitted.Height, rect.ClipY+rect.ClipHeight)
+	if right-left < 1 || bottom-top < 1 {
+		return PanePlacement{}, false
+	}
+	fitted.ClipX, fitted.ClipY = left, top
+	fitted.ClipWidth, fitted.ClipHeight = right-left, bottom-top
+	return PanePlacement{Rect: fitted, PageWidth: pageW, PageHeight: pageH, Scale: scale}, true
 }
 
 // paneMount is one mounted pane surface: the frontend's claim that a host rect
@@ -132,7 +182,17 @@ func (m *Manager) threadState(threadID string) CompanionEvent {
 		event.Pages = append(event.Pages, p.cachedInfo())
 	}
 	event.ActivePageID = session.ActivePageID
+	event.ViewportWidth, event.ViewportHeight = sessionViewport(session)
 	return event
+}
+
+// sessionViewport is the page size every page of the thread lays out at:
+// the agent's override, or the default. It never follows the pane.
+func sessionViewport(session SessionInfo) (int, int) {
+	if session.ViewportW > 0 && session.ViewportH > 0 {
+		return session.ViewportW, session.ViewportH
+	}
+	return defaultViewportWidth, defaultViewportHeight
 }
 
 func (m *Manager) emit(event CompanionEvent) {
@@ -367,6 +427,14 @@ func (m *Manager) syncPanePresentation(threadID string) {
 		}
 	}
 	m.mu.Unlock()
+	var placement PanePlacement
+	if visible {
+		// The page keeps the session's viewport; the pane shows it scaled to
+		// fit. A pane too small or too occluded to show any of it presents
+		// nothing rather than a sliver.
+		pageW, pageH := sessionViewport(session)
+		placement, visible = placePage(rect, pageW, pageH)
+	}
 	for _, p := range pages {
 		if p == active && visible {
 			continue
@@ -374,7 +442,7 @@ func (m *Manager) syncPanePresentation(threadID string) {
 		host.HidePage(p.driver.Handle())
 	}
 	if visible && active != nil {
-		host.SetPageBounds(active.driver.Handle(), rect)
+		host.SetPageBounds(active.driver.Handle(), placement)
 		host.ShowPage(active.driver.Handle())
 	}
 }

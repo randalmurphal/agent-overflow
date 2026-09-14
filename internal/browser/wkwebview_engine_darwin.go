@@ -25,13 +25,6 @@ import (
 // wkDo-backed call happens after it is released.
 
 const (
-	// A background page still needs a real viewport: layout, media queries, and
-	// element geometry are all read from it, and a screenshot of a hidden page
-	// is taken at this size. It is the size the pane opens at, so presenting a
-	// page does not reflow everything it has already measured.
-	wkHiddenWidth  = 1280
-	wkHiddenHeight = 800
-
 	// wkDownloadPollInterval is how often a live download's NSProgress is
 	// sampled. WKDownload has no per-chunk callback, and the Manager's
 	// per-download byte cap is only enforceable against a mid-flight number.
@@ -333,7 +326,7 @@ func (p *wkProfile) newPageShell(hooks pageHooks) (*wkPage, error) {
 // WebKit only guarantees layout and snapshots for a view inside a window.
 func (p *wkProfile) parkNew(page *wkPage) {
 	page.slot = p.engine.claimSlot()
-	wkParkView(page.view, page.slot, wkHiddenWidth, wkHiddenHeight)
+	wkParkView(page.view, page.slot)
 }
 
 func (p *wkProfile) registerDownload(handle string, ptr unsafe.Pointer) {

@@ -28,7 +28,11 @@ WebView2's debug endpoint to the backend or LAN.
 
 The browser controller is a child of the launcher's HWND. Use the clip container
 and preserve sibling z-order. Convert frontend CSS pixels using the owning
-window's current scale. Hide during invalid or zero-sized geometry.
+window's current scale. Hide during invalid or zero-sized geometry. Hiding
+hides only the container and keeps the controller `IsVisible`; an invisible
+controller stops compositing, which freezes frames and hangs CDP captures. The
+page's size and scale come from the backend's device-metrics override, never
+from the controller's bounds.
 
 All COM controller and HWND mutations run on the launcher UI thread. Completion
 handlers may arrive there, so never block on backend RPC inline. Serialize

@@ -18,6 +18,11 @@ mode. Product behavior and authority are defined in
 - Pages start hidden. Present only the selected page for a visible companion
   pane. The pane uses a native view positioned over the SPA; pixels do not cross
   the transport.
+- A page always lays out at the thread viewport (`sessionViewport`, default
+  1280x720) whether hidden or presented. The pane is a viewer: `placePage` fits
+  the viewport into the host rect and every engine draws the page at that
+  `PanePlacement` scale without resizing it. Hidden pages must keep producing
+  frames so screenshots and scrolls work with the pane closed.
 - An omitted `page_id` may resolve only when the thread owns at most one page.
   With multiple pages, require an explicit handle. Never infer a caller or use
   MRU selection.
@@ -42,9 +47,10 @@ page-operation JavaScript in `webkitjs.go` and `pagejs.go`; selectors and user
 text cross as JSON values rather than source fragments.
 
 Hidden native WebKit pages must remain attached to their window in a clipped
-1x1 host so layout, animation, and snapshots remain live. Pane geometry uses
-per-page clipping and the full page rect. Do not use opacity or natural-size
-requests as substitutes.
+1x1 host at their viewport so layout, animation, and snapshots remain live.
+Presentation scales the view (a GTK allocation transform, an AppKit bounds
+size) inside a per-page clip. Do not use opacity, natural-size requests, or a
+resize of the page as substitutes.
 
 Platform differences remain explicit. WebKit input is programmatic and reports
 `isTrusted=false`; CDP native input must assert resulting DOM state. WKWebView

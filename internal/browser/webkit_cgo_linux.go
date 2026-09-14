@@ -326,17 +326,22 @@ func webkitAttachHost(window unsafe.Pointer) error {
 	return nil
 }
 
-func webkitParkView(view unsafe.Pointer, slot, width, height int) {
-	gtkDo(func() { C.ao_wk_host_park(view, C.int(slot), C.int(width), C.int(height)) })
+func webkitParkView(view unsafe.Pointer, slot int) {
+	gtkDo(func() { C.ao_wk_host_park(view, C.int(slot)) })
 }
 
-func webkitPresentView(view unsafe.Pointer, rect PaneRect) error {
+// webkitPresentView shows the view at its placement: the fitted rect, its
+// clip, and the scale the page is drawn at. The page's own size was set by
+// SetViewport and is not touched here.
+func webkitPresentView(view unsafe.Pointer, placement PanePlacement) error {
+	rect := placement.Rect
 	if !gtkDo(func() {
 		C.ao_wk_host_present(view, C.double(rect.X), C.double(rect.Y),
 			C.double(rect.Width), C.double(rect.Height),
 			C.double(rect.ClipX), C.double(rect.ClipY),
 			C.double(rect.ClipWidth), C.double(rect.ClipHeight),
-			C.double(rect.ViewportWidth), C.double(rect.ViewportHeight))
+			C.double(rect.ViewportWidth), C.double(rect.ViewportHeight),
+			C.double(placement.Scale))
 	}) {
 		return errGTKUnavailable
 	}
@@ -352,10 +357,10 @@ func webkitSetViewBackground(view unsafe.Pointer, color webkitRGB) {
 	})
 }
 
-func webkitHideView(view unsafe.Pointer, slot, width, height int) error {
+func webkitHideView(view unsafe.Pointer, slot int) error {
 	if !gtkDo(func() {
 		C.ao_wk_host_hide(view)
-		C.ao_wk_host_park(view, C.int(slot), C.int(width), C.int(height))
+		C.ao_wk_host_park(view, C.int(slot))
 	}) {
 		return errGTKUnavailable
 	}
