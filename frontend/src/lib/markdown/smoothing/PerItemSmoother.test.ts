@@ -1,4 +1,4 @@
-import { afterEach, describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import {
   PerItemSmoother,
   computeAdvanceEnd,
@@ -9,18 +9,21 @@ import {
   MAX_ADAPTIVE_CHARS_PER_SEC,
   MIN_REVEAL_TICK_INTERVAL_MS,
   type SmoothingClock,
+  __resetRevealFrameGateForTest,
 } from './PerItemSmoother';
+
+beforeEach(() => __resetRevealFrameGateForTest());
 
 class FakeClock implements SmoothingClock {
   private current = 0;
   private nextHandle = 1;
-  private pending = new Map<number, () => void>();
-  private callbacks = new Set<() => void>();
+  private pending = new Map<number, (frameTimestamp?: number) => void>();
+  private callbacks = new Set<(frameTimestamp?: number) => void>();
 
   now(): number {
     return this.current;
   }
-  schedule(cb: () => void): number {
+  schedule(cb: (frameTimestamp?: number) => void): number {
     const handle = this.nextHandle++;
     this.pending.set(handle, cb);
     this.callbacks.add(cb);
@@ -36,7 +39,7 @@ class FakeClock implements SmoothingClock {
     this.current += ms;
     const toFire = [...this.pending.entries()];
     this.pending.clear();
-    for (const [, cb] of toFire) cb();
+    for (const [, cb] of toFire) cb(this.current);
   }
   pendingCount(): number {
     return this.pending.size;
@@ -444,12 +447,7 @@ describe('PerItemSmoother — rate ceiling and per-tick work cap', () => {
     expect(reveals.length).toBeLessThanOrEqual(67); // 1000ms / 15ms
   });
 
-  it('phase-offset smoothers coalesce onto the shared wall-clock grid', () => {
-    // The throttle gate is floor(now / interval) against a SHARED grid,
-    // not per-instance elapsed time. Two panes whose streams started at
-    // different moments must process in the SAME frame, so concurrent
-    // streaming costs one render pipeline per interval instead of one
-    // per frame (the storm-trace finding behind the grid, 2026-08-26).
+  function twoPhaseOffsetSmoothers(frameMs: number) {
     const clock = new FakeClock();
     const timesA: number[] = [];
     const timesB: number[] = [];
@@ -458,25 +456,62 @@ describe('PerItemSmoother — rate ceiling and per-tick work cap', () => {
       clock,
     });
     a.appendDelta('word '.repeat(400));
-    // B starts mid-slot, 7ms into A's stream — a per-instance elapsed
-    // gate would put its processed ticks on different frames forever
-    // (A on t=19,37,55…, B on t=25,43,61… at 6ms frames).
+    // B starts mid-slot, 7ms into A's stream, so a per-instance elapsed
+    // gate would keep the two on different slots forever.
     clock.tickFrame(7);
     const b = new PerItemSmoother({
       onReveal: () => timesB.push(clock.now()),
       clock,
     });
     b.appendDelta('word '.repeat(400));
-    for (let i = 0; i < 300; i++) clock.tickFrame(6);
-    expect(timesA.length).toBeGreaterThan(30);
-    expect(timesB.length).toBeGreaterThan(30);
-    // On the shared grid both smoothers process (and so reveal) in the
-    // same frames; per-instance phases would make the two sets disjoint.
-    const setA = new Set(timesA);
-    const shared = timesB.filter((t) => setA.has(t)).length;
-    expect(shared).toBeGreaterThan(0.8 * Math.min(timesA.length, timesB.length));
+    for (let i = 0; i < Math.round(1800 / frameMs); i++) clock.tickFrame(frameMs);
     a.dispose();
     b.dispose();
+    const setA = new Set(timesA);
+    return { timesA, timesB, shared: timesB.filter((t) => setA.has(t)).length };
+  }
+
+  it('phase-offset smoothers coalesce onto the shared wall-clock grid at 60Hz', () => {
+    // The throttle gate is floor(now / interval) against a SHARED grid,
+    // not per-instance elapsed time. When a slot is one frame, both
+    // panes process in the SAME frame so concurrent streaming costs one
+    // render pipeline per interval (the storm-trace finding behind the
+    // grid, 2026-08-26).
+    const { timesA, timesB, shared } = twoPhaseOffsetSmoothers(1000 / 60);
+    expect(timesA.length).toBeGreaterThan(30);
+    expect(timesB.length).toBeGreaterThan(30);
+    expect(shared).toBeGreaterThan(0.8 * Math.min(timesA.length, timesB.length));
+  });
+
+  it('spreads panes over the frames of a slot on a high-refresh display', () => {
+    // A 15ms slot holds two or three 165Hz frames. Each pane still
+    // processes once per slot, but never in the same frame as another
+    // pane, so no frame carries every pane's render work.
+    const { timesA, timesB, shared } = twoPhaseOffsetSmoothers(1000 / 165);
+    expect(timesA.length).toBeGreaterThan(30);
+    expect(timesB.length).toBeGreaterThan(30);
+    expect(shared).toBe(0);
+  });
+
+  it('bounds how long a pane can be held off the frame gate', () => {
+    // Six panes on a 165Hz slot of two or three frames: the gate cannot
+    // seat them all, so a pane waits at most two slots before it
+    // processes alongside another.
+    const clock = new FakeClock();
+    const gaps: number[] = [];
+    const smoothers = Array.from({ length: 6 }, () => {
+      let last = clock.now();
+      const smoother = new PerItemSmoother({
+        onReveal: () => { gaps.push(clock.now() - last); last = clock.now(); },
+        clock,
+      });
+      smoother.appendDelta('word '.repeat(400));
+      return smoother;
+    });
+    for (let i = 0; i < 300; i++) clock.tickFrame(1000 / 165);
+    for (const smoother of smoothers) smoother.dispose();
+    expect(gaps.length).toBeGreaterThan(200);
+    expect(Math.max(...gaps)).toBeLessThanOrEqual(MIN_REVEAL_TICK_INTERVAL_MS * 2 + 1000 / 165);
   });
 
   it('advances through a word unit larger than the per-tick cap', () => {

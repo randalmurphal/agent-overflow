@@ -37,7 +37,8 @@ import { createAnimationFrameBatcher } from '../../utils/animationFrameBatcher';
 
 export interface SmoothingClock {
   now(): number;
-  schedule(cb: () => void): number;
+  /** The callback receives the animation frame timestamp when the clock has one. */
+  schedule(cb: (frameTimestamp?: number) => void): number;
   cancel(handle: number): void;
 }
 
@@ -59,9 +60,38 @@ export const BASE_CHARS_PER_SEC = 160;
 export const ADAPTIVE_TRIGGER_CHARS = 80;
 export const ADAPTIVE_CATCHUP_MS = 500;
 // Bound markdown parsing and DOM mutation cadence independently of display
-// refresh. A shared wall-clock grid batches active panes into the same frame.
+// refresh. A shared wall-clock grid batches active panes into the same slot.
 // Reveal budgets still accrue from elapsed time, preserving the reveal rate.
 export const MIN_REVEAL_TICK_INTERVAL_MS = 15;
+// A slot holds several frames on a high-refresh display. There, one pane's
+// reveal per frame keeps each frame's style, layout, paint and raster inside
+// the frame budget (four panes packed into one 165Hz frame ran 4-11ms against
+// a 6ms budget and dropped the frame the scroll spring was gliding on). At
+// 60Hz a slot is one frame, so packing stays. No pane waits past two slots.
+const REVEAL_STARVATION_MS = MIN_REVEAL_TICK_INTERVAL_MS * 2;
+let revealFrameAt = -1;
+let previousFrameAt = -1;
+let framePeriodMs = 0;
+
+function frameCarriesReveal(frameTimestamp: number, lastTickAt: number): boolean {
+  if (frameTimestamp !== previousFrameAt) {
+    const gap = frameTimestamp - previousFrameAt;
+    if (previousFrameAt >= 0 && gap >= 1 && gap <= 50) framePeriodMs = gap;
+    previousFrameAt = frameTimestamp;
+  }
+  if (framePeriodMs === 0 || framePeriodMs >= MIN_REVEAL_TICK_INTERVAL_MS) return true;
+  if (revealFrameAt !== frameTimestamp) {
+    revealFrameAt = frameTimestamp;
+    return true;
+  }
+  return frameTimestamp - lastTickAt >= REVEAL_STARVATION_MS;
+}
+
+export function __resetRevealFrameGateForTest(): void {
+  revealFrameAt = -1;
+  previousFrameAt = -1;
+  framePeriodMs = 0;
+}
 // Ceiling on the adaptive catch-up RATE. When a fat wire burst (an
 // Anthropic-API paragraph landing in one chunk) opens a large lag, the
 // adaptive rate (`lag / 0.5s`) wants thousands of chars/sec; this
@@ -184,9 +214,9 @@ export class PerItemSmoother {
 
   private lastTickAt: number;
   private rafHandle: number | null = null;
-  private readonly runScheduledTick = (): void => {
+  private readonly runScheduledTick = (frameTimestamp?: number): void => {
     this.rafHandle = null;
-    this.tick();
+    this.tick(frameTimestamp);
   };
   private disposed = false;
   // Fractional character budget accumulates across ticks so a slow
@@ -469,7 +499,7 @@ export class PerItemSmoother {
     this.rafHandle = this.clock.schedule(this.runScheduledTick);
   }
 
-  private tick(): void {
+  private tick(frameTimestamp?: number): void {
     if (this.disposed) return;
     // Low-power: reveal everything pending in one mutation instead of
     // animating. Checked at the tick (not in appendDelta) so the
@@ -488,14 +518,14 @@ export class PerItemSmoother {
     const now = this.clock.now();
     // Refresh-rate decoupling: high-Hz panels re-schedule without
     // processing until the next wall-clock grid slot. The grid is shared
-    // across ALL smoothers (see MIN_REVEAL_TICK_INTERVAL_MS) so
-    // concurrent panes process in the same frame instead of spreading
-    // one render pipeline over every frame. lastTickAt is NOT advanced
-    // on skipped frames, so the processed tick's dt (and budget) covers
-    // the full elapsed time.
+    // across ALL smoothers (see MIN_REVEAL_TICK_INTERVAL_MS), and inside
+    // a slot the frame gate spreads panes over the slot's frames.
+    // lastTickAt is NOT advanced on skipped frames, so the processed
+    // tick's dt (and budget) covers the full elapsed time.
     if (
       Math.floor(now / MIN_REVEAL_TICK_INTERVAL_MS) ===
       Math.floor(this.lastTickAt / MIN_REVEAL_TICK_INTERVAL_MS)
+      || (frameTimestamp !== undefined && !frameCarriesReveal(frameTimestamp, this.lastTickAt))
     ) {
       this.scheduleTick();
       return;
