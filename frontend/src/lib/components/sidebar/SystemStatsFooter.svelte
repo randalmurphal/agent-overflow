@@ -16,10 +16,11 @@
     {#each rows as row (row.key)}
       <div class="flex min-w-0 flex-col gap-1" data-testid="system-stats-computer">
         {#if rows.length > 1}
-          <span class="truncate text-fg-subtle" title={row.name}>{row.name}{row.stats?.isWsl ? ' · WSL' : ''}</span>
-        {:else if row.stats?.isWsl}<span class="text-fg-subtle">WSL</span>{/if}
+          <span class="truncate text-fg-subtle" title={row.name}>{row.name}</span>
+        {/if}
         {#if row.stats}
           <div class="flex min-w-0 items-center justify-between gap-2 tabular-nums whitespace-nowrap">
+            {#if row.stats.isWsl}<span class="text-fg-subtle">WSL</span>{/if}
             <span><span class="text-fg-subtle">CPU</span> {Math.round(row.stats.cpuPercent)}%</span>
             <span><span class="text-fg-subtle">RAM</span> {formatGiB(row.stats.memUsedBytes)} / {formatGiB(row.stats.memTotalBytes)} GB</span>
           </div>

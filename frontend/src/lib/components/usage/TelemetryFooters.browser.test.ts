@@ -25,6 +25,18 @@ it.each([360, 1280])('fits multiple named computer stats and usage filters at %i
   host.style.width = '280px';
   document.body.append(host);
   const footer = render(SystemStatsFooter, { target: host });
+  function expectInlineStats(named: boolean) {
+    for (const row of footer.getAllByTestId('system-stats-computer')) {
+      const wsl = within(row).getByText('WSL').getBoundingClientRect();
+      const cpu = within(row).getByText('CPU').getBoundingClientRect();
+      const ram = within(row).getByText('RAM').getBoundingClientRect();
+      expect(wsl.top).toBeCloseTo(cpu.top, 0);
+      expect(wsl.top).toBeCloseTo(ram.top, 0);
+      if (named) expect(row.getBoundingClientRect().top).toBeLessThan(wsl.top);
+      else expect(row.getBoundingClientRect().top).toBeCloseTo(wsl.top, 0);
+    }
+  }
+  expectInlineStats(true);
   for (const element of footer.container.querySelectorAll('[data-testid="system-stats-computer"] span')) {
     const rect = element.getBoundingClientRect();
     expect(rect.left).toBeGreaterThanOrEqual(0);
@@ -35,6 +47,7 @@ it.each([360, 1280])('fits multiple named computer stats and usage filters at %i
   expect(option.getBoundingClientRect().right).toBeLessThanOrEqual(width);
   await fireEvent.click(option);
   await waitFor(() => expect(footer.getAllByTestId('system-stats-computer')).toHaveLength(1));
+  expectInlineStats(false);
   footer.unmount();
   host.remove();
 
