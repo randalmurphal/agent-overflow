@@ -55,13 +55,10 @@ export interface MergedNavTicks {
  * of ticks outgrows the rail column, the rail clips it to a window that
  * slides with the reader's position (`railClipOffsetPx`) instead of
  * packing ticks closer; the first/last arrows appear only while their
- * end tick is clipped out. Sized so the position dot fits the gap
- * between two 2px lines with clearance, without the lines having to
- * move. 8px is the deliberate resting density (user-tuned 2026-08-19):
- * tighter than the original 12 without reaching the packed look the
- * old compression produced.
+ * end tick is clipped out. Adjacent ticks are 12px apart so
+ * scanning adjacent message previews does not require precise movement.
  */
-export const NAV_TICK_SPACING_PX = 8;
+export const NAV_TICK_SPACING_PX = 12;
 
 /** The rail renders nothing below this many ticks (a lone message needs no map). */
 export const NAV_RAIL_MIN_TICKS = 2;

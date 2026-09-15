@@ -104,7 +104,7 @@ describe('messageNavRailSync single position claim', () => {
     firstArrow.style.visibility = 'hidden';
     latestArrow = document.createElement('button');
     latestArrow.style.visibility = 'hidden';
-    // Large enough that the 3-tick strip (16px) fits: no clip, no arrows.
+    // Large enough that the 3-tick strip (24px) fits: no clip, no arrows.
     availableHeight = 300;
     ticksNow = merged;
     sync = createNavRailViewportSync({ ...ctxFor(list, merged), getTicks: () => ticksNow });
@@ -416,17 +416,17 @@ describe('messageNavRailSync single position claim', () => {
   });
 
   it('mid-gap with no message on screen the dot fraction drives the clip', () => {
-    // 16px strip in a 6px window → maxClip 10. Viewport covers nodes
+    // 24px strip in a 6px window: maxClip 18. Viewport covers nodes
     // 1..3 (between u1 and u2): gap 0 → fraction (0+0.5)/2 = 0.25 →
-    // clip = 0.25·16 − 3 = 1, unclamped, both ends clipped out.
+    // clip = 0.25 * 24 - 3 = 3, unclamped, both ends clipped out.
     availableHeight = 6;
     scrollOffset = 100;
     sync.schedule();
     drainFrames();
     expect(marker.style.visibility).toBe('');
     expect(marker.style.top).toBe('25%');
-    expect(sync.getClipOffsetPx()).toBe(1);
-    expect(strip.style.transform).toBe('translateY(-1px)');
+    expect(sync.getClipOffsetPx()).toBe(3);
+    expect(strip.style.transform).toBe('translateY(-3px)');
     expect(firstArrow.style.visibility).toBe('');
     expect(latestArrow.style.visibility).toBe('');
   });
@@ -454,14 +454,14 @@ describe('messageNavRailSync single position claim', () => {
     } as unknown as TimelineVirtualizerHandle;
     const cold = createNavRailViewportSync(ctxFor(list, noneLoaded));
     tickEls.forEach((el, i) => cold.registerTick(el, i));
-    // maxOffset 800, offset 400 → proportion 0.5 → clip 0.5·16 − 3 = 5.
+    // maxOffset 800, offset 400: proportion 0.5, clip 0.5 * 24 - 3 = 9.
     scrollOffset = 400;
     cold.schedule();
     drainFrames();
     expect(currents()).toEqual(['false', 'false', 'false']);
     expect(marker.style.visibility).toBe('hidden');
-    expect(cold.getClipOffsetPx()).toBe(5);
-    expect(strip.style.transform).toBe('translateY(-5px)');
+    expect(cold.getClipOffsetPx()).toBe(9);
+    expect(strip.style.transform).toBe('translateY(-9px)');
     cold.cancel();
   });
 
@@ -478,7 +478,7 @@ describe('messageNavRailSync single position claim', () => {
     const onClipChange = vi.fn();
     const watched = createNavRailViewportSync(ctxFor(list, merged, onClipChange));
     tickEls.forEach((el, i) => watched.registerTick(el, i));
-    scrollOffset = 100; // gap 0 → clip 1 (moved from the initial 0)
+    scrollOffset = 100; // gap 0, clip 3 (moved from the initial 0)
     watched.schedule();
     drainFrames();
     expect(onClipChange).toHaveBeenCalledTimes(1);
@@ -486,7 +486,7 @@ describe('messageNavRailSync single position claim', () => {
     watched.schedule();
     drainFrames();
     expect(onClipChange).toHaveBeenCalledTimes(1);
-    scrollOffset = 600; // gap 1 → clip 9 → fires again
+    scrollOffset = 600; // gap 1, clip 15, fires again
     watched.schedule();
     drainFrames();
     expect(onClipChange).toHaveBeenCalledTimes(2);
@@ -544,7 +544,7 @@ describe('messageNavRailSync single position claim', () => {
   });
 
   it('an overflowing strip slides with the position claim and each arrow tracks its clipped end', () => {
-    // 3 ticks · 8px = a 16px strip in a 10px window → maxClip 6.
+    // Three ticks with two 12px gaps in a 10px window: maxClip 14.
     availableHeight = 10;
     const list = {
       getScrollOffset: () => scrollOffset,
@@ -565,13 +565,13 @@ describe('messageNavRailSync single position claim', () => {
     expect(wide.getClipOffsetPx()).toBe(0);
     expect(firstArrow.style.visibility).toBe('hidden');
     expect(latestArrow.style.visibility).toBe('');
-    // Mid: u2 current (fraction 0.5) → clip 0.5·16 − 5 = 3, both ends
+    // Mid: u2 current (fraction 0.5), clip 0.5 * 24 - 5 = 7, both ends
     // clipped out, both arrows on.
     scrollOffset = 50;
     wide.schedule();
     drainFrames();
-    expect(strip.style.transform).toBe('translateY(-3px)');
-    expect(wide.getClipOffsetPx()).toBe(3);
+    expect(strip.style.transform).toBe('translateY(-7px)');
+    expect(wide.getClipOffsetPx()).toBe(7);
     expect(firstArrow.style.visibility).toBe('');
     expect(latestArrow.style.visibility).toBe('');
     // Thread bottom: the edge override claims u3 (fraction 1) → max
@@ -579,7 +579,7 @@ describe('messageNavRailSync single position claim', () => {
     scrollOffset = 400;
     wide.schedule();
     drainFrames();
-    expect(strip.style.transform).toBe('translateY(-6px)');
+    expect(strip.style.transform).toBe('translateY(-14px)');
     expect(firstArrow.style.visibility).toBe('');
     expect(latestArrow.style.visibility).toBe('hidden');
     wide.cancel();

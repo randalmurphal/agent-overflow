@@ -74,7 +74,7 @@ describe('message navigation rail interaction geometry', () => {
 
     const ticks = [...host.querySelectorAll<HTMLElement>('.nav-rail-tick')];
     const current = ticks.find((el) => el.dataset.current === 'true');
-    const hoverTarget = ticks.find((el) => el.dataset.current === 'false');
+    const hoverTarget = ticks[1];
     expect(current, 'viewport sync must identify one current message').toBeDefined();
     expect(hoverTarget, 'the fixture must expose a non-current hover target').toBeDefined();
     expect(getComputedStyle(current!).backgroundColor).toBe(resolvedBackground('--color-accent'));
@@ -82,6 +82,7 @@ describe('message navigation rail interaction geometry', () => {
 
     const stripRect = strip!.getBoundingClientRect();
     const targetRect = hoverTarget!.getBoundingClientRect();
+    expect(targetRect.top - ticks[0].getBoundingClientRect().top).toBeCloseTo(12, 1);
     expect(stripRect.width, 'cold acquisition must match the resting tick').toBeCloseTo(
       TICK_REST_WIDTH_PX,
       1,
@@ -117,6 +118,15 @@ describe('message navigation rail interaction geometry', () => {
     expect(transitions).not.toContain('background');
     expect(transitions).not.toContain('opacity');
 
+    for (const offset of [-5, 5]) {
+      const move = new MouseEvent('mousemove', { bubbles: true });
+      Object.defineProperty(move, 'offsetY', { value: targetY - stripRect.top + offset });
+      strip!.dispatchEvent(move);
+      await tick();
+      expect(hoverTarget!.dataset.hovered, 'small pointer movements must retain the same tick')
+        .toBe('true');
+    }
+
     // Custom themes replace the base semantic variables. The rail consumes
     // those roles directly, so a live palette edit must repaint every state
     // without a component render or a rail-specific theme key.
@@ -143,7 +153,7 @@ describe('message navigation rail interaction geometry', () => {
     }
   });
 
-  it('renders an aligned bare chevron while preserving its 24px button target', async () => {
+  it('keeps matching overflow chevrons reachable across jumps and resizing', async () => {
     const threadId = 'thread-nav-rail-arrow';
     const { host } = await mountTimeline(
       threadId,
@@ -171,5 +181,38 @@ describe('message navigation rail interaction geometry', () => {
     expect(buttonCenter).toBeCloseTo(tickCenter, 1);
     const strip = host.querySelector<HTMLElement>('[data-testid="nav-rail-strip"]')!;
     expect(first.getBoundingClientRect().bottom).toBeLessThan(strip.getBoundingClientRect().top);
+
+    const latest = host.querySelector<HTMLButtonElement>('[data-testid="nav-rail-jump-latest"]')!;
+    for (let trip = 0; trip < 2; trip++) {
+      first.click();
+      await waitFor(() => getComputedStyle(latest).visibility === 'visible',
+        'latest-message chevron after jumping to the first message');
+      expect(getComputedStyle(first).visibility).toBe('hidden');
+      expect(latest.getBoundingClientRect().top).toBeGreaterThan(strip.getBoundingClientRect().bottom);
+      expect(latest.getBoundingClientRect().width).toBe(24);
+      expect(latest.getBoundingClientRect().height).toBe(24);
+      expect(getComputedStyle(latest).backgroundColor).toBe(style.backgroundColor);
+      expect(getComputedStyle(latest).borderTopStyle).toBe(style.borderTopStyle);
+      latest.click();
+      await waitFor(() => getComputedStyle(latest).visibility === 'hidden'
+        && getComputedStyle(first).visibility === 'visible',
+      'first-message chevron after jumping to the latest message');
+      await waitFor(() => [...host.querySelectorAll<HTMLElement>('.nav-rail-tick')]
+        .at(-1)?.dataset.current === 'true', 'latest user message to become current');
+    }
+
+    host.style.height = '600px';
+    await waitFor(() => host.querySelector('[data-testid="nav-rail-jump-first"]') === null,
+      'chevrons to unmount when all ticks fit');
+    host.style.height = '260px';
+    await waitFor(() => {
+      const button = host.querySelector<HTMLElement>('[data-testid="nav-rail-jump-first"]');
+      return button !== null && getComputedStyle(button).visibility === 'visible';
+    }, 'first-message chevron to reappear after shrinking');
+    host.querySelector<HTMLButtonElement>('[data-testid="nav-rail-jump-first"]')!.click();
+    await waitFor(() => {
+      const button = host.querySelector<HTMLElement>('[data-testid="nav-rail-jump-latest"]');
+      return button !== null && getComputedStyle(button).visibility === 'visible';
+    }, 'latest-message chevron to remain usable after remounting');
   });
 });

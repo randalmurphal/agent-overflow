@@ -60,7 +60,7 @@ Measurement methods and interpretation belong in
 
 - Message nav rail: one position claim at all times (one current tick, the
   dot only when no user message is visible, and the dot does not track the
-  fisheye); ticks never compress (8px), overflow is a clipped sliding
+  fisheye); ticks never compress, overflow is a clipped sliding
   window, arrows exist only while their end tick is clipped out (a
   position-based alternative was reviewed and rejected); the bottom arrow
   jumps to the latest message, not to bottom; thread-edge overrides force

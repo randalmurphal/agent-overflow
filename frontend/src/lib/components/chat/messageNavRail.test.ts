@@ -186,27 +186,26 @@ describe('rail geometry', () => {
 
   it('grows by the spacing constant until the column caps the window', () => {
     // Literal, not recomputed from the constant: a spacing change is a
-    // deliberate test edit, not an automatic pass. 8px (user-tuned
-    // resting density) still clears the 3px dot between two 2px lines.
-    expect(NAV_TICK_SPACING_PX).toBe(8);
-    expect(naturalRailHeightPx(5)).toBe(32);
-    expect(railHeightPx(5, 1000)).toBe(32);
+    // deliberate test edit, not an automatic pass.
+    expect(NAV_TICK_SPACING_PX).toBe(12);
+    expect(naturalRailHeightPx(5)).toBe(48);
+    expect(railHeightPx(5, 1000)).toBe(48);
     expect(railHeightPx(200, 300)).toBe(300);
     expect(railOverflows(200, 300)).toBe(true);
     expect(railOverflows(5, 300)).toBe(false);
   });
 
   it('slides the clipped strip with the reader, clamped to the strip', () => {
-    // 200 ticks · 8px = 1592px strip in a 300px window → 1292 max clip.
-    expect(railMaxClipPx(200, 300)).toBe(1292);
+    // 199 gaps at 12px = 2388px strip in a 300px window.
+    expect(railMaxClipPx(200, 300)).toBe(2088);
     expect(railMaxClipPx(5, 300)).toBe(0);
     // Pre-RO the column reports 0 available px: no window exists yet,
     // so nothing counts as clipped (not "everything does").
     expect(railMaxClipPx(200, 0)).toBe(0);
     // Ends clamp so the end tick is IN the window; the middle centers.
     expect(railClipOffsetPx(0, 200, 300)).toBe(0);
-    expect(railClipOffsetPx(1, 200, 300)).toBe(1292);
-    expect(railClipOffsetPx(0.5, 200, 300)).toBe(1592 * 0.5 - 150);
+    expect(railClipOffsetPx(1, 200, 300)).toBe(2088);
+    expect(railClipOffsetPx(0.5, 200, 300)).toBe(2388 * 0.5 - 150);
     // A strip that fits never slides, whatever the fraction says.
     expect(railClipOffsetPx(1, 5, 300)).toBe(0);
   });
