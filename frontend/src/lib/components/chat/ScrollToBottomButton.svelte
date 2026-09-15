@@ -1,36 +1,7 @@
 <script lang="ts">
-  // Floating "scroll to bottom" chip. Hand-rolled <button> rather than the
-  // IconButton primitive — IconButton's size/variant matrix is built for
-  // the toolbar (rounded-md, fixed h-7/h-8), not the rounded-full
-  // shadow-sheet floating chip we want here. SendButton.svelte is the
-  // existing precedent for "custom button when chrome diverges from the
-  // primitive."
-  //
-  // Positioning: the chip floats just above the composer overlay. The
-  // composer's visible card is absolutely positioned at `bottom-0` of
-  // the timeline's relative parent and grows upward with content
-  // (attachment tray, multi-line input, approval panel). Without
-  // lifting the chip by `--composer-height`, the chip would sit
-  // *visually behind* the opaque composer card and be invisible. The
-  // z-30 stacking keeps clicks reaching the chip, but the user can't
-  // see it without the lift. Putting the chip at z-30 + bottom =
-  // composer-height + 1rem keeps it visible regardless of composer
-  // growth. (Pointer-events on the composer overlay itself are scoped
-  // to the card via `pointer-events-none` on the outer wrapper —
-  // moat clicks fall through to the timeline below.)
-  //
-  // ChatView writes `--composer-height` from a ResizeObserver on the
-  // overlay. Discussion (ChannelView) intentionally does NOT — its
-  // textarea is a sibling flex section below the chip's relative
-  // parent, not an overlay, so the fallback `0px + 1rem` lands the
-  // chip 1rem above the scroll container's bottom edge, which is the
-  // visually-correct anchor on that surface. If a future refactor adds
-  // a floating element INSIDE Discussion's relative parent (between
-  // the scroll container and the chip), set `--composer-height` to its
-  // height the same way ChatView does.
-
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import { fade } from 'svelte/transition';
+  import Button from '../primitives/Button.svelte';
   import Icon from '../primitives/Icon.svelte';
 
   interface Props {
@@ -42,24 +13,22 @@
 </script>
 
 {#if visible}
-  <button
-    type="button"
-    onclick={onClick}
-    aria-label="Scroll to latest"
-    title="Scroll to latest"
-    data-testid="scroll-to-bottom"
+  <!-- Chat publishes its overlay height; discussion has a sibling composer. -->
+  <div
     transition:fade={{ duration: 120 }}
-    style="bottom: calc(var(--composer-height, 0px) + 1rem);"
-    class={[
-      'absolute right-4 z-30',
-      'inline-flex h-9 w-9 items-center justify-center',
-      'rounded-full border border-border-subtle bg-card text-text-secondary',
-      'shadow-sheet transition-[background-color,transform,color]',
-      'hover:bg-surface-2/80 hover:text-text-primary hover:scale-105 active:scale-95',
-      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
-      'cursor-pointer',
-    ].join(' ')}
+    style="bottom: calc(var(--composer-height, 0px) + 0.5rem);"
+    class="absolute inset-x-0 z-30 mx-auto flex w-max rounded-full bg-card shadow-sheet"
   >
-    <Icon icon={ChevronDown} size={16} strokeWidth={2.5} />
-  </button>
+    <Button
+      onclick={onClick}
+      testId="scroll-to-bottom"
+      size="sm"
+      class="rounded-full! whitespace-nowrap"
+    >
+      Jump to bottom
+      {#snippet trailing()}
+        <Icon icon={ChevronDown} size={14} strokeWidth={2} />
+      {/snippet}
+    </Button>
+  </div>
 {/if}

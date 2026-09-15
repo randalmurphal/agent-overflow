@@ -1388,13 +1388,13 @@ describe('scroll integration — auto-follow + button', () => {
     // The chip must NOT be a descendant of the scroll element. If it
     // is, scrolling moves it.
     expect(scrollEl.contains(chip)).toBe(false);
-    // It also must be a sibling of the scroll element inside the same
+    // Its positioning wrapper must be a sibling of the scroll element in the same
     // non-scrolling positioned wrapper — so its `position:absolute`
     // anchors to the wrapper's padding edge. A regression that hoisted
     // the chip elsewhere (e.g., to document.body) would still pass the
     // non-containment check above but break the absolute-positioning
     // contract the wrapper exists to provide.
-    expect(chip!.parentElement).toBe(scrollEl.parentElement);
+    expect(chip!.parentElement!.parentElement).toBe(scrollEl.parentElement);
   });
 
   it('Bug A: re-stick succeeds in a streaming-cadence sequence (60 Hz contentRO + wheel-down)', async () => {

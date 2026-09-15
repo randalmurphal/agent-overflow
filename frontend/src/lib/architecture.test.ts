@@ -248,7 +248,6 @@ const AUTHORIZED_SCROLL_PRESENTATION_STATE = [
   'lib/components/chat/ProposedPlanReviewSurface.svelte|Tailwind transform utility|class="pointer-events-none absolute left-1/2 top-full h-0 w-0 -translate-x-1/2 border-x-[7px] border-t-[7px] border-x-transparent border-t-border"',
   'lib/components/chat/ProposedPlanReviewSurface.svelte|transform declaration or keyframe|style={`top: ${pendingSelection.composerTop}px; left: ${pendingSelection.composerLeft}px; transform: translate(-50%, 0);`}',
   'lib/components/chat/ProposedPlanReviewSurface.svelte|transform declaration or keyframe|style={`top: ${pendingSelection.triggerTop}px; left: ${pendingSelection.triggerLeft}px; transform: translate(-50%, -100%);`}',
-  "lib/components/chat/ScrollToBottomButton.svelte|Tailwind transform utility|'hover:bg-surface-2/80 hover:text-text-primary hover:scale-105 active:scale-95',",
   "lib/components/chat/TailClampedText.svelte|DOM transform property assignment|inner.style.transform = slideOffset > 0 ? `translateY(${slideOffset}px)` : '';",
   "lib/components/chat/ChatHeaderActions.svelte|continuous spin animation|<Icon icon={RefreshCw} size={12} strokeWidth={2} class={regenerate.pending ? 'animate-spin' : ''} />",
   "lib/components/chat/ThreadTitleRegenerateButton.svelte|continuous spin animation|<Icon icon={RefreshCw} size={12} strokeWidth={2} class={regenerate.pending ? 'animate-spin' : ''} />",
