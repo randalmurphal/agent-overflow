@@ -180,8 +180,11 @@ and anti-changes that live only here:
   title fades and swipes rather than wrapping or truncating; only the
   branch ellipsizes; the worktree is an icon that never scrolls away
   (it is the way to New worktree). No workspace strip on the phone; the
-  cost sits right-aligned on the activity rail, which shows whenever
-  there is usage to report. Desktop shows the project
+  token count sits right-aligned on the activity rail, with cost in its
+  popover. The rail keeps one fixed-height row: Checklist and SendToBack
+  icons with counts replace disclosure arrows and labels under compact;
+  wide spinner art scales proportionally within its fixed-height slot.
+  The rail shows whenever there is usage to report. Desktop shows the project
   as `project / title` in the header, and its strip is machine, branch,
   worktree, cost. The desktop crumb and every segment of the phone's facts
   line wear the secondary text color, one visible tier under the title in

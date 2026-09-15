@@ -16,4 +16,4 @@ export const activityRailRowClasses =
 // Common chip box (padding + line box). Height-determining: every rail
 // segment and the spacer's placeholder chip share these metrics.
 export const activityRailChipClasses =
-  'inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 compact:py-1.5 compact:select-none';
+  'inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 compact:gap-1 compact:px-1 compact:py-1.5 compact:select-none';

@@ -59,6 +59,10 @@
     showTimestamp = false,
     showSpawnStatus = false,
     hostActions,
+    agentLayout = false,
+    headerMetrics,
+    headerDetails,
+    onActivate,
   }: {
     pane?: PaneDoors & PaneSession & RowUiRegistry & ScrollHost & TimelineSource;
     item: Item;
@@ -68,6 +72,10 @@
     showTimestamp?: boolean;
     showSpawnStatus?: boolean;
     hostActions?: Snippet;
+    agentLayout?: boolean;
+    headerMetrics?: Snippet;
+    headerDetails?: Snippet;
+    onActivate?: () => void;
   } = $props();
   let effectiveStatusItem = $derived(statusItem ?? item);
 
@@ -273,7 +281,7 @@
 {/snippet}
 
 {#snippet rowBody()}
-  <span class="min-w-0 flex-1 truncate">
+  <span class="min-w-0 flex-1 truncate" title={title + (modelAffix ? ` (${modelAffix})` : '')}>
     {title}{#if modelAffix}<span class="ml-1 text-fg-hint">({modelAffix})</span>{/if}
   </span>
 {/snippet}
@@ -299,6 +307,10 @@
 
 <div class="group/tool px-1 py-1 text-[0.75rem] text-fg-muted" data-testid="collab-tool-row">
   <TranscriptDisclosureHeader
+    {agentLayout}
+    metrics={headerMetrics}
+    details={headerDetails}
+    {onActivate}
     expanded={expansion?.expanded ?? false}
     expandable={hasExpandableOutput}
     controls={hasExpandableOutput ? outputDomId : undefined}

@@ -74,6 +74,10 @@
     durationLabel = '',
     showTimestamp = true,
     hostActions,
+    agentLayout = false,
+    headerMetrics,
+    headerDetails,
+    onActivate,
   }: {
     pane?: PaneDoors & PaneSession & RowUiRegistry & ScrollHost & TimelineSource;
     item: Item;
@@ -83,6 +87,10 @@
     showTimestamp?: boolean;
     /** A host's own row actions (the tray's stop/open). Replaces the open-pane door. */
     hostActions?: Snippet;
+    agentLayout?: boolean;
+    headerMetrics?: Snippet;
+    headerDetails?: Snippet;
+    onActivate?: () => void;
   } = $props();
 
   // The launch this row stands for. A completion sibling names it through
@@ -194,6 +202,10 @@
 
 <div class="group/tool overflow-hidden" data-testid="agent-row" data-tool-kind="robot">
   <TranscriptDisclosureHeader
+    {agentLayout}
+    metrics={headerMetrics}
+    details={headerDetails}
+    {onActivate}
     expanded={false}
     expandable={false}
     testId="agent-row-toggle"
@@ -202,7 +214,7 @@
     {#snippet icon()}<ToolKindIcon kind="robot" ariaLabel="agent" />{/snippet}
     {#snippet label()}<span data-testid="agent-row-label">agent</span>{/snippet}
     {#snippet body()}
-      <span class="min-w-0 flex-1 truncate text-[0.75rem] text-fg-muted/75" data-testid="agent-row-preview">
+      <span class="min-w-0 flex-1 truncate text-[0.75rem] text-fg-muted/75" data-testid="agent-row-preview" title={[agentLabel, modelLabel, inputPreview].filter(Boolean).join(' · ')}>
         <span class="text-fg-muted">{agentLabel}</span>{#if modelLabel}<span class="ml-1 text-fg-hint">({modelLabel})</span>{/if}{#if inputPreview}<span class="ml-2">{inputPreview}</span>{/if}
       </span>
     {/snippet}

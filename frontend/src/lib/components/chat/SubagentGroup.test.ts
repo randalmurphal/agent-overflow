@@ -380,7 +380,7 @@ describe('<SubagentGroup>', () => {
       { props: { group } },
     );
 
-    const toggle = getByRole('button');
+    const toggle = getByRole('button', { name: /^Toggle / });
     await fireEvent.click(toggle);
 
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
@@ -449,7 +449,7 @@ describe('<SubagentGroup>', () => {
       props: { group },
     });
 
-    await fireEvent.click(getByRole('button'));
+    await fireEvent.click(getByRole('button', { name: /^Toggle / }));
 
     const ids = getAllByTestId('leaf').map((el) => el.getAttribute('data-id'));
     expect(ids).toEqual([
@@ -482,7 +482,7 @@ describe('<SubagentGroup>', () => {
       props: { group },
     });
 
-    await fireEvent.click(getByRole('button'));
+    await fireEvent.click(getByRole('button', { name: /^Toggle / }));
     const ids = getAllByTestId('leaf').map((el) => el.getAttribute('data-id'));
     expect(ids).toEqual(['prompt-1', 'tool-1']);
   });
@@ -507,7 +507,7 @@ describe('<SubagentGroup>', () => {
       props: { group },
     });
 
-    await fireEvent.click(getByRole('button'));
+    await fireEvent.click(getByRole('button', { name: /^Toggle / }));
     const ids = getAllByTestId('leaf').map((el) => el.getAttribute('data-id'));
     expect(ids).toEqual(['tool-1', 'text-1']);
   });
@@ -529,7 +529,7 @@ describe('<SubagentGroup>', () => {
       props: { group },
     });
 
-    await fireEvent.click(getByRole('button'));
+    await fireEvent.click(getByRole('button', { name: /^Toggle / }));
 
     const ids = getAllByTestId('leaf').map((el) => el.getAttribute('data-id'));
     expect(ids).toEqual(['tool-1']);
@@ -542,7 +542,7 @@ describe('<SubagentGroup>', () => {
       descendantCount: 1,
     });
     const { getByRole, getAllByTestId } = render(SubagentGroupTestHarness, { props: { group } });
-    const toggle = getByRole('button');
+    const toggle = getByRole('button', { name: /^Toggle / });
 
     // Testing-library's click event is the reliable stand-in for the
     // native activation event browsers synthesize for Enter/Space on a
@@ -567,7 +567,7 @@ describe('<SubagentGroup>', () => {
       latestChildSummary: 'Bash: pwd',
     });
     const { getByTestId } = render(SubagentGroupTestHarness, { props: { group: withLatest } });
-    expect(getByTestId('subagent-group-preview').textContent?.trim()).toBe('└ Bash: pwd');
+    expect(getByTestId('subagent-group-preview').textContent?.trim()).toBe('Bash: pwd');
   });
 
   it('withholds the latest-action row until the launch is proven foreground', () => {
@@ -602,7 +602,7 @@ describe('<SubagentGroup>', () => {
       latestChildSummary: '',
     });
     const second = render(SubagentGroupTestHarness, { props: { group: withDescendants } });
-    expect(second.getByTestId('subagent-group-preview').textContent?.trim()).toBe('└ Initializing...');
+    expect(second.getByTestId('subagent-group-preview').textContent?.trim()).toBe('Initializing...');
     second.unmount();
 
     // An explicit run_in_background:false in the tool input is
@@ -617,7 +617,7 @@ describe('<SubagentGroup>', () => {
       latestChildSummary: '',
     });
     const third = render(SubagentGroupTestHarness, { props: { group: explicitForeground } });
-    expect(third.getByTestId('subagent-group-preview').textContent?.trim()).toBe('└ Initializing...');
+    expect(third.getByTestId('subagent-group-preview').textContent?.trim()).toBe('Initializing...');
     third.unmount();
 
     // A settled card with no child text has nothing to say — the
@@ -651,11 +651,11 @@ describe('<SubagentGroup>', () => {
     const { getAllByRole, getAllByTestId } = render(SubagentGroupTestHarness, {
       props: { group: outer },
     });
-    expect(getAllByRole('button')).toHaveLength(1);
+    expect(getAllByRole('button', { name: /^Toggle / })).toHaveLength(1);
 
-    await fireEvent.click(getAllByRole('button')[0]);
+    await fireEvent.click(getAllByRole('button', { name: /^Toggle / })[0]);
 
-    expect(getAllByRole('button')).toHaveLength(1);
+    expect(getAllByRole('button', { name: /^Toggle / })).toHaveLength(1);
     expect(() => getAllByTestId('leaf')).toThrow();
   });
 
@@ -680,7 +680,7 @@ describe('<SubagentGroup>', () => {
   it('shows a no-entries message when expanded with zero children (defensive)', async () => {
     const group = mkGroup({ parentId: 'empty', children: [], descendantCount: 0 });
     const { getByRole, getByText } = render(SubagentGroupTestHarness, { props: { group } });
-    await fireEvent.click(getByRole('button'));
+    await fireEvent.click(getByRole('button', { name: /^Toggle / }));
     expect(getByText(/No child entries captured/i)).toBeInTheDocument();
   });
 
@@ -697,7 +697,7 @@ describe('<SubagentGroup>', () => {
     const { getByRole, getByTestId, queryByText } = render(SubagentGroupTestHarness, {
       props: { group },
     });
-    await fireEvent.click(getByRole('button'));
+    await fireEvent.click(getByRole('button', { name: /^Toggle / }));
     expect(getByTestId('subagent-group-loading').textContent).toContain('Loading 4 entries');
     expect(queryByText(/No child entries captured/i)).not.toBeInTheDocument();
   });

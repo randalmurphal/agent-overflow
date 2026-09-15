@@ -34,7 +34,7 @@
   // Past that, the row steps down a measured density ladder
   // (activityRailDensity.ts): the preview and the working verb go first,
   // then the segment names, so at phone widths the row is icons, counts,
-  // the timer and the cost, and nothing clips.
+  // the timer and tokens. Cost remains in the usage popover.
   //
   // Under compact the row also carries the thread's usage chip at its
   // right end (the workspace strip does not mount there); the host owns
@@ -61,6 +61,8 @@
   import Icon from '../primitives/Icon.svelte';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import ListTodo from '@lucide/svelte/icons/list-todo';
+  import SendToBack from '@lucide/svelte/icons/send-to-back';
 
   interface Props {
     pane: ThreadPane;
@@ -173,7 +175,7 @@
       data-testid="activity-rail-hairline"
     ></span>
   {/if}
-  <div bind:this={rowEl} class={activityRailRowClasses} data-density={density} data-activity-rail-row>
+  <div bind:this={rowEl} class="{activityRailRowClasses} compact:[--working-sprite-max-width:2rem]" data-density={density} data-compact={isCompactLayout() || undefined} data-activity-rail-row>
     {#if inputRequest}
       <button
         type="button"
@@ -210,23 +212,23 @@
 
     {#if liveTodo}
       {#if inputRequest || showWorking}
-        <span class="shrink-0 select-none text-fg-hint/60" aria-hidden="true">·</span>
+        <span class="shrink-0 select-none text-fg-hint/60" data-activity-rail-separator aria-hidden="true">·</span>
       {/if}
-      <!-- The one shrinkable segment (min-w-0): the truncate preview gives
-           up width first; overflow-hidden additionally clips at the
-           button's own edge in the degenerate case where even the fixed
-           label/badge can't fit, instead of bleeding over the next chip. -->
+      <!-- Protect the icon and count so the density measurement sees
+           insufficient width. Only the optional preview may truncate. -->
       <button
         type="button"
-        class="{activityRailChipClasses} min-w-0 overflow-hidden text-fg-muted transition-colors hover:bg-surface-2/45 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 {todosOpen ? 'bg-accent/10 text-accent' : ''}"
+        class="{activityRailChipClasses} min-w-max text-fg-muted transition-colors hover:bg-surface-2/45 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 {todosOpen ? 'bg-accent/10 text-accent' : ''}"
         onclick={() => pane.toggleActivityRailTodos()}
         aria-controls="activity-rail-todos-body"
         aria-expanded={todosOpen}
+        aria-label={`Todos ${todoProgressLabel}`}
+        title="Todos"
         data-testid="activity-rail-todos-toggle"
         data-activity-rail-shrinker
       >
         <Icon
-          icon={todosOpen ? ChevronDown : ChevronRight}
+          icon={ListTodo}
           size={11}
           strokeWidth={2.25}
           class="shrink-0 text-fg-hint/70"
@@ -248,7 +250,7 @@
 
     {#if bg.count > 0}
       {#if inputRequest || showWorking || liveTodo}
-        <span class="shrink-0 select-none text-fg-hint/60" aria-hidden="true">·</span>
+        <span class="shrink-0 select-none text-fg-hint/60" data-activity-rail-separator aria-hidden="true">·</span>
       {/if}
       <button
         type="button"
@@ -256,10 +258,12 @@
         onclick={() => pane.toggleActivityRailBackground()}
         aria-controls="activity-rail-background-body"
         aria-expanded={backgroundOpen}
+        aria-label={`Background ${bg.count}`}
+        title="Background"
         data-testid="activity-rail-background-toggle"
       >
         <Icon
-          icon={backgroundOpen ? ChevronDown : ChevronRight}
+          icon={SendToBack}
           size={11}
           strokeWidth={2.25}
           class="shrink-0 text-fg-hint/70"
@@ -280,7 +284,7 @@
     {/if}
 
     {#if isCompactLayout()}
-      <span class="ml-auto flex shrink-0 items-center pl-2" data-testid="activity-rail-usage">
+      <span class="ml-auto flex shrink-0 items-center" data-testid="activity-rail-usage">
         <UsageChip {pane} variant="rail" stats={usage} />
       </span>
     {/if}
@@ -302,17 +306,23 @@
 </div>
 
 <style>
-  /* The density rungs (activityRailDensity.ts). `full` holds the todos
-     toggle open to a readable preview rather than letting it ellipsize to
-     nothing (the toggle clips its own content, so the minimum has to sit
-     on the toggle for the row's overflow read to see it); the measure
-     then only calls the rung a fit when the words actually show. */
-  :global([data-activity-rail-row][data-density='full'] [data-activity-rail-shrinker]:has([data-activity-rail-preview])) {
+  /* Full desktop rows reserve readable preview space. Other rungs keep
+     the toggle's intrinsic icon and count width visible to measurement. */
+  :global([data-activity-rail-row][data-density='full']:not([data-compact]) [data-activity-rail-shrinker]:has([data-activity-rail-preview])) {
     min-width: 11rem;
   }
+  :global([data-activity-rail-row][data-compact] [data-activity-rail-preview]),
+  :global([data-activity-rail-row][data-compact] [data-activity-rail-verb]),
+  :global([data-activity-rail-row][data-compact] [data-activity-rail-name]),
   :global([data-activity-rail-row]:not([data-density='full']) [data-activity-rail-preview]),
   :global([data-activity-rail-row]:not([data-density='full']) [data-activity-rail-verb]),
   :global([data-activity-rail-row][data-density='minimal'] [data-activity-rail-name]) {
     display: none;
+  }
+  :global([data-activity-rail-row]:is([data-density='minimal'], [data-compact]) [data-activity-rail-separator]) {
+    display: none;
+  }
+  :global([data-activity-rail-row]:is([data-density='minimal'], [data-compact])) {
+    column-gap: 0.25rem;
   }
 </style>

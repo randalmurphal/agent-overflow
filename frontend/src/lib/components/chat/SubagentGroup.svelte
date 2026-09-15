@@ -44,7 +44,7 @@
   //   - no status pills: `data-background` marks a detached node for
   //     tests, and a pending approval shows ONLY in the composer's
   //     approval UI (user ruling 2026-08-23), never on the card;
-  //   - live progress (tool count, activity line, tokens-when-room) from
+  //   - live progress (tool count, activity line, tokens) from
   //     `provider:subagent_progress`, falling back to the final numbers
   //     triage persisted on the launch row at terminal;
   //   - expanded body is a capped, virtualized DIGEST of the node's tool
@@ -501,10 +501,57 @@
     data-tool-kind="robot"
     data-background={isBackgroundNode ? 'true' : undefined}
   >
+    {#snippet cardMetrics()}
+      {#if toolCountLabel}
+        <span
+          class="shrink-0 text-[0.625rem] text-fg-hint tabular-nums"
+          data-testid="subagent-group-tools"
+        >
+          {toolCountLabel}
+        </span>
+      {/if}
+      {#if toolCountLabel && tokensLabel}<span aria-hidden="true">·</span>{/if}
+      {#if tokensLabel}
+        <span
+          class="shrink-0"
+          data-testid="subagent-group-tokens"
+        >
+          {tokensLabel}
+        </span>
+      {/if}
+      {#if entryCountLabel}
+        <span
+          class="shrink-0 text-[0.625rem] text-fg-hint opacity-70 transition-opacity group-hover/tool:opacity-100"
+          data-testid="subagent-group-count"
+          aria-label={entryCountAriaLabel}
+        >
+          {entryCountLabel}
+        </span>
+      {/if}
+    {/snippet}
+    {#snippet cardDetails()}
+      {#if previewText}
+        <button
+          type="button"
+          tabindex="-1"
+          disabled={navigationOnly}
+          onclick={(event) => preservePaneScrollAnchor(pane, event, toggle)}
+          class="block w-full truncate bg-transparent p-0 text-left text-[0.6875rem] text-fg-hint/85 disabled:cursor-default"
+          data-testid="subagent-group-preview"
+          title={previewText}
+        >
+          {previewText}
+        </button>
+      {/if}
+    {/snippet}
     <TranscriptDisclosureHeader
+      agentLayout
+      metrics={toolCountLabel || tokensLabel || entryCountLabel ? cardMetrics : undefined}
+      details={previewText ? cardDetails : undefined}
       expanded={expanded}
       expandable={!navigationOnly}
       controls={groupDomId}
+      ariaLabel={`Toggle ${kindLabel} ${agentTitle}${inputDescription ? `: ${inputDescription}` : ''}`}
       testId="subagent-group-toggle"
       class="rounded-[var(--radius-control)] px-1 py-1 hover:bg-surface-2/20"
       onToggle={(event) => preservePaneScrollAnchor(pane, event, toggle)}
@@ -515,7 +562,8 @@
       <span class="min-w-0 flex-1">
         <span class="flex min-w-0 items-center gap-2">
           <span
-            class="text-[0.75rem] text-fg-muted shrink-0"
+            class="min-w-0 truncate text-[0.75rem] text-fg-muted"
+            title={agentTitle + (modelLabel ? ` (${modelLabel})` : '')}
             data-testid="subagent-group-label"
           >
             {agentTitle}{#if modelLabel}<span class="ml-1 text-fg-hint normal-case tracking-normal">({modelLabel})</span>{/if}
@@ -526,43 +574,9 @@
             </span>
           {/if}
         </span>
-        {#if previewText}
-          <span class="mt-0.5 block min-w-0 truncate text-[0.6875rem] text-fg-hint/85" data-testid="subagent-group-preview">
-            <span aria-hidden="true">└</span>
-            {previewText}
-          </span>
-        {/if}
       </span>
       {/snippet}
       {#snippet actions()}
-        {#if toolCountLabel}
-          <span
-            class="shrink-0 text-[0.625rem] text-fg-hint tabular-nums"
-            data-testid="subagent-group-tools"
-          >
-            {toolCountLabel}
-          </span>
-        {/if}
-        {#if tokensLabel}
-          <!-- Tokens only when the card has room (spec Q1): container
-               width, not viewport — a narrow pane on a wide screen still
-               hides them. -->
-          <span
-            class="hidden shrink-0 text-[0.625rem] text-fg-hint tabular-nums @[36rem]:inline"
-            data-testid="subagent-group-tokens"
-          >
-            {tokensLabel}
-          </span>
-        {/if}
-        {#if entryCountLabel}
-          <span
-            class="shrink-0 text-[0.625rem] text-fg-hint opacity-70 transition-opacity group-hover/tool:opacity-100"
-            data-testid="subagent-group-count"
-            aria-label={entryCountAriaLabel}
-          >
-            {entryCountLabel}
-          </span>
-        {/if}
         {#if canBackground}
           <button
             type="button"

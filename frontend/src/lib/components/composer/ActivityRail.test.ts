@@ -471,8 +471,8 @@ describe('<ActivityRail>', () => {
     // gives up width first via text-overflow ellipsis.
     const todosToggle = await findByTestId('activity-rail-todos-toggle');
     expect(todosToggle.classList.contains('shrink-0')).toBe(false);
-    expect(todosToggle.classList.contains('min-w-0')).toBe(true);
-    expect(todosToggle.classList.contains('overflow-hidden')).toBe(true);
+    expect(todosToggle.classList.contains('min-w-max')).toBe(true);
+    expect(todosToggle.classList.contains('overflow-hidden')).toBe(false);
     const preview = await findByTestId('activity-rail-todos-preview');
     expect(preview.classList.contains('truncate')).toBe(true);
     expect(preview.classList.contains('hidden')).toBe(false);
@@ -524,7 +524,7 @@ describe('<ActivityRail>', () => {
     expect(usage.classList.contains('ml-auto')).toBe(true);
     expect(usage.classList.contains('shrink-0')).toBe(true);
     const chip = await findByTestId('usage-chip-trigger');
-    expect(chip.textContent?.trim()).toBe('500 · $0.32');
+    expect(chip.textContent?.trim()).toBe('500');
     // The chip wears the rail's chip box so the row stays the height twin
     // of the composer's reservation spacer.
     expect(chip.className).toContain('px-1.5 py-0.5');
@@ -963,7 +963,11 @@ describe('<ActivityRail>', () => {
     let fetches = 0;
     const launch = backgroundLaunch({
       id: 'spawn-agent',
+      summary: 'spawn agent',
       toolName: 'collab_agent',
+      payloadKind: undefined,
+      payloadId: undefined,
+      payloadMeta: undefined,
       meta: JSON.stringify({ input: { tool: 'spawn_agent' } }),
     });
     setBindingMock('ListLiveBackgroundTasks', async () => {

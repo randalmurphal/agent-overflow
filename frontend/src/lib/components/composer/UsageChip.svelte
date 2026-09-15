@@ -94,7 +94,7 @@
   let chipLabel = $derived.by(() => {
     if (!lifetimeBucket) return '';
     const tokens = formatTokens(tokenTotal);
-    return chipCost ? `${tokens} · ${chipCost}` : tokens;
+    return variant !== 'rail' && chipCost ? `${tokens} · ${chipCost}` : tokens;
   });
 
   let splitRows = $derived.by(() => {
@@ -160,6 +160,13 @@
             </div>
           {/each}
         </div>
+
+        {#if chipCost}
+          <div class="mt-2 flex items-center justify-between gap-4 text-xs text-fg-muted" data-testid="usage-chip-cost">
+            <span>{providerEstimated ? 'Estimated cost' : 'Cost'}</span>
+            <span class="tabular-nums">{chipCost}</span>
+          </div>
+        {/if}
 
         <p class="mt-2 max-w-xs text-xs text-fg-hint">{providerEstimated ? 'Cost estimated by Codex; billing may still be settling. Model totals below use standard token rates.' : USAGE_COST_EXPLANATION}</p>
         {#if accountingPending}

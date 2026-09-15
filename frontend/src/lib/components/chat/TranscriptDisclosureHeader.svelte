@@ -13,6 +13,11 @@
     class?: string;
     buttonClass?: string;
     interactiveBody?: boolean;
+    /** Agent summaries omit the tool gutter and move metrics below at narrow widths. */
+    agentLayout?: boolean;
+    metrics?: Snippet;
+    details?: Snippet;
+    onActivate?: () => void;
     children?: Snippet;
     icon?: Snippet;
     label?: Snippet;
@@ -31,6 +36,10 @@
     class: className = '',
     buttonClass = '',
     interactiveBody = false,
+    agentLayout = false,
+    metrics,
+    details,
+    onActivate,
     children,
     icon,
     label,
@@ -40,6 +49,10 @@
   }: Props = $props();
 
   function handleToggle(event: MouseEvent): void {
+    if (onActivate) {
+      onActivate();
+      return;
+    }
     if (!expandable) {
       event.preventDefault();
       return;
@@ -51,6 +64,7 @@
 <div
   class={[
     'flex w-full items-center gap-2 compact:gap-1 text-left',
+    agentLayout ? '@container/agent-header flex-wrap gap-y-0.5 [--agent-inset:2.625rem] compact:[--agent-inset:2.125rem]' : '',
     className,
   ].join(' ')}
   data-testid={headerTestId}
@@ -60,14 +74,14 @@
     class={[
       'flex min-w-0 items-center gap-2 compact:gap-1 bg-transparent p-0 text-left compact:min-h-9 compact:select-none',
       'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
-      expandable ? 'cursor-pointer' : 'cursor-default',
+      expandable || onActivate ? 'cursor-pointer' : 'cursor-default',
       interactiveBody ? 'shrink-0' : 'flex-1',
       buttonClass,
     ].join(' ')}
     onclick={handleToggle}
-    tabindex={expandable ? undefined : -1}
-    aria-disabled={!expandable}
-    aria-expanded={expandable ? expanded : false}
+    tabindex={expandable || onActivate ? undefined : -1}
+    aria-disabled={!expandable && !onActivate}
+    aria-expanded={onActivate ? undefined : expandable ? expanded : false}
     aria-controls={expandable ? controls : undefined}
     aria-label={ariaLabel}
     data-testid={testId}
@@ -92,7 +106,7 @@
       <span class="flex size-3.5 shrink-0 items-center justify-center" data-testid="{testId}-icon-slot">
         {#if icon}{@render icon()}{/if}
       </span>
-      <span class="w-12 compact:w-9 shrink-0 truncate text-[0.6875rem] text-fg-hint" data-testid="{testId}-label-slot">
+      <span class={agentLayout ? "sr-only" : "w-12 compact:w-9 shrink-0 truncate text-[0.6875rem] text-fg-hint"} data-testid="{testId}-label-slot">
         {#if label}{@render label()}{/if}
       </span>
       {#if !interactiveBody}
@@ -121,7 +135,21 @@
     </span>
   {/if}
 
-  {#if actions}
+  {#if agentLayout}
+    {#if metrics}
+      <span class="flex shrink-0 items-center gap-2 text-[0.625rem] text-fg-hint tabular-nums @max-[36rem]/agent-header:order-1 @max-[36rem]/agent-header:w-full @max-[36rem]/agent-header:pl-[var(--agent-inset)]">
+        {@render metrics()}
+      </span>
+    {/if}
+    {#if actions}
+      <span class="flex shrink-0 items-center gap-2 compact:gap-1">{@render actions()}</span>
+    {/if}
+    {#if details}
+      <span class="order-2 block w-full min-w-0 pl-[var(--agent-inset)]">
+        {@render details()}
+      </span>
+    {/if}
+  {:else if actions}
     {@render actions()}
   {/if}
 </div>

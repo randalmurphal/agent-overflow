@@ -70,6 +70,21 @@ describe('<UsageChip>', () => {
     expect(trigger.title).toContain('Estimated cost');
   });
 
+  it('keeps rail usage to tokens and exposes total cost on tap', async () => {
+    const pane = await buildPane(makeThread());
+    setBindingMock('GetUsageStats', async () => [lifetimeBucket({ costUsd: 1.2, unpricedRows: 2 })]);
+    const { findByTestId, getByTestId, rerender } = render(UsageChip, { props: { pane, variant: 'rail' } });
+    const trigger = await findByTestId('usage-chip-trigger');
+    expect(trigger.textContent?.trim()).toBe('500');
+    await fireEvent.click(trigger);
+    expect(getByTestId('usage-chip-cost')).toHaveTextContent('≥$1.20');
+    await fireEvent.click(trigger);
+    await rerender({ variant: 'strip' });
+    expect(trigger.textContent?.trim()).toBe('500 · ≥$1.20');
+    await rerender({ variant: 'rail' });
+    expect(trigger.textContent?.trim()).toBe('500');
+  });
+
   it('clears usage on thread changes and restores the current accounting hint on return', async () => {
     const pane = await buildPane(makeThread({ id: 'with-usage' }));
     const empty = await buildPane(makeThread({ id: 'without-usage' }), [], 'empty');

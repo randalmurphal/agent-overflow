@@ -1238,6 +1238,7 @@ input[type="search"]::-webkit-search-cancel-button {
  */
 .working-sprite-slot {
   --working-sprite-sz: 1.5rem;
+  height: var(--working-sprite-sz);
   display: inline-flex;
   align-items: center;
   flex: none;
@@ -1246,15 +1247,20 @@ input[type="search"]::-webkit-search-cancel-button {
   margin-block: calc((0.859375rem - var(--working-sprite-sz)) / 2);
 }
 .working-sprite {
+  --working-sprite-natural-width: calc(var(--working-sprite-sz) * var(--working-sprite-aspect, 1));
+  --working-sprite-render-size: min(
+    var(--working-sprite-sz),
+    calc(var(--working-sprite-max-width, var(--working-sprite-natural-width)) / var(--working-sprite-aspect, 1))
+  );
   --working-sprite-fw: calc(
-    round(var(--working-sprite-sz) * var(--working-sprite-aspect, 1) * var(--dpr, 1), 1px) /
+    round(var(--working-sprite-render-size) * var(--working-sprite-aspect, 1) * var(--dpr, 1), 1px) /
       var(--dpr, 1)
   );
   --working-sprite-strip-w: calc(var(--working-sprite-fw) * var(--working-sprite-frames, 1));
   position: relative;
   flex: none;
   width: var(--working-sprite-fw);
-  height: var(--working-sprite-sz);
+  height: var(--working-sprite-render-size);
   overflow: hidden;
 }
 .working-sprite-strip {

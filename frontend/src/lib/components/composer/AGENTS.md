@@ -52,4 +52,4 @@ header's crumb before the title. Under compact the chat header's facts line
 its own segments, and the usage chip sits at the right end of the activity
 rail. `activityRailHost.svelte.ts` owns the rail's visibility, and
 `densityLadder.ts` owns the measured density ladders of the toolbar and the
-rail; keep every rung a single line and never clip Send or the cost.
+rail; keep every rung a single line and never clip controls or usage.

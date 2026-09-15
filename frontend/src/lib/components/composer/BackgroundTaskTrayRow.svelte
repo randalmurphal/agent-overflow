@@ -117,7 +117,7 @@
     task.status === 'running' ? (progress?.activity || latestToolSummary) : '',
   );
   let hasStopAction = $derived(
-    stopTarget !== null || opensAgentPane || toolCountLabel !== '' || tokensLabel !== '',
+    stopTarget !== null || opensAgentPane,
   );
 </script>
 
@@ -132,27 +132,35 @@
   data-depth={task.depth}
   onclick={onRowClick}
 >
-  {#snippet stopAction()}
+  {#snippet metrics()}
     {#if toolCountLabel}
       <span
-        class="shrink-0 text-[0.625rem] text-fg-hint tabular-nums"
+        class="shrink-0"
         data-testid="background-task-tray-row-tools"
       >
         {toolCountLabel}
       </span>
     {/if}
+    {#if toolCountLabel && tokensLabel}<span aria-hidden="true">·</span>{/if}
     {#if tokensLabel}
       <span
-        class="shrink-0 text-[0.625rem] text-fg-hint tabular-nums"
+        class="shrink-0"
         data-testid="background-task-tray-row-tokens"
       >
         {tokensLabel}
       </span>
     {/if}
+  {/snippet}
+  {#snippet activity()}
+    <span class="block truncate text-[0.6875rem] text-fg-hint/85" data-testid="background-task-tray-row-activity" title={activityLine}>
+      {activityLine}
+    </span>
+  {/snippet}
+  {#snippet stopAction()}
     {#if onOpenPane && opensAgentPane}
       <button
         type="button"
-        class="shrink-0 rounded p-0.5 text-text-secondary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        class="hidden @min-[36rem]/agent-header:inline-flex shrink-0 rounded p-0.5 text-text-secondary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
         onclick={() => onOpenPane(task)}
         title="Open in agent pane"
         aria-label="Open in Agent Pane"
@@ -190,6 +198,10 @@
       />
     {:else if presentation.kind === 'agent'}
       <AgentRow
+        agentLayout
+        headerMetrics={toolCountLabel || tokensLabel ? metrics : undefined}
+        headerDetails={activityLine ? activity : undefined}
+        onActivate={opensAgentPane ? () => onOpenPane?.(task) : undefined}
         item={presentation.item}
         displayItem={presentation.displayItem}
         statusItem={presentation.statusItem}
@@ -199,6 +211,10 @@
       />
     {:else if presentation.kind === 'collab'}
       <CollabToolRow
+        agentLayout
+        headerMetrics={toolCountLabel || tokensLabel ? metrics : undefined}
+        headerDetails={activityLine ? activity : undefined}
+        onActivate={opensAgentPane ? () => onOpenPane?.(task) : undefined}
         item={presentation.item}
         statusItem={presentation.statusItem}
         {durationLabel}
@@ -216,16 +232,4 @@
       />
     {/if}
   </div>
-  {#if activityLine}
-    <!-- The agent's current activity in the card's preview style. Claude
-         supplies task_progress.description; Codex falls back to the latest
-         direct child tool summary projected onto the tray-only launch copy. -->
-    <div
-      class="ml-[5.25rem] truncate px-1 pb-0.5 text-[0.6875rem] text-fg-hint/85"
-      data-testid="background-task-tray-row-activity"
-    >
-      <span aria-hidden="true">└</span>
-      {activityLine}
-    </div>
-  {/if}
 </div>

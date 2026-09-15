@@ -59,9 +59,11 @@ subagent model and the user explicitly authorizes the corresponding change.
 - Card = today's inline subagent card for every kind. Awaited vs background
   changes placement and tray membership, not a card pill. Its expanded
   digest is capped, virtualized, and faded at the top.
-- Collapsed row: kind chip (`agent` / `skill`), name, state indicator,
-  elapsed, tool count, current activity line; tokens when the row has
-  room, hidden under a container-width breakpoint (Q1).
+- Agent cards and tray rows show name, state indicator, elapsed, tool count,
+  tokens and activity. Narrow rows put metrics on a separate line; names and
+  activity truncate. Activity aligns with the name without a tree connector.
+  The tray name opens the agent pane; wide rows also have an explicit open
+  button. Transcript launch rows retain their tool gutter and open button.
 - The initial prompt is a plain user-side message row nested under the
   launch (ruling 2026-08-23), not a bespoke shape: `user_text` with
   `meta.wire_only`, so it renders as a user bubble with no edit / fork /

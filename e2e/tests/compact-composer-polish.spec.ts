@@ -1,5 +1,5 @@
 // Phone gestures and geometry over the production SPA: a meter stays open,
-// the header's facts line and the rail's cost fit without horizontal
+// the header's facts line and the rail's tokens fit without horizontal
 // overflow and open their pickers, a picked file lands in the draft, and an
 // expanded Bash row exposes the full command before its output.
 import { test, expect } from './fixtures.js';
@@ -41,11 +41,11 @@ test('phone meters, attachments, workspace and command details remain usable', a
   await ring.tap();
   await expect(tooltip).toHaveCount(0);
 
-  // No workspace strip on the phone: the cost rides the activity rail and
+  // No workspace strip on the phone: the token count rides the activity rail and
   // the workspace facts are the header's own line.
   await expect(page.getByTestId('composer-workspace-strip')).toHaveCount(0);
   const rail = page.getByTestId('activity-rail');
-  await expect(rail.getByTestId('usage-chip-trigger')).toBeVisible();
+  await expect(rail.getByTestId('usage-chip-trigger')).toHaveText('45.7k');
   for (const width of [412, 360, 320]) {
     await page.setViewportSize({ width, height: 850 });
     const railRow = rail.locator('[data-activity-rail-row]');
@@ -74,6 +74,7 @@ test('phone meters, attachments, workspace and command details remain usable', a
   await page.getByTestId('chat-header-title').tap();
   await page.getByTestId('usage-chip-trigger').tap();
   await expect(page.getByTestId('usage-chip-popover')).toBeVisible();
+  await expect(page.getByTestId('usage-chip-cost')).toContainText('$');
   await page.getByTestId('chat-header-title').tap();
 
   const chooser = page.waitForEvent('filechooser');
