@@ -7,6 +7,7 @@ import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
 import { __setBackendStatusForTest } from '../../stores/transportStatus.svelte';
 import { noteThread } from '../../transport/entityIndex';
 import { __attachBackendForTest, detachBackend } from '../../transport/backends';
+import type { Project } from '../../types/models';
 
 const remote = 'tray-owner';
 function attachOwner() {
@@ -27,6 +28,24 @@ async function flush() { await tick(); await Promise.resolve(); await tick(); }
 describe('background tray recovery', () => {
   let release = () => {};
   afterEach(() => { release(); detachBackend(remote); vi.useRealTimers(); });
+
+  it('reads nothing for a draft placeholder, whose synthetic id no computer owns', async () => {
+    attachOwner();
+    noteThread('thread-1', remote, 2);
+    const pane = await buildPane();
+    const read = setBindingMock('ListLiveBackgroundTasks', async () => []);
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      pane.startDraftPlaceholder({ id: 'proj', name: 'proj', path: '/proj', createdAt: 0, updatedAt: 0 } as Project);
+      expect(pane.hasDraftPlaceholder).toBe(true);
+      release = $effect.root(() => createBackgroundController(() => pane, Date.now).mount());
+      await flush();
+      emitWailsEvent('provider:background_tasks_changed', { threadId: pane.threadId }, '');
+      await flush();
+      expect(read).not.toHaveBeenCalled();
+      expect(log).not.toHaveBeenCalled();
+    } finally { log.mockRestore(); }
+  });
 
   it('ignores other computers, fences an old reply, and rehydrates its owner without item events', async () => {
     attachOwner();

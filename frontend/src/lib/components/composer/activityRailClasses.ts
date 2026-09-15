@@ -10,8 +10,13 @@
 // would break the spacer's height twin. Every segment in the row is
 // shrink-0 except the todos button, whose preview text ellipsizes
 // (`truncate`) to absorb narrow pane widths.
+//
+// The compact working-sprite cap rides here too: it is a row-level
+// variable the sprite reads (`.working-sprite` in app.css), it sets no
+// box metric, and keeping it in the shared string keeps the spacer and
+// the live row identical by construction.
 export const activityRailRowClasses =
-  'flex items-center gap-1.5 px-3 py-2 text-[0.6875rem] leading-tight';
+  'flex items-center gap-1.5 px-3 py-2 text-[0.6875rem] leading-tight compact:[--working-sprite-max-width:2rem]';
 
 // Common chip box (padding + line box). Height-determining: every rail
 // segment and the spacer's placeholder chip share these metrics.

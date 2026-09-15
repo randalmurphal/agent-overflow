@@ -114,7 +114,10 @@ export function createBackgroundController(
 ): BackgroundController {
   let backgroundItems: Item[] = $state([]);
 
-  const threadId = $derived(getPane().thread?.id ?? null);
+  // A draft pane's thread is a synthetic placeholder no computer owns.
+  // There is nothing to read until it materializes, and asking would route
+  // an id that no entity index can resolve.
+  const threadId = $derived(getPane().hasDraftPlaceholder ? null : getPane().thread?.id ?? null);
   const provider = $derived(asProviderID(getPane().thread?.provider));
 
   // The scheduler owns staleness: its token flips false the moment a run is

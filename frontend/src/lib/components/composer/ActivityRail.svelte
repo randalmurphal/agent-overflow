@@ -175,7 +175,7 @@
       data-testid="activity-rail-hairline"
     ></span>
   {/if}
-  <div bind:this={rowEl} class="{activityRailRowClasses} compact:[--working-sprite-max-width:2rem]" data-density={density} data-compact={isCompactLayout() || undefined} data-activity-rail-row>
+  <div bind:this={rowEl} class={activityRailRowClasses} data-density={density} data-compact={isCompactLayout() || undefined} data-activity-rail-row>
     {#if inputRequest}
       <button
         type="button"

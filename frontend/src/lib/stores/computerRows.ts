@@ -65,12 +65,16 @@ export async function readComputerRows<T>(
     }
     let error: unknown;
     try {
-      // Every saved computer gets its initial dial, independently and under
-      // the same deadline. A phone need not have a legacy HOME slot at all;
-      // rejecting its first non-home read would leave boot/notification
-      // hydration incomplete even after the sidebar later reconnects.
-      const initialDial = !target.client.getHello?.();
-      if (!initialDial && target.status.status !== 'connected') throw new DisconnectedError('Computer is offline.');
+      // Every saved computer gets its first dial, independently and under
+      // the same deadline: 'disconnected' is the status until an attempt
+      // has failed, and a phone need not have a legacy HOME slot at all.
+      // Once that attempt has failed the reconnect ladder owns retries and
+      // this read treats the computer as offline like any other; its first
+      // hello refreshes every list (computerHydration). Issuing the read
+      // regardless would fire one dial per list per refresh at a computer
+      // that is off.
+      const status = target.status.status;
+      if (status !== 'connected' && status !== 'disconnected') throw new DisconnectedError('Computer is offline.');
       const rows = await readBeforeDeadline(withBackendTarget(target.id, read), 2500, (late) => {
         const apply = cache?.applyLate ?? applyLate;
         if (!apply || !stillCurrent()) return;

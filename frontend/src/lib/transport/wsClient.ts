@@ -745,13 +745,18 @@ interface ConnectAttempt {
 }
 
 // One outage's bookkeeping for the diagnostics sink: opened by the
-// first close after a connected period, settled (formatted + cleared)
-// when a reconnect lands. Keeping the three fields in one nullable
-// record means "reset every field" is a single assignment.
+// first failure, a socket close or an attempt that died before a socket
+// existed, and settled (formatted + cleared) when a reconnect lands.
+// Keeping the fields in one nullable record means "reset every field"
+// is a single assignment. closeCode is null until a socket has closed
+// during this outage: a backend that never answered has no code to name.
+// preSocketAttempts counts the attempts that died before a socket existed;
+// the first of them is the one the console and the diagnostics sink see.
 interface OutageRecord {
   startedAt: number;
-  closeCode: number;
+  closeCode: number | null;
   attempts: number;
+  preSocketAttempts: number;
 }
 
 // WSClient is the single transport client. Instances are stateful — the
@@ -1138,9 +1143,10 @@ export class WSClient {
     }
     // Connect lazily on first subscribe so an event-only listener
     // doesn't have to wait for an explicit RPC to bring the socket up.
-    void this.ensureConnected().catch((err) => {
-      console.warn('wsClient: ensureConnected failed', err);
-    });
+    // A failure is the connect path's to report, once per outage; a line
+    // per subscriber would print once per store on every boot against a
+    // computer that is off.
+    void this.ensureConnected().catch(() => {});
     return () => {
       const current = this.subscribers.get(channel);
       if (!current) return;
@@ -2022,11 +2028,7 @@ export class WSClient {
         // the pairing latch is the answer here too.
         this.enterPairingRequired(err);
       }
-      console.warn('wsClient: connection preparation failed', err);
-      // Pre-socket failures count toward the outage's attempt
-      // tally too (when one is open), so the reconnect summary reflects
-      // server-unreachable retries and not just WS-stage deaths.
-      if (this.outage !== null) this.outage.attempts += 1;
+      this.recordPreSocketFailure(err);
       // Re-raise so the awaiter sees the rejection, but also kick off a
       // reconnect so a transient bootstrap failure recovers without
       // requiring fresh user input.
@@ -2172,8 +2174,8 @@ export class WSClient {
     this.setStatus({ status: 'connected', nextAttemptAt: null });
     if (this.outage !== null) {
       const downSeconds = ((Date.now() - this.outage.startedAt) / 1000).toFixed(1);
-      const detail =
-        `down ${downSeconds}s, close code ${this.outage.closeCode}, ${this.outage.attempts} failed attempts`;
+      const cause = this.outage.closeCode === null ? 'no socket opened' : `close code ${this.outage.closeCode}`;
+      const detail = `down ${downSeconds}s, ${cause}, ${this.outage.attempts} failed attempts`;
       // Console too, not just the sink: remote clients can't persist
       // through ReportFrontendErrorBatch (host-scoped), and the console
       // line is then the only surviving evidence of the outage.
@@ -2247,6 +2249,28 @@ export class WSClient {
     this.handleFrame(parsed as ServerFrame, text.length);
   }
 
+  // recordPreSocketFailure books an attempt that died before a socket
+  // existed (manifest fetch, dial-ticket mint) into the outage the ladder
+  // is riding out, opening one when no socket close did. The outage's
+  // first such failure is the one that reaches the console and the
+  // diagnostics sink, because it carries the verdict a socket death does
+  // not (the manifest's HTTP status, a refused credential); a backend
+  // that is off answers every later attempt identically, and the
+  // reconnect summary carries the tally.
+  private recordPreSocketFailure(err: unknown): void {
+    if (this.outage === null) {
+      this.outage = { startedAt: Date.now(), closeCode: null, attempts: 0, preSocketAttempts: 0 };
+    }
+    this.outage.attempts += 1;
+    this.outage.preSocketAttempts += 1;
+    if (this.outage.preSocketAttempts !== 1) return;
+    console.warn('wsClient: connection preparation failed', err);
+    this.diagnosticsSink?.(
+      'transport: connection preparation failed',
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+
   // handleSocketClose tears down after a socket dies: outage
   // bookkeeping, pending-RPC rejection, bootstrap-cache invalidation,
   // attempt settlement, and the reconnect schedule. A superseded
@@ -2311,7 +2335,10 @@ export class WSClient {
     // 1000/1001 graceful); later closes during the same outage are
     // failed reconnect attempts.
     if (this.outage === null) {
-      this.outage = { startedAt: Date.now(), closeCode: ev.code, attempts: 0 };
+      this.outage = { startedAt: Date.now(), closeCode: ev.code, attempts: 0, preSocketAttempts: 0 };
+    } else if (this.outage.closeCode === null) {
+      // Opened by a pre-socket failure; this is the first socket to die.
+      this.outage.closeCode = ev.code;
     }
     // Drop pending RPCs from this socket; they will not get a
     // response on this connection. The reconnect path resends a

@@ -79,6 +79,26 @@ describe('unavailable computer catalogs', () => {
     expect(getProjects().map((entry) => entry.project.id)).toEqual(['late-home', 'gpu']);
   });
 
+  it('waits for a computer’s first dial but not for one whose reconnect ladder is running', async () => {
+    vi.useFakeTimers();
+    const gpu = stageBackend({ id: 'gpu', status: 'disconnected' });
+    const read = setBindingMock('ListProjects', async () => takePinnedBackend() === 'gpu' ? new Promise<never>(() => {}) : [row('mac')]);
+    // Never dialed: the read goes out and the deadline bounds it.
+    let refresh = refreshProjects();
+    await vi.advanceTimersByTimeAsync(2500);
+    await refresh;
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(getProjects().map((entry) => entry.project.id)).toEqual(['mac']);
+    // First attempt failed, ladder running: offline like any other
+    // disconnected computer, so no read is issued and nothing waits.
+    gpu.setStatus('reconnecting');
+    refresh = refreshProjects();
+    await vi.advanceTimersByTimeAsync(0);
+    await refresh;
+    expect(read).toHaveBeenCalledTimes(3);
+    expect(getProjects().map((entry) => entry.project.id)).toEqual(['mac']);
+  });
+
   it('does not let a delayed snapshot erase a project added since the request began', async () => {
     vi.useFakeTimers();
     stageBackend({ id: 'gpu' });

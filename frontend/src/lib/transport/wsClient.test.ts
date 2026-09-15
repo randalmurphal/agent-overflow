@@ -3887,6 +3887,46 @@ describe('WSClient', () => {
     }
   });
 
+  it('reports a pre-socket outage once, then summarizes it on reconnect', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'info').mockImplementation(() => {});
+
+    const fetchSpy = vi
+      .fn<() => Promise<{ wsUrl: string; token: string }>>()
+      .mockRejectedValueOnce(new Error('bootstrap fetch failed: HTTP 503'))
+      .mockRejectedValueOnce(new Error('bootstrap fetch failed: HTTP 503'))
+      .mockImplementation(bootstrap);
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap: fetchSpy });
+    const diagnostics: Array<{ message: string; detail?: string }> = [];
+    client.setDiagnosticsSink((message, detail) => diagnostics.push({ message, detail }));
+    // Several subscribers: each is live demand, none is a reporter.
+    client.subscribe('x', () => {});
+    client.subscribe('y', () => {});
+    client.subscribe('z', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    // attempt=0 backoff is 250 * 0.5 = 125ms; attempt=1 is 250ms.
+    await vi.advanceTimersByTimeAsync(150);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    MockWebSocket.instances[0]!.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const preparation = warn.mock.calls.filter((call) => call[0] === 'wsClient: connection preparation failed');
+    expect(preparation).toHaveLength(1);
+    expect(warn.mock.calls.some((call) => String(call[0]).includes('ensureConnected'))).toBe(false);
+    expect(diagnostics).toEqual([
+      { message: 'transport: connection preparation failed', detail: 'bootstrap fetch failed: HTTP 503' },
+      { message: 'transport: reconnected after outage', detail: expect.stringMatching(/^down \d+\.\ds, no socket opened, 2 failed attempts$/) },
+    ]);
+    expect(client.getStatus().status).toBe('connected');
+
+    client.close();
+  });
+
   it('reports an outage summary through the diagnostics sink on reconnect', async () => {
     vi.useFakeTimers();
     vi.spyOn(Math, 'random').mockReturnValue(0.5);
