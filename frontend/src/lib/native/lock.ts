@@ -3,7 +3,7 @@
 // is more sensitive than anything else on it).
 //
 // The lock screen goes up the moment the OS pauses the app, and the WebView
-// stays behind `components/native/LockScreen.svelte` until the gate passes.
+// stays behind `components/shared/LockScreen.svelte` until the gate passes.
 // Covering on PAUSE rather than on resume is what keeps the app's own
 // pixels out of the task switcher's thumbnail and off the screen for the
 // frame before a resume handler can run. The background WINDOW is still
@@ -29,38 +29,10 @@
 
 import { appPlugin, biometricPlugin } from './plugins';
 import { isNativeShell } from './platform';
+import { DEFAULT_LOCK_WINDOW_MS, shouldLock } from '../utils/lockTiming';
+export { DEFAULT_LOCK_WINDOW_MS, shouldLock } from '../utils/lockTiming';
 
 const LOCK_WINDOW_STORE_KEY = 'agent-overflow:lockWindowMs';
-
-/** Five minutes. The spec's default, and the one a person notices least. */
-export const DEFAULT_LOCK_WINDOW_MS = 5 * 60_000;
-
-/**
- * Whether a resume has to re-prompt.
- *
- * Pure, and the whole decision — which is why it is testable without a
- * plugin, a clock or a phone. Three cases, and each of them is a real
- * one rather than defensive padding:
- *
- *   - **Never paused (`null`)** is the COLD START, and it locks. That is
- *     the case the gate exists for.
- *   - **A window of zero or less** locks every time. Somebody who set it
- *     that way asked for exactly that.
- *   - **A `lastPausedAt` in the future** — a clock that moved backwards
- *     while the app was away, which is ordinary on a phone that just
- *     picked up network time — locks rather than trusting the arithmetic.
- *     Erring toward one prompt is the cheap direction.
- */
-export function shouldLock(
-  lastPausedAt: number | null,
-  now: number,
-  windowMs: number,
-): boolean {
-  if (lastPausedAt === null) return true;
-  if (windowMs <= 0) return true;
-  if (lastPausedAt > now) return true;
-  return now - lastPausedAt >= windowMs;
-}
 
 /** The window this device is set to, clamped to something sane. */
 export function lockWindowMs(): number {

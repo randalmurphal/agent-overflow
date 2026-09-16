@@ -5227,6 +5227,14 @@ export function UpdateThreadWorkspace(id: string, path: string): $CancellablePro
 }
 
 /**
+ * VerifyBrowserUnlock consumes fresh proof for the current session without
+ * replacing its credentials or grants. The browser owns its local screen lock.
+ */
+export function VerifyBrowserUnlock(ceremonyID: string, response: json$0.RawMessage): $CancellablePromise<void> {
+    return $Call.ByID(2139261008, ceremonyID, response);
+}
+
+/**
  * VerifyEditDiffs reports which of an edits-scope diff's files can
  * serve hunk-gap expansion, so the frontend renders arrows only where a
  * click would succeed. Each file runs the SAME resolution the serving

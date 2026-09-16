@@ -36,6 +36,11 @@ boundary. The `desktop` project runs ordinary specs; `compact` runs
 `compact-*.spec.ts` with touch and compact viewport settings. Run one file with
 `bin/ao-harness-e2e tests/<spec>`.
 
+`make e2e-mobile-browser` runs browser-lock checks in mobile Chromium and
+WebKit without the Android emulator. See
+[mobile browser validation](../docs/references/mobile-browser-testing.md) for
+coverage boundaries, real visibility events and the real-phone check.
+
 Manual specs and boundary probes are evidence tools, not automatic gates. Keep
 their opt-in environment checks and report exactly which mode ran. Freeze
 reproduction fixtures may contain real conversations: generate them from a

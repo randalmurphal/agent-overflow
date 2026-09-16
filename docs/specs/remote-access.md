@@ -505,6 +505,31 @@ same class as an MCP config write), and remote update triggering (§7).
 These calls require step-up because they change credentials, prompt
 routing, or commands the host will execute.
 
+### Browser content lock
+
+Remote browsers can enable **Browser lock** under **Allow device access** after
+verifying a registered passkey. The preference belongs to the browser profile
+at that origin. Each tab owns its unlock state: cold loads and history-cache
+restoration start locked, backgrounding covers content immediately, and returning
+after five minutes requires verification. Short returns retain an existing unlock;
+a canceled prompt remains owed. Authenticated host pages retain ordinary local
+access, including development and harness pages.
+
+`VerifyBrowserUnlock` verifies and consumes a session-bound passkey assertion
+without issuing a session or changing grants. Host presence cannot substitute
+for this assertion. The lock protects frontend interaction;
+it does not revoke credentials, stop agents, or encrypt cached content. Native
+apps retain their platform biometric/device-credential lock and share the cover
+and timing rule. Browser passkeys require the configured HTTPS domain. Enabling
+is explicit so plain HTTP LAN access remains available; an enabled lock never
+falls back to an unverified unlock. Lost sessions recover through pairing, and
+lost passkeys require registering a replacement from the host.
+
+Browser tests use Chromium's virtual authenticator through
+`e2e/tests/passkey-helpers.ts`, exercising real server verification without a
+human prompt. Cross-engine mobile coverage and real-phone checks are described in
+[mobile browser validation](../references/mobile-browser-testing.md).
+
 ### Local clients
 
 The embedded webview drops `?t=`: at boot the backend mints an implicit

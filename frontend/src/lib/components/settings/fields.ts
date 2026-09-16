@@ -550,6 +550,14 @@ const STATIC_FIELDS = [
 
   // --- Remote access ------------------------------------------------------
   {
+    id: 'remote.browser-lock',
+    section: 'remote',
+    label: 'Require a passkey to open',
+    heading: 'Browser lock',
+    keywords: ['security', 'lock', 'passkey', 'background', 'browser'],
+    conditional: true,
+  },
+  {
     id: 'remote.device-name',
     section: 'remote',
     label: 'Device name',

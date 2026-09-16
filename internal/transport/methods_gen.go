@@ -423,6 +423,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "UpdateThreadReasoningEffort", ID: 892204206, Scope: "threads:operate", Route: "thread"},                  // main.App.UpdateThreadReasoningEffort
 	{Name: "UpdateThreadRuntimeMode", ID: 325190827, Scope: "threads:operate", Route: "thread"},                      // main.App.UpdateThreadRuntimeMode
 	{Name: "UpdateThreadWorkspace", ID: 3875142865, Scope: "threads:operate", Route: "thread"},                       // main.App.UpdateThreadWorkspace
+	{Name: "VerifyBrowserUnlock", ID: 2139261008, Scope: "session", Route: "home"},                                   // main.App.VerifyBrowserUnlock
 	{Name: "VerifyEditDiffs", ID: 3907724148, Scope: "files:read", Route: "thread"},                                  // main.App.VerifyEditDiffs
 	{Name: "Version", ID: 2431199839, Scope: "threads:read", Route: "home"},                                          // main.App.Version
 	{Name: "WorkflowAgentAddMemory", ID: 4000394635, Scope: "threads:autonomy", Route: "home"},                       // main.App.WorkflowAgentAddMemory

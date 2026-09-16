@@ -369,6 +369,32 @@ func (a *App) FinishPasskeyStepUp(ceremonyID string, response json.RawMessage) (
 	return PasskeyStepUpGrant{Token: grant.Token, ExpiresAtMs: grant.ExpiresAtMillis}, nil
 }
 
+// VerifyBrowserUnlock consumes fresh proof for the current session without
+// replacing its credentials or grants. The browser owns its local screen lock.
+//
+//ao:scope session
+//ao:route home
+func (a *App) VerifyBrowserUnlock(ctx context.Context, ceremonyID string, response json.RawMessage) error {
+	sessionID := transport.SessionFromContext(ctx)
+	if sessionID == "" {
+		return fmt.Errorf("access: browser unlock requires a session")
+	}
+	state, err := a.accessState()
+	if err != nil {
+		return err
+	}
+	// Host presence can satisfy administrative step-up, but must never
+	// substitute for the passkey that unlocks a paired browser's content.
+	grant, reason := state.sessions.FinishPasskeyStepUp(ceremonyID, response, "")
+	if reason.Refused() {
+		return transport.AuthRefused(reason.Code())
+	}
+	if !state.sessions.SpendStepUpToken(sessionID, grant.Token) {
+		return transport.AuthRefused(identity.ReasonKeyMismatch.Code())
+	}
+	return nil
+}
+
 // passkeyChallenge is the one projection of a started ceremony onto the
 // wire, so the two begins cannot disagree about its shape.
 func passkeyChallenge(challenge identity.PasskeyChallenge) PasskeyChallengeResult {

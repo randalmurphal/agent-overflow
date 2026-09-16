@@ -68,6 +68,7 @@ commands for completion: the Go Make targets apply platform flags and
 | Production service updater | [Artifact validation](serve-mode.md#validating-production-artifacts) |
 | System Chromium upgrade or launch flags | [Browser guide](../../internal/browser/AGENTS.md) |
 | Android native shell or signed candidate | [Mobile guide](../../mobile/AGENTS.md), [e2e guide](../../e2e/AGENTS.md) |
+| Mobile browser access and passkey lock | [Mobile browser validation](../references/mobile-browser-testing.md) |
 
 The provider smoke uses authenticated real CLIs and spends tokens; it needs
 an explicit request. The import smoke reads only supplied copies of provider

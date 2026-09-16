@@ -40,5 +40,11 @@ export default defineConfig({
       use: { ...devices['Pixel 7'] },
       testMatch: /compact-.*\.spec\.ts$/,
     },
+    {
+      name: 'mobile-webkit',
+      use: { ...devices['iPhone 13'] },
+      testMatch: /compact-browser-lock\.spec\.ts$/,
+      grepInvert: /@chromium-lifecycle/,
+    },
   ],
 });

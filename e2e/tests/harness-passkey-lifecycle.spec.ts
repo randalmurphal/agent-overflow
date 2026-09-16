@@ -2,7 +2,8 @@
 // registers a credential at the machine, a browser this backend has never
 // seen signs in with it and no code to type, that remote session proves
 // step-up for a call no standing grant can open, and removing a passkey
-// signs nothing out.
+// signs nothing out. Browser locking covers reloads, background timing,
+// separate tabs, failed verification, and view-only permission preservation.
 //
 // WHY THIS FILE EXISTS. Every unit test around passkeys stops at a seam:
 // the Go tests drive a soft authenticator, the Vitest tests drive a fake
@@ -80,12 +81,12 @@ import {
   test,
   type Browser,
   type BrowserContext,
-  type CDPSession,
   type Page,
 } from '@playwright/test';
 
 import { launchHarness, type HarnessApp } from '../src/harness.js';
-import { instrument, nonLoopbackIPv4, type Surfaced } from './offhost-helpers.js';
+import { attachAuthenticator, type Authenticator, type VirtualCredential } from './passkey-helpers.js';
+import { instrument, nonLoopbackIPv4, redeemOnScreen, confirmOnHost, type PairingInvite, type Surfaced } from './offhost-helpers.js';
 
 // ---------------------------------------------------------------------
 // Wire shapes (internal/app/app_passkey.go, app_access_types.go,
@@ -147,23 +148,6 @@ interface NetworkSettings {
 
 interface SeedResult {
   projects: Array<{ projectId: string; path: string; threadIds: string[] }>;
-}
-
-/**
- * One credential as Chromium's virtual authenticator reports it, DERIVED
- * from the CDP call rather than restated. It is read out of one
- * authenticator and handed back verbatim to another, and the members are
- * the WebAuthn domain's — they have grown over Chromium releases, and a
- * hand-written shape would silently drop whichever one this file had not
- * heard of. For `isResidentCredential` that would mean the fresh browser
- * could no longer discover the credential at all, and the case would fail
- * with no hint about why.
- */
-type VirtualCredential = Awaited<ReturnType<typeof readCredentials>>[number];
-
-async function readCredentials(cdp: CDPSession, authenticatorId: string) {
-  const { credentials } = await cdp.send('WebAuthn.getCredentials', { authenticatorId });
-  return credentials;
 }
 
 // ---------------------------------------------------------------------
@@ -230,44 +214,18 @@ async function openOnDomain(harness: HarnessApp, page: Page): Promise<void> {
   await page.goto(url.toString());
 }
 
-interface Authenticator {
-  credentials(): Promise<VirtualCredential[]>;
-  adopt(credential: VirtualCredential): Promise<void>;
-}
-
-/**
- * A discoverable-credential authenticator on one PAGE target, answering
- * presence and user verification without a prompt — the closest thing CDP
- * has to a platform authenticator somebody just touched.
- *
- * `hasResidentKey` and `ResidentKeyRequirementRequired` have to agree:
- * sign-in names no account (`identity.beginDiscoverable`), so a
- * credential the client cannot discover could never be offered.
- *
- * Attach it AFTER the document that will use it has loaded. The virtual
- * environment belongs to the target, and a page that navigates while one
- * spec's authenticator is half-installed is a race with no error.
- */
-async function attachAuthenticator(context: BrowserContext, page: Page): Promise<Authenticator> {
-  const cdp = await context.newCDPSession(page);
-  await cdp.send('WebAuthn.enable');
-  const { authenticatorId } = await cdp.send('WebAuthn.addVirtualAuthenticator', {
-    options: {
-      protocol: 'ctap2',
-      ctap2Version: 'ctap2_1',
-      transport: 'internal',
-      hasResidentKey: true,
-      hasUserVerification: true,
-      isUserVerified: true,
-      automaticPresenceSimulation: true,
-    },
-  });
-  return {
-    credentials: () => readCredentials(cdp, authenticatorId),
-    async adopt(credential: VirtualCredential): Promise<void> {
-      await cdp.send('WebAuthn.addCredential', { authenticatorId, credential });
-    },
-  };
+async function pairViewerOnDomain(harness: HarnessApp, page: Page, label: string): Promise<void> {
+  const invite = await harness.rpc<PairingInvite>('MintDevicePairing', 'browser', 'view-only');
+  // Rewrite the invitation address and payload to the same listener over HTTPS.
+  const url = new URL(invite.url);
+  url.protocol = 'https:';
+  url.hostname = DOMAIN;
+  const payload = JSON.parse(Buffer.from(url.hash.slice('#pair='.length), 'base64url').toString('utf8'));
+  payload.endpoint = url.origin;
+  url.hash = 'pair=' + Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const shown = await redeemOnScreen(page, { ...invite, url: url.toString() }, label);
+  await confirmOnHost(harness, shown);
+  await expect(page.getByTestId('view-only-indicator')).toBeVisible({ timeout: APP_MOUNT_MS });
 }
 
 // The one thing this file's pages surface that the APP did not produce.
@@ -744,6 +702,141 @@ test.describe.serial('passkey lifecycle', () => {
   // -------------------------------------------------------------------
   // 5. Removal, which is not a revocation.
   // -------------------------------------------------------------------
+  test('browser lock verifies each tab, preserves the session, and follows background timing', async () => {
+    const savedSession = await remotePage.evaluate(() => JSON.parse(localStorage.getItem('agent-overflow:deviceSession')!));
+    const control = remotePage.getByRole('switch', { name: 'Require a passkey to open' });
+    await expect(control).toBeVisible();
+    await control.click();
+    await expect(control).toHaveAttribute('aria-checked', 'true');
+    await expect(remotePage.getByTestId('app-lock')).toHaveCount(0);
+
+    const second = await remoteContext.newPage();
+    try {
+      await second.goto(remotePage.url());
+      await expect(second.getByTestId('app-lock')).toBeVisible();
+      const authenticator = await attachAuthenticator(remoteContext, second);
+      for (const credential of await remoteAuthenticator.credentials()) await authenticator.adopt(credential);
+      await remotePage.clock.setFixedTime(Date.now());
+      await remotePage.reload();
+      await expect(remotePage.getByTestId('app-lock')).toBeVisible();
+      await expect(remotePage.locator('#app')).toHaveAttribute('inert', '');
+      await second.getByRole('button', { name: 'Unlock', exact: true }).click();
+      await expect(second.getByTestId('app-lock')).toHaveCount(0);
+      await expect(remotePage.getByTestId('app-lock')).toBeVisible();
+      await remotePage.keyboard.press('Tab');
+      await expect(remotePage.getByRole('button', { name: 'Unlock', exact: true })).toBeFocused();
+      await remotePage.keyboard.press('Enter');
+      await expect(remotePage.getByTestId('app-lock')).toHaveCount(0);
+    } finally {
+      await second.close();
+    }
+
+    // Headless Chromium does not background tabs on bringToFront. Deliver the
+    // browser visibility event with a controlled wall clock; app handlers are real.
+    const start = Date.now();
+    await remotePage.clock.setFixedTime(start);
+    const visibility = (hidden: boolean) => remotePage.evaluate((value) => {
+      Object.defineProperty(document, 'hidden', { configurable: true, value });
+      document.dispatchEvent(new Event('visibilitychange'));
+    }, hidden);
+    await visibility(true);
+    await expect(remotePage.getByTestId('app-lock')).toBeVisible();
+    await remotePage.clock.setFixedTime(start + 4_000);
+    await visibility(false);
+    await expect(remotePage.getByTestId('app-lock')).toHaveCount(0);
+    await visibility(true);
+    await remotePage.clock.setFixedTime(start + 304_000);
+    await visibility(false);
+    await expect(remotePage.getByTestId('app-lock')).toBeVisible();
+    await remotePage.clock.setFixedTime(Date.now());
+
+    // Cancellation of the browser API must leave the real lock closed.
+    await remotePage.evaluate(() => {
+      Object.defineProperty(navigator.credentials, 'get', {
+        configurable: true,
+        value: () => Promise.reject(new DOMException('Canceled', 'NotAllowedError')),
+      });
+    });
+    await remotePage.getByRole('button', { name: 'Unlock', exact: true }).click();
+    await expect(remotePage.getByRole('alert').filter({ hasText: 'Could not verify your passkey' })).toBeVisible();
+    await expect(remotePage.getByTestId('app-lock')).toBeVisible();
+    await remotePage.evaluate(() => Reflect.deleteProperty(navigator.credentials, 'get'));
+    await remotePage.getByRole('button', { name: 'Unlock', exact: true }).click();
+    await expect(remotePage.getByTestId('app-lock')).toHaveCount(0);
+    await remotePage.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
+    await expect(remotePage.getByTestId('app-lock')).toBeVisible();
+    await remotePage.getByRole('button', { name: 'Unlock', exact: true }).click();
+    await expect(remotePage.getByTestId('app-lock')).toHaveCount(0);
+
+    const after = await remotePage.evaluate(() => JSON.parse(localStorage.getItem('agent-overflow:deviceSession')!));
+    expect(after.sessionId).toBe(savedSession.sessionId);
+    expect(after.scopes).toEqual(savedSession.scopes);
+    // A paired browser routed through loopback must still verify its passkey.
+    // Host presence is accepted for administrative step-up on this connection.
+    const proxied = await acceptingContext(ownerBrowser);
+    try {
+      const page = await proxied.newPage();
+      await pairViewerOnDomain(harness, page, 'Loopback viewer');
+      const authenticator = await attachAuthenticator(proxied, page);
+      for (const credential of await remoteAuthenticator.credentials()) await authenticator.adopt(credential);
+      await page.getByTestId('sidebar-settings-button').click();
+      await page.getByRole('tab', { name: 'Allow device access', exact: true }).click();
+      const toggle = page.getByRole('switch', { name: 'Require a passkey to open' });
+      await toggle.click();
+      await expect(toggle).toHaveAttribute('aria-checked', 'true');
+      await page.reload();
+      await expect(page.getByTestId('app-lock')).toBeVisible();
+      await page.evaluate(() => Object.defineProperty(navigator.credentials, 'get', {
+        configurable: true,
+        value: () => Promise.reject(new DOMException('Canceled', 'NotAllowedError')),
+      }));
+      await page.getByRole('button', { name: 'Unlock', exact: true }).click();
+      await expect(page.getByRole('alert').filter({ hasText: 'Could not verify your passkey' })).toBeVisible();
+      await expect(page.getByTestId('app-lock')).toBeVisible();
+      await page.evaluate(() => Reflect.deleteProperty(navigator.credentials, 'get'));
+      await page.getByRole('button', { name: 'Unlock', exact: true }).click();
+      await expect(page.getByTestId('app-lock')).toHaveCount(0);
+    } finally {
+      await proxied.close();
+    }
+    // Reload preserves settings state; open the relevant folds only if closed.
+    if (!await control.isVisible()) await openDeviceAccessSettings(remotePage);
+    await control.click();
+    await expect(control).toHaveAttribute('aria-checked', 'false');
+    await remotePage.reload();
+    await expect(remotePage.getByTestId('thread-row')).toHaveCount(1, { timeout: APP_MOUNT_MS });
+    await expect(remotePage.getByTestId('app-lock')).toHaveCount(0);
+    await openDeviceAccessSettings(remotePage);
+  });
+
+  test('a compact view-only browser unlocks without acquiring full access', async () => {
+    const context = await remoteBrowser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+    const page = await context.newPage();
+    try {
+      await pairViewerOnDomain(harness, page, 'Locked viewer');
+      const authenticator = await attachAuthenticator(context, page);
+      for (const credential of await remoteAuthenticator.credentials()) await authenticator.adopt(credential);
+      await page.getByTestId('sidebar-settings-button').click();
+      await page.getByRole('tab', { name: 'Allow device access', exact: true }).click();
+      const control = page.getByRole('switch', { name: 'Require a passkey to open' });
+      await control.click();
+      await expect(control).toHaveAttribute('aria-checked', 'true');
+      const before = await page.evaluate(() => JSON.parse(localStorage.getItem('agent-overflow:deviceSession')!));
+      expect(before.scopes).not.toContain('threads:operate');
+      await page.reload();
+      await expect(page.getByTestId('app-lock')).toBeVisible();
+      await page.getByRole('button', { name: 'Unlock', exact: true }).click();
+      await expect(page.getByTestId('app-lock')).toHaveCount(0);
+      await expect(page.getByTestId('view-only-indicator')).toBeVisible();
+      const after = await page.evaluate(() => JSON.parse(localStorage.getItem('agent-overflow:deviceSession')!));
+      expect(after.sessionId).toBe(before.sessionId);
+      expect(after.scopes).toEqual(before.scopes);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+    } finally {
+      await context.close();
+    }
+  });
+
   test('removing a passkey takes the credential away and signs no device out', async () => {
     const before = await harness.rpc<AccessOverview>('GetAccessOverview');
     const device = before.devices.filter((d) => d.channel !== 'local')[0];

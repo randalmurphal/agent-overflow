@@ -1,5 +1,9 @@
 import { mount, unmount } from 'svelte';
 import App from './App.svelte';
+import BrowserLockScreen from './lib/components/shared/BrowserLockScreen.svelte';
+import LockScreen from './lib/components/shared/LockScreen.svelte';
+import { installBrowserLock } from './lib/stores/browserLock.svelte';
+import { createLockSurface } from './lib/utils/lockSurface';
 import { appTitleForEnv } from './appTitle';
 import { installBrowserHistoryGuard } from './lib/utils/browserHistoryGuard';
 import { installIOSInputZoomGuard } from './lib/utils/iosInputZoom';
@@ -134,7 +138,7 @@ async function mountApp(): Promise<void> {
       console.error('Frontend connection setup failed:', error);
     }
   }
-  mount(App, { target });
+  mountBrowserApp(target);
 }
 
 /**
@@ -196,7 +200,7 @@ async function mountPairing(
             await mountUnderLock(target);
             return;
           }
-          mount(App, { target });
+          mountBrowserApp(target);
         })();
       },
     },
@@ -239,10 +243,10 @@ async function mountFirstRun(target: HTMLElement): Promise<void> {
  * transcript on its way to being locked.
  */
 async function mountUnderLock(target: HTMLElement): Promise<void> {
-  const { default: LockScreen } = await import('./lib/components/native/LockScreen.svelte');
   const overlay = document.createElement('div');
   overlay.id = 'app-lock';
   document.body.appendChild(overlay);
+  const surface = createLockSurface(overlay);
 
   let lockScreen: ReturnType<typeof mount> | null = null;
   let unlock: () => void = () => {};
@@ -250,7 +254,7 @@ async function mountUnderLock(target: HTMLElement): Promise<void> {
     // The app under the gate is INERT while it is locked: the lock
     // screen paints over it, and inert is what keeps focus, the
     // keyboard and a screen reader from reaching what the paint hides.
-    target.inert = locked;
+    surface.setLocked(locked);
     if (locked && lockScreen === null) {
       lockScreen = mount(LockScreen, { target: overlay, props: { onUnlock: () => unlock() } });
       return;
@@ -269,6 +273,16 @@ async function mountUnderLock(target: HTMLElement): Promise<void> {
   // the screen has to come down for it — otherwise a phone with no
   // biometric plugin would be a permanent lock screen.
   show(lock.locked());
+}
+
+function mountBrowserApp(target: HTMLElement): void {
+  const overlay = document.createElement('div');
+  overlay.id = 'browser-lock';
+  document.body.appendChild(overlay);
+  const surface = createLockSurface(overlay);
+  installBrowserLock(surface.setLocked);
+  mount(BrowserLockScreen, { target: overlay });
+  mount(App, { target });
 }
 
 void mountApp();

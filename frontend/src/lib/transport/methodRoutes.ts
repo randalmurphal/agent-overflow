@@ -394,6 +394,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	892204206: 'thread', // UpdateThreadReasoningEffort
 	325190827: 'thread', // UpdateThreadRuntimeMode
 	3875142865: 'thread', // UpdateThreadWorkspace
+	2139261008: 'home', // VerifyBrowserUnlock
 	3907724148: 'thread', // VerifyEditDiffs
 	2431199839: 'home', // Version
 	4000394635: 'home', // WorkflowAgentAddMemory

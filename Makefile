@@ -1,4 +1,4 @@
-.PHONY: help ao-harness-docs methodgen install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-macos go-build go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider harness-build harness harness-window soak-window e2e apk apk-release e2e-android
+.PHONY: help ao-harness-docs methodgen install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-macos go-build go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider harness-build harness harness-window soak-window e2e e2e-mobile-browser apk apk-release e2e-android
 
 # Print the supported build, test, harness, and smoke targets. Keep this
 # short enough to use from an unfamiliar checkout. `make e2e` is the
@@ -10,6 +10,7 @@ help:
 		'Build:   make build | make check | make verify' \
 		'Tests:   make test | make test-race' \
 		'Android: make apk | make apk-release | make e2e-android' \
+		'Mobile browser: make e2e-mobile-browser (Chromium + WebKit)' \
 		'Harness: make harness | make harness-window | make harness-wsl' \
 		'Long-run: make soak | make soak-window | make soak-check' \
 		'Perf:    make perf-wsl | make soak-contract' \
@@ -536,10 +537,11 @@ soak-window: harness-build
 endif
 
 # e2e runs the Playwright harness suite (e2e/) against a fresh
-# harness-build. Chromium comes from `make install`'s playwright cache.
-e2e: harness-build
+# harness-build. Browser downloads are versioned and cached by Playwright.
+e2e e2e-mobile-browser: harness-build
 	cd e2e && pnpm install --frozen-lockfile
-	bin/ao-harness-e2e
+	cd e2e && pnpm exec playwright install chromium webkit
+	bin/ao-harness-e2e $(if $(filter e2e-mobile-browser,$@),tests/compact-browser-lock.spec.ts)
 
 # The Android shell (mobile/). Builds the ordinary production SPA,
 # syncs it into the native project, and assembles the debug APK. See
