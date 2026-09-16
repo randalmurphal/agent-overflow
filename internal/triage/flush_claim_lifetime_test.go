@@ -91,3 +91,85 @@ func TestFlushClaimSurvivesCleanupMidHandoff(t *testing.T) {
 	release()
 	waitForCount(0)
 }
+
+// TestQueuedFlushItemsCoverClaimedBatch pins the wire half of the same
+// claim: QueuedFlushItems (the source of GetQueueState and
+// emitQueueStateChanged) must include the claimed batch while the
+// dispatcher holds it. tryFlushQueue nils st.queuedFlushItems before the
+// App worker records the batch in-flight, so a queue-state emit landing in
+// that window used to publish a snapshot without the in-flight item and
+// Zone 1 dropped the message before its provider:queue_flushed existed.
+func TestQueuedFlushItemsCoverClaimedBatch(t *testing.T) {
+	router, _, _ := newTestRouter(t)
+
+	entered := make(chan struct{})
+	releaseDispatch := make(chan struct{})
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			close(releaseDispatch)
+		}
+	}
+	// A t.Fatalf before the release would otherwise park the dispatcher.
+	t.Cleanup(release)
+	var call atomic.Int32
+	router.SetFlushDispatcher(func(threadID string, items []QueuedFlushItem) {
+		if call.Add(1) == 1 {
+			close(entered)
+			<-releaseDispatch
+		}
+	})
+
+	ids := func() []string {
+		out := []string{}
+		for _, item := range router.QueuedFlushItems("t1") {
+			out = append(out, item.ID)
+		}
+		return out
+	}
+	sameIDs := func(got, want []string) bool {
+		if len(got) != len(want) {
+			return false
+		}
+		for i := range got {
+			if got[i] != want[i] {
+				return false
+			}
+		}
+		return true
+	}
+
+	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "first"))
+	go router.tryFlushQueue("t1")
+	<-entered
+
+	// Mid-handoff: the queue is already nil, the dispatcher has not
+	// reported the flush yet. The snapshot still carries the item.
+	if got := ids(); !sameIDs(got, []string{"queue:0"}) {
+		t.Fatalf("claimed batch missing from snapshot: got %v, want [queue:0]", got)
+	}
+
+	// A concurrent RegisterQueueItem emits queue state from this window;
+	// claimed items lead the still-queued ones so the composer keeps FIFO.
+	router.RegisterQueueItem("t1", makeQueueItem("queue:1", "second"))
+	if got := ids(); !sameIDs(got, []string{"queue:0", "queue:1"}) {
+		t.Fatalf("snapshot order: got %v, want [queue:0 queue:1]", got)
+	}
+
+	// Once the dispatcher returns, the claim is released and only the
+	// still-queued item remains. queue:1's own dispatch returns
+	// immediately, so poll until both settle.
+	release()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		got := ids()
+		if sameIDs(got, []string{"queue:1"}) || sameIDs(got, []string{}) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("after release: got %v, want [queue:1] or []", got)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}

@@ -380,13 +380,17 @@ type threadIdentity struct {
 	// anchorLock).
 	drainLock sync.Mutex
 
-	// claimedFlushItems counts batch items mid-handoff between the
+	// claimedFlushItems holds batch items mid-handoff between the
 	// queue delete in tryFlushQueue and the dispatcher's synchronous
 	// in-flight record. Folded into QueuedFlushItemCount so the
 	// revert-on-interrupt predicate sees a draining batch as queued →
-	// claimed → in-flight, never invisible (round-14 close-out, C14-1).
-	// Held only across the dispatcher callback; tryFlushQueue's deferred
-	// drop always runs and clamps at zero.
+	// claimed → in-flight, never invisible (round-14 close-out, C14-1),
+	// and into QueuedFlushItems so the same handoff cannot publish a
+	// queue_state_changed snapshot that omits the item — Zone 1 dropped
+	// it before its queue_flushed existed, leaving the message in no
+	// zone at all. Held only across the dispatcher callback;
+	// tryFlushQueue's deferred release always runs and removes exactly
+	// the ids it claimed, so overlapping claims cannot eat each other.
 	//
 	// On the never-deleted identity, NOT threadState, because the claim
 	// must survive cleanupThread: the dispatcher callback runs outside
@@ -397,7 +401,7 @@ type threadIdentity struct {
 	// 2026-08-25, codex finding 1). Pre-split this was a Router-level map
 	// that cleanup deliberately never touched; this placement restores
 	// that lifetime. Guarded by r.mu, exactly as that map was.
-	claimedFlushItems int
+	claimedFlushItems []QueuedFlushItem
 
 	// epoch counts MarkThreadActive calls. An asynchronous teardown
 	// captures the epoch before unregistering a dead session and hands it

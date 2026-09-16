@@ -21,7 +21,7 @@ import App from '../../App.svelte';
 import type { Thread } from '../../lib/types/models';
 import { setBindingMock } from '../mocks/bindings-app';
 import { emitWailsEvent } from '../mocks/wailsio-runtime';
-import { emitItemEventUpsert } from '../helpers/chat';
+import { emitItemEventDelta, emitItemEventUpsert, makeItem } from '../helpers/chat';
 import {
   getFlushedForThread,
   getQueueForThread,
@@ -242,6 +242,50 @@ describe('App integration — send-queue flow (Phases G1–G10)', () => {
     expect(getFlushedForThread('thread-1')).toHaveLength(1);
   });
 
+  it('T3b: a requeued dispatch returns its message to Zone 1 and empties Zone 2', async () => {
+    const { getByTestId } = await mountWithActiveThread();
+
+    // The eager Claude dispatch emits queue_flushed BEFORE the provider
+    // write settles, so the marker exists while the write is still in
+    // flight.
+    emitWailsEvent('provider:queue_flushed', {
+      threadId: 'thread-1',
+      items: [
+        { queueItemId: 'q-1', userItemId: 'user:0:flush:1', message: 'write this' },
+      ],
+    });
+    await flush();
+    expect(getFlushedForThread('thread-1')).toHaveLength(1);
+
+    // The write failed: the backend requeued the item under the SAME
+    // queue id and published the snapshot. One message, one home.
+    emitWailsEvent('provider:queue_state_changed', {
+      threadId: 'thread-1',
+      items: [
+        {
+          id: 'q-1',
+          threadId: 'thread-1',
+          message: 'write this',
+          attachmentIds: [],
+          sourceProposedPlan: null,
+          revisionSourceProposedPlan: null,
+          revisionSourceCommentIds: undefined,
+          enqueuedAt: 1,
+        },
+      ],
+    });
+    await flush();
+    expect(getFlushedForThread('thread-1')).toEqual([]);
+    expect(getQueueForThread('thread-1').map((q) => q.id)).toEqual(['q-1']);
+    await waitFor(() => {
+      const rows = Array.from(
+        getByTestId('send-queue-preview').querySelectorAll('[data-testid="send-queue-preview-row"]'),
+      );
+      expect(rows.map((row) => row.getAttribute('data-state'))).toEqual(['queued']);
+      expect(rows[0].textContent).toContain('write this');
+    });
+  });
+
   // ---- T4 — confirmed item_event upsert clears Zone 2 ------------------
 
   it('T4: provider:item_event upsert for a flushed userItemId clears Zone 2 on any flush user_text', async () => {
@@ -302,6 +346,183 @@ describe('App integration — send-queue flow (Phases G1–G10)', () => {
     await waitFor(() => {
       expect(getFlushedForThread('thread-1')).toHaveLength(0);
     });
+  });
+
+  // ---- T4c — a withheld flush row keeps its Zone 2 entry ----------------
+
+  it('T4c: a flush row the reveal gate withholds stays in Zone 2 until it is revealed', async () => {
+    await mountWithActiveThread();
+    startActiveTurn('thread-1');
+    await flush();
+
+    // An assistant row streaming a long delta owns the reveal frontier, so
+    // every row after it is withheld from the timeline until it drains.
+    emitItemEventUpsert(makeItem({
+      id: 'assistant:0',
+      threadId: 'thread-1',
+      turnIndex: 0,
+      itemIndex: 0,
+      kind: 'assistant_text',
+      role: 'assistant',
+      status: 'streaming',
+      summary: '',
+    }));
+    await flush();
+    emitItemEventDelta({
+      threadId: 'thread-1',
+      itemId: 'assistant:0',
+      kind: 'assistant_text',
+      delta: 'long prose '.repeat(400),
+      updatedAt: 2,
+    });
+    await flush();
+
+    const { getMainPane } = await import('../../lib/stores/panes.svelte');
+    const pane = getMainPane();
+    // The item-event channel batches on a frame, so wait for the smoother
+    // the delta creates rather than assuming it landed in this microtask.
+    await waitFor(() => {
+      expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
+    });
+
+    emitWailsEvent('provider:queue_flushed', {
+      threadId: 'thread-1',
+      items: [
+        { queueItemId: 'q-1', userItemId: 'user:0:flush:1', message: 'behind the prose' },
+      ],
+    });
+    await flush();
+
+    // The echo lands at the turn TAIL, after the still-draining row. The
+    // window admits it; the gate does not mount it. Clearing Zone 2 here
+    // would put the message in neither place for the whole drain.
+    emitItemEventUpsert(makeItem({
+      id: 'user:0:flush:1',
+      threadId: 'thread-1',
+      turnIndex: 0,
+      itemIndex: 1,
+      kind: 'user_text',
+      role: 'user',
+      status: 'completed',
+      summary: 'behind the prose',
+      meta: JSON.stringify({ provider_item_id: 'wire-echo-001' }),
+    }));
+    await flush();
+    await new Promise<void>((r) => setTimeout(r, 60));
+    expect(pane.items.some((item) => item.id === 'user:0:flush:1')).toBe(true);
+    expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
+    expect(getFlushedForThread('thread-1').map((f) => f.userItemId)).toEqual([
+      'user:0:flush:1',
+    ]);
+
+    // The prose settles and drains: the gate drops, the row mounts, and the
+    // handover happens on that pass — no extra event required.
+    emitWailsEvent('provider:item_event', {
+      action: 'patch',
+      threadId: 'thread-1',
+      itemId: 'assistant:0',
+      patch: { status: 'completed', updatedAt: 3 },
+    });
+    await flush();
+    pane.__flushItemSmoothersForTest();
+    await flush();
+    expect(pane.revealBoundary).toBeNull();
+    expect(getFlushedForThread('thread-1')).toHaveLength(0);
+  });
+
+  // ---- T4d — a flush row refused by a scrolled-back window --------------
+
+  it('T4d: a flush row a scrolled-back window refuses keeps its Zone 2 entry until the window catches up', async () => {
+    installAppDefaults();
+    const thread = makeThread({ title: 'Scrolled Back' });
+    setBindingMock('ListThreads', async () => [thread]);
+    seedSidebarProject([thread]);
+    installThreadViewDefaults();
+    installComposerDefaults(thread.id);
+    // A window parked on old history: the pane is scrolled back, so the
+    // backend says there is newer history it is not holding.
+    setBindingMock('ListThreadSliceAround', async () => ({
+      items: [
+        makeItem({
+          id: 'old-1',
+          threadId: thread.id,
+          turnIndex: 0,
+          itemIndex: 0,
+          kind: 'assistant_text',
+          role: 'assistant',
+          summary: 'old answer',
+        }),
+      ],
+      oldestTurnIndex: 0,
+      newestTurnIndex: 0,
+      hasMore: true,
+      hasMoreOlder: false,
+      hasMoreNewer: true,
+    }));
+
+    const rendered = render(App);
+    await flush();
+    await fireEvent.click(rendered.getAllByText(thread.title)[0]);
+    await flush(15);
+
+    const { getMainPane } = await import('../../lib/stores/panes.svelte');
+    const pane = getMainPane();
+    expect(pane.hasMoreNewer).toBe(true);
+
+    emitWailsEvent('provider:queue_flushed', {
+      threadId: thread.id,
+      items: [
+        { queueItemId: 'q-1', userItemId: 'user:9:flush:1', message: 'past the ceiling' },
+      ],
+    });
+    await flush();
+
+    // Above the loaded ceiling with newer history unloaded: the merge drops
+    // the row rather than opening a hole in the window.
+    emitItemEventUpsert(makeItem({
+      id: 'user:9:flush:1',
+      threadId: thread.id,
+      turnIndex: 9,
+      itemIndex: 0,
+      kind: 'user_text',
+      role: 'user',
+      status: 'completed',
+      summary: 'past the ceiling',
+      meta: JSON.stringify({ provider_item_id: 'wire-echo-009' }),
+    }));
+    await flush();
+    await new Promise<void>((r) => setTimeout(r, 60));
+    expect(pane.items.some((item) => item.id === 'user:9:flush:1')).toBe(false);
+    expect(getFlushedForThread(thread.id).map((f) => f.userItemId)).toEqual([
+      'user:9:flush:1',
+    ]);
+
+    // Paging forward to the live tail admits the row, and the same pane
+    // chokepoint hands it over.
+    setBindingMock('ListItemsAfterCursor', async () => ({
+      items: [
+        makeItem({
+          id: 'user:9:flush:1',
+          threadId: thread.id,
+          turnIndex: 9,
+          itemIndex: 0,
+          kind: 'user_text',
+          role: 'user',
+          status: 'completed',
+          summary: 'past the ceiling',
+          meta: JSON.stringify({ provider_item_id: 'wire-echo-009' }),
+        }),
+      ],
+      oldestTurnIndex: 9,
+      newestTurnIndex: 9,
+      hasMore: false,
+      hasMoreOlder: false,
+      hasMoreNewer: false,
+    }));
+    await pane.loadNewer();
+    await flush();
+    expect(pane.items.some((item) => item.id === 'user:9:flush:1')).toBe(true);
+    expect(getFlushedForThread(thread.id)).toHaveLength(0);
   });
 
   // ---- T4b — non-flush user_text upsert never clears Zone 2 ------------

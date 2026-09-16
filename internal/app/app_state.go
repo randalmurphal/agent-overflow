@@ -10,6 +10,7 @@ import (
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/sessionimport"
+	"agent-overflow/internal/triage"
 )
 
 // The App struct's concern groups.
@@ -42,9 +43,24 @@ type appFlushDispatchState struct {
 	// whether a drain is boundary or immediate; App owns the asynchronous
 	// provider writes so sequence allocation and Send/Steer locking stay in
 	// the same layer.
-	mu            sync.Mutex
-	queues        map[string][]flushDispatchBatch
-	current       map[string]flushDispatchBatch
+	mu      sync.Mutex
+	queues  map[string][]flushDispatchBatch
+	current map[string]flushDispatchBatch
+	// dispatching is the not-yet-delivered REMAINDER of the batch a
+	// dispatch call is working through, in order. It exists for the wire
+	// snapshot (`emitQueueStateChanged` / `GetQueueState`): an item that
+	// has left the triage queue but has not reached its `queue_flushed`
+	// yet must still read as queued, or a snapshot published in that
+	// window (a concurrent RegisterQueueItem raises one) tells the client
+	// to drop a message that is in no zone at all. Entries leave it the
+	// instant their `queue_flushed` is emitted, so the two events cannot
+	// both claim the same message, and on requeue the triage queue has
+	// taken the item back before it does.
+	//
+	// Deliberately NOT `current`: that one is the session-death drain's
+	// view and must keep the whole batch (dedupeUnconfirmedFlushItems
+	// resolves its overlap with the pending-send drain).
+	dispatching   map[string][]triage.QueuedFlushItem
 	running       map[string]bool
 	inflightItems map[string]int
 	generation    map[string]uint64

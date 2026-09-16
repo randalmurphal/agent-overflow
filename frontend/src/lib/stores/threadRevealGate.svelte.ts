@@ -29,6 +29,15 @@ export interface RevealGateOptions {
   getItems(): Item[];
   /** Arm the structural-append spring (pane owns all its gates). */
   armStructuralSpring(): void;
+  /**
+   * Every pass ends here, after the boundary is published. The pane's
+   * send-queue handover hangs off this: which rows are RENDERED changes
+   * when the gate moves and when the window under it changes, and every
+   * window commit runs inside `mutateSmoothersAndRecompute`, so this one
+   * notification covers both without a second watcher over the timeline.
+   * Must not mutate items or smoothers.
+   */
+  onRevealSettled?(): void;
 }
 
 export interface RevealGate {
@@ -268,6 +277,7 @@ export function createRevealGate(options: RevealGateOptions): RevealGate {
         options.armStructuralSpring();
       }
     }
+    options.onRevealSettled?.();
   }
 
   return {

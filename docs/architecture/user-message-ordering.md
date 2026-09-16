@@ -66,7 +66,7 @@ recovery's authority; an unconfirmed delivery must not be blindly resent.
 | Direct send | Persisted before provider write; echo attaches identity | Newly allocated turn |
 | Explicit Codex steer | Persisted in the active turn; echo attaches identity | Active turn |
 | Queued Codex steer | Deferred until matching provider echo | Active turn |
-| Queued Claude input during activity | Quiet row in the current display turn, revealed on consumption | Fresh logical turn |
+| Queued Claude input during activity | Quiet row reserved in the current display turn, revealed on consumption | Fresh logical turn |
 | Queued input without activity | Deferred until matching provider echo | Fresh logical turn |
 | Interrupt promotion | Reveal pending input at the interrupt boundary | Consumption still follows the provider echo |
 
@@ -82,6 +82,20 @@ failure on any member sends nothing and requeues the whole group in order.
 Codex and claude-tui keep one message per queued item. See
 `internal/app/app_flush_dispatch_join.go` and
 [claude-wire.md](../references/claude-wire.md).
+
+A quiet row is persisted without a `provider:item_event`, so a connected
+client keeps showing the message above its composer until the echo emits one.
+That marker is live state, not an inference: `LiveStateSnapshotForThread`
+publishes every unconsumed queued send as a pending flush item, and each
+pending send appears in exactly one of the snapshot's two lists: the
+composer marker or the deferred timeline rows a SQLite slice is blind to.
+A client renders a flushed message in exactly one place at a time and hands
+it from the marker to the timeline when the row actually renders
+(`docs/architecture/turn-lifecycle.md` § Per-thread send queue). A window
+read is the one place that shows a quiet row before its echo: the reserved
+row is in SQLite, so a thread switch or gap refresh loads it and the marker
+hands over early. Rows anchored at an interrupt are revealed deliberately and
+carry no marker at all.
 
 The first matched echo captures placement before fallible cache writes. A stable
 predecessor identifies that boundary; retries must never ask for the current tail.

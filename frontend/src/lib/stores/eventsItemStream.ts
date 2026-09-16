@@ -251,6 +251,15 @@ function feedDiscussionLiveTailUpserts(itemsByThread: Map<string, Item[]>): void
 function applyItemUpserts(upserts: Item[]): void {
   if (upserts.length === 0) return;
   const itemsByThread = new Map<string, Item[]>();
+  // Flushed user rows in this batch, per thread. The arrival of one is
+  // NOT what clears its send-queue Zone 2 marker any more: the row lands
+  // at the turn tail, behind any prose the reveal gate is still draining,
+  // and a scrolled-back window (`hasMoreNewer`) refuses it outright — in
+  // both cases the message would be in neither place. A pane decides for
+  // its own thread, from its reveal chokepoint (`syncRenderedFlushRows`),
+  // which `applyProviderItemUpserts` below always runs. The list here is
+  // only for threads NOBODY has mounted.
+  const flushRowIdsByThread = new Map<string, string[]>();
   for (const item of upserts) {
     const list = itemsByThread.get(item.threadId);
     if (list) {
@@ -258,12 +267,10 @@ function applyItemUpserts(upserts: Item[]): void {
     } else {
       itemsByThread.set(item.threadId, [item]);
     }
-    // Zone 2 clears when a flush user_text row arrives in the
-    // timeline — either via the normal deferred echo path (which
-    // carries provider_item_id) or via the eager persist on
-    // interrupt (which appears before the echo).
     if (item.kind === 'user_text' && item.id.includes(':flush:')) {
-      confirmFlushedByUserItemId(item.threadId, item.id);
+      const flushRowIds = flushRowIdsByThread.get(item.threadId);
+      if (flushRowIds) flushRowIds.push(item.id);
+      else flushRowIdsByThread.set(item.threadId, [item.id]);
     }
   }
   feedDiscussionLiveTailUpserts(itemsByThread);
@@ -292,6 +299,20 @@ function applyItemUpserts(upserts: Item[]): void {
       // the pane's gated append arm inside applyProviderItemUpserts
       // instead of this ungated path.
       if (hasLiveContentAdvance) pane.markLiveContentAdvanced();
+    }
+  }
+  // A thread with no mounted pane has no timeline for the row to be
+  // visible in, and no window or reveal state to ask. Its Zone 2 entries
+  // are unrendered by construction, so arrival is the only confirmation
+  // that exists there — and the one the sidebar's working indicator
+  // (`hasQueueItems`) needs, or a delivered message would keep that
+  // thread spinning until someone opened it. Panes re-decide from their
+  // own window when the thread is next mounted (hydration installs the
+  // window and runs the same sync).
+  if (flushRowIdsByThread.size > 0) {
+    for (const [threadId, flushRowIds] of flushRowIdsByThread) {
+      if (activeThreadIds.has(threadId)) continue;
+      for (const itemId of flushRowIds) confirmFlushedByUserItemId(threadId, itemId);
     }
   }
   // Evict cached snapshots only when this batch produced an observable

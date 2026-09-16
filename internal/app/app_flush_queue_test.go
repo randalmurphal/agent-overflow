@@ -2363,6 +2363,92 @@ func TestDispatchFlush_PostPersistFailureRequeuesWithFreshRowMarker(t *testing.T
 	}
 }
 
+// TestDispatchFlush_RequeueAfterQueueFlushedRepublishesTheQueueID pins the
+// wire half of the requeue: the eager path emits `queue_flushed` BEFORE the
+// provider write (the row is persisted quietly, so the composer marker is
+// how the user sees the message at all), and a failed write puts the item
+// back on the queue under its ORIGINAL id. The queue snapshot that follows
+// must carry that id, which is what lets a client take the message back out
+// of its flushed zone instead of rendering it twice.
+func TestDispatchFlush_RequeueAfterQueueFlushedRepublishesTheQueueID(t *testing.T) {
+	app, rec := newAppForFlushQueueRPC(t)
+
+	thread := testThread("flush-requeue-republish")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = initGitRepo(t)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	now := time.Now().UnixMilli()
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID: "turn-3", ThreadID: thread.ID, TurnIndex: 3, StartedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+
+	// A session whose subprocess is already closed: placement, id
+	// allocation and the quiet persist all succeed, the stdin write fails.
+	sess, err := claude.NewSession(
+		context.Background(), thread.ID,
+		claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		func(provider.ProviderEvent) {},
+	)
+	if err != nil {
+		t.Fatalf("claude.NewSession: %v", err)
+	}
+	if err := sess.Close(); err != nil {
+		t.Fatalf("close session: %v", err)
+	}
+	app.sessionManager().put(thread.ID, session{
+		Provider: string(provider.Claude),
+		Token:    "tok",
+		Claude:   sess,
+		Liveness: newSessionLiveness(time.Now()),
+	})
+
+	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{
+		ID: "queue:republish", Message: "write this", Payload: json.RawMessage(`{}`),
+	}})
+
+	flushedAt := -1
+	republishedAt := -1
+	for i, call := range rec.snapshot() {
+		switch call.Channel {
+		case "provider:queue_flushed":
+			evt, ok := call.Data.(QueueFlushedEvent)
+			if !ok || len(evt.Items) == 0 || evt.Items[0].QueueItemID != "queue:republish" {
+				continue
+			}
+			flushedAt = i
+		case "provider:queue_state_changed":
+			evt, ok := call.Data.(QueueStateChangedEvent)
+			if !ok {
+				continue
+			}
+			for _, item := range evt.Items {
+				if item.ID == "queue:republish" && flushedAt >= 0 {
+					republishedAt = i
+				}
+			}
+		}
+	}
+	if flushedAt < 0 {
+		t.Fatal("no provider:queue_flushed for the dispatched item — the eager path did not run")
+	}
+	if republishedAt < 0 {
+		t.Fatal("the requeue emitted no queue snapshot carrying queue:republish, so a client that moved the message to its flushed zone has nothing telling it the backend took it back")
+	}
+
+	// And the final state agrees with the event: the message is queued.
+	snap, err := app.GetQueueState(thread.ID)
+	if err != nil {
+		t.Fatalf("GetQueueState: %v", err)
+	}
+	if len(snap) != 1 || snap[0].ID != "queue:republish" {
+		t.Fatalf("queue snapshot after the requeue: got %+v, want queue:republish", snap)
+	}
+}
+
 // TestCodexResendAfterInterrupt_FailedSendRequeuesWithStaleMarkers
 // pins R13-2 (round 13): the Codex resend-after-interrupt clears the
 // pending entries (their echoes never come — Codex discards steered
@@ -2830,6 +2916,76 @@ func TestGetQueueState_ReturnsSnapshot(t *testing.T) {
 	}
 	if snap[0].Message != "snapshot me" {
 		t.Errorf("snapshot message: got %q, want %q", snap[0].Message, "snapshot me")
+	}
+}
+
+// TestQueueSnapshot_CoversItemMidDispatch pins the App half of the queue
+// handoff. tryFlushQueue clears the triage queue before the dispatch
+// worker can record the batch, so a queue-state snapshot raised in that
+// window (a concurrent RegisterQueueItem raises one) used to omit the
+// message being dispatched: the composer dropped it from Zone 1 while its
+// provider:queue_flushed did not exist yet, leaving it nowhere on screen.
+// The snapshot now reads the whole chain and drops an item only once its
+// queue_flushed is about to be emitted.
+func TestQueueSnapshot_CoversItemMidDispatch(t *testing.T) {
+	app, rec := newAppForFlushQueueRPC(t)
+	thread := testThread("queue-snapshot-handoff")
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	first, err := app.RegisterQueueItem(context.Background(), thread.ID, "mid dispatch", SendMessageOptions{})
+	if err != nil {
+		t.Fatalf("RegisterQueueItem: %v", err)
+	}
+
+	// Stand in for runFlushDispatchWorker: record the batch under the
+	// pop the way the worker does, without a provider write.
+	app.triage.SetFlushDispatcher(func(threadID string, items []triage.QueuedFlushItem) {
+		app.beginFlushDispatchVisibility(threadID, items)
+	})
+	t.Cleanup(func() { app.endFlushDispatchVisibility(thread.ID) })
+	if !app.triage.FlushQueuedItems(thread.ID) {
+		t.Fatal("FlushQueuedItems did not dispatch the queued message")
+	}
+	if got := app.triage.QueuedFlushItems(thread.ID); len(got) != 0 {
+		t.Fatalf("triage still holds the batch after the handoff: %+v", got)
+	}
+
+	snap, err := app.GetQueueState(thread.ID)
+	if err != nil {
+		t.Fatalf("GetQueueState: %v", err)
+	}
+	if len(snap) != 1 || snap[0].ID != first.ID || snap[0].Message != "mid dispatch" {
+		t.Fatalf("mid-dispatch snapshot: got %+v, want the dispatching message", snap)
+	}
+
+	// The emit path reads the same chain, so the concurrent register in
+	// this window keeps the in-flight message and appends its own.
+	rec.reset()
+	second, err := app.RegisterQueueItem(context.Background(), thread.ID, "queued behind", SendMessageOptions{})
+	if err != nil {
+		t.Fatalf("RegisterQueueItem (second): %v", err)
+	}
+	states := emittedQueueStates(rec)
+	if len(states) == 0 {
+		t.Fatal("no provider:queue_state_changed for the concurrent register")
+	}
+	emitted := states[len(states)-1]
+	if len(emitted.Items) != 2 || emitted.Items[0].ID != first.ID || emitted.Items[1].ID != second.ID {
+		t.Fatalf("emitted queue state: got %+v, want [%s %s]", emitted.Items, first.ID, second.ID)
+	}
+
+	// queue_flushed is about to carry the message: Zone 2 takes it over,
+	// so the queue snapshot gives it up in the same step.
+	app.noteFlushDispatchItemSettled(thread.ID, first.ID)
+	snap, err = app.GetQueueState(thread.ID)
+	if err != nil {
+		t.Fatalf("GetQueueState after settle: %v", err)
+	}
+	if len(snap) != 1 || snap[0].ID != second.ID {
+		t.Fatalf("snapshot after settle: got %+v, want only %s", snap, second.ID)
 	}
 }
 

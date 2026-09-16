@@ -157,12 +157,17 @@ func (a *App) runFlushDispatchWorker(threadID string) {
 			a.flushDispatch.queues[threadID] = queue[1:]
 		}
 		a.flushDispatch.current[threadID] = batch
+		// Under the SAME lock as the pop: the dispatch below can wait on
+		// the thread lock for as long as a git operation takes, and the
+		// batch must never be invisible to the queue snapshot in between.
+		a.flushDispatch.dispatching[threadID] = batch.items
 		a.flushDispatch.mu.Unlock()
 
 		a.dispatchFlushWithGeneration(threadID, batch.items, batch.generation)
 
 		a.flushDispatch.mu.Lock()
 		delete(a.flushDispatch.current, threadID)
+		delete(a.flushDispatch.dispatching, threadID)
 		if a.flushDispatch.generation[threadID] == batch.generation {
 			a.flushDispatch.inflightItems[threadID] -= len(batch.items)
 			if a.flushDispatch.inflightItems[threadID] <= 0 {
@@ -186,6 +191,9 @@ func (a *App) ensureFlushDispatchMapsLocked() {
 	if a.flushDispatch.current == nil {
 		a.flushDispatch.current = make(map[string]flushDispatchBatch)
 	}
+	if a.flushDispatch.dispatching == nil {
+		a.flushDispatch.dispatching = make(map[string][]triage.QueuedFlushItem)
+	}
 	if a.flushDispatch.running == nil {
 		a.flushDispatch.running = make(map[string]bool)
 	}
@@ -208,6 +216,7 @@ func (a *App) clearFlushDispatchForRollback(threadID string) {
 	a.flushDispatch.generation[threadID]++
 	delete(a.flushDispatch.queues, threadID)
 	delete(a.flushDispatch.current, threadID)
+	delete(a.flushDispatch.dispatching, threadID)
 	delete(a.flushDispatch.inflightItems, threadID)
 	a.flushDispatch.mu.Unlock()
 }
@@ -225,6 +234,7 @@ func (a *App) drainFlushDispatchForSessionEnd(threadID string) []triage.QueuedFl
 		drained = append(drained, batch.items...)
 	}
 	delete(a.flushDispatch.queues, threadID)
+	delete(a.flushDispatch.dispatching, threadID)
 	delete(a.flushDispatch.inflightItems, threadID)
 	a.flushDispatch.mu.Unlock()
 	return drained
@@ -319,7 +329,109 @@ type flushQueuePayload = flushqueue.Payload
 // r.mu. The worker preserves FIFO order across multiple boundary drains and
 // prevents concurrent sequence allocation for one thread.
 func (a *App) dispatchFlush(threadID string, items []triage.QueuedFlushItem) {
+	// The worker records the batch under the same lock as its pop; a
+	// direct call records its own, so both entry paths keep the batch
+	// visible to the queue snapshot for the whole dispatch.
+	a.beginFlushDispatchVisibility(threadID, items)
+	defer a.endFlushDispatchVisibility(threadID)
 	a.dispatchFlushWithGeneration(threadID, items, a.currentFlushDispatchGeneration(threadID))
+}
+
+func (a *App) beginFlushDispatchVisibility(threadID string, items []triage.QueuedFlushItem) {
+	a.flushDispatch.mu.Lock()
+	a.ensureFlushDispatchMapsLocked()
+	a.flushDispatch.dispatching[threadID] = items
+	a.flushDispatch.mu.Unlock()
+}
+
+func (a *App) endFlushDispatchVisibility(threadID string) {
+	a.flushDispatch.mu.Lock()
+	delete(a.flushDispatch.dispatching, threadID)
+	a.flushDispatch.mu.Unlock()
+}
+
+// noteFlushDispatchItemSettled drops one item from the in-flight remainder.
+// Called once its `queue_flushed` is about to be emitted (Zone 2 takes over)
+// or once a failure has put it back on the triage queue (Zone 1 takes it
+// back) — never in between, so no snapshot can miss it and none can show it
+// twice.
+func (a *App) noteFlushDispatchItemSettled(threadID, itemID string) {
+	if itemID == "" {
+		return
+	}
+	a.flushDispatch.mu.Lock()
+	defer a.flushDispatch.mu.Unlock()
+	remaining := a.flushDispatch.dispatching[threadID]
+	for i, item := range remaining {
+		if item.ID != itemID {
+			continue
+		}
+		next := make([]triage.QueuedFlushItem, 0, len(remaining)-1)
+		next = append(next, remaining[:i]...)
+		next = append(next, remaining[i+1:]...)
+		if len(next) == 0 {
+			delete(a.flushDispatch.dispatching, threadID)
+		} else {
+			a.flushDispatch.dispatching[threadID] = next
+		}
+		return
+	}
+}
+
+// noteFlushDispatchGroupSettled drops every member of a dispatch group: a
+// joined group leaves the queue on one write, and an empty member settles
+// with the group it dropped out of.
+func (a *App) noteFlushDispatchGroupSettled(threadID string, group []triage.QueuedFlushItem) {
+	for _, item := range group {
+		a.noteFlushDispatchItemSettled(threadID, item.ID)
+	}
+}
+
+// pendingFlushDispatchItems lists every queued message the App layer is
+// holding for a thread: the remainder of the batch being dispatched, then
+// the batches still waiting for the worker. Current generation only — a
+// rollback's discarded batches are not queued for anyone.
+func (a *App) pendingFlushDispatchItems(threadID string) []triage.QueuedFlushItem {
+	a.flushDispatch.mu.Lock()
+	defer a.flushDispatch.mu.Unlock()
+	generation := a.flushDispatch.generation[threadID]
+	var out []triage.QueuedFlushItem
+	out = append(out, a.flushDispatch.dispatching[threadID]...)
+	for _, batch := range a.flushDispatch.queues[threadID] {
+		if batch.generation != generation {
+			continue
+		}
+		out = append(out, batch.items...)
+	}
+	return out
+}
+
+// queueSnapshotForThread is the ONE queue snapshot every wire surface
+// publishes. A queued message is somewhere in the handoff chain at all
+// times — triage queue → triage claim → App dispatch batch → in-flight
+// item — and this reads the whole chain, oldest first, so no point in the
+// chain can publish a snapshot that omits a message the user is still
+// waiting on. The overlap between the App's batch and triage's claim (the
+// instant the dispatcher is invoked, when both hold it) dedupes by id.
+func (a *App) queueSnapshotForThread(threadID string) []QueuedItem {
+	pending := a.pendingFlushDispatchItems(threadID)
+	var queued []triage.QueuedFlushItem
+	if a.triage != nil {
+		queued = a.triage.QueuedFlushItems(threadID)
+	}
+	if len(pending)+len(queued) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(pending)+len(queued))
+	out := make([]QueuedItem, 0, len(pending)+len(queued))
+	for _, item := range append(pending, queued...) {
+		if _, duplicate := seen[item.ID]; duplicate {
+			continue
+		}
+		seen[item.ID] = struct{}{}
+		out = append(out, flushqueue.ItemFromTriage(threadID, item))
+	}
+	return out
 }
 
 func (a *App) dispatchFlushWithGeneration(threadID string, items []triage.QueuedFlushItem, generation uint64) {
@@ -342,6 +454,7 @@ func (a *App) dispatchFlushWithGeneration(threadID string, items []triage.Queued
 		if errors.Is(err, errEmptyUserMessage) {
 			// Older clients admitted empty rows. They have no input to retry
 			// or restore, and must not block the meaningful tail of the queue.
+			a.noteFlushDispatchGroupSettled(threadID, group)
 			settleFlushGroup(group)
 			continue
 		}
@@ -356,6 +469,10 @@ func (a *App) dispatchFlushWithGeneration(threadID string, items []triage.Queued
 			// how far dispatch got: the original marker when cleanup
 			// never ran or failed, cleared once cleanup succeeded, the
 			// fresh row id once a quiet persist landed.
+			// Requeue FIRST, then drop the in-flight record: the triage
+			// queue has the item back before this layer stops vouching
+			// for it, so a snapshot from another goroutine in between
+			// still sees it.
 			for _, item := range requeue {
 				a.triage.RegisterQueueItem(threadID, item)
 			}
@@ -364,10 +481,16 @@ func (a *App) dispatchFlushWithGeneration(threadID string, items []triage.Queued
 					a.triage.RegisterQueueItem(threadID, item)
 				}
 			}
+			for _, settled := range groups[i:] {
+				a.noteFlushDispatchGroupSettled(threadID, settled)
+			}
 			a.emitQueueStateChanged(threadID)
 			return
 		}
 		if !flushedEmitted {
+			// Zone 2 takes the message over here, so this layer stops
+			// publishing it as queued in the same step.
+			a.noteFlushDispatchGroupSettled(threadID, group)
 			a.emit(eventchan.ProviderQueueFlushed, QueueFlushedEvent{
 				ThreadID: threadID,
 				Items:    flushedItems,
@@ -587,6 +710,7 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 		// no provider:item_event — so the item reserves its timeline
 		// position in SQLite but stays as a queued marker in the UI
 		// until the provider echo confirms it entered context.
+		a.noteFlushDispatchGroupSettled(threadID, group)
 		a.emit(eventchan.ProviderQueueFlushed, QueueFlushedEvent{
 			ThreadID: threadID,
 			Items:    flushedItems,
@@ -1103,30 +1227,19 @@ func (a *App) GetQueueState(threadID string) ([]QueuedItem, error) {
 	if a.triage == nil {
 		return nil, nil
 	}
-	items := a.triage.QueuedFlushItems(threadID)
-	if len(items) == 0 {
-		return nil, nil
-	}
-	out := make([]QueuedItem, 0, len(items))
-	for _, item := range items {
-		out = append(out, flushqueue.ItemFromTriage(threadID, item))
-	}
-	return out, nil
+	return a.queueSnapshotForThread(threadID), nil
 }
 
 // emitQueueStateChanged emits the post-mutation queue snapshot on
-// `provider:queue_state_changed`. Always queries the current
-// snapshot via the triage primitive so the wire payload is
+// `provider:queue_state_changed`. Always re-reads the whole handoff
+// chain (`queueSnapshotForThread`) so the wire payload is
 // authoritative — observers don't have to combine deltas to get
-// state.
+// state, and a snapshot raised while another message is mid-dispatch
+// cannot tell them to drop it.
 func (a *App) emitQueueStateChanged(threadID string) {
-	var items []QueuedItem
-	if a.triage != nil {
-		current := a.triage.QueuedFlushItems(threadID)
-		items = make([]QueuedItem, 0, len(current))
-		for _, item := range current {
-			items = append(items, flushqueue.ItemFromTriage(threadID, item))
-		}
+	items := a.queueSnapshotForThread(threadID)
+	if items == nil {
+		items = []QueuedItem{}
 	}
 	a.emit(eventchan.ProviderQueueStateChanged, QueueStateChangedEvent{
 		ThreadID: threadID,

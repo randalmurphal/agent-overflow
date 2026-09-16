@@ -62,6 +62,8 @@ import { activityRunDefaultCollapsed, activityRunWindowRows } from './activityRu
 import type { TimelineTurnFacet } from './threadTurnProjection';
 import { createThreadRowUiState, type RowUiStateRetention } from './threadRowUiState.svelte';
 import { createThreadStreamingReveal } from './threadStreamingReveal.svelte';
+import { renderedFlushedUserItemIds } from './threadFlushRowReveal';
+import { confirmFlushedByUserItemId, getFlushedForThread } from './sendQueue.svelte';
 import type { StreamingAssistantRenderContext } from './streamingAssistantReveal';
 import { createThreadTimelineWindow } from './threadTimelineWindow.svelte';
 import { createThreadSubagentMemory } from './threadSubagentMemory';
@@ -303,6 +305,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     appendDirectAssistantLiteral,
     stampLiveContent,
     armStructuralSpring: armLiveContentAppendSpring,
+    onRevealSettled: syncRenderedFlushRows,
     appendLivePayloadDeltaForItem: rowUiState.appendLivePayloadDeltaForItem,
   });
   // Windowed-history / paging machinery (loaded-window cursors and flags,
@@ -426,6 +429,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     pendingInteractiveState,
     liveTodoState,
     confirmOptimisticSend,
+    syncRenderedFlushRows,
     getProviderSessionAccountRevision: () => providerSessionAccountRevision,
     hydrateProviderAccount: (account, expectedMutationRevision) => {
       if (providerSessionAccountRevision !== expectedMutationRevision) return;
@@ -572,6 +576,36 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     if (removed.length === 0) return removed;
     if (thread) switchLoad.dropCachedWindow(thread.id);
     return removed;
+  }
+
+  /**
+   * Hand every flushed message this pane now RENDERS over to the
+   * timeline: Zone 2 of the send-queue preview drops the entry exactly
+   * when its row is admitted to this window AND the reveal gate has
+   * opened past it (threadFlushRowReveal.ts). The XOR invariant in
+   * sendQueue.svelte.ts is enforced here and nowhere else on this side —
+   * arrival of the row's `provider:item_event` upsert is not enough,
+   * because the flush row lands at the turn tail behind whatever prose
+   * is still draining, and a scrolled-back window refuses it outright.
+   *
+   * Called from the reveal gate's per-pass notification, which every
+   * window commit and every smoother mutation already funnels through,
+   * plus the two places that ADD entries without touching the window
+   * (queue_flushed, live-state hydration). Reading the store costs one
+   * registry lookup when nothing is pending, which is the steady state.
+   */
+  function syncRenderedFlushRows(): void {
+    const threadId = thread?.id;
+    if (!threadId) return;
+    const pending = getFlushedForThread(threadId);
+    if (pending.length === 0) return;
+    for (const userItemId of renderedFlushedUserItemIds(
+      pending,
+      getItemById,
+      streamingReveal.revealBoundary,
+    )) {
+      confirmFlushedByUserItemId(threadId, userItemId);
+    }
   }
 
   // A remote frontend can predict a new turn while the host is already
@@ -1498,6 +1532,16 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     armStructuralSpring,
 
     confirmOptimisticSend,
+
+    /**
+     * Re-evaluate which of this thread's flushed messages this pane
+     * renders, handing the rendered ones over to the timeline (Zone 2
+     * drops them). The pane runs this itself on every reveal pass; the
+     * external callers are the two that ADD Zone 2 entries without
+     * touching the window — `provider:queue_flushed` (eventsQueue.ts) and
+     * the live-state snapshot (threadLiveStateHydration.ts).
+     */
+    syncRenderedFlushRows,
 
     trackOptimisticItem(id: string): void {
       optimisticItemIds.add(id);

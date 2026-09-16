@@ -187,7 +187,11 @@ function applySettledTransportGap(gap: { channel: string; seq: number }, origin?
     case 'thread:updated': {
       // The gap carries no entity key, so we cannot say WHICH thread's
       // history moved without us: every stamp we hold may now be an
-      // overstatement. Dropping them all costs one window fetch per
+      // overstatement. The send-queue preview converges through the same
+      // refresh: each pane re-reads its window AND the live-state
+      // snapshot of still-pending sends, then hands over the ones it now
+      // renders, so a lost echo cannot leave a queued message in both
+      // places or in neither. Dropping them all costs one window fetch per
       // thread on its next open and is the only answer that cannot
       // report a stale window as fresh (§3.4). Per-pane on purpose:
       // refreshFromBackend refetches THAT pane's loaded window (two
@@ -337,13 +341,18 @@ function applySettledTransportGap(gap: { channel: string; seq: number }, origin?
       // not persisted anywhere: it is the transient badge state Zone 2
       // renders while a message is in flight.
       //
-      // The cost of a lost frame is bounded and cosmetic: a flushed item
-      // keeps its previous badge until the turn moves on, at which point
-      // the real timeline row supersedes it. command_lifecycle is already
-      // optional in exactly this way — it is Claude-only and depends on the
-      // CLI version, so a session that never emits it leaves Zone 2 as it
-      // was. Falling through to the default would refetch every pane's
-      // window to repair a badge, and still not repair it.
+      // The cost of a lost frame is bounded: a queued message that never
+      // got its Zone 2 entry is one this client renders in the timeline
+      // instead (the row is in history either way), and a flushed item
+      // keeps its previous badge. Neither leaves a message invisible,
+      // because Zone 2 is only ever EMPTIED by a pane reporting the row
+      // rendered — see sendQueue.svelte.ts. Zone 1 is repaired by the
+      // `queue_state_changed` branch above, whose snapshot covers items
+      // mid-dispatch. command_lifecycle is already optional in exactly
+      // this way — it is Claude-only and depends on the CLI version, so a
+      // session that never emits it leaves Zone 2 as it was. Falling
+      // through to the default would refetch every pane's window to
+      // repair a badge, and still not repair it.
       return;
     }
     case 'draft:updated': {

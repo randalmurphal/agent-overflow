@@ -863,91 +863,81 @@ clears it.
 
 ### Per-thread send queue
 
-The composer is always-typeable. When the user submits a message
-mid-round (`getActiveTurn(threadId) !== null`), it lands in the
-per-thread send queue (`frontend/src/lib/stores/sendQueue.svelte.ts`)
-instead of dispatching `SendMessageWithOptions` immediately, which
-registers it with the backend (`RegisterQueueItem`) and mirrors the
-answer. The frontend copy is a render cache (`SvelteMap<threadId,
-QueueItem[]>`), keyed identically to the global active-turn registry
-and surviving thread switches; the DURABLE copy is the backend's
-`flush_queue_items` row, which is what survives a crash and comes
-back into the composer on the next boot (`internal/app/AGENTS.md`
-§ The flush queue outlives the process).
+The composer is always-typeable. A message submitted while the backend is
+working is ACCEPTED rather than sent: `RegisterQueueItem` writes the durable
+`flush_queue_items` row (`internal/app/AGENTS.md` § The flush queue outlives
+the process) and appends the message to triage's per-thread flush queue. The
+queue and every dispatch decision live in the backend
+(`internal/triage/flush_queue.go`); the frontend keeps a mirror it renders
+and nothing else.
 
-`QueueItem` captures everything needed to dispatch the message
-later: `message`, full `attachments` (not ids: click-to-edit
-needs to restore them into the composer without a backend
-round-trip), `terminalChips`, and plan-revision metadata
-(`sourceProposedPlan`, `revisionSourceProposedPlan`,
-`revisionSourceCommentIds`).
+**Drain.** Triage drains at provider boundaries it already classifies —
+turn, tool and background-task completion — through
+`maybeFlushQueueAtBoundary`, which refuses while queue-blocking work is
+running, and immediately from `RegisterQueueItem` when a session exists.
+`tryFlushQueue` hands the batch to the App dispatcher outside `r.mu`; the
+App worker serializes dispatch per thread behind the thread lock. Per item,
+`dispatchFlushItem` resolves placement, allocates the row identity, registers
+the pending send, and writes to the provider. An interrupt with messages
+queued is not special-cased: the interrupt settles the turn, and the next
+boundary drains the queue.
 
-**Drain trigger.** Every `provider:turn_completed` listener fires
-`tryDrainNextQueued(threadId)` after the existing
-`projectTurnCompleted` call. Drain is uniform across cause
-(success, error, or aborted), matching both reference UIs:
+**Placement** (`docs/architecture/user-message-ordering.md`): Claude with an
+active turn persists the row QUIETLY at the active turn's index, with no
+`provider:item_event`; every other case defers the row until its provider
+echo. Either way the message is visible above the composer, not in the
+timeline, until the echo confirms consumption.
 
-- Claude Code's `useQueueProcessor` flips on every `!isQueryActive`
-  transition (`src/hooks/useQueueProcessor.ts`).
-- Codex's `maybe_send_next_queued_input` is called from 11 sites
-  (`codex-rs/tui/src/chatwidget.rs`), every state-clearing
-  transition.
+**The frontend mirror** (`frontend/src/lib/stores/sendQueue.svelte.ts`) has
+two zones, both per-thread and both surviving thread switches:
 
-Stop-with-queue ("user hits Esc with messages queued") falls out of
-the same uniform rule: `InterruptTurn` → backend emits an aborted
-`turn_completed` → drain fires → first queued item is dispatched as
-the next user message. No special-case wiring.
+- Zone 1, queued: replaced wholesale from `provider:queue_state_changed`,
+  whose snapshot spans the entire handoff chain (triage queue, the claimed
+  batch mid-handoff, and the App's in-flight batch), so no snapshot taken
+  while a message is being dispatched can tell the client to drop it.
+- Zone 2, flushed: added by `provider:queue_flushed` and by the still-pending
+  sends in `GetThreadLiveState`. `provider:command_lifecycle` stamps an
+  optional delivery badge on an entry (Claude-only, CLI-version dependent).
 
-**Drain sequence.**
+**Zone 2 XOR the timeline.** From `provider:queue_flushed` onward a flushed
+message is visible in exactly one of the two: never both, never neither. The
+entry is removed only when a pane reports that it RENDERS the row — admitted
+to that pane's loaded window and at or before its reveal boundary — which the
+pane evaluates at its one reveal chokepoint (every window commit and every
+smoother mutation runs through it) and at the two events that add entries
+without touching the window. Arrival of the row's upsert is not the trigger:
+the flush row lands at the turn tail behind any still-draining prose, and a
+scrolled-back window refuses it, so both would leave the message in neither
+place for as long as the condition lasts. A thread with no mounted pane has
+no timeline for the row to be in; its item-stream handler confirms on
+arrival, which is also what lets the sidebar's working indicator settle.
 
-1. `provider:turn_completed` arrives → `activeTurn` cleared.
-2. `popFront(threadId)` → head item lifted; if undefined, return.
-3. `projectSendStarted(threadId)` → `pendingSendThreads.add`.
-   The working-indicator bridge predicate keeps the spinner up
-   across the RPC roundtrip (see below).
-4. `await SendMessageWithOptions(...)`, typically 50–200ms.
-5. Success → backend emits `provider:turn_started` → existing
-   `projectTurnStarted` handler clears `pendingSendThreads`.
-6. Failure → `enqueueAtFront(threadId, item)` restores the popped
-   item, `clearPendingSend(threadId)` collapses the bridge, the
-   error fans out to matching panes via `pane.setGeneralError`.
+The other way an entry leaves Zone 2 is the backend taking the message back.
+The eager path emits `queue_flushed` before the provider write settles, so a
+failed write requeues the item under its original queue id; the next Zone 1
+snapshot naming that id drops the Zone 2 entry (`replaceQueueForThread`), as
+does `provider:queue_restored` when the content goes back to the composer.
 
-**Working-indicator bridge.** Without intervention,
-`activeTurn` would be null between steps (1) and (5). To prevent
-the spinner from flickering for ~200ms, the working indicator's
-`isWorking` predicate is
+**Working indicator.** `isThreadWorking` is
+`activeTurn !== null || hasPendingSend || hasQueueItems` (either zone), so
+the spinner stays up across the gap between a turn ending and the queued
+message's next turn starting. The elapsed counter is gated on `activeTurn`
+alone, so the bridge moment renders `Working` without a `for 0s` flash.
 
-```ts
-isWorking = activeTurn !== null
-  || hasQueueItems(threadId)
-  || hasPendingSend(threadId);
-```
+**Approval gate.** A pending tool approval keeps the wire round open, so no
+`turn_completed` fires and the boundary drain simply does not run. There is
+no approval-aware drain code.
 
-The elapsed-counter span is gated separately on `activeTurn !== null`
-so the bridge moment renders just `Working` (no `for 0s` flash);
-the next round's `provider:turn_started` arms a fresh `startedAt`
-and the counter ticks from `0s`.
+**Stdin race (Claude only, accepted).** When a round ends with both a queued
+user message and a pending bg-subagent task notification, AO's stdin write
+races the CLI's own injection. Claude Code resolves this in-process (user
+`next` beats notification `later`); across a pipe we cannot. The model
+handles both in arrival order and the timeline reflects what the agent
+actually saw.
 
-**Approval gate.** During a pending tool approval, the wire round
-hasn't completed (backend's `currentRoundByThread` stays set). No
-`turn_completed` fires until approval resolves. Drain naturally
-waits. There's no special-case approval-aware drain code.
-
-**Stdin race (Claude only, accepted).** When round N ends with
-both a queued user message AND a pending bg-subagent task
-notification: our `tryDrainNextQueued` writes the user message
-to stdin while the CLI may auto-inject the task_notification.
-Whichever reaches the CLI input handler first becomes round N+1.
-Claude Code's source resolves this deterministically via
-in-process priority (user `next` beats notification `later`); we
-cannot, because stdin write order is non-deterministic. Accepted: the
-model handles both messages in arrival order, ordering is
-non-deterministic but the timeline reflects what the agent
-actually saw, not a presumed order.
-
-**Cleanup.** `clearThreadStatus(threadId)` (called when a thread
-is archived/deleted) calls `clearForThread` on the queue. Tests
-should call `resetSendQueueForTest()` in `beforeEach`.
+**Cleanup.** `clearThreadStatus(threadId)` (thread archived or deleted) calls
+`clearForThread` on both zones. Tests call `resetSendQueueForTest()` in
+`beforeEach`.
 
 ## Error routing
 

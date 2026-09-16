@@ -379,6 +379,7 @@ export interface PaneDoors {
 export interface ThreadPaneIngest {
   readonly armStructuralSpring: () => boolean;
   readonly confirmOptimisticSend: (threadId: string, sendId: string | undefined, canonicalItemId?: string) => void;
+  readonly syncRenderedFlushRows: () => void;
   readonly paneId: string;
   readonly threadId: string | null;
   readonly thread: Thread | null;

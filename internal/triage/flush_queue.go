@@ -264,7 +264,7 @@ func (r *Router) QueuedFlushItemCount(threadID string) int {
 	}
 	claimed := 0
 	if id := r.identityIfPresent(threadID); id != nil {
-		claimed = id.claimedFlushItems
+		claimed = len(id.claimedFlushItems)
 	}
 	return queued + claimed
 }
@@ -349,11 +349,21 @@ func (r *Router) maxPendingFlushSequence(threadID string, turnIndex int) int {
 	return maxSeq
 }
 
-// QueuedFlushItems returns a copy of the per-thread flush queue.
+// QueuedFlushItems returns a copy of the per-thread flush queue, in
+// dispatch order: items a tryFlushQueue handoff has CLAIMED but not yet
+// handed to the dispatcher come first, then the items still queued.
 // Callers receive a fresh slice they may mutate without affecting
 // router state; the underlying QueuedFlushItem values share their
 // json.RawMessage backing with the originals (Payload bytes are
 // treated as immutable). Returns nil when no items are queued.
+//
+// The claimed prefix is what makes the wire snapshot safe to publish at
+// any moment: tryFlushQueue empties the queue before the app worker has
+// recorded the batch, and a `provider:queue_state_changed` emitted in
+// that window (a concurrent RegisterQueueItem raises one) would
+// otherwise tell the client to drop a message whose `queue_flushed`
+// does not exist yet. The app dedupes this prefix against its own
+// in-flight batch, which takes over the moment the dispatcher returns.
 //
 // Used by the App layer to surface initial queue state on bootstrap
 // (a remote `--connect` client that attaches mid-session) and to
@@ -364,13 +374,20 @@ func (r *Router) QueuedFlushItems(threadID string) []QueuedFlushItem {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	st := r.threadStateIfPresent(threadID)
-	if st == nil || len(st.queuedFlushItems) == 0 {
+	var claimed []QueuedFlushItem
+	if id := r.identityIfPresent(threadID); id != nil {
+		claimed = id.claimedFlushItems
+	}
+	var queued []QueuedFlushItem
+	if st := r.threadStateIfPresent(threadID); st != nil {
+		queued = st.queuedFlushItems
+	}
+	if len(claimed)+len(queued) == 0 {
 		return nil
 	}
-	src := st.queuedFlushItems
-	out := make([]QueuedFlushItem, len(src))
-	copy(out, src)
+	out := make([]QueuedFlushItem, 0, len(claimed)+len(queued))
+	out = append(out, claimed...)
+	out = append(out, queued...)
 	return out
 }
 
@@ -394,10 +411,11 @@ func (r *Router) QueuedFlushItems(threadID string) []QueuedFlushItem {
 // App.flushHandoffMu — only the RegisterQueueItem trigger holds that
 // mutex against the revert-on-interrupt predicate. A batch mid-handoff
 // must therefore stay visible to the predicate on its own: the
-// claimedFlushItems count is bumped under r.mu alongside the queue
+// claimed batch is recorded under r.mu alongside the queue
 // delete and dropped only after the dispatcher has synchronously
 // recorded the batch in-flight (enqueueFlushDispatch bumps its
-// inflight counter before returning). Folded into QueuedFlushItemCount,
+// inflight counter before returning). Folded into QueuedFlushItemCount
+// and QueuedFlushItems,
 // the batch reads as queued → claimed → in-flight, never invisible —
 // without it, a Stop landing in the gap on a turn with no durable agent
 // rows (a top-level Codex unified-exec completing outside an active
@@ -432,20 +450,45 @@ func (r *Router) tryFlushQueue(threadID string) bool {
 	// sweep threadState mid-handoff — the claim must survive that sweep or
 	// QueuedFlushItemCount lies to the revert predicate. identitiesMu is a
 	// leaf lock, so minting/reading the identity under r.mu is safe.
-	r.identity(threadID).claimedFlushItems += len(batch)
+	r.identity(threadID).claimedFlushItems = append(r.identity(threadID).claimedFlushItems, batch...)
 	r.mu.Unlock()
 
 	defer func() {
 		r.mu.Lock()
 		if id := r.identityIfPresent(threadID); id != nil {
-			if id.claimedFlushItems -= len(batch); id.claimedFlushItems < 0 {
-				id.claimedFlushItems = 0
-			}
+			id.claimedFlushItems = releaseClaimedFlushItems(id.claimedFlushItems, batch)
 		}
 		r.mu.Unlock()
 	}()
 	dispatcher(threadID, batch)
 	return true
+}
+
+// releaseClaimedFlushItems drops this handoff's own entries and nothing
+// else. Two dispatches for one thread can overlap (a boundary drain and a
+// RegisterQueueItem trigger), and an earlier one that is still blocked
+// inside its dispatcher must keep its claim when a later one settles —
+// release by ID, never by count.
+func releaseClaimedFlushItems(claimed, released []QueuedFlushItem) []QueuedFlushItem {
+	if len(claimed) == 0 || len(released) == 0 {
+		return claimed
+	}
+	remaining := make(map[string]int, len(released))
+	for _, item := range released {
+		remaining[item.ID]++
+	}
+	kept := claimed[:0]
+	for _, item := range claimed {
+		if remaining[item.ID] > 0 {
+			remaining[item.ID]--
+			continue
+		}
+		kept = append(kept, item)
+	}
+	if len(kept) == 0 {
+		return nil
+	}
+	return kept
 }
 
 func (r *Router) maybeFlushQueueAtBoundary(threadID string) bool {

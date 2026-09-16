@@ -35,6 +35,8 @@ import { compactingRevision, hydrateCompactingState } from './compactingState.sv
 export interface ThreadLiveStateHydrationOptions {
   getThread(): Thread | null;
   confirmOptimisticSend(threadId: string, sendId: string | undefined, canonicalItemId?: string): void;
+  /** The pane's send-queue render handover (thread.svelte.ts). */
+  syncRenderedFlushRows(): void;
   /** Pane switch generation — captured at load start, compared after awaits. */
   getSwitchGeneration(): number;
   /** The pane's createThreadPendingInteractiveState instance. */
@@ -162,6 +164,12 @@ export function createThreadLiveStateHydration(
           flushedAt: Date.now(),
         }));
       replaceFlushedForThread(threadID, flushedItems);
+      // The snapshot lists every send the backend still holds unconfirmed,
+      // including quiet rows it has already persisted — which this pane's
+      // window read can therefore be rendering right now. Hand those back
+      // to the timeline before returning, so the re-install is never
+      // observable as "pending AND on screen".
+      options.syncRenderedFlushRows();
       for (const item of queueItems) options.confirmOptimisticSend(threadID, item.sendId);
       for (const item of flushedItems) {
         options.confirmOptimisticSend(threadID, item.sendId, item.userItemId);

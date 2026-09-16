@@ -82,6 +82,13 @@ export function applyQueueFlushed(evt: QueueFlushedPayload | undefined): void {
     for (const item of evt.items) {
       pane.confirmOptimisticSend(evt.threadId, item.sendId, item.userItemId);
     }
+    // The row can already be on screen when this frame lands: the eager
+    // quiet persist emits `queue_flushed` before its `item_event`, but a
+    // replay off the event ring re-delivers the frame long after the row
+    // mounted. `markItemsFlushed` adds unconditionally (it cannot know),
+    // and the pane takes back what it renders — in this same synchronous
+    // handler, so Zone 2 and the timeline are never both showing it.
+    pane.syncRenderedFlushRows();
   }
 }
 

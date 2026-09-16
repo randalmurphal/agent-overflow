@@ -108,6 +108,14 @@ export interface ThreadStreamingRevealOptions {
   /** Arm the structural-append spring and stamp the live-content latch
    *  (pane's armLiveContentAppendSpring — pane owns all its gates). */
   armStructuralSpring(): void;
+  /**
+   * Called at the end of every reveal pass, after the boundary is
+   * published — i.e. after every window commit and every smoother
+   * mutation. The pane hands its rendered flush rows to the send-queue
+   * store from here (threadFlushRowReveal.ts). Read-only with respect to
+   * items, smoothers and the gate.
+   */
+  onRevealSettled?(): void;
   /** rowUiState.appendLivePayloadDeltaForItem — live reasoning-tail payload append. */
   appendLivePayloadDeltaForItem(
     itemId: string,
@@ -213,6 +221,7 @@ export function createThreadStreamingReveal(
     getItemById: options.getItemById,
     getItems: options.getItems,
     armStructuralSpring: options.armStructuralSpring,
+    onRevealSettled: options.onRevealSettled,
   });
   const routing = createRevealRouting({
     registry,

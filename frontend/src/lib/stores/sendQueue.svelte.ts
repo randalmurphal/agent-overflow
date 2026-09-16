@@ -10,9 +10,33 @@ import { createKeyedSignalRegistry, type KeyedSignalRegistry } from './keyedSign
  * `queueByThread` holds messages registered with the backend but not
  * yet written to the provider by the dispatch worker.
  *
- * `flushedByThread` holds messages written to the provider but not
- * yet confirmed by the provider-visible user-message echo. Both states
- * render in the same pending area above the composer.
+ * `flushedByThread` holds messages written to the provider whose
+ * timeline row is not RENDERED anywhere yet. Both states render in the
+ * same pending area above the composer.
+ *
+ * Zone 2's exit condition is rendering, not arrival: for one flushed
+ * userItemId, "visible in the send-queue preview" XOR "visible in the
+ * timeline" holds at every observable instant from `provider:queue_flushed`
+ * onward. A row that reached the client but is refused window admission
+ * (the pane is scrolled back, `hasMoreNewer`) or withheld by the reveal
+ * gate is in neither timeline, so it keeps its Zone 2 entry. Panes call
+ * `confirmFlushedByUserItemId` from their one reveal chokepoint when a
+ * flush row becomes rendered; a thread with no mounted pane has no
+ * timeline to be in, so the item-stream handler confirms on data arrival
+ * there (eventsItemStream.ts). The other way out is the backend taking the
+ * message back: a `provider:queue_state_changed` snapshot that names the
+ * entry's queue id again (a requeued dispatch), or `provider:queue_restored`
+ * returning it to the composer.
+ *
+ * There is deliberately NO memo of confirmations that arrive before their
+ * Zone 2 entry exists. Such a memo has to outlive both authorities that
+ * can answer "is this send still pending" — the mounted timeline and the
+ * backend snapshot — and went stale exactly when a send was retried under
+ * its deterministic `user:flush:<uuid5(sendId)>` id, dropping the retry
+ * from Zone 1 without ever adding it to Zone 2. An entry re-added by a
+ * replayed `queue_flushed` is corrected by the next render sync or by the
+ * authoritative `replaceFlushedForThread` snapshot; that direction is the
+ * safe one, because it can never leave a message in neither place.
  *
  * The store does not own dispatch decisions. RegisterQueueItem goes
  * through the backend RPC; backend events are the source of truth.
@@ -74,7 +98,6 @@ const EMPTY_FLUSHED: readonly FlushedItem[] = Object.freeze([]);
 // so `{#each}` callers keep a stable identity when a zone drains.
 const queueByThread = createKeyedSignalRegistry<readonly QueueItem[]>(EMPTY_QUEUE);
 const flushedByThread = createKeyedSignalRegistry<readonly FlushedItem[]>(EMPTY_FLUSHED);
-const confirmedFlushedUserIdsByThread = new Map<string, Set<string>>();
 const queueRevisionByThread = new Map<string, number>();
 
 // ---- Zone 1 (queued) reads ------------------------------------------
@@ -110,28 +133,6 @@ export function getQueueRevisionForThread(threadId: string | null | undefined): 
 
 function bumpQueueRevision(threadId: string): void {
   queueRevisionByThread.set(threadId, getQueueRevisionForThread(threadId) + 1);
-}
-
-function rememberFlushedConfirmation(threadId: string, userItemId: string): void {
-  let confirmed = confirmedFlushedUserIdsByThread.get(threadId);
-  if (!confirmed) {
-    confirmed = new Set<string>();
-    confirmedFlushedUserIdsByThread.set(threadId, confirmed);
-  }
-  confirmed.add(userItemId);
-}
-
-function isFlushedConfirmed(threadId: string, userItemId: string): boolean {
-  return confirmedFlushedUserIdsByThread.get(threadId)?.has(userItemId) ?? false;
-}
-
-function forgetFlushedConfirmation(threadId: string, userItemId: string): void {
-  const confirmed = confirmedFlushedUserIdsByThread.get(threadId);
-  if (!confirmed) return;
-  confirmed.delete(userItemId);
-  if (confirmed.size === 0) {
-    confirmedFlushedUserIdsByThread.delete(threadId);
-  }
 }
 
 type QueueZone<T> = KeyedSignalRegistry<readonly T[]>;
@@ -215,27 +216,54 @@ export async function registerQueueItem(
 
 /** Replace the entire Zone 1 list for a thread. Called by the
  * `provider:queue_state_changed` handler — the snapshot in the event
- * payload is authoritative. */
+ * payload is authoritative.
+ *
+ * A queue id naming a Zone 2 entry means the backend took that message
+ * BACK: the eager Claude dispatch emits `provider:queue_flushed` before
+ * the provider write settles, and a failed write requeues the item under
+ * its original queue id (the requeue copies the input). Without this the
+ * message rendered twice above the composer — once queued, once flushed —
+ * which is the "never both" half of the invariant. The authoritative
+ * snapshot wins, so the Zone 2 entry goes.
+ *
+ * A joined multi-item flush produces ONE Zone 2 entry, keyed on the first
+ * member's queueItemId (markItemsFlushed dedupes on userItemId), and a
+ * requeue of that batch returns every member id — including the first —
+ * so the rule still maps. */
 export function replaceQueueForThread(
   threadId: string,
   items: readonly QueueItem[],
 ): void {
   if (!threadId) return;
-  if (!replaceZoneItems(queueByThread, threadId, items, EMPTY_QUEUE)) return;
-  bumpQueueRevision(threadId);
+  const queuedIds = new Set(items.map((item) => item.id));
+  const reclaimedFlushedItems = queuedIds.size > 0
+    && filterZoneItems(
+      flushedByThread,
+      threadId,
+      EMPTY_FLUSHED,
+      (entry) => !queuedIds.has(entry.queueItemId),
+    );
+  const replacedQueuedItems = replaceZoneItems(queueByThread, threadId, items, EMPTY_QUEUE);
+  if (reclaimedFlushedItems || replacedQueuedItems) bumpQueueRevision(threadId);
 }
 
+/** Replace Zone 2 from the backend's pending-send snapshot
+ * (`GetThreadLiveState.flushedItems`). The snapshot names every send the
+ * backend still considers unconfirmed — deferred rows that have no SQLite
+ * row yet AND quiet rows it persisted without an item event — and each
+ * send appears there or in the timeline window, never both
+ * (internal/triage/live_state.go).
+ *
+ * Installing it can re-add an entry whose row this client already renders
+ * (the snapshot was sampled before the echo). The caller resolves that
+ * immediately through its pane's render sync, in the same synchronous
+ * hydration step, so no "both" instant is observable. */
 export function replaceFlushedForThread(
   threadId: string,
   items: readonly FlushedItem[],
 ): void {
   if (!threadId) return;
-  const visibleItems = items.filter((item) => {
-    if (!isFlushedConfirmed(threadId, item.userItemId)) return true;
-    forgetFlushedConfirmation(threadId, item.userItemId);
-    return false;
-  });
-  if (!replaceZoneItems(flushedByThread, threadId, visibleItems, EMPTY_FLUSHED)) return;
+  if (!replaceZoneItems(flushedByThread, threadId, items, EMPTY_FLUSHED)) return;
   bumpQueueRevision(threadId);
 }
 
@@ -249,7 +277,13 @@ export function replaceFlushedForThread(
  * append rendered the same pending message twice (and handed a
  * userItemId-keyed `{#each}` a duplicate key — an aborted flush,
  * utils/uniqueEachKeys.ts). An entry already in Zone 2 keeps its
- * original flushedAt and lifecycle; the replay carries nothing newer. */
+ * original flushedAt and lifecycle; the replay carries nothing newer.
+ *
+ * An entry is added even when this client already holds (or renders) the
+ * row: the caller runs its panes' render sync straight after this call,
+ * which is the one place allowed to decide the row is on screen. Adding
+ * first and letting the timeline take it back is what makes "never
+ * neither" hold for a re-flushed send whose row is no longer rendered. */
 export function markItemsFlushed(
   threadId: string,
   items: readonly Pick<FlushedItem, 'queueItemId' | 'userItemId' | 'message' | 'sendId'>[],
@@ -263,10 +297,6 @@ export function markItemsFlushed(
   );
   const additions: FlushedItem[] = [];
   for (const item of items) {
-    if (isFlushedConfirmed(threadId, item.userItemId)) {
-      forgetFlushedConfirmation(threadId, item.userItemId);
-      continue;
-    }
     if (knownUserItemIds.has(item.userItemId)) continue;
     knownUserItemIds.add(item.userItemId);
     additions.push({
@@ -283,10 +313,14 @@ export function markItemsFlushed(
   }
 }
 
-/** Remove a Zone 2 entry by userItemId. Called when a timeline
- * `provider:item_event` upsert arrives with the matching id and a
- * `provider_item_id`, which is the provider-confirmed signal that the
- * queued message has landed in context. */
+/** Hand a flushed message over from Zone 2 to the timeline.
+ *
+ * The two callers are the only two ways a row becomes visible somewhere
+ * else: a pane reporting that it now RENDERS the row (admitted to its
+ * window and at or before its reveal boundary), and the item-stream
+ * handler for a thread no pane is mounted on, where the row's arrival is
+ * all the confirmation that exists. No-op when nothing matches — a
+ * confirmation with no entry means the handover already happened. */
 export function confirmFlushedByUserItemId(
   threadId: string,
   userItemId: string,
@@ -298,11 +332,7 @@ export function confirmFlushedByUserItemId(
     EMPTY_FLUSHED,
     (entry) => entry.userItemId !== userItemId,
   );
-  if (changed) {
-    bumpQueueRevision(threadId);
-    return;
-  }
-  rememberFlushedConfirmation(threadId, userItemId);
+  if (changed) bumpQueueRevision(threadId);
 }
 
 /** Stamp a provider delivery ack onto its Zone 2 entry.
@@ -371,7 +401,6 @@ export function clearForThread(threadId: string): void {
   if (!threadId) return;
   const hadVisibleItems = queueByThread.get(threadId).length > 0
     || flushedByThread.get(threadId).length > 0;
-  confirmedFlushedUserIdsByThread.delete(threadId);
   if (hadVisibleItems) bumpQueueRevision(threadId);
   queueByThread.drop(threadId);
   flushedByThread.drop(threadId);
@@ -409,6 +438,5 @@ export function queueItemFromWire(item: WireQueuedItem): QueueItem {
 export function resetForTest(): void {
   queueByThread.reset();
   flushedByThread.reset();
-  confirmedFlushedUserIdsByThread.clear();
   queueRevisionByThread.clear();
 }

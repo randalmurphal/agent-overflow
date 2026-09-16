@@ -516,6 +516,11 @@ export function createAgentScopeView(
     get setSendInFlight() { return sourcePane.setSendInFlight; },
     get armStructuralSpring() { return sourcePane.armStructuralSpring; },
     get confirmOptimisticSend() { return sourcePane.confirmOptimisticSend; },
+    // Forwarded, not overridden: a flushed user row is a TOP-LEVEL row of
+    // the main transcript, so the source pane's window and reveal boundary
+    // are the ones that decide whether it is rendered. This scope's null
+    // boundary describes scoped child rows only.
+    get syncRenderedFlushRows() { return sourcePane.syncRenderedFlushRows; },
     get trackOptimisticItem() { return sourcePane.trackOptimisticItem; },
     get isOptimisticItem() { return sourcePane.isOptimisticItem; },
     get untrackOptimisticItem() { return sourcePane.untrackOptimisticItem; },

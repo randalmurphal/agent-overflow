@@ -136,13 +136,29 @@ describe('sendQueue store', () => {
       expect(getFlushedForThread('t1')).toHaveLength(1);
     });
 
-    it('does not add a flushed marker when confirmation arrives first', () => {
-      confirmFlushedByUserItemId('t1', 'u:0');
+    // No confirmation memo: a confirmation with nothing to remove leaves
+    // NO state behind, so a later flush of the same send id (the durable
+    // `user:flush:<uuid5(sendId)>` is stable across a requeue/retry) still
+    // lands in Zone 2. The memo this replaced dropped the retry from Zone 1
+    // without ever showing it in Zone 2 — the "neither place" bug. Whether
+    // the row is already on screen is the mounted pane's answer, taken
+    // straight after this call (thread.svelte.ts syncRenderedFlushRows).
+    it('re-flushing a confirmed send id puts it back in Zone 2', () => {
       markItemsFlushed('t1', [{ queueItemId: 'q:0', userItemId: 'u:0', message: 'a' }]);
+      confirmFlushedByUserItemId('t1', 'u:0');
       expect(getFlushedForThread('t1')).toHaveLength(0);
+
+      markItemsFlushed('t1', [{ queueItemId: 'q:0', userItemId: 'u:0', message: 'a' }]);
+      expect(getFlushedForThread('t1').map((f) => f.userItemId)).toEqual(['u:0']);
     });
 
-    it('filters confirmed ids from replaced flushed snapshots', () => {
+    it('adds a flushed marker even when a confirmation arrived first', () => {
+      confirmFlushedByUserItemId('t1', 'u:0');
+      markItemsFlushed('t1', [{ queueItemId: 'q:0', userItemId: 'u:0', message: 'a' }]);
+      expect(getFlushedForThread('t1').map((f) => f.userItemId)).toEqual(['u:0']);
+    });
+
+    it('installs replaced flushed snapshots verbatim', () => {
       confirmFlushedByUserItemId('t1', 'u:0');
       replaceFlushedForThread('t1', [
         {
@@ -158,15 +174,42 @@ describe('sendQueue store', () => {
           flushedAt: 1,
         },
       ]);
-      expect(getFlushedForThread('t1').map((f) => f.userItemId)).toEqual(['u:1']);
+      expect(getFlushedForThread('t1').map((f) => f.userItemId)).toEqual(['u:0', 'u:1']);
     });
 
-    it('clearForThread clears remembered confirmations', () => {
+    it('clearForThread leaves no state that suppresses the next flush', () => {
       confirmFlushedByUserItemId('t1', 'u:0');
       replaceQueueForThread('t1', [makeItem({ threadId: 't1', message: 'queued' })]);
       clearForThread('t1');
       markItemsFlushed('t1', [{ queueItemId: 'q:0', userItemId: 'u:0', message: 'a' }]);
       expect(getFlushedForThread('t1').map((f) => f.userItemId)).toEqual(['u:0']);
+    });
+
+    // The eager Claude dispatch emits queue_flushed before the provider
+    // write settles. When that write fails the backend requeues the item
+    // under its original queue id, so the next authoritative Zone 1
+    // snapshot names it again — and the message would render twice above
+    // the composer, once queued and once flushed. The snapshot wins.
+    it('a requeued queue id takes its message back out of Zone 2', () => {
+      markItemsFlushed('t1', [
+        { queueItemId: 'q:0', userItemId: 'u:0', message: 'requeued' },
+        { queueItemId: 'q:1', userItemId: 'u:1', message: 'still flushed' },
+      ]);
+      replaceQueueForThread('t1', [
+        makeItem({ id: 'q:0', threadId: 't1', message: 'requeued' }),
+      ]);
+      expect(getQueueForThread('t1').map((q) => q.id)).toEqual(['q:0']);
+      expect(getFlushedForThread('t1').map((f) => f.userItemId)).toEqual(['u:1']);
+    });
+
+    it('an ordinary queue snapshot leaves unrelated Zone 2 entries alone', () => {
+      markItemsFlushed('t1', [{ queueItemId: 'q:0', userItemId: 'u:0', message: 'flushed' }]);
+      const before = getQueueRevisionForThread('t1');
+      replaceQueueForThread('t1', [
+        makeItem({ id: 'q:9', threadId: 't1', message: 'newly queued' }),
+      ]);
+      expect(getFlushedForThread('t1').map((f) => f.userItemId)).toEqual(['u:0']);
+      expect(getQueueRevisionForThread('t1')).toBe(before + 1);
     });
 
     it('confirming the last entry deletes the map key', () => {

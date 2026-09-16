@@ -28,7 +28,7 @@ func (r *Router) AnyUnfinishedWork(wakeupGrace time.Duration) bool {
 	r.identitiesMu.Lock()
 	defer r.identitiesMu.Unlock()
 	for _, id := range r.identities {
-		if id.claimedFlushItems > 0 || id.pendingEchoes > 0 {
+		if len(id.claimedFlushItems) > 0 || id.pendingEchoes > 0 {
 			return true
 		}
 	}

@@ -7,36 +7,78 @@ import (
 	"agent-overflow/internal/store"
 )
 
-// TestLiveStateSnapshot_DeferredItemsCoverAllPendingSendShapes: every
-// pending send's deferred row rides the snapshot in FIFO order, direct
-// and flush shapes alike — the SQLite slice a refresh reconciles against
-// is structurally blind to them, so this is the frontend's only source.
-// FlushedItems stays flush-shaped only (the composer's queue preview).
-func TestLiveStateSnapshot_DeferredItemsCoverAllPendingSendShapes(t *testing.T) {
+// TestLiveStateSnapshot_PendingSendAppearsInExactlyOneList: a pending send
+// is either a timeline row the SQLite slice is blind to (DeferredItems) or
+// a composer marker (FlushedItems), never both. A refresh taken mid-send
+// merges the first into the window and draws the second above the composer,
+// so an entry in both lists put the same message on screen twice.
+//
+// Flush shapes route by where their row already is: deferred (no row yet)
+// and quiet (row persisted without an item event, revealed on consumption)
+// are markers; a row anchored at an interrupt was emitted at its final
+// position, so it is only a timeline row — the claim outranks any copy
+// still retained on the entry.
+func TestLiveStateSnapshot_PendingSendAppearsInExactlyOneList(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
 	direct := store.Item{ID: "user:1", ThreadID: "t1", Kind: "user_text", Summary: "direct send"}
-	flush := store.Item{ID: "user:2:flush:1", ThreadID: "t1", Kind: "user_text", Summary: "queued send"}
+	deferred := store.Item{ID: "user:2:flush:1", ThreadID: "t1", Kind: "user_text", Summary: "queued send"}
+	quiet := store.Item{ID: "user:2:flush:2", ThreadID: "t1", Kind: "user_text", Summary: "quiet send"}
+	anchored := store.Item{ID: "user:2:flush:3", ThreadID: "t1", Kind: "user_text", Summary: "anchored send"}
+	// The contradictory shape: a retained DEFERRED copy on an entry that
+	// also claims the interrupt anchor. Neither interrupt path produces it
+	// (the eager persist drops DeferredItem in the same locked step that
+	// sets the claim), but the app marks by AOItemID, and flush ids are
+	// deterministic per sendId — a re-registration under the same id can be
+	// marked alongside the original. The anchor claim only ever follows a
+	// successful persist+emit, so the row is on screen and the entry is a
+	// marker for nothing.
+	anchoredCopy := store.Item{ID: "user:2:flush:5", ThreadID: "t1", Kind: "user_text", Summary: "anchored with a retained copy"}
 	router.mu.Lock()
 	state := router.state("t1")
 	state.pendingSends = append(state.pendingSends,
 		pendingSend{AOItemID: direct.ID, Shape: sendShapeDirect, DeferredItem: &direct},
-		pendingSend{AOItemID: flush.ID, QueueItemID: "queue:1", Shape: sendShapeFlush, DeferredItem: &flush},
+		pendingSend{AOItemID: deferred.ID, QueueItemID: "queue:1", Shape: sendShapeFlush, DeferredItem: &deferred},
+		pendingSend{AOItemID: quiet.ID, QueueItemID: "queue:2", Shape: sendShapeFlush, QuietItem: &quiet},
+		pendingSend{AOItemID: anchored.ID, QueueItemID: "queue:3", Shape: sendShapeFlush, QuietItem: &anchored, AnchoredAtInterrupt: true},
+		pendingSend{AOItemID: "user:2:flush:4", QueueItemID: "queue:4", Shape: sendShapeFlush},
+		pendingSend{
+			AOItemID:            anchoredCopy.ID,
+			QueueItemID:         "queue:5",
+			Shape:               sendShapeFlush,
+			DeferredItem:        &anchoredCopy,
+			AnchoredAtInterrupt: true,
+		},
 	)
 	router.mu.Unlock()
 
 	snap := router.LiveStateSnapshotForThread("t1")
 
-	gotIDs := make([]string, 0, len(snap.DeferredItems))
+	gotDeferred := make([]string, 0, len(snap.DeferredItems))
 	for _, item := range snap.DeferredItems {
-		gotIDs = append(gotIDs, item.ID)
+		gotDeferred = append(gotDeferred, item.ID)
 	}
-	if len(gotIDs) != 2 || gotIDs[0] != direct.ID || gotIDs[1] != flush.ID {
-		t.Fatalf("DeferredItems ids = %v, want [%s %s]", gotIDs, direct.ID, flush.ID)
+	if len(gotDeferred) != 1 || gotDeferred[0] != direct.ID {
+		t.Fatalf("DeferredItems ids = %v, want [%s] — an anchored entry's row is already in SQLite", gotDeferred, direct.ID)
 	}
-	if len(snap.FlushedItems) != 1 || snap.FlushedItems[0].QueueItemID != "queue:1" {
-		t.Fatalf("FlushedItems = %+v, want only the flush-shaped entry", snap.FlushedItems)
+
+	gotFlushed := make([]string, 0, len(snap.FlushedItems))
+	for _, item := range snap.FlushedItems {
+		gotFlushed = append(gotFlushed, item.UserItemID)
+	}
+	if len(gotFlushed) != 2 || gotFlushed[0] != deferred.ID || gotFlushed[1] != quiet.ID {
+		t.Fatalf("FlushedItems ids = %v, want [%s %s]", gotFlushed, deferred.ID, quiet.ID)
+	}
+	if snap.FlushedItems[1].QueueItemID != "queue:2" || snap.FlushedItems[1].Message != quiet.Summary {
+		t.Fatalf("quiet FlushedItem = %+v, want queue:2 carrying the persisted row's text", snap.FlushedItems[1])
+	}
+	for _, item := range snap.DeferredItems {
+		for _, flushed := range snap.FlushedItems {
+			if item.ID == flushed.UserItemID {
+				t.Fatalf("%s is in both DeferredItems and FlushedItems", item.ID)
+			}
+		}
 	}
 }
 

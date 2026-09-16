@@ -19,13 +19,19 @@ type LiveStateSnapshot struct {
 	ActiveTurn   *ActiveTurnSnapshot
 	QueueItems   []QueuedFlushItem
 	FlushedItems []PendingFlushItemSnapshot
-	// DeferredItems are the timeline rows of every pending send whose
+	// DeferredItems are the timeline rows of NON-FLUSH pending sends whose
 	// row is NOT in SQLite yet (a pending send persists on its wire
 	// echo — see AGENTS.md § Pending sends). A frontend reconciling
 	// against a SQLite slice merges these in, because the slice is
 	// structurally blind to them: without this, a transport-gap refresh
 	// mid-send drops the user's own message from the timeline until the
-	// echo lands (incident 2026-08-29). FIFO order, all send shapes.
+	// echo lands (incident 2026-08-29). FIFO order.
+	//
+	// A flush-shaped send is never here: it is published in FlushedItems
+	// and drawn above the composer instead, and one pending send appears
+	// in exactly one of the two lists. Merging it into the timeline as
+	// well put the same message on screen twice for every refresh taken
+	// while a queued send awaited its echo.
 	DeferredItems          []store.Item
 	Interactive            provider.PendingInteractiveRequests
 	EffectiveModel         string
@@ -77,24 +83,55 @@ func (r *Router) LiveStateSnapshotForThread(threadID string) LiveStateSnapshot {
 		copy(snapshot.QueueItems, queue)
 	}
 
+	// One pending send, one list. The split is the row's user-visible
+	// home, not its storage:
+	//
+	//   - Deferred (DeferredItem): no SQLite row until the echo, so the
+	//     message exists only as the composer's pending marker.
+	//   - Quiet (QuietItem): the row IS in SQLite, reserving its timeline
+	//     position, but it was persisted without a provider:item_event and
+	//     is revealed on consumption — so it is still the composer's
+	//     marker, not a timeline row, until the echo lands.
+	//   - Anchored at an interrupt: the row is persisted AND emitted, so
+	//     the user is already reading it in the timeline. No marker, and
+	//     no deferred merge either. The claim is only ever set after the
+	//     store write succeeds — EagerPersistDeferredFlushSends persists
+	//     with an emit and drops DeferredItem in the same locked step,
+	//     PromoteQuietFlushSends bumps an already-persisted quiet row and
+	//     emits it, and both restore paths clear the claim when their
+	//     write fails — so it outranks a retained copy on the same entry,
+	//     which a same-id re-registration marked alongside it can leave
+	//     behind. Checked FIRST for that reason.
+	//   - A flush resend carries neither copy: its row was persisted and
+	//     emitted by the interrupt that produced it. No marker.
 	for _, pending := range st.pendingSends {
+		if pending.Shape == sendShapeFlush {
+			if pending.AnchoredAtInterrupt {
+				continue
+			}
+			row := pending.DeferredItem
+			if row == nil {
+				row = pending.QuietItem
+			}
+			if row == nil {
+				continue
+			}
+			queueItemID := pending.QueueItemID
+			if queueItemID == "" {
+				queueItemID = pending.AOItemID
+			}
+			snapshot.FlushedItems = append(snapshot.FlushedItems, PendingFlushItemSnapshot{
+				QueueItemID: queueItemID,
+				UserItemID:  pending.AOItemID,
+				Message:     row.Summary,
+				UserMeta:    row.Meta,
+			})
+			continue
+		}
 		if pending.DeferredItem == nil {
 			continue
 		}
 		snapshot.DeferredItems = append(snapshot.DeferredItems, *pending.DeferredItem)
-		if pending.Shape != sendShapeFlush {
-			continue
-		}
-		queueItemID := pending.QueueItemID
-		if queueItemID == "" {
-			queueItemID = pending.AOItemID
-		}
-		snapshot.FlushedItems = append(snapshot.FlushedItems, PendingFlushItemSnapshot{
-			QueueItemID: queueItemID,
-			UserItemID:  pending.AOItemID,
-			Message:     pending.DeferredItem.Summary,
-			UserMeta:    pending.DeferredItem.Meta,
-		})
 	}
 
 	for _, requestID := range st.pendingApprovalOrder {
