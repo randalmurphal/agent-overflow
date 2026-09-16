@@ -34,7 +34,8 @@ state the sender reads.
 typechecks all suite sources, then runs Playwright under the harness memory
 boundary. The `desktop` project runs ordinary specs; `compact` runs
 `compact-*.spec.ts` with touch and compact viewport settings. Run one file with
-`bin/ao-harness-e2e tests/<spec>`.
+`bin/ao-harness-e2e tests/<spec>`; it runs the `bin/agent-overflow` from the last
+`make harness-build`, so rebuild after changing Go or frontend code.
 
 `make e2e-mobile-browser` runs browser-lock checks in mobile Chromium and
 WebKit without the Android emulator. See
