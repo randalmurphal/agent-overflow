@@ -2800,8 +2800,8 @@ export class ManagedProviderAccount {
     /**
      * SignInRequired is set only by SwitchProviderAccount, and only when the
      * switch was DECLINED because the target's login had already expired: the
-     * call succeeds, nothing was activated, and the client is being told to
-     * open a sign-in for THIS account rather than report a failure.
+     * call succeeds, nothing was activated, and the card is to show that the
+     * account needs a sign-in. The client never starts one on its own.
      */
     "signInRequired": boolean;
 
