@@ -141,6 +141,13 @@ qualifies costs nothing.
   Claude leaf; dedup mandatory; non-active branches materialize lazily at
   first send; no "imported" badge; no auto-sync; an imported historic model
   never becomes the composer default.
+- If Claude Code treats a queued batch as one message, AO does too, including
+  on revert: a flush drain of N>=2 messages for a headless Claude session is
+  dispatched as one envelope and recorded as one row carrying every member's
+  send id (`claude-wire.md` §Queued-message consumption, boundary-drain merge).
+- A Claude rollback whose stamped provider uuid is missing from a transcript
+  that continues past it FAILS loudly instead of falling back to the ordinal
+  walk; only a transcript ending before that turn is recoverable by cloning.
 - Cursor as a provider: `docs/specs/cursor-provider.md`.
 
 ## Workflows

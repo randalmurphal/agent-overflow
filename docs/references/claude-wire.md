@@ -1081,11 +1081,11 @@ summarized`), 3 turns in one persistent session:
 - **`parentUuid` is CLI-assigned.** The client supplies only `uuid`; the
   CLI assigns `parentUuid` itself, threading the entry onto the transcript.
 
-### Queued-message consumption: two flavors (claude 2.1.202 / 2.1.205)
+### Queued-message consumption: three flavors (claude 2.1.202 / 2.1.205 / 2.1.257)
 
 A user envelope written to stdin **while a turn is running** honors the
-client-supplied uuid in both cases, but the CLI consumes it at one of
-two points with **different transcript shapes**:
+client-supplied uuid in every case, but the CLI consumes it at one of
+three points with **different transcript shapes**:
 
 **At turn pickup** (spike 2026-07-09, 2.1.202: msg2 queued ~5 s into a
 ~20 s turn): the CLI holds the message until the running turn finishes,
@@ -1111,14 +1111,43 @@ the transcript entry is NOT a user row:
 The client uuid survives only as `attachment.source_uuid`; the next
 assistant entry parents to the attachment row's own uuid, so the row is
 on the active branch. The stdout echo still carries the client uuid, so
-AO's identity matching works the same in both flavors.
+AO's identity matching works the same in all three flavors. A mid-loop
+drain of several messages yields one `queued_command` attachment per
+message, each with its own `source_uuid`.
+
+**Boundary drain of N ≥ 2 (verified in `src/cli/print.ts` ~:1934-2007,
+2.1.257)**: when the CLI drains its command queue at a turn boundary and
+finds N consecutive commands in prompt mode, it **merges them into ONE**
+`type:"user"` JSONL entry. Its `message.content` is the flat
+concatenation of every command's content blocks (string contents are
+newline-joined), and the entry carries only the **LAST** command's uuid.
+The other N-1 uuids are echoed on stdout as `user{isReplay:true}`
+envelopes and are **never written to the session file**. `command_lifecycle`
+`started`/`completed` still fire for every uuid, so acks are no guide to
+how many transcript entries exist. To every ordinal walk and every
+UUID-keyed slice the merged entry is **one** user prompt.
 
 Consequences:
 
-- AO's flush-queue dispatch (`app_flush_queue.go`) mints a uuid per
-  queued item exactly like a direct send, and triage's pending-send
-  matching (`consumeMatchingPendingSend`) keys on it. No order-based
-  fallback is needed for Claude.
+- A client that writes N envelopes at a boundary gets N-1 uuids that
+  exist only on stdout. Rows stamped with those ids can never be sliced
+  at: `sessionfork` returns `ErrMessageNotFound`, and an ordinal walk
+  counts the merged entry once and so lands a turn (or more) too far
+  back.
+- AO therefore does the merge itself: a flush drain that hands the
+  dispatcher N ≥ 2 items for a headless Claude session sends **one**
+  stdin envelope with one uuid and records **one** `user_text` row
+  carrying every member's text and send id (`app_flush_queue.go`
+  `dispatchFlushGroup`, `app_flush_dispatch_join.go`). One AO message per
+  transcript entry is what makes revert exact.
+- Codex is unaffected (each queued item is its own `turn/steer` item),
+  and so is claude-tui: its REPL queue processor drains a batch into one
+  turn but keeps each command as its own user message with its own uuid
+  (`src/utils/queueProcessor.ts`, `executeUserInput`).
+- AO's flush-queue dispatch mints a uuid per outbound message exactly
+  like a direct send, and triage's pending-send matching
+  (`consumeMatchingPendingSend`) keys on it. No order-based fallback is
+  needed for Claude.
 - The echo can arrive an arbitrarily long time after the stdin write
   (the whole remaining turn), so any Claude-injected `user{isReplay}`
   envelope landing in that window (e.g. an `<agent-message>` subagent
@@ -1128,8 +1157,8 @@ Consequences:
   `sessionfork.parentUUIDForUserMessageUUIDInTranscript` prefers the
   real user entry and falls back to the `queued_command` attachment's
   `source_uuid`. A user-uuid-only matcher silently misses every
-  mid-loop-consumed queued message (`ErrMessageNotFound` → ordinal
-  fallback → wrong slice for a mid-turn anchor).
+  mid-loop-consumed queued message (`ErrMessageNotFound` → refused
+  slice, since the ordinal walk cannot be trusted for a stamped id).
 - Mid-turn slices resume cleanly: spike 2026-07-15 (2.1.205) resumed a
   session JSONL truncated immediately after a `tool_result` entry with
   full prior context retained. That is the contract behind reverting to a
@@ -1151,16 +1180,20 @@ that also creates the session file. So the window in which AO has stamped
 the uuid on its own rows but the CLI has not yet written it to the JSONL
 is ~100 ms and closes *before the user sees the turn begin responding*.
 A revert firing inside that sliver fails safe: the UUID-keyed slice
-returns `ErrMessageNotFound` and falls back to the
-(synthetic-entry-corrected) ordinal walk, then to a full-transcript clone
-+ composer-draft restore. See `app_checkpoint.go` (`writeClaudeSessionSlice`).
+returns `ErrMessageNotFound`, and because the transcript ends before the
+anchor's turn, `writeClaudeSessionSlice` clones the full transcript and
+restores the composer draft. A stamped uuid that is missing while the
+transcript continues PAST that turn is the merge case above, and the
+slice refuses rather than guessing an ordinal. See
+`app_conversation_rollback.go` (`writeClaudeSessionSlice`).
 
 ### Drift
 
 This is an **undocumented binary contract** pinned to the observed CLI
 version. If a future CLI stops honoring the supplied `uuid` (or starts
-canonicalizing / reassigning it), revert-by-uuid silently degrades to the
-ordinal walk, and pending-send identity matching degrades loudly: the
+canonicalizing / reassigning it), revert-by-uuid fails loudly (the slice
+refuses an id the transcript lacks rather than guessing an ordinal), and
+pending-send identity matching degrades loudly too: the
 echo matches no expected id, triage logs the mismatch and persists it as
 an injected-context notification instead of confirming the send (the
 queued-message overlay would then stay visible, a loud failure, not a
@@ -1198,7 +1231,7 @@ so the ack correlates with no ordering assumptions.
 AO's existing confirmation for a queued send is the `user{isReplay:true}`
 echo, which can arrive an arbitrarily long time after the stdin write,
 across the whole remaining turn (documented above under
-[§Queued-message consumption](#queued-message-consumption-two-flavors-claude-21202--21205)).
+[§Queued-message consumption](#queued-message-consumption-three-flavors-claude-21202--21205--21257)).
 The lifecycle frames are prompt and explicit. They do NOT replace the
 echo: the echo is still what confirms the message entered context and
 what stamps `provider_item_id` on the row. The acks answer the different

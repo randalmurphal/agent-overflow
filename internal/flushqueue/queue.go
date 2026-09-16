@@ -61,6 +61,14 @@ type Payload struct {
 	// re-sent frame to fall into. See `usermessage.Meta.SendID` for why the
 	// message itself is the record.
 	SendID string `json:"sendId,omitempty"`
+	// JoinedSendIDs carries EVERY send id a message answers for when the row
+	// it was rebuilt from had joined several queued messages into one
+	// outbound provider message (`usermessage.Meta.JoinedSendIDs`). It is
+	// set only on that requeue path; a message queued from the composer
+	// carries its own SendID alone. Dropping it would leave the
+	// re-dispatched row answering for the first member only, and a retry of
+	// any other member would send a duplicate.
+	JoinedSendIDs []string `json:"joinedSendIds,omitempty"`
 }
 
 // ItemFromTriage decodes a triage QueuedFlushItem back into the

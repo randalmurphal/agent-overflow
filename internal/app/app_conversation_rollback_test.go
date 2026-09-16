@@ -67,7 +67,9 @@ func TestConversationRollbackDeletesSelectedPromptAndRestoresDraft(t *testing.T)
 	}
 	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
 	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
-	seedMessageAnchor(t, app.store, thread.ID, "user:1", 1, "provider-user-1", "")
+	// The stamped uuid is the one the transcript actually carries: a
+	// stamped id the session file lacks is refused, not walked around.
+	seedMessageAnchor(t, app.store, thread.ID, "user:1", 1, "u1", "")
 
 	if err := rollbackToMessage(app, thread.ID, "user:1"); err != nil {
 		t.Fatalf("rollback: %v", err)
@@ -737,29 +739,25 @@ func TestConversationRollbackFallbackHandlesCompactBoundary(t *testing.T) {
 		[]string{"third", "reply 2"})
 }
 
-// TestConversationRollbackFallsBackToOrdinalWhenStampedUUIDAbsent
-// pins the safety net the send-time-uuid change leans on. An anchor
-// DOES carry a ProviderUserMessageID, but that id is absent from the
-// session JSONL — the case if the undocumented "Claude honors our
-// top-level uuid" contract ever drifts (a CLI version stops persisting
-// the supplied uuid; see docs/references/claude-wire.md §"Outbound user
-// message"). The UUID-keyed slice returns ErrMessageNotFound, and
-// writeClaudeSessionSlice must fall THROUGH to the ordinal walk, which —
-// with the tightened isRealUserPrompt filter — still lands on the SAME
-// turn boundary the uuid would have.
+// TestConversationRollbackRefusesWhenStampedUUIDAbsent pins the
+// no-ordinal-fallback rule. An anchor DOES carry a
+// ProviderUserMessageID, but that id is absent from the session JSONL
+// while the transcript continues past the anchor's turn. Two causes are
+// known: the Claude CLI merged this prompt into a later one at a queue
+// boundary and kept only the later uuid (claude-wire.md §Queued-message
+// consumption), or a fork remap left the stored ids stale. AO cannot
+// tell which entry to cut at in either case, and the ordinal walk
+// miscounts a merged entry (one JSONL prompt, several AO rows), so the
+// rollback FAILS with a message naming both causes instead of writing a
+// session that contradicts the visible timeline.
 //
 // Distinct coverage:
 //   - FallbackHandlesCompactBoundary uses an EMPTY uuid, so it never
-//     enters the UUID-keyed branch; this test forces that branch and its
-//     ErrMessageNotFound fall-through.
+//     enters the UUID-keyed branch and still takes the ordinal walk.
 //   - TolerantOfMissingJSONLAnchor also has an absent uuid, but its
-//     ordinal walk hits EOF and CLONES; this one slices mid-transcript.
-//
-// The compact-summary entry between turn 0 and turn 1 is the off-by-N
-// trap: a fallback that counted cs1 as a real prompt would slice one
-// turn too far back and lose "second"/"reply 1". Mirrors the UUID-keyed
-// happy path's fixture so both paths must reach the identical answer.
-func TestConversationRollbackFallsBackToOrdinalWhenStampedUUIDAbsent(t *testing.T) {
+//     transcript ENDS before the anchor's turn, which cannot be a merge
+//     or a remap, so that one clones instead of refusing.
+func TestConversationRollbackRefusesWhenStampedUUIDAbsent(t *testing.T) {
 	app := newTestApp(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -784,27 +782,35 @@ func TestConversationRollbackFallsBackToOrdinalWhenStampedUUIDAbsent(t *testing.
 	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
 	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
 	insertUserItem(t, app.store, thread.ID, "user:2", 2, "third")
-	// Stamped id is NON-EMPTY but matches no JSONL entry — forces the
-	// UUID-keyed branch to run, return ErrMessageNotFound, and fall
-	// through to the ordinal walk at TurnIndex-1.
+	// Stamped id is NON-EMPTY but matches no JSONL entry, and the
+	// transcript runs past turn 2, so no recovery reading is available.
 	seedMessageAnchor(t, app.store, thread.ID, "user:2", 2, "drifted-uuid-not-in-jsonl", "")
 
-	if err := rollbackToMessage(app, thread.ID, "user:2"); err != nil {
-		t.Fatalf("rollback: %v", err)
+	err := rollbackToMessage(app, thread.ID, "user:2")
+	if err == nil {
+		t.Fatal("rollback succeeded; want a refusal for an anchor uuid missing from the transcript")
 	}
+	for _, want := range []string{"drifted-uuid-not-in-jsonl", "merged this message into a later one", "fork remap"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("rollback error %q does not explain %q", err, want)
+		}
+	}
+	// The refusal leaves the session and the timeline untouched, so the
+	// user can retry or fork instead of resuming a diverged transcript.
 	updated, err := app.store.GetThread(thread.ID)
 	if err != nil {
 		t.Fatalf("get thread: %v", err)
 	}
-	if updated.SessionRef == "" || updated.SessionRef == sessionID {
-		t.Fatalf("thread session ref = %q, want sliced fork session", updated.SessionRef)
+	if updated.SessionRef != sessionID {
+		t.Fatalf("thread session ref = %q, want the untouched %q", updated.SessionRef, sessionID)
 	}
-	// Same boundary as the UUID-keyed happy path: turn 1 survives, turn 2
-	// is gone. A fallback that miscounted the compact summary would also
-	// drop "second"/"reply 1".
-	assertClaudeSessionText(t, workspace, updated.SessionRef,
-		[]string{"first", "reply 0", "second", "reply 1"},
-		[]string{"third", "reply 2"})
+	assertClaudeSessionText(t, workspace, sessionID,
+		[]string{"first", "reply 0", "second", "reply 1", "third", "reply 2"}, nil)
+	for _, id := range []string{"user:0", "user:1", "user:2"} {
+		if _, found, itemErr := app.store.GetThreadItem(thread.ID, id); itemErr != nil || !found {
+			t.Fatalf("item %s after refused rollback: found=%v err=%v", id, found, itemErr)
+		}
+	}
 }
 
 // TestConversationRollbackTolerantOfMissingJSONLAnchor pins the
@@ -898,7 +904,9 @@ func TestConversationRollbackRejectsLargerJSONLGap(t *testing.T) {
 	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
 	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
 	insertUserItem(t, app.store, thread.ID, "user:2", 2, "third")
-	seedMessageAnchor(t, app.store, thread.ID, "user:2", 2, "u2-never-persisted", "")
+	// No stored provider uuid: the anchor predates the wire-id stamp, so
+	// this is the ordinal walk's own scope boundary.
+	seedMessageAnchor(t, app.store, thread.ID, "user:2", 2, "", "")
 
 	err := rollbackToMessage(app, thread.ID, "user:2")
 	if err == nil {
@@ -909,6 +917,20 @@ func TestConversationRollbackRejectsLargerJSONLGap(t *testing.T) {
 	}
 	if errors.Is(err, sessionfork.ErrUserTurnAtTranscriptEnd) {
 		t.Fatalf("rollback with gap >= 2: error matched ErrUserTurnAtTranscriptEnd (the off-by-one sentinel), want only the broader ErrUserTurnOutOfRange — fallback scope leaked")
+	}
+
+	// Same gap with a STAMPED uuid never reaches the walk at all: an id the
+	// transcript lacks while the transcript continues is the CLI-merge /
+	// stale-remap case, which refuses instead of guessing.
+	if err := app.store.UpdateMessageAnchorProviderIDs(thread.ID, "user:2", "u2-never-persisted", ""); err != nil {
+		t.Fatalf("stamp anchor uuid: %v", err)
+	}
+	err = rollbackToMessage(app, thread.ID, "user:2")
+	if err == nil {
+		t.Fatal("stamped-uuid rollback with gap >= 2 succeeded; want a refusal")
+	}
+	if !strings.Contains(err.Error(), "u2-never-persisted") {
+		t.Fatalf("stamped-uuid refusal does not name the missing id: %v", err)
 	}
 }
 
@@ -1135,7 +1157,7 @@ func TestConversationRollbackClearsPersistedTodo(t *testing.T) {
 	}
 	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
 	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
-	seedMessageAnchor(t, app.store, thread.ID, "user:1", 1, "provider-user-1", "")
+	seedMessageAnchor(t, app.store, thread.ID, "user:1", 1, "u1", "")
 	if err := app.store.SetThreadLiveTodo(thread.ID, store.ThreadLiveTodo{
 		Steps:     []store.ThreadLiveTodoStep{{Step: "minted in the discarded tail", Status: "inProgress", ID: "1"}},
 		UpdatedAt: 1,

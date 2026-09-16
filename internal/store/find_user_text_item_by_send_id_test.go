@@ -217,3 +217,73 @@ func TestMigrationV89IndexesExistingSendIdentities(t *testing.T) {
 		t.Fatalf("upgraded queued lookup: found=%v item=%q err=%v", found, row.ID, err)
 	}
 }
+
+// A flush drain that joined several queued messages into one provider
+// message leaves ONE row answering for every member's send id: the first on
+// `$.sendId`, all of them on `$.joinedSendIds`. A retry of any member must
+// resolve to that row, or the message is sent twice.
+func TestFindUserTextItemBySendIDResolvesJoinedMembers(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-join")
+	insertUserTexts(t, s, "t-join", "send-earlier")
+	now := time.Now().UnixMilli()
+	joined := Item{
+		ID: "t-join-joined", ThreadID: "t-join", TurnIndex: 9, ItemIndex: 0,
+		Kind: "user_text", Role: "user", Summary: "a\n\n---\n\nb\n\n---\n\nc",
+		Meta:      `{"sendId":"send-a","joinedSendIds":["send-a","send-b","send-c"]}`,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.InsertItem(joined); err != nil {
+		t.Fatalf("insert joined row: %v", err)
+	}
+	for _, sendID := range []string{"send-a", "send-b", "send-c"} {
+		item, found, err := s.FindUserTextItemBySendID("t-join", sendID)
+		if err != nil || !found {
+			t.Fatalf("find %s: found=%v err=%v", sendID, found, err)
+		}
+		if item.ID != joined.ID {
+			t.Fatalf("find %s: got row %q, want the joined row %q", sendID, item.ID, joined.ID)
+		}
+	}
+	// The earlier single-message row is untouched, and an id that was never
+	// sent still misses.
+	if item, found, err := s.FindUserTextItemBySendID("t-join", "send-earlier"); err != nil || !found || item.ID != "t-join-user-send-earlier" {
+		t.Fatalf("unjoined row: found=%v id=%q err=%v", found, item.ID, err)
+	}
+	if _, found, err := s.FindUserTextItemBySendID("t-join", "send-d"); err != nil || found {
+		t.Fatalf("unknown send id matched: found=%v err=%v", found, err)
+	}
+}
+
+// The joined lookup is a second query over a second pair of sparse partial
+// indexes. It runs only when the `$.sendId` fast path misses, and it must not
+// scan message history on either timeline arm.
+func TestJoinedSendIdentityLookupUsesBothSparseIndexes(t *testing.T) {
+	s := newTestStore(t)
+	query, args := joinedSendIdentityQuery("thread", "send-id")
+	rows, err := s.db.Query("EXPLAIN QUERY PLAN "+query, args...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var plan strings.Builder
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan.WriteString(detail + "\n")
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	for _, index := range []string{"idx_items_joined_send_ids", "idx_import_history_items_joined_send_ids"} {
+		if !strings.Contains(plan.String(), index) {
+			t.Fatalf("missing %s in plan:\n%s", index, plan.String())
+		}
+	}
+	if strings.Contains(plan.String(), "SCAN items") {
+		t.Fatalf("scanned message history:\n%s", plan.String())
+	}
+}

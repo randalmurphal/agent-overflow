@@ -1592,9 +1592,14 @@ func TestDispatchFlush_Claude_InterruptPromotesAfterStoppedByUser(t *testing.T) 
 		Liveness: newSessionLiveness(time.Now()),
 	})
 
-	// Dispatch two flush messages while agent is working.
+	// Two flush messages sent while the agent is working, each in its own
+	// drain so each keeps its own row: a single drain of both would join
+	// them into one outbound Claude message (see dispatchFlushGroup), and
+	// promotion has to order MULTIPLE quiet rows.
 	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
 		{ID: "queue:m1", Message: "test message 1", Payload: json.RawMessage(`{}`)},
+	})
+	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
 		{ID: "queue:m2", Message: "test message 2", Payload: json.RawMessage(`{}`)},
 	})
 

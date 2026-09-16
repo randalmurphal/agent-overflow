@@ -108,14 +108,11 @@ func TestConversationRollbackRemapsSurvivingProviderIDs(t *testing.T) {
 		}
 	}
 
-	// Second rollback must take the uuid-keyed slice — the loud ordinal
-	// fallback means the remap missed.
-	logBuf := captureLog(t)
+	// Second rollback must take the uuid-keyed slice. There is no ordinal
+	// fallback behind it any more, so a missed remap surfaces as the slice
+	// refusing outright.
 	if err := rollbackToMessage(app, thread.ID, "user:1"); err != nil {
-		t.Fatalf("second rollback: %v", err)
-	}
-	if out := logBuf.String(); strings.Contains(out, "falling back to ordinal slice") {
-		t.Fatalf("second rollback hit the ordinal fallback — anchor remap is not feeding the uuid-keyed path:\n%s", out)
+		t.Fatalf("second rollback: %v — a remapped anchor must still slice by uuid", err)
 	}
 	afterSecond, err := app.store.GetThread(thread.ID)
 	if err != nil {
@@ -124,15 +121,20 @@ func TestConversationRollbackRemapsSurvivingProviderIDs(t *testing.T) {
 	assertClaudeSessionText(t, workspace, afterSecond.SessionRef, []string{"first"}, []string{"second", "third"})
 }
 
-// TestConversationRollbackOrdinalFallbackStillReachableForStaleIDs
-// pins the legacy escape hatch: when BOTH stored uuid copies — the
-// anchor's and the item row's meta stamp (the R5-7 retry candidate) —
-// are absent from the session file (pre-stamp rows, a wholesale
-// regressed remap), the rollback still lands via the ordinal walk,
-// loudly.
-func TestConversationRollbackOrdinalFallbackStillReachableForStaleIDs(t *testing.T) {
+// TestConversationRollbackRefusesStaleIDsInsteadOfOrdinalWalk pins the
+// no-ordinal-fallback rule from the remap side: when BOTH stored uuid
+// copies — the anchor's and the item row's meta stamp (the R5-7 retry
+// candidate) — are absent from a session file that continues past the
+// anchor, AO cannot tell which entry to cut at. The ordinal walk would
+// miscount a CLI-merged queue batch, so the rollback fails and leaves the
+// session and the timeline as they were.
+func TestConversationRollbackRefusesStaleIDsInsteadOfOrdinalWalk(t *testing.T) {
 	app := newTestApp(t)
 	thread, workspace := setupRemapRollbackThread(t, app)
+	before, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
 
 	if err := app.store.UpdateMessageAnchorProviderIDs(thread.ID, "user:2", "uuid-not-in-file", "also-not-in-file"); err != nil {
 		t.Fatalf("poison anchor uuid: %v", err)
@@ -141,18 +143,24 @@ func TestConversationRollbackOrdinalFallbackStillReachableForStaleIDs(t *testing
 		t.Fatalf("poison item meta uuid: %v", err)
 	}
 
-	logBuf := captureLog(t)
-	if err := rollbackToMessage(app, thread.ID, "user:2"); err != nil {
-		t.Fatalf("rollback with stale uuid: %v", err)
+	err = rollbackToMessage(app, thread.ID, "user:2")
+	if err == nil {
+		t.Fatal("rollback with stale uuids succeeded; want a refusal rather than an ordinal guess")
 	}
-	if out := logBuf.String(); !strings.Contains(out, "falling back to ordinal slice") {
-		t.Fatalf("stale-uuid rollback did not log the ordinal fallback:\n%s", out)
+	if !strings.Contains(err.Error(), "uuid-not-in-file") {
+		t.Fatalf("refusal does not name the missing uuid: %v", err)
 	}
 	after, err := app.store.GetThread(thread.ID)
 	if err != nil {
-		t.Fatalf("get thread: %v", err)
+		t.Fatalf("get thread after refusal: %v", err)
 	}
-	assertClaudeSessionText(t, workspace, after.SessionRef, []string{"first", "second"}, []string{"third"})
+	if after.SessionRef != before.SessionRef {
+		t.Fatalf("session ref changed on a refused rollback: %q -> %q", before.SessionRef, after.SessionRef)
+	}
+	assertClaudeSessionText(t, workspace, after.SessionRef, []string{"first", "second", "third"}, nil)
+	if _, found, err := app.store.GetThreadItem(thread.ID, "user:2"); err != nil || !found {
+		t.Fatalf("refused rollback removed user:2 (found=%v err=%v)", found, err)
+	}
 }
 
 // TestConversationRollbackSlicesPoisonedAPIErrorTail is the Step 6 +

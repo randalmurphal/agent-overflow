@@ -534,29 +534,15 @@ func claudeSliceAnchorUUIDs(anchor store.MessageAnchor, userItem store.Item) []s
 // anchor candidate in order (anchor-row copy first, then the item
 // row's meta stamp — see claudeSliceAnchorUUIDs; either can be a remap
 // generation staler than the other, so a miss on the first is retried
-// on the next before any fallback, round-5 R5-7). Only when EVERY
-// candidate is ErrMessageNotFound — most often: the stored UUIDs are
-// stale because the session was forked but the post-fork remap
-// regressed — does it fall back to the ordinal walk at
-// fallbackLastKeptTurn, so a known-imperfect slice still beats a
-// hard error. Other errors from the UUID-keyed branch propagate
-// verbatim. logCtx prefixes the fallback log so the operator can
-// tell which entry point hit the stale id; a loud log here is
-// deliberate because a wrong-source slice is worse than the
-// ordinal walk's known synthetic-entry sensitivity.
+// on the next before any fallback, round-5 R5-7). Other errors from the
+// UUID-keyed branch propagate verbatim. logCtx prefixes the fallback log
+// so the operator can tell which entry point hit the stale id.
 //
-// midTurnAnchor changes the no-UUID handling: the ordinal walk keeps
-// whole turns, so for an anchor that does NOT open its turn (a queued
-// flush row sharing turn N with an earlier prompt) it would slice at
-// end-of-turn-N-1 and drop the shared turn's kept prefix from the
-// provider session while SQLite retains it. A mid-turn anchor with an
-// EMPTY uuid was never consumed — the anchor's provider id is
-// stamped only by the consumption echo — so the transcript is already
-// at the right cut and is cloned whole (the common case: rollback of an
-// interrupt-promoted row before its echo). A mid-turn anchor with a
-// NON-EMPTY uuid that the transcript doesn't contain splits on
-// anchorParentUUIDs (the anchor row's provider_parent_uuid, then the
-// item meta's copy — see claudeSliceParentUUIDs, round-5 R5-8):
+// When EVERY candidate is ErrMessageNotFound the slice falls to
+// anchorParentUUIDs (the anchor row's provider_parent_uuid, then the item
+// meta's copy — see claudeSliceParentUUIDs, round-5 R5-8) and then FAILS. It
+// does NOT fall back to the ordinal walk, whichever side of its turn the
+// anchor sits on:
 //
 //   - Parent PRESENT in the transcript: a prior slice already cut this
 //     transcript exactly at the anchor — the post-slice remap refreshed
@@ -567,13 +553,37 @@ func claudeSliceAnchorUUIDs(anchor store.MessageAnchor, userItem store.Item) []s
 //     remaining steps. Through-the-parent, not a whole clone: anything
 //     appended after the failed rollback (a resumed session's rows)
 //     must not be resurrected into the retried cut (round-5, R5-6).
-//   - Parent ABSENT (or unknown): the stored ids went stale wholesale
-//     (fork remap regression). Cloning the full transcript would resume
-//     a session that still contains the rolled-back prompt and its
-//     response; slicing ordinally would drop the shared turn's kept
-//     prefix. Both silently diverge from the visible timeline, so the
-//     operation FAILS — loud and recoverable beats a session whose
-//     context contradicts what the user rolled back.
+//
+//   - Parent ABSENT (or unknown): the row names a provider id the
+//     transcript does not contain. A stored id can go stale wholesale
+//     (fork remap regression), and the Claude CLI can also MERGE a queued
+//     message into a later one at a queue boundary and keep only the later
+//     uuid — the earlier row's id is then acknowledged on stdout and never
+//     written to the session file (claude-wire.md §Queued-message
+//     consumption). Either way the ordinal walk miscounts: the merged
+//     entry is ONE real user prompt for what AO holds as several rows, so
+//     the walk slices a turn too far and the resumed session contradicts
+//     the timeline the user is looking at. A mid-turn anchor's ordinal walk
+//     drops the shared turn's kept prefix on top of that. Both silently
+//     diverge, so the operation FAILS — loud and recoverable beats a
+//     session whose context contradicts what the user rolled back.
+//
+//     The single exception is the transcript ENDING before the anchor's
+//     turn. That absence cannot be a merge or a stale remap: the CLI died
+//     before persisting this prompt, its file is already at the right cut,
+//     and cloning it whole is the bricked-session recovery AO's composer
+//     rehydration completes. It is probed, not sliced, so the refusal
+//     above leaves no orphan file.
+//
+// midTurnAnchor still changes the NO-uuid handling. The ordinal walk keeps
+// whole turns, so for an anchor that does not open its turn (a queued flush
+// row sharing turn N with an earlier prompt) it would slice at
+// end-of-turn-N-1 and drop the shared turn's kept prefix. A mid-turn anchor
+// with an EMPTY uuid was never consumed — the anchor's provider id is stamped
+// only by the consumption echo — so the transcript is already at the right cut
+// and is cloned whole (the common case: rollback of an interrupt-promoted row
+// before its echo). An id-less anchor that DOES open its turn predates the
+// wire-id stamp and keeps the ordinal walk.
 //
 // Returns (newSessionID, newPath, uuidMap, err). Fork and rollback
 // callers both thread the uuidMap into `remapClaudeProviderIDs` so
@@ -610,31 +620,39 @@ func writeClaudeSessionSlice(
 	}
 	if len(candidates) > 0 {
 		missed := strings.Join(candidates, ", ")
-		if midTurnAnchor {
-			for _, parent := range dedupNonEmpty(anchorParentUUIDs) {
-				// Beside the source: srcPath was located from the thread's
-				// CURRENT workspace, and a workspace change relocates a
-				// ref-carrying transcript before it gets here
-				// (copyClaudeSessionForWorkspaceChange), so the source
-				// directory already IS the current workspace's slug.
-				newID, newPath, uuidMap, parentErr := sessionfork.WriteForkFileThroughUUID(sessionfork.ForkCut{
-					SourcePath:   srcPath,
-					LastKeptUUID: parent,
-				})
-				if parentErr == nil {
-					log.Printf("%s: anchor uuids [%s] absent but the parent %q is present in session %s — a prior slice already cut this transcript at the anchor; re-slicing through the parent", logCtx, missed, parent, srcPath)
-					return newID, newPath, uuidMap, nil
-				}
-				if !errors.Is(parentErr, sessionfork.ErrMessageNotFound) {
-					return "", "", nil, parentErr
-				}
+		for _, parent := range dedupNonEmpty(anchorParentUUIDs) {
+			// Beside the source: srcPath was located from the thread's
+			// CURRENT workspace, and a workspace change relocates a
+			// ref-carrying transcript before it gets here
+			// (copyClaudeSessionForWorkspaceChange), so the source
+			// directory already IS the current workspace's slug.
+			newID, newPath, uuidMap, parentErr := sessionfork.WriteForkFileThroughUUID(sessionfork.ForkCut{
+				SourcePath:   srcPath,
+				LastKeptUUID: parent,
+			})
+			if parentErr == nil {
+				log.Printf("%s: anchor uuids [%s] absent but the parent %q is present in session %s — a prior slice already cut this transcript at the anchor; re-slicing through the parent", logCtx, missed, parent, srcPath)
+				return newID, newPath, uuidMap, nil
 			}
-			return "", "", nil, fmt.Errorf(
-				"%s: stored provider uuid %q is missing from session %s — the queued message was consumed but its stored id no longer matches the transcript (fork remap drift); refusing a mid-turn cut that would silently diverge from the timeline",
-				logCtx, missed, srcPath,
-			)
+			if !errors.Is(parentErr, sessionfork.ErrMessageNotFound) {
+				return "", "", nil, parentErr
+			}
 		}
-		log.Printf("%s: stored provider uuids [%s] not in session %s — falling back to ordinal slice; check fork remap coverage", logCtx, missed, srcPath)
+		if !midTurnAnchor {
+			// The one absence that provably is NOT a merge or a stale id:
+			// the transcript ENDS before the anchor's turn, so the CLI died
+			// before writing this prompt and its own file is already at the
+			// right cut. Probed rather than sliced so the refusal below
+			// leaves no orphan file behind.
+			if _, probeErr := sessionfork.SliceUUIDForLastKeptTurn(srcPath, fallbackLastKeptTurn); errors.Is(probeErr, sessionfork.ErrUserTurnAtTranscriptEnd) {
+				log.Printf("%s: anchor uuids [%s] absent and the transcript ends before turn %d (%v) — the CLI never persisted this prompt; cloning full transcript", logCtx, missed, fallbackLastKeptTurn+1, probeErr)
+				return sessionfork.WriteForkFileFullTranscript(srcPath, "")
+			}
+		}
+		return "", "", nil, fmt.Errorf(
+			"%s: stored provider uuid %q is missing from session %s — this message reached the provider but the transcript has no entry under that id, so AO cannot tell which entry to cut at; refusing a slice that would silently diverge from the timeline. Two known causes: the Claude CLI merged this message into a later one at a queue boundary and kept only that one's uuid, or a fork remap left the stored ids stale",
+			logCtx, missed, srcPath,
+		)
 	}
 	if midTurnAnchor {
 		return sessionfork.WriteForkFileFullTranscript(srcPath, "")

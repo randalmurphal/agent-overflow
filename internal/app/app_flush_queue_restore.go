@@ -506,7 +506,9 @@ func queuePayloadFromUserItem(item store.Item, fallback json.RawMessage) json.Ra
 		// The send id travels with the message, not with the row it happened
 		// to be in: a requeued message that is dispatched again persists a
 		// fresh row, and that row is the idempotency record from then on.
-		SendID: meta.SendID,
+		// A joined row answers for several sends, so all of them travel.
+		SendID:        meta.SendID,
+		JoinedSendIDs: meta.JoinedSendIDs,
 	})
 	if err != nil {
 		return fallback

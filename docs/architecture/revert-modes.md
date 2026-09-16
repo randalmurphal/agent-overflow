@@ -80,8 +80,20 @@ Provider-side rollback differs by provider:
   the selected message using `internal/provider/claude/sessionfork`,
   then points `threads.session_ref` at the new session file. The slice
   boundary is resolved in trust order: the anchor's provider uuid when
-  the transcript contains it, else the anchor's `turn_index`. Turn 0
-  clears the Claude session entirely.
+  the transcript contains it, then the anchor's parent uuid, else the
+  anchor's `turn_index`. Turn 0 clears the Claude session entirely.
+  A row that HAS a stamped provider uuid the transcript does not contain
+  does not fall through to the turn index: the ordinal walk counts a
+  CLI-merged queue batch as one prompt and would cut a turn too far back,
+  so the rollback fails with the two known causes named (queue-boundary
+  merge, stale fork remap). The one exception is a transcript that ends
+  before the anchor's turn, which is a session that died before
+  persisting the prompt and is cloned whole.
+
+  A queued batch AO dispatched as one joined message is one row with one
+  uuid, so it slices exactly. A batch the CLI merged across separate AO
+  drains still produces rows whose uuids only exist on stdout, and those
+  hit the refusal above.
 
 ## Legacy checkpoint refs
 

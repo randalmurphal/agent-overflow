@@ -203,6 +203,14 @@ func (s *Store) FindUserTextItemBySendID(threadID, sendID string) (Item, bool, e
 	if err != nil {
 		return Item{}, false, fmt.Errorf("store: find user text item by send id for thread %s: %w", threadID, err)
 	}
+	if found {
+		return item, true, nil
+	}
+	query, args = joinedSendIdentityQuery(threadID, sendID)
+	item, found, err = queryOneHydratedTimelineItem(s.reader(), threadID, query, args...)
+	if err != nil {
+		return Item{}, false, fmt.Errorf("store: find joined user text item by send id for thread %s: %w", threadID, err)
+	}
 	return item, found, nil
 }
 
@@ -211,6 +219,29 @@ func sendIdentityQuery(threadID, sendID string) (string, []any) {
 		Where: readerAuthoredUserTextFilterFor("items.") +
 			` AND json_valid(items.meta) AND json_extract(items.meta, '$.sendId') IS NOT NULL
 			  AND json_extract(items.meta, '$.sendId') = ?`,
+		WhereArgs: []any{sendID},
+		Limit:     1,
+	})
+}
+
+// joinedSendIdentityQuery is the second arm of the send-identity lookup:
+// the row a MERGED outbound message left behind answers for every send id
+// it folded in, and only its first member sits on `$.sendId`
+// (usermessage.Meta.JoinedSendIDs). A multi-valued key cannot live in an
+// expression index, so the sparse
+// idx_*_joined_send_ids indexes narrow the candidate set to the joined rows
+// of this thread — normally none, single digits at worst — and `json_each`
+// compares the array inside SQL rather than carrying metas back into Go.
+//
+// `json_extract(... '$.joinedSendIds') IS NOT NULL` is repeated verbatim from
+// the index predicate: SQLite applies a partial index only when the query
+// textually implies its WHERE clause.
+func joinedSendIdentityQuery(threadID, sendID string) (string, []any) {
+	return timelineIDSelection(threadID, timelineSelection{
+		Where: readerAuthoredUserTextFilterFor("items.") +
+			` AND json_valid(items.meta)
+			  AND json_extract(items.meta, '$.joinedSendIds') IS NOT NULL
+			  AND EXISTS (SELECT 1 FROM json_each(items.meta, '$.joinedSendIds') WHERE json_each.value = ?)`,
 		WhereArgs: []any{sendID},
 		Limit:     1,
 	})

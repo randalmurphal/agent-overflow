@@ -1630,6 +1630,23 @@ CREATE INDEX idx_flush_queue_send_id ON flush_queue_items(thread_id, send_id)
 	{Version: 96, Name: "usage_dated_pricing", SQL: usageDatedPricingV96SQL},
 	{Version: 97, Name: "remote_jobs_warning", SQL: remoteJobsWarningV97SQL},
 	{Version: 98, Name: "remote_watches_command", SQL: remoteWatchesCommandV98SQL},
+	{
+		Version: 99,
+		Name:    "joined_send_identity_lookup",
+		// A boundary-merged Claude batch leaves ONE row answering for every
+		// send id it folded in (usermessage.Meta.JoinedSendIDs). The array
+		// cannot be an expression index key, so index the presence of the
+		// array instead: the sparse index narrows the second lookup arm to
+		// the thread's joined rows before json_each compares members.
+		SQL: `CREATE INDEX idx_items_joined_send_ids
+    ON items(thread_id)
+ WHERE kind = 'user_text' AND parent_id = '' AND json_valid(meta)
+   AND json_extract(meta, '$.joinedSendIds') IS NOT NULL;
+CREATE INDEX idx_import_history_items_joined_send_ids
+    ON import_history_items(chunk_id)
+ WHERE kind = 'user_text' AND parent_id = '' AND json_valid(meta)
+   AND json_extract(meta, '$.joinedSendIds') IS NOT NULL;`,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

@@ -427,3 +427,88 @@ func TestSliceUUIDForLastKeptTurn(t *testing.T) {
 		}
 	}
 }
+
+// mergedQueuedBatchJSONL is the on-disk shape of a boundary drain that
+// handed the CLI three consecutive prompt-mode commands. The CLI merges
+// them into ONE `type:"user"` entry whose content is the flat
+// concatenation of the three commands' blocks, carrying only the LAST
+// command's uuid (u2c). The two earlier uuids (u2a, u2b) are echoed on
+// stdout as `user{isReplay:true}` envelopes and never reach this file.
+// See docs/references/claude-wire.md §Queued-message consumption.
+const mergedQueuedBatchJSONL = `{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"src","message":{"role":"user","content":"first"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"src","message":{"role":"assistant","content":[{"type":"text","text":"reply 1"}]}}
+{"type":"user","uuid":"u2c","parentUuid":"a1","sessionId":"src","message":{"role":"user","content":[{"type":"text","text":"queued one"},{"type":"text","text":"queued two"},{"type":"text","text":"queued three"}]}}
+{"type":"assistant","uuid":"a2","parentUuid":"u2c","sessionId":"src","message":{"role":"assistant","content":[{"type":"text","text":"reply 2"}]}}
+{"type":"user","uuid":"u3","parentUuid":"a2","sessionId":"src","message":{"role":"user","content":"third"}}
+{"type":"assistant","uuid":"a3","parentUuid":"u3","sessionId":"src","message":{"role":"assistant","content":[{"type":"text","text":"reply 3"}]}}
+`
+
+// TestMergedQueuedBatchIsOneUserPrompt pins the CLI facts the flush-join
+// routes around: the merged entry is ONE prompt to every ordinal walk,
+// only the last member's uuid can anchor a slice, and the dropped member
+// uuids are simply absent.
+func TestMergedQueuedBatchIsOneUserPrompt(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "merged.jsonl")
+	if err := os.WriteFile(path, []byte(mergedQueuedBatchJSONL), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	// Ordinal view: prompts are u1, u2c, u3 at indexes 0, 1, 2. Counting
+	// the merged entry once per text block would push u3 to index 4 and
+	// make every ordinal slice land a turn or more too far back.
+	for _, c := range []struct {
+		turn     int
+		wantUUID string
+	}{
+		{0, ""},   // u1 opens the transcript
+		{1, "a1"}, // merged entry's parent
+		{2, "a2"},
+	} {
+		got, err := FindUUIDBeforeUserTurn(strings.NewReader(mergedQueuedBatchJSONL), c.turn)
+		if err != nil {
+			t.Fatalf("FindUUIDBeforeUserTurn(%d): %v", c.turn, err)
+		}
+		if got != c.wantUUID {
+			t.Errorf("FindUUIDBeforeUserTurn(%d): got %q, want %q", c.turn, got, c.wantUUID)
+		}
+	}
+	if _, err := FindUUIDBeforeUserTurn(strings.NewReader(mergedQueuedBatchJSONL), 3); err == nil {
+		t.Error("FindUUIDBeforeUserTurn(3) succeeded; the merged entry must not count as three prompts")
+	}
+
+	// The last member's uuid anchors a real slice: everything from the
+	// merged entry on is cut, and all three joined texts go with it
+	// because they live in that one entry.
+	newID, newPath, _, err := WriteForkFileForUserMessageUUID(path, "u2c", "")
+	if err != nil {
+		t.Fatalf("WriteForkFileForUserMessageUUID(u2c): %v", err)
+	}
+	if newID == "" {
+		t.Fatal("fork session id is empty")
+	}
+	data, err := os.ReadFile(newPath)
+	if err != nil {
+		t.Fatalf("read fork: %v", err)
+	}
+	forked := string(data)
+	for _, want := range []string{"first", "reply 1"} {
+		if !strings.Contains(forked, want) {
+			t.Errorf("fork at u2c dropped kept content %q:\n%s", want, forked)
+		}
+	}
+	for _, absent := range []string{"queued one", "queued two", "queued three", "reply 2", "third"} {
+		if strings.Contains(forked, absent) {
+			t.Errorf("fork at u2c kept cut content %q:\n%s", absent, forked)
+		}
+	}
+
+	// The earlier members' uuids were acknowledged on stdout only. A row
+	// stamped with one of them can never anchor a slice, which is why the
+	// dispatcher joins the batch into one row under one uuid.
+	for _, dropped := range []string{"u2a", "u2b"} {
+		if _, _, _, err := WriteForkFileForUserMessageUUID(path, dropped, ""); !errors.Is(err, ErrMessageNotFound) {
+			t.Errorf("WriteForkFileForUserMessageUUID(%s): got %v, want ErrMessageNotFound", dropped, err)
+		}
+	}
+}

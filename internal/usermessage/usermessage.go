@@ -62,6 +62,17 @@ type Meta struct {
 	//
 	// Empty is legal and simply disables the check for that call.
 	SendID string `json:"sendId,omitempty"`
+	// JoinedSendIDs lists EVERY composer send id this row answers for,
+	// in queue order, when a flush drain folded several queued messages
+	// into one outbound Claude message (app_flush_queue.go). Absent for
+	// the ordinary one-message row, where SendID alone is the record.
+	//
+	// SendID stays set to the first member so the indexed fast path keeps
+	// answering the common retry; the array is what a retry of any LATER
+	// member resolves through (store.FindUserTextItemBySendID). Both are
+	// written together — a joined row with a SendID outside its array
+	// would answer one member and duplicate the rest.
+	JoinedSendIDs []string `json:"joinedSendIds,omitempty"`
 }
 
 // Input is the per-entry-point projection Marshal encodes. A struct
@@ -78,6 +89,7 @@ type Input struct {
 	Command                string
 	ExpandComposerCommands bool
 	SendID                 string
+	JoinedSendIDs          []string
 }
 
 // AttachmentMeta is the per-attachment slice element. The Go side
@@ -115,6 +127,7 @@ func Marshal(in Input) (string, error) {
 		len(in.RevisionDiffCommentIDs) == 0 &&
 		in.Command == "" &&
 		in.SendID == "" &&
+		len(in.JoinedSendIDs) == 0 &&
 		!in.ExpandComposerCommands {
 		return "", nil
 	}
@@ -139,6 +152,7 @@ func Marshal(in Input) (string, error) {
 		Command:                      in.Command,
 		ExpandComposerCommands:       in.ExpandComposerCommands,
 		SendID:                       in.SendID,
+		JoinedSendIDs:                in.JoinedSendIDs,
 	}
 	data, err := json.Marshal(meta)
 	if err != nil {

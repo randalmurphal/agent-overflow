@@ -1,12 +1,17 @@
 package triage
 
 import (
+	"slices"
+
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/usermessage"
 )
 
 // FindAcceptedUserMessageBySendID spans persisted history and the bounded
-// correlation entries for dispatched input. A successful provider write can
+// correlation entries for dispatched input. A pending row that JOINED several
+// queued messages into one provider message answers for every member id it
+// carries, so a retry of any member resolves to the joined row instead of
+// starting a second copy. A successful provider write can
 // remove the durable queue before its echo creates the history row. Hold the
 // same anchor as echo pop+persist so a retry cannot fall between those homes.
 func (r *Router) FindAcceptedUserMessageBySendID(threadID, sendID string) (store.Item, store.FlushQueueItem, bool, error) {
@@ -41,7 +46,7 @@ func (r *Router) FindAcceptedUserMessageBySendID(threadID, sendID string) (store
 		if err != nil {
 			return store.Item{}, store.FlushQueueItem{}, false, err
 		}
-		if meta.SendID == sendID {
+		if meta.SendID == sendID || slices.Contains(meta.JoinedSendIDs, sendID) {
 			return candidate, store.FlushQueueItem{}, true, nil
 		}
 	}

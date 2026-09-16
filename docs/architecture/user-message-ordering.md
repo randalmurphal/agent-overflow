@@ -70,6 +70,19 @@ recovery's authority; an unconfirmed delivery must not be blindly resent.
 | Queued input without activity | Deferred until matching provider echo | Fresh logical turn |
 | Interrupt promotion | Reveal pending input at the interrupt boundary | Consumption still follows the provider echo |
 
+A drain that hands the dispatcher several queued messages at once for a
+headless Claude session delivers them as ONE provider message: one stdin
+envelope under one uuid, one row whose summary joins the parts with a visible
+rule, one message anchor, one response turn, and every member send ID recorded
+on that row so any member's retry resolves to it. This records what the CLI
+does: it merges a multi-message boundary drain into a single transcript entry
+carrying only the last uuid, so a row per queued message would name provider ids
+the transcript never contains and revert could not slice at them. A resolution
+failure on any member sends nothing and requeues the whole group in order.
+Codex and claude-tui keep one message per queued item. See
+`internal/app/app_flush_dispatch_join.go` and
+[claude-wire.md](../references/claude-wire.md).
+
 The first matched echo captures placement before fallible cache writes. A stable
 predecessor identifies that boundary; retries must never ask for the current tail.
 Otherwise output received after the failed write moves the retried prompt below

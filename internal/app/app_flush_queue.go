@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"time"
 
@@ -271,11 +272,22 @@ type flushQueuePayload = flushqueue.Payload
 // triage observes a safe provider boundary, it hands queued user
 // messages here for delivery to the provider.
 //
-// Per-item flow:
+// A drain is split into GROUPS (groupFlushDispatch) and each group becomes
+// exactly one provider message. Codex and claude-tui take one group per item;
+// headless Claude takes the whole drain as one group, because its own command
+// queue merges a multi-message boundary drain into one transcript entry under
+// the LAST uuid — see flushDispatchJoinsMessages and claude-wire.md
+// §Queued-message consumption.
 //
-//  1. Decode QueuedFlushItem.Payload into flushQueuePayload.
-//  2. Resolve attachments + source/revision plan refs (same shape
-//     Send and Steer use).
+// Per-group flow:
+//
+//  1. Decode each member's QueuedFlushItem.Payload into flushQueuePayload
+//     and resolve its attachments + source/revision plan refs (same shape
+//     Send and Steer use). A failure here is BEFORE any durable or wire
+//     effect, so nothing is sent and every member requeues in order.
+//  2. Join the resolved members into one message: one content string, one
+//     attachment list, one meta carrying every member's send id
+//     (joinFlushMembers). A single-member group joins to itself.
 //  3. Allocate a stable AO identity independently of its turn placement.
 //  4. Register the pending-send marker — provider-specific:
 //     - Claude with active turn: EAGER persist. The user_text row is
@@ -298,8 +310,9 @@ type flushQueuePayload = flushqueue.Payload
 //     pending_input. Falls back to sess.Send when Steer returns
 //     ErrNoActiveTurn.
 //
-// On any definite item error, the dispatcher persists a sibling `error`
-// row, aborts the current batch, and requeues items not yet attempted.
+// On any definite group error, the dispatcher persists a sibling `error`
+// row, aborts the current batch, and requeues the group plus every group
+// not yet attempted.
 //
 // Invoked by the app-layer per-thread flush worker, after triage has released
 // r.mu. The worker preserves FIFO order across multiple boundary drains and
@@ -319,31 +332,36 @@ func (a *App) dispatchFlushWithGeneration(threadID string, items []triage.Queued
 		return
 	}
 
-	for i, item := range items {
+	groups := a.groupFlushDispatch(threadID, items)
+	for i, group := range groups {
 		if !a.isFlushDispatchGenerationCurrent(threadID, generation) {
 			return
 		}
-		flushedItem, flushedEmitted, requeue, err := a.dispatchFlushItem(threadID, item)
+		flushedItems, flushedEmitted, requeue, err := a.dispatchFlushGroup(threadID, group)
 		if errors.Is(err, errEmptyUserMessage) {
 			// Older clients admitted empty rows. They have no input to retry
 			// or restore, and must not block the meaningful tail of the queue.
-			item.Settlement.Settle()
+			settleFlushGroup(group)
 			continue
 		}
 		if err != nil {
-			log.Printf("flush dispatch: thread=%s item=%s: %v", threadID, item.ID, err)
+			log.Printf("flush dispatch: thread=%s items=[%s]: %v", threadID, flushGroupIDs(group), err)
 			if !a.isFlushDispatchGenerationCurrent(threadID, generation) {
 				return
 			}
-			// The FAILING item requeues too, ahead of the unattempted
+			// The FAILING group requeues too, ahead of the unattempted
 			// tail — dropping it would leave the message in no state at
 			// all (round-13, CT13-1/C13-2). Its StaleUserItemID reflects
 			// how far dispatch got: the original marker when cleanup
 			// never ran or failed, cleared once cleanup succeeded, the
 			// fresh row id once a quiet persist landed.
-			a.triage.RegisterQueueItem(threadID, requeue)
-			for _, unattempted := range items[i+1:] {
-				a.triage.RegisterQueueItem(threadID, unattempted)
+			for _, item := range requeue {
+				a.triage.RegisterQueueItem(threadID, item)
+			}
+			for _, unattempted := range groups[i+1:] {
+				for _, item := range unattempted {
+					a.triage.RegisterQueueItem(threadID, item)
+				}
 			}
 			a.emitQueueStateChanged(threadID)
 			return
@@ -351,88 +369,116 @@ func (a *App) dispatchFlushWithGeneration(threadID string, items []triage.Queued
 		if !flushedEmitted {
 			a.emit(eventchan.ProviderQueueFlushed, QueueFlushedEvent{
 				ThreadID: threadID,
-				Items:    []QueueFlushedItem{flushedItem},
+				Items:    flushedItems,
 			})
 		}
 		// A successful provider write is one of the two settlement endpoints for
 		// an injected message; session-death recovery into the composer is the
-		// other. The shared settlement is exactly-once if those paths race.
-		item.Settlement.Settle()
+		// other. The shared settlement is exactly-once if those paths race, and
+		// every member of a joined group settles on the one write that carried
+		// it.
+		settleFlushGroup(group)
 	}
 	a.emitQueueStateChanged(threadID)
 }
 
-// dispatchFlushItem dispatches one queued message. On error, the
-// returned requeue value is the item to re-register (round-13,
-// CT13-1): a copy of the input whose StaleUserItemID tracks the
-// durable state left behind — unchanged until the stale-row cleanup
-// runs, cleared once cleanup succeeds, and pointing at the fresh quiet
-// row once an eager persist lands (so the redispatch cleans it up
-// before persisting again). On success requeue is the zero value.
-func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (QueueFlushedItem, bool, triage.QueuedFlushItem, error) {
-	requeue := item
+func settleFlushGroup(group []triage.QueuedFlushItem) {
+	for _, item := range group {
+		item.Settlement.Settle()
+	}
+}
+
+func flushGroupIDs(group []triage.QueuedFlushItem) string {
+	ids := make([]string, 0, len(group))
+	for _, item := range group {
+		ids = append(ids, item.ID)
+	}
+	return strings.Join(ids, " ")
+}
+
+// dispatchFlushGroup dispatches one group as a single provider message. On
+// error the returned requeue value is the group to re-register in order
+// (round-13, CT13-1): copies of the input whose StaleUserItemID tracks the
+// durable state left behind — unchanged until the stale-row cleanup runs,
+// cleared once cleanup succeeds, and, on the FIRST member only, pointing at
+// the fresh quiet row once an eager persist lands (the group persists one row,
+// so one member owns the obligation to clean it up before persisting again).
+// On success requeue is nil.
+func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem) ([]QueueFlushedItem, bool, []triage.QueuedFlushItem, error) {
+	requeue := slices.Clone(group)
 	if a.shuttingDown.Load() {
-		return QueueFlushedItem{}, false, requeue, ErrShuttingDown
+		return nil, false, requeue, ErrShuttingDown
 	}
 
-	var payload flushQueuePayload
-	if len(item.Payload) > 0 {
-		if err := json.Unmarshal(item.Payload, &payload); err != nil {
-			return QueueFlushedItem{}, false, requeue, fmt.Errorf("decode payload: %w", err)
-		}
-	}
-	if err := validateUserMessageInput(item.Message, payload.AttachmentIDs, payload.RevisionSourceCommentIDs, payload.RevisionSourceDiffCommentIDs); err != nil {
-		if item.StaleUserItemID != "" {
-			if cleanupErr := a.cleanupStaleFlushRow(threadID, item.StaleUserItemID); cleanupErr != nil {
-				return QueueFlushedItem{}, false, requeue, cleanupErr
+	// Resolve EVERY member before anything durable or provider-visible
+	// happens. A joined group is one message: a failure on its third member
+	// must leave all three requeueable with nothing on the wire.
+	members := make([]flushMember, 0, len(group))
+	var staleRows []string
+	for _, item := range group {
+		var payload flushQueuePayload
+		if len(item.Payload) > 0 {
+			if err := json.Unmarshal(item.Payload, &payload); err != nil {
+				return nil, false, requeue, fmt.Errorf("decode payload: %w", err)
 			}
 		}
-		return QueueFlushedItem{}, false, requeue, err
+		if item.StaleUserItemID != "" {
+			staleRows = append(staleRows, item.StaleUserItemID)
+		}
+		if err := validateUserMessageInput(item.Message, payload.AttachmentIDs, payload.RevisionSourceCommentIDs, payload.RevisionSourceDiffCommentIDs); err != nil {
+			// An empty member carries no input to send. It drops out of the
+			// join and settles with the group; its stale row is still cleaned
+			// up below with everyone else's.
+			continue
+		}
+		resolved, err := a.resolveUserMessageEnvelope(threadID, item.Message, userMessageInputs{
+			attachmentIDs:                payload.AttachmentIDs,
+			sourceProposedPlan:           payload.SourceProposedPlan,
+			revisionSourceProposedPlan:   payload.RevisionSourceProposedPlan,
+			revisionSourceCommentIDs:     payload.RevisionSourceCommentIDs,
+			revisionSourceDiffReview:     payload.RevisionSourceDiffReview,
+			revisionSourceDiffCommentIDs: payload.RevisionSourceDiffCommentIDs,
+			// Resolve composer commands HERE, at dispatch, not at enqueue: the
+			// block names the runs live when the message reaches the provider.
+			// App-injected wake prose keeps this false so a leading slash reaches
+			// the model rather than Claude's local router.
+			expandComposerCommands: payload.ExpandComposerCommands,
+			// The send id moves from the durable queue row onto the row this
+			// dispatch persists, so the message keeps one idempotency record for
+			// its whole life (app_send_idempotency.go). A joined row carries
+			// every member's id; joinFlushMeta owns that union.
+			sendID: payload.SendID,
+		})
+		if err != nil {
+			return nil, false, requeue, err
+		}
+		members = append(members, flushMember{item: item, payload: payload, resolved: resolved})
 	}
-
-	resolved, err := a.resolveUserMessageEnvelope(threadID, item.Message, userMessageInputs{
-		attachmentIDs:                payload.AttachmentIDs,
-		sourceProposedPlan:           payload.SourceProposedPlan,
-		revisionSourceProposedPlan:   payload.RevisionSourceProposedPlan,
-		revisionSourceCommentIDs:     payload.RevisionSourceCommentIDs,
-		revisionSourceDiffReview:     payload.RevisionSourceDiffReview,
-		revisionSourceDiffCommentIDs: payload.RevisionSourceDiffCommentIDs,
-		// Resolve composer commands HERE, at dispatch, not at enqueue: the
-		// block names the runs live when the message reaches the provider.
-		// App-injected wake prose keeps this false so a leading slash reaches
-		// the model rather than Claude's local router.
-		expandComposerCommands: payload.ExpandComposerCommands,
-		// The send id moves from the durable queue row onto the row this
-		// dispatch persists, so the message keeps one idempotency record for
-		// its whole life (app_send_idempotency.go).
-		sendID: payload.SendID,
-	})
-	if err != nil {
-		return QueueFlushedItem{}, false, requeue, err
+	if len(members) == 0 {
+		if err := a.cleanupStaleFlushRows(threadID, staleRows); err != nil {
+			return nil, false, requeue, err
+		}
+		return nil, false, requeue, errEmptyUserMessage
 	}
-	content := resolved.content
-	providerContent := resolved.providerContent
-	providerAttachments := resolved.providerAttachments
-	userMeta := resolved.userMessageMeta
 
 	a.ensureTriageRouter()
 
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
-		return QueueFlushedItem{}, false, requeue, fmt.Errorf("load thread: %w", err)
+		return nil, false, requeue, fmt.Errorf("load thread: %w", err)
 	}
 	if err := a.ensureClaudeContextReadyForUserSendLocked(thread); err != nil {
-		return QueueFlushedItem{}, false, requeue, err
+		return nil, false, requeue, err
 	}
 	sess, unlockAccount, err := a.lockProviderAccountForSendLocked(thread)
 	if err != nil {
-		return QueueFlushedItem{}, false, requeue, err
+		return nil, false, requeue, err
 	}
 	defer unlockAccount()
 
 	placement, err := a.resolveUserMessagePlacement(thread, messageFlush)
 	if err != nil {
-		return QueueFlushedItem{}, false, requeue, fmt.Errorf("resolve placement: %w", err)
+		return nil, false, requeue, fmt.Errorf("resolve placement: %w", err)
 	}
 	responseTurnIndex := placement.responseTurn
 	persistTurnIndex := placement.displayTurn
@@ -449,6 +495,8 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 	// FIFO for the WHOLE remaining turn). The row meta is deliberately NOT
 	// pre-stamped: the echo-time merge must produce a meta change so
 	// attachProviderItemIDToUserRow emits the upsert that clears Zone 2.
+	// ONE uuid per group: a joined message is one envelope, so a second
+	// uuid would name a row the transcript never gets.
 	//
 	// Codex assigns its own item ids, so it names the message the other way
 	// round: AO passes the row id as `clientUserMessageId` on `turn/steer`
@@ -463,28 +511,35 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		sendUUID = uuid.NewString()
 	}
 
-	if item.StaleUserItemID != "" {
+	if len(staleRows) > 0 {
 		// A previous dispatch of this message left a quiet row whose
 		// session-death cleanup failed (see QueuedFlushItem doc). Retry
 		// it here — AFTER every failure-prone resolution step above, so
-		// an envelope/thread/session/placement error aborts the item
+		// an envelope/thread/session/placement error aborts the group
 		// while the stale row (the message's only durable copy) is
 		// still intact for the next retry (round-12, D12-1) — and
 		// BEFORE nextFlushUserItemID, which allocates against the
-		// turn's persisted rows. On cleanup failure, abort the item:
+		// turn's persisted rows. On cleanup failure, abort the group:
 		// persisting a fresh row over the stale one would show the
 		// message twice (round-11, R11-1). The remaining loss windows
 		// (allocation, persist, send) are the same ones a first
 		// dispatch of any message already has.
-		if err := a.cleanupStaleFlushRow(threadID, item.StaleUserItemID); err != nil {
-			return QueueFlushedItem{}, false, requeue, fmt.Errorf("cleanup stale flush row %s: %w", item.StaleUserItemID, err)
+		if err := a.cleanupStaleFlushRows(threadID, staleRows); err != nil {
+			return nil, false, requeue, err
 		}
-		requeue.StaleUserItemID = ""
+		for i := range requeue {
+			requeue[i].StaleUserItemID = ""
+		}
 	}
 
-	flushItemID, err := a.userMessageItemID(threadID, payload.SendID, persistTurnIndex, messageFlush)
+	joined, err := joinFlushMembers(members)
 	if err != nil {
-		return QueueFlushedItem{}, false, requeue, fmt.Errorf("allocate item id: %w", err)
+		return nil, false, requeue, fmt.Errorf("join queued messages: %w", err)
+	}
+
+	flushItemID, err := a.userMessageItemID(threadID, joined.sendID, persistTurnIndex, messageFlush)
+	if err != nil {
+		return nil, false, requeue, fmt.Errorf("allocate item id: %w", err)
 	}
 	now := time.Now().UnixMilli()
 	userItem := store.Item{
@@ -494,18 +549,36 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		Kind:      "user_text",
 		Role:      "user",
 		Status:    "completed",
-		Summary:   content,
-		Meta:      userMeta,
+		Summary:   joined.content,
+		Meta:      joined.meta,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
 
-	flushedItem := QueueFlushedItem{QueueItemID: item.ID, UserItemID: userItem.ID, Message: item.Message, SendID: payload.SendID}
+	// One acknowledgement per queued message the user is watching, all naming
+	// the one row they became: markItemsFlushed drops each queue id from
+	// Zone 1 and de-duplicates the additions by userItemId, so the overlay
+	// shows the joined message once and its echo clears it once.
+	flushedItems := make([]QueueFlushedItem, 0, len(members))
+	for _, member := range members {
+		flushedItems = append(flushedItems, QueueFlushedItem{
+			QueueItemID: member.item.ID,
+			UserItemID:  userItem.ID,
+			Message:     joined.content,
+			SendID:      member.payload.SendID,
+		})
+	}
 
 	// The identity this dispatch will be recognised by — wire stamp and
 	// registry expectation derived together (providerSendIdentity), so
 	// the two cannot drift.
 	clientUserMessageID, sendExpect := providerSendIdentity(sess, userItem.ID, sendUUID)
+
+	// The group's queue identity for the pending-send entry is its first
+	// member's: one entry per outbound message, and the session-death restore
+	// reads the entry's own joined row rather than the queue ids.
+	leadQueueItemID := members[0].item.ID
+	leadEnqueuedAt := members[0].item.EnqueuedAt
 
 	if eagerPersist {
 		// Emit queue_flushed so the frontend creates the Zone 2 entry
@@ -515,22 +588,23 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		// until the provider echo confirms it entered context.
 		a.emit(eventchan.ProviderQueueFlushed, QueueFlushedEvent{
 			ThreadID: threadID,
-			Items:    []QueueFlushedItem{flushedItem},
+			Items:    flushedItems,
 		})
 		if persistErr := a.triage.PersistAndRegisterPendingQuietFlushSendWithExpectation(
-			threadID, item.ID, userItem, responseTurnIndex, item.EnqueuedAt, sendExpect); persistErr != nil {
-			return QueueFlushedItem{}, true, requeue, fmt.Errorf("eager persist flush: %w", persistErr)
+			threadID, leadQueueItemID, userItem, responseTurnIndex, leadEnqueuedAt, sendExpect); persistErr != nil {
+			return nil, true, requeue, fmt.Errorf("eager persist flush: %w", persistErr)
 		}
-		requeue.StaleUserItemID = userItem.ID
+		// One row, one cleanup obligation: the first member owns it.
+		requeue[0].StaleUserItemID = userItem.ID
 
 	} else {
 		// Deferred: row persists at echo time via persistDeferredUserText.
-		a.triage.RegisterPendingFlushSendWithExpectation(threadID, item.ID, userItem, item.EnqueuedAt, sendExpect)
+		a.triage.RegisterPendingFlushSendWithExpectation(threadID, leadQueueItemID, userItem, leadEnqueuedAt, sendExpect)
 	}
 
 	sendOpts := provider.SendOptions{
 		InteractionMode: provider.NormalizeInteractionMode(thread.Mode),
-		Attachments:     providerAttachments,
+		Attachments:     joined.attachments,
 		UserMessageUUID: sendUUID,
 		// Codex's half of the same identity (empty for every other provider):
 		// stamped on both `turn/steer` and the fresh-turn fallback, and echoed
@@ -539,15 +613,15 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		// Agent Overflow's own expanded command must bypass Claude's local
 		// router. Every other leading `/name` keeps Claude's native command
 		// semantics, independent of discovery timing.
-		GuardClaudeSlashCommand: !payload.ExpandComposerCommands || resolved.command != "",
+		GuardClaudeSlashCommand: joined.guardSlashCommand,
 	}
 
-	dispatchErr := a.dispatchFlushToProvider(sess, providerContent, sendOpts)
+	dispatchErr := a.dispatchFlushToProvider(sess, joined.providerContent, sendOpts)
 	if dispatchErr != nil {
 		if codex.IsAmbiguousSteerTimeout(dispatchErr) {
-			log.Printf("flush dispatch: thread=%s item=%s: codex steer timed out after write; leaving pending confirmation for provider echo", threadID, item.ID)
-			a.applyProposedPlanAcceptance(threadID, userItem, resolved)
-			return flushedItem, eagerPersist, triage.QueuedFlushItem{}, nil
+			log.Printf("flush dispatch: thread=%s items=[%s]: codex steer timed out after write; leaving pending confirmation for provider echo", threadID, flushGroupIDs(group))
+			a.applyJoinedPlanAcceptance(threadID, userItem, members)
+			return flushedItems, eagerPersist, nil, nil
 		}
 		// A turn IS running and simply cannot take input — Codex is running a
 		// review or a compaction (codex.ErrTurnNotSteerable). Nothing is sent:
@@ -561,21 +635,21 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		// the user an error row for.
 		if sess.Codex != nil && codex.IsTurnNotSteerable(dispatchErr) {
 			a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
-			log.Printf("flush dispatch: thread=%s item=%s: the active codex turn cannot take input (%v); leaving the message queued for the next turn boundary",
-				threadID, item.ID, dispatchErr)
-			return QueueFlushedItem{}, eagerPersist, requeue, dispatchErr
+			log.Printf("flush dispatch: thread=%s items=[%s]: the active codex turn cannot take input (%v); leaving the message queued for the next turn boundary",
+				threadID, flushGroupIDs(group), dispatchErr)
+			return nil, eagerPersist, requeue, dispatchErr
 		}
 		if sess.Codex != nil && codex.IsNoActiveTurnRace(dispatchErr) {
 			a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
 			fallback, allocErr := a.resolveUserMessagePlacement(thread, messageFlushFallback)
 			if allocErr != nil {
-				return QueueFlushedItem{}, eagerPersist, requeue, allocErr
+				return nil, eagerPersist, requeue, allocErr
 			}
 			responseTurnIndex = fallback.responseTurn
-			freshFlushItemID, allocErr := a.userMessageItemID(threadID, payload.SendID, responseTurnIndex, messageFlushFallback)
+			freshFlushItemID, allocErr := a.userMessageItemID(threadID, joined.sendID, responseTurnIndex, messageFlushFallback)
 			if allocErr != nil {
 				a.persistFlushDispatchError(threadID, responseTurnIndex, allocErr)
-				return QueueFlushedItem{}, eagerPersist, requeue, allocErr
+				return nil, eagerPersist, requeue, allocErr
 			}
 			userItem.ID = freshFlushItemID
 			userItem.TurnIndex = responseTurnIndex
@@ -587,33 +661,63 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 			var refreshExpect triage.PendingSendExpectation
 			sendOpts.ClientUserMessageID, refreshExpect = providerSendIdentity(sess, userItem.ID, "")
 			a.triage.RegisterPendingFlushSendWithExpectation(
-				threadID, item.ID, userItem, item.EnqueuedAt, refreshExpect)
+				threadID, leadQueueItemID, userItem, leadEnqueuedAt, refreshExpect)
 			sess.Liveness.BumpActivity(time.Now())
-			if sendErr := sess.Codex.Send(context.Background(), providerContent, sendOpts); sendErr != nil {
+			if sendErr := sess.Codex.Send(context.Background(), joined.providerContent, sendOpts); sendErr != nil {
 				if codex.IsAmbiguousTurnStartTimeout(sendErr) {
 					// Same ambiguity as the steer timeout above: the
 					// turn/start was written and the echo may already be
 					// coming. A requeue would double-send (round-14,
 					// D14-2) — leave the pending entry for the echo.
-					log.Printf("flush dispatch: thread=%s item=%s: codex turn/start timed out after write; leaving pending confirmation for provider echo", threadID, item.ID)
-					a.applyProposedPlanAcceptance(threadID, userItem, resolved)
-					flushedItem.UserItemID = userItem.ID
-					return flushedItem, eagerPersist, triage.QueuedFlushItem{}, nil
+					log.Printf("flush dispatch: thread=%s items=[%s]: codex turn/start timed out after write; leaving pending confirmation for provider echo", threadID, flushGroupIDs(group))
+					a.applyJoinedPlanAcceptance(threadID, userItem, members)
+					return retargetFlushedItems(flushedItems, userItem.ID), eagerPersist, nil, nil
 				}
 				a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
 				a.persistFlushDispatchError(threadID, responseTurnIndex, sendErr)
-				return QueueFlushedItem{}, eagerPersist, requeue, sendErr
+				return nil, eagerPersist, requeue, sendErr
 			}
-			a.applyProposedPlanAcceptance(threadID, userItem, resolved)
-			flushedItem.UserItemID = userItem.ID
-			return flushedItem, eagerPersist, triage.QueuedFlushItem{}, nil
+			a.applyJoinedPlanAcceptance(threadID, userItem, members)
+			return retargetFlushedItems(flushedItems, userItem.ID), eagerPersist, nil, nil
 		}
 		a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
 		a.persistFlushDispatchError(threadID, persistTurnIndex, dispatchErr)
-		return QueueFlushedItem{}, eagerPersist, requeue, dispatchErr
+		return nil, eagerPersist, requeue, dispatchErr
 	}
-	a.applyProposedPlanAcceptance(threadID, userItem, resolved)
-	return flushedItem, eagerPersist, triage.QueuedFlushItem{}, nil
+	a.applyJoinedPlanAcceptance(threadID, userItem, members)
+	return flushedItems, eagerPersist, nil, nil
+}
+
+// applyJoinedPlanAcceptance marks each member's plan / comment bookkeeping
+// against the single row the group became. The refs are per-message even when
+// the message is joined, so the marking loop is too; the joined row's meta
+// carries only the refs it renders (joinFlushMeta).
+func (a *App) applyJoinedPlanAcceptance(threadID string, userItem store.Item, members []flushMember) {
+	for _, member := range members {
+		a.applyProposedPlanAcceptance(threadID, userItem, member.resolved)
+	}
+}
+
+// retargetFlushedItems re-points a group's acknowledgements at the row id a
+// placement-only fallback re-allocated.
+func retargetFlushedItems(items []QueueFlushedItem, userItemID string) []QueueFlushedItem {
+	for i := range items {
+		items[i].UserItemID = userItemID
+	}
+	return items
+}
+
+// cleanupStaleFlushRows retries the session-death cleanup for every quiet row
+// a previous dispatch of this group left behind. Each delete is idempotent, so
+// a group whose members were dispatched separately before being joined cleans
+// up all of their rows.
+func (a *App) cleanupStaleFlushRows(threadID string, userItemIDs []string) error {
+	for _, id := range userItemIDs {
+		if err := a.cleanupStaleFlushRow(threadID, id); err != nil {
+			return fmt.Errorf("cleanup stale flush row %s: %w", id, err)
+		}
+	}
+	return nil
 }
 
 // nextFlushSequenceForTurn returns the next available flush sequence
