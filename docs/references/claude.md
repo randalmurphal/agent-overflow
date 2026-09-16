@@ -50,6 +50,56 @@ our own code.
 4. If both sources disagree or are silent, follow
    `docs/references/spike-policy.md` and write an isolated spike.
 
+## OAuth credentials on disk (spiked 2.1.257)
+
+- **`refreshTokenExpiresAt` is the session deadline.** The
+  `claudeAiOauth` object carries `expiresAt` (access token, 8h, also
+  the rotation-chain position) and `refreshTokenExpiresAt`, both epoch
+  milliseconds. The CLI sets the second one at sign-in from the
+  server's `refresh_token_expires_in`, defaulting to 30 days when the
+  response omits it, and a token refresh does NOT extend it. Observed
+  lifetime is about 30 days from sign-in.
+- **Past that date the account is already signed out.** The next
+  refresh answers `invalid_grant` and the CLI overwrites the credential
+  with a sign-out husk: the object stays, `accessToken` and
+  `refreshToken` go blank. The CLI itself warns "Your login expires in
+  N days · run /login to renew" inside the last 3 days. AO reads the
+  field through `claude.RefreshTokenExpiresAt` and refuses to spawn a
+  probe that would produce the husk.
+- **Three locks guard the credential file**, all `proper-lockfile`
+  style: a lock IS a directory created with `mkdir`, staleness is
+  judged by its mtime, and an abandoned one is reclaimed by removing
+  it.
+  - `$CLAUDE_CONFIG_DIR/.oauth_refresh.lock` is held across the whole
+    refresh (locked read, token POST, write), stale after 60s, mtime
+    touched every 5s while held.
+  - `${realpath(configDir)}.lock` is the legacy lock, taken second in
+    the same section.
+  - `$CLAUDE_CONFIG_DIR/.storage-write.lock` is the secureStorage
+    mutation lock, taken innermost, inside the refresh section. It
+    wraps every secureStorage write (invalidate cache, read, mutate,
+    write), which means the credential read-modify-write AND logout,
+    not only refreshes, so it is the only one of the three a sign-in or
+    a sign-out takes. It retries 10 times at 100ms, is stale after 15s,
+    and is created with `realpath: false`, so it is named from the
+    unresolved config dir. Its base is
+    `$CLAUDE_SECURESTORAGE_CONFIG_DIR` when that is set. It guards
+    `.credentials.json` and the macOS keychain entry, not
+    `~/.claude.json`.
+- **The race that matters is the rotation drop.** A live CLI re-reads
+  `.credentials.json` under its own lock immediately before every
+  refresh, so replacing the file does not make a running process
+  refresh a stale token. But if a write lands inside a CLI's token POST
+  round trip, its compare-and-swap sees a different refresh token on
+  disk, adopts the disk value, and discards the rotation it just paid
+  for, retiring the outgoing refresh token server-side. Every AO write
+  to the canonical credential takes all three locks in the CLI's order,
+  each with the CLI's own stale threshold for that lock
+  (`internal/provideraccounts/claude_refresh_lock.go`).
+- On macOS the canonical credential lives in the keychain rather than
+  the file, and all three locks still apply: they are named from the
+  config home either way.
+
 ## Version-gated behaviors worth knowing
 
 - **Todo/task tool surface (≥2.1.233)**: the CLI removes

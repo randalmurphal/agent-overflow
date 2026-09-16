@@ -133,6 +133,62 @@ describe('<AccountSwitcher> — selection', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it('shows the login countdown only for accounts near their deadline', async () => {
+    const day = 24 * 60 * 60 * 1000;
+    setBindingMock('ListProviderAccounts', async () => [
+      account({ id: 'claude-a', displayName: 'Work', active: true, refreshTokenExpiresAt: Date.now() + 2 * day }),
+      account({ id: 'claude-b', displayName: 'Personal', refreshTokenExpiresAt: Date.now() + 20 * day }),
+      account({ id: 'codex-a', provider: 'codex', displayName: 'Codex Team' }),
+    ]);
+    const { findByTestId, queryByTestId } = render(AccountSwitcher, {
+      open: true,
+      onClose: () => {},
+    });
+
+    const expiring = await findByTestId('account-switcher-login-expiry-claude-a');
+    expect(expiring.textContent?.trim()).toBe('Login expires in 2 days');
+    expect(expiring.className).toContain('text-warning');
+    // Three weeks out is not news, and a countdown on every row would teach
+    // people to ignore the one that matters.
+    expect(queryByTestId('account-switcher-login-expiry-claude-b')).toBeNull();
+    expect(queryByTestId('account-switcher-login-expiry-codex-a')).toBeNull();
+  });
+
+  it('opens the sign-in flow when the backend declines the pick as expired', async () => {
+    // The row still looks switchable (its credential is present), so the
+    // verdict arrives from the switch reply. The picker turns it into the
+    // sign-in the user would have had to find themselves.
+    setBindingMock('ListProviderAccounts', async () => [
+      account({ id: 'claude-a', displayName: 'Work', active: true }),
+      account({ id: 'claude-b', displayName: 'Personal', refreshTokenExpiresAt: 10 }),
+    ]);
+    const switchMock = setBindingMock('SwitchProviderAccount', async () =>
+      account({ id: 'claude-b', needsLogin: true, signInRequired: true }),
+    );
+    const loginMock = setBindingMock('StartProviderLogin', async () => ({
+      provider: 'claude',
+      phase: 'awaiting_code',
+      method: 'remote',
+      authorizeUrl: 'https://claude.ai/oauth/authorize?state=expired',
+    }));
+    const onClose = vi.fn();
+    const { findByTestId } = render(AccountSwitcher, { open: true, onClose });
+
+    const row = await findByTestId('account-switcher-row-claude-b');
+    await fireEvent.click(row.querySelector('button') as HTMLButtonElement);
+
+    await waitFor(() => expect(loginMock).toHaveBeenCalledWith('claude', expect.any(String)));
+    expect(switchMock).toHaveBeenCalledWith('claude', 'claude-b');
+    await findByTestId('provider-login-flow-claude');
+    // Nothing switched, so the picker stays where the sign-in can finish.
+    expect(onClose).not.toHaveBeenCalled();
+    expect(
+      getToasts().some((t) =>
+        t.message.includes('The Claude login for Personal expired.'),
+      ),
+    ).toBe(true);
+  });
+
   it('closes without an RPC when the already-active account is picked', async () => {
     const switchMock = setBindingMock('SwitchProviderAccount', async () => undefined);
     const onClose = vi.fn();

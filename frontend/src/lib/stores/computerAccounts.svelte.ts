@@ -27,7 +27,7 @@ import { PROVIDER_IDS, type ProviderID } from '../types/providers';
 import { userFacingError } from '../utils/userFacingError';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { withBackendTarget } from '../transport/backends';
-import { providerLabel } from './providerAccountLabels';
+import { providerAccountName, providerLabel } from './providerAccountLabels';
 
 export interface ProviderAccountActions {
   loggingIn: boolean;
@@ -246,6 +246,13 @@ export class ComputerAccounts {
    * Make `account` the provider's active credential. Resolves true only when the
    * switch landed, so a caller that closes a surface on success keeps it open on
    * failure with the error already toasted.
+   *
+   * A DECLINED switch — the backend answering `signInRequired` because this
+   * account's login expired — resolves false and opens the sign-in for that
+   * same account here, so the user's one click still reaches the only repair.
+   * The sign-in is started after the in-flight latch clears: it is itself a
+   * credential operation, and starting it under the switch's own latch would
+   * be refused by the guard both share.
    */
   async switchProviderAccount(
     provider: ProviderID,
@@ -255,27 +262,42 @@ export class ComputerAccounts {
     const action = this.actions[provider];
     const label = providerLabel(provider);
     action.switchingID = account.id;
+    let switched = false;
+    let declined = false;
     try {
-      await this.call(() => SwitchProviderAccount(provider, account.id));
+      const result = (await this.call(() =>
+        SwitchProviderAccount(provider, account.id),
+      )) as ManagedProviderAccount | null;
+      declined = result?.signInRequired === true;
       await this.reloadProviderAccounts();
-      addToast('success', `Switched ${label} account.`);
-      return true;
+      if (!declined) {
+        addToast('success', `Switched ${label} account.`);
+        switched = true;
+      }
     } catch (error) {
-      if (this.disposed) return false;
-      console.error(`${label} account switch failed:`, error);
-      addToast(
-        'error',
-        `${label} account did not switch. ${userFacingError(error, 'Try again.')}`,
-      );
-      // A refusal is often a verdict about the account itself — a slot the
-      // provider signed out. Re-read the listing so the card shows that state
-      // instead of continuing to advertise a switch that cannot work. After the
-      // toast: the reason for the failure must not wait on another round trip.
-      await this.reloadProviderAccounts();
-      return false;
+      if (!this.disposed) {
+        console.error(`${label} account switch failed:`, error);
+        addToast(
+          'error',
+          `${label} account did not switch. ${userFacingError(error, 'Try again.')}`,
+        );
+        // A refusal is often a verdict about the account itself — a slot the
+        // provider signed out. Re-read the listing so the card shows that state
+        // instead of continuing to advertise a switch that cannot work. After the
+        // toast: the reason for the failure must not wait on another round trip.
+        await this.reloadProviderAccounts();
+      }
     } finally {
       action.switchingID = '';
     }
+    if (declined && !this.disposed) {
+      addToast(
+        'warning',
+        `The ${label} login for ${providerAccountName(account)} expired. Sign in again to reconnect it.`,
+      );
+      await this.startProviderLogin(provider);
+    }
+    return switched;
   }
 
   /** Re-read one account's quotas from the provider and reload the listing. */

@@ -437,3 +437,83 @@ func TestClaimProviderHomeBindsOnceAndRefusesForeignHomes(t *testing.T) {
 		t.Fatal("blank home claim succeeded, want error")
 	}
 }
+
+// The session deadline has exactly one author: the caller that has read the
+// credential. Identity writers carry no expiry at all, so a write that is
+// silent about it must leave it alone rather than erase the countdown.
+func TestRefreshTokenExpirySurvivesIdentityWrites(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	account := Account{ID: "one", Provider: "claude", Email: "one@example.com"}
+	if _, err := store.UpsertAndActivate(account); err != nil {
+		t.Fatal(err)
+	}
+
+	const deadline int64 = 1_802_592_000_000
+	noted, changed, err := store.NoteRefreshTokenExpiry("claude", "one", deadline)
+	if err != nil || !changed || noted.RefreshTokenExpiresAt != deadline {
+		t.Fatalf("NoteRefreshTokenExpiry = (%+v, %v, %v), want the deadline recorded", noted, changed, err)
+	}
+	if _, changed, err := store.NoteRefreshTokenExpiry("claude", "one", deadline); err != nil || changed {
+		t.Fatalf("re-noting the same deadline reported changed=%v (%v), want no write", changed, err)
+	}
+
+	// A re-adoption and an identity enrichment both rewrite the row from a
+	// provider identity response, which never carries an expiry.
+	if _, err := store.UpsertAndActivate(account); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpdateMetadata(Account{
+		ID: "one", Provider: "claude", Email: "one@example.com", OrgID: "org-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	saved, ok := store.Get("claude", "one", time.Now())
+	if !ok || saved.RefreshTokenExpiresAt != deadline {
+		t.Fatalf("saved account = %+v, want the deadline preserved across identity writes", saved)
+	}
+
+	// The credential-reading author, and only it, may clear the field: a
+	// credential that names no deadline is one whose countdown must stop being
+	// shown.
+	if _, changed, err := store.NoteRefreshTokenExpiry("claude", "one", 0); err != nil || !changed {
+		t.Fatalf("clearing the deadline reported changed=%v (%v), want the clear to land", changed, err)
+	}
+	if saved, _ := store.Get("claude", "one", time.Now()); saved.RefreshTokenExpiresAt != 0 {
+		t.Fatalf("saved account expiry = %d, want it cleared", saved.RefreshTokenExpiresAt)
+	}
+
+	// A row that has gone (removed under a credential transaction) is not an
+	// error: there is simply nothing to record.
+	if _, changed, err := store.NoteRefreshTokenExpiry("claude", "missing", deadline); err != nil || changed {
+		t.Fatalf("NoteRefreshTokenExpiry(missing) = (%v, %v), want a quiet no-op", changed, err)
+	}
+}
+
+// The deadline is persisted metadata, so it has to survive the file round trip
+// that a restart performs.
+func TestRefreshTokenExpiryPersists(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertAndActivate(Account{ID: "one", Provider: "claude"}); err != nil {
+		t.Fatal(err)
+	}
+	const deadline int64 = 1_802_592_000_000
+	if _, _, err := store.NoteRefreshTokenExpiry("claude", "one", deadline); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, ok := reloaded.Get("claude", "one", time.Now())
+	if !ok || saved.RefreshTokenExpiresAt != deadline {
+		t.Fatalf("reloaded account = %+v, want the deadline to have persisted", saved)
+	}
+}

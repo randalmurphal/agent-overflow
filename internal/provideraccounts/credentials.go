@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"time"
 
 	"agent-overflow/internal/atomicfile"
 )
@@ -60,15 +61,30 @@ type SignedOutDetector func(providerName string, data []byte) bool
 // diagnosable moment before the account dies.
 type ChainPosition func(providerName string, data []byte) (int64, bool)
 
+// LoginExpiry reports when the provider's own OAuth session for these
+// credential bytes ends, in epoch milliseconds — for Claude, the refresh
+// token's `refreshTokenExpiresAt`. ok=false means the bytes name no deadline,
+// which is UNKNOWN and never "expired".
+//
+// Past that moment the credential is not yet a husk: the file still holds
+// tokens and the provider still reports them, right up until something
+// attempts the refresh that turns it into one. So unlike SignedOutDetector
+// this gates USE, not writes — what may be activated, probed, or refreshed.
+// Expired bytes must still be preserved into their slot and rolled back
+// correctly, because destroying an account's last credential over a condition
+// a sign-in repairs is the worse failure.
+type LoginExpiry func(providerName string, data []byte) (int64, bool)
+
 // Policy carries the provider-specific credential predicates this package
-// cannot implement itself without importing a provider package. Both are
+// cannot implement itself without importing a provider package. They are
 // supplied at construction rather than through setters, so a store that
 // silently accepts production-refused bytes cannot be built by forgetting a
 // wiring call — the zero value is that choice made explicit, acceptable only
 // for focused tests exercising something other than these rules.
 type Policy struct {
-	SignedOut     SignedOutDetector
-	ChainPosition ChainPosition
+	SignedOut      SignedOutDetector
+	ChainPosition  ChainPosition
+	LoginExpiresAt LoginExpiry
 }
 
 // Credentials owns Agent Overflow's opaque copies of provider-native
@@ -133,6 +149,30 @@ func (c *Credentials) credentialSignedOut(providerName string, data []byte) bool
 // no provider claims a sign-out shape, which answers false.
 func (c *Credentials) CredentialSignedOut(providerName string, data []byte) bool {
 	return c.credentialSignedOut(providerName, data)
+}
+
+// CredentialLoginExpiresAt reports when the login these bytes hold stops being
+// renewable, in epoch milliseconds. 0 means the bytes name no deadline. No
+// predicate installed answers 0 for everything, so a store built without one
+// simply never sees a session end.
+func (c *Credentials) CredentialLoginExpiresAt(providerName string, data []byte) int64 {
+	if c.policy.LoginExpiresAt == nil {
+		return 0
+	}
+	expiresAt, ok := c.policy.LoginExpiresAt(providerName, data)
+	if !ok || expiresAt <= 0 {
+		return 0
+	}
+	return expiresAt
+}
+
+// CredentialLoginExpired reports that these bytes hold a login whose OAuth
+// session has ended, so refreshing them would only convert them into the
+// provider's sign-out husk. The boundary belongs to the expired side: the
+// refresh that lands exactly at the deadline is the one that gets rejected.
+func (c *Credentials) CredentialLoginExpired(providerName string, data []byte, now time.Time) bool {
+	expiresAt := c.CredentialLoginExpiresAt(providerName, data)
+	return expiresAt > 0 && expiresAt <= now.UnixMilli()
 }
 
 func (c *Credentials) Paths(providerName string) (ProviderPaths, error) {
@@ -272,32 +312,62 @@ func (c *Credentials) CredentialPresent(providerName, accountID string, active b
 	return info.Mode()&os.ModeSymlink == 0 && info.Mode().IsRegular() && info.Size() > 0, nil
 }
 
-// CredentialUsable reports whether this account could be activated right now:
-// its credential is present AND is not the provider's sign-out husk. A husked
-// slot and an empty one are the same state to the user — sign in again — so
-// callers surfacing "needs login" must ask this rather than CredentialPresent,
-// which only sees the file.
+// CredentialState is everything ONE read of an account's credential can tell a
+// listing: whether the account could be activated right now, and when its
+// login stops being renewable.
 //
-// One read answers both questions. Account listings ask this per account after
-// every switch, refresh, and removal, and on macOS each credential access is a
-// security(1) subprocess — a separate presence probe would double that for no
-// extra information.
+// They travel together because they come from the same bytes and the listing
+// needs both — and on macOS each credential access is a security(1)
+// subprocess, so asking twice would double the cost of opening the account
+// picker for no extra information.
+type CredentialState struct {
+	// Usable reports that the credential is present, is not the provider's
+	// sign-out husk, and holds a login whose OAuth session has not ended. All
+	// three are the same state to the user: sign in again.
+	Usable bool
+	// LoginExpiresAt is the provider's own deadline for that login, in epoch
+	// milliseconds, or 0 when the bytes name none. It is reported whether or
+	// not the account is usable — an expired account's card exists to say WHEN
+	// it expired.
+	LoginExpiresAt int64
+}
+
+// InspectCredential answers CredentialState for one account: the canonical
+// native store when active is true, that account's saved slot otherwise.
 //
-// A missing credential answers false with no error; a read that fails for any
-// other reason propagates, so a caller can tell "definitely unusable" from
+// A missing credential answers "unusable" with no error; a read that fails for
+// any other reason propagates, so a caller can tell "definitely unusable" from
 // "could not find out".
-func (c *Credentials) CredentialUsable(providerName, accountID string, active bool) (bool, error) {
+func (c *Credentials) InspectCredential(
+	providerName, accountID string,
+	active bool,
+) (CredentialState, error) {
 	snapshot, err := c.ReadCredentialSnapshot(providerName, accountID, active)
 	if IsCredentialMissing(err) {
-		return false, nil
+		return CredentialState{}, nil
 	}
 	if err != nil {
-		return false, err
+		return CredentialState{}, err
 	}
 	if len(snapshot.Data) == 0 {
-		return false, nil
+		return CredentialState{}, nil
 	}
-	return !c.credentialSignedOut(providerName, snapshot.Data), nil
+	state := CredentialState{
+		LoginExpiresAt: c.CredentialLoginExpiresAt(providerName, snapshot.Data),
+	}
+	if c.credentialSignedOut(providerName, snapshot.Data) {
+		return state, nil
+	}
+	state.Usable = !c.CredentialLoginExpired(providerName, snapshot.Data, time.Now())
+	return state, nil
+}
+
+// CredentialUsable is InspectCredential for callers that only need the
+// verdict. Callers surfacing "needs login" must ask this rather than
+// CredentialPresent, which only sees the file.
+func (c *Credentials) CredentialUsable(providerName, accountID string, active bool) (bool, error) {
+	state, err := c.InspectCredential(providerName, accountID, active)
+	return state.Usable, err
 }
 
 // ReadCredential returns opaque bytes from the canonical native store when
@@ -509,11 +579,21 @@ func (c *Credentials) writeActiveCredential(providerName string, data []byte) er
 
 // storeActiveCredential is writeActiveCredential without the sign-out refusal,
 // for the provider-impersonating test helper only.
+//
+// It is also the single chokepoint every canonical credential write passes
+// through, which makes it the place the provider's own refresh locks are held
+// (claude_refresh_lock.go). Taking them BEFORE the symlink check keeps the
+// inspect-then-write pair atomic against the CLI as well.
 func (c *Credentials) storeActiveCredential(providerName string, data []byte) error {
 	paths, err := c.Paths(providerName)
 	if err != nil {
 		return err
 	}
+	release, err := c.lockCanonicalCredentialWrite(providerName, paths.SharedHome)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if runtime.GOOS != "darwin" || providerName != "claude" {
 		activePath := filepath.Join(paths.SharedHome, paths.CredentialFile)
 		if info, statErr := os.Lstat(activePath); statErr == nil && info.Mode()&os.ModeSymlink != 0 {

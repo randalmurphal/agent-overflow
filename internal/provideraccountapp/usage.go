@@ -381,6 +381,20 @@ func (m *Manager) commitProviderUsageRefreshLocked(
 	if len(latest) == 0 {
 		latest = refresh.probed
 	}
+	// Those bytes are also the freshest statement of when this login's session
+	// ends — and for an account saved before the deadline was captured, the
+	// first one. Recorded before the credential copies are reconciled, so an
+	// account whose usage refresh is the only thing that ever touches it (an
+	// inactive one, which rotates nothing and returns early below) still gets
+	// its countdown. A change republishes the card; for Codex the republish
+	// below re-reads this same row, so the ordering keeps both in one frame.
+	if updated, changed := m.recordLoginExpiry(
+		refresh.providerName,
+		refresh.accountID,
+		latest,
+	); changed {
+		commit.account = &updated
+	}
 	if !refresh.isSelected {
 		if len(refresh.refreshed) == 0 || refresh.slotPersisted {
 			return commit, nil

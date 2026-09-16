@@ -118,11 +118,19 @@ func (c *Credentials) RemoveActive(providerName string) error {
 	if err := c.retireProviderIdentity(providerName); err != nil {
 		return err
 	}
+	paths, err := c.Paths(providerName)
+	if err != nil {
+		return err
+	}
+	// Deleting the canonical credential is a write to it: a CLI refresh that
+	// lands either side of the removal is fine, one that lands inside it
+	// rewrites the file this just deleted. Same locks as the write path.
+	release, err := c.lockCanonicalCredentialWrite(providerName, paths.SharedHome)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if runtime.GOOS == "darwin" && providerName == "claude" {
-		paths, err := c.Paths(providerName)
-		if err != nil {
-			return err
-		}
 		return c.keychain.remove(paths.SharedHome, true)
 	}
 	activePath, err := c.ActiveCredentialPath(providerName)

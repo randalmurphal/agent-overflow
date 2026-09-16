@@ -51,6 +51,23 @@ var errClaudeCredentialSignedOut = errors.New("the Claude CLI signed this login 
 // perfectly good account read as dead every time it was switched to.
 var errClaudeCredentialsExpired = errors.New("Claude credentials expired; log in again")
 
+// errClaudeLoginExpired reports a login whose OAuth SESSION is over: the
+// refresh token is past the ~30-day life it was issued with, so the next
+// refresh answers invalid_grant and the CLI blanks the credential to the husk
+// above. Spike-verified on 2.1.257: the deadline is set at sign-in and a
+// refresh does not extend it.
+//
+// It is the only one of these verdicts AO can see BEFORE spending anything,
+// which is the entire point of reading it: every path that would otherwise
+// spawn the CLI or send the credential's bearer checks it first and declines,
+// so the account is left repairable by a sign-in instead of blanked. Callers
+// with account metadata map it onto errProviderAccountLoginExpired so the user
+// is told which account, and why.
+var errClaudeLoginExpired = errors.New("this Claude login expired; sign in to this account again")
+
+// ErrClaudeLoginExpired is exposed for root integration assertions.
+var ErrClaudeLoginExpired = errClaudeLoginExpired
+
 var (
 	// ErrClaudeUsageStale is exposed for root integration assertions.
 	ErrClaudeUsageStale = errClaudeUsageStale
@@ -89,6 +106,19 @@ func (m *Manager) probeSelectedClaudeRateLimits(
 			selection.AccountID,
 		)
 		return provider.RateLimitsSnapshot{}, nil, errClaudeCredentialSignedOut
+	}
+	// Checked before the request, because the request's own failure mode is
+	// what does the damage: a 401 here escalates to the canonical refresh
+	// below, and a refresh past the refresh token's expiry is the invalid_grant
+	// that blanks the credential. A login whose session has ended has no usage
+	// worth that risk.
+	if claude.RefreshTokenExpired(credential, time.Now()) {
+		m.audit(
+			"claude account %s not refreshed: its login expired at %s",
+			selection.AccountID,
+			describeLoginExpiry(string(provider.Claude), credential),
+		)
+		return provider.RateLimitsSnapshot{}, nil, errClaudeLoginExpired
 	}
 	snapshot, err := claude.ProbeRateLimitsFromCredentialData(
 		ctx,
@@ -247,6 +277,12 @@ func (m *Manager) probeInactiveClaudeRateLimits(
 ) (provider.RateLimitsSnapshot, error) {
 	if claude.CredentialsSignedOut(credential) {
 		return provider.RateLimitsSnapshot{}, errClaudeCredentialSignedOut
+	}
+	// A login whose session has ended reports that, not stale usage: it is a
+	// different instruction to the user (sign this account in) and a different
+	// card state (needs login, with the date it ended).
+	if claude.RefreshTokenExpired(credential, time.Now()) {
+		return provider.RateLimitsSnapshot{}, errClaudeLoginExpired
 	}
 	// Checked before the request, not after: an expired bearer earns a 401
 	// that says nothing, and the usage endpoint's 429 throttle is per-bearer

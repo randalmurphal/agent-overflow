@@ -24,12 +24,39 @@ func CredentialChainPosition(providerName string, data []byte) (int64, bool) {
 	return claude.CredentialExpiresAt(data)
 }
 
+// CredentialLoginExpiresAt reports when provider-native bytes stop being
+// renewable, in epoch milliseconds. Past it the tokens are still there, but
+// the refresh that would renew them answers invalid_grant and leaves the CLI's
+// sign-out husk behind. Only Claude records a session deadline; ok=false for
+// everything else, which reads as unknown rather than expired.
+func CredentialLoginExpiresAt(providerName string, data []byte) (int64, bool) {
+	if providerName != string(provider.Claude) {
+		return 0, false
+	}
+	expiresAt, ok := claude.RefreshTokenExpiresAt(data)
+	if !ok {
+		return 0, false
+	}
+	return expiresAt.UnixMilli(), true
+}
+
 // CredentialPolicy is the shared provider-native credential write policy.
 func CredentialPolicy() provideraccounts.Policy {
 	return provideraccounts.Policy{
-		SignedOut:     CredentialSignedOut,
-		ChainPosition: CredentialChainPosition,
+		SignedOut:      CredentialSignedOut,
+		ChainPosition:  CredentialChainPosition,
+		LoginExpiresAt: CredentialLoginExpiresAt,
 	}
+}
+
+// loginExpiresAtMillis is CredentialLoginExpiresAt as the store's field: 0
+// for bytes that name no deadline.
+func loginExpiresAtMillis(providerName string, data []byte) int64 {
+	expiresAt, ok := CredentialLoginExpiresAt(providerName, data)
+	if !ok {
+		return 0
+	}
+	return expiresAt
 }
 
 // AccountFromInfo projects observed provider identity into saved metadata.

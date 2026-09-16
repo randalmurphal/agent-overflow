@@ -25,6 +25,7 @@
     loadProviderAccounts,
     startProviderLogin,
     providerAccountActionLabel,
+    providerAccountLoginExpiry,
     providerAccountName,
     providerAccountOrgLabel,
     providerLabel as resolveProviderLabel,
@@ -133,6 +134,7 @@
       {#each accounts as account (account.id)}
         {@const limits = getProviderRateLimits(provider, account.id, backend)}
         {@const orgLabel = providerAccountOrgLabel(account)}
+        {@const loginExpiry = providerAccountLoginExpiry(account)}
         <div
           class="rounded-[var(--radius-field)] border px-3 py-2.5 {account.needsLogin
             ? 'border-warning/40 bg-surface-0'
@@ -181,7 +183,19 @@
                   {[account.displayName ? account.email : '', orgLabel].filter(Boolean).join(' · ')}
                 </span>
               {/if}
-              {#if account.needsLogin}
+              <!-- Why this account needs a sign-in, and for a live one, when
+                   it will. An expired login is not a missing credential: the
+                   card says which it is. -->
+              {#if loginExpiry}
+                <span
+                  class="mt-0.5 block pl-4 text-[0.6875rem] {loginExpiry.urgent
+                    ? 'text-warning'
+                    : 'text-fg-hint'}"
+                  data-testid="provider-account-login-expiry-{account.id}"
+                >
+                  {loginExpiry.text}{loginExpiry.expired ? '. Sign in again to reconnect it.' : ''}
+                </span>
+              {:else if account.needsLogin}
                 <span class="mt-0.5 block pl-4 text-[0.6875rem] text-fg-hint">
                   Its saved {providerLabel} credentials are gone.
                 </span>

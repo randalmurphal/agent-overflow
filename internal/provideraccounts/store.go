@@ -29,18 +29,29 @@ const (
 // capture load with blanks and enrich on the next adoption, and an older
 // build reading a newer file simply drops them until re-enriched.
 type Account struct {
-	ID               string                       `json:"id"`
-	Provider         string                       `json:"provider"`
-	Email            string                       `json:"email,omitempty"`
-	OrgID            string                       `json:"orgId,omitempty"`
-	OrgName          string                       `json:"orgName,omitempty"`
-	DisplayName      string                       `json:"displayName,omitempty"`
-	SubscriptionType string                       `json:"subscriptionType,omitempty"`
-	TokenSource      string                       `json:"tokenSource,omitempty"`
-	APIProvider      string                       `json:"apiProvider,omitempty"`
-	AddedAt          int64                        `json:"addedAt"`
-	LastUsedAt       int64                        `json:"lastUsedAt"`
-	RateLimits       *provider.RateLimitsSnapshot `json:"rateLimits,omitempty"`
+	ID               string `json:"id"`
+	Provider         string `json:"provider"`
+	Email            string `json:"email,omitempty"`
+	OrgID            string `json:"orgId,omitempty"`
+	OrgName          string `json:"orgName,omitempty"`
+	DisplayName      string `json:"displayName,omitempty"`
+	SubscriptionType string `json:"subscriptionType,omitempty"`
+	TokenSource      string `json:"tokenSource,omitempty"`
+	APIProvider      string `json:"apiProvider,omitempty"`
+	// RefreshTokenExpiresAt is when this login's OAuth session ends, in epoch
+	// milliseconds, as the provider recorded it beside the credential. It is
+	// metadata, not credential material: a deadline names no token and grants
+	// nothing, so it belongs in this file while the bytes it describes never
+	// do.
+	//
+	// Claude only, and 0 means unknown — an account saved before the field
+	// was captured, a credential written by a CLI that does not record it, or
+	// any Codex account. Unknown is never read as expired; see
+	// NoteRefreshTokenExpiry for who keeps it current.
+	RefreshTokenExpiresAt int64                        `json:"refreshTokenExpiresAt,omitempty"`
+	AddedAt               int64                        `json:"addedAt"`
+	LastUsedAt            int64                        `json:"lastUsedAt"`
+	RateLimits            *provider.RateLimitsSnapshot `json:"rateLimits,omitempty"`
 }
 
 // ProviderState is the persisted account set and current selection for one
@@ -214,6 +225,7 @@ func (s *Store) upsertAndActivate(
 		if account.RateLimits == nil {
 			account.RateLimits = existing.RateLimits
 		}
+		account.RefreshTokenExpiresAt = mergeRefreshTokenExpiry(account, existing)
 	} else if account.AddedAt == 0 {
 		account.AddedAt = now
 	}
@@ -404,6 +416,7 @@ func (s *Store) UpdateMetadata(account Account) (Account, error) {
 	account.AddedAt = existing.AddedAt
 	account.LastUsedAt = existing.LastUsedAt
 	account.RateLimits = existing.RateLimits
+	account.RefreshTokenExpiresAt = mergeRefreshTokenExpiry(account, existing)
 	state.Accounts[index] = cloneAccount(account)
 	s.state.Providers[account.Provider] = state
 	if err := s.saveLocked(); err != nil {
@@ -411,6 +424,51 @@ func (s *Store) UpdateMetadata(account Account) (Account, error) {
 		return Account{}, err
 	}
 	return cloneAccount(account), nil
+}
+
+// NoteRefreshTokenExpiry records when one account's OAuth session ends, as
+// read from the credential bytes that account was just captured from or
+// committed to. It is the ONLY authority on the field: it may set it, move it,
+// and clear it, because it is the only caller that has looked at the
+// credential. It changes no selection, generation, timestamp, or quota — a
+// deadline the provider chose is not an account mutation.
+//
+// changed reports that the stored value actually moved, so a caller can skip
+// republishing a card that did not change. A removed account is not an error:
+// the metadata row can legitimately disappear under a credential transaction,
+// and there is then nothing to record.
+//
+// mergeRefreshTokenExpiry is why identity-only writers cannot clear this by
+// omission; keep new writers going through here instead.
+func (s *Store) NoteRefreshTokenExpiry(
+	providerName string,
+	accountID string,
+	expiresAt int64,
+) (Account, bool, error) {
+	if accountID == "" {
+		return Account{}, false, nil
+	}
+	if expiresAt < 0 {
+		expiresAt = 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	previous, existed := s.state.Providers[providerName]
+	state := cloneProviderState(previous)
+	index := indexOfAccount(state.Accounts, accountID)
+	if index < 0 {
+		return Account{}, false, nil
+	}
+	if state.Accounts[index].RefreshTokenExpiresAt == expiresAt {
+		return cloneAccount(state.Accounts[index]), false, nil
+	}
+	state.Accounts[index].RefreshTokenExpiresAt = expiresAt
+	s.state.Providers[providerName] = state
+	if err := s.saveLocked(); err != nil {
+		restoreProviderState(s.state.Providers, providerName, previous, existed)
+		return Account{}, false, err
+	}
+	return cloneAccount(state.Accounts[index]), true, nil
 }
 
 func (s *Store) RememberRateLimits(providerName, accountID string, snapshot provider.RateLimitsSnapshot) error {
@@ -479,6 +537,20 @@ func validateAccount(account Account) error {
 		return errors.New("provideraccounts: provider is required")
 	}
 	return nil
+}
+
+// mergeRefreshTokenExpiry keeps a saved OAuth-session deadline across writes
+// that were never about it. Every identity writer builds its Account from a
+// provider identity response, which carries no expiry at all, so taking the
+// incoming zero literally would erase the field on each probe and re-add it on
+// the next credential capture — a card that flickers between "login expires in
+// 2 days" and silence. Zero means "not supplied here", and only
+// NoteRefreshTokenExpiry, which has read the credential, may lower it.
+func mergeRefreshTokenExpiry(incoming, existing Account) int64 {
+	if incoming.RefreshTokenExpiresAt > 0 {
+		return incoming.RefreshTokenExpiresAt
+	}
+	return existing.RefreshTokenExpiresAt
 }
 
 func indexOfAccount(accounts []Account, accountID string) int {

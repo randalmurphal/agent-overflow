@@ -2767,6 +2767,20 @@ export class ManagedProviderAccount {
     "subscriptionType"?: string;
     "tokenSource"?: string;
     "apiProvider"?: string;
+
+    /**
+     * RefreshTokenExpiresAt is when this login's OAuth session ends, in epoch
+     * milliseconds, as the provider recorded it beside the credential. It is
+     * metadata, not credential material: a deadline names no token and grants
+     * nothing, so it belongs in this file while the bytes it describes never
+     * do.
+     * 
+     * Claude only, and 0 means unknown — an account saved before the field
+     * was captured, a credential written by a CLI that does not record it, or
+     * any Codex account. Unknown is never read as expired; see
+     * NoteRefreshTokenExpiry for who keeps it current.
+     */
+    "refreshTokenExpiresAt"?: number;
     "addedAt": number;
     "lastUsedAt": number;
     "rateLimits"?: provider$0.RateLimitsSnapshot | null;
@@ -2774,13 +2788,22 @@ export class ManagedProviderAccount {
     "generation": number;
 
     /**
-     * NeedsLogin marks a saved account whose credential is gone, so
-     * selecting it cannot work until the user signs in again. The card
-     * stays listed — its metadata and quota history are still the user's
-     * record of that account — but it is honest about being unusable
-     * instead of failing with a filesystem error on click.
+     * NeedsLogin marks a saved account that cannot be selected as it stands —
+     * its credential is gone, is the provider's sign-out husk, or holds a
+     * login whose OAuth session has expired — so selecting it cannot work
+     * until the user signs in again. The card stays listed: its metadata and
+     * quota history are still the user's record of that account, and
+     * refreshTokenExpiresAt tells the card which of those states it is in.
      */
     "needsLogin": boolean;
+
+    /**
+     * SignInRequired is set only by SwitchProviderAccount, and only when the
+     * switch was DECLINED because the target's login had already expired: the
+     * call succeeds, nothing was activated, and the client is being told to
+     * open a sign-in for THIS account rather than report a failure.
+     */
+    "signInRequired": boolean;
 
     /** Creates a new ManagedProviderAccount instance. */
     constructor($$source: Partial<ManagedProviderAccount> = {}) {
@@ -2805,6 +2828,9 @@ export class ManagedProviderAccount {
         if (!("needsLogin" in $$source)) {
             this["needsLogin"] = false;
         }
+        if (!("signInRequired" in $$source)) {
+            this["signInRequired"] = false;
+        }
 
         Object.assign(this, $$source);
     }
@@ -2813,10 +2839,10 @@ export class ManagedProviderAccount {
      * Creates a new ManagedProviderAccount instance from a string or object.
      */
     static createFrom($$source: any = {}): ManagedProviderAccount {
-        const $$createField11_0 = $$createType48;
+        const $$createField12_0 = $$createType48;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("rateLimits" in $$parsedSource) {
-            $$parsedSource["rateLimits"] = $$createField11_0($$parsedSource["rateLimits"]);
+            $$parsedSource["rateLimits"] = $$createField12_0($$parsedSource["rateLimits"]);
         }
         return new ManagedProviderAccount($$parsedSource as Partial<ManagedProviderAccount>);
     }

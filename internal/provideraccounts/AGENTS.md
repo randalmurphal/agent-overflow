@@ -27,6 +27,22 @@ the canonical home, where all processes share the provider's lock. Probes near
 rotation wait for the credential change before teardown. Inactive Claude
 accounts use the read-only HTTP usage probe and are never refreshed in copies.
 
+Every write to the canonical Claude credential, removal included, holds all
+three of the CLI's locks in its order (`claude_refresh_lock.go`): the two
+refresh locks, then `.storage-write.lock`, which the CLI takes innermost for
+every secureStorage mutation, including a sign-in or a sign-out that never
+refreshes. Each lock keeps the CLI's own stale threshold. A write that lands
+inside a CLI refresh makes that CLI adopt the disk value and drop the rotation
+it just performed. `ErrCredentialLockBusy` is the answer when the CLI still
+holds them after the wait.
+
+`Account.RefreshTokenExpiresAt` is metadata, not a credential: the login
+deadline the Claude CLI records at sign-in and never extends. Record it
+wherever credential bytes are captured; `NoteRefreshTokenExpiry` is the only
+writer. Past that deadline the account is signed out in effect, so activation,
+probes and usage refreshes decline it and ask for a sign-in rather than
+spawning a CLI whose refusal would blank the credential.
+
 Credential write APIs reject signed-out husks. Preserve a newer canonical
 rotation into the outgoing slot during activation failures. Rollback removes
 new structure but never restores older credential bytes.

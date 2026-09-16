@@ -7,7 +7,8 @@ import type { ProviderID } from '../types/providers';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { attachedBackends, onBackendsChanged } from '../transport/backends';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
-export { providerLabel, providerAccountName, providerAccountOrgLabel, providerAccountActionLabel } from './providerAccountLabels';
+export { providerLabel, providerAccountName, providerAccountOrgLabel, providerAccountActionLabel, providerAccountLoginExpiry } from './providerAccountLabels';
+export type { ProviderAccountLoginExpiry } from './providerAccountLabels';
 
 
 

@@ -91,3 +91,56 @@ func CredentialExpired(data []byte, now time.Time) bool {
 	}
 	return !time.UnixMilli(expiresAt).After(now)
 }
+
+// RefreshTokenExpiresAt reads `claudeAiOauth.refreshTokenExpiresAt` — epoch
+// MILLISECONDS — out of native credential bytes. ok is false when the bytes do
+// not parse, carry no claudeAiOauth object, or carry no positive value (an
+// API-key setup, a foreign shape, the sign-out husk, a credential written
+// before the CLI recorded the field).
+//
+// This is the OAuth SESSION's own deadline, and it is a different clock from
+// CredentialExpiresAt: that one bounds the eight-hour access token the refresh
+// chain keeps reissuing, this one bounds how long the chain may be reissued at
+// all. Spike-verified against 2.1.257 and the four logins on the development
+// host: the CLI sets it at sign-in from the token response's
+// `refresh_token_expires_in` (defaulting to 30 days when the server omits it)
+// and a refresh does NOT extend it — the CLI keeps the on-disk value unless
+// the server sends a new one, and the server does not, so an account refreshed
+// hours ago still carries its sign-in-day expiry to the second.
+//
+// Past it the next refresh answers invalid_grant and the CLI blanks the
+// credential to the sign-out husk (see CredentialsSignedOut). That makes this
+// field the ONE signal that can see a login's death coming, and the reason
+// Agent Overflow reads it: a refresh attempted after this moment does not fail
+// harmlessly, it destroys the credential it was trying to renew.
+func RefreshTokenExpiresAt(data []byte) (time.Time, bool) {
+	var credentials struct {
+		ClaudeAIOauth *struct {
+			RefreshTokenExpiresAt int64 `json:"refreshTokenExpiresAt"`
+		} `json:"claudeAiOauth"`
+	}
+	if err := json.Unmarshal(data, &credentials); err != nil {
+		return time.Time{}, false
+	}
+	oauth := credentials.ClaudeAIOauth
+	if oauth == nil || oauth.RefreshTokenExpiresAt <= 0 {
+		return time.Time{}, false
+	}
+	return time.UnixMilli(oauth.RefreshTokenExpiresAt), true
+}
+
+// RefreshTokenExpired reports that this login's OAuth session is over: the
+// refresh token's own lifetime has elapsed, so the next refresh answers
+// invalid_grant and the CLI blanks the credential in place.
+//
+// Bytes carrying no refresh-token expiry answer false. Absent is UNKNOWN, not
+// expired: credentials written by older CLIs (and every Codex credential) have
+// no such field, and reading their silence as death would sign working
+// accounts out.
+func RefreshTokenExpired(data []byte, now time.Time) bool {
+	expiresAt, ok := RefreshTokenExpiresAt(data)
+	if !ok {
+		return false
+	}
+	return !expiresAt.After(now)
+}

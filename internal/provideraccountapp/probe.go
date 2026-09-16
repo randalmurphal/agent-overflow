@@ -152,6 +152,22 @@ func (m *Manager) runStableAccountProbe(
 		if err != nil {
 			return provider.AccountInfo{}, nil, err
 		}
+		// Never spawn a provider process onto a login whose OAuth session has
+		// already ended. The CLI's first act is a token refresh; past the
+		// refresh token's own expiry the server answers invalid_grant and the
+		// CLI blanks the credential in place, so an identity probe run for
+		// display would destroy the account it was asking about. The callers
+		// that must keep working through this state (external reconciliation,
+		// pre-login adoption) check it themselves and stand down quietly;
+		// everything else — boot, recheck, transfer validation — gets the
+		// verdict as an error naming the one repair.
+		if beforePresent && m.credentials.CredentialLoginExpired(
+			providerName,
+			before.Data,
+			time.Now(),
+		) {
+			return provider.AccountInfo{}, nil, errClaudeLoginExpired
+		}
 		info, err := probe(m.context())
 		if err != nil {
 			return provider.AccountInfo{}, nil, err
@@ -181,6 +197,18 @@ func (m *Manager) runStableAccountProbe(
 		"%s credentials changed while identifying the active account; retry",
 		providerName,
 	)
+}
+
+// canonicalLoginExpired reports that the canonical credential holds a login
+// whose OAuth session has ended. An absent credential is not expired — there
+// is nothing there to expire — and a read failure is reported, because
+// "cannot tell" must not be answered as "safe to probe".
+func (m *Manager) canonicalLoginExpired(providerName string) (bool, error) {
+	snapshot, present, err := m.readCanonicalCredentialIfPresent(providerName)
+	if err != nil || !present {
+		return false, err
+	}
+	return m.credentials.CredentialLoginExpired(providerName, snapshot.Data, time.Now()), nil
 }
 
 func (m *Manager) readCanonicalCredentialIfPresent(

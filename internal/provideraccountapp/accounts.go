@@ -20,12 +20,22 @@ type ManagedAccount struct {
 	provideraccounts.Account
 	Active     bool   `json:"active"`
 	Generation uint64 `json:"generation"`
-	// NeedsLogin marks a saved account whose credential is gone, so
-	// selecting it cannot work until the user signs in again. The card
-	// stays listed — its metadata and quota history are still the user's
-	// record of that account — but it is honest about being unusable
-	// instead of failing with a filesystem error on click.
+	// NeedsLogin marks a saved account that cannot be selected as it stands —
+	// its credential is gone, is the provider's sign-out husk, or holds a
+	// login whose OAuth session has expired — so selecting it cannot work
+	// until the user signs in again. The card stays listed: its metadata and
+	// quota history are still the user's record of that account, and
+	// RefreshTokenExpiresAt tells the card which of those states it is in.
 	NeedsLogin bool `json:"needsLogin"`
+	// SignInRequired is set only by SwitchProviderAccount, and only when the
+	// switch was DECLINED because the target's login has expired. The call
+	// succeeds so the answer can carry this: the one recovery is a sign-in to
+	// that same account, and returning an error instead would cost a round
+	// trip and leave the client guessing which account to open it for.
+	//
+	// It is always false in listings, where NeedsLogin already says the card
+	// needs repair and nothing is being attempted.
+	SignInRequired bool `json:"signInRequired"`
 }
 
 func (m *Manager) ListProviderAccounts() ([]ManagedAccount, error) {
@@ -52,11 +62,20 @@ func (m *Manager) ListProviderAccounts() ([]ManagedAccount, error) {
 	// per account. Resolved after the lock is released so listing accounts
 	// cannot stall a session start behind it.
 	for i := range out {
-		out[i].NeedsLogin = !m.providerAccountCredentialUsable(
+		state := m.providerAccountCredentialState(
 			out[i].Provider,
 			out[i].ID,
 			out[i].Active,
 		)
+		out[i].NeedsLogin = !state.Usable
+		// The credential outranks the saved metadata here: an account that was
+		// saved before AO captured session deadlines, or whose credential was
+		// replaced outside AO, still gets its countdown from the bytes this
+		// read already has in hand. Persisting it belongs to the paths that
+		// move credentials, not to a listing.
+		if state.LoginExpiresAt > 0 {
+			out[i].RefreshTokenExpiresAt = state.LoginExpiresAt
+		}
 	}
 	if out == nil {
 		out = []ManagedAccount{}
@@ -64,54 +83,80 @@ func (m *Manager) ListProviderAccounts() ([]ManagedAccount, error) {
 	return out, nil
 }
 
-// providerAccountCredentialUsable reports whether this account could be
-// activated right now. The selected account is backed by the canonical
-// store; every other account is backed by its saved slot. A check that
-// itself fails is reported as usable so a transient filesystem error
-// cannot make every account look signed out — the activation path still
-// validates for real.
+// providerAccountCredentialState reads what one account's credential says
+// about itself. The selected account is backed by the canonical store; every
+// other account is backed by its saved slot. A read that itself fails is
+// reported as usable so a transient filesystem error cannot make every account
+// look signed out — the activation path still validates for real — and with no
+// deadline, so a failed read never invents an expiry either.
 //
-// A slot holding the provider's sign-out husk is unusable: it is a file
-// where a login used to be, and treating it as present is what let the
-// card advertise a dead account as switchable.
-func (m *Manager) providerAccountCredentialUsable(providerName, accountID string, isActive bool) bool {
+// A slot holding the provider's sign-out husk, or a login whose OAuth session
+// has ended, is unusable: it is a file where a working login used to be, and
+// treating it as present is what let the card advertise a dead account as
+// switchable.
+func (m *Manager) providerAccountCredentialState(
+	providerName, accountID string,
+	isActive bool,
+) provideraccounts.CredentialState {
 	if m.credentials == nil {
-		return true
+		return provideraccounts.CredentialState{Usable: true}
 	}
-	usable, err := m.credentials.CredentialUsable(providerName, accountID, isActive)
+	state, err := m.credentials.InspectCredential(providerName, accountID, isActive)
 	if err != nil {
-		return true
+		return provideraccounts.CredentialState{Usable: true}
 	}
-	return usable
+	return state
 }
 
 // errProviderAccountNeedsLogin describes the one recovery available when an
 // account's saved credential is gone: sign in again. The metadata row stays,
 // so the user is told what to do rather than shown the missing path.
 func errProviderAccountNeedsLogin(providerName string, account provideraccounts.Account) error {
-	label := account.Email
-	if label == "" {
-		label = account.DisplayName
-	}
-	if label == "" {
-		label = account.ID
-	}
 	return fmt.Errorf(
 		"the saved %s credentials for %s are gone; sign in to this account again to reconnect it",
 		providerName,
-		label,
+		describeProviderAccount(account),
 	)
 }
 
-// mapProviderAccountLoginError restates a provider-level "this login no longer
-// exists" verdict as the account-scoped instruction the card can act on. Every
-// other error passes through unchanged — only the one sentinel has a known
-// recovery.
+// errProviderAccountLoginExpired names the account whose OAuth session ran
+// out. It is deliberately a different sentence from errProviderAccountNeedsLogin:
+// nothing is missing or corrupt, the login simply reached the end of the
+// ~30-day life its refresh token was issued with, and the user has done
+// nothing wrong. It wraps errClaudeLoginExpired so callers can still test the
+// verdict.
+func errProviderAccountLoginExpired(providerName string, account provideraccounts.Account) error {
+	return fmt.Errorf(
+		"the %s login for %s expired; sign in to this account again to reconnect it (%w)",
+		providerName,
+		describeProviderAccount(account),
+		errClaudeLoginExpired,
+	)
+}
+
+func describeProviderAccount(account provideraccounts.Account) string {
+	if account.Email != "" {
+		return account.Email
+	}
+	if account.DisplayName != "" {
+		return account.DisplayName
+	}
+	return account.ID
+}
+
+// mapProviderAccountLoginError restates a provider-level "this login is over"
+// verdict as the account-scoped instruction the card can act on. Every other
+// error passes through unchanged — only the two sentinels have a known
+// recovery, and they are kept apart because the card says different things
+// about a credential that vanished and a session that ended.
 func mapProviderAccountLoginError(
 	providerName string,
 	account provideraccounts.Account,
 	err error,
 ) error {
+	if errors.Is(err, errClaudeLoginExpired) {
+		return errProviderAccountLoginExpired(providerName, account)
+	}
 	if !errors.Is(err, errClaudeCredentialSignedOut) {
 		return err
 	}
@@ -190,6 +235,27 @@ func (m *Manager) SwitchProviderAccount(providerName, accountID string) (Managed
 		)
 		return ManagedAccount{}, errProviderAccountNeedsLogin(providerName, target)
 	}
+	// An expired login is not yet a husk — the tokens are all still there —
+	// but activating it hands the provider a refresh token the server will
+	// reject, and the CLI answers that rejection by blanking the credential.
+	// So the switch stops here instead: the account is reported as needing a
+	// sign-in, with the switch's answer telling the caller to open one for
+	// THIS account rather than making the user find it again.
+	if m.credentials.CredentialLoginExpired(providerName, targetCredential.Data, time.Now()) {
+		m.audit(
+			"declined to switch to %s account %s: its login expired at %s",
+			providerName,
+			accountID,
+			describeLoginExpiry(providerName, targetCredential.Data),
+		)
+		expired := m.withRecordedLoginExpiry(target, targetCredential.Data)
+		return ManagedAccount{
+			Account:        expired,
+			Generation:     m.store.Generation(providerName),
+			NeedsLogin:     true,
+			SignInRequired: true,
+		}, nil
+	}
 	currentID := ""
 	if hasCurrent {
 		currentID = current.ID
@@ -228,6 +294,13 @@ func (m *Manager) SwitchProviderAccount(providerName, accountID string) (Managed
 			return ManagedAccount{}, fmt.Errorf("%w (credential rollback also failed: %v)", err, rollbackErr)
 		}
 		return ManagedAccount{}, err
+	}
+	// Both accounts just had credential bytes committed for them: the incoming
+	// one into the canonical store, the outgoing one into its slot. Record
+	// what each says about its session deadline while the bytes are in hand.
+	account = m.withRecordedLoginExpiry(account, targetCredential.Data)
+	if currentCredential != nil {
+		m.recordLoginExpiry(providerName, preserveID, currentCredential.Data)
 	}
 	binary := m.providerBinaryPath(providerName)
 	m.rememberProviderCredentialFingerprintLocked(providerName, targetCredential.Data)
@@ -318,6 +391,63 @@ func (m *Manager) verifiedActiveCredentialLocked(
 	return snapshot, nil
 }
 
+// recordLoginExpiry keeps one account's stored OAuth session deadline equal to
+// what the credential AO has just captured or committed for it says. Every
+// place that moves credential bytes for an account calls it, so the metadata
+// answer never drifts from the bytes: a login, an external adoption, a switch,
+// and the usage refresh that commits a rotation.
+//
+// The deadline is metadata (see provideraccounts.Account), and recording it is
+// NOT part of the credential transaction. The bytes are already durable by the
+// time this runs; failing the user's operation because a metadata write failed
+// would undo nothing and report the wrong cause, so the failure is audited and
+// the operation stands. The next capture retries it.
+func (m *Manager) recordLoginExpiry(
+	providerName, accountID string,
+	credential []byte,
+) (provideraccounts.Account, bool) {
+	if m.store == nil || accountID == "" {
+		return provideraccounts.Account{}, false
+	}
+	updated, changed, err := m.store.NoteRefreshTokenExpiry(
+		providerName,
+		accountID,
+		loginExpiresAtMillis(providerName, credential),
+	)
+	if err != nil {
+		m.audit(
+			"record %s account %s login expiry: %v",
+			providerName,
+			accountID,
+			err,
+		)
+		return provideraccounts.Account{}, false
+	}
+	return updated, changed
+}
+
+// withRecordedLoginExpiry is recordLoginExpiry for the callers that are about
+// to publish the account row, so the frame they emit carries the deadline the
+// credential just supplied rather than the previous one.
+func (m *Manager) withRecordedLoginExpiry(
+	account provideraccounts.Account,
+	credential []byte,
+) provideraccounts.Account {
+	if updated, changed := m.recordLoginExpiry(account.Provider, account.ID, credential); changed {
+		return updated
+	}
+	return account
+}
+
+// describeLoginExpiry renders an account's session deadline for the audit log.
+func describeLoginExpiry(providerName string, credential []byte) string {
+	expiresAt := loginExpiresAtMillis(providerName, credential)
+	if expiresAt <= 0 {
+		return "an unreadable time"
+	}
+	return time.UnixMilli(expiresAt).Format(time.RFC3339)
+}
+
 func (m *Manager) probeProviderAccountAtHome(providerName, binary, home string) (provider.AccountInfo, error) {
 	switch providerName {
 	case string(provider.Claude):
@@ -385,6 +515,7 @@ func (m *Manager) adoptCurrentProviderAccount(
 			cleanupErr := m.credentials.RestoreAccountCredential(saved)
 			return provideraccounts.Account{}, false, errors.Join(err, cleanupErr)
 		}
+		account = m.withRecordedLoginExpiry(account, credential.Data)
 		m.rememberProviderCredentialFingerprintLocked(providerName, credential.Data)
 		return account, true, nil
 	}
@@ -402,6 +533,23 @@ func (m *Manager) adoptCurrentProviderAccount(
 
 func (m *Manager) adoptCanonicalProviderAccountLocked(providerName, binary string) error {
 	if _, ok := m.store.Active(providerName, time.Now()); ok {
+		return nil
+	}
+	// Identifying an expired login costs it: the probe is a CLI start, the CLI
+	// starts by refreshing, and that refresh answers invalid_grant and blanks
+	// the credential. There is nothing here worth adopting anyway — whatever
+	// is in the canonical store needs a fresh sign-in, which is what the
+	// caller is on its way to running. Same shape as the husk case in
+	// reconcileExternalProviderAccountWithMutexHeld: not an error, because
+	// refusing here would lock the user out of the very sign-in that repairs
+	// it.
+	if expired, err := m.canonicalLoginExpired(providerName); err != nil {
+		return err
+	} else if expired {
+		m.audit(
+			"skipped adopting the canonical %s login: its login has expired and probing it would sign it out",
+			providerName,
+		)
 		return nil
 	}
 	info, credential, err := m.runStableAccountProbe(
@@ -460,6 +608,7 @@ func (m *Manager) adoptCanonicalProviderAccountLocked(providerName, binary strin
 		restore()
 		return err
 	}
+	m.recordLoginExpiry(providerName, accountID, credential.Data)
 	m.rememberProviderCredentialFingerprintLocked(providerName, credential.Data)
 	return nil
 }

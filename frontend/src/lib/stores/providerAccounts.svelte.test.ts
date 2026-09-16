@@ -359,6 +359,77 @@ describe('switchProviderAccount', () => {
     ).resolves.toBe(false);
     expect(switchMock).not.toHaveBeenCalled();
   });
+
+  // A Claude login whose refresh token has expired cannot be probed back to
+  // life: the CLI would answer invalid_grant and blank the credential. The
+  // backend therefore declines the switch and says so in the reply instead of
+  // failing, and the only move left is the sign-in the user would reach for
+  // anyway. One click, not two.
+  it('starts a sign-in when the backend declines the switch as expired', async () => {
+    let listed: ManagedProviderAccount[] = [
+      account({ id: 'claude-a', active: true }),
+      account({ id: 'claude-b', displayName: 'Work', refreshTokenExpiresAt: 10 }),
+    ];
+    setBindingMock('ListProviderAccounts', async () => listed);
+    setBindingMock('SwitchProviderAccount', async () => {
+      listed = [
+        account({ id: 'claude-a', active: true }),
+        account({
+          id: 'claude-b',
+          displayName: 'Work',
+          needsLogin: true,
+          refreshTokenExpiresAt: 10,
+        }),
+      ];
+      return account({ id: 'claude-b', needsLogin: true, signInRequired: true });
+    });
+    const startMock = setBindingMock('StartProviderLogin', async () =>
+      new ProviderLoginState({
+        provider: 'claude',
+        phase: ProviderLoginPhase.LoginPhaseAwaitingCode,
+        method: ProviderLoginMethod.LoginMethodRemote,
+        authorizeUrl: 'https://claude.ai/oauth/authorize?state=expired',
+      }),
+    );
+    await loadProviderAccounts();
+
+    const target = getProviderAccountsFor('claude')[1];
+    await expect(switchProviderAccount('claude', target)).resolves.toBe(false);
+
+    // A declined switch is not a switch: no success toast, no active move.
+    expect(toastMessages()).not.toContain('Switched Claude account.');
+    expect(toastMessages()).toContain(
+      'The Claude login for Work expired. Sign in again to reconnect it.',
+    );
+    expect(getProviderAccount('claude')?.accountId).toBe('claude-a');
+    // The reload ran, so the card carries the reason before the flow opens.
+    expect(getProviderAccountsFor('claude')[1].needsLogin).toBe(true);
+    // The sign-in starts from the same gesture, and the credential-op latch
+    // that guarded the switch has to have cleared for it to be admitted.
+    expect(startMock).toHaveBeenCalledWith('claude', expect.any(String));
+    expect(isProviderLoginActive('claude')).toBe(true);
+  });
+
+  it('starts no sign-in when the switch is accepted', async () => {
+    let active = 'claude-a';
+    setBindingMock('ListProviderAccounts', async () => [
+      account({ id: 'claude-a', active: active === 'claude-a' }),
+      account({ id: 'claude-b', active: active === 'claude-b' }),
+    ]);
+    setBindingMock('SwitchProviderAccount', async (_p, id: unknown) => {
+      active = String(id);
+      return account({ id: 'claude-b', active: true });
+    });
+    const startMock = setBindingMock('StartProviderLogin', async () => new ProviderLoginState());
+    await loadProviderAccounts();
+
+    await expect(
+      switchProviderAccount('claude', getProviderAccountsFor('claude')[1]),
+    ).resolves.toBe(true);
+
+    expect(startMock).not.toHaveBeenCalled();
+    expect(toastMessages()).toContain('Switched Claude account.');
+  });
 });
 
 // A sign-in is a session: Start returns as soon as there is a link to show,

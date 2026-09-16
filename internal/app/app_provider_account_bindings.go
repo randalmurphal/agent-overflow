@@ -14,12 +14,18 @@ type ManagedProviderAccount struct {
 	provideraccounts.Account
 	Active     bool   `json:"active"`
 	Generation uint64 `json:"generation"`
-	// NeedsLogin marks a saved account whose credential is gone, so
-	// selecting it cannot work until the user signs in again. The card
-	// stays listed — its metadata and quota history are still the user's
-	// record of that account — but it is honest about being unusable
-	// instead of failing with a filesystem error on click.
+	// NeedsLogin marks a saved account that cannot be selected as it stands —
+	// its credential is gone, is the provider's sign-out husk, or holds a
+	// login whose OAuth session has expired — so selecting it cannot work
+	// until the user signs in again. The card stays listed: its metadata and
+	// quota history are still the user's record of that account, and
+	// refreshTokenExpiresAt tells the card which of those states it is in.
 	NeedsLogin bool `json:"needsLogin"`
+	// SignInRequired is set only by SwitchProviderAccount, and only when the
+	// switch was DECLINED because the target's login had already expired: the
+	// call succeeds, nothing was activated, and the client is being told to
+	// open a sign-in for THIS account rather than report a failure.
+	SignInRequired bool `json:"signInRequired"`
 }
 
 //ao:scope access:admin
@@ -46,7 +52,10 @@ func (a *App) SwitchProviderAccount(providerName, accountID string) (ManagedProv
 		return ManagedProviderAccount{}, errors.New("provider account storage is unavailable")
 	}
 	account, err := a.providerAccounts.SwitchProviderAccount(providerName, accountID)
-	if err == nil {
+	// A declined switch activated nothing, so there is no new identity to
+	// learn — and the catalog probe would spawn the CLI for an answer the
+	// canonical home already gave.
+	if err == nil && !account.SignInRequired {
 		a.probeSwitchedProviderAccount(providerName)
 	}
 	return managedProviderAccount(account), err
@@ -185,5 +194,6 @@ func managedProviderAccount(account provideraccountapp.ManagedAccount) ManagedPr
 	return ManagedProviderAccount{
 		Account: account.Account, Active: account.Active,
 		Generation: account.Generation, NeedsLogin: account.NeedsLogin,
+		SignInRequired: account.SignInRequired,
 	}
 }

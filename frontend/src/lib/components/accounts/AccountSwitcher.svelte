@@ -31,6 +31,7 @@
     loadProviderAccounts,
     startProviderLogin,
     providerAccountActionLabel,
+    providerAccountLoginExpiry,
     providerAccountName,
     providerAccountOrgLabel,
     refreshProviderAccountUsage,
@@ -240,6 +241,7 @@
               {#each group.rows as row (row.account.id)}
                 {@const account = row.account}
                 {@const limits = getProviderRateLimits(group.provider, account.id, backend)}
+                {@const loginExpiry = providerAccountLoginExpiry(account)}
                 <li
                   class={[
                     'rounded-[var(--radius-field)] px-2 py-1.5 transition-colors',
@@ -269,6 +271,19 @@
                         {#if providerAccountOrgLabel(account)}
                           <span class="max-w-32 shrink-0 truncate text-[0.6875rem] text-fg-hint">
                             {providerAccountOrgLabel(account)}
+                          </span>
+                        {/if}
+                        <!-- The same countdown the settings card shows, so the
+                             quick surface is not the one that hides a login
+                             about to die. -->
+                        {#if loginExpiry}
+                          <span
+                            class="shrink-0 truncate text-[0.6875rem] {loginExpiry.urgent
+                              ? 'text-warning'
+                              : 'text-fg-hint'}"
+                            data-testid="account-switcher-login-expiry-{account.id}"
+                          >
+                            {loginExpiry.text}
                           </span>
                         {/if}
                         {#if account.needsLogin}

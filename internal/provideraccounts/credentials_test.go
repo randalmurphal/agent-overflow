@@ -7,7 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestClaudeKeychainIdentityMatchesConfigScopedNativeService(t *testing.T) {
@@ -545,5 +548,98 @@ func assertCredentialPresent(
 	}
 	if _, readErr := credentials.ReadCredential("codex", accountID, active); readErr != nil {
 		t.Fatalf("credential reported present but unreadable: %v", readErr)
+	}
+}
+
+// literalExpiryPolicy reads a deadline out of the fixture bytes
+// "expires:<millis>", standing in for claude.RefreshTokenExpiresAt without
+// importing a provider package.
+func literalExpiryPolicy(providerName string, data []byte) (int64, bool) {
+	if providerName != "claude" {
+		return 0, false
+	}
+	rest, ok := strings.CutPrefix(string(data), "expires:")
+	if !ok {
+		return 0, false
+	}
+	millis, err := strconv.ParseInt(rest, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return millis, true
+}
+
+// One read answers both questions a listing asks, and an expired login answers
+// them differently from a husk or a missing file: it is unusable, but it still
+// has a date the card has to show.
+func TestInspectCredentialReportsUsabilityAndTheLoginDeadline(t *testing.T) {
+	credentials, err := NewCredentials(t.TempDir(), Policy{
+		SignedOut:      literalHuskDetector,
+		LoginExpiresAt: literalExpiryPolicy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-time.Hour).UnixMilli()
+	future := time.Now().Add(72 * time.Hour).UnixMilli()
+
+	cases := []struct {
+		name          string
+		accountID     string
+		data          string
+		wantUsable    bool
+		wantExpiresAt int64
+	}{
+		{"live login", "live", "expires:" + strconv.FormatInt(future, 10), true, future},
+		{"expired login", "expired", "expires:" + strconv.FormatInt(past, 10), false, past},
+		{"no deadline in the bytes", "silent", "opaque-token", true, 0},
+		{"husk", "husked", "husk", false, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.data == "husk" {
+				// The husk is the provider's own write; the refusal in the
+				// write layer is exactly what keeps AO from making one.
+				accountDir, dirErr := credentials.ensureAccountDirectory("claude", tc.accountID)
+				if dirErr != nil {
+					t.Fatal(dirErr)
+				}
+				if err := credentials.storeCredentialAt("claude", accountDir, false, []byte(tc.data)); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := credentials.WriteAccountCredential("claude", tc.accountID, []byte(tc.data)); err != nil {
+				t.Fatal(err)
+			}
+			state, err := credentials.InspectCredential("claude", tc.accountID, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state.Usable != tc.wantUsable || state.LoginExpiresAt != tc.wantExpiresAt {
+				t.Fatalf(
+					"InspectCredential(%s) = %+v, want usable=%v expiresAt=%d",
+					tc.accountID, state, tc.wantUsable, tc.wantExpiresAt,
+				)
+			}
+			usable, err := credentials.CredentialUsable("claude", tc.accountID, false)
+			if err != nil || usable != tc.wantUsable {
+				t.Fatalf("CredentialUsable(%s) = (%v, %v), want %v", tc.accountID, usable, err, tc.wantUsable)
+			}
+		})
+	}
+
+	// A slot that was never written is unusable and carries no date to show.
+	state, err := credentials.InspectCredential("claude", "absent", false)
+	if err != nil || state.Usable || state.LoginExpiresAt != 0 {
+		t.Fatalf("InspectCredential(absent) = (%+v, %v), want the zero state", state, err)
+	}
+
+	// An expired login is still WRITABLE. Refusing to store it would destroy
+	// the account's last credential over a state a sign-in repairs.
+	if err := credentials.WriteAccountCredential(
+		"claude",
+		"expired",
+		[]byte("expires:"+strconv.FormatInt(past, 10)),
+	); err != nil {
+		t.Fatalf("writing an expired credential = %v, want it stored", err)
 	}
 }

@@ -69,6 +69,16 @@ func (m *Manager) reconcileExternalProviderAccountWithMutexHeld(
 	if observed && known == sha256.Sum256(before.Data) {
 		return nil
 	}
+	if m.credentials.CredentialLoginExpired(providerName, before.Data, time.Now()) {
+		// An expired login is a change this reconciliation cannot identify:
+		// the probe that would name it is a CLI start, and starting the CLI on
+		// an expired refresh token is what converts it into the husk below.
+		// The fingerprint stays untouched, so the sign-in that repairs the
+		// account still reconciles as a change. Not an error — every account
+		// mutation runs this first, and failing here would mean the user could
+		// neither switch away from the dead account nor sign it back in.
+		return nil
+	}
 	if providerName == string(provider.Claude) && claude.CredentialsSignedOut(before.Data) {
 		// claude >= 2.1.219 blanks the canonical credential in place when its
 		// startup token refresh fails (spike 2026-08-03). That husk is a
@@ -290,6 +300,7 @@ func (m *Manager) reconcileObservedAccountLocked(
 			err,
 		)
 	}
+	account = m.withRecordedLoginExpiry(account, credential.Data)
 	restoreCredentialOnError = false
 	// Reaching this point means the canonical credential fingerprint changed.
 	// Publish the new generation even when provider identity metadata stayed
