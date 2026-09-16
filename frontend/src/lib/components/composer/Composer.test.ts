@@ -289,10 +289,14 @@ describe('<Composer>', () => {
     })));
     expect(create).toHaveBeenCalledWith(expect.objectContaining({
       projectId: 'project-placeholder',
-      provider: 'codex',
       mode: 'chat',
       workspaceOverride: '/tmp/placeholder',
     }));
+    // An un-seeded placeholder states no provider or model so CreateThread
+    // seeds the remembered pair (threadDraftPlaceholder materialize).
+    const options = create.mock.calls[0][0] as { provider?: string; model?: string };
+    expect(options.provider).toBeUndefined();
+    expect(options.model).toBeUndefined();
     expect(save).toHaveBeenCalledWith('materialized-send', 'first send', [], [], null);
     expect(clear).not.toHaveBeenCalled();
     expect(draft.threadId).toBe('materialized-send');

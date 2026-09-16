@@ -372,6 +372,7 @@ export const AddBackend = dispatch('AddBackend');
 export const RemoveBackend = dispatch('RemoveBackend');
 export const RenameBackend = dispatch('RenameBackend');
 export const RepairBackendAddress = dispatch('RepairBackendAddress');
+export const ShutdownBackend = dispatch('ShutdownBackend');
 export const StartSSHConnection = dispatch('StartSSHConnection');
 export const GetSSHConnection = dispatch('GetSSHConnection');
 export const ConfirmSSHConnection = dispatch('ConfirmSSHConnection');
