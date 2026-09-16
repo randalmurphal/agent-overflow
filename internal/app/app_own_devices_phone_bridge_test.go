@@ -21,8 +21,12 @@ func TestOwnDevicePhoneBridgesTwoPreviouslySeparateHosts(t *testing.T) {
 	// Observe the production emit funnel on both receiving hosts. An outgoing
 	// profile that exists only on disk leaves each already-open desktop blind.
 	var changes [2]atomic.Int32
+	var agentChanges [2]atomic.Int32
 	for i, host := range []ownConnectionHost{a, b} {
 		host.app.testEmitHook = func(name string, data any) {
+			if name == "agent-computers:changed" {
+				agentChanges[i].Add(1)
+			}
 			if name == "backend:set-changed" && data.(BackendSetChange).Action == attachedbackends.SetMembership {
 				changes[i].Add(1)
 			}
@@ -104,6 +108,9 @@ func TestOwnDevicePhoneBridgesTwoPreviouslySeparateHosts(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := range changes {
+		if got := agentChanges[i].Load(); got != 1 {
+			t.Fatalf("host %d published %d agent computer changes, want 1", i, got)
+		}
 		if got := changes[i].Load(); got != 1 {
 			t.Fatalf("host %d published %d profile changes, want 1", i, got)
 		}
@@ -112,7 +119,7 @@ func TestOwnDevicePhoneBridgesTwoPreviouslySeparateHosts(t *testing.T) {
 	if err := phone.CallOwnDevice(ctx, b.id, "AcceptOwnDeviceIntroduction", nil, invite.URL); err != nil {
 		t.Fatal(err)
 	}
-	if changes[1].Load() != 1 {
+	if changes[1].Load() != 1 || agentChanges[1].Load() != 1 {
 		t.Fatal("existing connection was republished")
 	}
 	for _, edge := range []struct{ from, to ownConnectionHost }{{a, b}, {b, a}} {

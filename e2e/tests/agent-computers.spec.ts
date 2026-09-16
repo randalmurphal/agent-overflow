@@ -3,10 +3,12 @@
 import { test, expect } from '@playwright/test';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
+import type { PairingInvite } from './offhost-helpers.js';
 
 interface Peer { id: string; enabled: boolean }
 
-test('enables agent access from home to an attached computer and back again', async ({ page }) => {
+for (const ownDevice of [false, true]) {
+test(`enables agent access in both directions (${ownDevice ? 'own devices' : 'manual pairing'})`, async ({ page }) => {
   test.setTimeout(90_000);
   page.setDefaultTimeout(10_000);
   let home: HarnessApp | undefined;
@@ -14,14 +16,23 @@ test('enables agent access from home to an attached computer and back again', as
   try {
     home = await launchHarness();
     remote = await launchHarness();
-    const pairing = await headlessPairing(remote);
     let remoteID: string;
-    try {
-      const attachment = await home.rpc<{ id: string; verificationNumber: string }>('AddBackend', pairing.invite.url);
-      await pairing.confirm(attachment.verificationNumber);
+    if (ownDevice) {
+      const pairing = await headlessPairing(remote);
+      try {
+        const attachment = await home.rpc<{ id: string; verificationNumber: string }>('AddBackend', pairing.invite.url);
+        await pairing.confirm(attachment.verificationNumber);
+        remoteID = attachment.id;
+      } finally { pairing.close(); }
+    } else {
+      const invite = await remote.rpc<PairingInvite>('MintDevicePairing', 'desktop', 'full');
+      const attachment = await home.rpc<{ id: string; verificationNumber: string }>('AddBackend', invite.url);
+      const status = await remote.rpc<{ verificationNumber: string }>('DevicePairingStatus', invite.linkId);
+      expect(status.verificationNumber).toBe(attachment.verificationNumber);
+      await remote.rpc('ConfirmDevicePairing', invite.linkId);
       remoteID = attachment.id;
-      await home.rpc('RenameBackend', remoteID, 'GPU computer');
-    } finally { pairing.close(); }
+    }
+    await home.rpc('RenameBackend', remoteID, 'GPU computer');
     await home.open(page);
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     await page.getByRole('tab', { name: 'Connect to a computer', exact: true }).click();
@@ -33,14 +44,25 @@ test('enables agent access from home to an attached computer and back again', as
     await expect(peers.getByRole('button', { name: 'Enabled', exact: true })).toHaveAttribute('aria-pressed', 'true');
     expect(await home.rpc<Peer[]>('ListAgentComputers')).toEqual([expect.objectContaining({ id: remoteID, enabled: true })]);
 
-    // This step mints the invitation on HOME and enrolls the REMOTE source.
-    // Both identities and both verification numbers are checked by the app.
     await page.getByRole('combobox', { name: 'Computer', exact: true }).selectOption(remoteID);
-    const candidate = peers.getByRole('combobox', { name: 'Computer for agent commands', exact: true });
-    await expect(candidate.locator('option')).toHaveCount(2);
-    const [homeID] = await candidate.selectOption({ index: 1 });
+    let homeID: string;
+    if (ownDevice) {
+      // Personal enrollment introduces the reverse connection automatically.
+      // It grants connectivity, never agent command access.
+      await expect.poll(() => remote!.rpc<Peer[]>('ListAgentComputers')).toEqual([
+        expect.objectContaining({ enabled: false }),
+      ]);
+      [ { id: homeID } ] = await remote.rpc<Peer[]>('ListAgentComputers');
+      await peers.getByRole('button', { name: 'Enable', exact: true }).click();
+    } else {
+      // An ordinary invitation adds only one direction. The UI must mint,
+      // verify and confirm a separate invitation to enable the reverse hop.
+      const candidate = peers.getByRole('combobox', { name: 'Computer for agent commands', exact: true });
+      await expect(candidate.locator('option')).toHaveCount(2);
+      [homeID] = await candidate.selectOption({ index: 1 });
+      await peers.getByRole('button', { name: 'Enable tools', exact: true }).click();
+    }
     expect(homeID).not.toBe(remoteID);
-    await peers.getByRole('button', { name: 'Enable tools', exact: true }).click();
     await expect(peers.getByRole('button', { name: 'Enabled', exact: true })).toHaveAttribute('aria-pressed', 'true');
     expect(await remote.rpc<Peer[]>('ListAgentComputers')).toEqual([expect.objectContaining({ id: homeID, enabled: true })]);
 
@@ -54,3 +76,5 @@ test('enables agent access from home to an attached computer and back again', as
     await remote?.close();
   }
 });
+
+}

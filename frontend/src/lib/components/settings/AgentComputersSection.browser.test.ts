@@ -9,6 +9,7 @@ import { resetToLocalPage, grantBackendScopes } from '../../../test/helpers/scop
 import { __setTransportHelloForTest, __setBackendStatusForTest } from '../../stores/transportStatus.svelte';
 import { takePinnedBackend } from '../../transport/backends';
 import type { TransportHello } from '../../transport/wsClient';
+import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
 
 const mac = '11111111-1111-4111-8111-111111111111';
 const gpu = '22222222-2222-4222-8222-222222222222';
@@ -127,6 +128,10 @@ it('reloads rather than offering a second pairing when enabling fails after the 
   expect(list).toHaveBeenCalledTimes(2);
   expect(mint).toHaveBeenCalledOnce();
   expect(cancel).not.toHaveBeenCalled();
+  emitWailsEvent('agent-computers:changed', {});
+  await waitFor(() => expect(list).toHaveBeenCalledTimes(3));
+  await tick();
+  expect(view.getByRole('alert').textContent).toContain('the computer is busy');
 });
 
 it('keeps agent remote tools visible, off and disabled with no connected computers', async () => {

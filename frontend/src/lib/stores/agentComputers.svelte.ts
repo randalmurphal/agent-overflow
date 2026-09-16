@@ -16,6 +16,7 @@ export function createAgentComputers(backend: BackendKey) {
   const hasScope = (scope: Parameters<typeof computerHasScope>[0]) => computerHasScope(scope, backend);
   let rows = $state<AgentComputer[]>([]);
   let error = $state('');
+  let loadError = $state('');
   let busy = $state(false);
   let loaded = $state(false);
   let repair = $state('');
@@ -28,8 +29,8 @@ export function createAgentComputers(backend: BackendKey) {
 
   async function load(): Promise<void> {
     const request = ++revision;
-    try { const next = await call(ListAgentComputers); if (request === revision) { rows = next; loaded = true; error = ''; } }
-    catch (err) { if (request === revision) error = errString(err); }
+    try { const next = await call(ListAgentComputers); if (request === revision) { rows = next; loaded = true; loadError = ''; } }
+    catch (err) { if (request === revision) loadError = errString(err); }
   }
   $effect(() => { if (getTransportStatusFor(backend).status === 'connected' && capable() && hasScope('terminal:operate')) void untrack(load); });
   $effect(() => {
@@ -42,7 +43,7 @@ export function createAgentComputers(backend: BackendKey) {
 
   async function toggle(row: AgentComputer): Promise<void> {
     if (busy) return;
-    busy = true; error = ''; repair = '';
+    busy = true; error = ''; loadError = ''; repair = '';
     try { await call(() => SetAgentComputerEnabled(row.id, !row.enabled)); await load(); }
     catch (err) {
       error = errString(err);
@@ -59,7 +60,7 @@ export function createAgentComputers(backend: BackendKey) {
     if (!destination || busy || rows.some((row) => row.id === target && row.enabled)) return false;
     const destinationKey = destination.id;
     const destinationID = identity(destinationKey);
-    busy = true; error = ''; repair = '';
+    busy = true; error = ''; loadError = ''; repair = '';
     let invitation: string | null = null;
     let confirmed = false;
     try {
@@ -75,8 +76,8 @@ export function createAgentComputers(backend: BackendKey) {
     } catch (err) {
       // A confirmed pairing already exists on the backend: reload so its
       // row appears, with the toggle as the retry. Offering the pairing
-      // again would mint a second one. `load` clears `error` on success,
-      // so the message is set after it.
+      // again would mint a second one. Background refreshes must preserve
+      // the mutation failure until the user retries.
       if (confirmed) await load(); else repair = target;
       error = errString(err);
       return false;
@@ -92,11 +93,11 @@ export function createAgentComputers(backend: BackendKey) {
 
   return {
     get rows() { return rows; },
-    get error() { return error; },
+    get error() { return error || loadError; },
     get busy() { return busy; },
     get loaded() { return loaded; },
     get candidates() { return candidates; },
     get repairTarget() { return destinations.some((entry) => identity(entry.id) === repair) ? repair : ''; },
-    capable, identity, load, toggle, connect,
+    capable, identity, load: async () => { error = ''; await load(); }, toggle, connect,
   };
 }

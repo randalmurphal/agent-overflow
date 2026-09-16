@@ -162,12 +162,7 @@ func (a *App) RemoveBackend(id string) error {
 	} else if pending {
 		return errors.New("This computer has remote commands awaiting completion or confirmation. Stop them from their conversations and wait for confirmation before forgetting the computer. If it is offline, reconnect it first so cancellation remains available.")
 	}
-	if err := a.backends.Remove(id); err != nil {
-		return err
-	}
-	a.signalRemotePeers()
-	a.emit(eventchan.AgentComputersChanged, struct{}{})
-	return nil
+	return a.backends.Remove(id)
 }
 
 // RenameBackend sets what this installation calls one machine, or clears
@@ -198,6 +193,8 @@ func SetAttachedBackends(a *App, manager *attachedbackends.Manager) {
 		manager.SetNetwork(func() string { id, _ := a.backendIdentity(); return id }, a.dialComputer)
 		manager.SetChanged(func(change attachedbackends.SetChange) {
 			a.emit(eventchan.BackendSetChanged, change)
+			a.signalRemotePeers()
+			a.emit(eventchan.AgentComputersChanged, struct{}{})
 		})
 	}
 }
