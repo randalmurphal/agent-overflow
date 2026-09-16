@@ -93,6 +93,12 @@ export function createThreadDraftPlaceholder(
     const thread = options.getThread();
     if (!draftPlaceholder || !thread) return false;
     const provider = asProviderID(defaults.provider) ?? thread.provider;
+    // The branch rides along only while the placeholder still sits on the
+    // workspace the defaults describe. Defaults arriving for the project root
+    // say nothing about a placeholder the user has since pointed at a
+    // worktree, and the workspace pick owns the branch there.
+    const sameWorkspace = Boolean(defaults.workspacePath)
+      && sameNormalizedPath(defaults.workspacePath!, thread.workspacePath);
     const next: Thread = {
       ...thread,
       provider,
@@ -103,6 +109,7 @@ export function createThreadDraftPlaceholder(
       contextWindow: defaults.contextWindow ?? thread.contextWindow,
       runtimeMode: (defaults.runtimeMode ??
         thread.runtimeMode) as Thread['runtimeMode'],
+      branch: sameWorkspace ? (defaults.branch ?? thread.branch) : thread.branch,
       updatedAt: Date.now(),
     };
     options.setThread(next);
@@ -224,11 +231,18 @@ export function createThreadDraftPlaceholder(
     if (!placeholder) return options.getThread();
     const current = options.getThread();
     const backend = projectBackend(placeholder.projectId) ?? HOME_BACKEND;
+    // An un-seeded placeholder carries the provider fallback
+    // startDraftPlaceholder needs to satisfy the Thread type, not a user
+    // choice: defaults always arrive with a model, so an empty model is what
+    // says "nobody has chosen yet". Sending the fallback would pin the row to
+    // Codex when the remembered seed is another provider, so this states
+    // neither and lets CreateThread seed the pair it would have seeded.
+    const chosen = Boolean(current?.model);
     const created = (await withBackendTarget(backend, () => CreateThread({
       projectId: placeholder.projectId,
       groupId: current?.groupId,
-      provider: current?.provider,
-      model: current?.model,
+      provider: chosen ? current?.provider : undefined,
+      model: chosen ? current?.model : undefined,
       mode: current?.mode ?? placeholder.mode,
       reasoningEffort: current?.reasoningEffort,
       fastMode: current?.fastMode,

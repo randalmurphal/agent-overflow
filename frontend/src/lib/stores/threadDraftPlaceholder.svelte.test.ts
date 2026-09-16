@@ -320,6 +320,80 @@ describe('threadDraftPlaceholder', () => {
     expect(pane.thread?.branch).toBe('feature/x');
   });
 
+  it('applies the defaults branch when the placeholder still sits on that workspace', () => {
+    // The placeholder is painted before GetThreadDefaults answers, so the
+    // branch arrives late and must still land on an untouched placeholder.
+    const pane = createThreadPane();
+    const project: Project = {
+      id: 'p-1',
+      path: '/tmp/project',
+      name: 'project',
+      sortPosition: 0,
+      createdAt: 0,
+      updatedAt: 0,
+      archived: false,
+    };
+
+    pane.startDraftPlaceholder(project, 'chat');
+    expect(pane.thread?.branch).toBeUndefined();
+
+    pane.applyDraftPlaceholderDefaults({
+      provider: 'codex',
+      model: 'gpt-5.4',
+      workspacePath: '/tmp/project',
+      branch: 'main',
+    });
+
+    expect(pane.thread?.workspacePath).toBe('/tmp/project');
+    expect(pane.thread?.branch).toBe('main');
+  });
+
+  it('sends the placeholder model and provider only once something chose them', async () => {
+    const project: Project = {
+      id: 'p-1',
+      path: '/tmp/project',
+      name: 'project',
+      sortPosition: 0,
+      createdAt: 0,
+      updatedAt: 0,
+      archived: false,
+    };
+    const seen: CreateThreadOptions[] = [];
+    setBindingMock('CreateThread', async (opts: CreateThreadOptions) => {
+      seen.push(opts);
+      return makeThread({
+        id: `created-${seen.length}`,
+        projectId: project.id,
+        projectPath: project.path,
+        workspacePath: project.path,
+        provider: 'claude',
+        model: 'backend-seed',
+        isDraft: true,
+      });
+    });
+
+    // Defaults have not landed: the placeholder's provider is the fallback
+    // startDraftPlaceholder needs to satisfy the Thread type, and the empty
+    // model says nobody chose. CreateThread seeds the remembered pair.
+    const pending = openEmptyPane();
+    pending.startDraftPlaceholder(project, 'chat');
+    expect(pending.thread?.provider).toBe('codex');
+    expect(pending.thread?.model).toBe('');
+    expect(await pending.ensureMaterializedThread()).toBe('created-1');
+    expect(seen[0].provider).toBeUndefined();
+    expect(seen[0].model).toBeUndefined();
+    expect(pending.thread?.provider).toBe('claude');
+    expect(pending.thread?.model).toBe('backend-seed');
+
+    // Defaults landed: the pair is a statement and travels with the create.
+    const seeded = openEmptyPane();
+    seeded.startDraftPlaceholder(project, 'chat');
+    seeded.applyDraftPlaceholderDefaults({ provider: 'codex', model: 'gpt-5.4' });
+    expect(await seeded.ensureMaterializedThread()).toBe('created-2');
+    expect(seen[1].provider).toBe('codex');
+    expect(seen[1].model).toBe('gpt-5.4');
+  });
+
   it('migrates worktree intent when an empty materialized draft returns to a placeholder', async () => {
     resetWorktreeIntent();
     try {

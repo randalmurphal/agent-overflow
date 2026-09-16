@@ -38,20 +38,20 @@ func TestSeedChatModelProfileSkipsHiddenLastUsedModel(t *testing.T) {
 
 	// Last-used model is hidden → seed the provider's first visible
 	// catalog model instead.
-	seed := app.seedChatModelProfile("", "")
+	seed := app.seedChatModelProfile(context.Background(), "", "")
 	if seed.Provider != "claude" || seed.Model != firstVisible {
 		t.Fatalf("seed = %s/%s, want claude/%s (first visible model)", seed.Provider, seed.Model, firstVisible)
 	}
 
 	// The provider-scoped branch applies the same guard.
-	seed = app.seedChatModelProfile("claude", "")
+	seed = app.seedChatModelProfile(context.Background(), "claude", "")
 	if seed.Model != firstVisible {
 		t.Fatalf("provider-scoped seed model = %q, want %q", seed.Model, firstVisible)
 	}
 
 	// Explicit model requests bypass the hide-list: hiding is a picker
 	// preference, not a hard ban.
-	seed = app.seedChatModelProfile("claude", hiddenSlug)
+	seed = app.seedChatModelProfile(context.Background(), "claude", hiddenSlug)
 	if seed.Model != hiddenSlug {
 		t.Fatalf("explicit seed model = %q, want %q", seed.Model, hiddenSlug)
 	}
@@ -76,7 +76,7 @@ func TestSeedChatModelProfileSkipsHiddenCodexModel(t *testing.T) {
 		t.Fatalf("UpsertChatModelProfile: %v", err)
 	}
 
-	seed := app.seedChatModelProfile("codex", "")
+	seed := app.seedChatModelProfile(context.Background(), "codex", "")
 	if seed.Provider != "codex" || seed.Model != firstVisible {
 		t.Fatalf("seed = %s/%s, want codex/%s (first visible model)", seed.Provider, seed.Model, firstVisible)
 	}
@@ -99,7 +99,7 @@ func TestSeedChatModelProfileKeepsVisibleLastUsedModel(t *testing.T) {
 		t.Fatalf("UpsertChatModelProfile: %v", err)
 	}
 
-	seed := app.seedChatModelProfile("", "")
+	seed := app.seedChatModelProfile(context.Background(), "", "")
 	if seed.Model != "claude-opus-4-5" {
 		t.Fatalf("seed model = %q, want claude-opus-4-5 (visible last-used stays)", seed.Model)
 	}

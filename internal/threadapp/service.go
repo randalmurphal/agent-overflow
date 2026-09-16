@@ -14,7 +14,11 @@ import (
 // Root supplies the live-catalog-aware implementation; the service owns how
 // those answers are applied to thread rows.
 type ModelPolicy interface {
-	Seed(providerName, model string) store.ChatModelProfile
+	// Seed resolves the remembered profile a fresh thread starts from. It
+	// takes a context because the lookup is a store read: the draft-defaults
+	// path answers a user gesture under a deadline, while creation passes
+	// the app lifetime context.
+	Seed(ctx context.Context, providerName, model string) store.ChatModelProfile
 	Sanitize(profile store.ChatModelProfile) store.ChatModelProfile
 	SupportsReasoningEffort(providerName, model, effort string) bool
 	CoerceReasoningEffort(providerName, model, effort string) string

@@ -1,6 +1,8 @@
 package store
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -1453,5 +1455,66 @@ func TestPayloadGCIgnoresSharedPayload(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("shared payload should be swept once last referencer is gone, got %d", n)
+	}
+}
+
+// TestDraftDefaultReadsFailFastOnABlockedReadPool covers the reads behind
+// GetThreadDefaults. They answer a user gesture ("+ New"), so when every read
+// connection is held they must return their caller's deadline rather than
+// park until one comes free. The ctx-less twins deliberately have no ceiling
+// and are not exercised here — they would hang, which is the whole reason the
+// ctx-taking ones exist.
+func TestDraftDefaultReadsFailFastOnABlockedReadPool(t *testing.T) {
+	s := newTestStore(t)
+	if s.read == nil {
+		t.Fatal("test store has no read pool; the blocked-pool case cannot be reproduced")
+	}
+
+	// Hold every read connection in an open transaction. MaxOpenConns is 4,
+	// so the next acquisition blocks inside database/sql until one is
+	// returned or the caller's context expires.
+	for i := 0; i < 4; i++ {
+		tx, err := s.read.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+		if err != nil {
+			t.Fatalf("occupy read connection %d: %v", i, err)
+		}
+		t.Cleanup(func() { _ = tx.Rollback() })
+		var probe int
+		if err := tx.QueryRow("SELECT 1").Scan(&probe); err != nil {
+			t.Fatalf("probe occupied read connection %d: %v", i, err)
+		}
+	}
+
+	reads := map[string]func(context.Context) error{
+		"GetProjectContext": func(ctx context.Context) error {
+			_, err := s.GetProjectContext(ctx, defaultTestProjectID)
+			return err
+		},
+		"LatestChatModelProfileContext": func(ctx context.Context) error {
+			_, err := s.LatestChatModelProfileContext(ctx)
+			return err
+		},
+		"LatestChatModelProfileForProviderContext": func(ctx context.Context) error {
+			_, err := s.LatestChatModelProfileForProviderContext(ctx, "claude")
+			return err
+		},
+		"GetChatModelProfileContext": func(ctx context.Context) error {
+			_, err := s.GetChatModelProfileContext(ctx, "claude", "claude-sonnet-4-6")
+			return err
+		},
+	}
+	for name, read := range reads {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+			defer cancel()
+			started := time.Now()
+			err := read(ctx)
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("err = %v, want context.DeadlineExceeded", err)
+			}
+			if waited := time.Since(started); waited > 5*time.Second {
+				t.Fatalf("waited %s past a 150ms deadline; the read is not bounded", waited)
+			}
+		})
 	}
 }

@@ -3148,3 +3148,130 @@ func TestGetThreadNotificationFacts(t *testing.T) {
 		t.Fatalf("missing = %+v, want the zero facts with Exists=false", got)
 	}
 }
+
+// TestThreadReadStateQueryWalksTheItemIndex pins the plan and the result of
+// the newest-error read MarkThreadReadNow performs.
+//
+// The value used to be MAX(errors.created_at) over the `timeline_items`
+// view. An aggregate over a compound view cannot be flattened, so SQLite ran
+// both arms whole and SCANned `items` on every thread focus. The arms form
+// walks idx_items_thread_turn_item_unique on the local arm and
+// idx_import_history_items_timeline on the imported one.
+func TestThreadReadStateQueryWalksTheItemIndex(t *testing.T) {
+	s := newTestStore(t)
+	const threadID = "thread-read-state-plan"
+	newImportTargetThread(t, s, threadID)
+
+	const base = int64(1_700_000_000_000)
+	if err := s.ApplyImportBatch(threadID, ImportBatch{
+		Turns: []Turn{{TurnID: threadID + ":0", ThreadID: threadID, TurnIndex: 0, StartedAt: base}},
+		Rows: []ImportRow{{Item: Item{
+			ID: "imp-error", TurnIndex: 0, ItemIndex: 0,
+			Kind: "error", Role: "assistant", Status: "completed", Summary: "imported failure",
+			CreatedAt: base + 30, UpdatedAt: base + 30,
+		}}},
+	}); err != nil {
+		t.Fatalf("ApplyImportBatch: %v", err)
+	}
+	// A local error OLDER than the imported one, so an arm pair that
+	// merged wrongly would answer with the local stamp instead.
+	if err := s.InsertItem(Item{
+		ID: "loc-error", ThreadID: threadID, TurnIndex: 0, ItemIndex: 1,
+		Kind: "error", Role: "assistant", Status: "completed", Summary: "local failure",
+		CreatedAt: base + 10,
+	}); err != nil {
+		t.Fatalf("InsertItem: %v", err)
+	}
+
+	query, args := threadReadStateQuery(threadID)
+
+	// The view form is the oracle: same rows, same answer, only the plan
+	// differs.
+	viewForm := `SELECT (SELECT MAX(errors.created_at) FROM timeline_items AS errors
+       WHERE errors.thread_id = threads.id
+         AND ` + newestTurnErrorPredicate("errors", "threads.id") + `)
+       FROM threads WHERE id = ?`
+	var want sql.NullInt64
+	if err := s.db.QueryRow(viewForm, threadID).Scan(&want); err != nil {
+		t.Fatalf("view-form newest error: %v", err)
+	}
+	if !want.Valid || want.Int64 != base+30 {
+		t.Fatalf("fixture newest error = %v, want %d; the parity check would prove nothing", want, base+30)
+	}
+	var completedAt, incompleteStartedAt, errorAt, lastReadAt sql.NullInt64
+	if err := s.db.QueryRow(query, args...).
+		Scan(&completedAt, &incompleteStartedAt, &errorAt, &lastReadAt); err != nil {
+		t.Fatalf("threadReadStateQuery: %v", err)
+	}
+	if errorAt != want {
+		t.Fatalf("arms-form newest error = %v, want %v", errorAt, want)
+	}
+
+	plan := explainPlan(t, s, query, args...)
+	searchesLocalArm := false
+	for _, r := range plan {
+		if strings.Contains(r.detail, "SCAN items") {
+			t.Errorf("read-state plan scans items: %q\n%s", r.detail, planText(plan))
+		}
+		if strings.Contains(r.detail, "SEARCH items USING INDEX idx_items_thread_turn_item_unique") {
+			searchesLocalArm = true
+		}
+	}
+	if !searchesLocalArm {
+		t.Fatalf("read-state plan does not walk idx_items_thread_turn_item_unique:\n%s", planText(plan))
+	}
+
+	// The negative control: without it the assertion above could be green
+	// against a plan shape no query ever produces.
+	viewPlan := explainPlan(t, s, viewForm, threadID)
+	scans := false
+	for _, r := range viewPlan {
+		scans = scans || strings.Contains(r.detail, "SCAN items")
+	}
+	if !scans {
+		t.Fatalf("the view form no longer scans items, so the rule above proves nothing:\n%s", planText(viewPlan))
+	}
+}
+
+// TestMarkThreadReadNowClampsToImportedErrorItem covers the imported arm end
+// to end: an error that arrived with imported history is read state exactly
+// like a locally written one, so the stamp must clear the Failed pill it lit.
+func TestMarkThreadReadNowClampsToImportedErrorItem(t *testing.T) {
+	s := newTestStore(t)
+	const threadID = "thread-read-imported-error"
+	newImportTargetThread(t, s, threadID)
+
+	errorAt := time.Now().UnixMilli() + 60_000
+	if err := s.ApplyImportBatch(threadID, ImportBatch{
+		Turns: []Turn{{TurnID: threadID + ":0", ThreadID: threadID, TurnIndex: 0, StartedAt: errorAt - 100}},
+		Rows: []ImportRow{{Item: Item{
+			ID: "imp-error", TurnIndex: 0, ItemIndex: 0,
+			Kind: "error", Role: "assistant", Status: "completed", Summary: "imported failure",
+			CreatedAt: errorAt, UpdatedAt: errorAt,
+		}}},
+	}); err != nil {
+		t.Fatalf("ApplyImportBatch: %v", err)
+	}
+	before, err := s.GetThread(threadID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if !before.HasFailedTurn {
+		t.Fatal("HasFailedTurn = false for an imported error item, want true")
+	}
+
+	read, changed, err := s.MarkThreadReadNow(context.Background(), threadID)
+	if err != nil || !changed {
+		t.Fatalf("MarkThreadReadNow() = changed %v, err %v; want a stamp", changed, err)
+	}
+	if read.LastReadAt == nil || *read.LastReadAt < errorAt {
+		t.Fatalf("LastReadAt = %v, want >= imported error %d", read.LastReadAt, errorAt)
+	}
+	after, err := s.GetThread(threadID)
+	if err != nil {
+		t.Fatalf("GetThread after read: %v", err)
+	}
+	if after.HasFailedTurn {
+		t.Fatal("HasFailedTurn = true after reading the imported error, want false")
+	}
+}

@@ -37,8 +37,8 @@ func (a *App) hasActiveSession(threadID string) bool {
 
 type threadModelPolicy struct{ app *App }
 
-func (p threadModelPolicy) Seed(providerName, model string) store.ChatModelProfile {
-	return p.app.seedChatModelProfile(providerName, model)
+func (p threadModelPolicy) Seed(ctx context.Context, providerName, model string) store.ChatModelProfile {
+	return p.app.seedChatModelProfile(ctx, providerName, model)
 }
 
 func (p threadModelPolicy) Sanitize(profile store.ChatModelProfile) store.ChatModelProfile {

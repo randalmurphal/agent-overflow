@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -43,7 +44,10 @@ func (a *App) rememberChatModelProfile(thread store.Thread) {
 
 // seedChatModelProfile picks the best stored chat-model profile for the
 // given (provider, model) inputs and falls back to the registry default
-// when nothing is remembered.
+// when nothing is remembered. Its store reads are bounded by ctx so a
+// user-facing seed (the "+ New" draft defaults) fails fast instead of
+// hanging on a stalled reader pool; callers off that path pass the app
+// lifetime context.
 //
 // Resolution order:
 //   - both blank → most recent profile across providers, else fallback
@@ -54,7 +58,7 @@ func (a *App) rememberChatModelProfile(thread store.Thread) {
 // When the provider has to be inferred (both-blank or model-only cases),
 // the choice is informed by which provider binaries resolve on PATH so a
 // Codex-only environment doesn't seed a Claude default that won't work.
-func (a *App) seedChatModelProfile(providerName, model string) store.ChatModelProfile {
+func (a *App) seedChatModelProfile(ctx context.Context, providerName, model string) store.ChatModelProfile {
 	providerName = strings.TrimSpace(providerName)
 	model = strings.TrimSpace(model)
 
@@ -63,7 +67,7 @@ func (a *App) seedChatModelProfile(providerName, model string) store.ChatModelPr
 	switch {
 	case providerName == "" && model == "":
 		if a.store != nil {
-			profile, err := a.store.LatestChatModelProfile()
+			profile, err := a.store.LatestChatModelProfileContext(ctx)
 			if err == nil {
 				return a.visibleSeedProfile(chatmodel.SanitizeProfile(profile))
 			}
@@ -74,7 +78,7 @@ func (a *App) seedChatModelProfile(providerName, model string) store.ChatModelPr
 		return a.visibleSeedProfile(a.fallbackChatModelProfile("", "", available...))
 	case providerName != "" && model == "":
 		if a.store != nil {
-			profile, err := a.store.LatestChatModelProfileForProvider(providerName)
+			profile, err := a.store.LatestChatModelProfileForProviderContext(ctx, providerName)
 			if err == nil {
 				return a.visibleSeedProfile(chatmodel.SanitizeProfile(profile))
 			}
@@ -91,7 +95,7 @@ func (a *App) seedChatModelProfile(providerName, model string) store.ChatModelPr
 	model = provider.NormalizeModelSlug(providerName, model)
 
 	if a.store != nil {
-		profile, err := a.store.GetChatModelProfile(providerName, model)
+		profile, err := a.store.GetChatModelProfileContext(ctx, providerName, model)
 		if err == nil {
 			return chatmodel.SanitizeProfile(profile)
 		}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
@@ -177,6 +178,15 @@ func (a *App) StartTerminal(ctx context.Context, opts StartTerminalOptions) (sto
 	return thread, nil
 }
 
+// threadDefaultsTimeout bounds the store reads GetThreadDefaults performs
+// (the project row and the remembered chat-model profile). The client paints
+// its draft placeholder before this answers and keeps it usable when the
+// answer never comes, so a read that cannot complete promptly is worth
+// abandoning rather than holding the RPC open. Matches
+// syncThreadWindowTimeout, markThreadReadTimeout and the store's
+// busy_timeout.
+const threadDefaultsTimeout = 5 * time.Second
+
 // GetThreadDefaults returns the values CreateThread would have seeded
 // for a fresh thread in the given project. Used by the frontend's draft
 // placeholder flow so "+ New" surfaces a populated toolbar (model name,
@@ -188,14 +198,17 @@ func (a *App) StartTerminal(ctx context.Context, opts StartTerminalOptions) (sto
 //ao:scope threads:operate
 //ao:route selected
 func (a *App) GetThreadDefaults(opts CreateThreadOptions) (ThreadDefaults, error) {
-	defaults, err := a.threadApplication().Defaults(threadapp.CreateOptions{
+	ctx, cancel := context.WithTimeout(context.Background(), threadDefaultsTimeout)
+	defer cancel()
+
+	defaults, err := a.threadApplication().Defaults(ctx, threadapp.CreateOptions{
 		ProjectID: opts.ProjectID,
 		Provider:  opts.Provider,
 		Model:     opts.Model,
 		Mode:      opts.Mode,
 	})
 	if err != nil {
-		return ThreadDefaults{}, err
+		return ThreadDefaults{}, boundedStoreReadError(ctx, "thread defaults", threadDefaultsTimeout, err)
 	}
 	return ThreadDefaults{
 		Provider:        defaults.Provider,

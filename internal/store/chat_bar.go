@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -187,9 +188,20 @@ func (s *Store) UpsertChatModelProfile(profile ChatModelProfile) error {
 	return nil
 }
 
+// The three profile reads below back the chat-bar seed. Each has a
+// ctx-taking twin because the "+ New" draft path answers a user gesture and
+// must fail fast instead of queueing behind a stalled reader pool; the
+// ctx-less names stay for the callers that run off a user's critical path.
+
 // GetChatModelProfile returns a remembered provider/model profile.
 func (s *Store) GetChatModelProfile(providerName, model string) (ChatModelProfile, error) {
-	row := s.reader().QueryRow(
+	return s.GetChatModelProfileContext(context.Background(), providerName, model)
+}
+
+// GetChatModelProfileContext is GetChatModelProfile bounded by ctx.
+func (s *Store) GetChatModelProfileContext(ctx context.Context, providerName, model string) (ChatModelProfile, error) {
+	row := s.reader().QueryRowContext(
+		ctx,
 		`SELECT provider, model, reasoning_effort, fast_mode, context_window,
 		        auto_compact_standard_percent, auto_compact_extended_percent, runtime_mode, updated_at
 		   FROM chat_model_profiles
@@ -201,7 +213,13 @@ func (s *Store) GetChatModelProfile(providerName, model string) (ChatModelProfil
 
 // LatestChatModelProfile returns the most recently observed chat profile.
 func (s *Store) LatestChatModelProfile() (ChatModelProfile, error) {
-	row := s.reader().QueryRow(
+	return s.LatestChatModelProfileContext(context.Background())
+}
+
+// LatestChatModelProfileContext is LatestChatModelProfile bounded by ctx.
+func (s *Store) LatestChatModelProfileContext(ctx context.Context) (ChatModelProfile, error) {
+	row := s.reader().QueryRowContext(
+		ctx,
 		`SELECT provider, model, reasoning_effort, fast_mode, context_window,
 		        auto_compact_standard_percent, auto_compact_extended_percent, runtime_mode, updated_at
 		   FROM chat_model_profiles
@@ -213,7 +231,14 @@ func (s *Store) LatestChatModelProfile() (ChatModelProfile, error) {
 
 // LatestChatModelProfileForProvider returns the newest profile for one provider.
 func (s *Store) LatestChatModelProfileForProvider(providerName string) (ChatModelProfile, error) {
-	row := s.reader().QueryRow(
+	return s.LatestChatModelProfileForProviderContext(context.Background(), providerName)
+}
+
+// LatestChatModelProfileForProviderContext is
+// LatestChatModelProfileForProvider bounded by ctx.
+func (s *Store) LatestChatModelProfileForProviderContext(ctx context.Context, providerName string) (ChatModelProfile, error) {
+	row := s.reader().QueryRowContext(
+		ctx,
 		`SELECT provider, model, reasoning_effort, fast_mode, context_window,
 		        auto_compact_standard_percent, auto_compact_extended_percent, runtime_mode, updated_at
 		   FROM chat_model_profiles

@@ -2,6 +2,7 @@ package threadapp
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -18,7 +19,7 @@ type testModels struct {
 	remembered []store.Thread
 }
 
-func (m *testModels) Seed(providerName, model string) store.ChatModelProfile {
+func (m *testModels) Seed(_ context.Context, providerName, model string) store.ChatModelProfile {
 	return chatmodel.FallbackProfile(providerName, model, string(provider.Claude))
 }
 func (m *testModels) Sanitize(profile store.ChatModelProfile) store.ChatModelProfile {
@@ -456,5 +457,30 @@ func TestUpdateBranchReachesRowsStoredUnderAnotherSpelling(t *testing.T) {
 	}
 	if got, _ := database.GetThread(other.ID); got.Branch == "feature/again" {
 		t.Fatal("a thread in another directory took the branch")
+	}
+}
+
+// TestDefaultsCarriesItsCallersDeadlineIntoTheStore pins the half of the
+// bound that lives here: the caller's context must reach the store reads.
+// An expired context is the deterministic stand-in for the pool that is
+// wedged long enough for the deadline to expire; internal/store covers a
+// genuinely blocked read pool.
+func TestDefaultsCarriesItsCallersDeadlineIntoTheStore(t *testing.T) {
+	service, _, _ := newServiceFixture(t)
+
+	expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	if _, err := service.Defaults(expired, CreateOptions{ProjectID: "project"}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Defaults(expired ctx) = %v, want context.DeadlineExceeded", err)
+	}
+	// The same call under a live context still answers, so the failure above
+	// is the deadline and not a broken fixture.
+	defaults, err := service.Defaults(context.Background(), CreateOptions{ProjectID: "project"})
+	if err != nil {
+		t.Fatalf("Defaults: %v", err)
+	}
+	if defaults.WorkspacePath != "/repo" {
+		t.Fatalf("WorkspacePath = %q, want /repo", defaults.WorkspacePath)
 	}
 }

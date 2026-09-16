@@ -911,7 +911,7 @@ func (a *App) workflowOpenTriageThread(itemID string) (store.Thread, error) {
 }
 
 func (a *App) newWorkflowTriageThread(threadID string, project store.Project, workspace, branch, title, providerName, model string) store.Thread {
-	seed := a.seedChatModelProfile(providerName, model)
+	seed := a.seedChatModelProfile(a.lifeCtx(), providerName, model)
 	now := time.Now().UnixMilli()
 	thread := store.Thread{
 		ID: threadID, ProjectID: project.ID, ProjectPath: project.Path,

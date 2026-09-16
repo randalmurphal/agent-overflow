@@ -1,6 +1,7 @@
 package threadapp
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -107,7 +108,7 @@ func (s *Service) Create(opts CreateOptions) (store.Thread, error) {
 		return store.Thread{}, err
 	}
 
-	seed := models.Seed(opts.Provider, opts.Model)
+	seed := models.Seed(s.deps.LifeContext(), opts.Provider, opts.Model)
 	providerName := seed.Provider
 	model := seed.Model
 	effort := seed.ReasoningEffort
@@ -304,7 +305,7 @@ func (s *Service) StartTerminal(opts TerminalOptions) (store.Thread, error) {
 		}
 		workspace = home
 	}
-	seed := models.Seed("", "")
+	seed := models.Seed(s.deps.LifeContext(), "", "")
 	providerName := seed.Provider
 	model := provider.NormalizeModelSlug(providerName, seed.Model)
 	effort := string(provider.CoerceReasoningEffortForModel(
@@ -336,7 +337,15 @@ func (s *Service) StartTerminal(opts TerminalOptions) (store.Thread, error) {
 	return database.GetThread(thread.ID)
 }
 
-func (s *Service) Defaults(opts CreateOptions) (Defaults, error) {
+// Defaults resolves the values Create would have seeded, for a draft
+// placeholder that has no row yet.
+//
+// Every store read it performs runs under ctx. A caller answering a user
+// gesture supplies a deadline: the frontend paints the placeholder before
+// this answers, so a read that cannot complete promptly is worth abandoning,
+// and the caller maps the expiry to a retryable failure. The git branch
+// lookup below is a subprocess and is NOT bounded by ctx.
+func (s *Service) Defaults(ctx context.Context, opts CreateOptions) (Defaults, error) {
 	database, err := s.database("get thread defaults")
 	if err != nil {
 		return Defaults{}, err
@@ -349,11 +358,11 @@ func (s *Service) Defaults(opts CreateOptions) (Defaults, error) {
 	if projectID == "" {
 		return Defaults{}, fmt.Errorf("get thread defaults: projectId is required")
 	}
-	project, err := database.GetProject(projectID)
+	project, err := database.GetProjectContext(ctx, projectID)
 	if err != nil {
 		return Defaults{}, fmt.Errorf("get thread defaults: resolve project %s: %w", projectID, err)
 	}
-	seed := models.Seed(opts.Provider, opts.Model)
+	seed := models.Seed(ctx, opts.Provider, opts.Model)
 	providerName := seed.Provider
 	model := seed.Model
 	if trimmed := strings.TrimSpace(opts.Provider); trimmed != "" {

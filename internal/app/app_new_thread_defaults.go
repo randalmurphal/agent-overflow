@@ -52,7 +52,7 @@ func (a *App) UpdateNewThreadDefaults(ctx context.Context, update NewThreadDefau
 		return ThreadDefaults{}, fmt.Errorf("update new thread defaults: resolve project %s: %w", projectID, err)
 	}
 
-	profile, err := a.newThreadDefaultsProfile(update)
+	profile, err := a.newThreadDefaultsProfile(ctx, update)
 	if err != nil {
 		return ThreadDefaults{}, err
 	}
@@ -91,13 +91,13 @@ type NewThreadDefaultsChangedEvent struct {
 	Defaults  ThreadDefaults `json:"defaults"`
 }
 
-func (a *App) newThreadDefaultsProfile(update NewThreadDefaultsUpdate) (store.ChatModelProfile, error) {
+func (a *App) newThreadDefaultsProfile(ctx context.Context, update NewThreadDefaultsUpdate) (store.ChatModelProfile, error) {
 	providerName := strings.TrimSpace(update.Provider)
 	if providerName != "" && !threadapp.ValidProvider(providerName) {
 		return store.ChatModelProfile{}, fmt.Errorf("%w: %q", store.ErrInvalidProvider, providerName)
 	}
 	model := strings.TrimSpace(update.Model)
-	profile := a.seedChatModelProfile(providerName, model)
+	profile := a.seedChatModelProfile(ctx, providerName, model)
 	profile = chatmodel.SanitizeProfile(profile)
 	if providerName != "" {
 		profile.Provider = providerName

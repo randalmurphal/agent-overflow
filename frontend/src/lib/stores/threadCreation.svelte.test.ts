@@ -20,8 +20,9 @@ import {
 } from './projects.svelte';
 import { getPaneLayoutItems, resetPaneLayoutForTest } from './paneLayout.svelte';
 import { getCompactScreen, setCompactLayoutForTest, showCompactList } from './layoutMode.svelte';
-import { focusPane, getFocusedPaneId } from './panes.svelte';
+import { focusPane, getFocusedPaneId, registerPaneForTest } from './panes.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
+import { installDiagnosticsCapture } from '../../test/helpers/diagnostics';
 import type { ThreadDefaults } from './bindings';
 import type { Project, Thread } from '../types/models';
 
@@ -188,8 +189,13 @@ describe('openDraftThreadForProject', () => {
     upsertThreadGroup(group);
     const defaults = deferred<ThreadDefaults>();
     setBindingMock('GetThreadDefaults', () => defaults.promise);
-    const pane = createThreadPane();
+    // Registered, because the placeholder now exists before the delete
+    // arrives: the delete clears group membership by walking the pane
+    // registry, which is the production path.
+    const pane = createThreadPane({ paneId: 'group-delete-pane' });
+    registerPaneForTest(pane.paneId, pane);
     const opening = openDraftThreadForProject({ projectId: project.id, groupId: group.id, targetPane: pane });
+    expect(pane.thread?.groupId).toBe(group.id);
     applyThreadGroupUpdated({ action: 'delete', group });
     defaults.resolve(makeDefaults());
     await opening;
@@ -217,7 +223,7 @@ describe('openDraftThreadForProject', () => {
     }
   });
 
-  it('waits for authoritative composer defaults before opening the placeholder', async () => {
+  it('opens the placeholder before defaults arrive and applies them when they land', async () => {
     const project = makeProject();
     addProjectLocal(project);
     const pane = createThreadPane({ paneId: 'main' });
@@ -230,7 +236,15 @@ describe('openDraftThreadForProject', () => {
       targetPane: pane,
     });
 
-    expect(pane.thread?.id).toBe('thread-1');
+    // The whole point: the placeholder is up on the calling tick, with the
+    // prior thread already gone, while the RPC is still outstanding.
+    expect(pane.hasDraftPlaceholder).toBe(true);
+    expect(pane.thread?.id).not.toBe('thread-1');
+    expect(pane.thread).toMatchObject({
+      projectId: project.id,
+      workspacePath: project.path,
+      isDraft: true,
+    });
 
     pendingDefaults.resolve(makeDefaults());
     await expect(opening).resolves.toBe(pane);
@@ -317,30 +331,75 @@ describe('openDraftThreadForProject', () => {
     expect(pane.hasDraftPlaceholder).toBe(false);
   });
 
-  it('opens a usable placeholder when defaults cannot be loaded', async () => {
-    const project = makeProject();
-    addProjectLocal(project);
-    const pane = createThreadPane({ paneId: 'main' });
-    setBindingMock('GetThreadDefaults', async () => {
-      throw new Error('defaults unavailable');
-    });
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  describe('when defaults cannot be loaded', () => {
+    // Asserted through the real capture pipeline: a console-only failure is
+    // invisible in a production build, which is the bug this replaced.
+    const diagnostics = installDiagnosticsCapture();
 
-    try {
+    it('opens a usable placeholder and reports the failure', async () => {
+      const project = makeProject();
+      addProjectLocal(project);
+      const pane = createThreadPane({ paneId: 'main' });
+      setBindingMock('GetThreadDefaults', async () => {
+        throw new Error('temporarily_unavailable: thread defaults timed out after 5s');
+      });
+
       await expect(openDraftThreadForProject({
         projectId: project.id,
         targetPane: pane,
       })).resolves.toBe(pane);
-    } finally {
-      warn.mockRestore();
-    }
 
-    expect(pane.hasDraftPlaceholder).toBe(true);
-    expect(pane.thread).toMatchObject({
-      projectId: project.id,
-      provider: 'codex',
-      model: '',
-      isDraft: true,
+      expect(pane.hasDraftPlaceholder).toBe(true);
+      expect(pane.thread).toMatchObject({
+        projectId: project.id,
+        provider: 'codex',
+        model: '',
+        workspacePath: project.path,
+        isDraft: true,
+      });
+
+      const records = await diagnostics.all();
+      const reported = records.filter((r) => r.message === 'thread defaults fetch failed');
+      expect(reported).toHaveLength(1);
+      expect(reported[0].detail).toContain('thread defaults timed out');
     });
+  });
+
+  it('carries the current placeholder selection across a project flip until defaults land', async () => {
+    const project = makeProject();
+    const other = makeProject({ id: 'project-2', path: '/tmp/p2', name: 'Project Two' });
+    addProjectLocal(project);
+    addProjectLocal(other);
+    const pane = createThreadPane({ paneId: 'main' });
+    setBindingMock('GetThreadDefaults', async () => makeDefaults());
+    await openDraftThreadForProject({ projectId: project.id, targetPane: pane });
+    expect(pane.thread?.model).toBe('gpt-5.4');
+
+    const pendingDefaults = deferred<ThreadDefaults>();
+    setBindingMock('GetThreadDefaults', () => pendingDefaults.promise);
+    const flipping = flipPaneDraftPlaceholder(pane, other);
+
+    // Already on the new project, still showing the model the toolbar had.
+    expect(pane.thread).toMatchObject({
+      projectId: other.id,
+      workspacePath: other.path,
+      model: 'gpt-5.4',
+      reasoningEffort: 'high',
+    });
+    // The branch belonged to the project being left, so it is not carried.
+    expect(pane.thread?.branch).toBeUndefined();
+
+    pendingDefaults.resolve(makeDefaults({
+      model: 'gpt-5.4-mini',
+      branch: 'feature/other',
+      workspacePath: other.path,
+    }));
+    await expect(flipping).resolves.toBe(true);
+    expect(pane.thread).toMatchObject({
+      projectId: other.id,
+      model: 'gpt-5.4-mini',
+      branch: 'feature/other',
+    });
+    pane.clear();
   });
 });

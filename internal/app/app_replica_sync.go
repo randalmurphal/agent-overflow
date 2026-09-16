@@ -2,12 +2,9 @@ package app
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"time"
 
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/transport"
 )
 
 // syncThreadWindowTimeout bounds the read transaction SyncThreadWindow
@@ -105,13 +102,5 @@ func (a *App) SyncThreadWindow(threadID string, req SyncThreadWindowRequest) (Sy
 }
 
 func normalizeThreadWindowSyncError(ctx context.Context, err error) error {
-	if ctxErr := ctx.Err(); errors.Is(ctxErr, context.DeadlineExceeded) {
-		return fmt.Errorf(
-			"%w: thread history read timed out after %s: %w",
-			transport.ErrTemporarilyUnavailable,
-			syncThreadWindowTimeout,
-			ctxErr,
-		)
-	}
-	return fmt.Errorf("sync thread window: %w", err)
+	return boundedStoreReadError(ctx, "thread history read", syncThreadWindowTimeout, err)
 }

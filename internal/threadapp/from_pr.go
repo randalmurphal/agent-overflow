@@ -83,7 +83,7 @@ func (s *Service) CreateFromPR(opts PullRequestOptions, port PullRequestPort) (s
 		return store.Thread{}, fmt.Errorf("create thread from %s: pull request source unavailable", prthread.ForgeNounLong(forgeID))
 	}
 	model = strings.TrimSpace(model)
-	seed := models.Seed(providerName, model)
+	seed := models.Seed(s.deps.LifeContext(), providerName, model)
 	if model == "" {
 		model = seed.Model
 	}

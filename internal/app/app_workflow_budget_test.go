@@ -384,7 +384,7 @@ func TestWorkflowThreadIgnoresRememberedChatProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Guard the guard: the chat path really would pick the remembered profile up.
-	if seeded := app.seedChatModelProfile(string(provider.Claude), effortTestModel); seeded.ReasoningEffort != remembered.ReasoningEffort {
+	if seeded := app.seedChatModelProfile(context.Background(), string(provider.Claude), effortTestModel); seeded.ReasoningEffort != remembered.ReasoningEffort {
 		t.Fatalf("chat seed effort = %q, want the remembered %q — fixture no longer proves anything", seeded.ReasoningEffort, remembered.ReasoningEffort)
 	}
 

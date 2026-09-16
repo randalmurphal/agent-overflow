@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -99,10 +100,19 @@ func (s *Store) CreateProject(p Project) (Project, error) {
 }
 
 // GetProject returns a single project by id. Returns sql.ErrNoRows when
-// the id doesn't exist.
+// the id doesn't exist. Reads run on the query_only pool; a caller that must
+// not wait on a wedged pool uses GetProjectContext.
 func (s *Store) GetProject(id string) (Project, error) {
-	row := s.reader().QueryRow(
-		`SELECT `+projectColumns+` FROM projects WHERE id = ?`, id,
+	return s.GetProjectContext(context.Background(), id)
+}
+
+// GetProjectContext is GetProject bounded by ctx. A read served from the
+// writer connection (a :memory: or non-WAL store) queues behind the writer,
+// and even a WAL read pool can be held quiesced by a checkpoint; a call the
+// user is waiting on needs a ceiling on both.
+func (s *Store) GetProjectContext(ctx context.Context, id string) (Project, error) {
+	row := s.reader().QueryRowContext(
+		ctx, `SELECT `+projectColumns+` FROM projects WHERE id = ?`, id,
 	)
 	p, err := scanProject(row)
 	if err != nil {

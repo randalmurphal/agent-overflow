@@ -11,6 +11,7 @@ import { expandProject, isGroupExpanded, toggleGroup } from './sidebar.svelte';
 import { prependThread } from './threads.svelte';
 import { addToast } from './toast.svelte';
 import { errString } from '../utils/errors';
+import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import type { DraftPlaceholderDefaults, ThreadPane } from './thread.svelte';
 import type { Project, Thread } from '../types/models';
 import { getThreadGroupById } from './threadGroups.svelte';
@@ -55,20 +56,65 @@ function finishDraftDefaultsRequest(
   }
 }
 
+/**
+ * The seed a placeholder can be started with before the backend answers.
+ *
+ * A pane that already shows a placeholder carries its selection across a
+ * project flip, so the toolbar keeps a model, effort and runtime mode while
+ * the new project's defaults load instead of blanking and refilling. Branch
+ * and workspace are deliberately absent: they described the project being
+ * left. Anything else (a live thread, an empty pane) starts from the
+ * toolbar's own fallbacks, because a neighbouring thread's model is not a
+ * statement about what the next one should be.
+ */
+function localDraftDefaults(pane: ThreadPane): DraftPlaceholderDefaults | undefined {
+  const thread = pane.draftPlaceholder ? pane.thread : null;
+  if (!thread) return undefined;
+  return {
+    provider: thread.provider,
+    model: thread.model,
+    reasoningEffort: thread.reasoningEffort,
+    fastMode: thread.fastMode,
+    contextWindow: thread.contextWindow,
+    runtimeMode: thread.runtimeMode,
+  };
+}
+
+/**
+ * Open the placeholder NOW, then converge it on the backend's defaults.
+ *
+ * The placeholder is pure UI state, so nothing about it needs the RPC: during
+ * a store stall `GetThreadDefaults` took seconds and "+ New" painted nothing
+ * at all. Starting first means the pane is usable immediately and the seed
+ * (model, effort, runtime mode, branch) lands when it arrives.
+ *
+ * The pane is reserved on the same tick as the start, so a second "+ New"
+ * request or a thread switch wins even if this older response resolves last.
+ * A failed fetch leaves the placeholder open on its fallback defaults — the
+ * toolbar pickers resolve their own values — and is reported as a diagnostic
+ * rather than a toast, since the user got the surface they asked for.
+ *
+ * Resolves true when this request still owned the placeholder as the answer
+ * landed, false when a newer request or a navigation superseded it.
+ */
 async function loadAndStartDraftPlaceholder(
   pane: ThreadPane,
   project: Project,
   groupId?: string,
 ): Promise<boolean> {
-  // Reserve the pane before the RPC. A second "+ New" request or a thread
-  // switch must win even if this older defaults response resolves last.
+  pane.startDraftPlaceholder(
+    project,
+    'chat',
+    localDraftDefaults(pane),
+    groupId && getThreadGroupById(groupId) ? groupId : undefined,
+  );
   const request = beginDraftDefaultsRequest(pane);
   let defaults: DraftPlaceholderDefaults | undefined;
   try {
     defaults = await withBackendTarget(projectBackend(project.id) ?? HOME_BACKEND,
       () => GetThreadDefaults({ projectId: project.id, mode: 'chat' }));
   } catch (err) {
-    console.warn('GetThreadDefaults failed; using empty placeholder defaults', err);
+    reportFrontendDiagnostic('thread defaults fetch failed', errString(err));
   }
 
   if (!draftDefaultsRequestIsCurrent(pane, request)) {
@@ -76,22 +122,18 @@ async function loadAndStartDraftPlaceholder(
     return false;
   }
 
-  pane.startDraftPlaceholder(project, 'chat', defaults, groupId && getThreadGroupById(groupId) ? groupId : undefined);
+  if (defaults) pane.applyDraftPlaceholderDefaults(defaults);
   finishDraftDefaultsRequest(pane, request);
   return true;
 }
 
 /**
- * Fetch fresh seed defaults and replace the pane's draft placeholder
- * with one keyed on the new project. ProjectPicker calls this to keep the
- * placeholder's toolbar (model, effort, runtime mode) and workspace
- * strip (current git branch) populated across flips — calling
- * `pane.startDraftPlaceholder` directly drops the seeded values and
- * the toolbar/branch render empty.
- *
- * Defaults-fetch failures are swallowed to a warning (mirrors the
- * shape of openDraftThreadForProject): an empty toolbar is better
- * than failing the flip on a UI gesture.
+ * Replace the pane's draft placeholder with one keyed on the new project and
+ * seed it from that project's defaults. ProjectPicker calls this so the
+ * placeholder's toolbar (model, effort, runtime mode) and workspace strip
+ * (current git branch) stay populated across flips — calling
+ * `pane.startDraftPlaceholder` directly drops the seeded values and the
+ * toolbar/branch render empty.
  */
 export async function flipPaneDraftPlaceholder(
   pane: ThreadPane,
@@ -138,8 +180,11 @@ export interface OpenDraftThreadOptions {
  * action simply replaces the prior placeholder, so the user can spin up
  * and discard threads freely.
  *
- * Returns the pane when this request opened the placeholder, or null when a
- * newer draft request/navigation superseded it while defaults were loading.
+ * The placeholder appears on the calling tick; nothing about it waits on the
+ * backend. The returned promise settles when the seed defaults land, so the
+ * result still reports ownership: the pane when this request still owned the
+ * placeholder at that moment, null when a newer draft request or a
+ * navigation superseded it in between.
  */
 export async function openDraftThreadForProject(
   options: OpenDraftThreadOptions,
@@ -163,11 +208,9 @@ export async function openDraftThreadForProject(
   // openThreadInPane, so we need to make sure the pane is mounted in
   // the layout grid ourselves. openEmptyPane already attaches itself.
   ensurePaneInLayout(pane.paneId);
-  // Fetch the same seed values CreateThread would have used (last-used
-  // model profile + current git branch) so the placeholder's toolbar
-  // and workspace strip don't render "no model / no branch" before
-  // materialization. Failure here is tolerable — we still want the
-  // placeholder to appear; the user can pick from the toolbar.
+  // Opens the placeholder, then applies the same seed values CreateThread
+  // would have used (last-used model profile + current git branch) so its
+  // toolbar and workspace strip converge on the real model and branch.
   const opened = await loadAndStartDraftPlaceholder(pane, project, groupId);
   return opened ? pane : null;
 }
