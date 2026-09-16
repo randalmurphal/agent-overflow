@@ -1,5 +1,7 @@
+import { flushSync } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  composerPickerSelectionLabel,
   isAnyComposerPickerOpen,
   registerComposerPicker,
   registerComposerPickerFallbackAnchor,
@@ -38,6 +40,38 @@ function makeHandle(): {
 describe('composerPickerRegistry', () => {
   beforeEach(() => resetComposerPickerRegistryForTest());
   afterEach(() => resetComposerPickerRegistryForTest());
+
+  it('reacts to selection, registration, and cleanup without leaking across panes', () => {
+    let label = $state('High');
+    let observed = '';
+    const stop = $effect.root(() => {
+      $effect(() => { observed = composerPickerSelectionLabel('main', 'effort'); });
+    });
+    try {
+      flushSync();
+      expect(observed).toBe('');
+      const first = registerComposerPicker('main', 'effort', {
+        ...makeHandle().handle, selectionLabel: () => label,
+      });
+      flushSync();
+      expect(observed).toBe('High');
+      label = 'Low';
+      flushSync();
+      expect(observed).toBe('Low');
+      expect(composerPickerSelectionLabel('other', 'effort')).toBe('');
+      const second = registerComposerPicker('main', 'effort', {
+        ...makeHandle().handle, selectionLabel: () => 'Medium',
+      });
+      first();
+      flushSync();
+      expect(observed).toBe('Medium');
+      second();
+      flushSync();
+      expect(observed).toBe('');
+    } finally {
+      stop();
+    }
+  });
 
   describe('toggleComposerPicker', () => {
     it('calls open() when the picker is closed', () => {

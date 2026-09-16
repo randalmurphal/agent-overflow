@@ -11,6 +11,7 @@
   import SlidersHorizontal from '@lucide/svelte/icons/sliders-horizontal';
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import {
+    composerPickerSelectionLabel,
     openComposerPicker,
     registerComposerPickerFallbackAnchor,
   } from '../../../stores/composerPickerRegistry.svelte';
@@ -76,8 +77,12 @@
 
 <Popover anchor={triggerEl} {open} onClose={close} placement="top-start" role="none">
   {#snippet children()}
-    <Menu ariaLabel="Composer options" onClose={close}>
-      <MenuItem label="Effort…" onSelect={() => pick(() => openComposerPicker(pane.paneId, 'effort', triggerEl))} />
+    <Menu ariaLabel="Composer options" onClose={close} minWidthClass="min-w-[min(20rem,calc(100vw-1rem))] max-w-[calc(100vw-1rem)]">
+      <MenuItem
+        label="Effort…"
+        suffix={composerPickerSelectionLabel(pane.paneId, 'effort')}
+        onSelect={() => pick(() => openComposerPicker(pane.paneId, 'effort', triggerEl))}
+      />
       {#if showMode}
         <MenuItem
           label="Agent mode"
@@ -86,14 +91,23 @@
         />
       {/if}
       {#if showAccess}
-        <MenuItem label="Access…" onSelect={() => pick(() => openComposerPicker(pane.paneId, 'access', triggerEl))} />
+        <MenuItem
+          label="Access…"
+          suffix={composerPickerSelectionLabel(pane.paneId, 'access')}
+          onSelect={() => pick(() => openComposerPicker(pane.paneId, 'access', triggerEl))}
+        />
       {/if}
       {#if showMcp}
-        <MenuItem label="MCP servers…" onSelect={() => pick(() => openComposerPicker(pane.paneId, 'mcp', triggerEl))} />
+        <MenuItem
+          label="MCP servers…"
+          suffix={composerPickerSelectionLabel(pane.paneId, 'mcp')}
+          onSelect={() => pick(() => openComposerPicker(pane.paneId, 'mcp', triggerEl))}
+        />
       {/if}
       {#if showPlan}
         <MenuItem
           label="Plan sidebar"
+          suffix={pane.showPlanSidebar ? 'Shown' : 'Hidden'}
           checked={pane.showPlanSidebar}
           onSelect={() => pick(() => pane.togglePlanSidebar())}
         />

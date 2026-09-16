@@ -59,6 +59,7 @@
   $effect(() => {
     return registerComposerPicker(pane.paneId, 'mcp', {
       isOpen: () => open,
+      selectionLabel: () => `${enabledCount} enabled`,
       open: openMenu,
       close: closeMenu,
     });

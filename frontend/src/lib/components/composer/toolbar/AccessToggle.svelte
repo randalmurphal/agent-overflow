@@ -184,6 +184,7 @@
   $effect(() => {
     return registerComposerPicker(pane.paneId, 'access', {
       isOpen: () => open,
+      selectionLabel: () => currentMeta.label,
       open: (anchor) => {
         if (!pane.thread) return;
         anchorOverride = resolvePickerAnchor(pane.paneId, anchor, triggerEl);

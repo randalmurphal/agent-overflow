@@ -7,7 +7,9 @@ import {
   resetForTest as resetProviderAccounts,
   setProviderAccount,
 } from '../../../stores/accountInfo.svelte';
-import { resetBindingMocks } from '../../../../test/mocks/bindings-app';
+import { resetBindingMocks, setBindingMock } from '../../../../test/mocks/bindings-app';
+import { ThreadMCPServer } from '../../../stores/bindings';
+import { refreshMcpServers } from '../../../stores/mcpServers.svelte';
 import type { Thread } from '../../../types/models';
 import type { SendButtonAction } from './sendButtonTypes';
 
@@ -181,10 +183,43 @@ describe('<ComposerToolbar>', () => {
 
     await fireEvent.click(getByTestId('composer-pickers-rollup'));
     expect(queryByRole('menuitem', { name: 'Model…' })).toBeNull();
-    await fireEvent.click(getByRole('menuitem', { name: 'Effort…' }));
+    await fireEvent.click(getByRole('menuitem', { name: /^Effort…/ }));
     await waitFor(() => {
       expect(effortTrigger).toHaveAttribute('aria-expanded', 'true');
     });
+  });
+
+  it('shows live picker selections in the rollup, including cleared settings', async () => {
+    vi.mocked(window.requestAnimationFrame).mockImplementation((callback) => {
+      setTimeout(() => callback(performance.now()), 0);
+      return 0;
+    });
+    let disabled = false;
+    setBindingMock('ListThreadMcpServers', async () => [new ThreadMCPServer({
+      provider: 'claude', name: 'configured', status: 'unknown', source: 'config', disabled,
+    })]);
+    const pane = createThreadPane();
+    pane.replaceThread(makeThread({ fastMode: true }));
+    const { getByTestId, getByRole } = render(ComposerToolbar, { props: toolbarProps(pane) });
+    await fireEvent.click(getByTestId('composer-pickers-rollup'));
+    await waitFor(() => {
+      expect(getByRole('menuitem', { name: /^Effort…/ })).toHaveTextContent('xHigh · Fast');
+      expect(getByRole('menuitem', { name: /^Access…/ })).toHaveTextContent('Full access');
+      expect(getByRole('menuitem', { name: /^MCP servers…/ })).toHaveTextContent('1 enabled');
+      expect(getByRole('menuitem', { name: /^Agent mode/ })).toHaveTextContent('Plan');
+    });
+
+    pane.replaceThread(makeThread({ reasoningEffort: 'low', runtimeMode: 'auto-accept-edits', mode: 'chat', fastMode: false }));
+    disabled = true;
+    refreshMcpServers(' claude:/tmp');
+    await waitFor(() => {
+      expect(getByRole('menuitem', { name: /^Effort…/ })).toHaveTextContent('Low');
+      expect(getByRole('menuitem', { name: /^Effort…/ })).not.toHaveTextContent('Fast');
+      expect(getByRole('menuitem', { name: /^Access…/ })).toHaveTextContent('Auto-accept edits');
+      expect(getByRole('menuitem', { name: /^MCP servers…/ })).toHaveTextContent('0 enabled');
+      expect(getByRole('menuitem', { name: /^Agent mode/ })).toHaveTextContent('Build');
+    });
+    expect(getByRole('menuitem', { name: /^Plan sidebar/ })).toHaveTextContent('Hidden');
   });
 
   it('keeps full toolbar labels when full contents fit', async () => {

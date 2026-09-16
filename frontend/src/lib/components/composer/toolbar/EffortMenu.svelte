@@ -54,6 +54,7 @@
   $effect(() => {
     return registerComposerPicker(pane.paneId, 'effort', {
       isOpen: () => open,
+      selectionLabel: () => triggerTitle,
       open: (anchor) => {
         // Same gate as the trigger's disabled state: the chord must not open a
         // menu with no rows in it either.

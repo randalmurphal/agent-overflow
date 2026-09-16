@@ -372,7 +372,7 @@ test('the composer\'s densest rung keeps the model and the meters and rolls the 
   await rollup.tap();
   const menu = page.locator('[data-popover]');
   await expect(menu.getByRole('menuitem', { name: 'Model…' })).toHaveCount(0);
-  await menu.getByRole('menuitem', { name: 'Effort…' }).tap();
+  await menu.getByRole('menuitem', { name: /^Effort…/ }).tap();
   // The row opened the picker itself: its (hidden) trigger reports open,
   // and the picker's menu hangs from the roll-up button, the one control
   // of the picker's that is on screen.

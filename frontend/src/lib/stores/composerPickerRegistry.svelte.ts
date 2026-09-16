@@ -11,10 +11,14 @@
 // composer with its own picker instances, and the same chord routes
 // to whichever pane is currently focused.
 
+import { SvelteMap } from 'svelte/reactivity';
+
 export type ComposerPickerId = 'model' | 'effort' | 'access' | 'mcp' | 'branch';
 
 export interface ComposerPickerHandle {
   isOpen: () => boolean;
+  /** Current selection, derived by the picker for compact menu summaries. */
+  selectionLabel?: () => string;
   /**
    * `anchor` is where the menu hangs instead of the picker's own trigger.
    * The roll-up passes its button; a chord or slash command passes
@@ -56,11 +60,9 @@ export function resolvePickerAnchor(
   return fallbackAnchors.get(paneId) ?? trigger;
 }
 
-// Plain Map (no $state) — the chord handlers call these imperatively
-// and don't subscribe to changes. Wrapping in $state would proxy the
-// handles and trigger state_proxy_equality_mismatch when component
-// code compares a stored handle with its original.
-const entries = new Map<string, ComposerPickerHandle>();
+// SvelteMap tracks registration changes without proxying handles. Selection
+// getters read the picker's existing derived state, so summaries stay reactive.
+const entries = new SvelteMap<string, ComposerPickerHandle>();
 
 function entryKey(paneId: string, pickerId: ComposerPickerId): string {
   return `${paneId}:${pickerId}`;
@@ -76,6 +78,10 @@ export function registerComposerPicker(
   return () => {
     if (entries.get(key) === handle) entries.delete(key);
   };
+}
+
+export function composerPickerSelectionLabel(paneId: string, pickerId: ComposerPickerId): string {
+  return entries.get(entryKey(paneId, pickerId))?.selectionLabel?.() ?? '';
 }
 
 export function toggleComposerPicker(paneId: string | null, pickerId: ComposerPickerId): boolean {
