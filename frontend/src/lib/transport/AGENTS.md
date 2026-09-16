@@ -83,6 +83,8 @@ Terminal `unauthorized` and `pairing-required` states clear only from evidence,
 such as user-triggered reconnect or a successful attempt past the condition.
 Passive RPC demand must not restart a terminal ladder. Prolonged failure may
 enter dormant cadence, but explicit demand and platform resume probe immediately.
+Repeated passive demand may not outpace the ladder: collapsing a queued backoff
+is rate-limited by the pending rung, so a polling caller cannot set the cadence.
 A background native lease schedules no probes and active resume reuses the
 existing queued attempt.
 

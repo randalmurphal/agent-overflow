@@ -3,7 +3,9 @@
 // A "+ New" draft pane's synthetic thread id is never routed: with two
 // computers attached no entity index can resolve it, and the tray must not
 // ask. Covers wsClient's outage logging, computerRows' fan-out skip and the
-// ActivityRail draft guard against the real backend proxy.
+// ActivityRail draft guard against the real backend proxy, and the dial
+// cadence itself: the browser logs every refused request, so the ladder's
+// rungs are what bounds the console during an outage.
 import { test, expect, type Page } from '@playwright/test';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
@@ -94,6 +96,11 @@ test('an offline paired computer logs once per outage and a draft pane is never 
     await page.waitForTimeout(10_000);
     const outage = drain();
     expect(outage.http503).toBeGreaterThanOrEqual(2);
+    // Each dial is a browser-native console line, so the ladder's cadence
+    // is itself user-visible. Six rungs fit in ten seconds; the ceiling
+    // catches passive demand collapsing the backoff on every poll, which
+    // would put the dials seconds apart for as long as the machine is off.
+    expect(outage.http503 + outage.socketFailed).toBeLessThanOrEqual(12);
     expect(outage).toMatchObject({ preparationFailed: 1, ensureConnected: 0, ownerUnknown: 0, errors: [] });
 
     // A reload boots every store against the offline computer: one line

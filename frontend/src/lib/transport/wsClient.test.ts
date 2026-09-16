@@ -2543,6 +2543,54 @@ describe('WSClient', () => {
     await p;
   });
 
+  it('paces passive demand by the rung, so a poll loop cannot pace the ladder', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Climb: close -> attempt (125ms) -> close -> attempt (250ms) ->
+    // close, leaving a rung of base 1000ms queued at 500ms.
+    first.triggerClose();
+    await vi.advanceTimersByTimeAsync(130);
+    MockWebSocket.instances[1]!.triggerClose();
+    await vi.advanceTimersByTimeAsync(260);
+    MockWebSocket.instances[2]!.triggerClose();
+    expect(MockWebSocket.instances).toHaveLength(3);
+
+    // The first demand of the outage probes at once, as it always has.
+    await vi.advanceTimersByTimeAsync(RECONNECT_INITIAL_MS + 10);
+    const opener = client.callByID(9, ['poll']).catch(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(MockWebSocket.instances).toHaveLength(4);
+
+    // It fails too, queuing a rung of base 2000ms at 1000ms.
+    MockWebSocket.instances[3]!.triggerClose();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // A background loader now polls every 50ms straight through that
+    // rung. Not one of those polls dials: demand already spent this
+    // rung's budget on the call above, so the ladder keeps the pace.
+    const polls: Promise<unknown>[] = [];
+    for (let i = 0; i < 12; i += 1) {
+      polls.push(client.callByID(10 + i, ['poll']).catch(() => {}));
+      await vi.advanceTimersByTimeAsync(50);
+    }
+    expect(MockWebSocket.instances).toHaveLength(4);
+
+    // And the ladder's own attempt still runs at its scheduled 1000ms.
+    await vi.advanceTimersByTimeAsync(500);
+    expect(MockWebSocket.instances).toHaveLength(5);
+
+    client.close();
+    await Promise.all([opener, ...polls]);
+  });
+
   it('page resume fires the queued attempt immediately and resets the ladder', async () => {
     vi.useFakeTimers();
     vi.spyOn(Math, 'random').mockReturnValue(0.5);
@@ -4723,6 +4771,35 @@ describe('dormant reconnect ladder', () => {
 
     client.close();
     await pending;
+  });
+
+  it('holds the dormant cadence under a poll loop, not one dial per poll', async () => {
+    const client = await dormantClient();
+    const dialsBefore = MockWebSocket.instances.length;
+    let failed = dialsBefore;
+
+    // Half an hour of a background loader polling every thirty seconds,
+    // with every probe it earns failing. This is the case dormancy exists
+    // for: the machine is off and nothing the page does will change that.
+    const polls: Promise<unknown>[] = [];
+    for (let i = 0; i < 60; i += 1) {
+      polls.push(client.callByID(500 + i, ['poll']).catch(() => {}));
+      await vi.advanceTimersByTimeAsync(30_000);
+      while (failed < MockWebSocket.instances.length) {
+        MockWebSocket.instances[failed]!.triggerClose();
+        failed += 1;
+      }
+    }
+
+    // Sixty polls, and the cadence is still one probe per DORMANT_PROBE_MS:
+    // demand may be the reason for a probe, never for the pace of them.
+    const dials = MockWebSocket.instances.length - dialsBefore;
+    expect(dials).toBeGreaterThanOrEqual(1);
+    expect(dials).toBeLessThanOrEqual(8);
+    expect(client.getStatus().dormant).toBe(true);
+
+    client.close();
+    await Promise.all(polls);
   });
 
   it('carries the last-seen moment into the dormant snapshot', async () => {

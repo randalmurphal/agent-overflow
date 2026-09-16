@@ -99,9 +99,9 @@ export const RECONNECT_INITIAL_MS = 250;
 // cap is remote-client sizing — polite to a LAN server that may be
 // genuinely down. Against a same-machine backend a failed attempt is a
 // refused loopback connect (~µs), so a long cap buys nothing and costs
-// stale event streams: demand collapse (queuedAttempt.fire) only fires
-// when the user acts, so a passive viewer would otherwise stare at a
-// frozen stream for up to the cap after a relay flap.
+// stale event streams: demand collapse is paced by the rung
+// (collapseBackoffForDemand), so a passive viewer would otherwise stare
+// at a frozen stream for up to the cap after a relay flap.
 export const RECONNECT_MAX_LOCAL_MS = 5_000;
 export const RECONNECT_MAX_REMOTE_MS = 30_000;
 // Stale-socket watchdog. The server heartbeats every 10s — 3× that
@@ -805,13 +805,24 @@ export class WSClient {
   // and on close(). This is how fresh demand — a user RPC, a page
   // resume, the banner's Retry — skips the remaining backoff instead
   // of waiting it out.
-  private queuedAttempt: { timer: ReturnType<typeof setTimeout>; fire: () => void } | null = null;
-  // Wall-clock start of the most recent connect attempt. The RPC
+  private queuedAttempt: {
+    timer: ReturnType<typeof setTimeout>;
+    fire: () => void;
+    // This rung's un-jittered delay. See collapseBackoffForDemand.
+    demandFloorMs: number;
+  } | null = null;
+  // Wall-clock start of the most recent connect attempt. Passive
   // demand-collapse refuses to fire a queued attempt sooner than
   // RECONNECT_INITIAL_MS after the previous attempt began, so an
   // RPC-issuing background loop (the diagnostics flush itself is an
   // RPC) can't turn the backoff into a tight retry storm.
   private lastAttemptStartedAt = 0;
+  // Wall-clock time of the last backoff that PASSIVE demand collapsed.
+  // Separate from lastAttemptStartedAt because the two answer different
+  // questions: that one bounds how closely two dials may sit, this one
+  // bounds how often demand may be the reason for one. See
+  // collapseBackoffForDemand.
+  private lastDemandCollapseAt = 0;
   // Detaches the page-lifecycle listeners registered in the
   // constructor; null in non-DOM environments.
   private readonly detachLifecycleListeners: (() => void) | null;
@@ -1136,11 +1147,9 @@ export class WSClient {
     // A new subscriber is live demand, exactly as an RPC is: a pane
     // opening wants the stream NOW, and while a backoff (dormant or
     // ordinary) is queued, ensureConnected would only hand back the
-    // pending promise. Same rate floor as the RPC path, so a burst of
-    // remounting panes cannot turn the ladder into a dial storm.
-    if (Date.now() - this.lastAttemptStartedAt >= RECONNECT_INITIAL_MS) {
-      this.queuedAttempt?.fire();
-    }
+    // pending promise. Paced exactly as the RPC path is, so a pane that
+    // remounts in a loop cannot turn the ladder into a dial storm.
+    this.collapseBackoffForDemand();
     // Connect lazily on first subscribe so an event-only listener
     // doesn't have to wait for an explicit RPC to bring the socket up.
     // A failure is the connect path's to report, once per outage; a line
@@ -1401,6 +1410,7 @@ export class WSClient {
     }
     this.reconnectAttempt = 0;
     this.ladderStartedAt = 0;
+    this.lastDemandCollapseAt = 0;
     if (this.connectPromise !== null) {
       // An attempt is in flight. Racing a second connect against it
       // would mint a parallel socket and orphan one of the two — let
@@ -1865,15 +1875,12 @@ export class WSClient {
       // An RPC is live demand: if reconnection is sitting in a queued
       // backoff, run the attempt now instead of making the caller wait
       // it out (up to the backoff cap of nothing-visibly-happening for
-      // whatever UI action issued this call). Rate-floored: an attempt
-      // must be at least RECONNECT_INITIAL_MS old before demand starts
-      // the next one, so an RPC-issuing background loop can't defeat
-      // the backoff entirely. The attempt counter is deliberately NOT
-      // reset — against a genuinely down server the ladder keeps its
-      // height; this only collapses the idle wait.
-      if (Date.now() - this.lastAttemptStartedAt >= RECONNECT_INITIAL_MS) {
-        this.queuedAttempt?.fire();
-      }
+      // whatever UI action issued this call). Paced, so an RPC-issuing
+      // background loop cannot defeat the backoff by repeating; the
+      // attempt counter is deliberately NOT reset either, so against a
+      // genuinely down server the ladder keeps its height and this only
+      // collapses the idle wait.
+      this.collapseBackoffForDemand();
       this.ensureConnected().then(
         () => {
           // The connect may have been replaced by a reconnect that
@@ -2313,11 +2320,13 @@ export class WSClient {
     if (connectedFor >= BACKOFF_RESET_AFTER_MS && this.replayBuffer === null) {
       this.reconnectAttempt = 0;
       // A connection that proved stable retires the ladder's age with its
-      // height: the next outage is a NEW one and earns its own five
-      // minutes before going dormant again. It also refills the flap
-      // allowance below — proof the far side serves is what distinguishes
-      // a flapping network from an accept-then-close backend.
+      // height, and the demand budget with both: the next outage is a NEW
+      // one and earns its own five minutes before going dormant again. It
+      // also refills the flap allowance below — proof the far side serves
+      // is what distinguishes a flapping network from an accept-then-close
+      // backend.
       this.ladderStartedAt = 0;
+      this.lastDemandCollapseAt = 0;
       this.openFlapRetries = 0;
     } else if (opened && connectedFor < BACKOFF_RESET_AFTER_MS
         && this.openFlapRetries < OPEN_FLAP_FAST_RETRIES) {
@@ -2574,11 +2583,42 @@ export class WSClient {
     clearTimeout(this.queuedAttempt.timer);
   }
 
+  // collapseBackoffForDemand is passive demand: an RPC from a background
+  // loader, a pane remounting its subscription. Demand still probes
+  // immediately, which is the contract; what is bounded is how often
+  // demand gets to be the reason for a dial.
+  //
+  // The bound has to run on demand's own clock. Floored against the last
+  // ATTEMPT instead, a poll that arrives just after a ladder dial reads a
+  // long-expired floor and collapses the next rung too, and the rung
+  // after that, so a caller polling every few seconds paces the ladder
+  // rather than the other way round: the height the ladder climbed
+  // delays nothing and every poll costs a dial and a console line.
+  // Measured from the last collapse, a sustained poll buys at most one
+  // extra dial per rung. The first demand after a quiet stretch still
+  // connects at once, because no collapse preceded it, which is what a
+  // pane the user just opened and a call they just made both are.
+  //
+  // The attempt floor stays as the near-simultaneity guard: two dials
+  // never sit closer together than the ladder's own first rung.
+  //
+  // A person acting takes wakeReconnectLadder instead, which resets the
+  // ladder and is not floored at all.
+  private collapseBackoffForDemand(): void {
+    const queued = this.queuedAttempt;
+    if (queued === null) return;
+    const now = Date.now();
+    if (now - this.lastAttemptStartedAt < RECONNECT_INITIAL_MS) return;
+    if (now - this.lastDemandCollapseAt < queued.demandFloorMs) return;
+    this.lastDemandCollapseAt = now;
+    queued.fire();
+  }
+
   // wakeReconnectLadder is the shared body of every DEMAND path that
   // deserves a fresh ladder: a page resume, the banner's Retry, the whole
   // app coming back to the foreground. Each is a person acting, so the
-  // ladder's accumulated pessimism (its height AND its age) is discarded
-  // and the queued attempt runs now.
+  // ladder's accumulated pessimism (its height, its age, and the budget
+  // passive demand has spent) is discarded and the queued attempt runs now.
   //
   // Deliberately NOT what an RPC does: an RPC collapses the wait without
   // resetting anything, so a background poll cannot talk a genuinely
@@ -2586,6 +2626,7 @@ export class WSClient {
   private wakeReconnectLadder(): void {
     this.reconnectAttempt = 0;
     this.ladderStartedAt = 0;
+    this.lastDemandCollapseAt = 0;
     if (this.queuedAttempt === null) return;
     this.queuedAttempt.fire();
   }
@@ -2631,10 +2672,16 @@ export class WSClient {
     if (this.ladderStartedAt === 0) this.ladderStartedAt = Date.now();
     const dormant = this.isDormant();
     let delay: number;
+    // The rung's un-jittered delay, carried as the minimum gap between two
+    // demand collapses. Un-jittered because jitter exists to spread dials
+    // across clients; a poll that happens to land in a short draw must not
+    // get to dial faster than the ladder's chosen cadence.
+    let demandFloorMs: number;
     if (dormant) {
       // Flat cadence plus spread. No exponential growth past here — see
       // DORMANT_PROBE_MS.
       delay = DORMANT_PROBE_MS + Math.floor(Math.random() * DORMANT_PROBE_JITTER_MS);
+      demandFloorMs = DORMANT_PROBE_MS;
     } else {
       const cap = this.remoteBackend ? RECONNECT_MAX_REMOTE_MS : RECONNECT_MAX_LOCAL_MS;
       const base = Math.min(RECONNECT_INITIAL_MS * 2 ** attempt, cap);
@@ -2642,6 +2689,7 @@ export class WSClient {
       // against zero-delay reconnect on Math.random() => 0; without it
       // a degenerate RNG could spin a tight reconnect loop.
       delay = Math.max(50, Math.floor(Math.random() * base));
+      demandFloorMs = base;
     }
     // A dormant client whose whole app is BACKGROUNDED probes nothing at
     // all. The lease is the native pause/resume of the entire client
@@ -2672,7 +2720,7 @@ export class WSClient {
         this.setReconnecting(null);
         this.connect().then(resolve, reject);
       };
-      this.queuedAttempt = { timer: setTimeout(fire, delay), fire };
+      this.queuedAttempt = { timer: setTimeout(fire, delay), fire, demandFloorMs };
     });
     // Queued either way, so demand still has something to fire and the
     // promise below still has an owner; only the TIMER is cancelled.
