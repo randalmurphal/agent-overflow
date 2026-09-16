@@ -959,14 +959,32 @@ func (s *Store) explainProviderSwitchNoRows(threadID, previousProvider string) e
 // milliseconds.
 const deleteThreadItemChunk = 500
 
+// ChunkPause runs between the bounded write chunks of a long delete so a
+// background caller can hand the write lock back to user writes between
+// transactions. It is called only between chunks, never while one is
+// open, and never after the last one.
+type ChunkPause func()
+
 // DeleteThread removes a thread row and everything that cascades from
-// it. The thread's items are drained first in bounded chunks, each its
-// own implicit transaction, so no single write transaction ever spans a
-// large thread's whole item set. Draining items before the thread row
-// is safe under the app layer's idempotent-retry model: the thread row
-// is the resumability anchor, and a crash mid-drain leaves a thread a
-// retried delete completes.
+// it, as fast as the database allows. Interactive callers use this.
 func (s *Store) DeleteThread(id string) error {
+	return s.DeleteThreadPaced(id, nil)
+}
+
+// DeleteThreadPaced is DeleteThread with a caller-supplied pause between
+// item chunks.
+//
+// The thread's items are drained first in bounded chunks, each its own
+// implicit transaction, so no single write transaction ever spans a
+// large thread's whole item set. Back to back, those chunks still hold
+// the write lock continuously for as long as the drain takes, which is
+// seconds on a large backlog; pause is where a background sweep yields
+// so user writes interleave. A nil pause is DeleteThread.
+//
+// Draining items before the thread row is safe under the app layer's
+// idempotent-retry model: the thread row is the resumability anchor, and
+// a crash mid-drain leaves a thread a retried delete completes.
+func (s *Store) DeleteThreadPaced(id string, pause ChunkPause) error {
 	for {
 		n, err := s.deleteThreadItemsChunk(id)
 		if err != nil {
@@ -974,6 +992,9 @@ func (s *Store) DeleteThread(id string) error {
 		}
 		if n < deleteThreadItemChunk {
 			break
+		}
+		if pause != nil {
+			pause()
 		}
 	}
 	result, err := s.db.Exec(`DELETE FROM threads WHERE id = ?`, id)

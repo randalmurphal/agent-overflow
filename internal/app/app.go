@@ -580,6 +580,17 @@ type App struct {
 	// sweep. Production leaves it nil and retentionNow reads time.Now
 	// directly. Mirrors idleReaperNowFn.
 	retentionNowFn func() time.Time
+	// reclaimFreeSpaceFn is a test-only override for the sweep's
+	// free-space step. Production leaves it nil and the sweep calls
+	// Store.ReclaimFreeSpace; the production thresholds need a
+	// multi-gigabyte freelist to trip, which a unit test cannot build.
+	reclaimFreeSpaceFn func(context.Context, time.Duration) (int64, error)
+	// maintenance shortens the background maintenance timings for
+	// tests. Zero fields mean production values.
+	maintenance maintenanceTuning
+	// storeMaintenance owns the one-time auto_vacuum conversion
+	// scheduler's stop gate. See app_store_maintenance.go.
+	storeMaintenance backgroundLoop
 	// codexThread owns provider-thread reconcile and cumulative-cost reads.
 	codexThreadOnce sync.Once
 	codexThread     *codexthread.Service

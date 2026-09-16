@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -10,8 +11,8 @@ import (
 // properties the rest of the app relies on: file-backed stores get the
 // pool, :memory: stores fall back to the writer, the pool can never
 // write, reads don't block behind an open write transaction, and
-// quiescing (the VACUUM guard) restores single-pool routing for its
-// duration.
+// quiescing (the truncating-checkpoint and file-swap guard) restores
+// single-pool routing for its duration.
 
 func TestReadPoolEnabledForFileBackedStore(t *testing.T) {
 	s := newTestStore(t)
@@ -128,23 +129,42 @@ func TestQuiesceReadsRestoresRouting(t *testing.T) {
 	}
 }
 
-func TestVacuumRunsWithReadPoolOpen(t *testing.T) {
+// TestReclaimRunsWithReadPoolOpen pins that free-space reclamation does
+// NOT quiesce reads: it is a series of ordinary short write
+// transactions, so the read pool keeps serving throughout.
+func TestReclaimRunsWithReadPoolOpen(t *testing.T) {
 	s := newTestStore(t)
-	// Zero thresholds force the VACUUM branch regardless of freelist
-	// state, exercising the quiesce + exclusive-lock path with the read
-	// pool open.
-	ran, err := s.vacuumIfFragmented(0, 0)
-	if err != nil {
-		t.Fatalf("vacuum with read pool open: %v", err)
+	done := make(chan error, 1)
+	stop := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stop:
+				done <- nil
+				return
+			default:
+			}
+			if _, err := s.GetUIState("client:test"); err != nil {
+				done <- err
+				return
+			}
+		}
+	}()
+	// Zero thresholds run the loop regardless of freelist state.
+	if _, err := s.reclaimFreeSpace(context.Background(), time.Millisecond, 0, 0); err != nil {
+		t.Fatalf("reclaim with read pool open: %v", err)
 	}
-	if !ran {
-		t.Fatal("vacuum should run at zero thresholds")
+	close(stop)
+	if err := <-done; err != nil {
+		t.Fatalf("read during reclaim: %v", err)
 	}
-	// The store must still serve reads and writes afterwards.
+	if s.reader() != s.read {
+		t.Fatal("reclamation must leave read-pool routing alone")
+	}
 	if err := s.SetUIState("client:test", map[string]string{"k": "post"}); err != nil {
-		t.Fatalf("write after vacuum: %v", err)
+		t.Fatalf("write after reclaim: %v", err)
 	}
 	if got, err := s.GetUIState("client:test"); err != nil || got["k"] != "post" {
-		t.Fatalf("read after vacuum: %v %v", err, got)
+		t.Fatalf("read after reclaim: %v %v", err, got)
 	}
 }

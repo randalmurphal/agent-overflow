@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/logging"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/uitrace"
 )
 
@@ -13,13 +14,16 @@ import (
 // (and their on-disk side effects), dated provider-event log files, and
 // bug-report bookmark files. Each sweep reads Retention.Days from
 // settings live so toggling the window doesn't require a restart;
-// Retention.Days <= 0 disables the sweep silently.
+// Retention.Days <= 0 disables the deletes silently. It does not
+// disable the sweep: the free-space tail is gated by the freelist, not
+// by the retention window, so a database the user pruned by hand still
+// gets its pages back. See reclaimStoreFreeSpace.
 //
-// Each tick processes the entire eligible backlog in one pass — no
-// per-tick cap. The sweep runs in a background goroutine and SQLite's
-// 5 s busy_timeout handles contention with user-initiated writes.
-// shuttingDown is polled every retentionShutdownCheckEvery threads so
-// a quit during a long backfill aborts within a second or two.
+// Each tick processes the entire eligible backlog in one pass, paced:
+// every delete chunk is followed by retentionChunkPause so no write
+// transaction runs back to back with the next one and user writes never
+// queue behind more than one chunk. shuttingDown is polled between
+// threads so a quit lands within a pause, not at the end of the backlog.
 //
 // Stop pattern mirrors startIdleSessionReaper (chan + WaitGroup), NOT
 // the rate-limit probe's appCtx.Done() select. The sweep writes to
@@ -28,9 +32,16 @@ import (
 // session map snapshot in step 4.
 
 const (
-	// retentionInitialDelay defers the first sweep so app startup
-	// and first-paint don't compete with a potentially large backfill.
-	retentionInitialDelay = 30 * time.Second
+	// retentionSettleMinUptime is how long the app must have been
+	// running before the first sweep. Boot is the worst moment for it:
+	// first paint, session restore and history hydration are all
+	// competing for the same writer, and a backlog that has waited days
+	// can wait a few more minutes.
+	retentionSettleMinUptime = 5 * time.Minute
+
+	// retentionSettlePoll is how often the first-sweep gate re-checks
+	// uptime and live turns.
+	retentionSettlePoll = 30 * time.Second
 
 	// retentionSweepInterval is the cadence between sweeps. Six hours
 	// is long enough that the per-sweep cost never shows up in
@@ -38,17 +49,18 @@ const (
 	// predictably.
 	retentionSweepInterval = 6 * time.Hour
 
-	// retentionShutdownCheckEvery is how often (in threads processed)
-	// the sweep polls a.shuttingDown so a Quit during a long backfill
-	// doesn't wait for the full eligible set.
-	retentionShutdownCheckEvery = 50
+	// retentionChunkPause is the gap the sweep leaves between write
+	// chunks, both between the item chunks of one thread delete and
+	// between threads. It is what keeps the sweep's share of the write
+	// lock to one chunk at a time; without it a 47-thread pass held the
+	// writer continuously for 17 s.
+	retentionChunkPause = 100 * time.Millisecond
 
 	// retentionCheckpointEvery is how often (in successful deletes) the
 	// sweep runs PassiveCheckpoint so a long backfill doesn't grow the
-	// WAL unboundedly before the trailing checkpoint. Each commit appends
-	// to the WAL; without periodic recycling a 50k-thread backfill can
-	// inflate the WAL into the hundreds of MB and stay there until the
-	// loop ends.
+	// WAL unboundedly. Each commit appends to the WAL; without periodic
+	// recycling a 50k-thread backfill can inflate the WAL into the
+	// hundreds of MB and stay there until the loop ends.
 	retentionCheckpointEvery = 500
 )
 
@@ -66,21 +78,10 @@ func (a *App) startRetentionCleanup() {
 
 	go func() {
 		defer a.sessionManager().runtime.RetentionCleanupDone()
-		// Initial sweep on a short timer, then transition to ticker.
-		// The initial timer is select-able so a Shutdown during the
-		// 30 s warm-up window doesn't have to wait for the timer to
-		// fire before noticing the stop signal.
-		initial := time.NewTimer(retentionInitialDelay)
-		defer initial.Stop()
-		select {
-		case <-stop:
+		if !a.awaitRetentionSettled(stop) {
 			return
-		case <-initial.C:
-			if a.shuttingDown.Load() {
-				return
-			}
-			a.runRetentionSweep(a.retentionNow())
 		}
+		a.runRetentionSweep(a.retentionNow())
 
 		ticker := time.NewTicker(retentionSweepInterval)
 		defer ticker.Stop()
@@ -96,6 +97,49 @@ func (a *App) startRetentionCleanup() {
 			}
 		}
 	}()
+}
+
+// awaitRetentionSettled blocks until the first sweep may run, and
+// reports whether it should. It returns false when the app stops or
+// begins shutting down first.
+//
+// The gate is deliberately not a fixed delay: a sweep that deletes
+// months of history is minutes of write work, and the two moments it
+// must stay out of are boot and a live turn.
+func (a *App) awaitRetentionSettled(stop <-chan struct{}) bool {
+	start := a.retentionNow()
+	ticker := time.NewTicker(a.retentionSettlePollInterval())
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return false
+		case <-ticker.C:
+			if a.shuttingDown.Load() {
+				return false
+			}
+			if a.retentionSettled(a.retentionNow().Sub(start)) {
+				return true
+			}
+		}
+	}
+}
+
+// retentionSettled reports whether the app is far enough past boot and
+// quiet enough for the first sweep.
+func (a *App) retentionSettled(uptime time.Duration) bool {
+	if uptime < a.retentionSettleUptime() {
+		return false
+	}
+	return !a.sessionManager().runtime.HasActiveTurn()
+}
+
+func (a *App) retentionSettleUptime() time.Duration {
+	return orDuration(a.maintenance.settleUptime, retentionSettleMinUptime)
+}
+
+func (a *App) retentionSettlePollInterval() time.Duration {
+	return orDuration(a.maintenance.settlePoll, retentionSettlePoll)
 }
 
 // stopRetentionCleanup signals the goroutine to exit and waits for it
@@ -115,14 +159,32 @@ func (a *App) retentionNow() time.Time {
 	return time.Now()
 }
 
-// runRetentionSweep performs one sweep tick. Reads Retention.Days
-// live from settings; returns immediately if disabled. Logs one
-// summary line iff any work happened so disabled installs and idle
-// ticks stay silent.
+// retentionPause is the sweep's yield between write chunks. It returns
+// immediately once shutdown has begun so a quit never waits out the
+// pacing.
+func (a *App) retentionPause() {
+	if a.shuttingDown.Load() {
+		return
+	}
+	time.Sleep(orDuration(a.maintenance.chunkPause, retentionChunkPause))
+}
+
+// runRetentionSweep performs one sweep tick: the TTL deletes, then the
+// store's free-space tail.
 //
 // Package-visible so tests can drive a single sweep with a pinned
 // clock without spinning the ticker.
 func (a *App) runRetentionSweep(now time.Time) {
+	a.runRetentionDeletes(now)
+	a.reclaimStoreFreeSpace()
+}
+
+// runRetentionDeletes prunes everything past the TTL: stale threads and
+// what cascades from them, dated log files, and bug-report bookmarks.
+// Reads Retention.Days live from settings and returns immediately when
+// retention is off. Logs one summary line iff any work happened so
+// disabled installs and idle ticks stay silent.
+func (a *App) runRetentionDeletes(now time.Time) {
 	if a.settings == nil {
 		return
 	}
@@ -168,57 +230,59 @@ func (a *App) runRetentionSweep(now time.Time) {
 	// Opportunistic WAL recycle when thread rows were actually freed.
 	// PassiveCheckpoint is non-blocking and a no-op when there's
 	// nothing to reclaim; failure is benign (the next autocheckpoint
-	// catches up).
-	if threadDeleted > 0 && a.store != nil {
+	// catches up). The truncating checkpoint that used to follow is
+	// deliberately absent: it needs every reader gone, so mid-session it
+	// stalls reads for up to the busy timeout. Boot and Close are the
+	// two moments where that quiescence is free, and both run it.
+	if a.store != nil && threadDeleted > 0 {
 		if err := a.store.PassiveCheckpoint(); err != nil {
 			log.Printf("app: retention sweep: passive checkpoint: %v", err)
-		}
-		// Reclaim freed file space once the sweep has deleted history.
-		// VacuumIfFragmented self-gates on the freelist thresholds, so
-		// most sweeps skip it; when it runs it holds an exclusive lock
-		// for seconds, which is why it only runs here (a controlled
-		// background moment) and not during shutdown, where it would
-		// stall the quit. SQLITE_BUSY from a concurrent long reader is
-		// benign — the next qualifying sweep retries.
-		if !a.shuttingDown.Load() {
-			start := time.Now()
-			if ran, err := a.store.VacuumIfFragmented(); err != nil {
-				log.Printf("app: retention sweep: vacuum: %v", err)
-			} else if ran {
-				log.Printf("app: retention sweep: vacuum reclaimed freed space in %s", time.Since(start).Round(time.Millisecond))
-			}
-
-			// Trailing truncating checkpoint. The passive checkpoints
-			// above (and the per-batch ones inside the sweep) keep the
-			// WAL from growing but never shrink the file, so a sweep
-			// that just pushed thousands of thread deletions — and
-			// possibly a VACUUM, which appends the entire rebuilt
-			// database to the WAL — leaves the session's high-water
-			// mark on disk. TRUNCATE is what reclaims it, and this is
-			// the right moment for it: a controlled background pass
-			// that already took an exclusive lock for the VACUUM.
-			// It quiesces reads internally, and a checkpoint it still
-			// can't complete reports Busy and changes nothing rather
-			// than failing the sweep — the next qualifying sweep, or
-			// the next boot, retries. Skipped while shutting down
-			// because Store.Close runs the same checkpoint with the
-			// read pool already gone.
-			res, err := a.store.TruncateCheckpoint()
-			switch {
-			case err != nil:
-				log.Printf("app: retention sweep: truncate checkpoint: %v", err)
-			case res.Busy:
-				log.Printf("app: retention sweep: truncate checkpoint blocked by an open read; %d frames left in the WAL", res.WALFrames)
-			}
 		}
 	}
 }
 
+// reclaimStoreFreeSpace hands pages on the freelist back to the
+// filesystem. It self-gates on the freelist thresholds and on the
+// database being auto_vacuum=incremental, so most ticks do nothing; when
+// it runs it is a paced series of short write transactions that readers
+// never see.
+//
+// It runs on every tick, whatever the retention setting is and whether
+// or not this tick deleted anything. Retention decides what is old
+// enough to delete; it says nothing about the space a delete already
+// freed, and threads the user deleted by hand leave exactly the same
+// freelist. The thresholds are what decide.
+//
+// Shutdown skips it because the pacing would only delay the quit, and
+// freed pages are reused by later writes regardless of when the file
+// shrinks.
+func (a *App) reclaimStoreFreeSpace() {
+	if a.store == nil || a.shuttingDown.Load() {
+		return
+	}
+	reclaim := a.reclaimFreeSpaceFn
+	if reclaim == nil {
+		reclaim = a.store.ReclaimFreeSpace
+	}
+	start := time.Now()
+	pages, err := reclaim(a.lifeCtx(), orDuration(a.maintenance.chunkPause, retentionChunkPause))
+	switch {
+	case err != nil:
+		log.Printf("app: retention sweep: reclaim free space: %v", err)
+	case pages > 0:
+		// Under WAL the shortened database lands in the WAL; the file
+		// itself shrinks when a checkpoint moves it back.
+		if err := a.store.PassiveCheckpoint(); err != nil {
+			log.Printf("app: retention sweep: passive checkpoint: %v", err)
+		}
+		log.Printf("app: retention sweep: reclaimed %d pages in %s", pages, time.Since(start).Round(time.Millisecond))
+	}
+}
+
 // runRetentionThreadSweep loads all stale thread ids and routes each
-// through the per-thread action lock + deleteThreadTreeLocked path.
-// Returns (deleted, failed) counts. Per-thread errors log and
-// continue; one bad thread must not prevent the rest from being
-// cleaned up.
+// through the per-thread action lock + the paced delete path. Returns
+// (deleted, failed) counts. Per-thread errors log and continue; one bad
+// thread must not prevent the rest from being cleaned up.
 func (a *App) runRetentionThreadSweep(cutoffMs int64) (deleted, failed int) {
 	if a.store == nil {
 		return 0, 0
@@ -230,15 +294,17 @@ func (a *App) runRetentionThreadSweep(cutoffMs int64) (deleted, failed int) {
 	}
 	for i, id := range ids {
 		// Poll cooperatively so a Quit during a multi-thousand-thread
-		// backfill exits quickly. The check is cheap (one atomic load)
-		// so doing it every retentionShutdownCheckEvery iterations
-		// rather than every iteration is just to avoid bytecode bloat;
-		// either cadence would be acceptable.
-		if i%retentionShutdownCheckEvery == 0 && a.shuttingDown.Load() {
+		// backfill exits at the next thread boundary. Pacing makes each
+		// iteration at least retentionChunkPause long, so checking every
+		// iteration is what keeps the quit inside one pause.
+		if a.shuttingDown.Load() {
 			return deleted, failed
 		}
+		if i > 0 {
+			a.retentionPause()
+		}
 		unlock := a.threadLocks().Lock(id)
-		delErr := a.deleteThreadTreeLocked(id)
+		delErr := a.deleteThreadTreePacedLocked(id, a.retentionPause)
 		unlock()
 		if delErr != nil {
 			// errors.Is(delErr, sql.ErrNoRows) is normal (the user
@@ -252,15 +318,22 @@ func (a *App) runRetentionThreadSweep(cutoffMs int64) (deleted, failed int) {
 		}
 		deleted++
 		// Recycle the WAL periodically so a multi-thousand-thread
-		// backfill doesn't keep growing it before the trailing
-		// checkpoint runs. PassiveCheckpoint is non-blocking and
-		// benign on failure (the next autocheckpoint catches up), so a
-		// best-effort call here is safe even from a hot loop.
-		if a.store != nil && deleted%retentionCheckpointEvery == 0 {
+		// backfill doesn't keep growing it. PassiveCheckpoint is
+		// non-blocking and benign on failure (the next autocheckpoint
+		// catches up).
+		if deleted%retentionCheckpointEvery == 0 {
 			if err := a.store.PassiveCheckpoint(); err != nil {
 				log.Printf("app: retention sweep: passive checkpoint: %v", err)
 			}
 		}
 	}
 	return deleted, failed
+}
+
+// deleteThreadTreePacedLocked is deleteThreadTreeLocked with the store's
+// item-chunk pause wired to the sweep's yield.
+func (a *App) deleteThreadTreePacedLocked(threadID string, pause store.ChunkPause) error {
+	ports := a.threadDeletePorts()
+	ports.ChunkPause = pause
+	return a.threadApplication().DeleteTree(threadID, false, ports)
 }

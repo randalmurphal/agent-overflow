@@ -33,6 +33,11 @@ type DeletePorts struct {
 	// ids are only knowable here.
 	Deleted func(store.Thread)
 	Logf    func(format string, args ...any)
+	// ChunkPause, when set, runs between the bounded item-delete chunks
+	// of the store delete so a background sweep yields the write lock
+	// between transactions. nil keeps user-initiated deletes at full
+	// speed.
+	ChunkPause store.ChunkPause
 }
 
 func (s *Service) DeleteTree(threadID string, subtreeLocksHeld bool, ports DeletePorts) error {
@@ -134,7 +139,7 @@ func (s *Service) DeleteTree(threadID string, subtreeLocksHeld bool, ports Delet
 	if !threadFound {
 		return nil
 	}
-	if err := database.DeleteThread(threadID); err != nil {
+	if err := database.DeleteThreadPaced(threadID, ports.ChunkPause); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}

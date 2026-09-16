@@ -75,6 +75,18 @@ func newTestStore(t *testing.T) *Store {
 	return s
 }
 
+// newTestStorePath clones the migrated template into a temp directory
+// and returns its path without opening it, for tests that open the file
+// themselves.
+func newTestStorePath(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "store.sqlite")
+	if err := copyTestStoreTemplate(path); err != nil {
+		t.Fatalf("clone store template: %v", err)
+	}
+	return path
+}
+
 func copyTestStoreTemplate(destination string) error {
 	source, err := os.Open(testStoreTemplatePath)
 	if err != nil {
@@ -393,16 +405,36 @@ func TestDeleteThreadDrainsItemsAcrossChunks(t *testing.T) {
 	}
 }
 
-func TestVacuumIfFragmented(t *testing.T) {
-	s := newTestStore(t)
-
-	// A fresh store has (almost) no freelist: below thresholds, no run.
-	ran, err := s.vacuumIfFragmented(1<<20, 0.2)
+func TestNewDatabaseUsesIncrementalAutoVacuum(t *testing.T) {
+	// A fresh file, not the shared template clone: the mode is written
+	// into the header when the first table is created, so this is what
+	// proves runMigrations sets it before the schema exists.
+	s, err := New(filepath.Join(t.TempDir(), "fresh.sqlite"))
 	if err != nil {
-		t.Fatalf("vacuum probe on fresh store: %v", err)
+		t.Fatalf("new store: %v", err)
 	}
-	if ran {
-		t.Fatal("fresh store should not qualify for vacuum")
+	defer s.Close()
+
+	mode, err := s.AutoVacuumMode()
+	if err != nil {
+		t.Fatalf("auto_vacuum: %v", err)
+	}
+	if mode != AutoVacuumIncremental {
+		t.Fatalf("auto_vacuum = %s, want incremental", mode)
+	}
+}
+
+func TestReclaimFreeSpaceHonorsThresholdsAndDrainsFreelist(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// A fresh store has (almost) no freelist: below thresholds, no work.
+	reclaimed, err := s.reclaimFreeSpace(ctx, time.Millisecond, 1<<20, 0.2)
+	if err != nil {
+		t.Fatalf("reclaim probe on fresh store: %v", err)
+	}
+	if reclaimed != 0 {
+		t.Fatalf("fresh store reclaimed %d pages, want 0", reclaimed)
 	}
 
 	// Free a meaningful number of pages: one fat payload, then delete
@@ -412,7 +444,7 @@ func TestVacuumIfFragmented(t *testing.T) {
 	}
 	now := time.Now().UnixMilli()
 	if err := seedPayloadRow(s, "t1", Payload{
-		ID: "p1", Kind: "tool_result", Meta: "{}", Data: make([]byte, 2<<20), CreatedAt: now,
+		ID: "p1", Kind: "tool_result", Meta: "{}", Data: make([]byte, 8<<20), CreatedAt: now,
 	}); err != nil {
 		t.Fatalf("insert payload: %v", err)
 	}
@@ -422,6 +454,17 @@ func TestVacuumIfFragmented(t *testing.T) {
 		CreatedAt: now,
 	}); err != nil {
 		t.Fatalf("insert item: %v", err)
+	}
+	// Measure the main file with the WAL folded in: a write that is
+	// still only in the WAL has not grown the file yet, so without this
+	// the before/after comparison would be against a file that never
+	// held the payload.
+	if err := s.PassiveCheckpoint(); err != nil {
+		t.Fatalf("checkpoint before delete: %v", err)
+	}
+	sizeBefore, err := fileSize(s.path)
+	if err != nil {
+		t.Fatalf("size before: %v", err)
 	}
 	if err := s.DeleteThread("t1"); err != nil {
 		t.Fatalf("delete thread: %v", err)
@@ -435,18 +478,106 @@ func TestVacuumIfFragmented(t *testing.T) {
 		t.Fatal("expected freed pages after deleting a 2MB payload")
 	}
 
-	ran, err = s.vacuumIfFragmented(4096, 0.01)
+	reclaimed, err = s.reclaimFreeSpace(ctx, time.Millisecond, 4096, 0.01)
 	if err != nil {
-		t.Fatalf("vacuum: %v", err)
+		t.Fatalf("reclaim: %v", err)
 	}
-	if !ran {
-		t.Fatal("expected vacuum to run above thresholds")
+	if reclaimed <= 0 {
+		t.Fatalf("reclaimed %d pages, want the freed pages back", reclaimed)
 	}
 	if err := s.db.QueryRow("PRAGMA freelist_count").Scan(&freed); err != nil {
-		t.Fatalf("freelist_count after vacuum: %v", err)
+		t.Fatalf("freelist_count after reclaim: %v", err)
 	}
 	if freed != 0 {
-		t.Fatalf("expected empty freelist after vacuum, got %d pages", freed)
+		t.Fatalf("expected empty freelist after reclaim, got %d pages", freed)
+	}
+	// Under WAL the truncation lands in the WAL; the main file shrinks
+	// when a checkpoint moves it back, which is why the sweep
+	// checkpoints after reclaiming.
+	if err := s.PassiveCheckpoint(); err != nil {
+		t.Fatalf("checkpoint after reclaim: %v", err)
+	}
+	sizeAfter, err := fileSize(s.path)
+	if err != nil {
+		t.Fatalf("size after: %v", err)
+	}
+	if sizeAfter >= sizeBefore {
+		t.Fatalf("file did not shrink: %d -> %d bytes", sizeBefore, sizeAfter)
+	}
+
+	// The store still works afterwards.
+	if err := s.SetUIState("client:test", map[string]string{"k": "v"}); err != nil {
+		t.Fatalf("write after reclaim: %v", err)
+	}
+}
+
+func TestReclaimFreeSpaceStopsOnCancel(t *testing.T) {
+	s := newTestStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	reclaimed, err := s.reclaimFreeSpace(ctx, time.Millisecond, 0, 0)
+	if err != nil {
+		t.Fatalf("cancelled reclaim must not be an error: %v", err)
+	}
+	if reclaimed != 0 {
+		t.Fatalf("cancelled reclaim moved %d pages", reclaimed)
+	}
+}
+
+func TestReclaimFreeSpaceIsNoOpWithoutIncrementalAutoVacuum(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.sqlite")
+	mustSeedLegacyDatabase(t, path)
+	s, err := New(path)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	defer s.Close()
+
+	if mode, err := s.AutoVacuumMode(); err != nil || mode != AutoVacuumNone {
+		t.Fatalf("auto_vacuum = %v (%v), want none: migrations must not convert an existing file", mode, err)
+	}
+	reclaimed, err := s.reclaimFreeSpace(context.Background(), time.Millisecond, 0, 0)
+	if err != nil {
+		t.Fatalf("reclaim on a none database: %v", err)
+	}
+	if reclaimed != 0 {
+		t.Fatalf("reclaimed %d pages on an auto_vacuum=none database", reclaimed)
+	}
+}
+
+func TestDeleteThreadPacedPausesBetweenChunks(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t1")
+
+	// Two full chunks plus a remainder, so the drain runs three chunks
+	// and pauses between them.
+	const items = deleteThreadItemChunk*2 + 7
+	now := time.Now().UnixMilli()
+	for i := 0; i < items; i++ {
+		if err := s.InsertItem(Item{
+			ID: fmt.Sprintf("i%d", i), ThreadID: "t1", TurnIndex: 0, ItemIndex: i,
+			Kind: "user_text", Role: "user", Summary: "x", CreatedAt: now,
+		}); err != nil {
+			t.Fatalf("insert item %d: %v", i, err)
+		}
+	}
+
+	pauses := 0
+	if err := s.DeleteThreadPaced("t1", func() { pauses++ }); err != nil {
+		t.Fatalf("paced delete: %v", err)
+	}
+	if pauses != 2 {
+		t.Fatalf("pause called %d times, want 2 (once between each pair of chunks)", pauses)
+	}
+	var remaining int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM items WHERE thread_id = 't1'`).Scan(&remaining); err != nil {
+		t.Fatalf("count items: %v", err)
+	}
+	if remaining != 0 {
+		t.Fatalf("%d items left after paced delete", remaining)
+	}
+	if _, err := s.GetThread("t1"); err == nil {
+		t.Fatal("thread row survived paced delete")
 	}
 }
 

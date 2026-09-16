@@ -48,6 +48,12 @@ func (s *Store) SnapshotTo(destPath string) error {
 // client's replica invalidation circuit open (the exact failure the
 // generation exists to prevent).
 func (s *Store) RestoreFrom(srcPath string) (identity Identity, retErr error) {
+	// The copy below toggles foreign_keys and attaches a second database
+	// on the writer connection and relies on the whole sequence running
+	// on that one connection. fileMu keeps the conversion swap, which
+	// retires that connection, from running underneath it.
+	s.fileMu.Lock()
+	defer s.fileMu.Unlock()
 	if _, err := os.Stat(srcPath); err != nil {
 		return Identity{}, fmt.Errorf("store: snapshot source: %w", err)
 	}

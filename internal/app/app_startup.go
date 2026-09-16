@@ -211,9 +211,22 @@ func (a *App) startUnattendedWork() error {
 	// doesn't require a restart. See app_retention_cleanup.go.
 	//
 	// It prunes on-disk side effects — attachments, dated log files, bug
-	// report bookmarks — which no database snapshot restores, and its first
-	// sweep is 30 seconds in, well inside a trial's budget.
+	// report bookmarks — which no database snapshot restores. The first
+	// sweep waits for the app to settle rather than firing on a timer;
+	// the gate is in awaitRetentionSettled.
 	a.startRetentionCleanup()
+
+	// Start the one-time auto_vacuum conversion scheduler. It watches
+	// for an idle moment to rebuild a pre-incremental database file so
+	// retention can hand freed pages back to the filesystem, then exits
+	// for good. Databases already on incremental auto-vacuum, which is
+	// every database this build creates, stop it on its first check.
+	//
+	// Behind the activation gate because the rebuild writes a snapshot
+	// beside the database and renames the old file aside: both sit
+	// outside the snapshot triple, so a rollback would leave them until
+	// the next boot clears them. See app_store_maintenance.go.
+	a.startStoreMaintenance()
 
 	// Watch the provider binaries for an upgrade under a running app: a
 	// quiet tick is two stats, and a changed file re-reads the version,

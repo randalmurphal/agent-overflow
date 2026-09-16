@@ -1651,6 +1651,20 @@ func runMigrations(db *sql.DB) error {
 }
 
 func configureDatabase(db *sql.DB) error {
+	// auto_vacuum before anything creates a table. It is a property of
+	// the database FILE, written into its header when the first table is
+	// created, and after that a plain PRAGMA cannot change it: on a
+	// database that already has tables this statement is a silent no-op,
+	// which is exactly what existing databases should get. They keep
+	// auto_vacuum=none until ConvertToIncrementalVacuum rebuilds them.
+	//
+	// Incremental is what lets ReclaimFreeSpace hand freed pages back to
+	// the filesystem in 128-page steps instead of rewriting the whole
+	// database with VACUUM. It costs a pointer map; measured on this
+	// schema, large deletes run at the same speed as without it.
+	if _, err := db.Exec("PRAGMA auto_vacuum=INCREMENTAL"); err != nil {
+		return fmt.Errorf("set auto_vacuum: %w", err)
+	}
 	// PRAGMA journal_mode=WAL returns the resulting mode even on
 	// success; SQLite silently falls back to the previous journal mode
 	// when WAL can't be enabled (NFS filesystems, read-only mounts,

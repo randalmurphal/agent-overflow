@@ -106,7 +106,16 @@ an atomic persistence decision; they must not become a business-logic layer.
 - Put connection-scoped PRAGMAs in the DSN. A post-open `Exec` does not cover
   replacement pooled connections. Keep boot verification for required PRAGMAs.
 - `TruncateCheckpoint` quiesces readers and reports contention through
-  `CheckpointResult.Busy`; checking only the error is insufficient.
+  `CheckpointResult.Busy`; checking only the error is insufficient. Quiescing
+  stalls every read, so it stays at boot and `Close`, never on a sweep.
+- Do not run a plain `VACUUM` on the live database; `VACUUM INTO`, which
+  `SnapshotTo` uses, is online-safe. Free space is reclaimed by
+  `ReclaimFreeSpace` in paced
+  `incremental_vacuum` chunks, and an existing database is converted to
+  incremental auto-vacuum by `ConvertToIncrementalVacuum`. Read
+  [sqlite-store.md](../../docs/architecture/sqlite-store.md#free-space) before
+  changing either, or before adding an operation that replaces or reopens the
+  database file.
 
 ## Testing
 

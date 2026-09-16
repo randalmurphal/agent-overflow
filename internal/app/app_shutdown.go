@@ -243,6 +243,13 @@ func (a *App) Shutdown(ctx context.Context) error {
 	a.stopRetentionCleanup()
 	record("stop retention cleanup", nil)
 
+	// Step 3c2: stop the auto_vacuum conversion scheduler. It replaces
+	// the database file under both pools, so it must be joined before
+	// Step 9's store close. Idempotent and blocks until the goroutine
+	// returns.
+	a.stopStoreMaintenance()
+	record("stop store maintenance", nil)
+
 	// Step 3d: stop the background `git fetch` cadence. Each pass reads
 	// the project list from SQLite, so it must be joined before Step 9's
 	// store close; it spawns git subprocesses, so leaving it running

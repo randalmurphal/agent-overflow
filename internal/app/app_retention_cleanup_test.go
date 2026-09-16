@@ -1,10 +1,12 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -227,6 +229,7 @@ func TestStartRetentionCleanupExitsOnStop(t *testing.T) {
 
 func TestRunRetentionThreadSweepIsRaceFreeUnderChurn(t *testing.T) {
 	app := retentionTestApp(t)
+	app.maintenance.chunkPause = time.Millisecond
 	if _, err := app.settings.Update(map[string]any{
 		"retention": map[string]any{"days": 30},
 	}); err != nil {
@@ -308,25 +311,23 @@ func TestRunRetentionThreadSweepCancelsOnShutdownFlag(t *testing.T) {
 	}
 }
 
-// TestRunRetentionThreadSweepAbortsMidBatchOnShutdown drives enough
-// stale threads through the sweep to cross at least one polling
-// boundary, then flips shuttingDown from inside stopSessionFn so the
-// next boundary trips. Asserts the sweep returns at exactly the
-// polling boundary rather than draining the rest.
-func TestRunRetentionThreadSweepAbortsMidBatchOnShutdown(t *testing.T) {
+// TestRunRetentionThreadSweepAbortsAtTheNextThreadOnShutdown pins the
+// abort contract the pacing requires: every iteration costs at least one
+// pause, so the shutdown poll runs per thread rather than per batch.
+func TestRunRetentionThreadSweepAbortsAtTheNextThreadOnShutdown(t *testing.T) {
 	app := retentionTestApp(t)
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	cutoffMs := now.UnixMilli()
 
-	const seeded = retentionShutdownCheckEvery*2 + 1 // 101 with current constant
+	const seeded = 5
 	for i := 0; i < seeded; i++ {
 		seedThread(t, app, fmt.Sprintf("mb-%03d", i), 0)
 	}
 
 	// Flip shuttingDown from inside deleteThreadTreeLocked (it calls
-	// stopSessionFn for any tracked session; we hook the same path
-	// even though our test threads have no live session). The flag is
-	// then visible to the next polling boundary check at i = N.
+	// stopSessionFn for any tracked session; we hook the same path even
+	// though our test threads have no live session), so the flag is
+	// visible to the next iteration's check.
 	var calls int
 	app.stopSessionFn = func(string) error {
 		calls++
@@ -341,24 +342,195 @@ func TestRunRetentionThreadSweepAbortsMidBatchOnShutdown(t *testing.T) {
 	if failed != 0 {
 		t.Fatalf("unexpected failures: %d", failed)
 	}
-	// shuttingDown is set during iteration 0's delete; the poll fires
-	// next at i = retentionShutdownCheckEvery, which trips and returns.
-	// That means iterations 0..N-1 ran, so deleted == N.
-	if deleted != retentionShutdownCheckEvery {
-		t.Fatalf("deleted=%d, want %d (polling boundary abort)", deleted, retentionShutdownCheckEvery)
+	if deleted != 1 {
+		t.Fatalf("deleted=%d, want 1 (abort at the next thread boundary)", deleted)
 	}
-	// And the corresponding number of threads survived. We don't know
-	// which specific ids because ThreadIDsOlderThan returns rows in a
-	// tie-break order the test doesn't constrain — what matters is the
-	// count, which is what the abort contract delivers.
 	survived := 0
 	for i := 0; i < seeded; i++ {
-		id := fmt.Sprintf("mb-%03d", i)
-		if _, err := app.store.GetThread(id); err == nil {
+		if _, err := app.store.GetThread(fmt.Sprintf("mb-%03d", i)); err == nil {
 			survived++
 		}
 	}
-	if want := seeded - retentionShutdownCheckEvery; survived != want {
-		t.Fatalf("survived=%d, want %d (= seeded - polled boundary)", survived, want)
+	if want := seeded - 1; survived != want {
+		t.Fatalf("survived=%d, want %d", survived, want)
+	}
+}
+
+// TestRunRetentionThreadSweepPacesItsWrites proves the sweep yields
+// between write chunks: the store delete calls the pause hook between
+// item chunks, and the sweep pauses between threads.
+func TestRunRetentionThreadSweepPacesItsWrites(t *testing.T) {
+	app := retentionTestApp(t)
+	app.maintenance.chunkPause = 20 * time.Millisecond
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	cutoffMs := now.UnixMilli()
+	seedThread(t, app, "p-1", 0)
+	seedThread(t, app, "p-2", 0)
+
+	start := time.Now()
+	deleted, failed := app.runRetentionThreadSweep(cutoffMs)
+	elapsed := time.Since(start)
+	if deleted != 2 || failed != 0 {
+		t.Fatalf("deleted=%d failed=%d, want 2/0", deleted, failed)
+	}
+	if elapsed < 20*time.Millisecond {
+		t.Fatalf("sweep of two threads took %s, expected a pause between them", elapsed)
+	}
+}
+
+func TestRetentionPauseSkippedWhileShuttingDown(t *testing.T) {
+	app := retentionTestApp(t)
+	app.maintenance.chunkPause = 2 * time.Second
+	app.shuttingDown.Store(true)
+	defer app.shuttingDown.Store(false)
+
+	start := time.Now()
+	app.retentionPause()
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("pause waited %s during shutdown; a quit must not wait out the pacing", elapsed)
+	}
+}
+
+// TestRetentionSettledGate pins what defers the first sweep: uptime and
+// live turns, not a fixed timer.
+func TestRetentionSettledGate(t *testing.T) {
+	app := retentionTestApp(t)
+	app.maintenance.settleUptime = time.Minute
+
+	if app.retentionSettled(30 * time.Second) {
+		t.Fatal("the first sweep must not run inside the settle window")
+	}
+	if !app.retentionSettled(2 * time.Minute) {
+		t.Fatal("an idle app past the settle window is settled")
+	}
+
+	liveness := newSessionLiveness(time.Now())
+	liveness.ActiveTurns.Store(1)
+	app.sessionManager().put("live-thread", session{Liveness: liveness})
+	defer app.sessionManager().take("live-thread")
+	if app.retentionSettled(2 * time.Minute) {
+		t.Fatal("the first sweep must not run while a turn is live")
+	}
+	liveness.ActiveTurns.Store(0)
+	if !app.retentionSettled(2 * time.Minute) {
+		t.Fatal("the sweep is settled once the turn ends")
+	}
+}
+
+func TestAwaitRetentionSettledReturnsOnStop(t *testing.T) {
+	app := retentionTestApp(t)
+	app.maintenance.settleUptime = time.Hour
+	app.maintenance.settlePoll = time.Millisecond
+
+	stop := make(chan struct{})
+	done := make(chan bool, 1)
+	go func() { done <- app.awaitRetentionSettled(stop) }()
+	close(stop)
+	select {
+	case settled := <-done:
+		if settled {
+			t.Fatal("a stopped gate must not report settled")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("awaitRetentionSettled did not return on stop")
+	}
+}
+
+// TestStartRetentionCleanupWaitsForTheSettledGate drives the real
+// goroutine with a shortened gate and an advancing clock.
+func TestStartRetentionCleanupWaitsForTheSettledGate(t *testing.T) {
+	app := retentionTestApp(t)
+	if _, err := app.settings.Update(map[string]any{
+		"retention": map[string]any{"days": 30},
+	}); err != nil {
+		t.Fatalf("settings.Update: %v", err)
+	}
+	app.maintenance.settlePoll = time.Millisecond
+	app.maintenance.settleUptime = 10 * time.Millisecond
+	app.maintenance.chunkPause = time.Millisecond
+
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	var clock atomic.Int64
+	clock.Store(base.UnixMilli())
+	app.retentionNowFn = func() time.Time {
+		return time.UnixMilli(clock.Add(5))
+	}
+	seedThread(t, app, "stale", 0)
+
+	app.startRetentionCleanup()
+	defer app.stopRetentionCleanup()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := app.store.GetThread("stale"); err != nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the first sweep never ran after the settle gate opened")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestRunRetentionSweepReclaimsFreeSpaceWithRetentionDisabled pins the
+// split between the two halves of a tick. Retention.Days is the TTL for
+// deletes; the freelist left behind by deletes the user made by hand is
+// reclaimed on the same schedule whether or not the TTL is on.
+func TestRunRetentionSweepReclaimsFreeSpaceWithRetentionDisabled(t *testing.T) {
+	app := retentionTestApp(t)
+	if _, err := app.settings.Update(map[string]any{
+		"retention": map[string]any{"days": 0},
+	}); err != nil {
+		t.Fatalf("settings.Update: %v", err)
+	}
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	app.retentionNowFn = func() time.Time { return now }
+	seedThread(t, app, "ancient", now.Add(-10*365*24*time.Hour).UnixMilli())
+
+	var calls int
+	var gotPause time.Duration
+	app.maintenance.chunkPause = 7 * time.Millisecond
+	app.reclaimFreeSpaceFn = func(ctx context.Context, pause time.Duration) (int64, error) {
+		calls++
+		gotPause = pause
+		if ctx == nil {
+			t.Error("reclaim got a nil context")
+		}
+		return 12, nil
+	}
+
+	app.runRetentionSweep(now)
+
+	if calls != 1 {
+		t.Fatalf("reclaim called %d times with retention off, want 1", calls)
+	}
+	if gotPause != 7*time.Millisecond {
+		t.Fatalf("reclaim pause = %s, want the sweep's chunk pause", gotPause)
+	}
+	if _, err := app.store.GetThread("ancient"); err != nil {
+		t.Fatalf("retention is off, so nothing may be deleted: %v", err)
+	}
+}
+
+// TestReclaimStoreFreeSpaceSkippedWhileShuttingDown keeps the quit free
+// of the reclaim loop's pacing.
+func TestReclaimStoreFreeSpaceSkippedWhileShuttingDown(t *testing.T) {
+	app := retentionTestApp(t)
+	var calls int
+	app.reclaimFreeSpaceFn = func(context.Context, time.Duration) (int64, error) {
+		calls++
+		return 0, nil
+	}
+
+	app.reclaimStoreFreeSpace()
+	if calls != 1 {
+		t.Fatalf("reclaim called %d times, want 1", calls)
+	}
+
+	app.shuttingDown.Store(true)
+	app.reclaimStoreFreeSpace()
+	if calls != 1 {
+		t.Fatalf("reclaim called %d times, want no call during shutdown", calls)
 	}
 }

@@ -6,14 +6,18 @@ chain. See [schema.md](schema.md) for table ownership.
 
 ## Connections
 
-The store uses one writer connection for writes, migrations, restore,
-checkpoint, and `VACUUM`. A small `query_only` pool serves ordinary reads from
-WAL snapshots. In-memory and non-WAL databases use the writer for reads.
+The store uses one writer connection for writes, migrations, restore, and
+checkpoints. A small `query_only` pool serves ordinary reads from WAL
+snapshots. In-memory and non-WAL databases use the writer for reads.
 
 Connection-scoped PRAGMAs belong in the DSN assembled by `dsn.go`. Applying
 them once with `Exec` is unsafe because `database/sql` may replace a pooled
 connection. `verifyConnPragmas` checks the required values at startup because
 SQLite accepts unknown PRAGMA names without reporting a typo.
+
+Both pools open through `conngate.go`, which interposes on the driver's
+`Connect`. The conversion swap holds that gate so no replacement connection can
+attach to a file it is about to rename away.
 
 Reads that depend on connection-local state, including attached restore
 databases and PRAGMA probes, use `s.db`. Helpers that may run either directly or
@@ -167,11 +171,80 @@ include a negative control when practical.
 ## WAL maintenance
 
 Passive checkpoints recycle WAL pages but do not shrink the file.
-`TruncateCheckpoint` runs when reader quiescence is cheap: after migration at
-boot, during `Store.Close` after the read pool closes, and after retention
-`VACUUM`.
+`TruncateCheckpoint` needs every reader gone, so it quiesces the read pool and
+routes reads onto the writer for its duration. That makes one stalled reader a
+stall for every reader, so it runs only where quiescence is structurally free:
+after migration at boot, and during `Store.Close` after the read pool closes.
+It does not belong on a user-facing path or in a periodic sweep.
 
 SQLite reports a blocked truncate checkpoint as a result row. Callers must
-inspect `CheckpointResult.Busy` as well as the error. The store quiesces its
-read pool before truncate checkpoint and `VACUUM`; new hot-path callers should
-use passive checkpointing.
+inspect `CheckpointResult.Busy` as well as the error.
+
+## Free space
+
+Deleted rows leave pages on the freelist. Later writes reuse them, so a
+database with a large freelist does not keep growing, but nothing returns the
+space to the filesystem on its own.
+
+Under WAL, `VACUUM` blocks no readers, but it blocks every write for as long as
+it takes to rewrite the database (measured: 10-17 s on 4.4 GB), grows the WAL by
+about the size of the database, and needs roughly twice the live size on disk.
+It is not run by the application.
+
+`ReclaimFreeSpace` shrinks the file instead by looping
+`PRAGMA incremental_vacuum(128)` on the writer with a pause between chunks.
+Each chunk is its own implicit transaction, so a concurrent writer waits at
+most one chunk and readers are unaffected. Measured on 4.4 GB: 97 ms per chunk
+worst case, 79 ms worst-case writer wait, 8 MB WAL peak, no extra disk. Larger
+chunks push writers past 100 ms; do not raise the chunk size. The freelist
+thresholds (64 MB and 20%) gate the work, and cancelling the context stops it
+at a chunk boundary because reclamation has no deadline. Under WAL the
+shortened database lands in the WAL, so the file itself shrinks at the next
+checkpoint.
+
+`incremental_vacuum` needs `auto_vacuum=incremental`, which is a property of the
+file, fixed when its first table is created. `configureDatabase` sets it before
+the schema exists, so every database this build creates has it; on an existing
+database the same statement is a silent no-op, and so is `incremental_vacuum`
+itself. `ReclaimFreeSpace` therefore checks the mode and reports an
+unconvertible database once rather than appearing to work.
+
+## Converting an existing database
+
+`ConvertToIncrementalVacuum` rebuilds a pre-incremental file as a snapshot swap
+rather than with `VACUUM`:
+
+1. `VACUUM INTO` a `.incremental.tmp` beside the database, from a dedicated
+   connection carrying `auto_vacuum=INCREMENTAL`. Readers and writers are
+   unaffected. The snapshot is then given WAL mode and checked for schema
+   version and mode.
+2. Take the writer connection, quiesce and drain the read pool, and re-read
+   `PRAGMA data_version` on the snapshot's connection. `VACUUM INTO` copies the
+   database as of the start of its read transaction, so any commit during it is
+   missing from the copy; a changed value means the result is `ConvertNotQuiet`
+   and the snapshot is deleted.
+3. Truncate-checkpoint on the held writer, retire it with
+   `Conn.Raw` returning `driver.ErrBadConn`, drop the read pool's connections
+   with `SetMaxIdleConns(0)`, and confirm the database's `-wal` and `-shm` are
+   gone. SQLite deletes both when the last connection closes, so their absence
+   is the proof that no connection, in this process or another, still holds the
+   file. Then rename the old file aside, rename the snapshot into place, and
+   release the gate. Both pools reopen lazily against the same path.
+
+The outgoing file is unlinked after the swap is visible, because unlinking a
+multi-gigabyte file costs about as much as the swap itself. The measured
+blocked window is a few milliseconds.
+
+Crash safety is by file state, repaired in `Store.New` before anything opens the
+database: a leftover `.incremental.tmp` is always stale and is removed, a
+`.replaced` beside a live database is removed, and a `.replaced` with no live
+database is the whole database and is renamed back.
+
+`RestoreFrom` and the conversion share `fileMu`. Restore depends on a sequence
+of statements landing on one writer connection, and the swap retires that
+connection.
+
+`CommitWatcher` owns a connection of its own because `PRAGMA data_version` only
+reports other connections' commits and is comparable only against an earlier
+read from the same connection. Close it before converting; an open connection
+refuses the swap.

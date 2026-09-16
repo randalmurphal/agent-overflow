@@ -19,11 +19,11 @@ import (
 // Store wraps SQLite and provides all persistence operations.
 //
 // Two pools back it. db is the single-connection writer: every write,
-// migration, snapshot restore, checkpoint, and vacuum runs there, which
-// is what lets RestoreFrom's temporary foreign_keys toggle behave as if
-// it were global. The connection-scoped PRAGMAs both pools depend on
-// (foreign_keys, busy_timeout, synchronous, query_only) ride the DSN so
-// they survive connection recycling — see dsn.go.
+// migration, snapshot restore, checkpoint and space reclamation runs
+// there, which is what lets RestoreFrom's temporary foreign_keys toggle
+// behave as if it were global. The connection-scoped PRAGMAs both pools
+// depend on (foreign_keys, busy_timeout, synchronous, query_only) ride
+// the DSN so they survive connection recycling — see dsn.go.
 //
 // read is a small read-only pool so UI reads run
 // against WAL snapshots instead of queuing behind streaming flush
@@ -37,9 +37,27 @@ import (
 type Store struct {
 	db   *sql.DB
 	read *sql.DB
-	// readsQuiesced routes reads back to the writer pool while VACUUM
-	// needs the exclusive lock — see quiesceReads.
+	// path is the database file both pools are opened against, or
+	// ":memory:". ConvertToIncrementalVacuum needs it to place its
+	// snapshot beside the live file and to swap the two.
+	path string
+	// gate holds new physical connections off while the database file
+	// is being replaced. Both pools open through it; see connGate.
+	gate *connGate
+	// fileMu serializes the operations that own the whole database file
+	// or the writer connection's local state across several statements:
+	// RestoreFrom and ConvertToIncrementalVacuum. Ordinary accessors do
+	// not take it.
+	fileMu sync.Mutex
+	// readsQuiesced routes reads back to the writer pool while an
+	// operation needs the database to itself — see quiesceReads.
 	readsQuiesced atomic.Bool
+	// convertHooks are test-only seams inside the conversion swap.
+	convertHooks convertHooks
+	// reclaimUnavailableOnce keeps ReclaimFreeSpace's "this database
+	// predates incremental auto-vacuum" report to one line per process
+	// instead of one per sweep.
+	reclaimUnavailableOnce sync.Once
 	// Native import and transfer preparation serialize before publishing an AO
 	// alias or reserving its provider identity. Entries reclaim themselves.
 	nativeLocksOnce sync.Once
@@ -49,7 +67,11 @@ type Store struct {
 // New opens (or creates) the SQLite database at the given path and runs migrations.
 // Pass ":memory:" for tests.
 func New(dbPath string) (*Store, error) {
-	db, err := sql.Open("sqlite", poolDSN(dbPath, writerConnPragmas))
+	if err := recoverInterruptedSwap(dbPath); err != nil {
+		return nil, err
+	}
+	gate := &connGate{}
+	db, err := openPool(dbPath, writerConnPragmas, gate)
 	if err != nil {
 		return nil, fmt.Errorf("store: open database: %w", err)
 	}
@@ -64,7 +86,7 @@ func New(dbPath string) (*Store, error) {
 		return nil, err
 	}
 
-	s := &Store{db: db}
+	s := &Store{db: db, path: dbPath, gate: gate}
 
 	// Reclaim the WAL file before anything can read from it. Every other
 	// checkpoint the app runs is PASSIVE, which recycles WAL pages for
@@ -79,7 +101,7 @@ func New(dbPath string) (*Store, error) {
 	bootCheckpoint, bootErr := s.TruncateCheckpoint()
 	s.logCheckpoint("boot", bootCheckpoint, bootErr)
 
-	if read, err := openReadPool(db, dbPath); err != nil {
+	if read, err := openReadPool(db, dbPath, gate); err != nil {
 		db.Close()
 		return nil, err
 	} else {
@@ -93,7 +115,7 @@ func New(dbPath string) (*Store, error) {
 // database is in-memory or WAL didn't take. Never returns a non-nil
 // pool that hasn't served a probe query: a read pool that cannot read
 // is a config error worth failing startup over.
-func openReadPool(db *sql.DB, dbPath string) (*sql.DB, error) {
+func openReadPool(db *sql.DB, dbPath string, gate *connGate) (*sql.DB, error) {
 	if dbPath == ":memory:" || strings.Contains(dbPath, "mode=memory") {
 		return nil, nil
 	}
@@ -110,12 +132,12 @@ func openReadPool(db *sql.DB, dbPath string) (*sql.DB, error) {
 	// _pragma values apply per connection (verified against
 	// modernc.org/sqlite v1.56.0). journal_mode is a property of the
 	// database file, so read connections inherit WAL.
-	read, err := sql.Open("sqlite", poolDSN(dbPath, readerConnPragmas))
+	read, err := openPool(dbPath, readerConnPragmas, gate)
 	if err != nil {
 		return nil, fmt.Errorf("store: open read pool: %w", err)
 	}
-	read.SetMaxOpenConns(4)
-	read.SetMaxIdleConns(4)
+	read.SetMaxOpenConns(readPoolConns)
+	read.SetMaxIdleConns(readPoolConns)
 	var probe int
 	if err := read.QueryRow("SELECT 1").Scan(&probe); err != nil {
 		read.Close()
@@ -146,10 +168,15 @@ func (s *Store) reader() *sql.DB {
 
 // quiesceReads routes new reads to the writer pool, waits for in-flight
 // read-pool queries to drain, runs fn, then restores read-pool routing.
-// It exists for VACUUM: the exclusive lock it needs can never be starved
-// by the single writer pool, and quiescing preserves that property with
-// the read pool in play — during fn, every read queues behind the writer
-// exactly as it did when the store held one connection.
+//
+// It exists for the two operations that need no open read transaction on
+// the database: PRAGMA wal_checkpoint(TRUNCATE), which reports Busy and
+// reclaims nothing while any reader holds a mark, and the
+// ConvertToIncrementalVacuum file swap, which must leave no connection on
+// the old file. Reads are not quiesced for space reclamation:
+// incremental_vacuum runs as ordinary short write transactions.
+//
+// During fn every read queues behind the writer, so fn must be short.
 // readQuiesceSettleTick is both the drain poll interval and the one-tick
 // pause quiesceReads takes before its first poll. See the comment there.
 const readQuiesceSettleTick = 5 * time.Millisecond
@@ -181,7 +208,9 @@ func (s *Store) quiesceReads(fn func() error) error {
 	// either it waits out fn's exclusive lock or fn waits out its read
 	// mark, and whichever waits is absorbed by `busy_timeout`. Nothing
 	// reads torn state, nothing is written twice, and the cost is a
-	// microsecond-scale stall on a path that already runs a VACUUM.
+	// microsecond-scale stall on a path that already runs a checkpoint.
+	// The file swap does not rely on this mitigation: it verifies that
+	// both pools hold zero connections before it renames anything.
 	time.Sleep(readQuiesceSettleTick)
 
 	// In-flight read-pool work is short — single statements, plus the
@@ -267,9 +296,11 @@ type CheckpointResult struct {
 // The cost is exclusivity: TRUNCATE waits for every reader to finish
 // (measured: an open read transaction costs the full busy_timeout and
 // then returns Busy with nothing reclaimed), so it runs inside
-// quiesceReads like VACUUM does — in-flight read-pool queries drain and
-// new reads route to the writer for the duration. Callers pick the
-// moment; it does not belong on a user-facing path.
+// quiesceReads — in-flight read-pool queries drain and new reads route
+// to the writer for the duration. That makes a stalled reader a stall
+// for every reader, so this runs only where quiescence is structurally
+// free: after migration at boot and during Close after the read pool is
+// gone. It does not belong on a user-facing path or in a periodic sweep.
 func (s *Store) TruncateCheckpoint() (CheckpointResult, error) {
 	var res CheckpointResult
 	err := s.quiesceReads(func() error {
@@ -298,56 +329,6 @@ func (s *Store) logCheckpoint(moment string, res CheckpointResult, err error) {
 	case res.Busy:
 		log.Printf("store: %s WAL checkpoint blocked by an open read; %d frames left in the WAL", moment, res.WALFrames)
 	}
-}
-
-// Freed pages accumulate on the freelist forever (auto_vacuum is off —
-// measured 3.8x slower large deletes from pointer-map maintenance), so
-// space is reclaimed with a plain VACUUM at controlled moments instead.
-// The two thresholds gate that: both must hold before a VACUUM is worth
-// its cost (an exclusive lock for roughly a second per live GB). The
-// fraction keeps a mostly-live file from being rewritten to reclaim
-// scraps; the absolute floor keeps small databases from vacuuming over
-// megabytes.
-const (
-	vacuumMinFreelistFraction = 0.2
-	vacuumMinFreelistBytes    = 64 << 20
-)
-
-// VacuumIfFragmented runs VACUUM when the freelist exceeds both
-// thresholds above, and reports whether it ran. Callers pick the
-// moment: VACUUM takes an exclusive lock for its duration and briefly
-// needs up to twice the live data size on disk, so it belongs after a
-// sweep that actually deleted history, never on a user-facing path.
-func (s *Store) VacuumIfFragmented() (bool, error) {
-	return s.vacuumIfFragmented(vacuumMinFreelistBytes, vacuumMinFreelistFraction)
-}
-
-func (s *Store) vacuumIfFragmented(minFreeBytes int64, minFreeFraction float64) (bool, error) {
-	var pageSize, pageCount, freelistCount int64
-	for _, p := range []struct {
-		pragma string
-		dest   *int64
-	}{
-		{"page_size", &pageSize},
-		{"page_count", &pageCount},
-		{"freelist_count", &freelistCount},
-	} {
-		if err := s.db.QueryRow("PRAGMA " + p.pragma).Scan(p.dest); err != nil {
-			return false, fmt.Errorf("store: vacuum probe %s: %w", p.pragma, err)
-		}
-	}
-	if pageCount == 0 ||
-		freelistCount*pageSize < minFreeBytes ||
-		float64(freelistCount)/float64(pageCount) < minFreeFraction {
-		return false, nil
-	}
-	if err := s.quiesceReads(func() error {
-		_, err := s.db.Exec("VACUUM")
-		return err
-	}); err != nil {
-		return false, fmt.Errorf("store: vacuum: %w", err)
-	}
-	return true, nil
 }
 
 // runMigrations is defined in migrate.go.

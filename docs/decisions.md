@@ -35,6 +35,19 @@ workaround because it changes the sandbox boundary.
 Measurement methods and interpretation belong in
 [the performance reference](../.claude/skills/perf-investigation/REFERENCE.md).
 
+## Background maintenance
+
+Nothing the app does to maintain its own storage may be noticeable. No visible
+wait at boot, at quit or in use; no write stall beyond about 100 ms; no read
+stall at all. Maintenance work is paced into chunks that fit that budget and
+yields between them, and it is deferred until the app is settled rather than
+run on a fixed timer after launch. Reclaiming disk space has no deadline:
+freed pages are reused by later writes, so a pass that stops early or never
+qualifies costs nothing.
+
+`VACUUM` is not run by the application. Mechanisms and measurements are in
+[the SQLite store document](architecture/sqlite-store.md#free-space).
+
 ## Streaming and reveal
 
 - Nothing skips, rushes, or pops the readable reveal drain. A backlog-skip

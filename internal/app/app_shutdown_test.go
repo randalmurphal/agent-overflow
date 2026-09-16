@@ -260,6 +260,10 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		// a.sessions via stopSession; running it concurrently with
 		// Step 4's snapshotAndClear would race the session map.
 		"stop retention cleanup",
+		// "stop store maintenance" MUST appear before "close store" — the
+		// auto_vacuum conversion scheduler replaces the database file
+		// under both pools.
+		"stop store maintenance",
 		// "stop background git fetch" MUST appear before "close store" —
 		// every pass reads the project list out of SQLite. It sits here,
 		// with the other timer-driven loops, so teardown has exactly one
