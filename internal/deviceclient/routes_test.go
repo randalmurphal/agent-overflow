@@ -18,9 +18,17 @@ import (
 	"agent-overflow/internal/servercert"
 )
 
+// Root discovery probes are not operations on these route fixtures.
+func routeTestHandler(serve http.HandlerFunc) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/{$}", http.NotFound)
+	mux.HandleFunc("/", serve)
+	return mux
+}
+
 func candidateServer(t *testing.T, id string, serve func(http.ResponseWriter, *http.Request)) (*httptest.Server, computerroute.Route) {
 	t.Helper()
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(routeTestHandler(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/healthz" {
 			for _, key := range []string{SessionCredentialHeader, DeviceKeyHeader, "Authorization", "Cookie"} {
 				if r.Header.Get(key) != "" {
@@ -70,7 +78,7 @@ func TestComputerRoutesDistinguishBrokenUpgradeFromAuthentication(t *testing.T) 
 	for _, status := range []int{http.StatusNotFound, http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden} {
 		t.Run(strconv.Itoa(status), func(t *testing.T) {
 			var originalCalls, alternateCalls atomic.Int32
-			first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			first := httptest.NewServer(routeTestHandler(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/healthz" {
 					json.NewEncoder(w).Encode(map[string]string{"backendId": "backend-a"})
 				} else if r.Header.Get("Upgrade") == "websocket" {
@@ -115,7 +123,7 @@ func TestComputerRoutesDistinguishBrokenUpgradeFromAuthentication(t *testing.T) 
 }
 
 func TestComputerRouteRejectsURLCredentialsBeforeDialing(t *testing.T) {
-	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { t.Error("untrusted request reached the wire") }))
+	first := httptest.NewServer(routeTestHandler(func(w http.ResponseWriter, r *http.Request) { t.Error("untrusted request reached the wire") }))
 	t.Cleanup(first.Close)
 	client, _ := openAgainst(t, &backend{Server: first}, nil)
 	req, err := http.NewRequest(http.MethodGet, client.Endpoint()+"/next", nil)
@@ -130,7 +138,7 @@ func TestComputerRouteRejectsURLCredentialsBeforeDialing(t *testing.T) {
 
 func TestComputerRoutesSwitchWithoutReplayingACommittedRequest(t *testing.T) {
 	var operations atomic.Int32
-	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	first := httptest.NewServer(routeTestHandler(func(w http.ResponseWriter, r *http.Request) {
 		operations.Add(1)
 		connection, _, err := w.(http.Hijacker).Hijack()
 		if err != nil {
@@ -197,7 +205,7 @@ func TestComputerRoutesRefuseWrongIdentityPinAndRedirectBeforeCredentials(t *tes
 				candidate.CertFingerprint = "sha256:" + strings.Repeat("a", 64)
 			}
 			if kind == "redirect" {
-				redirect := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				redirect := httptest.NewTLSServer(routeTestHandler(func(w http.ResponseWriter, r *http.Request) {
 					http.Redirect(w, r, candidate.Endpoint+"/healthz", http.StatusTemporaryRedirect)
 				}))
 				t.Cleanup(redirect.Close)
@@ -229,7 +237,7 @@ func TestComputerRouteSelectionCoalescesAndDoesNotWaitForAStalledRoute(t *testin
 	var releaseOnce sync.Once
 	unblock := func() { releaseOnce.Do(func() { close(release) }) }
 	defer unblock()
-	healthy := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	healthy := httptest.NewTLSServer(routeTestHandler(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/healthz" {
 			if probes.Add(1) == 1 {
 				close(arrived)
@@ -246,7 +254,7 @@ func TestComputerRouteSelectionCoalescesAndDoesNotWaitForAStalledRoute(t *testin
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	t.Cleanup(healthy.Close)
-	stalled := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
+	stalled := httptest.NewTLSServer(routeTestHandler(func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
 	t.Cleanup(stalled.Close)
 	learnRoutes(t, client,
 		computerroute.Route{Endpoint: stalled.URL, CertFingerprint: servercert.Fingerprint(stalled.Certificate().Raw)},
@@ -288,7 +296,7 @@ func TestComputerRouteReusesAFlappedRouteWithoutWaitingForDeadCandidates(t *test
 	client, _ := openAgainst(t, first, nil)
 	var fail atomic.Bool
 	var served atomic.Int32
-	_, flapRoute := candidateServer(t, client.Session().BackendID, func(w http.ResponseWriter, r *http.Request) {
+	flapServer, flapRoute := candidateServer(t, client.Session().BackendID, func(w http.ResponseWriter, r *http.Request) {
 		if fail.Swap(false) {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
@@ -296,7 +304,7 @@ func TestComputerRouteReusesAFlappedRouteWithoutWaitingForDeadCandidates(t *test
 		served.Add(1)
 		w.WriteHeader(http.StatusNoContent)
 	})
-	stalled := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
+	stalled := httptest.NewTLSServer(routeTestHandler(func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
 	t.Cleanup(stalled.Close)
 	learnRoutes(t, client, flapRoute,
 		computerroute.Route{Endpoint: stalled.URL, CertFingerprint: servercert.Fingerprint(stalled.Certificate().Raw)})
@@ -308,6 +316,17 @@ func TestComputerRouteReusesAFlappedRouteWithoutWaitingForDeadCandidates(t *test
 		t.Fatalf("first selection: %v", err)
 	}
 	fail.Store(true) // One 500 marks the now-current route failed without changing its health.
+	// An unrelated discovery request must not consume the next operation's failure.
+	probe, err := flapServer.Client().Get(flapServer.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := probe.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if probe.StatusCode != http.StatusNotFound {
+		t.Fatalf("root probe status = %d, want 404", probe.StatusCode)
+	}
 	if err := routeRequest(client, http.MethodGet, "/next"); err != nil {
 		t.Fatalf("flapping answer: %v", err)
 	}
@@ -327,7 +346,7 @@ func TestComputerRoutesAllowColdVPNPath(t *testing.T) {
 	first := newBackend(t)
 	client, _ := openAgainst(t, first, nil)
 	var sent atomic.Int32
-	candidate := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	candidate := httptest.NewTLSServer(routeTestHandler(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/healthz" {
 			select {
 			case <-time.After(3 * time.Second):

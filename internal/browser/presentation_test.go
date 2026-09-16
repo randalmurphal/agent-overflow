@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -44,7 +45,8 @@ func TestPlacePageFitsDownCentersAndClips(t *testing.T) {
 	if !ok || placement.Scale != 300.0/900.0 {
 		t.Fatalf("height must bind: %+v ok=%v", placement, ok)
 	}
-	if r := placement.Rect; r.Width != 200 || r.Height != 300 || r.X != 400 || r.Y != 0 {
+	// The one-third scale can leave a subpixel centering remainder.
+	if r := placement.Rect; r.Width != 200 || r.Height != 300 || r.X != 400 || !(math.Abs(r.Y) < 1e-9) {
 		t.Fatalf("tall page fitted rect = %+v", r)
 	}
 

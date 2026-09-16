@@ -39,6 +39,11 @@ import {
   waitForGate,
 } from './agent-visibility-helpers.js';
 
+test.beforeEach(async ({ harness }) => {
+  // These assertions inspect delivery cards inside completed activity runs.
+  await harness.rpc('UpdateSettings', { activityRunDefault: 'expanded' });
+});
+
 const MID = 'Mid-stream note: the background scan is still running.';
 const FINAL =
   'Final summary after all three stop notifications: the background agent ' +

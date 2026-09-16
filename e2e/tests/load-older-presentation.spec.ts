@@ -5,6 +5,7 @@ import {
   type Page,
   type WebSocketRoute,
 } from '@playwright/test';
+import { gzipSync } from 'node:zlib';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { startCompositorTrace, summarizeCompositorWindow } from '../src/compositorTrace.js';
 
@@ -273,11 +274,17 @@ async function runCollision(
       for (let frame = 0; frame < 12; frame += 1) await new Promise(requestAnimationFrame);
     });
     await page.evaluate(() => performance.mark('ao-load-older-end'));
+    const trace = await compositorTrace.stop();
     const compositor = summarizeCompositorWindow(
-      await compositorTrace.stop(),
+      trace,
       'ao-load-older-start',
       'ao-load-older-end',
     );
+    if (compositor.missingTileSignals || compositor.checkerboardSignals || compositor.blankRenderPasses) {
+      await test.info().attach(`compositor-${disableSpinner ? 'control' : 'animated'}.json.gz`, {
+        body: gzipSync(JSON.stringify(trace)), contentType: 'application/gzip',
+      });
+    }
     expect(compositor.eventCount, 'trace must contain events during the prepend').toBeGreaterThan(0);
     expect(compositor.renderPasses, 'prepend must reach the compositor').toBeGreaterThan(0);
     expect(compositor.prepareDraws, 'prepend must produce compositor draws').toBeGreaterThan(0);
