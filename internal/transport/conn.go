@@ -807,13 +807,29 @@ func (h *connHandler) handlePresence(ctx context.Context, frame ClientFrame) {
 }
 
 // dispatchRPC enforces the per-conn concurrency cap and spawns a
-// handler goroutine. A blocked semaphore acquire waits for an
-// in-flight RPC to finish — back-pressuring the read loop instead of
-// queueing unbounded goroutines.
+// handler goroutine. The cap and the WaitGroup both stay: the first
+// bounds the goroutines one peer can create, the second lets teardown
+// wait for their responses.
+//
+// A full semaphore REFUSES the frame rather than waiting for a slot.
+// Waiting parked the read loop, and a parked read loop stops serving the
+// whole connection: no later RPC is dispatched, no subscribe, watch,
+// lease or presence frame is applied, and the client sees no error and no
+// close, and every click in every project is simply dead (a store
+// stall held 64 RPCs and took the connection with it). The cap exists to
+// bound concurrency on ONE call, so spending the connection to enforce it
+// is the wrong trade. An immediate client_overloaded names what happened,
+// settles the caller's promise, and leaves the reader free.
 func (h *connHandler) dispatchRPC(ctx context.Context, frame ClientFrame) {
 	select {
 	case h.rpcSem <- struct{}{}:
-	case <-ctx.Done():
+	default:
+		h.writeError(ctx, frame.ID, &FrameError{
+			Code: ErrCodeClientOverloaded,
+			Message: fmt.Sprintf(
+				"this connection already has %d RPCs in flight; the call was not started",
+				cap(h.rpcSem)),
+		})
 		return
 	}
 	h.rpcWG.Go(func() {

@@ -62,8 +62,12 @@ does not advertise until the launcher reports native state. See
 ## Lifetime, diagnostics, and build
 
 Preserve the backend lifetime guarantees in
-[`internal/wsllauncher`](../../internal/wsllauncher/AGENTS.md). Isolated
-profiles install host and WSL memory containment before WebView2 starts.
+[`internal/wsllauncher`](../../internal/wsllauncher/AGENTS.md). Window close
+asks the backend for a graceful shutdown over the authenticated bridge and
+waits out the exit budget; the Job Object kill is the fallback. Only a
+server-answered refusal skips the wait, because every other RPC failure may
+mean the request landed. Isolated profiles install host and WSL memory
+containment before WebView2 starts.
 Identity checks for WSL samples include PID, start time, and executable. Release
 a governor lease only after both sides are confirmed stopped.
 

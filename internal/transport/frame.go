@@ -483,6 +483,13 @@ const (
 	ErrCodeInternal               = "internal"
 	ErrCodeShuttingDown           = "shutting_down"
 	ErrCodeAuthFailed             = "auth_failed"
+	// ErrCodeClientOverloaded refuses an RPC this connection has no slot
+	// for: it already holds Config.MaxConcurrentRPCs in flight. The call
+	// was never started, so a client may reissue it once one of its own
+	// outstanding calls settles. The spelling is the frontend's own
+	// client-side cap code (wsClient.ts), so a caller branching on it
+	// reads one answer whichever side ran out of slots first.
+	ErrCodeClientOverloaded = "client_overloaded"
 )
 
 // AuthFailure builds the refusal envelope for a caller whose session

@@ -374,6 +374,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SetWSLDistroPreference", ID: 3978807241, Scope: "host", Route: "home", StepUp: true},                     // main.App.SetWSLDistroPreference
 	{Name: "SetWindowBackgroundColor", ID: 3648660014, Scope: "host", Route: "home"},                                 // main.App.SetWindowBackgroundColor
 	{Name: "SetWorkspaceMcpServerEnabled", ID: 2181574220, Scope: "settings:write", Route: "selected", StepUp: true}, // main.App.SetWorkspaceMcpServerEnabled
+	{Name: "ShutdownBackend", ID: 2115861089, Scope: "host", Route: "home"},                                          // main.App.ShutdownBackend
 	{Name: "StartCodexReview", ID: 1913732562, Scope: "threads:operate", Route: "thread"},                            // main.App.StartCodexReview
 	{Name: "StartDiscussion", ID: 3188309099, Scope: "threads:operate", Route: "thread"},                             // main.App.StartDiscussion
 	{Name: "StartDiscussionByID", ID: 2336869067, Scope: "threads:operate", Route: "thread"},                         // main.App.StartDiscussionByID

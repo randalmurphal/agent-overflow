@@ -18,6 +18,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -673,6 +674,10 @@ func runHeadless(listenAddr string, printURLFD int) {
 	// fully wired App.updater.handle / App.updater.wsl without a race. Gated at runtime
 	// on the Windows launcher having spawned us; a no-op otherwise.
 	appservice.InitWSLUpdater(appService.App, bootSettingsDir())
+	// The launcher closes its window by asking this backend to stop. This
+	// mode's shell is the signal wait below, so the door hands the request
+	// to that wait and the teardown a Ctrl-C would get runs unchanged.
+	shutdownRequested := armBackendShutdownDoor(appService)
 	// Inside WSL the launcher that started us also runs nativenetwork.Run,
 	// which reports the physical Windows LAN endpoints; the payload and the
 	// launcher ship as one artifact, so there is no launcher without the
@@ -730,7 +735,7 @@ func runHeadless(listenAddr string, printURLFD int) {
 		log.Printf("app: service startup: %v", err)
 		srv.MarkStartupFailed()
 		log.Printf("headless: startup failed; serving terminal bootstrap failure until shutdown")
-		waitForHeadlessShutdown(appService, srv)
+		waitForHeadlessShutdown(appService, srv, shutdownRequested)
 		return
 	}
 	logBootPhase("headless.service_startup", phaseStarted)
@@ -739,14 +744,39 @@ func runHeadless(listenAddr string, printURLFD int) {
 	srv.MarkReady()
 	logBootPhase("headless.mark_ready", phaseStarted)
 
-	waitForHeadlessShutdown(appService, srv)
+	waitForHeadlessShutdown(appService, srv, shutdownRequested)
 }
 
-func waitForHeadlessShutdown(appService *App, srv *transport.Server) {
-	waitForHeadlessShutdownOrRestart(appService, srv, nil)
+// armBackendShutdownDoor opens App.ShutdownBackend for a boot whose shell
+// is the signal wait below, and returns the channel that wait selects on.
+//
+// A channel rather than a self-signal: the wait already owns the ordered
+// teardown, and raising SIGTERM to reach it would route a fact this
+// process already knows through the OS. It also keeps the door honest on
+// Windows, which has no self-SIGTERM and whose terminateSelf exits the
+// process outright.
+//
+// Closed, not sent: a second request while the first teardown runs has to
+// be a no-op rather than a blocked RPC handler.
+func armBackendShutdownDoor(appService *App) <-chan struct{} {
+	requested := make(chan struct{})
+	var once sync.Once
+	appservice.ConfigureBackendShutdown(appService.App, func() error {
+		once.Do(func() { close(requested) })
+		return nil
+	})
+	return requested
 }
 
-func waitForHeadlessShutdownOrRestart(appService *App, srv *transport.Server, restart <-chan struct{}) bool {
+func waitForHeadlessShutdown(appService *App, srv *transport.Server, shutdown <-chan struct{}) {
+	waitForHeadlessShutdownOrRestart(appService, srv, nil, shutdown)
+}
+
+// waitForHeadlessShutdownOrRestart parks until something asks this backend
+// to stop: a signal, the supervisor's restart, or the authenticated
+// ShutdownBackend RPC. A nil channel never fires, which is how a boot that
+// offers neither door says so.
+func waitForHeadlessShutdownOrRestart(appService *App, srv *transport.Server, restart, shutdown <-chan struct{}) bool {
 	// Wait for SIGINT / SIGTERM. Wails' Run() handles this for us in
 	// the desktop path; here we own the loop directly.
 	sigCh := make(chan os.Signal, 1)
@@ -759,6 +789,8 @@ func waitForHeadlessShutdownOrRestart(appService *App, srv *transport.Server, re
 	case <-restart:
 		restarting = true
 		log.Printf("headless: restarting to resolve the supervisor's update result")
+	case <-shutdown:
+		log.Printf("headless: authenticated shutdown requested, shutting down")
 	}
 
 	shutdownHeadless(appService, srv)

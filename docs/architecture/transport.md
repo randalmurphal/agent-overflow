@@ -225,6 +225,12 @@ events use `type:"batch"`. Non-loopback connections may also negotiate
 permessage-deflate. Coalescing preserves channel sequence order and respects
 the configured event-count bound.
 
+Each connection caps its in-flight RPC handlers. Reaching the cap refuses the
+frame immediately with `client_overloaded` instead of parking the read loop:
+the reader keeps serving the connection's other frames, and the caller gets a
+settled rejection naming a call that never started. Connection teardown still
+waits for the handlers that did start.
+
 The server sends application-visible ping frames on the heartbeat cadence and
 periodically verifies a protocol pong while the reader is parked. Every write
 has a deadline. Close logs record peer, duration, and a specific server-side
@@ -307,5 +313,7 @@ The highest-value transport tests cover:
 - replay ordering, both directions of cursor gaps, subscriber overflow,
   entity filtering, and background coalescing;
 - blocked writers, keepalive timeout, session revocation during upgrade, and
-  cleanup races; and
+  cleanup races;
+- the in-flight RPC cap refusal and read-loop liveness while handlers are
+  parked; and
 - mixed-version hello, refusal, refresh, and additive-field compatibility.

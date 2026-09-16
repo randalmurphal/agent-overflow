@@ -186,6 +186,16 @@ func SetProviderExtraEnv(a *App, env map[string]string) {
 	a.providerExtraEnv = maps.Clone(env)
 }
 
+// ConfigureBackendShutdown installs the process-exit path ShutdownBackend
+// asks for. Call before Start.
+//
+// Only a boot whose shell IS a signal wait installs one, and it installs
+// its own signal: the ordered teardown a graceful exit needs (App.Shutdown,
+// the transport drain, the boot's own deferred cleanup) already hangs off
+// that wait, and a second path into it would be a second teardown order to
+// keep correct. Root owns process exit; this package only asks for it.
+func ConfigureBackendShutdown(a *App, request func() error) { a.backendShutdown = request }
+
 // ConfigureTransportNotifications installs the headless launcher bridge.
 func ConfigureTransportNotifications(a *App) {
 	a.osNotifications = newTransportNotificationSender(a)

@@ -147,7 +147,7 @@ func runServe(flags cliFlags) {
 		// into the same failure on a loop, and nobody would ever read the
 		// reason.
 		log.Printf("serve: startup failed; serving terminal bootstrap failure until shutdown")
-		if waitForHeadlessShutdownOrRestart(appService, srv, supervisor.restartRequested()) {
+		if waitForHeadlessShutdownOrRestart(appService, srv, supervisor.restartRequested(), nil) {
 			os.Exit(supervise.RestartForUpdateExitCode)
 		}
 		return
@@ -175,7 +175,7 @@ func runServe(flags cliFlags) {
 	// way it would at any other moment.
 	go runServeEnrollment(bootCtx, defaultServeConsole(), appEnrollment{app: appService}, serveEnrollmentPoll)
 
-	if waitForHeadlessShutdownOrRestart(appService, srv, supervisor.restartRequested()) {
+	if waitForHeadlessShutdownOrRestart(appService, srv, supervisor.restartRequested(), nil) {
 		os.Exit(supervise.RestartForUpdateExitCode)
 	}
 }

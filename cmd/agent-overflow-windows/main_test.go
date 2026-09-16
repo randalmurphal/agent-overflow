@@ -953,6 +953,40 @@ func TestProbeBootstrapAnsweredFailuresAreNotRetryable(t *testing.T) {
 
 // TestRetryWithFreshTransportPortIgnoresUnrelatedErrors keeps the
 // classifier from widening by accident: only the sentinel qualifies.
+// TestShutdownRequestLandedDistinguishesRefusalFromLostAnswer covers the
+// decision between waiting for a graceful exit and killing the backend.
+// The ambiguous branch is the load-bearing one: a graceful shutdown tears
+// down the very connection carrying its acknowledgement, so reading a lost
+// answer as "nothing happened" would kill the backend mid-teardown.
+func TestShutdownRequestLandedDistinguishesRefusalFromLostAnswer(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"acknowledged", nil, true},
+		{
+			"refused by a backend with no such method",
+			&wsllauncher.RPCRefusedError{Method: wsllauncher.RPCShutdownBackend, Code: "method_not_found", Message: "unknown"},
+			false,
+		},
+		{
+			"refused by a backend that owns no shutdown path",
+			&wsllauncher.RPCRefusedError{Method: wsllauncher.RPCShutdownBackend, Code: "method_error", Message: "no shutdown path"},
+			false,
+		},
+		{"bridge disconnected", wsllauncher.ErrNotificationBridgeDisconnected, true},
+		{"answer never arrived", errors.New("ShutdownBackend RPC: context deadline exceeded"), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shutdownRequestLanded(tc.err); got != tc.want {
+				t.Fatalf("shutdownRequestLanded(%v) = %t, want %t", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestRetryWithFreshTransportPortIgnoresUnrelatedErrors(t *testing.T) {
 	for _, err := range []error{nil, errors.New("boom"), errLaunchFailed, bootstrapHTTPError{StatusCode: 500, URL: "u"}} {
 		if retryWithFreshTransportPort(err) {

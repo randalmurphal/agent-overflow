@@ -289,6 +289,13 @@ type App struct {
 	// New code: pick by call site (entry point vs goroutine), not by
 	// preference.
 	shuttingDown atomic.Bool
+	// backendShutdown ends this process on ShutdownBackend's behalf. Only
+	// the boots whose shell is a signal wait install one (runHeadless and
+	// runSoak, the two the Windows launcher spawns); every other boot owns
+	// its own quit path and leaves this nil, which is what makes the RPC
+	// refuse rather than half-tear-down an app whose shell is still up.
+	// Installed before Start by ConfigureBackendShutdown.
+	backendShutdown func() error
 	// appCtx is the App-lifetime context shared by every fire-and-forget
 	// goroutine that has no narrower scope (rate-limit probe loop, Claude
 	// OAuth-completion poller, MCP live-reconcile callbacks, etc).

@@ -435,6 +435,49 @@ func contextWithTimeout(parent context.Context, timeout time.Duration) (context.
 	return context.WithTimeout(parent, timeout)
 }
 
+// ErrShutdownNotOwned refuses ShutdownBackend on a boot that owns its own
+// quit path. Distinct prose rather than a generic failure because the two
+// causes are different facts: a desktop shell quits through its window,
+// and a backend that should have installed a path and did not is a boot
+// wiring bug.
+var ErrShutdownNotOwned = errors.New("this backend does not own a shutdown path; quit it through its own shell")
+
+// ShutdownBackend is how the process that SPAWNED this backend asks it to
+// stop gracefully: the Windows launcher calls it over its authenticated
+// bridge when the window closes, and waits for the backend to disappear
+// before falling back to the Job Object.
+//
+// That fallback is a kill. Without this door every window close took the
+// backend down mid-flight: no App.Shutdown, so every in-flight turn was
+// settled as interrupted by the NEXT boot's crash sweep, and no store
+// close, so the WAL never took its checkpoint. HarnessShutdown is the same
+// door for the isolated boots, but it exists only on a receiver the
+// harness registers, which is why an ordinary backend had none.
+//
+// Asynchronous, like HarnessShutdown and for the same reason: the caller
+// is waiting on this response over the very transport the shutdown is
+// about to drain, so the answer has to be written before the teardown
+// starts. The connection's in-flight RPC accounting is what keeps the
+// ordering honest: the drain waits for this handler to return.
+//
+// Scoped host: it ends the process serving this machine's app, and no
+// remote session can hold a grant for that.
+//
+//ao:scope host
+//ao:route home
+func (a *App) ShutdownBackend() error {
+	request := a.backendShutdown
+	if request == nil {
+		return ErrShutdownNotOwned
+	}
+	go func() {
+		if err := request(); err != nil {
+			log.Printf("app: authenticated backend shutdown: %v", err)
+		}
+	}()
+	return nil
+}
+
 // ServiceShutdown is the Wails v3 lifecycle hook. We keep it as a thin
 // wrapper around Shutdown so the Wails runtime drives the same code path
 // tests exercise directly.

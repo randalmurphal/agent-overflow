@@ -141,7 +141,7 @@ func runHarness(flags cliFlags) {
 		if err := writeHarnessBootstrap(bootstrapOut, srv, paths, err, instanceIdentityFor(paths, instanceinfo.ModeHarness, flags.window, 0, "", "", "", "")); err != nil {
 			log.Printf("harness: write bootstrap: %v", err)
 		}
-		waitForHeadlessShutdown(appService, srv)
+		waitForHeadlessShutdown(appService, srv, nil)
 		return
 	}
 	srv.MarkReady()
@@ -172,7 +172,7 @@ func runHarness(flags cliFlags) {
 		}
 		return
 	}
-	waitForHeadlessShutdown(appService, srv)
+	waitForHeadlessShutdown(appService, srv, nil)
 }
 
 // isolationOptions carries the ONE isolation decision a mocked boot mode

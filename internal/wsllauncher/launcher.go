@@ -172,6 +172,12 @@ type Launcher struct {
 	cmd      *exec.Cmd
 	platform platformLauncher
 
+	// killChild is the belt-and-braces terminate Stop sends after the
+	// platform close. A field only so tests can inject the refusal
+	// Windows reports for a process the Job Object already killed; nil
+	// means the real os.Process.Kill.
+	killChild func() error
+
 	stopOnce sync.Once
 	stopErr  error
 	waitMu   sync.Mutex
@@ -235,20 +241,20 @@ func (l *Launcher) waitedProcess(err error) bool {
 func (l *Launcher) Stop() error {
 	l.stopOnce.Do(func() {
 		var errs []error
+		platformClosed := false
 		if l.platform != nil {
 			if err := l.platform.close(); err != nil {
 				errs = append(errs, fmt.Errorf("close platform handle: %w", err))
+			} else {
+				platformClosed = true
 			}
 		}
 		// On non-Windows hosts (where the Job Object doesn't exist), or
 		// as a belt-and-braces follow-up on Windows, send a kill signal
-		// directly. os.ErrProcessDone is the documented sentinel
-		// returned by Process.Kill when the child has already exited;
-		// errors.Is unwraps the platform-specific error chain so we
-		// don't have to substring-match the message.
+		// directly.
 		if l.cmd != nil && l.cmd.Process != nil {
-			if err := l.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) && !l.waitedProcess(err) {
-				errs = append(errs, fmt.Errorf("kill child: %w", err))
+			if err := l.killAfterPlatformClose(platformClosed); err != nil {
+				errs = append(errs, err)
 			}
 		}
 		if len(errs) > 0 {
@@ -256,6 +262,71 @@ func (l *Launcher) Stop() error {
 		}
 	})
 	return l.stopErr
+}
+
+// childExitConfirmWindow bounds how long a failed belt-and-braces Kill
+// waits for proof that the child is already gone. A process the platform
+// close killed is reaped in milliseconds; anything past this window is a
+// process that is still running, which is the case whose Kill failure is
+// worth reporting.
+const childExitConfirmWindow = 2 * time.Second
+
+// killAfterPlatformClose sends the direct kill and decides whether its
+// failure means anything.
+//
+// os.ErrProcessDone is the documented sentinel for a child that has
+// already exited, and waitedProcess covers the Windows variant where Wait
+// released the handle first; errors.Is unwraps the platform-specific
+// error chain so neither needs substring matching.
+//
+// Neither covers the ordinary Windows teardown. Closing the Job Object
+// kills the child, and TerminateProcess against a process that is already
+// dying answers ERROR_ACCESS_DENIED, so every window close logged
+// "kill child: TerminateProcess: Access is denied" about a child the
+// close had just successfully killed. The error names a permission
+// problem that does not exist, and a reader chasing a real teardown
+// failure has to rule it out first. So after a SUCCESSFUL platform close,
+// a Kill failure is only reported for a process that is still alive:
+// confirmed exit is the whole answer, and it is the same fact Wait
+// already produces.
+func (l *Launcher) killAfterPlatformClose(platformClosed bool) error {
+	kill := l.killChild
+	if kill == nil {
+		kill = l.cmd.Process.Kill
+	}
+	err := kill()
+	if err == nil || errors.Is(err, os.ErrProcessDone) || l.waitedProcess(err) {
+		return nil
+	}
+	if platformClosed && l.childExited(childExitConfirmWindow) {
+		return nil
+	}
+	return fmt.Errorf("kill child: %w", err)
+}
+
+// childExited reports whether the child was REAPED within the window:
+// Wait returned and published its process state.
+//
+// It waits through Launcher.Wait rather than reading cmd.ProcessState
+// directly: the production launcher already has a Wait in flight, and
+// ProcessState is only safe to read once that Wait has closed its done
+// channel (the same ordering waitedProcess relies on). A false answer
+// means "not confirmed dead", never "confirmed alive", which is the safe
+// direction for a caller that reports Kill failures on it.
+func (l *Launcher) childExited(within time.Duration) bool {
+	reaped := make(chan struct{})
+	go func() {
+		_ = l.Wait()
+		close(reaped)
+	}()
+	timer := time.NewTimer(within)
+	defer timer.Stop()
+	select {
+	case <-reaped:
+		return l.cmd.ProcessState != nil
+	case <-timer.C:
+		return false
+	}
 }
 
 // buildLaunchArgs assembles the wsl.exe argument vector for spawning the

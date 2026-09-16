@@ -345,6 +345,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3978807241: 'home', // SetWSLDistroPreference
 	3648660014: 'home', // SetWindowBackgroundColor
 	2181574220: 'selected', // SetWorkspaceMcpServerEnabled
+	2115861089: 'home', // ShutdownBackend
 	1913732562: 'thread', // StartCodexReview
 	3188309099: 'thread', // StartDiscussion
 	2336869067: 'thread', // StartDiscussionByID

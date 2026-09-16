@@ -54,12 +54,24 @@ type RPCRefusedError struct {
 	Message string
 }
 
-// Shutdown asks an isolated WSL backend to begin its authenticated graceful
+// RPCShutdownBackend is the backend method that begins an authenticated
+// graceful shutdown. Restated here because this package does not link the
+// transport server; TestShutdownRPCNamesARegisteredHostMethod is the drift
+// guard, the same shape PageURLPath uses.
+//
+// It is an App method, so it exists on every backend this launcher can
+// spawn: the production headless boot and the isolated --soak shell alike.
+// The harness receiver's HarnessShutdown is a different door for a
+// different caller (ao-harness, over a receiver only the isolated boots
+// register) and is deliberately not what the launcher asks for.
+const RPCShutdownBackend = "ShutdownBackend"
+
+// Shutdown asks the WSL backend to begin its authenticated graceful
 // shutdown. The response is only the backend control acknowledgement. Callers
 // must still wait for the transport to disappear before closing their process
 // containment or reusing the data root.
 func (c *NotificationClient) Shutdown(ctx context.Context) error {
-	return c.callRPC(ctx, rpcIDPrefixShutdown, "HarnessShutdown", nil)
+	return c.callRPC(ctx, rpcIDPrefixShutdown, RPCShutdownBackend, nil)
 }
 
 func (e *RPCRefusedError) Error() string {

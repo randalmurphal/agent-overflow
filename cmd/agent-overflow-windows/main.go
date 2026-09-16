@@ -936,14 +936,12 @@ func (a *launcherApp) stopLaunchedBackend(l *wsllauncher.Launcher, bs *wsllaunch
 	if bs != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
-		if err := a.shutdownBackend(ctx, bs); err == nil {
+		if shutdownRequestLanded(a.shutdownBackend(ctx, bs)) {
 			if err := waitBackendGone(ctx, bs); err != nil {
-				log.Printf("launcher: backend acknowledged shutdown but stayed reachable: %v", err)
+				log.Printf("launcher: backend did not finish its shutdown in time: %v", err)
 			} else {
 				backendGone = true
 			}
-		} else {
-			log.Printf("launcher: authenticated backend shutdown unavailable: %v; using Job Object fallback", err)
 		}
 	}
 	stopErr := l.Stop()
@@ -971,6 +969,33 @@ func (a *launcherApp) stopLaunchedBackend(l *wsllauncher.Launcher, bs *wsllaunch
 		return a.releaseHarnessReservation()
 	}
 	return errors.New("backend teardown was not authenticated or confirmed; refusing to reuse its data root")
+}
+
+// shutdownRequestLanded decides whether the graceful shutdown may still be
+// running after the RPC did not come back clean, and therefore whether the
+// launcher should wait for the backend to go away before killing it.
+//
+// Same classification ClassifyInstallAck applies to the install handshake,
+// and for the same reason. A backend that ANSWERED and rejected provably
+// did nothing, so waiting for an exit that is not coming would only delay
+// the Job Object by the whole budget. Every other failure is ambiguous:
+// the request may have landed and taken the transport down with it, which
+// is precisely what a graceful shutdown does to the connection carrying
+// its own acknowledgement. Killing on that reading is how a backend ends
+// up torn down mid-teardown, which is the outcome this door exists to
+// remove. A backend that is already gone answers the probe immediately, so
+// the ambiguous branch costs nothing in the common failure.
+func shutdownRequestLanded(err error) bool {
+	if err == nil {
+		return true
+	}
+	var refused *wsllauncher.RPCRefusedError
+	if errors.As(err, &refused) {
+		log.Printf("launcher: backend refused the authenticated shutdown: %v; using Job Object fallback", err)
+		return false
+	}
+	log.Printf("launcher: authenticated backend shutdown unacknowledged: %v; waiting for exit before the Job Object fallback", err)
+	return true
 }
 
 // shutdownBackend uses the token from the just-validated bootstrap. The Job

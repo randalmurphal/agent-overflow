@@ -144,6 +144,12 @@ func runSoak(flags cliFlags) {
 		RealBrowserEngine: realBrowserEngineRequested(flags),
 	})
 	h := newHarness(appService, paths, nativeWindow)
+	// This shell is launcher-spawned, so it takes the same window-close
+	// door the production headless boot does. The request lands on the
+	// signal wait below, which is what runs this function's deferred
+	// teardown (the instance record, the mock control server) as well as
+	// App.Shutdown.
+	shutdownRequested := armBackendShutdownDoor(appService)
 	// Before App.Start, exactly as in harness mode: the control server
 	// publishes its address/token through providerExtraEnv (write-once
 	// before Start) and the autopilot's first send spawns a mock that
@@ -188,7 +194,7 @@ func runSoak(flags cliFlags) {
 		log.Printf("app: service startup: %v", err)
 		srv.MarkStartupFailed()
 		log.Printf("%s: startup failed; serving terminal bootstrap failure until shutdown", label)
-		waitForHeadlessShutdown(appService, srv)
+		waitForHeadlessShutdown(appService, srv, shutdownRequested)
 		return
 	}
 	srv.MarkReady()
@@ -240,7 +246,7 @@ func runSoak(flags cliFlags) {
 		}
 		return
 	}
-	waitForHeadlessShutdown(appService, srv)
+	waitForHeadlessShutdown(appService, srv, shutdownRequested)
 }
 
 func soakHarnessConfig() harnessrpc.SoakConfig {
