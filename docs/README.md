@@ -6,6 +6,7 @@ when the named task applies.
 
 ## Start here
 
+- Installation, first conversation, Android and browser access: [README](../README.md).
 - Project layout and essential engineering rules: [root guide](../AGENTS.md).
 - Setup, builds, bootstrap and packaging: [Development](architecture/development.md).
 - Code organization, asynchronous tests or persistence conventions:
