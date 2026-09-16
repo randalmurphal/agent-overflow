@@ -41,13 +41,26 @@ func TestKeepRenewed_RotatesBeforeExpiryWithoutADial(t *testing.T) {
 	reported := func(err error) { t.Errorf("reported %v, want no transient failure", err) }
 	done, cancel := keepRenewed(t, client, reported)
 
-	waitFor(t, "the rotation", func() bool { return be.rotations.Load() == 1 })
+	// A rotation is finished when the new pair is on disk, not when the
+	// backend begins answering: the counter moves as the request arrives,
+	// and the client writes the session and adopts it afterwards, under one
+	// lock. Waiting on the counter reads the file mid-exchange and sees the
+	// credential the rotation is replacing.
+	waitFor(t, "the rotated pair to be stored", func() bool {
+		stored, err := LoadSession(dir, "backend-a")
+		return err == nil && stored.Credential != "ao1.issued-0"
+	})
 	stored, err := LoadSession(dir, "backend-a")
 	if err != nil {
 		t.Fatalf("LoadSession: %v", err)
 	}
-	if stored.Credential == "ao1.issued-0" || stored.Credential != client.Session().Credential {
+	// Written before it is adopted, so a stored rotation is also this
+	// client's: nothing may present a credential it failed to write down.
+	if stored.Credential != client.Session().Credential {
 		t.Fatalf("stored credential %q, in memory %q, want the rotated one in both", stored.Credential, client.Session().Credential)
+	}
+	if be.rotations.Load() != 1 {
+		t.Fatalf("rotations = %d, want exactly one", be.rotations.Load())
 	}
 	if be.tickets.Load() != 0 {
 		t.Fatal("a proactive renewal minted a socket ticket")
