@@ -3,6 +3,7 @@
 // A real LAN listener and Android radio changes reach the pinned HTTP/WS
 // bridge; browser route mocks cannot establish this native lifecycle contract.
 import { _android, expect, test, type AndroidDevice, type AndroidSelector } from '@playwright/test';
+import { prepareEmulatorScreen, screenLocked, tapNode, unlockScreen, waitForNode, waitForStableNode } from './native-controls.js';
 import { launchHarness } from '../src/harness.js';
 import { compareBundleVersions } from '../../frontend/src/lib/native/bundleVersion.ts';
 import { execFileSync } from 'node:child_process';
@@ -10,41 +11,10 @@ import { RESULT_LINE, advance, claudeScenario, emit, seedAgentThread, startMock,
 
 const PACKAGE = 'dev.agentoverflow.app';
 const ACTIVITY = `${PACKAGE}/.MainActivity`;
-const TIMEOUT = 60_000;
 
 // Chromium exposes ARIA names as Android accessibility text. Wait through
 // UiAutomation rather than treating a connected socket as rendered progress.
 const named = (text: string | RegExp): AndroidSelector => ({ text, pkg: PACKAGE });
-
-async function waitForNode(device: AndroidDevice, selector: AndroidSelector, present = true): Promise<void> {
-  // Native selector queries can report absence before the WebView's next
-  // accessibility update (including a driver null-node exception). Retry reads
-  // only; never retry a tap or a send.
-  await expect.poll(async () => {
-    try { await device.info(selector); return true; }
-    catch { return false; }
-  }, { message: `Android node ${JSON.stringify(selector)} must be ${present ? 'present' : 'gone'}`, timeout: TIMEOUT }).toBe(present);
-}
-
-async function waitForStableNode(device: AndroidDevice, selector: AndroidSelector): Promise<void> {
-  // Native tap injects coordinates without Page locator actionability. Filling
-  // a field opens the IME and moves buttons: await enabled, stable bounds first.
-  let previous = '';
-  await expect.poll(async () => {
-    try {
-      const node = await device.info(selector);
-      const bounds = JSON.stringify(node.bounds);
-      const ready = node.enabled && node.bounds.width > 0 && node.bounds.height > 0 && bounds === previous;
-      previous = bounds;
-      return ready;
-    } catch { previous = ''; return false; }
-  }, { message: `Android action ${JSON.stringify(selector)} must settle`, timeout: TIMEOUT, intervals: [250] }).toBe(true);
-}
-
-async function tapNode(device: AndroidDevice, selector: AndroidSelector): Promise<void> {
-  await waitForStableNode(device, selector);
-  await device.tap(selector);
-}
 
 async function fillNode(device: AndroidDevice, selector: AndroidSelector, value: string): Promise<void> {
   await tapNode(device, selector);
@@ -69,23 +39,6 @@ async function background(device: AndroidDevice): Promise<void> {
     const focus = /mCurrentFocus=(.*)/.exec(dump)?.[1]?.trim() ?? '';
     return focus !== '' && !focus.includes(PACKAGE);
   }, { message: 'Android must background the real app before the provider advances' }).toBe(true);
-}
-
-async function screenLocked(device: AndroidDevice, locked: boolean): Promise<void> {
-  await expect.poll(async () => (await device.shell('dumpsys activity activities')).toString(), {
-    message: `Android keyguard must be ${locked ? 'locked' : 'unlocked'}`,
-  }).toContain(`mKeyguardShowing=${locked}`);
-}
-
-async function unlockScreen(device: AndroidDevice): Promise<void> {
-  await device.shell('input keyevent KEYCODE_WAKEUP');
-  await device.shell('input keyevent KEYCODE_MENU');
-  await waitForNode(device, { res: 'com.android.systemui:id/pinEntry' });
-  // System keyguard does not accept WebView/IME text injection. Use its real
-  // numeric buttons for the PIN the runner provisioned on this emulator.
-  for (const digit of '1234') await tapNode(device, { res: `com.android.systemui:id/key${digit}` });
-  await tapNode(device, { res: 'com.android.systemui:id/key_enter' });
-  await screenLocked(device, false);
 }
 
 test('the signed release recovers live and completed turns across Android suspension and LAN loss', async ({}, testInfo) => {
@@ -117,6 +70,7 @@ test('the signed release recovers live and completed turns across Android suspen
     expect(invite.url).not.toContain('127.0.0.1');
     expect(payload.certFingerprint).toMatch(/^sha256:[0-9a-f]{64}$/);
 
+    await prepareEmulatorScreen(phone);
     await phone.shell(`pm clear ${PACKAGE}`);
     await phone.shell(`pm grant ${PACKAGE} android.permission.POST_NOTIFICATIONS`);
     await phone.shell(`am start -n ${ACTIVITY}`);

@@ -87,6 +87,7 @@ import {
   type Page,
 } from '@playwright/test';
 
+import { prepareEmulatorScreen, tapNode } from './native-controls.js';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { unusedPort } from '../src/ports.js';
 import { compareBundleVersions } from '../../frontend/src/lib/native/bundleVersion.ts';
@@ -421,6 +422,7 @@ const test = base.extend<ShellFixtures>({
   // dialog no assertion here is about.
   page: async ({ device, harness: _harness }, use, testInfo) => {
     if (HUMAN_LOCK) await awaitOwnerUnlock(device);
+    else await prepareEmulatorScreen(device);
     await device.shell(`pm clear ${SHELL_PACKAGE}`);
     await device.shell(`pm grant ${SHELL_PACKAGE} android.permission.POST_NOTIFICATIONS`);
     await device.shell(`am start -n ${SHELL_ACTIVITY}`);
@@ -430,12 +432,16 @@ const test = base.extend<ShellFixtures>({
     } finally {
       if (testInfo.status !== testInfo.expectedStatus) {
         try {
+          const screenshot = testInfo.outputPath('failed-device-screen.png');
+          await device.screenshot({ path: screenshot });
+          await testInfo.attach('failed-device-screen', { path: screenshot, contentType: 'image/png' });
           const page = await (await shellWebView(device)).page();
           const state = await page.evaluate(() => ({
             selected: localStorage.getItem('agent-overflow:frontend:selected-computer'),
             endpoints: localStorage.getItem('agent-overflow:backendEndpoints'),
             routes: Object.fromEntries(Object.keys(localStorage).filter((key) => key.startsWith('agent-overflow:computerRoutes:')).map((key) => [key, localStorage.getItem(key)])),
           }));
+          console.info('Connection diagnostic:', JSON.stringify(state));
           await testInfo.attach('connection-selection', { body: JSON.stringify(state, null, 2), contentType: 'application/json' });
           await testInfo.attach('failed-shell-screen', { body: await page.locator('body').ariaSnapshot(), contentType: 'text/plain' });
         } catch (error) {
@@ -626,13 +632,18 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
   await page.getByTestId('review-close').click();
   await expect(page.getByTestId('chat-header-title')).toBeVisible();
 
-  // CAMERA is already declared by the QR scanner. Grant it here so resolving
-  // the actual camera activity, rather than merely a permission dialog, is tested.
-  await device.shell(`pm grant ${SHELL_PACKAGE} android.permission.CAMERA`);
+  // The first capture must work through the runtime permission prompt too.
+  if (HUMAN_LOCK) await device.shell(`pm grant ${SHELL_PACKAGE} android.permission.CAMERA`);
   const camera = (await device.shell('cmd package resolve-activity --brief -a android.media.action.IMAGE_CAPTURE'))
     .toString().trim().split('\n').at(-1)?.split('/')[0];
   expect(camera, 'the test device needs a camera app').toMatch(/^[a-z][\w.]+$/);
-  if (!HUMAN_LOCK) await device.shell(`am force-stop ${camera}`);
+  if (!HUMAN_LOCK) {
+    // The stock emulator camera has its own first-launch location prompt.
+    // Leave our app's camera permission unset to exercise its real prompt.
+    await device.shell(`pm grant ${camera} android.permission.ACCESS_COARSE_LOCATION`);
+    await device.shell(`pm grant ${camera} android.permission.ACCESS_FINE_LOCATION`);
+    await device.shell(`am force-stop ${camera}`);
+  }
   for (const choice of ['Take photo', 'Photos', 'Files']) {
     const input = page.getByLabel('Choose attachments');
     await input.evaluate((element) => {
@@ -641,6 +652,9 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
     });
     await page.getByTestId('composer-attach').click();
     await page.getByRole('menuitem', { name: choice, exact: true }).click();
+    if (choice === 'Take photo' && !HUMAN_LOCK) {
+      await tapNode(device, { res: /.*:id\/permission_allow_foreground_only_button/ });
+    }
     await expect.poll(async () => {
       const focus = await focusedWindow(device);
       return focus !== '' && !focus.includes(SHELL_PACKAGE);
@@ -658,16 +672,27 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
 
   // The stock emulator camera must return a real JPEG through Capacitor's
   // content URI and the same private-TLS upload as selected files.
-  if (!HUMAN_LOCK) {
+  async function capturePhoto(): Promise<void> {
     await page.getByTestId('composer-attach').click();
     await page.getByRole('menuitem', { name: 'Take photo', exact: true }).click();
     await expect.poll(() => focusedWindow(device)).toContain(camera!);
-    await device.tap({ desc: 'Shutter' });
-    await device.tap({ desc: 'Done' });
+    await tapNode(device, { desc: 'Shutter', enabled: true });
+    try {
+      await tapNode(device, { res: `${camera}:id/done_button` });
+    } catch (error) {
+      const screenshot = test.info().outputPath('camera-confirmation-failure.png');
+      await device.screenshot({ path: screenshot });
+      await test.info().attach('camera-confirmation-failure', { path: screenshot, contentType: 'image/png' });
+      throw error;
+    }
     const captured = page.getByRole('button', { name: /^Remove JPEG_.*\.jpg$/ });
     await expect(captured).toBeVisible();
     await expect(page.getByRole('textbox', { name: 'Message Input', exact: true })).toHaveValue(/\[Image #1\]/);
     await captured.click();
+  }
+  if (!HUMAN_LOCK) {
+    await capturePhoto();
+    await capturePhoto();
   }
 
   // Bytes must cross the native private-TLS bridge, not just open a chooser.
@@ -749,6 +774,7 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
   await expect(stop).toHaveCount(0);
   await expect(page.getByLabel('Message Input')).toBeEnabled();
   expect((await device.shell(`pidof ${SHELL_PACKAGE}`)).toString().trim(), 'recovery must not require restarting the app').toBe(pidBeforePause);
+  if (!HUMAN_LOCK) await capturePhoto();
   await pressBack(device);
   await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'list');
 
@@ -855,6 +881,9 @@ test('new pairings preserve a legacy first computer and removing it preserves th
       const session = localStorage.getItem(key)!;
       localStorage.setItem('agent-overflow:deviceSession', session);
       localStorage.removeItem(key);
+      // Legacy installs selected their first computer through HOME as well.
+      // Do not leave a modern UUID selection after moving its pairing slot.
+      localStorage.setItem('agent-overflow:frontend:selected-computer', JSON.stringify(''));
       const endpoints = JSON.parse(localStorage.getItem('agent-overflow:backendEndpoints')!);
       endpoints[''] = endpoints[id];
       delete endpoints[id];
@@ -869,12 +898,12 @@ test('new pairings preserve a legacy first computer and removing it preserves th
     } catch (error) {
       // Addresses and UI state only: never attach paired credentials.
       console.info('Paired computer addresses:', await page.evaluate(() => localStorage.getItem('agent-overflow:backendEndpoints')));
-      await settings('Connections');
+      await settings('Connect to a computer');
       await test.info().attach('computers-state', { body: await page.locator('body').ariaSnapshot(), contentType: 'text/plain' });
       throw error;
     }
     await harness.stop();
-    await settings('Connections');
+    await settings('Connect to a computer');
     const first = page.getByTestId('home-computer');
     await first.getByRole('button', { name: 'Remove', exact: true }).click();
     await first.getByRole('button', { name: 'Confirm remove', exact: true }).click();
