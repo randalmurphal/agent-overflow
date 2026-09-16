@@ -4,6 +4,11 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  '@capacitor/android@8.5.1':
+    hash: 1f3b87b7484f88b7375916512c358667b5834a5a2bef60db12978aa6a2cddabf
+    path: patches/@capacitor__android@8.5.1.patch
+
 importers:
 
   .:
@@ -13,7 +18,7 @@ importers:
         version: 10.0.0
       '@capacitor/android':
         specifier: 8.5.1
-        version: 8.5.1(@capacitor/core@8.5.1)
+        version: 8.5.1(patch_hash=1f3b87b7484f88b7375916512c358667b5834a5a2bef60db12978aa6a2cddabf)(@capacitor/core@8.5.1)
       '@capacitor/app':
         specifier: 8.1.1
         version: 8.1.1(@capacitor/core@8.5.1)
@@ -445,12 +450,12 @@ snapshots:
 
   '@aparajita/capacitor-biometric-auth@10.0.0':
     dependencies:
-      '@capacitor/android': 8.5.1(@capacitor/core@8.5.1)
+      '@capacitor/android': 8.5.1(patch_hash=1f3b87b7484f88b7375916512c358667b5834a5a2bef60db12978aa6a2cddabf)(@capacitor/core@8.5.1)
       '@capacitor/app': 8.1.1(@capacitor/core@8.5.1)
       '@capacitor/core': 8.5.1
       '@capacitor/ios': 8.5.1(@capacitor/core@8.5.1)
 
-  '@capacitor/android@8.5.1(@capacitor/core@8.5.1)':
+  '@capacitor/android@8.5.1(patch_hash=1f3b87b7484f88b7375916512c358667b5834a5a2bef60db12978aa6a2cddabf)(@capacitor/core@8.5.1)':
     dependencies:
       '@capacitor/core': 8.5.1
 

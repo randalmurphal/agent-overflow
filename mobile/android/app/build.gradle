@@ -66,6 +66,9 @@ dependencies {
     testImplementation "com.squareup.okhttp3:mockwebserver3:$okhttpVersion"
     testImplementation "com.squareup.okhttp3:okhttp-tls:$okhttpVersion"
     testImplementation "junit:junit:$junitVersion"
+    testImplementation "org.mockito:mockito-core:5.20.0"
+    testImplementation "androidx.webkit:webkit:$androidxWebkitVersion"
+    testImplementation "org.apache.cordova:framework:$cordovaAndroidVersion"
     // The bundle state file is JSON, and `org.json` on the unit-test
     // classpath is android.jar's STUB, whose every method throws. The
     // real implementation from Maven shadows it, which is what lets
