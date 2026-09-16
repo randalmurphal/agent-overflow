@@ -35,9 +35,12 @@ type backend struct {
 	// ticketRefusals counts down mints that answer the unfingerprintable
 	// 404 before the route starts working.
 	ticketRefusals atomic.Int32
-	tickets        atomic.Int32
-	rotations      atomic.Int32
-	failureStatus  atomic.Int32
+	// ticketDrops counts down mints whose connection is closed without an
+	// answer, the way a rebound listener drops the ones it was serving.
+	ticketDrops   atomic.Int32
+	tickets       atomic.Int32
+	rotations     atomic.Int32
+	failureStatus atomic.Int32
 	// proofs is every X-AO-Device-Key value this backend was presented,
 	// so a test can see that a proof was minted per request.
 	proofs []string
@@ -66,6 +69,14 @@ func (b *backend) route(w http.ResponseWriter, r *http.Request) {
 	case "/auth/token":
 		b.rotate(w, r)
 	case "/auth/ticket":
+		if b.ticketDrops.Add(-1) >= 0 {
+			// Answer nothing and take the connection away, which is what
+			// shutting down a listener does to the connections on it.
+			if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+				_ = conn.Close()
+			}
+			return
+		}
 		if b.ticketRefusals.Add(-1) >= 0 {
 			http.NotFound(w, r)
 			return
@@ -485,5 +496,54 @@ func TestHTTPFailuresPreservePairingAndRecoverWithoutEnrollment(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestTicket_RepeatsAMintWhoseConnectionWasDropped — rebinding a listener
+// closes every connection it was serving without answering on them, and
+// net/http does not replay a POST, so the mint surfaces the drop. Nothing
+// was issued and nothing was decided, so the mint is repeated once on a
+// new connection, with the fresh proof a second attempt requires. A drop
+// is not a credential refusal and must not spend a rotation.
+func TestTicket_RepeatsAMintWhoseConnectionWasDropped(t *testing.T) {
+	be := newBackend(t)
+	be.ticketDrops.Store(1)
+	client, _ := openAgainst(t, be, nil)
+
+	ticket, err := client.Ticket(context.Background())
+	if err != nil {
+		t.Fatalf("Ticket after a dropped connection: %v", err)
+	}
+	if ticket != "socket-ticket" {
+		t.Fatalf("ticket = %q, want the minted one", ticket)
+	}
+	if be.rotations.Load() != 0 {
+		t.Fatalf("rotations = %d, want none: a dropped connection says nothing about the credential", be.rotations.Load())
+	}
+	proofs := be.presentedProofs()
+	if len(proofs) != 2 {
+		t.Fatalf("the backend saw %d requests, want the dropped mint and its repeat", len(proofs))
+	}
+	if proofs[0] == proofs[1] {
+		t.Fatal("the repeat replayed the dropped attempt's proof")
+	}
+}
+
+// TestTicket_RepeatsADroppedMintOnlyOnce — the repeat covers a listener
+// that went away, not a backend that answers nothing. One retry, then the
+// failure is reported.
+func TestTicket_RepeatsADroppedMintOnlyOnce(t *testing.T) {
+	be := newBackend(t)
+	be.ticketDrops.Store(5)
+	client, _ := openAgainst(t, be, nil)
+
+	if _, err := client.Ticket(context.Background()); err == nil {
+		t.Fatal("a backend that never answers a mint produced a ticket")
+	}
+	if proofs := be.presentedProofs(); len(proofs) != 2 {
+		t.Fatalf("the backend saw %d requests, want the mint and exactly one repeat", len(proofs))
+	}
+	if be.rotations.Load() != 0 {
+		t.Fatalf("rotations = %d, want none", be.rotations.Load())
 	}
 }

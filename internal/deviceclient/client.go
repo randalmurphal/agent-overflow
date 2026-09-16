@@ -9,9 +9,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"slices"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -328,6 +330,22 @@ func (c *Client) Ticket(ctx context.Context) (string, error) {
 	if err == nil {
 		return ticket, nil
 	}
+	// The connection went away before the backend answered. Rebinding a
+	// listener closes every connection it was serving, and joining a
+	// personal group rebinds one (the LAN listener it enables), as does a
+	// sharing or domain settings change; a pooled connection can also be
+	// closed just as it is reused. net/http does not replay a POST, so the
+	// drop surfaces here as the mint's own failure even though the backend
+	// decided nothing. Repeat it once on a new connection: no ticket was
+	// issued, a ticket carries no durable effect, and the retry mints the
+	// fresh proof a second attempt requires.
+	if connectionDropped(ctx, err) {
+		retried, retryErr := c.mintTicket(ctx)
+		if retryErr == nil {
+			return retried, nil
+		}
+		err = retryErr
+	}
 	var refusal *Refusal
 	if !errors.As(err, &refusal) {
 		return "", err
@@ -336,6 +354,20 @@ func (c *Client) Ticket(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return c.mintTicket(ctx)
+}
+
+// connectionDropped reports whether a request ended because its connection
+// went away before the backend answered, rather than because the backend
+// answered something. Both spellings mean the same thing from here:
+// nothing came back, so nothing was decided, and neither is evidence about
+// the session. A dial that never connected is a different fact and is not
+// one of these, so an outage is still reported as an outage.
+func connectionDropped(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, net.ErrClosed) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE)
 }
 
 // DialURL is the WebSocket endpoint a freshly minted ticket names its
