@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   clearUiRenderTrace,
   flushUiRenderTrace,
@@ -11,8 +11,11 @@ import {
   snapshotChatDomForTrace,
 } from './uiRenderTrace';
 import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
+import { pairViewOnly, resetToLocalPage } from '../../test/helpers/scopes';
+import { __resetScopesForTest, setPageGrantsFromBootstrap } from '../transport/scopes';
 
 describe('uiRenderTrace', () => {
+  beforeEach(resetToLocalPage);
   afterEach(() => {
     clearUiRenderTrace();
     setUiRenderTraceEnabled(false);
@@ -22,6 +25,7 @@ describe('uiRenderTrace', () => {
     window.history.replaceState(null, '', '/');
     vi.restoreAllMocks();
     vi.useRealTimers();
+    resetToLocalPage();
   });
 
   it('does not record while disabled', () => {
@@ -30,6 +34,20 @@ describe('uiRenderTrace', () => {
     recordUiTrace('chat.state', { threadId: 't1' });
 
     expect(getUiRenderTraceRecords()).toEqual([]);
+  });
+
+  it.each([false, true])('waits for bootstrap before deciding whether to write a trace (remote=%s)', async (remote) => {
+    __resetScopesForTest();
+    const append = setBindingMock('AppendUIRenderTraceBatch', async () => '/tmp/ui-render.jsonl');
+    setUiRenderTraceEnabled(true);
+    recordUiTrace('before.bootstrap', {});
+    const flush = flushUiRenderTrace();
+    await Promise.resolve();
+    expect(append).not.toHaveBeenCalled();
+    setPageGrantsFromBootstrap(remote);
+    await expect(flush).resolves.toBe(remote ? null : '/tmp/ui-render.jsonl');
+    expect(append).toHaveBeenCalledTimes(remote ? 0 : 1);
+    expect(getUiRenderTraceRecords()).toContainEqual(expect.objectContaining({ label: 'before.bootstrap' }));
   });
 
   it('records bounded snapshots when enabled', () => {
@@ -113,6 +131,35 @@ describe('uiRenderTrace', () => {
       label: 'chat.state',
       data: { threadId: 't1' },
     });
+  });
+
+  it('keeps remote browser traces in memory without host writes or bookmarks', async () => {
+    const append = setBindingMock('AppendUIRenderTraceBatch', async () => '/tmp/ui-render.jsonl');
+    const bookmark = setBindingMock('BookmarkUIRenderTrace', async () => '/tmp/bookmark.jsonl');
+    await pairViewOnly();
+    installUiRenderTraceApi();
+    setUiRenderTraceEnabled(true);
+    recordUiTrace('chat.state', { threadId: 'remote-thread' });
+    await expect(flushUiRenderTrace()).resolves.toBeNull();
+    window.dispatchEvent(new KeyboardEvent('keydown', { ctrlKey: true, shiftKey: true, code: 'KeyB' }));
+    await vi.waitFor(() => expect(getUiRenderTraceRecords().some((row) => row.label === 'user.bugReport')).toBe(true));
+    await flushUiRenderTrace();
+    expect(getUiRenderTraceRecords()).toContainEqual(expect.objectContaining({ label: 'chat.state' }));
+    expect(append).not.toHaveBeenCalled();
+    expect(bookmark).not.toHaveBeenCalled();
+  });
+
+  it('discards queued file writes and stale file paths when host access disappears', async () => {
+    const append = setBindingMock('AppendUIRenderTraceBatch', async () => '/tmp/ui-render.jsonl');
+    setUiRenderTraceEnabled(true);
+    recordUiTrace('chat.state', {});
+    await expect(flushUiRenderTrace()).resolves.toBe('/tmp/ui-render.jsonl');
+    recordUiTrace('chat.pending', {});
+    await pairViewOnly();
+    await expect(flushUiRenderTrace()).resolves.toBeNull();
+    resetToLocalPage();
+    await expect(flushUiRenderTrace()).resolves.toBeNull();
+    expect(append).toHaveBeenCalledTimes(1);
   });
 
   it('installs the dev console API', async () => {

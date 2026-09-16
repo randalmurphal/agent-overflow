@@ -3,6 +3,8 @@ import { getActiveTurn } from '../stores/threadStatuses.svelte';
 import type { ThreadPane } from '../stores/thread.svelte';
 import { redactDiagnosticText } from './diagnosticRedaction';
 import { UI_TRACE_MAX_LINE_BYTES } from './uiTraceLimits';
+import { hasScope, pageGrantsResolved } from '../transport/scopes';
+import { HOME_BACKEND } from '../transport/backendKey';
 
 // The trace surface is opt-in at build time via VITE_AGENT_OVERFLOW_UI_TRACE
 // (set by `make dev DEBUG=1` / `make dev-wsl DEBUG=1`). Vite inlines the
@@ -302,6 +304,10 @@ async function captureBugReport(): Promise<void> {
   // lines would copy-out only after the next scheduled flush and the
   // marker could miss the bookmark.
   await flushUiRenderTrace();
+  if (!hasScope('host', HOME_BACKEND)) {
+    console.info('[BugReport] Browser trace is available through __agentOverflowUiTrace.dump().');
+    return;
+  }
   // Take a frozen snapshot of the current trace file (plus any rotated
   // `.1` predecessor) so the bug-moment context survives the next
   // rotation triggered by ongoing render activity. The live trace can
@@ -330,12 +336,18 @@ async function captureBugReport(): Promise<void> {
 }
 
 export async function flushUiRenderTrace(): Promise<string | null> {
-  if (!UI_TRACE_BUILD_GATE || pendingFileLines.length === 0) {
-    return lastTraceFilePath;
-  }
+  await pageGrantsResolved();
   if (fileFlushTimer !== null) {
     clearTimeout(fileFlushTimer);
     fileFlushTimer = null;
+  }
+  if (!hasScope('host', HOME_BACKEND)) {
+    pendingFileLines.length = 0;
+    lastTraceFilePath = null;
+    return null;
+  }
+  if (!UI_TRACE_BUILD_GATE || pendingFileLines.length === 0) {
+    return lastTraceFilePath;
   }
 
   const lines = pendingFileLines.splice(0, pendingFileLines.length);
@@ -391,7 +403,7 @@ function stubLineForOversizeRecord(
 function scheduleFileFlush(): void {
   if (!UI_TRACE_BUILD_GATE || fileFlushTimer !== null || typeof window === 'undefined') return;
   fileFlushTimer = window.setTimeout(() => {
-    fileFlushTimer = null;
+    // Keep the scheduled flush claimed while bootstrap is unresolved.
     void flushUiRenderTrace();
   }, FILE_FLUSH_DELAY_MS);
 }
