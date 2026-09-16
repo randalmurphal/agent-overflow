@@ -714,6 +714,12 @@ and window `blur` clear it synchronously; `pointermove` resyncs. Touch is
 excluded (a finger is a scroll or a tap). The real-browser proof that a
 drag swallows the release lives in
 `scroll/selectionTracking.browser.test.ts`.
+A `dragstart` inside the scroller from anything but an explicit
+`draggable="true"` element is canceled (`handleDragStart`): pressing on
+already-selected timeline text and moving would otherwise start a native
+drag session the app has no drop target for, and the browser process owns
+that session once it begins. The veto keeps the button state held, read
+from the event's own bitmask, since the pointer stays with the page.
 Paused frames still advance the spring's clock without advancing its motion.
 Releasing selection must not integrate the pause or classify it as a browser
 stall (`spring.test.ts`). Escape remains a synchronous controller fact;

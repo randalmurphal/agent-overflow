@@ -52,6 +52,14 @@ const DOWN_KEYS: ReadonlySet<string> = new Set(['PageDown', 'ArrowDown', 'End'])
 // the next movement for anything else that lost its release. Touch is
 // excluded: a finger on the timeline is a scroll or a tap, and touch
 // text selection is the platform's long-press, outside this stream.
+//
+// A drag that starts INSIDE the scroller from anything but an explicit
+// `draggable="true"` element is vetoed (`handleDragStart`). Pressing on
+// already-selected timeline text and moving would otherwise pick the
+// selection up as a native drag session owned by the browser process, and
+// the app has no drop target for it. The veto keeps the pointer with the
+// page, so the held state is re-read from the event's own button bitmask
+// after the document-level clear above ran.
 let primaryButtonHeld = false;
 let listenersInstalled = false;
 
@@ -700,6 +708,19 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     touchStartX = null;
   }
 
+  // Only an element that asked to be dragged starts a drag from inside the
+  // scroller. Everything else, a text selection above all, stays a
+  // selection; canceling `dragstart` is the spec's veto and the browser
+  // never opens a drag session. Runs after the document-level clear, so
+  // the held state is re-read from this event: a vetoed drag leaves the
+  // button down and the pointer stream continuing.
+  function handleDragStart(e: DragEvent): void {
+    const target = e.target instanceof Element ? e.target : null;
+    if (target?.closest('[draggable="true"]')) return;
+    e.preventDefault();
+    primaryButtonHeld = (e.buttons & 1) !== 0;
+  }
+
   function attach(el: HTMLElement): void {
     el.addEventListener('wheel', handleWheel, { passive: true });
     // Capture on the target runs before the virtualizer's ordinary listener.
@@ -711,7 +732,9 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     el.addEventListener('touchmove', handleTouchMove, { passive: true });
     el.addEventListener('touchend', handleTouchEnd, { passive: true });
     el.addEventListener('touchcancel', handleTouchEnd, { passive: true });
+    el.addEventListener('dragstart', handleDragStart, { capture: true });
     detachListeners = () => {
+      el.removeEventListener('dragstart', handleDragStart, { capture: true });
       el.removeEventListener('wheel', handleWheel);
       el.removeEventListener('scroll', handleScroll, { capture: true });
       el.removeEventListener('pointerdown', handlePointerDown);

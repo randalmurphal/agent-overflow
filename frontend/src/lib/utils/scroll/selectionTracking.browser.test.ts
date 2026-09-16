@@ -47,4 +47,40 @@ describe('selection tracking survives a native drag-and-drop', () => {
     expect(counts.click - before.click, 'and no click').toBe(0);
     expect(isSelectingInside(scroller)).toBe(false);
   });
+
+  it('a drag of selected text inside an attached scroller never becomes a drag session', async () => {
+    document.body.innerHTML = `
+      <div style="padding:20px">
+        <div id="scroller" style="height:100px;overflow:auto">
+          <p id="text" style="user-select:text">select this whole line and then drag it</p>
+          <div style="height:1000px"></div>
+        </div>
+        <div id="dst" style="width:200px;height:120px;background:#3c3;margin-top:40px">drop here</div>
+      </div>`;
+    const scroller = document.getElementById('scroller')!;
+    const text = document.getElementById('text')!;
+    const dst = document.getElementById('dst')!;
+    const intent = createScrollIntent(new Proxy({}, { get: () => () => 0 }) as never);
+    intent.attach(scroller);
+    const seen = { dragstart: 0, dragstartCanceled: 0, drop: 0 };
+    document.addEventListener('dragstart', (e) => {
+      seen.dragstart += 1;
+      // Read after the target's capture listener ran: document bubble phase.
+      if (e.defaultPrevented) seen.dragstartCanceled += 1;
+    });
+    dst.addEventListener('dragover', (e) => e.preventDefault());
+    dst.addEventListener('drop', (e) => { e.preventDefault(); seen.drop += 1; });
+
+    await userEvent.tripleClick(text);
+    expect(window.getSelection()?.toString().trim(), 'the line is selected').toContain('select this whole line');
+
+    // Press on the selection and move it onto the drop target: the gesture
+    // that starts a native drag of selected text.
+    await userEvent.dragAndDrop(text, dst);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(seen.dragstart, 'the engine offered the drag').toBeGreaterThan(0);
+    expect(seen.dragstartCanceled, 'and every offer was vetoed').toBe(seen.dragstart);
+    expect(seen.drop, 'so nothing was ever dropped').toBe(0);
+  });
 });

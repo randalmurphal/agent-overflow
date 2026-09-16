@@ -909,6 +909,68 @@ describe('selection tracking: primary button state', () => {
     expect(isSelectingInside(h.scrollEl)).toBe(false);
   });
 
+  // A drag starting inside the scroller from anything but an explicit
+  // draggable is vetoed: selected timeline text has no drop target in the
+  // app, and picking it up handed the browser process a drag session the
+  // page could not end. The veto keeps the button held for selection.
+  describe('dragstart inside the scroller', () => {
+    // happy-dom's DragEvent carries no button bitmask; a real one is a
+    // MouseEvent, and that is the shape the handler reads.
+    const dragstart = (target: Element, init: MouseEventInit = {}) => {
+      const e = new MouseEvent('dragstart', { bubbles: true, cancelable: true, buttons: 1, ...init });
+      target.dispatchEvent(e);
+      return e;
+    };
+
+    it('from timeline content is canceled and leaves the button held', () => {
+      const h = build();
+      stubSelectionInside(h.scrollEl);
+      pointer('pointerdown', { buttons: 1 });
+
+      const e = dragstart(h.child);
+
+      expect(e.defaultPrevented).toBe(true);
+      expect(isSelectingInside(h.scrollEl)).toBe(true);
+    });
+
+    it('from an explicit draggable inside the scroller is left alone', () => {
+      const h = build();
+      stubSelectionInside(h.scrollEl);
+      pointer('pointerdown', { buttons: 1 });
+      const handle = document.createElement('div');
+      handle.setAttribute('draggable', 'true');
+      const grip = document.createElement('span');
+      handle.append(grip);
+      h.scrollEl.append(handle);
+
+      const e = dragstart(grip);
+
+      expect(e.defaultPrevented).toBe(false);
+      expect(isSelectingInside(h.scrollEl)).toBe(false);
+    });
+
+    it('outside the scroller is left alone', () => {
+      build();
+      const outside = document.createElement('div');
+      document.body.append(outside);
+      try {
+        const e = dragstart(outside);
+        expect(e.defaultPrevented).toBe(false);
+      } finally {
+        outside.remove();
+      }
+    });
+
+    it('is released with detach', () => {
+      const h = build();
+      h.intent.detach();
+
+      const e = dragstart(h.child);
+
+      expect(e.defaultPrevented).toBe(false);
+    });
+  });
+
   it('a pointer move reporting the button still down keeps it', () => {
     const h = build();
     stubSelectionInside(h.scrollEl);
