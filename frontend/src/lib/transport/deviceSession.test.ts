@@ -19,6 +19,7 @@ import {
   parsePairingFragment,
   probeActivation,
   redeemPairing,
+  renewPairedSession,
   renewPairedSessionIfDue,
   signInWithPasskey,
   unpairHome,
@@ -66,6 +67,55 @@ function refusal(reason: string): Response {
 
 beforeEach(() => {
   localStorage.clear();
+});
+
+describe('response cleanup', () => {
+  it.each([405, 503])('releases the renewal capability response (HTTP %s) before proceeding', async (status) => {
+    await redeemPairing(PAYLOAD, 'Phone', async () => grantResponse());
+    // Older saved sessions negotiate recovery support once, using only headers.
+    const saved = JSON.parse(localStorage.getItem('agent-overflow:deviceSession')!);
+    delete saved.refreshRecovery;
+    localStorage.setItem('agent-overflow:deviceSession', JSON.stringify(saved));
+    const response = new Response('unused', { status });
+    const cancel = vi.spyOn(response.body!, 'cancel');
+    const fetcher = vi.fn<typeof fetch>(async (_input, init) => {
+      if (!init?.method) return response;
+      expect(cancel).toHaveBeenCalledOnce();
+      return grantResponse({ credential: 'renewed', refreshSecret: 'next' });
+    });
+    await expect(renewPairedSession(fetcher)).resolves.toBe(status === 405);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(fetcher).toHaveBeenCalledTimes(status === 405 ? 2 : 1);
+    expect(hasPairedSession()).toBe(true);
+  });
+
+  it('releases both refused dial tickets around a successful renewal', async () => {
+    await redeemPairing(PAYLOAD, 'Phone', async () => grantResponse());
+    const first = new Response('refused', { status: 404 });
+    const retry = new Response('still refused', { status: 404 });
+    const firstCancel = vi.spyOn(first.body!, 'cancel');
+    const retryCancel = vi.spyOn(retry.body!, 'cancel');
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(first)
+      .mockImplementationOnce(async () => {
+        expect(firstCancel).toHaveBeenCalledOnce();
+        return grantResponse({ credential: 'renewed', refreshSecret: 'next' });
+      })
+      .mockResolvedValueOnce(retry);
+    await expect(mintDialTicket(fetcher)).resolves.toBeNull();
+    expect(retryCancel).toHaveBeenCalledOnce();
+    expect(hasPairedSession()).toBe(true);
+  });
+
+  it.each(['activation', 'dial'] as const)('treats failed response cleanup as a failed %s without retiring the pairing', async (operation) => {
+    await redeemPairing(PAYLOAD, 'Phone', async () => grantResponse());
+    const response = new Response(new ReadableStream({ cancel() { throw new Error('cleanup failed'); } }), { status: 404 });
+    const fetcher = vi.fn<typeof fetch>(async () => response);
+    if (operation === 'activation') await expect(probeActivation(fetcher)).resolves.toBe(false);
+    else await expect(mintDialTicket(fetcher)).resolves.toBeNull();
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(hasPairedSession()).toBe(true);
+  });
 });
 
 describe('pairing admission', () => {

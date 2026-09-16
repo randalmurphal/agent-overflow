@@ -20,6 +20,9 @@ let tailUp = true;
 let expired = false;
 let renewals = 0;
 let credential = 'original';
+let bootstrapStatus = 200;
+let ticketStatus = 200;
+let transferCount: () => number;
 
 async function respond(url: string, method: string, headers: Headers, body: string, native: boolean, pin?: string): Promise<Response> {
   const target = new URL(url);
@@ -38,6 +41,7 @@ async function respond(url: string, method: string, headers: Headers, body: stri
     if (target.origin === TAIL) expect(pin).toBe('');
     return Response.json({ backendId: ID });
   }
+  if (target.pathname === '/attachments/upload') return Response.json({ id: 'photo', threadId: 'new-thread' });
   if (target.pathname === '/auth/token/recover') {
     expect(method).toBe('POST');
     expect(headers.get('X-AO-Device-Key')).toBeTruthy();
@@ -51,8 +55,10 @@ async function respond(url: string, method: string, headers: Headers, body: stri
   expect(headers.get('X-AO-Session')).toBe(credential);
   expect(headers.get('X-AO-Device-Key')).toBeTruthy();
   if (expired) return new Response('', { status: 404 });
-  if (target.pathname === '/auth/ticket') return Response.json({ ticket: 'fresh-ticket' });
+  if (target.pathname === '/auth/ticket') return ticketStatus === 200
+    ? Response.json({ ticket: 'fresh-ticket' }) : new Response('not admitted', { status: ticketStatus });
   expect(target.pathname).toBe('/bootstrap.json');
+  if (bootstrapStatus !== 200) return new Response('not ready', { status: bootstrapStatus });
   return Response.json({ backendId: ID, replicaGeneration: 'generation', backendName: 'Mac', routes,
     wsUrl: `${target.origin.replace('https:', 'wss:')}/ws`, remote: true });
 }
@@ -60,11 +66,16 @@ async function respond(url: string, method: string, headers: Headers, body: stri
 beforeEach(() => {
   vi.resetModules(); localStorage.clear(); requests.length = sockets.length = 0;
   lanUp = true; tailUp = true; expired = false; renewals = 0; credential = 'original';
+  bootstrapStatus = ticketStatus = 200;
   routes = [{ endpoint: LAN, certFingerprint: PIN }];
   const transfers = new Map<string, { url: string; method: string; headers: Headers; pin: string; body: string; response?: Response; read: boolean }>();
+  transferCount = () => transfers.size;
   boundary.plugin = {
     getCapabilities: async () => ({ computerRoutes: true }),
-    httpStart: async (request) => { transfers.set(request.id, { ...request, headers: new Headers(request.headers), body: '', read: false }); },
+    httpStart: async (request) => {
+      if (transfers.size >= 16) throw new Error('Too many file transfers. Wait for one to finish.');
+      transfers.set(request.id, { ...request, headers: new Headers(request.headers), body: '', read: false });
+    },
     httpWrite: async ({ id, data }) => { transfers.get(id)!.body += atob(data); },
     httpHeaders: async ({ id }) => {
       const held = transfers.get(id)!;
@@ -91,6 +102,46 @@ beforeEach(() => {
   });
 });
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); localStorage.clear(); });
+
+it.each(['bootstrap', 'activation'] as const)('releases repeated %s refusals before a photo upload on the same LAN pairing', async (kind) => {
+  const { pairingEndpoint } = await import('../native/networkTrust');
+  const { storeBackendEndpoint } = await import('./homeEndpoint');
+  await import('./bootstrap');
+  const { fetchBackendManifest } = await import('./manifestBackends');
+  const { probeActivation, pairedSessionId } = await import('./deviceSession');
+  const { stageBackend, resetStagedBackends } = await import('../../test/helpers/backends');
+  const { noteThread } = await import('./entityIndex');
+  const { setBindingMock, resetBindingMocks } = await import('../../test/mocks/bindings-app');
+  const { uploadAttachmentBytes } = await import('./attachmentTransfer');
+  pairingEndpoint({ v: 1, backendId: ID, endpoint: LAN, certFingerprint: PIN, token: 'used' });
+  storeBackendEndpoint(ID, LAN);
+  localStorage.setItem(`agent-overflow:deviceSession:${ID}`, JSON.stringify({ backendId: ID,
+    sessionId: 'same-session', credential, expiresAtMs: Date.now() + 3600000, proofKind: 'bearer' }));
+  const descriptor = { id: ID, backendId: ID, name: 'Mac', nickname: '',
+    wsUrl: `${LAN.replace('https:', 'wss:')}/ws`, bootstrapUrl: `${LAN}/bootstrap.json` };
+  await fetchBackendManifest(descriptor);
+  bootstrapStatus = 503; ticketStatus = 404;
+  // Exceed the actual native bridge's limit without its two-minute idle sweep.
+  for (let i = 0; i < 24; i++) {
+    if (kind === 'bootstrap') await expect(fetchBackendManifest(descriptor)).rejects.toThrow('HTTP 503');
+    else await expect(probeActivation(undefined, ID)).resolves.toBe(false);
+    expect(transferCount()).toBe(0);
+  }
+  bootstrapStatus = ticketStatus = 200;
+  await expect(fetchBackendManifest(descriptor)).resolves.toMatchObject({ backendId: ID });
+  await expect(probeActivation(undefined, ID)).resolves.toBe(true);
+  stageBackend(descriptor);
+  noteThread('new-thread', ID, 0);
+  const mint = setBindingMock('MintAttachmentUploadTicket', () => '/attachments/upload?ticket=photo');
+  try {
+    await expect(uploadAttachmentBytes('new-thread', new File(['image'], 'photo.png', { type: 'image/png' })))
+      .resolves.toMatchObject({ id: 'photo', threadId: 'new-thread' });
+    expect(mint).toHaveBeenCalledOnce();
+    expect(requests.at(-1)).toMatchObject({ origin: LAN, path: '/attachments/upload', native: true, pin: PIN });
+    expect(pairedSessionId(ID)).toBe('same-session');
+    expect(transferCount()).toBe(0);
+  } finally { resetStagedBackends(); resetBindingMocks(); }
+});
 
 for (const backend of ['', ID]) {
   it(`learns Tailscale enabled after LAN pairing without reconnecting, then survives reload and renewal (${backend ? 'attached' : 'home'})`, async () => {

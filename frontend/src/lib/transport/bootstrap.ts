@@ -247,6 +247,9 @@ async function fetchAuthenticatedManifest(
     // exactly what a same-origin one signs.
     headers: await pairedSessionHeaders('GET', path, backend),
   });
+  // Rejected manifests contribute only their status. Release their body before
+  // renewal or retry so native HTTP transfer slots cannot accumulate.
+  if (!resp.ok) await resp.body?.cancel();
   if (!resp.ok && CREDENTIAL_REFUSED_STATUSES.has(resp.status) && hasPairedSession(backend)) {
     // The stored access credential may simply have aged out between
     // visits; the refresh exchange decides whether the session is dead.
@@ -260,6 +263,7 @@ async function fetchAuthenticatedManifest(
         // attempt carried is spent.
         headers: await pairedSessionHeaders('GET', path, backend),
       });
+      if (!resp.ok) await resp.body?.cancel();
     } else if (hasPairedSession(backend)) {
       // A network failure, throttling, or pending confirmation is not
       // evidence that the renewal credential is dead. Keep retrying.

@@ -133,6 +133,69 @@ public class PinnedNetworkTest {
         }
     }
 
+    @Test public void discardedResponsesKeepSlotsUntilTheBridgeClosesThem() throws Exception {
+        HeldCertificate cert = new HeldCertificate.Builder().commonName("test").build();
+        try (MockWebServer server = server(cert); PinnedClients clients = new PinnedClients(); HttpStreams http = new HttpStreams(clients)) {
+            String certificatePin = pin(cert);
+            for (int i = 0; i < HttpStreams.MAX_TRANSFERS; i++) {
+                server.enqueue(new MockResponse.Builder().code(503).body("not ready").build());
+                var transfer = http.start("refused-" + i, server.url("/bootstrap.json").toString(), certificatePin, "GET", Map.of(), -1);
+                assertEquals(503, transfer.headers.get(10, TimeUnit.SECONDS).code());
+                // The JS stream can prefetch a chunk without a consumer ever reading EOF.
+                assertTrue(transfer.read().length > 0);
+            }
+            var failure = assertThrows(java.io.IOException.class, () -> http.start("health",
+                    server.url("/healthz").toString(), certificatePin, "GET", Map.of(), -1));
+            assertEquals("Too many file transfers. Wait for one to finish.", failure.getMessage());
+            assertEquals(HttpStreams.MAX_TRANSFERS, server.getRequestCount());
+
+            for (int i = 0; i < HttpStreams.MAX_TRANSFERS; i++) http.close("refused-" + i);
+            server.enqueue(new MockResponse.Builder().body("healthy").build());
+            var health = http.start("health", server.url("/healthz").toString(), certificatePin, "GET", Map.of(), -1);
+            assertEquals(200, health.headers.get(10, TimeUnit.SECONDS).code());
+            http.close("health");
+        }
+    }
+
+    @Test public void closingDiscardedResponsesPreservesCapacityForHealthAndPhotoUpload() throws Exception {
+        HeldCertificate cert = new HeldCertificate.Builder().commonName("test").build();
+        try (MockWebServer server = server(cert); PinnedClients clients = new PinnedClients(); HttpStreams http = new HttpStreams(clients)) {
+            String certificatePin = pin(cert);
+            int[] statuses = {503, 404, 405, 200};
+            for (int i = 0; i < HttpStreams.MAX_TRANSFERS * 2; i++) {
+                int status = statuses[i % statuses.length];
+                server.enqueue(new MockResponse.Builder().code(status).body("discarded").build());
+                String id = "discarded-" + i;
+                var transfer = http.start(id, server.url("/auth/ticket").toString(), certificatePin, "POST", Map.of(), -1);
+                assertEquals(status, transfer.headers.get(10, TimeUnit.SECONDS).code());
+                if (i % 2 == 0) assertTrue(transfer.read().length > 0);
+                http.close(id);
+                assertThrows(java.io.IOException.class, () -> http.get(id));
+                assertNotNull(server.takeRequest(10, TimeUnit.SECONDS));
+            }
+
+            server.enqueue(new MockResponse.Builder().body("healthy").build());
+            var health = http.start("health", server.url("/healthz").toString(), certificatePin, "GET", Map.of(), -1);
+            assertEquals(200, health.headers.get(10, TimeUnit.SECONDS).code());
+            http.close("health");
+            assertNotNull(server.takeRequest(10, TimeUnit.SECONDS));
+
+            byte[] photo = {(byte) 0xff, (byte) 0xd8, 0, 1, (byte) 0xff, (byte) 0xd9};
+            server.enqueue(new MockResponse.Builder().body("uploaded").build());
+            var upload = http.start("photo", server.url("/attachments/upload").toString(), certificatePin,
+                    "POST", Map.of("content-type", "image/jpeg"), photo.length);
+            upload.write(photo, true);
+            assertEquals(200, upload.headers.get(10, TimeUnit.SECONDS).code());
+            var request = server.takeRequest(10, TimeUnit.SECONDS);
+            assertNotNull(request);
+            assertEquals("POST", request.getMethod());
+            assertEquals("image/jpeg", request.getHeaders().get("Content-Type"));
+            assertArrayEquals(photo, request.getBody().toByteArray());
+            http.close("photo");
+            assertThrows(java.io.IOException.class, () -> http.get("photo"));
+        }
+    }
+
     @Test public void cancellationLeavesBodyDisposalWithItsActiveReader() throws Exception {
         var entered = new java.util.concurrent.CountDownLatch(1);
         var release = new java.util.concurrent.CountDownLatch(1);

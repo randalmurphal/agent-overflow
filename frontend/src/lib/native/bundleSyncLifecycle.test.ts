@@ -48,6 +48,17 @@ beforeEach(async () => {
 afterEach(() => stopBundleSync());
 
 describe('bundle selection across asynchronous boundaries', () => {
+  it.each(['manifest', 'archive'])('releases a refused bundle %s response without staging it', async (part) => {
+    const response = new Response('unavailable', { status: 503 });
+    const cancel = vi.spyOn(response.body!, 'cancel');
+    mocks.fetch.mockImplementation(async (url: string) => part === 'archive' && url.endsWith('manifest.json')
+      ? Response.json({ id: NEXT, version: '1.1.0', minShellBuild: 9, files: [] }) : response);
+    hello();
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
+    expect(mocks.stage).not.toHaveBeenCalled();
+    expect(mocks.ready).not.toHaveBeenCalled();
+  });
+
   it('keeps newer installed code without downloading or announcing an older host', async () => {
     hello(NEXT, '0.9.0');
     await Promise.resolve();

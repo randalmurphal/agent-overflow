@@ -300,9 +300,14 @@ describe('defaultBootstrap', () => {
   // retry: the access credential may simply have aged out between
   // visits, and the refresh exchange is what decides whether the
   // session is dead.
-  it('renews the paired session once when the manifest refuses it', async () => {
+  it.each([200, 503])('releases the refused manifest before renewal and handles retry HTTP %s', async (retryStatus) => {
     localStorage.clear();
     try {
+      const refused = new Response('not found', { status: 404 });
+      const refusedCancel = vi.spyOn(refused.body!, 'cancel');
+      const retried = retryStatus === 200
+        ? manifestResponse({ wsUrl: SAME_ORIGIN_WS }) : new Response('not ready', { status: retryStatus });
+      const retriedCancel = vi.spyOn(retried.body!, 'cancel');
       const grant = async () =>
         new Response(
           JSON.stringify({
@@ -321,6 +326,7 @@ describe('defaultBootstrap', () => {
       const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
         void init;
         if (url === '/auth/token') {
+          expect(refusedCancel).toHaveBeenCalledOnce();
           return new Response(
             JSON.stringify({
               sessionId: 'sess-1',
@@ -333,13 +339,19 @@ describe('defaultBootstrap', () => {
         }
         // First manifest fetch refused; the post-renewal retry served.
         if (fetchMock.mock.calls.filter(([u]) => u !== '/auth/token').length <= 1) {
-          return new Response('not found', { status: 404 });
+          return refused;
         }
-        return manifestResponse({ wsUrl: SAME_ORIGIN_WS });
+        return retried;
       });
       vi.stubGlobal('fetch', fetchMock);
 
-      await expect(defaultBootstrap()).resolves.toMatchObject({ wsUrl: SAME_ORIGIN_WS });
+      if (retryStatus === 200) {
+        await expect(defaultBootstrap()).resolves.toMatchObject({ wsUrl: SAME_ORIGIN_WS });
+        expect(retriedCancel).not.toHaveBeenCalled();
+      } else {
+        await expect(defaultBootstrap()).rejects.toThrow('HTTP 503');
+        expect(retriedCancel).toHaveBeenCalledOnce();
+      }
 
       const manifestCalls = fetchMock.mock.calls.filter(([u]) => u !== '/auth/token');
       expect(manifestCalls).toHaveLength(2);
@@ -353,11 +365,20 @@ describe('defaultBootstrap', () => {
   // 503 is the readiness gate, not a verdict on the credential: the
   // server has already issued the cookie by the time it answers one.
   it('keeps a 503 transient', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('not ready', { status: 503 })));
+    const response = new Response('not ready', { status: 503 });
+    const cancel = vi.spyOn(response.body!, 'cancel');
+    vi.stubGlobal('fetch', vi.fn(async () => response));
 
     const err = await defaultBootstrap().catch((e: unknown) => e);
     expect(err).toBeInstanceOf(Error);
     expect(err).not.toBeInstanceOf(BootstrapRejectedError);
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it('surfaces response cleanup failure', async () => {
+    const response = new Response(new ReadableStream({ cancel() { throw new Error('cleanup failed'); } }), { status: 503 });
+    vi.stubGlobal('fetch', vi.fn(async () => response));
+    await expect(defaultBootstrap()).rejects.toThrow('cleanup failed');
   });
 
   it('rejects a manifest without a wsUrl', async () => {

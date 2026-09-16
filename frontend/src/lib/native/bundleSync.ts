@@ -481,6 +481,7 @@ async function pairedFetch(path: string, backend: BackendKey): Promise<Response>
     credentials: backendCredentials(backend),
   });
   if (!response.ok) {
+    await response.body?.cancel();
     throw new Error(`${path} answered ${response.status}`);
   }
   return response;

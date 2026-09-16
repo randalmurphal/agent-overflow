@@ -844,6 +844,7 @@ function renewSession(fetcher: typeof fetch, backend: BackendKey): Promise<boole
         // GET cannot spend a secret on this POST-only route. Its existing
         // shell CORS also works on older hosts, whose health route has none.
         const response = await fetchPairedComputer(backend, fetcher, authUrl(AUTH_TOKEN_PATH, backend), { redirect: 'error', credentials: authCredentials(backend) });
+        await response.body?.cancel();
         if (response.status !== 405) return false;
         supported = response.headers.get(REFRESH_RECOVERY_HEADER) === '1';
       } catch { return false; }
@@ -971,6 +972,7 @@ export function mintDialTicket(
         redirect: 'error', credentials: authCredentials(backend),
         headers,
       });
+      if (!res.ok) await res.body?.cancel();
     } catch {
       return null;
     }
@@ -994,6 +996,7 @@ export function mintDialTicket(
             redirect: 'error', credentials: authCredentials(backend),
             headers,
           });
+          if (!retry.ok) await retry.body?.cancel();
           rememberRefreshRecovery(retry, renewed, backend);
           if (retry.ok) {
             const grant = (await retry.json()) as { ticket?: string };
@@ -1035,12 +1038,13 @@ export async function probeActivation(
       redirect: 'error', credentials: authCredentials(backend),
       headers,
     });
+    // Activation needs only the status, including while confirmation is pending.
+    await res.body?.cancel();
   } catch {
     return false;
   }
   if (!res.ok) return false;
   // The probe minted a real ticket; it goes unused and lapses in
   // seconds, which the ticket book prices in (mint evicts, TTL sweeps).
-  void res.body?.cancel();
   return true;
 }
