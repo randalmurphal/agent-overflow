@@ -8,6 +8,7 @@
   import { installTimelineReconnect } from './timelineReconnect';
   import { createContentGeometryNotifier } from '../../utils/scroll/contentGeometryNotifier';
   import { getSettings } from '../../stores/settings.svelte';
+  import { getProject } from '../../stores/projects.svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import {
     createUserMessageOverflowCoordinator,
@@ -144,6 +145,10 @@
      */
     pendingCutAfter?: { turnIndex: number; itemIndex: number } | null;
   } = $props();
+
+  let projectName = $derived(
+    pane.thread?.projectId ? getProject(pane.thread.projectId)?.project.name : undefined,
+  );
 
   /**
    * Strictly after the pending cut in DISPLAY order. Positional, not
@@ -934,8 +939,14 @@
         <span class="animate-pulse">Loading thread...</span>
       </div>
     {:else if pane.items.length === 0 && !getActiveTurn(pane.threadId) && !pane.loading}
-      <div class="flex items-center justify-center h-full text-fg-subtle text-sm">
-        No messages yet. Send a message to get started.
+      <div class="flex min-h-full items-center justify-center px-6 py-8" data-testid="empty-thread-greeting">
+        <h2 class="min-w-0 max-w-2xl text-center text-2xl font-normal leading-snug tracking-tight text-text-secondary text-balance [overflow-wrap:anywhere] compact:text-xl">
+          {#if projectName}
+            What should we build in <span class="font-medium text-fg">{projectName}</span>?
+          {:else}
+            What should we build?
+          {/if}
+        </h2>
       </div>
     {:else if pane.items.length === 0 && getActiveTurn(pane.threadId)}
       <!-- Active turn but no items yet. The working/todo UI lives in the

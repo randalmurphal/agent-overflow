@@ -15,6 +15,7 @@ import { getToasts } from '../../stores/toast.svelte';
 import { clearThreadScrollSnapshotsForTest } from '../../utils/threadScrollSnapshots';
 import MessageTimeline from './MessageTimeline.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
+import { addProjectLocal, resetProjectsForTest, updateProjectLocal } from '../../stores/projects.svelte';
 
 beforeAll(() => {
   if (typeof (Element.prototype as unknown as { animate?: unknown }).animate !== 'function') {
@@ -61,6 +62,7 @@ class FakeSmoothingClock implements SmoothingClock {
 describe('<MessageTimeline>', () => {
   beforeEach(async () => {
     resetBindingMocks();
+    resetProjectsForTest();
     clearThreadScrollSnapshotsForTest();
     setBindingMock('GetSettings', async () => null);
     await loadSettings();
@@ -70,7 +72,26 @@ describe('<MessageTimeline>', () => {
     const pane = await buildPane();
     const { getByText } = render(MessageTimeline, { props: { pane } });
 
-    expect(getByText(/No messages yet/i)).toBeInTheDocument();
+    expect(getByText('What should we build?')).toBeInTheDocument();
+  });
+
+  it('shows the current project name and removes the greeting when history arrives', async () => {
+    const project = {
+      id: 'project-1', name: 'agent-overflow', path: '/tmp/workspace',
+      sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false,
+    };
+    addProjectLocal(project);
+    const pane = await buildPane();
+    const { getByRole, queryByTestId } = render(MessageTimeline, { props: { pane } });
+
+    expect(getByRole('heading')).toHaveTextContent('What should we build in agent-overflow?');
+    updateProjectLocal({ ...project, name: 'Renamed project' });
+    await tick();
+    expect(getByRole('heading')).toHaveTextContent('What should we build in Renamed project?');
+
+    pane.upsertItem(makeItem());
+    await tick();
+    expect(queryByTestId('empty-thread-greeting')).toBeNull();
   });
 
   it('keeps active-turn status out of the virtualized history', async () => {
@@ -93,7 +114,7 @@ describe('<MessageTimeline>', () => {
     const { queryByTestId, queryByText } = render(MessageTimeline, { props: { pane } });
 
     expect(queryByTestId('activity-rail-working')).toBeNull();
-    expect(queryByText(/No messages yet/i)).toBeNull();
+    expect(queryByText(/What should we build/i)).toBeNull();
   });
 
   it('renders user, assistant, error, and compaction rows from unified items', async () => {

@@ -245,7 +245,7 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
       // placeholder is active or the pane has no thread): the restore
       // $effect short-circuits on `!threadId`, so the defensive escape
       // would never be cleared and the scroll-to-bottom chip would
-      // appear over the empty "No messages yet" placeholder. There is no
+      // appear over the empty-thread greeting. There is no
       // content to anchor against, no measurement cascade to hide, and
       // no restore to gate — flip the controller directly back to
       // sticky-bottom.
