@@ -72,14 +72,15 @@ type RunHandle struct {
 
 // ProgressEvent is one per-session result or the terminal run frame.
 type ProgressEvent struct {
-	ImportID  string
-	Completed int
-	Total     int
-	ID        string
-	Status    string
-	ThreadIDs []string
-	Error     string
-	Done      bool
+	ImportID         string
+	Completed        int
+	Total            int
+	ID               string
+	Status           string
+	ThreadIDs        []string
+	UpdatedThreadIDs []string
+	Error            string
+	Done             bool
 }
 
 // UpdateStatus is the stable, wire-neutral projection of an update plan.
@@ -404,7 +405,7 @@ func (m *Manager) run(ctx context.Context, run *managerRun, ids []string) {
 		default:
 			imported++
 			logImportWarnings(id, result.outcome.Warnings)
-			report(ProgressEvent{ID: id, Status: ImportStatusImported, ThreadIDs: result.outcome.ThreadIDs()})
+			report(ProgressEvent{ID: id, Status: ImportStatusImported, ThreadIDs: result.outcome.ThreadIDs(), UpdatedThreadIDs: result.outcome.UpdatedThreadIDs})
 		}
 	}
 	if imported > 0 {

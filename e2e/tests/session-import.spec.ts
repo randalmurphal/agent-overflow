@@ -274,7 +274,8 @@ test('a multi-leaf Claude transcript imports one coherent active thread', async 
   await expectThinkingPayload(page, BRANCH_B_THINKING_PREFIX, BRANCH_A_THINKING_PREFIX);
 });
 
-test('an explicit Claude fork imports both histories and exposes navigable lineage', async ({
+for (const childFirst of [false, true]) {
+test(`an explicit Claude fork exposes navigable lineage (${childFirst ? 'separate child-first runs' : 'concurrent import'})`, async ({
   harness,
   page,
 }) => {
@@ -286,7 +287,17 @@ test('an explicit Claude fork imports both histories and exposes navigable linea
 
   await expect(page.getByTestId(fx.claudeLinear.rowTestId)).toBeVisible();
   await expect(page.getByTestId(fork.rowTestId)).toBeVisible();
-  const { rows } = await importRows(page, harness, [fork, fx.claudeLinear]);
+  let rows: Map<string, ImportProgressFrame>;
+  if (childFirst) {
+    const childRun = await importRows(page, harness, [fork]);
+    await expect(threadRow(page, fork.title)).toBeVisible();
+    await expect(threadRow(page, fork.title).getByTestId('thread-row-fork-lineage')).toHaveCount(0);
+    await openImportModal(page);
+    const parentRun = await importRows(page, harness, [fx.claudeLinear]);
+    rows = new Map([...childRun.rows, ...parentRun.rows]);
+  } else {
+    ({ rows } = await importRows(page, harness, [fork, fx.claudeLinear]));
+  }
   const parentIDs = rows.get(fx.claudeLinear.rowId)?.threadIds ?? [];
   const childIDs = rows.get(fork.rowId)?.threadIds ?? [];
   expect(parentIDs).toHaveLength(1);
@@ -328,6 +339,8 @@ test('an explicit Claude fork imports both histories and exposes navigable linea
   await expect(history.getByText(FORK_CHILD_PROMPT)).toHaveCount(0);
   await expect(history.getByText(FORK_CHILD_ANSWER)).toHaveCount(0);
 });
+
+}
 
 test('sessions already imported are gone from the next scan', async ({ harness, page }) => {
   const fx = await seedImportFixtures(harness);

@@ -44,12 +44,15 @@ func TestReconcileImportedForkLineageIsImportOrderIndependent(t *testing.T) {
 	// Import the deepest child first. Its unresolved provider id is durable,
 	// but it must not point at an invented AO thread.
 	seedImportedSession(t, s, "thread-c", "claude", "session-c", "session-b")
-	warnings, err := s.ReconcileImportedForkLineage("claude", "session-c")
+	result, err := s.ReconcileImportedForkLineage("claude", "session-c")
 	if err != nil {
 		t.Fatalf("reconcile child first: %v", err)
 	}
-	if len(warnings) != 0 {
-		t.Fatalf("child-first warnings = %+v", warnings)
+	if len(result.Warnings) != 0 {
+		t.Fatalf("child-first warnings = %+v", result.Warnings)
+	}
+	if len(result.Threads) != 0 {
+		t.Fatalf("unresolved child changed rows = %+v", result.Threads)
 	}
 	requireForkParent(t, s, "thread-c", "")
 
@@ -57,12 +60,15 @@ func TestReconcileImportedForkLineageIsImportOrderIndependent(t *testing.T) {
 	seedImportedSession(t, s, "thread-a", "claude", "session-a", "")
 	seedImportedSession(t, s, "thread-b2", "claude", "session-b2", "session-a")
 	seedImportedSession(t, s, "thread-b", "claude", "session-b", "session-a")
-	warnings, err = s.ReconcileImportedForkLineage("claude", "session-b")
+	result, err = s.ReconcileImportedForkLineage("claude", "session-b")
 	if err != nil {
 		t.Fatalf("reconcile complete family: %v", err)
 	}
-	if len(warnings) != 0 {
-		t.Fatalf("complete-family warnings = %+v", warnings)
+	if len(result.Warnings) != 0 {
+		t.Fatalf("complete-family warnings = %+v", result.Warnings)
+	}
+	if len(result.Threads) != 3 || result.Threads[0].ID != "thread-b" || result.Threads[1].ID != "thread-b2" || result.Threads[2].ID != "thread-c" || result.Threads[2].ForkedFromThreadID != "thread-b" {
+		t.Fatalf("changed family rows = %+v", result.Threads)
 	}
 	requireForkParent(t, s, "thread-a", "")
 	requireForkParent(t, s, "thread-b", "thread-a")
@@ -71,9 +77,9 @@ func TestReconcileImportedForkLineageIsImportOrderIndependent(t *testing.T) {
 
 	// Idempotence matters because every session imported by Import All runs
 	// reconciliation, including calls after the family is already complete.
-	warnings, err = s.ReconcileImportedForkLineage("claude", "session-b")
-	if err != nil || len(warnings) != 0 {
-		t.Fatalf("idempotent reconcile = warnings:%+v err:%v", warnings, err)
+	result, err = s.ReconcileImportedForkLineage("claude", "session-b")
+	if err != nil || len(result.Warnings) != 0 || len(result.Threads) != 0 {
+		t.Fatalf("idempotent reconcile = warnings:%+v err:%v", result, err)
 	}
 	requireForkParent(t, s, "thread-c", "thread-b")
 
@@ -104,9 +110,9 @@ func TestReconcileImportedForkLineageResolvesAONativeClaudeParent(t *testing.T) 
 	}
 	seedImportedSession(t, s, "imported-child", "claude", "provider-child", "provider-parent")
 
-	warnings, err := s.ReconcileImportedForkLineage("claude", "provider-child")
-	if err != nil || len(warnings) != 0 {
-		t.Fatalf("reconcile native parent = warnings:%+v err:%v", warnings, err)
+	result, err := s.ReconcileImportedForkLineage("claude", "provider-child")
+	if err != nil || len(result.Warnings) != 0 {
+		t.Fatalf("reconcile native parent = warnings:%+v err:%v", result, err)
 	}
 	requireForkParent(t, s, "imported-child", "native-parent")
 }
@@ -115,12 +121,12 @@ func TestReconcileImportedForkLineageRejectsUnsafeMetadataWithoutLosingHistory(t
 	t.Run("self parent", func(t *testing.T) {
 		s := newTestStore(t)
 		seedImportedSession(t, s, "self", "claude", "session-self", "session-self")
-		warnings, err := s.ReconcileImportedForkLineage("claude", "session-self")
+		result, err := s.ReconcileImportedForkLineage("claude", "session-self")
 		if err != nil {
 			t.Fatalf("reconcile: %v", err)
 		}
-		if len(warnings) != 1 || warnings[0].Code != ImportedForkLineageSelf {
-			t.Fatalf("warnings = %+v, want self warning", warnings)
+		if len(result.Warnings) != 1 || result.Warnings[0].Code != ImportedForkLineageSelf {
+			t.Fatalf("warnings = %+v, want self warning", result.Warnings)
 		}
 		requireForkParent(t, s, "self", "")
 	})
@@ -129,13 +135,13 @@ func TestReconcileImportedForkLineageRejectsUnsafeMetadataWithoutLosingHistory(t
 		s := newTestStore(t)
 		seedImportedSession(t, s, "cycle-a", "codex", "session-a", "session-b")
 		seedImportedSession(t, s, "cycle-b", "codex", "session-b", "session-a")
-		warnings, err := s.ReconcileImportedForkLineage("codex", "session-b")
+		result, err := s.ReconcileImportedForkLineage("codex", "session-b")
 		if err != nil {
 			t.Fatalf("reconcile: %v", err)
 		}
-		if len(warnings) != 2 || warnings[0].Code != ImportedForkLineageCycle ||
-			warnings[1].Code != ImportedForkLineageCycle {
-			t.Fatalf("warnings = %+v, want two cycle warnings", warnings)
+		if len(result.Warnings) != 2 || result.Warnings[0].Code != ImportedForkLineageCycle ||
+			result.Warnings[1].Code != ImportedForkLineageCycle {
+			t.Fatalf("warnings = %+v, want two cycle warnings", result.Warnings)
 		}
 		requireForkParent(t, s, "cycle-a", "")
 		requireForkParent(t, s, "cycle-b", "")
@@ -151,12 +157,12 @@ func TestReconcileImportedForkLineageRejectsUnsafeMetadataWithoutLosingHistory(t
 			}
 		}
 		seedImportedSession(t, s, "ambiguous-child", "claude", "child", "shared-parent")
-		warnings, err := s.ReconcileImportedForkLineage("claude", "child")
+		result, err := s.ReconcileImportedForkLineage("claude", "child")
 		if err != nil {
 			t.Fatalf("reconcile: %v", err)
 		}
-		if len(warnings) != 1 || warnings[0].Code != ImportedForkLineageAmbiguous {
-			t.Fatalf("warnings = %+v, want ambiguous warning", warnings)
+		if len(result.Warnings) != 1 || result.Warnings[0].Code != ImportedForkLineageAmbiguous {
+			t.Fatalf("warnings = %+v, want ambiguous warning", result.Warnings)
 		}
 		requireForkParent(t, s, "ambiguous-child", "")
 		// The warning concerns only the edge: all three histories remain.

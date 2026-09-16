@@ -380,24 +380,8 @@ func (a *App) newSessionImportManager(config sessionimport.ManagerConfig) *sessi
 	return sessionimport.NewManager(config)
 }
 
-// importedRowBroadcast turns the rows an import run creates into the ordinary
-// per-row frames every other write path emits.
-//
-// An import is the one write path that persisted threads and auto-created
-// projects with nothing said about them: the run reported its own progress and
-// the importing client compensated by re-reading the whole sidebar when the
-// run finished. Every OTHER connected client learned nothing until reload, and
-// the compensation could not be given to them because it is a whole-list
-// resync, not a row.
-//
-// The frames are `listed` in both families — an imported thread and an
-// auto-created project are new rows a sidebar must INSERT, which is exactly
-// what that action means — and the project goes first, so a client has the
-// project before the threads that name it.
-//
-// Projects are deduplicated for the life of one run: an import of forty
-// sessions in one repository would otherwise send forty identical project
-// frames. Threads are not, because each id appears in exactly one frame.
+// importedRowBroadcast publishes newly imported rows and existing children whose
+// lineage changed. Projects are listed once per run, before their threads.
 type importedRowBroadcast struct {
 	mu       sync.Mutex
 	runID    string
@@ -405,10 +389,11 @@ type importedRowBroadcast struct {
 }
 
 func (b *importedRowBroadcast) announce(a *App, frame sessionimport.ProgressEvent) {
-	if a.store == nil || len(frame.ThreadIDs) == 0 {
+	if a.store == nil {
 		return
 	}
-	for _, threadID := range frame.ThreadIDs {
+	ids := append(append([]string(nil), frame.ThreadIDs...), frame.UpdatedThreadIDs...)
+	for i, threadID := range ids {
 		thread, err := a.store.GetThread(threadID)
 		if err != nil {
 			// The row is committed; a read that fails here costs this client
@@ -416,14 +401,18 @@ func (b *importedRowBroadcast) announce(a *App, frame sessionimport.ProgressEven
 			log.Printf("session import: broadcast imported thread %s: %v", threadID, err)
 			continue
 		}
-		if b.claimProject(frame.ImportID, thread.ProjectID) {
+		if i < len(frame.ThreadIDs) && b.claimProject(frame.ImportID, thread.ProjectID) {
 			if project, err := a.store.GetProject(thread.ProjectID); err != nil {
 				log.Printf("session import: broadcast imported project %s: %v", thread.ProjectID, err)
 			} else {
 				a.broadcastProjectRow(triage.ProjectActionListed, project)
 			}
 		}
-		a.broadcastThreadRow(triage.ThreadActionListed, thread)
+		action := triage.ThreadActionFull
+		if i < len(frame.ThreadIDs) {
+			action = triage.ThreadActionListed
+		}
+		a.broadcastThreadRow(action, thread)
 	}
 }
 

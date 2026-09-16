@@ -22,6 +22,13 @@ type ImportedForkLineageWarning struct {
 	Message  string
 }
 
+// ImportedForkLineageResult includes every changed row, including children
+// imported in an earlier run. Callers publish those rows to connected clients.
+type ImportedForkLineageResult struct {
+	Threads  []Thread
+	Warnings []ImportedForkLineageWarning
+}
+
 type importedForkSource struct {
 	threadID        string
 	provider        string
@@ -45,13 +52,13 @@ type importedForkSource struct {
 // returned.
 func (s *Store) ReconcileImportedForkLineage(
 	providerName, sessionID string,
-) ([]ImportedForkLineageWarning, error) {
+) (ImportedForkLineageResult, error) {
 	if providerName != "claude" && providerName != "codex" {
-		return nil, fmt.Errorf("%w: %q", ErrInvalidImportProvider, providerName)
+		return ImportedForkLineageResult{}, fmt.Errorf("%w: %q", ErrInvalidImportProvider, providerName)
 	}
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
-		return nil, fmt.Errorf("store: reconcile imported fork lineage: source session id is required")
+		return ImportedForkLineageResult{}, fmt.Errorf("store: reconcile imported fork lineage: source session id is required")
 	}
 
 	// Almost every provider session is a root. Avoid turning Import All into
@@ -70,29 +77,29 @@ func (s *Store) ReconcileImportedForkLineage(
 		 )`,
 		providerName, sessionID, providerName, sessionID,
 	).Scan(&relevant); err != nil {
-		return nil, fmt.Errorf("store: inspect imported fork lineage relevance: %w", err)
+		return ImportedForkLineageResult{}, fmt.Errorf("store: inspect imported fork lineage relevance: %w", err)
 	}
 	if relevant == 0 {
-		return nil, nil
+		return ImportedForkLineageResult{}, nil
 	}
 
 	tx, err := s.db.Begin()
 	if err != nil {
-		return nil, fmt.Errorf("store: begin imported fork lineage reconciliation: %w", err)
+		return ImportedForkLineageResult{}, fmt.Errorf("store: begin imported fork lineage reconciliation: %w", err)
 	}
 	defer tx.Rollback()
 
 	sources, err := loadImportedForkSources(tx)
 	if err != nil {
-		return nil, err
+		return ImportedForkLineageResult{}, err
 	}
 	claims, err := loadProviderSessionClaims(tx)
 	if err != nil {
-		return nil, err
+		return ImportedForkLineageResult{}, err
 	}
 	graph, err := loadForkGraph(tx)
 	if err != nil {
-		return nil, err
+		return ImportedForkLineageResult{}, err
 	}
 
 	desired := make(map[string]string, len(sources))
@@ -163,19 +170,30 @@ func (s *Store) ReconcileImportedForkLineage(
 		children = append(children, child)
 	}
 	sort.Strings(children)
+	var changed []Thread
 	for _, child := range children {
 		var parent any
 		if desired[child] != "" {
 			parent = desired[child]
 		}
-		if _, err := tx.Exec(
-			`UPDATE threads SET forked_from_thread_id = ? WHERE id = ?`, parent, child,
-		); err != nil {
-			return nil, fmt.Errorf("store: reconcile imported fork parent for thread %s: %w", child, err)
+		var id string
+		err := tx.QueryRow(
+			`UPDATE threads SET forked_from_thread_id = ? WHERE id = ? AND forked_from_thread_id IS NOT ? RETURNING id`, parent, child, parent,
+		).Scan(&id)
+		if err == sql.ErrNoRows {
+			continue
 		}
+		if err != nil {
+			return ImportedForkLineageResult{}, fmt.Errorf("store: reconcile imported fork parent for thread %s: %w", child, err)
+		}
+		thread, err := scanThread(tx.QueryRow(`SELECT `+threadColumns+` FROM threads WHERE id = ?`, id))
+		if err != nil {
+			return ImportedForkLineageResult{}, fmt.Errorf("store: read reconciled fork %s: %w", child, err)
+		}
+		changed = append(changed, thread)
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("store: commit imported fork lineage reconciliation: %w", err)
+		return ImportedForkLineageResult{}, fmt.Errorf("store: commit imported fork lineage reconciliation: %w", err)
 	}
 	sort.Slice(warnings, func(i, j int) bool {
 		if warnings[i].ThreadID != warnings[j].ThreadID {
@@ -183,7 +201,7 @@ func (s *Store) ReconcileImportedForkLineage(
 		}
 		return warnings[i].Code < warnings[j].Code
 	})
-	return warnings, nil
+	return ImportedForkLineageResult{Threads: changed, Warnings: warnings}, nil
 }
 
 func loadImportedForkSources(tx *sql.Tx) ([]importedForkSource, error) {

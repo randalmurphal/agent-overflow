@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/sessionimport"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/triage"
@@ -535,4 +536,28 @@ func TestGitBranchChangeBroadcastsTheThreadRow(t *testing.T) {
 		t.Fatalf("GitCheckout(same branch): %v", err)
 	}
 	broadcasts.expectSilence("checking out the branch the thread is already on")
+}
+
+func TestImportedLineageUpdatesExistingRowsWithoutRelistingThem(t *testing.T) {
+	app := newTestAppWithStore(t)
+	parent := mustCreateBroadcastThread(t, app)
+	child := mustCreateBroadcastThread(t, app)
+	child.ForkedFromThreadID = parent.ID
+	child.Archived = true
+	if err := app.store.UpdateThread(child); err != nil {
+		t.Fatal(err)
+	}
+	broadcasts := captureThreadBroadcasts(t, app)
+	var imported importedRowBroadcast
+	imported.announce(app, sessionimport.ProgressEvent{ImportID: "later-parent", ThreadIDs: []string{parent.ID}, UpdatedThreadIDs: []string{child.ID}})
+	if len(broadcasts.events) != 2 {
+		t.Fatalf("import broadcasts = %+v", broadcasts.events)
+	}
+	first, second := broadcasts.events[0], broadcasts.events[1]
+	if first.Action != triage.ThreadActionListed || first.Thread == nil || first.Thread.ID != parent.ID {
+		t.Fatalf("new parent was not listed: %+v", first)
+	}
+	if second.Action != triage.ThreadActionFull || second.Thread == nil || second.Thread.ID != child.ID || second.Thread.ForkedFromThreadID != parent.ID || !second.Thread.Archived {
+		t.Fatalf("existing child update lost lineage or membership: %+v", second)
+	}
 }

@@ -25,6 +25,8 @@ import (
 type ImportOutcome struct {
 	Threads  []store.Thread
 	Warnings []importir.Warning
+	// UpdatedThreadIDs names existing children whose lineage changed.
+	UpdatedThreadIDs []string
 }
 
 // ThreadIDs returns the imported thread id, or an empty slice.

@@ -492,11 +492,11 @@ func (r *corpusReport) verifyImportedLineage(
 	unsafe := make(map[string]bool)
 	seenWarnings := make(map[string]bool)
 	for _, sessionID := range sessionIDs {
-		warnings, err := writer.store.ReconcileImportedForkLineage(r.provider, sessionID)
+		lineage, err := writer.store.ReconcileImportedForkLineage(r.provider, sessionID)
 		if err != nil {
 			t.Fatalf("import corpus (%s): reconcile lineage for %s: %v", r.provider, sessionID, err)
 		}
-		for _, warning := range warnings {
+		for _, warning := range lineage.Warnings {
 			unsafe[warning.ThreadID] = true
 			key := warning.ThreadID + "\x00" + warning.Code
 			if !seenWarnings[key] {

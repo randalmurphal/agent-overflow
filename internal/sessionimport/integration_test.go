@@ -792,6 +792,9 @@ func TestImportClaudeExplicitForkKeepsBothCoherentHistoriesAndLineage(t *testing
 	if len(parentOutcome.Threads) != 1 {
 		t.Fatalf("parent threads = %d, want 1", len(parentOutcome.Threads))
 	}
+	if len(parentOutcome.UpdatedThreadIDs) != 1 || parentOutcome.UpdatedThreadIDs[0] != childID {
+		t.Fatalf("updated child IDs = %v, want %s", parentOutcome.UpdatedThreadIDs, childID)
+	}
 	parentID := parentOutcome.Threads[0].ID
 	child, err := st.GetThread(childID)
 	if err != nil {

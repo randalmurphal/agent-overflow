@@ -19,8 +19,9 @@ type sessionImporter struct {
 	// is the one timestamp in this package that is allowed to be now().
 	importedAt int64
 
-	created  []store.Thread
-	warnings []importir.Warning
+	created          []store.Thread
+	updatedThreadIDs []string
+	warnings         []importir.Warning
 }
 
 func newSessionImporter(s *store.Store, row Row, proj store.Project) *sessionImporter {
@@ -37,7 +38,7 @@ func (im *sessionImporter) warn(warnings ...importir.Warning) {
 }
 
 func (im *sessionImporter) outcome() ImportOutcome {
-	return ImportOutcome{Threads: im.created, Warnings: im.warnings}
+	return ImportOutcome{Threads: im.created, Warnings: im.warnings, UpdatedThreadIDs: im.updatedThreadIDs}
 }
 
 // add commits one session: its thread row, its whole history in one
@@ -83,22 +84,22 @@ func (im *sessionImporter) add(plan branchPlan) error {
 	if err := im.store.SetThreadImportState(state); err != nil {
 		return im.fail(fmt.Errorf("sessionimport: record cursor for %s: %w", im.row.ID, err))
 	}
-	lineageWarnings, err := im.store.ReconcileImportedForkLineage(im.row.Provider, im.row.SessionID)
+	lineage, err := im.store.ReconcileImportedForkLineage(im.row.Provider, im.row.SessionID)
 	if err != nil {
 		return im.fail(fmt.Errorf("sessionimport: reconcile fork lineage for %s: %w", im.row.ID, err))
 	}
-	for _, warning := range lineageWarnings {
+	for _, warning := range lineage.Warnings {
 		// Reconciliation is global because parent and child can arrive in
 		// either order. Surface every new observation even when importing the
 		// parent is what finally made an older child's invalid cycle visible.
 		im.warn(importir.Warning{Code: warning.Code, Message: warning.Message})
 	}
-	if im.row.ParentSessionID != "" {
-		resolved, err := im.store.GetThread(thread.ID)
-		if err != nil {
-			return im.fail(fmt.Errorf("sessionimport: read reconciled fork %s: %w", im.row.ID, err))
+	for _, resolved := range lineage.Threads {
+		if resolved.ID == thread.ID {
+			im.created[len(im.created)-1] = resolved
+		} else {
+			im.updatedThreadIDs = append(im.updatedThreadIDs, resolved.ID)
 		}
-		im.created[len(im.created)-1] = resolved
 	}
 	return nil
 }
