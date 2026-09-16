@@ -29,9 +29,10 @@ type ManagedAccount struct {
 	NeedsLogin bool `json:"needsLogin"`
 	// SignInRequired is set only by SwitchProviderAccount, and only when the
 	// switch was DECLINED because the target's login has expired. The call
-	// succeeds so the answer can carry this: the one recovery is a sign-in to
-	// that same account, and returning an error instead would cost a round
-	// trip and leave the client guessing which account to open it for.
+	// succeeds so the answer can carry this: nothing is broken, the account
+	// simply needs a sign-in, and the client shows that on the card. It
+	// never starts a sign-in on the user's behalf; that is the user's own
+	// click.
 	//
 	// It is always false in listings, where NeedsLogin already says the card
 	// needs repair and nothing is being attempted.
@@ -239,8 +240,8 @@ func (m *Manager) SwitchProviderAccount(providerName, accountID string) (Managed
 	// but activating it hands the provider a refresh token the server will
 	// reject, and the CLI answers that rejection by blanking the credential.
 	// So the switch stops here instead: the account is reported as needing a
-	// sign-in, with the switch's answer telling the caller to open one for
-	// THIS account rather than making the user find it again.
+	// sign-in, and the answer says so rather than failing, because nothing
+	// went wrong.
 	if m.credentials.CredentialLoginExpired(providerName, targetCredential.Data, time.Now()) {
 		m.audit(
 			"declined to switch to %s account %s: its login expired at %s",

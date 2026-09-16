@@ -154,10 +154,10 @@ describe('<AccountSwitcher> — selection', () => {
     expect(queryByTestId('account-switcher-login-expiry-codex-a')).toBeNull();
   });
 
-  it('opens the sign-in flow when the backend declines the pick as expired', async () => {
+  it('does not open the sign-in flow when the backend declines the pick as expired', async () => {
     // The row still looks switchable (its credential is present), so the
-    // verdict arrives from the switch reply. The picker turns it into the
-    // sign-in the user would have had to find themselves.
+    // verdict arrives from the switch reply. The picker reports it and stays
+    // open on the now-marked row; the sign-in is the user's next click.
     setBindingMock('ListProviderAccounts', async () => [
       account({ id: 'claude-a', displayName: 'Work', active: true }),
       account({ id: 'claude-b', displayName: 'Personal', refreshTokenExpiresAt: 10 }),
@@ -177,16 +177,16 @@ describe('<AccountSwitcher> — selection', () => {
     const row = await findByTestId('account-switcher-row-claude-b');
     await fireEvent.click(row.querySelector('button') as HTMLButtonElement);
 
-    await waitFor(() => expect(loginMock).toHaveBeenCalledWith('claude', expect.any(String)));
+    await waitFor(() =>
+      expect(
+        getToasts().some((t) => t.message.includes('The Claude login for Personal expired.')),
+      ).toBe(true),
+    );
     expect(switchMock).toHaveBeenCalledWith('claude', 'claude-b');
-    await findByTestId('provider-login-flow-claude');
-    // Nothing switched, so the picker stays where the sign-in can finish.
+    expect(loginMock).not.toHaveBeenCalled();
+    // Nothing switched, so the picker stays open on the row that now says
+    // "Sign in again".
     expect(onClose).not.toHaveBeenCalled();
-    expect(
-      getToasts().some((t) =>
-        t.message.includes('The Claude login for Personal expired.'),
-      ),
-    ).toBe(true);
   });
 
   it('closes without an RPC when the already-active account is picked', async () => {

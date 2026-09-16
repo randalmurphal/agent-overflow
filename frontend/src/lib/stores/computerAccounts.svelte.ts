@@ -248,11 +248,10 @@ export class ComputerAccounts {
    * failure with the error already toasted.
    *
    * A DECLINED switch — the backend answering `signInRequired` because this
-   * account's login expired — resolves false and opens the sign-in for that
-   * same account here, so the user's one click still reaches the only repair.
-   * The sign-in is started after the in-flight latch clears: it is itself a
-   * credential operation, and starting it under the switch's own latch would
-   * be refused by the guard both share.
+   * account's login expired — resolves false, toasts why, and reloads the
+   * listing so the card now reads as needing a sign-in. It never starts the
+   * sign-in itself: a sign-in opens a browser, and that is an explicit choice
+   * the user makes on the card, not a side effect of a switch.
    */
   async switchProviderAccount(
     provider: ProviderID,
@@ -263,14 +262,20 @@ export class ComputerAccounts {
     const label = providerLabel(provider);
     action.switchingID = account.id;
     let switched = false;
-    let declined = false;
     try {
       const result = (await this.call(() =>
         SwitchProviderAccount(provider, account.id),
       )) as ManagedProviderAccount | null;
-      declined = result?.signInRequired === true;
+      const declined = result?.signInRequired === true;
+      // Before the toast on the declined path: the card should already say
+      // "Sign in again" by the time the user reads why.
       await this.reloadProviderAccounts();
-      if (!declined) {
+      if (declined) {
+        addToast(
+          'warning',
+          `The ${label} login for ${providerAccountName(account)} expired. Sign in again to reconnect it.`,
+        );
+      } else {
         addToast('success', `Switched ${label} account.`);
         switched = true;
       }
@@ -289,13 +294,6 @@ export class ComputerAccounts {
       }
     } finally {
       action.switchingID = '';
-    }
-    if (declined && !this.disposed) {
-      addToast(
-        'warning',
-        `The ${label} login for ${providerAccountName(account)} expired. Sign in again to reconnect it.`,
-      );
-      await this.startProviderLogin(provider);
     }
     return switched;
   }

@@ -402,12 +402,12 @@ describe('switchProviderAccount', () => {
       'The Claude login for Work expired. Sign in again to reconnect it.',
     );
     expect(getProviderAccount('claude')?.accountId).toBe('claude-a');
-    // The reload ran, so the card carries the reason before the flow opens.
+    // The reload ran, so the card now offers the sign-in itself.
     expect(getProviderAccountsFor('claude')[1].needsLogin).toBe(true);
-    // The sign-in starts from the same gesture, and the credential-op latch
-    // that guarded the switch has to have cleared for it to be admitted.
-    expect(startMock).toHaveBeenCalledWith('claude', expect.any(String));
-    expect(isProviderLoginActive('claude')).toBe(true);
+    // A sign-in opens a browser and is the user's explicit choice on the
+    // card; a declined switch must never start one on its own.
+    expect(startMock).not.toHaveBeenCalled();
+    expect(isProviderLoginActive('claude')).toBe(false);
   });
 
   it('starts no sign-in when the switch is accepted', async () => {
