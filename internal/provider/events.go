@@ -715,3 +715,17 @@ type BackgroundTaskRef struct {
 type BackgroundTasksChangedMeta struct {
 	Tasks []BackgroundTaskRef `json:"tasks"`
 }
+
+// MetaUserContentBlockDigestKey carries an `EventUserText` echo's content
+// blocks as a per-block fingerprint list, in wire order — the shape a provider
+// parser reports so a consumer can tell whether the echo contains exactly the
+// blocks the app sent under that id, or MORE.
+//
+// It exists for the Claude CLI's queue-boundary merge: the survivor of a
+// merged batch is acknowledged with the concatenated blocks of every member,
+// which the flattened `Content` string cannot distinguish from one longer
+// message. Triage compares this against the per-send expectation it registered
+// (`PendingSendExpectation.ContentBlockDigest`). A parser that reports nothing
+// simply leaves the comparison unavailable, which is the pre-existing
+// behaviour.
+const MetaUserContentBlockDigestKey = "content_block_digest"

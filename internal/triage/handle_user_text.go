@@ -114,12 +114,22 @@ func (r *Router) handleUserText(evt provider.ProviderEvent) error {
 			// parent so the session-death self-heal can stamp them — the
 			// echo won't necessarily be re-delivered (round-6, R6-1).
 			pending.stashEchoIdentity(providerItemID, meta.text("parent_uuid"))
+			// Decided BEFORE the handlers run, off the entry this echo just
+			// popped: a merge is read from what the popped send expected
+			// against what the echo actually carries. Acting on it waits
+			// until the survivor's own row is durable and stamped.
+			merged := r.mergedFlushPrefix(evt.ThreadID, &pending, meta.strings(provider.MetaUserContentBlockDigestKey))
 			r.captureUserConfirmation(evt.ThreadID, &pending, eventTimestampMillis(evt))
 			var handleErr error
 			if pending.DeferredItem != nil {
 				handleErr = r.persistDeferredUserText(&pending, evt)
 			} else {
 				handleErr = r.attachProviderItemIDToUserRow(evt.ThreadID, &pending, evt)
+			}
+			if handleErr == nil && len(merged) > 0 {
+				// The provider merged earlier dispatched messages into this
+				// one, so AO's rows become the one row the transcript holds.
+				handleErr = r.foldMergedFlushRows(evt.ThreadID, &pending, merged)
 			}
 			if r.isWireOnlyUserTextSeen(evt.ThreadID, pending.EchoProviderItemID) {
 				r.markWireOnlyUserTextSeen(evt.ThreadID, providerItemID)
@@ -283,6 +293,21 @@ func (m userTextMeta) text(key string) string {
 	var value string
 	if json.Unmarshal(raw, &value) != nil {
 		return ""
+	}
+	return value
+}
+
+// strings reads a JSON string array — the shape the content-block digest
+// rides as. Same defensive contract as text/flag: absent or wrong-typed reads
+// as nil, so the merge comparison simply does not run.
+func (m userTextMeta) strings(key string) []string {
+	raw, ok := m[key]
+	if !ok {
+		return nil
+	}
+	var value []string
+	if json.Unmarshal(raw, &value) != nil {
+		return nil
 	}
 	return value
 }

@@ -1,25 +1,15 @@
 package app
 
 import (
-	"slices"
-	"strings"
-
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
 )
 
 // joinedFlushSeparator is the visible rule between the parts of a JOINED
-// queued message. It goes in BOTH the stored row summary and the text written
-// to the provider, so the bubble the user reads back, the text the model
-// receives, and the message the revert cuts at are one thing.
-//
-// Claude Code's own boundary-drain merge newline-joins the parts
-// (`joinPromptValues`, src/cli/print.ts). AO uses a markdown rule instead
-// because its copy is also the row a person reads, edits and reverts to, and
-// two prompts run together across a bare newline read as one paragraph.
-const joinedFlushSeparator = "\n\n---\n\n"
+// queued message, shared with the triage-side fold of a merge the CLI made
+// across separate drains so the two produce the same row.
+const joinedFlushSeparator = usermessage.JoinSeparator
 
 // flushMember is one queued item resolved up to the last fallible step before
 // anything durable happens. A joined group resolves EVERY member first, so an
@@ -136,37 +126,21 @@ func joinFlushMembers(members []flushMember) (joinedFlushMessage, error) {
 	return joined, nil
 }
 
-// joinRenumberedText concatenates one text per member and RENUMBERS its inline
-// image markers into the joined attachment order. `pick` selects which of the
-// member's two texts to walk: the stored summary or the provider-bound text.
-// They carry identical markers and differ only in what surrounds them (command
-// expansion, file attachment lines), so one walk serves both and the two cannot
-// drift apart.
-//
-// The composer numbers `[Image #N]` per message, so a plain concatenation
-// leaves two `#1` markers and an image with no marker at all: a reader's split
-// claims the first unused occurrence per index, binds attachment 1 to the first
-// member's marker, finds no `#2`, and appends the second member's image at the
-// end while its literal `#1` stays in the text. Re-emitting each marker from
-// the member's attachment offset keeps every image where the user dropped it.
+// joinRenumberedText concatenates one text per member and renumbers its inline
+// image markers into the joined attachment order (usermessage.JoinRenumberedText).
+// `pick` selects which of the member's two texts to walk: the stored summary or
+// the provider-bound text. They carry identical markers and differ only in what
+// surrounds them (command expansion, file attachment lines), so one walk serves
+// both and the two cannot drift apart.
 func joinRenumberedText(members []flushMember, pick func(flushMember) string) string {
-	var text strings.Builder
-	base := 0
-	for i, member := range members {
-		if i > 0 {
-			text.WriteString(joinedFlushSeparator)
-		}
-		images := member.resolved.providerAttachments
-		for _, part := range provider.SplitContentByImageMarkers(pick(member), len(images)) {
-			if part.ImageIndex >= 0 {
-				text.WriteString(provider.ImagePlaceholderLabel(base + part.ImageIndex + 1))
-				continue
-			}
-			text.WriteString(part.Text)
-		}
-		base += len(images)
+	parts := make([]usermessage.TextPart, 0, len(members))
+	for _, member := range members {
+		parts = append(parts, usermessage.TextPart{
+			Text:       pick(member),
+			ImageCount: len(member.resolved.providerAttachments),
+		})
 	}
-	return text.String()
+	return usermessage.JoinRenumberedText(parts)
 }
 
 // joinProviderAttachments is the image list those renumbered markers index
@@ -180,75 +154,29 @@ func joinProviderAttachments(members []flushMember) []provider.ImageAttachment {
 	return attachments
 }
 
-// joinFlushMeta unions the members' row metadata and returns it with the send
-// id that names the joined row.
-//
-// Attachments concatenate in queue order, matching the renumbered markers.
-// The singular references (source plan, revision plan, diff review) take the
-// first member that carries one, and comment ids are collected only from the
-// members pointing at THAT reference: the badges a row renders are scoped to
-// its own reference, so folding in another plan's comment ids would label the
-// row with comments it does not show. Every member's plan/comment bookkeeping
-// is still applied separately by applyProposedPlanAcceptance.
+// joinFlushMeta unions the members' row metadata (usermessage.JoinMetas) and
+// returns it with the send id that names the joined row.
 func joinFlushMeta(members []flushMember) (string, string, error) {
-	var in usermessage.Input
+	metas := make([]usermessage.Meta, 0, len(members))
 	for _, member := range members {
 		resolved := member.resolved
-		in.Attachments = append(in.Attachments, resolved.persistedAttachments...)
-		if in.SourcePlan == nil {
-			in.SourcePlan = resolved.sourcePlan
-		}
-		if resolved.revisionSourcePlan != nil {
-			if in.RevisionSourcePlan == nil {
-				in.RevisionSourcePlan = resolved.revisionSourcePlan
-			}
-			if samePlanRef(in.RevisionSourcePlan, resolved.revisionSourcePlan) {
-				in.RevisionCommentIDs = append(in.RevisionCommentIDs, resolved.revisionPlanCommentIDs...)
-			}
-		}
-		if resolved.revisionSourceDiff != nil {
-			if in.RevisionSourceDiff == nil {
-				in.RevisionSourceDiff = resolved.revisionSourceDiff
-			}
-			if sameDiffRef(in.RevisionSourceDiff, resolved.revisionSourceDiff) {
-				in.RevisionDiffCommentIDs = append(in.RevisionDiffCommentIDs, resolved.revisionDiffCommentIDs...)
-			}
-		}
-		if in.Command == "" {
-			in.Command = resolved.command
-		}
-		// A crash-rebuilt row must keep the composer's slash semantics for any
-		// member that came through the composer.
-		in.ExpandComposerCommands = in.ExpandComposerCommands || member.payload.ExpandComposerCommands
-		// A member requeued from a joined row answers for every id that row
-		// answered for, not just its own.
-		ids := member.payload.JoinedSendIDs
-		if len(ids) == 0 {
-			ids = []string{member.payload.SendID}
-		}
-		for _, id := range ids {
-			if id == "" {
-				continue
-			}
-			if in.SendID == "" {
-				in.SendID = id
-			}
-			if !slices.Contains(in.JoinedSendIDs, id) {
-				in.JoinedSendIDs = append(in.JoinedSendIDs, id)
-			}
-		}
+		metas = append(metas, usermessage.Input{
+			Attachments:            resolved.persistedAttachments,
+			SourcePlan:             resolved.sourcePlan,
+			RevisionSourcePlan:     resolved.revisionSourcePlan,
+			RevisionCommentIDs:     resolved.revisionPlanCommentIDs,
+			RevisionSourceDiff:     resolved.revisionSourceDiff,
+			RevisionDiffCommentIDs: resolved.revisionDiffCommentIDs,
+			Command:                resolved.command,
+			ExpandComposerCommands: member.payload.ExpandComposerCommands,
+			SendID:                 member.payload.SendID,
+			JoinedSendIDs:          member.payload.JoinedSendIDs,
+		}.Projection())
 	}
-	meta, err := usermessage.Marshal(in)
+	joined := usermessage.JoinMetas(metas)
+	meta, err := usermessage.MarshalMeta(joined)
 	if err != nil {
 		return "", "", err
 	}
-	return meta, in.SendID, nil
-}
-
-func samePlanRef(a, b *store.ProposedPlanSourceRef) bool {
-	return a != nil && b != nil && a.ThreadID == b.ThreadID && a.ItemID == b.ItemID
-}
-
-func sameDiffRef(a, b *SourceDiffReview) bool {
-	return a != nil && b != nil && a.Scope == b.Scope && a.SourceKey == b.SourceKey
+	return meta, joined.SendID, nil
 }

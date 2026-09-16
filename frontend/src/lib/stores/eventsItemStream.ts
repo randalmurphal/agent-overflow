@@ -337,6 +337,29 @@ function applyItemUpserts(upserts: Item[]): void {
   }
 }
 
+/**
+ * Drop a row the backend deleted from every mounted pane, and retire the
+ * send-queue entry that was waiting for it to render.
+ *
+ * The Zone 2 clear is not optional: the entry's exit condition is "its row is
+ * rendered", and a row that no longer exists can never satisfy it, so without
+ * this the message would sit above the composer forever. Its text is not lost
+ * — the queue-boundary merge fold that removed the row put it in the surviving
+ * row's summary, which arrives as an upsert in this same batch.
+ *
+ * The cache eviction mirrors the upsert path: a window that changed shape must
+ * not be served from a warm snapshot that still holds the row.
+ */
+function applyItemRemoval(threadId: string, itemId: string): void {
+  let removed = false;
+  for (const pane of ingestPanes()) {
+    if (pane.threadId !== threadId) continue;
+    if (pane.removeItemById(itemId, threadId)) removed = true;
+  }
+  confirmFlushedByUserItemId(threadId, itemId);
+  if (removed) threadItemCache.evict(threadId);
+}
+
 function applyItemDelta(evt: ItemDeltaEvent): void {
   if (!evt || !evt.threadId || !evt.itemId || !evt.delta) return;
   if (!isBoundedString(evt.threadId, 512) || !isBoundedString(evt.itemId, 512)) return;
@@ -384,6 +407,9 @@ export function applyItemStreamEvent(evt: ItemStreamEvent, origin?: EventOrigin)
     if (!isBoundedString(evt.kind, 128)) return;
     if (!isBoundedString(evt.meta)) return;
     if (!isFiniteNumber(evt.updatedAt)) return;
+  } else if (evt.action === 'remove') {
+    if (!isBoundedString(evt.threadId, 512)) return;
+    if (!isBoundedString(evt.itemId, 512) || evt.itemId.trim() === '') return;
   } else if (evt.action === 'patch') {
     if (!isBoundedString(evt.threadId, 512)) return;
     if (!isBoundedString(evt.itemId, 512) || evt.itemId.trim() === '') return;
@@ -545,6 +571,16 @@ export function flushItemEventQueue(): void {
           if (pane.threadId !== evt.threadId) continue;
           pane.applyItemPatch(evt);
         }
+        continue;
+      }
+      if (evt.action === 'remove') {
+        // The row is gone from the store. Anything this flush still holds
+        // for it describes a row that no longer exists, so both buffers
+        // drain first and the removal is applied last.
+        const itemKey = itemConflictKey(evt.threadId, evt.itemId);
+        if (pendingDeltaItemKeys.has(itemKey)) flushPendingDeltas();
+        if (pendingUpsertItemKeys.has(itemKey)) flushPendingUpserts();
+        applyItemRemoval(evt.threadId, evt.itemId);
         continue;
       }
       if (evt.action !== 'delta') continue;

@@ -253,12 +253,34 @@ func (p *Parser) parseUserReplay(threadID string, raw map[string]json.RawMessage
 
 	providerItemID := firstNonEmpty(msg.ID, readRawString(raw["uuid"]))
 	parentUUID := readRawString(raw["parentUuid"])
+	// The echo's content blocks, fingerprinted. This is the ONLY signal that
+	// distinguishes the CLI's boundary-drain merge from an ordinary ack: the
+	// survivor's echo carries the concatenated blocks of every merged member,
+	// while the flattened text alone reads as one longer message. See
+	// message_blocks.go and claude-wire.md §Queued-message consumption.
+	//
+	// Not emitted for a peer delivery: its content is the wrapper, which the
+	// branch below replaces with the inner body, so a digest of the raw blocks
+	// would describe a string no consumer holds.
+	var contentBlockDigest BlockDigest
+	if !isPeerMessage {
+		contentBlockDigest = EchoBlockDigest(msg.Content)
+	}
 
 	var meta json.RawMessage
-	if providerItemID != "" || parentUUID != "" || commandEcho || isPeerMessage {
-		fields := map[string]any{
-			"provider_item_id": providerItemID,
-			"parent_uuid":      parentUUID,
+	if providerItemID != "" || parentUUID != "" || commandEcho || isPeerMessage || len(contentBlockDigest) > 0 {
+		// Absence and empty string are collapsed to absence: every reader
+		// resolves a missing key to "", and an envelope with no identifier
+		// must not look like one carrying an empty id.
+		fields := map[string]any{}
+		if providerItemID != "" {
+			fields["provider_item_id"] = providerItemID
+		}
+		if parentUUID != "" {
+			fields["parent_uuid"] = parentUUID
+		}
+		if len(contentBlockDigest) > 0 {
+			fields[provider.MetaUserContentBlockDigestKey] = []string(contentBlockDigest)
 		}
 		if commandEcho {
 			fields["command_echo"] = true

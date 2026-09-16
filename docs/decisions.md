@@ -144,7 +144,11 @@ qualifies costs nothing.
 - If Claude Code treats a queued batch as one message, AO does too, including
   on revert: a flush drain of N>=2 messages for a headless Claude session is
   dispatched as one envelope and recorded as one row carrying every member's
-  send id (`claude-wire.md` §Queued-message consumption, boundary-drain merge).
+  send id, and a batch the CLI merged across separate AO drains is folded into
+  one row when the survivor's echo proves the merge (`claude-wire.md`
+  §Queued-message consumption, boundary-drain merge). The fold requires an
+  exact block-sequence decomposition; an echo that differs any other way is
+  logged and left alone rather than guessed at.
 - A Claude rollback whose stamped provider uuid is missing from a transcript
   that continues past it FAILS loudly instead of falling back to the ordinal
   walk; only a transcript ending before that turn is recoverable by cloning.

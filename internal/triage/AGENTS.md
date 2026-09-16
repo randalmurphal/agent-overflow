@@ -24,6 +24,8 @@ Allocate a turn index once in `turn_lifecycle.go`; every item, usage row, interr
 
 Pending sends are keyed by durable send identity. Acceptance, confirmation, retry, and provider echo may arrive in different orders and must settle idempotently. Promotion from the interrupt queue occurs only after the prior streaming item and turn have settled.
 
+One AO user row is one provider transcript entry. The only path that deletes a persisted user row is `claude_merge_fold.go`, when a provider's own queue-boundary merge proves several dispatched messages became one entry; it requires an exact content-block decomposition and declines loudly otherwise. Do not add another history-rewriting path on weaker evidence.
+
 Stopped-thread events route according to their recorded ownership and lifecycle, not whichever thread is currently selected. Late completion remains attached to the turn that started it.
 
 ## Subagents and background work

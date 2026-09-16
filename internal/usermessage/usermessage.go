@@ -119,46 +119,7 @@ type AttachmentMeta struct {
 // can persist an empty Meta column and the frontend's omit-empty
 // branches continue to work.
 func Marshal(in Input) (string, error) {
-	if len(in.Attachments) == 0 &&
-		in.SourcePlan == nil &&
-		in.RevisionSourcePlan == nil &&
-		len(in.RevisionCommentIDs) == 0 &&
-		in.RevisionSourceDiff == nil &&
-		len(in.RevisionDiffCommentIDs) == 0 &&
-		in.Command == "" &&
-		in.SendID == "" &&
-		len(in.JoinedSendIDs) == 0 &&
-		!in.ExpandComposerCommands {
-		return "", nil
-	}
-	metaAttachments := make([]AttachmentMeta, 0, len(in.Attachments))
-	for _, attachment := range in.Attachments {
-		metaAttachments = append(metaAttachments, AttachmentMeta{
-			ID:       attachment.ID,
-			ThreadID: attachment.ThreadID,
-			Filename: attachment.Filename,
-			MimeType: attachment.MimeType,
-			Size:     attachment.Size,
-			Kind:     attachment.Kind,
-		})
-	}
-	meta := Meta{
-		Attachments:                  metaAttachments,
-		SourceProposedPlan:           in.SourcePlan,
-		RevisionSourceProposedPlan:   in.RevisionSourcePlan,
-		RevisionSourceCommentIDs:     in.RevisionCommentIDs,
-		RevisionSourceDiffReview:     in.RevisionSourceDiff,
-		RevisionSourceDiffCommentIDs: in.RevisionDiffCommentIDs,
-		Command:                      in.Command,
-		ExpandComposerCommands:       in.ExpandComposerCommands,
-		SendID:                       in.SendID,
-		JoinedSendIDs:                in.JoinedSendIDs,
-	}
-	data, err := json.Marshal(meta)
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
+	return MarshalMeta(in.Projection())
 }
 
 // FromItem decodes the user_text Meta column back into a Meta. An

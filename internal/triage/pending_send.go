@@ -82,6 +82,20 @@ type pendingSend struct {
 	// ExpectedProviderItemID) and for any Codex send predating the
 	// stamp, both of which keep the FIFO head-pop.
 	ExpectedClientID string
+
+	// ExpectedContentBlockDigest is the per-block fingerprint of the content
+	// blocks this send put on the wire, when the provider adapter could
+	// supply one (headless Claude flush sends do; everything else leaves it
+	// empty and the comparison simply never runs).
+	//
+	// The echo carries the same fingerprint of what the provider actually
+	// acknowledged (provider.MetaUserContentBlockDigestKey), so an echo whose
+	// blocks are a strict SUPERSET of this — ending with it, and prefixed by
+	// the digests of earlier flush sends on the thread — is the Claude CLI's
+	// queue-boundary merge rather than this message's own ack. See
+	// claude_merge_fold.go.
+	ExpectedContentBlockDigest []string
+
 	// AnchoredAtInterrupt marks a flush entry whose row was already
 	// placed at its user-visible timeline position by the interrupt
 	// handler — either bumped to the turn tail (PromoteQuietFlushSends,
@@ -210,6 +224,13 @@ type PendingSendExpectation struct {
 	// the two can never disagree. See pendingSend.ExpectedClientID for
 	// what it costs an echo that carries no client id.
 	ByClientID bool
+
+	// ContentBlockDigest is the per-block fingerprint of the content blocks
+	// this send writes to the provider. Supplied only where the provider can
+	// acknowledge a message that contains MORE than what was sent under its
+	// id — headless Claude's queue-boundary merge. See
+	// pendingSend.ExpectedContentBlockDigest.
+	ContentBlockDigest []string
 }
 
 // RegisterPendingSendWithExpectation registers a direct send — the
@@ -281,17 +302,24 @@ func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, q
 	r.mu.Lock()
 	st := r.state(threadID)
 	st.pendingSends = append(st.pendingSends, pendingSend{
-		AOItemID:               aoItemID,
-		QueueItemID:            queueItemID,
-		TurnIndex:              turnIndex,
-		EnqueuedAt:             enqueuedAt,
-		DeferredItem:           deferredItem,
-		QuietItem:              quietItem,
-		ExpectedProviderItemID: expect.ProviderItemID,
-		ExpectedClientID:       expectedClientID,
-		Shape:                  shape,
-		InterruptedTurnIndex:   -1,
+		AOItemID:                   aoItemID,
+		QueueItemID:                queueItemID,
+		TurnIndex:                  turnIndex,
+		EnqueuedAt:                 enqueuedAt,
+		DeferredItem:               deferredItem,
+		QuietItem:                  quietItem,
+		ExpectedProviderItemID:     expect.ProviderItemID,
+		ExpectedClientID:           expectedClientID,
+		ExpectedContentBlockDigest: expect.ContentBlockDigest,
+		Shape:                      shape,
+		InterruptedTurnIndex:       -1,
 	})
+	// The ledger outlives the FIFO entry on purpose: a merge is recognised
+	// from the SURVIVOR's echo, by which time the earlier members' entries
+	// have already been consumed by their own merged-away echoes.
+	if shape == sendShapeFlush {
+		st.recordFlushSendDigest(aoItemID, expect.ContentBlockDigest)
+	}
 	r.mu.Unlock()
 }
 
@@ -462,6 +490,36 @@ func (r *Router) popPendingSendAtLocked(threadID string, i int) pendingSend {
 	next = append(next, queue[i+1:]...)
 	st.pendingSends = next
 	return entry
+}
+
+// peekPendingSendByItemID returns the entry for aoItemID without removing it.
+// The queue-boundary merge fold reads a merged-away member's retained row copy
+// through this before it has decided to commit; the matching pop is
+// popPendingSendByItemIDLocked, run only after the fold's store write lands.
+func (r *Router) peekPendingSendByItemID(threadID, aoItemID string) (pendingSend, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, entry := range r.pendingSendsLocked(threadID) {
+		if entry.AOItemID == aoItemID {
+			return entry, true
+		}
+	}
+	return pendingSend{}, false
+}
+
+// popPendingSendByItemIDLocked removes and returns the entry for aoItemID.
+// Caller holds r.mu. Unlike ClearPendingSendForFailure this is for an entry
+// whose message the provider PROVABLY has (its blocks arrived on another
+// message's echo), so the caller marks its wire id seen rather than treating
+// it as an unsent message.
+func (r *Router) popPendingSendByItemIDLocked(threadID, aoItemID string) (pendingSend, bool) {
+	queue := r.pendingSendsLocked(threadID)
+	for i := range queue {
+		if queue[i].AOItemID == aoItemID {
+			return r.popPendingSendAtLocked(threadID, i), true
+		}
+	}
+	return pendingSend{}, false
 }
 
 // ClearPendingSendForFailure removes a single matching entry from the

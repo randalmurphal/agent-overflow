@@ -17,6 +17,16 @@ const (
 	// the meta lands against text the user has already seen.
 	itemStreamActionMeta  = "meta"
 	itemStreamActionPatch = "patch"
+	// itemStreamActionRemove retires a row the backend deleted from a
+	// thread whose history is otherwise immutable. The one producer is the
+	// Claude queue-boundary merge fold (claude_merge_fold.go): the provider
+	// merged several dispatched messages into one transcript entry, so AO
+	// rebuilds the surviving row as their join and removes the others.
+	//
+	// It rides the same ordered channel as the survivor's upsert, which is
+	// what keeps a client from rendering the fold half-applied — the join
+	// and the removals apply in one flush.
+	itemStreamActionRemove = "remove"
 )
 
 // ItemPatchFields carries the mutable subset of an Item for a patch event.
@@ -64,6 +74,17 @@ func NewItemStreamUpsert(item store.Item) ItemStreamEvent {
 		Action:   itemStreamActionUpsert,
 		ThreadID: projected.ThreadID,
 		Item:     &projected,
+	}
+}
+
+// newItemStreamRemove announces that a row no longer exists. Carries the id
+// and kind only: there is no row left to project.
+func newItemStreamRemove(threadID, itemID, kind string) ItemStreamEvent {
+	return ItemStreamEvent{
+		Action:   itemStreamActionRemove,
+		ThreadID: threadID,
+		ItemID:   itemID,
+		Kind:     kind,
 	}
 }
 

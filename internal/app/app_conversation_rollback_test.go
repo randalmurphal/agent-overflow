@@ -742,14 +742,15 @@ func TestConversationRollbackFallbackHandlesCompactBoundary(t *testing.T) {
 // TestConversationRollbackRefusesWhenStampedUUIDAbsent pins the
 // no-ordinal-fallback rule. An anchor DOES carry a
 // ProviderUserMessageID, but that id is absent from the session JSONL
-// while the transcript continues past the anchor's turn. Two causes are
-// known: the Claude CLI merged this prompt into a later one at a queue
-// boundary and kept only the later uuid (claude-wire.md §Queued-message
-// consumption), or a fork remap left the stored ids stale. AO cannot
-// tell which entry to cut at in either case, and the ordinal walk
-// miscounts a merged entry (one JSONL prompt, several AO rows), so the
-// rollback FAILS with a message naming both causes instead of writing a
-// session that contradicts the visible timeline.
+// while the transcript continues past the anchor's turn. The known cause
+// is a fork remap that left the stored ids stale. AO cannot tell which
+// entry to cut at, and the ordinal walk has no proof that its row count
+// still matches the transcript's prompt count, so the rollback FAILS with
+// a message naming the cause instead of writing a session that
+// contradicts the visible timeline.
+//
+// A CLI queue-boundary merge does not reach here: triage folds those rows
+// into the one the transcript names (claude_merge_fold.go).
 //
 // Distinct coverage:
 //   - FallbackHandlesCompactBoundary uses an EMPTY uuid, so it never
@@ -790,7 +791,7 @@ func TestConversationRollbackRefusesWhenStampedUUIDAbsent(t *testing.T) {
 	if err == nil {
 		t.Fatal("rollback succeeded; want a refusal for an anchor uuid missing from the transcript")
 	}
-	for _, want := range []string{"drifted-uuid-not-in-jsonl", "merged this message into a later one", "fork remap"} {
+	for _, want := range []string{"drifted-uuid-not-in-jsonl", "fork remap"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("rollback error %q does not explain %q", err, want)
 		}

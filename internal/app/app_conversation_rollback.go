@@ -555,18 +555,20 @@ func claudeSliceAnchorUUIDs(anchor store.MessageAnchor, userItem store.Item) []s
 //     must not be resurrected into the retried cut (round-5, R5-6).
 //
 //   - Parent ABSENT (or unknown): the row names a provider id the
-//     transcript does not contain. A stored id can go stale wholesale
-//     (fork remap regression), and the Claude CLI can also MERGE a queued
-//     message into a later one at a queue boundary and keep only the later
-//     uuid — the earlier row's id is then acknowledged on stdout and never
-//     written to the session file (claude-wire.md §Queued-message
-//     consumption). Either way the ordinal walk miscounts: the merged
-//     entry is ONE real user prompt for what AO holds as several rows, so
-//     the walk slices a turn too far and the resumed session contradicts
-//     the timeline the user is looking at. A mid-turn anchor's ordinal walk
-//     drops the shared turn's kept prefix on top of that. Both silently
-//     diverge, so the operation FAILS — loud and recoverable beats a
-//     session whose context contradicts what the user rolled back.
+//     transcript does not contain, which a stale stored id (fork remap
+//     regression) is the known way to reach. The ordinal walk cannot
+//     repair it: AO's row count and the transcript's prompt count are no
+//     longer known to agree, so the walk can slice a turn too far and the
+//     resumed session contradicts the timeline the user is looking at. A
+//     mid-turn anchor's ordinal walk drops the shared turn's kept prefix
+//     on top of that. Both silently diverge, so the operation FAILS —
+//     loud and recoverable beats a session whose context contradicts what
+//     the user rolled back.
+//
+//     The Claude CLI's own queue-boundary merge does NOT arrive here. It
+//     keeps only the last member's uuid, but AO folds its rows into one
+//     at echo time (internal/triage/claude_merge_fold.go), so the row a
+//     revert anchors at names the uuid the transcript holds.
 //
 //     The single exception is the transcript ENDING before the anchor's
 //     turn. That absence cannot be a merge or a stale remap: the CLI died
@@ -650,7 +652,7 @@ func writeClaudeSessionSlice(
 			}
 		}
 		return "", "", nil, fmt.Errorf(
-			"%s: stored provider uuid %q is missing from session %s — this message reached the provider but the transcript has no entry under that id, so AO cannot tell which entry to cut at; refusing a slice that would silently diverge from the timeline. Two known causes: the Claude CLI merged this message into a later one at a queue boundary and kept only that one's uuid, or a fork remap left the stored ids stale",
+			"%s: stored provider uuid %q is missing from session %s — this message reached the provider but the transcript has no entry under that id, so AO cannot tell which entry to cut at; refusing a slice that would silently diverge from the timeline. The known cause is a fork remap that left the stored ids stale",
 			logCtx, missed, srcPath,
 		)
 	}

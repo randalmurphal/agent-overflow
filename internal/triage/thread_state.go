@@ -206,6 +206,14 @@ type threadState struct {
 	// Lifecycle: user-send-time carry-over — swept at cleanup as a safety
 	// net. See pending_send.go.
 	pendingSends []pendingSend
+	// recentFlushDigests is the bounded, ordered history of this thread's
+	// flush sends and the content-block fingerprints they put on the wire.
+	// It outlives the pendingSends entry because the evidence for a provider
+	// queue-boundary merge arrives on the LAST member's echo, after the
+	// earlier members' entries have already been consumed. Lifecycle:
+	// session-scoped, swept with the rest of threadState at cleanup. See
+	// claude_merge_fold.go.
+	recentFlushDigests []flushSendDigest
 	// wireOnlyUserTextSeen dedupes wire EventUserText events that don't
 	// match any pending AO send (the "agent prompted itself" or
 	// session-resume replay case). Set of providerItemIDs already seen.

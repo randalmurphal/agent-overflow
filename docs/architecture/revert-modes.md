@@ -83,17 +83,18 @@ Provider-side rollback differs by provider:
   the transcript contains it, then the anchor's parent uuid, else the
   anchor's `turn_index`. Turn 0 clears the Claude session entirely.
   A row that HAS a stamped provider uuid the transcript does not contain
-  does not fall through to the turn index: the ordinal walk counts a
-  CLI-merged queue batch as one prompt and would cut a turn too far back,
-  so the rollback fails with the two known causes named (queue-boundary
-  merge, stale fork remap). The one exception is a transcript that ends
-  before the anchor's turn, which is a session that died before
-  persisting the prompt and is cloned whole.
+  does not fall through to the turn index: the ordinal walk has no proof
+  its row count still matches the transcript's prompt count and could cut
+  a turn too far back, so the rollback fails naming the known cause, a
+  stale fork remap. The one exception is a transcript that ends before
+  the anchor's turn, which is a session that died before persisting the
+  prompt and is cloned whole.
 
-  A queued batch AO dispatched as one joined message is one row with one
-  uuid, so it slices exactly. A batch the CLI merged across separate AO
-  drains still produces rows whose uuids only exist on stdout, and those
-  hit the refusal above.
+  Every queued batch is one row with one uuid, so it slices exactly: a
+  batch AO dispatched as one joined message is joined at dispatch
+  (`app_flush_dispatch_join.go`), and one the CLI merged across separate
+  AO drains is folded into the surviving row when its echo arrives
+  (`internal/triage/claude_merge_fold.go`).
 
 ## Legacy checkpoint refs
 

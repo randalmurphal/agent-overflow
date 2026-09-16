@@ -14,6 +14,7 @@ import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/flushqueue"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
@@ -697,6 +698,20 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 	// registry expectation derived together (providerSendIdentity), so
 	// the two cannot drift.
 	clientUserMessageID, sendExpect := providerSendIdentity(sess, userItem.ID, sendUUID)
+	// What this message puts on the wire, block by block. Headless Claude can
+	// acknowledge a queued message whose content is this message CONCATENATED
+	// onto earlier ones the CLI merged with it at a turn boundary, and the
+	// flattened echo text cannot be told from one longer message. Registering
+	// the outbound block fingerprints is what lets triage recognise that and
+	// fold AO's rows to match (claude_merge_fold.go). Derived from the real
+	// block builder, so the expectation is the bytes Send writes.
+	if sess.Claude != nil {
+		digest, digestErr := claude.UserMessageBlockDigest(joined.providerContent, joined.attachments, joined.guardSlashCommand)
+		if digestErr != nil {
+			return nil, false, requeue, fmt.Errorf("fingerprint queued message content: %w", digestErr)
+		}
+		sendExpect.ContentBlockDigest = digest
+	}
 
 	// The group's queue identity for the pending-send entry is its first
 	// member's: one entry per outbound message, and the session-death restore

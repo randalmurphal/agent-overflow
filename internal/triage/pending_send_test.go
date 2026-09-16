@@ -1,6 +1,7 @@
 package triage
 
 import (
+	"reflect"
 	"testing"
 
 	"agent-overflow/internal/store"
@@ -32,7 +33,7 @@ func TestRegisterAndConsumePendingSend_FIFO(t *testing.T) {
 	if ok {
 		t.Fatalf("expected empty FIFO to return ok=false, got entry %+v", zero)
 	}
-	if zero != (pendingSend{}) {
+	if !reflect.DeepEqual(zero, pendingSend{}) {
 		t.Fatalf("empty pop should return zero value, got %+v", zero)
 	}
 }

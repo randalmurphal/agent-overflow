@@ -21,7 +21,12 @@ import App from '../../App.svelte';
 import type { Thread } from '../../lib/types/models';
 import { setBindingMock } from '../mocks/bindings-app';
 import { emitWailsEvent } from '../mocks/wailsio-runtime';
-import { emitItemEventDelta, emitItemEventUpsert, makeItem } from '../helpers/chat';
+import {
+  emitItemEventDelta,
+  emitItemEventRemove,
+  emitItemEventUpsert,
+  makeItem,
+} from '../helpers/chat';
 import {
   getFlushedForThread,
   getQueueForThread,
@@ -682,5 +687,134 @@ describe('App integration — send-queue flow (Phases G1–G10)', () => {
       'user:0:flush:3',
     ]);
     expect(flushed.map((f) => f.message)).toEqual(['one', 'two', 'three']);
+  });
+
+  // ---- T11 — a CLI queue-boundary merge folds two rows into one --------
+
+  it('T11: a fold upsert plus a remove leaves one bubble holding both texts and an empty Zone 2', async () => {
+    const { container } = await mountWithActiveThread();
+
+    // Two messages flushed at SEPARATE drains, so each got its own row and
+    // its own Zone 2 entry.
+    emitWailsEvent('provider:queue_flushed', {
+      threadId: 'thread-1',
+      items: [{ queueItemId: 'q-1', userItemId: 'user:0:flush:1', message: 'first queued' }],
+    });
+    await flush();
+    emitWailsEvent('provider:queue_flushed', {
+      threadId: 'thread-1',
+      items: [{ queueItemId: 'q-2', userItemId: 'user:0:flush:2', message: 'second queued' }],
+    });
+    await flush();
+    expect(getFlushedForThread('thread-1').map((f) => f.userItemId)).toEqual([
+      'user:0:flush:1',
+      'user:0:flush:2',
+    ]);
+
+    // The first row lands as an ordinary echo.
+    emitItemEventUpsert(makeItem({
+      id: 'user:0:flush:1',
+      threadId: 'thread-1',
+      turnIndex: 0,
+      itemIndex: 1,
+      kind: 'user_text',
+      role: 'user',
+      status: 'completed',
+      summary: 'first queued',
+      meta: JSON.stringify({ provider_item_id: 'wire-echo-001', sendId: 'send-a' }),
+    }));
+    await waitFor(() => {
+      expect(container.querySelectorAll('[data-testid="user-message-bubble"]')).toHaveLength(1);
+    });
+
+    // The CLI merged the two at its boundary drain. Triage folds: the
+    // survivor is rebuilt as the join, the merged-away row is removed, and
+    // both events ride the same batch.
+    emitItemEventUpsert(makeItem({
+      id: 'user:0:flush:2',
+      threadId: 'thread-1',
+      turnIndex: 0,
+      itemIndex: 2,
+      kind: 'user_text',
+      role: 'user',
+      status: 'completed',
+      summary: 'first queued\n\n---\n\nsecond queued',
+      meta: JSON.stringify({
+        provider_item_id: 'wire-echo-002',
+        sendId: 'send-a',
+        joinedSendIds: ['send-a', 'send-b'],
+      }),
+      updatedAt: 3,
+    }));
+    emitItemEventRemove('thread-1', 'user:0:flush:1');
+    await flush();
+
+    const { getMainPane } = await import('../../lib/stores/panes.svelte');
+    const pane = getMainPane();
+    await waitFor(() => {
+      expect(pane.items.map((item) => item.id)).toEqual(['user:0:flush:2']);
+    });
+
+    // Exactly one bubble, carrying both texts.
+    await waitFor(() => {
+      const bubbles = Array.from(
+        container.querySelectorAll('[data-testid="user-message-bubble"]'),
+      );
+      expect(bubbles).toHaveLength(1);
+      expect(bubbles[0].textContent).toContain('first queued');
+      expect(bubbles[0].textContent).toContain('second queued');
+    });
+
+    // Neither message is left in Zone 2: the survivor's upsert confirms it,
+    // and the removal confirms the row that no longer exists.
+    expect(getFlushedForThread('thread-1')).toHaveLength(0);
+  });
+
+  // ---- T11b — the fold's removal retires a Zone 2 entry with no row -----
+
+  it('T11b: a fold removal clears Zone 2 for a member whose row never rendered', async () => {
+    const { container } = await mountWithActiveThread();
+
+    // Both messages sit in Zone 2 and neither row has arrived: the first
+    // message's own row was still deferred when the merge was confirmed, so
+    // the fold has nothing to delete for it and emits only the removal.
+    emitWailsEvent('provider:queue_flushed', {
+      threadId: 'thread-1',
+      items: [{ queueItemId: 'q-1', userItemId: 'user:0:flush:1', message: 'first queued' }],
+    });
+    emitWailsEvent('provider:queue_flushed', {
+      threadId: 'thread-1',
+      items: [{ queueItemId: 'q-2', userItemId: 'user:0:flush:2', message: 'second queued' }],
+    });
+    await flush();
+    expect(getFlushedForThread('thread-1')).toHaveLength(2);
+
+    emitItemEventUpsert(makeItem({
+      id: 'user:0:flush:2',
+      threadId: 'thread-1',
+      turnIndex: 0,
+      itemIndex: 1,
+      kind: 'user_text',
+      role: 'user',
+      status: 'completed',
+      summary: 'first queued\n\n---\n\nsecond queued',
+      meta: JSON.stringify({
+        provider_item_id: 'wire-echo-002',
+        sendId: 'send-a',
+        joinedSendIds: ['send-a', 'send-b'],
+      }),
+    }));
+    emitItemEventRemove('thread-1', 'user:0:flush:1');
+    await flush();
+
+    await waitFor(() => {
+      const bubbles = Array.from(
+        container.querySelectorAll('[data-testid="user-message-bubble"]'),
+      );
+      expect(bubbles).toHaveLength(1);
+      expect(bubbles[0].textContent).toContain('first queued');
+      expect(bubbles[0].textContent).toContain('second queued');
+    });
+    expect(getFlushedForThread('thread-1')).toHaveLength(0);
   });
 });

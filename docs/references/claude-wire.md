@@ -1127,6 +1127,22 @@ envelopes and are **never written to the session file**. `command_lifecycle`
 how many transcript entries exist. To every ordinal walk and every
 UUID-keyed slice the merged entry is **one** user prompt.
 
+**The two stdout echoes have different shapes, and that is what makes a
+merge detectable.** Both are `user{isReplay:true}`:
+
+| | merged-away member (N-1 of them) | survivor (the last uuid) |
+|---|---|---|
+| when | at drain time, **before** `command_lifecycle` `started` | later, from `QueryEngine` (`messagesToAck` ~:735-750) |
+| `uuid` | that member's own | the **last** member's |
+| `message.content` | that member's **own** blocks | **every** member's blocks concatenated, in queue order |
+| `timestamp` | absent | present |
+| JSONL entry | none | this one |
+
+A merged-away echo is byte-indistinguishable from an ordinary ack. The
+**survivor's** echo is the discriminator: it carries strictly more blocks
+than the client sent under that uuid, and the extra leading blocks equal
+the content the client sent for the earlier message(s), in order.
+
 Consequences:
 
 - A client that writes N envelopes at a boundary gets N-1 uuids that
@@ -1140,6 +1156,16 @@ Consequences:
   carrying every member's text and send id (`app_flush_queue.go`
   `dispatchFlushGroup`, `app_flush_dispatch_join.go`). One AO message per
   transcript entry is what makes revert exact.
+- A merge AO could not see coming — message A drained at one AO drain, B
+  at a later one, and the CLI had not consumed A before its boundary
+  drain — is folded when the survivor's echo arrives. Triage registers
+  each flush send's outbound block sequence as a per-block digest, and on
+  an echo whose block list is longer than expected and **ends** with the
+  expected blocks it decomposes the leading blocks into the preceding
+  flush sends' digests. An exact decomposition folds the rows into the
+  survivor (`internal/triage/claude_merge_fold.go`); anything else is
+  logged and left alone. One AO row per transcript entry holds in both
+  directions, so the revert refusal below is never reached by a merge.
 - Codex is unaffected (each queued item is its own `turn/steer` item),
   and so is claude-tui: its REPL queue processor drains a batch into one
   turn but keeps each command as its own user message with its own uuid
@@ -1183,8 +1209,8 @@ A revert firing inside that sliver fails safe: the UUID-keyed slice
 returns `ErrMessageNotFound`, and because the transcript ends before the
 anchor's turn, `writeClaudeSessionSlice` clones the full transcript and
 restores the composer draft. A stamped uuid that is missing while the
-transcript continues PAST that turn is the merge case above, and the
-slice refuses rather than guessing an ordinal. See
+transcript continues PAST that turn is a stale stored id (a fork remap
+regression), and the slice refuses rather than guessing an ordinal. See
 `app_conversation_rollback.go` (`writeClaudeSessionSlice`).
 
 ### Drift

@@ -213,7 +213,20 @@ export type ItemStreamEvent =
 	    }
 	  | ({ action: 'delta' } & ItemDeltaEvent)
 	  | ({ action: 'meta' } & ItemMetaEvent)
-	  | ({ action: 'patch' } & ItemPatchEvent);
+	  | ({ action: 'patch' } & ItemPatchEvent)
+	  /**
+	   * A row the backend deleted. The one producer is the Claude
+	   * queue-boundary merge fold: the provider merged several dispatched
+	   * messages into one transcript entry, so the surviving row is upserted
+	   * as their join and the others are removed. Both arrive on this channel
+	   * in one batch, so the fold never renders half-applied.
+	   */
+	  | {
+	      action: 'remove';
+	      threadId: string;
+	      itemId: string;
+	      kind?: string;
+	    };
 
 /**
  * RateLimitsSnapshot mirrors the Go `provider.RateLimitsSnapshot` payload.

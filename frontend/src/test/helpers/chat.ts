@@ -74,6 +74,19 @@ export function emitItemEventUpsert(item: Item): void {
   });
 }
 
+export function emitItemEventRemove(
+  threadId: string,
+  itemId: string,
+  kind = 'user_text',
+): void {
+  emitWailsEvent('provider:item_event', {
+    action: 'remove',
+    threadId,
+    itemId,
+    kind,
+  });
+}
+
 export function emitItemEventDelta(delta: ItemDeltaEvent): void {
   emitWailsEvent('provider:item_event', {
     action: 'delta',

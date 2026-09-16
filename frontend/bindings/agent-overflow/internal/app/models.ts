@@ -5201,10 +5201,13 @@ export class ThreadLiveState {
     "flushedItems": QueueFlushedItem[];
 
     /**
-     * DeferredItems are pending-send timeline rows not yet persisted to
-     * SQLite (they persist on their wire echo), in FIFO send order. A
-     * refresh reconciling against a ListThreadSliceAround page merges
-     * these in so the user's own just-sent message survives the install.
+     * DeferredItems are NON-FLUSH pending-send timeline rows not yet
+     * persisted to SQLite (they persist on their wire echo), in FIFO send
+     * order. A refresh reconciling against a ListThreadSliceAround page
+     * merges these in so the user's own just-sent message survives the
+     * install. A queued (flush-shaped) send is published in FlushedItems
+     * instead and stays above the composer until the client renders its
+     * row — never in both lists (internal/triage/live_state.go).
      */
     "deferredItems": store$0.Item[];
     "interactive": provider$0.PendingInteractiveRequests;
