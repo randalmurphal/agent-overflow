@@ -369,6 +369,52 @@ Every `ThreadItem` subtype has its own shape
 | `collabAgentToolCall` | `collab_agent` | Subagent spawn/wait/control. |
 | `error` | `error` | Runtime error row. |
 
+### `imageGeneration`: the picture is a top-level row
+
+`imageGeneration` (also spelled `image_generation`) is not in the table
+above: it falls through `classifyCodexItemTypeFromItem` unchanged and
+becomes an ordinary `tool_call`. Its completed item carries:
+
+| Field | Use |
+|---|---|
+| `savedPath` / `saved_path` | Absolute path Codex wrote the file to. |
+| `revisedPrompt` / `revised_prompt` | The model's rewritten prompt. |
+| `status` | `completed` for a picture that exists. |
+| `result` | Base64 image bytes. **Never read.** |
+
+`imageGenerationMetaExtras` (`protocol_meta.go`) copies only the first
+two onto the item meta as `input.path` and `input.prompt`. `result`
+never leaves this package: the bytes are already on disk, a base64 copy
+of a multi-megabyte PNG would be cloned through every event hop and
+logged wherever an event is dumped, and nothing downstream could use it
+that the path does not already give.
+
+The tool row itself stays on the activity rail with its lifecycle chip.
+The PICTURE is assistant output, so
+`internal/triage/codex_generated_image.go` writes a second row for it at
+prose level, immediately after the tool row settles:
+
+- Deterministic id `image:<tool item id>`, which is also the dedupe key:
+  a replayed `item/completed` upserts the same row and imports nothing.
+  A row left `errored` is retried.
+- Kind `assistant_text` with `meta.attachments` — the shape a user
+  message carries for its images, so serving, the lightbox, transfer
+  rewriting and export work on it unchanged. `meta.generatedImage`
+  carries `sourceItemId`, `provider`, the prompt, and the failure
+  reason.
+- `summary` is the revised prompt (fallback `Generated image`), because
+  every summary-reading surface reads that column.
+- The bytes are imported by `attachment.Store.ImportImageFromDir`: the
+  path must canonicalize under `<codex home>/.codex/generated_images`,
+  be a regular file within the store's own image cap
+  (`MaxSizeFor("image")`, checked from the stat before the file is
+  opened, so an import has no second cap), and carry a PNG/JPEG/WebP/GIF
+  signature. A refusal writes the row in `errored` status with the
+  reason rather than a broken image.
+
+Nothing happens when `image_generation` is off in `disabled_tools.go`:
+Codex emits no such item.
+
 ### Dropped `item/*` events (intentional)
 
 `protocol_item.go`'s `classifyItemNotification` claims and drops these

@@ -2229,6 +2229,31 @@ Prerequisite sweep, valuable standalone:
   `provider:login` succeeded) — accepted for this wave; push senders,
   the phone presenter, and remote-raised native notifications stay
   open here.
+  **Sounds** are a second PRESENTATION of a decision already made, not
+  a fourth kind of send. `publishNotificationSound` is called from one
+  place, inside `notifyOS` after both gate halves pass and before
+  presentation, so the per-kind toggle, `notifyHiddenThreads` and
+  `notifyQuietWhen` apply without being restated and a cue can never
+  fire where a banner was suppressed. It is independent of whether the
+  OS presentation SUCCEEDS: on a machine whose notification permission
+  was denied, the cue is the only channel left. `notify.SoundEventFor`
+  folds the six kinds onto three events (turn complete, input needed,
+  attention) because that is the distinction a person makes by ear;
+  `TestSoundEventCoversEveryKind` keeps it total. Preferences are
+  device tier on the backend machine's own screen: a master
+  `notificationSoundsEnabled`, a toggle per event, and a cue choice per
+  event among three built-ins, all defaulting ON. The frame
+  (`notification:sound`, loopback-only and ephemeral) carries the event
+  and the resolved cue name and nothing else — no thread, no title, no
+  text — and is never replayed, because a cue names a moment that has
+  passed. The cue assets are synthesized by `scripts/gen-notification-
+  sounds.py` (Python stdlib only, no external samples) into
+  `frontend/src/lib/assets/sounds/`. `stores/notificationSound.ts`
+  decides nothing: it owns the 1.5 s cooldown so a burst is one sound,
+  the first-gesture unlock every engine requires (frames before it are
+  dropped with a note, never queued), and reporting a refused or
+  unavailable `play()` through `reportFrontendDiagnostic` rather than
+  throwing.
 - **Approval policy**: pending approvals need a TTL / abandon policy so
   a turn does not hang forever holding a workspace when no device
   answers; approving from a notification is not allowed (app-open, and

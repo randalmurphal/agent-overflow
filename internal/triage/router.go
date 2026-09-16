@@ -53,6 +53,11 @@ type Router struct {
 	usageEmitMu           sync.Mutex
 	usageResolverMu       sync.RWMutex
 	usageWorkItemResolver func(threadID string) string
+	// generatedImageImporter copies a provider-written image into the
+	// thread's attachments. Installed by the app (the provider home is an
+	// app-layer resolution); nil until then. Leaf lock.
+	generatedImageMu       sync.Mutex
+	generatedImageImporter GeneratedImageImporter
 	tracer                trace.Tracer
 	metrics               TurnMetrics
 	// deferredPersistGate is a test-only hook (same-package tests set it
@@ -578,6 +583,12 @@ func (r *Router) handleToolComplete(evt provider.ProviderEvent) error {
 		return err
 	}
 	if err := r.persistToolCallCompletion(evt); err != nil {
+		return err
+	}
+	// The picture Codex's image-generation tool just saved becomes its own
+	// top-level assistant row, written after the tool row it follows so
+	// provider order is preserved. A no-op for every other tool.
+	if err := r.persistCodexGeneratedImage(evt); err != nil {
 		return err
 	}
 	// Codex background projector handles persisted spawn_agent / wait_agent

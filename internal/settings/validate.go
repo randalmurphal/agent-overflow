@@ -72,6 +72,14 @@ var (
 		NotifyQuietWhenThreadVisible:           {},
 		NotifyQuietWhenFocusedAndThreadVisible: {},
 	}
+	// The built-in notification cues; see the NotifyCue* constants. Any of
+	// them is selectable for any sound event, so one table covers all three
+	// NotifySoundCue* keys.
+	allowedNotifyCues = map[string]struct{}{
+		NotifyCueTurnComplete: {},
+		NotifyCueInputNeeded:  {},
+		NotifyCueAttention:    {},
+	}
 	allowedProjectSortModes = map[string]struct{}{
 		"lastActivity": {},
 		"createdAt":    {},
@@ -160,6 +168,19 @@ func validateSettings(current Settings) (Settings, error) {
 	current.NotifyQuietWhen = strings.TrimSpace(current.NotifyQuietWhen)
 	if err := validateOption("notifyQuietWhen", current.NotifyQuietWhen, allowedNotifyQuietWhen); err != nil {
 		return Settings{}, err
+	}
+	for _, cue := range []struct {
+		key   string
+		value *string
+	}{
+		{"notifySoundCueTurnComplete", &current.NotifySoundCueTurnComplete},
+		{"notifySoundCueInputNeeded", &current.NotifySoundCueInputNeeded},
+		{"notifySoundCueAttention", &current.NotifySoundCueAttention},
+	} {
+		*cue.value = strings.TrimSpace(*cue.value)
+		if err := validateOption(cue.key, *cue.value, allowedNotifyCues); err != nil {
+			return Settings{}, err
+		}
 	}
 	if err := validateActivityRunWindowRows(current.ActivityRunWindowRows); err != nil {
 		return Settings{}, err
@@ -392,6 +413,24 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		current.NotifyQuietWhen,
 		DefaultSettings.NotifyQuietWhen,
 		allowedNotifyQuietWhen,
+	)
+	current.NotifySoundCueTurnComplete = sanitizeOption(
+		"notifySoundCueTurnComplete",
+		current.NotifySoundCueTurnComplete,
+		DefaultSettings.NotifySoundCueTurnComplete,
+		allowedNotifyCues,
+	)
+	current.NotifySoundCueInputNeeded = sanitizeOption(
+		"notifySoundCueInputNeeded",
+		current.NotifySoundCueInputNeeded,
+		DefaultSettings.NotifySoundCueInputNeeded,
+		allowedNotifyCues,
+	)
+	current.NotifySoundCueAttention = sanitizeOption(
+		"notifySoundCueAttention",
+		current.NotifySoundCueAttention,
+		DefaultSettings.NotifySoundCueAttention,
+		allowedNotifyCues,
 	)
 	current.ActivityRunWindowRows = sanitizeActivityRunWindowRows(current.ActivityRunWindowRows)
 

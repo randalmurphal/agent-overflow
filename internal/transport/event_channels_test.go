@@ -71,6 +71,11 @@ var (
 		"harness:perf",             // W3 bridge: per-process RSS + host detail
 		"harness:replay",           // 2026-08-25 pass
 		"harness:ui-query",         // W3 bridge: a directive carrying DOM reads back
+		// The notification cue: decided against the BACKEND MACHINE's own
+		// screen (Service.BackendScreen), so it belongs to that screen's
+		// speakers and nobody else's. A remote device is interrupted
+		// through its own push.
+		"notification:sound",
 		"power:keepawake",          // 2026-08-25: launcher power directive, same posture as webview:trim
 		"updater:download-started", // 2026-08-25 pass
 		"updater:error",            // 2026-08-25 pass
@@ -97,6 +102,11 @@ var (
 		"provider:login",
 		"updater:install",
 		"webview:trim", // 2026-08-25: replaying a stale trim would GC an active session
+		// A cue is a MOMENT, not a state: replaying it after a reconnect
+		// would play a sound for a turn that finished minutes ago, with
+		// nothing on screen to explain it. The banner it accompanies is
+		// retained on notification:send and is what survives the gap.
+		"notification:sound",
 	}
 	frozenLatestOnlyChannels = []string{
 		"backend:name-changed", "access:devices-changed",

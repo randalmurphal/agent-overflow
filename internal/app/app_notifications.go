@@ -133,8 +133,68 @@ func (a *App) notifyOS(send notify.Send) error {
 		if a.screenIsAlreadyLooking(send) {
 			return &NotificationError{Code: NotificationScreenAttended}
 		}
+		// Both halves of the gate said yes, so this moment may interrupt
+		// this screen. The cue rides that one answer rather than asking
+		// again — see publishNotificationSound.
+		a.publishNotificationSound(send.Kind)
 	}
 	return a.notifyOSUngated(send)
+}
+
+// publishNotificationSound emits the cue for a send the gate has ALREADY
+// admitted. It is called from exactly one place, immediately after both gate
+// halves passed and before presentation, which is what makes the sound and
+// the banner one decision: a kind the user silenced, a hidden thread they did
+// not opt into, and an attended screen never reach here, so none of those can
+// be heard.
+//
+// It is deliberately independent of whether the OS presentation SUCCEEDS. A
+// cue is a notification channel of its own: on a machine whose notification
+// permission was denied, or in a mode with no presenter, the sound is the
+// only thing left that can say "your turn finished", and withholding it would
+// silence the user twice for one platform failure.
+//
+// The per-event sound preferences live on the backend machine's own screen,
+// the same screen the banner gate was resolved against.
+func (a *App) publishNotificationSound(kind notify.Kind) {
+	event, ok := notify.SoundEventFor(kind)
+	if !ok {
+		return
+	}
+	current := settings.DefaultSettings
+	if a.settings != nil {
+		current = a.settings.BackendScreen().Get()
+	}
+	cue, enabled := notificationSoundCueIn(current, event)
+	if !enabled {
+		return
+	}
+	a.emit(eventchan.NotificationSound, notify.SoundCue{Event: event, Cue: cue})
+}
+
+// notificationSoundCueIn answers "does this screen play a cue for this event,
+// and which one" from ONE screen's settings.
+//
+// Its own function, taken apart from the App, for the reason
+// notificationKindEnabledIn is: it is a total switch over a closed set, and a
+// second copy of it would eventually disagree with this one about an event.
+// TOTAL with no permissive default — an event this build does not know is one
+// with no preference behind it, and playing an unrequested sound is worse
+// than playing none.
+func notificationSoundCueIn(current settings.Settings, event notify.SoundEvent) (string, bool) {
+	if !current.NotificationSoundsEnabled {
+		return "", false
+	}
+	switch event {
+	case notify.SoundTurnComplete:
+		return current.NotifySoundCueTurnComplete, current.NotifySoundTurnComplete
+	case notify.SoundInputNeeded:
+		return current.NotifySoundCueInputNeeded, current.NotifySoundInputNeeded
+	case notify.SoundAttention:
+		return current.NotifySoundCueAttention, current.NotifySoundAttention
+	default:
+		return "", false
+	}
 }
 
 // notificationPreferenceRefusal answers the PER-KIND half of the gate for the

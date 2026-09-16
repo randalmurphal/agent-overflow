@@ -52,6 +52,7 @@ func eventChannelConstants() []eventchan.Channel {
 		eventchan.MCPStatus,
 		eventchan.NotificationActivated,
 		eventchan.NotificationSend,
+		eventchan.NotificationSound,
 		eventchan.PowerKeepAwake,
 		eventchan.PRUpdated,
 		eventchan.ProjectUpdated,

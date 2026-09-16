@@ -372,11 +372,23 @@ func readTransferHistoryTx(ctx context.Context, tx *sql.Tx, target Thread, input
 				return errors.New("transfer: item belongs to another conversation")
 			}
 			item.ThreadID, item.PayloadPreviewSpans = target.ID, ""
-			if item.Kind == "user_text" {
+			// Attachment references are rewritten on every kind that can
+			// hold them. A user message carries the images it was sent
+			// with; an assistant row carries a picture the agent generated
+			// and AO imported (triage/codex_generated_image.go). Both
+			// reference rows whose ids this transfer reallocated, so both
+			// must be remapped or the copy points at the source computer's
+			// attachment ids. Narrowed to those two kinds rather than run
+			// over every row: a tool row's meta is provider wire content,
+			// and a top-level `attachments` key appearing there would be
+			// something else entirely.
+			if item.Kind == "user_text" || item.Kind == "assistant_text" {
 				item.Meta, err = itemmeta.TransferAttachments(item.Meta, sourceID, attachments)
 				if err != nil {
 					return err
 				}
+			}
+			if item.Kind == "user_text" {
 				item.Meta, err = itemmeta.TransferThreadReferences(item.Meta, sourceID, target.ID, func(kind, id string) string { return transferContentID(target.ID, kind, id) })
 				if err != nil {
 					return err

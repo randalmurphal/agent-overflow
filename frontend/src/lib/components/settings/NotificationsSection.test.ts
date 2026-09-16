@@ -121,4 +121,86 @@ describe('<NotificationsSection>', () => {
     expect(getByRole('switch', { name: 'Toggle approval needed notifications' })
       .getAttribute('aria-checked')).toBe('true');
   });
+
+  // The third stack. Three EVENTS, not six kinds: the cue answers "finished",
+  // "needs you" or "something is wrong", and any of the three built-in cues
+  // may be assigned to any of them.
+  describe('sounds', () => {
+    const soundEvents: Array<[string, keyof Settings, keyof Settings, string]> = [
+      ['Toggle the Turn complete cue', 'notifySoundTurnComplete', 'notifySoundCueTurnComplete', 'turn-complete'],
+      ['Toggle the Approval needed cue', 'notifySoundInputNeeded', 'notifySoundCueInputNeeded', 'input-needed'],
+      ['Toggle the Attention cue', 'notifySoundAttention', 'notifySoundCueAttention', 'attention'],
+    ];
+
+    it('ships with sounds on and every event on its own cue', () => {
+      const { getByRole, getByTestId } = render(NotificationsSection);
+      expect(getByRole('switch', { name: 'Toggle notification sounds' }).getAttribute('aria-checked'))
+        .toBe('true');
+      for (const [name, , , cue] of soundEvents) {
+        expect(getByRole('switch', { name }).getAttribute('aria-checked')).toBe('true');
+        expect((getByTestId(`settings-sound-cue-${cue}`) as HTMLSelectElement).value).toBe(cue);
+      }
+    });
+
+    it.each(soundEvents)('dispatches %s as its own key', async (name, key) => {
+      const { getByRole } = render(NotificationsSection);
+      await fireEvent.click(getByRole('switch', { name }));
+
+      const mock = getBindingMock('UpdateSettings');
+      expect(mock!.mock.calls[0][0]).toEqual({ [key]: false });
+    });
+
+    it.each(soundEvents)('dispatches the cue chosen for %s', async (_name, _key, cueKey, testid) => {
+      const { getByTestId } = render(NotificationsSection);
+      const select = getByTestId(`settings-sound-cue-${testid}`) as HTMLSelectElement;
+      await fireEvent.change(select, { target: { value: 'attention' } });
+
+      const mock = getBindingMock('UpdateSettings');
+      expect(mock!.mock.calls[0][0]).toEqual({ [cueKey]: 'attention' });
+    });
+
+    it('offers all three built-in cues for every event', () => {
+      const { getByTestId } = render(NotificationsSection);
+      for (const [, , , testid] of soundEvents) {
+        const options = Array.from(
+          (getByTestId(`settings-sound-cue-${testid}`) as HTMLSelectElement).options,
+        ).map((option) => option.value);
+        expect(options).toEqual(['turn-complete', 'input-needed', 'attention']);
+      }
+    });
+
+    it('hides the per-event rows when the master sound switch is off', async () => {
+      await seed({ notificationSoundsEnabled: false });
+      const { getByRole, queryByRole, queryByTestId } = render(NotificationsSection);
+      expect(getByRole('switch', { name: 'Toggle notification sounds' }).getAttribute('aria-checked'))
+        .toBe('false');
+      for (const [name, , , testid] of soundEvents) {
+        expect(queryByRole('switch', { name })).toBeNull();
+        expect(queryByTestId(`settings-sound-cue-${testid}`)).toBeNull();
+      }
+    });
+
+    it('disables the cue picker for an event that is off, leaving its choice visible', async () => {
+      await seed({ notifySoundTurnComplete: false });
+      const { getByTestId } = render(NotificationsSection);
+      expect((getByTestId('settings-sound-cue-turn-complete') as HTMLSelectElement).disabled).toBe(true);
+      expect((getByTestId('settings-sound-cue-input-needed') as HTMLSelectElement).disabled).toBe(false);
+    });
+
+    // A cue picker is unusable without a way to hear the choice, and the
+    // click that plays one is also the gesture the engine needs before the
+    // page may make any sound at all.
+    it('offers a preview button per event', () => {
+      const { getByTestId } = render(NotificationsSection);
+      for (const [, , , testid] of soundEvents) {
+        expect(getByTestId(`settings-sound-preview-${testid}`)).toBeTruthy();
+      }
+    });
+
+    it('hides the whole sound stack beneath the notifications master switch', async () => {
+      await seed({ notificationsEnabled: false });
+      const { queryByRole } = render(NotificationsSection);
+      expect(queryByRole('switch', { name: 'Toggle notification sounds' })).toBeNull();
+    });
+  });
 });

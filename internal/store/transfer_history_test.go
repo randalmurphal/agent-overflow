@@ -258,6 +258,67 @@ func TestTransferHistoryCarriesInheritedAttachmentsAndAllowsIndependentCopies(t 
 	}
 }
 
+// A generated image is an assistant_text row carrying the same
+// `meta.attachments` shape a user message carries, so the transfer rewrite
+// must reach it too. A row left unrewritten names the source thread and
+// renders as a broken tile in the moved copy.
+func TestTransferHistoryRewritesAssistantRowAttachments(t *testing.T) {
+	source, destination := newTestStore(t), newTestStore(t)
+	mustCreateThread(t, source, "origin")
+	if err := source.InsertAttachment(Attachment{
+		ID: "generated", ThreadID: "origin", Kind: AttachmentKindImage, Filename: "render.png",
+		RelativePath: "origin/generated.png", MimeType: "image/png", Size: 33,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.InsertItem(Item{
+		ID: "image:img-1", ThreadID: "origin", Kind: "assistant_text", Role: "assistant",
+		Status: "completed", Summary: "A quiet dashboard",
+		Meta: `{"generatedImage":{"sourceItemId":"img-1","provider":"codex","prompt":"A quiet dashboard"},` +
+			`"attachments":[{"id":"generated","threadId":"origin","filename":"render.png","mimeType":"image/png","size":33,"kind":"image"}]}`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	thread, err := source.GetThread("origin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot bytes.Buffer
+	if err := source.ExportThreadHistory(context.Background(), thread.ID, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	target := thread
+	target.ID = "moved"
+	if err := destination.ImportThreadHistory(context.Background(), target, bytes.NewReader(snapshot.Bytes())); err != nil {
+		t.Fatal(err)
+	}
+
+	attachments, err := destination.ListAttachments("moved")
+	if err != nil || len(attachments) != 1 {
+		t.Fatalf("generated image did not travel: %+v %v", attachments, err)
+	}
+	copied := attachments[0]
+	if copied.ID == "generated" || !strings.HasPrefix(copied.RelativePath, "moved/") {
+		t.Fatalf("copy aliases the original: %+v", copied)
+	}
+	items, err := destination.ListItems("moved")
+	if err != nil || len(items) != 1 {
+		t.Fatalf("items: %+v %v", items, err)
+	}
+	meta := items[0].Meta
+	if strings.Contains(meta, `"id":"generated"`) || !strings.Contains(meta, copied.ID) {
+		t.Fatalf("attachment id not rewritten: %s", meta)
+	}
+	if !strings.Contains(meta, `"threadId":"moved"`) {
+		t.Fatalf("attachment owner not rewritten: %s", meta)
+	}
+	// The provenance rides along untouched: it names the provider's item, not
+	// an AO id, so nothing in it is remapped.
+	if !strings.Contains(meta, `"sourceItemId":"img-1"`) {
+		t.Fatalf("provenance lost: %s", meta)
+	}
+}
+
 func TestTransferHistoryCopiesReviewNotesWithoutAliasingTheirIDs(t *testing.T) {
 	source, destination := newTestStore(t), newTestStore(t)
 	mustCreateThread(t, source, "source")

@@ -125,6 +125,7 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('thread:updated')).toBe(1);
     expect(wailsListenerCount('thread-group:updated')).toBe(1);
     expect(wailsListenerCount('workflow:error')).toBe(1);
+    expect(wailsListenerCount('notification:sound')).toBe(1);
 
     cleanup();
 
@@ -140,6 +141,7 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('thread:updated')).toBe(0);
     expect(wailsListenerCount('thread-group:updated')).toBe(0);
     expect(wailsListenerCount('workflow:error')).toBe(0);
+    expect(wailsListenerCount('notification:sound')).toBe(0);
 
     cleanup = setupEventListeners();
   });

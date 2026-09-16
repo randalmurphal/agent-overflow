@@ -224,6 +224,9 @@ func emitFrontendConstraints(b *strings.Builder) {
 		"monoFont": allowedFonts, "defaultThreadEnvMode": allowedThreadEnvModes,
 		"paneDensity": allowedPaneDensities, "activityRunDefault": allowedActivityRunDefaults,
 		"notifyQuietWhen": allowedNotifyQuietWhen, "projectSortMode": allowedProjectSortModes,
+		"notifySoundCueTurnComplete": allowedNotifyCues,
+		"notifySoundCueInputNeeded":  allowedNotifyCues,
+		"notifySoundCueAttention":    allowedNotifyCues,
 		"usagePeriod": allowedUsagePeriods,
 	}
 	b.WriteString("\nexport const FRONTEND_SETTING_OPTIONS: Partial<Record<keyof Settings, readonly string[]>> = {\n")

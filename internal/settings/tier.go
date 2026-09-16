@@ -185,6 +185,17 @@ var tierByKey = map[string]Tier{
 	// THIS screen is already being looked at. That question has no answer
 	// at all without a screen to ask it of.
 	"notifyQuietWhen": TierDevice,
+	// Sounds are the same tier for the same reason once more: a cue plays
+	// out of the speakers of ONE screen, and which cue (or whether any) is
+	// that screen's answer. A laptop at the desk and a phone in a pocket do
+	// not want the same one.
+	"notificationSoundsEnabled":  TierDevice,
+	"notifySoundTurnComplete":    TierDevice,
+	"notifySoundInputNeeded":     TierDevice,
+	"notifySoundAttention":       TierDevice,
+	"notifySoundCueTurnComplete": TierDevice,
+	"notifySoundCueInputNeeded":  TierDevice,
+	"notifySoundCueAttention":    TierDevice,
 	// Spinner appearance is display, like fonts and motion.
 	"spinnerVerbsEnabled":         TierDevice,
 	"spinnerAnimationsEnabled":    TierDevice,

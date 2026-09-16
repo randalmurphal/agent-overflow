@@ -46,6 +46,13 @@ export type CommitMessageStyle = "conventional" | "repo" | "custom";
 export type NotifyQuietWhen = "never" | "focused" | "threadVisible" | "focusedAndThreadVisible";
 
 /**
+ * The built-in notification cues (settings.NotifyCue*). The value names one
+ * asset under `lib/assets/sounds`; `stores/notificationSound.ts` is the one
+ * place that maps it to a URL.
+ */
+export type NotifyCue = "turn-complete" | "input-needed" | "attention";
+
+/**
  * One breadcrumb hop in the agent companion's scope trail. The first entry
  * is always the thread itself (`itemId: ''`, label `main`); every later
  * entry is a launch row the reader descended into.
@@ -288,6 +295,28 @@ export interface Settings {
    * sent or what it draws.
    */
   notifyQuietWhen: NotifyQuietWhen;
+  /**
+   * Notification SOUNDS. A cue is a second presentation of a notification
+   * the host already decided to raise: the per-kind toggles and
+   * `notifyQuietWhen` above apply first, so a sound never fires where a
+   * banner was suppressed. Master switch and all three events default ON.
+   *
+   * Three events, not six kinds: the agent finished, the agent needs you,
+   * something is wrong. Any cue may be chosen for any of them.
+   */
+  notificationSoundsEnabled: boolean;
+  /** Cue when a top-level turn finishes. Default on. */
+  notifySoundTurnComplete: boolean;
+  /** Cue when the agent is blocked on your approval. Default on. */
+  notifySoundInputNeeded: boolean;
+  /** Cue for a failure, a signed-out provider, a workflow or an update. Default on. */
+  notifySoundAttention: boolean;
+  /** Which built-in cue the turn-complete event plays. */
+  notifySoundCueTurnComplete: NotifyCue;
+  /** Which built-in cue the input-needed event plays. */
+  notifySoundCueInputNeeded: NotifyCue;
+  /** Which built-in cue the attention event plays. */
+  notifySoundCueAttention: NotifyCue;
   /**
    * Working-indicator spinner verbs: replace the rail's "Working" label
    * with one verb per turn, drawn from the built-in list plus

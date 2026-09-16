@@ -22,6 +22,7 @@ package app
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"agent-overflow/internal/claudeconfig"
 	"agent-overflow/internal/codexconfig"
@@ -69,6 +70,17 @@ func (a *App) claudeProjectsDir() (string, error) {
 		return "", err
 	}
 	return sessionfork.ProjectsDirForHome(home), nil
+}
+
+// codexGeneratedImagesDir is `<providerHome>/.codex/generated_images` — where
+// Codex writes what its image-generation tool produced, and therefore the ONE
+// directory a generated-image import is allowed to read from.
+func (a *App) codexGeneratedImagesDir() (string, error) {
+	home, err := a.providerHome()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".codex", "generated_images"), nil
 }
 
 // codexConfigTOMLPath is `<providerHome>/.codex/config.toml`.

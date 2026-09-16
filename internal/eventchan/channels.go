@@ -101,6 +101,13 @@ const (
 const (
 	NotificationActivated Channel = "notification:activated"
 	NotificationSend      Channel = "notification:send"
+	// NotificationSound is the cue that accompanies a notification the host
+	// already decided to raise. It carries no thread, title or text — only
+	// which cue to play — and it exists because the desktop presenter is
+	// in-process on macOS and Linux, so `notification:send` does not reach a
+	// client there. Emitting it after the gate is what keeps the sound
+	// decision from becoming a second one.
+	NotificationSound Channel = "notification:sound"
 )
 
 // power:* — host power-management directives. Like updater:install and

@@ -63,6 +63,12 @@ var (
 		eventchan.HarnessPerf,
 		eventchan.HarnessReplay,
 		eventchan.HarnessUIQuery,
+		// A directive to the screen this process interrupts: play this
+		// cue. The preferences behind it (per-kind toggle, quiet-when
+		// reading, cue choice) are resolved against that machine's own
+		// device bucket, so it has no remote consumer by construction —
+		// another device's answers are different answers.
+		eventchan.NotificationSound,
 		eventchan.PowerKeepAwake,
 		eventchan.UpdaterDownloadStarted,
 		eventchan.UpdaterError,

@@ -549,6 +549,42 @@ type Settings struct {
 	// tells you something you can already see.
 	NotifyQuietWhen string `json:"notifyQuietWhen"`
 
+	// The NOTIFICATION SOUND preferences. A sound is a second presentation
+	// of a notification that already passed the gate above, never a fourth
+	// kind of send: the host decides once (app_notifications.go notifyOS),
+	// and a cue is emitted only where a banner was allowed. So every per-kind
+	// toggle and the "quiet when" reading apply to sounds without being
+	// restated, and a sound can never fire where a banner was suppressed.
+	//
+	// THREE SOUND EVENTS, not six, because the six notify kinds answer three
+	// questions a person reacts to differently: the agent finished, the agent
+	// needs you, something is wrong. The four "wrong or waiting on a system"
+	// kinds (error, provider signed out, workflow attention, app update)
+	// share one event; splitting them would offer four cue pickers for a
+	// distinction nobody makes by ear.
+	//
+	// DEFAULTS ON, master included, and therefore present in
+	// DefaultSettings: sounds were asked for, and the per-kind gate above
+	// already decides which moments reach this at all.
+	NotificationSoundsEnabled bool `json:"notificationSoundsEnabled"`
+	// NotifySoundTurnComplete covers notify.KindTurnComplete.
+	NotifySoundTurnComplete bool `json:"notifySoundTurnComplete"`
+	// NotifySoundInputNeeded covers notify.KindApprovalNeeded.
+	NotifySoundInputNeeded bool `json:"notifySoundInputNeeded"`
+	// NotifySoundAttention covers notify.KindError,
+	// notify.KindProviderSignedOut, notify.KindWorkflowAttention and
+	// notify.KindAppUpdate.
+	NotifySoundAttention bool `json:"notifySoundAttention"`
+	// The cue each event plays. Any of the three built-ins may be chosen for
+	// any event (NotifyCue*): a user who wants one sound for everything sets
+	// all three the same, and one who cannot tell two of them apart on their
+	// speakers can pick differently. Validated against the built-in set, so
+	// an unknown value sanitizes back to the default rather than playing
+	// nothing.
+	NotifySoundCueTurnComplete string `json:"notifySoundCueTurnComplete"`
+	NotifySoundCueInputNeeded  string `json:"notifySoundCueInputNeeded"`
+	NotifySoundCueAttention    string `json:"notifySoundCueAttention"`
+
 	// Per-screen UI view state (pane layout, collapsed projects,
 	// sidebar width, …) deliberately does NOT live here: it belongs to
 	// the frontend that renders it (frontend/src/lib/stores/appStorage.ts,
@@ -656,7 +692,28 @@ var DefaultSettings = Settings{
 	// "notify me": the interruption is worth nothing when the answer is
 	// already in front of them.
 	NotifyQuietWhen: NotifyQuietWhenFocused,
+	// Sounds on, each event on its own cue. See the fields for why the
+	// master switch is present here rather than left as the zero value.
+	NotificationSoundsEnabled:  true,
+	NotifySoundTurnComplete:    true,
+	NotifySoundInputNeeded:     true,
+	NotifySoundAttention:       true,
+	NotifySoundCueTurnComplete: NotifyCueTurnComplete,
+	NotifySoundCueInputNeeded:  NotifyCueInputNeeded,
+	NotifySoundCueAttention:    NotifyCueAttention,
 }
+
+// The built-in notification cues, the values of the NotifySoundCue* keys.
+// Each names one file under frontend/src/lib/assets/sounds; the frontend
+// player maps the value to its asset URL and nothing else interprets it.
+const (
+	// NotifyCueTurnComplete is two notes rising a fifth.
+	NotifyCueTurnComplete = "turn-complete"
+	// NotifyCueInputNeeded is one note struck twice.
+	NotifyCueInputNeeded = "input-needed"
+	// NotifyCueAttention is two notes falling a minor third.
+	NotifyCueAttention = "attention"
+)
 
 // The four readings of "quiet when", the values of Settings.NotifyQuietWhen.
 // Each names the condition under which a notification about this screen is

@@ -30,11 +30,17 @@
 
   import { settingsComputer } from './settingsComputer';
   const { getSettings, updateSetting } = settingsComputer();
-  import type { NotifyQuietWhen } from '../../types/settings';
+  import Volume2 from '@lucide/svelte/icons/volume-2';
+  import type { NotifyCue, NotifyQuietWhen, Settings } from '../../types/settings';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
+  import Icon from '../primitives/Icon.svelte';
+  import IconButton from '../primitives/IconButton.svelte';
   import PhonePushBlock from './PhonePushBlock.svelte';
   import SettingsField from './SettingsField.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
+  import { SELECT_CLASS } from './styles';
+  import type { SettingsFieldId } from './fields';
+  import { playNotificationCue } from '../../stores/notificationSound';
 
   const QUIET_WHEN_OPTIONS: Array<{
     value: NotifyQuietWhen;
@@ -63,8 +69,93 @@
     },
   ];
 
+  // The three sound EVENTS. They are not notify kinds: the six kinds answer
+  // three questions a person reacts to differently, and a cue picker per kind
+  // would offer four pickers for a distinction nobody makes by ear. The
+  // grouping is `notify.SoundEventFor`, backend-side.
+  const SOUND_EVENTS: Array<{
+    field: SettingsFieldId;
+    label: string;
+    hint: string;
+    enabledKey: 'notifySoundTurnComplete' | 'notifySoundInputNeeded' | 'notifySoundAttention';
+    cueKey: 'notifySoundCueTurnComplete' | 'notifySoundCueInputNeeded' | 'notifySoundCueAttention';
+    testid: string;
+  }> = [
+    {
+      field: 'notifications.sound-turn-complete',
+      label: 'Turn complete cue',
+      hint: 'Plays when the agent finishes a turn.',
+      enabledKey: 'notifySoundTurnComplete',
+      cueKey: 'notifySoundCueTurnComplete',
+      testid: 'turn-complete',
+    },
+    {
+      field: 'notifications.sound-input-needed',
+      label: 'Approval needed cue',
+      hint: 'Plays when the agent is blocked waiting on you.',
+      enabledKey: 'notifySoundInputNeeded',
+      cueKey: 'notifySoundCueInputNeeded',
+      testid: 'input-needed',
+    },
+    {
+      field: 'notifications.sound-attention',
+      label: 'Attention cue',
+      hint: 'Plays for errors, a signed-out provider, a workflow that needs you, and update notices.',
+      enabledKey: 'notifySoundAttention',
+      cueKey: 'notifySoundCueAttention',
+      testid: 'attention',
+    },
+  ];
+
+  // Any cue may be chosen for any event, so one list serves all three.
+  const CUE_OPTIONS: Array<{ value: NotifyCue; label: string }> = [
+    { value: 'turn-complete', label: 'Rising chime' },
+    { value: 'input-needed', label: 'Double tap' },
+    { value: 'attention', label: 'Falling tone' },
+  ];
+
   let settings = $derived(getSettings());
+
+  function cueOf(key: keyof Settings): NotifyCue {
+    return settings[key] as NotifyCue;
+  }
 </script>
+
+<!-- One sound event: its own on/off, its cue, and a way to hear it. The
+     preview is not decoration — choosing between three cues by name is
+     guesswork, and the click that plays one is also the user gesture every
+     engine requires before it will let the page make a sound at all. -->
+{#snippet soundEvent(event: (typeof SOUND_EVENTS)[number])}
+  <SettingsField id={event.field} label={event.label} hint={event.hint} stacked>
+    <div class="flex items-center gap-2">
+      <select
+        class={`${SELECT_CLASS} min-w-0 flex-1`}
+        aria-label={`Cue for ${event.label}`}
+        data-testid={`settings-sound-cue-${event.testid}`}
+        value={cueOf(event.cueKey)}
+        disabled={!settings[event.enabledKey]}
+        onchange={(e) =>
+          updateSetting(event.cueKey, (e.target as HTMLSelectElement).value as NotifyCue)}
+      >
+        {#each CUE_OPTIONS as option (option.value)}
+          <option value={option.value}>{option.label}</option>
+        {/each}
+      </select>
+      <IconButton
+        label={`Play the ${event.label}`}
+        onClick={() => playNotificationCue(cueOf(event.cueKey))}
+        testId={`settings-sound-preview-${event.testid}`}
+      >
+        <Icon icon={Volume2} size={15} strokeWidth={2} />
+      </IconButton>
+      <ToggleSwitch
+        checked={settings[event.enabledKey]}
+        ariaLabel={`Toggle the ${event.label}`}
+        onToggle={(value) => updateSetting(event.enabledKey, value)}
+      />
+    </div>
+  </SettingsField>
+{/snippet}
 
 <section data-testid="settings-notifications-section">
   <SettingsHeader
@@ -219,6 +310,36 @@
               </span>
             </label>
           {/each}
+        </div>
+      </div>
+
+      <!-- The third stack. A cue is a second PRESENTATION of a notification
+           the toggles above already allowed, not a fourth kind of send: the
+           backend decides once and tells this screen which cue to play, so
+           everything above — including "Quiet when" — applies to sounds
+           without being restated here. -->
+      <div class="pt-3">
+        <SettingsHeader
+          title="Sounds"
+          description="A short cue alongside the notification, on this screen's speakers."
+        />
+        <div class="flex flex-col gap-1">
+          <SettingsField
+            id="notifications.sounds"
+            label="Play sounds"
+            hint="A short cue alongside the notification. It follows the toggles above, so a silenced kind stays silent."
+          >
+            <ToggleSwitch
+              checked={settings.notificationSoundsEnabled}
+              ariaLabel="Toggle notification sounds"
+              onToggle={(value) => updateSetting('notificationSoundsEnabled', value)}
+            />
+          </SettingsField>
+          {#if settings.notificationSoundsEnabled}
+            {#each SOUND_EVENTS as event (event.field)}
+              {@render soundEvent(event)}
+            {/each}
+          {/if}
         </div>
       </div>
     {/if}

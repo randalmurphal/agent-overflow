@@ -513,6 +513,27 @@ var channelPolicies = []ChannelPolicy{
 			"the send it withdraws, which only a real ring preserves.",
 	},
 	{
+		Channel:   eventchan.NotificationSound,
+		Audience:  AudienceLoopbackOnly,
+		Retention: RetentionEphemeral,
+		Scope:     ScopeThreadsRead,
+		Why: "The cue that accompanies a notification the host already " +
+			"decided to raise. It carries which cue to play and nothing " +
+			"else: no thread, no title, no text. " +
+			"LOOPBACK ONLY because the decision behind it is the BACKEND " +
+			"MACHINE's — App.notifyOS resolves the per-kind toggles, the " +
+			"attended-screen reading and the cue choice against " +
+			"Service.BackendScreen — and a remote client's speakers are a " +
+			"different screen with different answers. Playing it there " +
+			"would apply one screen's preferences to another's room; a " +
+			"remote device is interrupted through its own push instead. " +
+			"Ephemeral, and that is the difference from the send: a banner " +
+			"replayed after a reconnect is still true, while a cue replayed " +
+			"minutes later is a noise with no moment behind it. Emitting " +
+			"is host-side only (App.notifyOS, after both gate halves), so " +
+			"no client can make another's speakers fire.",
+	},
+	{
 		Channel:   eventchan.PowerKeepAwake,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionLatestOnly,

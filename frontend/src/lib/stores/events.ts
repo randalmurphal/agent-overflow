@@ -179,6 +179,10 @@ import {
   applyNotificationActivated,
 } from './eventsNotification';
 import { parseNotificationTarget } from './notificationActivationQueue';
+import {
+  applyNotificationSoundEvent,
+  installNotificationSoundUnlock,
+} from './notificationSound';
 import type {
   WorkflowEngineStateEvent,
   WorkflowErrorEvent,
@@ -219,6 +223,14 @@ export function setupEventListeners(): () => void {
       if (target) applyNotificationActivated(target);
       else console.warn('notification:activated: invalid target', value);
     },
+  );
+  // The cue that rides an OS notification the host already decided to raise.
+  // The unlock arms playback on the first interaction with the page; every
+  // engine refuses audio started before one. See stores/notificationSound.ts.
+  const cancelNotificationSoundUnlock = installNotificationSoundUnlock();
+  const cancelNotificationSound = wailsEventOn<unknown>(
+    'notification:sound',
+    applyNotificationSoundEvent,
   );
   const cancelUserInput = wailsEventOn<UserInputEvent>('provider:user_input', applyUserInputEvent);
 
@@ -698,6 +710,8 @@ export function setupEventListeners(): () => void {
     flushItemEventQueue();
     cancelApproval();
     cancelNotificationActivated();
+    cancelNotificationSound();
+    cancelNotificationSoundUnlock();
     cancelUserInput();
     cancelUsage();
     cancelModelFallback();

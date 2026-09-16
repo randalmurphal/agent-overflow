@@ -1093,6 +1093,56 @@ export class Settings {
     "notifyQuietWhen": string;
 
     /**
+     * The NOTIFICATION SOUND preferences. A sound is a second presentation
+     * of a notification that already passed the gate above, never a fourth
+     * kind of send: the host decides once (app_notifications.go notifyOS),
+     * and a cue is emitted only where a banner was allowed. So every per-kind
+     * toggle and the "quiet when" reading apply to sounds without being
+     * restated, and a sound can never fire where a banner was suppressed.
+     * 
+     * THREE SOUND EVENTS, not six, because the six notify kinds answer three
+     * questions a person reacts to differently: the agent finished, the agent
+     * needs you, something is wrong. The four "wrong or waiting on a system"
+     * kinds (error, provider signed out, workflow attention, app update)
+     * share one event; splitting them would offer four cue pickers for a
+     * distinction nobody makes by ear.
+     * 
+     * DEFAULTS ON, master included, and therefore present in
+     * DefaultSettings: sounds were asked for, and the per-kind gate above
+     * already decides which moments reach this at all.
+     */
+    "notificationSoundsEnabled": boolean;
+
+    /**
+     * NotifySoundTurnComplete covers notify.KindTurnComplete.
+     */
+    "notifySoundTurnComplete": boolean;
+
+    /**
+     * NotifySoundInputNeeded covers notify.KindApprovalNeeded.
+     */
+    "notifySoundInputNeeded": boolean;
+
+    /**
+     * NotifySoundAttention covers notify.KindError,
+     * notify.KindProviderSignedOut, notify.KindWorkflowAttention and
+     * notify.KindAppUpdate.
+     */
+    "notifySoundAttention": boolean;
+
+    /**
+     * The cue each event plays. Any of the three built-ins may be chosen for
+     * any event (NotifyCue*): a user who wants one sound for everything sets
+     * all three the same, and one who cannot tell two of them apart on their
+     * speakers can pick differently. Validated against the built-in set, so
+     * an unknown value sanitizes back to the default rather than playing
+     * nothing.
+     */
+    "notifySoundCueTurnComplete": string;
+    "notifySoundCueInputNeeded": string;
+    "notifySoundCueAttention": string;
+
+    /**
      * Window stores the desktop window placement (position, size, and
      * maximized/fullscreen state) so the app reopens where it was last
      * closed. Owned by the Go side, not the frontend — written from
@@ -1279,6 +1329,27 @@ export class Settings {
         if (!("notifyQuietWhen" in $$source)) {
             this["notifyQuietWhen"] = "";
         }
+        if (!("notificationSoundsEnabled" in $$source)) {
+            this["notificationSoundsEnabled"] = false;
+        }
+        if (!("notifySoundTurnComplete" in $$source)) {
+            this["notifySoundTurnComplete"] = false;
+        }
+        if (!("notifySoundInputNeeded" in $$source)) {
+            this["notifySoundInputNeeded"] = false;
+        }
+        if (!("notifySoundAttention" in $$source)) {
+            this["notifySoundAttention"] = false;
+        }
+        if (!("notifySoundCueTurnComplete" in $$source)) {
+            this["notifySoundCueTurnComplete"] = "";
+        }
+        if (!("notifySoundCueInputNeeded" in $$source)) {
+            this["notifySoundCueInputNeeded"] = "";
+        }
+        if (!("notifySoundCueAttention" in $$source)) {
+            this["notifySoundCueAttention"] = "";
+        }
         if (!("window" in $$source)) {
             this["window"] = (new windowgeom$0.Geometry());
         }
@@ -1308,7 +1379,7 @@ export class Settings {
         const $$createField57_0 = $$createType0;
         const $$createField62_0 = $$createType0;
         const $$createField64_0 = $$createType0;
-        const $$createField78_0 = $$createType12;
+        const $$createField85_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
             $$parsedSource["recentWorkspaces"] = $$createField5_0($$parsedSource["recentWorkspaces"]);
@@ -1365,7 +1436,7 @@ export class Settings {
             $$parsedSource["spinnerDisabledAnimations"] = $$createField64_0($$parsedSource["spinnerDisabledAnimations"]);
         }
         if ("window" in $$parsedSource) {
-            $$parsedSource["window"] = $$createField78_0($$parsedSource["window"]);
+            $$parsedSource["window"] = $$createField85_0($$parsedSource["window"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }

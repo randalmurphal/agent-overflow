@@ -7,6 +7,7 @@
   import CompactionDivider from './CompactionDivider.svelte';
   import CompactionReasoning from './CompactionReasoning.svelte';
   import CommandResultRow from './CommandResultRow.svelte';
+  import GeneratedImageMessage from './GeneratedImageMessage.svelte';
   import NotificationRow from './NotificationRow.svelte';
   import SessionDiedNotification from './SessionDiedNotification.svelte';
   import TerminalInteractionRow from './TerminalInteractionRow.svelte';
@@ -14,6 +15,7 @@
   import ToolCallCard from './ToolCallCard.svelte';
   import UserMessage from './UserMessage.svelte';
   import { parseJsonObject } from '../../utils/parseJsonObject';
+  import { generatedImageRow } from '../../utils/generatedImageMeta';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import type { UserMessageActions } from './userMessageActions';
 
@@ -48,6 +50,12 @@
     const meta = parseJsonObject(displayItem.meta);
     return typeof meta?.kind === 'string' ? meta.kind : '';
   });
+
+  // A generated picture is an assistant_text row carrying an imported
+  // attachment (utils/generatedImageMeta.ts). It renders at prose level like
+  // any other assistant row, with its own body; a row that is not one falls
+  // through to AssistantMessage untouched.
+  const isGeneratedImage = $derived(generatedImageRow(displayItem) !== null);
 </script>
 
 <!-- kind / role / status ride the row root beside the id because the
@@ -118,6 +126,8 @@
     </div>
   {:else if displayItem.kind === 'compaction'}
     <CompactionDivider {pane} item={displayItem} />
+  {:else if isGeneratedImage}
+    <GeneratedImageMessage {pane} item={displayItem} {onImageExpand} />
   {:else}
     <AssistantMessage {pane} item={displayItem} />
   {/if}

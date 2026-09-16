@@ -99,6 +99,7 @@ func (a *App) newTriageRouter(st *store.Store) *triage.Router {
 	r.SetAssistantTextStreamObserver(a.observeAssistantTextStream)
 	r.SetDiffPayloadObserver(a.observeDiffPayloadPersisted)
 	r.SetCodeSpanEnricher(a.buildPersistedCodeSpans)
+	r.SetGeneratedImageImporter(a.importCodexGeneratedImage)
 	return r
 }
 
