@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -173,6 +174,9 @@ type Launcher struct {
 
 	stopOnce sync.Once
 	stopErr  error
+	waitMu   sync.Mutex
+	waitDone chan struct{}
+	waitErr  error
 }
 
 // platformLauncher is the host-specific cleanup hook. Windows installs
@@ -188,13 +192,40 @@ type platformLauncher interface {
 }
 
 // Wait blocks until the child process exits and returns its run error.
-// Wait is a thin wrapper around (*exec.Cmd).Wait — it does NOT close
-// the platform primitive; callers should defer Stop separately.
+// It does not close the platform primitive; callers defer Stop separately.
+// Concurrent or repeated calls share the same process result.
 func (l *Launcher) Wait() error {
 	if l.cmd == nil {
 		return errors.New("wsllauncher: Launcher has no underlying command")
 	}
-	return l.cmd.Wait()
+	l.waitMu.Lock()
+	if done := l.waitDone; done != nil {
+		l.waitMu.Unlock()
+		<-done
+		return l.waitErr
+	}
+	l.waitDone = make(chan struct{})
+	done := l.waitDone
+	l.waitMu.Unlock()
+	l.waitErr = l.cmd.Wait()
+	close(done)
+	return l.waitErr
+}
+
+func (l *Launcher) waitedProcess(err error) bool {
+	if !errors.Is(err, syscall.EINVAL) {
+		return false
+	}
+	// Windows Wait releases the process handle, so a later Kill returns EINVAL
+	// instead of ErrProcessDone. Wait may still be publishing its result.
+	l.waitMu.Lock()
+	done := l.waitDone
+	l.waitMu.Unlock()
+	if done == nil {
+		return false
+	}
+	<-done
+	return l.cmd.ProcessState != nil
 }
 
 // Stop terminates the child. On Windows this closes the Job Object
@@ -216,7 +247,7 @@ func (l *Launcher) Stop() error {
 		// errors.Is unwraps the platform-specific error chain so we
 		// don't have to substring-match the message.
 		if l.cmd != nil && l.cmd.Process != nil {
-			if err := l.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			if err := l.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) && !l.waitedProcess(err) {
 				errs = append(errs, fmt.Errorf("kill child: %w", err))
 			}
 		}
