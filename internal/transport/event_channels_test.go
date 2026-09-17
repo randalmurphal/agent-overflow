@@ -65,12 +65,12 @@ var (
 		// that move the set are `host` and act on this process's own
 		// profile directory.
 		"backend:set-changed",
-		"browser:companion-state",  // local URLs and file paths
-		"browser:host",             // 2026-08-31: launcher pane directive, same posture as webview:trim
-		"harness:mock",             // 2026-08-25 pass
-		"harness:perf",             // W3 bridge: per-process RSS + host detail
-		"harness:replay",           // 2026-08-25 pass
-		"harness:ui-query",         // W3 bridge: a directive carrying DOM reads back
+		"browser:companion-state", // local URLs and file paths
+		"browser:host",            // 2026-08-31: launcher pane directive, same posture as webview:trim
+		"harness:mock",            // 2026-08-25 pass
+		"harness:perf",            // W3 bridge: per-process RSS + host detail
+		"harness:replay",          // 2026-08-25 pass
+		"harness:ui-query",        // W3 bridge: a directive carrying DOM reads back
 		// The notification cue: decided against the BACKEND MACHINE's own
 		// screen (Service.BackendScreen), so it belongs to that screen's
 		// speakers and nobody else's. A remote device is interrupted

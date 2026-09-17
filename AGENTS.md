@@ -94,7 +94,8 @@ guides for additional requirements. Do not run unrelated suites solely because
 code changed; run broader checks when the impact crosses areas or is uncertain.
 
 For Go changes, use the Make targets so platform build settings are applied:
-`make go-build` and `make go-test`. For frontend changes, run
+`make go-build` and `make go-test`, and run `gofmt -w` on every changed Go
+file before committing. For frontend changes, run
 `cd frontend && pnpm run check`, `cd frontend && pnpm run build`, and the
 relevant Vitest tests. Changes to shared bindings, transport or build settings
 may require checks on both sides. Documentation-only changes need checks of

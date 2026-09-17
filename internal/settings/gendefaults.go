@@ -227,7 +227,7 @@ func emitFrontendConstraints(b *strings.Builder) {
 		"notifySoundCueTurnComplete": allowedNotifyCues,
 		"notifySoundCueInputNeeded":  allowedNotifyCues,
 		"notifySoundCueAttention":    allowedNotifyCues,
-		"usagePeriod": allowedUsagePeriods,
+		"usagePeriod":                allowedUsagePeriods,
 	}
 	b.WriteString("\nexport const FRONTEND_SETTING_OPTIONS: Partial<Record<keyof Settings, readonly string[]>> = {\n")
 	keys := make([]string, 0, len(options))
