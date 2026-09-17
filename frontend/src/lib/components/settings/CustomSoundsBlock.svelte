@@ -23,6 +23,8 @@
   import IconButton from '../primitives/IconButton.svelte';
   import SettingsCallout from './SettingsCallout.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
+  import ConfirmDialog from '../shared/ConfirmDialog.svelte';
+  import { getSettings } from '../../stores/settings.svelte';
   import { playNotificationCue } from '../../stores/notificationSound';
   import {
     addCustomSound,
@@ -48,6 +50,8 @@
   // cannot write.
   let libraryError = $state('');
   let adding = $state(false);
+  // The cue a delete is waiting on confirmation for, or null.
+  let pendingDelete: string | null = $state(null);
   let fileInput: HTMLInputElement | undefined = $state();
 
   $effect(() => {
@@ -55,6 +59,29 @@
   });
 
   let library = $derived(peekCustomSounds());
+
+  /**
+   * How many of this screen's three events play the cue being deleted. The
+   * confirm says so because the file is the only copy: a deleted cue is gone
+   * from every screen attached to this computer, and the events still
+   * naming it fall back to their defaults.
+   */
+  function eventsUsing(id: string): number {
+    const settings = getSettings();
+    const cue = `${CUSTOM_PREFIX}${id}`;
+    return [
+      settings.notifySoundCueTurnComplete,
+      settings.notifySoundCueInputNeeded,
+      settings.notifySoundCueAttention,
+    ].filter((value) => value === cue).length;
+  }
+
+  function deleteDescription(id: string): string {
+    const used = eventsUsing(id);
+    const base = `Remove ${id} from this computer's sound library. Every screen attached to it loses the cue.`;
+    if (used === 0) return base;
+    return `${base} ${used === 1 ? 'One event' : `${used} events`} on this screen play it now and will play the default sound instead.`;
+  }
 
   /**
    * The id a picked file is stored under: its stem as kebab-case ASCII.
@@ -130,7 +157,9 @@
             <IconButton
               label={`Delete ${sound.id}`}
               size="sm"
-              onClick={() => void removeSound(sound.id)}
+              onClick={() => {
+                pendingDelete = sound.id;
+              }}
               testId={`settings-sound-delete-${sound.id}`}
             >
               <Icon icon={Trash2} size={14} strokeWidth={2} />
@@ -195,3 +224,19 @@
     {/if}
   </div>
 </div>
+
+<ConfirmDialog
+  open={pendingDelete !== null}
+  title="Delete sound"
+  description={pendingDelete === null ? '' : deleteDescription(pendingDelete)}
+  confirmLabel="Delete"
+  destructive={true}
+  onConfirm={() => {
+    const id = pendingDelete;
+    pendingDelete = null;
+    if (id !== null) void removeSound(id);
+  }}
+  onCancel={() => {
+    pendingDelete = null;
+  }}
+/>

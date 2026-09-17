@@ -357,16 +357,43 @@ describe('<NotificationsSection>', () => {
 
     it('lists each cue with a way to hear it and a way to remove it', async () => {
       seedSounds(['desk-bell']);
-      const { getByTestId } = await renderSection();
+      const { getByTestId, getByRole } = await renderSection();
 
       await fireEvent.click(getByTestId('settings-sound-play-desk-bell'));
       expect(playNotificationCue).toHaveBeenCalledWith('custom:desk-bell', undefined);
 
       const remove = setBindingMock('DeleteSoundFile', async () => undefined);
       await fireEvent.click(getByTestId('settings-sound-delete-desk-bell'));
+      // The file is the only copy and every screen on this computer loses
+      // it, so the trash icon asks first; the row is untouched until then.
+      expect(remove).not.toHaveBeenCalled();
+      await fireEvent.click(getByRole('button', { name: 'Delete' }));
       await vi.waitFor(() => {
         expect(remove).toHaveBeenCalledWith('desk-bell');
       });
+    });
+
+    it('cancelling the delete confirm removes nothing', async () => {
+      seedSounds(['desk-bell']);
+      const { getByTestId, getByRole, queryByRole } = await renderSection();
+      const remove = setBindingMock('DeleteSoundFile', async () => undefined);
+      await fireEvent.click(getByTestId('settings-sound-delete-desk-bell'));
+      await fireEvent.click(getByRole('button', { name: 'Cancel' }));
+      expect(remove).not.toHaveBeenCalled();
+      expect(queryByRole('button', { name: 'Delete' })).toBeNull();
+    });
+
+    // The confirm names the consequence for this screen: events still
+    // pointing at the cue fall back to their default sound.
+    it('the delete confirm says which events will fall back', async () => {
+      await seed({
+        notifySoundCueTurnComplete: 'custom:desk-bell',
+        notifySoundCueAttention: 'custom:desk-bell',
+      });
+      seedSounds(['desk-bell']);
+      const { getByTestId, getByRole } = await renderSection();
+      await fireEvent.click(getByTestId('settings-sound-delete-desk-bell'));
+      expect(getByRole('dialog').textContent).toContain('2 events on this screen play it now');
     });
 
     // A failed delete must reach the user: a row that stays put with no
@@ -376,8 +403,9 @@ describe('<NotificationsSection>', () => {
       setBindingMock('DeleteSoundFile', async () => {
         throw new Error('sounds directory is read-only');
       });
-      const { getByTestId, findByRole } = await renderSection();
+      const { getByTestId, getByRole, findByRole } = await renderSection();
       await fireEvent.click(getByTestId('settings-sound-delete-desk-bell'));
+      await fireEvent.click(getByRole('button', { name: 'Delete' }));
 
       expect((await findByRole('alert')).textContent).toContain('read-only');
     });
