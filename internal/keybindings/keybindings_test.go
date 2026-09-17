@@ -67,6 +67,10 @@ func TestDefaultsIncludeNewHelpSearchAndInterruptBindings(t *testing.T) {
 		"thread.search":          "mod+p",
 		"provider.switchAccount": "mod+shift+u",
 		"thread.interrupt":       "esc",
+		// The quick mute for notification sounds. alt+shift+m, not
+		// mod+shift+m: that chord is composer.picker.model, and an
+		// un-gated row on the same chord would shadow it.
+		"sound.toggleMute": "alt+shift+m",
 	}
 	got := make(map[string]string)
 	for _, b := range Defaults {
@@ -95,6 +99,35 @@ func TestAccountSwitcherDefaultIsContextFree(t *testing.T) {
 	}
 	if matches[0].When != "" {
 		t.Errorf("provider.switchAccount When = %q, want empty", matches[0].When)
+	}
+}
+
+// TestSoundMuteDefaultIsContextFreeAndUncontested pins both halves of the
+// quick-mute chord choice. The row carries no `when` (silencing this screen
+// is reachable from the composer, from a view-only device and with no thread
+// open), so ANY other default on the same chord would be shadowed by it or
+// shadow it depending on list order. The uniqueness check is what would have
+// caught mod+shift+m, which composer.picker.model already owns.
+func TestSoundMuteDefaultIsContextFreeAndUncontested(t *testing.T) {
+	var mute []Keybinding
+	for _, b := range Defaults {
+		if b.Command == "sound.toggleMute" {
+			mute = append(mute, b)
+		}
+	}
+	if len(mute) != 1 {
+		t.Fatalf("want exactly one sound.toggleMute binding, got %d: %+v", len(mute), mute)
+	}
+	if mute[0].When != "" {
+		t.Errorf("sound.toggleMute When = %q, want empty", mute[0].When)
+	}
+	for _, b := range Defaults {
+		if b.Command == "sound.toggleMute" {
+			continue
+		}
+		if b.Key == mute[0].Key {
+			t.Errorf("%s shares the sound.toggleMute chord %q (when=%q)", b.Command, b.Key, b.When)
+		}
 	}
 }
 

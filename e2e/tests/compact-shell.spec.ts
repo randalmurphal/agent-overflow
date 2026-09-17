@@ -87,6 +87,31 @@ test('every composer control stays inside the phone viewport', async ({ harness,
   );
 });
 
+// The sidebar footer is the app's global icon row (there is no top bar), so
+// every toggle that lands there has to survive a phone's width beside the
+// Settings button. An overflowing flex row clips its tail silently, and the
+// tail is where the toggles are.
+test('the sidebar footer keeps its toggles inside the phone width', async ({ harness, page }) => {
+  await harness.open(page);
+  const footer = page.getByTestId('sidebar-settings-button').locator('..');
+  await expect
+    .poll(() => footer.evaluate((el) => el.scrollWidth - el.clientWidth), {
+      message: 'the sidebar footer row must fit its width at phone size',
+    })
+    .toBeLessThanOrEqual(1);
+
+  const viewport = page.viewportSize()!;
+  for (const testId of ['sidebar-settings-button', 'sidebar-sound-toggle', 'sidebar-keep-awake-toggle']) {
+    const control = page.getByTestId(testId);
+    await expect(control).toBeVisible();
+    const box = (await control.boundingBox())!;
+    expect(box.x, `${testId} must not hang off the left edge`).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width, `${testId} must not hang off the right edge`).toBeLessThanOrEqual(
+      viewport.width,
+    );
+  }
+});
+
 test('opening a thread swaps to the thread screen and back returns to the list', async ({
   harness,
   page,

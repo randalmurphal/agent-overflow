@@ -833,6 +833,25 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     },
   });
 
+  // The palette half of the quick mute. `notificationSoundsEnabled` is
+  // device tier, so this silences THIS screen and leaves every other
+  // device (and the notifications themselves) alone. Reachable from a
+  // focused text field because alt+shift+m is a mid-sentence press, and
+  // ungated because a view-only session owns its own speaker too.
+  registerCommand({
+    id: 'sound.toggleMute',
+    label: 'Notifications: Toggle sound mute',
+    description: 'Keep notifications, silence the sound on this screen.',
+    icon: '🔇',
+    editableReachable: true,
+    run: () => {
+      void updateSetting(
+        'notificationSoundsEnabled',
+        !getSettings().notificationSoundsEnabled,
+      );
+    },
+  });
+
   registerCommand({
     id: 'terminal.toggle',
     label: 'Terminal: Toggle',

@@ -4,6 +4,8 @@
   import Settings from '@lucide/svelte/icons/settings';
   import Moon from '@lucide/svelte/icons/moon';
   import Sun from '@lucide/svelte/icons/sun';
+  import Volume2 from '@lucide/svelte/icons/volume-2';
+  import VolumeX from '@lucide/svelte/icons/volume-x';
   import Icon from '../primitives/Icon.svelte';
   import Button from '../primitives/Button.svelte';
   import UpdateBadge from '../shared/UpdateBadge.svelte';
@@ -40,6 +42,11 @@
         : 'Keep awake is on (machine only). Click to allow sleep.'
       : 'Keep the machine awake',
   );
+  // notificationSoundsEnabled is DEVICE tier (internal/settings/tier.go):
+  // it decides whether this screen makes noise, not whether the machine
+  // notifies. So unlike keep-awake above it carries no host gate — a
+  // view-only or remote session owns its own speaker and gets the switch.
+  let soundsOn = $derived(settings.notificationSoundsEnabled);
 </script>
 
 {#if onOpenSettings}
@@ -65,6 +72,26 @@
         title="This device was paired with read-only access."
       >View only</span>
     {/if}
+    <Button
+      variant="ghost"
+      size="sm"
+      pressed={!soundsOn}
+      onclick={() => updateSetting('notificationSoundsEnabled', !soundsOn)}
+      testId="sidebar-sound-toggle"
+      title={soundsOn
+        ? 'Notification sounds on for this screen. Click to mute.'
+        : 'Notification sounds muted on this screen. Click to unmute.'}
+      ariaLabel={soundsOn ? 'Mute notification sounds' : 'Unmute notification sounds'}
+      class="px-0 w-7 justify-center shrink-0"
+    >
+      {#snippet children()}
+        {#if soundsOn}
+          <Icon icon={Volume2} size={13} strokeWidth={2} class="opacity-80" />
+        {:else}
+          <Icon icon={VolumeX} size={13} strokeWidth={2} class="text-accent" />
+        {/if}
+      {/snippet}
+    </Button>
     {#if !noHost}
       <Button
         variant="ghost"

@@ -315,6 +315,12 @@ export const KEYBINDING_DEFAULTS: readonly KeybindingRule[] = [
     "defaultKey": "mod+shift+b"
   },
   {
+    "key": "alt+shift+m",
+    "command": "sound.toggleMute",
+    "defaultId": "sound.toggleMute",
+    "defaultKey": "alt+shift+m"
+  },
+  {
     "key": "shift+tab",
     "command": "mode.cycle",
     "when": "hasActiveThread \u0026\u0026 !paletteOpen \u0026\u0026 !anyModalOpen",

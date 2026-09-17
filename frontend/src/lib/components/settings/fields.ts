@@ -755,7 +755,7 @@ const STATIC_FIELDS = [
     heading: 'Sounds',
     label: 'Play sounds',
     hint: 'A short cue alongside the notification. It follows the toggles above, so a silenced kind stays silent.',
-    keywords: ['sound', 'audio', 'chime', 'ding', 'beep', 'alert', 'mute', 'volume'],
+    keywords: ['sound', 'audio', 'chime', 'ding', 'beep', 'alert', 'mute', 'toggle', 'volume'],
     conditional: true,
   },
   {

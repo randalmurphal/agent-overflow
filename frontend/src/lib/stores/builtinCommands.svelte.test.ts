@@ -56,7 +56,7 @@ import {
   getPendingThreadActionConfirmation,
   resetThreadActionConfirmationsForTest,
 } from './threadActionConfirmations.svelte';
-import { loadSettings, resetSettingsForTest } from './settings.svelte';
+import { getSettings, loadSettings, resetSettingsForTest } from './settings.svelte';
 import {
   isWorkflowsOverlayOpen,
   resetWorkflowsOverlayForTest,
@@ -1892,6 +1892,50 @@ describe('settings commands', () => {
     runCommand('settings.open', makeCommandContext(null, {}) as CommandContext);
     expect(isSettingsOpen()).toBe(true);
     expect(isWorkflowsOverlayOpen()).toBe(false);
+  });
+});
+
+// --- sound.toggleMute ---
+//
+// The palette + alt+shift+m half of the quick mute. `notificationSoundsEnabled`
+// is device tier: the command silences THIS screen's cue and leaves the
+// notifications, and every other device, alone.
+
+describe('sound.toggleMute command', () => {
+  beforeEach(() => {
+    clearCommandRegistry();
+    resetSettingsForTest();
+    registerBuiltinCommands(makeBuiltinHooks());
+  });
+
+  afterEach(() => {
+    resetSettingsForTest();
+    resetToLocalPage();
+  });
+
+  it('flips the sound setting in both directions', () => {
+    const ctx = makeCommandContext(null, {}) as CommandContext;
+    expect(getSettings().notificationSoundsEnabled).toBe(true);
+
+    expect(runCommand('sound.toggleMute', ctx)).toBe(true);
+    expect(getSettings().notificationSoundsEnabled).toBe(false);
+
+    expect(runCommand('sound.toggleMute', ctx)).toBe(true);
+    expect(getSettings().notificationSoundsEnabled).toBe(true);
+  });
+
+  // alt+shift+m is a mid-sentence press, and App.svelte only dispatches
+  // editable-target chords for editableReachable commands.
+  it('stays reachable from a focused text field', () => {
+    expect(getCommand('sound.toggleMute')?.editableReachable).toBe(true);
+  });
+
+  // The key is device tier, so it needs no host presence and no grant: a
+  // view-only device owns its own speaker and keeps the command.
+  it('stays enabled with no thread and for a view-only session', async () => {
+    expect(isCommandEnabled('sound.toggleMute', makeCommandContext(null, {}) as CommandContext)).toBe(true);
+    await pairViewOnly();
+    expect(isCommandEnabled('sound.toggleMute', makeCommandContext(null, {}) as CommandContext)).toBe(true);
   });
 });
 

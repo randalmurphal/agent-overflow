@@ -214,6 +214,21 @@ var Defaults = []Keybinding{
 	{Key: "mod+shift+e", Command: "composer.picker.effort", When: "hasActiveThread && !anyModalOpen", DefaultID: "composer.picker.effort"},
 	{Key: "mod+shift+a", Command: "composer.picker.access", When: "hasActiveThread && !anyModalOpen", DefaultID: "composer.picker.access"},
 	{Key: "mod+shift+b", Command: "composer.picker.branch", When: "hasActiveThread && !anyModalOpen", DefaultID: "composer.picker.branch"},
+	// Quick mute for notification sounds on THIS screen
+	// (notificationSoundsEnabled is device tier: notifications still
+	// appear, they just stop making noise here). Un-gated, because the
+	// press that silences the machine happens mid-sentence in the
+	// composer and from a view-only device just the same.
+	//
+	// NOT mod+shift+m — that is composer.picker.model above, and a
+	// later un-gated row would shadow it for every active thread
+	// (dispatch walks the resolved list in reverse). The free mod+shift
+	// letters left are the ones the shell already claims (mod+shift+r is
+	// the webview force-reload in internal/uikeys; i/j/c open devtools),
+	// so this joins the alt+shift family that alt+shift+r and the
+	// alt+shift+h/l pane moves already use for exactly that reason, and
+	// keeps the m-for-mute mnemonic.
+	{Key: "alt+shift+m", Command: "sound.toggleMute", DefaultID: "sound.toggleMute"},
 	// shift+tab cycles the active thread through chat → plan →
 	// design. The `when` expression keeps the chord inert while the
 	// palette or any modal has focus so Shift+Tab's default "focus
