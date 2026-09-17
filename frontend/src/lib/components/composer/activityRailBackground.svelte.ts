@@ -4,9 +4,9 @@
 // `provider:background_tasks_changed`, `provider:background_task_state`),
 // and the rate-bounded refresh they drive (`utils/refreshScheduler` — a plain
 // trailing debounce here starved forever under a live stream and left the pill
-// showing a count nothing had refuted). Exposes reactive `tasks` / `runningCount` /
-// `hasPendingCompletion` for the rail's toggle pill and
-// expanded body.
+// showing a count nothing had refuted). Exposes reactive `tasks` / `runningCount`
+// for the rail's toggle pill and expanded body, and `hasPendingCompletion`
+// for the host's clock gate.
 //
 // Owned by `Composer.svelte`, not the rail: the composer's `railVisible`
 // predicate reads `count`, and the rail + height-reservation spacer must
@@ -168,10 +168,12 @@ export function createBackgroundController(
   const runningCount = $derived(
     tasks.filter((t) => t.status === 'running').length,
   );
-  // Top-level rows only (spec Q8): a nested launch's completion is its
-  // parent agent's business — the pill must not pulse for it.
+  // A settled pair prunes only when `getNow()` advances past its retention
+  // window, and the host runs the shared clock off this flag. Every depth
+  // counts: a nested completion that could not restart the clock sat in
+  // `tasks` forever, inflating the pill until the tray was opened.
   const hasPendingCompletion = $derived(
-    tasks.some((t) => t.depth === 0 && t.completion !== null),
+    tasks.some((t) => t.completion !== null),
   );
 
   return {
