@@ -44,16 +44,22 @@ CHANNELS = 1
 SAMPLE_WIDTH = 2  # 16-bit PCM
 FULL_SCALE = 32_767
 
-# Peak amplitude the tonal cues are normalised to. The swoosh is noise, whose
-# peak says little about how loud it sounds, so it is matched by RMS instead
-# (SWOOSH_RMS_DB) and clipped at SWOOSH_CEILING.
+# Every cue is normalised by SHORT-TERM LOUDNESS, not peak: the RMS of its
+# loudest 100 ms window, which is the measure that tracks how loud a short
+# sound is heard. Peak normalisation put a sharp knock and a sustained hum at
+# the same peak and very different loudness, and left the whole set about
+# 4 dB hotter than the OS sounds they sit beside.
 #
-# The swoosh sits 6 dB below the tonal cues' RMS on purpose: broadband noise
-# reads louder than a tone at the same RMS (it fills the whole hearing range),
-# and at -19 dBFS it was heard as roughly twice as loud as the rest of the set.
-PEAK = 0.40
-SWOOSH_RMS_DB = -25.0
-SWOOSH_CEILING = 0.85
+# The target is the Windows default notification sound (Windows Notify System
+# Generic.wav) measured the same way: -19.3 dBFS. Matching it means switching
+# an event between a built-in cue and "System sound" does not change how loud
+# notifications are.
+LOUDNESS_DB = -19.3
+# Broadband noise is heard louder than a tone at the same RMS (it fills the
+# whole hearing range), so the swoosh sits below the tonal target.
+SWOOSH_OFFSET_DB = -4.0
+LOUDNESS_WINDOW = 0.100
+CEILING = 0.85
 
 # Seconds of linear fade at the very end of a cue, so playback stopping on a
 # non-zero sample cannot click.
@@ -194,16 +200,20 @@ def swoosh(
             buf[index] += envelope * band2
 
 
-def normalise_peak(buf: list[float]) -> list[float]:
-    peak = max(1e-9, max(abs(v) for v in buf))
-    scale = PEAK / peak
-    return [v * scale for v in buf]
+def loudness(buf: list[float]) -> float:
+    """RMS of the loudest LOUDNESS_WINDOW slice, in linear full scale."""
+    window = max(1, int(LOUDNESS_WINDOW * SAMPLE_RATE))
+    hop = max(1, window // 10)
+    loudest = 0.0
+    for start in range(0, max(1, len(buf) - window + 1), hop):
+        slice_ = buf[start : start + window]
+        loudest = max(loudest, math.sqrt(sum(v * v for v in slice_) / len(slice_)))
+    return loudest
 
 
-def normalise_rms(buf: list[float]) -> list[float]:
-    rms = math.sqrt(sum(v * v for v in buf) / len(buf))
-    scale = 10 ** (SWOOSH_RMS_DB / 20) / max(rms, 1e-9)
-    return [max(-SWOOSH_CEILING, min(SWOOSH_CEILING, v * scale)) for v in buf]
+def normalise(buf: list[float], offset_db: float = 0.0) -> list[float]:
+    scale = 10 ** ((LOUDNESS_DB + offset_db) / 20) / max(loudness(buf), 1e-9)
+    return [max(-CEILING, min(CEILING, v * scale)) for v in buf]
 
 
 def quantise(buf: list[float]) -> list[int]:
@@ -233,7 +243,7 @@ def write_wav(path: pathlib.Path, samples: list[int]) -> None:
 def cue_swoosh() -> list[int]:
     buf = empty(0.70)
     swoosh(buf, 0.0, 0.70, 3_800.0, 380.0, q=2.5, attack=0.09, decay=3.8, seed=21)
-    return quantise(normalise_rms(buf))
+    return quantise(normalise(buf, SWOOSH_OFFSET_DB))
 
 
 # G4 up to D5 on a mallet timbre: a rising fifth reads as "done" without
@@ -242,7 +252,7 @@ def cue_marimba() -> list[int]:
     buf = empty(0.62)
     tone(buf, 0.00, 392.0, 0.40, 1.0, MARIMBA, attack=0.004)
     tone(buf, 0.14, 587.3, 0.48, 0.9, MARIMBA, attack=0.004)
-    return quantise(normalise_peak(buf))
+    return quantise(normalise(buf))
 
 
 # A4 then E5 with the slow attack and detuned warmth of an electric piano.
@@ -250,7 +260,7 @@ def cue_chord() -> list[int]:
     buf = empty(0.75)
     tone(buf, 0.00, 440.0, 0.55, 1.0, EPIANO, attack=0.020, detune_hz=1.2)
     tone(buf, 0.16, 659.3, 0.59, 0.85, EPIANO, attack=0.020, detune_hz=1.4)
-    return quantise(normalise_peak(buf))
+    return quantise(normalise(buf))
 
 
 # Two knocks. No pitch to speak of, so it never clashes with what is playing.
@@ -258,7 +268,7 @@ def cue_knock() -> list[int]:
     buf = empty(0.45)
     knock(buf, 0.00, 190.0, 1.0, seed=1)
     knock(buf, 0.15, 205.0, 0.9, seed=2)
-    return quantise(normalise_peak(buf))
+    return quantise(normalise(buf))
 
 
 # Two blips that each bend downward, the second a little higher.
@@ -266,14 +276,14 @@ def cue_pop() -> list[int]:
     buf = empty(0.45)
     tone(buf, 0.00, 620.0, 0.16, 1.0, SOFT, attack=0.003, glide_to=420.0, glide_time=0.05)
     tone(buf, 0.13, 740.0, 0.30, 0.9, SOFT, attack=0.003, glide_to=520.0, glide_time=0.05)
-    return quantise(normalise_peak(buf))
+    return quantise(normalise(buf))
 
 
 # One low B-flat sliding down a semitone: "something is wrong" without alarm.
 def cue_hum() -> list[int]:
     buf = empty(0.80)
     tone(buf, 0.0, 233.1, 0.80, 1.0, HUM, attack=0.030, glide_to=207.7, glide_time=0.5, detune_hz=0.7)
-    return quantise(normalise_peak(buf))
+    return quantise(normalise(buf))
 
 
 # A rounded low double blip.
@@ -281,7 +291,7 @@ def cue_boop() -> list[int]:
     buf = empty(0.50)
     tone(buf, 0.00, 520.0, 0.20, 1.0, BLIP, attack=0.006, glide_to=390.0, glide_time=0.09)
     tone(buf, 0.17, 640.0, 0.30, 1.0, BLIP_LONG, attack=0.006, glide_to=470.0, glide_time=0.10)
-    return quantise(normalise_peak(buf))
+    return quantise(normalise(buf))
 
 
 CUES = {
