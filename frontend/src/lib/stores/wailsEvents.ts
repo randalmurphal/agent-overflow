@@ -58,6 +58,17 @@ interface DeliveredEvent {
  * being re-plumbed when a second connection attaches. Passed as an
  * argument rather than folded into the payload so no channel's shape
  * changes and nothing has to be unwrapped.
+ *
+ * `origin.replayed` marks a frame the transport delivered out of its
+ * RECONNECT REPLAY window rather than as it happened. A subscriber that
+ * converges state must ignore it — applying a replayed row is exactly what
+ * replay is for — and only a subscriber that INTERRUPTS a person has any
+ * business reading it, because for those the same frame means two different
+ * things. `stores/browserNotificationPresenter.svelte.ts` is the one such
+ * consumer today: it re-raises a replayed banner (the tag replaces it, so a
+ * duplicate costs nothing) and plays no cue for one, because a cue names a
+ * moment and a replayed moment has already passed. Absent means live, which
+ * is the answer a transport that never buffered gives.
  */
 export function wailsEventOn<T = unknown>(
   name: string,

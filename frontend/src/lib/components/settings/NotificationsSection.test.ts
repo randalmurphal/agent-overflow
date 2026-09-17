@@ -27,6 +27,15 @@ vi.mock('../../audio/renderCue', async (importOriginal) => ({
 
 const renderCue = vi.mocked(renderCueWav);
 
+// Which SCREEN this page is. Every case below runs on a loopback origin —
+// the backend machine's own screen, where the host presents — except the
+// remote block at the foot of the file, which flips this.
+const page = vi.hoisted(() => ({ loopback: true }));
+vi.mock('../../transport/bootstrap', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../transport/bootstrap')>()),
+  pageServedOverLoopback: () => page.loopback,
+}));
+
 /** The wire body PutSoundFile should carry for `bytes`. */
 function base64Of(bytes: Uint8Array): string {
   return btoa(String.fromCharCode(...bytes));
@@ -101,6 +110,7 @@ function quietWhenRadio(container: HTMLElement, value: string): HTMLInputElement
 
 describe('<NotificationsSection>', () => {
   beforeEach(async () => {
+    page.loopback = true;
     playNotificationCue.mockClear();
     renderCue.mockReset();
     await seed();
@@ -113,7 +123,7 @@ describe('<NotificationsSection>', () => {
   it('renders every kind on, because notifications were unconditional before these keys', async () => {
     const { getByTestId, getByRole } = render(NotificationsSection);
     expect(getByTestId('settings-notifications-section')).toBeTruthy();
-    for (const name of ['Toggle desktop notifications', ...perKind.map(([label]) => label)]) {
+    for (const name of ['Toggle notifications', ...perKind.map(([label]) => label)]) {
       expect(getByRole('switch', { name }).getAttribute('aria-checked')).toBe('true');
     }
   });
@@ -146,7 +156,7 @@ describe('<NotificationsSection>', () => {
   it('hides every row beneath the master switch when it is off', async () => {
     await seed({ notificationsEnabled: false });
     const { getByRole, queryByRole } = render(NotificationsSection);
-    expect(getByRole('switch', { name: 'Toggle desktop notifications' }).getAttribute('aria-checked'))
+    expect(getByRole('switch', { name: 'Toggle notifications' }).getAttribute('aria-checked'))
       .toBe('false');
     for (const [name] of perKind) {
       expect(queryByRole('switch', { name })).toBeNull();
@@ -495,5 +505,146 @@ describe('<NotificationsSection>', () => {
       expect(queryByTestId('settings-sound-add')).toBeNull();
       expect(queryByTestId('settings-sound-play-desk-bell')).toBeNull();
     });
+  });
+});
+
+// ---------------------------------------------------------------------
+// The REMOTE screen. These preferences are device tier and have always
+// described the screen being interrupted; what changed is that a browser
+// attached from another machine now PRESENTS for itself, so this page has
+// two more things to say — the browser's own permission, and a system-sound
+// preview that lands in the right room.
+// ---------------------------------------------------------------------
+describe('<NotificationsSection> on a remote screen', () => {
+  let permission: NotificationPermission;
+  let constructed: Array<{ title: string; options: NotificationOptions }>;
+  let constructorThrows: Error | null;
+
+  /** The whole Web Notification surface this section touches. */
+  function installNotificationRecorder(): void {
+    class RecordingNotification {
+      static get permission(): NotificationPermission {
+        return permission;
+      }
+
+      static requestPermission(): Promise<NotificationPermission> {
+        return Promise.resolve(permission);
+      }
+
+      constructor(title: string, options: NotificationOptions = {}) {
+        if (constructorThrows) throw constructorThrows;
+        constructed.push({ title, options });
+      }
+
+      close(): void {}
+    }
+    vi.stubGlobal('Notification', RecordingNotification);
+  }
+
+  beforeEach(async () => {
+    page.loopback = false;
+    permission = 'granted';
+    constructed = [];
+    constructorThrows = null;
+    playNotificationCue.mockClear();
+    installNotificationRecorder();
+    await seed();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    __resetCustomSoundsForTest();
+  });
+
+  it('says nothing about permission once the browser has granted it', () => {
+    const { queryByTestId } = render(NotificationsSection);
+    expect(queryByTestId('browser-notifications-permission')).toBeNull();
+    expect(queryByTestId('browser-notifications-blocked')).toBeNull();
+  });
+
+  it('offers the ask, and stops offering it once the browser answers', async () => {
+    permission = 'default';
+    const { getByTestId, queryByTestId } = render(NotificationsSection);
+    expect(getByTestId('browser-notifications-permission')).toBeTruthy();
+
+    permission = 'granted';
+    await fireEvent.click(getByTestId('browser-notifications-allow'));
+    await vi.waitFor(() => {
+      expect(queryByTestId('browser-notifications-permission')).toBeNull();
+    });
+  });
+
+  // Retained, not retried: denied is permanent until the person changes it
+  // in the browser's own settings, and a button that silently does nothing
+  // is worse than a sentence saying so.
+  it('retains a denial and says the sounds still play', async () => {
+    permission = 'default';
+    const { getByTestId, findByTestId } = render(NotificationsSection);
+    permission = 'denied';
+    await fireEvent.click(getByTestId('browser-notifications-allow'));
+
+    const blocked = await findByTestId('browser-notifications-blocked');
+    expect(blocked.textContent).toContain('sounds still play');
+  });
+
+  // A capability that is not there is a THIRD state: "blocked" is untrue of
+  // a plain-HTTP page, where the constructor simply does not exist to ask.
+  it('names an engine that cannot show notifications at all', () => {
+    vi.stubGlobal('Notification', undefined);
+    const { getByTestId, queryByTestId } = render(NotificationsSection);
+    expect(getByTestId('browser-notifications-unavailable')).toBeTruthy();
+    expect(queryByTestId('browser-notifications-allow')).toBeNull();
+  });
+
+  // PreviewNotificationSound is host-scoped and raises a banner on the
+  // BACKEND MACHINE. From here that is the wrong room entirely: the person
+  // would hear nothing and the desk would chirp at nobody.
+  it('previews the system sound on THIS screen rather than on the host', async () => {
+    await seed({ notifySoundCueTurnComplete: 'system' });
+    const preview = setBindingMock('PreviewNotificationSound', async () => undefined);
+    const { getByTestId } = render(NotificationsSection);
+    await fireEvent.click(getByTestId('settings-sound-preview-turn-complete'));
+
+    expect(preview).not.toHaveBeenCalled();
+    expect(constructed).toHaveLength(1);
+    expect(constructed[0].title).toBe('Agent Overflow');
+    expect(constructed[0].options.body).toBe('This is the turn-complete sound.');
+    // `silent: false` is the whole point: the platform sound is what is
+    // being auditioned, and it only ever arrives attached to a banner.
+    expect(constructed[0].options.silent).toBe(false);
+    expect(playNotificationCue).not.toHaveBeenCalled();
+  });
+
+  it('still plays a built-in cue in the page, exactly as the host screen does', async () => {
+    const preview = setBindingMock('PreviewNotificationSound', async () => undefined);
+    const { getByTestId } = render(NotificationsSection);
+    await fireEvent.click(getByTestId('settings-sound-preview-turn-complete'));
+
+    expect(playNotificationCue).toHaveBeenCalledWith('swoosh', 'turn-complete');
+    expect(preview).not.toHaveBeenCalled();
+    expect(constructed).toEqual([]);
+  });
+
+  it('explains a system preview it cannot raise instead of making no sound', async () => {
+    await seed({ notifySoundCueTurnComplete: 'system' });
+    permission = 'denied';
+    const { getByTestId, findByTestId } = render(NotificationsSection);
+    await fireEvent.click(getByTestId('settings-sound-preview-turn-complete'));
+
+    // By testid rather than by role: the permission callout beside it is
+    // also an alert, and "the first alert on the page" is not the assertion.
+    expect((await findByTestId('settings-sound-preview-error')).textContent)
+      .toContain('Allow notifications');
+    expect(constructed).toEqual([]);
+  });
+
+  it('surfaces a constructor that throws rather than swallowing it', async () => {
+    await seed({ notifySoundCueTurnComplete: 'system' });
+    constructorThrows = new Error('no service worker registration');
+    const { getByTestId, findByTestId } = render(NotificationsSection);
+    await fireEvent.click(getByTestId('settings-sound-preview-turn-complete'));
+
+    expect((await findByTestId('settings-sound-preview-error')).textContent)
+      .toContain('service worker');
   });
 });

@@ -53,7 +53,8 @@ vi.mock('./wailsEvents', () => ({
   },
 }));
 
-import { pushTag, startPushPresenter, stopPushPresenter } from './pushPresenter.svelte';
+import { startPushPresenter, stopPushPresenter } from './pushPresenter.svelte';
+import { notificationTag } from '../notifications/tag';
 
 interface FakeTray {
   presented: { id: string; kind: string; title: string; body: string; target: string }[];
@@ -189,13 +190,13 @@ describe('startPushPresenter', () => {
   });
 });
 
-describe('pushTag', () => {
+describe('notificationTag', () => {
   it('is the backend and the id, the spelling the pushed message and the renderer share', () => {
-    expect(pushTag('thread:t-1', 'home-9')).toBe('home-9|thread:t-1');
-    expect(pushTag('provider-auth:claude', 'laptop')).toBe('laptop|provider-auth:claude');
+    expect(notificationTag('thread:t-1', 'home-9')).toBe('home-9|thread:t-1');
+    expect(notificationTag('provider-auth:claude', 'laptop')).toBe('laptop|provider-auth:claude');
   });
 
   it('keeps the bare id only when the origin is unknown', () => {
-    expect(pushTag('thread:t-1', '')).toBe('thread:t-1');
+    expect(notificationTag('thread:t-1', '')).toBe('thread:t-1');
   });
 });

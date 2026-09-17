@@ -228,15 +228,24 @@ export const Events = {
  * provider channels in `{seq, data}` here would hide a regression if
  * the production emitter accidentally re-introduced an envelope.
  */
-export function emitWailsEvent(name: string, data: unknown, backendId?: string): void {
+export function emitWailsEvent(
+  name: string,
+  data: unknown,
+  backendId?: string,
+  replayed?: boolean,
+): void {
   const set = listeners.get(name);
   if (!set) return;
   // Same stamp the production shim applies: the identity of the connection
   // the frame arrived on, so a test sees the origin its subscribers will
   // see in the app. Defaults to HOME's identity, which is the only one a
   // single-backend test has; pass `backendId` to deliver a frame as if it
-  // came in on a second attached backend.
-  const origin: EventOrigin = { backendId: backendId ?? getBackendIdentity().backendId };
+  // came in on a second attached backend, and `replayed` to deliver it as
+  // the transport's reconnect replay would.
+  const origin: EventOrigin = {
+    backendId: backendId ?? getBackendIdentity().backendId,
+    ...(replayed ? { replayed: true } : {}),
+  };
   // Copy to avoid mutation-during-iteration if handlers unsubscribe.
   for (const handler of [...set]) {
     handler({ name, data, origin });

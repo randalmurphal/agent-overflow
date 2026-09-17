@@ -26,7 +26,9 @@ and run the end-to-end gate.
 Notification specs must account for screen presence. An open focused page can
 suppress mapped notifications under normal preferences. Keep page-free tests
 page-free, or explicitly set `notifyQuietWhen: "never"` on the connection whose
-state the sender reads.
+state the sender reads. A remote page presents for itself and gates on its OWN
+presence, so a spec about what that page shows sets the preference on that
+page's connection, not on the backend screen's.
 
 ## Running and evidence
 

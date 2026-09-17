@@ -476,6 +476,50 @@ describe('WSClient', () => {
     client.close();
   });
 
+  it('marks frames drained out of the replay window, and only those', async () => {
+    // A subscriber that converges state ignores this; one that INTERRUPTS a
+    // person reads it, because "this just happened" and "this is what you
+    // missed" call for different presentations
+    // (stores/browserNotificationPresenter.svelte.ts).
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    const seen: Array<{ id: string; replayed: boolean | undefined }> = [];
+    client.subscribe('notification:send', (data, _seq, replayed) => {
+      seen.push({ id: (data as { id: string }).id, replayed });
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    first.pushFrame({ type: 'replay' });
+    // The first connection's frames are live: nothing was missed before a
+    // socket existed, and the server replays no channel this client has no
+    // cursor for.
+    first.pushFrame({ type: 'event', channel: 'notification:send', seq: 1, data: { id: 'live-1' } });
+
+    first.triggerClose();
+    await vi.advanceTimersByTimeAsync(125);
+    const second = MockWebSocket.instances[1]!;
+    second.acceptOpen();
+    await flushMicrotasks();
+
+    // Buffered until the completion marker, then drained as replay.
+    second.pushFrame({ type: 'event', channel: 'notification:send', seq: 2, data: { id: 'missed' } });
+    expect(seen).toHaveLength(1);
+    second.pushFrame({ type: 'replay' });
+    // …and the flag is cleared again for everything after it.
+    second.pushFrame({ type: 'event', channel: 'notification:send', seq: 3, data: { id: 'live-2' } });
+
+    expect(seen).toEqual([
+      { id: 'live-1', replayed: false },
+      { id: 'missed', replayed: true },
+      { id: 'live-2', replayed: false },
+    ]);
+    client.close();
+  });
+
   it('orders a live activation that races ahead of replay completion', async () => {
     const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
     const seen: string[] = [];
@@ -1392,7 +1436,10 @@ describe('WSClient', () => {
     const text = 'x'.repeat(MAX_REPLAY_BUFFER_CHARS / 2);
     for (const seq of [1, 2, 3]) socket.pushFrame({ type: 'event', channel: 'provider:item_event', seq, data: text });
     socket.pushFrame({ type: 'replay' });
-    expect(activated).toHaveBeenCalledExactlyOnceWith({ threadId: 'target' }, 1);
+    // `replayed` is true even on the first connection for this channel: it is
+    // the one channel seeded at cursor zero, so what drains here is the
+    // retained ring — a toast clicked before this page had a socket.
+    expect(activated).toHaveBeenCalledExactlyOnceWith({ threadId: 'target' }, 1, true);
     client.close();
   });
 

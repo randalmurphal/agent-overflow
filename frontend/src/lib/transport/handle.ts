@@ -36,6 +36,22 @@ import type { StepUpProver } from './wsClient';
 export interface EventOrigin {
   readonly backendId: string;
   readonly sequence?: number;
+  /**
+   * True for a frame the transport delivered out of its reconnect replay
+   * window rather than as it happened.
+   *
+   * Almost every subscriber converges state and must treat the two
+   * identically — that is what makes reconnect recovery correct. It is here
+   * for the subscribers that INTERRUPT a person: a banner re-raised after a
+   * reconnect replaces itself by tag and costs nothing, while a sound
+   * replayed minutes later names a moment that has passed. See
+   * `stores/browserNotificationPresenter.svelte.ts`.
+   *
+   * Absent means "not known to be replayed", which is the live reading: a
+   * transport that never buffered (the `--connect` stub, an older bundle)
+   * delivers only live frames.
+   */
+  readonly replayed?: boolean;
 }
 
 /** What a transport must provide to carry this app's RPCs and events. */
@@ -79,7 +95,15 @@ export interface TransportHandle {
    * (`setPresenceEverywhere`) and `stores/screenPresence.ts` composes it.
    */
   setPresence(focused: boolean, threadIds: readonly string[]): void;
-  subscribe(channel: string, handler: (data: unknown, sequence?: number) => void): () => void;
+  /**
+   * Subscribe to `channel`. The handler's third argument marks a frame
+   * delivered out of the reconnect replay window rather than as it happened;
+   * see `wsClient.ts`'s EventHandler.
+   */
+  subscribe(
+    channel: string,
+    handler: (data: unknown, sequence?: number, replayed?: boolean) => void,
+  ): () => void;
 }
 
 /**

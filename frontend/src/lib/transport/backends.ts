@@ -187,7 +187,7 @@ const detachListeners = new Set<(detached: BackendDetachment) => void>();
 // consumer; see `subscribeEveryBackend`.
 interface StandingSubscription {
   channel: string;
-  handler: (data: unknown, handle: TransportHandle, sequence?: number) => void;
+  handler: (data: unknown, handle: TransportHandle, sequence?: number, replayed?: boolean) => void;
   cancels: Map<Entry, () => void>;
 }
 const standing = new Set<StandingSubscription>();
@@ -267,7 +267,10 @@ function createHandle(entry: () => Entry, id: string): TransportHandle {
     setPresence(focused: boolean, threadIds: readonly string[]): void {
       entry().client.setPresence(focused, threadIds);
     },
-    subscribe(channel: string, handler: (data: unknown, sequence?: number) => void): () => void {
+    subscribe(
+      channel: string,
+      handler: (data: unknown, sequence?: number, replayed?: boolean) => void,
+    ): () => void {
       return entry().client.subscribe(channel, handler);
     },
   };
@@ -577,8 +580,8 @@ function attachStanding(sub: StandingSubscription, entry: Entry): void {
   const handle = entry.handle;
   sub.cancels.set(
     entry,
-    handle.subscribe(sub.channel, (data, sequence) => {
-      sub.handler(data, handle, sequence);
+    handle.subscribe(sub.channel, (data, sequence, replayed) => {
+      sub.handler(data, handle, sequence, replayed);
     }),
   );
 }
@@ -596,7 +599,7 @@ function attachStanding(sub: StandingSubscription, entry: Entry): void {
  */
 export function subscribeEveryBackend(
   channel: string,
-  handler: (data: unknown, handle: TransportHandle, sequence?: number) => void,
+  handler: (data: unknown, handle: TransportHandle, sequence?: number, replayed?: boolean) => void,
 ): () => void {
   const sub: StandingSubscription = { channel, handler, cancels: new Map() };
   standing.add(sub);

@@ -356,13 +356,19 @@ export const Events = {
     name: string,
     handler: (ev: { name: string; data: unknown; origin?: EventOrigin }) => void,
   ): () => void {
-    return subscribeEveryBackend(name, (data, transport, sequence) => {
+    return subscribeEveryBackend(name, (data, transport, sequence, replayed) => {
       // threadId is the shared routing field on thread-scoped runtime events.
       // Row ownership events use id/thread.id and are admitted separately so a
       // newer owner can introduce itself before its runtime events arrive.
       const threadId = (data as { threadId?: unknown } | null)?.threadId;
       if (typeof threadId === 'string' && !currentThreadEvent(threadId, backendKeyForOrigin(transport.origin.backendId))) return;
-      handler({ name, data, origin: sequence === undefined ? transport.origin : { ...transport.origin, sequence } });
+      // The handle's own origin object is reused whole while neither the
+      // sequence nor the replay mark has anything to add, which is the
+      // steady state: stamping stays allocation-free for every live frame.
+      const stamped = sequence === undefined && !replayed
+        ? transport.origin
+        : { ...transport.origin, ...(sequence === undefined ? {} : { sequence }), ...(replayed ? { replayed: true } : {}) };
+      handler({ name, data, origin: stamped });
     });
   },
   Emit(_event: { name: string; data: unknown }): void {

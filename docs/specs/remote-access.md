@@ -2273,6 +2273,54 @@ Prerequisite sweep, valuable standalone:
   named warning for each file it refuses. A cue a screen's listing does
   not hold plays that event's default instead, so a cue deleted mid-flight
   costs the usual sound rather than silence.
+
+  **Per-client presentation LANDED.** Every screen now decides for
+  itself and presents for itself, from its own device-tier settings and
+  its own focus. Three presenters, one rule: the backend machine's own
+  screen is judged host-side by `notifyOS` and gets a native banner plus
+  the loopback `notification:sound` cue; a REMOTE BROWSER runs the same
+  gate itself off the `notification:send` frame it already received
+  (`frontend/src/lib/notifications/gate.ts`,
+  `stores/browserNotificationPresenter.svelte.ts`) and presents with the
+  Web Notification API plus a local cue; a phone whose app is not open is
+  interrupted through push. Before this, a remote browser's whole
+  notification block was rows in a settings page that decided nothing —
+  the frame arrived and nothing consumed it. The remote presenter is
+  installed only where the host does not already present for that screen
+  (not loopback, not the native shell), so one moment is never two
+  banners, and it computes `silent` from ITS settings rather than from
+  `Send.Silent`, which is the host screen's answer about the desk's
+  speakers. Permission, capability and preference stay three states: the
+  ask lives in Settings behind a user gesture, a denial is retained and
+  shown, and where a banner cannot be raised at all the CUE still plays —
+  the same reason `publishNotificationSound` is independent of whether
+  presentation succeeds. `PreviewNotificationSound` stays host-scoped and
+  is therefore the loopback page's preview only; a remote page raises its
+  own system-sound preview, because a banner on the desk auditions
+  nothing for somebody in another room.
+
+  LIVE VERSUS REPLAYED. `notification:send` is retained, so a reconnect
+  replays what was missed. A replayed frame gets the BANNER (it dedupes
+  by tag, so it replaces itself) and NO CUE: a banner replayed after a
+  reconnect is still true, while a cue names a moment that has already
+  passed — the same argument that makes `notification:sound` ephemeral.
+  The transport marks it: `EventOrigin.replayed` is set for frames
+  drained out of the reconnect replay window, deliberately including live
+  frames that arrived during it, because "may have been missed" is the
+  honest answer for those. Retractions are gated by neither preferences
+  nor replay, on either side.
+
+  ONE GATE, TWO IMPLEMENTATIONS, ONE TABLE. Drift between the Go gate and
+  the TypeScript one is invisible in production — the symptom is one
+  screen staying quiet where the other spoke, from settings pages that
+  read identically — so both run
+  `internal/notify/testdata/gate_cases.json` case for case
+  (`internal/app/app_notification_gate_cases_test.go`,
+  `frontend/src/lib/notifications/gate.test.ts`). Both runners are strict
+  on the way in: a case naming a settings key, a field or a refusal
+  either side does not know FAILS rather than being skipped, because a
+  case that quietly runs on one side only is the drift the file exists to
+  prevent.
 - **Approval policy**: pending approvals need a TTL / abandon policy so
   a turn does not hang forever holding a workspace when no device
   answers; approving from a notification is not allowed (app-open, and

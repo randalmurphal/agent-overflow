@@ -1,0 +1,490 @@
+[
+  {
+    "name": "defaults raise a turn-complete on an unattended screen and name its cue",
+    "settings": {},
+    "send": { "kind": "turn-complete", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": null,
+    "cue": "swoosh"
+  },
+  {
+    "name": "master switch off refuses every kind",
+    "settings": { "notificationsEnabled": false },
+    "send": { "kind": "turn-complete", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": "suppressed",
+    "cue": "swoosh"
+  },
+  {
+    "name": "master switch off still leaves the sound switch alone",
+    "settings": { "notificationsEnabled": false, "notificationSoundsEnabled": false },
+    "send": { "kind": "turn-complete", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": "suppressed",
+    "cue": null
+  },
+  {
+    "name": "turn-complete on",
+    "settings": { "notifyTurnComplete": true },
+    "send": { "kind": "turn-complete", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": null,
+    "cue": "swoosh"
+  },
+  {
+    "name": "turn-complete off",
+    "settings": { "notifyTurnComplete": false },
+    "send": { "kind": "turn-complete", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": "suppressed",
+    "cue": "swoosh"
+  },
+  {
+    "name": "approval-needed on",
+    "settings": { "notifyApprovalNeeded": true },
+    "send": { "kind": "approval-needed", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": null,
+    "cue": "knock"
+  },
+  {
+    "name": "approval-needed off",
+    "settings": { "notifyApprovalNeeded": false },
+    "send": { "kind": "approval-needed", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": "suppressed",
+    "cue": "knock"
+  },
+  {
+    "name": "error on",
+    "settings": { "notifyError": true },
+    "send": { "kind": "error", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": null,
+    "cue": "hum"
+  },
+  {
+    "name": "error off",
+    "settings": { "notifyError": false },
+    "send": { "kind": "error", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": "suppressed",
+    "cue": "hum"
+  },
+  {
+    "name": "provider-signed-out on, and it names no thread",
+    "settings": { "notifyProviderSignedOut": true },
+    "send": { "kind": "provider-signed-out", "target": { "kind": "none" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": null,
+    "cue": "hum"
+  },
+  {
+    "name": "provider-signed-out off",
+    "settings": { "notifyProviderSignedOut": false },
+    "send": { "kind": "provider-signed-out", "target": { "kind": "none" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": "suppressed",
+    "cue": "hum"
+  },
+  {
+    "name": "workflow-attention on, targeting a work item",
+    "settings": { "notifyWorkflowAttention": true },
+    "send": { "kind": "workflow-attention", "target": { "kind": "workflow-item", "workItemId": "w1" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": null,
+    "cue": "hum"
+  },
+  {
+    "name": "workflow-attention off",
+    "settings": { "notifyWorkflowAttention": false },
+    "send": { "kind": "workflow-attention", "target": { "kind": "workflow-item", "workItemId": "w1" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": "suppressed",
+    "cue": "hum"
+  },
+  {
+    "name": "app-update on",
+    "settings": { "notifyAppUpdate": true },
+    "send": { "kind": "app-update", "target": { "kind": "none" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": null,
+    "cue": "hum"
+  },
+  {
+    "name": "app-update off",
+    "settings": { "notifyAppUpdate": false },
+    "send": { "kind": "app-update", "target": { "kind": "none" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": "suppressed",
+    "cue": "hum"
+  },
+  {
+    "name": "a kind this build does not declare is refused rather than raised",
+    "settings": {},
+    "send": { "kind": "meteor-strike", "target": { "kind": "none" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": "suppressed",
+    "cue": null
+  },
+  {
+    "name": "a hidden thread stays quiet while the opt-in is off",
+    "settings": { "notifyHiddenThreads": false },
+    "send": { "kind": "turn-complete", "hiddenThread": true, "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": "hidden_thread",
+    "cue": "swoosh"
+  },
+  {
+    "name": "a hidden thread is raised once the opt-in is on",
+    "settings": { "notifyHiddenThreads": true },
+    "send": { "kind": "turn-complete", "hiddenThread": true, "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": null,
+    "cue": "swoosh"
+  },
+  {
+    "name": "the per-kind toggle is answered before the hidden-thread opt-in",
+    "settings": { "notifyTurnComplete": false, "notifyHiddenThreads": false },
+    "send": { "kind": "turn-complete", "hiddenThread": true, "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": "suppressed",
+    "cue": "swoosh"
+  },
+  {
+    "name": "quiet never, unfocused, thread not visible, thread target",
+    "settings": { "notifyQuietWhen": "never" },
+    "send": { "kind": "turn-complete", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": null,
+    "cue": "swoosh"
+  },
+  {
+    "name": "quiet never, focused, thread not visible, thread target",
+    "settings": { "notifyQuietWhen": "never" },
+    "send": { "kind": "turn-complete", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": true, "threadVisible": false },
+    "refusal": null,
+    "cue": "swoosh"
+  },
+  {
+    "name": "quiet never, unfocused, thread visible, thread target",
+    "settings": { "notifyQuietWhen": "never" },
+    "send": { "kind": "turn-complete", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": false, "threadVisible": true },
+    "refusal": null,
+    "cue": "swoosh"
+  },
+  {
+    "name": "quiet never, focused, thread visible, thread target",
+    "settings": { "notifyQuietWhen": "never" },
+    "send": { "kind": "turn-complete", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": true, "threadVisible": true },
+    "refusal": null,
+    "cue": "swoosh"
+  },
+  {
+    "name": "quiet never, unfocused, thread not visible, no thread target",
+    "settings": { "notifyQuietWhen": "never" },
+    "send": { "kind": "app-update", "target": { "kind": "none" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": null,
+    "cue": "hum"
+  },
+  {
+    "name": "quiet never, focused, thread not visible, no thread target",
+    "settings": { "notifyQuietWhen": "never" },
+    "send": { "kind": "app-update", "target": { "kind": "none" } },
+    "screen": { "focused": true, "threadVisible": false },
+    "refusal": null,
+    "cue": "hum"
+  },
+  {
+    "name": "quiet never, unfocused, thread visible, no thread target",
+    "settings": { "notifyQuietWhen": "never" },
+    "send": { "kind": "app-update", "target": { "kind": "none" } },
+    "screen": { "focused": false, "threadVisible": true },
+    "refusal": null,
+    "cue": "hum"
+  },
+  {
+    "name": "quiet never, focused, thread visible, no thread target",
+    "settings": { "notifyQuietWhen": "never" },
+    "send": { "kind": "app-update", "target": { "kind": "none" } },
+    "screen": { "focused": true, "threadVisible": true },
+    "refusal": null,
+    "cue": "hum"
+  },
+  {
+    "name": "quiet focused, unfocused, thread not visible, thread target",
+    "settings": { "notifyQuietWhen": "focused" },
+    "send": { "kind": "turn-complete", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": null,
+    "cue": "swoosh"
+  },
+  {
+    "name": "quiet focused, focused, thread not visible, thread target",
+    "settings": { "notifyQuietWhen": "focused" },
+    "send": { "kind": "turn-complete", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": true, "threadVisible": false },
+    "refusal": "screen_attended",
+    "cue": "swoosh"
+  },
+  {
+    "name": "quiet focused, unfocused, thread visible, thread target",
+    "settings": { "notifyQuietWhen": "focused" },
+    "send": { "kind": "turn-complete", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": false, "threadVisible": true },
+    "refusal": null,
+    "cue": "swoosh"
+  },
+  {
+    "name": "quiet focused, focused, thread visible, thread target",
+    "settings": { "notifyQuietWhen": "focused" },
+    "send": { "kind": "turn-complete", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": true, "threadVisible": true },
+    "refusal": "screen_attended",
+    "cue": "swoosh"
+  },
+  {
+    "name": "quiet focused, unfocused, thread not visible, no thread target",
+    "settings": { "notifyQuietWhen": "focused" },
+    "send": { "kind": "workflow-attention", "target": { "kind": "workflow-item", "workItemId": "w1" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": null,
+    "cue": "hum"
+  },
+  {
+    "name": "quiet focused judges a targetless send by focus alone",
+    "settings": { "notifyQuietWhen": "focused" },
+    "send": { "kind": "workflow-attention", "target": { "kind": "workflow-item", "workItemId": "w1" } },
+    "screen": { "focused": true, "threadVisible": false },
+    "refusal": "screen_attended",
+    "cue": "hum"
+  },
+  {
+    "name": "quiet focused, unfocused, thread visible, no thread target",
+    "settings": { "notifyQuietWhen": "focused" },
+    "send": { "kind": "workflow-attention", "target": { "kind": "workflow-item", "workItemId": "w1" } },
+    "screen": { "focused": false, "threadVisible": true },
+    "refusal": null,
+    "cue": "hum"
+  },
+  {
+    "name": "quiet focused, focused, thread visible, no thread target",
+    "settings": { "notifyQuietWhen": "focused" },
+    "send": { "kind": "workflow-attention", "target": { "kind": "workflow-item", "workItemId": "w1" } },
+    "screen": { "focused": true, "threadVisible": true },
+    "refusal": "screen_attended",
+    "cue": "hum"
+  },
+  {
+    "name": "quiet threadVisible, unfocused, thread not visible, thread target",
+    "settings": { "notifyQuietWhen": "threadVisible" },
+    "send": { "kind": "turn-complete", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": null,
+    "cue": "swoosh"
+  },
+  {
+    "name": "quiet threadVisible, focused, thread not visible, thread target",
+    "settings": { "notifyQuietWhen": "threadVisible" },
+    "send": { "kind": "turn-complete", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": true, "threadVisible": false },
+    "refusal": null,
+    "cue": "swoosh"
+  },
+  {
+    "name": "quiet threadVisible holds back a thread on screen behind another app",
+    "settings": { "notifyQuietWhen": "threadVisible" },
+    "send": { "kind": "turn-complete", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": false, "threadVisible": true },
+    "refusal": "screen_attended",
+    "cue": "swoosh"
+  },
+  {
+    "name": "quiet threadVisible, focused, thread visible, thread target",
+    "settings": { "notifyQuietWhen": "threadVisible" },
+    "send": { "kind": "turn-complete", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": true, "threadVisible": true },
+    "refusal": "screen_attended",
+    "cue": "swoosh"
+  },
+  {
+    "name": "quiet threadVisible, unfocused, thread not visible, no thread target",
+    "settings": { "notifyQuietWhen": "threadVisible" },
+    "send": { "kind": "provider-signed-out", "target": { "kind": "none" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": null,
+    "cue": "hum"
+  },
+  {
+    "name": "quiet threadVisible, focused, thread not visible, no thread target",
+    "settings": { "notifyQuietWhen": "threadVisible" },
+    "send": { "kind": "provider-signed-out", "target": { "kind": "none" } },
+    "screen": { "focused": true, "threadVisible": false },
+    "refusal": null,
+    "cue": "hum"
+  },
+  {
+    "name": "quiet threadVisible always raises a send that names no thread",
+    "settings": { "notifyQuietWhen": "threadVisible" },
+    "send": { "kind": "provider-signed-out", "target": { "kind": "none" } },
+    "screen": { "focused": false, "threadVisible": true },
+    "refusal": null,
+    "cue": "hum"
+  },
+  {
+    "name": "quiet threadVisible, focused, thread visible, no thread target",
+    "settings": { "notifyQuietWhen": "threadVisible" },
+    "send": { "kind": "provider-signed-out", "target": { "kind": "none" } },
+    "screen": { "focused": true, "threadVisible": true },
+    "refusal": null,
+    "cue": "hum"
+  },
+  {
+    "name": "quiet focusedAndThreadVisible, unfocused, thread not visible, thread target",
+    "settings": { "notifyQuietWhen": "focusedAndThreadVisible" },
+    "send": { "kind": "turn-complete", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": null,
+    "cue": "swoosh"
+  },
+  {
+    "name": "quiet focusedAndThreadVisible needs both facts, not focus alone",
+    "settings": { "notifyQuietWhen": "focusedAndThreadVisible" },
+    "send": { "kind": "turn-complete", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": true, "threadVisible": false },
+    "refusal": null,
+    "cue": "swoosh"
+  },
+  {
+    "name": "quiet focusedAndThreadVisible needs both facts, not visibility alone",
+    "settings": { "notifyQuietWhen": "focusedAndThreadVisible" },
+    "send": { "kind": "turn-complete", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": false, "threadVisible": true },
+    "refusal": null,
+    "cue": "swoosh"
+  },
+  {
+    "name": "quiet focusedAndThreadVisible, focused, thread visible, thread target",
+    "settings": { "notifyQuietWhen": "focusedAndThreadVisible" },
+    "send": { "kind": "turn-complete", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": true, "threadVisible": true },
+    "refusal": "screen_attended",
+    "cue": "swoosh"
+  },
+  {
+    "name": "quiet focusedAndThreadVisible, unfocused, thread not visible, no thread target",
+    "settings": { "notifyQuietWhen": "focusedAndThreadVisible" },
+    "send": { "kind": "app-update", "target": { "kind": "none" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": null,
+    "cue": "hum"
+  },
+  {
+    "name": "quiet focusedAndThreadVisible, focused, thread not visible, no thread target",
+    "settings": { "notifyQuietWhen": "focusedAndThreadVisible" },
+    "send": { "kind": "app-update", "target": { "kind": "none" } },
+    "screen": { "focused": true, "threadVisible": false },
+    "refusal": null,
+    "cue": "hum"
+  },
+  {
+    "name": "quiet focusedAndThreadVisible, unfocused, thread visible, no thread target",
+    "settings": { "notifyQuietWhen": "focusedAndThreadVisible" },
+    "send": { "kind": "app-update", "target": { "kind": "none" } },
+    "screen": { "focused": false, "threadVisible": true },
+    "refusal": null,
+    "cue": "hum"
+  },
+  {
+    "name": "quiet focusedAndThreadVisible raises a targetless send on a fully attended screen",
+    "settings": { "notifyQuietWhen": "focusedAndThreadVisible" },
+    "send": { "kind": "app-update", "target": { "kind": "none" } },
+    "screen": { "focused": true, "threadVisible": true },
+    "refusal": null,
+    "cue": "hum"
+  },
+  {
+    "name": "the per-kind toggle is answered before the attended screen",
+    "settings": { "notifyTurnComplete": false, "notifyQuietWhen": "focused" },
+    "send": { "kind": "turn-complete", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": true, "threadVisible": true },
+    "refusal": "suppressed",
+    "cue": "swoosh"
+  },
+  {
+    "name": "the hidden-thread opt-in is answered before the attended screen",
+    "settings": { "notifyHiddenThreads": false, "notifyQuietWhen": "focused" },
+    "send": { "kind": "turn-complete", "hiddenThread": true, "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": true, "threadVisible": true },
+    "refusal": "hidden_thread",
+    "cue": "swoosh"
+  },
+  {
+    "name": "the sounds master switch silences every event",
+    "settings": { "notificationSoundsEnabled": false },
+    "send": { "kind": "turn-complete", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": null,
+    "cue": null
+  },
+  {
+    "name": "the turn-complete sound toggle off leaves the banner alone",
+    "settings": { "notifySoundTurnComplete": false },
+    "send": { "kind": "turn-complete", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": null,
+    "cue": null
+  },
+  {
+    "name": "the input-needed sound toggle off",
+    "settings": { "notifySoundInputNeeded": false },
+    "send": { "kind": "approval-needed", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": null,
+    "cue": null
+  },
+  {
+    "name": "the attention sound toggle off covers every kind folded onto it",
+    "settings": { "notifySoundAttention": false },
+    "send": { "kind": "workflow-attention", "target": { "kind": "workflow-item", "workItemId": "w1" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": null,
+    "cue": null
+  },
+  {
+    "name": "a cue chosen for one event does not move another",
+    "settings": { "notifySoundCueTurnComplete": "marimba", "notifySoundCueAttention": "boop" },
+    "send": { "kind": "turn-complete", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": null,
+    "cue": "marimba"
+  },
+  {
+    "name": "the system cue reads back as the system cue",
+    "settings": { "notifySoundCueInputNeeded": "system" },
+    "send": { "kind": "approval-needed", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": null,
+    "cue": "system"
+  },
+  {
+    "name": "a custom cue passes through unchanged",
+    "settings": { "notifySoundCueAttention": "custom:desk-bell" },
+    "send": { "kind": "error", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": null,
+    "cue": "custom:desk-bell"
+  },
+  {
+    "name": "a refused send still reports the cue its event would have used",
+    "settings": { "notifyError": false, "notifySoundCueAttention": "custom:desk-bell" },
+    "send": { "kind": "error", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": "suppressed",
+    "cue": "custom:desk-bell"
+  }
+]

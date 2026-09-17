@@ -88,8 +88,18 @@ channel also requires contributing its thread IDs. Push the opening watch set
 before history loads, and restate it whenever a pane adopts or clears a thread.
 
 `screenPresence.ts` reports focus and visible panes only so the backend can
-suppress redundant OS notifications. Do not use presence to govern
-subscriptions, delivery, fetching, rendering, or other work.
+suppress redundant OS notifications, and `currentScreenPresence` answers the
+same two facts to `browserNotificationPresenter.svelte.ts`, which runs that
+decision locally for a screen the host cannot judge. Do not use presence to
+govern subscriptions, delivery, fetching, rendering, or other work.
+
+Every screen presents its own notifications. A page that is not loopback-served
+and not the native shell runs `notifications/gate.ts` against its own settings
+and its own focus and raises a Web Notification; the host presents for the
+backend machine's own screen, and `notification:sound` stays loopback-only
+because the decision behind it is that screen's. `origin.replayed` marks a
+frame drained out of the reconnect replay window: only a subscriber that
+interrupts a person may read it.
 
 Transport replay, watch splitting, and gap rules are documented in
 [transport.md](../../../../docs/architecture/transport.md#event-replay-and-filtering).

@@ -493,7 +493,13 @@ interface Pending {
   sentAt: number;
 }
 
-type EventHandler = (data: unknown, sequence?: number) => void;
+// `replayed` marks a frame delivered out of the reconnect replay window
+// rather than as it happened. A subscriber that only converges state ignores
+// it; one that INTERRUPTS a person reads it, because the same frame means two
+// different things — "this just happened" and "this is what you missed". See
+// `stores/browserNotificationPresenter.svelte.ts`, which re-raises a banner
+// for a replayed send (the tag dedupes it) and plays no cue for it.
+type EventHandler = (data: unknown, sequence?: number, replayed?: boolean) => void;
 
 // Reusable subscriber-fanout copy. dispatchToSubscribers snapshots a
 // channel's handler set before iterating; doing that into one shared
@@ -980,6 +986,13 @@ export class WSClient {
   private connectionEpoch = 0;
   private replayBuffer: ReplayBuffer | null = null;
   private replayStartedAt = 0;
+  // True only while the buffered replay is draining, which is what stamps
+  // `replayed` on the frames that drain out of it. It is not `replayBuffer
+  // !== null`: frames can arrive live DURING the window and are buffered
+  // with the replayed ones, and the honest answer for those is "may have
+  // been missed" — a presenter that treats one of them as live would make a
+  // noise for a moment the person already lived through.
+  private drainingReplay = false;
   private notificationCheckpointScope: string | null = null;
   // The watched-thread set this client is DESIRING, sorted. `null` means
   // no set has ever been composed, which is the wildcard state the backend
@@ -2866,18 +2879,26 @@ export class WSClient {
     if (frame.type === 'replay') {
       const buffered = this.replayBuffer;
       this.replayBuffer = null;
-      buffered?.drain(
-        (event) => this.handleEventEntry(event),
-        (heads) => {
-          const channels = new Set([...this.lastSeqByChannel.keys(), ...this.subscribers.keys(), ...heads.keys()]);
-          channels.delete(TRANSPORT_GAP_CHANNEL);
-          for (const channel of channels) {
-            const seq = heads.get(channel) ?? this.lastSeqByChannel.get(channel)?.seq ?? 0;
-            this.recordChannelSeq(channel, seq);
-            this.dispatchToSubscribers(TRANSPORT_GAP_CHANNEL, { channel, seq });
-          }
-        },
-      );
+      this.drainingReplay = true;
+      try {
+        buffered?.drain(
+          (event) => this.handleEventEntry(event),
+          (heads) => {
+            const channels = new Set([...this.lastSeqByChannel.keys(), ...this.subscribers.keys(), ...heads.keys()]);
+            channels.delete(TRANSPORT_GAP_CHANNEL);
+            for (const channel of channels) {
+              const seq = heads.get(channel) ?? this.lastSeqByChannel.get(channel)?.seq ?? 0;
+              this.recordChannelSeq(channel, seq);
+              this.dispatchToSubscribers(TRANSPORT_GAP_CHANNEL, { channel, seq });
+            }
+          },
+        );
+      } finally {
+        // A subscriber that throws is already caught per handler, but the
+        // recover callback and the buffer itself are not, and a flag left
+        // set would mark every later live frame as replayed.
+        this.drainingReplay = false;
+      }
       // Start authoritative restart snapshots after the old buffered events
       // have been applied. Otherwise a fast snapshot can be overwritten by
       // the replay it was meant to reconcile.
@@ -3164,6 +3185,10 @@ export class WSClient {
   private dispatchToSubscribers(channel: string, data: unknown, sequence?: number): void {
     const set = this.subscribers.get(channel);
     if (!set || set.size === 0) return;
+    // Read once per fanout rather than per handler: the drain is synchronous
+    // inside handleFrame's replay branch, so every dispatch it causes is
+    // replay and nothing else can interleave.
+    const replayed = this.drainingReplay;
     // Copy so a handler that unsubscribes mid-iteration doesn't perturb
     // the loop — into a reused module-level scratch rather than a fresh
     // `[...set]` per event, since a streaming drain dispatches here for
@@ -3187,7 +3212,7 @@ export class WSClient {
         // from the copy and correctly wait for the next event.)
         if (!set.has(handler)) continue;
         try {
-          handler(data, sequence);
+          handler(data, sequence, replayed);
         } catch (err) {
           console.warn(`wsClient: subscriber on ${clampString(channel)} threw`, err);
         }

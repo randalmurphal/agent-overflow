@@ -23,6 +23,7 @@
 // `notifyOS` and `TrayNotifier` hold, for the same reason.
 
 import { isNativeShell } from '../native/platform';
+import { notificationTag } from '../notifications/tag';
 import { pushPlugin, type PushNotificationPlugin } from '../native/plugins';
 import { clientLease } from '../transport/lease';
 import { wailsEventOn } from './wailsEvents';
@@ -64,35 +65,16 @@ export function stopPushPresenter(): void {
   plugin = null;
 }
 
-/**
- * The tray tag for one send: `<backendId>|<id>`, mirroring `push.TrayTag`
- * and `TrayNotifier.tagFor`. It is what makes a later state change REPLACE
- * a notification and a retraction cancel exactly it.
- *
- * NAMESPACED BY BACKEND, home included. Not every notification id is
- * unique across machines — `provider-auth:claude` is the same string on
- * every backend the owner runs, and without the prefix one machine's
- * sign-out notice would silently replace another's. And the pushed path
- * composes the SAME tag from the message's own `backend` key, so a
- * backgrounded phone whose socket is still alive — told about one moment
- * on the wire and again through Google — shows one notification, the
- * second replacing the first. `origin.backendId` is the backend's identity
- * (`backends.ts`), the same string the backend stamps on the pushed
- * message, which is what makes the two spellings agree.
- *
- * An unknown origin (empty) keeps the bare id, the same fallback the
- * renderer makes for a message with no backend key.
- */
-export function pushTag(id: string, backendId: string): string {
-  return backendId === '' ? id : `${backendId}|${id}`;
-}
 
 async function present(send: NotificationSend, backendId: string): Promise<void> {
   const bridge = plugin;
   if (bridge === null) return;
   const id = typeof send.id === 'string' ? send.id : '';
   if (id === '') return;
-  const tag = pushTag(id, backendId);
+  // `origin.backendId` is the backend's identity (`backends.ts`), the same
+  // string the backend stamps on the pushed message, which is what makes the
+  // wire tag and the pushed one agree.
+  const tag = notificationTag(id, backendId);
 
   try {
     if (send.retract === true) {

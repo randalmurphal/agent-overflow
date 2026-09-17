@@ -126,6 +126,11 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('thread-group:updated')).toBe(1);
     expect(wailsListenerCount('workflow:error')).toBe(1);
     expect(wailsListenerCount('notification:sound')).toBe(1);
+    // The REMOTE screen's presenter installs only where the host does not
+    // already present for this screen. The suite runs on a loopback origin,
+    // which IS the host's screen, so `notification:send` has no subscriber
+    // here; browserNotificationPresenter.test.ts covers the other arm.
+    expect(wailsListenerCount('notification:send')).toBe(0);
 
     cleanup();
 

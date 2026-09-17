@@ -1,14 +1,18 @@
 // Tells every attached backend whether THIS screen is being looked at, and
 // which threads it is showing (transport/frames.ts ClientPresenceFrame).
 //
-// ONE CONSUMER, ONE DECISION. The backend reads it only to decide whether to
-// RAISE an OS notification it was about to raise — "no toast about a turn you
-// watched finish" (internal/app/app_notifications.go screenIsAlreadyLooking).
-// It never changes what this client is sent, what any surface renders, or
-// what work the backend does. Off-view work shedding is a rejected design in
-// this codebase; the alternative to a toast is no toast, not a stale pane.
-// Nothing else in the app may read this module, and nothing here may be
-// wired into rendering, subscription, or fetching.
+// ONE DECISION, TWO READERS OF IT. The facts exist for exactly one question —
+// whether to RAISE an OS notification that was about to be raised, "no toast
+// about a turn you watched finish". The BACKEND asks it of the machine's own
+// screen (internal/app/app_notifications.go screenIsAlreadyLooking), which is
+// what the frame reports; a remote browser asks the same question of ITSELF,
+// because the host cannot answer for a screen in another room
+// (./browserNotificationPresenter.svelte.ts, through currentScreenPresence
+// below). Neither ever changes what this client is sent, what any surface
+// renders, or what work the backend does. Off-view work shedding is a
+// rejected design in this codebase; the alternative to a toast is no toast,
+// not a stale pane. Nothing else in the app may read this module, and nothing
+// here may be wired into rendering, subscription, or fetching.
 //
 // THE OPPOSITE RULE TO ./watchedThreads.ts, deliberately, and they must not
 // be confused. That one is EXISTENCE and never visibility, because a pane
@@ -30,7 +34,7 @@ import { setPresenceEverywhere } from '../transport/backends';
 import { getCompactScreen, isCompactLayout } from './layoutMode.svelte';
 import { getFocusedPaneOrNull, openThreadIds } from './panes.svelte';
 
-interface ScreenPresence {
+export interface ScreenPresence {
   focused: boolean;
   threads: string[];
 }
@@ -64,6 +68,26 @@ function composePresence(): ScreenPresence {
   // looking" means. `hasFocus` answers false for a visible window sitting
   // behind another app, which is exactly the case the second rule is for.
   return { focused: document.hasFocus(), threads };
+}
+
+/**
+ * This screen's presence right now, for a consumer that decides LOCALLY
+ * rather than having the backend decide for it.
+ *
+ * The browser notification presenter is that consumer
+ * (./browserNotificationPresenter.svelte.ts): a remote page runs the same
+ * attended-screen gate the host runs, so it needs the same two facts. It
+ * reads them HERE rather than composing its own from the pane and layout
+ * stores, because two derivations of "is somebody looking" would eventually
+ * disagree, and the disagreement would be a notification the desk and the
+ * couch answer differently from identical settings.
+ *
+ * The rule the module header states is unchanged by this second reader: the
+ * answer decides whether a banner is RAISED and nothing else. It must never
+ * reach subscriptions, delivery, fetching or rendering.
+ */
+export function currentScreenPresence(): ScreenPresence {
+  return composePresence();
 }
 
 /**

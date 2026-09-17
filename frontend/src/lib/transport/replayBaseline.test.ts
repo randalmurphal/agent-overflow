@@ -70,7 +70,10 @@ it.each([0, 7])('replays a completion never received by this client (baseline %i
   second.pushFrame({ type: 'event', channel: 'provider:turn_completed',
     seq: completedBeforeConnect + 1, data: { turnId: 'turn' } });
   second.pushFrame({ type: 'replay' });
-  expect(completed).toHaveBeenCalledExactlyOnceWith({ turnId: 'turn' }, completedBeforeConnect + 1);
+  // Delivered out of the reconnect replay window, so it is stamped replayed:
+  // this subscriber converges state and ignores that, and only a presenter
+  // that interrupts a person reads it (wsClient.ts EventHandler).
+  expect(completed).toHaveBeenCalledExactlyOnceWith({ turnId: 'turn' }, completedBeforeConnect + 1, true);
   second.pushFrame({ type: 'event', channel: 'provider:turn_completed',
     seq: completedBeforeConnect + 1, data: { turnId: 'turn' } });
   expect(completed).toHaveBeenCalledTimes(1);
@@ -96,7 +99,9 @@ it('ignores invalid baseline cursors and preserves historical notification activ
   });
   socket.pushFrame({ type: 'event', channel: 'notification:activated', seq: 1, data: 'open thread' });
   socket.pushFrame({ type: 'replay' });
-  expect(activated).toHaveBeenCalledExactlyOnceWith('open thread', 1);
+  // The zero-seeded activation cursor makes this channel's first-connection
+  // frames a drain of the retained ring, which is what replayed names.
+  expect(activated).toHaveBeenCalledExactlyOnceWith('open thread', 1, true);
   socket.triggerClose();
   await vi.advanceTimersByTimeAsync(250);
   const next = MockWebSocket.instances[1]!;

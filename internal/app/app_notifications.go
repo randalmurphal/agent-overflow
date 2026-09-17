@@ -411,6 +411,8 @@ func (a *App) notifyOSUngated(send notify.Send) error {
 func (a *App) screenIsAlreadyLooking(send notify.Send) bool {
 	current := a.backendScreenSettings()
 	if current.NotifyQuietWhen == settings.NotifyQuietNever {
+		// screenAttendedIn answers the same for this reading. Short-circuited
+		// here only to skip the presence read, which takes the bus lock.
 		return false
 	}
 	bus := a.eventBus.Load()
@@ -420,12 +422,37 @@ func (a *App) screenIsAlreadyLooking(send notify.Send) bool {
 		// before this gate existed.
 		return false
 	}
+	hasThreadTarget := send.Target.Kind == notify.TargetThread
 	threadID := ""
-	if send.Target.Kind == notify.TargetThread {
+	if hasThreadTarget {
 		threadID = send.Target.ThreadID
 	}
 	focused, threadVisible := bus.LocalScreenPresence(threadID)
-	switch current.NotifyQuietWhen {
+	return screenAttendedIn(current.NotifyQuietWhen, focused, threadVisible, hasThreadTarget)
+}
+
+// screenAttendedIn is the attended-screen switch with the App, the settings
+// service and the transport taken out: given the reading a screen chose and
+// the two facts that screen last stated, is it already looking?
+//
+// Its own function for the reason notificationKindEnabledIn and
+// notificationSoundCueIn are: it is a total switch over a closed set, and the
+// REMOTE presenter runs the same decision against its own screen
+// (frontend/src/lib/notifications/gate.ts). The two are held together by a
+// shared decision table, internal/notify/testdata/gate_cases.json, which both
+// sides run case for case; a copy that drifted would mean one screen staying
+// quiet where the other spoke, from settings that read identically.
+//
+// hasThreadTarget is a parameter rather than something the caller folds into
+// threadVisible because it is the narrowing the two thread readings depend
+// on: a send whose Target does not NAME a thread has no thread for a pane to
+// be showing, so a workflow-attention or signed-out notice is raised under
+// both of them and judged by focus alone under the third.
+func screenAttendedIn(quietWhen string, focused, threadVisible, hasThreadTarget bool) bool {
+	threadVisible = threadVisible && hasThreadTarget
+	switch quietWhen {
+	case settings.NotifyQuietNever:
+		return false
 	case settings.NotifyQuietWhenFocused:
 		return focused
 	case settings.NotifyQuietWhenThreadVisible:
@@ -436,7 +463,7 @@ func (a *App) screenIsAlreadyLooking(send notify.Send) bool {
 		// sanitizeLoadedSettings and validateSettings keep the value inside
 		// the four readings; an unknown one here is a settings bug, and the
 		// answer that raises the notification is the one that loses nothing.
-		log.Printf("notifications: unknown notifyQuietWhen %q, raising", current.NotifyQuietWhen)
+		log.Printf("notifications: unknown notifyQuietWhen %q, raising", quietWhen)
 		return false
 	}
 }

@@ -673,9 +673,9 @@ const STATIC_FIELDS = [
     id: 'notifications.enabled',
     section: 'notifications',
     heading: 'Notifications',
-    label: 'Desktop notifications',
+    label: 'Notifications',
     hint: 'Off silences every kind on this screen, including workflow and update notices.',
-    keywords: ['alerts', 'os notification', 'silence', 'mute', 'sound'],
+    keywords: ['alerts', 'os notification', 'desktop', 'silence', 'mute', 'sound'],
   },
   {
     id: 'notifications.turn-complete',

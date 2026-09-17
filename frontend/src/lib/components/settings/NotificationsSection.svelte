@@ -3,8 +3,12 @@
   //
   // Device tier (docs/specs/remote-access.md §6): these describe the SCREEN
   // being interrupted, so two devices attached to one backend keep their own
-  // answers. The host-side sender resolves them against the backend
-  // machine's own screen.
+  // answers. WHICH PRESENTER READS THEM depends on which screen this page is:
+  // the backend machine's own screen is read host-side by `App.notifyOS`,
+  // which raises the native banner; a remote browser reads them itself and
+  // presents with the Web Notification API
+  // (stores/browserNotificationPresenter.svelte.ts). Same keys, same gate,
+  // different screen.
   //
   // The master switch hides rather than disables the rows beneath it, the
   // SpinnerSection pattern: a stack of greyed-out toggles reads as broken,
@@ -34,6 +38,7 @@
   import type { NotifyCue, NotifyQuietWhen, Settings } from '../../types/settings';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import CustomSoundsBlock from './CustomSoundsBlock.svelte';
+  import Button from '../primitives/Button.svelte';
   import Icon from '../primitives/Icon.svelte';
   import IconButton from '../primitives/IconButton.svelte';
   import PhonePushBlock from './PhonePushBlock.svelte';
@@ -50,6 +55,10 @@
   } from '../../stores/sounds.svelte';
   import { PreviewNotificationSound } from '../../stores/bindings';
   import { userFacingError } from '../../utils/userFacingError';
+  import {
+    browserNotificationPermission,
+    pagePresentsNotificationsLocally,
+  } from '../../stores/browserNotificationPresenter.svelte';
 
   const QUIET_WHEN_OPTIONS: Array<{
     value: NotifyQuietWhen;
@@ -135,10 +144,43 @@
 
   let settings = $derived(getSettings());
   // The one failure this section can produce. A preview of the SYSTEM sound
-  // is a real OS notification on the host, so it can be refused (permission
-  // denied, no presenter, a step-up the host tier wants) and a click that
-  // makes no sound with no explanation reads as a broken speaker.
+  // is a real OS notification, so it can be refused (permission denied, no
+  // presenter, a step-up the host tier wants) and a click that makes no sound
+  // with no explanation reads as a broken speaker.
   let previewError = $state('');
+
+  // THE BROWSER'S PERMISSION IS A THIRD STATE, beside the app preference and
+  // the platform capability (./AGENTS.md). It exists only where this page
+  // presents for itself: the backend machine's own screen is interrupted by
+  // the host process, which holds the OS permission, and the native shell has
+  // its own. Held in $state rather than read in the markup because
+  // `Notification.permission` is not reactive — nothing tells Svelte it moved,
+  // so the value is re-read at the one moment it can change.
+  const presentsLocally = pagePresentsNotificationsLocally();
+  let permission = $state(presentsLocally ? browserNotificationPermission() : 'granted');
+
+  /**
+   * Ask the browser, from the click that asked for it.
+   *
+   * The ask has to come from a user gesture — every engine refuses one that
+   * does not, and the presenter deliberately never asks from an event
+   * handler. A refusal is RETAINED and shown, not retried: `denied` is
+   * permanent until the person changes it in browser settings, and a button
+   * that silently does nothing is worse than a sentence saying so.
+   */
+  async function askForNotificationPermission(): Promise<void> {
+    previewError = '';
+    try {
+      permission = await Notification.requestPermission();
+    } catch (cause) {
+      // Some engines reject rather than answering 'denied' (a page with no
+      // secure context, a permissions policy). Same outcome for the user, and
+      // the callout has to say something rather than leaving the button
+      // looking unpressed.
+      permission = browserNotificationPermission();
+      previewError = userFacingError(cause, 'The browser refused to ask for notification permission.');
+    }
+  }
 
   // The pickers below offer the library whether or not the user is about to
   // edit it, so the listing is acquired with the section. CustomSoundsBlock
@@ -200,10 +242,43 @@
       playNotificationCue(cueOf(event.cueKey), event.testid);
       return;
     }
+    // THE SYSTEM PREVIEW HAS TO LAND ON THE SCREEN BEING CONFIGURED.
+    // `PreviewNotificationSound` is host-scoped and raises a banner on the
+    // BACKEND MACHINE, which is the right screen from a loopback page and the
+    // wrong room entirely from a remote one — the person would hear nothing
+    // and the desk would chirp at nobody. A remote page therefore raises the
+    // preview itself, exactly as its presenter raises a real one.
+    if (presentsLocally) {
+      previewLocalSystemSound(event);
+      return;
+    }
     try {
       await call(() => PreviewNotificationSound(event.testid));
     } catch (cause) {
       previewError = userFacingError(cause, 'Could not send a test notification.');
+    }
+  }
+
+  /**
+   * The remote screen's own system-sound preview: one Web Notification with
+   * the platform's own sound, which is what `silent: false` asks for and the
+   * only way this cue can be heard at all.
+   */
+  function previewLocalSystemSound(event: (typeof SOUND_EVENTS)[number]): void {
+    if (permission !== 'granted') {
+      previewError = 'Allow notifications in this browser to hear the system sound.';
+      return;
+    }
+    try {
+      new Notification('Agent Overflow', {
+        body: `This is the ${event.testid} sound.`,
+        // Its own tag so a preview never replaces, or is replaced by, a real
+        // notification about a thread.
+        tag: 'agent-overflow-sound-preview',
+        silent: false,
+      });
+    } catch (cause) {
+      previewError = userFacingError(cause, 'Could not show a test notification.');
     }
   }
 </script>
@@ -270,19 +345,55 @@
 {/snippet}
 
 <section data-testid="settings-notifications-section">
+  <!-- "On this screen" rather than "desktop": these keys belong to whichever
+       screen this page is, and the presenter that reads them is the host
+       process on the backend machine and this browser everywhere else. -->
   <SettingsHeader
     title="Notifications"
-    description="Desktop notifications from this screen. A notification names the thread and what happened, never what was said in it."
+    description="Notifications on this screen. A notification names the thread and what happened, never what was said in it."
   />
   <div class="flex flex-col gap-1">
+    <!-- The browser's permission, above every preference below it, because no
+         toggle here can produce a notification without it. It is shown only
+         while it is not granted: a settled permission is not news, and a
+         callout that never goes away is one nobody reads. -->
+    {#if presentsLocally && permission !== 'granted'}
+      <SettingsCallout tone={permission === 'denied' ? 'error' : 'warn'}>
+        {#if permission === 'denied'}
+          <span data-testid="browser-notifications-blocked">
+            Notifications are blocked in this browser. Allow them for this site in the
+            browser's own settings; sounds still play here.
+          </span>
+        {:else if permission === 'unavailable'}
+          <span data-testid="browser-notifications-unavailable">
+            This browser cannot show notifications on this page. Sounds still play here.
+          </span>
+        {:else}
+          <span class="flex flex-wrap items-center gap-2">
+            <span data-testid="browser-notifications-permission">
+              Notifications on this screen need the browser's permission.
+            </span>
+            <Button
+              variant="secondary"
+              size="sm"
+              testId="browser-notifications-allow"
+              onclick={() => void askForNotificationPermission()}
+            >
+              Allow
+            </Button>
+          </span>
+        {/if}
+      </SettingsCallout>
+    {/if}
+
     <SettingsField
       id="notifications.enabled"
-      label="Desktop notifications"
+      label="Notifications"
       hint="Off silences every kind on this screen, including workflow and update notices."
     >
       <ToggleSwitch
         checked={settings.notificationsEnabled}
-        ariaLabel="Toggle desktop notifications"
+        ariaLabel="Toggle notifications"
         onToggle={(value) => updateSetting('notificationsEnabled', value)}
       />
     </SettingsField>
@@ -452,7 +563,9 @@
               {@render soundEvent(event)}
             {/each}
             {#if previewError}
-              <SettingsCallout tone="error">{previewError}</SettingsCallout>
+              <SettingsCallout tone="error">
+                <span data-testid="settings-sound-preview-error">{previewError}</span>
+              </SettingsCallout>
             {/if}
 
             <!-- The library the three pickers above draw from. It hides with

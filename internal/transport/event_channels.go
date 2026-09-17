@@ -525,8 +525,13 @@ var channelPolicies = []ChannelPolicy{
 			"attended-screen reading and the cue choice against " +
 			"Service.BackendScreen — and a remote client's speakers are a " +
 			"different screen with different answers. Playing it there " +
-			"would apply one screen's preferences to another's room; a " +
-			"remote device is interrupted through its own push instead. " +
+			"would apply one screen's preferences to another's room. A " +
+			"remote screen PRESENTS FOR ITSELF instead, banner and cue " +
+			"alike, running the same gate against its own settings and its " +
+			"own focus off the notification:send frame " +
+			"(frontend/src/lib/notifications/gate.ts, " +
+			"stores/browserNotificationPresenter.svelte.ts); a phone the app " +
+			"is not open on is interrupted through push. " +
 			"Ephemeral, and that is the difference from the send: a banner " +
 			"replayed after a reconnect is still true, while a cue replayed " +
 			"minutes later is a noise with no moment behind it. Emitting " +

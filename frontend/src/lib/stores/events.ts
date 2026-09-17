@@ -183,6 +183,7 @@ import {
   applyNotificationSoundEvent,
   installNotificationSoundUnlock,
 } from './notificationSound';
+import { startBrowserNotificationPresenter } from './browserNotificationPresenter.svelte';
 import type {
   WorkflowEngineStateEvent,
   WorkflowErrorEvent,
@@ -232,6 +233,13 @@ export function setupEventListeners(): () => void {
     'notification:sound',
     applyNotificationSoundEvent,
   );
+  // The REMOTE screen's own presenter. `notification:sound` above carries a
+  // decision the backend machine made for ITS screen, and the channel is
+  // loopback-only for that reason; a browser attached from elsewhere is a
+  // different screen and runs the whole gate itself, banner and cue, off
+  // `notification:send`. It subscribes to nothing on a loopback page or in
+  // the native shell, where a presenter already exists.
+  const cancelBrowserNotifications = startBrowserNotificationPresenter();
   const cancelUserInput = wailsEventOn<UserInputEvent>('provider:user_input', applyUserInputEvent);
 
   const cancelUsage = wailsEventOn<UsageEvent>('provider:usage', (evt, origin) => applyUsageEvent(evt, backendKeyForOrigin(origin.backendId)));
@@ -711,6 +719,7 @@ export function setupEventListeners(): () => void {
     cancelApproval();
     cancelNotificationActivated();
     cancelNotificationSound();
+    cancelBrowserNotifications();
     cancelNotificationSoundUnlock();
     cancelUserInput();
     cancelUsage();
