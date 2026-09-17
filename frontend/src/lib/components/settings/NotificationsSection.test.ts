@@ -123,22 +123,23 @@ describe('<NotificationsSection>', () => {
   });
 
   // The third stack. Three EVENTS, not six kinds: the cue answers "finished",
-  // "needs you" or "something is wrong", and any of the three built-in cues
-  // may be assigned to any of them.
+  // "needs you" or "something is wrong", and any built-in cue may be
+  // assigned to any of them.
   describe('sounds', () => {
-    const soundEvents: Array<[string, keyof Settings, keyof Settings, string]> = [
-      ['Toggle the Turn complete cue', 'notifySoundTurnComplete', 'notifySoundCueTurnComplete', 'turn-complete'],
-      ['Toggle the Approval needed cue', 'notifySoundInputNeeded', 'notifySoundCueInputNeeded', 'input-needed'],
-      ['Toggle the Attention cue', 'notifySoundAttention', 'notifySoundCueAttention', 'attention'],
+    const soundEvents: Array<[string, keyof Settings, keyof Settings, string, string]> = [
+      ['Toggle the Turn complete cue', 'notifySoundTurnComplete', 'notifySoundCueTurnComplete', 'turn-complete', 'swoosh'],
+      ['Toggle the Approval needed cue', 'notifySoundInputNeeded', 'notifySoundCueInputNeeded', 'input-needed', 'knock'],
+      ['Toggle the Attention cue', 'notifySoundAttention', 'notifySoundCueAttention', 'attention', 'hum'],
     ];
+    const cueOptions = ['swoosh', 'marimba', 'chord', 'knock', 'pop', 'hum', 'boop', 'system'];
 
     it('ships with sounds on and every event on its own cue', () => {
       const { getByRole, getByTestId } = render(NotificationsSection);
       expect(getByRole('switch', { name: 'Toggle notification sounds' }).getAttribute('aria-checked'))
         .toBe('true');
-      for (const [name, , , cue] of soundEvents) {
+      for (const [name, , , testid, cue] of soundEvents) {
         expect(getByRole('switch', { name }).getAttribute('aria-checked')).toBe('true');
-        expect((getByTestId(`settings-sound-cue-${cue}`) as HTMLSelectElement).value).toBe(cue);
+        expect((getByTestId(`settings-sound-cue-${testid}`) as HTMLSelectElement).value).toBe(cue);
       }
     });
 
@@ -153,19 +154,19 @@ describe('<NotificationsSection>', () => {
     it.each(soundEvents)('dispatches the cue chosen for %s', async (_name, _key, cueKey, testid) => {
       const { getByTestId } = render(NotificationsSection);
       const select = getByTestId(`settings-sound-cue-${testid}`) as HTMLSelectElement;
-      await fireEvent.change(select, { target: { value: 'attention' } });
+      await fireEvent.change(select, { target: { value: 'boop' } });
 
       const mock = getBindingMock('UpdateSettings');
-      expect(mock!.mock.calls[0][0]).toEqual({ [cueKey]: 'attention' });
+      expect(mock!.mock.calls[0][0]).toEqual({ [cueKey]: 'boop' });
     });
 
-    it('offers all three built-in cues for every event', () => {
+    it('offers every built-in cue, and the system sound, for every event', () => {
       const { getByTestId } = render(NotificationsSection);
       for (const [, , , testid] of soundEvents) {
         const options = Array.from(
           (getByTestId(`settings-sound-cue-${testid}`) as HTMLSelectElement).options,
         ).map((option) => option.value);
-        expect(options).toEqual(['turn-complete', 'input-needed', 'attention']);
+        expect(options).toEqual(cueOptions);
       }
     });
 

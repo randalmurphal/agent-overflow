@@ -1,15 +1,21 @@
 # Notification cues
 
-Three short cues the notification sound player chooses between
-(`lib/stores/notificationSound.ts`).
+The built-in cues the notification sound player chooses between
+(`lib/stores/notificationSound.ts`). One list serves every notification
+event; any cue can be chosen for any event.
 
 | File | Shape | Default event |
 |---|---|---|
-| `turn-complete.wav` | two notes rising a fifth | turn complete |
-| `input-needed.wav` | one note struck twice | approval / input needed |
-| `attention.wav` | two notes falling a minor third | error, signed out, workflow, update |
+| `swoosh.wav` | air sweeping high to low, no pitch | turn complete |
+| `marimba.wav` | two wooden notes rising a fifth | |
+| `chord.wav` | a warm electric-piano pair | |
+| `knock.wav` | two low knocks | input needed |
+| `pop.wav` | two soft blips, rising | |
+| `hum.wav` | one low note sliding down | attention |
+| `boop.wav` | a rounded low double blip | |
 
-Any cue can be chosen for any event; the table is only what the defaults are.
+The settings value `system` names no file here: it means the OS banner plays
+its own notification sound and no cue frame is sent.
 
 ## Regenerating
 
@@ -22,6 +28,7 @@ python3 scripts/gen-notification-sounds.py
 ```
 
 The script uses the Python standard library only and synthesizes every sample
-from sine partials, so the committed audio contains no third-party sampled
-material and carries this repository's licence. Do not hand-edit the `.wav`
-files or drop a downloaded sample in beside them.
+(seeded noise and sine partials), so the committed audio contains no
+third-party sampled material and carries this repository's licence. Output is
+deterministic. Do not hand-edit the `.wav` files or drop a downloaded sample
+in beside them.

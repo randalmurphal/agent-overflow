@@ -66,7 +66,7 @@ afterEach(() => {
 describe('notification cue playback', () => {
   it('plays a built-in cue once the page has been interacted with', () => {
     __unlockNotificationSoundForTest();
-    playNotificationCue('turn-complete');
+    playNotificationCue('swoosh');
 
     expect(FakeAudio.instances).toHaveLength(1);
     expect(FakeAudio.instances[0].plays).toBe(1);
@@ -78,9 +78,9 @@ describe('notification cue playback', () => {
 
   it('reuses one element per cue rather than allocating per notification', () => {
     __unlockNotificationSoundForTest();
-    playNotificationCue('turn-complete');
+    playNotificationCue('swoosh');
     clock += NOTIFICATION_SOUND_COOLDOWN_MS;
-    playNotificationCue('turn-complete');
+    playNotificationCue('swoosh');
 
     expect(FakeAudio.instances).toHaveLength(1);
     expect(FakeAudio.instances[0].plays).toBe(2);
@@ -88,27 +88,27 @@ describe('notification cue playback', () => {
 
   it('collapses a burst into a single sound', () => {
     __unlockNotificationSoundForTest();
-    for (let i = 0; i < 4; i += 1) playNotificationCue('turn-complete');
+    for (let i = 0; i < 4; i += 1) playNotificationCue('swoosh');
     expect(totalPlays()).toBe(1);
 
     // Still inside the window, even for a different cue: the cooldown is a
     // property of the speaker, not of one sound.
     clock += NOTIFICATION_SOUND_COOLDOWN_MS - 1;
-    playNotificationCue('attention');
+    playNotificationCue('hum');
     expect(totalPlays()).toBe(1);
 
     clock += 1;
-    playNotificationCue('attention');
+    playNotificationCue('hum');
     expect(totalPlays()).toBe(2);
   });
 
   it('stays silent, with a note, before the first user gesture', () => {
-    playNotificationCue('turn-complete');
+    playNotificationCue('swoosh');
 
     expect(FakeAudio.instances).toHaveLength(0);
     expect(reported).toHaveBeenCalledWith(
       'notification cue suppressed before first user gesture',
-      'turn-complete',
+      'swoosh',
     );
   });
 
@@ -116,7 +116,7 @@ describe('notification cue playback', () => {
     const teardown = installNotificationSoundUnlock();
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a' }));
 
-    playNotificationCue('turn-complete');
+    playNotificationCue('swoosh');
     expect(totalPlays()).toBe(1);
     teardown();
   });
@@ -126,7 +126,7 @@ describe('notification cue playback', () => {
     teardown();
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a' }));
 
-    playNotificationCue('turn-complete');
+    playNotificationCue('swoosh');
     expect(totalPlays()).toBe(0);
   });
 
@@ -141,12 +141,12 @@ describe('notification cue playback', () => {
   it('reports a rejected play without throwing', async () => {
     __unlockNotificationSoundForTest();
     FakeAudio.behavior = 'reject';
-    expect(() => playNotificationCue('turn-complete')).not.toThrow();
+    expect(() => playNotificationCue('swoosh')).not.toThrow();
 
     await vi.waitFor(() => {
       expect(reported).toHaveBeenCalledWith(
         'notification cue playback failed',
-        expect.stringContaining('turn-complete'),
+        expect.stringContaining('swoosh'),
       );
     });
   });
@@ -154,7 +154,7 @@ describe('notification cue playback', () => {
   it('reports a throwing play without throwing', () => {
     __unlockNotificationSoundForTest();
     FakeAudio.behavior = 'throw';
-    expect(() => playNotificationCue('turn-complete')).not.toThrow();
+    expect(() => playNotificationCue('swoosh')).not.toThrow();
 
     expect(reported).toHaveBeenCalledWith(
       'notification cue playback failed',
@@ -165,7 +165,7 @@ describe('notification cue playback', () => {
   it('tolerates an engine whose play() returns no promise', () => {
     __unlockNotificationSoundForTest();
     FakeAudio.behavior = 'undefined';
-    expect(() => playNotificationCue('turn-complete')).not.toThrow();
+    expect(() => playNotificationCue('swoosh')).not.toThrow();
     expect(reported).not.toHaveBeenCalled();
   });
 
@@ -180,16 +180,16 @@ describe('notification:sound frames', () => {
   });
 
   it('plays the cue the host named', () => {
-    applyNotificationSoundEvent({ event: 'input-needed', cue: 'input-needed' });
+    applyNotificationSoundEvent({ event: 'input-needed', cue: 'knock' });
     expect(totalPlays()).toBe(1);
-    expect(FakeAudio.instances[0].src).toContain('input-needed');
+    expect(FakeAudio.instances[0].src).toContain('knock');
   });
 
   it('plays the cue rather than re-deriving one from the event', () => {
     // The host resolved this screen's preference to a different cue; the
     // player does not second-guess it.
-    applyNotificationSoundEvent({ event: 'turn-complete', cue: 'attention' });
-    expect(FakeAudio.instances[0].src).toContain('attention');
+    applyNotificationSoundEvent({ event: 'turn-complete', cue: 'hum' });
+    expect(FakeAudio.instances[0].src).toContain('hum');
   });
 
   it('ignores a malformed frame', () => {

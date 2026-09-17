@@ -108,10 +108,17 @@
   ];
 
   // Any cue may be chosen for any event, so one list serves all three.
+  // `system` is the OS banner's own sound: nothing to preview here, and
+  // choosing it means no cue frame is sent for that event.
   const CUE_OPTIONS: Array<{ value: NotifyCue; label: string }> = [
-    { value: 'turn-complete', label: 'Rising chime' },
-    { value: 'input-needed', label: 'Double tap' },
-    { value: 'attention', label: 'Falling tone' },
+    { value: 'swoosh', label: 'Swoosh' },
+    { value: 'marimba', label: 'Marimba' },
+    { value: 'chord', label: 'Warm two-tone' },
+    { value: 'knock', label: 'Knock' },
+    { value: 'pop', label: 'Pop' },
+    { value: 'hum', label: 'Low hum' },
+    { value: 'boop', label: 'Boop' },
+    { value: 'system', label: 'System sound' },
   ];
 
   let settings = $derived(getSettings());
@@ -143,6 +150,10 @@
       </select>
       <IconButton
         label={`Play the ${event.label}`}
+        title={cueOf(event.cueKey) === 'system'
+          ? 'The system sound plays with the notification itself'
+          : undefined}
+        disabled={!settings[event.enabledKey] || cueOf(event.cueKey) === 'system'}
         onClick={() => playNotificationCue(cueOf(event.cueKey))}
         testId={`settings-sound-preview-${event.testid}`}
       >

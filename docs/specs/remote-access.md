@@ -2242,7 +2242,7 @@ Prerequisite sweep, valuable standalone:
   `TestSoundEventCoversEveryKind` keeps it total. Preferences are
   device tier on the backend machine's own screen: a master
   `notificationSoundsEnabled`, a toggle per event, and a cue choice per
-  event among three built-ins, all defaulting ON. The frame
+  event among the built-in cues or the system sound, all defaulting ON. The frame
   (`notification:sound`, loopback-only and ephemeral) carries the event
   and the resolved cue name and nothing else — no thread, no title, no
   text — and is never replayed, because a cue names a moment that has

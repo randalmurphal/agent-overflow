@@ -169,6 +169,12 @@ func (a *App) publishNotificationSound(kind notify.Kind) {
 	if !enabled {
 		return
 	}
+	// The system sound is the banner's to play, not a frame: the presenter
+	// sends that banner with the platform default sound, and publishing a
+	// cue named "system" would only make the player report an unknown cue.
+	if cue == settings.NotifyCueSystem {
+		return
+	}
 	a.emit(eventchan.NotificationSound, notify.SoundCue{Event: event, Cue: cue})
 }
 

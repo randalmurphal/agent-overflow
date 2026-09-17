@@ -76,9 +76,14 @@ var (
 	// them is selectable for any sound event, so one table covers all three
 	// NotifySoundCue* keys.
 	allowedNotifyCues = map[string]struct{}{
-		NotifyCueTurnComplete: {},
-		NotifyCueInputNeeded:  {},
-		NotifyCueAttention:    {},
+		NotifyCueSwoosh:  {},
+		NotifyCueMarimba: {},
+		NotifyCueChord:   {},
+		NotifyCueKnock:   {},
+		NotifyCuePop:     {},
+		NotifyCueHum:     {},
+		NotifyCueBoop:    {},
+		NotifyCueSystem:  {},
 	}
 	allowedProjectSortModes = map[string]struct{}{
 		"lastActivity": {},

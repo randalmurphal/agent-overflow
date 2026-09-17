@@ -25,21 +25,33 @@
 //     notification a headless run, a locked-down webview or a machine with no
 //     sound card simply does not have.
 
-import attentionCue from '../assets/sounds/attention.wav?url';
-import inputNeededCue from '../assets/sounds/input-needed.wav?url';
-import turnCompleteCue from '../assets/sounds/turn-complete.wav?url';
+import boopCue from '../assets/sounds/boop.wav?url';
+import chordCue from '../assets/sounds/chord.wav?url';
+import humCue from '../assets/sounds/hum.wav?url';
+import knockCue from '../assets/sounds/knock.wav?url';
+import marimbaCue from '../assets/sounds/marimba.wav?url';
+import popCue from '../assets/sounds/pop.wav?url';
+import swooshCue from '../assets/sounds/swoosh.wav?url';
 import { errString } from '../utils/errors';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 
-/** The built-in cues, keyed by the value `settings.NotifyCue*` carries. */
+/**
+ * The built-in cues, keyed by the value `settings.NotifyCue*` carries.
+ * `system` is deliberately absent: it names the OS banner's own sound, and
+ * the host never publishes a cue frame for it.
+ */
 const CUE_URLS: Readonly<Record<string, string>> = {
-  'turn-complete': turnCompleteCue,
-  'input-needed': inputNeededCue,
-  attention: attentionCue,
+  swoosh: swooshCue,
+  marimba: marimbaCue,
+  chord: chordCue,
+  knock: knockCue,
+  pop: popCue,
+  hum: humCue,
+  boop: boopCue,
 };
 
 /**
- * Minimum spacing between cues. Long enough that the longest cue (~0.6 s) has
+ * Minimum spacing between cues. Long enough that the longest cue (~0.8 s) has
  * finished before another can start, so two never overlap, and short enough
  * that two genuinely separate events a couple of seconds apart are both heard.
  */

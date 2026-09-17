@@ -91,9 +91,9 @@ export const SETTINGS_DEFAULTS = {
   notifySoundTurnComplete: true,
   notifySoundInputNeeded: true,
   notifySoundAttention: true,
-  notifySoundCueTurnComplete: "turn-complete",
-  notifySoundCueInputNeeded: "input-needed",
-  notifySoundCueAttention: "attention",
+  notifySoundCueTurnComplete: "swoosh",
+  notifySoundCueInputNeeded: "knock",
+  notifySoundCueAttention: "hum",
 } satisfies Settings;
 
 // Frontend-owned preferences. Backend persistence remains a migration/notification mirror.
@@ -186,9 +186,9 @@ export const FRONTEND_SETTING_OPTIONS: Partial<Record<keyof Settings, readonly s
   "defaultThreadEnvMode": ["local","worktree"],
   "monoFont": ["geist","hack-nerd","system"],
   "notifyQuietWhen": ["focused","focusedAndThreadVisible","never","threadVisible"],
-  "notifySoundCueAttention": ["attention","input-needed","turn-complete"],
-  "notifySoundCueInputNeeded": ["attention","input-needed","turn-complete"],
-  "notifySoundCueTurnComplete": ["attention","input-needed","turn-complete"],
+  "notifySoundCueAttention": ["boop","chord","hum","knock","marimba","pop","swoosh","system"],
+  "notifySoundCueInputNeeded": ["boop","chord","hum","knock","marimba","pop","swoosh","system"],
+  "notifySoundCueTurnComplete": ["boop","chord","hum","knock","marimba","pop","swoosh","system"],
   "paneDensity": ["comfortable","compact","spacious"],
   "projectSortMode": ["createdAt","lastActivity","manual"],
   "sansFont": ["geist","hack-nerd","system"],

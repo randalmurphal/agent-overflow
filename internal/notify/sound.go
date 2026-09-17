@@ -55,8 +55,10 @@ type SoundCue struct {
 	// Event is the moment class, for a client that wants to log or gate on
 	// it. It carries no thread, no title and no text.
 	Event SoundEvent `json:"event"`
-	// Cue names one of the built-in cue assets (settings.NotifyCue*). A
-	// player that does not recognise it plays nothing and says so in its
-	// debug log rather than substituting another sound.
+	// Cue names one of the built-in cue assets (settings.NotifyCue*). Never
+	// settings.NotifyCueSystem: that choice is carried by the banner and no
+	// frame is published for it. A player that does not recognise the value
+	// plays nothing and says so in its debug log rather than substituting
+	// another sound.
 	Cue string `json:"cue"`
 }

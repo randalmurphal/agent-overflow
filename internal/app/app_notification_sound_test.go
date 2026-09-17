@@ -87,12 +87,12 @@ func TestNotificationSoundDefaultsPlayEveryEvent(t *testing.T) {
 		event notify.SoundEvent
 		cue   string
 	}{
-		{notify.KindTurnComplete, notify.SoundTurnComplete, settings.NotifyCueTurnComplete},
-		{notify.KindApprovalNeeded, notify.SoundInputNeeded, settings.NotifyCueInputNeeded},
-		{notify.KindError, notify.SoundAttention, settings.NotifyCueAttention},
-		{notify.KindProviderSignedOut, notify.SoundAttention, settings.NotifyCueAttention},
-		{notify.KindWorkflowAttention, notify.SoundAttention, settings.NotifyCueAttention},
-		{notify.KindAppUpdate, notify.SoundAttention, settings.NotifyCueAttention},
+		{notify.KindTurnComplete, notify.SoundTurnComplete, settings.NotifyCueSwoosh},
+		{notify.KindApprovalNeeded, notify.SoundInputNeeded, settings.NotifyCueKnock},
+		{notify.KindError, notify.SoundAttention, settings.NotifyCueHum},
+		{notify.KindProviderSignedOut, notify.SoundAttention, settings.NotifyCueHum},
+		{notify.KindWorkflowAttention, notify.SoundAttention, settings.NotifyCueHum},
+		{notify.KindAppUpdate, notify.SoundAttention, settings.NotifyCueHum},
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.kind), func(t *testing.T) {
@@ -129,17 +129,17 @@ func TestNotificationSoundPerEventToggleIsIndependent(t *testing.T) {
 	if err := app.notifyOS(kindSend(notify.KindApprovalNeeded)); err != nil {
 		t.Fatalf("notifyOS approval-needed: %v", err)
 	}
-	wantOneCue(t, recorder, notify.SoundInputNeeded, settings.NotifyCueInputNeeded)
+	wantOneCue(t, recorder, notify.SoundInputNeeded, settings.NotifyCueKnock)
 }
 
 func TestNotificationSoundPlaysTheChosenCue(t *testing.T) {
 	app, recorder := soundApp(t)
-	updateSoundSettings(t, app, map[string]any{"notifySoundCueTurnComplete": settings.NotifyCueAttention})
+	updateSoundSettings(t, app, map[string]any{"notifySoundCueTurnComplete": settings.NotifyCueBoop})
 
 	if err := app.notifyOS(kindSend(notify.KindTurnComplete)); err != nil {
 		t.Fatalf("notifyOS: %v", err)
 	}
-	wantOneCue(t, recorder, notify.SoundTurnComplete, settings.NotifyCueAttention)
+	wantOneCue(t, recorder, notify.SoundTurnComplete, settings.NotifyCueBoop)
 }
 
 // The per-kind half of the banner gate. A kind the user silenced raises no
@@ -170,7 +170,7 @@ func TestAHiddenThreadIsSilentOnTheSpeakerUntilOptedIn(t *testing.T) {
 	if err := app.notifyOS(send); err != nil {
 		t.Fatalf("notifyOS after opt-in: %v", err)
 	}
-	wantOneCue(t, recorder, notify.SoundTurnComplete, settings.NotifyCueTurnComplete)
+	wantOneCue(t, recorder, notify.SoundTurnComplete, settings.NotifyCueSwoosh)
 }
 
 // A retraction removes a banner; there is nothing to hear about a moment
@@ -195,4 +195,16 @@ func TestNotificationSoundCueInIsTotal(t *testing.T) {
 			t.Fatalf("master off, %s = %q, %v; want silence", event, cue, ok)
 		}
 	}
+}
+
+// The system sound is carried by the banner, so choosing it publishes no
+// frame: a "system" cue on the wire would be a value no player has a file for.
+func TestTheSystemCuePublishesNoFrame(t *testing.T) {
+	app, recorder := soundApp(t)
+	updateSoundSettings(t, app, map[string]any{"notifySoundCueTurnComplete": settings.NotifyCueSystem})
+
+	if err := app.notifyOS(kindSend(notify.KindTurnComplete)); err != nil {
+		t.Fatalf("notifyOS with the system cue: %v", err)
+	}
+	wantNoCue(t, recorder, "system cue chosen")
 }

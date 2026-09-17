@@ -46,11 +46,13 @@ export type CommitMessageStyle = "conventional" | "repo" | "custom";
 export type NotifyQuietWhen = "never" | "focused" | "threadVisible" | "focusedAndThreadVisible";
 
 /**
- * The built-in notification cues (settings.NotifyCue*). The value names one
- * asset under `lib/assets/sounds`; `stores/notificationSound.ts` is the one
- * place that maps it to a URL.
+ * The built-in notification cues (settings.NotifyCue*). One list serves every
+ * event. Each value but `system` names one asset under `lib/assets/sounds`;
+ * `stores/notificationSound.ts` is the one place that maps it to a URL.
+ * `system` names no asset: the OS banner plays its own sound and no cue
+ * frame is sent.
  */
-export type NotifyCue = "turn-complete" | "input-needed" | "attention";
+export type NotifyCue = "swoosh" | "marimba" | "chord" | "knock" | "pop" | "hum" | "boop" | "system";
 
 /**
  * One breadcrumb hop in the agent companion's scope trail. The first entry

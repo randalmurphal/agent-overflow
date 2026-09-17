@@ -575,11 +575,11 @@ type Settings struct {
 	// notify.KindProviderSignedOut, notify.KindWorkflowAttention and
 	// notify.KindAppUpdate.
 	NotifySoundAttention bool `json:"notifySoundAttention"`
-	// The cue each event plays. Any of the three built-ins may be chosen for
-	// any event (NotifyCue*): a user who wants one sound for everything sets
-	// all three the same, and one who cannot tell two of them apart on their
-	// speakers can pick differently. Validated against the built-in set, so
-	// an unknown value sanitizes back to the default rather than playing
+	// The cue each event plays. Any cue may be chosen for any event
+	// (NotifyCue*): a user who wants one sound for everything sets all three
+	// the same, and one who cannot tell two of them apart on their speakers
+	// can pick differently. Validated against the built-in set, so an
+	// unknown value sanitizes back to the default rather than playing
 	// nothing.
 	NotifySoundCueTurnComplete string `json:"notifySoundCueTurnComplete"`
 	NotifySoundCueInputNeeded  string `json:"notifySoundCueInputNeeded"`
@@ -698,21 +698,36 @@ var DefaultSettings = Settings{
 	NotifySoundTurnComplete:    true,
 	NotifySoundInputNeeded:     true,
 	NotifySoundAttention:       true,
-	NotifySoundCueTurnComplete: NotifyCueTurnComplete,
-	NotifySoundCueInputNeeded:  NotifyCueInputNeeded,
-	NotifySoundCueAttention:    NotifyCueAttention,
+	NotifySoundCueTurnComplete: NotifyCueSwoosh,
+	NotifySoundCueInputNeeded:  NotifyCueKnock,
+	NotifySoundCueAttention:    NotifyCueHum,
 }
 
 // The built-in notification cues, the values of the NotifySoundCue* keys.
-// Each names one file under frontend/src/lib/assets/sounds; the frontend
-// player maps the value to its asset URL and nothing else interprets it.
+// One list serves every event. Each built-in names one file under
+// frontend/src/lib/assets/sounds (synthesized by
+// scripts/gen-notification-sounds.py); the frontend player maps the value to
+// its asset URL and nothing else interprets it. NotifyCueSystem is the
+// exception: it names no file. It means "let the OS banner play its own
+// notification sound", so the host emits no cue frame for that event and
+// sends the banner with the platform default sound instead of silent.
 const (
-	// NotifyCueTurnComplete is two notes rising a fifth.
-	NotifyCueTurnComplete = "turn-complete"
-	// NotifyCueInputNeeded is one note struck twice.
-	NotifyCueInputNeeded = "input-needed"
-	// NotifyCueAttention is two notes falling a minor third.
-	NotifyCueAttention = "attention"
+	// NotifyCueSwoosh is air sweeping high to low, no pitch.
+	NotifyCueSwoosh = "swoosh"
+	// NotifyCueMarimba is two wooden notes rising a fifth.
+	NotifyCueMarimba = "marimba"
+	// NotifyCueChord is a warm electric-piano pair.
+	NotifyCueChord = "chord"
+	// NotifyCueKnock is two low knocks.
+	NotifyCueKnock = "knock"
+	// NotifyCuePop is two soft blips, rising.
+	NotifyCuePop = "pop"
+	// NotifyCueHum is one low note sliding down.
+	NotifyCueHum = "hum"
+	// NotifyCueBoop is a rounded low double blip.
+	NotifyCueBoop = "boop"
+	// NotifyCueSystem is the OS notification sound, carried by the banner.
+	NotifyCueSystem = "system"
 )
 
 // The four readings of "quiet when", the values of Settings.NotifyQuietWhen.
