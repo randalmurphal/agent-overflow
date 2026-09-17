@@ -29,18 +29,21 @@
   // sees the toggles and nothing else (./PhonePushBlock.svelte).
 
   import { settingsComputer } from './settingsComputer';
-  const { getSettings, updateSetting } = settingsComputer();
+  const { call, getSettings, updateSetting } = settingsComputer();
   import Volume2 from '@lucide/svelte/icons/volume-2';
   import type { NotifyCue, NotifyQuietWhen, Settings } from '../../types/settings';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import Icon from '../primitives/Icon.svelte';
   import IconButton from '../primitives/IconButton.svelte';
   import PhonePushBlock from './PhonePushBlock.svelte';
+  import SettingsCallout from './SettingsCallout.svelte';
   import SettingsField from './SettingsField.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
   import { SELECT_CLASS } from './styles';
   import type { SettingsFieldId } from './fields';
   import { playNotificationCue } from '../../stores/notificationSound';
+  import { PreviewNotificationSound } from '../../stores/bindings';
+  import { userFacingError } from '../../utils/userFacingError';
 
   const QUIET_WHEN_OPTIONS: Array<{
     value: NotifyQuietWhen;
@@ -108,8 +111,8 @@
   ];
 
   // Any cue may be chosen for any event, so one list serves all three.
-  // `system` is the OS banner's own sound: nothing to preview here, and
-  // choosing it means no cue frame is sent for that event.
+  // `system` is the OS banner's own sound: choosing it means no cue frame is
+  // sent for that event, and the banner carries the platform sound instead.
   const CUE_OPTIONS: Array<{ value: NotifyCue; label: string }> = [
     { value: 'swoosh', label: 'Swoosh' },
     { value: 'marimba', label: 'Marimba' },
@@ -122,9 +125,33 @@
   ];
 
   let settings = $derived(getSettings());
+  // The one failure this section can produce. A preview of the SYSTEM sound
+  // is a real OS notification on the host, so it can be refused (permission
+  // denied, no presenter, a step-up the host tier wants) and a click that
+  // makes no sound with no explanation reads as a broken speaker.
+  let previewError = $state('');
 
   function cueOf(key: keyof Settings): NotifyCue {
     return settings[key] as NotifyCue;
+  }
+
+  // Auditioning a cue is two different operations, because the two sounds
+  // come from different places. A built-in is an asset in this bundle, so
+  // the page plays it. The system sound is not a file this app owns and only
+  // ever arrives attached to a banner, so the only honest preview is asking
+  // the host to raise one — `PreviewNotificationSound`, host-scoped and
+  // routed to the backend this page is editing (settingsComputer.call).
+  async function previewSound(event: (typeof SOUND_EVENTS)[number]): Promise<void> {
+    previewError = '';
+    if (cueOf(event.cueKey) !== 'system') {
+      playNotificationCue(cueOf(event.cueKey));
+      return;
+    }
+    try {
+      await call(() => PreviewNotificationSound(event.testid));
+    } catch (cause) {
+      previewError = userFacingError(cause, 'Could not send a test notification.');
+    }
   }
 </script>
 
@@ -151,10 +178,10 @@
       <IconButton
         label={`Play the ${event.label}`}
         title={cueOf(event.cueKey) === 'system'
-          ? 'The system sound plays with the notification itself'
+          ? 'Send a test notification with the system sound'
           : undefined}
-        disabled={!settings[event.enabledKey] || cueOf(event.cueKey) === 'system'}
-        onClick={() => playNotificationCue(cueOf(event.cueKey))}
+        disabled={!settings[event.enabledKey]}
+        onClick={() => void previewSound(event)}
         testId={`settings-sound-preview-${event.testid}`}
       >
         <Icon icon={Volume2} size={15} strokeWidth={2} />
@@ -350,6 +377,9 @@
             {#each SOUND_EVENTS as event (event.field)}
               {@render soundEvent(event)}
             {/each}
+            {#if previewError}
+              <SettingsCallout tone="error">{previewError}</SettingsCallout>
+            {/if}
           {/if}
         </div>
       </div>

@@ -256,6 +256,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	842795367: 'home', // PinThreadGroup
 	1315440605: 'selected', // PostChannelMessage
 	2870364785: 'thread', // PrepareThreadWorktree
+	2105157519: 'home', // PreviewNotificationSound
 	1313986574: 'home', // ProbeClaudeAccount
 	2614227175: 'home', // ProbeCodexAccount
 	3448359500: 'home', // ProbeDevServerURL

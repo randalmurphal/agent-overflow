@@ -285,6 +285,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "PinThreadGroup", ID: 842795367, Scope: "threads:operate", Route: "home"},                                 // main.App.PinThreadGroup
 	{Name: "PostChannelMessage", ID: 1315440605, Scope: "threads:operate", Route: "selected"},                        // main.App.PostChannelMessage
 	{Name: "PrepareThreadWorktree", ID: 2870364785, Scope: "git:operate", Route: "thread"},                           // main.App.PrepareThreadWorktree
+	{Name: "PreviewNotificationSound", ID: 2105157519, Scope: "host", Route: "home"},                                 // main.App.PreviewNotificationSound
 	{Name: "ProbeClaudeAccount", ID: 1313986574, Scope: "access:admin", Route: "home"},                               // main.App.ProbeClaudeAccount
 	{Name: "ProbeCodexAccount", ID: 2614227175, Scope: "access:admin", Route: "home"},                                // main.App.ProbeCodexAccount
 	{Name: "ProbeDevServerURL", ID: 3448359500, Scope: "host", Route: "home"},                                        // main.App.ProbeDevServerURL

@@ -2242,7 +2242,15 @@ Prerequisite sweep, valuable standalone:
   `TestSoundEventCoversEveryKind` keeps it total. Preferences are
   device tier on the backend machine's own screen: a master
   `notificationSoundsEnabled`, a toggle per event, and a cue choice per
-  event among the built-in cues or the system sound, all defaulting ON. The frame
+  event among the built-in cues or the system sound, all defaulting ON. The
+  banner itself is sent SILENT (`notify.Send.Silent` mapped onto
+  `NotificationOptions.Sound` by both presenters) unless the resolved cue
+  is the system sound, so a notification is heard exactly once rather than
+  playing the app's cue and then the platform's.
+  `PreviewNotificationSound` is the second and last named bypass of
+  `notifyOS`'s gates beside the harness RPC: it auditions one event's
+  sound on the host's own screen, which the attended-screen gate would
+  otherwise swallow because the user is looking at the settings page. The frame
   (`notification:sound`, loopback-only and ephemeral) carries the event
   and the resolved cue name and nothing else — no thread, no title, no
   text — and is never replayed, because a cue names a moment that has

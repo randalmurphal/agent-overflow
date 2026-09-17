@@ -578,6 +578,14 @@ func TestValidateSend(t *testing.T) {
 				Target: Target{Kind: "thread", ThreadID: threadID},
 			},
 		},
+		// Silent answers "should the banner add the platform's own sound".
+		// A withdrawal raises no banner, so the field is meaningless on one
+		// and a presenter that read it would be reading a decision nobody
+		// made.
+		{
+			name: "retraction carrying the silent mark",
+			send: Send{ID: "a", Kind: KindTurnComplete, Retract: true, Silent: true},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

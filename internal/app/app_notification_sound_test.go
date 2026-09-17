@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"sync"
 	"testing"
 
@@ -207,4 +208,221 @@ func TestTheSystemCuePublishesNoFrame(t *testing.T) {
 		t.Fatalf("notifyOS with the system cue: %v", err)
 	}
 	wantNoCue(t, recorder, "system cue chosen")
+}
+
+// EXACTLY ONE SOUND. A notification can be heard twice — the cue frame and
+// the banner's own platform sound — and Silent is how the host says which of
+// the two this one is. Every case below states a preference, calls notifyOS,
+// and asks the presenter what it was handed AND the channel what it heard;
+// the pair must never be two sounds, and never none where the user asked for
+// one.
+func wantSilent(t *testing.T, sends []notify.Send, silent bool, context string) {
+	t.Helper()
+	if len(sends) != 1 {
+		t.Fatalf("%s: presenter sends = %+v, want exactly one", context, sends)
+	}
+	if sends[0].Silent != silent {
+		t.Fatalf("%s: send.Silent = %v, want %v", context, sends[0].Silent, silent)
+	}
+}
+
+// The shipped default is a built-in cue, so the app plays the sound and the
+// banner must not add the platform's on top of it.
+func TestABuiltInCueSilencesTheBanner(t *testing.T) {
+	app, recorder := soundApp(t)
+	sender := app.osNotifications.(*recordingNotificationSender)
+
+	if err := app.notifyOS(kindSend(notify.KindTurnComplete)); err != nil {
+		t.Fatalf("notifyOS: %v", err)
+	}
+	wantOneCue(t, recorder, notify.SoundTurnComplete, settings.NotifyCueSwoosh)
+	wantSilent(t, sender.snapshot(), true, "default built-in cue")
+}
+
+// The system cue is the one choice that means "let the banner make the
+// noise": no frame, and the banner keeps the platform sound.
+func TestTheSystemCueLeavesTheBannerAudible(t *testing.T) {
+	app, recorder := soundApp(t)
+	sender := app.osNotifications.(*recordingNotificationSender)
+	updateSoundSettings(t, app, map[string]any{"notifySoundCueTurnComplete": settings.NotifyCueSystem})
+
+	if err := app.notifyOS(kindSend(notify.KindTurnComplete)); err != nil {
+		t.Fatalf("notifyOS: %v", err)
+	}
+	wantNoCue(t, recorder, "system cue chosen")
+	wantSilent(t, sender.snapshot(), false, "system cue")
+}
+
+// Muted means muted on both channels. The banner still appears — the sound
+// preferences are not the notification toggles — but it makes no noise.
+func TestTheSoundMasterSwitchSilencesTheBannerToo(t *testing.T) {
+	app, recorder := soundApp(t)
+	sender := app.osNotifications.(*recordingNotificationSender)
+	updateSoundSettings(t, app, map[string]any{
+		"notificationSoundsEnabled":  false,
+		"notifySoundCueTurnComplete": settings.NotifyCueSystem,
+	})
+
+	if err := app.notifyOS(kindSend(notify.KindTurnComplete)); err != nil {
+		t.Fatalf("notifyOS: %v", err)
+	}
+	wantNoCue(t, recorder, "sound master switch off")
+	wantSilent(t, sender.snapshot(), true, "sound master switch off")
+}
+
+// The per-event toggle is the same answer one event down, and it holds even
+// when that event's cue is the system sound — otherwise turning an event's
+// sound off would leave the loudest one of all still playing.
+func TestAnEventWithItsSoundOffSilencesTheBanner(t *testing.T) {
+	app, recorder := soundApp(t)
+	sender := app.osNotifications.(*recordingNotificationSender)
+	updateSoundSettings(t, app, map[string]any{
+		"notifySoundTurnComplete":    false,
+		"notifySoundCueTurnComplete": settings.NotifyCueSystem,
+	})
+
+	if err := app.notifyOS(kindSend(notify.KindTurnComplete)); err != nil {
+		t.Fatalf("notifyOS: %v", err)
+	}
+	wantNoCue(t, recorder, "turn-complete sound off")
+	wantSilent(t, sender.snapshot(), true, "turn-complete sound off")
+}
+
+// A retraction carries no sound answer at all: there is no banner to attach
+// one to, and ValidateSend refuses a retraction that claims otherwise.
+func TestARetractionCarriesNoSoundAnswer(t *testing.T) {
+	app, _ := soundApp(t)
+	sender := app.osNotifications.(*recordingNotificationSender)
+	send := kindSend(notify.KindTurnComplete)
+	send.Retract = true
+	send.Title = ""
+	send.Target = notify.Target{}
+
+	if err := app.notifyOS(send); err != nil {
+		t.Fatalf("notifyOS retraction: %v", err)
+	}
+	got := sender.snapshot()
+	if len(got) != 1 || !got[0].Retract {
+		t.Fatalf("presenter sends = %+v, want one retraction", got)
+	}
+	if got[0].Silent {
+		t.Fatalf("retraction carried Silent: %+v", got[0])
+	}
+}
+
+// hostBannerSilentIn shares notificationSoundCueIn rather than restating the
+// preference switch, so it is total for the same reason: an event this build
+// does not know has no preference behind it, and the safe arm is the quiet
+// one — matching publishNotificationSound, which publishes no frame either.
+func TestHostBannerSilentInIsTotal(t *testing.T) {
+	current := settings.DefaultSettings
+	current.NotifySoundCueTurnComplete = settings.NotifyCueSystem
+	current.NotifySoundCueInputNeeded = settings.NotifyCueSystem
+	current.NotifySoundCueAttention = settings.NotifyCueSystem
+	if !hostBannerSilentIn(current, notify.Kind("gossip")) {
+		t.Fatal("an unknown kind was given the platform sound")
+	}
+	for _, kind := range []notify.Kind{
+		notify.KindTurnComplete, notify.KindApprovalNeeded, notify.KindError,
+		notify.KindProviderSignedOut, notify.KindWorkflowAttention, notify.KindAppUpdate,
+	} {
+		if hostBannerSilentIn(current, kind) {
+			t.Fatalf("%s: silent under the system cue, want the platform sound", kind)
+		}
+	}
+}
+
+// The preview is the only way to hear the system sound, so it raises a real
+// banner past the attended-screen gate — the user is looking at the settings
+// page by definition — and resolves Silent exactly as notifyOS does.
+func TestPreviewNotificationSoundRaisesTheSystemSound(t *testing.T) {
+	cases := []struct {
+		event notify.SoundEvent
+		kind  notify.Kind
+		cue   string
+	}{
+		{notify.SoundTurnComplete, notify.KindTurnComplete, "notifySoundCueTurnComplete"},
+		{notify.SoundInputNeeded, notify.KindApprovalNeeded, "notifySoundCueInputNeeded"},
+		{notify.SoundAttention, notify.KindError, "notifySoundCueAttention"},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.event), func(t *testing.T) {
+			app, recorder := soundApp(t)
+			sender := app.osNotifications.(*recordingNotificationSender)
+			updateSoundSettings(t, app, map[string]any{tc.cue: settings.NotifyCueSystem})
+
+			if err := app.PreviewNotificationSound(string(tc.event)); err != nil {
+				t.Fatalf("PreviewNotificationSound: %v", err)
+			}
+			wantNoCue(t, recorder, "system cue preview")
+			got := sender.snapshot()
+			wantSilent(t, got, false, "system cue preview")
+			if got[0].ID != "preview:"+string(tc.event) {
+				t.Fatalf("preview id = %q, want preview:%s", got[0].ID, tc.event)
+			}
+			// The kind has to fold back onto the event being auditioned, or
+			// the preview would read its sound off the wrong settings row.
+			if got[0].Kind != tc.kind {
+				t.Fatalf("preview kind = %q, want %q", got[0].Kind, tc.kind)
+			}
+			if event, _ := notify.SoundEventFor(got[0].Kind); event != tc.event {
+				t.Fatalf("preview kind %q folds onto %q, want %q", got[0].Kind, event, tc.event)
+			}
+			if got[0].Title == "" || got[0].Body == "" {
+				t.Fatalf("preview send = %+v, want a title and a body", got[0])
+			}
+			if got[0].Target.Kind != notify.TargetNone || got[0].Target.ThreadID != "" {
+				t.Fatalf("preview target = %#v, want no route", got[0].Target)
+			}
+		})
+	}
+}
+
+// A preview of a BUILT-IN cue plays the cue and leaves the banner silent:
+// the same "exactly one sound" answer a real notification gets, so what the
+// user auditions is what they will hear.
+func TestPreviewNotificationSoundPlaysTheCueForABuiltIn(t *testing.T) {
+	app, recorder := soundApp(t)
+	sender := app.osNotifications.(*recordingNotificationSender)
+	updateSoundSettings(t, app, map[string]any{"notifySoundCueTurnComplete": settings.NotifyCueBoop})
+
+	if err := app.PreviewNotificationSound(string(notify.SoundTurnComplete)); err != nil {
+		t.Fatalf("PreviewNotificationSound: %v", err)
+	}
+	wantOneCue(t, recorder, notify.SoundTurnComplete, settings.NotifyCueBoop)
+	wantSilent(t, sender.snapshot(), true, "built-in cue preview")
+}
+
+// The event is wire input from a settings page, so an unrecognised one is
+// refused rather than raising a banner nobody asked for.
+func TestPreviewNotificationSoundRefusesAnUnknownEvent(t *testing.T) {
+	app, recorder := soundApp(t)
+	sender := app.osNotifications.(*recordingNotificationSender)
+
+	if err := app.PreviewNotificationSound("applause"); err == nil {
+		t.Fatal("an unknown sound event was accepted")
+	}
+	wantNoCue(t, recorder, "unknown event")
+	if got := sender.snapshot(); len(got) != 0 {
+		t.Fatalf("unknown event presented %+v", got)
+	}
+}
+
+// A screen that switched notifications off gets no banner from the preview
+// either: the master switch is the one gate the audition honours, so the
+// settings page never contradicts itself by raising what it says it will not.
+func TestPreviewNotificationSoundHonoursTheMasterSwitch(t *testing.T) {
+	app, recorder := soundApp(t)
+	sender := app.osNotifications.(*recordingNotificationSender)
+	updateSoundSettings(t, app, map[string]any{"notificationsEnabled": false})
+
+	err := app.PreviewNotificationSound(string(notify.SoundTurnComplete))
+	var nerr *NotificationError
+	if !errors.As(err, &nerr) || nerr.Code != NotificationSuppressed {
+		t.Fatalf("PreviewNotificationSound with notifications off = %v, want NotificationSuppressed", err)
+	}
+	wantNoCue(t, recorder, "notifications off")
+	if got := sender.snapshot(); len(got) != 0 {
+		t.Fatalf("notifications off still presented %+v", got)
+	}
 }

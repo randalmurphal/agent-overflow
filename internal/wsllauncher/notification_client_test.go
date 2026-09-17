@@ -243,3 +243,78 @@ func TestNotificationBridgeErrorRedactsToken(t *testing.T) {
 type testNotificationClientError struct{ message string }
 
 func (e *testNotificationClientError) Error() string { return e.message }
+
+// The banner's sound answer crosses the process boundary INTACT. The backend
+// resolves it against its own screen's settings (App.notifyOS) and this side
+// only carries it, so a frame that loses `silent` on the way through would
+// make every bridged toast play the Windows sound on top of the app's cue.
+//
+// Raw JSON rather than a marshalled notify.Send: the wire is what the
+// launcher decodes, and a round-trip through the Go shape would pass even if
+// the field were dropped from the struct tag.
+func TestABridgedNotificationCarriesItsSilentAnswer(t *testing.T) {
+	presented := make([]notify.Send, 0, 2)
+	client, err := NewNotificationClient(NotificationClientConfig{
+		WSURL: "ws://127.0.0.1/ws",
+		Token: "test-token",
+		Present: func(send notify.Send) error {
+			presented = append(presented, send)
+			return nil
+		},
+		Logf: t.Logf,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	silent := `{"id":"thread:t1","kind":"turn-complete","title":"Ready","body":"Completed",` +
+		`"target":{"kind":"none"},"silent":true}`
+	if err := client.handleEvent(notificationEvent{
+		Channel: notify.SendChannel, Seq: 1, Data: json.RawMessage(silent),
+	}); err != nil {
+		t.Fatalf("handleEvent: %v", err)
+	}
+	// An absent field is the other answer, not a missing one: the banner
+	// carries the platform's default sound.
+	audible := `{"id":"thread:t2","kind":"turn-complete","title":"Ready","body":"Completed",` +
+		`"target":{"kind":"none"}}`
+	if err := client.handleEvent(notificationEvent{
+		Channel: notify.SendChannel, Seq: 2, Data: json.RawMessage(audible),
+	}); err != nil {
+		t.Fatalf("handleEvent: %v", err)
+	}
+
+	if len(presented) != 2 {
+		t.Fatalf("presented %d notifications, want 2", len(presented))
+	}
+	if !presented[0].Silent {
+		t.Fatalf("presented[0] = %+v, want Silent", presented[0])
+	}
+	if presented[1].Silent {
+		t.Fatalf("presented[1] = %+v, want the platform sound", presented[1])
+	}
+}
+
+// A retraction carrying the field is refused by the shared admission check
+// rather than presented: there is no banner for a sound to ride on.
+func TestABridgedRetractionCarryingSilentIsDropped(t *testing.T) {
+	presented := 0
+	client, err := NewNotificationClient(NotificationClientConfig{
+		WSURL:   "ws://127.0.0.1/ws",
+		Token:   "test-token",
+		Present: func(notify.Send) error { presented++; return nil },
+		Logf:    t.Logf,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame := `{"id":"thread:t1","kind":"turn-complete","retract":true,"silent":true}`
+	if err := client.handleEvent(notificationEvent{
+		Channel: notify.SendChannel, Seq: 1, Data: json.RawMessage(frame),
+	}); err != nil {
+		t.Fatalf("handleEvent = %v, want nil (an invalid payload must not kill the connection)", err)
+	}
+	if presented != 0 {
+		t.Fatalf("presented %d notifications, want none", presented)
+	}
+}

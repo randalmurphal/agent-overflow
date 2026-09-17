@@ -31,6 +31,10 @@ type NotificationSend = {
   retract?: boolean;
   title: string;
   body: string;
+  // The host's answer to "does the banner add the platform's own sound":
+  // true wherever an in-app cue is playing for this notification, which is
+  // every send under the shipped defaults.
+  silent?: boolean;
   target: { kind: string; threadId?: string; backendId?: string };
 };
 
@@ -143,6 +147,11 @@ test('a completed turn notifies by name and resuming the thread withdraws it', a
   expect(presented.id).toBe(`thread:${threadId}`);
   expect(presented.target.backendId).toBeTruthy();
 
+  // EXACTLY ONE SOUND. The default turn-complete cue is a built-in, so the
+  // app plays it and the banner must ask the platform for silence rather
+  // than stacking a second sound on top.
+  expect(presented.silent).toBe(true);
+
   // Working again is the "handled elsewhere" that takes it back.
   const withdrawn = harness.waitForEvent<NotificationSend>(
     'notification:send',
@@ -156,6 +165,8 @@ test('a completed turn notifies by name and resuming the thread withdraws it', a
   const retraction = await withdrawn;
   expect(retraction.title).toBe('');
   expect(retraction.target.kind).toBe('');
+  // A withdrawal raises no banner, so it carries no sound answer at all.
+  expect(retraction.silent).toBeFalsy();
 
   // And the next rest re-presents under the SAME id, so one thread never
   // stacks two notifications.

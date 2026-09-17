@@ -313,3 +313,94 @@ func TestAnUnavailablePlatformIsNotReachedByARetraction(t *testing.T) {
 		t.Fatalf("removed = %#v, want none", platform.removed)
 	}
 }
+
+// EXACTLY ONE SOUND reaches the platform. The vendored contract is that a nil
+// Sound means the platform's DEFAULT notification sound and
+// `&NotificationSound{Silent: true}` means none, so leaving the field alone —
+// what this presenter did before — added the OS sound on top of the app's own
+// cue on macOS and Windows. These pin the mapping in both directions.
+func TestTheHostsSilentAnswerReachesThePlatform(t *testing.T) {
+	tests := []struct {
+		name   string
+		silent bool
+		want   *notifications.NotificationSound
+	}{
+		{
+			name:   "a cue is playing in the app",
+			silent: true,
+			want:   &notifications.NotificationSound{Silent: true},
+		},
+		{
+			// nil, not a named sound: the user chose "the system sound",
+			// and naming one here would pick a sound they did not choose.
+			name:   "the system sound is the chosen cue",
+			silent: false,
+			want:   nil,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			app, platform := newAuthorizedDesktopNotifications(t)
+			send := testSend(notify.Target{Kind: "none"})
+			send.Silent = test.silent
+			if err := app.notifyOSUngated(send); err != nil {
+				t.Fatalf("notifyOSUngated: %v", err)
+			}
+
+			platform.mu.Lock()
+			defer platform.mu.Unlock()
+			if len(platform.sent) != 1 {
+				t.Fatalf("platform sends = %d, want 1", len(platform.sent))
+			}
+			got := platform.sent[0].Sound
+			if test.want == nil {
+				if got != nil {
+					t.Fatalf("Sound = %#v, want nil (the platform's default sound)", got)
+				}
+				return
+			}
+			if got == nil || *got != *test.want {
+				t.Fatalf("Sound = %#v, want %#v", got, test.want)
+			}
+		})
+	}
+}
+
+// A retraction is a withdrawal by id. It never reaches the options shape at
+// all, so there is nothing for a sound to be attached to.
+func TestARetractionCarriesNoPlatformSound(t *testing.T) {
+	app, platform := newAuthorizedDesktopNotifications(t)
+	err := app.notifyOS(notify.Send{
+		ID: "thread:thread-1", Kind: notify.KindTurnComplete, Retract: true,
+	})
+	if err != nil {
+		t.Fatalf("notifyOS: %v", err)
+	}
+	platform.mu.Lock()
+	defer platform.mu.Unlock()
+	if len(platform.sent) != 0 {
+		t.Fatalf("a retraction presented %#v", platform.sent)
+	}
+	if len(platform.removed) != 1 {
+		t.Fatalf("removed = %#v, want the withdrawn id", platform.removed)
+	}
+}
+
+// The whole point, end to end on the in-process presenter: the shipped
+// default is a built-in cue, so a real notifyOS send arrives at the platform
+// asking for silence rather than a second sound.
+func TestTheDefaultCueReachesThePlatformSilent(t *testing.T) {
+	app, platform := newAuthorizedDesktopNotifications(t)
+	if err := app.notifyOS(testSend(notify.Target{Kind: "none"})); err != nil {
+		t.Fatalf("notifyOS: %v", err)
+	}
+	platform.mu.Lock()
+	defer platform.mu.Unlock()
+	if len(platform.sent) != 1 {
+		t.Fatalf("platform sends = %d, want 1", len(platform.sent))
+	}
+	sound := platform.sent[0].Sound
+	if sound == nil || !sound.Silent {
+		t.Fatalf("Sound = %#v, want silent: the app is already playing the cue", sound)
+	}
+}

@@ -1,10 +1,19 @@
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import NotificationsSection from './NotificationsSection.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
 import type { Settings } from '../../types/settings';
 import { makeSettings } from '../../../test/helpers/settings';
+
+// The built-in cues are assets this bundle plays itself; jsdom has no audio
+// engine, so the player is stubbed and the assertion is which of the two
+// preview paths a click took.
+const playNotificationCue = vi.fn();
+vi.mock('../../stores/notificationSound', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../stores/notificationSound')>()),
+  playNotificationCue: (cue: string) => playNotificationCue(cue),
+}));
 
 async function seed(overrides: Partial<Settings> = {}): Promise<Settings> {
   const merged = makeSettings(overrides);
@@ -46,6 +55,7 @@ function quietWhenRadio(container: HTMLElement, value: string): HTMLInputElement
 
 describe('<NotificationsSection>', () => {
   beforeEach(async () => {
+    playNotificationCue.mockClear();
     await seed();
   });
 
@@ -196,6 +206,55 @@ describe('<NotificationsSection>', () => {
       for (const [, , , testid] of soundEvents) {
         expect(getByTestId(`settings-sound-preview-${testid}`)).toBeTruthy();
       }
+    });
+
+    // Two sounds, two sources. A built-in lives in this bundle, so the page
+    // plays it; the system sound is not a file this app owns and only ever
+    // arrives attached to a banner, so previewing it means asking the host
+    // to raise one.
+    it('plays a built-in cue locally, without asking the host for a banner', async () => {
+      const preview = setBindingMock('PreviewNotificationSound', async () => undefined);
+      const { getByTestId } = render(NotificationsSection);
+      await fireEvent.click(getByTestId('settings-sound-preview-turn-complete'));
+
+      expect(playNotificationCue).toHaveBeenCalledWith('swoosh');
+      expect(preview).not.toHaveBeenCalled();
+    });
+
+    it.each(soundEvents)('sends a test notification for %s when its cue is the system sound',
+      async (_name, _key, cueKey, testid) => {
+        await seed({ [cueKey]: 'system' } as Partial<Settings>);
+        const preview = setBindingMock('PreviewNotificationSound', async () => undefined);
+        const { getByTestId } = render(NotificationsSection);
+        await fireEvent.click(getByTestId(`settings-sound-preview-${testid}`));
+
+        expect(preview.mock.calls[0][0]).toBe(testid);
+        expect(playNotificationCue).not.toHaveBeenCalled();
+      });
+
+    // The preview is a real OS notification, so it can be refused. A click
+    // that makes no sound and says nothing reads as a broken speaker.
+    it('surfaces a refused test notification beside the controls', async () => {
+      await seed({ notifySoundCueTurnComplete: 'system' });
+      setBindingMock('PreviewNotificationSound', async () => {
+        throw new Error('OS notifications are unavailable in this application mode');
+      });
+      const { getByTestId, findByRole } = render(NotificationsSection);
+      await fireEvent.click(getByTestId('settings-sound-preview-turn-complete'));
+
+      const alert = await findByRole('alert');
+      expect(alert.textContent).toContain('unavailable');
+    });
+
+    // The button stays live under the system cue: it is the only way to hear
+    // that sound at all. Only an event whose sound is OFF has nothing to play.
+    it('keeps the preview clickable under the system cue and disables it when the event is off', async () => {
+      await seed({ notifySoundCueTurnComplete: 'system', notifySoundInputNeeded: false });
+      const { getByTestId } = render(NotificationsSection);
+      expect((getByTestId('settings-sound-preview-turn-complete') as HTMLButtonElement).disabled)
+        .toBe(false);
+      expect((getByTestId('settings-sound-preview-input-needed') as HTMLButtonElement).disabled)
+        .toBe(true);
     });
 
     it('hides the whole sound stack beneath the notifications master switch', async () => {

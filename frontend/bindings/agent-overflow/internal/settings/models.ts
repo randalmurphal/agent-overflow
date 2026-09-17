@@ -1131,11 +1131,11 @@ export class Settings {
     "notifySoundAttention": boolean;
 
     /**
-     * The cue each event plays. Any of the three built-ins may be chosen for
-     * any event (NotifyCue*): a user who wants one sound for everything sets
-     * all three the same, and one who cannot tell two of them apart on their
-     * speakers can pick differently. Validated against the built-in set, so
-     * an unknown value sanitizes back to the default rather than playing
+     * The cue each event plays. Any cue may be chosen for any event
+     * (NotifyCue*): a user who wants one sound for everything sets all three
+     * the same, and one who cannot tell two of them apart on their speakers
+     * can pick differently. Validated against the built-in set, so an
+     * unknown value sanitizes back to the default rather than playing
      * nothing.
      */
     "notifySoundCueTurnComplete": string;

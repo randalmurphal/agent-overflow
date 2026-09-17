@@ -279,13 +279,15 @@ func TestEveryDeclaredKindHasAToggleThatDefaultsOn(t *testing.T) {
 }
 
 // notifyOSUngated skips both gates, so its caller list is the whole of what
-// makes that safe. One caller, and it is the harness RPC — a send that
-// exercises the pipe rather than reporting a moment.
+// makes that safe. Two callers, and neither reports a moment: the harness
+// RPC, and the settings page's sound preview.
 func TestOnlyTheHarnessBypassesTheNotificationGate(t *testing.T) {
 	const packageDir = "internal/app"
 	allowed := map[string]string{
-		"app_notifications.go": "declares it, and calls it as notifyOS's own presentation half",
-		"app_harness.go":       "the harness RPC, whose send must not depend on preferences or a Playwright page's focus",
+		"app_notifications.go": "declares it, calls it as notifyOS's own presentation half, " +
+			"and calls it for PreviewNotificationSound — a banner the user asked for from a " +
+			"page they are looking at, which is exactly what the attended-screen gate refuses",
+		"app_harness.go": "the harness RPC, whose send must not depend on preferences or a Playwright page's focus",
 	}
 	entries, err := os.ReadDir(packageDir)
 	if err != nil {

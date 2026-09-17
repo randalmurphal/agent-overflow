@@ -219,6 +219,11 @@ export const GetThemeFiles = dispatch('GetThemeFiles');
 export const GetSpinnerFiles = dispatch('GetSpinnerFiles');
 export const SetAppearance = dispatch('SetAppearance');
 export const SetWindowBackgroundColor = dispatch('SetWindowBackgroundColor');
+
+// The system-sound audition (settings/NotificationsSection.svelte): a real
+// banner on the host, so it is `host`-scoped like SetWindowBackgroundColor
+// and a test wanting the refused path throws from its mock.
+export const PreviewNotificationSound = dispatch('PreviewNotificationSound');
 export const SetProviderCustomEnvVar = dispatch('SetProviderCustomEnvVar');
 export const DeleteProviderCustomEnvVar = dispatch('DeleteProviderCustomEnvVar');
 export const GetProjectWorktreeSetup = dispatch('GetProjectWorktreeSetup');

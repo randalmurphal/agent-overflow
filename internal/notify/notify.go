@@ -102,6 +102,18 @@ type Send struct {
 	// interrupted, and the presenter applying it is not always this process.
 	// Never set on a retraction; ValidateSend refuses one that carries it.
 	HiddenThread bool `json:"hiddenThread,omitempty"`
+	// Silent is the HOST screen presenter's answer to "does the banner play
+	// the platform's own notification sound": true means a cue is playing in
+	// the app for this notification, or this screen muted sounds, so the
+	// platform must not add its own sound. Resolved by App.notifyOS from the
+	// backend screen's settings, so exactly one sound is heard per
+	// notification.
+	//
+	// A remote presenter reads its own screen's preferences and ignores this
+	// field; a phone push never sees it. Never set on a retraction;
+	// ValidateSend refuses one that carries it, because a withdrawal plays
+	// nothing on any platform.
+	Silent bool `json:"silent,omitempty"`
 }
 
 // NewID allocates a throwaway identifier for a notification that names no
@@ -198,7 +210,7 @@ func ValidateSend(send Send) error {
 		return fmt.Errorf("notification kind %q is unsupported", send.Kind)
 	}
 	if send.Retract {
-		if send.Title != "" || send.Body != "" || send.Target != (Target{}) || send.HiddenThread {
+		if send.Title != "" || send.Body != "" || send.Target != (Target{}) || send.HiddenThread || send.Silent {
 			return errors.New("notification retraction must carry only an id and a kind")
 		}
 		return nil

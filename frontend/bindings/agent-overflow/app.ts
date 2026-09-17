@@ -3298,6 +3298,36 @@ export function PrepareThreadWorktree(threadID: string, baseBranch: string, requ
 }
 
 /**
+ * PreviewNotificationSound plays what one sound event will sound like when it
+ * happens, on the backend machine's own screen: a real OS notification
+ * carrying the platform sound when that event's cue is the system sound, and
+ * the in-app cue frame when it is a built-in.
+ * 
+ * A PREVIEW IS THE ONLY WAY TO HEAR THE SYSTEM SOUND. Every built-in cue can
+ * be auditioned by the settings page itself, because the asset is in the
+ * bundle; the platform sound is not a file this app owns and only arrives
+ * attached to a banner, so the only honest preview of it is a banner.
+ * 
+ * HOST-SCOPED for the reason SetAppearance is (app_appearance.go): it makes
+ * THIS machine's screen do something — raise a banner and make a noise — and
+ * a paired device asking for that would be interrupting a desk it is not
+ * sitting at. The event names what the user is auditioning, not a thread, so
+ * the send carries no route.
+ * 
+ * It sends through notifyOSUngated, the second and last bypass of the
+ * preference and attended-screen gates. The user clicked a button on the
+ * settings page, so the attended-screen gate would swallow every preview by
+ * definition — they ARE looking at the app — and the per-kind toggles answer
+ * "is this moment worth an interruption" about a moment that is not
+ * happening. The two sound preferences the preview does NOT bypass are its
+ * own: Silent is resolved exactly as notifyOS resolves it, so a muted screen
+ * previews silently rather than lying about what the event will do.
+ */
+export function PreviewNotificationSound(event: string): $CancellablePromise<void> {
+    return $Call.ByID(2105157519, event);
+}
+
+/**
  * ProbeClaudeAccount spawns a short-lived Claude CLI subprocess (via
  * the SDK initialize handshake) and returns the authenticated account
  * metadata. Results are cached per binary path for 5 minutes. Zero

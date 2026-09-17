@@ -188,7 +188,24 @@ func (n *desktopNotificationService) send(payload notify.Send) error {
 		Title: payload.Title,
 		Body:  payload.Body,
 		Data:  data,
+		Sound: notificationSound(payload),
 	})
+}
+
+// notificationSound maps the host's resolved Silent answer onto the vendored
+// option, whose nil means "platform default sound" and whose
+// `&NotificationSound{Silent: true}` means none (Linux `suppress-sound`,
+// Windows `<audio silent="true"/>`, macOS a nil content sound).
+//
+// Leaving it nil unconditionally is what made every notification on macOS and
+// Windows play twice: the app's own cue, then the platform's. The decision is
+// not made here — App.notifyOS resolves it once against the backend screen's
+// settings so the cue and the banner cannot disagree.
+func notificationSound(payload notify.Send) *notifications.NotificationSound {
+	if payload.Silent {
+		return &notifications.NotificationSound{Silent: true}
+	}
+	return nil
 }
 
 func (n *desktopNotificationService) setUnavailable(err error) {

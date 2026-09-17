@@ -128,7 +128,24 @@ func (n *launcherNotificationService) present(send notify.Send) error {
 		Title: send.Title,
 		Body:  send.Body,
 		Data:  data,
+		Sound: notificationSound(send),
 	})
+}
+
+// notificationSound maps the backend's resolved Silent answer onto the
+// vendored option, the same mapping the in-process desktop presenter makes
+// (internal/app/app_notifications_desktop.go): nil is the platform's default
+// sound, `&NotificationSound{Silent: true}` is `<audio silent="true"/>` on
+// this platform. Leaving it nil unconditionally is what made every bridged
+// toast play the app's cue and then the Windows sound.
+//
+// The decision is the backend's, resolved once against the backend screen's
+// settings; this side only carries it. A retraction never reaches here.
+func notificationSound(send notify.Send) *notifications.NotificationSound {
+	if send.Silent {
+		return &notifications.NotificationSound{Silent: true}
+	}
+	return nil
 }
 
 func (n *launcherNotificationService) handleResponse(result notifications.NotificationResult) {

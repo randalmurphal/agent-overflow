@@ -136,34 +136,51 @@ func (a *App) notifyOS(send notify.Send) error {
 		// Both halves of the gate said yes, so this moment may interrupt
 		// this screen. The cue rides that one answer rather than asking
 		// again — see publishNotificationSound.
-		a.publishNotificationSound(send.Kind)
+		//
+		// EXACTLY ONE SOUND. The cue frame and the banner's own platform
+		// sound are the two ways this notification can be heard, and they
+		// are resolved from ONE reading of the screen's settings so they
+		// cannot disagree: whichever the user chose plays, and the other
+		// stays quiet.
+		current := a.backendScreenSettings()
+		send.Silent = hostBannerSilentIn(current, send.Kind)
+		a.publishNotificationSound(current, send.Kind)
 	}
 	return a.notifyOSUngated(send)
 }
 
+// backendScreenSettings reads the preferences of the screen this process
+// interrupts — the backend machine's own. A settings service that is not
+// wired yet answers from DefaultSettings, which has every notification
+// preference ON: an App that has not finished booting must not silently
+// start swallowing the notices it does raise during boot (the WSL "update
+// didn't apply" notice is exactly one).
+func (a *App) backendScreenSettings() settings.Settings {
+	if a.settings == nil {
+		return settings.DefaultSettings
+	}
+	return a.settings.BackendScreen().Get()
+}
+
 // publishNotificationSound emits the cue for a send the gate has ALREADY
-// admitted. It is called from exactly one place, immediately after both gate
-// halves passed and before presentation, which is what makes the sound and
-// the banner one decision: a kind the user silenced, a hidden thread they did
-// not opt into, and an attended screen never reach here, so none of those can
-// be heard.
+// admitted, from the settings reading its caller resolved the banner's own
+// sound against. Both production callers pass the backend screen's settings:
+// notifyOS, immediately after both gate halves passed and before
+// presentation, and PreviewNotificationSound, whose whole purpose is to make
+// this screen play the cue it is configured for. That is what makes the sound
+// and the banner one decision: a kind the user silenced, a hidden thread they
+// did not opt into, and an attended screen never reach notifyOS's call, so
+// none of those can be heard.
 //
 // It is deliberately independent of whether the OS presentation SUCCEEDS. A
 // cue is a notification channel of its own: on a machine whose notification
 // permission was denied, or in a mode with no presenter, the sound is the
 // only thing left that can say "your turn finished", and withholding it would
 // silence the user twice for one platform failure.
-//
-// The per-event sound preferences live on the backend machine's own screen,
-// the same screen the banner gate was resolved against.
-func (a *App) publishNotificationSound(kind notify.Kind) {
+func (a *App) publishNotificationSound(current settings.Settings, kind notify.Kind) {
 	event, ok := notify.SoundEventFor(kind)
 	if !ok {
 		return
-	}
-	current := settings.DefaultSettings
-	if a.settings != nil {
-		current = a.settings.BackendScreen().Get()
 	}
 	cue, enabled := notificationSoundCueIn(current, event)
 	if !enabled {
@@ -203,19 +220,110 @@ func notificationSoundCueIn(current settings.Settings, event notify.SoundEvent) 
 	}
 }
 
+// hostBannerSilentIn answers whether the OS banner this host raises must be
+// presented WITHOUT the platform's own notification sound, from ONE screen's
+// settings.
+//
+// EXACTLY ONE SOUND PER NOTIFICATION. A notification can be heard twice —
+// once as the in-app cue on `notification:sound`, once as the sound the
+// platform attaches to the banner — and before this answer existed both fired
+// for every send on macOS and Windows. The banner keeps the platform sound in
+// exactly one case: sounds are on, this event's toggle is on, and the cue the
+// user picked for it IS the system sound (settings.NotifyCueSystem), which is
+// the one choice that means "let the banner make the noise". Every other
+// reading — master switch off, event toggle off, any built-in cue — is silent,
+// because either nothing should be heard or the cue frame is already playing.
+//
+// It shares notificationSoundCueIn rather than restating the preference
+// switch, so the cue and the banner cannot disagree about an event and leave
+// the user with two sounds or none. Total over the closed set: a kind with no
+// sound event publishes no cue frame, so its banner is silent too.
+func hostBannerSilentIn(current settings.Settings, kind notify.Kind) bool {
+	event, ok := notify.SoundEventFor(kind)
+	if !ok {
+		return true
+	}
+	cue, enabled := notificationSoundCueIn(current, event)
+	return !enabled || cue != settings.NotifyCueSystem
+}
+
+// PreviewNotificationSound plays what one sound event will sound like when it
+// happens, on the backend machine's own screen: a real OS notification
+// carrying the platform sound when that event's cue is the system sound, and
+// the in-app cue frame when it is a built-in.
+//
+// A PREVIEW IS THE ONLY WAY TO HEAR THE SYSTEM SOUND. Every built-in cue can
+// be auditioned by the settings page itself, because the asset is in the
+// bundle; the platform sound is not a file this app owns and only arrives
+// attached to a banner, so the only honest preview of it is a banner.
+//
+// HOST-SCOPED for the reason SetAppearance is (app_appearance.go): it makes
+// THIS machine's screen do something — raise a banner and make a noise — and
+// a paired device asking for that would be interrupting a desk it is not
+// sitting at. The event names what the user is auditioning, not a thread, so
+// the send carries no route.
+//
+// It sends through notifyOSUngated, the second and last bypass of the
+// preference and attended-screen gates. The user clicked a button on the
+// settings page, so the attended-screen gate would swallow every preview by
+// definition — they ARE looking at the app — and the per-kind toggles answer
+// "is this moment worth an interruption" about a moment that is not
+// happening. The two sound preferences the preview does NOT bypass are its
+// own: Silent is resolved exactly as notifyOS resolves it, so a muted screen
+// previews silently rather than lying about what the event will do.
+//
+//ao:scope host
+//ao:route home
+func (a *App) PreviewNotificationSound(event string) error {
+	kind, body, ok := notificationPreviewFor(notify.SoundEvent(event))
+	if !ok {
+		return fmt.Errorf("notification sound event %q is unsupported", event)
+	}
+	current := a.backendScreenSettings()
+	// The one preference the preview honours from the banner gate: a screen
+	// that turned notifications off has nothing to audition, and a banner
+	// raised anyway would contradict the switch the user can see.
+	if !current.NotificationsEnabled {
+		return &NotificationError{Code: NotificationSuppressed}
+	}
+	a.publishNotificationSound(current, kind)
+	return a.notifyOSUngated(notify.Send{
+		ID:     "preview:" + event,
+		Kind:   kind,
+		Title:  "Agent Overflow",
+		Body:   body,
+		Target: notify.Target{Kind: notify.TargetNone, BackendID: a.notificationBackendID()},
+		Silent: hostBannerSilentIn(current, kind),
+	})
+}
+
+// notificationPreviewFor answers the kind and the body one preview is raised
+// under, or false for a value that is not one of the three sound events.
+//
+// The kind is REPRESENTATIVE, not arbitrary: it has to be one that
+// notify.SoundEventFor folds back onto the event being previewed, or the
+// preview would resolve its sound from the wrong row of the settings page.
+// TOTAL over the closed set, with no permissive default — an unrecognised
+// event is wire input from a settings page, and raising a banner for it would
+// be inventing a preference.
+func notificationPreviewFor(event notify.SoundEvent) (notify.Kind, string, bool) {
+	switch event {
+	case notify.SoundTurnComplete:
+		return notify.KindTurnComplete, "This is the turn complete sound.", true
+	case notify.SoundInputNeeded:
+		return notify.KindApprovalNeeded, "This is the approval needed sound.", true
+	case notify.SoundAttention:
+		return notify.KindError, "This is the attention sound.", true
+	default:
+		return "", "", false
+	}
+}
+
 // notificationPreferenceRefusal answers the PER-KIND half of the gate for the
 // backend machine's own screen, as the typed refusal notifyOS returns, or nil
 // when the screen's preferences let the send through.
-//
-// A settings service that is not wired yet answers from DefaultSettings,
-// which has every kind ON: an App that has not finished booting must not
-// silently start swallowing the notices it does raise during boot (the WSL
-// "update didn't apply" notice is exactly one).
 func (a *App) notificationPreferenceRefusal(send notify.Send) error {
-	current := settings.DefaultSettings
-	if a.settings != nil {
-		current = a.settings.BackendScreen().Get()
-	}
+	current := a.backendScreenSettings()
 	return notificationPreferenceRefusalIn(current, send)
 }
 
@@ -301,10 +409,7 @@ func (a *App) notifyOSUngated(send notify.Send) error {
 // Under the two thread readings those sends are therefore always raised, and
 // under the focused reading they are judged by focus alone.
 func (a *App) screenIsAlreadyLooking(send notify.Send) bool {
-	current := settings.DefaultSettings
-	if a.settings != nil {
-		current = a.settings.BackendScreen().Get()
-	}
+	current := a.backendScreenSettings()
 	if current.NotifyQuietWhen == settings.NotifyQuietNever {
 		return false
 	}

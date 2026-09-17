@@ -394,6 +394,10 @@ export {
   SetAppearance,
   SetWindowBackgroundColor,
 
+  // The system-sound audition: a real banner on the host's own screen,
+  // host-scoped for the reason SetAppearance is.
+  PreviewNotificationSound,
+
   // Review pane diffs (workspace / branch / per-commit / edits)
   GetBranchBaseDiff,
   GetWorkspaceCurrentDiff,
