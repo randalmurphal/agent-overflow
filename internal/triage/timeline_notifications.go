@@ -100,31 +100,6 @@ func (r *Router) projectTodoSnapshot(threadID string, steps []TodoStep, updatedA
 	return storeErr
 }
 
-// ResetThreadTodo drops the thread's Task* correlation map and clears the
-// persisted todo list, emitting the live clear when something was stored.
-//
-// For the app paths that discard the conversation a list was minted in —
-// rollback to an earlier message, switching the thread's provider. Those
-// paths start the next provider session from scratch (or fork it, which
-// starts provider task state from scratch all the same), and Claude task ids
-// are per-session small integers: leaving the dead list in the column would
-// hand seedTasksFromStoredTodo entries the new session's ids collide with,
-// resurrecting discarded tasks with stale statuses. Opting out clears what
-// opting in stored. claude-tui reverts deliberately do NOT call this: the
-// TUI's session (and its task list) stays live across its native Esc-revert,
-// and the still-warm map keeps projecting the provider's real state.
-func (r *Router) ResetThreadTodo(threadID string) error {
-	if r == nil || threadID == "" {
-		return nil
-	}
-	r.mu.Lock()
-	if st := r.threadStateIfPresent(threadID); st != nil {
-		st.tasks = nil
-	}
-	r.mu.Unlock()
-	return r.projectTodoSnapshot(threadID, nil, 0)
-}
-
 // storeLiveTodo converts the wire step shape into the persisted one. The
 // fields map 1:1 — the two types exist separately only because the wire shape
 // is triage's and the column shape is the store's.

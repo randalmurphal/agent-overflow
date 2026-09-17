@@ -5,6 +5,9 @@ package store
 // SessionOptions without importing internal/store (which would create a
 // dependency cycle: provider → store → provider).
 
+// GetID returns the thread id.
+func (t Thread) GetID() string { return t.ID }
+
 // GetProvider returns the provider identifier (claude/codex).
 func (t Thread) GetProvider() string { return t.Provider }
 

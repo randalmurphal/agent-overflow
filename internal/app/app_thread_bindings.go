@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 
 	"agent-overflow/internal/eventchan"
@@ -741,11 +740,6 @@ func (a *App) finishThreadModelUpdate(update threadapp.ModelUpdate) (store.Threa
 	if !update.SelectionChanged() && !reassertModel {
 		a.rememberChatModelProfile(update.Thread)
 		return update.Thread, nil
-	}
-	if update.ProviderChanged() && a.triage != nil {
-		if err := a.triage.ResetThreadTodo(update.Thread.ID); err != nil {
-			log.Printf("thread %s: reset todo list on provider switch: %v", update.Thread.ID, err)
-		}
 	}
 	a.reconcileSessionConfig(update.Thread.ID, reassertModel)
 	updated, err := a.threadApplication().Get(update.Thread.ID)

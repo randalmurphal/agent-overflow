@@ -119,6 +119,15 @@ type SessionOptions struct {
 	// at the right bundle.
 	Provider string
 
+	// ThreadID is the AO thread this session serves. Claude pins it as
+	// CLAUDE_CODE_TASK_LIST_ID so the CLI keys its Task* list by thread
+	// rather than by session id: the list then survives every path that
+	// mints a new session id for the same thread (rollback, provider
+	// round-trip), which is what keeps threads.live_todo and its cold seed
+	// (triage.seedTasksFromStoredTodo) describing tasks the provider still
+	// has. Codex ignores it.
+	ThreadID string
+
 	Model           string
 	WorkDir         string
 	ReasoningEffort ReasoningEffort
@@ -255,6 +264,7 @@ type SessionOptions struct {
 // internal/provider/ stays free of any dependency on internal/store/ —
 // the store package attaches the Get* methods to satisfy the interface.
 type ThreadView interface {
+	GetID() string
 	GetProvider() string
 	GetModel() string
 	GetWorkspacePath() string
@@ -317,6 +327,7 @@ func SessionOptionsFromThread(
 	}
 	return SessionOptions{
 		Provider: t.GetProvider(),
+		ThreadID: t.GetID(),
 		Model:    t.GetModel(),
 		WorkDir:  t.GetWorkspacePath(),
 		ReasoningEffort: CoerceReasoningEffortForModel(

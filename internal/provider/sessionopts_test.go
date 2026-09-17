@@ -5,6 +5,7 @@ import "testing"
 // fakeThreadView is a minimal ThreadView stub used to exercise the
 // translation logic without dragging in internal/store/.
 type fakeThreadView struct {
+	id                         string
 	provider                   string
 	model                      string
 	workspacePath              string
@@ -19,6 +20,7 @@ type fakeThreadView struct {
 	pendingForkRef             string
 }
 
+func (f fakeThreadView) GetID() string              { return f.id }
 func (f fakeThreadView) GetProvider() string        { return f.provider }
 func (f fakeThreadView) GetModel() string           { return f.model }
 func (f fakeThreadView) GetWorkspacePath() string   { return f.workspacePath }
@@ -38,6 +40,7 @@ func (f fakeThreadView) GetPendingForkRef() string { return f.pendingForkRef }
 
 func TestSessionOptionsFromThreadCopiesEveryField(t *testing.T) {
 	view := fakeThreadView{
+		id:                         "thread-1",
 		provider:                   "claude",
 		model:                      "claude-opus-4-7",
 		workspacePath:              "/tmp/workspace",
@@ -54,6 +57,9 @@ func TestSessionOptionsFromThreadCopiesEveryField(t *testing.T) {
 
 	if opts.Provider != "claude" {
 		t.Errorf("Provider = %q, want claude", opts.Provider)
+	}
+	if opts.ThreadID != "thread-1" {
+		t.Errorf("ThreadID = %q, want thread-1", opts.ThreadID)
 	}
 	if opts.Model != "claude-opus-4-7" {
 		t.Errorf("Model = %q, want claude-opus-4-7", opts.Model)

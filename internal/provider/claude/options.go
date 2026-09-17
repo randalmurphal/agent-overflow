@@ -204,6 +204,7 @@ func ConfigFromOptions(opts provider.SessionOptions) Config {
 	return Config{
 		Model:                claudeModelForContextWindow(model, contextWindow),
 		WorkDir:              opts.WorkDir,
+		TaskListID:           opts.ThreadID,
 		Resume:               opts.Resume,
 		ResumeAt:             opts.ResumeAt,
 		ForkSession:          opts.ForkSession,
@@ -278,6 +279,11 @@ const claudeHarborKiteEnv = "CLAUDE_CODE_HARBOR_KITE"
 // set the gate itself. One constant, so the two Claude transports cannot
 // disagree about which variable binds the inbox.
 const CrossSessionGateEnv = claudeHarborKiteEnv
+
+// TaskListIDEnv is claudeTaskListIDEnvVar under its exported name, for
+// internal/provider/claudetui's PTY environment — same one-constant reasoning
+// as CrossSessionGateEnv.
+const TaskListIDEnv = claudeTaskListIDEnvVar
 
 // withClaudeCrossSessionEnv adds the inbox gate variable to a session's
 // environment when the setting asks for it.

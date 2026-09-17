@@ -65,6 +65,11 @@ type Config struct {
 	// env value; a change lands on the next session, and PlanLiveUpdate's
 	// trailing DeepEqual reports it as a restart.
 	DisableTodoReminders bool
+	// TaskListID keys the CLI's Task* list (`~/.claude/tasks/<id>/`) and is
+	// exported as CLAUDE_CODE_TASK_LIST_ID (claudeTaskListIDEnvVar). Always
+	// the AO thread id via ConfigFromOptions; empty only for a Config built
+	// by hand, which leaves the CLI keying the list by session id.
+	TaskListID string
 	// The Claude-only settings-block axes (see `cliInlineSettings`).
 	//
 	// All four are SPAWN-TIME ONLY and deliberately NOT part of
@@ -163,8 +168,9 @@ type Config struct {
 	// the caller left unset (withClaudeSessionEnvDefaults: the
 	// CLAUDE_CODE_ENTRYPOINT marker, the CLAUDE_CODE_ENABLE_TODO_TOOLS
 	// opt-in, and — only when DisableTodoReminders is set —
-	// CLAUDE_CODE_TODO_REMINDER_MODE=off). Anything Claude exposes via `settings.env` should go
-	// through AutoCompactPercent's inline settings path instead.
+	// CLAUDE_CODE_TODO_REMINDER_MODE=off) and pins the names it owns
+	// (withClaudeTaskListEnv). Anything Claude exposes via `settings.env`
+	// should go through AutoCompactPercent's inline settings path instead.
 	Env         map[string]string
 	EventLogger *logging.Logger
 	// MCPServers carries optional MCP server configs to register for
@@ -186,7 +192,23 @@ type Config struct {
 // but the host exported would otherwise bind the peer inbox behind the
 // setting's back (see CrossSessionUnsetEnv).
 func claudeSpawnEnv(cfg Config) map[string]string {
-	return withClaudeSessionEnvDefaults(withClaudeCrossSessionEnv(cfg.Env, cfg), cfg.DisableTodoReminders)
+	env := withClaudeTaskListEnv(withClaudeCrossSessionEnv(cfg.Env, cfg), cfg.TaskListID)
+	return withClaudeSessionEnvDefaults(env, cfg.DisableTodoReminders)
+}
+
+// withClaudeTaskListEnv pins CLAUDE_CODE_TASK_LIST_ID to taskListID,
+// overriding any caller value: the id is the thread's identity, not a
+// preference (provider.ReservedEnvNames). An empty id leaves env alone.
+func withClaudeTaskListEnv(env map[string]string, taskListID string) map[string]string {
+	if taskListID == "" {
+		return env
+	}
+	merged := make(map[string]string, len(env)+1)
+	for k, v := range env {
+		merged[k] = v
+	}
+	merged[claudeTaskListIDEnvVar] = taskListID
+	return merged
 }
 
 func claudeSpawnUnsetEnv() []string {
@@ -236,6 +258,17 @@ const claudeTodoToolsEnvVar = "CLAUDE_CODE_ENABLE_TODO_TOOLS"
 // and like the opt-in above it is a default, not a pin: a user value in
 // the provider's custom environment wins.
 const claudeTodoReminderModeEnvVar = "CLAUDE_CODE_TODO_REMINDER_MODE"
+
+// claudeTaskListIDEnvVar names the directory the CLI keeps a session's
+// Task* list in (`~/.claude/tasks/<id>/`, sanitized to [A-Za-z0-9_-]).
+// Unset, the CLI keys the list by session id, so any path that mints a
+// new session id for the same thread (AO's rollback slice, a provider
+// round-trip) would orphan the list while the thread's activity rail and
+// threads.live_todo still described it. Pinned to the AO thread id on both
+// Claude spawn paths, the list follows the thread. The CLI reads the
+// variable ahead of its team-name and session-id fallbacks (2.1.257
+// binary analysis; honored end to end since the 2.1.233 spike).
+const claudeTaskListIDEnvVar = "CLAUDE_CODE_TASK_LIST_ID"
 
 // withClaudeSessionEnvDefaults returns a copy of env with AO's
 // session-environment defaults applied — each only when the caller did

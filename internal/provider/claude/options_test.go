@@ -838,6 +838,31 @@ func TestCrossSessionGateIsNotInheritedWhenDisabled(t *testing.T) {
 	}
 }
 
+// The task list is keyed by thread on every Claude spawn: the id travels
+// SessionOptions.ThreadID -> Config.TaskListID -> CLAUDE_CODE_TASK_LIST_ID,
+// and it outranks a caller value because it is the thread's identity, not a
+// preference (provider.ReservedEnvNames).
+func TestTaskListIDIsPinnedToTheThread(t *testing.T) {
+	cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude", ThreadID: "thread-1", Model: "claude-opus-4-7"})
+	if cfg.TaskListID != "thread-1" {
+		t.Fatalf("TaskListID = %q, want thread-1", cfg.TaskListID)
+	}
+	cfg.Env = map[string]string{claudeTaskListIDEnvVar: "someone-elses-list", "FOO": "bar"}
+	env := provider.BuildEnvironment(claudeSpawnEnv(cfg), claudeSpawnUnsetEnv()...)
+	if value, found := envLookup(env, claudeTaskListIDEnvVar); !found || value != "thread-1" {
+		t.Fatalf("%s = %q (present=%v), want thread-1", claudeTaskListIDEnvVar, value, found)
+	}
+	if value, _ := envLookup(env, "FOO"); value != "bar" {
+		t.Fatalf("FOO = %q, want the caller's value untouched", value)
+	}
+
+	// A hand-built Config without an id states nothing, so the CLI keeps its
+	// own session-keyed default rather than an empty directory name.
+	if got := withClaudeTaskListEnv(map[string]string{"FOO": "bar"}, ""); len(got) != 1 || got["FOO"] != "bar" {
+		t.Fatalf("empty id changed the environment: %v", got)
+	}
+}
+
 // The enabled direction over the same host environment: AO states the gate
 // explicitly rather than relying on what it happened to inherit, so the value
 // is exactly "1" no matter what the host exported.

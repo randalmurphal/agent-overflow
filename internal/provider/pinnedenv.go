@@ -102,6 +102,14 @@ import "strings"
 //	                      is ever held, and reserving the name keeps a
 //	                      custom value from quietly re-timing a drop that
 //	                      produces no output at all.
+//	CLAUDE_CODE_TASK_LIST_ID
+//	                    — pinned to the AO thread id by both Claude spawn
+//	                      paths (claude.withClaudeTaskListEnv, claudetui's
+//	                      buildEnv) so the CLI's Task* list follows the
+//	                      thread across every session id it mints. A user
+//	                      value would key every thread's list to one
+//	                      directory, and AO's persisted todo list would
+//	                      then describe tasks a different thread owns.
 //	CODEX_HOME          — cleared by codex.NewSession (session.go),
 //	                      ProbeAccount / ProbeIdentity, the model catalog
 //	                      fetcher, and the MCP status fetcher; set to a
@@ -149,6 +157,7 @@ func ReservedEnvNames(providerName string) []string {
 			"CLAUDE_CODE_HARBOR_KITE",
 			"CLAUDE_CODE_SESSION_NAME",
 			"CLAUDE_CODE_USER_DIALOG_TIMEOUT_MS",
+			"CLAUDE_CODE_TASK_LIST_ID",
 		)
 	case string(Codex):
 		return append(shared, "CODEX_HOME")

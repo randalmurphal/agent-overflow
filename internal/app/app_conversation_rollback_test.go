@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1134,14 +1135,11 @@ func TestClaudeMidTurnAnchor(t *testing.T) {
 	}
 }
 
-// A rollback discards the conversation the activity-rail todo list was minted
-// in, and the next session starts from scratch with per-session task ids that
-// would collide with the dead list's (triage.seedTasksFromStoredTodo). The
-// saga must clear threads.live_todo alongside the rows.
-func TestConversationRollbackClearsPersistedTodo(t *testing.T) {
+// A rollback keeps the activity-rail todo list: Claude keys its task list by
+// thread (CLAUDE_CODE_TASK_LIST_ID), so the rolled-back session still holds
+// the same tasks and threads.live_todo must keep describing them.
+func TestConversationRollbackKeepsPersistedTodo(t *testing.T) {
 	app := newTestApp(t)
-	// The reset runs through triage (rollbackConversationLocked guards on
-	// a.triage != nil), which the light fixture leaves unwired.
 	app.ensureTriageRouter()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -1159,17 +1157,22 @@ func TestConversationRollbackClearsPersistedTodo(t *testing.T) {
 	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
 	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
 	seedMessageAnchor(t, app.store, thread.ID, "user:1", 1, "u1", "")
-	if err := app.store.SetThreadLiveTodo(thread.ID, store.ThreadLiveTodo{
+	seeded := store.ThreadLiveTodo{
 		Steps:     []store.ThreadLiveTodoStep{{Step: "minted in the discarded tail", Status: "inProgress", ID: "1"}},
 		UpdatedAt: 1,
-	}); err != nil {
+	}
+	if err := app.store.SetThreadLiveTodo(thread.ID, seeded); err != nil {
 		t.Fatalf("seed todo: %v", err)
 	}
 
 	if err := rollbackToMessage(app, thread.ID, "user:1"); err != nil {
 		t.Fatalf("rollback: %v", err)
 	}
-	if _, found, err := app.store.ThreadLiveTodo(thread.ID); err != nil || found {
-		t.Fatalf("rollback must clear the persisted todo; found=%v err=%v", found, err)
+	stored, found, err := app.store.ThreadLiveTodo(thread.ID)
+	if err != nil || !found {
+		t.Fatalf("rollback must keep the persisted todo; found=%v err=%v", found, err)
+	}
+	if !reflect.DeepEqual(stored, seeded) {
+		t.Fatalf("rollback changed the persisted todo: got %+v, want %+v", stored, seeded)
 	}
 }

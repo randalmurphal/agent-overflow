@@ -136,11 +136,16 @@ our own code.
   emitted on the wire for it. AO mirrors the 5s constant in its
   read-side auto-hide (`app_live_state.go`) and refuses to cold-seed
   an all-completed stored list (`triage.seedTasksFromStoredTodo`).
-- **Task lists across resumes (spiked 2.1.219 / 2.1.233)**: plain
-  `--resume` keeps the session id, so the session-id-keyed task list
-  survives ordinary resumes; only `--fork-session` mints a new id and
-  orphans the list. `--resume-session-at` (the crash-repair path) is
-  untested. A resume re-emits NO task events, so AO learns task state
-  only from live `TaskCreate` / `TaskUpdate` or its own
-  `threads.live_todo`. `CLAUDE_CODE_TASK_LIST_ID` is honored end to end
-  but pinning is not needed for plain-resume continuity.
+- **Task lists are keyed by `CLAUDE_CODE_TASK_LIST_ID`** (read ahead of
+  the team-name and session-id fallbacks; 2.1.257 binary analysis,
+  honored end to end since the 2.1.233 spike). Unset, the list is keyed
+  by session id: plain `--resume` keeps it, while `--fork-session` and
+  AO's rollback slice mint a new id and orphan it. The CLI copies a
+  session-keyed list to a fork only on the TUI's left-arrow background
+  fork, never for `--fork-session`. AO pins the variable to the thread id
+  on both Claude spawn paths so the list follows the thread through
+  restarts, reverts and provider round-trips, and never clears
+  `threads.live_todo` on those paths. A resume re-emits NO task events,
+  so AO learns task state only from live `TaskCreate` / `TaskUpdate` or
+  its own `threads.live_todo`. `--resume-session-at` (the crash-repair
+  path) is untested.

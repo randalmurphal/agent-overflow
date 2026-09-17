@@ -51,6 +51,7 @@ func TestConfigFromOptionsCarriesEffort(t *testing.T) {
 func TestConfigFromOptionsCarriesTheSettingsOwnedAxes(t *testing.T) {
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider:     string(provider.ClaudeTUI),
+		ThreadID:     "thread-1",
 		Model:        "claude-opus-5",
 		WorkDir:      "/tmp/work",
 		SystemPrompt: "You are the agent.",
@@ -66,6 +67,9 @@ func TestConfigFromOptionsCarriesTheSettingsOwnedAxes(t *testing.T) {
 	})
 	if cfg.SystemPrompt != "You are the agent." {
 		t.Fatalf("SystemPrompt = %q, want the override to pass through", cfg.SystemPrompt)
+	}
+	if cfg.TaskListID != "thread-1" {
+		t.Fatalf("TaskListID = %q, want the thread id", cfg.TaskListID)
 	}
 	want := []string{"Workflow", "WebSearch"}
 	if !reflect.DeepEqual(cfg.DisallowedTools, want) {

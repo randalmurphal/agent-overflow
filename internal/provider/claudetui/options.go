@@ -65,6 +65,11 @@ type Config struct {
 	// Silences the CLI's periodic "track your work with the todo tools"
 	// nudge while keeping the tools.
 	DisableTodoReminders bool
+	// TaskListID is exported as CLAUDE_CODE_TASK_LIST_ID, an OWNED key like
+	// the gateway URL: buildEnv drops any inherited value and states this
+	// one. Same value and same reason as the headless Config.TaskListID (one
+	// binary, one task directory per thread).
+	TaskListID string
 	// ReasoningEffort is the resolved `--effort` value (low/medium/high/xhigh/
 	// max), already mapped from SessionOptions by claude.ConfigFromOptions.
 	// Empty means "omit the flag" so the CLI keeps its own default. The
@@ -125,6 +130,7 @@ func ConfigFromOptions(opts provider.SessionOptions) Config {
 		// Settings-owned like the two axes above; claude-tui shares the
 		// Claude answer (one binary, one nudge producer).
 		DisableTodoReminders: opts.DisableTodoReminders,
+		TaskListID:           base.TaskListID,
 		// Same shared-registry reasoning: one binary, one peer registry, so
 		// the TUI surface takes the headless resolution verbatim rather
 		// than re-deriving a second answer from the same options.

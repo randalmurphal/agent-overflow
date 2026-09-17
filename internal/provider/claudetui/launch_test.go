@@ -157,7 +157,7 @@ func countEnv(env []string, key string) (int, string) {
 // caller-provided value — the user's custom provider environment — wins.
 func TestBuildEnvDefaultsTodoToolsOptIn(t *testing.T) {
 	t.Run("default applied when absent", func(t *testing.T) {
-		env := buildEnv([]string{"FOO=bar"}, "http://gw", "http://hook", "tok", false, false)
+		env := buildEnv(Config{Env: []string{"FOO=bar"}}, "http://gw", "http://hook", "tok")
 		if n, v := countEnv(env, todoToolsEnvVar); n != 1 || v != "true" {
 			t.Fatalf("%s: got %d entries (last %q), want exactly one =true; env %v", todoToolsEnvVar, n, v, env)
 		}
@@ -165,8 +165,8 @@ func TestBuildEnvDefaultsTodoToolsOptIn(t *testing.T) {
 
 	t.Run("user opt-out survives without a duplicate", func(t *testing.T) {
 		env := buildEnv(
-			[]string{"FOO=bar", todoToolsEnvVar + "=false"},
-			"http://gw", "http://hook", "tok", false, false,
+			Config{Env: []string{"FOO=bar", todoToolsEnvVar + "=false"}},
+			"http://gw", "http://hook", "tok",
 		)
 		if n, v := countEnv(env, todoToolsEnvVar); n != 1 || v != "false" {
 			t.Fatalf("%s: got %d entries (last %q), want exactly the caller's =false; env %v", todoToolsEnvVar, n, v, env)
@@ -175,8 +175,8 @@ func TestBuildEnvDefaultsTodoToolsOptIn(t *testing.T) {
 
 	t.Run("owned gateway keys still replaced", func(t *testing.T) {
 		env := buildEnv(
-			[]string{BaseURLEnv + "=https://dirty.example"},
-			"http://gw", "http://hook", "tok", false, false,
+			Config{Env: []string{BaseURLEnv + "=https://dirty.example"}},
+			"http://gw", "http://hook", "tok",
 		)
 		if n, v := countEnv(env, BaseURLEnv); n != 1 || v != "http://gw" {
 			t.Fatalf("%s: got %d entries (last %q), want exactly the gateway URL; env %v", BaseURLEnv, n, v, env)
@@ -190,14 +190,14 @@ func TestBuildEnvDefaultsTodoToolsOptIn(t *testing.T) {
 // value outranks the setting.
 func TestBuildEnvTodoReminderMode(t *testing.T) {
 	t.Run("disabled exports off", func(t *testing.T) {
-		env := buildEnv([]string{"FOO=bar"}, "http://gw", "http://hook", "tok", true, false)
+		env := buildEnv(Config{Env: []string{"FOO=bar"}, DisableTodoReminders: true}, "http://gw", "http://hook", "tok")
 		if n, v := countEnv(env, todoReminderModeEnvVar); n != 1 || v != "off" {
 			t.Fatalf("%s: got %d entries (last %q), want exactly one =off; env %v", todoReminderModeEnvVar, n, v, env)
 		}
 	})
 
 	t.Run("enabled exports nothing", func(t *testing.T) {
-		env := buildEnv([]string{"FOO=bar"}, "http://gw", "http://hook", "tok", false, false)
+		env := buildEnv(Config{Env: []string{"FOO=bar"}}, "http://gw", "http://hook", "tok")
 		if n, v := countEnv(env, todoReminderModeEnvVar); n != 0 {
 			t.Fatalf("%s: got %d entries (last %q), want none; env %v", todoReminderModeEnvVar, n, v, env)
 		}
@@ -205,11 +205,37 @@ func TestBuildEnvTodoReminderMode(t *testing.T) {
 
 	t.Run("user value survives without a duplicate", func(t *testing.T) {
 		env := buildEnv(
-			[]string{todoReminderModeEnvVar + "=baseline"},
-			"http://gw", "http://hook", "tok", true, false,
+			Config{Env: []string{todoReminderModeEnvVar + "=baseline"}, DisableTodoReminders: true},
+			"http://gw", "http://hook", "tok",
 		)
 		if n, v := countEnv(env, todoReminderModeEnvVar); n != 1 || v != "baseline" {
 			t.Fatalf("%s: got %d entries (last %q), want exactly the caller's =baseline; env %v", todoReminderModeEnvVar, n, v, env)
+		}
+	})
+}
+
+// TestBuildEnvOwnsTheTaskListID pins the TUI leg of the thread-keyed task
+// list: the variable is stated from Config.TaskListID and an inherited value
+// is dropped whether or not there is one to state, so a host that exported
+// it can never key a thread's tasks to someone else's list.
+func TestBuildEnvOwnsTheTaskListID(t *testing.T) {
+	t.Run("stated from the config", func(t *testing.T) {
+		env := buildEnv(
+			Config{Env: []string{claude.TaskListIDEnv + "=inherited", "FOO=bar"}, TaskListID: "thread-1"},
+			"http://gw", "http://hook", "tok",
+		)
+		if n, v := countEnv(env, claude.TaskListIDEnv); n != 1 || v != "thread-1" {
+			t.Fatalf("%s: got %d entries (last %q), want exactly one =thread-1; env %v", claude.TaskListIDEnv, n, v, env)
+		}
+	})
+
+	t.Run("inherited value dropped when the config has none", func(t *testing.T) {
+		env := buildEnv(
+			Config{Env: []string{claude.TaskListIDEnv + "=inherited", "FOO=bar"}},
+			"http://gw", "http://hook", "tok",
+		)
+		if n, v := countEnv(env, claude.TaskListIDEnv); n != 0 {
+			t.Fatalf("%s: got %d entries (last %q), want none; env %v", claude.TaskListIDEnv, n, v, env)
 		}
 	})
 }
@@ -272,7 +298,7 @@ func TestBuildEnvDropsAnInheritedCrossSessionGateWhenDisabled(t *testing.T) {
 		"CLAUDE_CODE_SESSION_NAME=someone-elses-name",
 		"HOME=/home/test",
 	}
-	env := buildEnv(base, "http://gw", "http://hook", "tok", false, false)
+	env := buildEnv(Config{Env: base}, "http://gw", "http://hook", "tok")
 
 	if value, found := envValueIn(env, claude.CrossSessionGateEnv); found {
 		t.Fatalf("%s = %q, want it absent — the setting says off", claude.CrossSessionGateEnv, value)
@@ -290,7 +316,7 @@ func TestBuildEnvDropsAnInheritedCrossSessionGateWhenDisabled(t *testing.T) {
 // Enabled states the gate explicitly, overriding whatever the host carried.
 func TestBuildEnvStatesTheCrossSessionGateWhenEnabled(t *testing.T) {
 	base := []string{claude.CrossSessionGateEnv + "=totally-bogus", "HOME=/home/test"}
-	env := buildEnv(base, "http://gw", "http://hook", "tok", false, true)
+	env := buildEnv(Config{Env: base, CrossSessionEnabled: true}, "http://gw", "http://hook", "tok")
 
 	if value, found := envValueIn(env, claude.CrossSessionGateEnv); !found || value != "1" {
 		t.Fatalf("%s = %q (present=%v), want \"1\"", claude.CrossSessionGateEnv, value, found)

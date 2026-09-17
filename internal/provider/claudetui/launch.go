@@ -110,7 +110,7 @@ func buildLaunchOptions(cfg Config, systemPromptPath, gatewayURL, hookURL, hookT
 		Shell: cfg.Binary,
 		Args:  args,
 		Cwd:   cfg.WorkDir,
-		Env:   buildEnv(cfg.Env, gatewayURL, hookURL, hookToken, cfg.DisableTodoReminders, cfg.CrossSessionEnabled),
+		Env:   buildEnv(cfg, gatewayURL, hookURL, hookToken),
 		Rows:  cfg.rows(),
 		Cols:  cfg.cols(),
 	}, nil
@@ -215,11 +215,12 @@ const todoToolsEnvVar = "CLAUDE_CODE_ENABLE_TODO_TOOLS"
 // opt-in above: a value already in the base environment wins.
 const todoReminderModeEnvVar = "CLAUDE_CODE_TODO_REMINDER_MODE"
 
-// buildEnv layers the per-session gateway + relay env onto the base
-// environment, stripping any inherited values for the keys we own so a dirty
-// parent env can't redirect Claude away from our gateway, and fills in the
-// todo-tools defaults the base carries no value of its own for.
-func buildEnv(base []string, gatewayURL, hookURL, hookToken string, disableTodoReminders, crossSessionEnabled bool) []string {
+// buildEnv layers the per-session gateway + relay env onto cfg.Env,
+// stripping any inherited values for the keys we own so a dirty parent env
+// can't redirect Claude away from our gateway, and fills in the todo-tools
+// defaults the base carries no value of its own for.
+func buildEnv(cfg Config, gatewayURL, hookURL, hookToken string) []string {
+	base := cfg.Env
 	if len(base) == 0 {
 		// Honor the documented "empty means inherit" Config.Env contract for an
 		// empty-but-non-nil slice too, not just nil.
@@ -239,7 +240,10 @@ func buildEnv(base []string, gatewayURL, hookURL, hookToken string, disableTodoR
 	for _, key := range claude.CrossSessionUnsetEnv() {
 		owned[key] = struct{}{}
 	}
-	out := make([]string, 0, len(base)+5)
+	// The task-list key is the thread's identity (Config.TaskListID), so an
+	// inherited value is dropped even when cfg carries none to state.
+	owned[claude.TaskListIDEnv] = struct{}{}
+	out := make([]string, 0, len(base)+6)
 	haveTodoOptIn := false
 	haveReminderMode := false
 	for _, kv := range base {
@@ -261,13 +265,16 @@ func buildEnv(base []string, gatewayURL, hookURL, hookToken string, disableTodoR
 		envHookURL+"="+hookURL,
 		envHookToken+"="+hookToken,
 	)
-	if crossSessionEnabled {
+	if cfg.CrossSessionEnabled {
 		out = append(out, claude.CrossSessionGateEnv+"=1")
+	}
+	if cfg.TaskListID != "" {
+		out = append(out, claude.TaskListIDEnv+"="+cfg.TaskListID)
 	}
 	if !haveTodoOptIn {
 		out = append(out, todoToolsEnvVar+"=true")
 	}
-	if disableTodoReminders && !haveReminderMode {
+	if cfg.DisableTodoReminders && !haveReminderMode {
 		out = append(out, todoReminderModeEnvVar+"=off")
 	}
 	return out

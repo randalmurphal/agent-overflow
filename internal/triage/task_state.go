@@ -59,9 +59,10 @@ func (r *Router) handleTaskUpdate(evt provider.ProviderEvent) error {
 // the persisted list (threads.live_todo) before an event is applied.
 //
 // The map dies with the session (cleanupThread) and the process; the column
-// survives both — and so does the PROVIDER's own task list, because a plain
-// `claude --resume` keeps its session id and its on-disk task state
-// (spike-verified 2026-08-16 on 2.1.219). A resumed session therefore updates
+// survives both — and so does the PROVIDER's own task list, because every
+// Claude spawn keys it by the AO thread id (CLAUDE_CODE_TASK_LIST_ID, see
+// claude.Config.TaskListID), not by the session id a restart, rollback slice
+// or provider round-trip may replace. A resumed session therefore updates
 // and deletes ids minted before the restart, and without this seed those
 // events would find a nil map, apply to nothing, and never reach
 // projectTodoSnapshot — freezing the durable list in a state the provider has
@@ -84,12 +85,11 @@ func (r *Router) handleTaskUpdate(evt provider.ProviderEvent) error {
 // finished) projection misses it — until the list's next create
 // replaces it wholesale.
 //
-// The seed is only sound because a stored list implies a resumable session
-// whose ids it reflects. The app paths that break that implication — a
-// rollback, a provider switch: same thread row, next session from scratch,
-// per-session small-integer ids that WOULD collide with a dead list's —
-// clear the column through ResetThreadTodo before any Task* event can seed
-// from it. A new from-scratch start path must do the same.
+// The seed is only sound because the stored ids and the provider's are minted
+// against the same task directory. That is what the thread-keyed list buys:
+// a rollback keeps the provider's list (tail tasks included, exactly as the
+// native TUI's Esc-revert does), so the column is never cleared by an app
+// path — only by the provider's own deletes, which arrive as events.
 //
 // A seed read error is returned but does not block the event: an update
 // over the uninstalled map applies to nothing (safe — the provider's state

@@ -101,6 +101,7 @@ var deniedProviderEnvNames = map[string]map[string]string{
 		"CLAUDE_CODE_HARBOR_KITE":              "set by the cross-session messaging setting, which is what opens the peer inbox; a value here would let a thread be discovered and messaged by other Claude sessions while the setting says it is off",
 		"CLAUDE_CODE_SESSION_NAME":             "Agent Overflow derives the peer-visible session name from the thread and passes it as `--name`, keeping it distinct per thread and in step with the thread title; a value here would name every thread the same thing to every peer",
 		"CLAUDE_CODE_USER_DIALOG_TIMEOUT_MS":   "sets how long a HELD cross-session message waits before it is silently dropped; Agent Overflow always sends an explicit inbound policy so nothing is ever held, and a value here would only re-time a drop the user cannot see",
+		"CLAUDE_CODE_TASK_LIST_ID":             "Agent Overflow pins this to the thread id so Claude's task list follows the thread across restarts and reverts; a value here would make every thread share one task list",
 	},
 	"codex": {
 		"CODEX_HOME": "Agent Overflow owns Codex's home: every spawn clears this variable, and login / inactive-account probes set it to a temporary home holding that account's credentials",
