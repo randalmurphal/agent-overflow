@@ -472,7 +472,6 @@ func (r *Router) enrichExistingBackgroundCompletionFromNotification(
 			"",
 		),
 	)
-	completion.Meta = r.completionMetaWithSubagentAggregates(launch, completion)
 	return r.maybeDeferOrPersist(evt.ThreadID, completion, payload)
 }
 
@@ -1081,25 +1080,4 @@ func agentReportFromNotification(launch store.Item, summary string) string {
 
 func agentFinishedBell(launch store.Item) string {
 	return `Agent "` + launchInputIdentity(launch.Meta).Description + `" finished`
-}
-
-// completionMetaWithSubagentAggregates stamps a Claude agent's completion
-// sibling with its transcript count and latest child activity at write
-// time, the way a Codex completion snapshots its own
-// (SnapshotSubagentExecutionMeta). Without it the live-emitted sibling
-// is bare, and the card that moves onto it drops the pane's live fold
-// and renders an empty body until the next page read decorates the row.
-// A command launch has no transcript and is left alone.
-func (r *Router) completionMetaWithSubagentAggregates(launch, completion store.Item) string {
-	if !isSubagentTranscriptLaunch(launch) {
-		return completion.Meta
-	}
-	meta, err := r.store.DecorateSubagentCompletionMeta(completion.ThreadID, completion)
-	if err != nil {
-		// The count is a card decoration the next page read re-derives;
-		// the sibling itself must still land.
-		log.Printf("triage: stamp subagent aggregates on %s: %v", completion.ID, err)
-		return completion.Meta
-	}
-	return meta
 }

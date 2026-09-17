@@ -22,6 +22,7 @@
 import { test, expect } from './fixtures.js';
 import {
   RESULT_LINE,
+  advance,
   asyncAgentAckLine,
   backgroundTasksChangedLine,
   claudeScenario,
@@ -29,12 +30,15 @@ import {
   itemMeta,
   listItems,
   seedAgentThread,
+  sidechainTranscript,
   startMock,
   taskNotificationLine,
   taskStartedLine,
   taskUpdatedLine,
   textLines,
+  toolResultLine,
   toolUseLine,
+  waitForGate,
 } from './agent-visibility-helpers.js';
 
 test('a top-level background completion writes a bell and a nested one does not', async ({
@@ -165,4 +169,96 @@ test('a top-level background completion writes a bell and a nested one does not'
   const nestedSpawnRow = topBody.locator('[data-item-id="tu-nested"]');
   await expect(nestedSpawnRow.getByTestId('agent-row-preview')).toContainText('Nested Runner');
   await expect(nestedSpawnRow.getByTestId('agent-row-status')).toHaveAttribute('data-state', 'backgrounded');
+});
+
+// The card that lands at the completion sibling must know how many rows
+// its transcript has WITHOUT a page read: while the agent ran collapsed,
+// the pane folded its settled rows out of memory, and a completed card
+// reads its saved aggregates rather than the live fold. Those aggregates
+// are stamped on the sibling at write time (triage
+// completionMetaWithSubagentAggregates). A bare sibling rendered "No
+// child entries captured" for a 144-row transcript (2026-09-17).
+test('a background agent’s card lands with its entry count and hydrates on expand', async ({
+  harness,
+  page,
+}) => {
+  await harness.rpc('HarnessSetScenario', {
+    scenario: claudeScenario('count-on-landing', [
+      emit([
+        ...textLines('msg-lead', 'Launching the shard reviewer.'),
+        toolUseLine('msg-bg', 'tu-bg', 'Agent', {
+          description: 'shard reviewer',
+          subagent_type: 'shard-reviewer',
+        }),
+        taskStartedLine('task-bg', 'tu-bg', 'shard reviewer'),
+        asyncAgentAckLine('tu-bg', 'task-bg', 'shard reviewer'),
+        backgroundTasksChangedLine([
+          { task_id: 'task-bg', task_type: 'local_agent', description: 'shard reviewer' },
+        ]),
+        RESULT_LINE,
+      ]),
+      // The agent's sidechain streams while nothing renders it: no card
+      // yet (a detached launch's card is its completion), no pane open,
+      // so every settled row folds out of memory as it lands.
+      { waitSignal: { name: 'stream' } },
+      emit([
+        ...textLines('msg-s1', 'Reading the first shard.', 'tu-bg'),
+        toolUseLine('msg-s2', 'tu-read', 'Read', { file_path: '${CWD}/README.md' }, 'tu-bg'),
+        toolResultLine('tu-read', '# fixture', { parentToolUseId: 'tu-bg' }),
+        ...textLines('msg-s3', 'Shard reviewed: nothing drifted.', 'tu-bg'),
+      ]),
+      { waitSignal: { name: 'settle' } },
+      // The output file as the CLI leaves it at notification time: the
+      // report row is not appended yet (the CLI notifies first), so the
+      // envelope's summary is the only copy of the report. Nothing here
+      // is new to the thread, so the backfill adds no rows.
+      { writeFile: { path: 'shard-output.jsonl', content: sidechainTranscript([]) } },
+      emit([
+        taskUpdatedLine('task-bg', { status: 'completed', end_time: 1787419835322 }),
+        taskNotificationLine('task-bg', 'tu-bg', 'Shard reviewed: nothing drifted.', {
+          outputFile: '${CWD}/shard-output.jsonl',
+          usage: { total_tokens: 12000, tool_uses: 1, duration_ms: 2100 },
+        }),
+        backgroundTasksChangedLine([]),
+      ]),
+    ]),
+  });
+
+  const threadId = await seedAgentThread(harness, 'count-app', 'Count on landing');
+  await harness.open(page);
+  await page.getByText('Count on landing').click();
+  const mockId = await startMock(harness, threadId);
+  await harness.rpc('SendMessage', threadId, 'review the shard', null);
+  await harness.waitForEvent('provider:turn_completed');
+
+  const timeline = page.getByTestId('message-timeline-scroll');
+  await expect(timeline.locator('[data-item-id="tu-bg"]').getByTestId('agent-row-status')).toHaveAttribute('data-state', 'backgrounded');
+  await expect(timeline.getByTestId('subagent-group')).toHaveCount(0);
+
+  await waitForGate(harness, 'stream');
+  await advance(harness, mockId, 'stream');
+  // The live rows are persisted under the launch before the agent settles:
+  // two text rows and the Read. Backfill adds the prompt row on settle.
+  await expect
+    .poll(async () => {
+      const items = await listItems(harness, threadId);
+      const rows = items.filter((i) => i.parentId === 'tu-bg');
+      return rows.some((i) => i.summary?.includes('nothing drifted')) ? rows.length : 0;
+    })
+    .toBe(3);
+  await expect(timeline.getByTestId('subagent-group')).toHaveCount(0);
+
+  await waitForGate(harness, 'settle');
+  await advance(harness, mockId, 'settle');
+  const card = timeline.getByTestId('subagent-group').first();
+  await expect(card).toHaveAttribute('data-background', 'true');
+  await expect(card.getByTestId('subagent-group-count')).toHaveText('4 entries');
+  await expect(card.getByTestId('subagent-group-preview')).toContainText('Shard reviewed: nothing drifted.');
+
+  // Expanding hydrates the folded rows back from the store.
+  await card.getByTestId('subagent-group-toggle').first().click();
+  const body = card.getByTestId('subagent-group-body').first();
+  await expect(body.getByText('Shard reviewed: nothing drifted.')).toBeVisible();
+  await expect(body.getByRole('link', { name: 'Open README.md in editor' })).toBeVisible();
+  await expect(body.getByText(/No child entries captured/i)).toHaveCount(0);
 });

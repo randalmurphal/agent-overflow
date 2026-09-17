@@ -3500,3 +3500,50 @@ describe('decoratedSubagentAggregates', () => {
     })).transcriptCount).toBe(4);
   });
 });
+
+describe('a detached launch’s card reads its counts off the completion sibling', () => {
+  // While a background agent runs collapsed, the pane folds its settled
+  // rows out of memory under the LAUNCH id. When the completion sibling
+  // lands the card moves onto it and, being a completed card, reads its
+  // saved aggregates instead of the live fold. Those aggregates are the
+  // `subagentDescendantCount` triage stamps on the sibling at write time
+  // (internal/triage completionMetaWithSubagentAggregates); a bare
+  // sibling would count zero here and the expanded body would say "No
+  // child entries captured" for a transcript that exists.
+  it('counts the stamped total with nothing loaded and the fold keyed on the launch', () => {
+    const fold: SubagentLiveAggregates = (anchorId) =>
+      anchorId === 'bg-agent'
+        ? { evictedCount: 3, terminalPreview: 'evicted preview', terminalTurnIndex: 0, terminalItemIndex: 3 }
+        : undefined;
+    const nodes = groupItemsBySubagent(
+      [
+        mkItem({
+          id: 'bg-agent',
+          itemIndex: 0,
+          kind: 'tool_call',
+          toolName: 'Agent',
+          isBackground: true,
+          meta: toolMeta({ toolName: 'Agent', input: { description: 'review' } }),
+        }),
+        mkItem({
+          id: 'complete:bg-agent',
+          itemIndex: 5,
+          kind: 'tool_completion',
+          toolName: 'Agent',
+          isBackground: true,
+          completionOf: 'bg-agent',
+          summary: 'Agent: review -> done',
+          meta: JSON.stringify({ subagentDescendantCount: 3, subagentLatestChildSummary: 'go test ./...' }),
+        }),
+      ],
+      fold,
+    );
+
+    const card = expectGroup(nodes[1]);
+    expect(card.anchor.id).toBe('complete:bg-agent');
+    expect(card.children).toEqual([]);
+    expect(card.descendantCount).toBe(3);
+    expect(card.loadedDescendantCount).toBe(0);
+    expect(card.latestChildSummary).toBe('go test ./...');
+  });
+});

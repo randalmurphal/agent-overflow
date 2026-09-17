@@ -1040,19 +1040,3 @@ func (s *Store) ListSubagentDescendants(threadID, rootItemID string) ([]Item, er
 	}
 	return decorated, nil
 }
-
-// DecorateSubagentCompletionMeta stamps one Claude completion sibling with
-// the same aggregates a page read would (decorateSubagentAnchors), so the
-// live-emitted sibling carries its transcript count from its first write
-// instead of arriving bare and waiting for the next page read. The
-// completion must name its launch in CompletionOf.
-func (s *Store) DecorateSubagentCompletionMeta(threadID string, completion Item) (string, error) {
-	if completion.Kind != "tool_completion" || strings.TrimSpace(completion.CompletionOf) == "" {
-		return "", fmt.Errorf("store: decorate subagent completion %q: not a completion sibling", completion.ID)
-	}
-	decorated, err := s.decorateSubagentAnchors(s.reader(), threadID, []Item{completion})
-	if err != nil {
-		return "", err
-	}
-	return decorated[0].Meta, nil
-}

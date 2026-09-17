@@ -1414,7 +1414,6 @@ func (r *Router) writeBackgroundCompletionSibling(evt provider.ProviderEvent, me
 	// the row lands complete: a card mounted from this frame must not
 	// grow its counters a patch later.
 	completion.Meta, _ = r.completionMetaWithFinalProgress(launch, completion.Meta)
-	completion.Meta = r.completionMetaWithSubagentAggregates(launch, completion)
 
 	if err := r.maybeDeferOrPersist(evt.ThreadID, completion, payload); err != nil {
 		return err
