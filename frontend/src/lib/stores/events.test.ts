@@ -289,12 +289,9 @@ describe('setupEventListeners', () => {
     expect(cacheModule.threadItemCache.get('thread-other')).not.toBeNull();
 
     // An upsert naming a thread with no pane still evicts defensively:
-    // we cannot value-dedupe a window nobody owns. This branch was
-    // deliberately left as-is when the channel was narrowed — a client
-    // that is not watching a thread simply stops getting these frames,
-    // and its stale snapshot is caught on read instead (the open stamps
-    // the window and SyncThreadWindow answers stale with a replacing
-    // page). It is the one accepted degradation of the narrowing.
+    // we cannot value-dedupe a window nobody owns. A client that is not
+    // watching a thread stops getting these frames once the channel is
+    // narrowed; its turn events (never narrowed) evict instead, below.
     emitWailsEvent('provider:item_event', {
       action: 'upsert',
       threadId: 'thread-other',
@@ -302,6 +299,49 @@ describe('setupEventListeners', () => {
     });
     await nextFrame();
     expect(cacheModule.threadItemCache.get('thread-other')).toBeNull();
+
+    cacheModule.threadItemCache.clear();
+  });
+
+  it('evicts the cached snapshot on turn lifecycle events, pane or no pane', async () => {
+    // `provider:item_event` is entity-filtered to watched threads, so a
+    // thread with no pane never evicts through it; the turn channels reach
+    // every client, and a turn boundary always changes the thread's rows.
+    const cacheModule = await import('./threadItemCache');
+    cacheModule.threadItemCache.clear();
+    const snapshot = (threadId: string) => ({
+      items: [makeItem({ id: `cached-${threadId}`, threadId })],
+      oldestLoadedTurnIndex: 0,
+      newestLoadedTurnIndex: 0,
+      hasMoreHistory: false,
+      hasMoreNewer: false,
+      latestSettledTurn: null,
+    });
+    cacheModule.threadItemCache.set('thread-a', snapshot('thread-a'));
+    cacheModule.threadItemCache.set('thread-closed', snapshot('thread-closed'));
+    cacheModule.threadItemCache.set('thread-untouched', snapshot('thread-untouched'));
+    await buildPane(makeThread({ id: 'thread-a' }));
+
+    emitWailsEvent('provider:turn_started', {
+      threadId: 'thread-closed', turnId: 'turn-1', turnIndex: 1, startedAt: 100,
+    });
+    expect(cacheModule.threadItemCache.get('thread-closed')).toBeNull();
+    expect(cacheModule.threadItemCache.get('thread-a')).not.toBeNull();
+    expect(cacheModule.threadItemCache.get('thread-untouched')).not.toBeNull();
+
+    cacheModule.threadItemCache.set('thread-closed', snapshot('thread-closed'));
+    emitWailsEvent('provider:turn_completed', {
+      threadId: 'thread-closed', turnId: 'turn-1', turnIndex: 1, startedAt: 100,
+      completedAt: 200, stopReason: 'end_turn', assistantMessageId: '', tokenUsage: '',
+    });
+    expect(cacheModule.threadItemCache.get('thread-closed')).toBeNull();
+
+    emitWailsEvent('provider:turn_completed', {
+      threadId: 'thread-a', turnId: 'turn-1', turnIndex: 1, startedAt: 100,
+      completedAt: 200, stopReason: 'end_turn', assistantMessageId: '', tokenUsage: '',
+    });
+    expect(cacheModule.threadItemCache.get('thread-a')).toBeNull();
+    expect(cacheModule.threadItemCache.get('thread-untouched')).not.toBeNull();
 
     cacheModule.threadItemCache.clear();
   });

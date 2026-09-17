@@ -674,9 +674,10 @@ export function createThreadSwitchLoad(
    * Runs BEFORE `pane.clear()` empties the items, while the timeline is
    * still mounted so `persistSizePriors` reaches a live listRef. Same
    * gates as the switch edge (loading, row-count budget) via
-   * `cacheOutgoingWindow`; streamed events for a still-running thread
-   * evict the entry afterwards exactly as they do for a switched-away
-   * one, so a running thread's close is a transient cache at worst.
+   * `cacheOutgoingWindow`; a still-running thread's turn events evict
+   * the entry afterwards (`evictStaleWindowCaches`), exactly as they do
+   * for a switched-away one, so a running thread's close is a transient
+   * cache at worst.
    * Span eviction matches the switch edge too — the pane leaving the
    * thread frees its highlight spans either way.
    */

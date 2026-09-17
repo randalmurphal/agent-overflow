@@ -134,6 +134,11 @@ export interface ActivityRunIdentity {
    * born collapsed (2026-08-18). Tail-ness is a superset of liveness by
    * construction (the live run is always the tail run), so nothing that
    * opened under the old rule closes under this one.
+   *
+   * The registry records the hold only from a window the pane has verified
+   * (`ThreadActivityRunsOptions.windowVerified`): an unverified cached paint
+   * still renders its tail run open, but a hold recorded from it would
+   * outlive the sync that replaces the paint.
    */
   collapsedFor(runId: string, atTail: boolean): boolean;
   endPass(): void;
@@ -163,6 +168,14 @@ export interface GroupActivityRunsOptions {
    * Empty when the gate is holding nothing, which is the common case.
    */
   withheld: readonly TimelineNode[];
+  /**
+   * Whether the loaded window ends at the thread's newest item (false while
+   * the pane reports `hasMoreNewer`). Tail-ness and liveness are claims
+   * about the THREAD's newest run, and a window loaded around an older
+   * anchor ends at whatever row the budget reached: its last run is neither
+   * live nor the one the reader is watching, so no run in it is stamped.
+   */
+  windowReachesTail: boolean;
 }
 
 function currentLeafItem(node: TimelineNode, getItem: (id: string) => Item | undefined): Item | null {
@@ -578,8 +591,12 @@ export function groupActivityRuns(
   // gate has not yet let prose past is finished whether or not the reader can
   // see the prose. Withheld ACTIVITY does not: those rows join this very run
   // when the gate opens, so it is still the live one.
+  //
+  // Neither fact exists for a window that stops short of the thread's newest
+  // item (`windowReachesTail` false): the run after this window's last row
+  // is the tail, and it is not loaded.
   const tail = out[out.length - 1];
-  if (tail?.kind === 'activity_run') {
+  if (tail?.kind === 'activity_run' && options.windowReachesTail) {
     // An absorbable bell behind the gate joins this very run when revealed,
     // same as withheld activity — it must not read as closing prose.
     tail.live = options.withheld.every((node) =>

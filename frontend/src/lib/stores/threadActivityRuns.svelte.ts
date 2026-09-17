@@ -52,6 +52,17 @@ export interface ThreadActivityRunsOptions {
   /** `activityRunWindowRows` — how many tail rows a run mounts by default. */
   windowRows(): number;
   /**
+   * Whether the pane's item window has been verified against the backend
+   * since it was installed (false while a thread switch or history retry
+   * is still syncing). Read per resolve. The open-because-live hold is a
+   * claim that the reader watched the tail run stream, and a warm re-entry
+   * paints a cached window before the sync says whether that window is
+   * still the thread's tail: the tail run renders open either way, but the
+   * hold is recorded only once the window is verified, so a run the sync
+   * then displaces takes the defaults instead of staying open on a guess.
+   */
+  windowVerified(): boolean;
+  /**
    * The pane's scroll controller, read per mutation (it registers after this
    * factory runs and churns on thread switches — same "declared later" closure
    * as the pane's other getters). The collapse mutators below run their writes
@@ -882,8 +893,14 @@ export function createThreadActivityRuns(
     // a claim about nodes it never reads, and it is deliberately an input to
     // the FALLBACK only. The caller states tail-ness rather than liveness on
     // purpose — see `ActivityRunIdentity.collapsedFor`.
+    //
+    // Recorded only from a verified window (`windowVerified`): a cached
+    // paint's tail run renders open on the same guess the paint is, but a
+    // hold written from that guess would keep a displaced run open after
+    // the sync replaced the window. The pass that follows verification
+    // re-resolves the tail and records it then.
     if (atTail) {
-      if (entry) entry.openedLive = true;
+      if (entry && options.windowVerified()) entry.openedLive = true;
       return false;
     }
     // Settled, but it opened as a live run and nobody has reconciled that yet.

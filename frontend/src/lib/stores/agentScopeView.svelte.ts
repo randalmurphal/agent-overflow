@@ -315,6 +315,8 @@ export function createAgentScopeView(
   const activityRuns = createThreadActivityRuns({
     defaultCollapsed: () => activityRunDefaultCollapsed(),
     windowRows: () => activityRunWindowRows(),
+    // Scoped rows are local to the host pane; the view's `loading` is always false.
+    windowVerified: () => true,
     scrollController: () => scrollController,
   });
 

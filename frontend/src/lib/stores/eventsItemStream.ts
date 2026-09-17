@@ -321,20 +321,33 @@ function applyItemUpserts(upserts: Item[]): void {
   // This keeps redundant active-thread echoes from invalidating the warm
   // re-entry cache and rebuilding rows for no visible data change.
   for (const threadId of itemsByThread.keys()) {
-    const inactive = !activeThreadIds.has(threadId);
-    if (changedThreadIds.has(threadId) || inactive) {
-      threadItemCache.evict(threadId);
+    const paneOpen = activeThreadIds.has(threadId);
+    if (changedThreadIds.has(threadId) || !paneOpen) {
+      evictStaleWindowCaches(threadId, paneOpen);
     }
-    // The durable copy is dropped only for INACTIVE threads, whose
-    // window nobody owns. A mounted thread's replica entry stays: at
-    // ~10 Hz streaming, a readwrite IndexedDB transaction per flush is
-    // exactly the per-frame cost the backend contract was shaped to
-    // avoid (§14), and it buys nothing — the envelope's attested stamp
-    // already trails these writes, so the next open answers `stale`
-    // and replaces the window regardless. The switch-away snapshot and
-    // the debounced write-back own the mounted thread's entry.
-    if (inactive) void removeReplicaWindow(threadId);
   }
+}
+
+/**
+ * Drop the cached copies of a thread's window once the wire shows the
+ * thread has moved past them: the L1 snapshot always, the durable replica
+ * only when no pane shows the thread.
+ *
+ * A mounted thread's replica entry stays: at ~10 Hz streaming, a readwrite
+ * IndexedDB transaction per flush is exactly the per-frame cost the backend
+ * contract was shaped to avoid (§14), and it buys nothing — the envelope's
+ * attested stamp already trails these writes, so the next open answers
+ * `stale` and replaces the window regardless. The switch-away snapshot and
+ * the debounced write-back own the mounted thread's entry.
+ *
+ * Item events reach only watched threads (`provider:item_event` is
+ * entity-filtered), so a thread with no pane never evicts through them;
+ * turn lifecycle events reach every client and cover that thread from
+ * `applyTurnStarted` / `applyTurnCompleted`.
+ */
+export function evictStaleWindowCaches(threadId: string, paneOpen: boolean): void {
+  threadItemCache.evict(threadId);
+  if (!paneOpen) void removeReplicaWindow(threadId);
 }
 
 /**

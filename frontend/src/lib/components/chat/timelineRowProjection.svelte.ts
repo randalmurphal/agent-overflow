@@ -15,6 +15,7 @@ import type {
   RevealRead,
   RowUiRegistry,
   TimelineSource,
+  TimelineWindow,
 } from '../../stores/threadPaneRoles';
 import type { Item } from '../../types/models';
 import { formatElapsedSeconds } from '../../utils/format';
@@ -40,7 +41,7 @@ const EMPTY_RECEIVER_LABELS = new Map<string, string>();
 const NO_WITHHELD_NODES: readonly TimelineNode[] = [];
 
 export interface TimelineRowProjectionOptions {
-  getPane(): PaneSession & TimelineSource & RowUiRegistry & RevealRead;
+  getPane(): PaneSession & TimelineSource & RowUiRegistry & RevealRead & Pick<TimelineWindow, 'hasMoreNewer'>;
 }
 
 export interface TimelineRowProjection {
@@ -127,11 +128,19 @@ export function createTimelineRowProjection(
     pane.activityRuns.revision;
     activityRunDefaultCollapsed();
     activityRunWindowRows();
+    // Both tail facts are pane state the registry reads inside the untracked
+    // walk (`windowVerified`) or this pass stamps from (`windowReachesTail`),
+    // so the flips must be tracked here: a sync answering `fresh` installs
+    // nothing, and without this read the pass that records the verified
+    // tail's open hold would wait for an unrelated structural change.
+    const windowReachesTail = !pane.hasMoreNewer;
+    pane.loading;
     return untrack(() => {
       const runs = groupActivityRuns(nodes, {
         identity: pane.activityRuns,
         getItem: (id) => pane.getItemById(id),
         withheld,
+        windowReachesTail,
       });
       // Last thing before Svelte sees the projection. Every keyed block
       // downstream (the virtualizer's root list, a run's `{#each}`, a

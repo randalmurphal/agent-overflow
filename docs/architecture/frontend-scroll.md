@@ -329,8 +329,10 @@ they keep scrolling as the page arrives.
 
 `threadItemCache.ts` is a small LRU of visible-window snapshots, not a
 full-history cache. It rejects oversized snapshots, evicts inactive
-threads touched by persisted mutations, and force-evicts same-thread
-reloads so revert/reload flows do not paint stale rows.
+threads touched by persisted mutations, evicts any thread at a turn
+boundary (`evictStaleWindowCaches`, the only wire signal a closed thread
+still receives), and force-evicts same-thread reloads so revert/reload
+flows do not paint stale rows.
 
 `mergeMissingItemsById` is the merge contract for initial load and older
 paging. Existing in-memory rows keep their references; missing rows are

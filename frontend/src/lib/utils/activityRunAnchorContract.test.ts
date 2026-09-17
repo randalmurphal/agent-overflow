@@ -135,6 +135,7 @@ function capturingIdentity(): {
   const real = createThreadActivityRuns({
     defaultCollapsed: () => false,
     windowRows: () => 30,
+    windowVerified: () => true,
     scrollController: () => null,
   });
   let captured: readonly (readonly string[])[] = [];
@@ -156,6 +157,7 @@ function projectRun(nodes: TimelineNode[], registry: ThreadActivityRuns): Activi
     identity: registry,
     getItem: () => undefined,
     withheld: [],
+    windowReachesTail: true,
   });
   const node = grouped.find((n): n is ActivityRunNode => n.kind === 'activity_run');
   if (!node) throw new Error('nothing grouped into a run');

@@ -1,4 +1,4 @@
-import { survivesRevertedTurnEvent } from './eventsItemStream';
+import { evictStaleWindowCaches, survivesRevertedTurnEvent } from './eventsItemStream';
 import type { EventOrigin } from '../transport/handle';
 import { resolveThreadBackend } from '../transport/entityIndex';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
@@ -68,6 +68,13 @@ type ProviderEventPane = ThreadPaneIngest &
 
 function ingestPanes(): Iterable<ProviderEventPane> {
   return iterPanes();
+}
+
+function paneShowsThread(threadId: string): boolean {
+  for (const pane of ingestPanes()) {
+    if (pane.threadId === threadId) return true;
+  }
+  return false;
 }
 
 // A `fail` frame on either interactive channel reaches every client, but
@@ -400,6 +407,7 @@ export function applyProviderSessionAccount(evt: ProviderSessionAccountEvent): v
  */
 export function applyTurnStarted(evt: TurnStartedEvent, origin?: EventOrigin): void {
   if (!evt?.threadId || !evt.turnId || !survivesRevertedTurnEvent(evt.threadId, 'turnStartedSequence', origin)) return;
+  evictStaleWindowCaches(evt.threadId, paneShowsThread(evt.threadId));
   // Pass the full {turnIndex, startedAt} into the global registry so
   // the chat working indicator's self-ticking timer and the timeline
   // boundary projection can read both without a separate write path.
@@ -432,6 +440,7 @@ export function applyTurnStarted(evt: TurnStartedEvent, origin?: EventOrigin): v
  */
 export function applyTurnCompleted(evt: TurnCompletedEvent, origin?: EventOrigin): void {
   if (!evt?.threadId || !evt.turnId || !survivesRevertedTurnEvent(evt.threadId, 'turnCompletedSequence', origin)) return;
+  evictStaleWindowCaches(evt.threadId, paneShowsThread(evt.threadId));
   // New usage_ledger rows may exist for this turn; nudge every usage
   // surface (composer chip, sidebar footer, usage modal) to refetch —
   // the composer chip is thread-scoped and only reacts to its own

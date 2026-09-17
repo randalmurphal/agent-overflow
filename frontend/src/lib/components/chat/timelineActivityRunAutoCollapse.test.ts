@@ -40,6 +40,7 @@ function harness(): Harness {
   const runs = createThreadActivityRuns({
     defaultCollapsed: () => true,
     windowRows: () => 30,
+    windowVerified: () => true,
     scrollController: () => null,
   });
   const items = new Map<string, Item>();

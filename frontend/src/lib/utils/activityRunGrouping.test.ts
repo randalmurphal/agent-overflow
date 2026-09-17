@@ -14,6 +14,7 @@ function identity(): ThreadActivityRuns {
   return createThreadActivityRuns({
     defaultCollapsed: () => false,
     windowRows: () => 30,
+    windowVerified: () => true,
     scrollController: () => null,
   });
 }
@@ -123,6 +124,8 @@ function project(
     live?: Item[];
     /** Nodes the reveal gate is holding back, which decide tail liveness. */
     withheld?: TimelineNode[];
+    /** Default true; false models a window loaded short of the thread's tail. */
+    windowReachesTail?: boolean;
   } = {},
 ): TimelineNode[] {
   const live = new Map((options.live ?? []).map((item) => [item.id, item]));
@@ -130,6 +133,7 @@ function project(
     identity: options.identity ?? identity(),
     getItem: (id) => live.get(id),
     withheld: options.withheld ?? [],
+    windowReachesTail: options.windowReachesTail ?? true,
   });
 }
 
@@ -382,6 +386,39 @@ describe('tail-ness', () => {
   });
 });
 
+describe('a window short of the thread tail', () => {
+  // Tail-ness and liveness are claims about the THREAD's newest run. A
+  // window loaded around an older anchor (`hasMoreNewer`) ends wherever the
+  // budget ran out, so its last run is neither: stamping it would open a
+  // settled run and record a hold nobody watched.
+  it('stamps neither tail nor live, and records no hold', () => {
+    const id = createThreadActivityRuns({
+      defaultCollapsed: () => true,
+      windowRows: () => 30,
+      windowVerified: () => true,
+      scrollController: () => null,
+    });
+    const out = project([prose('p0'), tool('t0', 'Bash')], {
+      identity: id,
+      windowReachesTail: false,
+    });
+    expect(run(out, 1).atTail).toBe(false);
+    expect(run(out, 1).live).toBe(false);
+    expect(run(out, 1).collapsed).toBe(true);
+    expect(id.openedLiveRunIds()).toEqual([]);
+  });
+
+  it('stamps the run once the window reaches the tail', () => {
+    const id = identity();
+    const short = project([tool('t0', 'Bash')], { identity: id, windowReachesTail: false });
+    expect(run(short, 0).atTail).toBe(false);
+    const full = project([tool('t0', 'Bash')], { identity: id });
+    expect(run(full, 0).runId).toBe(run(short, 0).runId);
+    expect(run(full, 0).atTail).toBe(true);
+    expect(run(full, 0).live).toBe(true);
+  });
+});
+
 describe('member items', () => {
   // The chip aggregates from these ids, so anything missing here is a row
   // the collapsed run would silently fail to count.
@@ -548,6 +585,7 @@ describe('identity migration', () => {
     const id = createThreadActivityRuns({
       defaultCollapsed: () => true,
       windowRows: () => 30,
+      windowVerified: () => true,
       scrollController: () => null,
     });
     const nodes = project([tool('t1', 'Bash'), prose('p1'), tool('t2', 'Bash')], { identity: id });
@@ -568,6 +606,7 @@ describe('identity migration', () => {
     const id = createThreadActivityRuns({
       defaultCollapsed: () => true,
       windowRows: () => 30,
+      windowVerified: () => true,
       scrollController: () => null,
     });
     const first = project([tool('t1', 'Bash')], { identity: id, withheld: [prose('p1')] });

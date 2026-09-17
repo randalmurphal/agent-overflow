@@ -20,11 +20,17 @@ export function registry(
      * the mutators' viewport hold itself.
      */
     scrollController?: PaneScrollController;
+    /**
+     * Default true: the window is verified, so a tail run records its
+     * open hold. Pass a getter to drive a switch's cached-paint phase.
+     */
+    windowVerified?: () => boolean;
   } = {},
 ): ActivityRunRegistry {
   return createThreadActivityRuns({
     defaultCollapsed: () => overrides.defaultCollapsed ?? false,
     windowRows: () => overrides.windowRows ?? 30,
+    windowVerified: overrides.windowVerified ?? (() => true),
     scrollController: () => overrides.scrollController ?? null,
   });
 }

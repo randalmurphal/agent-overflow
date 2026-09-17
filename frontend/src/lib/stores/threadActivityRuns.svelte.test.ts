@@ -32,6 +32,7 @@ describe('collapse state', () => {
     const runs = createThreadActivityRuns({
       defaultCollapsed: () => collapsedDefault,
       windowRows: () => 30,
+      windowVerified: () => true,
       scrollController: () => null,
     });
     const [run] = pass(runs, [['a']]);
@@ -116,6 +117,49 @@ describe('collapse state while a run is still working', () => {
 
     runs.releaseOpenedLive([settled.runId]);
     expect(pass(runs, [['a']])[0].collapsed).toBe(true);
+  });
+});
+
+describe('the hold and an unverified window', () => {
+  // A warm re-entry paints a cached window before the sync says whether it
+  // is still the thread's tail. The tail run renders open on that guess,
+  // but the hold is a claim the reader watched it stream, and a hold
+  // written from the guess would keep a displaced run open after the sync
+  // replaced the paint.
+  it('renders the tail run open without recording a hold', () => {
+    const runs = registry({ defaultCollapsed: true, windowVerified: () => false });
+    const [tail] = pass(runs, [['a']], 'thread-1', 0);
+
+    expect(tail.collapsed).toBe(false);
+    expect(runs.openedLiveRunIds()).toEqual([]);
+  });
+
+  it('a run the sync displaces takes the defaults', () => {
+    let verified = false;
+    const runs = registry({ defaultCollapsed: true, windowVerified: () => verified });
+    pass(runs, [['a']], 'thread-1', 0);
+
+    // The replacing page: prose after the run, a newer run at the tail.
+    verified = true;
+    const [displaced, tail] = pass(runs, [['a'], ['b']], 'thread-1', 1);
+    expect(displaced.collapsed).toBe(true);
+    expect(tail.collapsed).toBe(false);
+    expect(runs.openedLiveRunIds()).toEqual([tail.runId]);
+  });
+
+  it('records the hold on the first pass after verification', () => {
+    let verified = false;
+    const runs = registry({ defaultCollapsed: true, windowVerified: () => verified });
+    const [guess] = pass(runs, [['a']], 'thread-1', 0);
+    expect(runs.openedLiveRunIds()).toEqual([]);
+
+    verified = true;
+    const [confirmed] = pass(runs, [['a']], 'thread-1', 0);
+    expect(confirmed.runId).toBe(guess.runId);
+    expect(runs.openedLiveRunIds()).toEqual([confirmed.runId]);
+
+    // Displaced later, it stays open on the recorded hold.
+    expect(pass(runs, [['a']])[0].collapsed).toBe(false);
   });
 });
 
@@ -434,6 +478,7 @@ describe('mount window', () => {
     const runs = createThreadActivityRuns({
       defaultCollapsed: () => false,
       windowRows: () => windowRows,
+      windowVerified: () => true,
       scrollController: () => null,
     });
     pass(runs, [rows(100)]);
@@ -520,6 +565,7 @@ describe('mount window', () => {
     const runs = createThreadActivityRuns({
       defaultCollapsed: () => false,
       windowRows: () => windowRows,
+      windowVerified: () => true,
       scrollController: () => null,
     });
     const [run] = pass(runs, [rows(100)]);
@@ -1062,6 +1108,7 @@ describe('viewport hold ownership', () => {
     const runs = createThreadActivityRuns({
       defaultCollapsed: () => overrides.defaultCollapsed ?? false,
       windowRows: () => 30,
+      windowVerified: () => true,
       scrollController: () => controller,
     });
     return { runs, holds };

@@ -337,6 +337,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   const activityRuns = createThreadActivityRuns({
     defaultCollapsed: () => activityRunDefaultCollapsed(),
     windowRows: () => activityRunWindowRows(),
+    // `loading` spans a switch's cached paint through its sync, and a
+    // history retry; a window is verified once it is false.
+    windowVerified: () => !loading,
     scrollController: () => paneScroll.controller,
   });
   // Rate-limit snapshots live in the global `rateLimitsInfo.svelte.ts`

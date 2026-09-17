@@ -420,6 +420,25 @@ structural spring, which then glides the new row in
 (history loads, revived archive entries, thread switches) carry no hold and follow the defaults
 outright, which is why a loaded thread does not arrive as a wall of clips.
 
+Both tail facts are claims about the thread, and the projection only makes
+them when it can (`timelineRowProjection.tailFacts.svelte.test.ts`):
+
+- **The window must reach the thread's tail** (`windowReachesTail`, false
+  while `pane.hasMoreNewer`). A window loaded around an older anchor ends
+  wherever the budget ran out; its last run is neither `atTail` nor `live`.
+- **The hold is recorded only from a verified window**
+  (`ThreadActivityRunsOptions.windowVerified`, false while `pane.loading`).
+  A warm re-entry paints the cached window before `SyncThreadWindow`
+  answers, and that paint's tail run renders open on the same guess the
+  paint is. The hold is written on the first pass after the sync verifies
+  the window, so a run the replacing page displaces takes the defaults, and
+  a run the page confirms as the tail keeps its hold when prose later
+  displaces it. The projection reads `pane.loading` in its tracked prelude
+  because a `fresh` answer installs nothing. Turn lifecycle events evict a
+  closed thread's cached window outright (`evictStaleWindowCaches`), so a
+  turn that finished while the thread was closed cold-loads instead of
+  painting a stale run.
+
 The engagement peek (`ThreadPane.hasUserExpansionWithin`, on the row-UI
 registry) answers "did the reader explicitly expand anything in these items":
 diff cards overridden to expanded, subagent / wait / read groups, payload
