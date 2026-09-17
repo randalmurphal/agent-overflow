@@ -128,6 +128,7 @@ var (
 		// every earlier one, and a client reconnecting mid-download wants
 		// the current phase rather than the ticks it missed.
 		"service:update-status",
+		"sound:changed",
 		"spinner:changed",
 		"system:stats",
 		"theme:changed",

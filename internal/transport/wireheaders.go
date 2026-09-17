@@ -22,8 +22,8 @@ type ContentSecurityPolicy string
 // to load, not from a template:
 //
 //   - default-src 'self' is the floor every unlisted directive falls
-//     back to (media, worker, manifest, frame). The bundle loads none of
-//     those today, so the floor is what a future one trips.
+//     back to (worker, manifest, frame). The bundle loads none of those
+//     today, so the floor is what a future one trips.
 //   - script-src 'self', with no 'unsafe-inline' and no 'unsafe-eval'.
 //     The production bundle carries no eval, no new Function, no
 //     WebAssembly and no Worker. The first-paint theme script lives in
@@ -40,6 +40,11 @@ type ContentSecurityPolicy string
 //     previews and the markdown image host.
 //   - font-src needs data: beside 'self': the frontend build inlines
 //     small woff2 faces as data URIs and serves the rest from /assets.
+//   - media-src needs blob: beside 'self': a custom notification cue
+//     arrives as base64 in the sounds listing and is played from an
+//     object URL over its decoded bytes. Not data: — the bundled cues
+//     are served from /assets, and nothing turns a remote URL into a
+//     sound.
 //   - connect-src 'self' covers both the manifest fetch and the
 //     WebSocket, which is same-origin by construction — the manifest's
 //     wsUrl is derived from the request's own Host (deriveWSURL) and the
@@ -54,6 +59,7 @@ const CSPProduction ContentSecurityPolicy = "default-src 'self'; " +
 	"style-src 'self' 'unsafe-inline'; " +
 	"img-src 'self' data: blob: http: https:; " +
 	"font-src 'self' data:; " +
+	"media-src 'self' blob:; " +
 	"connect-src 'self'; " +
 	"object-src 'none'; " +
 	"base-uri 'self'; " +
@@ -85,6 +91,7 @@ const CSPDevServer ContentSecurityPolicy = "default-src 'self'; " +
 	"style-src 'self' 'unsafe-inline'; " +
 	"img-src 'self' data: blob: http: https:; " +
 	"font-src 'self' data:; " +
+	"media-src 'self' blob:; " +
 	"connect-src 'self' ws: wss:; " +
 	"object-src 'none'; " +
 	"base-uri 'self'; " +

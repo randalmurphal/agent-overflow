@@ -182,6 +182,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 	if a.spinnerWatcher != nil {
 		record("close spinner watcher", a.spinnerWatcher.Close())
 	}
+	if a.soundWatcher != nil {
+		record("close sound watcher", a.soundWatcher.Close())
+	}
 	if a.workflowApplication().Engine() != nil {
 		engineErr := a.workflowApplication().CloseEngine()
 		// No new lifecycle events can arrive after the engine closes. Let the

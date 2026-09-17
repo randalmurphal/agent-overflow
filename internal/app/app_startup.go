@@ -726,6 +726,7 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	a.startWorkflowDefinitionsWatcher(dbDir)
 	a.initThemeDirectory()
 	a.initSpinnerDirectory()
+	a.initSoundDirectory()
 	a.startDeviceNameWatcher()
 	return nil
 }
@@ -785,4 +786,23 @@ func (a *App) initSpinnerDirectory() {
 		log.Printf("spinner directory setup: %v", err)
 	}
 	a.startSpinnerWatcher(service.Dir())
+}
+
+// initSoundDirectory materializes <configDir>/sounds (dir + the generated
+// SOUNDS.md reference) and arms the live-reload watcher over it.
+//
+// Nothing fails boot, for the reason spinners does not: a sounds directory
+// that cannot be created costs live reload, the on-disk reference and the
+// ability to add a custom cue, while GetSoundFiles still answers and every
+// notification still plays one of the cues bundled with the frontend.
+func (a *App) initSoundDirectory() {
+	service, err := a.soundService()
+	if err != nil {
+		log.Printf("sound directory unavailable: %v", err)
+		return
+	}
+	if err := service.EnsureBoot(); err != nil {
+		log.Printf("sound directory setup: %v", err)
+	}
+	a.startSoundWatcher(service.Dir())
 }

@@ -217,6 +217,13 @@ export const BrowserHostReport = dispatch('BrowserHostReport');
 // DEGRADED path throws from its mock rather than omitting the binding.
 export const GetThemeFiles = dispatch('GetThemeFiles');
 export const GetSpinnerFiles = dispatch('GetSpinnerFiles');
+
+// The custom notification-cue library (stores/sounds.svelte.ts). The two
+// writes are `settings:write`, so a test wanting a REFUSED add or delete
+// throws from its mock rather than omitting the binding.
+export const GetSoundFiles = dispatch('GetSoundFiles');
+export const PutSoundFile = dispatch('PutSoundFile');
+export const DeleteSoundFile = dispatch('DeleteSoundFile');
 export const SetAppearance = dispatch('SetAppearance');
 export const SetWindowBackgroundColor = dispatch('SetWindowBackgroundColor');
 

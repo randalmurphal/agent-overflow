@@ -46,13 +46,25 @@ export type CommitMessageStyle = "conventional" | "repo" | "custom";
 export type NotifyQuietWhen = "never" | "focused" | "threadVisible" | "focusedAndThreadVisible";
 
 /**
- * The built-in notification cues (settings.NotifyCue*). One list serves every
- * event. Each value but `system` names one asset under `lib/assets/sounds`;
- * `stores/notificationSound.ts` is the one place that maps it to a URL.
- * `system` names no asset: the OS banner plays its own sound and no cue
- * frame is sent.
+ * The built-in notification cues (settings.BuiltinNotifyCues). One list serves
+ * every event. Each value but `system` names one asset under
+ * `lib/assets/sounds`; `stores/notificationSound.ts` is the one place that
+ * maps it to a URL. `system` names no asset: the OS banner plays its own
+ * sound and no cue frame is sent.
  */
-export type NotifyCue = "swoosh" | "marimba" | "chord" | "knock" | "pop" | "hum" | "boop" | "system";
+export type BuiltinNotifyCue = "swoosh" | "marimba" | "chord" | "knock" | "pop" | "hum" | "boop" | "system";
+
+/**
+ * What a `notifySoundCue*` key may carry: a built-in, or `custom:<id>` naming
+ * a file in the backend host's sounds directory (internal/soundlib).
+ *
+ * The custom arm is `custom:${string}` rather than a union of the ids in the
+ * listing: the legal set changes whenever the user adds or deletes a cue, so
+ * no type could enumerate it. The exact rule — including the id grammar — is
+ * `FRONTEND_SETTING_PATTERNS` in the generated defaults, which carries the
+ * regular expression Go validates against.
+ */
+export type NotifyCue = BuiltinNotifyCue | `custom:${string}`;
 
 /**
  * One breadcrumb hop in the agent companion's scope trail. The first entry

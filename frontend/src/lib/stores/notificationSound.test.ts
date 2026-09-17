@@ -8,6 +8,13 @@ import {
   __unlockNotificationSoundForTest,
 } from './notificationSound';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
+import { setBindingMock, resetBindingMocks } from '../../test/mocks/bindings-app';
+import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
+import {
+  __resetCustomSoundsForTest,
+  customSoundUrl,
+  ensureCustomSounds,
+} from './sounds.svelte';
 
 vi.mock('../utils/frontendErrorCapture', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../utils/frontendErrorCapture')>()),
@@ -23,8 +30,23 @@ class FakeAudio {
   currentTime = 7;
   preload = 'none';
   plays = 0;
-  constructor(readonly src: string) {
+  pauses = 0;
+  loads = 0;
+  src: string;
+  constructor(src: string) {
+    this.src = src;
     FakeAudio.instances.push(this);
+  }
+  // The three calls that unhook an element from a revoked object URL. An
+  // element that kept one would hold the decoded audio and play nothing.
+  pause(): void {
+    this.pauses += 1;
+  }
+  removeAttribute(name: string): void {
+    if (name === 'src') this.src = '';
+  }
+  load(): void {
+    this.loads += 1;
   }
   play(): Promise<void> | undefined {
     this.plays += 1;
@@ -61,7 +83,25 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   __resetNotificationSoundForTest();
+  __resetCustomSoundsForTest();
+  resetBindingMocks();
 });
+
+/** base64 of one byte, enough to become a Blob and an object URL. */
+const CUE_BYTES = btoa('\x00');
+
+/** Seed the backend's cue library and wait for this screen to hold it. */
+async function seedLibrary(ids: string[]): Promise<void> {
+  setBindingMock('GetSoundFiles', () => ({
+    dir: '/cfg/sounds',
+    sounds: ids.map((id) => ({ id, wav: CUE_BYTES })),
+    warnings: [],
+  }));
+  ensureCustomSounds();
+  await vi.waitFor(() => {
+    for (const id of ids) expect(customSoundUrl(id)).not.toBeNull();
+  });
+}
 
 describe('notification cue playback', () => {
   it('plays a built-in cue once the page has been interacted with', () => {
@@ -198,5 +238,125 @@ describe('notification:sound frames', () => {
     }
     expect(totalPlays()).toBe(0);
     expect(reported).not.toHaveBeenCalled();
+  });
+});
+
+// A `custom:<id>` names a file in the BACKEND HOST's sounds directory, so the
+// bytes come from the library this screen holds rather than from the bundle.
+describe('custom cues', () => {
+  beforeEach(() => {
+    __unlockNotificationSoundForTest();
+  });
+
+  it('plays a custom cue from the library the backend listed', async () => {
+    await seedLibrary(['desk-bell']);
+
+    applyNotificationSoundEvent({ event: 'turn-complete', cue: 'custom:desk-bell' });
+
+    expect(totalPlays()).toBe(1);
+    expect(FakeAudio.instances[0].src).toBe(customSoundUrl('desk-bell'));
+    expect(reported).not.toHaveBeenCalled();
+  });
+
+  // The frame can name a cue this screen does not have: deleted a second ago,
+  // or listed on a host whose reply has not landed. A notification that makes
+  // no sound at all is worse than one that makes the usual sound.
+  it("substitutes the event's default for a cue this screen does not have", async () => {
+    await seedLibrary([]);
+
+    applyNotificationSoundEvent({ event: 'turn-complete', cue: 'custom:desk-bell' });
+
+    expect(totalPlays()).toBe(1);
+    // SETTINGS_DEFAULTS.notifySoundCueTurnComplete, from the generated mirror
+    // of DefaultSettings — not a reading of what the user chose.
+    expect(FakeAudio.instances[0].src).toContain('swoosh');
+    expect(reported).toHaveBeenCalledWith(
+      'custom notification cue is missing, played the default',
+      'custom:desk-bell',
+    );
+  });
+
+  it.each([
+    ['input-needed', 'knock'],
+    ['attention', 'hum'],
+  ])('substitutes the %s default', async (event, fallback) => {
+    await seedLibrary([]);
+
+    applyNotificationSoundEvent({ event, cue: 'custom:gone' });
+
+    expect(FakeAudio.instances[0].src).toContain(fallback);
+  });
+
+  // With no event there is no defined substitution, so the honest outcome is
+  // silence and a note, exactly as for a cue value nobody recognises.
+  it('stays silent for a missing custom cue with no event to fall back on', async () => {
+    await seedLibrary([]);
+
+    playNotificationCue('custom:desk-bell');
+
+    expect(FakeAudio.instances).toHaveLength(0);
+    expect(reported).toHaveBeenCalledWith(
+      'notification cue is not a built-in',
+      'custom:desk-bell',
+    );
+  });
+
+  // The object URL behind a cached element is revoked the moment the listing
+  // is replaced. Keeping the element would mean a cue that silently plays
+  // nothing for the rest of the page's life.
+  it('drops its cached custom elements when the library changes', async () => {
+    await seedLibrary(['desk-bell']);
+    const teardown = installNotificationSoundUnlock();
+    playNotificationCue('custom:desk-bell');
+    const stale = FakeAudio.instances[0];
+    expect(stale.src).not.toBe('');
+
+    setBindingMock('GetSoundFiles', () => ({
+      dir: '/cfg/sounds',
+      sounds: [{ id: 'desk-bell', wav: CUE_BYTES }],
+      warnings: [],
+    }));
+    emitWailsEvent('sound:changed', null);
+    await vi.waitFor(() => {
+      expect(stale.src).toBe('');
+    });
+    expect(stale.pauses).toBe(1);
+    expect(stale.loads).toBe(1);
+
+    // The next play mints a fresh element over the URL that is live now.
+    clock += NOTIFICATION_SOUND_COOLDOWN_MS;
+    playNotificationCue('custom:desk-bell');
+    expect(FakeAudio.instances).toHaveLength(2);
+    expect(FakeAudio.instances[1].src).toBe(customSoundUrl('desk-bell'));
+    teardown();
+  });
+
+  // Built-in elements are backed by bundle URLs that nothing revokes, so a
+  // library change must not throw them away.
+  it('keeps built-in elements across a library change', async () => {
+    await seedLibrary(['desk-bell']);
+    const teardown = installNotificationSoundUnlock();
+    playNotificationCue('swoosh');
+    const builtin = FakeAudio.instances[0];
+
+    emitWailsEvent('sound:changed', null);
+    await vi.waitFor(() => {
+      expect(customSoundUrl('desk-bell')).not.toBeNull();
+    });
+    clock += NOTIFICATION_SOUND_COOLDOWN_MS;
+    playNotificationCue('swoosh');
+
+    expect(FakeAudio.instances).toHaveLength(1);
+    expect(builtin.plays).toBe(2);
+    teardown();
+  });
+
+  // `CUE_URLS['constructor']` is a truthy INHERITED property. A cue value
+  // arrives on the wire, so the lookup has to be an own-property check.
+  it('refuses a cue value that names an inherited property', () => {
+    playNotificationCue('constructor');
+
+    expect(FakeAudio.instances).toHaveLength(0);
+    expect(reported).toHaveBeenCalledWith('notification cue is not a built-in', 'constructor');
   });
 });

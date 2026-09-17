@@ -94,7 +94,7 @@ func TestEventVisibleToOrigin(t *testing.T) {
 // reconnect and fire one full-listing refetch per frame. Replay must hand
 // back exactly one.
 func TestRefetchSignalChannelsAreLatestOnly(t *testing.T) {
-	for _, channel := range []string{"theme:changed", "spinner:changed", "workflow:definitions-changed"} {
+	for _, channel := range []string{"theme:changed", "spinner:changed", "sound:changed", "workflow:definitions-changed"} {
 		switch channelRetention(channel) {
 		case RetentionLatestOnly:
 			// What this test is about.

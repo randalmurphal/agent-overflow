@@ -398,6 +398,13 @@ export {
   // host-scoped for the reason SetAppearance is.
   PreviewNotificationSound,
 
+  // The custom notification-cue library (<configDir>/sounds). Unlike themes
+  // and spinners it belongs to the backend host, not to this screen: the
+  // machine that raises the notification is the one holding the file.
+  GetSoundFiles,
+  PutSoundFile,
+  DeleteSoundFile,
+
   // Review pane diffs (workspace / branch / per-commit / edits)
   GetBranchBaseDiff,
   GetWorkspaceCurrentDiff,

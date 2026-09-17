@@ -786,6 +786,15 @@ const STATIC_FIELDS = [
     conditional: true,
   },
   {
+    id: 'notifications.custom-sounds',
+    section: 'notifications',
+    heading: 'Custom sounds',
+    label: 'Custom sounds',
+    hint: 'Your own cues, kept on this computer and offered to every screen attached to it.',
+    keywords: ['custom', 'upload', 'import', 'wav', 'mp3', 'own sound', 'add', 'library', 'ringtone'],
+    conditional: true,
+  },
+  {
     id: 'notifications.phone-push',
     section: 'notifications',
     heading: 'Phone push',

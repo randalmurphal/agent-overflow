@@ -224,10 +224,7 @@ func emitFrontendConstraints(b *strings.Builder) {
 		"monoFont": allowedFonts, "defaultThreadEnvMode": allowedThreadEnvModes,
 		"paneDensity": allowedPaneDensities, "activityRunDefault": allowedActivityRunDefaults,
 		"notifyQuietWhen": allowedNotifyQuietWhen, "projectSortMode": allowedProjectSortModes,
-		"notifySoundCueTurnComplete": allowedNotifyCues,
-		"notifySoundCueInputNeeded":  allowedNotifyCues,
-		"notifySoundCueAttention":    allowedNotifyCues,
-		"usagePeriod":                allowedUsagePeriods,
+		"usagePeriod": allowedUsagePeriods,
 	}
 	b.WriteString("\nexport const FRONTEND_SETTING_OPTIONS: Partial<Record<keyof Settings, readonly string[]>> = {\n")
 	keys := make([]string, 0, len(options))
@@ -243,6 +240,16 @@ func emitFrontendConstraints(b *strings.Builder) {
 		sort.Strings(values)
 		encoded, _ := json.Marshal(values)
 		fmt.Fprintf(b, "  %s: %s,\n", strconv.Quote(key), encoded)
+	}
+	b.WriteString("};\n")
+	// The cue keys are PATTERNS, not options: a legal value may name a file
+	// the user added to <configDir>/sounds minutes ago, which no generated
+	// list could enumerate. The regular-expression source is Go's
+	// (settings.NotifyCuePatternSource), so the frontend validates against
+	// the same rule the backend enforces rather than a hand-kept copy.
+	b.WriteString("\nexport const FRONTEND_SETTING_PATTERNS: Partial<Record<keyof Settings, string>> = {\n")
+	for _, key := range notifyCueKeys {
+		fmt.Fprintf(b, "  %s: %s,\n", strconv.Quote(key), tsString(NotifyCuePatternSource))
 	}
 	b.WriteString("};\n")
 	b.WriteString("\nexport const FRONTEND_SETTING_RANGES: Partial<Record<keyof Settings, readonly [number, number]>> = {\n")

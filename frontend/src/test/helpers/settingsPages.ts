@@ -25,6 +25,7 @@ export async function seedSettingsPages(): Promise<void> {
   setBindingMock('ListAvailableEditors', async () => []);
   setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
   setBindingMock('GetSpinnerFiles', async () => ({ dir: '/tmp/spinners', sprites: [], warnings: [] }));
+  setBindingMock('GetSoundFiles', async () => ({ dir: '/tmp/sounds', sounds: [], warnings: [] }));
   // The notifications page reads the phone-push status on mount.
   setBindingMock('GetPushSenderStatus', async () => ({
     configured: false,

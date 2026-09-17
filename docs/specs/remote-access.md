@@ -2262,6 +2262,17 @@ Prerequisite sweep, valuable standalone:
   dropped with a note, never queued), and reporting a refused or
   unavailable `play()` through `reportFrontendDiagnostic` rather than
   throwing.
+  **Custom cues** live on the BACKEND host under `<configDir>/sounds/`
+  (`internal/soundlib`, watched like the spinners directory) and are
+  offered to every screen attached to it, so the three cue keys also
+  accept `custom:<id>`. Nothing a user uploads is stored or played as
+  uploaded: the page decodes it with the engine's own
+  `AudioContext.decodeAudioData`, re-renders it to a canonical 44100 Hz
+  mono 16-bit WAV of at most 3 seconds, and Go re-validates that shape
+  byte by byte before writing and again on every listing, returning a
+  named warning for each file it refuses. A cue a screen's listing does
+  not hold plays that event's default instead, so a cue deleted mid-flight
+  costs the usual sound rather than silence.
 - **Approval policy**: pending approvals need a TTL / abandon policy so
   a turn does not hang forever holding a workspace when no device
   answers; approving from a notification is not allowed (app-open, and

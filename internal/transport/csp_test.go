@@ -72,8 +72,8 @@ func TestCSPRefusesFramingAndBaseRewrites(t *testing.T) {
 			// away and lose its state. Refusing the submit is the
 			// better failure.
 			"form-action": "'none'",
-			// The floor for media-src, worker-src, manifest-src and
-			// frame-src, none of which the bundle uses today.
+			// The floor for worker-src, manifest-src and frame-src,
+			// none of which the bundle uses today.
 			"default-src": "'self'",
 		} {
 			sources, ok := directives[directive]
@@ -106,6 +106,8 @@ func TestCSPAdmitsWhatTheBundleLoads(t *testing.T) {
 		{"img-src", "data:", "spinner sprite strips and the in-app browser's frame JPEGs"},
 		{"img-src", "blob:", "attachment previews and the markdown image host"},
 		{"font-src", "data:", "the frontend build inlines small woff2 faces as data URIs"},
+		{"media-src", "blob:", "custom notification cues decoded from the sounds listing"},
+		{"media-src", "'self'", "the bundled notification cues are served from /assets"},
 		{"font-src", "'self'", "the rest of the Hack Nerd Font slices are served from /assets"},
 		{"connect-src", "'self'", "the manifest fetch and the same-origin WebSocket"},
 	} {

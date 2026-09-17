@@ -239,6 +239,65 @@ func TestABuiltInCueSilencesTheBanner(t *testing.T) {
 	wantSilent(t, sender.snapshot(), true, "default built-in cue")
 }
 
+// A `custom:<id>` cue is a BUILT-IN as far as this side is concerned: the
+// host publishes the value verbatim and silences the banner, and the player
+// is the only thing that knows the difference. The one alternative — Go
+// resolving the id against the sounds directory before publishing — would
+// put a filesystem read on the notification path and would still be wrong,
+// because the screen that plays the cue may not be the one that has the file.
+func TestACustomCueTravelsLikeABuiltIn(t *testing.T) {
+	app, recorder := soundApp(t)
+	sender := app.osNotifications.(*recordingNotificationSender)
+	updateSoundSettings(t, app, map[string]any{"notifySoundCueTurnComplete": "custom:desk-bell"})
+
+	if err := app.notifyOS(kindSend(notify.KindTurnComplete)); err != nil {
+		t.Fatalf("notifyOS: %v", err)
+	}
+	wantOneCue(t, recorder, notify.SoundTurnComplete, "custom:desk-bell")
+	wantSilent(t, sender.snapshot(), true, "custom cue")
+}
+
+// The same answer from the two pure helpers directly, including for a cue id
+// no file backs. Neither may treat an unresolvable custom cue as the system
+// sound, which would hand the banner a second noise on top of the frame.
+func TestCustomCueHelpersAgreeWithTheBuiltInPath(t *testing.T) {
+	current := settings.DefaultSettings
+	current.NotifySoundCueTurnComplete = "custom:desk-bell"
+	current.NotifySoundCueInputNeeded = "custom:never-added"
+
+	for _, tc := range []struct {
+		kind  notify.Kind
+		event notify.SoundEvent
+		cue   string
+	}{
+		{notify.KindTurnComplete, notify.SoundTurnComplete, "custom:desk-bell"},
+		{notify.KindApprovalNeeded, notify.SoundInputNeeded, "custom:never-added"},
+	} {
+		cue, enabled := notificationSoundCueIn(current, tc.event)
+		if !enabled || cue != tc.cue {
+			t.Fatalf("notificationSoundCueIn(%s) = %q/%v, want %q/true", tc.event, cue, enabled, tc.cue)
+		}
+		if !hostBannerSilentIn(current, tc.kind) {
+			t.Fatalf("%s: the banner kept the platform sound while a custom cue frame plays", tc.kind)
+		}
+	}
+}
+
+// The preview path resolves its two sound answers through the same helpers,
+// so a custom cue previews as a frame with a silent banner rather than as an
+// OS notification with the platform sound.
+func TestPreviewNotificationSoundPlaysACustomCue(t *testing.T) {
+	app, recorder := soundApp(t)
+	sender := app.osNotifications.(*recordingNotificationSender)
+	updateSoundSettings(t, app, map[string]any{"notifySoundCueAttention": "custom:desk-bell"})
+
+	if err := app.PreviewNotificationSound(string(notify.SoundAttention)); err != nil {
+		t.Fatalf("PreviewNotificationSound: %v", err)
+	}
+	wantOneCue(t, recorder, notify.SoundAttention, "custom:desk-bell")
+	wantSilent(t, sender.snapshot(), true, "custom cue preview")
+}
+
 // The system cue is the one choice that means "let the banner make the
 // noise": no frame, and the banner keeps the platform sound.
 func TestTheSystemCueLeavesTheBannerAudible(t *testing.T) {

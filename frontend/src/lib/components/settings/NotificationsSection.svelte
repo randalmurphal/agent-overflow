@@ -33,6 +33,7 @@
   import Volume2 from '@lucide/svelte/icons/volume-2';
   import type { NotifyCue, NotifyQuietWhen, Settings } from '../../types/settings';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
+  import CustomSoundsBlock from './CustomSoundsBlock.svelte';
   import Icon from '../primitives/Icon.svelte';
   import IconButton from '../primitives/IconButton.svelte';
   import PhonePushBlock from './PhonePushBlock.svelte';
@@ -42,6 +43,11 @@
   import { SELECT_CLASS } from './styles';
   import type { SettingsFieldId } from './fields';
   import { playNotificationCue } from '../../stores/notificationSound';
+  import {
+    customSoundsLoaded,
+    ensureCustomSounds,
+    peekCustomSounds,
+  } from '../../stores/sounds.svelte';
   import { PreviewNotificationSound } from '../../stores/bindings';
   import { userFacingError } from '../../utils/userFacingError';
 
@@ -124,6 +130,9 @@
     { value: 'system', label: 'System sound' },
   ];
 
+  /** The prefix a cue value carries when it names a file in the library. */
+  const CUSTOM_PREFIX = 'custom:';
+
   let settings = $derived(getSettings());
   // The one failure this section can produce. A preview of the SYSTEM sound
   // is a real OS notification on the host, so it can be refused (permission
@@ -131,20 +140,64 @@
   // makes no sound with no explanation reads as a broken speaker.
   let previewError = $state('');
 
+  // The pickers below offer the library whether or not the user is about to
+  // edit it, so the listing is acquired with the section. CustomSoundsBlock
+  // acquires it too; the hold is shared and idempotent.
+  $effect(() => {
+    ensureCustomSounds();
+  });
+
+  let library = $derived(peekCustomSounds());
+  let libraryLoaded = $derived(customSoundsLoaded());
+
   function cueOf(key: keyof Settings): NotifyCue {
     return settings[key] as NotifyCue;
   }
 
+  /**
+   * The id of a `custom:<id>` cue this backend's library does not hold, or
+   * null for anything that can be played.
+   *
+   * Before the first listing arrives every custom cue would answer "missing",
+   * which is a different statement from the one the warning makes, so an
+   * unloaded library claims nothing.
+   */
+  function missingCustomId(cue: string): string | null {
+    if (!libraryLoaded || !cue.startsWith(CUSTOM_PREFIX)) return null;
+    const id = cue.slice(CUSTOM_PREFIX.length);
+    return library.sounds.some((sound) => sound.id === id) ? null : id;
+  }
+
+  /**
+   * The custom entries one picker offers.
+   *
+   * A cue the library no longer holds is listed too: a `<select>` whose value
+   * matches no option renders BLANK, which would hide the very choice the
+   * warning underneath it is about.
+   */
+  function customOptions(cue: NotifyCue): Array<{ value: string; label: string }> {
+    const options = library.sounds.map((sound) => ({
+      value: `${CUSTOM_PREFIX}${sound.id}`,
+      label: sound.id,
+    }));
+    const missing = missingCustomId(cue);
+    if (missing !== null) options.push({ value: cue, label: `${missing} (missing)` });
+    return options;
+  }
+
   // Auditioning a cue is two different operations, because the two sounds
-  // come from different places. A built-in is an asset in this bundle, so
-  // the page plays it. The system sound is not a file this app owns and only
-  // ever arrives attached to a banner, so the only honest preview is asking
-  // the host to raise one — `PreviewNotificationSound`, host-scoped and
-  // routed to the backend this page is editing (settingsComputer.call).
+  // come from different places. A built-in is an asset in this bundle and a
+  // custom cue is bytes this screen already holds, so the page plays both.
+  // The system sound is not a file this app owns and only ever arrives
+  // attached to a banner, so the only honest preview is asking the host to
+  // raise one — `PreviewNotificationSound`, host-scoped and routed to the
+  // backend this page is editing (settingsComputer.call).
   async function previewSound(event: (typeof SOUND_EVENTS)[number]): Promise<void> {
     previewError = '';
     if (cueOf(event.cueKey) !== 'system') {
-      playNotificationCue(cueOf(event.cueKey));
+      // The event travels so a cue the library has lost falls back to that
+      // event's default, exactly as a real notification would.
+      playNotificationCue(cueOf(event.cueKey), event.testid);
       return;
     }
     try {
@@ -160,13 +213,16 @@
      guesswork, and the click that plays one is also the user gesture every
      engine requires before it will let the page make a sound at all. -->
 {#snippet soundEvent(event: (typeof SOUND_EVENTS)[number])}
+  {@const cue = cueOf(event.cueKey)}
+  {@const customs = customOptions(cue)}
+  {@const missing = missingCustomId(cue)}
   <SettingsField id={event.field} label={event.label} hint={event.hint} stacked>
     <div class="flex items-center gap-2">
       <select
         class={`${SELECT_CLASS} min-w-0 flex-1`}
         aria-label={`Cue for ${event.label}`}
         data-testid={`settings-sound-cue-${event.testid}`}
-        value={cueOf(event.cueKey)}
+        value={cue}
         disabled={!settings[event.enabledKey]}
         onchange={(e) =>
           updateSetting(event.cueKey, (e.target as HTMLSelectElement).value as NotifyCue)}
@@ -174,10 +230,17 @@
         {#each CUE_OPTIONS as option (option.value)}
           <option value={option.value}>{option.label}</option>
         {/each}
+        {#if customs.length > 0}
+          <optgroup label="Custom">
+            {#each customs as option (option.value)}
+              <option value={option.value}>{option.label}</option>
+            {/each}
+          </optgroup>
+        {/if}
       </select>
       <IconButton
         label={`Play the ${event.label}`}
-        title={cueOf(event.cueKey) === 'system'
+        title={cue === 'system'
           ? 'Send a test notification with the system sound'
           : undefined}
         disabled={!settings[event.enabledKey]}
@@ -192,6 +255,17 @@
         onToggle={(value) => updateSetting(event.enabledKey, value)}
       />
     </div>
+    <!-- Not an error and not a reason to change the setting for the user:
+         the cue may come back the moment the file does, and until then the
+         backend still sends this event with its default sound. -->
+    {#if missing !== null}
+      <p
+        class="mt-1 text-[0.75rem] text-warning"
+        data-testid={`settings-sound-missing-${event.testid}`}
+      >
+        {missing} is missing; the default sound plays instead.
+      </p>
+    {/if}
   </SettingsField>
 {/snippet}
 
@@ -380,6 +454,12 @@
             {#if previewError}
               <SettingsCallout tone="error">{previewError}</SettingsCallout>
             {/if}
+
+            <!-- The library the three pickers above draw from. It hides with
+                 the rest of the stack when sounds are off, the section's rule
+                 throughout: a library of cues that cannot play reads as
+                 broken. -->
+            <CustomSoundsBlock />
           {/if}
         </div>
       </div>

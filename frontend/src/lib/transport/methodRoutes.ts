@@ -78,6 +78,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3379369923: 'project', // DeleteProject
 	554913120: 'thread', // DeleteProposedPlanComment
 	784096448: 'home', // DeleteProviderCustomEnvVar
+	2725195951: 'home', // DeleteSoundFile
 	1186337974: 'thread', // DeleteThread
 	4104302889: 'home', // DeleteThreadGroup
 	604263015: 'home', // DevicePairingStatus
@@ -138,6 +139,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	324671375: 'home', // GetSSHConnection
 	2230314013: 'selected', // GetServiceUpdateStatus
 	2554697378: 'home', // GetSettings
+	3138117849: 'home', // GetSoundFiles
 	2622552651: 'home', // GetSpinnerFiles
 	2329592604: 'home', // GetTerminalReplay
 	2000462111: 'home', // GetThemeFiles
@@ -268,6 +270,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	907422467: 'thread', // ProviderTerminalReplay
 	2998028796: 'thread', // ProviderTerminalResize
 	1382066673: 'thread', // ProviderTerminalSetControl
+	2418838611: 'home', // PutSoundFile
 	2424974671: 'thread', // ReadThreadRemoteLog
 	2274850917: 'home', // RecheckClaudeAccount
 	227978482: 'home', // RecheckCodexAccount

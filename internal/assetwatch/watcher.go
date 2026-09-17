@@ -14,10 +14,10 @@ import (
 )
 
 // watcher is the shared core behind every flat client-asset directory
-// the app live-reloads: <configDir>/themes today, <configDir>/spinners
-// beside it. One fsnotify watch on one directory, a debounce, a
-// self-write suppression ledger, and a re-arm for the directory itself
-// being removed.
+// the app live-reloads: <configDir>/themes, <configDir>/spinners and
+// <configDir>/sounds beside it. One fsnotify watch on one directory, a
+// debounce, a self-write suppression ledger, and a re-arm for the
+// directory itself being removed.
 //
 // The per-directory part is exactly one predicate — which BASE NAMES in
 // that directory are content this app reads — so that is the only thing
@@ -27,8 +27,8 @@ import (
 // suppression consume, and the silent-death-on-directory-removal case
 // each have a comment below explaining a tradeoff that was chosen once.
 //
-// ThemeWatcher and SpinnerWatcher wrap this core so their capabilities
-// remain distinct while the event loop stays single-sourced.
+// ThemeWatcher, SpinnerWatcher and SoundWatcher wrap this core so their
+// capabilities remain distinct while the event loop stays single-sourced.
 type watcher struct {
 	// label prefixes every log line and error so a message names the
 	// watcher a reader is looking for ("theme watcher: ...").

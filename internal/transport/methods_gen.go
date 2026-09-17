@@ -107,6 +107,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "DeleteProject", ID: 3379369923, Scope: "threads:operate", Route: "project"},                              // main.App.DeleteProject
 	{Name: "DeleteProposedPlanComment", ID: 554913120, Scope: "threads:operate", Route: "thread"},                    // main.App.DeleteProposedPlanComment
 	{Name: "DeleteProviderCustomEnvVar", ID: 784096448, Scope: "settings:write", Route: "home", StepUp: true},        // main.App.DeleteProviderCustomEnvVar
+	{Name: "DeleteSoundFile", ID: 2725195951, Scope: "settings:write", Route: "home"},                                // main.App.DeleteSoundFile
 	{Name: "DeleteThread", ID: 1186337974, Scope: "threads:operate", Route: "thread"},                                // main.App.DeleteThread
 	{Name: "DeleteThreadGroup", ID: 4104302889, Scope: "threads:operate", Route: "home"},                             // main.App.DeleteThreadGroup
 	{Name: "DevicePairingStatus", ID: 604263015, Scope: "access:admin", Route: "home"},                               // main.App.DevicePairingStatus
@@ -167,6 +168,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetSSHConnection", ID: 324671375, Scope: "host", Route: "home"},                                          // main.App.GetSSHConnection
 	{Name: "GetServiceUpdateStatus", ID: 2230314013, Scope: "access:admin", Route: "selected"},                       // main.App.GetServiceUpdateStatus
 	{Name: "GetSettings", ID: 2554697378, Scope: "settings:read", Route: "home"},                                     // main.App.GetSettings
+	{Name: "GetSoundFiles", ID: 3138117849, Scope: "settings:read", Route: "home"},                                   // main.App.GetSoundFiles
 	{Name: "GetSpinnerFiles", ID: 2622552651, Scope: "settings:read", Route: "home"},                                 // main.App.GetSpinnerFiles
 	{Name: "GetTerminalReplay", ID: 2329592604, Scope: "terminal:operate", Route: "home"},                            // main.App.GetTerminalReplay
 	{Name: "GetThemeFiles", ID: 2000462111, Scope: "settings:read", Route: "home"},                                   // main.App.GetThemeFiles
@@ -297,6 +299,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ProviderTerminalReplay", ID: 907422467, Scope: "terminal:operate", Route: "thread"},                      // main.App.ProviderTerminalReplay
 	{Name: "ProviderTerminalResize", ID: 2998028796, Scope: "terminal:operate", Route: "thread"},                     // main.App.ProviderTerminalResize
 	{Name: "ProviderTerminalSetControl", ID: 1382066673, Scope: "terminal:operate", Route: "thread"},                 // main.App.ProviderTerminalSetControl
+	{Name: "PutSoundFile", ID: 2418838611, Scope: "settings:write", Route: "home"},                                   // main.App.PutSoundFile
 	{Name: "ReadThreadRemoteLog", ID: 2424974671, Scope: "terminal:operate", Route: "thread"},                        // main.App.ReadThreadRemoteLog
 	{Name: "RecheckClaudeAccount", ID: 2274850917, Scope: "access:admin", Route: "home"},                             // main.App.RecheckClaudeAccount
 	{Name: "RecheckCodexAccount", ID: 227978482, Scope: "access:admin", Route: "home"},                               // main.App.RecheckCodexAccount

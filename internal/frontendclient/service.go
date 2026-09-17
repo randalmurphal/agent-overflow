@@ -14,6 +14,7 @@ import (
 	"agent-overflow/internal/highlight"
 	"agent-overflow/internal/highlightapp"
 	"agent-overflow/internal/keybindings"
+	"agent-overflow/internal/soundlib"
 	"agent-overflow/internal/spinner"
 	"agent-overflow/internal/sshsetup"
 	"agent-overflow/internal/theme"
@@ -31,6 +32,7 @@ type service struct {
 	bus          *transport.EventBus
 	theme        *theme.Service
 	spinner      *spinner.Service
+	sound        *soundlib.Service
 	keys         *keybindings.Service
 	highlight    *highlightapp.Service
 	updater      *appupdate.Service
@@ -39,6 +41,7 @@ type service struct {
 	nameWatch    *assetwatch.DeviceNameWatcher
 	themeWatch   *assetwatch.ThemeWatcher
 	spinnerWatch *assetwatch.SpinnerWatcher
+	soundWatch   *assetwatch.SoundWatcher
 	mu           sync.Mutex
 	closed       bool
 	jobs         sync.WaitGroup
@@ -58,6 +61,9 @@ func newService(ctx context.Context, cancel context.CancelFunc, cfg Config, comp
 	if s.spinner, err = spinner.New(cfg.ConfigDir); err != nil {
 		return nil, err
 	}
+	if s.sound, err = soundlib.New(cfg.ConfigDir); err != nil {
+		return nil, err
+	}
 	if s.keys, err = keybindings.New(cfg.ConfigDir); err != nil {
 		return nil, err
 	}
@@ -72,6 +78,9 @@ func newService(ctx context.Context, cancel context.CancelFunc, cfg Config, comp
 	if err := s.spinner.EnsureBoot(); err != nil {
 		log.Printf("frontend client: spinner files: %v", err)
 	}
+	if err := s.sound.EnsureBoot(); err != nil {
+		log.Printf("frontend client: sound files: %v", err)
+	}
 	s.themeWatch, err = assetwatch.NewThemeWatcher(s.theme.Dir(), func() { s.emit(eventchan.ThemeChanged, nil) })
 	if err != nil {
 		log.Printf("frontend client: theme watcher: %v", err)
@@ -79,6 +88,10 @@ func newService(ctx context.Context, cancel context.CancelFunc, cfg Config, comp
 	s.spinnerWatch, err = assetwatch.NewSpinnerWatcher(s.spinner.Dir(), func() { s.emit(eventchan.SpinnerChanged, nil) })
 	if err != nil {
 		log.Printf("frontend client: spinner watcher: %v", err)
+	}
+	s.soundWatch, err = assetwatch.NewSoundWatcher(s.sound.Dir(), func() { s.emit(eventchan.SoundChanged, nil) })
+	if err != nil {
+		log.Printf("frontend client: sound watcher: %v", err)
 	}
 	s.nameWatch, err = assetwatch.NewDeviceNameWatcher(cfg.DeviceName.Path(), func() {
 		name, err := s.GetDeviceName()
@@ -122,6 +135,7 @@ func (s *service) close() {
 	_ = s.nameWatch.Close()
 	_ = s.themeWatch.Close()
 	_ = s.spinnerWatch.Close()
+	_ = s.soundWatch.Close()
 	s.bus.Close()
 }
 
@@ -213,7 +227,44 @@ func (s *service) SetWindowBackgroundColor(hex string) error {
 	}
 	return err
 }
-func (s *service) GetSpinnerFiles() (spinner.Files, error)         { return s.spinner.Files(), nil }
+func (s *service) GetSpinnerFiles() (spinner.Files, error) { return s.spinner.Files(), nil }
+func (s *service) GetSoundFiles() (soundlib.Files, error)  { return s.sound.Files(), nil }
+
+// The cue library is this installation's, on the machine whose speakers play
+// it, so the controller owns the same three methods App does rather than
+// routing them to an execution computer.
+func (s *service) PutSoundFile(id string, wavBase64 string) error {
+	wav, err := soundlib.DecodeWAV(id, wavBase64)
+	if err != nil {
+		return err
+	}
+	path, err := s.sound.Path(id)
+	if err != nil {
+		return err
+	}
+	s.soundWatch.Suppress(path)
+	defer s.soundWatch.Suppress(path)
+	if err := s.sound.Put(id, wav); err != nil {
+		return err
+	}
+	s.emit(eventchan.SoundChanged, nil)
+	return nil
+}
+
+func (s *service) DeleteSoundFile(id string) error {
+	path, err := s.sound.Path(id)
+	if err != nil {
+		return err
+	}
+	s.soundWatch.Suppress(path)
+	defer s.soundWatch.Suppress(path)
+	if err := s.sound.Delete(id); err != nil {
+		return err
+	}
+	s.emit(eventchan.SoundChanged, nil)
+	return nil
+}
+
 func (s *service) GetKeybindings() (keybindings.LoadResult, error) { return s.keys.Get(), nil }
 func (s *service) UpdateKeybindings(value []keybindings.Keybinding) error {
 	if err := s.keys.Update(value); err != nil {

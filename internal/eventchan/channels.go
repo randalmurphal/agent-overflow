@@ -253,9 +253,10 @@ const (
 	SettingsUpdated Channel = "settings:updated"
 )
 
-// spinner:* / theme:* — payload-less refetch nudges from the two
-// client-asset directory watchers.
+// sound:* / spinner:* / theme:* — payload-less refetch nudges from the
+// three client-asset directory watchers.
 const (
+	SoundChanged   Channel = "sound:changed"
 	SpinnerChanged Channel = "spinner:changed"
 	ThemeChanged   Channel = "theme:changed"
 )

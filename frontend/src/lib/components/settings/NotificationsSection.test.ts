@@ -1,19 +1,51 @@
-import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import NotificationsSection from './NotificationsSection.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
 import type { Settings } from '../../types/settings';
 import { makeSettings } from '../../../test/helpers/settings';
+import { __resetCustomSoundsForTest } from '../../stores/sounds.svelte';
+import { renderCueWav } from '../../audio/renderCue';
 
-// The built-in cues are assets this bundle plays itself; jsdom has no audio
-// engine, so the player is stubbed and the assertion is which of the two
-// preview paths a click took.
+// The built-in cues are assets this bundle plays itself; happy-dom has no
+// audio engine, so the player is stubbed and the assertion is which of the
+// two preview paths a click took, and with which cue.
 const playNotificationCue = vi.fn();
 vi.mock('../../stores/notificationSound', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../stores/notificationSound')>()),
-  playNotificationCue: (cue: string) => playNotificationCue(cue),
+  playNotificationCue: (cue: string, event?: string) => playNotificationCue(cue, event),
 }));
+
+// happy-dom has no Web Audio either, so the decode-and-re-render step is
+// stubbed here. Its own contract — that what it emits is the canonical WAV
+// internal/soundlib accepts — is pinned by lib/audio/renderCue.test.ts.
+vi.mock('../../audio/renderCue', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../audio/renderCue')>()),
+  renderCueWav: vi.fn(),
+}));
+
+const renderCue = vi.mocked(renderCueWav);
+
+/** The wire body PutSoundFile should carry for `bytes`. */
+function base64Of(bytes: Uint8Array): string {
+  return btoa(String.fromCharCode(...bytes));
+}
+
+/** Seed the backend's cue library for the render that follows. */
+function seedSounds(ids: string[], warnings: string[] = [], dir = '/cfg/sounds'): void {
+  setBindingMock('GetSoundFiles', () => ({
+    dir,
+    sounds: ids.map((id) => ({ id, wav: btoa('\x00') })),
+    warnings,
+  }));
+}
+
+/** Hand the hidden input a file and fire the change the component listens for. */
+async function pickFile(input: HTMLInputElement, file: File): Promise<void> {
+  Object.defineProperty(input, 'files', { value: [file], configurable: true });
+  await fireEvent.change(input);
+}
 
 async function seed(overrides: Partial<Settings> = {}): Promise<Settings> {
   const merged = makeSettings(overrides);
@@ -30,8 +62,22 @@ async function seed(overrides: Partial<Settings> = {}): Promise<Settings> {
     lastError: '',
     registeredDevices: 0,
   }));
+  // The sound stack reads the backend's cue library on mount. Tests that
+  // care about its contents re-seed it before rendering.
+  seedSounds([]);
   await loadSettings();
   return merged;
+}
+
+/** Render, then let the library listing land before asserting on the pickers. */
+async function renderSection() {
+  const view = render(NotificationsSection);
+  await vi.waitFor(() => {
+    expect(getBindingMock('GetSoundFiles')).toHaveBeenCalled();
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  return view;
 }
 
 const perKind: Array<[string, keyof Settings]> = [
@@ -56,7 +102,12 @@ function quietWhenRadio(container: HTMLElement, value: string): HTMLInputElement
 describe('<NotificationsSection>', () => {
   beforeEach(async () => {
     playNotificationCue.mockClear();
+    renderCue.mockReset();
     await seed();
+  });
+
+  afterEach(() => {
+    __resetCustomSoundsForTest();
   });
 
   it('renders every kind on, because notifications were unconditional before these keys', async () => {
@@ -217,7 +268,9 @@ describe('<NotificationsSection>', () => {
       const { getByTestId } = render(NotificationsSection);
       await fireEvent.click(getByTestId('settings-sound-preview-turn-complete'));
 
-      expect(playNotificationCue).toHaveBeenCalledWith('swoosh');
+      // The event travels with the cue so a missing custom cue falls back to
+      // that event's default, exactly as a real notification would.
+      expect(playNotificationCue).toHaveBeenCalledWith('swoosh', 'turn-complete');
       expect(preview).not.toHaveBeenCalled();
     });
 
@@ -261,6 +314,186 @@ describe('<NotificationsSection>', () => {
       await seed({ notificationsEnabled: false });
       const { queryByRole } = render(NotificationsSection);
       expect(queryByRole('switch', { name: 'Toggle notification sounds' })).toBeNull();
+    });
+  });
+
+  // The library belongs to the BACKEND, not to this screen: every screen
+  // attached to that computer offers the same cues, and Go re-validates every
+  // file on every listing.
+  describe('custom sounds', () => {
+    it('offers the backend library after the built-ins, in one Custom group', async () => {
+      seedSounds(['desk-bell', 'zap']);
+      const { getByTestId } = await renderSection();
+
+      const select = getByTestId('settings-sound-cue-turn-complete') as HTMLSelectElement;
+      const group = select.querySelector('optgroup');
+      expect(group?.getAttribute('label')).toBe('Custom');
+      expect(Array.from(select.options).map((option) => option.value)).toEqual([
+        'swoosh', 'marimba', 'chord', 'knock', 'pop', 'hum', 'boop', 'system',
+        'custom:desk-bell', 'custom:zap',
+      ]);
+    });
+
+    it('dispatches a custom choice as the same cue key', async () => {
+      seedSounds(['desk-bell']);
+      const { getByTestId } = await renderSection();
+      await fireEvent.change(getByTestId('settings-sound-cue-attention'), {
+        target: { value: 'custom:desk-bell' },
+      });
+
+      const mock = getBindingMock('UpdateSettings');
+      expect(mock!.mock.calls[0][0]).toEqual({ notifySoundCueAttention: 'custom:desk-bell' });
+    });
+
+    it('lists each cue with a way to hear it and a way to remove it', async () => {
+      seedSounds(['desk-bell']);
+      const { getByTestId } = await renderSection();
+
+      await fireEvent.click(getByTestId('settings-sound-play-desk-bell'));
+      expect(playNotificationCue).toHaveBeenCalledWith('custom:desk-bell', undefined);
+
+      const remove = setBindingMock('DeleteSoundFile', async () => undefined);
+      await fireEvent.click(getByTestId('settings-sound-delete-desk-bell'));
+      await vi.waitFor(() => {
+        expect(remove).toHaveBeenCalledWith('desk-bell');
+      });
+    });
+
+    // A failed delete must reach the user: a row that stays put with no
+    // explanation reads as a broken button.
+    it('shows a refused delete inline', async () => {
+      seedSounds(['desk-bell']);
+      setBindingMock('DeleteSoundFile', async () => {
+        throw new Error('sounds directory is read-only');
+      });
+      const { getByTestId, findByRole } = await renderSection();
+      await fireEvent.click(getByTestId('settings-sound-delete-desk-bell'));
+
+      expect((await findByRole('alert')).textContent).toContain('read-only');
+    });
+
+    // The file is decoded and re-rendered in this page's own engine; what
+    // reaches the host is a canonical WAV this page wrote.
+    it('renders a picked file and sends the bytes under an id from its name', async () => {
+      const wav = new Uint8Array([82, 73, 70, 70, 1, 2, 3, 4]);
+      renderCue.mockResolvedValue({ wav, seconds: 0.4 });
+      const put = setBindingMock('PutSoundFile', async () => undefined);
+      const { getByTestId } = await renderSection();
+
+      await pickFile(
+        getByTestId('settings-sound-file') as HTMLInputElement,
+        new File([new Uint8Array(4)], 'Desk Bell (Final).mp3', { type: 'audio/mpeg' }),
+      );
+
+      await vi.waitFor(() => {
+        expect(put).toHaveBeenCalled();
+      });
+      expect(put.mock.calls[0]).toEqual(['desk-bell-final', base64Of(wav)]);
+    });
+
+    it.each([
+      ['Desk Bell.wav', 'desk-bell'],
+      ['  spaced  out .aiff', 'spaced-out'],
+      ['Café Chime.mp3', 'cafe-chime'],
+      ['♪♪♪.wav', 'sound'],
+      ['UPPER_snake_case.ogg', 'upper-snake-case'],
+    ])('derives the id %s -> %s', async (name, id) => {
+      renderCue.mockResolvedValue({ wav: new Uint8Array([1]), seconds: 0.1 });
+      const put = setBindingMock('PutSoundFile', async () => undefined);
+      const { getByTestId } = await renderSection();
+
+      await pickFile(getByTestId('settings-sound-file') as HTMLInputElement, new File([], name));
+
+      await vi.waitFor(() => {
+        expect(put).toHaveBeenCalled();
+      });
+      expect(put.mock.calls[0][0]).toBe(id);
+    });
+
+    // Every refusal the add can hit — a file the engine cannot decode, one
+    // past the cap, a name already taken — is shown beside the button.
+    it.each([
+      ['a file the engine refuses', () => renderCue.mockRejectedValue(new Error('That file could not be decoded as audio (bad).')), 'could not be decoded'],
+      ['a file past the cap', () => renderCue.mockRejectedValue(new Error('Keep it under 3 seconds')), 'under 3 seconds'],
+    ])('shows %s inline', async (_name, arrange, message) => {
+      arrange();
+      setBindingMock('PutSoundFile', async () => undefined);
+      const { getByTestId, findByRole } = await renderSection();
+
+      await pickFile(getByTestId('settings-sound-file') as HTMLInputElement, new File([], 'x.mp3'));
+
+      expect((await findByRole('alert')).textContent).toContain(message);
+    });
+
+    it('shows a host that refuses the write inline', async () => {
+      renderCue.mockResolvedValue({ wav: new Uint8Array([1]), seconds: 0.1 });
+      setBindingMock('PutSoundFile', async () => {
+        throw new Error('a sound named "desk-bell" already exists; delete it first');
+      });
+      const { getByTestId, findByRole } = await renderSection();
+
+      await pickFile(getByTestId('settings-sound-file') as HTMLInputElement, new File([], 'desk-bell.mp3'));
+
+      expect((await findByRole('alert')).textContent).toContain('already exists');
+    });
+
+    // A file dropped in by hand is the expected way this directory grows, so
+    // one the host cannot use has to explain itself here.
+    it('shows the directory and the listing warnings', async () => {
+      seedSounds([], ['bogus.wav: skipped, not a canonical cue'], '/cfg/sounds');
+      const { getByTestId, getByText } = await renderSection();
+
+      expect(getByTestId('settings-sound-warnings').textContent).toContain('bogus.wav');
+      expect(getByText('/cfg/sounds')).toBeTruthy();
+    });
+
+    // The chosen cue is kept visible: a <select> whose value matches no
+    // option renders blank, which would hide what the warning is about.
+    it('keeps a cue the library has lost visible, with a warning under it', async () => {
+      await seed({ notifySoundCueAttention: 'custom:gone' });
+      seedSounds(['desk-bell']);
+      const { getByTestId } = await renderSection();
+
+      const select = getByTestId('settings-sound-cue-attention') as HTMLSelectElement;
+      expect(select.value).toBe('custom:gone');
+      expect(Array.from(select.options).map((option) => option.textContent?.trim())).toContain(
+        'gone (missing)',
+      );
+      expect(getByTestId('settings-sound-missing-attention').textContent).toContain(
+        'gone is missing; the default sound plays instead.',
+      );
+    });
+
+    it('says nothing about a cue the library does hold', async () => {
+      await seed({ notifySoundCueAttention: 'custom:desk-bell' });
+      seedSounds(['desk-bell']);
+      const { getByTestId, queryByTestId } = await renderSection();
+
+      expect((getByTestId('settings-sound-cue-attention') as HTMLSelectElement).value)
+        .toBe('custom:desk-bell');
+      expect(queryByTestId('settings-sound-missing-attention')).toBeNull();
+    });
+
+    // Before the first listing arrives, "this backend has no cue by that
+    // name" and "this screen has not asked yet" look identical. Only the
+    // first is worth warning about.
+    it('does not claim a cue is missing before the library has loaded', async () => {
+      await seed({ notifySoundCueAttention: 'custom:desk-bell' });
+      setBindingMock('GetSoundFiles', () => new Promise(() => {}));
+      const { queryByTestId } = render(NotificationsSection);
+      await Promise.resolve();
+
+      expect(queryByTestId('settings-sound-missing-attention')).toBeNull();
+    });
+
+    it('hides the library with the rest of the stack when sounds are off', async () => {
+      await seed({ notificationSoundsEnabled: false });
+      seedSounds(['desk-bell']);
+      const { queryByTestId } = render(NotificationsSection);
+      await Promise.resolve();
+
+      expect(queryByTestId('settings-sound-add')).toBeNull();
+      expect(queryByTestId('settings-sound-play-desk-bell')).toBeNull();
     });
   });
 });

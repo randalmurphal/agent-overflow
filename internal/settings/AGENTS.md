@@ -48,6 +48,7 @@ Remove a retired setting from validation, residency, generated defaults, binding
 - `claudesession.go`, `claudecrosssession.go`: Claude-only session axes and live reconciliation inputs.
 - `network.go`: LAN, domain/TLS, tailnet, and configured preview ports. Validate independent halves independently.
 - `spinner.go`: custom verbs, animation exclusions, and compaction selection.
+- `notifycue.go`: the notification-cue value rule, the one authority for the built-in names plus the `custom:<id>` form the frontend mirrors.
 - `classdefaults.go`, `residency.go`, `tier.go`: storage routing and per-screen resolution.
 - `gendefaults.go`: Go-to-frontend default generation.
 

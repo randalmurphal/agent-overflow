@@ -1,11 +1,22 @@
 // This frontend owns its preferences; hosts supply only the one-time migration
 // seed. Remote settings echoes never change this screen's appearance or choices.
-import { FRONTEND_SETTINGS_KEYS, SETTINGS_DEFAULTS, FRONTEND_SETTING_OPTIONS, FRONTEND_SETTING_RANGES } from '../generated/settingsDefaults';
+import { FRONTEND_SETTINGS_KEYS, SETTINGS_DEFAULTS, FRONTEND_SETTING_OPTIONS, FRONTEND_SETTING_PATTERNS, FRONTEND_SETTING_RANGES } from '../generated/settingsDefaults';
 import type { Settings } from '../types/settings';
 import { readFrontendValue, writeFrontendValue, onFrontendValueChanged } from './frontendStorage';
 
 const KEY = 'preferences';
 const keys = new Set<string>(FRONTEND_SETTINGS_KEYS);
+
+// A key whose legal values are not a closed list carries a PATTERN instead of
+// an option list: a notification cue may name a sound the user added minutes
+// ago, which no generated enum could hold. The source is Go's
+// (settings.NotifyCuePatternSource), compiled once here rather than per
+// validated entry — the key set is fixed at build time.
+const patterns = new Map<string, RegExp>(
+  Object.entries(FRONTEND_SETTING_PATTERNS)
+    .filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+    .map(([key, source]) => [key, new RegExp(source)]),
+);
 
 function read(): Partial<Settings> {
   const value = readFrontendValue(KEY);
@@ -21,6 +32,8 @@ export function validatedFrontendPreferences(value: object): Partial<Settings> {
     const fallback = SETTINGS_DEFAULTS[key];
     const options = FRONTEND_SETTING_OPTIONS[key];
     if (options && (typeof entry !== 'string' || !options.includes(entry))) return false;
+    const pattern = patterns.get(key);
+    if (pattern && (typeof entry !== 'string' || !pattern.test(entry))) return false;
     const range = FRONTEND_SETTING_RANGES[key];
     if (range && (typeof entry !== 'number' || !Number.isInteger(entry) || entry < range[0] || entry > range[1])) return false;
     if (Array.isArray(fallback)) {

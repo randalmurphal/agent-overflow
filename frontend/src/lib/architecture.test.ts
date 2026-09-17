@@ -72,6 +72,7 @@ const MCP_SERVERS_STORE = 'lib/stores/mcpServers.svelte.ts';
 const CHAT_BAR_FAVORITES_STORE = 'lib/stores/chatBarFavorites.svelte.ts';
 const WORKFLOW_RUN_MAP_STORE = 'lib/stores/workflowRunMap.svelte.ts';
 const APPEARANCE_STORE = 'lib/stores/appearance.svelte.ts';
+const SOUNDS_STORE = 'lib/stores/sounds.svelte.ts';
 const EDITORS_STORE = 'lib/stores/editors.svelte.ts';
 const BROWSER_COMPANION_STORE = 'lib/stores/browserCompanion.svelte.ts';
 const PROVIDER_ACCOUNTS_STORE = 'lib/stores/computerAccounts.svelte.ts';
@@ -127,6 +128,13 @@ const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   // the cache the next launch reads.
   GetThemeFiles: owned('lib/stores/appearanceFiles.ts', 'readAppearanceFiles() / copyAppearanceFiles()'),
   GetSpinnerFiles: owned('lib/stores/appearanceFiles.ts', 'readSpinnerFiles() / copyAppearanceFiles()'),
+  // The cue library is one directory on one host with two mutations that
+  // invalidate the listing. A section calling PutSoundFile itself would hold a
+  // library the store never re-read, and would leave its object URLs to the
+  // garbage collector that cannot reclaim them.
+  GetSoundFiles: owned(SOUNDS_STORE, 'the sounds entity source'),
+  PutSoundFile: owned(SOUNDS_STORE, 'addCustomSound()'),
+  DeleteSoundFile: owned(SOUNDS_STORE, 'deleteCustomSound()'),
   SetAppearance: owned(APPEARANCE_STORE, 'setAppearance()'),
   SetWindowBackgroundColor: owned(APPEARANCE_STORE, 'syncWindowBackground()'),
   // The provider-account surface is one listing and one credential slot per

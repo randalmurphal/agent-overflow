@@ -1161,6 +1161,25 @@ var channelPolicies = []ChannelPolicy{
 			"`fontSize` would keep rendering the old size forever.",
 	},
 	{
+		Channel:   eventchan.SoundChanged,
+		Audience:  AudienceAny,
+		Retention: RetentionLatestOnly,
+		Scope:     ScopeSettingsRead,
+		Why: "Retention: the same payload-less refetch signal theme:changed " +
+			"and spinner:changed are — `emit(name, nil)` from a debounced " +
+			"fsnotify watcher over one directory, meaning exactly \"read " +
+			"that directory again\" — so N retained frames are N IDENTICAL " +
+			"frames and a reconnect would replay one full-listing refetch " +
+			"per frame. Latest-only rather than ephemeral: a client that was " +
+			"disconnected while a cue was added or deleted DOES need to hear " +
+			"about it once, because an event whose chosen `custom:<id>` just " +
+			"disappeared falls back to a different sound. Unkeyed (one " +
+			"directory, one global answer), so it satisfies the membership " +
+			"rule. Audience: GetSoundFiles is wire-safe and the library is " +
+			"the backend host's, shared by every screen attached to it, so " +
+			"the nudge must reach remote peers too.",
+	},
+	{
 		Channel:   eventchan.SpinnerChanged,
 		Audience:  AudienceAny,
 		Retention: RetentionLatestOnly,

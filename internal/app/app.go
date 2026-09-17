@@ -38,6 +38,7 @@ import (
 	"agent-overflow/internal/remotejobs"
 	"agent-overflow/internal/sessionruntime"
 	"agent-overflow/internal/settings"
+	"agent-overflow/internal/soundlib"
 	"agent-overflow/internal/spinner"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/terminal"
@@ -139,6 +140,12 @@ type App struct {
 	// without a restart. Nil on the same terms as themeWatcher — live
 	// reload is a convenience on top of GetSpinnerFiles.
 	spinnerWatcher *assetwatch.SpinnerWatcher
+	// soundWatcher watches <configDir>/sounds so a custom notification
+	// cue added, replaced or removed reaches every attached screen
+	// without a restart. Nil on the same terms as themeWatcher; unlike
+	// spinnerWatcher it also suppresses this process's own cue writes,
+	// which are RPCs rather than hand edits.
+	soundWatcher *assetwatch.SoundWatcher
 	// turnObservers fans provider events out to internal App features after
 	// triage handling has been attempted.
 	turnObservers appTurnObserverState
@@ -224,6 +231,12 @@ type App struct {
 	spinnerOnce sync.Once
 	spinner     *spinner.Service
 	spinnerErr  error
+	// sound is the lazy-init sounds-directory service backing the custom
+	// notification-cue bindings. Same construction contract as spinner
+	// above.
+	soundOnce sync.Once
+	sound     *soundlib.Service
+	soundErr  error
 	// eventBus is the Phase C transport that owns per-channel seq stamping
 	// and fan-out to connected webview / remote clients. main.go wires it
 	// in via SetEventBus; the atomic.Pointer means SetEventBus and

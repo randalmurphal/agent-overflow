@@ -72,19 +72,6 @@ var (
 		NotifyQuietWhenThreadVisible:           {},
 		NotifyQuietWhenFocusedAndThreadVisible: {},
 	}
-	// The built-in notification cues; see the NotifyCue* constants. Any of
-	// them is selectable for any sound event, so one table covers all three
-	// NotifySoundCue* keys.
-	allowedNotifyCues = map[string]struct{}{
-		NotifyCueSwoosh:  {},
-		NotifyCueMarimba: {},
-		NotifyCueChord:   {},
-		NotifyCueKnock:   {},
-		NotifyCuePop:     {},
-		NotifyCueHum:     {},
-		NotifyCueBoop:    {},
-		NotifyCueSystem:  {},
-	}
 	allowedProjectSortModes = map[string]struct{}{
 		"lastActivity": {},
 		"createdAt":    {},
@@ -174,16 +161,12 @@ func validateSettings(current Settings) (Settings, error) {
 	if err := validateOption("notifyQuietWhen", current.NotifyQuietWhen, allowedNotifyQuietWhen); err != nil {
 		return Settings{}, err
 	}
-	for _, cue := range []struct {
-		key   string
-		value *string
-	}{
-		{"notifySoundCueTurnComplete", &current.NotifySoundCueTurnComplete},
-		{"notifySoundCueInputNeeded", &current.NotifySoundCueInputNeeded},
-		{"notifySoundCueAttention", &current.NotifySoundCueAttention},
-	} {
+	// The one option-shaped group whose legal values are NOT a closed list:
+	// a cue may also name a file the user added to <configDir>/sounds. See
+	// notifycue.go.
+	for _, cue := range notifyCueFields(&current) {
 		*cue.value = strings.TrimSpace(*cue.value)
-		if err := validateOption(cue.key, *cue.value, allowedNotifyCues); err != nil {
+		if err := validateNotifyCue(cue.key, *cue.value); err != nil {
 			return Settings{}, err
 		}
 	}
@@ -419,24 +402,11 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		DefaultSettings.NotifyQuietWhen,
 		allowedNotifyQuietWhen,
 	)
-	current.NotifySoundCueTurnComplete = sanitizeOption(
-		"notifySoundCueTurnComplete",
-		current.NotifySoundCueTurnComplete,
-		DefaultSettings.NotifySoundCueTurnComplete,
-		allowedNotifyCues,
-	)
-	current.NotifySoundCueInputNeeded = sanitizeOption(
-		"notifySoundCueInputNeeded",
-		current.NotifySoundCueInputNeeded,
-		DefaultSettings.NotifySoundCueInputNeeded,
-		allowedNotifyCues,
-	)
-	current.NotifySoundCueAttention = sanitizeOption(
-		"notifySoundCueAttention",
-		current.NotifySoundCueAttention,
-		DefaultSettings.NotifySoundCueAttention,
-		allowedNotifyCues,
-	)
+	// The fallback stays the PER-EVENT default: a cue file that was deleted
+	// while this screen was away must leave the other two events alone.
+	for _, cue := range notifyCueFields(&current) {
+		*cue.value = sanitizeNotifyCue(cue.key, *cue.value, cue.fallback)
+	}
 	current.ActivityRunWindowRows = sanitizeActivityRunWindowRows(current.ActivityRunWindowRows)
 
 	current.TextGenerationProvider = sanitizeOption(

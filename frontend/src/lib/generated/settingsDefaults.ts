@@ -186,14 +186,17 @@ export const FRONTEND_SETTING_OPTIONS: Partial<Record<keyof Settings, readonly s
   "defaultThreadEnvMode": ["local","worktree"],
   "monoFont": ["geist","hack-nerd","system"],
   "notifyQuietWhen": ["focused","focusedAndThreadVisible","never","threadVisible"],
-  "notifySoundCueAttention": ["boop","chord","hum","knock","marimba","pop","swoosh","system"],
-  "notifySoundCueInputNeeded": ["boop","chord","hum","knock","marimba","pop","swoosh","system"],
-  "notifySoundCueTurnComplete": ["boop","chord","hum","knock","marimba","pop","swoosh","system"],
   "paneDensity": ["comfortable","compact","spacious"],
   "projectSortMode": ["createdAt","lastActivity","manual"],
   "sansFont": ["geist","hack-nerd","system"],
   "timestampFormat": ["12-hour","24-hour","locale"],
   "usagePeriod": ["all","day","month","week"],
+};
+
+export const FRONTEND_SETTING_PATTERNS: Partial<Record<keyof Settings, string>> = {
+  "notifySoundCueTurnComplete": "^(?:swoosh|marimba|chord|knock|pop|hum|boop|system|custom:[a-z0-9][a-z0-9-]{0,63})$",
+  "notifySoundCueInputNeeded": "^(?:swoosh|marimba|chord|knock|pop|hum|boop|system|custom:[a-z0-9][a-z0-9-]{0,63})$",
+  "notifySoundCueAttention": "^(?:swoosh|marimba|chord|knock|pop|hum|boop|system|custom:[a-z0-9][a-z0-9-]{0,63})$",
 };
 
 export const FRONTEND_SETTING_RANGES: Partial<Record<keyof Settings, readonly [number, number]>> = {
