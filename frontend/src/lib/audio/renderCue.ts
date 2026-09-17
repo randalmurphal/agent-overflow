@@ -26,14 +26,18 @@ export const CUE_HEADER_BYTES = 44;
 export const CUE_MAX_SECONDS = 3;
 
 /**
- * Peak level the render normalises to.
- *
- * Half of full scale rather than full: a cue is heard beside system sounds and
- * the user's music, a normalised-to-1.0 cue is startlingly louder than either,
- * and the headroom leaves the 16-bit quantisation below the noise floor of
- * anything a notification is played through.
+ * Loudness the render normalises to: the RMS of the loudest CUE_LOUDNESS_WINDOW_S
+ * of audio, in dBFS. The same measure and the same target the built-in cues
+ * are generated to (scripts/gen-notification-sounds.py LOUDNESS_DB), which
+ * sits between the Windows and macOS default notification sounds. Peak
+ * normalisation was tried first and rejected: a sharp click and a sustained
+ * tone at the same peak differ by 10 dB in how loud they are heard, so a
+ * custom cue could land far louder than the built-in it replaced.
  */
-export const CUE_PEAK = 0.5;
+export const CUE_LOUDNESS_DB = -17;
+export const CUE_LOUDNESS_WINDOW_S = 0.1;
+/** Hard ceiling after normalisation, so a very peaky file cannot clip. */
+export const CUE_CEILING = 0.85;
 
 /**
  * Linear fade applied to the tail.
@@ -143,21 +147,36 @@ async function resampleToMono(decoded: AudioBuffer, audio: CueAudioEngine): Prom
 }
 
 /**
- * Scale the samples so the loudest one sits at CUE_PEAK.
+ * Scale the samples so their loudest CUE_LOUDNESS_WINDOW_S sits at
+ * CUE_LOUDNESS_DB, then clamp to CUE_CEILING.
  *
  * Silence is left alone rather than divided by zero — a cue of pure silence is
  * a legal canonical file, and refusing it here would be inventing a rule the
  * backend does not have.
  */
 function normalise(samples: Float32Array): void {
-  let peak = 0;
-  for (const sample of samples) {
-    const magnitude = Math.abs(sample);
-    if (magnitude > peak) peak = magnitude;
+  const loudest = loudestWindowRms(samples);
+  if (loudest === 0) return;
+  const gain = 10 ** (CUE_LOUDNESS_DB / 20) / loudest;
+  for (let i = 0; i < samples.length; i += 1) {
+    samples[i] = Math.max(-CUE_CEILING, Math.min(CUE_CEILING, samples[i] * gain));
   }
-  if (peak === 0) return;
-  const gain = CUE_PEAK / peak;
-  for (let i = 0; i < samples.length; i += 1) samples[i] *= gain;
+}
+
+/**
+ * RMS of the loudest CUE_LOUDNESS_WINDOW_S slice, stepped a tenth of a window
+ * at a time. A file shorter than one window is measured whole.
+ */
+export function loudestWindowRms(samples: Float32Array): number {
+  const window = Math.min(samples.length, Math.max(1, Math.round(CUE_LOUDNESS_WINDOW_S * CUE_SAMPLE_RATE)));
+  const hop = Math.max(1, Math.floor(window / 10));
+  let loudest = 0;
+  for (let start = 0; start + window <= samples.length; start += hop) {
+    let sum = 0;
+    for (let i = start; i < start + window; i += 1) sum += samples[i] * samples[i];
+    loudest = Math.max(loudest, Math.sqrt(sum / window));
+  }
+  return loudest;
 }
 
 /** Ramp the last CUE_FADE_MS linearly to zero so the file cannot end on a click. */

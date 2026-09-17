@@ -8,11 +8,17 @@ event; any cue can be chosen for any event.
 |---|---|---|
 | `swoosh.wav` | air sweeping high to low, no pitch | turn complete |
 | `marimba.wav` | two wooden notes rising a fifth | |
-| `chord.wav` | a warm electric-piano pair | |
+| `chord.wav` | a warm two-note pad | |
 | `knock.wav` | two low knocks | input needed |
-| `pop.wav` | two soft blips, rising | |
+| `pop.wav` | two glass notes rising | |
 | `hum.wav` | one low note sliding down | attention |
-| `boop.wav` | a rounded low double blip | |
+| `boop.wav` | two glass notes falling | |
+
+Every file is 2.0 s of 16-bit stereo at 44.1 kHz: a struck voice in the first
+half second, then a reverb tail fading to silence. All seven are normalised to
+the same short-term loudness (-17 dBFS over the loudest 100 ms), which sits
+between the Windows and macOS default notification sounds measured the same
+way; custom cues (`lib/audio/renderCue.ts`) are normalised to the same target.
 
 The settings value `system` names no file here: it means the OS banner plays
 its own notification sound and no cue frame is sent.

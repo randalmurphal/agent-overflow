@@ -74,9 +74,11 @@ const EVENT_DEFAULT_CUE: Readonly<Record<string, string>> = {
 };
 
 /**
- * Minimum spacing between cues. Long enough that the longest cue (~0.8 s) has
- * finished before another can start, so two never overlap, and short enough
- * that two genuinely separate events a couple of seconds apart are both heard.
+ * Minimum spacing between cues. Long enough that the audible part of any cue
+ * (well under a second; the rest of the 2 s file is a reverb tail 25 dB down)
+ * has finished before another can start, so two never overlap, and short
+ * enough that two genuinely separate events a couple of seconds apart are
+ * both heard.
  */
 export const NOTIFICATION_SOUND_COOLDOWN_MS = 1_500;
 
