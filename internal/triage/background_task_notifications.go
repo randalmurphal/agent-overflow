@@ -267,7 +267,7 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 			return err
 		}
 
-		payload, transcript, readErr := r.readBackgroundOutputFile(evt.ThreadID, launch, meta.OutputFile, nil, now)
+		payload, transcript, readErr := r.readBackgroundOutputFile(evt.ThreadID, launch, meta.OutputFile, agentReportFromNotification(launch, evt.Content), nil, now)
 		if readErr != nil {
 			outputState = "error"
 			readErrorString = readErr.Error()
@@ -472,6 +472,7 @@ func (r *Router) enrichExistingBackgroundCompletionFromNotification(
 			"",
 		),
 	)
+	completion.Meta = r.completionMetaWithSubagentAggregates(launch, completion)
 	return r.maybeDeferOrPersist(evt.ThreadID, completion, payload)
 }
 
@@ -576,7 +577,7 @@ func notificationOutputState(raw string) (string, string) {
 // carrier's rows live under the original launch), which is the scope
 // the backfill replays against. It is nil when the file was truncated
 // at the payload ceiling, which the backfill reports.
-func (r *Router) readBackgroundOutputFile(threadID string, launch store.Item, outputFile string, exitCode *int, now int64) (*store.Payload, *claudeimport.ConvertResult, error) {
+func (r *Router) readBackgroundOutputFile(threadID string, launch store.Item, outputFile, report string, exitCode *int, now int64) (*store.Payload, *claudeimport.ConvertResult, error) {
 	scope := ""
 	if isSubagentTranscriptLaunch(launch) {
 		root, err := r.transcriptRootOrSelf(threadID, launch)
@@ -585,17 +586,22 @@ func (r *Router) readBackgroundOutputFile(threadID string, launch store.Item, ou
 		}
 		scope = root.ID
 	}
-	return buildBackgroundOutputFilePayload("tool-call-result:"+launch.ID, launch, scope, outputFile, exitCode, now)
+	return buildBackgroundOutputFilePayload("tool-call-result:"+launch.ID, launch, scope, outputFile, report, exitCode, now)
 }
 
 // buildBackgroundOutputFilePayload reads one `output_file` into a
 // payload. A command's file is its captured output. An agent's file is
-// its sidechain transcript JSONL, projected under transcriptScope, and
-// the payload's `preview` is the agent's final report (the last
-// assistant text), the same 240-char collapsed line a Codex completion
-// carries for its FINAL_ANSWER (`completionPayload`). The raw file head
-// is never the preview: it is a JSON envelope, not prose.
-func buildBackgroundOutputFilePayload(payloadID string, launch store.Item, transcriptScope, outputFile string, exitCode *int, now int64) (*store.Payload, *claudeimport.ConvertResult, error) {
+// its sidechain transcript JSONL, projected under transcriptScope.
+//
+// The payload's `preview` is the agent's final report, the same 240-char
+// collapsed line a Codex completion carries for its FINAL_ANSWER
+// (`completionPayload`). `report` is the notification's own copy of it
+// (agentReportFromNotification) and wins: the CLI emits the notification
+// before it appends the report row to the JSONL, so the file's last
+// assistant text at read time can be the agent's previous message. The
+// file is the fallback when the envelope carried no report. The raw file
+// head is never the preview: it is a JSON envelope, not prose.
+func buildBackgroundOutputFilePayload(payloadID string, launch store.Item, transcriptScope, outputFile, report string, exitCode *int, now int64) (*store.Payload, *claudeimport.ConvertResult, error) {
 	data, meta, err := readClaudeTaskOutputFile(outputFile, claudeTaskOutputFileMaxBytes)
 	if err != nil {
 		return nil, nil, err
@@ -630,9 +636,12 @@ func buildBackgroundOutputFilePayload(payloadID string, launch store.Item, trans
 			return nil, nil, fmt.Errorf("read subagent transcript: %w", err)
 		}
 		transcript = &converted
-		if preview := truncatePreview(converted.FinalAssistantText(), 240); preview != "" {
-			meta["preview"] = preview
+		if report == "" {
+			report = converted.FinalAssistantText()
 		}
+	}
+	if preview := truncatePreview(report, 240); preview != "" {
+		meta["preview"] = preview
 	}
 	metaJSON, err := json.Marshal(meta)
 	if err != nil {
@@ -1054,4 +1063,43 @@ func formatByteCount(bytes int64) string {
 		return fmt.Sprintf("%.1f KB", float64(bytes)/1024)
 	}
 	return fmt.Sprintf("%.1f MB", float64(bytes)/(1024*1024))
+}
+
+// agentReportFromNotification is the agent's final report as the
+// `task_notification` envelope carries it. For a `local_agent` task the
+// first envelope's `summary` is the agent's final assistant text in
+// full; a later envelope for the same task carries only the CLI's
+// `Agent "<description>" finished` bell, which is not a report. The
+// placeholder a summary-less envelope falls back to is not one either.
+func agentReportFromNotification(launch store.Item, summary string) string {
+	summary = notificationCaptionSummary(summary)
+	if summary == "" || summary == agentFinishedBell(launch) {
+		return ""
+	}
+	return summary
+}
+
+func agentFinishedBell(launch store.Item) string {
+	return `Agent "` + launchInputIdentity(launch.Meta).Description + `" finished`
+}
+
+// completionMetaWithSubagentAggregates stamps a Claude agent's completion
+// sibling with its transcript count and latest child activity at write
+// time, the way a Codex completion snapshots its own
+// (SnapshotSubagentExecutionMeta). Without it the live-emitted sibling
+// is bare, and the card that moves onto it drops the pane's live fold
+// and renders an empty body until the next page read decorates the row.
+// A command launch has no transcript and is left alone.
+func (r *Router) completionMetaWithSubagentAggregates(launch, completion store.Item) string {
+	if !isSubagentTranscriptLaunch(launch) {
+		return completion.Meta
+	}
+	meta, err := r.store.DecorateSubagentCompletionMeta(completion.ThreadID, completion)
+	if err != nil {
+		// The count is a card decoration the next page read re-derives;
+		// the sibling itself must still land.
+		log.Printf("triage: stamp subagent aggregates on %s: %v", completion.ID, err)
+		return completion.Meta
+	}
+	return meta
 }
