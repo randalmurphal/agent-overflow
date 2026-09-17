@@ -607,9 +607,20 @@ An expanded payload is not activity. It is content the reader explicitly
 asked for, so the cap grows by exactly what expansion added and reading a
 diff inside a run never means scroll-within-scroll.
 
-`observeActivityRunExpansion` (`utils/activityRunClip.ts`) pairs a
-MutationObserver on `aria-expanded` (which bodies count) with a
-ResizeObserver on those bodies (what each contributes). Bodies are found
+`observeActivityRunExpansion` (`utils/activityRunClip.ts`) owns the clip's
+`max-height` after mount. It pairs a MutationObserver on `aria-expanded`
+(which bodies count) with a ResizeObserver on those bodies (what each
+contributes) and a MutationObserver on the expanded bodies' content (a
+payload or streamed text landing). A body change and its cap must reach one
+paint together: the clip pins or clamps its inner `scrollTop` against the
+cap current at layout time, so a cap landing a frame late moved the clicked
+row by the body's height and back. Mutation-announced changes are measured
+and written on the microtask after their flush, before layout and before the
+toggle's anchor hold reads geometry. Only a resize with no mutation (width
+reflow, a font or image load) takes the ResizeObserver path, which measures
+on the next frame because writing an observed ancestor from inside a
+delivery is the loop Chromium reports. Retargeting from the mounted-set
+effect reads no geometry. Bodies are found
 through the disclosure contract (`aria-expanded` + `aria-controls` on a
 `TranscriptDisclosureHeader`) rather than a marker attribute rows have to
 remember: a body that skipped the query would be an accessibility defect

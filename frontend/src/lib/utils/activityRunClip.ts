@@ -82,7 +82,27 @@ export const ACTIVITY_RUN_CAP_REM_PX = ACTIVITY_RUN_CAP_REM * 16;
 
 export function activityRunClipMaxHeight(expandedPx: number): string {
   if (expandedPx <= 0) return ACTIVITY_RUN_CAP_CSS;
-  return `calc(${ACTIVITY_RUN_CAP_CSS} + ${Math.round(expandedPx)}px)`;
+  return `calc(${ACTIVITY_RUN_CAP_CSS} + ${expandedPx}px)`;
+}
+
+/**
+ * The px the base cap is lifted by, read back from `clip`'s inline
+ * `max-height`. Diagnostics and tests; the observer below is the writer.
+ */
+export function activityRunClipLiftPx(clip: HTMLElement): number {
+  // The browser may reorder the calc's terms on readback; the lift is its
+  // only px literal.
+  const match = /(-?[\d.]+)px/.exec(clip.style.maxHeight);
+  return match ? Number(match[1]) : 0;
+}
+
+/**
+ * A body's laid-out height. Fractional: `offsetHeight` rounds, and a lift
+ * rounded against a fractional clamp baseline left the clip a pixel taller
+ * than the growth it was matching.
+ */
+function boxHeight(el: HTMLElement): number {
+  return el.getBoundingClientRect().height;
 }
 
 /**
@@ -97,6 +117,13 @@ export function activityRunClipMaxHeight(expandedPx: number): string {
  * unmounts.
  */
 const measuredCollapsedHeights = new WeakMap<Element, number>();
+
+/**
+ * What each expanded body contributed at its last measurement, keyed the
+ * same way and for the same reason. It is the cap a still-open body keeps
+ * while a sibling collapses, applied before any geometry is read.
+ */
+const lastContributions = new WeakMap<Element, number>();
 
 export interface ActivityRunDisclosureBodies {
   /**
@@ -158,7 +185,7 @@ export function activityRunDisclosureBodies(clip: Element): ActivityRunDisclosur
  * truth of what expansion will replace.
  */
 export function activityRunRecordCollapsedHeights(bodies: readonly HTMLElement[]): void {
-  for (const body of bodies) measuredCollapsedHeights.set(body, body.offsetHeight);
+  for (const body of bodies) measuredCollapsedHeights.set(body, boxHeight(body));
 }
 
 /**
@@ -176,94 +203,128 @@ function collapsedBaselinePx(body: HTMLElement): number {
   if (Number.isFinite(declaredLines) && declaredLines > 0) {
     const lineHeight = Number.parseFloat(getComputedStyle(body).lineHeight);
     if (Number.isFinite(lineHeight) && lineHeight > 0) {
-      return Math.min(body.offsetHeight, declaredLines * lineHeight);
+      return Math.min(boxHeight(body), declaredLines * lineHeight);
     }
   }
   return measuredCollapsedHeights.get(body) ?? 0;
 }
 
+/**
+ * What `bodies` add over their collapsed state right now. Records each
+ * body's contribution for `activityRunLastExpandedHeight`.
+ */
 export function activityRunExpandedHeight(bodies: readonly HTMLElement[]): number {
   let total = 0;
   for (const body of bodies) {
-    total += Math.max(0, body.offsetHeight - collapsedBaselinePx(body));
+    const contribution = Math.max(0, boxHeight(body) - collapsedBaselinePx(body));
+    lastContributions.set(body, contribution);
+    total += contribution;
   }
   return total;
 }
 
+/** The lift `bodies` earned at their last measurement, with no geometry read. */
+export function activityRunLastExpandedHeight(bodies: readonly HTMLElement[]): number {
+  let total = 0;
+  for (const body of bodies) total += lastContributions.get(body) ?? 0;
+  return total;
+}
+
 /**
- * Report the total height `clip`'s expanded bodies add over their collapsed
- * state, and keep reporting it as they open, close, and resize. Returns a
- * teardown.
+ * Keep `clip`'s `max-height` at the base cap plus what its expanded bodies
+ * add over their collapsed state, as they open, close, load and resize.
+ * Returns a teardown. The observer is the cap's only writer after mount.
  *
- * Two observers, because the two things that change the number are unrelated:
- * a disclosure toggling (an `aria-expanded` mutation) changes WHICH bodies
- * count, and a body growing (a diff loading, output streaming into an open
- * card) changes what one of them contributes. Collapsed bodies are observed
- * too — their size is tomorrow's baseline, and for a body whose trigger
- * remounts on toggle (a command result swapping its load control) the
- * content swap's resize is the only signal the toggle emits.
+ * A body change and the cap it earns must reach one paint together. The
+ * clip pins or clamps its inner `scrollTop` against whichever cap is current
+ * at layout time, so a cap that lands a frame after its body moves the row
+ * the reader clicked by the body's height and back. Two paths, by how the
+ * change announces itself:
  *
- * Retargeting is attribute-only; every geometry read lives in the
- * ResizeObserver delivery the reobserve schedules. That delivery runs after
- * layout, where the same reads are free — retarget itself runs against a
- * tree the caller's effect (or a toggle's flush) just dirtied, and its
- * `offsetHeight` loop was the timeline's only source of full forced layouts,
+ * - A DOM mutation (a disclosure toggling `aria-expanded`, a payload or
+ *   streamed text landing inside an expanded body) is observed on the
+ *   microtask after the flush that made it, before any layout, and the cap
+ *   is measured and written there. The forced layout is the frame's own
+ *   layout taken early. It also lands before the anchor hold that wraps a
+ *   toggle reads its geometry, so that hold sees the settled row and writes
+ *   nothing.
+ * - A resize with no mutation (width reflow, a font or image load) is seen
+ *   only by the ResizeObserver, after layout. Writing the clip from inside
+ *   that delivery is what Chromium reports as "ResizeObserver loop completed
+ *   with undelivered notifications" (the clip is an observed ancestor of the
+ *   bodies), and it then delivers the clip's, row's and content's
+ *   observations a frame late anyway; so this path measures on the next
+ *   animation frame instead.
+ *
+ * Retargeting from the caller's effect (a mounted-set change) is
+ * attribute-only. It runs inside a Svelte flush that is still mutating the
+ * tree, where a geometry read forces a layout the flush then invalidates,
  * once per window advance while streaming (2026-08-26, the 165Hz frame-drop
- * attribution).
- *
- * The height is reported on the next animation frame, not from inside the
- * delivery. The bodies are the deepest observed targets in the run; the cap
- * they lift is `style:max-height` on the clip, an observed ancestor. A
- * resize of a shallower target caused by a delivery is what Chromium reports
- * as "ResizeObserver loop completed with undelivered notifications", and it
- * then delivers the clip's, row's and content's observations one frame late
- * anyway. Reporting a frame later moves the cap write ahead of that frame's
- * deliveries, so every observer above the bodies sees the lifted cap in the
- * same frame. Deliveries within a frame coalesce to the last measurement.
+ * attribution). The resize path's initial delivery measures for it. A run
+ * with no expanded body needs no geometry at all: its lift is zero.
  */
-export function observeActivityRunExpansion(
-  clip: HTMLElement,
-  onHeight: (px: number) => void,
-): () => void {
-  function measure(): ActivityRunDisclosureBodies {
-    const bodies = activityRunDisclosureBodies(clip);
-    activityRunRecordCollapsedHeights(bodies.collapsed);
-    return bodies;
+export function observeActivityRunExpansion(clip: HTMLElement): () => void {
+  let applied: number | null = null;
+  function apply(px: number): void {
+    if (applied === px) return;
+    applied = px;
+    clip.style.maxHeight = activityRunClipMaxHeight(px);
   }
-  let reportFrame: number | null = null;
-  function reportNextFrame(px: number): void {
-    if (reportFrame !== null) cancelAnimationFrame(reportFrame);
-    reportFrame = requestAnimationFrame(() => {
-      reportFrame = null;
-      onHeight(px);
+  // From a mutation, the cap the still-expanded bodies last earned is
+  // written BEFORE any geometry is read. A read forces layout, and a layout
+  // taken with a body already collapsed but its lift still applied is where
+  // the browser clamps the clip's inner scrollTop by that body's height,
+  // which no later cap write undoes. With nothing expanded the sync path
+  // reads nothing at all; collapsed baselines come from the resize path,
+  // whose read follows a layout the cap already reached.
+  function measureAndApply(fromMutation: boolean): void {
+    const bodies = activityRunDisclosureBodies(clip);
+    if (fromMutation) {
+      apply(activityRunLastExpandedHeight(bodies.expanded));
+      if (bodies.expanded.length === 0) return;
+    }
+    activityRunRecordCollapsedHeights(bodies.collapsed);
+    apply(activityRunExpandedHeight(bodies.expanded));
+  }
+  let deferred: number | null = null;
+  function measureNextFrame(): void {
+    if (deferred !== null) return;
+    deferred = requestAnimationFrame(() => {
+      deferred = null;
+      measureAndApply(false);
     });
   }
-  const sizes = new ResizeObserver(() => {
-    reportNextFrame(activityRunExpandedHeight(measure().expanded));
-  });
-  function retarget(): void {
+  const sizes = new ResizeObserver(measureNextFrame);
+  const contents = new MutationObserver(() => measureAndApply(true));
+  function retarget(fromMutation: boolean): void {
     const bodies = activityRunDisclosureBodies(clip);
     sizes.disconnect();
-    for (const body of bodies.expanded) sizes.observe(body);
+    contents.disconnect();
+    for (const body of bodies.expanded) {
+      sizes.observe(body);
+      // Not attributes: the reasoning tail's line-slide writes a transform
+      // on its inner wrapper every frame while draining, and that changes no
+      // height.
+      contents.observe(body, { childList: true, characterData: true, subtree: true });
+    }
     for (const body of bodies.collapsed) sizes.observe(body);
-    // Nothing observed means no delivery will fire, and the answer needs no
-    // geometry: no bodies, no lift. This is also what retracts the cap when
-    // the last expanded mount-on-expand body collapses out of the DOM.
-    if (bodies.expanded.length === 0 && bodies.collapsed.length === 0) onHeight(0);
+    if (fromMutation) measureAndApply(true);
+    else if (bodies.expanded.length === 0) apply(0);
   }
-  const disclosures = new MutationObserver(retarget);
+  const disclosures = new MutationObserver(() => retarget(true));
   disclosures.observe(clip, {
     subtree: true,
     attributes: true,
     attributeFilter: ['aria-expanded'],
   });
-  retarget();
+  retarget(false);
   return () => {
     disclosures.disconnect();
+    contents.disconnect();
     sizes.disconnect();
-    if (reportFrame !== null) {
-      cancelAnimationFrame(reportFrame);
-      reportFrame = null;
+    if (deferred !== null) {
+      cancelAnimationFrame(deferred);
+      deferred = null;
     }
   };
 }

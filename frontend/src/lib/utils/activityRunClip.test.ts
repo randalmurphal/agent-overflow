@@ -32,7 +32,7 @@ function disclosure(bodyId: string, expanded: boolean): string {
 
 /** happy-dom lays nothing out, so a body's contribution is stamped on it. */
 function stampHeight(body: HTMLElement, px: number): HTMLElement {
-  Object.defineProperty(body, 'offsetHeight', { value: px, configurable: true });
+  body.getBoundingClientRect = () => ({ height: px }) as DOMRect;
   return body;
 }
 
@@ -117,9 +117,11 @@ describe('activityRunClipMaxHeight', () => {
 
   it('adds exactly what expansion asked for', () => {
     expect(activityRunClipMaxHeight(220)).toBe(`calc(${ACTIVITY_RUN_CAP_CSS} + 220px)`);
-    // Fractional heights are real (borders, DPR); the style value stays integral
-    // so a sub-pixel jitter cannot re-write the declaration every frame.
-    expect(activityRunClipMaxHeight(220.4)).toBe(`calc(${ACTIVITY_RUN_CAP_CSS} + 220px)`);
+    // Fractional heights are real (a line clamp of 3 × 19.5px), and rounding
+    // the lift left the clip a pixel taller than the growth it matched, which
+    // moved the toggled row by that pixel. The observer writes only on a
+    // changed value, so no rounding is needed to keep the declaration still.
+    expect(activityRunClipMaxHeight(220.4)).toBe(`calc(${ACTIVITY_RUN_CAP_CSS} + 220.4px)`);
   });
 });
 

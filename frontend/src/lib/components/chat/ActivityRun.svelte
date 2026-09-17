@@ -47,8 +47,8 @@
   } from '../../utils/activityRunWindow';
   import {
     activityRunCenteredScrollTop,
+    ACTIVITY_RUN_CAP_CSS,
     activityRunChildElement,
-    activityRunClipMaxHeight,
     activityRunAtBottom,
     activityRunRowFullyVisible,
     activityRunRowViewportTop,
@@ -99,7 +99,6 @@
 
   let clipEl = $state<HTMLElement | undefined>();
   let contentEl = $state<HTMLElement | undefined>();
-  let expandedPx = $state(0);
   const scrollbarGeometry = createContentGeometryNotifier();
 
   // The run's identity as a PRIMITIVE. Every projection pass hands this
@@ -207,7 +206,6 @@
   // collide even on different threads. Passed to the header rather than
   // rebuilt there (utils/chatDomIds.ts).
   let clipId = $derived(chatRowDomId(pane, 'activity-run', run.runId));
-  let maxHeight = $derived(activityRunClipMaxHeight(expandedPx));
 
   function toggle(): void {
     // The state on screen, not the registry's idea of it: a run with no
@@ -271,22 +269,17 @@
     pane.activityRuns.setMountWindow(run.runId, activityRunWindowGrownNewer(run));
   }
 
-  // Expanded payloads lift the cap by their own height (see
-  // utils/activityRunClip.ts). Reading `mountedWindowKey` re-targets the
-  // observers when the mounted set changes: a row can remount already
-  // expanded from its lease, which mutates no attribute for the observer
-  // inside to see. Streaming text growth changes neither, so this stays off
-  // the hot path.
+  // Expanded payloads lift the cap by their own height; the observer owns
+  // the clip's `max-height` from here (see utils/activityRunClip.ts for why
+  // the write is imperative and same-flush). Reading `mountedWindowKey`
+  // re-targets the observers when the mounted set changes: a row can remount
+  // already expanded from its lease, which mutates no attribute for the
+  // observer inside to see.
   $effect(() => {
     const clip = clipEl;
-    if (!clip) {
-      expandedPx = 0;
-      return;
-    }
+    if (!clip) return;
     mountedWindowKey;
-    return observeActivityRunExpansion(clip, (px) => {
-      expandedPx = px;
-    });
+    return observeActivityRunExpansion(clip);
   });
 
   // Persisted per reader-owned scroll frame, not only at teardown: a thread
@@ -919,7 +912,7 @@
           bind:this={clipEl}
           id={clipId}
           class="activity-run-clip pane-scroll-surface overflow-y-auto overflow-x-hidden [overflow-anchor:none]"
-          style:max-height={maxHeight}
+          style:max-height={ACTIVITY_RUN_CAP_CSS}
           use:nestedScroll
           use:readerGestures
           onscroll={onClipScroll}
