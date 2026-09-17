@@ -1094,7 +1094,7 @@ describe('<MessageTimeline>', () => {
       const pane = await buildWindowedPane({
         items: [makeItem({ id: 'a', turnIndex: 5 })],
       });
-      const loadSpy = vi.spyOn(pane, 'loadUntilItem').mockResolvedValue(true);
+      const loadSpy = vi.spyOn(pane, 'loadUntilItem').mockResolvedValue('loaded');
 
       render(MessageTimeline, { props: { pane } });
       pane.requestScrollToItem('a');
@@ -1111,7 +1111,7 @@ describe('<MessageTimeline>', () => {
       const pane = await buildWindowedPane({
         items: [makeItem({ id: 'visible', turnIndex: 5 })],
       });
-      vi.spyOn(pane, 'loadUntilItem').mockResolvedValue(false);
+      vi.spyOn(pane, 'loadUntilItem').mockResolvedValue('missing');
       const toastsBefore = getToasts().length;
 
       render(MessageTimeline, { props: { pane } });

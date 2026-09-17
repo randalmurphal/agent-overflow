@@ -57,7 +57,7 @@ func (a *App) ListThreadSliceAround(threadID, anchorItemID string, targetItemCou
 	if err != nil {
 		return store.PagedItems{}, fmt.Errorf("list thread slice around: %w", err)
 	}
-	return projectPage(paged, inlinePreviews, keepNewest), nil
+	return projectPage(paged, inlinePreviews, anchorIndex(paged.Items, anchorItemID)), nil
 }
 
 // clampSliceItemBudget normalizes a caller-supplied slice-window budget:
@@ -94,7 +94,7 @@ func (a *App) ListItemsBeforeCursor(threadID string, before store.TimelineCursor
 	if err != nil {
 		return store.PagedItems{}, fmt.Errorf("list items before cursor: %w", err)
 	}
-	return projectPage(paged, inlinePreviews, keepNewest), nil
+	return projectPage(paged, inlinePreviews, newestIndex(paged.Items)), nil
 }
 
 // ListItemsAfterCursor loads newer items on demand, strictly after the
@@ -113,7 +113,7 @@ func (a *App) ListItemsAfterCursor(threadID string, after store.TimelineCursor, 
 	if err != nil {
 		return store.PagedItems{}, fmt.Errorf("list items after cursor: %w", err)
 	}
-	return projectPage(paged, inlinePreviews, keepOldest), nil
+	return projectPage(paged, inlinePreviews, 0), nil
 }
 
 // ListSubagentDescendants loads the full child transcript under a
@@ -131,7 +131,7 @@ func (a *App) ListSubagentDescendants(threadID, rootItemID string, inlinePreview
 	if err != nil {
 		return nil, fmt.Errorf("list subagent descendants: %w", err)
 	}
-	return projectItemSlice(items, inlinePreviews, keepNewest), nil
+	return projectItemSlice(items, inlinePreviews), nil
 }
 
 // ListThreadProposedPlans returns the current proposed-plan item for a thread,
@@ -147,7 +147,7 @@ func (a *App) ListThreadProposedPlans(threadID string) ([]store.Item, error) {
 	// 0-or-1 plan rows, never a diff carrier: the projection is here so
 	// no item reaches a client unprojected, not because these rows have
 	// bytes to give up. Previews stay on for the same reason.
-	return projectItemSlice(items, true, keepNewest), nil
+	return projectItemSlice(items, true), nil
 }
 
 // ListLiveBackgroundTasks returns running launches plus their
@@ -187,7 +187,7 @@ func (a *App) ListLiveBackgroundTasks(threadID string) ([]store.Item, error) {
 	// Running launches, so no completed diff previews to weigh: the
 	// projection is here to keep the "no item reaches a client
 	// unprojected" rule total, not for the bytes.
-	return projectItemSlice(items, true, keepNewest), nil
+	return projectItemSlice(items, true), nil
 }
 
 // GetThreadUserMessageTicks returns every reader-authored user message

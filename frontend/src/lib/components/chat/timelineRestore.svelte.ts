@@ -502,17 +502,20 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
         return;
       }
 
-      const found = await pane.loadUntilItem(snap.itemId);
+      const loaded = await pane.loadUntilItem(snap.itemId);
       if (isUiRenderTraceEnabled()) {
         recordUiTrace('timeline.restore.anchor.loaded', {
           threadId,
           token,
-          found,
+          loaded,
           itemId: snap.itemId,
         });
       }
       if (token !== restoreToken || options.getPane().scrollStateKey !== threadId) return;
-      if (!found) {
+      if (loaded === 'superseded') return;
+      if (loaded !== 'loaded') {
+        // The snapshot's row is gone (or its load failed and said so):
+        // the bottom is the only position left to restore to.
         restoreToBottom();
         return;
       }
@@ -567,12 +570,12 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
     if (!listRef || !id) return false;
     const myToken = ++restoreToken;
     const pane = options.getPane();
-    const found = await pane.loadUntilItem(id);
+    const loaded = await pane.loadUntilItem(id);
     if (myToken !== restoreToken || !options.getListRef()) return false;
-    if (!found) {
-      addToast('warning', 'Message is no longer in this thread');
-      return false;
-    }
+    if (loaded === 'missing') addToast('warning', 'Message is no longer in this thread');
+    // `failed` has already been reported by the pane; `superseded` belongs
+    // to the newer navigation.
+    if (loaded !== 'loaded') return false;
     await tick();
     if (myToken !== restoreToken || !options.getListRef()) return false;
     let idx = options.findTimelineNodeIndex(id);

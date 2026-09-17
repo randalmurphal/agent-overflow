@@ -30,6 +30,7 @@ import {
   loadOlderResult,
   wantsInlinePreviews,
   type LoadOlderResult,
+  type LoadUntilItemResult,
   type PaneScrollController,
 } from './threadPaneShared';
 
@@ -129,7 +130,7 @@ export interface ThreadTimelineWindow {
    */
   settleRecentWindowPrune(): void;
   loadOlder(): Promise<LoadOlderResult>;
-  loadUntilItem(itemID: string): Promise<boolean>;
+  loadUntilItem(itemID: string): Promise<LoadUntilItemResult>;
   loadNewer(): Promise<LoadOlderResult>;
   loadRecentTail(): Promise<boolean>;
 }
@@ -845,45 +846,48 @@ export function createThreadTimelineWindow(
 
   /**
    * Ensure the item with `itemID` is present in the loaded window.
-   * Used by scroll-to-item callers (search hits, plan sidebar, tray)
-   * before they dispatch the scroll intent. When the item is already
-   * in the window this is a cheap `Array.some` and no backend call.
-   * When the item lives below the floor the pane loads every turn
-   * from the item's turn_index up to the existing tail in one
-   * replacement — the window grows to cover the hit, no cumulative
-   * multi-page ratchet.
+   * Used by scroll-to-item callers (search hits, plan sidebar, tray,
+   * the nav rail) before they dispatch the scroll intent. When the item
+   * is already in the window this is a cheap `Array.some` and no backend
+   * call. Otherwise the window is replaced by a bounded slice around the
+   * item (or around its launch root for a subagent child, whose subtree
+   * is then hydrated).
    *
-   * Returns `true` when the item is (now) loaded and scrollable,
-   * `false` when the backend reports the item doesn't exist on this
-   * thread (scroll callers show a toast and abandon the request).
+   * The result names why the item is not scrollable, because the callers
+   * answer differently: `missing` is the only outcome that means the row
+   * is gone from the thread; `superseded` means a newer switch or page
+   * owns the window now; `failed` has already been reported to the user
+   * here and is a defect or transport fault, never the row's absence.
    */
-  async function loadUntilItem(itemID: string): Promise<boolean> {
+  async function loadUntilItem(itemID: string): Promise<LoadUntilItemResult> {
     const currentThread = options.getThread();
-    if (!currentThread || !itemID) return false;
-    if (options.getItems().some((it) => it.id === itemID)) return true;
+    if (!currentThread || !itemID) return 'missing';
+    if (options.getItems().some((it) => it.id === itemID)) return 'loaded';
 
     const gen = options.getSwitchGeneration();
     const pageGen = ++pagingGeneration;
+    const superseded = (): boolean =>
+      gen !== options.getSwitchGeneration() || pageGen !== pagingGeneration;
     let fetched: Item;
     try {
       fetched = (await GetThreadItem(currentThread.id, itemID)) as Item;
     } catch (err) {
-      if (gen !== options.getSwitchGeneration()) return false;
+      if (superseded()) return 'superseded';
       console.error('loadUntilItem GetThreadItem failed:', err);
-      return false;
+      addToast('error', 'Failed to load message');
+      return 'failed';
     }
-    if (gen !== options.getSwitchGeneration() || pageGen !== pagingGeneration)
-      return false;
-    if (!fetched || !fetched.id) return false;
+    if (superseded()) return 'superseded';
+    if (!fetched || !fetched.id) return 'missing';
     // Defense-in-depth: the backend already filters by threadId, but a
     // mislayered binding or a future cache that returns stale rows
     // shouldn't cross-pollute between panes.
-    if (fetched.threadId !== currentThread.id) return false;
+    if (fetched.threadId !== currentThread.id) return 'missing';
 
     // Race: another upsert or loadOlder might have pulled the item in
     // between our check and the backend round-trip. Re-check before
     // paging in a whole turn window we don't need.
-    if (options.getItems().some((it) => it.id === itemID)) return true;
+    if (options.getItems().some((it) => it.id === itemID)) return 'loaded';
 
     // Subagent children never appear in history windows. Walk the
     // parent chain to the top-level launch root so the slice anchors
@@ -913,11 +917,7 @@ export function createThreadTimelineWindow(
           console.error('loadUntilItem parent walk failed:', err);
           break;
         }
-        if (
-          gen !== options.getSwitchGeneration() ||
-          pageGen !== pagingGeneration
-        )
-          return false;
+        if (superseded()) return 'superseded';
         if (!parentItem?.id || parentItem.threadId !== currentThread.id)
           break;
         visited.add(parentItem.id);
@@ -937,11 +937,7 @@ export function createThreadTimelineWindow(
         ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
         wantsInlinePreviews(),
       );
-      if (
-        gen !== options.getSwitchGeneration() ||
-        pageGen !== pagingGeneration
-      )
-        return false;
+      if (superseded()) return 'superseded';
       const next = reconcileItemWindow(
         itemsForThread((paged.items ?? []) as Item[], currentThread.id),
         options.getItems(),
@@ -952,26 +948,27 @@ export function createThreadTimelineWindow(
       });
       if (subagentRootID) {
         await options.hydrateSubagentChildren(subagentRootID);
-        if (
-          gen !== options.getSwitchGeneration() ||
-          pageGen !== pagingGeneration
-        )
-          return false;
+        if (superseded()) return 'superseded';
       }
     } catch (err) {
-      if (
-        gen !== options.getSwitchGeneration() ||
-        pageGen !== pagingGeneration
-      )
-        return false;
+      if (superseded()) return 'superseded';
       console.error('loadUntilItem ListThreadSliceAround failed:', err);
       addToast('error', 'Failed to load message');
-      return false;
+      return 'failed';
     } finally {
       // Match loadOlder's unconditional reset — see comment there.
       loadingOlder = false;
     }
-    return options.getItems().some((it) => it.id === itemID);
+    if (options.getItems().some((it) => it.id === itemID)) return 'loaded';
+    // The backend confirmed the row exists, then shipped a window that
+    // does not hold it: a contract fault (an anchored slice that dropped
+    // its anchor, a subtree hydration that skipped a child), not a
+    // deleted row.
+    console.error(
+      `loadUntilItem: window loaded around ${sliceAnchorID} does not contain ${itemID}`,
+    );
+    addToast('error', 'Failed to load message');
+    return 'failed';
   }
 
   async function loadNewer(): Promise<LoadOlderResult> {

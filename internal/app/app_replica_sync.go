@@ -104,7 +104,7 @@ func (a *App) SyncThreadWindow(threadID string, req SyncThreadWindowRequest) (Sy
 		// and the same byte backstop. A cold open that reached this RPC
 		// and a gap refresh that reached that one must not disagree
 		// about how a row is shaped, or one window would hold both.
-		page := projectPage(*result.Page, req.InlinePreviews, keepNewest)
+		page := projectPage(*result.Page, req.InlinePreviews, anchorIndex(result.Page.Items, req.AnchorItemID))
 		out.Page = &page
 	}
 	return out, nil

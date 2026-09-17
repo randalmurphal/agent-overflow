@@ -124,6 +124,7 @@ import {
 } from './activityRunPrefs.svelte';
 import type {
   LoadOlderResult,
+  LoadUntilItemResult,
   PaneScrollController,
   ScrollToItemRequest,
 } from './threadPaneShared';
@@ -362,8 +363,8 @@ export function createAgentScopeView(
     // ensureSubagentChildren (driven by the pane body).
     loadOlder: () => NO_PAGE,
     loadNewer: () => NO_PAGE,
-    loadUntilItem: (itemID: string) =>
-      Promise.resolve(scopedItems.some((item) => item.id === itemID)),
+    loadUntilItem: (itemID: string): Promise<LoadUntilItemResult> =>
+      Promise.resolve(scopedItems.some((item) => item.id === itemID) ? 'loaded' : 'missing'),
     get hasMoreHistory() {
       return false;
     },

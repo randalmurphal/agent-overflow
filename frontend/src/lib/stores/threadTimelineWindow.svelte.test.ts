@@ -371,7 +371,7 @@ describe('threadTimelineWindow', () => {
       expect(pane.items.some((it) => it.id === 'stale')).toBe(false);
     });
 
-    it('loadUntilItem returns true when the item is already in-window', async () => {
+    it('loadUntilItem reports loaded when the item is already in-window', async () => {
       const pane = createThreadPane();
       setBindingMock('ListThreadSliceAround', async () => ({
         items: [makeItem({ id: 'here', threadId: 't', turnIndex: 5 })],
@@ -385,7 +385,7 @@ describe('threadTimelineWindow', () => {
       });
       await pane.switchThread(makeThread({ id: 't' }));
       const ok = await pane.loadUntilItem('here');
-      expect(ok).toBe(true);
+      expect(ok).toBe('loaded');
       expect(fetched).toBe(0);
     });
 
@@ -431,7 +431,7 @@ describe('threadTimelineWindow', () => {
       const revisionBeforeLoadUntil = pane.timelineRevision;
       const ok = await pane.loadUntilItem('target');
 
-      expect(ok).toBe(true);
+      expect(ok).toBe('loaded');
       expect(pane.timelineRevision).toBeGreaterThan(revisionBeforeLoadUntil);
       expect(pane.oldestLoadedTurnIndex).toBe(1);
       expect(pane.newestLoadedTurnIndex).toBe(3);
@@ -440,7 +440,7 @@ describe('threadTimelineWindow', () => {
       expect(sliceCalls).toBe(2);
     });
 
-    it('loadUntilItem returns false when the item is unknown to the backend', async () => {
+    it('loadUntilItem reports missing when the item is unknown to the backend', async () => {
       const pane = createThreadPane();
       setBindingMock('ListThreadSliceAround', async () => ({
         items: [makeItem({ id: 't5', turnIndex: 5 })],
@@ -450,7 +450,79 @@ describe('threadTimelineWindow', () => {
       setBindingMock('GetThreadItem', async () => makeItem({ id: '' }));
       await pane.switchThread(makeThread({ id: 't' }));
       const ok = await pane.loadUntilItem('ghost');
-      expect(ok).toBe(false);
+      expect(ok).toBe('missing');
+    });
+
+    it('loadUntilItem reports failed and toasts when the loaded window does not contain the item', async () => {
+      // The backend confirmed the row exists; the window it shipped lacks
+      // it. That is a contract fault, not a deleted row, so the caller
+      // must not tell the reader the message is gone.
+      const { getToasts } = await import('./toast.svelte');
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const pane = createThreadPane();
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: [makeItem({ id: 't5', threadId: 't', turnIndex: 5 })],
+        oldestTurnIndex: 5,
+        newestTurnIndex: 5,
+        hasMore: true,
+        hasMoreOlder: true,
+        hasMoreNewer: false,
+      }));
+      setBindingMock('GetThreadItem', async () =>
+        makeItem({ id: 'dropped', threadId: 't', turnIndex: 1 }));
+      await pane.switchThread(makeThread({ id: 't' }));
+      const toastsBefore = getToasts().length;
+      const ok = await pane.loadUntilItem('dropped');
+      expect(ok).toBe('failed');
+      const added = getToasts().slice(toastsBefore);
+      expect(added.map((t) => t.type)).toEqual(['error']);
+      expect(consoleError).toHaveBeenCalledWith(
+        expect.stringContaining('window loaded around dropped does not contain dropped'),
+      );
+      consoleError.mockRestore();
+    });
+
+    it('loadUntilItem reports failed and toasts when the item lookup rejects', async () => {
+      const { getToasts } = await import('./toast.svelte');
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const pane = createThreadPane();
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: [makeItem({ id: 't5', threadId: 't', turnIndex: 5 })],
+        oldestTurnIndex: 5,
+        hasMore: true,
+      }));
+      await pane.switchThread(makeThread({ id: 't' }));
+      setBindingMock('GetThreadItem', async () => {
+        throw new Error('socket closed');
+      });
+      const toastsBefore = getToasts().length;
+      const ok = await pane.loadUntilItem('anything');
+      expect(ok).toBe('failed');
+      expect(getToasts().slice(toastsBefore).map((t) => t.type)).toEqual(['error']);
+      consoleError.mockRestore();
+    });
+
+    it('loadUntilItem reports superseded, silently, when a thread switch lands mid-flight', async () => {
+      const { getToasts } = await import('./toast.svelte');
+      const pane = createThreadPane();
+      setBindingMock('ListThreadSliceAround', async (threadId: string) => ({
+        items: [makeItem({ id: `${threadId}-tail`, threadId, turnIndex: 5 })],
+        oldestTurnIndex: 5,
+        hasMore: true,
+      }));
+      let releaseLookup: (() => void) | undefined;
+      setBindingMock('GetThreadItem', () => new Promise<Item>((resolve) => {
+        releaseLookup = () => resolve(makeItem({ id: 'deep', threadId: 't', turnIndex: 1 }));
+      }));
+      await pane.switchThread(makeThread({ id: 't' }));
+      const toastsBefore = getToasts().length;
+      const pending = pane.loadUntilItem('deep');
+      await flushMicrotasks();
+      await pane.switchThread(makeThread({ id: 'u' }));
+      releaseLookup?.();
+      expect(await pending).toBe('superseded');
+      expect(getToasts().length).toBe(toastsBefore);
+      expect(pane.items.map((it) => it.id)).toEqual(['u-tail']);
     });
 
     it('requestScrollToItem bumps the nonce observed by the timeline', () => {
@@ -526,7 +598,7 @@ describe('threadTimelineWindow', () => {
       expect(pane.oldestLoadedTurnIndex).toBeNull();
 
       const ok = await pane.loadUntilItem('deep');
-      expect(ok).toBe(true);
+      expect(ok).toBe('loaded');
       expect(sliceAnchor).toBe('deep');
       expect(pane.items.some((it) => it.id === 'deep')).toBe(true);
       expect(pane.oldestLoadedTurnIndex).toBe(3);
@@ -556,7 +628,7 @@ describe('threadTimelineWindow', () => {
       await pane.switchThread(makeThread({ id: 't' }));
 
       const ok = await pane.loadUntilItem('wrong');
-      expect(ok).toBe(false);
+      expect(ok).toBe('missing');
       expect(paged).toBe(0);
     });
 
@@ -666,7 +738,7 @@ describe('threadTimelineWindow', () => {
 
       const ok = await pane.loadUntilItem('deep-child');
 
-      expect(ok).toBe(true);
+      expect(ok).toBe('loaded');
       expect(sliceAnchors.at(-1)).toBe('root-launch');
       expect(pane.items.map((it) => it.id)).toEqual([
         'root-launch',
@@ -996,7 +1068,7 @@ describe('threadTimelineWindow', () => {
       await pane.switchThread(makeThread({ id: 't' }));
       expect(pane.oldestLoadedTurnIndex).toBeNull();
       const ok = await pane.loadUntilItem('deep');
-      expect(ok).toBe(true);
+      expect(ok).toBe('loaded');
       expect(capturedAnchor).toBe('deep');
       expect(capturedTargetCount).toBeLessThanOrEqual(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
       expect(capturedTargetCount).toBeGreaterThan(0);
@@ -1201,7 +1273,7 @@ describe('threadTimelineWindow', () => {
 
       await pane.switchThread(makeThread({ id: 't' }));
       const ok = await pane.loadUntilItem('deep');
-      expect(ok).toBe(true);
+      expect(ok).toBe('loaded');
       expect(pane.items.filter((it) => it.id === 'ancestor').length).toBe(1);
       expect(pane.items.some((it) => it.id === 'deep')).toBe(true);
       expect(pane.hasMoreNewer).toBe(true);

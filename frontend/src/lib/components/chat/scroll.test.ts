@@ -393,7 +393,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
       makeItem({ id: 'pinned-item', summary: 'pinned' }),
     ]);
     pane.thread!.id = 'thread-restore-anchor';
-    const loadUntilItem = vi.spyOn(pane, 'loadUntilItem').mockResolvedValue(true);
+    const loadUntilItem = vi.spyOn(pane, 'loadUntilItem').mockResolvedValue('loaded');
 
     render(MessageTimeline, { props: { pane } });
     await tick();
@@ -586,7 +586,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
       makeItem({ id: 'present', summary: 'still here' }),
     ]);
     pane.thread!.id = 'thread-missing-anchor';
-    const loadUntilItem = vi.spyOn(pane, 'loadUntilItem').mockResolvedValue(false);
+    const loadUntilItem = vi.spyOn(pane, 'loadUntilItem').mockResolvedValue('missing');
 
     render(MessageTimeline, { props: { pane } });
     await tick();
@@ -596,8 +596,8 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     expect(loadUntilItem).toHaveBeenCalledWith('gone-from-history');
   });
 
-  it('falls back to restoreToBottom when loadUntilItem returns false (controller ends sticky+not-escaped)', async () => {
-    // restoreAnchor has a `!found` branch that calls
+  it('falls back to restoreToBottom when loadUntilItem reports the anchor missing (controller ends sticky+not-escaped)', async () => {
+    // restoreAnchor has a `missing` branch that calls
     // restoreToBottom when the saved anchor's item is gone from the
     // backend. Pin the controller end-state contract: after the fallback
     // runs, restoreToBottom calls forceStick which clears escape and
@@ -612,7 +612,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
       makeItem({ id: 'present', summary: 'still here' }),
     ]);
     pane.thread!.id = 'thread-anchor-not-found';
-    vi.spyOn(pane, 'loadUntilItem').mockResolvedValue(false);
+    vi.spyOn(pane, 'loadUntilItem').mockResolvedValue('missing');
 
     render(MessageTimeline, { props: { pane } });
     await tick();
@@ -643,7 +643,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
       makeItem({ id: 'b', itemIndex: 1, summary: 'b' }),
     ]);
     pane.thread!.id = 'thread-anchor-idx-missing';
-    vi.spyOn(pane, 'loadUntilItem').mockResolvedValue(true);
+    vi.spyOn(pane, 'loadUntilItem').mockResolvedValue('loaded');
 
     render(MessageTimeline, { props: { pane } });
     await tick();
@@ -713,7 +713,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     const pane = await buildPane(makeThread({ id: 'cache-hit-restore' }), items);
     // Ensure pane.loading reflects the in-flight slice load.
     expect(pane.items.length).toBeGreaterThan(0);
-    const loadUntilItem = vi.spyOn(pane, 'loadUntilItem').mockResolvedValue(true);
+    const loadUntilItem = vi.spyOn(pane, 'loadUntilItem').mockResolvedValue('loaded');
 
     render(MessageTimeline, { props: { pane } });
     await tick();
@@ -788,7 +788,7 @@ describe('scroll integration — scroll to item', () => {
     const pane = await buildPane(undefined, [
       makeItem({ id: 'visible', turnIndex: 5, summary: 'visible' }),
     ]);
-    const loadUntilItem = vi.spyOn(pane, 'loadUntilItem').mockResolvedValue(true);
+    const loadUntilItem = vi.spyOn(pane, 'loadUntilItem').mockResolvedValue('loaded');
 
     render(MessageTimeline, { props: { pane } });
     pane.requestScrollToItem('visible');
@@ -803,7 +803,7 @@ describe('scroll integration — scroll to item', () => {
     const pane = await buildPane(undefined, [
       makeItem({ id: 'visible', turnIndex: 5, summary: 'visible' }),
     ]);
-    vi.spyOn(pane, 'loadUntilItem').mockResolvedValue(false);
+    vi.spyOn(pane, 'loadUntilItem').mockResolvedValue('missing');
     const toastsBefore = getToasts().length;
 
     render(MessageTimeline, { props: { pane } });
@@ -851,7 +851,7 @@ describe('scroll integration — scroll to item', () => {
         summary: 'after the run',
       }),
     ]);
-    vi.spyOn(pane, 'loadUntilItem').mockResolvedValue(true);
+    vi.spyOn(pane, 'loadUntilItem').mockResolvedValue('loaded');
 
     const { container } = render(MessageTimeline, { props: { pane } });
     await tick();

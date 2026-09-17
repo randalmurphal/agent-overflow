@@ -135,9 +135,9 @@ describe('createAgentScopeView', () => {
     expect(facade.loading).toBe(false);
     expect(facade.showLoadingSpinner).toBe(false);
     await expect(facade.loadOlder()).resolves.toMatchObject({ status: 'noop' });
-    await expect(facade.loadUntilItem('nested-launch')).resolves.toBe(true);
-    await expect(facade.loadUntilItem('grandchild')).resolves.toBe(false);
-    await expect(facade.loadUntilItem('main-text')).resolves.toBe(false);
+    await expect(facade.loadUntilItem('nested-launch')).resolves.toBe('loaded');
+    await expect(facade.loadUntilItem('grandchild')).resolves.toBe('missing');
+    await expect(facade.loadUntilItem('main-text')).resolves.toBe('missing');
 
     // Everything else is the source pane.
     expect(facade.threadId).toBe(pane.threadId);

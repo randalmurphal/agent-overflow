@@ -190,6 +190,14 @@ export type LoadOlderResult = {
 };
 
 /**
+ * Why `loadUntilItem` did or did not make its item scrollable. Only
+ * `missing` means the row is gone from the thread; `failed` was already
+ * reported to the user by the pane; `superseded` belongs to whoever owns
+ * the window now and must not be reported at all.
+ */
+export type LoadUntilItemResult = 'loaded' | 'missing' | 'superseded' | 'failed';
+
+/**
  * Minimal surface a registered scroll controller exposes to the pane.
  * MessageTimeline registers an explicit adapter (its `observe` routes
  * `'host-layout'` through the listRef-aware retry ladder and it adds the

@@ -85,6 +85,7 @@ import { createThreadChannelState } from './threadChannelState.svelte';
 import {
   nowForLiveContent,
   type LoadOlderResult,
+  type LoadUntilItemResult,
   type PaneScrollController,
   type ThreadPaneOptions,
 } from './threadPaneShared';
@@ -108,6 +109,7 @@ export type {
   DraftPlaceholderMode,
   DraftThreadPlaceholder,
   LoadOlderResult,
+  LoadUntilItemResult,
   PaneErrorKind,
   PaneScrollController,
   PreserveViewportBottomOptions,
@@ -1143,7 +1145,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
 
     /** Ensure `itemID` is present in the loaded window. See threadTimelineWindow.svelte.ts. */
-    loadUntilItem(itemID: string): Promise<boolean> {
+    loadUntilItem(itemID: string): Promise<LoadUntilItemResult> {
       return timelineWindow.loadUntilItem(itemID);
     },
 

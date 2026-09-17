@@ -694,7 +694,7 @@ func (a *App) ListItems(threadID string, inlinePreviews bool) ([]store.Item, err
 	if err != nil {
 		return nil, err
 	}
-	return projectItemSlice(items, inlinePreviews, keepNewest), nil
+	return projectItemSlice(items, inlinePreviews), nil
 }
 
 // --- Payload operations ---
