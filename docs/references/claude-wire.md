@@ -1143,6 +1143,17 @@ A merged-away echo is byte-indistinguishable from an ordinary ack. The
 than the client sent under that uuid, and the extra leading blocks equal
 the content the client sent for the earlier message(s), in order.
 
+Verified live 2026-09-16 on 2.1.257 (haiku, AO's flag set): with A and B
+written 400 ms apart during a tool-free streaming turn, the merged-away
+echo for A landed ~1 ms after that turn's `result`, before either
+`command_lifecycle` `started`; the merged turn then emitted its own
+`system/init`, and the survivor echo for B (both blocks, with a
+`timestamp`) followed it. The session file held one `type:"user"` entry
+under B's uuid with A's block first. `TestProviderSmokeClaudeCrossDrainMergeFold`
+(`internal/app/providersmoke_merge_test.go`, part of `make provider-smoke`)
+drives the same shape through AO's flush queue and asserts the fold and a
+revert anchored on the survivor.
+
 Consequences:
 
 - A client that writes N envelopes at a boundary gets N-1 uuids that

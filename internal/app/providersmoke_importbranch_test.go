@@ -424,6 +424,12 @@ func (d *providerSmokeClaudeDriver) removeTranscripts(t *testing.T) {
 		}
 	}
 	for dir := range dirs {
+		// The CLI creates an empty `memory/` beside every project's transcripts;
+		// it is not a transcript, and left alone it keeps the emptied project
+		// dir alive in the developer's home.
+		if err := os.Remove(filepath.Join(dir, "memory")); err != nil && !os.IsNotExist(err) {
+			t.Logf("provider smoke (claude): remove project memory dir under %s: %v", dir, err)
+		}
 		entries, err := os.ReadDir(dir)
 		if err != nil || len(entries) > 0 {
 			continue

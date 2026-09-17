@@ -58,8 +58,8 @@ type Router struct {
 	// app-layer resolution); nil until then. Leaf lock.
 	generatedImageMu       sync.Mutex
 	generatedImageImporter GeneratedImageImporter
-	tracer                trace.Tracer
-	metrics               TurnMetrics
+	tracer                 trace.Tracer
+	metrics                TurnMetrics
 	// deferredPersistGate is a test-only hook (same-package tests set it
 	// directly) called inside the anchored echo section AFTER the pending
 	// entry is popped and BEFORE its row persists — the window

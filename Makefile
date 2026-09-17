@@ -171,10 +171,12 @@ test-race:
 # binary-path override) and asserts schema acceptance, envelope round-trip, and
 # the §9 worktree/branch rules. A Claude-only scenario additionally builds a
 # real multi-branch transcript and proves the CLI resumes a fork cut by the
-# session importer's lazy branch materialisation. It SPENDS REAL MODEL TOKENS:
-# one trivial turn per provider, four for that scenario, and four answered
-# turns plus one early interrupt per provider for the revert flow. Both CLIs
-# must be installed and authenticated.
+# session importer's lazy branch materialisation, and another proves the CLI's
+# queue-boundary merge of two separately flushed messages is folded and
+# revertable. It SPENDS REAL MODEL TOKENS: one trivial turn per provider, four
+# for the imported-branch scenario, three Haiku turns for the merge scenario,
+# and four answered turns plus one early interrupt per provider for the revert
+# flow. Both CLIs must be installed and authenticated.
 #
 # The `providersmoke` build tag keeps these tests out of `make go-test`.
 # `make verify` compiles them without running any test so production API changes
@@ -185,7 +187,8 @@ test-race:
 # internal/app/providersmoke_test.go.
 #
 # -timeout covers the sum of the in-test deadlines (6m per workflow leg, 3m for
-# the imported-branch scenario, 6m per revert leg, plus auth probes) with
+# the imported-branch scenario, 6m for the merge scenario, 6m per revert leg,
+# plus auth probes) with
 # headroom, so a wedged turn fails through the gate's own diagnostics rather
 # than as a bare test-binary timeout panic.
 provider-smoke-compile:

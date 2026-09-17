@@ -15,8 +15,9 @@
 // Run the real gate manually before a release and after upgrading either
 // provider CLI. It spends real model tokens — one trivial turn per provider
 // here, plus the four the Claude imported-branch scenario costs
-// (providersmoke_importbranch_test.go) — which is the price of the only
-// assertions a mock cannot make.
+// (providersmoke_importbranch_test.go) and the three Haiku turns the Claude
+// queue-boundary merge scenario costs (providersmoke_merge_test.go) — which
+// is the price of the only assertions a mock cannot make.
 //
 // This file's workflow gate measures three things, in the order a failure
 // should be read:

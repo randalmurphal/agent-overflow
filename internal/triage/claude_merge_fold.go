@@ -26,6 +26,12 @@ import (
 // concatenated blocks of every member. On that evidence — and only on it —
 // this file rebuilds the survivor as the join and deletes the merged-away
 // rows, so one AO message is one transcript entry again.
+//
+// Each flushed member reserved its own response turn index when it was
+// dispatched; the merged answer arrives in the survivor's, and the folded
+// member's reservation is simply never opened. A turn index only orders,
+// and the next composer send already allocates past pending reservations
+// (app_user_message_placement.go nextSendTurnIndex), so nothing renumbers.
 
 // mergedFlushRow is one member of a confirmed merge, resolved to the durable
 // state the fold needs from it.
