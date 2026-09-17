@@ -457,7 +457,7 @@
   },
   {
     "name": "a cue chosen for one event does not move another",
-    "settings": { "notifySoundCueTurnComplete": "marimba", "notifySoundCueAttention": "boop" },
+    "settings": { "notifySoundCueTurnComplete": "marimba", "notifySoundCueAttention": "chime" },
     "send": { "kind": "turn-complete", "target": { "kind": "thread", "threadId": "t1" } },
     "screen": { "focused": false, "threadVisible": false },
     "refusal": null,

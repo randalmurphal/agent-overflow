@@ -12,7 +12,7 @@ event; any cue can be chosen for any event.
 | `knock.wav` | two low knocks | input needed |
 | `pop.wav` | two glass notes rising | |
 | `hum.wav` | one low note sliding down | attention |
-| `boop.wav` | two glass notes falling | |
+| `chime.wav` | two glass notes falling a fifth, long room | |
 
 Every file is 2.0 s of 16-bit stereo at 44.1 kHz: a struck voice in the first
 half second, then a reverb tail fading to silence. All seven are normalised to

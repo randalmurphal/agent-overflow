@@ -724,8 +724,8 @@ const (
 	NotifyCuePop = "pop"
 	// NotifyCueHum is one low note sliding down.
 	NotifyCueHum = "hum"
-	// NotifyCueBoop is a rounded low double blip.
-	NotifyCueBoop = "boop"
+	// NotifyCueChime is two glass notes falling a fifth.
+	NotifyCueChime = "chime"
 	// NotifyCueSystem is the OS notification sound, carried by the banner.
 	NotifyCueSystem = "system"
 )

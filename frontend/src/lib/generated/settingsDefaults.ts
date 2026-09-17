@@ -194,9 +194,9 @@ export const FRONTEND_SETTING_OPTIONS: Partial<Record<keyof Settings, readonly s
 };
 
 export const FRONTEND_SETTING_PATTERNS: Partial<Record<keyof Settings, string>> = {
-  "notifySoundCueTurnComplete": "^(?:swoosh|marimba|chord|knock|pop|hum|boop|system|custom:[a-z0-9][a-z0-9-]{0,63})$",
-  "notifySoundCueInputNeeded": "^(?:swoosh|marimba|chord|knock|pop|hum|boop|system|custom:[a-z0-9][a-z0-9-]{0,63})$",
-  "notifySoundCueAttention": "^(?:swoosh|marimba|chord|knock|pop|hum|boop|system|custom:[a-z0-9][a-z0-9-]{0,63})$",
+  "notifySoundCueTurnComplete": "^(?:swoosh|marimba|chord|knock|pop|hum|chime|system|custom:[a-z0-9][a-z0-9-]{0,63})$",
+  "notifySoundCueInputNeeded": "^(?:swoosh|marimba|chord|knock|pop|hum|chime|system|custom:[a-z0-9][a-z0-9-]{0,63})$",
+  "notifySoundCueAttention": "^(?:swoosh|marimba|chord|knock|pop|hum|chime|system|custom:[a-z0-9][a-z0-9-]{0,63})$",
 };
 
 export const FRONTEND_SETTING_RANGES: Partial<Record<keyof Settings, readonly [number, number]>> = {

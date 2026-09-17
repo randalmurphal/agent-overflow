@@ -52,7 +52,7 @@ export type NotifyQuietWhen = "never" | "focused" | "threadVisible" | "focusedAn
  * maps it to a URL. `system` names no asset: the OS banner plays its own
  * sound and no cue frame is sent.
  */
-export type BuiltinNotifyCue = "swoosh" | "marimba" | "chord" | "knock" | "pop" | "hum" | "boop" | "system";
+export type BuiltinNotifyCue = "swoosh" | "marimba" | "chord" | "knock" | "pop" | "hum" | "chime" | "system";
 
 /**
  * What a `notifySoundCue*` key may carry: a built-in, or `custom:<id>` naming

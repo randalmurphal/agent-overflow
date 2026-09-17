@@ -26,7 +26,7 @@ var BuiltinNotifyCues = []string{
 	NotifyCueKnock,
 	NotifyCuePop,
 	NotifyCueHum,
-	NotifyCueBoop,
+	NotifyCueChime,
 	NotifyCueSystem,
 }
 

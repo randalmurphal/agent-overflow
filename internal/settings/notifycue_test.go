@@ -25,7 +25,7 @@ func TestNotifyCueCustomIDGrammarMatchesSoundlib(t *testing.T) {
 func TestBuiltinNotifyCuesCoverEveryConstant(t *testing.T) {
 	for _, cue := range []string{
 		NotifyCueSwoosh, NotifyCueMarimba, NotifyCueChord, NotifyCueKnock,
-		NotifyCuePop, NotifyCueHum, NotifyCueBoop, NotifyCueSystem,
+		NotifyCuePop, NotifyCueHum, NotifyCueChime, NotifyCueSystem,
 	} {
 		if !notifyCuePattern.MatchString(cue) {
 			t.Fatalf("the cue pattern rejects the built-in %q", cue)
@@ -73,7 +73,7 @@ func TestNotifyCuePatternSourceIsPortable(t *testing.T) {
 func TestNotifyCueValidationIsStrictAndLoadIsLenient(t *testing.T) {
 	current := DefaultSettings
 	current.NotifySoundCueTurnComplete = "custom:desk-bell"
-	current.NotifySoundCueInputNeeded = NotifyCueBoop
+	current.NotifySoundCueInputNeeded = NotifyCueChime
 	validated, err := validateSettings(current)
 	if err != nil {
 		t.Fatalf("validateSettings: %v", err)
@@ -94,8 +94,8 @@ func TestNotifyCueValidationIsStrictAndLoadIsLenient(t *testing.T) {
 		t.Fatalf("turn-complete cue = %q, want this event's default %q",
 			loaded.NotifySoundCueTurnComplete, DefaultSettings.NotifySoundCueTurnComplete)
 	}
-	if loaded.NotifySoundCueInputNeeded != NotifyCueBoop {
-		t.Fatalf("input-needed cue = %q, want the untouched %q", loaded.NotifySoundCueInputNeeded, NotifyCueBoop)
+	if loaded.NotifySoundCueInputNeeded != NotifyCueChime {
+		t.Fatalf("input-needed cue = %q, want the untouched %q", loaded.NotifySoundCueInputNeeded, NotifyCueChime)
 	}
 }
 

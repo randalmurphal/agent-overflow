@@ -33,7 +33,7 @@
 //     DefaultSettings, so nothing here consults what the user chose.
 
 import { SETTINGS_DEFAULTS } from '../generated/settingsDefaults';
-import boopCue from '../assets/sounds/boop.wav?url';
+import chimeCue from '../assets/sounds/chime.wav?url';
 import chordCue from '../assets/sounds/chord.wav?url';
 import humCue from '../assets/sounds/hum.wav?url';
 import knockCue from '../assets/sounds/knock.wav?url';
@@ -56,7 +56,7 @@ const CUE_URLS: Readonly<Record<string, string>> = {
   knock: knockCue,
   pop: popCue,
   hum: humCue,
-  boop: boopCue,
+  chime: chimeCue,
 };
 
 /** The prefix a cue value carries when it names a file, not a bundled asset. */

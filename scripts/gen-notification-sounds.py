@@ -20,7 +20,7 @@ so a person tells them apart without listening for pitch:
   knock    two low knocks, like a door               default: input needed
   pop      two glass notes rising
   hum      one low note sliding down                 default: attention
-  boop     two glass notes falling
+  chime    two glass notes falling a fifth, C6 to F5
 
 What makes a cue sound finished rather than synthetic is not the instrument,
 it is the ROOM and the ATTACK. The OS cues these sit beside are near-pure
@@ -74,6 +74,7 @@ OUTPUT_DIR = pathlib.Path("frontend/src/lib/assets/sounds")
 # Partials above the fundamental die faster than it, which is what makes a
 # tone read as struck rather than beeped.
 GLASS = [(1.0, 1.0, 14.0), (3.0, 0.02, 30.0)]
+CHIME = [(1.0, 1.0, 42.0), (2.0, 0.03, 60.0), (3.0, 0.015, 80.0)]
 MARIMBA = [(1.0, 1.0, 9.0), (3.98, 0.18, 26.0), (9.3, 0.04, 50.0)]
 PAD = [(1.0, 1.0, 3.2), (2.0, 0.28, 5.0), (3.0, 0.08, 8.0), (4.0, 0.03, 12.0)]
 HUM = [(1.0, 1.0, 2.6), (2.0, 0.40, 4.5), (3.0, 0.10, 7.0)]
@@ -358,15 +359,17 @@ def cue_hum() -> list[int]:
     return quantise(place(dry, wet_db=-22.0, room=0.92, damp=0.45))
 
 
-# Two glass notes falling a fifth, E5 to A4, 90 ms apart: the low, rounded
-# cousin of pop.
-def cue_boop() -> list[int]:
+# Two glass notes falling a fifth, C6 to F5, 62 ms apart, in a long bright
+# room. Tuned to the measured shape of the macOS default notification tone
+# (a 1 ms attack, a decay of roughly 22 dB in 60 ms, the second note 3 dB
+# under the first, a tail 28 dB under the hit fading 2.5 dB per 100 ms).
+def cue_chime() -> list[int]:
     dry = empty()
-    tone(dry, 0.00, 659.3, 1.0, GLASS)
-    tick(dry, 0.00, 0.08, seed=7, cutoff=3_000.0)
-    tone(dry, 0.09, 440.0, 1.0, GLASS)
-    tick(dry, 0.09, 0.08, seed=8, cutoff=3_000.0)
-    return quantise(place(dry, wet_db=-24.0))
+    tone(dry, 0.000, 1_046.5, 1.0, CHIME, attack=0.001)
+    tick(dry, 0.000, 0.05, seed=7, cutoff=5_000.0)
+    tone(dry, 0.062, 698.5, 0.7, CHIME, attack=0.001)
+    tick(dry, 0.062, 0.04, seed=8, cutoff=5_000.0)
+    return quantise(place(dry, wet_db=-22.0, room=0.94, damp=0.18, predelay=0.075))
 
 
 CUES = {
@@ -376,7 +379,7 @@ CUES = {
     "knock": cue_knock,
     "pop": cue_pop,
     "hum": cue_hum,
-    "boop": cue_boop,
+    "chime": cue_chime,
 }
 
 
