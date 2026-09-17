@@ -278,6 +278,9 @@ test('backgrounding a running inline agent returns the turn and the transcript c
   const settledCard = timeline.getByTestId('subagent-group').first();
   await expect(settledCard).toHaveAttribute('data-background', 'true');
   await expect(settledCard.getByTestId('subagent-group-output-error')).toHaveCount(0);
+  // Its collapsed line is the agent's final report from the transcript,
+  // not the JSONL file's first envelope.
+  await expect(settledCard.getByTestId('subagent-group-preview')).toContainText(BACKFILL_TEXT);
   await expect(pane.getByTestId('agent-pane-working')).toHaveCount(0);
   // The notification's `usage` is the whole run's, and it persists onto
   // the launch row — a backgrounded agent's live ticks are gone by then.

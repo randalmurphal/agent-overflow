@@ -256,3 +256,26 @@ func ConvertSubagentRows(rows []Row, launchToolUseID string) ConvertResult {
 	c.appendDeferredWarnings()
 	return ConvertResult{Events: c.events, Warnings: c.warnings}
 }
+
+// FinalAssistantText is the agent's final report: every text block of
+// the transcript's last assistant message that carried text, joined in
+// order. Empty when the agent produced no text at all. Blocks belong to
+// the same message when their ids share the `<message id>#<ordinal>`
+// prefix nextBlockItemID assigns; a block without a message id stands
+// alone.
+func (r ConvertResult) FinalAssistantText() string {
+	var parts []string
+	lastMessage := ""
+	for _, evt := range r.Events {
+		if evt.Kind != provider.EventTextDelta || evt.Role != "assistant" {
+			continue
+		}
+		message, _, _ := strings.Cut(evt.ItemID, "#")
+		if message != lastMessage {
+			parts = parts[:0]
+			lastMessage = message
+		}
+		parts = append(parts, evt.Content)
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
+}

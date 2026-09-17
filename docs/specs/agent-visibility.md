@@ -83,7 +83,8 @@ subagent model and the user explicitly authorizes the corresponding change.
   answer as its payload; a terminal whose envelope does not arrive in
   that turn is written answerless at turn end, and an answer sampled in a
   later turn stays a delivery activity. A Claude background completion
-  carries the `output_file` report. The answer itself is a NORMAL
+  carries the `output_file` sidechain transcript, and its preview is the
+  agent's final assistant text. The answer itself is a NORMAL
   message, not a special block (ruling 2026-08-23): a Codex child's
   transcript streams to the parent parented to the launch, so the answer
   already renders in the card body and the pane as its own assistant

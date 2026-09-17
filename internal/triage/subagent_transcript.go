@@ -43,7 +43,7 @@ import (
 // notification's output-file state — a silently incomplete agent
 // transcript reads exactly like a complete one, and no second signal
 // would ever correct it.
-func (r *Router) backfillSubagentTranscript(threadID string, launch store.Item, data []byte) (int, error) {
+func (r *Router) backfillSubagentTranscript(threadID string, launch store.Item, converted claudeimport.ConvertResult) (int, error) {
 	// The terminal can land on a §E6 resume CARRIER, whose own subtree is
 	// empty: the agent's rows — round one's and every resumed round's —
 	// are parented to the transcript ROOT (transcript_root.go). Replaying
@@ -56,10 +56,6 @@ func (r *Router) backfillSubagentTranscript(threadID string, launch store.Item, 
 	launch, err := r.transcriptRootOrSelf(threadID, launch)
 	if err != nil {
 		return 0, err
-	}
-	converted, err := claudeimport.ConvertSubagentTranscriptData(data, launch.ID)
-	if err != nil {
-		return 0, fmt.Errorf("read subagent transcript: %w", err)
 	}
 	for _, warning := range converted.Warnings {
 		log.Printf("triage: subagent transcript %s (%s): %s", launch.ID, warning.Code, warning.Message)

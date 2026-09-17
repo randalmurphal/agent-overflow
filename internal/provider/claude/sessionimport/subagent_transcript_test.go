@@ -264,3 +264,42 @@ func TestConvertSubagentTranscriptEmptyAndInvalidInputs(t *testing.T) {
 		t.Fatal("expected a missing transcript to be an error")
 	}
 }
+
+// FinalAssistantText is the agent's report: the last assistant message's
+// text blocks, all of them, and nothing from an earlier message.
+func TestConvertResultFinalAssistantText(t *testing.T) {
+	stamp := func(seconds int) string { return "2026-01-01T00:00:0" + string(rune('0'+seconds)) + ".000Z" }
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-final.jsonl")
+	writeJSONL(t, path,
+		userRow("s1", "", "the task prompt", stamp(0), with("isSidechain", true)),
+		assistantRow("s2", "s1", "msg_1", []any{textBlock("first thoughts")}, stamp(1), with("isSidechain", true)),
+		assistantRow("s3", "s2", "msg_2", []any{
+			toolUseBlock("toolu_sub", "Read", map[string]any{"file_path": "/repo/a.go"}),
+		}, stamp(2), with("isSidechain", true)),
+		toolResultRow("s4", "s3", "toolu_sub", "package main", stamp(3), with("isSidechain", true)),
+		assistantRow("s5", "s4", "msg_3", []any{textBlock("Reviewed."), textBlock("No issues.")}, stamp(4), with("isSidechain", true)),
+	)
+	result, err := ConvertSubagentTranscript(path, "toolu_task")
+	if err != nil {
+		t.Fatalf("ConvertSubagentTranscript: %v", err)
+	}
+	if got := result.FinalAssistantText(); got != "Reviewed.\nNo issues." {
+		t.Fatalf("FinalAssistantText = %q", got)
+	}
+
+	promptOnly := filepath.Join(dir, "agent-prompt.jsonl")
+	writeJSONL(t, promptOnly,
+		userRow("s1", "", "the task prompt", stamp(0), with("isSidechain", true)),
+	)
+	silent, err := ConvertSubagentTranscript(promptOnly, "toolu_task")
+	if err != nil {
+		t.Fatalf("ConvertSubagentTranscript(prompt only): %v", err)
+	}
+	if got := silent.FinalAssistantText(); got != "" {
+		t.Fatalf("FinalAssistantText(prompt only) = %q, want empty", got)
+	}
+	if got := (ConvertResult{}).FinalAssistantText(); got != "" {
+		t.Fatalf("FinalAssistantText(empty) = %q, want empty", got)
+	}
+}
