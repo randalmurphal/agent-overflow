@@ -33,8 +33,9 @@ export const REPLICA_ENVELOPE_VERSION = 1;
  * changes — including a change to the wire `Item` DTO, since items ride
  * the envelope verbatim. A mismatch drops the whole database.
  */
-// Earlier windows could pair a snapshot stamp with an older replayed row.
-export const REPLICA_SCHEMA_VERSION = 2;
+// The wire `Item` DTO gained `rev`, so stored rows from an earlier build
+// cannot describe a held window.
+export const REPLICA_SCHEMA_VERSION = 3;
 
 /**
  * Per-envelope caps, deliberately the same numbers `threadItemCache`
@@ -212,6 +213,7 @@ export function readEnvelope(raw: unknown): ReplicaBody | null {
     if (!isFiniteNumber((item as Item).turnIndex) || !isFiniteNumber((item as Item).itemIndex)) {
       return null;
     }
+    if (!Number.isInteger((item as Item).rev)) return null;
   }
   return {
     epoch: body.epoch,

@@ -43,6 +43,14 @@ type SyncThreadWindowRequest struct {
 	// several clients that can disagree; the server never reads the
 	// setting itself.
 	InlinePreviews bool `json:"inlinePreviews,omitempty"`
+	// HaveWindow describes the ROWS the caller already holds, and is nil
+	// when it holds none. It is the answer to the case the stamps cannot
+	// serve: a turn on the open thread moves the thread's rev, so the
+	// caller's attested stamp is worthless on the next open even though
+	// every row it holds is still current. A window that verifies earns
+	// the same page-less `fresh` a matching stamp does
+	// (docs/architecture/thread-replica-sync.md §5).
+	HaveWindow *store.HeldWindow `json:"haveWindow,omitempty"`
 }
 
 // SyncThreadWindowResponse is the answer. Page is nil for "fresh"
@@ -63,10 +71,11 @@ type SyncThreadWindowResponse struct {
 }
 
 // SyncThreadWindow is the cold-open replacement for
-// ListThreadSliceAround: it answers with the window only when the
-// caller's stamps prove it necessary. Store-read-only — it opens one
-// read-pool transaction and touches no local FS, process, or credential
-// state, so it rides `threads:read` like the history it answers with.
+// ListThreadSliceAround: it answers with the window only when neither the
+// caller's stamps nor the window it describes prove it current.
+// Store-read-only — it opens one read-pool transaction and touches no
+// local FS, process, or credential state, so it rides `threads:read` like
+// the history it answers with.
 //
 // The other paging RPCs are unchanged; this one covers the initial
 // window only.
@@ -79,7 +88,7 @@ func (a *App) SyncThreadWindow(threadID string, req SyncThreadWindowRequest) (Sy
 	result, err := a.store.SyncThreadWindow(ctx, threadID, req.AnchorItemID, clampSliceItemBudget(req.ItemBudget), store.HistoryStamp{
 		Rev:   req.HaveRev,
 		Epoch: req.HaveEpoch,
-	})
+	}, req.HaveWindow)
 	if err != nil {
 		return SyncThreadWindowResponse{}, normalizeThreadWindowSyncError(ctx, err)
 	}

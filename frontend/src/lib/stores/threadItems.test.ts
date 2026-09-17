@@ -837,3 +837,54 @@ describe('reconcileSnapshotPage subagent admission', () => {
     expect(result.items).toEqual([]);
   });
 });
+
+// A row re-persisted without visible change arrives as an upsert that
+// differs only in `rev`. Every dedupe keeps the held row (and, on the
+// window path, the array reference), but the held row must carry the new
+// revision or the next open describes a window the backend no longer has
+// (threadWindowDigest.ts). See `adoptRevIfEqual`.
+describe('revision carry on absorbed rows', () => {
+  it('keeps the window reference and adopts the rev on a revision-only upsert', () => {
+    const held = makeItem({ id: 'a', threadId: 'thread-1', rev: 4 });
+    const current = [held];
+
+    const next = applyWindowUpserts({
+      current,
+      incoming: [makeItem({ id: 'a', threadId: 'thread-1', rev: 9 })],
+      itemIndexById: new Map([['a', 0]]),
+      currentThreadId: 'thread-1',
+    });
+
+    expect(next).toBeNull();
+    expect(current[0]).toBe(held);
+    expect(held.rev).toBe(9);
+  });
+
+  it('adopts the rev of an equal-by-value paging row', () => {
+    const held = makeItem({ id: 'a', summary: 'same', rev: 4 });
+    const current = [held];
+
+    expect(mergeItemsById([makeItem({ id: 'a', summary: 'same', rev: 9 })], current)).toBe(current);
+    expect(held.rev).toBe(9);
+  });
+
+  it('adopts the rev of an equal-by-value reconciled row', () => {
+    const held = makeItem({ id: 'a', summary: 'same', rev: 4 });
+    const current = [held];
+
+    const next = reconcileItemWindow([makeItem({ id: 'a', summary: 'same', rev: 9 })], current);
+
+    expect(next).toBe(current);
+    expect(held.rev).toBe(9);
+  });
+
+  it('still replaces the row when anything rendered changed', () => {
+    const held = makeItem({ id: 'a', summary: 'before', rev: 4 });
+    const incoming = makeItem({ id: 'a', summary: 'after', rev: 9 });
+
+    const next = reconcileItemWindow([incoming], [held]);
+
+    expect(next[0]).toBe(incoming);
+    expect(held.rev).toBe(4);
+  });
+});

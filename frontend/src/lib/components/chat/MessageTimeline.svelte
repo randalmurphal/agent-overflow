@@ -7,7 +7,7 @@
   import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';
   import { installTimelineReconnect } from './timelineReconnect';
   import { createContentGeometryNotifier } from '../../utils/scroll/contentGeometryNotifier';
-  import { getSettings } from '../../stores/settings.svelte';
+  import { getSettings, typographySignature } from '../../stores/settings.svelte';
   import { getProject } from '../../stores/projects.svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import {
@@ -395,6 +395,7 @@
     getListRef: () => listRef,
     getRevealedNodes: () => revealedNodes,
     getScrollSurfaceContentWidth: () => scrollSurfaceContentWidth,
+    getTypographySignature: () => typographySignature(),
     getRestoredThreadId: () => restore.restoredThreadId,
   });
 
@@ -431,11 +432,11 @@
     getGroupedNodes: () => rows.groupedNodes,
     findTimelineNodeIndex,
     // The rate-bounded variant: this reaches the snapshot path, which
-    // fires per scroll frame. The exact capture is the settle edge below,
-    // plus the final edges (unmount here, switch-away through the
-    // controller adapter).
+    // fires per scroll frame. The settle edge captures exactly; the final
+    // edges (unmount here, switch-away through the controller adapter)
+    // capture past both the rate bound and the size gate.
     persistSizePriors: () => sizePriors.maybePersistSizePriorsInterim(),
-    persistSizePriorsExact: () => sizePriors.maybePersistSizePriors(),
+    persistSizePriorsExact: () => sizePriors.persistSizePriorsFinal(),
     armWarmupWithReset,
     resetAutoLoadGates: () => paging.resetGates(),
   });
@@ -545,9 +546,9 @@
     stickToLatest: () => {
       void paging.jumpToLatest();
     },
-    // The EXACT capture: a switch-away is a final edge, so it must not be
-    // refused by the scroll cadence's rate bound.
-    persistSizePriors: () => sizePriors.maybePersistSizePriors(),
+    // A switch-away is a final edge: neither the scroll cadence's rate
+    // bound nor the total-size gate may refuse it.
+    persistSizePriors: () => sizePriors.persistSizePriorsFinal(),
   };
 
   // Hide contentEl while the virtualizer and async row content settle.
@@ -1250,10 +1251,13 @@
   <!-- Visible when the user has escaped or is no longer near the bottom.
        Wiring this to `!isSticky` would also pop the chip during sidebar/
        drawer resize leases (pauseDepth > 0) even though the user is
-       geometrically glued to the bottom. Anchored to the outer wrapper
-       (which does not scroll), so the chip stays fixed in the visible
-       area regardless of transcript scrollTop. -->
-  <ScrollToBottomButton visible={!stick.isAtBottom || pane.hasMoreNewer} onClick={() => { void paging.jumpToLatest(); }} />
+       geometrically glued to the bottom. `restorePending` suppresses it
+       across a thread switch: the escape there is the controller's own
+       defensive one and there is no restored position yet to be away
+       from. Anchored to the outer wrapper (which does not scroll), so the
+       chip stays fixed in the visible area regardless of transcript
+       scrollTop. -->
+  <ScrollToBottomButton visible={!stick.restorePending && (!stick.isAtBottom || pane.hasMoreNewer)} onClick={() => { void paging.jumpToLatest(); }} />
 </div>
 
 <style>

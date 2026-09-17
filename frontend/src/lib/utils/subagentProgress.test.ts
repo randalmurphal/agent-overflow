@@ -4,6 +4,7 @@ import { formatToolUses, persistedSubagentProgress, resolveSubagentProgress } fr
 
 function item(overrides: Partial<Item>): Item {
   return {
+    rev: 0,
     id: 'toolu_1',
     threadId: 't1',
     turnIndex: 0,

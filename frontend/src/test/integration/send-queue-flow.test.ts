@@ -314,6 +314,7 @@ describe('App integration — send-queue flow (Phases G1–G10)', () => {
     // persist on interrupt path where the item is persisted into the
     // timeline before the provider echo arrives.
     emitItemEventUpsert({
+      rev: 0,
       id: 'user:0:flush:1',
       threadId: 'thread-1',
       turnIndex: 0,
@@ -336,6 +337,7 @@ describe('App integration — send-queue flow (Phases G1–G10)', () => {
     // remaining item. Both paths (eager persist without id, normal
     // echo with id) use the same confirm gate.
     emitItemEventUpsert({
+      rev: 0,
       id: 'user:0:flush:2',
       threadId: 'thread-1',
       turnIndex: 0,
@@ -426,7 +428,7 @@ describe('App integration — send-queue flow (Phases G1–G10)', () => {
       action: 'patch',
       threadId: 'thread-1',
       itemId: 'assistant:0',
-      patch: { status: 'completed', updatedAt: 3 },
+      patch: { rev: 3, status: 'completed', updatedAt: 3 },
     });
     await flush();
     pane.__flushItemSmoothersForTest();
@@ -549,6 +551,7 @@ describe('App integration — send-queue flow (Phases G1–G10)', () => {
     // gate must skip it — confirming on this would clear an
     // unrelated queued message's marker.
     emitItemEventUpsert({
+      rev: 0,
       id: 'user:0',
       threadId: 'thread-1',
       turnIndex: 0,

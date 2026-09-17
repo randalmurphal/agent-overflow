@@ -397,7 +397,7 @@ describe('thread streaming reveal cleanup', () => {
     expect(reveal.revealBoundary).not.toBeNull();
     expect(statusAtRelease).toBeUndefined();
 
-    reveal.applyPatch(item.id, { status: 'completed', updatedAt: 2 });
+    reveal.applyPatch(item.id, { rev: 0, status: 'completed', updatedAt: 2 });
 
     expect(getItems()[0].status).toBe('completed');
     expect(statusAtRelease).toBe('completed');
@@ -427,6 +427,7 @@ describe('thread streaming reveal cleanup', () => {
     expect(reveal.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
 
     expect(() => reveal.applyPatch(item.id, {
+      rev: 0,
       status: 'completed',
       summary: 'replacement ',
     })).toThrow(/smoother disposal failed/);
@@ -444,6 +445,7 @@ describe('thread streaming reveal cleanup', () => {
     reveal.appendStreamingDelta(item.id, '', 'pending words ', 1);
 
     expect(() => reveal.applyPatch(item.id, {
+      rev: 0,
       status: 'killed',
       summary: 'interrupted',
     })).toThrow(/smoother disposal failed/);

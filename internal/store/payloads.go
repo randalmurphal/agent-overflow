@@ -54,7 +54,8 @@ func insertPayloadTx(exec sqlExecutor, threadID string, payload Payload, label s
 // There is deliberately no exported bare payload insert or upsert. A
 // payload row is only ever window-visible through the item that
 // references it, and the history contract's payload half is enforced by
-// the threadID parameter every mutator carries (see bumpHistoryRevTx) —
+// the threadID parameter every mutator carries (see
+// bumpHistoryRevForPayloadTx) —
 // an export that wrote `payloads` without naming a thread would be a hole
 // in exactly that enforcement. The private upsert also clears derived
 // chunks, snapshots, and span blobs, which must stay coupled to the item
@@ -293,7 +294,8 @@ func (s *Store) payloadLengths(threadID, id string) (int, int, error) {
 //
 // threadID is the thread whose history this payload belongs to: payload
 // content rides item rows on the wire, so changing it changes what a
-// windowed read returns. See bumpHistoryRevTx.
+// windowed read returns — including the revision of every item row that
+// references the payload. See bumpHistoryRevForPayloadTx.
 //
 // Returns sql.ErrNoRows (wrapped) if no payload matches id. Callers must
 // handle "no row yet" by creating the item+payload pair first
@@ -309,7 +311,7 @@ func (s *Store) AppendPayloadData(threadID, id string, delta []byte, meta string
 	if err := appendPayloadDataTx(tx, threadID, id, delta, meta, createdAt); err != nil {
 		return err
 	}
-	if err := bumpHistoryRevTx(tx, threadID, fmt.Sprintf("store: append payload data %s", id)); err != nil {
+	if err := bumpHistoryRevForPayloadTx(tx, threadID, id, fmt.Sprintf("store: append payload data %s", id)); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -403,7 +405,7 @@ func (s *Store) ReplacePayloadData(threadID, id string, data []byte, meta string
 	); err != nil {
 		return fmt.Errorf("store: replace payload data clear chunks %s: %w", id, err)
 	}
-	if err := bumpHistoryRevTx(tx, threadID, fmt.Sprintf("store: replace payload data %s", id)); err != nil {
+	if err := bumpHistoryRevForPayloadTx(tx, threadID, id, fmt.Sprintf("store: replace payload data %s", id)); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -444,7 +446,7 @@ func (s *Store) UpdatePayloadMeta(threadID, id, meta string) error {
 	if err := requireRowsAffected(result, label); err != nil {
 		return err
 	}
-	if err := bumpHistoryRevTx(tx, threadID, label); err != nil {
+	if err := bumpHistoryRevForPayloadTx(tx, threadID, id, label); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -463,6 +465,12 @@ func (s *Store) UpdatePayloadMeta(threadID, id, meta string) error {
 // threadID names the thread whose history_rev this advances: preview
 // spans ride the item row on the wire (Item.PayloadPreviewSpans), so a
 // backfill genuinely changes what a windowed read returns.
+//
+// It is the one payload mutator that bumps the THREAD without stamping the
+// item rows (bumpHistoryRevForPayloadTx explains the split). Spans are a
+// derived highlight cache the client version-checks against the payload
+// content it already holds, so a held window whose spans are behind is
+// still a correct window and must not be forced to re-page.
 //
 // Returns sql.ErrNoRows (wrapped) if no payload matches id — the
 // span worker racing a thread deletion hits this and treats it as a

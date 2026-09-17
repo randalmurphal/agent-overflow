@@ -38,6 +38,7 @@ const REWRAPS = Array.from({ length: 16 }, (_, i) => `sentence ${i} about the mi
 
 function makeItem(summary: string): Item {
   return {
+    rev: 0,
     id: 'item-1',
     threadId: 'thread-1',
     turnIndex: 0,

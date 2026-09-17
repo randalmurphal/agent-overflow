@@ -67,7 +67,7 @@ func seedTimelineParityThread(t *testing.T, s *Store) {
 	// the case both arms have to agree about, so the fixture must have
 	// one — assertTimelineParityFixtureIsRepresentative checks it did.
 	edited := "locally edited ask"
-	if err := s.UpdateItemFields(timelineParityThreadID, "imp-user-1", ItemPartialUpdate{Summary: &edited}); err != nil {
+	if _, err := s.UpdateItemFields(timelineParityThreadID, "imp-user-1", ItemPartialUpdate{Summary: &edited}); err != nil {
 		t.Fatalf("override imported item: %v", err)
 	}
 
@@ -594,6 +594,21 @@ func TestTimelineArmSelectionsWalkIndexes(t *testing.T) {
 			},
 		},
 		{
+			// windowDigestRowsTx. A held window is verified on a cold
+			// open, so the one thing this read may not do is walk the
+			// thread: it is bounded by the caller's claimed count and
+			// must reach both edges through the ordering index.
+			name: "held window digest rows (windowDigestRowsTx)",
+			sel: timelineSelection{
+				Where: windowedTimelineFilter + `
+		   AND (items.turn_index > ? OR (items.turn_index = ? AND items.item_index >= ?))
+		   AND (items.turn_index < ? OR (items.turn_index = ? AND items.item_index <= ?))`,
+				WhereArgs: []any{0, 0, 1, 2, 2, 5},
+				OrderBy:   "turn_index ASC, item_index ASC",
+				Limit:     51,
+			},
+		},
+		{
 			name: "title context earliest ask (ThreadTitleContextItems)",
 			sel: timelineSelection{
 				Where: topLevelItemsFilterFor("items.") + `
@@ -664,7 +679,7 @@ func TestSubagentWalksDoNotMaterializeTheView(t *testing.T) {
 			t.Fatalf("aggregates: %v", err)
 		}
 		resolvedSQL, resolvedArgs := timelineArms(timelineParityThreadID, timelineSelection{
-			Columns: func(string) string {
+			Columns: func(string, string) string {
 				return `rel.root AS root, items.id AS id, items.kind AS kind,
 			        items.status AS status, items.summary AS summary,
 			        items.turn_index AS turn_index, items.item_index AS item_index`
@@ -789,4 +804,41 @@ func rawStringLiterals(source string) []string {
 		literals = append(literals, parts[i])
 	}
 	return literals
+}
+
+// TestTimelineItemsViewJoinPushesDown pins the plan of the sidebar reads
+// that reach `timeline_items` through correlated terms from OUTSIDE the
+// view's UNION ALL: threadColumns' proposed-plan probe joins the view on
+// (thread_id, id), and ListThreadsWithItems probes it by thread_id. SQLite
+// pushes such terms into the arms only when every result column has the
+// same affinity across arms (importedItemRevExpr); otherwise it
+// materializes the view per outer row, which is a full scan of `items`
+// for every thread in the sidebar. ListProjectsWithThreadCounts carries
+// the same probe once per project row. The tripwire is "no node scans a base
+// table of the view and no automatic index is built", checked on the
+// production statements.
+func TestTimelineItemsViewJoinPushesDown(t *testing.T) {
+	s := newTestStore(t)
+	seedTimelineParityThread(t, s)
+
+	withItems, withItemsArgs := listThreadsWithItemsQuery()
+	projectCounts, projectCountsArgs := listProjectsWithThreadCountsQuery()
+	cases := []struct {
+		name  string
+		query string
+		args  []any
+	}{
+		{name: "ListThreads", query: listThreadsQuery},
+		{name: "ListThreadsWithItems", query: withItems, args: withItemsArgs},
+		{name: "ListProjectsWithThreadCounts", query: projectCounts, args: projectCountsArgs},
+	}
+	for _, tc := range cases {
+		plan := explainPlan(t, s, tc.query, tc.args...)
+		for _, r := range plan {
+			if r.detail == "SCAN items" || r.detail == "SCAN imported" || strings.Contains(r.detail, "AUTOMATIC") {
+				t.Errorf("%s: timeline_items is materialized instead of searched (%q)\n%s", tc.name, r.detail, planText(plan))
+				break
+			}
+		}
+	}
 }

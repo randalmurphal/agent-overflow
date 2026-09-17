@@ -9,6 +9,7 @@ import (
 	"agent-overflow/internal/codexghost"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider/codex"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
 )
 
@@ -43,10 +44,40 @@ func (a *Service) RetireBackgroundRuntime(threadID string) error {
 	if err != nil {
 		return fmt.Errorf("retire Codex background runtime for %s: %w", threadID, err)
 	}
-	for _, item := range retired {
-		a.emit(eventchan.ProviderItemEvent, triage.NewItemStreamUpsert(item))
-	}
+	a.emitRetiredItems(retired)
 	return nil
+}
+
+// emitRetiredItems pushes retired rows as a page reads them: a spawn row
+// with children carries its descendant aggregate at read time, so the
+// write's read-back is not the row a client may later prove fresh
+// (docs/architecture/thread-replica-sync.md §3.1). When the read fails
+// the rows go out unstamped, so a reopen pages instead.
+func (a *Service) emitRetiredItems(retired []store.Item) {
+	byThread := make(map[string][]string)
+	order := make([]string, 0, len(retired))
+	for _, item := range retired {
+		if _, seen := byThread[item.ThreadID]; !seen {
+			order = append(order, item.ThreadID)
+		}
+		byThread[item.ThreadID] = append(byThread[item.ThreadID], item.ID)
+	}
+	for _, threadID := range order {
+		rows, err := a.store.ListWireItems(threadID, byThread[threadID])
+		if err != nil {
+			log.Printf("app: read retired Codex rows for %s: %v", threadID, err)
+			for _, item := range retired {
+				if item.ThreadID == threadID {
+					item.Rev = store.UnstampedItemRev
+					a.emit(eventchan.ProviderItemEvent, triage.NewItemStreamUpsert(item))
+				}
+			}
+			continue
+		}
+		for _, row := range rows {
+			a.emit(eventchan.ProviderItemEvent, triage.NewItemStreamUpsert(row))
+		}
+	}
 }
 
 func (a *Service) RecoverBackgroundRuntimeOnStartup() {
@@ -61,9 +92,7 @@ func (a *Service) RecoverBackgroundRuntimeOnStartup() {
 	if len(retired) > 0 {
 		log.Printf("app: retired %d Codex background items from the prior app instance", len(retired))
 	}
-	for _, item := range retired {
-		a.emit(eventchan.ProviderItemEvent, triage.NewItemStreamUpsert(item))
-	}
+	a.emitRetiredItems(retired)
 }
 
 // ReconcileOnReopen probes a Codex thread's liveness via
@@ -154,11 +183,11 @@ func (a *Service) retireCodexBackgroundRuntimeForReconcile(threadID string) (int
 	}
 	flipped := 0
 	for _, item := range retired {
-		a.emit(eventchan.ProviderItemEvent, triage.NewItemStreamUpsert(item))
 		if item.Status == "errored" {
 			flipped++
 		}
 	}
+	a.emitRetiredItems(retired)
 	return flipped, nil
 }
 

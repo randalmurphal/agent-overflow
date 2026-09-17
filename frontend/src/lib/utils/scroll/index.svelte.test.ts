@@ -1378,6 +1378,58 @@ describe('createUseStickToBottomController', () => {
       expect(geom.scrollTop).toBe(100);
     });
 
+    it('reports restorePending across the arm-to-consume window, and isAtBottom stays honest', () => {
+      // The chip reads `restorePending` alongside `isAtBottom`.
+      // armRestoreSnap's escape is the controller's guard for the switch,
+      // not reader intent, so the chip must stay down over a thread whose
+      // restore has not landed (one frame on a cached reopen, the whole
+      // load on a fetch) — without `isAtBottom` claiming a bottom the
+      // viewport is not at.
+      controller.armRestoreSnap();
+      expect(controller.escapedFromLock).toBe(true);
+      expect(controller.restorePending).toBe(true);
+      expect(controller.isAtBottom).toBe(false);
+
+      controller.forceStick({ reason: 'restore' });
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.restorePending).toBe(false);
+      expect(controller.isAtBottom).toBe(true);
+    });
+
+    it('a reader escape inside the window clears the consent and reports away from bottom', () => {
+      controller.armRestoreSnap();
+      expect(controller.restorePending).toBe(true);
+
+      // Same path a wheel/key/touch escape takes: the escape flag is
+      // already up, so only the consent moves, and the reader's intent
+      // must reach the chip through it.
+      controller.setEscapedFromLock(true);
+      geom.scrollTop = 100;
+      expect(controller.restorePending).toBe(false);
+      expect(controller.isAtBottom).toBe(false);
+
+      // The stale restore then no-ops and the chip stays up.
+      controller.forceStick({ reason: 'restore' });
+      expect(controller.escapedFromLock).toBe(true);
+      expect(controller.restorePending).toBe(false);
+      expect(controller.isAtBottom).toBe(false);
+    });
+
+    it('clearRestoreConsent drops a pending consent without placing the viewport', () => {
+      // The bail paths out of a restore transaction owe this call: the
+      // chip must come back even though no restore consumed the arm.
+      controller.armRestoreSnap();
+      expect(controller.restorePending).toBe(true);
+
+      controller.clearRestoreConsent();
+      expect(controller.restorePending).toBe(false);
+      expect(controller.escapedFromLock).toBe(true);
+
+      // And the consent is genuinely spent: a later restore is refused.
+      controller.forceStick({ reason: 'restore' });
+      expect(controller.escapedFromLock).toBe(true);
+    });
+
     it('user-reason forceStick (default) always proceeds AND consumes any pending restore-snap', () => {
       // Chip click / send: explicit user intent always wins. Also
       // clears any pending arm so a follow-up stale restore can't

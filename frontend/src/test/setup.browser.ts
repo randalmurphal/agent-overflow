@@ -15,6 +15,7 @@ import './helpers/firstDivergence';
 import { cleanup } from '@testing-library/svelte';
 import { resetWailsMocks } from './mocks/wailsio-runtime';
 import { resetBindingMocks, setBindingMock } from './mocks/bindings-app';
+import { resetPanesForTest } from '../lib/stores/panes.svelte';
 import { resetAttachmentTransferMocks } from './mocks/attachmentTransfer';
 import { setPageGrantsFromBootstrap } from '../lib/transport/scopes';
 import { resetForTest as resetThreadStatusesForTest } from '../lib/stores/threadStatuses.svelte';
@@ -56,6 +57,9 @@ afterEach(() => {
   // mount() manually (the prevailing browser-suite pattern) keep owning
   // their own unmount in a local afterEach.
   cleanup();
+  // Same as setup.ts: clear registered panes and their timers before the
+  // binding mocks they would call are reset.
+  resetPanesForTest();
   resetWailsMocks();
   resetBindingMocks();
   resetAttachmentTransferMocks();

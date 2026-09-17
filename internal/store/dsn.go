@@ -58,10 +58,16 @@ func (p connPragma) dsnToken() string {
 //     per-block-stop freeze hot path. Execution ownership is an exception:
 //     beginDurableTx holds one writer connection with EXTRA/fullfsync until
 //     its transfer transaction ends, then restores this ordinary policy.
+//   - recursive_triggers=0 is SQLite's default, pinned because the item
+//     history triggers depend on it: each one UPDATEs `items` to stamp the
+//     rows it just invalidated (history_sync.go), and only the OFF setting
+//     stops that statement re-entering the trigger that issued it. Turning
+//     it on would make an insert recurse through its own parent stamp.
 var writerConnPragmas = []connPragma{
 	{name: "busy_timeout", dsnValue: "5000", want: 5000},
 	{name: "foreign_keys", dsnValue: "1", want: 1},
 	{name: "synchronous", dsnValue: "NORMAL", want: 1},
+	{name: "recursive_triggers", dsnValue: "0", want: 0},
 }
 
 // readerConnPragmas are the settings every read-pool connection must

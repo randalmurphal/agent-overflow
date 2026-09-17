@@ -309,6 +309,13 @@ func (s *Store) ForceCloseRunningToolCallsInTurn(
 		); err != nil {
 			return nil, fmt.Errorf("store: force-close update %s: %w", flipped[i].ID, err)
 		}
+		// Selected before the UPDATE, emitted after it: re-read the
+		// trigger-assigned revision (readItemRevTx).
+		rev, err := readItemRevTx(tx, flipped[i].ThreadID, flipped[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		flipped[i].Rev = rev
 	}
 
 	// Thread activity is bumped at the turn-settle path (via

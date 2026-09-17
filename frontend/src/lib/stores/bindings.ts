@@ -925,7 +925,10 @@ import {
 import {
   SyncThreadWindowRequest as SyncThreadWindowRequestClass,
 } from '../../../bindings/agent-overflow/internal/app/models.js';
-import type { PagedItems } from '../../../bindings/agent-overflow/internal/store/models';
+import type {
+  HeldWindow,
+  PagedItems,
+} from '../../../bindings/agent-overflow/internal/store/models';
 
 export type SyncThreadWindowStatus = 'fresh' | 'stale' | 'rewritten' | 'gone';
 
@@ -947,6 +950,15 @@ export interface SyncThreadWindowInput {
    * for a different projection than the rest of the window.
    */
   inlinePreviews: boolean;
+  /**
+   * The rows the caller already holds, or omitted when it holds none
+   * (`stores/threadWindowDigest.ts#heldWindowOf`). Optional because most
+   * of the value is in the stamp: the window is the second route to a
+   * page-less `fresh`, for the case a turn on the open thread made the
+   * caller's stamp stale while leaving every row it holds current
+   * (docs/architecture/thread-replica-sync.md §3.4).
+   */
+  haveWindow?: HeldWindow;
 }
 
 export interface SyncThreadWindowResult {

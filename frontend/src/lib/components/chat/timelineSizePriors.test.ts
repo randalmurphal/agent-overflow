@@ -9,8 +9,8 @@ import { timelineRowStructuralSizeFor } from './timelineSizePriors.svelte';
 // header alone, or that header over a capped clip — and the engine places
 // unmeasured rows with whichever it is in right now.
 
-/** One header line. Always present, so it is a term in both shapes. */
-const HEADER_PX = 24;
+/** The collapsed-run floor (header plus row spacing). Always present, so it is a term in both shapes. */
+const HEADER_PX = 30;
 
 const REAL_INNER_HEIGHT = window.innerHeight;
 

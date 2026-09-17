@@ -1843,14 +1843,6 @@ func (r *Router) turnIndexForScope(threadID, scope string) (int, error) {
 	return r.currentTurnIndex(threadID)
 }
 
-func (r *Router) emitItemUpsert(item store.Item) {
-	r.emit(eventchan.ProviderItemEvent, NewItemStreamUpsert(item))
-}
-
-func (r *Router) emitItemRemove(threadID, itemID, kind string) {
-	r.emit(eventchan.ProviderItemEvent, newItemStreamRemove(threadID, itemID, kind))
-}
-
 func isToolStartMetaUpdateOnly(raw json.RawMessage) bool {
 	return DecodeToolStartMeta(raw).isMetaUpdateOnly()
 }

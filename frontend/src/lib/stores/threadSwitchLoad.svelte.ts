@@ -10,7 +10,10 @@ import type {
   ProviderSessionAccountEvent,
   ProviderStatusEvent,
 } from '../types/events';
-import type { TimelineCursor } from '../../../bindings/agent-overflow/internal/store/models';
+import type {
+  HeldWindow,
+  TimelineCursor,
+} from '../../../bindings/agent-overflow/internal/store/models';
 import {
   AutoResumeThread,
   CloseThreadTerminals,
@@ -62,8 +65,13 @@ import {
   type ReplicaBody,
 } from '../replica';
 import { UNKNOWN_STAMP_VALUE, type ThreadHistoryStamp } from './threadHistoryStamps';
+import { heldWindowOf } from './threadWindowDigest';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
-import { getBackendIdentity, observeBackendGeneration } from '../transport/backendIdentity';
+import {
+  getBackendIdentity,
+  observeBackendGeneration,
+  type BackendIdentity,
+} from '../transport/backendIdentity';
 import {
   clearThreadTerminalState,
   getExistingThreadTerminalState,
@@ -352,12 +360,13 @@ export function createThreadSwitchLoad(
    * understate rule exists to prevent, so the pane carries its own.
    *
    * Set when a sync page installs, when a page-less `fresh` confirms the
-   * rows already painted from an attested source, and — critically — to
-   * the ENVELOPE's own stamp the moment a replica window is painted, so
-   * a sync failure leaves the pane holding what its rows actually
-   * descend from. Cleared by anything that changes the window's
-   * provenance, including item mutations. Replay and reveal cursors can
-   * carry older content despite being delivered after a snapshot.
+   * rows already painted from an attested source (whether the stamp or
+   * the held-window digest earned it), and to the ENVELOPE's own stamp
+   * the moment a replica window is painted (so a sync failure leaves the
+   * pane holding what its rows actually descend from).
+   * Cleared by anything that changes the window's provenance, including
+   * item mutations. Replay and reveal cursors can carry older content
+   * despite being delivered after a snapshot.
    *
    * `generation` pins it to the backend history lineage it was minted
    * under. A restored database re-mints the generation and wipes the
@@ -428,6 +437,35 @@ export function createThreadSwitchLoad(
     if (replicaWriteBackTimer === null) return;
     clearTimeout(replicaWriteBackTimer);
     replicaWriteBackTimer = null;
+  }
+
+  /**
+   * Did this answer come from a different history lineage than the leg
+   * believed it was talking to?
+   *
+   * `observeBackendGeneration` reports whether the observation moved the
+   * GLOBAL identity, which is a different question: with two panes in
+   * flight across one flip, only the first to answer moves it, and the
+   * second would be told "no change" about the very lineage change that
+   * invalidates its painted rows. The global observation still has to
+   * happen — it is what wipes the replica and L1 — but the decision each
+   * leg makes is per-leg, against the identity it captured before the
+   * ask.
+   */
+  function observeAnswerLineage(
+    response: SyncThreadWindowResult,
+    backend: BackendKey,
+    believed: BackendIdentity,
+  ): boolean {
+    const observed = observeBackendGeneration(response.generation, backend);
+    return (
+      observed ||
+      (believed.backendId !== '' &&
+        believed.generation !== '' &&
+        typeof response.generation === 'string' &&
+        response.generation !== '' &&
+        response.generation !== believed.generation)
+    );
   }
 
   /**
@@ -873,8 +911,9 @@ export function createThreadSwitchLoad(
   /**
    * Apply a settled `SyncThreadWindow` answer to the pane.
    *
-   * `fresh` applies nothing: the stamp match itself attests the rows
-   * already painted, and they become the live window as-is. `stale` and
+   * `fresh` applies nothing: the match that produced it — the stamp, or
+   * the held window the request described — attests the rows already
+   * painted, and they become the live window as-is. `stale` and
    * `rewritten` both carry a page, and the page REPLACES the painted
    * window — no cache-sourced row survives a reconcile, which is what
    * makes the write-back safe (every persisted row descends from an
@@ -884,17 +923,21 @@ export function createThreadSwitchLoad(
    * echo) are folded into every non-`gone` answer and tracked as
    * optimistic bets, because neither a page nor any stamped tier can
    * carry them.
+   *
+   * `rearmWarmup` is the caller's decision, not this function's: an open
+   * over an empty paint (or any lineage change) is a first content mount
+   * and re-closes the warm gate; a page landing on a window the reader is
+   * already looking at must not.
    */
   function applySyncResponse(
     response: SyncThreadWindowResult,
     newThread: Thread,
-    paintSource: ColdLoadPaintSource,
+    rearmWarmup: boolean,
     sentStamp: ThreadHistoryStamp | null,
-    lineageChanged: boolean,
+    sentWindow: HeldWindow | null,
     deferredItems: readonly Item[],
   ): void {
     const threadId = newThread.id;
-    coldLoadSyncStatus(paneId, response.status);
     if (response.status === 'gone') {
       dropCachedWindow(threadId);
       options.installTimelineItems([], {
@@ -943,7 +986,7 @@ export function createThreadSwitchLoad(
               // A page over an existing attested paint is a reconcile, not a
               // first mount. An empty paint or a new lineage re-arms before
               // the flush that mounts the replacement rows.
-              if (paintSource !== 'none' && !lineageChanged) return;
+              if (!rearmWarmup) return;
               const rearmed = options.armInitialSliceWarmup();
               coldLoadItemsApplied(
                 paneId,
@@ -970,21 +1013,25 @@ export function createThreadSwitchLoad(
     // Attested last: the stamp describes the rows now installed, so it
     // must not be recorded before they are. A page is a full attestation
     // (the rows arrived with the stamp, one transaction). A page-less
-    // `fresh` only attests as much as the stamp we SENT was worth: an
-    // echo of an event-carried stamp confirms the server's counter, not
-    // that this client received every frame up to it, so upgrading it to
-    // attested here would incorrectly mark incomplete replica data as current.
-    if ((page || sentStamp?.attested)
+    // answer attests only as much as the evidence we SENT was worth:
+    //
+    //  - an attested stamp: the server confirmed its counter over rows
+    //    this client provably received. An event-carried stamp does not
+    //    qualify — echoing it confirms the counter, not the frames.
+    //  - a held window: the server re-derived those exact `(id, rev)`
+    //    pairs from the database in the same read transaction as the
+    //    stamp it returned, so the rows on screen ARE that read.
+    if ((page || sentStamp?.attested || sentWindow)
       && !liveTouchedDuringSync?.size && !liveRemovedDuringSync?.size
       && options.streamingReveal.smootherCount() === 0) {
       // The pane's own copy: this answer attested the window it is
       // holding, which is what a write-back may pair rows with.
       attestCurrentWindow(response.epoch, response.rev);
     } else {
-      // A page-less answer over an unattested source leaves the pane
-      // with rows nothing has attested — including whatever earlier
-      // attestation the install carried, which this answer did not
-      // confirm.
+      // A page-less answer over an unattested source and an undescribed
+      // window leaves the pane with rows nothing has attested —
+      // including whatever earlier attestation the install carried,
+      // which this answer did not confirm.
       windowAttestation = null;
     }
     scheduleReplicaWriteBack(threadId);
@@ -1026,13 +1073,46 @@ export function createThreadSwitchLoad(
     let haveStamp: ThreadHistoryStamp | null = cached?.historyStamp?.attested && windowAttestation
       && options.streamingReveal.smootherCount() === 0 ? cached.historyStamp : null;
 
-    const ask = (stamp: ThreadHistoryStamp | null): Promise<SyncThreadWindowResult> =>
+    /**
+     * Describe the rows this pane has painted, for the ask below. A turn
+     * on the open thread leaves the L1 snapshot stampless, so the window
+     * is often the ONLY evidence the pane can offer
+     * (docs/architecture/thread-replica-sync.md §3.4).
+     *
+     * Only over a real paint: with nothing painted there is nothing to
+     * describe, and an un-echoed optimistic row makes the window one no
+     * rev ever had, so the pane does not claim it. Rows the live-state
+     * leg appends later are not persisted rows either; they simply fail
+     * verification and earn a page, which needs no special case.
+     */
+    const paintedWindow = (): HeldWindow | null => {
+      if (paintSource === 'none' || options.optimisticItemIds.size > 0) return null;
+      return heldWindowOf(
+        options.getItems(),
+        options.timelineWindow.hasMoreHistory,
+        options.timelineWindow.hasMoreNewer,
+      );
+    };
+
+    /**
+     * The two evidence forms are independent and both ride the same ask:
+     * the stamp answers "has this thread changed at all", the window
+     * answers "are the rows I hold still what a read returns". A turn on
+     * the open thread kills the first and leaves the second intact, which
+     * is the case the window exists for
+     * (docs/architecture/thread-replica-sync.md §3.4).
+     */
+    const ask = (
+      stamp: ThreadHistoryStamp | null,
+      heldWindow: HeldWindow | null,
+    ): Promise<SyncThreadWindowResult> =>
       withBackendTarget(backend, () => SyncThreadWindow(threadId, {
         anchorItemId: sliceAnchorId,
         itemBudget: SLICE_AROUND_ITEM_BUDGET,
         haveEpoch: stamp ? stamp.epoch : UNKNOWN_STAMP_VALUE,
         haveRev: stamp ? stamp.rev : UNKNOWN_STAMP_VALUE,
         inlinePreviews: wantsInlinePreviews(),
+        ...(heldWindow ? { haveWindow: heldWindow } : {}),
       }));
 
     try {
@@ -1059,17 +1139,11 @@ export function createThreadSwitchLoad(
       coldLoadPaintSource(paneId, paintSource);
 
       // The lineage this leg BELIEVES it is talking to, captured before
-      // the ask. `observeBackendGeneration` reports whether the
-      // observation moved the global identity, which is a different
-      // question: with two panes in flight across one flip, only the
-      // first to answer moves it, and the second would be told "no
-      // change" about the very lineage change that invalidates its
-      // painted rows. The global observation still has to happen — it
-      // is what wipes the replica and L1 — but the
-      // decision this leg makes is per-leg.
+      // the ask (see `observeAnswerLineage`).
       const believed = getBackendIdentity(backend);
       let sentStamp = haveStamp;
-      let response = await ask(sentStamp);
+      let sentWindow = paintedWindow();
+      let response = await ask(sentStamp, sentWindow);
       if (gen !== options.getSwitchGeneration()) return;
       // The response carries the backend's LIVE generation — the one
       // channel that observes a mid-session database restore, since the
@@ -1080,22 +1154,20 @@ export function createThreadSwitchLoad(
       // dead lineage, so a page-less answer — even `fresh`, ESPECIALLY
       // `fresh`, which can be a coincidental counter match across
       // lineages — cannot be trusted and is re-asked stampless.
-      const observed = observeBackendGeneration(response.generation, backend);
-      const lineageChanged =
-        observed ||
-        (believed.backendId !== '' &&
-          believed.generation !== '' &&
-          typeof response.generation === 'string' &&
-          response.generation !== '' &&
-          response.generation !== believed.generation);
-      const validatesPaint = sentStamp?.attested && response.epoch === sentStamp.epoch && response.rev === sentStamp.rev;
+      const lineageChanged = observeAnswerLineage(response, backend, believed);
+      // What in this request could have earned a page-less answer: the
+      // stamp the server echoed back unchanged, or the window it
+      // verified row by row. A window that verified does not echo the
+      // stamp we sent (it is answering the case where that stamp is
+      // stale), so its pairing is the fact that it was sent at all.
+      const validatesPaint = Boolean(sentWindow)
+        || (sentStamp?.attested && response.epoch === sentStamp.epoch && response.rev === sentStamp.rev);
       if (response.status !== 'gone' && !response.page && (lineageChanged || paintSource === 'none' || !validatesPaint)) {
         if (!lineageChanged) {
-          // A page-less answer means "keep what you have" and we have
-          // nothing — the stamp we sent outlived its rows. The pairing
-          // rules are supposed to make this unreachable, so report it
-          // and re-ask without a stamp rather than leaving the pane
-          // empty.
+          // A page-less answer means "keep what you have" and nothing we
+          // sent describes what we have. The pairing rules are supposed
+          // to make this unreachable, so report it and re-ask with no
+          // evidence at all rather than leaving the pane empty.
           console.error(
             `replica: sync answered "${response.status}" without a matching painted snapshot; refetching`,
           );
@@ -1105,7 +1177,8 @@ export function createThreadSwitchLoad(
           );
         }
         sentStamp = null;
-        response = await ask(sentStamp);
+        sentWindow = null;
+        response = await ask(sentStamp, sentWindow);
         if (gen !== options.getSwitchGeneration()) return;
         if (response.status !== 'gone' && !response.page) {
           throw new Error('Conversation synchronization returned no history for an unverified window');
@@ -1117,12 +1190,17 @@ export function createThreadSwitchLoad(
       const liveState = liveStateFetch ? await liveStateFetch : null;
       const deferredItems = liveState?.deferredItems ?? [];
       if (gen !== options.getSwitchGeneration()) return;
+      coldLoadSyncStatus(paneId, response.status);
+      // Nothing painted, or what was painted belongs to a dead lineage:
+      // either way the response's rows are structural content mounting
+      // into an effectively empty pane, so the warm gate re-closes.
+      const rearmWarmup = paintSource === 'none' || lineageChanged;
       applySyncResponse(
         response,
         newThread,
-        paintSource,
+        rearmWarmup,
         sentStamp,
-        lineageChanged,
+        sentWindow,
         deferredItems,
       );
       liveState?.apply();

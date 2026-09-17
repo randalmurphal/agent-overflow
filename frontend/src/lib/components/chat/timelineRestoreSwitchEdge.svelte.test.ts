@@ -11,6 +11,7 @@
 // is hidden behind the warm gate) with the call spies as support.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { tick } from 'svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import type { TimelineNode } from '../../utils/subagentGrouping';
 import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
@@ -21,6 +22,11 @@ import {
 import { resetScrollIntentModuleStateForTest } from '../../utils/scroll/intent';
 import { MockResizeObserver, stubGeometry, type Geometry } from '../../utils/scroll/testGeometry';
 import { createTimelineRestore, type TimelineRestore } from './timelineRestore.svelte';
+import {
+  clearThreadScrollSnapshotsForTest,
+  getThreadScrollSnapshot,
+  setThreadScrollSnapshot,
+} from '../../utils/threadScrollSnapshots';
 
 const ROW_PX = 100;
 
@@ -41,7 +47,15 @@ interface Harness {
   armWarmupWithReset: ReturnType<typeof vi.fn>;
   resetAutoLoadGates: ReturnType<typeof vi.fn>;
   /** Mutate the pane the restore session reads through its getter. */
-  pane: { threadId: string | null; scrollStateKey: string | null; items: unknown[]; loading: boolean };
+  pane: {
+    threadId: string | null;
+    scrollStateKey: string | null;
+    items: unknown[];
+    loading: boolean;
+    loadUntilItem(itemId: string): Promise<boolean>;
+  };
+  /** Withhold the virtualizer handle, as a pre-mount flush does. */
+  setListRefPresent(present: boolean): void;
   /** One engine-sourced sample, as the virtualizer's subscription replays it. */
   deliverGeometry(height?: number): void;
   destroy(): void;
@@ -63,7 +77,10 @@ function makeHarness(nodes: TimelineNode[]): Harness {
     scrollStateKey: null as string | null,
     items: [] as unknown[],
     loading: false,
+    loadUntilItem: async (itemId: string) =>
+      nodes.some((node) => (node as { item?: { id?: string } }).item?.id === itemId),
   };
+  let listRefPresent = true;
 
   // Only the geometry queries the restore session actually reaches for:
   // the snapshot capture's anchor (findItemIndex + getItemOffset) and
@@ -81,7 +98,7 @@ function makeHarness(nodes: TimelineNode[]): Harness {
   const restore = createTimelineRestore({
     getPane: () => pane as unknown as ThreadPane,
     stick,
-    getListRef: () => listRef,
+    getListRef: () => (listRefPresent ? listRef : undefined),
     getScrollEl: () => scrollEl,
     getRevealedNodes: () => nodes,
     getGroupedNodes: () => nodes,
@@ -101,6 +118,9 @@ function makeHarness(nodes: TimelineNode[]): Harness {
     armWarmupWithReset,
     resetAutoLoadGates,
     pane,
+    setListRefPresent(present: boolean) {
+      listRefPresent = present;
+    },
     deliverGeometry(height = geom.contentHeight) {
       stick.deliverContentGeometry({
         height,
@@ -131,6 +151,7 @@ describe('timeline restore switch edges', () => {
 
   beforeEach(() => {
     resetScrollIntentModuleStateForTest();
+    clearThreadScrollSnapshotsForTest();
     MockResizeObserver.instances = [];
     originalRO = globalThis.ResizeObserver;
     (globalThis as unknown as { ResizeObserver: typeof MockResizeObserver }).ResizeObserver =
@@ -283,5 +304,60 @@ describe('timeline restore switch edges', () => {
     h.restore.handleSwitchEdgePre('thread-escaped', 0);
     h.restore.maybeRestoreAfterFlush();
     expect(h.geom.scrollTop).toBe(120);
+  });
+
+  it('a scroll inside the pending window does not overwrite the anchor snapshot', async () => {
+    // The anchor path sets `restoredThreadId` before its awaits, so the
+    // restored-guard no longer stops a save. A scroll event landing in
+    // that window carries the switch's own motion, not a reader
+    // position, and saving it would destroy the snapshot the in-flight
+    // restore is still trying to reach.
+    const nodes = [leaf('a'), leaf('b'), leaf('c')];
+    const h = (harness = makeHarness(nodes));
+    mountThread(h, 'thread-anchor-hold');
+    setThreadScrollSnapshot('thread-anchor-hold', { kind: 'anchor', itemId: 'c', offsetTop: 40 });
+
+    h.restore.handleSwitchEdgePre('thread-anchor-hold', 0);
+    h.restore.maybeRestoreAfterFlush();
+    expect(h.stick.restorePending).toBe(true);
+
+    // The switch's own scroll event, before the restore's awaits resolve.
+    h.geom.scrollTop = 0;
+    h.restore.saveScrollSnapshot();
+
+    expect(getThreadScrollSnapshot('thread-anchor-hold')).toEqual({
+      kind: 'anchor',
+      itemId: 'c',
+      offsetTop: 40,
+    });
+
+    await tick();
+    await tick();
+    await tick();
+    expect(h.stick.restorePending).toBe(false);
+  });
+
+  it('a no-listref bail leaves no restore consent behind', async () => {
+    // The virtualizer handle can go away across the restore's own
+    // `await tick()`. That bail places nothing, so it owes the consent:
+    // left armed, the chip stays hidden and every later non-restore
+    // placement is refused.
+    const nodes = [leaf('a'), leaf('b'), leaf('c')];
+    const h = (harness = makeHarness(nodes));
+    mountThread(h, 'thread-no-listref');
+    setThreadScrollSnapshot('thread-no-listref', { kind: 'anchor', itemId: 'c', offsetTop: 40 });
+
+    h.restore.handleSwitchEdgePre('thread-no-listref', 0);
+    h.restore.maybeRestoreAfterFlush();
+    expect(h.stick.restorePending).toBe(true);
+
+    h.setListRefPresent(false);
+    await tick();
+    await tick();
+
+    expect(h.stick.restorePending).toBe(false);
+    // Nothing was placed: the defensive escape is still standing.
+    expect(h.stick.escapedFromLock).toBe(true);
+    expect(h.geom.scrollTop).toBe(0);
   });
 });

@@ -146,7 +146,7 @@ func TestWholesaleMetaRewriteOfSettledLaunchIsReStamped(t *testing.T) {
 	assertSettled(t, s, "t", "launch")
 
 	stale := `{"subagentProgress":{"tokens":42}}`
-	if err := s.UpdateItemFields("t", "launch", ItemPartialUpdate{Meta: &stale}); err != nil {
+	if _, err := s.UpdateItemFields("t", "launch", ItemPartialUpdate{Meta: &stale}); err != nil {
 		t.Fatalf("wholesale meta rewrite: %v", err)
 	}
 	assertSettled(t, s, "t", "launch")

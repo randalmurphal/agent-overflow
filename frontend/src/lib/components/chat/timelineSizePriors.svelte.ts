@@ -17,16 +17,21 @@ import type {
   PaneSession,
   RowUiRegistry,
   ScrollHost,
+  TimelineSource,
 } from '../../stores/threadPaneRoles';
 import {
   createRowEstimate,
   getThreadSizePriors,
   hasThreadSizePriorsInMemory,
+  latestSizePriors,
   setThreadSizePriors,
+  sizePriorsAtGeometry,
 } from '../../utils/virtual/priors';
+import type { SizePriorsBucket, SizePriorsGeometry } from '../../utils/virtual/priors';
 import { installSizePriorsPersistence } from '../../utils/virtual/priorsStorage';
 import type { RowEstimate, TimelineVirtualizerHandle } from '../../utils/virtual/types';
 import type { TimelineNode } from '../../utils/subagentGrouping';
+import type { Item } from '../../types/models';
 import { ACTIVITY_RUN_CAP_REM_PX } from '../../utils/activityRunClip';
 import { nodeSignature } from '../../utils/timelineStructureSignature';
 
@@ -73,8 +78,12 @@ const ROW_KIND_ESTIMATE_PX: Readonly<Record<string, number>> = {
   wait_group: 36,
 };
 
-/** One header line, matching ActivityRunHeader's `py-0.5` + 12px line box. */
-const ACTIVITY_RUN_HEADER_PX = 24;
+/**
+ * Floor for a collapsed run: the header line plus the row shell's vertical
+ * spacing, measured at 38px in real Chromium at default settings and
+ * derated like the kind table above.
+ */
+const ACTIVITY_RUN_HEADER_PX = 30;
 /**
  * Floor for an expanded run: its rows at the tightest kind height in the
  * table, capped at the clip's own ceiling. Deliberately a floor, matching
@@ -144,10 +153,16 @@ export function timelineRowStructuralSizeFor(
 }
 
 export interface TimelineSizePriorsOptions {
-  getPane(): PaneSession & RowUiRegistry & ScrollHost;
+  getPane(): PaneSession & RowUiRegistry & ScrollHost & Pick<TimelineSource, 'getItemById'>;
   getListRef(): TimelineVirtualizerHandle | undefined;
   getRevealedNodes(): TimelineNode[];
   getScrollSurfaceContentWidth(): number;
+  /**
+   * `stores/settings.svelte.ts#typographySignature` in production. Injected
+   * like the width above so this module stays testable with a fake: the two
+   * together are the bucket's geometry key.
+   */
+  getTypographySignature(): string;
   getRestoredThreadId(): string | null;
 }
 
@@ -155,11 +170,15 @@ export interface TimelineSizePriorsOptions {
  * Diagnostic summary of the current mount's priors replay, read at the
  * warm edge by the cold-load trace (utils/coldLoadTrace.ts). `validity`
  * stays 'pending' until the first `at()` call runs the lazy-once check;
- * 'replayed-trusted-width' means the width dimension was skipped because
- * the surface had not reported a width yet at first use (see the memo in
- * `buildRowEstimate`). `rowsResolved` counts prior hits, including
- * re-consultations of the same row across structural recomputes — an
- * indicative volume, not a distinct-row count.
+ * 'geometry-mismatch' means the entry holds no bucket for this mount's
+ * GEOMETRY — width and typography signature both, so a font or display
+ * setting changed since capture reports it the same way a resized pane
+ * does;
+ * 'replayed-trusted-width' means the most recently captured bucket was
+ * taken unchecked because the surface had not reported a width yet at
+ * first use (see the memo in `buildRowEstimate`). `rowsResolved` counts
+ * prior hits, including re-consultations of the same row across
+ * structural recomputes — an indicative volume, not a distinct-row count.
  */
 export interface SizePriorsReplayStats {
   source: 'none' | 'memory' | 'storage';
@@ -168,7 +187,7 @@ export interface SizePriorsReplayStats {
     | 'pending'
     | 'replayed'
     | 'replayed-trusted-width'
-    | 'width-mismatch'
+    | 'geometry-mismatch'
     | 'expansion-mismatch';
   rowsResolved: number;
 }
@@ -177,11 +196,17 @@ export interface TimelineSizePriors {
   /** Reactive — the template binds `estimate={sizePriors.rowEstimate}`. */
   readonly rowEstimate: RowEstimate | undefined;
   /**
-   * Capture now, subject only to the O(1) total-size gate. The exact
-   * capture — used by the settle edge and by tests that want a capture
-   * at a known moment.
+   * Capture now, subject only to the O(1) total-size gate. The settle
+   * edge uses it, as do tests that want a capture at a known moment.
    */
   maybePersistSizePriors(): void;
+  /**
+   * Capture for a final edge (switch-away, unmount): neither the rate
+   * bound nor the total-size gate may refuse it, because a signature can
+   * change while the geometry stays put and this is the last capture the
+   * thread gets.
+   */
+  persistSizePriorsFinal(): void;
   /**
    * Capture from a scroll-driven trigger, rate-bounded. This is what
    * `saveScrollSnapshot` calls; see `INTERIM_PRIORS_MIN_INTERVAL_MS` for
@@ -229,6 +254,13 @@ export function createTimelineSizePriors(
   // thread is never made to wait out the outgoing thread's cooldown.
   let lastInterimCaptureEndedAt: number | null = null;
 
+  // Leaf resolver for `nodeSignature`. Untracked: item boxes are
+  // `$state.raw`, and this runs inside the virtualizer's `$derived`
+  // estimate path and the warm-edge `$effect`, where a tracked read would
+  // re-run the estimate on every streaming delta.
+  const currentItem = (itemId: string): Item | undefined =>
+    untrack(() => options.getPane().getItemById(itemId));
+
   // Kind resolver for the estimate fallback. Reads live `revealedNodes`,
   // so it needs no remap across head splices (the per-row prior lookup
   // below reads live data the same way — neither carries index-keyed
@@ -255,26 +287,26 @@ export function createTimelineSizePriors(
   // takeSnapshot() + the O(N) rows-map rebuild below run ~5–20×/sec — bounded
   // by the gate (never per-frame) and only while the visible thread streams.
   // Only the settle capture (isWarm rising) matters for replay; the interim
-  // ones are overwritten by the next capture (setThreadSizePriors replaces the
-  // whole entry). Deliberately NOT gated on spring-chase state: that would risk
-  // dropping the settle capture on an already-warm streaming thread (isWarm
-  // does not re-arm), regressing replay.
+  // ones are overwritten by the next capture (setThreadSizePriors replaces
+  // that geometry's whole bucket). Deliberately NOT gated on spring-chase state:
+  // that would risk dropping the settle capture on an already-warm streaming
+  // thread (isWarm does not re-arm), regressing replay.
   //
-  // A capture is a REPLACE at the store level, so an early capture must not
-  // discard what a settled one stored: the restore flow saves a snapshot
-  // synchronously at restore time (timelineRestore's restoreToBottom /
-  // restoreAnchor), when the freshly remounted engine has measured NOTHING —
-  // persisting that as-is wholesale-replaced the thread's settled entry with
-  // an empty map, and the next visit replayed zero rows (the coldload trace's
-  // memory/replayed/rowsResolved:0 signature). Two guards close that class:
-  // rows the engine has not (re)measured CARRY FORWARD from the previous
-  // entry when their signature is still live in the current window and the
-  // entry's width/expansionSig match this capture's (sizes measured under
-  // different geometry never mix), and a capture that still resolves nothing
-  // is skipped outright rather than stored. Self-cleaning is preserved: only
-  // signatures present in the current window survive a capture, so streaming
-  // signature churn still drops dead rows for free.
-  function maybePersistSizePriors(): void {
+  // A capture is a REPLACE of this geometry's bucket at the store level, so an
+  // early capture must not discard what a settled one stored: the restore
+  // flow saves a snapshot synchronously at restore time (timelineRestore's
+  // restoreToBottom / restoreAnchor), when the freshly remounted engine has
+  // measured NOTHING — persisting that as-is wholesale-replaced the bucket
+  // with an empty map, and the next visit replayed zero rows (the coldload
+  // trace's memory/replayed/rowsResolved:0 signature). Two guards close that
+  // class: rows the engine has not (re)measured CARRY FORWARD from the
+  // bucket for THIS capture's geometry when their signature is still live in
+  // the current window and that bucket's expansionSig matches (sizes
+  // measured under different geometry never mix), and a capture that still
+  // resolves nothing is skipped outright rather than stored. Self-cleaning
+  // is preserved: only signatures present in the current window survive a
+  // capture, so streaming signature churn still drops dead rows for free.
+  function capture(final: boolean): void {
     const pane = options.getPane();
     // Priors stay keyed per THREAD (row sizes are a property of the
     // content, deliberately shared across surfaces showing it); the
@@ -283,19 +315,23 @@ export function createTimelineSizePriors(
     const threadId = pane.threadId || null;
     const listRef = options.getListRef();
     if (!threadId || !listRef || options.getRestoredThreadId() !== pane.scrollStateKey) return;
-    // O(1) read (the engine's prefix-sum total) — the cheap change-gate.
-    // Skip the takeSnapshot() slice entirely when geometry hasn't moved
-    // (60Hz spring).
+    // O(1) read (the engine's prefix-sum total), the cheap change gate.
+    // Skip the takeSnapshot() slice when geometry has not moved (60Hz
+    // spring), unless this is a final edge (see persistSizePriorsFinal).
     const totalSize = listRef.getTotalSize();
-    if (totalSize === lastPersistedTotalSize) return;
+    if (!final && totalSize === lastPersistedTotalSize) return;
     lastPersistedTotalSize = totalSize;
 
-    const width = Math.round(options.getScrollSurfaceContentWidth());
+    const geometry: SizePriorsGeometry = {
+      width: options.getScrollSurfaceContentWidth(),
+      typography: options.getTypographySignature(),
+    };
     const expansionSig = pane.expansionSignature();
     const previous = getThreadSizePriors(threadId);
+    const previousBucket = previous ? sizePriorsAtGeometry(previous, geometry) : undefined;
     const carry =
-      previous && previous.width === width && previous.expansionSig === expansionSig
-        ? previous.rows
+      previousBucket && previousBucket.expansionSig === expansionSig
+        ? previousBucket.rows
         : undefined;
     const nodes = options.getRevealedNodes();
     const snapshot = listRef.takeSnapshot();
@@ -303,7 +339,7 @@ export function createTimelineSizePriors(
     for (let index = 0; index < snapshot.length; index++) {
       const node = nodes[index];
       if (!node) continue;
-      const signature = nodeSignature(node);
+      const signature = nodeSignature(node, currentItem);
       const size = snapshot[index];
       if (size >= 0) {
         // Negative sizes (UNMEASURED or any corrupt value) never persist.
@@ -314,7 +350,28 @@ export function createTimelineSizePriors(
       if (carried !== undefined) rows.set(signature, carried);
     }
     if (rows.size === 0) return;
-    setThreadSizePriors(threadId, { width, expansionSig, rows });
+    setThreadSizePriors(threadId, geometry, { expansionSig, rows });
+  }
+
+  /**
+   * The gated capture: the settle edge and the interim scroll cadence.
+   * A total-size match means no row moved, so the snapshot slice is
+   * skipped.
+   */
+  function maybePersistSizePriors(): void {
+    capture(false);
+  }
+
+  // The final edges skip the size gate. A row can change signature
+  // without changing height (a turn end upserts the last assistant row's
+  // status and updatedAt; a window sync page replaces rows with equal
+  // content), and a gated capture would leave the stored signature
+  // stale. The next open would then miss that row, estimate it from the
+  // kind table, and take the quiet path instead of settling on first
+  // paint. Nothing after this edge captures for the thread, so the slice
+  // is worth it.
+  function persistSizePriorsFinal(): void {
+    capture(true);
   }
 
   function maybePersistSizePriorsInterim(): void {
@@ -353,13 +410,14 @@ export function createTimelineSizePriors(
   }
 
   // Fetching the stored entry is cheap and layout-independent (it may
-  // lazily hydrate from localStorage), so it happens eagerly here. The
-  // width/expansionSig VALIDITY CHECK is deliberately deferred to the
-  // first `at()` call instead: this function runs in $effect.pre, before
-  // the virtualizer remounts, and on a fresh app boot the scroll surface
-  // has not been laid out yet — `getScrollSurfaceContentWidth()` would
-  // read 0 here, and checking eagerly would spuriously refuse EVERY
-  // restart replay (0 never equals a captured width).
+  // lazily hydrate from localStorage), so it happens eagerly here.
+  // SELECTING the geometry bucket and checking its expansionSig is
+  // deliberately deferred to the first `at()` call instead: this function
+  // runs in $effect.pre, before the virtualizer remounts, and on a fresh
+  // app boot the scroll surface has not been laid out yet, so
+  // `getScrollSurfaceContentWidth()` would read 0 here and selecting
+  // eagerly would spuriously refuse EVERY restart replay (a laid-out pane
+  // never captures a bucket at width 0).
   //
   // Deferral alone is not enough, though: the width signal is RO-only
   // (scrollSurfaceWidth.ts's async-delivery rule), and the engine's FIRST
@@ -369,13 +427,21 @@ export function createTimelineSizePriors(
   // width delivery or the item fetch's WS response — is a machine-speed
   // race, so the first `at()` can still legitimately see width 0. A width
   // of 0 is "layout hasn't reported yet", not a real wrap point, so the
-  // memo TRUSTS the entry's captured width in that case rather than
-  // refusing it: window geometry restores across restarts, so the real
-  // width almost always matches, and when it doesn't the stale replay
-  // degrades to the documented self-correcting residual (per-row RO
-  // corrections behind the warm-up gate — priors.ts header), which is
-  // strictly better than guaranteeing the full cascade. The decision is
-  // latched either way so every row in the mount resolves consistently.
+  // memo takes the MOST RECENTLY CAPTURED bucket in that case rather than
+  // refusing the entry: window geometry restores across restarts, so the
+  // last width the reader saw is almost always the one about to be
+  // reported, and when it isn't the per-row ResizeObserver corrects the
+  // replayed heights behind the warm-up gate, which is strictly better
+  // than guaranteeing the full cascade. The decision is latched either way
+  // so every row in the mount resolves consistently.
+  //
+  // The TYPOGRAPHY half of the key is read at the same moment and has no
+  // such race: it is a settings read, available synchronously from the
+  // first `at()` call, so a font or display-setting change is an exact
+  // bucket miss rather than a trusted replay. The trusted-latest path
+  // above is therefore the one place a bucket measured under different
+  // typography can still be replayed — the surface has reported no width
+  // at all there, so there is no geometry to match in the first place.
   function buildRowEstimate(threadId: string): SizePriorsRowEstimateBuild {
     const inMemory = hasThreadSizePriorsInMemory(threadId);
     const entry = getThreadSizePriors(threadId);
@@ -385,29 +451,35 @@ export function createTimelineSizePriors(
       rowsResolved: 0,
     };
     let valid: boolean | undefined;
+    let bucket: SizePriorsBucket | undefined;
 
     function rowPrior(index: number): number | undefined {
       if (!entry) return undefined;
       if (valid === undefined) {
         const width = Math.round(options.getScrollSurfaceContentWidth());
-        if (entry.expansionSig !== options.getPane().expansionSignature()) {
+        const trustedWidth = width === 0;
+        const candidate = trustedWidth
+          ? latestSizePriors(entry)
+          : sizePriorsAtGeometry(entry, {
+              width,
+              typography: options.getTypographySignature(),
+            });
+        if (!candidate) {
+          valid = false;
+          stats.validity = 'geometry-mismatch';
+        } else if (candidate.expansionSig !== untrack(() => options.getPane().expansionSignature())) {
           valid = false;
           stats.validity = 'expansion-mismatch';
-        } else if (width === 0) {
-          valid = true;
-          stats.validity = 'replayed-trusted-width';
-        } else if (width !== entry.width) {
-          valid = false;
-          stats.validity = 'width-mismatch';
         } else {
           valid = true;
-          stats.validity = 'replayed';
+          bucket = candidate;
+          stats.validity = trustedWidth ? 'replayed-trusted-width' : 'replayed';
         }
       }
-      if (!valid) return undefined;
+      if (!valid || !bucket) return undefined;
       const node = options.getRevealedNodes()[index];
       if (!node) return undefined;
-      const size = entry.rows.get(nodeSignature(node));
+      const size = bucket.rows.get(nodeSignature(node, currentItem));
       if (size !== undefined) stats.rowsResolved += 1;
       return size;
     }
@@ -448,6 +520,7 @@ export function createTimelineSizePriors(
       return rowEstimate;
     },
     maybePersistSizePriors,
+    persistSizePriorsFinal,
     maybePersistSizePriorsInterim,
     resolveRowEstimateOnThreadEdge,
     captureOnWarmRisingEdge,

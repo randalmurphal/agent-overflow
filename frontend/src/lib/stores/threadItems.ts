@@ -170,6 +170,29 @@ export function itemsAreEqual(a: Item, b: Item): boolean {
 }
 
 /**
+ * Dedupe `incoming` against the row already held, carrying its revision
+ * when nothing else differs. Returns true when the caller should keep
+ * `existing`.
+ *
+ * `rev` is deliberately outside `itemsAreEqual`: nothing renders it, and
+ * a write that re-persists a row unchanged is exactly the redundant
+ * upsert the dedupe above exists to drop. But the pane describes the
+ * rows it holds to the backend as `(id, rev)` pairs
+ * (`threadWindowDigest.ts`), so a held row still carrying the revision
+ * of its previous write fails that check and costs the next open a page.
+ * The absorbed row therefore adopts the incoming revision IN PLACE: rows
+ * are plain records in a `$state.raw` window with no reader of `rev`, so
+ * the write wakes nothing and the array reference the dedupe protects is
+ * untouched. Adopting never overstates: the incoming rev is the one the
+ * backend read this identical row at, or -1 (an unstamped wire row).
+ */
+export function adoptRevIfEqual(existing: Item, incoming: Item): boolean {
+  if (!itemsAreEqual(existing, incoming)) return false;
+  existing.rev = incoming.rev;
+  return true;
+}
+
+/**
  * `itemsAreEqual` minus the `createdAt` / `updatedAt` timestamps: value
  * equality over every field a row renders or that positions it in the
  * timeline. The events fan-out's spring-latch predicate
@@ -200,6 +223,12 @@ export function itemsRenderEqual(a: Item, b: Item): boolean {
     && a.decision === b.decision
     && a.meta === b.meta
     && a.isBackground === b.isBackground
+    // `payloadPreviewSpans` is deliberately absent. `UpdatePayloadSpans`
+    // on the server bumps only the thread stamp, never the row: spans are
+    // a derived highlight cache the client version-checks
+    // (`utils/payloadVersion.ts`). So a row equal in every field above IS
+    // the same stored row, and including the spans here would make an
+    // equal row look changed and cost a re-render.
   );
 }
 
@@ -219,6 +248,9 @@ export function itemsForThread(
  * Returns the original `current` reference when `incoming` is empty or every
  * incoming row is already present by the same object reference, so callers can
  * skip reactive writes and associated turn-diff rebuilds.
+ *
+ * MUTATES a retained row's `rev` in place (`adoptRevIfEqual`): "unchanged"
+ * means unchanged to a reader, and the revision has no reader.
  */
 export function mergeItemsById(incoming: readonly Item[], current: readonly Item[]): Item[] {
   if (incoming.length === 0) return current as Item[];
@@ -234,7 +266,7 @@ export function mergeItemsById(incoming: readonly Item[], current: readonly Item
     const identity = userMessageIdentity(it);
     const previousId = identity === null ? undefined : idBySend.get(identity);
     const existing = byId.get(it.id) ?? (previousId ? byId.get(previousId) : undefined);
-    if (existing && itemsAreEqual(existing, it)) {
+    if (existing && adoptRevIfEqual(existing, it)) {
       continue;
     }
     if (existing !== it) {
@@ -253,6 +285,14 @@ export function mergeItemsById(incoming: readonly Item[], current: readonly Item
   return merged;
 }
 
+/**
+ * Replace the window with `incoming` while keeping the existing object for
+ * every row that did not change, so unchanged rows do not re-render.
+ * Returns `current` itself when nothing moved.
+ *
+ * MUTATES a retained row's `rev` in place (`adoptRevIfEqual`): "unchanged"
+ * means unchanged to a reader, and the revision has no reader.
+ */
 export function reconcileItemWindow(incoming: readonly Item[], current: readonly Item[]): Item[] {
   if (incoming.length === 0 && current.length === 0) return current as Item[];
 
@@ -263,7 +303,7 @@ export function reconcileItemWindow(incoming: readonly Item[], current: readonly
   let changed = incoming.length !== current.length;
   for (const item of incoming) {
     const existing = currentById.get(item.id);
-    if (existing && itemsAreEqual(existing, item)) {
+    if (existing && adoptRevIfEqual(existing, item)) {
       next.push(existing);
     } else {
       next.push(item);
@@ -300,7 +340,9 @@ export function reconcileItemWindow(incoming: readonly Item[], current: readonly
  *    delta for the same item. Delivery time alone does not prove freshness.
  *
  * Unchanged rows keep their existing reference so the reconcile does not
- * re-render them. `items` is `current` itself when nothing moved.
+ * re-render them, and MUTATE their `rev` in place to the page's
+ * (`adoptRevIfEqual`): "unchanged" means unchanged to a reader, and the
+ * revision has no reader. `items` is `current` itself when nothing moved.
  *
  * `orphanedLiveChildren` are live-touched subagent children the merge
  * dropped because their launch anchor survived in neither the page nor
@@ -336,7 +378,7 @@ export function reconcileSnapshotPage(
     }
     // Delivery time alone cannot make an old start newer than completion.
     const settlesExisting = isItemStatusRegression(item, existing);
-    if ((!settlesExisting && liveTouchedIds.has(item.id)) || itemsAreEqual(existing, item)) {
+    if ((!settlesExisting && liveTouchedIds.has(item.id)) || adoptRevIfEqual(existing, item)) {
       next.push(existing);
       continue;
     }

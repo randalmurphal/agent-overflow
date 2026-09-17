@@ -135,6 +135,11 @@ type Router struct {
 	// this counter (see WaitForPendingSettles) so SQLite isn't closed
 	// underneath an in-flight settle.
 	settleWG sync.WaitGroup
+	// refreshWG tracks the armed anchor refresh timers and their running
+	// flushes (wire_items.go). Separate from settleWG because the settle
+	// drain runs on in-turn paths and must not wait out a quiet period;
+	// DrainWireItemRefresh is its drain.
+	refreshWG sync.WaitGroup
 	// dispatchFlush is the app-layer callback invoked when the queue
 	// drains. Wired via SetFlushDispatcher; nil disables dispatch. Triage
 	// releases r.mu before invoking, and the callback must return quickly;
@@ -1382,36 +1387,6 @@ func (r *Router) persistItemWithPayloadAppend(item store.Item, payloadID string,
 	r.metrics.ItemsPersisted.Add(context.Background(), 1,
 		metric.WithAttributes(attribute.String("kind", persisted.Kind)))
 	return nil
-}
-
-// emitItemPatch sends a lightweight patch event carrying only the fields
-// that changed. The frontend merges the patch into the existing item in
-// place, avoiding re-transmission of immutable structural fields and the
-// potentially large summary text.
-func (r *Router) emitItemPatch(threadID, itemID, kind string, patch ItemPatchFields) {
-	r.emit(eventchan.ProviderItemEvent, newItemStreamPatch(threadID, itemID, kind, patch))
-}
-
-// persistItemFieldsAndPatch writes a targeted UPDATE for the specified
-// fields and emits a patch event. Use instead of persistItem when the
-// row already exists and only a narrow set of fields changed (e.g.,
-// streaming settle: status + meta + updatedAt).
-func (r *Router) persistItemFieldsAndPatch(threadID, itemID, kind string, update store.ItemPartialUpdate) error {
-	if err := r.store.UpdateItemFields(threadID, itemID, update); err != nil {
-		return err
-	}
-	r.emitItemPatch(threadID, itemID, kind, patchFromPartial(update))
-	return nil
-}
-
-func patchFromPartial(u store.ItemPartialUpdate) ItemPatchFields {
-	return ItemPatchFields{
-		Status:    u.Status,
-		Summary:   u.Summary,
-		Meta:      u.Meta,
-		Decision:  u.Decision,
-		UpdatedAt: u.UpdatedAt,
-	}
 }
 
 // shouldDropParentID decides whether an item's parent_id should be

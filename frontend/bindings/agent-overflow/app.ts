@@ -4847,10 +4847,11 @@ export function SyncOwnDevices(members: app$0.OwnDeviceMember[]): $CancellablePr
 
 /**
  * SyncThreadWindow is the cold-open replacement for
- * ListThreadSliceAround: it answers with the window only when the
- * caller's stamps prove it necessary. Store-read-only — it opens one
- * read-pool transaction and touches no local FS, process, or credential
- * state, so it rides `threads:read` like the history it answers with.
+ * ListThreadSliceAround: it answers with the window only when neither the
+ * caller's stamps nor the window it describes prove it current.
+ * Store-read-only — it opens one read-pool transaction and touches no
+ * local FS, process, or credential state, so it rides `threads:read` like
+ * the history it answers with.
  * 
  * The other paging RPCs are unchanged; this one covers the initial
  * window only.

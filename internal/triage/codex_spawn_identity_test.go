@@ -68,6 +68,9 @@ func TestCodexSpawnIdentityLandsOnSettledRowWithoutRuntimeState(t *testing.T) {
 	}
 	expected := before
 	expected.Meta = after.Meta
+	// The row revision moves with the meta write: it is the stamp that
+	// tells a client its copy of this row is behind (store.Item.Rev).
+	expected.Rev = after.Rev
 	if !reflect.DeepEqual(expected, after) {
 		t.Fatalf("identity changed more than meta\nbefore: %+v\nafter: %+v", before, after)
 	}

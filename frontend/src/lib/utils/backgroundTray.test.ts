@@ -19,6 +19,7 @@ import {
 function makeItem(overrides: Partial<Item> = {}): Item {
   const createdAt = overrides.createdAt ?? 0;
   return {
+    rev: 0,
     id: 'launch-1',
     threadId: 't',
     turnIndex: 0,

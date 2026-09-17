@@ -369,6 +369,7 @@ describe('<PlanSidebar>', () => {
     ];
 
     emitItemEventUpsert({
+      rev: 0,
       id: 'plan-fresh',
       threadId: pane.thread!.id,
       turnIndex: 0,
@@ -429,6 +430,7 @@ describe('<PlanSidebar>', () => {
       ...plansForRefresh,
     ];
     emitItemEventUpsert({
+      rev: 0,
       id: 'plan-2',
       threadId: pane.thread!.id,
       turnIndex: 1,
@@ -458,6 +460,7 @@ describe('<PlanSidebar>', () => {
     expect(fetchCount).toBe(1);
 
     emitItemEventUpsert({
+      rev: 0,
       id: 'x',
       threadId: 'other-thread',
       turnIndex: 0,
@@ -471,6 +474,7 @@ describe('<PlanSidebar>', () => {
       updatedAt: 0,
     });
     emitItemEventUpsert({
+      rev: 0,
       id: 'y',
       threadId: pane.thread!.id,
       turnIndex: 0,
@@ -520,6 +524,7 @@ describe('<PlanSidebar>', () => {
     expect(queryByText('Fresh plan')).toBeNull();
 
     emitItemEventUpsert({
+      rev: 0,
       id: 'plan-fresh',
       threadId: pane.thread!.id,
       turnIndex: 0,

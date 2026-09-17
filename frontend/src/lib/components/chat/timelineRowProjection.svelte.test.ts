@@ -146,7 +146,7 @@ describe('timeline row projection reactivity', () => {
 
       pane.applyItemPatch({
         threadId: 'thread-1', itemId: 'agent:1', kind: 'tool_call',
-        patch: { status: 'completed', updatedAt: 2 },
+        patch: { rev: 0, status: 'completed', updatedAt: 2 },
       });
       flushSync();
 

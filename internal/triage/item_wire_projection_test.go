@@ -110,7 +110,7 @@ func TestItemStreamUpsert_KeepsInlinePreviews(t *testing.T) {
 // patched back to its stored shape at settle.
 func TestItemStreamPatch_ProjectsMetaLikeAnUpsert(t *testing.T) {
 	meta := bigToolMeta(t, 8<<10)
-	evt := newItemStreamPatch("thread-1", "item-1", "tool_call", ItemPatchFields{Meta: &meta})
+	evt := newItemStreamPatch("thread-1", "item-1", "tool_call", 7, ItemPatchFields{Meta: &meta})
 	if evt.Patch == nil || evt.Patch.Meta == nil {
 		t.Fatal("patch carried no meta")
 	}

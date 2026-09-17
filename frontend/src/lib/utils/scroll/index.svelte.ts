@@ -156,6 +156,15 @@ export function createUseStickToBottomController(
   // here and use a revision only to notify reactive consumers of its change.
   let escapedFromLockState = false;
   let escapeRevision = $state(0);
+  // The one-shot restore-snap consent (scroll/intent.ts § Restore-snap
+  // consent). While it is armed, the escape flag is the defensive one
+  // `armRestoreSnap` set on the thread switch, not reader intent, which
+  // the public `restorePending` getter reports so the scroll-to-bottom
+  // chip can hide over a thread whose restore has not landed. Same shape
+  // as the escape flag: an imperative fact plus a revision that wakes the
+  // reactive readers.
+  let restoreConsentArmedState = false;
+  let restoreConsentRevision = $state(0);
   let pauseDepth = $state(0);
   let scrollInputRevision = 0;
 
@@ -556,6 +565,12 @@ export function createUseStickToBottomController(
     setEscaped: (next) => {
       escapedFromLockState = next;
       escapeRevision += 1;
+    },
+    restoreConsentArmed: () => restoreConsentArmedState,
+    setRestoreConsentArmed: (next) => {
+      if (restoreConsentArmedState === next) return;
+      restoreConsentArmedState = next;
+      restoreConsentRevision += 1;
     },
     isNearBottom: () => isNearBottomState,
     pauseDepth: () => pauseDepth,
@@ -1202,6 +1217,10 @@ export function createUseStickToBottomController(
       escapeRevision;
       return !escapedFromLockState && (isAtBottomState || isNearBottomState);
     },
+    get restorePending() {
+      restoreConsentRevision;
+      return restoreConsentArmedState;
+    },
     get escapedFromLock() {
       escapeRevision;
       return escapedFromLockState;
@@ -1234,6 +1253,7 @@ export function createUseStickToBottomController(
     skipWarmup: observers.skipWarmup,
     notifyQuietContextSignalChanged: observers.notifyQuietContextSignalChanged,
     armRestoreSnap: intent.armRestoreSnap,
+    clearRestoreConsent: intent.clearRestoreConsent,
     applyEngineCompensation,
     applyScrollTarget,
     deliverContentGeometry: observers.deliverSample,

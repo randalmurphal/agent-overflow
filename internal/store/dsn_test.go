@@ -78,7 +78,7 @@ func TestReaderPragmasSurviveConnectionRecycling(t *testing.T) {
 
 func TestPoolDSNRendersPragmasAndMemoryPaths(t *testing.T) {
 	got := poolDSN("/data/agent overflow.db", writerConnPragmas)
-	want := "file:/data/agent overflow.db?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)"
+	want := "file:/data/agent overflow.db?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)&_pragma=recursive_triggers(0)"
 	if got != want {
 		t.Fatalf("poolDSN = %q, want %q", got, want)
 	}

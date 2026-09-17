@@ -12,6 +12,7 @@ vi.mock('../lib/utils/scroll/grid', () => ({
 import { cleanup } from '@testing-library/svelte';
 import { resetWailsMocks } from './mocks/wailsio-runtime';
 import { resetBindingMocks } from './mocks/bindings-app';
+import { resetPanesForTest } from '../lib/stores/panes.svelte';
 import { resetAttachmentTransferMocks } from './mocks/attachmentTransfer';
 import { resetForTest as resetThreadStatusesForTest } from '../lib/stores/threadStatuses.svelte';
 import { resetDiffReviewCommentsForTest } from '../lib/stores/diffReviewComments.svelte';
@@ -248,6 +249,10 @@ beforeEach(() => {
 afterEach(() => {
   resetDiffReviewCommentsForTest();
   cleanup();
+  // Panes built through helpers/chat.ts#buildPane register here and hold
+  // timers against their thread (the replica write-back). Clear them
+  // while the binding mocks they would call are still installed.
+  resetPanesForTest();
   resetWailsMocks();
   resetBindingMocks();
   resetAttachmentTransferMocks();

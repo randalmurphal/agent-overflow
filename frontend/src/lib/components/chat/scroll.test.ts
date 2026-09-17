@@ -39,6 +39,7 @@ import {
   type SizePriorsEntry,
 } from '../../utils/virtual/priors';
 import * as sizePriorsModule from '../../utils/virtual/priors';
+import { typographySignature } from '../../stores/settings.svelte';
 import type { UseStickToBottomController } from '../../utils/scroll/index.svelte';
 import MessageTimeline from './MessageTimeline.svelte';
 import ChatView from './ChatView.svelte';
@@ -284,12 +285,15 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     // RESOLVE on re-entry, not the capture. The B visit and A's own
     // restore-time captures must leave it untouched (nothing measures, so
     // every capture is refused rather than replacing this entry).
-    const firstEntry: SizePriorsEntry = {
-      width: 0,
+    // Width 0 is what an unlaid-out happy-dom surface reports, so this is
+    // the bucket the return mount's trusted-width path picks up. The
+    // typography half of the geometry key is the live one the component
+    // reads, so the seed names the same bucket a real capture would.
+    setThreadSizePriors('thread-aba-a', { width: 0, typography: typographySignature() }, {
       expansionSig: '',
       rows: new Map([['L:seeded:completed:5:0', 50]]),
-    };
-    setThreadSizePriors('thread-aba-a', firstEntry);
+    });
+    const firstEntry: SizePriorsEntry = peekThreadSizePriorsForTest('thread-aba-a')!;
 
     // Switch to an uncached thread B.
     const threadB = makeThread({ id: 'thread-aba-b' });
@@ -2551,6 +2555,73 @@ describe('scroll integration — useStickToBottom wiring', () => {
       '[data-testid="message-timeline-scroll"] > div',
     );
     expect(contentEl?.style.visibility).toBe('hidden');
+  });
+
+  it('keeps the scroll-to-bottom chip down across a thread switch until the restore lands', async () => {
+    // The switch $effect.pre arms the restore snap, which sets the
+    // controller's defensive escape. The chip read `isAtBottom` alone, so
+    // before this fix it mounted the instant the switch started and
+    // unmounted when the restore's forceStick cleared the escape: one
+    // painted frame on a cached reopen, the whole load on a fetch,
+    // floating over an empty pane. The chip predicate now also reads
+    // `restorePending`, which spans exactly that window.
+    const threadA = makeThread({ id: 'thread-a-chip' });
+    const pane = await buildPane(threadA, [
+      makeItem({ id: 'a1', threadId: 'thread-a-chip' }),
+      makeItem({ id: 'a2', threadId: 'thread-a-chip', itemIndex: 1 }),
+    ]);
+    const { container } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+    const ctrl = timelineStick();
+    expect(container.querySelector('[data-testid="scroll-to-bottom"]')).toBeNull();
+
+    const threadB = makeThread({ id: 'thread-b-chip' });
+    let release: (value: unknown) => void = () => {};
+    const pending = new Promise((resolve) => { release = resolve; });
+    setBindingMock('SwitchThread', async () => threadB);
+    setBindingMock('ListThreadSliceAround', async () => {
+      await pending;
+      return {
+        items: Array.from({ length: 10 }, (_, i) =>
+          makeItem({ id: `b${i}`, threadId: 'thread-b-chip', itemIndex: i }),
+        ),
+        oldestTurnIndex: 0,
+        hasMore: false,
+      };
+    });
+    setBindingMock('GetThreadLiveState', async () => ({
+      threadId: threadB.id,
+      activeTurn: null,
+      queueItems: [],
+      interactive: { approvals: [], userInputs: [] },
+      todo: null,
+    }));
+    setBindingMock('ListRecentTurns', async () => []);
+
+    const switching = pane.switchThread(threadB);
+    await tick();
+    await tick();
+
+    // Mid-load: the defensive escape is up — so `isAtBottom` honestly
+    // reports away from bottom — but the restore is pending, and the chip
+    // is not shown.
+    expect(ctrl.escapedFromLock).toBe(true);
+    expect(ctrl.restorePending).toBe(true);
+    expect(ctrl.isAtBottom).toBe(false);
+    expect(container.querySelector('[data-testid="scroll-to-bottom"]')).toBeNull();
+
+    release(undefined);
+    await switching;
+    await tick();
+    await tick();
+
+    // Restore landed: escape and consent both cleared by the consuming
+    // forceStick, chip still down on its own merits.
+    expect(ctrl.escapedFromLock).toBe(false);
+    expect(ctrl.restorePending).toBe(false);
+    expect(ctrl.isAtBottom).toBe(true);
+    expect(container.querySelector('[data-testid="scroll-to-bottom"]')).toBeNull();
   });
 
   it('hides contentEl during the measurement cascade on uncached loads (cache miss)', async () => {

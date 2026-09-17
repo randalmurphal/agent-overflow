@@ -449,9 +449,7 @@ func (s *Store) ThreadExists(id string) (bool, error) {
 }
 
 func (s *Store) ListThreads() ([]Thread, error) {
-	rows, err := s.reader().Query(
-		`SELECT ` + threadColumns + ` FROM owned_threads AS threads WHERE archived = 0 ORDER BY updated_at DESC`,
-	)
+	rows, err := s.reader().Query(listThreadsQuery)
 	if err != nil {
 		return nil, fmt.Errorf("store: list threads: %w", err)
 	}
@@ -476,22 +474,8 @@ func (s *Store) ListThreads() ([]Thread, error) {
 // included: they are first-class sidebar fixtures that never carry items or
 // drafts, so the item/draft gates would otherwise hide them.
 func (s *Store) ListThreadsWithItems() ([]Thread, error) {
-	hiddenClause, hiddenArgs := hiddenThreadModesClause("mode")
-	rows, err := s.reader().Query(
-		`SELECT `+threadColumns+` FROM owned_threads AS threads
-		 WHERE archived = 0 AND `+hiddenClause+`
-		   AND (
-		       threads.mode = 'terminal'
-		    OR EXISTS (SELECT 1 FROM timeline_items WHERE timeline_items.thread_id = threads.id)
-		    OR EXISTS (SELECT 1 FROM thread_draft_recoveries WHERE thread_id = threads.id)
-		    OR EXISTS (
-		         SELECT 1 FROM thread_drafts
-		          WHERE thread_drafts.thread_id = threads.id
-		            AND thread_drafts.has_content = 1
-		       )
-		   )
-		 ORDER BY updated_at DESC`, hiddenArgs...,
-	)
+	query, args := listThreadsWithItemsQuery()
+	rows, err := s.reader().Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list threads with items: %w", err)
 	}
@@ -1133,7 +1117,7 @@ func (s *Store) MarkThreadActivity(threadID string, at int64) error {
 // view form took 1.1 s warm for one thread and the arms form 3 ms.
 func threadReadStateQuery(id string) (string, []any) {
 	newestErrorAt, args := timelineArms(id, timelineSelection{
-		Columns:   func(string) string { return `items.created_at AS created_at` },
+		Columns:   func(string, string) string { return `items.created_at AS created_at` },
 		Where:     newestTurnErrorPredicate("items", "?"),
 		WhereArgs: []any{id},
 		// Same answer as MAX(created_at): descending order puts NULLs
@@ -1879,4 +1863,37 @@ func normalizeRuntimeMode(mode string) string {
 	default:
 		return "full-access"
 	}
+}
+
+// listThreadsQuery is the ListThreads statement. It is a package-level
+// var rather than inline text for the same reason listThreadsWithItemsQuery
+// is a function: the plan tripwire (TestTimelineItemsViewJoinPushesDown)
+// pins the production statement instead of a copy that is free to drift
+// from it. threadColumns reaches `timeline_items` through its
+// proposed-plan probe, which is the shape that tripwire exists for.
+var listThreadsQuery = `SELECT ` + threadColumns + ` FROM owned_threads AS threads
+		 WHERE archived = 0 ORDER BY updated_at DESC`
+
+// listThreadsWithItemsQuery is the ListThreadsWithItems statement. It is a
+// function rather than inline text so the plan tripwire
+// (TestTimelineItemsViewJoinPushesDown) pins the production statement:
+// its EXISTS probes and threadColumns' proposed-plan probe reach
+// `timeline_items` through correlated terms from OUTSIDE the view's UNION
+// ALL, the one shape where SQLite can decline to push the term into the
+// arms and scan `items` once per sidebar row (see importedItemRevExpr).
+func listThreadsWithItemsQuery() (string, []any) {
+	hiddenClause, hiddenArgs := hiddenThreadModesClause("mode")
+	return `SELECT ` + threadColumns + ` FROM owned_threads AS threads
+		 WHERE archived = 0 AND ` + hiddenClause + `
+		   AND (
+		       threads.mode = 'terminal'
+		    OR EXISTS (SELECT 1 FROM timeline_items WHERE timeline_items.thread_id = threads.id)
+		    OR EXISTS (SELECT 1 FROM thread_draft_recoveries WHERE thread_id = threads.id)
+		    OR EXISTS (
+		         SELECT 1 FROM thread_drafts
+		          WHERE thread_drafts.thread_id = threads.id
+		            AND thread_drafts.has_content = 1
+		       )
+		   )
+		 ORDER BY updated_at DESC`, hiddenArgs
 }

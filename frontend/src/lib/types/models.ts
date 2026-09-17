@@ -260,6 +260,23 @@ export interface Item {
   meta?: string;
   createdAt: number;
   updatedAt: number;
+  /**
+   * The owning thread's `history_rev` at the moment this row's read
+   * result last changed (docs/architecture/thread-replica-sync.md §3.1).
+   * Two reads of the same `(id, rev)` are byte-identical except for
+   * `payloadPreviewSpans`, a derived highlight cache the client
+   * version-checks (`utils/payloadVersion.ts`) rather than trusting the
+   * row stamp for. That is what lets a pane describe the window it holds
+   * by its `(id, rev)` pairs instead of shipping the rows back
+   * (`stores/threadWindowDigest.ts`).
+   *
+   * Stamped only by the store's item triggers. Imported history rows
+   * read as -1; a window containing one is refused by the server rather
+   * than verified. A row the client mutated locally (a streaming delta,
+   * a mid-stream `meta` action) keeps the rev of its last stamped write, which
+   * understates and costs one page fetch — never a false `fresh`.
+   */
+  rev: number;
 }
 
 export interface PayloadMeta {

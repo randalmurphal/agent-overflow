@@ -734,7 +734,14 @@ Programmatic scrolls go through the controller:
 - `forceStick({ reason: 'user' })` for explicit bottom-follow.
 - `armRestoreSnap()` (sets the defensive escape, then arms consent)
   followed by `forceStick({ reason: 'restore' })` for thread/channel
-  restore.
+  restore. While the consent is armed, `restorePending` reports true;
+  `isAtBottom` keeps its honest meaning. The chip predicate is
+  `!restorePending && !isAtBottom` (chat also ors in `hasMoreNewer`),
+  so the chip stays down until the restore lands or a gesture clears the
+  consent: the escape in that window is the controller's guard, not
+  reader intent. Every bail path out of a restore transaction must
+  consume the consent, through the restore itself or
+  `clearRestoreConsent()`.
 - `markAtBottom()` for empty-timeline restore without writing scrollTop.
 - `requestBottom({ takeover })` for every out-of-band "put the reader at
   the bottom" placement: transaction restores
@@ -1417,37 +1424,53 @@ Zero re-render, zero scroll jump.
 Priors are keyed by a **per-row content signature** (`nodeSignature` in
 `utils/timelineStructureSignature.ts`: id, status, `summary.length`,
 `updatedAt` for a leaf; key + member count for a group), not by
-position. Each thread's `SizePriorsEntry` is `{ width, expansionSig,
-rows: Map<signature, measuredPx> }`: **width** (the wrap point) and
-**expansionSig** (`pane.expansionSignature()`, non-default subagent/diff/
-payload expansion) gate the whole entry. A mismatch on either refuses
-every row in it, degrading the mount to the kind/flat estimate chain,
-same as a cold first visit. The per-row signature gates each row
-independently within a valid entry: a row whose content changed simply
-misses on its own map key, without invalidating its still-valid
-siblings. This replaced an earlier design that keyed ONE positional
+position, and per **geometry**. A leaf signs the row the store holds now
+(`pane.getItemById`), never `node.item`: the projection re-mints nodes
+only on a structural change, so after a streaming row settles the node
+still carries the streaming-era Item while the rendered height is the
+settled one. Each thread's `SizePriorsEntry` is
+`{ byGeometry: Map<geometryKey, { expansionSig, rows: Map<sig, px> }> }`.
+The geometry key is `sizePriorsGeometryKey`'s
+`<rounded content width>|<typography signature>` — the two inputs that
+rescale a row at unchanged content. Width is the wrap point; the
+typography signature (`typographySignature` in
+`stores/settings.svelte.ts`) is the one list of display settings that
+change a row's height at a fixed wrap point: `fontSize` (root font scale
+on `<html>`), `sansFont` and `monoFont` (typeface metrics), and
+`collapseDiffPreviews` and `diffWordWrap` (default diff-card expansion
+and tool-result wrapping). **expansionSig**
+(`pane.expansionSignature()`, non-default subagent/diff/payload
+expansion) then gates the bucket the geometry selected. A geometry with
+no bucket, or a bucket whose expansionSig disagrees, refuses every row it
+would have supplied, degrading the mount to the kind/flat estimate chain,
+same as a cold first visit. Keeping the geometries apart is what makes
+the common reading patterns replay at all: two panes of different widths,
+a sidebar toggle, a split or unsplit, a window resize, and a font-size or
+typeface change all move the heights a mount should start from. The
+bucket map is an LRU bounded by `MAX_BUCKETS_PER_THREAD` (3, in
+`priors.ts`) with the most recently captured geometry last, so recurring
+geometries survive and a drag-resize's or font-step run of intermediate
+ones keeps only its latest. The per-row signature gates each row
+independently within a valid bucket: a row whose content changed simply
+misses on its own map key, without invalidating its still-valid siblings.
+This replaced an earlier design that keyed ONE positional
 `sizes: number[]` snapshot against a **whole-window** structure
 signature (the newline-join of every loaded row's signature), a key
 that a fresh app boot's small initial window essentially never matched
 against a full session window of hundreds of streamed/paged rows, so
 restart replay was effectively dead. The per-row map fixes that: a boot
 window's rows are a *suffix* of a larger captured window, and each one
-resolves independently. A handful of global display settings (`fontSize`,
-the sans/mono fonts, `collapseDiffPreviews`) also change row height but
-are deliberately **not** keyed, a documented, benign residual: toggling
-one mid-session then revisiting a thread replays stale heights, which the
-warm-up gate masks as a cold first visit (the estimate→measure cascade
-re-runs and corrects them), never a crash or stuck viewport. Keying them
-would make the residual airtight but buys no visible change (same masked
-cascade either way) at the cost of a drift-prone signature; the choice is
-recorded in `priors.ts`. Row-UI state is reset to default on every switch
+resolves independently. A new height-affecting display setting is added
+to `typographySignature` and nowhere else; a partial list would replay
+wrong heights for whatever it omitted. Row-UI state is reset to default
+on every switch
 (`rowUiState.clear()`), so at restore time the expansion signature is the
 default one, which is exactly why a thread that was idle-at-default
 replays cleanly and a thread that had something expanded (taller rows) is
 correctly refused.
 
-The width/expansion validity check is deliberately **lazy-once**, not
-eager: `resolveRowEstimateOnThreadEdge` (`timelineSizePriors.svelte.ts`)
+Bucket selection and the expansion check are deliberately **lazy-once**,
+not eager: `resolveRowEstimateOnThreadEdge` (`timelineSizePriors.svelte.ts`)
 runs in `$effect.pre` before the virtualizer remounts, and on a fresh app
 boot the scroll surface has not been laid out yet. An eager check would
 read width 0 and spuriously refuse every restart replay. The check
@@ -1458,18 +1481,27 @@ one-source rule in `scrollSurfaceWidth.ts`), while the engine's first
 `at()` calls run synchronously when the virtualizer mounts with data.
 On boot, whichever lands first is a machine-speed race. Width 0
 therefore means "layout hasn't reported yet", not a real wrap point,
-and the check **trusts the entry's captured width** in that case
+and the check takes the **most recently captured bucket** in that case
 (latched, so every row in the mount resolves consistently): window
-geometry restores across restarts, so the real width almost always
-matches, and a genuine mismatch degrades to the documented
-self-correcting display-settings residual instead of a guaranteed full
-cascade.
+geometry restores across restarts, so the last width the reader saw is
+almost always the one about to be reported, and a genuine mismatch is
+corrected by the per-row ResizeObserver behind the warm-up gate instead
+of guaranteeing a full cascade. The typography half of the key has no
+such race — it is a synchronous settings read — so a display-setting
+change is an exact bucket miss everywhere except this width-0 path,
+where there is no reported geometry to match in the first place. The
+trace value for a geometry miss is `width-mismatch`; the name predates
+the typography half of the key and is kept stable for readers comparing
+traces across runs.
 
-`setThreadSizePriors` REPLACES a thread's entry wholesale on every
-capture rather than merging row-by-row: streaming rows carry
+`setThreadSizePriors` REPLACES the captured geometry's bucket wholesale on
+every capture rather than merging row-by-row, and leaves the thread's
+other geometry buckets untouched: streaming rows carry
 `updatedAt`/`summary.length` in their signature, so a row's key changes
 on every append, and merging would accumulate dead signatures forever.
-A wholesale replace self-cleans that for free.
+A wholesale replace self-cleans that for free. The whole thread entry,
+every bucket, is what reaches the storage adapter, so one thread is
+still one persisted value.
 
 Captures must store the **settled** sizes or the replay restores a
 mid-cascade height. They ride two triggers, both routed through one
@@ -1480,8 +1512,8 @@ and the rising edge of `stick.isWarm`, the controller's
 capture for a thread the user views but never scrolls.
 
 The in-memory store is a bounded LRU (memory: ~one float per loaded row
-per recent thread), a WORKING SET over a persistent backing store, not
-the store itself. `utils/virtual/priorsStorage.ts` is a
+per geometry bucket per recent thread), a WORKING SET over a persistent
+backing store, not the store itself. `utils/virtual/priorsStorage.ts` is a
 localStorage-backed adapter (installed at module scope of
 `timelineSizePriors.svelte.ts`, so it is active before any pane mounts)
 that makes priors survive an app restart: writes are debounced (~1s,
@@ -1523,11 +1555,12 @@ deletion:
 
 - The scroll surface width signal: the **content-box** width, observed
   asynchronously through `observeScrollSurfaceContentWidth`
-  (`scrollSurfaceWidth.ts`), feeds the priors validity key, and is
-  never a synchronous or border-box read (`getBoundingClientRect`,
-  `clientWidth`). A second, disagreeing width source turns the width signal
-  into a self-sustaining oscillation that re-renders every row at idle
-  (CPU/heap-churn incident 2026-06-26, commit `a5a5d032`).
+  (`scrollSurfaceWidth.ts`), feeds the width half of the priors geometry
+  key, and is never a synchronous or border-box read
+  (`getBoundingClientRect`, `clientWidth`). A second, disagreeing width
+  source turns the width signal into a self-sustaining oscillation that
+  re-renders every row at idle (CPU/heap-churn incident 2026-06-26,
+  commit `a5a5d032`).
 - Margin containment: the `[data-row-geometry-content]` row wrapper and the
   app.css `display: flow-root` rule (commit `4b3759a1`), independent of the
   floors; see [`settle-flicker-analysis.md`](settle-flicker-analysis.md).
@@ -1744,6 +1777,14 @@ Useful trace records:
   for a different thread). Every session emits on exactly one of these
   paths, so a switch that produced no record at all is itself a signal.
   Needs a `make dev DEBUG=1` build (`VITE_AGENT_OVERFLOW_UI_TRACE=1`).
+
+  Two more name the window sync behind the open: `paintSource` (`'l1'`,
+  `'replica'` or `'none'` — which tier put rows on screen before the RPC
+  answered) and `syncStatus` (the `SyncThreadWindow` verdict). A gate
+  that settles before the answer lands closes the session first, so
+  `syncStatus` is `null` on that record and the verdict follows as its
+  own `timeline.coldload.sync` record (`paneId`, `threadId`,
+  `syncStatus`, `afterCloseMs`). Read the pair together.
 - `frame.loaf`: one record per long animation frame (>50ms, the spec's
   fixed threshold), session-wide (`utils/loafTrace.ts`, light-tier: the
   browser only delivers entries for frames that exceeded the

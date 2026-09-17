@@ -44,7 +44,7 @@ it('does not reveal and retract a completion during gaps in an unfinished messag
   expect(edges, JSON.stringify(edges)).toEqual([expect.objectContaining({ shown: false })]);
   expect(pane.getItemById(prose.id)?.status).toBe('streaming');
   applyItemStreamEvent({ action: 'patch', threadId, itemId: prose.id, kind: prose.kind,
-    patch: { status: 'completed', updatedAt: 300 } });
+    patch: { rev: 0, status: 'completed', updatedAt: 300 } });
   flushItemEventQueue();
   await waitFor(() => scrollEl.querySelector('[data-item-id="command"]') !== null, 'completion released once message ends');
   await waitForQuietBottom(scrollEl, 'completion settles', quiet);

@@ -829,7 +829,7 @@ describe('<ActivityRun>', () => {
 
       pane.applyItemPatch({
         threadId: 'thread-1', itemId: 't0', kind: 'tool_call',
-        patch: { status: 'errored', updatedAt: Date.now() + 1 },
+        patch: { rev: 0, status: 'errored', updatedAt: Date.now() + 1 },
       });
       await tick();
 
@@ -849,7 +849,7 @@ describe('<ActivityRun>', () => {
 
       pane.applyItemPatch({
         threadId: 'thread-1', itemId: 't0', kind: 'tool_call',
-        patch: { summary: 'Bash: ls -la /very/long/path', updatedAt: Date.now() + 1 },
+        patch: { rev: 0, summary: 'Bash: ls -la /very/long/path', updatedAt: Date.now() + 1 },
       });
       await tick();
 
@@ -1036,7 +1036,7 @@ describe('<ActivityRun>', () => {
         // Drain the gate; the prose reveals and displaces the run ON SCREEN.
         // Only now does the settle half take over.
         pane.applyItemPatch({ threadId: pane.threadId!, itemId: 'think:0:2', kind: 'thinking',
-          patch: { status: 'completed', updatedAt: 4 } });
+          patch: { rev: 0, status: 'completed', updatedAt: 4 } });
         for (let i = 0; i < 200 && pane.revealBoundary !== null; i++) clock.tickFrame(16);
         // A failure below must blame the fix, not an undrained fixture.
         expect(pane.revealBoundary).toBeNull();

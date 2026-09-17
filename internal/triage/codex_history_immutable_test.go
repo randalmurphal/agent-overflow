@@ -82,6 +82,9 @@ func TestCodexSpawnAndCompletedExecutionsAreImmutable(t *testing.T) {
 	}
 	expected := spawn
 	expected.Meta = identified.Meta
+	// The row revision moves with the meta write: it is the stamp that
+	// tells a client its copy of this row is behind (store.Item.Rev).
+	expected.Rev = identified.Rev
 	if !reflect.DeepEqual(expected, identified) {
 		t.Fatalf("identity write changed more than meta\nbefore: %+v\nafter: %+v", spawn, identified)
 	}
@@ -106,6 +109,10 @@ func TestCodexSpawnAndCompletedExecutionsAreImmutable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A later write to the launch row stamps its completion siblings (a
+	// sibling's read result is walked from the launch, store.stampedRowIDsSQL),
+	// so the revision moves while the content must not.
+	first.Rev = after.Rev
 	if !reflect.DeepEqual(first, after) {
 		t.Fatalf("later execution mutated first completion: %+v -> %+v", first, after)
 	}

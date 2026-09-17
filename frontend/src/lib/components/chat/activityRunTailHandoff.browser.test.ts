@@ -277,7 +277,7 @@ describe('tail handoff', () => {
       threadId,
       itemId: 'th0',
       kind: 'thinking',
-      patch: { status: 'completed', updatedAt: 41 },
+      patch: { rev: 0, status: 'completed', updatedAt: 41 },
     });
     await tick();
 

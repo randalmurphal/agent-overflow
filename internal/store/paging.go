@@ -226,11 +226,11 @@ func (s *Store) finalizePagedItems(q sqlQueryer, threadID string, items []Item) 
 	}
 	oldest := cursorFromItem(items[0])
 	newest := cursorFromItem(items[len(items)-1])
-	hasMoreOlder, err := s.hasOlderItems(q, threadID, oldest)
+	hasMoreOlder, err := hasOlderItems(q, threadID, oldest)
 	if err != nil {
 		return PagedItems{}, err
 	}
-	hasMoreNewer, err := s.hasNewerItems(q, threadID, newest)
+	hasMoreNewer, err := hasNewerItems(q, threadID, newest)
 	if err != nil {
 		return PagedItems{}, err
 	}
@@ -246,7 +246,7 @@ func (s *Store) finalizePagedItems(q sqlQueryer, threadID string, items []Item) 
 	}, nil
 }
 
-func (s *Store) hasOlderItems(q sqlQueryer, threadID string, cursor TimelineCursor) (bool, error) {
+func hasOlderItems(q sqlQueryer, threadID string, cursor TimelineCursor) (bool, error) {
 	var exists int
 	err := q.QueryRow(
 		`SELECT EXISTS(SELECT 1 FROM timeline_items
@@ -262,7 +262,7 @@ func (s *Store) hasOlderItems(q sqlQueryer, threadID string, cursor TimelineCurs
 	return exists != 0, nil
 }
 
-func (s *Store) hasNewerItems(q sqlQueryer, threadID string, cursor TimelineCursor) (bool, error) {
+func hasNewerItems(q sqlQueryer, threadID string, cursor TimelineCursor) (bool, error) {
 	var exists int
 	err := q.QueryRow(
 		`SELECT EXISTS(SELECT 1 FROM timeline_items

@@ -3,18 +3,20 @@ package store
 import "fmt"
 
 // itemHydrationColumns is the canonical frontend-bound Item projection with
-// caller-supplied expressions for the logical thread id and the three payload
-// fields carried alongside a timeline row. Keeping the variable expressions
-// here lets local and imported physical branches share one scanner contract
-// without routing either branch through the compound timeline_payloads view.
-func itemHydrationColumns(threadID, payloadKind, payloadMeta, previewSpans string) string {
+// caller-supplied expressions for the logical thread id, the three payload
+// fields carried alongside a timeline row, and the row revision. Keeping the
+// variable expressions here lets local and imported physical branches share
+// one scanner contract without routing either branch through the compound
+// timeline_payloads view.
+func itemHydrationColumns(threadID, payloadKind, payloadMeta, previewSpans, rev string) string {
 	return fmt.Sprintf(`items.id, %s, items.turn_index, items.item_index,
     items.kind, items.role, items.status, items.summary,
     COALESCE(items.payload_id, ''), %s, %s, %s,
     COALESCE(items.input_payload_id, ''),
     items.parent_id, items.is_background, items.completion_of,
-    items.tool_name, items.decision, items.meta, items.created_at, items.updated_at`,
-		threadID, payloadKind, payloadMeta, previewSpans)
+    items.tool_name, items.decision, items.meta, items.created_at, items.updated_at,
+    %s`,
+		threadID, payloadKind, payloadMeta, previewSpans, rev)
 }
 
 var localItemHydrationColumns = itemHydrationColumns(
@@ -22,6 +24,7 @@ var localItemHydrationColumns = itemHydrationColumns(
 	"COALESCE(payloads.kind, '')",
 	"COALESCE(payloads.meta, '')",
 	"COALESCE(payloads.preview_spans, '')",
+	"items.rev",
 )
 
 var importedItemHydrationColumns = itemHydrationColumns(
@@ -29,6 +32,7 @@ var importedItemHydrationColumns = itemHydrationColumns(
 	"COALESCE(local_payloads.kind, imported_payloads.kind, '')",
 	"COALESCE(local_payloads.meta, imported_payloads.meta, '')",
 	"COALESCE(local_payloads.preview_spans, imported_payloads.preview_spans, '')",
+	importedItemRevExpr,
 )
 
 // queryHydratedTimelineItems selects logical item ids first, then resolves each

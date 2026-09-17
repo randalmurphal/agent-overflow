@@ -212,8 +212,8 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 		}
 	}
 
-	// Re-install what the copy ran without, from the same const migration
-	// v55 installs, so the two can never describe different contracts.
+	// Re-install what the copy ran without, from the same var migration
+	// v100 installs, so the two can never describe different contracts.
 	if _, err := tx.Exec(historyRevTriggersSQL); err != nil {
 		return Identity{}, fmt.Errorf("store: restore: recreate history triggers: %w", err)
 	}

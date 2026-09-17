@@ -20,14 +20,22 @@
 // against the shared per-row map — window composition no longer has to
 // match, only the individual rows that are still present.
 //
-// VALIDITY: two dimensions still gate an entire entry (a mismatch on
-// either refuses every row in it, degrading the whole mount to the
-// kind/flat estimate chain):
+// VALIDITY: a thread's entry is a set of per-GEOMETRY BUCKETS, not one
+// measurement set. A bucket's geometry is the two inputs that rescale
+// every row at constant content: the scroll-surface content WIDTH (the
+// wrap point, so a narrower/wider pane changes every multi-line row's
+// height) and the TYPOGRAPHY signature (the display settings that change
+// a row's height at a fixed wrap point — see
+// `stores/settings.svelte.ts#typographySignature`). The same thread read
+// full-pane, in a split, with the sidebar toggled, and at two font sizes
+// replays at each of those geometries instead of refusing whichever one
+// it was not last captured at. A geometry with no bucket is a miss, and
+// so is a bucket whose remaining dimension disagrees. Either one refuses
+// every row it would have supplied, degrading that mount to the kind/flat
+// estimate chain:
 //
-//   - width        : the wrap point — a narrower/wider pane changes every
-//                    multi-line row's height, so it is a whole-entry miss.
 //   - expansionSig : non-default row-UI expansion state
-//                    (`pane.expansionSignature()`).
+//                    (`pane.expansionSignature()`), per bucket.
 //
 // The structure/content dimension is NOT a top-level key anymore — it is
 // folded into the per-row map key itself (`nodeSignature` encodes id,
@@ -54,17 +62,18 @@
 //     `threads.svelte.ts removeThread` / `thread.svelte.ts` reswitch
 //     eviction) calls `adapter.remove()`.
 //
-// `setThreadSizePriors` REPLACES a thread's entry wholesale on every
-// capture rather than merging row-by-row. This is deliberate: streaming
-// rows carry `updatedAt`/`summary.length` in their signature, so a row's
-// key changes on every append — merging would accumulate an ever-growing
-// tail of dead signatures from rows that no longer exist in that exact
-// form. A wholesale replace self-cleans that churn for free. The consumer
-// (timelineSizePriors.svelte.ts `maybePersistSizePriors`) builds each
-// replacement by carrying forward the previous entry's sizes for
-// signatures still live in the current window — so an early capture with
-// few (or no) measured rows cannot destroy a settled one — but the store
-// contract here stays a plain replace.
+// `setThreadSizePriors` REPLACES the captured geometry's BUCKET wholesale
+// on every capture rather than merging row-by-row; the thread's other
+// geometry buckets are left alone. The wholesale part is deliberate:
+// streaming rows carry `updatedAt`/`summary.length` in their signature,
+// so a row's key changes on every append — merging would accumulate an
+// ever-growing tail of dead signatures from rows that no longer exist in
+// that exact form. A wholesale replace self-cleans that churn for free.
+// The consumer (timelineSizePriors.svelte.ts `maybePersistSizePriors`)
+// builds each replacement by carrying forward that same geometry bucket's
+// sizes for signatures still live in the current window — so an early
+// capture with few (or no) measured rows cannot destroy a settled one —
+// but the store contract here stays a plain per-bucket replace.
 //
 // Consumption is unchanged in spirit from the prior generation: the
 // engine reads priors lazily per row through `RowEstimate` whenever a row
@@ -76,35 +85,78 @@
 // the deleted `RowEstimate.shiftBase`, which remapped the old positional
 // snapshot's base index across a load-older prepend/removal.
 //
-// KNOWN RESIDUAL — display settings are NOT keyed. Four global settings
-// change a timeline row's height at constant width/structure/expansion:
-// `fontSize` (a root font-scale on <html>, so it rescales every row),
-// `sansFont` and `monoFont` (typeface metrics shift line heights at a
-// fixed width), and `collapseDiffPreviews` (the default expand/collapse
-// of an un-overridden inline diff card — DiffFileBlock). Toggling one
-// mid-session and then revisiting a thread can replay sizes measured
-// under the old setting. This is deliberately tolerated rather than
-// keyed, because it is benign and self-correcting: a stale replay feeds
-// the engine wrong start heights, the per-row ResizeObserver corrects
-// them, and MessageTimeline's warm-up visibility gate hides that
-// cascade exactly as it hides a cold first visit — so the worst case
-// degrades to first-visit behavior, never a crash or a stuck viewport.
-// The benefit of keying them is therefore invisible (same masked
-// cascade either way), while a partial display-settings key would
-// silently regress the day a new height-affecting setting is added and
-// not threaded through it. If it must become airtight, add ONE
-// display-settings dimension — covering all four — here AND in
-// timelineSizePriors.svelte.ts's validity check, not a subset.
+// The display settings that rescale rows are ONE dimension of the
+// geometry key, never a subset: `typographySignature` in
+// `stores/settings.svelte.ts` is the single place that names them, so a
+// new height-affecting setting is added there and both the capture and
+// the replay pick it up without a second list to keep in step.
 
 import type { RowEstimate } from './types';
 
-export interface SizePriorsEntry {
-  /** Math.round(scroll-surface content width) at capture. */
-  width: number;
+/** One geometry's measurements for a thread. */
+export interface SizePriorsBucket {
   /** `pane.expansionSignature()` at capture. */
   expansionSig: string;
-  /** nodeSignature(node) → last measured px, for every row measured at capture. */
+  /**
+   * `nodeSignature(node, currentItem)` → last measured px, for every row
+   * measured at capture.
+   */
   rows: Map<string, number>;
+}
+
+/**
+ * The geometry a bucket's rows were measured under: the scroll-surface
+ * content width (the wrap point) and the typography signature (the
+ * display settings that change a row's height at a fixed wrap point).
+ * Both are inputs to every multi-line row's height, so they select the
+ * bucket together — `sizePriorsGeometryKey` is the only way to build the
+ * key they form.
+ */
+export interface SizePriorsGeometry {
+  /** Scroll-surface CONTENT width in px; rounded into the key. */
+  width: number;
+  /** `typographySignature()` at capture. */
+  typography: string;
+}
+
+export interface SizePriorsEntry {
+  /**
+   * `sizePriorsGeometryKey(geometry)` → that geometry's measurements, in
+   * LRU order with the most recently captured geometry LAST. Bounded by
+   * MAX_BUCKETS_PER_THREAD.
+   */
+  byGeometry: Map<string, SizePriorsBucket>;
+}
+
+/**
+ * Separator between the two key segments. The width segment is digits
+ * only, so the first separator always ends it and the typography segment
+ * may contain anything non-empty, this character included.
+ * `GEOMETRY_KEY_PATTERN` below spells the same separator; change both.
+ */
+const GEOMETRY_KEY_SEPARATOR = '|';
+
+/**
+ * `<rounded width>|<typography signature>`. Rounding lives here, not at
+ * the call sites, so a capture and the replay that follows it cannot
+ * disagree about which bucket a fractional width names.
+ */
+export function sizePriorsGeometryKey(geometry: SizePriorsGeometry): string {
+  return `${Math.round(geometry.width)}${GEOMETRY_KEY_SEPARATOR}${geometry.typography}`;
+}
+
+/**
+ * Whether a string from an untrusted source (storage, a hand-edited
+ * profile) is a key this module could have written: a non-negative
+ * integer width, the separator, then a non-empty typography segment. A
+ * key that fails this is not merely a permanent miss occupying the
+ * per-thread cap — it means the stored value was corrupted, so the
+ * loader drops the whole entry.
+ */
+const GEOMETRY_KEY_PATTERN = /^(?:0|[1-9][0-9]*)\|[^]+$/;
+
+export function isSizePriorsGeometryKey(value: unknown): value is string {
+  return typeof value === 'string' && GEOMETRY_KEY_PATTERN.test(value);
 }
 
 /** Persists priors past the in-memory LRU (utils/virtual/priorsStorage.ts). */
@@ -121,12 +173,33 @@ export function setSizePriorsStorageAdapter(adapter: SizePriorsStorageAdapter | 
   storageAdapter = adapter;
 }
 
-// Each entry holds ~one float per loaded row plus its signature string;
-// both scale with the live window and are bounded here. 50 recently
+// Each entry holds ~one float per loaded row plus its signature string,
+// times its geometry buckets (MAX_BUCKETS_PER_THREAD below); all of that
+// scales with the live window and is bounded here. 50 recently
 // visited threads is a generous working set; older threads fall back to
 // the adapter (if the thread is still stored) or kind estimates, which is
 // correct, just not pixel-exact until the next capture.
 const MAX_ENTRIES = 50;
+
+/**
+ * Geometry buckets kept per thread. The geometries a reader actually
+ * cycles through are the full pane, a split, and a sidebar-toggled
+ * variant, so three covers the recurring set; a drag-resize or a run of
+ * font-size steps instead produces one-off geometries, and the LRU order
+ * keeps the latest of that run rather than the stalest. Storage cost per
+ * thread is therefore bounded at this many row maps.
+ */
+export const MAX_BUCKETS_PER_THREAD = 3;
+
+/**
+ * Rows one bucket may hold. Equal to
+ * `ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS` in
+ * `stores/threadPaneShared.ts`, the pane's retention ceiling and so the
+ * most rows a capture can ever measure. The value is duplicated rather
+ * than imported because `utils/` must not depend on `stores/`; the priors
+ * test asserts the two stay equal.
+ */
+export const MAX_ROWS_PER_BUCKET = 2400;
 
 const entries = new Map<string, SizePriorsEntry>();
 
@@ -140,22 +213,69 @@ function evictOverCap(): void {
   }
 }
 
-export function setThreadSizePriors(threadId: string, entry: SizePriorsEntry): void {
-  // Re-insert to bump LRU recency.
-  if (entries.has(threadId)) {
-    entries.delete(threadId);
+function evictBucketsOverCap(byGeometry: Map<string, SizePriorsBucket>): void {
+  while (byGeometry.size > MAX_BUCKETS_PER_THREAD) {
+    const oldest = byGeometry.keys().next().value;
+    if (oldest === undefined) break;
+    byGeometry.delete(oldest);
   }
+}
+
+/**
+ * Installs `bucket` as this thread's measurements at `geometry`,
+ * replacing whatever that geometry held and leaving its other geometries
+ * alone. The whole thread entry (every bucket) is what reaches the
+ * adapter, so the adapter contract stays one persisted value per thread.
+ *
+ * The thread's existing buckets come from the in-memory LRU alone. A
+ * memory miss means no stored buckets either: `getThreadSizePriors`
+ * installs a storage hit into the LRU, and the capture path reads
+ * through it before every set, so a memory-evicted thread is rehydrated
+ * before it is written back rather than truncated to this one geometry.
+ */
+export function setThreadSizePriors(
+  threadId: string,
+  geometry: SizePriorsGeometry,
+  bucket: SizePriorsBucket,
+): void {
+  const entry = entries.get(threadId) ?? { byGeometry: new Map() };
+  const key = sizePriorsGeometryKey(geometry);
+  // Re-insert to bump the bucket to LRU-last.
+  entry.byGeometry.delete(key);
+  entry.byGeometry.set(key, bucket);
+  evictBucketsOverCap(entry.byGeometry);
+  // Re-insert to bump LRU recency.
+  entries.delete(threadId);
   entries.set(threadId, entry);
   evictOverCap();
   storageAdapter?.persist(threadId, entry);
+}
+
+/** This thread's measurements at `geometry`, if it has any. */
+export function sizePriorsAtGeometry(
+  entry: SizePriorsEntry,
+  geometry: SizePriorsGeometry,
+): SizePriorsBucket | undefined {
+  return entry.byGeometry.get(sizePriorsGeometryKey(geometry));
+}
+
+/**
+ * The most recently captured bucket, the best guess when the surface has
+ * not reported a width yet (see `buildRowEstimate` in
+ * components/chat/timelineSizePriors.svelte.ts).
+ */
+export function latestSizePriors(entry: SizePriorsEntry): SizePriorsBucket | undefined {
+  let latest: SizePriorsBucket | undefined;
+  for (const bucket of entry.byGeometry.values()) latest = bucket;
+  return latest;
 }
 
 /**
  * The stored entry for a thread — a memory hit bumps LRU recency; a
  * memory miss falls through to the storage adapter (if installed) and,
  * on a storage hit, installs the result into the in-memory LRU before
- * returning it. Validity checking (width/expansionSig, per-row signature
- * lookup) is the consumer's job — see
+ * returning it. Validity checking (bucket selection by geometry,
+ * expansionSig, per-row signature lookup) is the consumer's job — see
  * `components/chat/timelineSizePriors.svelte.ts`.
  */
 export function getThreadSizePriors(threadId: string): SizePriorsEntry | undefined {
@@ -198,10 +318,14 @@ export function peekThreadSizePriorsForTest(threadId: string): SizePriorsEntry |
 }
 
 /** Diagnostic accounting (memoryReport). */
-export function sizePriorsStats(): { threads: number; rows: number } {
+export function sizePriorsStats(): { threads: number; buckets: number; rows: number } {
+  let buckets = 0;
   let rows = 0;
-  for (const entry of entries.values()) rows += entry.rows.size;
-  return { threads: entries.size, rows };
+  for (const entry of entries.values()) {
+    buckets += entry.byGeometry.size;
+    for (const bucket of entry.byGeometry.values()) rows += bucket.rows.size;
+  }
+  return { threads: entries.size, buckets, rows };
 }
 
 export interface RowEstimateOptions {

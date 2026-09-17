@@ -141,6 +141,11 @@ func assertTrayRowsEqual(t *testing.T, want, got []Item) {
 		wantMeta := metaWithoutLiveFlag(t, wantRow.Meta)
 		gotMeta := metaWithoutLiveFlag(t, gotRow.Meta)
 		wantRow.Meta, gotRow.Meta = "", ""
+		// The v74 backfill rewrites `meta` on the rows it settles, which
+		// re-stamps their revision. The claim here is that the two
+		// queries select the same rows in the same order, not that a
+		// history-changing backfill left the counter alone.
+		wantRow.Rev, gotRow.Rev = 0, 0
 		if wantRow != gotRow {
 			t.Errorf("row %d differs:\n old = %+v\n new = %+v", i, wantRow, gotRow)
 		}

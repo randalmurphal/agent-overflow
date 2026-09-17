@@ -1081,6 +1081,7 @@ describe('<ChatView>', () => {
     HTMLElement.prototype.scrollIntoView = scrollSpy as typeof HTMLElement.prototype.scrollIntoView;
     try {
       const launch: Item = {
+        rev: 0,
         id: 'launch-a',
         threadId: 'thread-1',
         turnIndex: 0,

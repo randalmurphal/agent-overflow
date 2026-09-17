@@ -78,6 +78,51 @@ export function getSettings(backend: BackendKey = HOME_BACKEND): Settings {
   return value;
 }
 
+/**
+ * The one description of "which settings change a rendered row's height at
+ * a fixed content width". It keys the timeline's measured row-height priors
+ * (`utils/virtual/priors.ts`, `SizePriorsGeometry.typography`), so a replay
+ * under different typography misses and re-measures instead of restoring
+ * heights from the old settings.
+ *
+ * Every field here is a FRONTEND preference (`FRONTEND_SETTINGS_KEYS`), so
+ * it reads the same on every computer and needs no backend argument:
+ *
+ *   - `fontSize`     root font scale on <html> (utils/zoom.ts), so it
+ *                    rescales every row.
+ *   - `sansFont`     `--font-sans` typeface; metrics shift line counts and
+ *                    line heights at a fixed width.
+ *   - `monoFont`     `--font-mono` typeface; same, for code, diffs and
+ *                    command output.
+ *   - `collapseDiffPreviews`
+ *                    default expand/collapse of an un-overridden inline
+ *                    diff card (DiffFileBlock). Not covered by
+ *                    `expansionSignature`, which serializes reader
+ *                    deviations from the default and is empty when the
+ *                    default itself moves.
+ *   - `diffWordWrap` wraps vs horizontally scrolls tool-result and diff
+ *                    text (ToolResultCard), which changes line count at a
+ *                    fixed width.
+ *
+ * Add a new height-affecting display setting HERE, not at a call site: a
+ * partial list silently replays wrong heights for whatever it omits.
+ * Settings that only change motion, cadence or chrome (`lowPowerMode`,
+ * `streamingEnabled`, the spinner keys) are deliberately absent — they do
+ * not change a settled row's height. `paneDensity` is absent because it
+ * changes the pane's width, which the width half of the key already
+ * carries.
+ */
+export function typographySignature(): string {
+  const settings = getSettings();
+  return [
+    `f${settings.fontSize}`,
+    `s${settings.sansFont}`,
+    `m${settings.monoFont}`,
+    `c${settings.collapseDiffPreviews ? 1 : 0}`,
+    `w${settings.diffWordWrap ? 1 : 0}`,
+  ].join('/');
+}
+
 // Serial within a computer, independent across computers. Failed operations
 // handle their own errors, so they cannot poison the next operation's queue.
 function enqueue(backend: BackendKey, work: () => Promise<void>): Promise<void> {

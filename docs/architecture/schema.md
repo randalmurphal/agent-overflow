@@ -24,7 +24,7 @@ make every row disposable.
 | Tables | Ownership and key constraints |
 |---|---|
 | `threads`, `turns`, `message_anchors` | Conversation metadata, thread-scoped turns, and provider message correlation. `threads.history_rev` and `history_epoch` invalidate client replicas. Narrow lifecycle columns such as import provenance, live todo, group membership, and worktree setup state have dedicated writers and are omitted from broad updates. |
-| `items` | Mutable timeline overlay keyed by `(thread_id, id)` and ordered by `(thread_id, turn_index, item_index)`. `summary` is the always-loaded raw preview. `parent_id` links nested work; `completion_of` links terminal siblings to launches. Item triggers maintain history stamps, payload collection, import guards, and background liveness. |
+| `items` | Mutable timeline overlay keyed by `(thread_id, id)` and ordered by `(thread_id, turn_index, item_index)`. `summary` is the always-loaded raw preview. `parent_id` links nested work; `completion_of` links terminal siblings to launches. `rev` is the owning thread's `history_rev` when the row's read result last changed (imported rows project -1). Item triggers maintain history stamps, payload collection, import guards, and background liveness. |
 | `payloads`, `payload_chunks` | Heavy content keyed by `(thread_id, id)`. Metadata and capped preview spans may ride list reads; base data, chunks, and full spans load on demand. Span blobs are versioned render caches. |
 | `import_history_chunks`, `import_history_items`, `import_history_payloads` | Content-addressed immutable imported history. Chunk-local composite keys keep item and payload identity together. |
 | `thread_import_chunks`, `thread_import_item_overrides`, `thread_import_state` | Ordered mapping of chunks into a thread, explicit mutable-overlay hides, and provider refresh provenance. Triggers reject gaps, overlaps, and implicit shadowing. |
@@ -127,7 +127,7 @@ When index selection is part of behavior, tests assert both result parity and
 
 | Family | Purpose |
 |---|---|
-| History revision | Three `items` triggers maintain `history_rev` and `history_epoch`. |
+| History revision | Three `items` triggers maintain `threads.history_rev`, `threads.history_epoch`, and the per-row `items.rev` stamp on every row whose read result the write changed: the row, its completion sibling, and the anchors decorated from its parent chain (`stampedRowIDsSQL`: a recursive CTE walks the chain by primary key; the carrier leg probes the partial expression index `idx_items_transcript_root`). `rev` is written only here; the update trigger's `WHEN OLD.rev IS NEW.rev` guard keeps the stamping write from re-bumping the thread. |
 | Payload collection | Item deletion removes payloads no longer referenced by either payload field in the same thread. Cascades collect payload chunks and edit snapshots. |
 | Imported-history integrity | Triggers reject implicit shadowing, coordinate overlap, chunk gaps, and ambiguous payload identity; the final chunk reference collects immutable storage. |
 | Background settlement | Four triggers maintain `meta.live_background_active` as launches and completion siblings arrive, change, or are removed. |

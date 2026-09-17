@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Item } from '../types/models';
 import { subagentExecutionItem } from './codexSubagentRuntime';
 const launch: Item = {
+ rev: 0,
  id: 'spawn', threadId: 'thread', turnIndex: 0, itemIndex: 0,
  kind: 'tool_call', role: 'assistant', status: 'completed', toolName: 'collab_agent',
  summary: 'Worker', isBackground: true, createdAt: 100, updatedAt: 150,

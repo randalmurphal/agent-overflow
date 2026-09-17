@@ -19,6 +19,7 @@ import type { Item } from '../types/models';
 
 function planItem(overrides: Partial<Item> = {}): Item {
   return {
+    rev: 0,
     id: 'plan-1',
     threadId: 'thread-1',
     turnIndex: 0,

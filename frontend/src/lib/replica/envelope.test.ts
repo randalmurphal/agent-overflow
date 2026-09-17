@@ -14,6 +14,7 @@ import type { Item } from '../types/models';
 
 function item(overrides: Partial<Item> = {}): Item {
   return {
+    rev: 0,
     id: 'i-1',
     threadId: 't-1',
     turnIndex: 0,
@@ -77,6 +78,12 @@ describe('replica envelope', () => {
       }),
     ).toBeNull();
     expect(readEnvelope(null)).toBeNull();
+  });
+
+  it('drops a body whose rows predate the item rev', () => {
+    const stale = normalizeBody(body()) as unknown as { items: Array<Partial<Item>> };
+    for (const row of stale.items) delete row.rev;
+    expect(readEnvelope({ v: 1, cipher: 'none', body: stale })).toBeNull();
   });
 
   it('normalizes a reactive proxy into structured-clone-safe plain data', () => {

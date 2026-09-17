@@ -169,6 +169,13 @@ export interface UseStickToBottomController {
    * User escape wins over the near-bottom band.
    */
   readonly isAtBottom: boolean;
+  /**
+   * True between `armRestoreSnap()` and the restore that consumes it (or
+   * a reader gesture that clears it). The chip hides during that window
+   * because the escape then is the controller's own defensive one, not
+   * the reader's, and no restored position exists yet to be away from.
+   */
+  readonly restorePending: boolean;
   /** True when the user has explicitly moved the outer scroller away from bottom. */
   readonly escapedFromLock: boolean;
   /**
@@ -318,6 +325,13 @@ export interface UseStickToBottomController {
    * merged restore call could not provide this protection.
    */
   armRestoreSnap(): void;
+  /**
+   * Drop a restore-snap consent without consuming it as a restore. Every
+   * bail path out of a restore transaction owes this call: an armed
+   * consent keeps `restorePending` true (chip hidden) and keeps the
+   * controller refusing non-restore placements.
+   */
+  clearRestoreConsent(): void;
   /**
    * Flip intent flags to sticky-bottom WITHOUT writing scrollTop.
    * Use only when the caller has already established bottom geometry

@@ -101,7 +101,7 @@ it.each(['completed', 'errored', 'declined', 'killed'] as const)('does not reope
   const row = makeItem({ id: 'text', threadId: pane.threadId!, kind: 'assistant_text', status, summary: 'settled text' });
   pane.upsertItems([row]);
   pane.applyProviderItemUpserts([{ ...row, status: 'streaming', summary: 'old partial' }]);
-  pane.applyItemPatch({ threadId: pane.threadId!, itemId: row.id, kind: row.kind, patch: { status: 'streaming' } });
+  pane.applyItemPatch({ threadId: pane.threadId!, itemId: row.id, kind: row.kind, patch: { rev: 0, status: 'streaming' } });
   pane.applyItemDelta({ threadId: pane.threadId!, itemId: row.id, kind: row.kind, delta: 'old delta', updatedAt: 100 });
   expect(pane.items[0]).toMatchObject({ status, summary: 'settled text' });
   expect(pane.revealBoundary).toBeNull();

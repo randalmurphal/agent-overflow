@@ -519,7 +519,7 @@ func (r *Router) doSettleStreamingText(threadID, scope, itemID, status, finalCon
 	if summaryChanged {
 		update.Summary = &item.Summary
 	}
-	return r.persistItemFieldsAndPatch(threadID, itemID, item.Kind, update)
+	return r.persistItemFieldsAndPatch(item, update)
 }
 
 // settleStreamingTextAsync is the fire-and-forget text-block settle.
@@ -998,7 +998,7 @@ func (r *Router) doSettleStreamingThinking(threadID, scope, itemID, status, fina
 		summary := interruptedSummary(item.Summary)
 		update.Summary = &summary
 	}
-	return r.persistItemFieldsAndPatch(threadID, itemID, item.Kind, update)
+	return r.persistItemFieldsAndPatch(item, update)
 }
 
 func (r *Router) settleStreamingThinkingAsync(threadID string, turnIndex int, scope, providerItemID, status, finalContent string, finalContentPresent bool) {

@@ -5,13 +5,19 @@
 // priors.ts's storage-adapter seam via `setSizePriorsStorageAdapter`.
 //
 // Storage shape: one JSON entry per thread under
-// `agent-overflow.sizePriors.v1.<threadId>`, plus one JSON string[] index
-// under `agent-overflow.sizePriors.v1.index` (LRU order, most-recent
-// LAST) so a 50-thread storage cap can evict the oldest thread without
-// scanning every key. The `v1` segment is a schema version: `install`
-// sweeps any `agent-overflow.sizePriors.*` key that isn't under the
-// current version, so a future shape change can bump the prefix instead
-// of migrating old data.
+// `agent-overflow.sizePriors.v3.<threadId>`, holding that thread's geometry
+// buckets as
+// `{ buckets: [geometryKey, { expansionSig, rows: [[sig, px], ...] }][] }`
+// in LRU order (most recently captured geometry LAST), plus one JSON
+// string[] index under `agent-overflow.sizePriors.v3.index` (same LRU
+// order over threads) so a 50-thread storage cap can evict the oldest
+// thread without scanning every key. The `v3` segment is a schema
+// version: `install` sweeps any `agent-overflow.sizePriors.*` key that
+// isn't under the current version, which is how a shape change ships:
+// stale keys are dropped, never migrated. v1 stored one row map per
+// thread under a single numeric width; v3 keys each map by width PLUS
+// typography signature, so v1 entries are swept rather than
+// reinterpreted. (There was never a v2 on disk.)
 //
 // Writes are debounced (trailing, ~1s) and coalesced per thread — a
 // streaming thread's rapid captures collapse into one write per quiet
@@ -22,21 +28,38 @@
 // degrades to "priors just don't persist this session" rather than
 // throwing — a crash here would take the whole timeline down with it.
 
-import type { SizePriorsEntry, SizePriorsStorageAdapter } from './priors';
-import { setSizePriorsStorageAdapter } from './priors';
+import type {
+  SizePriorsBucket,
+  SizePriorsEntry,
+  SizePriorsStorageAdapter,
+} from './priors';
+import {
+  MAX_BUCKETS_PER_THREAD,
+  MAX_ROWS_PER_BUCKET,
+  isSizePriorsGeometryKey,
+  setSizePriorsStorageAdapter,
+} from './priors';
 import { documentHidden } from '../pageVisibility';
 
 const PREFIX = 'agent-overflow.sizePriors.';
-const VERSION_PREFIX = `${PREFIX}v1.`;
+const VERSION_PREFIX = `${PREFIX}v3.`;
 const INDEX_KEY = `${VERSION_PREFIX}index`;
 const MAX_STORED_THREADS = 50;
 const FLUSH_DEBOUNCE_MS = 1000;
 
 /** On-disk shape — Map isn't JSON-serializable, so entries round-trip through pairs. */
-interface StoredEntry {
-  width: number;
+interface StoredBucket {
   expansionSig: string;
   rows: [string, number][];
+}
+
+interface StoredEntry {
+  /**
+   * [geometry key, that geometry's measurements][], LRU order with the
+   * most recent LAST. The key is `sizePriorsGeometryKey`'s composite of
+   * rounded width and typography signature.
+   */
+  buckets: [string, StoredBucket][];
 }
 
 function hasLocalStorage(): boolean {
@@ -59,9 +82,9 @@ let indexDirty = false;
 const pendingEntries = new Map<string, SizePriorsEntry>();
 let flushTimer: ReturnType<typeof setTimeout> | undefined;
 
-// Set once a write fails even after the evict-oldest retry. Persistence
-// for the rest of the session becomes a no-op rather than retrying a
-// storage that has already proven full/unavailable on every capture.
+// Set once a write fails with nothing left to evict. Persistence for the
+// rest of the session becomes a no-op rather than retrying a storage that
+// has already proven full/unavailable on every capture.
 let disabled = false;
 let warnedQuota = false;
 
@@ -104,39 +127,56 @@ function scheduleFlush(): void {
 }
 
 /**
- * Writes one key, retrying once after evicting the single oldest stored
- * thread if the browser reports the write as over quota. `serialize` is
- * re-invoked for the retry: eviction mutates `indexOrder`, so a value
+ * Writes one key, evicting the oldest stored thread and retrying for as
+ * long as the browser reports the write as over quota and there is still
+ * a thread to evict. One eviction is not a bound on how much room the
+ * write needs: a single large entry can be bigger than several small
+ * ones, so stopping after one retry disabled persistence for the session
+ * while the profile still held evictable priors. `serialize` is
+ * re-invoked per attempt: eviction mutates `indexOrder`, so a value
  * derived from it (the index write) must be re-serialized post-eviction
  * or the persisted index would still list the evicted thread. Returns
  * whether the value is now durably stored.
  */
+// Browsers disagree on the quota error's name (Firefox reports
+// NS_ERROR_DOM_QUOTA_REACHED); both are DOMExceptions with code 22 / 1014.
+function isQuotaError(err: unknown): boolean {
+  if (!(err instanceof DOMException)) return false;
+  return (
+    err.name === 'QuotaExceededError' ||
+    err.name === 'NS_ERROR_DOM_QUOTA_REACHED' ||
+    err.code === 22 ||
+    err.code === 1014
+  );
+}
+
 function writeItem(key: string, serialize: () => string): boolean {
-  try {
-    localStorage.setItem(key, serialize());
-    return true;
-  } catch (err) {
+  let lastError: unknown;
+  for (;;) {
+    try {
+      localStorage.setItem(key, serialize());
+      return true;
+    } catch (err) {
+      lastError = err;
+    }
+    // Only a full store earns an eviction. Any other failure (storage
+    // denied, a serializer throw) would otherwise sweep every stored
+    // thread before giving up.
+    if (!isQuotaError(lastError)) break;
     const oldest = indexOrder.shift();
-    if (oldest !== undefined) {
-      indexDirty = true;
-      localStorage.removeItem(entryKey(oldest));
-      try {
-        localStorage.setItem(key, serialize());
-        return true;
-      } catch {
-        // Falls through to the disable path below.
-      }
-    }
-    if (!warnedQuota) {
-      warnedQuota = true;
-      console.warn(
-        'priorsStorage: write failed after evicting the oldest stored thread; disabling size-priors persistence for this session',
-        err,
-      );
-    }
-    disabled = true;
-    return false;
+    if (oldest === undefined) break;
+    indexDirty = true;
+    localStorage.removeItem(entryKey(oldest));
   }
+  if (!warnedQuota) {
+    warnedQuota = true;
+    console.warn(
+      'priorsStorage: write failed with no stored thread left to evict; disabling size-priors persistence for this session',
+      lastError,
+    );
+  }
+  disabled = true;
+  return false;
 }
 
 function flush(): void {
@@ -150,9 +190,17 @@ function flush(): void {
 
   for (const [threadId, entry] of pendingEntries) {
     const stored: StoredEntry = {
-      width: entry.width,
-      expansionSig: entry.expansionSig,
-      rows: Array.from(entry.rows.entries()),
+      buckets: Array.from(entry.byGeometry, ([key, bucket]) => [
+        key,
+        {
+          expansionSig: bucket.expansionSig,
+          // Same ceiling the loader enforces, so this module can never
+          // write a value its own reader would reject. A capture cannot
+          // exceed the pane's retention ceiling, which IS the cap, so
+          // this only bounds a bucket some other writer corrupted.
+          rows: Array.from(bucket.rows.entries()).slice(-MAX_ROWS_PER_BUCKET),
+        },
+      ]),
     };
     const value = JSON.stringify(stored);
     if (!writeItem(entryKey(threadId), () => value)) {
@@ -193,12 +241,15 @@ function handleVisibilityChange(): void {
   if (documentHidden()) flushNow();
 }
 
-function validateStoredEntry(parsed: unknown): SizePriorsEntry | undefined {
+function validateStoredBucket(parsed: unknown): SizePriorsBucket | undefined {
   if (typeof parsed !== 'object' || parsed === null) return undefined;
-  const candidate = parsed as Partial<StoredEntry>;
-  if (typeof candidate.width !== 'number' || !Number.isFinite(candidate.width)) return undefined;
+  const candidate = parsed as Partial<StoredBucket>;
   if (typeof candidate.expansionSig !== 'string') return undefined;
   if (!Array.isArray(candidate.rows)) return undefined;
+  // More rows than a pane can ever hold did not come from this app, so
+  // there is nothing to salvage: reject rather than trim, the way a
+  // negative height below is rejected.
+  if (candidate.rows.length > MAX_ROWS_PER_BUCKET) return undefined;
   const rows = new Map<string, number>();
   for (const pair of candidate.rows) {
     if (!Array.isArray(pair) || pair.length !== 2) return undefined;
@@ -212,7 +263,31 @@ function validateStoredEntry(parsed: unknown): SizePriorsEntry | undefined {
     }
     rows.set(sig, height);
   }
-  return { width: candidate.width, expansionSig: candidate.expansionSig, rows };
+  return { expansionSig: candidate.expansionSig, rows };
+}
+
+function validateStoredEntry(parsed: unknown): SizePriorsEntry | undefined {
+  if (typeof parsed !== 'object' || parsed === null) return undefined;
+  const candidate = parsed as Partial<StoredEntry>;
+  if (!Array.isArray(candidate.buckets)) return undefined;
+  // A profile written by an older build, or hand-edited, can carry more
+  // buckets than the store keeps. Extra buckets are still well-formed
+  // measurements, so the loader trims rather than rejects; the tail is
+  // the most recently captured, so that is what survives.
+  const byGeometry = new Map<string, SizePriorsBucket>();
+  for (const pair of candidate.buckets.slice(-MAX_BUCKETS_PER_THREAD)) {
+    if (!Array.isArray(pair) || pair.length !== 2) return undefined;
+    const [key, rawBucket] = pair as [unknown, unknown];
+    // A key this module could not have written (a bare width from the v2
+    // shape that escaped the sweep, a negative or non-finite width, an
+    // empty typography segment) can never name a real geometry, so it
+    // could only ever be a permanent miss sitting in the cap.
+    if (!isSizePriorsGeometryKey(key)) return undefined;
+    const bucket = validateStoredBucket(rawBucket);
+    if (!bucket) return undefined;
+    byGeometry.set(key, bucket);
+  }
+  return { byGeometry };
 }
 
 function load(threadId: string): SizePriorsEntry | undefined {

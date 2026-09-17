@@ -7,33 +7,49 @@
 // the redesign exists for.
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ThreadPane } from '../../stores/thread.svelte';
+import type { Item } from '../../types/models';
 import { makeItem } from '../../../test/helpers/chat';
 import {
   clearAllThreadSizePriorsForTest,
   getThreadSizePriors,
   setSizePriorsStorageAdapter,
+  sizePriorsAtGeometry,
 } from '../../utils/virtual/priors';
 import {
   __resetSizePriorsStorageForTest,
   installSizePriorsPersistence,
 } from '../../utils/virtual/priorsStorage';
 import type { TimelineNode } from '../../utils/subagentGrouping';
+import { nodeSignature } from '../../utils/timelineStructureSignature';
 import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
 import { createTimelineSizePriors } from './timelineSizePriors.svelte';
+
+// Stand-in for `typographySignature()` (stores/settings.svelte.ts). The
+// module only ever compares it, so a literal is enough; the tests that
+// care about a typography change reassign this between mounts.
+const DEFAULT_TYPOGRAPHY = 'f15/sgeist/mgeist/c1/w1';
+let typography = DEFAULT_TYPOGRAPHY;
 
 function leaf(id: string, overrides: Partial<Parameters<typeof makeItem>[0]> = {}): TimelineNode {
   return { kind: 'leaf', item: makeItem({ id, ...overrides }) };
 }
 
-function fakePane(threadId: string, expansionSig = ''): ThreadPane {
-  // Only `.threadId`, `.scrollStateKey`, and `.expansionSignature()` are
-  // read by timelineSizePriors.svelte.ts — a full ThreadPane is not
-  // needed. scrollStateKey mirrors the production default (the stable
-  // thread id); the agent-pane facade is what diverges it.
+function fakePane(
+  threadId: string,
+  expansionSig = '',
+  rowsById: ReadonlyMap<string, Item> = new Map(),
+): ThreadPane {
+  // Only `.threadId`, `.scrollStateKey`, `.expansionSignature()` and
+  // `.getItemById()` are read by timelineSizePriors.svelte.ts — a full
+  // ThreadPane is not needed. scrollStateKey mirrors the production default
+  // (the stable thread id); the agent-pane facade is what diverges it.
+  // `rowsById` is the store's current row per id: empty means every node's
+  // `item` IS the store row, the steady state after a structural pass.
   return {
     threadId,
     scrollStateKey: threadId,
     expansionSignature: () => expansionSig,
+    getItemById: (itemId: string) => rowsById.get(itemId),
   } as unknown as ThreadPane;
 }
 
@@ -56,6 +72,7 @@ function fakeListRef(sizes: number[]): TimelineVirtualizerHandle {
 }
 
 beforeEach(() => {
+  typography = DEFAULT_TYPOGRAPHY;
   clearAllThreadSizePriorsForTest();
   setSizePriorsStorageAdapter(undefined);
 });
@@ -88,6 +105,7 @@ describe('createTimelineSizePriors', () => {
       getListRef: () => listRef,
       getRevealedNodes: () => nodes,
       getScrollSurfaceContentWidth: () => 800,
+      getTypographySignature: () => typography,
       getRestoredThreadId: () => threadId,
     });
 
@@ -112,6 +130,78 @@ describe('createTimelineSizePriors', () => {
     }
   });
 
+  it('captures a settled row under the signature the reopen looks up, not the stale node item', () => {
+    // A streaming row settling (status, summary, updatedAt) is not a
+    // structural change, so the projection keeps the node minted for the
+    // streaming-era Item while the store, and the row on screen, hold the
+    // settled one. The switch-away capture must store the settled height
+    // under the settled signature: the reopen rebuilds its nodes from the
+    // store and would otherwise look up a key that was never written and
+    // estimate from the kind floor.
+    const threadId = 'thread-settle';
+    const streaming = makeItem({ id: 'a', summary: '', status: 'streaming', updatedAt: 1 });
+    const settled = makeItem({ id: 'a', summary: 'a settled answer', status: 'completed', updatedAt: 2 });
+    let nodes: TimelineNode[] = [{ kind: 'leaf', item: streaming }];
+    let listRef = fakeListRef([121]);
+    let pane = fakePane(threadId, '', new Map([['a', settled]]));
+    const priors = createTimelineSizePriors({
+      getPane: () => pane,
+      getListRef: () => listRef,
+      getRevealedNodes: () => nodes,
+      getScrollSurfaceContentWidth: () => 800,
+      getTypographySignature: () => typography,
+      getRestoredThreadId: () => threadId,
+    });
+    priors.persistSizePriorsFinal();
+
+    // Reopen: a fresh projection from the store, nothing measured yet.
+    nodes = [{ kind: 'leaf', item: settled }];
+    listRef = fakeListRef([-1]);
+    pane = fakePane(threadId);
+    priors.resolveRowEstimateOnThreadEdge(threadId);
+    expect(priors.rowEstimate!.at(0)).toBe(121);
+  });
+
+  it('resolves a run captured open, and reopened closed, from the bucket\'s closed-run height', () => {
+    // The tail run of a finished turn stays open at switch-away (its
+    // `openedLive` hold) and comes back closed on the reopen, since the hold
+    // dies with the registry. Every closed run in a bucket measures the same
+    // px, so the run resolves from any closed run the capture measured.
+    const threadId = 'thread-run-shape';
+    const run = (id: string, collapsed: boolean): TimelineNode => ({
+      kind: 'activity_run',
+      runId: `run-${id}`,
+      threadId,
+      children: [leaf(id)],
+      mountedFrom: 0,
+      mountedRows: 1,
+      membershipEpoch: 1,
+      memberItemIds: [id],
+      summaryItemIds: [id],
+      collapsed,
+      live: false,
+      atTail: false,
+    });
+    let nodes: TimelineNode[] = [run('early', true), run('tail', false)];
+    let listRef = fakeListRef([38, 69.5]);
+    const pane = fakePane(threadId);
+    const priors = createTimelineSizePriors({
+      getPane: () => pane,
+      getListRef: () => listRef,
+      getRevealedNodes: () => nodes,
+      getScrollSurfaceContentWidth: () => 800,
+      getTypographySignature: () => typography,
+      getRestoredThreadId: () => threadId,
+    });
+    priors.persistSizePriorsFinal();
+
+    nodes = [run('early', true), run('tail', true)];
+    listRef = fakeListRef([-1, -1]);
+    priors.resolveRowEstimateOnThreadEdge(threadId);
+    expect(priors.rowEstimate!.at(0)).toBe(38);
+    expect(priors.rowEstimate!.at(1)).toBe(38);
+  });
+
   it('defers the width/expansion validity check to the first at() call (lazy-once)', () => {
     const threadId = 'thread-lazy';
     const nodes: TimelineNode[] = [leaf('a', { summary: 'hi' })]; // default kind: assistant_text
@@ -123,6 +213,7 @@ describe('createTimelineSizePriors', () => {
       getListRef: () => listRef,
       getRevealedNodes: () => nodes,
       getScrollSurfaceContentWidth: () => currentWidth,
+      getTypographySignature: () => typography,
       getRestoredThreadId: () => threadId,
     });
     priors.maybePersistSizePriors(); // captured at width 800
@@ -163,6 +254,7 @@ describe('createTimelineSizePriors', () => {
       getListRef: () => listRef,
       getRevealedNodes: () => nodes,
       getScrollSurfaceContentWidth: () => currentWidth,
+      getTypographySignature: () => typography,
       getRestoredThreadId: () => threadId,
     });
     priors.maybePersistSizePriors(); // captured at width 800
@@ -194,6 +286,7 @@ describe('createTimelineSizePriors', () => {
       getListRef: () => listRef,
       getRevealedNodes: () => nodes,
       getScrollSurfaceContentWidth: () => currentWidth,
+      getTypographySignature: () => typography,
       getRestoredThreadId: () => threadId,
     });
 
@@ -224,7 +317,7 @@ describe('createTimelineSizePriors', () => {
     priors.resolveRowEstimateOnThreadEdge(threadId);
     currentWidth = 640;
     priors.rowEstimate!.at(0);
-    expect(priors.replayStats().validity).toBe('width-mismatch');
+    expect(priors.replayStats().validity).toBe('geometry-mismatch');
     expect(priors.replayStats().rowsResolved).toBe(0);
   });
 
@@ -248,6 +341,7 @@ describe('createTimelineSizePriors', () => {
       getListRef: () => listRef,
       getRevealedNodes: () => nodes,
       getScrollSurfaceContentWidth: () => 800,
+      getTypographySignature: () => typography,
       getRestoredThreadId: () => threadId,
     });
     priors.maybePersistSizePriors(); // the settled capture
@@ -281,6 +375,7 @@ describe('createTimelineSizePriors', () => {
       getListRef: () => listRef,
       getRevealedNodes: () => nodes,
       getScrollSurfaceContentWidth: () => 800,
+      getTypographySignature: () => typography,
       getRestoredThreadId: () => threadId,
     });
     priors.maybePersistSizePriors();
@@ -307,7 +402,7 @@ describe('createTimelineSizePriors', () => {
     expect(estimate.at(5)).toBe(44); // changed signature: stale size dropped → kind estimate
   });
 
-  it('refuses carry-forward across a width change', () => {
+  it('carries forward within a width bucket and keeps the other width\'s bucket', () => {
     const threadId = 'thread-width-carry';
     const nodes: TimelineNode[] = Array.from({ length: 4 }, (_, i) =>
       leaf(`item-${i}`, { summary: `body ${i}`, status: 'completed', updatedAt: i }),
@@ -320,12 +415,13 @@ describe('createTimelineSizePriors', () => {
       getListRef: () => listRef,
       getRevealedNodes: () => nodes,
       getScrollSurfaceContentWidth: () => currentWidth,
+      getTypographySignature: () => typography,
       getRestoredThreadId: () => threadId,
     });
     priors.maybePersistSizePriors(); // settled at width 800
 
     // Pane resized: a partial capture at the new width must not smuggle
-    // 800px-width sizes into a 640px-width entry.
+    // 800px-width sizes into the 640px bucket.
     currentWidth = 640;
     priors.resolveRowEstimateOnThreadEdge(null);
     priors.resolveRowEstimateOnThreadEdge(threadId);
@@ -334,9 +430,218 @@ describe('createTimelineSizePriors', () => {
 
     priors.resolveRowEstimateOnThreadEdge(null);
     priors.resolveRowEstimateOnThreadEdge(threadId);
-    const estimate = priors.rowEstimate!;
+    let estimate = priors.rowEstimate!;
     expect(estimate.at(0)).toBe(110); // measured at 640 — replays
-    expect(estimate.at(1)).toBe(44); // old 800px size not carried → kind estimate
+    expect(estimate.at(1)).toBe(44); // 800px size not carried into 640 → kind estimate
+
+    // ...and the 640px capture left the 800px bucket intact, so going back
+    // to the old width still replays its settled sizes.
+    currentWidth = 800;
+    priors.resolveRowEstimateOnThreadEdge(null);
+    priors.resolveRowEstimateOnThreadEdge(threadId);
+    estimate = priors.rowEstimate!;
+    expect(estimate.at(0)).toBe(90);
+    expect(estimate.at(1)).toBe(91);
+    expect(priors.replayStats().validity).toBe('replayed');
+
+    // A second capture at 640 carries the earlier 640 measurement forward
+    // for rows that still have not re-measured at that width.
+    currentWidth = 640;
+    priors.resolveRowEstimateOnThreadEdge(null);
+    priors.resolveRowEstimateOnThreadEdge(threadId);
+    listRef = fakeListRef([-1, 111, -1, -1]);
+    priors.maybePersistSizePriors();
+
+    priors.resolveRowEstimateOnThreadEdge(null);
+    priors.resolveRowEstimateOnThreadEdge(threadId);
+    estimate = priors.rowEstimate!;
+    expect(estimate.at(0)).toBe(110); // carried within the 640 bucket
+    expect(estimate.at(1)).toBe(111);
+  });
+
+  it('replays each captured width from its own bucket', () => {
+    const threadId = 'thread-two-widths';
+    const nodes: TimelineNode[] = Array.from({ length: 3 }, (_, i) =>
+      leaf(`item-${i}`, { summary: `body ${i}`, status: 'completed', updatedAt: i }),
+    );
+    let currentWidth = 800;
+    let listRef = fakeListRef([90, 91, 92]);
+    const pane = fakePane(threadId);
+    const priors = createTimelineSizePriors({
+      getPane: () => pane,
+      getListRef: () => listRef,
+      getRevealedNodes: () => nodes,
+      getScrollSurfaceContentWidth: () => currentWidth,
+      getTypographySignature: () => typography,
+      getRestoredThreadId: () => threadId,
+    });
+    priors.maybePersistSizePriors();
+
+    // The same thread settles in a narrower pane (a split, or the sidebar
+    // opening) and captures there too.
+    currentWidth = 600;
+    priors.resolveRowEstimateOnThreadEdge(null);
+    priors.resolveRowEstimateOnThreadEdge(threadId);
+    listRef = fakeListRef([130, 131, 132]);
+    priors.maybePersistSizePriors();
+
+    // Each width replays its own measurements, both as full replays.
+    currentWidth = 800;
+    priors.resolveRowEstimateOnThreadEdge(null);
+    priors.resolveRowEstimateOnThreadEdge(threadId);
+    expect([0, 1, 2].map((i) => priors.rowEstimate!.at(i))).toEqual([90, 91, 92]);
+    expect(priors.replayStats().validity).toBe('replayed');
+
+    currentWidth = 600;
+    priors.resolveRowEstimateOnThreadEdge(null);
+    priors.resolveRowEstimateOnThreadEdge(threadId);
+    expect([0, 1, 2].map((i) => priors.rowEstimate!.at(i))).toEqual([130, 131, 132]);
+    expect(priors.replayStats().validity).toBe('replayed');
+  });
+
+  it('evicts the least recently captured width past the per-thread bucket cap', () => {
+    const threadId = 'thread-width-cap';
+    const nodes: TimelineNode[] = [leaf('a', { summary: 'hi' })];
+    let currentWidth = 800;
+    let listRef = fakeListRef([120]);
+    const pane = fakePane(threadId);
+    const priors = createTimelineSizePriors({
+      getPane: () => pane,
+      getListRef: () => listRef,
+      getRevealedNodes: () => nodes,
+      getScrollSurfaceContentWidth: () => currentWidth,
+      getTypographySignature: () => typography,
+      getRestoredThreadId: () => threadId,
+    });
+
+    // Four widths, each with its own measurement. Only the newest three
+    // buckets survive the cap.
+    [[800, 120], [700, 121], [600, 122], [500, 123]].forEach(([width, size], i) => {
+      currentWidth = width;
+      if (i > 0) {
+        priors.resolveRowEstimateOnThreadEdge(null);
+        priors.resolveRowEstimateOnThreadEdge(threadId);
+      }
+      listRef = fakeListRef([size]);
+      priors.maybePersistSizePriors();
+    });
+
+    currentWidth = 800;
+    priors.resolveRowEstimateOnThreadEdge(null);
+    priors.resolveRowEstimateOnThreadEdge(threadId);
+    expect(priors.rowEstimate!.at(0)).toBe(44); // evicted → kind estimate
+    expect(priors.replayStats().validity).toBe('geometry-mismatch');
+
+    for (const [width, size] of [[700, 121], [600, 122], [500, 123]]) {
+      currentWidth = width;
+      priors.resolveRowEstimateOnThreadEdge(null);
+      priors.resolveRowEstimateOnThreadEdge(threadId);
+      expect(priors.rowEstimate!.at(0)).toBe(size);
+      expect(priors.replayStats().validity).toBe('replayed');
+    }
+  });
+
+  it('refuses a same-width bucket captured under different typography, and captures its own', () => {
+    // Root font scale and the UI typefaces rescale every row at an
+    // unchanged wrap point. Before typography joined the bucket key this
+    // replayed the old heights and relied on the warm-up gate to hide the
+    // correction cascade; now it is an ordinary bucket miss.
+    const threadId = 'thread-typography';
+    const nodes: TimelineNode[] = [leaf('a', { summary: 'hi' })];
+    const currentWidth = 800;
+    let listRef = fakeListRef([120]);
+    const pane = fakePane(threadId);
+    const priors = createTimelineSizePriors({
+      getPane: () => pane,
+      getListRef: () => listRef,
+      getRevealedNodes: () => nodes,
+      getScrollSurfaceContentWidth: () => currentWidth,
+      getTypographySignature: () => typography,
+      getRestoredThreadId: () => threadId,
+    });
+    priors.maybePersistSizePriors(); // captured at 800px / default typography
+
+    typography = 'f18/sgeist/mgeist/c1/w1';
+    priors.resolveRowEstimateOnThreadEdge(null);
+    priors.resolveRowEstimateOnThreadEdge(threadId);
+    expect(priors.rowEstimate!.at(0)).toBe(44); // kind estimate, not the 120px measured before
+    expect(priors.replayStats().validity).toBe('geometry-mismatch');
+
+    // The new typography gets its OWN bucket at the same width...
+    listRef = fakeListRef([150]);
+    priors.maybePersistSizePriors();
+    priors.resolveRowEstimateOnThreadEdge(null);
+    priors.resolveRowEstimateOnThreadEdge(threadId);
+    expect(priors.rowEstimate!.at(0)).toBe(150);
+    expect(priors.replayStats().validity).toBe('replayed');
+
+    // ...and going back replays the original bucket, not the new one.
+    typography = DEFAULT_TYPOGRAPHY;
+    priors.resolveRowEstimateOnThreadEdge(null);
+    priors.resolveRowEstimateOnThreadEdge(threadId);
+    expect(priors.rowEstimate!.at(0)).toBe(120);
+    expect(priors.replayStats().validity).toBe('replayed');
+  });
+
+  it('still trusts the latest bucket at width 0 after a typography change', () => {
+    // Width 0 means the surface has reported no geometry at all, so there
+    // is nothing to match against; the trusted-latest replay stays the
+    // documented exception, self-corrected by the per-row observer behind
+    // the warm-up gate. Pinned so a future edit cannot quietly turn boot
+    // replay into a guaranteed full cascade.
+    const threadId = 'thread-typography-boot';
+    const nodes: TimelineNode[] = [leaf('a', { summary: 'hi' })];
+    let currentWidth = 800;
+    const listRef = fakeListRef([120]);
+    const pane = fakePane(threadId);
+    const priors = createTimelineSizePriors({
+      getPane: () => pane,
+      getListRef: () => listRef,
+      getRevealedNodes: () => nodes,
+      getScrollSurfaceContentWidth: () => currentWidth,
+      getTypographySignature: () => typography,
+      getRestoredThreadId: () => threadId,
+    });
+    priors.maybePersistSizePriors();
+
+    typography = 'f18/sgeist/mgeist/c1/w1';
+    currentWidth = 0;
+    priors.resolveRowEstimateOnThreadEdge(null);
+    priors.resolveRowEstimateOnThreadEdge(threadId);
+    expect(priors.rowEstimate!.at(0)).toBe(120);
+    expect(priors.replayStats().validity).toBe('replayed-trusted-width');
+  });
+
+  it('uses the most recently captured bucket when the surface reports width 0', () => {
+    // Width 0 at first at() is "layout hasn't reported yet". With several
+    // buckets stored, the best guess is the width the reader last used,
+    // not whichever bucket happens to be first in the map.
+    const threadId = 'thread-width-zero';
+    const nodes: TimelineNode[] = [leaf('a', { summary: 'hi' })];
+    let currentWidth = 800;
+    let listRef = fakeListRef([120]);
+    const pane = fakePane(threadId);
+    const priors = createTimelineSizePriors({
+      getPane: () => pane,
+      getListRef: () => listRef,
+      getRevealedNodes: () => nodes,
+      getScrollSurfaceContentWidth: () => currentWidth,
+      getTypographySignature: () => typography,
+      getRestoredThreadId: () => threadId,
+    });
+    priors.maybePersistSizePriors();
+
+    currentWidth = 600;
+    priors.resolveRowEstimateOnThreadEdge(null);
+    priors.resolveRowEstimateOnThreadEdge(threadId);
+    listRef = fakeListRef([170]);
+    priors.maybePersistSizePriors();
+
+    currentWidth = 0;
+    priors.resolveRowEstimateOnThreadEdge(null);
+    priors.resolveRowEstimateOnThreadEdge(threadId);
+    expect(priors.rowEstimate!.at(0)).toBe(170); // the 600px bucket, captured last
+    expect(priors.replayStats().validity).toBe('replayed-trusted-width');
   });
 
   it('never stores an entry for a capture that resolves nothing', () => {
@@ -349,6 +654,7 @@ describe('createTimelineSizePriors', () => {
       getListRef: () => listRef,
       getRevealedNodes: () => nodes,
       getScrollSurfaceContentWidth: () => 800,
+      getTypographySignature: () => typography,
       getRestoredThreadId: () => threadId,
     });
     priors.maybePersistSizePriors();
@@ -372,6 +678,7 @@ describe('createTimelineSizePriors', () => {
       getListRef: () => listRef,
       getRevealedNodes: () => nodes,
       getScrollSurfaceContentWidth: () => 800,
+      getTypographySignature: () => typography,
       getRestoredThreadId: () => threadId,
     });
 
@@ -397,12 +704,14 @@ describe('createTimelineSizePriors', () => {
     // exists to prevent.
     function harness(threadId: string) {
       let sizes = [100];
+      let node = leaf('a', { summary: 'hi', updatedAt: 1 });
       const pane = fakePane(threadId);
       const priors = createTimelineSizePriors({
         getPane: () => pane,
         getListRef: () => fakeListRef(sizes),
-        getRevealedNodes: () => [leaf('a', { summary: 'hi' })],
+        getRevealedNodes: () => [node],
         getScrollSurfaceContentWidth: () => 800,
+        getTypographySignature: () => typography,
         getRestoredThreadId: () => threadId,
       });
       return {
@@ -411,12 +720,25 @@ describe('createTimelineSizePriors', () => {
         grow(px: number) {
           sizes = [sizes[0] + px];
         },
-        /** The one row's stored height, or null when nothing is stored. */
+        /** Change the row's signature without moving its geometry. */
+        touch(updatedAt: number) {
+          node = leaf('a', { summary: 'hi', updatedAt });
+        },
+        signature(): string {
+          return nodeSignature(node, () => undefined);
+        },
+        /** The one row's stored height at width 800, or null when nothing is stored. */
         stored(): number | null {
           const entry = getThreadSizePriors(threadId);
           if (!entry) return null;
-          const [size] = [...entry.rows.values()];
+          const [size] = [...(sizePriorsAtGeometry(entry, { width: 800, typography })?.rows.values() ?? [])];
           return size ?? null;
+        },
+        /** The signatures stored at width 800. */
+        storedSignatures(): string[] {
+          const entry = getThreadSizePriors(threadId);
+          if (!entry) return [];
+          return [...(sizePriorsAtGeometry(entry, { width: 800, typography })?.rows.keys() ?? [])];
         },
       };
     }
@@ -484,10 +806,9 @@ describe('createTimelineSizePriors', () => {
 
     it('never bounds the final-edge capture', () => {
       // The switch-away edge (`switchThread` → the controller adapter) and
-      // the unmount edge (`saveSnapshotOnDestroy`) both call the exact
+      // the unmount edge (`saveSnapshotOnDestroy`) both call the final
       // capture. They are the last chance this thread gets, so a cooldown
-      // armed by the reader's last scroll frame must not swallow them —
-      // that was the hole the interim bound opened.
+      // armed by the reader's last scroll frame must not swallow them.
       vi.useFakeTimers();
       const h = harness('thread-bound-final');
       h.priors.maybePersistSizePriorsInterim();
@@ -496,10 +817,34 @@ describe('createTimelineSizePriors', () => {
       h.priors.maybePersistSizePriorsInterim();
       expect(h.stored()).toBe(100);
 
-      h.priors.maybePersistSizePriors();
+      h.priors.persistSizePriorsFinal();
 
       expect(h.stored()).toBe(140);
       vi.useRealTimers();
+    });
+
+    it('stores a signature-only change on the final edge, past the size gate', () => {
+      // A turn end upserts the last assistant row's status/updatedAt and a
+      // window sync page replaces rows with equal content: the signature
+      // changes, the height does not. The gated capture (settle edge)
+      // sees an unchanged total and skips, which would leave the stored
+      // signature stale and miss on the next open. The final edge must
+      // store the live signature regardless.
+      const h = harness('thread-final-signature');
+      h.priors.maybePersistSizePriors();
+      const before = h.signature();
+      expect(h.storedSignatures()).toEqual([before]);
+
+      h.touch(2);
+      const after = h.signature();
+      expect(after).not.toBe(before);
+      h.priors.maybePersistSizePriors();
+      expect(h.storedSignatures()).toEqual([before]);
+
+      h.priors.persistSizePriorsFinal();
+
+      expect(h.storedSignatures()).toEqual([after]);
+      expect(h.stored()).toBe(100);
     });
   });
 });

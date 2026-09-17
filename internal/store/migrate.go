@@ -1049,7 +1049,7 @@ CREATE INDEX idx_workflow_provider_usage_attention_thread
 		SQL: `ALTER TABLE threads ADD COLUMN history_bulk_load INTEGER NOT NULL DEFAULT 0
     CHECK(history_bulk_load IN (0, 1));
 
-` + dropHistoryRevTriggersSQL + historyRevTriggersSQL,
+` + dropHistoryRevTriggersSQL + historyRevTriggersBulkLoadSQL,
 	},
 	{
 		Version: 60,
@@ -1647,6 +1647,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
  WHERE kind = 'user_text' AND parent_id = '' AND json_valid(meta)
    AND json_extract(meta, '$.joinedSendIds') IS NOT NULL;`,
 	},
+	{Version: 100, Name: "item_row_revision", SQL: itemRowRevisionV100SQL},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

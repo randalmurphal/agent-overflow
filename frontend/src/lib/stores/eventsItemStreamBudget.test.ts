@@ -90,10 +90,10 @@ it('preserves delta, correction, metadata and completion order across text-budge
   const suffix = 'b'.repeat(140_000);
   applyItemStreamEvent({ action: 'upsert', threadId: item.threadId, item });
   applyItemStreamEvent({ action: 'delta', ...base, delta: 'a'.repeat(140_000), updatedAt: 2 });
-  applyItemStreamEvent({ action: 'patch', ...base, patch: { summary: 'corrected ', updatedAt: 3 } });
+  applyItemStreamEvent({ action: 'patch', ...base, patch: { rev: 0, summary: 'corrected ', updatedAt: 3 } });
   applyItemStreamEvent({ action: 'delta', ...base, delta: suffix, updatedAt: 4 });
   applyItemStreamEvent({ action: 'meta', ...base, meta: '{}', updatedAt: 5 });
-  applyItemStreamEvent({ action: 'patch', ...base, patch: { status: 'completed', updatedAt: 6 } });
+  applyItemStreamEvent({ action: 'patch', ...base, patch: { rev: 0, status: 'completed', updatedAt: 6 } });
   for (let i = 0; i < 6; i++) flushItemEventQueue();
   clock.tickFrame(16);
   expect(pane.getItemById(item.id)).toMatchObject({

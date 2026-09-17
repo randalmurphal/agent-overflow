@@ -36,6 +36,7 @@ interface Harness {
   state: {
     isAtBottom: boolean;
     escaped: boolean;
+    restoreConsentArmed: boolean;
     distanceFromBottom: number;
     resizeCorrelated: boolean;
     lastExplained: number | null;
@@ -70,6 +71,7 @@ function harness(
   const state = {
     isAtBottom: true,
     escaped: false,
+    restoreConsentArmed: false,
     // Far enough from the bottom that a down-intent does NOT trip the
     // immediate re-stick branch; the tests that want that branch set it to 0.
     distanceFromBottom: 100,
@@ -95,6 +97,10 @@ function harness(
     escaped: () => state.escaped,
     setEscaped: (next) => {
       state.escaped = next;
+    },
+    restoreConsentArmed: () => state.restoreConsentArmed,
+    setRestoreConsentArmed: (next) => {
+      state.restoreConsentArmed = next;
     },
     isNearBottom: () => state.distanceFromBottom <= AUTO_FOLLOW_BOTTOM_EPSILON_PX,
     pauseDepth: () => 0,

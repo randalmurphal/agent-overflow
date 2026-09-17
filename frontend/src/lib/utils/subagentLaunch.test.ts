@@ -15,6 +15,7 @@ import type { Item } from '../types/models';
 
 function mkItem(overrides: Partial<Item> & { id: string }): Item {
   return {
+    rev: 0,
     threadId: 'thread-1',
     turnIndex: 0,
     itemIndex: 0,

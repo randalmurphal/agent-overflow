@@ -92,7 +92,7 @@ CREATE INDEX idx_threads_parent      ON threads(parent_thread_id);
 CREATE INDEX idx_threads_pinned_at   ON threads(pinned_at) WHERE pinned_at IS NOT NULL;
 CREATE INDEX idx_threads_project     ON threads(project_id, updated_at DESC);
 CREATE INDEX idx_threads_updated     ON threads(updated_at DESC);
-` + historyRevTriggersSQL + `
+` + historyRevTriggersBulkLoadSQL + `
 
 CREATE TRIGGER trg_items_require_import_override
 BEFORE INSERT ON items

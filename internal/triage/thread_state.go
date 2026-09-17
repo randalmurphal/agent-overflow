@@ -331,6 +331,10 @@ type threadState struct {
 	// a duplicate write to the provider. Bounded like its siblings: swept
 	// with the pending maps at the turn boundary. See interactive_claim.go.
 	answeredRequests map[string]struct{}
+
+	// wireRefresh is the rows pushed since the last anchor refresh and
+	// the timer that will flush them (wire_items.go).
+	wireRefresh wireItemRefresh
 }
 
 // threadIdentity is per-thread state that must SURVIVE cleanupThread.

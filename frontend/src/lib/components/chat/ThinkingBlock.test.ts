@@ -160,7 +160,7 @@ describe('<ThinkingBlock>', () => {
         threadId: 'thread-1',
         itemId: 'think:0:0',
         kind: 'thinking',
-        patch: { status: 'completed', updatedAt: 3 },
+        patch: { rev: 0, status: 'completed', updatedAt: 3 },
       });
       await rerender({ pane, item: pane.items[0] });
       await tick();

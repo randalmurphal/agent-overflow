@@ -1768,7 +1768,7 @@ describe('threadTimelineWindow', () => {
         threadId: 't',
         itemId: 'streaming',
         kind: 'assistant_text',
-        patch: { status: 'completed', updatedAt: 2 },
+        patch: { rev: 0, status: 'completed', updatedAt: 2 },
       });
       pane.upsertItem(makeItem({
         id: 'live-only',

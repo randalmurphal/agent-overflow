@@ -1,7 +1,6 @@
 package store
 
 import (
-	"database/sql"
 	"fmt"
 )
 
@@ -62,30 +61,20 @@ func (s *Store) ListThreadProposedPlans(threadID string) ([]Item, error) {
 	return decorated, nil
 }
 
+// GetThreadProposedPlanItem returns a proposed plan row as a page reads
+// it, content and `rev` from one snapshot (ListWireItems), so the row an
+// emitter pushes is the row a client can later prove fresh.
 func (s *Store) GetThreadProposedPlanItem(threadID, itemID string) (Item, bool, error) {
-	row := s.reader().QueryRow(
-		`SELECT `+itemColumns+`
-		   FROM items
-		   JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
-		  WHERE items.thread_id = ?
-		    AND items.id = ?
-		    AND items.role = 'assistant'
-		    AND payloads.kind = 'proposed_plan'
-		  LIMIT 1`,
-		threadID, itemID,
-	)
-	item, err := scanItemRow(row)
-	if err == sql.ErrNoRows {
-		return Item{}, false, nil
-	}
+	rows, err := s.ListWireItems(threadID, []string{itemID})
 	if err != nil {
 		return Item{}, false, fmt.Errorf("store: get proposed plan item %s/%s: %w", threadID, itemID, err)
 	}
-	decorated, err := s.decorateProposedPlanItems(s.reader(), threadID, []Item{item})
-	if err != nil {
-		return Item{}, false, fmt.Errorf("store: decorate proposed plan item %s/%s: %w", threadID, itemID, err)
+	for _, row := range rows {
+		if row.Role == "assistant" && row.PayloadKind == "proposed_plan" {
+			return row, true, nil
+		}
 	}
-	return decorated[0], true, nil
+	return Item{}, false, nil
 }
 
 // ListLiveBackgroundTasks returns the tray's item set: live background

@@ -92,7 +92,7 @@ func TestHistoryContractTransitions(t *testing.T) {
 					name: "AppendItemSummary streaming append",
 					run: func(t *testing.T, s *Store) {
 						status := "streaming"
-						if err := s.UpdateItemFields("t", "i1", ItemPartialUpdate{Status: &status}); err != nil {
+						if _, err := s.UpdateItemFields("t", "i1", ItemPartialUpdate{Status: &status}); err != nil {
 							t.Fatalf("flip to streaming: %v", err)
 						}
 						if _, err := s.AppendItemSummary("t", "i1", " more", 2000); err != nil {

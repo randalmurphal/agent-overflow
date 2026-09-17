@@ -17,7 +17,7 @@
 
 import type { Item, ItemKind } from '../types/models';
 import type { ItemPatchEvent } from '../types/events';
-import { itemsAreEqual } from './threadItems';
+import { adoptRevIfEqual } from './threadItems';
 import { classifyRevealText } from './threadRevealText';
 import { PerItemSmoother } from '../markdown/smoothing/PerItemSmoother';
 import {
@@ -379,12 +379,20 @@ export function createRevealRouting(options: RevealRoutingOptions): RevealRoutin
       if (patch.meta !== undefined) next.meta = patch.meta;
       if (patch.decision !== undefined) next.decision = patch.decision;
       if (patch.updatedAt !== undefined) next.updatedAt = patch.updatedAt;
+      // The patching write moved the row's revision; carrying it is what
+      // makes a settled streaming row describable again — its upsert
+      // arrived at `rev: -1` because the wire row was altered
+      // (docs/architecture/thread-replica-sync.md §3.1).
+      next.rev = patch.rev;
       if (itemSmoothers.has(itemId)) {
         next.summary = options.getItems()[index].summary;
       } else if (patch.summary !== undefined) {
         options.stampLiveContent();
       }
-      if (itemsAreEqual(current, next)) return;
+      // A patch that moves only the revision (a re-persist of an
+      // unchanged row) is absorbed onto the held row: no replacement,
+      // no reactive write, rev carried.
+      if (adoptRevIfEqual(current, next)) return;
       options.setItemAt(index, next);
       committed = next;
     });

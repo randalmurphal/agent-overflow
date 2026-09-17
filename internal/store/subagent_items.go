@@ -469,7 +469,7 @@ func (s *Store) subagentResumeRounds(q sqlQueryer, threadID string, rootIDs []st
 		rootArgs = append(rootArgs, id)
 	}
 	query, args := timelineArms(threadID, timelineSelection{
-		Columns: func(string) string {
+		Columns: func(string, string) string {
 			return `items.parent_id AS root, items.id AS id, items.meta AS meta,
 			        items.turn_index AS turn_index, items.item_index AS item_index`
 		},
@@ -596,7 +596,7 @@ func (s *Store) subagentLaunchRowsByID(q sqlQueryer, threadID string, ids []stri
 		args = append(args, id)
 	}
 	source, queryArgs := timelineArms(threadID, timelineSelection{
-		Columns: func(string) string {
+		Columns: func(string, string) string {
 			return "items.id AS id, items.kind AS kind, items.tool_name AS tool_name, items.meta AS meta"
 		},
 		Where:     "items.id IN (" + placeholders + ")",
@@ -749,7 +749,7 @@ func (s *Store) subagentAggregatesByRoot(q sqlQueryer, threadID string, rootIDs 
 	// would materialize whole (timeline_arms.go). The resolution carries
 	// only the columns the ranking reads.
 	resolvedSQL, resolvedArgs := timelineArms(threadID, timelineSelection{
-		Columns: func(string) string {
+		Columns: func(string, string) string {
 			return `rel.root AS root, items.id AS id, items.kind AS kind,
 			        items.status AS status, items.summary AS summary,
 			        items.turn_index AS turn_index, items.item_index AS item_index`
@@ -798,7 +798,7 @@ func (s *Store) subagentAggregatesByRoot(q sqlQueryer, threadID string, rootIDs 
 // completion records after the session's live projection has been discarded.
 func (s *Store) SubagentCompletedChildIndex(threadID, launchID string) (int, error) {
 	source, args := timelineArms(threadID, timelineSelection{
-		Columns: func(string) string {
+		Columns: func(string, string) string {
 			return "json_extract(items.meta, '$.codex_execution_child_end_index') AS child_end"
 		},
 		Where:     "items.completion_of <> '' AND items.completion_of = ?",
@@ -868,7 +868,7 @@ func (s *Store) subagentAggregatesByRound(
 		return nil, nil
 	}
 	resolvedSQL, resolvedArgs := timelineArms(threadID, timelineSelection{
-		Columns: func(string) string {
+		Columns: func(string, string) string {
 			return `rel.root AS root, items.id AS id, items.kind AS kind,
 			        items.status AS status, items.summary AS summary,
 			        items.turn_index AS turn_index, items.item_index AS item_index`

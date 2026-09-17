@@ -33,21 +33,40 @@ const importedNotOverridden = `NOT EXISTS (
 		        WHERE o.thread_id = refs.thread_id AND o.item_id = items.id
 		   )`
 
+// importedItemRevExpr is the imported arm's `items.rev`. Imported history
+// rows live in shared immutable chunks keyed by chunk id, so there is no
+// thread-scoped place to stamp a per-row revision on them the way the item
+// triggers stamp `items.rev` (docs/architecture/thread-replica-sync.md
+// §3.1). -1 is the honest answer rather than a fabricated number: it can
+// never equal a real stamp, and window verification refuses any window that
+// contains one instead of treating an unstampable row as proof of freshness.
+//
+// The CAST is load-bearing. A bare literal has no affinity, `items.rev` has
+// INTEGER affinity, and SQLite refuses to push WHERE terms into a UNION ALL
+// whose arms disagree on any result column's affinity. A correlated join
+// against `timeline_items` (threadColumns' proposed-plan probe, the
+// ListThreadsWithItems EXISTS) then materializes the whole view per outer
+// row: a full scan of `items` for every thread in the sidebar.
+// TestTimelineItemsViewJoinPushesDown pins the plan.
+const importedItemRevExpr = `CAST(-1 AS INTEGER)`
+
 // timelineSelection describes one ordered/limited read of a thread's
 // logical timeline. It is rendered once per physical arm, so a predicate
 // or a projection is written once and cannot drift between them.
 type timelineSelection struct {
-	// Columns renders the arm's projection. Its argument is the
-	// expression that yields the row's logical thread id (`items` owns
-	// it locally; the chunk reference owns it for imported rows) — most
-	// callers ignore it. Every other column is written against the
-	// `items` alias, which BOTH arms carry.
+	// Columns renders the arm's projection. Its arguments are the two
+	// expressions an arm cannot write against the `items` alias: the
+	// row's logical thread id (`items` owns it locally; the chunk
+	// reference owns it for imported rows) and the row revision
+	// (`items.rev` locally, importedItemRevExpr for imported history) —
+	// most callers ignore both. Every other column is written against
+	// the `items` alias, which BOTH arms carry.
 	//
 	// The projection MUST name every ORDER BY key: a compound's ORDER BY
 	// can only reference its own result columns, and it is precisely
 	// ordering by a column the subquery does not return that forces the
 	// temp b-tree this helper exists to avoid.
-	Columns func(threadIDExpr string) string
+	Columns func(threadIDExpr, revExpr string) string
 
 	// Source, when non-empty, is a row source CROSS JOINed AHEAD of the
 	// timeline table in both arms (`rel` for the subagent descendant
@@ -96,11 +115,11 @@ func timelineArms(threadID string, sel timelineSelection) (string, []any) {
 	if sel.Source != "" {
 		source = sel.Source + "\n		  CROSS JOIN "
 	}
-	sql := `SELECT ` + sel.Columns("items.thread_id") + `
+	sql := `SELECT ` + sel.Columns("items.thread_id", "items.rev") + `
 		  FROM ` + source + `items
 		 WHERE items.thread_id = ?` + where + `
 		UNION ALL
-		SELECT ` + sel.Columns("refs.thread_id") + `
+		SELECT ` + sel.Columns("refs.thread_id", importedItemRevExpr) + `
 		  FROM ` + source + `thread_import_chunks refs
 		  JOIN import_history_items items ON items.chunk_id = refs.chunk_id
 		 WHERE refs.thread_id = ?` + where + `
@@ -124,7 +143,7 @@ func timelineArms(threadID string, sel timelineSelection) (string, []any) {
 // hydrator resolves, plus the two ordering keys the compound needs to
 // merge its arms instead of sorting them. Callers wrap the compound in
 // `SELECT id FROM (…)` so the hydrator still sees a single `id` column.
-func timelineIDColumns(string) string {
+func timelineIDColumns(string, string) string {
 	return `items.id AS id, items.turn_index AS turn_index, items.item_index AS item_index`
 }
 

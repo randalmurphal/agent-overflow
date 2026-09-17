@@ -119,7 +119,7 @@ describe('streaming incremental token reuse (real timeline × Chromium)', () => 
       }
       pane.applyItemPatch({
         threadId, itemId, kind: 'assistant_text',
-        patch: { status: 'completed', summary: finalText, updatedAt: turnIndex + 99 },
+        patch: { rev: 0, status: 'completed', summary: finalText, updatedAt: turnIndex + 99 },
       });
       pane.settleTurn({
         turnId: 'turn-inc', turnIndex, startedAt: Date.now() - 1_000,

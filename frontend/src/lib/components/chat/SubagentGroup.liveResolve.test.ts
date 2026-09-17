@@ -88,7 +88,7 @@ describe('<SubagentGroup> live resolution against the pane', () => {
 
     pane.applyItemPatch({
       threadId: 'thread-1', itemId: 'agent:1', kind: 'tool_call',
-      patch: { status: 'errored', updatedAt: 5 },
+      patch: { rev: 0, status: 'errored', updatedAt: 5 },
     });
     await tick();
 

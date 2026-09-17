@@ -25,6 +25,7 @@ function body(): ReplicaBody {
     savedAt: 1_000,
     items: [
       {
+        rev: 0,
         id: 'i-1',
         threadId: 't-1',
         turnIndex: 0,

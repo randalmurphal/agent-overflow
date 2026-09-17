@@ -109,6 +109,7 @@ describe('App integration — messaging flow', () => {
       startedAt: 1,
     });
     emitItemEventUpsert({
+      rev: 0,
       id: 'text:0:0',
       threadId: 'thread-1',
       turnIndex: 0,
@@ -197,6 +198,7 @@ describe('App integration — messaging flow', () => {
       startedAt: 1,
     });
     emitItemEventUpsert({
+      rev: 0,
       id: 'text:0:0',
       threadId: 'thread-1',
       turnIndex: 0,
@@ -217,6 +219,7 @@ describe('App integration — messaging flow', () => {
   it('renders streaming assistant item updates as they arrive', async () => {
     await mountWithActiveThread();
     emitItemEventUpsert({
+      rev: 0,
       id: 'text:0:0',
       threadId: 'thread-1',
       turnIndex: 0,
@@ -249,6 +252,7 @@ describe('App integration — messaging flow', () => {
     // Backend persisted a tool_call item and pushed the upsert; the
     // timeline should reflect it without any transient grouping.
     emitItemEventUpsert({
+      rev: 0,
       id: 'tool-1',
       threadId: 'thread-1',
       turnIndex: 0,
@@ -266,6 +270,7 @@ describe('App integration — messaging flow', () => {
     // A second concurrent tool_call shows up as its own row — no
     // grouping chip, no relocation.
     emitItemEventUpsert({
+      rev: 0,
       id: 'tool-2',
       threadId: 'thread-1',
       turnIndex: 0,
@@ -319,6 +324,7 @@ describe('App integration — messaging flow', () => {
       startedAt: 1,
     });
     emitItemEventUpsert({
+      rev: 0,
       id: 'text:0:0',
       threadId: 'thread-1',
       turnIndex: 0,
@@ -331,6 +337,7 @@ describe('App integration — messaging flow', () => {
       updatedAt: 1,
     });
     emitItemEventUpsert({
+      rev: 0,
       id: 'text:0:0',
       threadId: 'thread-1',
       turnIndex: 0,
@@ -400,6 +407,7 @@ describe('App integration — messaging flow', () => {
     // the timeline as a ToolCallCard. This exercises the mid-turn
     // item lifecycle — status flip from running to completed.
     emitItemEventUpsert({
+      rev: 0,
       id: 'tool-xyz',
       threadId: 'thread-1',
       turnIndex: 0,
@@ -416,6 +424,7 @@ describe('App integration — messaging flow', () => {
     expect(await findByText(/echo hello/)).toBeInTheDocument();
 
     emitItemEventUpsert({
+      rev: 0,
       id: 'tool-xyz',
       threadId: 'thread-1',
       turnIndex: 0,
@@ -470,6 +479,7 @@ describe('App integration — messaging flow', () => {
     // divider mounts immediately before it because tool activity
     // preceded assistant prose in the same turn.
     emitItemEventUpsert({
+      rev: 0,
       id: 'assist1',
       threadId: 'thread-1',
       turnIndex: 0,
@@ -533,6 +543,7 @@ describe('App integration — messaging flow', () => {
     // Claude wire). The launch row stays status=running per invariant
     // 24 — triage never flips it even at turn-complete.
     const launchItem: Item = {
+      rev: 0,
       id: 'bg-launch',
       threadId: 'thread-1',
       turnIndex: 0,
@@ -586,6 +597,7 @@ describe('App integration — messaging flow', () => {
     // is near the current wall clock so the tray's 2 s retention
     // window starts NOW, not in the past.
     const completionItem: Item = {
+      rev: 0,
       id: 'complete:bg-launch',
       threadId: 'thread-1',
       turnIndex: 0,

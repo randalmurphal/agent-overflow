@@ -4,6 +4,7 @@ import { deriveCompletionStatus } from './toolCompletionStatus';
 
 function makeItem(overrides: Partial<Item>): Item {
   return {
+    rev: 0,
     id: 'i1',
     threadId: 't1',
     turnIndex: 0,

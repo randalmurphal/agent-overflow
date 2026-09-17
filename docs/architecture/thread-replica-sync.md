@@ -104,16 +104,25 @@ reason: a brand-new thread genuinely is at the origin.
 ### 3.1 Enforcement: triggers on `items`, thread-scoped payload API
 
 Item-side bumps are SQLite triggers (installed by v55, alongside the
-existing `trg_items_gc_*` precedent), so no store function, present or
-future, can write an item row without advancing the contract:
+existing `trg_items_gc_*` precedent; replayed drop-then-create by v100
+when their bodies changed), so no store function, present or future, can
+write an item row without advancing the contract. The same triggers
+stamp the per-row revision `items.rev`: the thread's `history_rev` as of
+the last write that changed what a read of that row returns. Two reads of
+the same `(id, rev)` are byte-identical, which is what lets a client
+describe the window it already holds (§5).
 
 ```sql
 CREATE TRIGGER trg_items_rev_insert AFTER INSERT ON items BEGIN
   UPDATE threads SET history_rev = history_rev + 1
    WHERE id = NEW.thread_id AND history_bulk_load = 0;
+  UPDATE items SET rev = (SELECT history_rev FROM threads WHERE id = items.thread_id)
+   WHERE thread_id = NEW.thread_id AND id IN (<rows a write to NEW changed>);
 END;
 
-CREATE TRIGGER trg_items_rev_update AFTER UPDATE ON items BEGIN
+CREATE TRIGGER trg_items_rev_update AFTER UPDATE ON items
+WHEN OLD.rev IS NEW.rev
+BEGIN
   UPDATE threads SET
     history_rev   = history_rev + 1,
     history_epoch = history_epoch
@@ -121,6 +130,9 @@ CREATE TRIGGER trg_items_rev_update AFTER UPDATE ON items BEGIN
          OLD.item_index IS NOT NEW.item_index OR
          OLD.thread_id  IS NOT NEW.thread_id)
   WHERE id IN (OLD.thread_id, NEW.thread_id) AND history_bulk_load = 0;
+  UPDATE items SET rev = (SELECT history_rev FROM threads WHERE id = items.thread_id)
+   WHERE (thread_id = NEW.thread_id AND id IN (<rows a write to NEW changed>))
+      OR (thread_id = OLD.thread_id AND id IN (<rows a write to OLD changed>));
 END;
 
 CREATE TRIGGER trg_items_rev_delete AFTER DELETE ON items BEGIN
@@ -128,8 +140,65 @@ CREATE TRIGGER trg_items_rev_delete AFTER DELETE ON items BEGIN
     history_rev   = history_rev + 1,
     history_epoch = history_epoch + 1
   WHERE id = OLD.thread_id AND history_bulk_load = 0;
+  UPDATE items SET rev = (SELECT history_rev FROM threads WHERE id = items.thread_id)
+   WHERE thread_id = OLD.thread_id AND id IN (<rows a write to OLD changed>);
 END;
 ```
+
+`rev` is stamped only here. No INSERT or UPDATE column list in Go names
+it, so a new writer cannot forget it and cannot lie about it.
+
+The rows a write changed (`stampedRowIDsSQL`) are the rows whose READ
+result it changed, not only the row itself, because a page decorates
+some top-level rows from other rows (`decorateSubagentAnchors`):
+
+- the written row;
+- its completion sibling (`completion_of`), whose card is walked from the
+  launch row;
+- when the row has a parent: every row on its parent chain (the
+  descendant aggregate is transitive, so a write under a nested launch
+  changes the outer launch's read too), every resume carrier whose
+  `transcript_root_id` names one of those (a carrier's round is counted
+  from the root's children, claude-wire.md §E6), and the completion
+  siblings of all of those.
+
+Each leg is an index probe (the primary key, walked once per level of
+the chain by a recursive CTE, `idx_items_completion_of`, and the v100
+partial expression index `idx_items_transcript_root`), so a child write
+costs a handful of probes per nesting level whatever the thread's size;
+`TestItemRevisionStampProbesIndexes` pins the plan. The set is one
+`id IN (...)` so an overlapping leg stamps a row once: a second stamp
+that left `rev` unchanged would pass the update trigger's guard below and
+bump the thread twice. `TestHeldWindowSeesThroughToAnchorsWalkedFromOutside`
+holds a window of carriers and completion siblings with the launch
+scrolled out of it and proves a child write under the launch, or under
+a launch nested inside it, still refuses the window.
+
+The update trigger's `WHEN OLD.rev IS NEW.rev` guard is what stops the
+nested `UPDATE items` from re-entering the thread bump. `recursive_triggers`
+is OFF (pinned in `writerConnPragmas` with boot verification) so a trigger
+does not re-fire *itself*, but the insert trigger's stamp is an UPDATE and
+would otherwise fire the update trigger, bumping `history_rev` a second
+time per insert. The guard is the stamping write's signature: it is the
+only item write that leaves every other column alone. Exact arithmetic for
+insert, update, delete and child writes is pinned by
+`TestItemRevisionTriggerArithmetic`.
+
+Imported history rows (`import_history_items`, shared across threads by
+`thread_import_chunks`) have no thread-scoped place to stamp, so the
+imported arm of `timeline_items` reads `rev = -1` (`importedItemRevExpr`).
+A held window containing one is refused rather than verified (§5).
+
+A chunk-derived stamp does not work in place of -1, because an imported
+row's read result changes while its chunk reference stands still. Two
+write paths do it today: a payload mutator copies the imported payload
+into the thread's local overlay (`ensureLocalPayloadTx`) and the imported
+arm hydrates `COALESCE(local_payloads..., imported_payloads...)`, so kind,
+meta and preview spans change; and a local child parented to an imported
+`tool_call` changes that anchor's decorated meta. Neither write has an
+`items` row to stamp. The cost of the refusal is bounded: only a window
+that CONTAINS imported rows is refused, so the live tail of an imported
+thread still verifies.
 
 Cost: the bump is an extra dirty page in the same transaction; WAL
 writes pages per commit, not per statement, so a 500-row retention
@@ -138,13 +207,26 @@ image per commit. This satisfies the remote-access budget rule that
 streaming must not gain per-frame work (§14). The bump rides commits
 that already exist.
 
+The row stamp is a second UPDATE of the written row inside the same
+transaction, and SQLite rewrites the whole record for it, so its CPU cost
+grows with the row. Measured on an in-memory store appending a 36-byte
+delta to one `assistant_text` row (`AppendItemSummary`, no stamps vs the
+full stamp set): 0.19 ms vs 0.47 ms at a 4 KB summary, 0.40 vs 0.68 ms
+at 40 KB, 0.65 vs 1.22 ms at 200 KB. The anchor legs are about 0.09 ms
+of that; the rest is the row copy. WAL page images do not grow: the
+stamp dirties pages the append already dirtied.
+
 `ApplyImportBatch` is the bulk-load exception without being a contract
 exception. Inside its uncommitted transaction it sets the private
 `threads.history_bulk_load` flag; the trigger predicates therefore skip their
 per-row updates. After inserting the batch, the writer adds exactly the number
 of inserted item rows to the revision and clears the flag. Readers cannot
 observe it, a rollback restores it automatically, and committed revision
-values remain identical to the ordinary trigger path.
+values remain identical to the ordinary trigger path. Rows written under the
+flag are still stamped, with the thread's current `history_rev`; because the
+aggregate bump lands before commit, `history_rev` ends greater than every rev
+stamped inside the batch, so no client can hold a rev a later read would
+reproduce for different bytes.
 
 Payload-side bumps stay explicit in the payload mutators rather than adding a
 second trigger path. Since migration v58 payload rows carry `thread_id`, the
@@ -168,6 +250,83 @@ The item-coupled combos
 covered by the item triggers and need no second bump; double bumps
 would be harmless anyway, because the contract is monotonic, never
 exact.
+
+A window-visible write outside `items` must move the row revision of the
+rows it changes, not only the thread's. Two helpers do that, and they are
+the only way those writers bump:
+
+- `bumpHistoryRevForPayloadTx` (`AppendPayloadData`, `ReplacePayloadData`,
+  `UpdatePayloadMeta`) issues `UPDATE items SET rev = rev` over the rows
+  whose `payload_id` or `input_payload_id` is the payload, each matched
+  through its own partial index. The statement changes no column; the
+  update trigger does the stamping and the thread bump. When it matches no
+  row (the owner is imported history) it falls back to `bumpHistoryRevTx`
+  so the thread stamp still invalidates.
+- `bumpHistoryRevForItemTx` (proposed-plan state and comment writers) does
+  the same for the plan item id, because plan rows are decorated from those
+  tables on read (`decorateProposedPlanItems`).
+
+`UpdatePayloadSpans` is excluded on purpose and keeps the bare
+`bumpHistoryRevTx`. Spans are a derived cache with a documented "empty means
+not computed, ask the highlight RPC" fallback and are version-checked against
+payload content on the client (`utils/payloadVersion.ts`), so a window whose
+spans are behind is still a correct window.
+
+Every pushed `ItemStreamEvent` is the row a page reads, at the revision
+it reads it (`TestEmittedItemEventsCarryStoredItemRev`), because a client
+builds its held window out of the rows it was pushed:
+
+- an upsert of a row whose page read is the stored row sends the row
+  read back inside its write transaction; the caller's input struct
+  carries a pre-trigger value;
+- an upsert of a row whose page read is decorated
+  (`store.ItemReadNeedsDecoration`: an anchor with a child row, a resume
+  carrier, a completion sibling, a proposed plan) sends `ListWireItems`,
+  the page's hydrate-and-decorate read in one read transaction, so the
+  pushed content and its `rev` are one snapshot. The write's own
+  read-back would be an altered row at the stored revision: the launch
+  without its descendant count. The gate is one `idx_items_parent`
+  probe, because the decorator leaves a childless root untouched;
+  measured on a file-backed store, the full page read is 0.66 ms
+  against 0.21 ms for the plain row read, and a plain tool call (every
+  tool start and result, every Codex command-output flush) is the
+  common case;
+- a `patch` carries `patch.rev`, the revision `UpdateItemFields` read
+  inside the same transaction as the write. Without it every settled row
+  would hold the revision its last upsert carried and no window
+  containing one could verify. A patch replaces the client's `meta`
+  wholesale, so a decorated row is never patched: `persistItemFieldsAndPatch`
+  pushes its page read instead;
+- an upsert whose row the emitter altered on purpose carries
+  `store.UnstampedItemRev` (-1). The streaming reveal blanks the summary
+  so the text can arrive as deltas, and that wire row is not the stored
+  row; claiming the stored revision beside altered content is the one way
+  to earn a false `fresh`. The settle patch closes the sequence with the
+  real revision.
+
+The mid-stream `meta` action still carries no revision. It only reaches
+rows that are streaming, and those settle through a patch that does, so a
+held row's revision is stale only while its content is visibly in flight.
+
+A write also stamps rows it did not touch (the list above: the parent
+anchor, its resume carriers, the completion siblings), and nothing pushes
+those. Left there, a client that watched a subagent run would hold every
+anchor at a revision behind the store's and pay a page on each reopen,
+the cost §1 exists to remove. The router's anchor refresh
+(`internal/triage/wire_items.go`) closes it: every upsert and patch notes
+its row and pushed revision on the thread; at a quiet point the rows
+those writes stamped (`ListWireItemsBehind`, the trigger's own candidate
+select as a query, plus the launch a completion sibling settles) are
+read as a page would and pushed again, skipping a written row whose
+stored revision still equals its pushed one. Quiet points are one second
+after the thread's last push, at most five seconds after its first, turn
+completion, and session teardown; the router's drains flush them too. A
+refresh is never per write: an anchor push rebuilds the client's
+grouping, and a subagent's tool calls arrive at tens per second. A
+refresh that fails leaves the client's copies behind, which costs a page,
+never a false `fresh`. `TestSubagentTurnLeavesEveryPushedRowProvable`
+drives a whole subagent turn and proves the window built from the last
+push of each top-level row verifies `fresh`.
 
 ### 3.2 Operation → contract map
 
@@ -282,6 +441,22 @@ graded by durability:
   prior sync). Requests send only the attested stamp paired
   with the painted window; event-carried counters cannot validate that window.
 
+  **A verified held window is the second attestation source.** A request
+  that painted rows also describes them (`haveWindow`, §5), and a
+  page-less `fresh` earned that way attests exactly as a stamp-validated
+  one does: the server re-derived those `(id, rev)` pairs from the
+  database in the same read transaction as the stamp it returned, so the
+  rows on screen ARE that read and the returned stamp describes them.
+  This is what a turn on the open thread leaves a pane: no usable stamp,
+  but every row it holds still current. The client side is
+  `stores/threadWindowDigest.ts`. A held row always carries the revision of
+  its latest pushed write: an upsert or patch that changes nothing rendered
+  is absorbed onto the held row with its `rev` (`adoptRevIfEqual` in
+  `stores/threadItems.ts`), so a re-persist of an unchanged row does not
+  cost the next open a page. What still understates is a row the client
+  mutated locally (a streaming delta, a mid-stream `meta` action): it keeps
+  the rev of its last stamped write, fails verification and earns a page.
+
   **Attestation is a property of a WINDOW, not of a thread id.** What
   may be persisted is decided by the attestation the *pane holding the
   rows* carries, never by a thread-keyed lookup: a registry entry can
@@ -289,17 +464,17 @@ graded by durability:
   pane later repainted from an older replica envelope, and the sync that
   would have converged them threw), and pairing those rows with that
   stamp is precisely the permanent false `fresh` this section exists to
-  prevent. The pane's attestation is set when a sync page installs, when
-  a page-less `fresh` confirms rows that came from an attested source,
-  and to the ENVELOPE's own
-  stamp the moment a replica window is painted, so a failed sync leaves
-  the pane holding what its rows actually descend from. It is cleared by
-  anything that changes the window's provenance (thread install, pane
-  clear, structural cut, a page-less answer over an unattested source)
-  and pinned to its lineage (§3.3). Item mutations invalidate the window
-  attestation. Replay and reveal cursors can carry older content even when
-  their delivery occurs after the read. Windows with active smoothers are
-  also ineligible for stamped caching.
+  prevent. The pane's attestation is set from three sources: a sync page
+  installing, a page-less `fresh` confirming rows whose description the
+  server verified or whose attested stamp it echoed, and the ENVELOPE's
+  own stamp the moment a replica window is painted (so a failed sync
+  leaves the pane holding what its rows actually descend from). It
+  is cleared by anything that changes the window's provenance (thread
+  install, pane clear, structural cut, a page-less answer over an
+  unattested source) and pinned to its lineage (§3.3). Item mutations
+  invalidate the window attestation. Replay and reveal cursors can carry
+  older content even when their delivery occurs after the read. Windows
+  with active smoothers are also ineligible for stamped caching.
 
   A window holding an **optimistic row** (a send the wire has not
   echoed) is not a window any rev ever had, so neither stamped tier
@@ -373,6 +548,18 @@ type SyncThreadWindowRequest struct {
     ItemBudget   int    // SLICE_AROUND_ITEM_BUDGET (200)
     HaveEpoch    int64  // -1 = no replica
     HaveRev      int64  // -1 = no replica / stamp unknown
+    HaveWindow   *HeldWindow // nil when the caller holds no rows
+}
+
+// HeldWindow describes the rows the caller already holds, so a caller
+// without an attested stamp can still be answered `fresh`.
+type HeldWindow struct {
+    OldestItemID string
+    NewestItemID string
+    Count        int
+    HasMoreOlder bool
+    HasMoreNewer bool
+    Digest       string // 16 lowercase hex chars, see below
 }
 
 type SyncThreadWindowResponse struct {
@@ -383,7 +570,38 @@ type SyncThreadWindowResponse struct {
 }
 ```
 
-- **fresh**: `HaveEpoch/HaveRev` match the `threads` row. No page.
+Decision order, all inside the one read transaction that reads the
+stamps:
+
+1. the stamps match → `fresh`, no page.
+2. else `HaveWindow` verifies → `fresh`, no page, stamp = current.
+3. else page, graded by the stamp compare.
+
+Step 2 exists because a turn on the open thread moves the thread's rev,
+which makes the caller's attested stamp worthless on the next open even
+though every row it holds is still current. Verification is a read, not a
+counter: both edge ids must resolve to visible top-level rows
+(`windowedTimelineFilter`: `parent_id = ''` and not a `plan_update`
+notification), oldest must not sit after newest, the rows in
+`[oldest, newest]` under that filter ordered by `(turn_index, item_index)`
+must number exactly `Count` (capped at `MaxHeldWindowItems`, 2000) and
+hash to `Digest`, no row in the range may carry `rev < 0` (imported
+history, §3.1), and an `EXISTS` probe on either side must agree with
+`HasMoreOlder` / `HasMoreNewer`. The digest query selects `(id, rev)`
+only and never joins payloads.
+
+The digest is FNV-1a 64-bit over `id + 0x1f + decimal rev + 0x1e` per
+row in window order, rendered as 16 lowercase hex characters. Go and
+TypeScript implementations are pinned to one vector fixture
+(`internal/store/testdata/window_digest_vectors.json`, copied byte-for-byte
+to `frontend/src/test/fixtures/windowDigestVectors.json`).
+
+`fresh` means the same thing whichever step produced it: the caller's
+rows ARE the read, so it may attest them with the returned stamp and
+write them back to the replica.
+
+- **fresh**: `HaveEpoch/HaveRev` match the `threads` row, or `HaveWindow`
+  verifies. No page.
   ~100-byte response; on a phone link this is the entire cold-open
   item transfer. This response *is* the degenerate case of the
   remote-access spec's reduced-snapshot primitive (§9): the full
@@ -548,6 +766,14 @@ port; temporary token attachment does not create a durable pairing.
    read is local, watchdog-bounded, and resolves null immediately on a
    disabled replica. (A replica read superseded by a newer thread
    switch is still discarded via the pane's `gen` token.)
+
+   The request carries `haveWindow` too, whenever either tier painted
+   (`heldWindowOf` over the painted rows and the window's has-more
+   flags). It is independent evidence, not a fallback: the stamp asks
+   whether the thread changed, the window asks whether these rows are
+   still the read, and a thread that had a turn while open can only
+   answer the second. A pane holding an un-echoed optimistic row
+   describes nothing, for the same reason it persists nothing (§3.4).
 3. Replica paint goes through the existing `replaceTimelineItems`
    chokepoint and **arms the wave 1 warm gate exactly like an initial
    slice** (`armInitialSliceWarmup`). On loopback the sync response
@@ -566,8 +792,15 @@ port; temporary token attachment does not create a durable pairing.
    Merging replica scrollback from an older attestation under a newer
    stamp is the one composition that could pin a stale row under a
    false `fresh`, and this rule makes it unrepresentable. `fresh`
-   applies nothing. The fresh match itself attests the replica rows,
-   which become the live window as-is.
+   applies nothing. The match that produced it — echoed stamp or
+   verified window — attests the replica rows, which become the live
+   window as-is under the stamp the answer returned.
+
+   A page-less answer that neither echoes an attested stamp nor
+   answers a described window is unreachable by those pairing rules. It
+   is reported through `reportFrontendDiagnostic` and the ask is
+   repeated with no evidence at all, so the pane converges on a page
+   instead of sitting on rows nothing confirmed.
 
    The warm gate is NOT re-armed for this page: it lands over a window
    the reader may already be looking at, and re-closing the gate there
@@ -638,6 +871,26 @@ the freshly returned window, so there is nothing stale to page into.
 - **Same-tx attestation**: a sync read racing a concurrent writer must
   return stamps matching its page (WAL snapshot), never the newer rev
   with older rows.
+- **Row revisions (Go)**: exact `history_rev`/`items.rev` arithmetic for
+  insert, update, delete and child writes; every exported item writer
+  advances the touched row's rev and returns it; payload and plan writers
+  stamp their owning item row; bulk load stamps rows and still ends with
+  `history_rev` above every rev it wrote; every pushed item event is its
+  page read at the revision its write produced, including settle
+  patches, while a deliberately altered wire row carries none; after a
+  subagent turn the last push of every top-level row builds a window
+  that verifies `fresh` (triage). The refresh read returns exactly the
+  rows a write stamped without a push, the launch a completion settles,
+  and a written row only once a sibling write moved it (store).
+- **Held-window verification (Go)**: a window built from a real page
+  verifies, and each way of being wrong is refused separately — count
+  mismatch, a missing edge, either has-more flag flipped, a digest
+  mismatch, a window over 2000 rows, and a window containing imported
+  (rev -1) history, whose local tail still verifies. Rows a page would not
+  return (child rows, plan_update notifications) must not affect the
+  answer. A child write under a launch refuses a window holding only the
+  launch's resume carriers and completion siblings, and the stamping
+  statement's plan is index probes only.
 - **Understate safety (frontend)**: applying unstamped upserts then
   re-opening yields `stale` + converged window; never `fresh` over
   divergent content.
@@ -653,6 +906,13 @@ the freshly returned window, so there is nothing stale to page into.
   database this app did not mint left alone, an empty live set dropping
   the OPEN database (the sign-out contract), and a purge cancelled rather
   than deleting what a newer identity just opened.
+- **Held-window description (frontend)**: `windowDigest` runs the same
+  shared vectors the Go test does; the filter drops subagent children and
+  plan_update notifications from the description; a reopen after a turn
+  sends the mutated revs with no stamp; a `fresh` over that window
+  attests it and writes it back; a refused window takes its page; and a
+  page-less answer with neither a validating stamp nor a sent window is
+  still reported and refetched.
 - **Attestation pairing (frontend)**: a replica paint whose sync then
   FAILS must write back under the envelope's own stamp; a window
   carrying an optimistic row must reach neither stamped tier; a

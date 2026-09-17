@@ -238,7 +238,7 @@ func (r *Router) persistSubagentFinalProgress(launch store.Item, final provider.
 		if !changed {
 			return nil
 		}
-		if err := r.persistItemFieldsAndPatch(launch.ThreadID, completion.ID, completion.Kind, store.ItemPartialUpdate{Meta: &meta}); err != nil {
+		if err := r.persistItemFieldsAndPatch(completion, store.ItemPartialUpdate{Meta: &meta}); err != nil {
 			return err
 		}
 		r.TakeSubagentProgress(launch.ThreadID, launch.ID)
@@ -256,7 +256,7 @@ func (r *Router) persistSubagentFinalProgress(launch store.Item, final provider.
 		return fmt.Errorf("triage: marshal final subagent progress for %s: %w", launch.ID, err)
 	}
 	meta := mergeItemMetaJSON(launch.Meta, encoded)
-	return r.persistItemFieldsAndPatch(launch.ThreadID, launch.ID, launch.Kind, store.ItemPartialUpdate{Meta: &meta})
+	return r.persistItemFieldsAndPatch(launch, store.ItemPartialUpdate{Meta: &meta})
 }
 
 // completionMetaWithFinalProgress folds a detached launch's live entry

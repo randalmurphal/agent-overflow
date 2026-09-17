@@ -119,7 +119,7 @@ func (s *Store) CreateProposedPlanComment(comment ProposedPlanComment) (Proposed
 	); err != nil {
 		return ProposedPlanComment{}, fmt.Errorf("store: create proposed plan comment %s: %w", comment.ID, err)
 	}
-	if err := bumpHistoryRevTx(tx, comment.ThreadID, fmt.Sprintf("store: create proposed plan comment %s", comment.ID)); err != nil {
+	if err := bumpHistoryRevForItemTx(tx, comment.ThreadID, comment.PlanItemID, fmt.Sprintf("store: create proposed plan comment %s", comment.ID)); err != nil {
 		return ProposedPlanComment{}, err
 	}
 	stored, err := getProposedPlanCommentQ(tx, comment.ThreadID, comment.ID)
@@ -157,11 +157,11 @@ func (s *Store) UpdateProposedPlanComment(threadID, commentID string, update Pro
 	} else if n == 0 {
 		return ProposedPlanComment{}, fmt.Errorf("store: proposed plan comment %s not found or resolved", commentID)
 	}
-	if err := bumpHistoryRevTx(tx, threadID, fmt.Sprintf("store: update proposed plan comment %s", commentID)); err != nil {
-		return ProposedPlanComment{}, err
-	}
 	stored, err := getProposedPlanCommentQ(tx, threadID, commentID)
 	if err != nil {
+		return ProposedPlanComment{}, err
+	}
+	if err := bumpHistoryRevForItemTx(tx, threadID, stored.PlanItemID, fmt.Sprintf("store: update proposed plan comment %s", commentID)); err != nil {
 		return ProposedPlanComment{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -197,7 +197,7 @@ func (s *Store) DeleteOrResolveProposedPlanComment(threadID, commentID string, n
 	); err != nil {
 		return fmt.Errorf("store: resolve proposed plan comment %s/%s: %w", threadID, commentID, err)
 	}
-	if err := bumpHistoryRevTx(tx, threadID, fmt.Sprintf("store: delete-or-resolve proposed plan comment %s", commentID)); err != nil {
+	if err := bumpHistoryRevForItemTx(tx, threadID, comment.PlanItemID, fmt.Sprintf("store: delete-or-resolve proposed plan comment %s", commentID)); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -250,7 +250,7 @@ func (s *Store) MarkProposedPlanCommentsSent(threadID, planItemID string, commen
 		}
 	}
 	if n > 0 {
-		if err := bumpHistoryRevTx(tx, threadID, fmt.Sprintf("store: mark proposed plan comments sent for %s", planItemID)); err != nil {
+		if err := bumpHistoryRevForItemTx(tx, threadID, planItemID, fmt.Sprintf("store: mark proposed plan comments sent for %s", planItemID)); err != nil {
 			return err
 		}
 	}

@@ -180,6 +180,7 @@ function isValidItemForThread(item: Item | null | undefined, threadId: string): 
   if (item.inputPayloadId !== undefined && !isBoundedString(item.inputPayloadId, 512)) return false;
   if (item.meta !== undefined && !isBoundedString(item.meta)) return false;
   if (!isFiniteNumber(item.createdAt) || !isFiniteNumber(item.updatedAt)) return false;
+  if (!Number.isInteger(item.rev)) return false;
   return true;
 }
 
@@ -335,10 +336,11 @@ function applyItemUpserts(upserts: Item[]): void {
  *
  * A mounted thread's replica entry stays: at ~10 Hz streaming, a readwrite
  * IndexedDB transaction per flush is exactly the per-frame cost the backend
- * contract was shaped to avoid (§14), and it buys nothing — the envelope's
- * attested stamp already trails these writes, so the next open answers
- * `stale` and replaces the window regardless. The switch-away snapshot and
- * the debounced write-back own the mounted thread's entry.
+ * contract was shaped to avoid (§14), and the envelope it would drop is a
+ * valid window under its own older stamp. The switch-away snapshot and the
+ * debounced write-back own the mounted thread's entry, and the next open
+ * describes the rows this activity produced to the backend directly
+ * (thread-replica-sync.md §3.4), so the newer window earns its own stamp.
  *
  * Item events reach only watched threads (`provider:item_event` is
  * entity-filtered), so a thread with no pane never evicts through them;
@@ -432,6 +434,9 @@ export function applyItemStreamEvent(evt: ItemStreamEvent, origin?: EventOrigin)
     if (evt.patch.meta !== undefined && !isBoundedString(evt.patch.meta)) return;
     if (evt.patch.decision !== undefined && !isBoundedString(evt.patch.decision, 128)) return;
     if (evt.patch.updatedAt !== undefined && !isFiniteNumber(evt.patch.updatedAt)) return;
+    // Required, unlike the fields above: the patch is what stamps a
+    // settled streaming row's revision (types/events.ts ItemPatchEvent).
+    if (!Number.isInteger(evt.patch.rev)) return;
   } else {
     return;
   }

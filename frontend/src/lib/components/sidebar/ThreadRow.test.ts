@@ -937,6 +937,7 @@ describe('<ThreadRow> live status dot', () => {
       expect(queryByTestId('thread-row-status-dot')).toBeNull();
 
       emitItemEventUpsert({
+        rev: 0,
         id: 'item-1',
         threadId: 't-stream',
         turnIndex: 0,

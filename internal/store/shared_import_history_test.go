@@ -67,7 +67,7 @@ func TestSharedImportHistoryDeduplicatesWithoutAliasingLogicalThreads(t *testing
 	assertCount("A payload overlay", `SELECT COUNT(*) FROM payloads WHERE thread_id = 'shared-a'`, 1)
 
 	changed := "changed only in A"
-	if err := s.UpdateItemFields("shared-a", "item-tool", ItemPartialUpdate{Summary: &changed}); err != nil {
+	if _, err := s.UpdateItemFields("shared-a", "item-tool", ItemPartialUpdate{Summary: &changed}); err != nil {
 		t.Fatalf("update A item: %v", err)
 	}
 	aItem, found, err := s.GetThreadItem("shared-a", "item-tool")

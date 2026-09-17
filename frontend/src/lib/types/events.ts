@@ -202,6 +202,16 @@ export interface ItemPatchEvent {
     meta?: string;
     decision?: Item['decision'];
     updatedAt?: number;
+    /**
+     * The row revision the patching write produced
+     * (docs/architecture/thread-replica-sync.md §3.1). Required, not
+     * optional: a streaming row's upsert is deliberately altered on the
+     * wire (blank summary, `rev: -1`) and the settle patch is where it
+     * gets its real revision, so a patch without one would leave the row
+     * permanently undescribable. The validator refuses a patch that
+     * omits it.
+     */
+    rev: number;
   };
 }
 

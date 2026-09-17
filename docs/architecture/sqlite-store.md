@@ -51,10 +51,23 @@ for every window-visible mutation. `history_epoch` advances for deletions and
 repositioning that a client cannot apply incrementally; every epoch advance also
 advances the revision.
 
-Three `items` triggers in `historyRevTriggersSQL` maintain those counters. A
-window-visible mutation outside `items`, such as payload content or a plan
+Three `items` triggers in `historyRevTriggersSQL` maintain those counters and
+the per-row `items.rev` stamp (the thread revision as of the last write that
+changed the row's read result, plus the rows a page decorates from it: its
+completion sibling and the anchors walked from its parent chain, `stampedRowIDsSQL`).
+They depend on `recursive_triggers` being OFF, which `dsn.go` pins and boot
+verifies, and on the update trigger's `WHEN OLD.rev IS NEW.rev` guard, which
+excludes the stamping write itself from the thread bump. Go never names `rev`
+in a column list.
+
+A window-visible mutation outside `items`, such as payload content or a plan
 decoration projected onto `Item.Meta`, calls `bumpHistoryRevTx` in its own
-transaction. Item-coupled writes do not call it because their item mutation
+transaction. Payload and plan writers instead call
+`bumpHistoryRevForPayloadTx` / `bumpHistoryRevForItemTx`, which touch the
+owning item rows so the row stamps move with the thread counter and fall back
+to the plain bump when the owner is imported history. `UpdatePayloadSpans` is
+deliberately excluded: spans are a derived cache the client version-checks.
+Item-coupled writes do not call any of them because their item mutation
 already fires the trigger.
 
 `history_bulk_load` is reserved for a transaction that suppresses per-row
@@ -93,7 +106,8 @@ reads carry summaries, metadata, and capped preview spans.
 
 Four trigger families ride `items`:
 
-- History triggers maintain revision and epoch counters.
+- History triggers maintain revision and epoch counters, and the per-row
+  `items.rev` stamp.
 - Payload-GC triggers collect payloads after item deletion when no item in the
   thread references them. Repointing an item does not collect the old payload.
 - Imported-history triggers enforce the immutable-base and mutable-overlay

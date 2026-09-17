@@ -30,6 +30,14 @@
 // Every close path emits. A session is never silently discarded, so
 // "the switch happened but no record came out" is a real signal rather
 // than a routine outcome; module-scoped state stays O(mounted panes).
+//
+// One field arrives out of band. `coldLoadSyncStatus` is the only report
+// that can land AFTER the session closed (a warm gate that settles over a
+// replica or L1 paint before the sync answer returns), and holding the
+// session for it would make `timeline.coldload` wait on a leg that may
+// never answer. The verdict is emitted as its own `timeline.coldload.sync`
+// record instead, keyed by the same pane and thread, so a closed record's
+// `syncStatus: null` is still readable rather than silently missing.
 import { isUiRenderTraceEnabled, recordUiTrace } from './uiRenderTrace';
 
 export type ColdLoadSource = 'cache-restore' | 'fetch';
@@ -83,6 +91,10 @@ const sessionsByPane = new Map<string, ColdLoadSession>();
 // warmed once and stays warm across unrelated re-renders must not
 // re-fire on every call.
 const lastWarmByPane = new Map<string, boolean>();
+// Keyed by paneId. The last session emitted for the pane, so a sync
+// verdict that arrives after the close still has a thread and a close
+// time to report against.
+const lastClosedByPane = new Map<string, { threadId: string; closedAt: number }>();
 
 function emitSession(
   paneId: string,
@@ -112,6 +124,7 @@ function emitSession(
     paintSource: session.paintSource,
     syncStatus: session.syncStatus,
   });
+  lastClosedByPane.set(paneId, { threadId: session.threadId, closedAt: now });
 }
 
 /** Open the pane's cold-load session. A session still open for this pane
@@ -170,8 +183,25 @@ export function coldLoadPaintSource(paneId: string, paintSource: ColdLoadPaintSo
 export function coldLoadSyncStatus(paneId: string, status: string): void {
   if (!isUiRenderTraceEnabled()) return;
   const session = sessionsByPane.get(paneId);
-  if (!session) return;
-  session.syncStatus = status;
+  if (session) {
+    session.syncStatus = status;
+    return;
+  }
+  // The gate settled before the answer landed, so the consolidated
+  // record went out with `syncStatus: null`. Report the verdict as a
+  // follow-up rather than dropping it.
+  const closed = lastClosedByPane.get(paneId);
+  if (!closed) return;
+  // One closed session earns at most one follow-up, so the record it was
+  // held for has now been emitted. Drop it rather than retaining a row
+  // per pane the session ever saw.
+  lastClosedByPane.delete(paneId);
+  recordUiTrace('timeline.coldload.sync', {
+    paneId,
+    threadId: closed.threadId,
+    syncStatus: status,
+    afterCloseMs: Math.round(performance.now() - closed.closedAt),
+  });
 }
 
 /** Mark the fetch leg's initial-slice application: how many rows the
@@ -238,4 +268,5 @@ export function coldLoadWarmEdge(
 export function __resetColdLoadTraceForTest(): void {
   sessionsByPane.clear();
   lastWarmByPane.clear();
+  lastClosedByPane.clear();
 }

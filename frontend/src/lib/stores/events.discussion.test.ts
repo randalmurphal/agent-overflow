@@ -239,6 +239,7 @@ describe('provider:item_event live-tail seam for discussion child threads', () =
         summary: 'partial reply',
         createdAt: 0,
         updatedAt: 0,
+        rev: 0,
       },
     });
     await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
@@ -296,6 +297,7 @@ describe('provider:item_event live-tail seam for discussion child threads', () =
         summary: 'nobody is listening',
         createdAt: 0,
         updatedAt: 0,
+        rev: 0,
       },
     });
     await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
@@ -321,6 +323,7 @@ describe('provider:item_event live-tail seam for discussion child threads', () =
         summary: 'Bash: ls',
         createdAt: 0,
         updatedAt: 0,
+        rev: 0,
       },
     });
     emitWailsEvent('provider:item_event', {

@@ -1,0 +1,130 @@
+{
+  "algorithm": "fnv1a64",
+  "note": "Canonical string per row: id + 0x1f + decimal rev + 0x1e, in (turnIndex, itemIndex) order. Both sides fold that string's UTF-16 code units, so the digest agrees for any id. Digest is 16 lowercase hex chars. Shared by internal/store/window_digest.go and frontend/src/lib/stores/threadWindowDigest.ts; the two copies of this file must stay byte-identical.",
+  "maxHeldWindowItems": 2000,
+  "cases": [
+    {
+      "name": "empty window",
+      "rows": [],
+      "digest": "cbf29ce484222325"
+    },
+    {
+      "name": "one row",
+      "rows": [
+        {
+          "id": "itm-1",
+          "rev": 1
+        }
+      ],
+      "digest": "37e28832145d52b1"
+    },
+    {
+      "name": "three rows",
+      "rows": [
+        {
+          "id": "a",
+          "rev": 1
+        },
+        {
+          "id": "b",
+          "rev": 2
+        },
+        {
+          "id": "c",
+          "rev": 3
+        }
+      ],
+      "digest": "3e1801d1969d09ba"
+    },
+    {
+      "name": "non-sequential revs",
+      "rows": [
+        {
+          "id": "a",
+          "rev": 7
+        },
+        {
+          "id": "b",
+          "rev": 7
+        },
+        {
+          "id": "c",
+          "rev": 41
+        }
+      ],
+      "digest": "a0558f89fb23e637"
+    },
+    {
+      "name": "punctuated ids",
+      "rows": [
+        {
+          "id": "thread-1:item-9",
+          "rev": 12
+        },
+        {
+          "id": "complete:tool-4",
+          "rev": 12
+        }
+      ],
+      "digest": "0c165acd3d1ba7c2"
+    },
+    {
+      "name": "order matters",
+      "rows": [
+        {
+          "id": "b",
+          "rev": 2
+        },
+        {
+          "id": "a",
+          "rev": 1
+        }
+      ],
+      "digest": "e3901d64f1af7be1"
+    },
+    {
+      "name": "rev zero",
+      "rows": [
+        {
+          "id": "legacy-row",
+          "rev": 0
+        }
+      ],
+      "digest": "146b3ee7db9591a2"
+    },
+    {
+      "name": "large rev",
+      "rows": [
+        {
+          "id": "itm",
+          "rev": 9007199254740991
+        }
+      ],
+      "digest": "4ff410610576bba0"
+    },
+    {
+      "name": "negative rev",
+      "rows": [
+        {
+          "id": "imported",
+          "rev": -1
+        }
+      ],
+      "digest": "149d5edd8be59732"
+    },
+    {
+      "name": "non-ascii id",
+      "rows": [
+        {
+          "id": "ü:1",
+          "rev": 3
+        },
+        {
+          "id": "日本-2",
+          "rev": 4
+        }
+      ],
+      "digest": "118e4155fd4a8e0f"
+    }
+  ]
+}

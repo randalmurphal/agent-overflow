@@ -504,6 +504,82 @@ export class DiscussionSettings {
 }
 
 /**
+ * HeldWindow is the caller's description of the rows it already holds for
+ * a thread (docs/architecture/thread-replica-sync.md §5). It is the
+ * evidence behind the second route to a page-less `fresh`: the stamps did
+ * not match, but these rows are still exactly what a read would return.
+ * 
+ * It describes rows, never content: the edges and the count bound the
+ * range, and Digest folds the (id, rev) pairs inside it. The server never
+ * trusts any of it on its own — every field is re-derived from the
+ * database inside the sync transaction and compared.
+ */
+export class HeldWindow {
+    /**
+     * OldestItemID / NewestItemID are the window's inclusive edges in
+     * (turn_index, item_index) order. Both must be visible top-level rows
+     * of the thread; a window whose edge has been deleted or re-parented
+     * is not a window any more.
+     */
+    "oldestItemId": string;
+    "newestItemId": string;
+
+    /**
+     * Count is how many visible top-level rows the caller holds between
+     * the edges, inclusive. It is checked before the digest so a wrong
+     * count cannot be hidden by a hash collision, and it bounds the work
+     * the verification query is allowed to do.
+     */
+    "count": number;
+
+    /**
+     * HasMoreOlder / HasMoreNewer are the caller's belief about history
+     * outside the edges. They ride the window because they drive the
+     * "Load older messages" affordance: a window that is row-identical but
+     * wrong about its ends still renders wrongly.
+     */
+    "hasMoreOlder": boolean;
+    "hasMoreNewer": boolean;
+
+    /**
+     * Digest is WindowDigest over the held rows, 16 lowercase hex chars.
+     */
+    "digest": string;
+
+    /** Creates a new HeldWindow instance. */
+    constructor($$source: Partial<HeldWindow> = {}) {
+        if (!("oldestItemId" in $$source)) {
+            this["oldestItemId"] = "";
+        }
+        if (!("newestItemId" in $$source)) {
+            this["newestItemId"] = "";
+        }
+        if (!("count" in $$source)) {
+            this["count"] = 0;
+        }
+        if (!("hasMoreOlder" in $$source)) {
+            this["hasMoreOlder"] = false;
+        }
+        if (!("hasMoreNewer" in $$source)) {
+            this["hasMoreNewer"] = false;
+        }
+        if (!("digest" in $$source)) {
+            this["digest"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new HeldWindow instance from a string or object.
+     */
+    static createFrom($$source: any = {}): HeldWindow {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new HeldWindow($$parsedSource as Partial<HeldWindow>);
+    }
+}
+
+/**
  * Item represents a persisted timeline entry.
  */
 export class Item {
@@ -538,6 +614,25 @@ export class Item {
     "createdAt": number;
     "updatedAt": number;
 
+    /**
+     * Rev is the owning thread's history_rev at the moment this row's
+     * read result last changed (docs/architecture/thread-replica-sync.md
+     * §3.1). Two reads of the same (ID, Rev) are byte-identical, except
+     * PayloadPreviewSpans, a derived cache the client version-checks
+     * against the payload content it holds (see bumpHistoryRevForPayloadTx).
+     * That is what lets a client describe a held window by its (id, rev)
+     * pairs instead of shipping the rows back.
+     * 
+     * It is stamped only by the item history triggers, never by Go: no
+     * INSERT or UPDATE column list may assign it a value. Imported
+     * history rows read as -1 because they live in shared immutable
+     * chunks with no thread-scoped place to stamp; a window containing
+     * one cannot be verified by digest (see importedItemRevExpr and
+     * UnstampedItemRev, which is the same refusal for a wire row an
+     * emitter altered on purpose).
+     */
+    "rev": number;
+
     /** Creates a new Item instance. */
     constructor($$source: Partial<Item> = {}) {
         if (!("id" in $$source)) {
@@ -569,6 +664,9 @@ export class Item {
         }
         if (!("updatedAt" in $$source)) {
             this["updatedAt"] = 0;
+        }
+        if (!("rev" in $$source)) {
+            this["rev"] = 0;
         }
 
         Object.assign(this, $$source);

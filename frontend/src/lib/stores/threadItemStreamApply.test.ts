@@ -344,7 +344,7 @@ describe('threadItemStreamApply', () => {
         threadId: 'thread-patch',
         itemId: 'text:0:0',
         kind: 'assistant_text',
-        patch: { status: 'completed', updatedAt: 2000 },
+        patch: { rev: 0, status: 'completed', updatedAt: 2000 },
       });
 
       const patched = pane.items[0];
@@ -356,6 +356,60 @@ describe('threadItemStreamApply', () => {
       expect(patched.role).toBe('assistant');
     });
 
+    it('stamps the settled row with the revision the patch carries', async () => {
+      const pane = await buildPane(makeThread({ id: 'thread-patch' }));
+      // A streaming row's upsert is deliberately altered on the wire
+      // (blank summary, text arrives as deltas), so the store sends it
+      // unstamped at rev -1. The settle patch is where it gets its real
+      // revision (docs/architecture/thread-replica-sync.md §3.1);
+      // without carrying it here the row stays undescribable for the
+      // rest of its life and every reopen pays a page.
+      pane.upsertItem(makeItem({
+        id: 'text:0:0',
+        threadId: 'thread-patch',
+        kind: 'assistant_text',
+        status: 'streaming',
+        summary: '',
+        rev: -1,
+      }));
+
+      pane.applyItemPatch({
+        threadId: 'thread-patch',
+        itemId: 'text:0:0',
+        kind: 'assistant_text',
+        patch: { rev: 42, status: 'completed', summary: 'hello', updatedAt: 2000 },
+      });
+
+      expect(pane.items[0].rev).toBe(42);
+      expect(pane.items[0].status).toBe('completed');
+    });
+
+    it('absorbs a revision-only patch onto the held row', async () => {
+      const pane = await buildPane(makeThread({ id: 'thread-patch' }));
+      pane.upsertItem(makeItem({
+        id: 'text:0:0',
+        threadId: 'thread-patch',
+        kind: 'assistant_text',
+        status: 'completed',
+        summary: 'hello',
+        rev: 5,
+      }));
+      const before = pane.items[0];
+
+      // A re-persist of an unchanged row moves only its revision. The row
+      // object and the array stay (no reactive write), but the held row
+      // must carry the revision the backend now reads it at.
+      pane.applyItemPatch({
+        threadId: 'thread-patch',
+        itemId: 'text:0:0',
+        kind: 'assistant_text',
+        patch: { rev: 6 },
+      });
+
+      expect(pane.items[0]).toBe(before);
+      expect(before.rev).toBe(6);
+    });
+
     it('is a no-op for an unknown item id', async () => {
       const pane = await buildPane(makeThread({ id: 'thread-patch' }));
       pane.upsertItem(makeItem({ id: 'text:0:0', threadId: 'thread-patch' }));
@@ -365,7 +419,7 @@ describe('threadItemStreamApply', () => {
         threadId: 'thread-patch',
         itemId: 'nonexistent',
         kind: 'assistant_text',
-        patch: { status: 'completed' },
+        patch: { rev: 0, status: 'completed' },
       });
 
       expect(pane.items[0]).toBe(before);
@@ -386,7 +440,7 @@ describe('threadItemStreamApply', () => {
         threadId: 'thread-patch',
         itemId: 'text:0:0',
         kind: 'assistant_text',
-        patch: { status: 'completed', summary: 'hello' },
+        patch: { rev: 0, status: 'completed', summary: 'hello' },
       });
 
       expect(pane.items[0]).toBe(before);
@@ -402,7 +456,7 @@ describe('threadItemStreamApply', () => {
         threadId: 'thread-b',
         itemId: 'text:0:0',
         kind: 'assistant_text',
-        patch: { status: 'completed' },
+        patch: { rev: 0, status: 'completed' },
       });
 
       expect(pane.items[0].status).toBe('streaming');
@@ -424,6 +478,7 @@ describe('threadItemStreamApply', () => {
         itemId: 'tool:0:0',
         kind: 'tool_call',
         patch: {
+          rev: 0,
           meta: '{"toolName":"Bash","task_id":"t1"}',
           decision: 'approved',
         },
@@ -470,6 +525,7 @@ describe('threadItemStreamApply', () => {
         itemId: 'text:0:0',
         kind: 'assistant_text',
         patch: {
+          rev: 0,
           status: 'completed',
           summary: 'initial middle and the final tail',
           updatedAt: 3,
@@ -515,6 +571,7 @@ describe('threadItemStreamApply', () => {
         itemId: 'text:0:0',
         kind: 'assistant_text',
         patch: {
+          rev: 0,
           status: 'completed',
           summary: 'completely different final wording',
           updatedAt: 3,
@@ -557,6 +614,7 @@ describe('threadItemStreamApply', () => {
         itemId: 'text:0:0',
         kind: 'assistant_text',
         patch: {
+          rev: 0,
           status: 'errored',
           summary: '[interrupted] partial reveal so far',
           updatedAt: 3,
@@ -599,7 +657,7 @@ describe('threadItemStreamApply', () => {
         threadId: 'thread-patch',
         itemId: 'text:0:0',
         kind: 'assistant_text',
-        patch: { status: 'completed', updatedAt: 3 },
+        patch: { rev: 0, status: 'completed', updatedAt: 3 },
       });
 
       pane.__flushItemSmoothersForTest();

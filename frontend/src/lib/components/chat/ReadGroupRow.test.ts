@@ -7,6 +7,7 @@ import type { ThreadPane } from '../../stores/thread.svelte';
 
 function mkReadItem(id: string, summary: string, overrides: Partial<Item> = {}): Item {
   return {
+    rev: 0,
     id,
     threadId: 'thread-1',
     turnIndex: 0,

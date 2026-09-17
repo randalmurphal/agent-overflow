@@ -836,6 +836,28 @@ describe('setupEventListeners', () => {
     expect(getThreadStatus('thread-a')).toBe('idle');
   });
 
+  it('drops item_event upserts whose row carries no rev', async () => {
+    const pane = await buildPane(makeThread({ id: 'thread-a' }));
+
+    const unstamped = makeItem({
+      id: 'no-rev',
+      threadId: 'thread-a',
+      kind: 'assistant_text',
+      status: 'streaming',
+    }) as Partial<Item>;
+    delete unstamped.rev;
+
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: 'thread-a',
+      item: unstamped,
+    });
+    await nextFrame();
+
+    expect(pane.items).toEqual([]);
+    expect(getThreadStatus('thread-a')).toBe('idle');
+  });
+
   it('routes item_event deltas only to the matching pane', async () => {
     const paneA = await buildPane(makeThread({ id: 'thread-a' }), [], 'a');
     const paneB = await buildPane(makeThread({ id: 'thread-b' }), [], 'b');
@@ -1628,6 +1650,47 @@ describe('setupEventListeners', () => {
     await nextFrame();
 
     expect(pane.items.find((item) => item.id === 'text-1')?.meta).toBe('');
+  });
+
+  it('drops item_event patches that carry no row revision', async () => {
+    const pane = await buildPane();
+    pane.upsertItem(makeItem({
+      id: 'text-1',
+      kind: 'assistant_text',
+      status: 'streaming',
+      summary: 'stable',
+      rev: -1,
+    }));
+
+    // The settle patch is the only place a streaming row (sent unstamped
+    // at rev -1 because its wire summary was blanked) gets its real
+    // revision, so a patch without one is refused rather than applied as
+    // a row nothing can describe.
+    emitWailsEvent('provider:item_event', {
+      action: 'patch',
+      threadId: 'thread-1',
+      itemId: 'text-1',
+      kind: 'assistant_text',
+      patch: { status: 'completed', updatedAt: 5 },
+    });
+    await nextFrame();
+
+    const untouched = pane.items.find((item) => item.id === 'text-1');
+    expect(untouched?.status).toBe('streaming');
+    expect(untouched?.rev).toBe(-1);
+
+    emitWailsEvent('provider:item_event', {
+      action: 'patch',
+      threadId: 'thread-1',
+      itemId: 'text-1',
+      kind: 'assistant_text',
+      patch: { rev: 12, status: 'completed', updatedAt: 5 },
+    });
+    await nextFrame();
+
+    const settled = pane.items.find((item) => item.id === 'text-1');
+    expect(settled?.status).toBe('completed');
+    expect(settled?.rev).toBe(12);
   });
 
   it('drops item_event payloads with unknown actions', async () => {
@@ -3643,7 +3706,7 @@ describe('setupEventListeners', () => {
     const tool3 = makeItem({ id: 'tool-3', kind: 'tool_call', status: 'running', turnIndex: 1, itemIndex: 2 });
     emitWailsEvent('provider:item_event', { action: 'upsert', threadId: tool1.threadId, item: tool1 });
     emitWailsEvent('provider:item_event', {
-      action: 'patch', threadId: seededTool.threadId, itemId: 'tool-existing', patch: { status: 'completed' },
+      action: 'patch', threadId: seededTool.threadId, itemId: 'tool-existing', patch: { rev: 1, status: 'completed' },
     });
     emitWailsEvent('provider:item_event', { action: 'upsert', threadId: tool2.threadId, item: tool2 });
     emitWailsEvent('provider:item_event', {

@@ -7,6 +7,7 @@ const BELL = 'Background command "sleep 1" completed (exit code 0)';
 function mkItem(overrides: Partial<Item> & { id: string }): Item {
   const createdAt = overrides.createdAt ?? 0;
   return {
+    rev: 0,
     threadId: 'thread-1',
     turnIndex: 0,
     itemIndex: 0,

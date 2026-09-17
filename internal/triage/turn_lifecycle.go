@@ -347,6 +347,9 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 			r.maybeFlushQueueAtBoundary(evt.ThreadID)
 		}
 	}()
+	// The turn's writes are done once settlement below returns; push the
+	// anchors they stamped now rather than a second later (wire_items.go).
+	defer r.flushWireItemRefresh(evt.ThreadID)
 
 	// A turn boundary always closes the live compacting window: a failed
 	// Codex compaction abandons its contextCompaction item without
@@ -633,16 +636,17 @@ func settledTurnStatus(meta turnCompleteMeta) string {
 // already-exempt rows at all.
 //
 // The DB writes are batched inside store.ForceCloseRunningToolCallsInTurn
-// (one TX, one thread-touch) to cut per-orphan roundtrips; the
-// frontend-bound `provider:item_event` upserts stay per-row so the
-// UI still updates each card independently.
+// (one TX, one thread-touch) to cut per-orphan roundtrips, and so is the
+// page read behind their upserts; the frontend-bound
+// `provider:item_event` upserts stay per-row so the UI still updates
+// each card independently.
 func (r *Router) forceCloseOrphanToolCalls(threadID string, turnIndex int, now int64) error {
 	flipped, err := r.store.ForceCloseRunningToolCallsInTurn(threadID, turnIndex, ForceCloseSummary, now)
 	if err != nil {
 		return fmt.Errorf("force-close orphan tool calls: %w", err)
 	}
+	r.emitItemUpserts(threadID, flipped)
 	for _, item := range flipped {
-		r.emitItemUpsert(item)
 		r.metrics.ItemsPersisted.Add(context.Background(), 1,
 			metric.WithAttributes(attribute.String("kind", item.Kind)))
 	}
@@ -1615,6 +1619,7 @@ func (r *Router) Wait(ctx context.Context) error {
 		// flushing stream persistence — flushAllStreamPersistence
 		// writes to SQLite and must not race a settle's persistItem.
 		r.settleWG.Wait()
+		r.DrainWireItemRefresh()
 		close(done)
 	}()
 	select {
@@ -1697,6 +1702,8 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 	if err := r.flushStreamingThread(threadID); err != nil {
 		log.Printf("triage: cleanup flush stream buffers for thread %s: %v", threadID, err)
 	}
+	// The state below is about to go, and its refresh timer with it.
+	r.flushWireItemRefresh(threadID)
 
 	// The pending-send sweep below must be total: an echo whose store
 	// write is in flight holds the anchor lock and, on failure, reinserts

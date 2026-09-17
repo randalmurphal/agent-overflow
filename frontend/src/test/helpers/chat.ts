@@ -62,6 +62,9 @@ export function makeItem(overrides: Partial<Item> = {}): Item {
     summary: 'hello',
     createdAt,
     updatedAt: overrides.updatedAt ?? createdAt,
+    // The store stamps every persisted row; 0 is the origin a thread with
+    // no item writes since the contract landed genuinely sits at.
+    rev: 0,
     ...overrides,
   };
 }

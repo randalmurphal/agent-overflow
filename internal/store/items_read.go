@@ -355,7 +355,7 @@ type UserMessageTick struct {
 // / 17 ms became 736 / 1-3 ms on a 67k-item thread.
 func (s *Store) ListThreadUserMessageTicks(threadID string) ([]UserMessageTick, error) {
 	sql, args := timelineArms(threadID, timelineSelection{
-		Columns: func(string) string {
+		Columns: func(string, string) string {
 			return `items.id AS id, items.turn_index AS turn_index, items.item_index AS item_index`
 		},
 		Where:   readerAuthoredUserTextFilterFor("items."),
@@ -406,7 +406,7 @@ func (s *Store) ListThreadUserMessageHistory(threadID string, limit int) ([]User
 		return []UserMessageHistoryEntry{}, nil
 	}
 	sql, args := timelineArms(threadID, timelineSelection{
-		Columns: func(string) string {
+		Columns: func(string, string) string {
 			return `items.id AS id, items.turn_index AS turn_index,
 			        items.item_index AS item_index, items.summary AS summary`
 		},
@@ -475,7 +475,7 @@ func (s *Store) ThreadTurnPreview(threadID, itemID string) (TurnPreview, bool, e
 	// The ordering keys ride the projection because the compound needs
 	// them (timeline_arms.go); the scan drops them.
 	walkSQL, walkArgs := timelineArms(threadID, timelineSelection{
-		Columns: func(string) string {
+		Columns: func(string, string) string {
 			return `items.kind AS kind, items.summary AS summary,
 			        COALESCE(CASE WHEN json_valid(items.meta)
 			                      THEN json_extract(items.meta, '$.wire_only') END, 0) AS wire_only,
@@ -684,7 +684,7 @@ func (s *Store) ThreadTitleContextItems(threadID string, limit int) ([]Item, boo
 	// One row past the window: its arrival is what proves rows were
 	// dropped, and it is discarded immediately after.
 	windowSQL, windowArgs := timelineArms(threadID, timelineSelection{
-		Columns: func(threadIDExpr string) string {
+		Columns: func(threadIDExpr, revExpr string) string {
 			return `items.id, ` + threadIDExpr + ` AS thread_id,
 			        items.turn_index AS turn_index, items.item_index AS item_index,
 			        items.kind, items.role, items.status,
@@ -693,7 +693,8 @@ func (s *Store) ThreadTitleContextItems(threadID string, limit int) ([]Item, boo
 			        items.parent_id, items.is_background, items.completion_of,
 			        items.tool_name, items.decision,
 			        CASE WHEN items.kind = 'user_text' THEN items.meta ELSE '' END,
-			        items.created_at, items.updated_at`
+			        items.created_at, items.updated_at,
+			        ` + revExpr
 		},
 		Where: topLevelItemsFilterFor("items.") + `
 		   AND items.kind IN ('user_text', 'assistant_text')`,
@@ -722,7 +723,7 @@ func (s *Store) ThreadTitleContextItems(threadID string, limit int) ([]Item, boo
 	// difference could show, and it only shows for a thread whose opening
 	// message is both enormous and still in the newest-N rows.
 	earliestSQL, earliestArgs := timelineArms(threadID, timelineSelection{
-		Columns: func(threadIDExpr string) string {
+		Columns: func(threadIDExpr, revExpr string) string {
 			return `items.id, ` + threadIDExpr + ` AS thread_id,
 			        items.turn_index AS turn_index, items.item_index AS item_index,
 			        items.kind, items.role, items.status,
@@ -730,7 +731,8 @@ func (s *Store) ThreadTitleContextItems(threadID string, limit int) ([]Item, boo
 			        COALESCE(items.payload_id, ''),
 			        items.parent_id, items.is_background, items.completion_of,
 			        items.tool_name, items.decision, items.meta,
-			        items.created_at, items.updated_at`
+			        items.created_at, items.updated_at,
+			        ` + revExpr
 		},
 		// `parent_id = '' AND kind = 'user_text'` is also what lets this
 		// one use the partial idx_items_user_text.

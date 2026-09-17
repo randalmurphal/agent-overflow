@@ -29,6 +29,7 @@ import {
 
 function mkItem(overrides: Partial<Item> & { id: string; itemIndex: number }): Item {
   return {
+    rev: 0,
     threadId: 'thread-1',
     turnIndex: 0,
     kind: 'assistant_text',

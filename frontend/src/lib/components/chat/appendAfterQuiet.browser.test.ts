@@ -193,7 +193,7 @@ async function streamThinking(
     threadId,
     itemId: id,
     kind: 'thinking',
-    patch: { status: 'completed', summary: THINKING_TEXT, updatedAt: turnIndex + chunks + 1 },
+    patch: { rev: 0, status: 'completed', summary: THINKING_TEXT, updatedAt: turnIndex + chunks + 1 },
   });
 }
 

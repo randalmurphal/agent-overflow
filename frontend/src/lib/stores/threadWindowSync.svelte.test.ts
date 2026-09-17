@@ -29,11 +29,21 @@ import { setupEventListeners } from './events';
 import { registerPaneForTest } from './panes.svelte';
 import type { Item } from '../types/models';
 import type { SyncThreadWindowResult } from './bindings';
-import type { PaneScrollController } from './threadPaneShared';
-import type { PagedItems } from '../../../bindings/agent-overflow/internal/store/models';
+import {
+  REPLICA_WRITE_BACK_DELAY_MS,
+  type PaneScrollController,
+} from './threadPaneShared';
+import type { HeldWindow, PagedItems } from '../../../bindings/agent-overflow/internal/store/models';
+import { windowDigest } from './threadWindowDigest';
 import { TransportError } from '../transport/wsClient';
 
-type SyncRequest = { anchorItemId: string; itemBudget: number; haveEpoch: number; haveRev: number };
+type SyncRequest = {
+  anchorItemId: string;
+  itemBudget: number;
+  haveEpoch: number;
+  haveRev: number;
+  haveWindow?: HeldWindow;
+};
 
 const THREAD_ID = 'thread-sync';
 /** `UNKNOWN_STAMP_VALUE` as it appears on a request the pane sent stampless. */
@@ -507,7 +517,7 @@ describe('cold-open window sync', () => {
     // `resetIncomingPaneState` clears the optimistic-id ledger, so a row
     // cached here would come back on a warm re-entry as an untracked
     // phantom — and the snapshot's stamp would let the next answer
-    // re-attest it straight into the durable replica.
+    // attest it straight into the durable replica.
     const cached = threadItemCache.get(THREAD_ID);
     expect(cached?.items.map((it) => it.id)).toEqual(['i0']);
     expect(cached?.newestLoadedCursor?.itemId ?? '').not.toBe('user:1');
@@ -637,11 +647,291 @@ describe('cold-open window sync', () => {
     expect(pane.__syncLedgerArmedForTest()).toBe(false);
   });
 
-  it('rejects a page-less answer that does not validate the painted window', async () => {
+  // The second route to a page-less `fresh`: a turn on the open thread
+  // moves the thread's rev, so the pane's stamp is worthless on the next
+  // open even though every row it holds is still current. It describes
+  // the ROWS instead (docs/architecture/thread-replica-sync.md §3.4).
+  describe('held-window description', () => {
+    it('describes the rows it holds when a turn left it without a stamp', async () => {
+      const pane = createThreadPane();
+      const requests = installSync(() => ({
+        status: 'stale',
+        epoch: 1,
+        rev: 2,
+        page: page([row('i0', { rev: 2 })]),
+      }));
+      await pane.switchThread(makeThread({ id: THREAD_ID }));
+
+      // A turn on the open thread: the upserts carry the revs their
+      // writes produced and clear the pane's attestation.
+      pane.applyProviderItemUpserts([
+        row('i0', { rev: 7, summary: 'settled' }),
+        row('i1', { itemIndex: 1, rev: 8 }),
+      ]);
+      await pane.switchThread(makeThread({ id: 'other-thread' }));
+      // Nothing attested that window, so neither stamped tier holds a stamp…
+      expect(threadItemCache.get(THREAD_ID)?.historyStamp ?? null).toBeNull();
+      expect(await getReplicaWindow(THREAD_ID)).toBeNull();
+
+      await pane.switchThread(makeThread({ id: THREAD_ID }));
+
+      // …and the reopen still has evidence to send: the mutated revs.
+      const reopen = requests.at(-1)!;
+      expect(reopen.haveEpoch).toBe(UNKNOWN_REV);
+      expect(reopen.haveRev).toBe(UNKNOWN_REV);
+      expect(reopen.haveWindow).toEqual({
+        oldestItemId: 'i0',
+        newestItemId: 'i1',
+        count: 2,
+        hasMoreOlder: false,
+        hasMoreNewer: false,
+        digest: windowDigest([{ id: 'i0', rev: 7 }, { id: 'i1', rev: 8 }]),
+      });
+    });
+
+    it('describes a row re-persisted without visible change at its latest rev', async () => {
+      const pane = createThreadPane();
+      const requests = installSync(() => ({
+        status: 'stale',
+        epoch: 1,
+        rev: 2,
+        page: page([row('i0', { rev: 2 })]),
+      }));
+      await pane.switchThread(makeThread({ id: THREAD_ID }));
+      const painted = pane.items;
+
+      // The backend re-persisted the row unchanged: the upsert differs
+      // only in `rev`. The dedupe keeps the array (no render cascade) and
+      // the row, so the page's attestation survives too…
+      pane.applyProviderItemUpserts([row('i0', { rev: 7 })]);
+      expect(pane.items).toBe(painted);
+      await pane.switchThread(makeThread({ id: 'other-thread' }));
+      await pane.switchThread(makeThread({ id: THREAD_ID }));
+
+      // …and the reopen sends both: the stamp the page attested, and the
+      // window at the revision the backend now reads the row at. Only the
+      // latter can verify (the thread's rev moved past the stamp).
+      const reopen = requests.at(-1)!;
+      expect(reopen).toMatchObject({ haveEpoch: 1, haveRev: 2 });
+      expect(reopen.haveWindow?.digest).toBe(windowDigest([{ id: 'i0', rev: 7 }]));
+    });
+
+    it('sends the window alongside an attested stamp', async () => {
+      await putReplicaWindow(THREAD_ID, replicaBody([row('i0', { rev: 11 })], 3, 11));
+      const pane = createThreadPane();
+      const requests = installSync(() => ({ status: 'fresh', epoch: 3, rev: 11 }));
+
+      await pane.switchThread(makeThread({ id: THREAD_ID }));
+
+      // The two are independent evidence and both ride the one ask: the
+      // stamp answers "did the thread change", the window answers "are
+      // these rows still the read".
+      expect(requests[0]).toMatchObject({ haveEpoch: 3, haveRev: 11 });
+      expect(requests[0].haveWindow).toMatchObject({ count: 1, oldestItemId: 'i0' });
+    });
+
+    it('attests a fresh answer over the sent window and writes it back', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        const pane = createThreadPane();
+        let answer: () => Partial<SyncThreadWindowResult> = () => ({
+          status: 'stale',
+          epoch: 1,
+          rev: 2,
+          page: page([row('i0', { rev: 2 })]),
+        });
+        const requests = installSync(() => answer());
+        await pane.switchThread(makeThread({ id: THREAD_ID }));
+        pane.applyProviderItemUpserts([row('i0', { rev: 9, summary: 'after the turn' })]);
+        await pane.switchThread(makeThread({ id: 'other-thread' }));
+
+        // The server verified the rows in the same read transaction as
+        // the stamp it returns, so a page-less `fresh` over a described
+        // window attests exactly as a stamp-validated one does.
+        answer = () => ({ status: 'fresh', epoch: 1, rev: 9 });
+        await pane.switchThread(makeThread({ id: THREAD_ID }));
+
+        expect(requests.at(-1)?.haveWindow).toMatchObject({ count: 1 });
+        expect(pane.items.map((it) => it.id)).toEqual(['i0']);
+        expect(pane.items[0].summary).toBe('after the turn');
+
+        await vi.advanceTimersByTimeAsync(REPLICA_WRITE_BACK_DELAY_MS + 50);
+        expect(await getReplicaWindow(THREAD_ID)).toMatchObject({ epoch: 1, rev: 9 });
+
+        await pane.switchThread(makeThread({ id: 'other-thread' }));
+        expect(threadItemCache.get(THREAD_ID)?.historyStamp).toEqual({
+          epoch: 1,
+          rev: 9,
+          attested: true,
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('lets a stale answer replace a window the server refused', async () => {
+      const pane = createThreadPane();
+      let answer: () => Partial<SyncThreadWindowResult> = () => ({
+        status: 'stale',
+        epoch: 1,
+        rev: 2,
+        page: page([row('i0', { rev: 2 })]),
+      });
+      const requests = installSync(() => answer());
+      await pane.switchThread(makeThread({ id: THREAD_ID }));
+      pane.applyProviderItemUpserts([row('i0', { rev: 9 })]);
+      await pane.switchThread(makeThread({ id: 'other-thread' }));
+
+      // Another client rewrote the thread, so the described rows are not
+      // what a read returns any more. One page, one ask: the refusal is
+      // not an error path.
+      answer = () => ({
+        status: 'stale',
+        epoch: 1,
+        rev: 14,
+        page: page([row('i0', { rev: 14 }), row('i1', { itemIndex: 1, rev: 14 })]),
+      });
+      await pane.switchThread(makeThread({ id: THREAD_ID }));
+
+      expect(requests.at(-1)?.haveWindow).toMatchObject({ count: 1 });
+      expect(requests.filter((req) => req.haveWindow !== undefined)).toHaveLength(1);
+      expect(pane.items.map((it) => it.id)).toEqual(['i0', 'i1']);
+      await pane.switchThread(makeThread({ id: 'other-thread' }));
+      expect(threadItemCache.get(THREAD_ID)?.historyStamp).toEqual({
+        epoch: 1,
+        rev: 14,
+        attested: true,
+      });
+    });
+
+    it('leaves plan_update notifications out of the description', async () => {
+      const pane = createThreadPane();
+      let answer: () => Partial<SyncThreadWindowResult> = () => ({
+        status: 'stale',
+        epoch: 1,
+        rev: 2,
+        page: page([row('i0', { rev: 2 })]),
+      });
+      const requests = installSync(() => answer());
+      await pane.switchThread(makeThread({ id: THREAD_ID }));
+      // A plan_update notification reaches the pane over the wire but is
+      // never in a page (`windowedTimelineFilter`), so counting it would
+      // refuse every window the pane holds one in.
+      pane.applyProviderItemUpserts([
+        row('plan', { itemIndex: 1, rev: 6, kind: 'notification', toolName: 'plan_update' }),
+        row('i1', { itemIndex: 2, rev: 7 }),
+      ]);
+      await pane.switchThread(makeThread({ id: 'other-thread' }));
+      answer = () => ({ status: 'fresh', epoch: 1, rev: 7 });
+      await pane.switchThread(makeThread({ id: THREAD_ID }));
+
+      expect(pane.items.map((it) => it.id)).toEqual(['i0', 'plan', 'i1']);
+      expect(requests.at(-1)?.haveWindow).toEqual({
+        oldestItemId: 'i0',
+        newestItemId: 'i1',
+        count: 2,
+        hasMoreOlder: false,
+        hasMoreNewer: false,
+        digest: windowDigest([{ id: 'i0', rev: 2 }, { id: 'i1', rev: 7 }]),
+      });
+    });
+
+    it('describes a window holding imported history and takes the page', async () => {
+      const pane = createThreadPane();
+      let answer: () => Partial<SyncThreadWindowResult> = () => ({
+        status: 'stale',
+        epoch: 1,
+        rev: 2,
+        // Imported rows carry no per-row stamp; the store reads them as -1.
+        page: page([row('i0', { rev: -1 }), row('i1', { itemIndex: 1, rev: 2 })]),
+      });
+      const requests = installSync(() => answer());
+      await pane.switchThread(makeThread({ id: THREAD_ID }));
+      pane.applyProviderItemUpserts([row('i1', { itemIndex: 1, rev: 5, summary: 'settled' })]);
+      await pane.switchThread(makeThread({ id: 'other-thread' }));
+
+      // Sent as-is rather than special-cased on the client: the server
+      // refuses a window containing an imported row, and that refusal
+      // costs exactly the page the pane would have asked for anyway.
+      answer = () => ({
+        status: 'stale',
+        epoch: 1,
+        rev: 5,
+        page: page([
+          row('i0', { rev: -1 }),
+          row('i1', { itemIndex: 1, rev: 5, summary: 'settled' }),
+        ]),
+      });
+      await pane.switchThread(makeThread({ id: THREAD_ID }));
+
+      expect(requests.at(-1)?.haveWindow).toMatchObject({
+        count: 2,
+        digest: windowDigest([{ id: 'i0', rev: -1 }, { id: 'i1', rev: 5 }]),
+      });
+      expect(pane.items.map((it) => it.id)).toEqual(['i0', 'i1']);
+    });
+
+    it('describes a mid-stream window holding an unstamped row', async () => {
+      const pane = createThreadPane();
+      let answer: () => Partial<SyncThreadWindowResult> = () => ({
+        status: 'stale',
+        epoch: 1,
+        rev: 2,
+        page: page([row('i0', { rev: 2 })]),
+      });
+      const requests = installSync(() => answer());
+      await pane.switchThread(makeThread({ id: THREAD_ID }));
+      // A streaming row's upsert is altered on the wire (blank summary,
+      // text arrives as deltas), so the store sends it unstamped at -1
+      // until the settle patch supplies the real rev.
+      pane.applyProviderItemUpserts([
+        row('i1', { itemIndex: 1, rev: -1, status: 'streaming', summary: '' }),
+      ]);
+      await pane.switchThread(makeThread({ id: 'other-thread' }));
+
+      answer = () => ({
+        status: 'stale',
+        epoch: 1,
+        rev: 6,
+        page: page([
+          row('i0', { rev: 2 }),
+          row('i1', { itemIndex: 1, rev: 6, summary: 'settled' }),
+        ]),
+      });
+      await pane.switchThread(makeThread({ id: THREAD_ID }));
+
+      // Sent as-is: the client does not second-guess a -1, the server
+      // refuses the window, and the replacing page brings the stamped
+      // rows back.
+      expect(requests.at(-1)?.haveWindow).toMatchObject({
+        count: 2,
+        digest: windowDigest([{ id: 'i0', rev: 2 }, { id: 'i1', rev: -1 }]),
+      });
+      expect(pane.items.map((it) => it.id)).toEqual(['i0', 'i1']);
+      expect(pane.items[1].rev).toBe(6);
+    });
+
+    it('sends no window when nothing is painted', async () => {
+      const pane = createThreadPane();
+      const requests = installSync(() => ({
+        status: 'stale',
+        epoch: 1,
+        rev: 2,
+        page: page([row('i0', { rev: 2 })]),
+      }));
+
+      await pane.switchThread(makeThread({ id: THREAD_ID }));
+
+      expect(requests).toHaveLength(1);
+      expect(requests[0].haveWindow).toBeUndefined();
+    });
+  });
+
+  it('takes a fresh answer at a rev the stamp never named when a window backed it', async () => {
     const dispose = setupEventListeners();
     const pane = createThreadPane();
     registerPaneForTest('sync-pane', pane);
-    installSync(() => ({ status: 'stale', epoch: 1, rev: 2, page: page([row('i0')]) }));
+    installSync(() => ({ status: 'stale', epoch: 1, rev: 2, page: page([row('i0', { rev: 2 })]) }));
     await pane.switchThread(makeThread({ id: THREAD_ID }));
     emitWailsEvent('provider:turn_completed', {
       threadId: THREAD_ID,
@@ -656,13 +946,46 @@ describe('cold-open window sync', () => {
     await pane.switchThread(makeThread({ id: 'other-thread' }));
     await removeReplicaWindow(THREAD_ID);
 
-    // A malformed fresh echo cannot attest rows the client never received.
-    installSync(() => ({ status: 'fresh', epoch: 1, rev: 30 }));
+    // The answer does not echo the stamp the pane sent, which on its own
+    // would be the "page-less over nothing" anomaly. It is not one here:
+    // the request also described the rows, and the server verified those
+    // rows against rev 30 in the same read transaction. The reader keeps
+    // the window and the pane adopts the rev the server actually holds.
+    const requests = installSync(() => ({ status: 'fresh', epoch: 1, rev: 30 }));
     await pane.switchThread(makeThread({ id: THREAD_ID }));
-    expect(pane.generalErrorKind).toBe('history-load');
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ haveEpoch: 1, haveRev: 2 });
+    expect(requests[0].haveWindow).toMatchObject({ count: 1, oldestItemId: 'i0' });
+    expect(pane.generalErrorKind).toBeNull();
+    expect(pane.items.map((it) => it.id)).toEqual(['i0']);
+
     await pane.switchThread(makeThread({ id: 'other-thread' }));
-    expect(await getReplicaWindow(THREAD_ID)).toMatchObject({ epoch: 1, rev: 2 });
+    expect(await getReplicaWindow(THREAD_ID)).toMatchObject({ epoch: 1, rev: 30 });
 
     dispose();
+  });
+
+  it('reports and refetches a page-less answer with nothing to validate it', async () => {
+    const pane = createThreadPane();
+    // No L1 snapshot, no replica envelope: the pane painted nothing, so
+    // it sent neither a stamp nor a window and a page-less answer
+    // describes rows it does not have. The pairing rules make this
+    // unreachable, so it is reported and re-asked rather than leaving
+    // the pane empty and silent.
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const requests = installSync(() => ({ status: 'fresh', epoch: 1, rev: 30 }));
+
+    await pane.switchThread(makeThread({ id: THREAD_ID }));
+
+    expect(requests).toHaveLength(2);
+    expect(requests[0].haveWindow).toBeUndefined();
+    expect(requests[1]).toMatchObject({ haveEpoch: UNKNOWN_REV, haveRev: UNKNOWN_REV });
+    expect(requests[1].haveWindow).toBeUndefined();
+    expect(errors).toHaveBeenCalledWith(
+      expect.stringContaining('without a matching painted snapshot'),
+    );
+    expect(pane.items).toEqual([]);
+    expect(pane.generalErrorKind).toBe('history-load');
+    vi.restoreAllMocks();
   });
 });

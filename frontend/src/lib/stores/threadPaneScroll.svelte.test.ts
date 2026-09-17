@@ -345,7 +345,7 @@ describe('threadPaneScroll', () => {
         // row mounts it with no wire upsert in that flush, so only the
         // reveal-site arm can make its growth spring-eligible.
         pane.applyItemPatch({ threadId: thread.id, itemId: 'front', kind: 'assistant_text',
-          patch: { status: 'completed', updatedAt: 3 } });
+          patch: { rev: 0, status: 'completed', updatedAt: 3 } });
         for (let frame = 0; frame < 500 && pane.revealBoundary !== null; frame++) {
           clock.tickFrame(16);
         }
@@ -387,7 +387,7 @@ describe('threadPaneScroll', () => {
         // gate drops, no rows mount — arming would open a pointless
         // spring window on whatever grows next.
         pane.applyItemPatch({ threadId: thread.id, itemId: 'front', kind: 'assistant_text',
-          patch: { status: 'completed', updatedAt: 3 } });
+          patch: { rev: 0, status: 'completed', updatedAt: 3 } });
         for (let frame = 0; frame < 500 && pane.revealBoundary !== null; frame++) {
           clock.tickFrame(16);
         }
@@ -862,7 +862,7 @@ describe('threadPaneScroll', () => {
           threadId: 'stamp-drain',
           itemId: 'a:0:0',
           kind: 'assistant_text',
-          patch: { status: 'completed', updatedAt: 3 },
+          patch: { rev: 0, status: 'completed', updatedAt: 3 },
         });
         // The bare status patch itself adds no stamp (rigorous no-stamp
         // proof for status/meta patches is the next test); the smoother
@@ -944,7 +944,7 @@ describe('threadPaneScroll', () => {
           threadId: 'stamp-patch',
           itemId: 'a:0:0',
           kind: 'assistant_text',
-          patch: { status: 'errored', updatedAt: 2 },
+          patch: { rev: 0, status: 'errored', updatedAt: 2 },
         });
         expect(pane.lastLiveContentAt).toBe(0);
 
@@ -953,7 +953,7 @@ describe('threadPaneScroll', () => {
           threadId: 'stamp-patch',
           itemId: 'a:0:0',
           kind: 'assistant_text',
-          patch: { meta: '{"pathRefs":[]}' },
+          patch: { rev: 0, meta: '{"pathRefs":[]}' },
         });
         expect(pane.lastLiveContentAt).toBe(0);
 
@@ -962,7 +962,7 @@ describe('threadPaneScroll', () => {
           threadId: 'stamp-patch',
           itemId: 'a:0:0',
           kind: 'assistant_text',
-          patch: { summary: 'hello world' },
+          patch: { rev: 0, summary: 'hello world' },
         });
         expect(pane.lastLiveContentAt).toBe(10);
         expect(pane.items[0].summary).toBe('hello world');

@@ -1741,6 +1741,26 @@ func migrateThrough(t *testing.T, target int) *sql.DB {
 	return db
 }
 
+// migrateFrom applies the rest of the chain after a test has replayed a
+// prefix and exercised the migration it cares about. Store accessors are
+// written against the CURRENT schema, so any test that calls one has to
+// finish the chain first.
+func migrateFrom(t *testing.T, db *sql.DB, after int) {
+	t.Helper()
+	for _, m := range migrations {
+		if m.Version <= after {
+			continue
+		}
+		apply := applyMigration
+		if m.Rebuild {
+			apply = applyRebuildMigration
+		}
+		if err := apply(db, m); err != nil {
+			t.Fatalf("apply migration v%d: %v", m.Version, err)
+		}
+	}
+}
+
 // TestApplyRebuildMigrationRefusesAFix — applyRebuildMigration used to
 // run the SQL, record the version, and drop the Fix on the floor. A
 // forward-only chain has no second attempt at a skipped data pass, so the

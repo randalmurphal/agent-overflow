@@ -263,6 +263,7 @@ describe('<ComposerToolbar>', () => {
     const pane = createThreadPane();
     pane.replaceThread(makeThread({ provider: 'codex', model: 'gpt-5.3-codex' }));
     pane.upsertItems([{
+      rev: 0,
       id: 'user-1',
       threadId: 'thread-1',
       turnIndex: 1,
@@ -299,6 +300,7 @@ describe('<ComposerToolbar>', () => {
     const pane = createThreadPane();
     pane.replaceThread(makeThread({ provider: 'codex', model: 'gpt-5.3-codex' }));
     pane.upsertItems([{
+      rev: 0,
       id: 'user-1',
       threadId: 'thread-1',
       turnIndex: 1,

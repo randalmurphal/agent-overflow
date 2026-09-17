@@ -473,7 +473,7 @@ describe('createAgentScopeView', () => {
       threadId: THREAD_ID,
       itemId: 'scope-completion',
       kind: 'tool_completion',
-      patch: { status: 'completed', updatedAt: 9_000 },
+      patch: { rev: 0, status: 'completed', updatedAt: 9_000 },
     });
 
     expect(turns.activeKey).toBeNull();

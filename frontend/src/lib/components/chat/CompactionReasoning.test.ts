@@ -136,7 +136,7 @@ describe('<CompactionReasoning>', () => {
         threadId: 'thread-1',
         itemId: reasoning.id,
         kind: 'compaction_reasoning',
-        patch: { status: 'completed', updatedAt: 3 },
+        patch: { rev: 0, status: 'completed', updatedAt: 3 },
       });
       await rerender({ pane, item: pane.items[0] });
       await tick();

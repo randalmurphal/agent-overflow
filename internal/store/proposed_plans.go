@@ -119,7 +119,7 @@ func (s *Store) EnsureProposedPlanStateWithParent(threadID, itemID, explicitPare
 	); err != nil {
 		return ProposedPlanState{}, fmt.Errorf("store: insert proposed plan state %s: %w", itemID, err)
 	}
-	if err := bumpHistoryRevTx(tx, threadID, fmt.Sprintf("store: insert proposed plan state %s", itemID)); err != nil {
+	if err := bumpHistoryRevForItemTx(tx, threadID, itemID, fmt.Sprintf("store: insert proposed plan state %s", itemID)); err != nil {
 		return ProposedPlanState{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -218,7 +218,7 @@ func (s *Store) MarkProposedPlanImplemented(threadID, itemID, implementationThre
 		}
 		return fmt.Errorf("store: proposed plan %s not found on thread %s", itemID, threadID)
 	}
-	if err := bumpHistoryRevTx(tx, threadID, fmt.Sprintf("store: mark proposed plan implemented %s", itemID)); err != nil {
+	if err := bumpHistoryRevForItemTx(tx, threadID, itemID, fmt.Sprintf("store: mark proposed plan implemented %s", itemID)); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

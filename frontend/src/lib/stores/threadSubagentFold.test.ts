@@ -183,7 +183,7 @@ describe('subagent fold', () => {
         threadId: 'fold-patch',
         itemId: 'child-1',
         kind: 'assistant_text',
-        patch: { status: 'completed', summary: 'full text', updatedAt: 2 },
+        patch: { rev: 0, status: 'completed', summary: 'full text', updatedAt: 2 },
       });
 
       expect(pane.items.some((it) => it.id === 'child-1')).toBe(false);

@@ -1,0 +1,194 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+)
+
+// ItemReadIsDecorated reports whether a page read of this row can differ
+// from the stored row: a subagent anchor takes its descendant aggregate
+// from its children (decorateSubagentAnchors) and a proposed plan takes
+// its state and comment count from the plan tables
+// (decorateProposedPlanItems). An emitter must push such a row as a page
+// would read it, or a client holding the undecorated copy at the stored
+// revision could prove a window fresh whose card is behind (§3.1).
+//
+// The predicate is the decorators' own admission test, widened to every
+// row they would consider: a tool call with no children decorates to
+// itself, so the extra read for one is a handful of index probes that
+// return the row unchanged.
+func ItemReadIsDecorated(item Item) bool {
+	switch item.Kind {
+	case "tool_call":
+		return item.ToolName != "collab_agent"
+	case "tool_completion":
+		return item.CompletionOf != "" && item.ToolName != "wait_agent"
+	}
+	return item.Role == "assistant" && item.PayloadKind == "proposed_plan"
+}
+
+// ItemReadNeedsDecoration is ItemReadIsDecorated narrowed by one index
+// probe for the hot case. decorateSubagentAnchors leaves a root with no
+// descendants and no rounds untouched, and both are reached through a
+// child row, so a tool call that is not a resume carrier and has no
+// child decorates to itself: the write's read-back is the page read.
+// Every other admitted row still needs ListWireItems. The probe is the
+// one subagentLaunchFilterFor makes, on idx_items_parent, local rows
+// only: a launch the router wrote sits past the import cursor, and an
+// import refresh refuses such a thread (sessionimport.Diverged), so it
+// can never gain imported children.
+func (s *Store) ItemReadNeedsDecoration(item Item) (bool, error) {
+	if !ItemReadIsDecorated(item) {
+		return false, nil
+	}
+	if item.Kind != "tool_call" || item.PayloadKind == "proposed_plan" || transcriptRootFromMeta(item.Meta) != "" {
+		return true, nil
+	}
+	var hasChild int
+	if err := s.reader().QueryRow(
+		`SELECT EXISTS(
+		    SELECT 1 FROM items child
+		     WHERE child.thread_id = ? AND child.parent_id = ? AND child.parent_id <> ''
+		)`, item.ThreadID, item.ID,
+	).Scan(&hasChild); err != nil {
+		return false, fmt.Errorf("store: probe children of %s/%s: %w", item.ThreadID, item.ID, err)
+	}
+	return hasChild != 0, nil
+}
+
+// ListWireItems reads the named rows exactly as a page would: hydrated
+// and decorated, in one read transaction, so each row's content and its
+// `rev` describe one snapshot. Missing ids are simply absent from the
+// result. Rows come back in timeline order, which keeps a parent ahead
+// of its children on the wire (the client admits a child in the same
+// batch only behind its parent).
+func (s *Store) ListWireItems(threadID string, ids []string) ([]Item, error) {
+	if len(ids) == 0 {
+		return []Item{}, nil
+	}
+	tx, err := s.reader().BeginTx(context.Background(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("store: begin wire item read for %s: %w", threadID, err)
+	}
+	defer tx.Rollback()
+	return s.listWireItemsTx(tx, threadID, ids)
+}
+
+func (s *Store) listWireItemsTx(q sqlQueryer, threadID string, ids []string) ([]Item, error) {
+	args := make([]any, 0, len(ids))
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	selectedSQL, selectedArgs := timelineIDSelection(threadID, timelineSelection{
+		Where:     "items.id IN (" + placeholders(len(ids)) + ")",
+		WhereArgs: args,
+	})
+	return s.querySelectedPagedItems(q, threadID, selectedSQL, selectedArgs...)
+}
+
+// ListWireItemsBehind returns, as a page would read them now, every row
+// whose read result the writes of the given rows changed and whose
+// client copy is behind. emitted maps each written row's id to the
+// revision it was last pushed at.
+//
+// The candidate set is the one the history triggers stamped for each
+// write (stampedRowIDsSQL), plus the launch a completion sibling settles
+// (backgroundSettleTriggersSQL rewrites the launch's meta on a completion
+// insert, and the update trigger stamps it from there). A written row is
+// returned only when its stored revision has moved past the pushed one:
+// a sibling write stamped it after its own push. A written row that no
+// longer exists contributes nothing; its parent's copy then costs the
+// client a page, never a false fresh.
+//
+// This is the emit-side half of the per-row revision contract for rows
+// that change without being written (§3.1): the trigger moves the
+// anchor's `rev`, and this read is what lets the emitter push the anchor
+// at that revision so a client's held window can still verify.
+func (s *Store) ListWireItemsBehind(threadID string, emitted map[string]int64) ([]Item, error) {
+	if len(emitted) == 0 {
+		return []Item{}, nil
+	}
+	tx, err := s.reader().BeginTx(context.Background(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("store: begin behind wire item read for %s: %w", threadID, err)
+	}
+	defer tx.Rollback()
+
+	candidates := make(map[string]struct{})
+	current := make(map[string]int64, len(emitted))
+	for id := range emitted {
+		var parentID, completionOf string
+		var rev int64
+		err := tx.QueryRow(
+			`SELECT parent_id, completion_of, rev FROM items WHERE thread_id = ? AND id = ?`,
+			threadID, id,
+		).Scan(&parentID, &completionOf, &rev)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("store: resolve written row %s/%s: %w", threadID, id, err)
+		}
+		current[id] = rev
+		if err := collectStampedRowIDs(tx, threadID, id, parentID, candidates); err != nil {
+			return nil, err
+		}
+		if completionOf == "" {
+			continue
+		}
+		var launchParent string
+		err = tx.QueryRow(
+			`SELECT parent_id FROM items WHERE thread_id = ? AND id = ?`,
+			threadID, completionOf,
+		).Scan(&launchParent)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("store: resolve launch %s/%s: %w", threadID, completionOf, err)
+		}
+		if err := collectStampedRowIDs(tx, threadID, completionOf, launchParent, candidates); err != nil {
+			return nil, err
+		}
+	}
+	ids := make([]string, 0, len(candidates))
+	for id := range candidates {
+		if pushed, written := emitted[id]; written {
+			if rev, exists := current[id]; !exists || rev == pushed {
+				continue
+			}
+		}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return []Item{}, nil
+	}
+	return s.listWireItemsTx(tx, threadID, ids)
+}
+
+// stampedRowIDsByParamsSQL is stampedRowIDsSQL with the written row's
+// coordinates as parameters: the one statement the triggers and
+// ListWireItemsBehind share (TestStampedRowIDsByParamsProbesIndexes pins
+// its plan).
+var stampedRowIDsByParamsSQL = stampedRowIDsFor("?1", "?2", "?3")
+
+func collectStampedRowIDs(q sqlQueryer, threadID, itemID, parentID string, into map[string]struct{}) error {
+	rows, err := q.Query(stampedRowIDsByParamsSQL, threadID, itemID, parentID)
+	if err != nil {
+		return fmt.Errorf("store: select rows stamped by %s/%s: %w", threadID, itemID, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return fmt.Errorf("store: scan row stamped by %s/%s: %w", threadID, itemID, err)
+		}
+		into[id] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("store: iterate rows stamped by %s/%s: %w", threadID, itemID, err)
+	}
+	return nil
+}

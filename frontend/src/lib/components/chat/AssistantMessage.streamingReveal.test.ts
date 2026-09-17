@@ -315,7 +315,7 @@ describe('assistant streaming reveal integration', () => {
       threadId: item.threadId,
       itemId: item.id,
       kind: 'assistant_text',
-      patch: { status: 'completed', updatedAt: 4 },
+      patch: { rev: 0, status: 'completed', updatedAt: 4 },
     });
     await drain();
 

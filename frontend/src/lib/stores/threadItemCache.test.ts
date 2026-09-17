@@ -9,6 +9,7 @@ import {
 
 function makeItem(id: string, turnIndex = 0, itemIndex = 0): Item {
   return {
+    rev: 0,
     id,
     threadId: 't',
     turnIndex,

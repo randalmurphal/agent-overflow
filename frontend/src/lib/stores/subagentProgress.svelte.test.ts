@@ -70,6 +70,7 @@ describe('subagentProgress', () => {
 describe('Codex runtime hydration', () => {
   beforeEach(resetForTest);
   const agent = (threadId = 't1'): Item => ({
+    rev: 0,
     threadId, id: 'spawn', kind: 'tool_call', toolName: 'collab_agent', role: 'assistant',
     turnIndex: 0, itemIndex: 0, status: 'completed', summary: 'Worker', createdAt: 1, updatedAt: 2,
   });

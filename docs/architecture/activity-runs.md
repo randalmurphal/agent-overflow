@@ -969,11 +969,14 @@ without it the pass either bails as a no-op or is never scheduled, and the
 window the reader left stays retained until an unrelated outer scroll. Each
 bump is one deliberate action (a toggle, a chunk, a jump), never a delta.
 
-`nodeSignature` is
-`A:{runId}:{c|o}:{childCount}:{mountedFrom}:{mountedRows}`, shape and window
-included, because both change a sub-cap run's height. Two shape letters, read
-straight off `collapsed`: `c` is a closed run (its header alone), `o` an open one
-(header over clip).
+`nodeSignature` reads the shape straight off `collapsed`. An open run signs
+`A:{firstMemberId}:o:{childCount}:{mountedFrom}:{mountedRows}`, membership and
+window included, because both change a sub-cap run's height. Every closed run
+signs the one shared key `A:c` (`CLOSED_ACTIVITY_RUN_SIGNATURE`): a closed run is
+its one-line header alone, so its height belongs to the geometry bucket, not to
+the run, and the tail run that was captured open at a switch-away (held by
+`openedLive`) resolves exactly on the reopen that renders it closed, from any
+closed run the bucket measured before.
 
 Deliberately not three, and liveness is not a letter. It was resolved into
 `collapsed` once per pass, so a run rendering open while it works signs `o` like

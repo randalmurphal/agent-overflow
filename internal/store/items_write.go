@@ -77,6 +77,22 @@ func classifyStreamingUpdateMissTx(tx *sql.Tx, threadID string, id string, opera
 	return ErrItemSettled
 }
 
+// readItemRevTx re-reads one row's stamped revision. Paths that select
+// rows, mutate them in Go and return the mutated structs use it after the
+// write: `rev` is assigned by the trigger, so the struct they selected
+// carries the value from BEFORE their own update, and an event emitted
+// from it would tell a client its copy is current when it is one write
+// behind.
+func readItemRevTx(tx *sql.Tx, threadID, id string) (int64, error) {
+	var rev int64
+	if err := tx.QueryRow(
+		`SELECT rev FROM items WHERE thread_id = ? AND id = ?`, threadID, id,
+	).Scan(&rev); err != nil {
+		return 0, fmt.Errorf("store: read item revision %s/%s: %w", threadID, id, err)
+	}
+	return rev, nil
+}
+
 func readBackItemTx(tx *sql.Tx, threadID string, id string) (Item, error) {
 	row := tx.QueryRow(
 		`SELECT `+itemColumns+`
@@ -964,7 +980,16 @@ type ItemPartialUpdate struct {
 // UpdateItemFields writes only the non-nil fields from update onto the
 // existing row identified by (threadID, id). Returns an error if the
 // row does not exist or no fields were specified.
-func (s *Store) UpdateItemFields(threadID, id string, update ItemPartialUpdate) error {
+//
+// It returns the row's new `rev`, read inside the same transaction as the
+// write. The wire patch this feeds (triage emitItemPatch) describes exactly
+// the content this statement left behind, so its revision has to be read
+// under the same lock: a rev fetched afterwards could belong to a LATER
+// write, which would let a client pair newer-looking evidence with older
+// content and earn a false `fresh` from window verification. Returning it
+// is the enforcement — a patch emitter cannot reach the write without
+// receiving the revision that goes with it.
+func (s *Store) UpdateItemFields(threadID, id string, update ItemPartialUpdate) (int64, error) {
 	setClauses := make([]string, 0, 5)
 	args := make([]any, 0, 7)
 	if update.Status != nil {
@@ -988,32 +1013,36 @@ func (s *Store) UpdateItemFields(threadID, id string, update ItemPartialUpdate) 
 		args = append(args, *update.UpdatedAt)
 	}
 	if len(setClauses) == 0 {
-		return fmt.Errorf("store: update item fields %s/%s: no fields specified", threadID, id)
+		return 0, fmt.Errorf("store: update item fields %s/%s: no fields specified", threadID, id)
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("store: begin update item fields %s/%s: %w", threadID, id, err)
+		return 0, fmt.Errorf("store: begin update item fields %s/%s: %w", threadID, id, err)
 	}
 	defer tx.Rollback()
 	if err := requireMutableItemTx(tx, threadID, id, "store: update item fields"); err != nil {
-		return err
+		return 0, err
 	}
 	args = append(args, threadID, id)
 	query := "UPDATE items SET " + strings.Join(setClauses, ", ") + " WHERE thread_id = ? AND id = ?"
 	result, err := tx.Exec(query, args...)
 	if err != nil {
-		return fmt.Errorf("store: update item fields %s/%s: %w", threadID, id, err)
+		return 0, fmt.Errorf("store: update item fields %s/%s: %w", threadID, id, err)
 	}
 	if err := requireRowsAffected(
 		result,
 		fmt.Sprintf("store: update item fields %s/%s", threadID, id),
 	); err != nil {
-		return err
+		return 0, err
+	}
+	rev, err := readItemRevTx(tx, threadID, id)
+	if err != nil {
+		return 0, err
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("store: commit update item fields %s/%s: %w", threadID, id, err)
+		return 0, fmt.Errorf("store: commit update item fields %s/%s: %w", threadID, id, err)
 	}
-	return nil
+	return rev, nil
 }
 
 // AppendCompletionItem writes the second row of a backgrounded tool-call

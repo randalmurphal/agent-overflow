@@ -75,7 +75,7 @@ it.each(Array.from({ length: 24 }, (_, seed) => seed + 1))(
     }
     if (seed % 2) {
       applyItemStreamEvent({ action: 'patch', threadId: thread.id, itemId: prose.id,
-        kind: prose.kind, patch: { status: 'completed', summary: text, updatedAt: ++time } });
+        kind: prose.kind, patch: { rev: 0, status: 'completed', summary: text, updatedAt: ++time } });
     } else {
       applyItemStreamEvent({ action: 'upsert', threadId: thread.id,
         item: { ...prose, status: 'completed', summary: text, updatedAt: ++time } });

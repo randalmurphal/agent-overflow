@@ -1,7 +1,8 @@
+import type { Item } from '../types/models';
 import type { TimelineNode } from './subagentGrouping';
 
 // Per-row content signature for the timeline virtualizer's size-priors
-// replay (utils/virtual/priors.ts, `SizePriorsEntry.rows`). Changes
+// replay (utils/virtual/priors.ts, `SizePriorsBucket.rows`). Changes
 // whenever a row's measured height could change for a reason OTHER than
 // scroll-pane width or row-UI expansion state — i.e. the node's
 // STRUCTURE (kind, key, membership) or a leaf's CONTENT (text length,
@@ -18,7 +19,7 @@ import type { TimelineNode } from './subagentGrouping';
 // each row independently by its OWN signature fixes this: the boot
 // window's rows are a SUFFIX subset of a larger captured window, and each
 // one resolves independently against the shared per-row map
-// (`SizePriorsEntry.rows`) instead of requiring the whole window to
+// (`SizePriorsBucket.rows`) instead of requiring the whole window to
 // match. The joined function was deleted once this was its only
 // consumer (`components/chat/timelineSizePriors.svelte.ts`).
 //
@@ -49,28 +50,56 @@ import type { TimelineNode } from './subagentGrouping';
 // tracks how many rows it folds; an expanded group differs in
 // `expansionSig` instead, gated at the entry level, not here).
 //
-// Leaf and read_group signatures are memoized per NODE. Both node kinds
-// are cached by the projection (`subagentGrouping.ts` / `readGrouping.ts`)
-// and every input here is immutable for the node's lifetime: a leaf's
-// `item` is fixed at mint and the store replaces the Item — minting a
-// fresh leaf — on any write, and a read_group's members likewise re-mint
-// the node. So the memo needs no invalidation; entries die with their
-// nodes. Group/wait_group nodes are minted fresh per pass (a memo would
+// A leaf is signed by the row the store holds NOW, resolved through
+// `currentItem`, never by `node.item`. The projection rebuilds its nodes
+// only on a structural change (`pane.timelineRevision`), while the store
+// replaces the Item on every write, structural or not: after a
+// streaming row settles (status, summary, `updatedAt` all move, structure
+// does not) the leaf node still carries the streaming-era Item, and the
+// row on screen, which renders the store's row, has the settled height.
+// Signing that height with the stale Item would store it under a key no
+// later mount looks up. `getItemById` is the same resolution every row
+// component and the projection's `currentTimelineLeafItem` use.
+//
+// Leaf signatures are memoized per resolved ITEM, read_group signatures
+// per NODE. Both keys are immutable for the object's lifetime: the store
+// never mutates a row's signed fields in place (`adoptRevIfEqual` adopts
+// only `rev`, which is not signed), and a read_group's members re-mint
+// the node. So neither memo needs invalidation; entries die with their
+// objects. Group/wait_group nodes are minted fresh per pass (a memo would
 // never hit) and an activity_run's inputs include stamps mutated after
 // mint (`collapsed`, the mount window), so those compute directly.
 // The priors capture calls this for every row in the window on a bounded
 // interim cadence while streaming; the per-call string builds were a
 // visible line of the 2026-08-25 allocation profile.
+const leafSignatureByItem = new WeakMap<Item, string>();
 const signatureByNode = new WeakMap<TimelineNode, string>();
 
-export function nodeSignature(node: TimelineNode): string {
+/**
+ * Shape key of every closed activity run. A closed run renders its header
+ * alone, and that header is one flex line (`ActivityRunHeader.svelte`
+ * truncates its counts), so its height is a property of the geometry
+ * bucket, not of the run: every closed run in a bucket measures the same
+ * px whatever its membership or position. Sharing one key is what lets a
+ * run that was captured OPEN (the tail run at the switch-away after a
+ * turn, held open by `openedLive`) resolve exactly on the reopen that
+ * renders it closed: the registry's hold dies with the mount, the run
+ * comes back at the thread default, and the key any earlier closed run in
+ * the same bucket measured under answers for it.
+ */
+export const CLOSED_ACTIVITY_RUN_SIGNATURE = 'A:c';
+
+export function nodeSignature(
+  node: TimelineNode,
+  currentItem: (itemId: string) => Item | undefined,
+): string {
   switch (node.kind) {
     case 'leaf': {
-      const cached = signatureByNode.get(node);
+      const item = currentItem(node.item.id) ?? node.item;
+      const cached = leafSignatureByItem.get(item);
       if (cached !== undefined) return cached;
-      const item = node.item;
       const signature = `L:${item.id}:${item.status}:${item.summary.length}:${item.updatedAt}`;
-      signatureByNode.set(node, signature);
+      leafSignatureByItem.set(item, signature);
       return signature;
     }
     case 'group':
@@ -97,7 +126,12 @@ export function nodeSignature(node: TimelineNode): string {
       // it is resolved once per pass, liveness already folded in
       // (`ActivityRunIdentity.collapsedFor`), so nothing here has to re-decide
       // whether a live run counts as open.
-      return `A:${node.runId}:${node.collapsed ? 'c' : 'o'}:${node.children.length}:${node.mountedFrom}:${node.mountedRows}`;
+      if (node.collapsed) return CLOSED_ACTIVITY_RUN_SIGNATURE;
+      // Identity is the first member id, NOT `runId`: run ids are minted by
+      // the pane registry and re-minted on every mount (the registry clears
+      // on a thread switch), so a runId-keyed prior could never replay. The
+      // member count already signs a changed membership.
+      return `A:${node.memberItemIds[0] ?? ''}:o:${node.children.length}:${node.mountedFrom}:${node.mountedRows}`;
     default: {
       // Exhaustiveness guard: a new TimelineNode kind must extend the
       // signature, not silently sign as an empty/identical row (which

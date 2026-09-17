@@ -14,7 +14,7 @@ function patch(pane: ReturnType<typeof createThreadPane>, itemId: string, summar
     threadId: 'thread-1',
     itemId,
     kind: 'assistant_text',
-    patch: { summary, updatedAt: 2 },
+    patch: { rev: 0, summary, updatedAt: 2 },
   });
 }
 

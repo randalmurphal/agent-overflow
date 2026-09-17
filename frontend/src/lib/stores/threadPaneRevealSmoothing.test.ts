@@ -505,7 +505,7 @@ describe('reveal smoothing', () => {
           threadId: 'thread-drain',
           itemId: 'think:0:0',
           kind: 'thinking',
-          patch: { status: 'completed', summary: fullText, updatedAt: 3 },
+          patch: { rev: 0, status: 'completed', summary: fullText, updatedAt: 3 },
         });
 
         // Drain. With per-tick cap = 14 chars, ~300 chars takes ~22
@@ -581,7 +581,7 @@ describe('reveal smoothing', () => {
           threadId: 'thread-think-settle',
           itemId: 'think:0:0',
           kind: 'thinking',
-          patch: { status: 'completed', summary: full.slice(-400), updatedAt: 3 },
+          patch: { rev: 0, status: 'completed', summary: full.slice(-400), updatedAt: 3 },
         });
 
         // Smoother survives; the patch neither snapped the reveal nor
@@ -770,7 +770,7 @@ describe('reveal smoothing', () => {
           threadId: 'thread-tail-cleanup',
           itemId: 'think:0:0',
           kind: 'thinking',
-          patch: { status: 'completed', summary: fullText, updatedAt: 3 },
+          patch: { rev: 0, status: 'completed', summary: fullText, updatedAt: 3 },
         });
         let safety = 500;
         while (clock.pendingCount() > 0 && safety-- > 0) clock.tickFrame(16);
@@ -835,7 +835,7 @@ describe('reveal smoothing', () => {
           threadId: 'thread-bare-status',
           itemId: 'think:0:0',
           kind: 'thinking',
-          patch: { status: 'completed', updatedAt: 3 },
+          patch: { rev: 0, status: 'completed', updatedAt: 3 },
         });
 
         expect(pane.items[0].status).toBe('completed');
@@ -890,6 +890,7 @@ describe('reveal smoothing', () => {
           itemId: 'think:0:0',
           kind: 'thinking',
           patch: {
+            rev: 0,
             status: 'killed',
             summary: '[interrupted] partial reasoning ',
             updatedAt: 3,
@@ -936,7 +937,7 @@ describe('reveal smoothing', () => {
           threadId: 'thread-remove-tail',
           itemId: 'think:0:0',
           kind: 'thinking',
-          patch: { status: 'completed', updatedAt: 3 },
+          patch: { rev: 0, status: 'completed', updatedAt: 3 },
         });
         let safety = 500;
         while (clock.pendingCount() > 0 && safety-- > 0) clock.tickFrame(16);
@@ -986,7 +987,7 @@ describe('reveal smoothing', () => {
           threadId: 'thread-tail-prune',
           itemId: 'think:0:0',
           kind: 'thinking',
-          patch: { status: 'completed', updatedAt: 3 },
+          patch: { rev: 0, status: 'completed', updatedAt: 3 },
         });
         let safety = 500;
         while (clock.pendingCount() > 0 && safety-- > 0) clock.tickFrame(16);
@@ -1056,7 +1057,7 @@ describe('reveal smoothing', () => {
           threadId: 'thread-divergent-upsert',
           itemId: 'think:0:0',
           kind: 'thinking',
-          patch: { status: 'completed', updatedAt: 3 },
+          patch: { rev: 0, status: 'completed', updatedAt: 3 },
         });
         let safety = 500;
         while (clock.pendingCount() > 0 && safety-- > 0) clock.tickFrame(16);
@@ -1113,7 +1114,7 @@ describe('reveal smoothing', () => {
           threadId: 'thread-divergent-patch',
           itemId: 'think:0:0',
           kind: 'thinking',
-          patch: { status: 'completed', updatedAt: 3 },
+          patch: { rev: 0, status: 'completed', updatedAt: 3 },
         });
         let safety = 500;
         while (clock.pendingCount() > 0 && safety-- > 0) clock.tickFrame(16);
@@ -1123,7 +1124,7 @@ describe('reveal smoothing', () => {
           threadId: 'thread-divergent-patch',
           itemId: 'think:0:0',
           kind: 'thinking',
-          patch: { summary: 'corrected reasoning', updatedAt: 4 },
+          patch: { rev: 0, summary: 'corrected reasoning', updatedAt: 4 },
         });
         expect(pane.items[0].summary).toBe('corrected reasoning');
         expect(pane.liveThinkingTailForItem('think:0:0')).toBeNull();
@@ -1164,7 +1165,7 @@ describe('reveal smoothing', () => {
           threadId: 'thread-reassert',
           itemId: 'think:0:0',
           kind: 'thinking',
-          patch: { status: 'completed', updatedAt: 3 },
+          patch: { rev: 0, status: 'completed', updatedAt: 3 },
         });
         let safety = 500;
         while (clock.pendingCount() > 0 && safety-- > 0) clock.tickFrame(16);
@@ -1174,7 +1175,7 @@ describe('reveal smoothing', () => {
           threadId: 'thread-reassert',
           itemId: 'think:0:0',
           kind: 'thinking',
-          patch: { status: 'completed', summary: pane.items[0].summary, updatedAt: 4 },
+          patch: { rev: 0, status: 'completed', summary: pane.items[0].summary, updatedAt: 4 },
         });
         expect(pane.liveThinkingTailForItem('think:0:0')).toBe('stable reasoning ');
       } finally {
@@ -1218,7 +1219,7 @@ describe('reveal smoothing', () => {
           threadId: 'thread-reseed',
           itemId: 'think:0:0',
           kind: 'thinking',
-          patch: { status: 'completed', updatedAt: 3 },
+          patch: { rev: 0, status: 'completed', updatedAt: 3 },
         });
         let safety = 500;
         while (clock.pendingCount() > 0 && safety-- > 0) clock.tickFrame(16);
@@ -1287,7 +1288,7 @@ describe('reveal smoothing', () => {
           threadId: 'thread-stale-reseed',
           itemId: 'think:0:0',
           kind: 'thinking',
-          patch: { status: 'completed', updatedAt: 3 },
+          patch: { rev: 0, status: 'completed', updatedAt: 3 },
         });
         let safety = 500;
         while (clock.pendingCount() > 0 && safety-- > 0) clock.tickFrame(16);
@@ -1566,7 +1567,7 @@ describe('reveal smoothing', () => {
           threadId: 'thread-equal-text',
           itemId: 'text:0:0',
           kind: 'assistant_text',
-          patch: { status: 'completed', summary: 'hello world ', updatedAt: 3 },
+          patch: { rev: 0, status: 'completed', summary: 'hello world ', updatedAt: 3 },
         });
 
         expect(pane.items[0].status).toBe('completed');
@@ -1618,7 +1619,7 @@ describe('reveal smoothing', () => {
           threadId: 'thread-snap-nosum',
           itemId: 'text:0:0',
           kind: 'assistant_text',
-          patch: { status: 'killed', updatedAt: 3 },
+          patch: { rev: 0, status: 'killed', updatedAt: 3 },
         });
         expect(pane.items[0].status).toBe('killed');
         // The snap revealed everything; the no-summary patch must keep it.
@@ -1738,7 +1739,7 @@ describe('reveal smoothing', () => {
           threadId: 'thread-vis-b',
           itemId: 'text:0:0',
           kind: 'assistant_text',
-          patch: { status: 'completed', summary: full, updatedAt: 3 },
+          patch: { rev: 0, status: 'completed', summary: full, updatedAt: 3 },
         });
         // Bug shape on return WITHOUT the snap: status is completed but the
         // text has not been revealed, and a pending rAF would drain it slowly.

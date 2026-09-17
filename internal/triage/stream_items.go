@@ -187,6 +187,25 @@ func eventMetaBool(meta json.RawMessage, key string) bool {
 	return json.Unmarshal(fields[key], &value) == nil && value
 }
 
+// blankedStreamingWireRow is the wire copy of a row whose text the client
+// is about to receive as deltas: no summary, streaming status, and no
+// revision stamp.
+//
+// The three go together, which is why they are one helper. Blanking the
+// summary is what routes the content through the delta path so it
+// animates; the row is then NOT what a read of SQLite returns, and a wire
+// row that is not the stored row must not carry the stored row's revision
+// (store.UnstampedItemRev). A client folds these events into a row it
+// holds and only gets back to a copy of the stored row when the settle
+// patch lands with the real revision; until then a held window containing
+// this row must not be provable fresh.
+func blankedStreamingWireRow(persisted store.Item) store.Item {
+	persisted.Summary = ""
+	persisted.Status = statusStreaming
+	persisted.Rev = store.UnstampedItemRev
+	return persisted
+}
+
 // emitStreamingBlockStart persists a new streaming text/thinking row (with
 // its optional payload) for history / mid-stream restore, then emits row
 // creation with an EMPTY summary and ships the first chunk as a delta.
@@ -214,8 +233,7 @@ func (r *Router) emitStreamingBlockStart(
 	if err != nil {
 		return err
 	}
-	persisted.Summary = ""
-	r.emitItemUpsert(persisted)
+	r.emitItemUpsert(blankedStreamingWireRow(persisted))
 	r.emitItemDelta(ItemDeltaEvent{
 		ThreadID:  persisted.ThreadID,
 		ItemID:    persisted.ID,
@@ -259,10 +277,7 @@ func (r *Router) persistCompletedBlockEmitStreaming(
 	if err != nil {
 		return err
 	}
-	wire := persisted
-	wire.Summary = ""
-	wire.Status = statusStreaming
-	r.emitItemUpsert(wire)
+	r.emitItemUpsert(blankedStreamingWireRow(persisted))
 	r.emitItemDelta(ItemDeltaEvent{
 		ThreadID:  persisted.ThreadID,
 		ItemID:    persisted.ID,
@@ -271,7 +286,7 @@ func (r *Router) persistCompletedBlockEmitStreaming(
 		UpdatedAt: persisted.UpdatedAt,
 	})
 	completed := statusCompleted
-	r.emitItemPatch(persisted.ThreadID, persisted.ID, persisted.Kind, ItemPatchFields{
+	r.emitItemPatch(persisted.ThreadID, persisted.ID, persisted.Kind, persisted.Rev, ItemPatchFields{
 		Status:    &completed,
 		Summary:   &persisted.Summary,
 		UpdatedAt: &persisted.UpdatedAt,

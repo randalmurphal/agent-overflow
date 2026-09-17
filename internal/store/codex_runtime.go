@@ -94,6 +94,11 @@ func (s *Store) retireCodexBackgroundRuntime(threadID string, summarise func(str
 		); err != nil {
 			return nil, fmt.Errorf("store: retire Codex background item %s: %w", item.ID, err)
 		}
+		// The rows were selected before the UPDATE, so their revision is
+		// the pre-write one. These structs are emitted to clients.
+		if item.Rev, err = readItemRevTx(tx, item.ThreadID, item.ID); err != nil {
+			return nil, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("store: commit Codex background runtime retirement: %w", err)

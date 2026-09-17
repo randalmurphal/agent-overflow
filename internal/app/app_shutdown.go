@@ -388,6 +388,7 @@ func (a *App) Shutdown(ctx context.Context) error {
 		drained := make(chan struct{})
 		go func() {
 			a.triage.WaitForPendingSettles()
+			a.triage.DrainWireItemRefresh()
 			close(drained)
 		}()
 		select {

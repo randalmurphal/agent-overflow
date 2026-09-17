@@ -75,6 +75,7 @@
   import { buildSendOptions } from '../../utils/sendOptions';
   import { registerComposerDraft } from '../../stores/composerDraftRegistry.svelte';
   import { getThreadById, prependThread } from '../../stores/threads.svelte';
+  import { UNSTAMPED_ITEM_REV } from '../../stores/threadWindowDigest';
   import { getActiveTurn, isSendInFlight } from '../../stores/threadStatuses.svelte';
   import { isThreadInterruptPending } from '../../stores/threadInterruptState.svelte';
   import { getFocusedPaneId } from '../../stores/panes.svelte';
@@ -688,6 +689,8 @@
       meta: JSON.stringify({ sendId: sendOptions.sendId }),
       createdAt: now,
       updatedAt: now,
+      // A locally minted row is not a copy of any stored row.
+      rev: UNSTAMPED_ITEM_REV,
     };
     // The pane this send belongs to, captured alongside `threadId`: the
     // rollback below runs after an await, and both the pane binding and

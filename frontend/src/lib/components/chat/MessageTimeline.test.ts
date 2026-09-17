@@ -153,7 +153,7 @@ describe('<MessageTimeline>', () => {
       threadId: 'thread-1',
       itemId: 'text:0:0',
       kind: 'assistant_text',
-      patch: { summary: 'second version', updatedAt: 2 },
+      patch: { rev: 0, summary: 'second version', updatedAt: 2 },
     });
     await tick();
 
@@ -1640,7 +1640,7 @@ describe('<MessageTimeline>', () => {
         // frame count so the assertion proves "the gate dropped",
         // independent of the reveal rate constants.
         pane.applyItemPatch({ threadId: 'thread-1', itemId: 'think:0:1', kind: 'thinking',
-          patch: { status: 'completed', updatedAt: 4 } });
+          patch: { rev: 0, status: 'completed', updatedAt: 4 } });
         for (let i = 0; i < 200 && pane.revealBoundary !== null; i++) clock.tickFrame(16);
         await tick();
 

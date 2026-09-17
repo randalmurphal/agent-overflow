@@ -52,7 +52,7 @@ it.each(['patch', 'upsert', 'background-sibling', 'prose-status-last', 'mid-drai
     }
     const finishProse = () => applyItemStreamEvent({ action: 'patch', threadId,
       itemId: prose.id, kind: prose.kind,
-      patch: { status: 'completed', summary: SUMMARY, updatedAt: 4 } });
+      patch: { rev: 0, status: 'completed', summary: SUMMARY, updatedAt: 4 } });
     if (completion !== 'prose-status-last') finishProse();
 
     const command = makeItem({ id: 'command', threadId, turnIndex: 100, itemIndex: 1,
@@ -74,7 +74,7 @@ it.each(['patch', 'upsert', 'background-sibling', 'prose-status-last', 'mid-drai
           expect(scrollEl.querySelector('[data-item-id="command"]')).toBeNull();
         }
         applyItemStreamEvent({ action: 'patch', threadId, itemId: command.id, kind: command.kind,
-          patch: { status: 'completed', updatedAt: 3 } });
+          patch: { rev: 0, status: 'completed', updatedAt: 3 } });
       }
     }
     if (completion === 'prose-status-last') finishProse();

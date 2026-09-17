@@ -116,6 +116,13 @@ export interface ScrollIntentDeps {
   setIsAtBottom(next: boolean): void;
   escaped(): boolean;
   setEscaped(next: boolean): void;
+  /**
+   * Restore-snap consent (see the section comment in createScrollIntent).
+   * Owned by the controller like the escape flag so its public
+   * `restorePending` can tell the defensive escape from a reader's.
+   */
+  restoreConsentArmed(): boolean;
+  setRestoreConsentArmed(next: boolean): void;
   /** Trace-data reads only. */
   isNearBottom(): boolean;
   pauseDepth(): number;
@@ -237,8 +244,10 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
   // a user escape cannot clobber it. This is
   // the load-bearing distinguisher between "the user has explicitly
   // escaped" and "armRestoreSnap just defensively set escape=true
-  // while preparing the new thread for restore."
-  let restoreSnapArmed = false;
+  // while preparing the new thread for restore." The flag lives in the
+  // controller (`deps.restoreConsentArmed`), which publishes it as
+  // `restorePending` so the scroll-to-bottom chip cannot appear over a
+  // thread that has no reader position yet.
 
   function clearRecentDownIntent(opts: { bumpVersion?: boolean } = {}): void {
     recentDownIntentUntil = 0;
@@ -305,7 +314,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     deps.onScrollInput?.();
     if (!deps.escaped()) return;
     clearProgrammaticScrollState();
-    restoreSnapArmed = false;
+    deps.setRestoreConsentArmed(false);
     recentDownIntentUntil = nowMs() + RECENT_DOWN_INTENT_WINDOW_MS;
     recentDownIntentVersion += 1;
     if (recentDownIntentClearTimer) clearTimeout(recentDownIntentClearTimer);
@@ -405,7 +414,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
       // clear is the right default — a stale consent left over from an
       // earlier path can't slip through, and a legitimate arm survives
       // because it is written after this clear.
-      restoreSnapArmed = false;
+      deps.setRestoreConsentArmed(false);
     }
     if (deps.escaped() === next) return;
     const previousIsAtBottom = deps.isAtBottom();
@@ -434,7 +443,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     // poll) cannot get the ordering wrong — see the interface doc for why
     // arm and consume must stay separate calls.
     setEscapedFromLock(true);
-    restoreSnapArmed = true;
+    deps.setRestoreConsentArmed(true);
     if (isUiRenderTraceEnabled()) trace('scroll.restoreSnap.arm', () => ({
       isAtBottomState: deps.isAtBottom(),
       escapedFromLockState: deps.escaped(),
@@ -755,7 +764,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     clearScrollbarDragSession();
     touchStartY = null;
     lastObservedScrollTopForRestick = -1;
-    // DELIBERATELY leave `restoreSnapArmed` untouched. attach() calls
+    // DELIBERATELY leave the restore consent untouched. attach() calls
     // detach() up-front when scrollEl / contentEl change, and on first
     // mount that wipe ran BETWEEN the consumer's $effect.pre arm and
     // the restore $effect's forceStick({reason:'restore'}), making
@@ -774,9 +783,9 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     detach,
     setEscapedFromLock,
     armRestoreSnap,
-    restoreConsentArmed: () => restoreSnapArmed,
+    restoreConsentArmed: () => deps.restoreConsentArmed(),
     clearRestoreConsent: () => {
-      restoreSnapArmed = false;
+      deps.setRestoreConsentArmed(false);
     },
     clearRecentDownIntent: () => clearRecentDownIntent(),
     clearScrollbarDragSession: () => clearScrollbarDragSession(),
@@ -786,7 +795,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
       recentDownIntentUntil: Math.round(recentDownIntentUntil),
       scrollbarDragSessionActive,
       scrollbarDragSessionVersion,
-      restoreSnapArmed,
+      restoreSnapArmed: deps.restoreConsentArmed(),
     }),
   };
 }

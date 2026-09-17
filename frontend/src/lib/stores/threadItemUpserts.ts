@@ -3,7 +3,7 @@ import { rowUiRetentionChanged } from '../utils/rowUiRetention';
 import { activityRunSummaryFieldsChanged } from '../utils/activityRunGrouping';
 import { itemTimelineStructureChanged } from '../utils/timelineStructure';
 import { userMessageIdentity } from '../utils/userMessageIdentity';
-import { compareItemsByTimelinePosition, compareItemToCursor, cursorsAfterItemUpserts, isItemStatusRegression, itemsAreEqual, type TimelineCursorLike } from './threadItems';
+import { adoptRevIfEqual, compareItemsByTimelinePosition, compareItemToCursor, cursorsAfterItemUpserts, isItemStatusRegression, type TimelineCursorLike } from './threadItems';
 
 export interface ApplyItemUpsertsToWindowOptions {
   current: readonly Item[];
@@ -148,8 +148,10 @@ export function applyItemUpsertsToWindow({
       // through `groupedNodes`, the Virtualizer's `data` prop, and the
       // mounted row components — observed as a 103 px row oscillation
       // every ~115 ms in plan-ready threads. See `itemsAreEqual` for
-      // the fields compared.
-      if (itemsAreEqual(previous, item)) continue;
+      // the fields compared. The skip MUTATES the held row's `rev` in
+      // place to the incoming one: "identical content" means identical
+      // to a reader, and the revision has no reader.
+      if (adoptRevIfEqual(previous, item)) continue;
       if (previous.id !== item.id) {
         if (!optimisticItemIds?.has(previous.id) || userMessageIdentity(previous) !== identity) {
           throw new Error(`Conflicting confirmation ids for send: ${identity}`);

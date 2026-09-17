@@ -376,8 +376,8 @@ describe('threadItemWindow', () => {
     // memory housekeeping (a stale row is refused on its own signature mismatch
     // anyway), but they free the entry immediately instead of waiting for the
     // LRU. Guard each call site so a future edit that drops one is caught.
-    const seedEntry = {
-      width: 0,
+    const seedGeometry = { width: 800, typography: 'f15/sgeist/mgeist/c1/w1' };
+    const seedBucket = {
       expansionSig: '',
       rows: new Map([['seed', 42]]),
     };
@@ -388,7 +388,7 @@ describe('threadItemWindow', () => {
 
     it('evicts the priors when an item is removed by id', async () => {
       const pane = await buildPane(makeThread({ id: 't' }), [makeItem({ id: 'x', threadId: 't' })]);
-      setThreadSizePriors('t', { ...seedEntry });
+      setThreadSizePriors('t', seedGeometry, { ...seedBucket });
       expect(peekThreadSizePriorsForTest('t')).toBeTruthy();
       pane.removeItemById('x', 't');
       expect(peekThreadSizePriorsForTest('t')).toBeUndefined();
@@ -408,7 +408,7 @@ describe('threadItemWindow', () => {
         makeItem({ id: 'user:1', threadId: 'other' }),
       ]);
       await pane.switchThread(makeThread({ id: 'other' }));
-      setThreadSizePriors('other', { ...seedEntry });
+      setThreadSizePriors('other', seedGeometry, { ...seedBucket });
       expect(pane.items.map((it) => it.id)).toEqual(['user:1']);
 
       expect(pane.removeItemById('user:1', 't')).toBeNull();
@@ -421,14 +421,14 @@ describe('threadItemWindow', () => {
       const pane = await buildPane(makeThread({ id: 't' }), [
         makeItem({ id: 'x', threadId: 't', turnIndex: 1 }),
       ]);
-      setThreadSizePriors('t', { ...seedEntry });
+      setThreadSizePriors('t', seedGeometry, { ...seedBucket });
       pane.removeItemsFromTurn(1, pane.threadId!);
       expect(peekThreadSizePriorsForTest('t')).toBeUndefined();
     });
 
     it('evicts the priors on a same-thread reswitch', async () => {
       const pane = await buildPane(makeThread({ id: 't' }));
-      setThreadSizePriors('t', { ...seedEntry });
+      setThreadSizePriors('t', seedGeometry, { ...seedBucket });
       await pane.switchThread(makeThread({ id: 't' }));
       expect(peekThreadSizePriorsForTest('t')).toBeUndefined();
     });
@@ -603,7 +603,7 @@ describe('threadItemWindow', () => {
         threadId: 'thread-1',
         itemId: 'bash',
         kind: 'tool_call',
-        patch: { summary: 'Bash: still working', updatedAt: 1 },
+        patch: { rev: 0, summary: 'Bash: still working', updatedAt: 1 },
       });
       expect(pane.rowUiRetentionRevision).toBe(revision);
 
@@ -611,7 +611,7 @@ describe('threadItemWindow', () => {
         threadId: 'thread-1',
         itemId: 'bash',
         kind: 'tool_call',
-        patch: { status: 'completed', updatedAt: 2 },
+        patch: { rev: 0, status: 'completed', updatedAt: 2 },
       });
       expect(pane.items[0].status).toBe('completed');
       expect(pane.rowUiRetentionRevision).toBe(revision + 1);
@@ -626,7 +626,7 @@ describe('threadItemWindow', () => {
         threadId: 'thread-1',
         itemId: 'row',
         kind: 'tool_call',
-        patch: { status: 'running', updatedAt: 1 },
+        patch: { rev: 0, status: 'running', updatedAt: 1 },
       });
 
       expect(pane.rowUiRetentionRevision).toBe(revision + 1);
@@ -676,7 +676,7 @@ describe('threadItemWindow', () => {
         threadId: 't-wholesale',
         itemId: 'tool',
         kind: 'tool_call',
-        patch: { status: 'completed', updatedAt: 1 },
+        patch: { rev: 0, status: 'completed', updatedAt: 1 },
       });
       expect(pane.activityRuns.wholesaleGeneration).toBe(generation);
 

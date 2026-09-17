@@ -501,6 +501,7 @@ func newTestRouter(t *testing.T) (*Router, *store.Store, *emissionLog) {
 
 	router := NewRouter(st, emit)
 	t.Cleanup(router.flushAllUsage)
+	t.Cleanup(router.DrainWireItemRefresh)
 	return router, st, emissions
 }
 
@@ -4346,7 +4347,7 @@ func TestPersistItemFieldsAndPatch_NoEmitOnStoreError(t *testing.T) {
 	createTestThread(t, st, "t1")
 
 	status := "completed"
-	err := router.persistItemFieldsAndPatch("t1", "nonexistent-item", "assistant_text", store.ItemPartialUpdate{
+	err := router.persistItemFieldsAndPatch(store.Item{ThreadID: "t1", ID: "nonexistent-item", Kind: "assistant_text"}, store.ItemPartialUpdate{
 		Status: &status,
 	})
 	if err == nil {
@@ -4380,7 +4381,7 @@ func TestPersistItemFieldsAndPatch_EmitsPatchOnSuccess(t *testing.T) {
 	newStatus := "completed"
 	newMeta := `{"pathRefs":[]}`
 	newUpdatedAt := now + 1000
-	if err := router.persistItemFieldsAndPatch("t1", "text:0:0", "assistant_text", store.ItemPartialUpdate{
+	if err := router.persistItemFieldsAndPatch(store.Item{ThreadID: "t1", ID: "text:0:0", Kind: "assistant_text"}, store.ItemPartialUpdate{
 		Status:    &newStatus,
 		Meta:      &newMeta,
 		UpdatedAt: &newUpdatedAt,

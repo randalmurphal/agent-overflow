@@ -397,7 +397,7 @@
         if (atBottom) stick.forceStick();
       }}
     />
-    <ScrollToBottomButton visible={!stick.isAtBottom} onClick={() => stick.forceStick()} />
+    <ScrollToBottomButton visible={!stick.restorePending && !stick.isAtBottom} onClick={() => stick.forceStick()} />
   </div>
 
   <div

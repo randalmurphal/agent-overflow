@@ -758,7 +758,7 @@ func TestUpdateItemFieldsPartialUpdate(t *testing.T) {
 	t.Run("status-only preserves other fields", func(t *testing.T) {
 		status := "completed"
 		ts := int64(3000)
-		if err := s.UpdateItemFields("t", "i1", ItemPartialUpdate{
+		if _, err := s.UpdateItemFields("t", "i1", ItemPartialUpdate{
 			Status: &status, UpdatedAt: &ts,
 		}); err != nil {
 			t.Fatalf("update: %v", err)
@@ -783,7 +783,7 @@ func TestUpdateItemFieldsPartialUpdate(t *testing.T) {
 
 	t.Run("meta-only preserves other fields", func(t *testing.T) {
 		meta := `{"pathRefs":[{"path":"foo.go"}]}`
-		if err := s.UpdateItemFields("t", "i1", ItemPartialUpdate{
+		if _, err := s.UpdateItemFields("t", "i1", ItemPartialUpdate{
 			Meta: &meta,
 		}); err != nil {
 			t.Fatalf("update: %v", err)
@@ -809,7 +809,7 @@ func TestUpdateItemFieldsPartialUpdate(t *testing.T) {
 		meta := `{"error":true}`
 		decision := "declined"
 		ts := int64(5000)
-		if err := s.UpdateItemFields("t", "i1", ItemPartialUpdate{
+		if _, err := s.UpdateItemFields("t", "i1", ItemPartialUpdate{
 			Status: &status, Summary: &summary, Meta: &meta, Decision: &decision, UpdatedAt: &ts,
 		}); err != nil {
 			t.Fatalf("update: %v", err)
@@ -836,14 +836,14 @@ func TestUpdateItemFieldsPartialUpdate(t *testing.T) {
 	})
 
 	t.Run("empty update errors", func(t *testing.T) {
-		if err := s.UpdateItemFields("t", "i1", ItemPartialUpdate{}); err == nil {
+		if _, err := s.UpdateItemFields("t", "i1", ItemPartialUpdate{}); err == nil {
 			t.Fatal("expected error for empty update")
 		}
 	})
 
 	t.Run("nonexistent row errors", func(t *testing.T) {
 		status := "completed"
-		if err := s.UpdateItemFields("t", "nonexistent", ItemPartialUpdate{Status: &status}); err == nil {
+		if _, err := s.UpdateItemFields("t", "nonexistent", ItemPartialUpdate{Status: &status}); err == nil {
 			t.Fatal("expected error for nonexistent row")
 		}
 	})
@@ -2431,8 +2431,27 @@ func TestUpsertItemWithPayloadAppendMatchesSequentialPair(t *testing.T) {
 		t.Fatalf("sequential upsert: %v", err)
 	}
 
+	// Rev is compared separately: the pair is two writes and the combined
+	// form is one, so the thread counter lands a step apart by
+	// construction. What both must report is the value their OWN store
+	// stamped on the row, because an item returned with a stale revision
+	// would be emitted as one.
+	combinedRev, sequentialRev := gotCombined.Rev, gotSequential.Rev
+	gotCombined.Rev, gotSequential.Rev = 0, 0
 	if gotCombined != gotSequential {
 		t.Errorf("returned item diverged:\ncombined  = %#v\nsequential = %#v", gotCombined, gotSequential)
+	}
+	for name, pair := range map[string]struct {
+		store *Store
+		rev   int64
+	}{"combined": {combined, combinedRev}, "sequential": {sequential, sequentialRev}} {
+		stored, found, err := pair.store.GetThreadItem("t", "stream")
+		if err != nil || !found {
+			t.Fatalf("%s re-read: found=%v err=%v", name, found, err)
+		}
+		if stored.Rev != pair.rev {
+			t.Errorf("%s returned rev = %d, stored rev = %d", name, pair.rev, stored.Rev)
+		}
 	}
 	for name, s := range map[string]*Store{"combined": combined, "sequential": sequential} {
 		data, err := s.GetPayloadData("t", "pay")

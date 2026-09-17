@@ -55,8 +55,8 @@ export interface TimelineRestoreOptions {
    */
   persistSizePriors(): void;
   /**
-   * Wired to module 2's `maybePersistSizePriors` — the exact capture, for
-   * the final edges that must not be refused by that rate bound.
+   * Wired to module 2's `persistSizePriorsFinal`, the final-edge capture,
+   * refused by neither the rate bound nor the total-size gate.
    */
   persistSizePriorsExact(): void;
   armWarmupWithReset(): void;
@@ -168,6 +168,12 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
     // No separate loading check is needed.
     const listRef = options.getListRef();
     if (!listRef || restoredThreadId !== threadId) return;
+    // A scroll event inside the restore window is not the reader's
+    // position: it is the switch's own motion. The anchor path sets
+    // `restoredThreadId` before its awaits, so the guard above no longer
+    // covers it, and saving here would overwrite the incoming thread's
+    // snapshot with wherever the transaction happens to be mid-flight.
+    if (options.stick.restorePending) return;
     if (options.stick.isAtBottom) {
       setThreadScrollSnapshot(threadId, { kind: 'bottom' });
       return;
@@ -538,6 +544,11 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
       saveScrollSnapshot();
     } finally {
       release();
+      // Every bail path above must consume the consent: left armed, the
+      // chip stays hidden and the controller keeps refusing non-restore
+      // placements. The token guard is because a newer restore may
+      // already have armed its own consent, which this one must not clear.
+      if (token === restoreToken) options.stick.clearRestoreConsent();
     }
   }
 
@@ -604,10 +615,10 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
   function saveSnapshotOnDestroy(): void {
     if (!restoredThreadId) return;
     saveScrollSnapshotForThread(restoredThreadId);
-    // Unmount is a final edge — the pane is closing or being replaced, and
-    // nothing after this will capture. Exact, for the same reason the
-    // switch-away edge is: the rate bound exists to thin a per-frame
-    // cadence, and there is no cadence left here to thin.
+    // Unmount is a final edge: the pane is closing or being replaced, and
+    // nothing after this will capture. Final, for the same reason the
+    // switch-away edge is: the rate bound and size gate exist to thin a
+    // per-frame cadence, and there is no cadence left here to thin.
     options.persistSizePriorsExact();
   }
 

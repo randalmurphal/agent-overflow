@@ -582,6 +582,22 @@ type Item struct {
 	Meta                string `json:"meta,omitempty"`
 	CreatedAt           int64  `json:"createdAt"`
 	UpdatedAt           int64  `json:"updatedAt"`
+	// Rev is the owning thread's history_rev at the moment this row's
+	// read result last changed (docs/architecture/thread-replica-sync.md
+	// §3.1). Two reads of the same (ID, Rev) are byte-identical, except
+	// PayloadPreviewSpans, a derived cache the client version-checks
+	// against the payload content it holds (see bumpHistoryRevForPayloadTx).
+	// That is what lets a client describe a held window by its (id, rev)
+	// pairs instead of shipping the rows back.
+	//
+	// It is stamped only by the item history triggers, never by Go: no
+	// INSERT or UPDATE column list may assign it a value. Imported
+	// history rows read as -1 because they live in shared immutable
+	// chunks with no thread-scoped place to stamp; a window containing
+	// one cannot be verified by digest (see importedItemRevExpr and
+	// UnstampedItemRev, which is the same refusal for a wire row an
+	// emitter altered on purpose).
+	Rev int64 `json:"rev"`
 }
 
 // Payload represents heavy content stored for on-demand loading.

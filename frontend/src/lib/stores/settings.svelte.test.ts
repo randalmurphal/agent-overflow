@@ -4,6 +4,7 @@ import {
   loadSettings,
   resetSettingsForTest,
   resyncSettings,
+  typographySignature,
   updateSetting,
 } from './settings.svelte';
 import type { Settings } from '../types/settings';
@@ -292,6 +293,39 @@ describe('settings store', () => {
       await resyncSettings();
       expect(getSettings().claudeAutoCompactStandardPercent).toBe(23);
       consoleErr.mockRestore();
+    });
+  });
+
+  describe('typographySignature()', () => {
+    // The timeline's row-height priors key their buckets on this string
+    // (utils/virtual/priors.ts), so every setting that rescales a row has
+    // to move it and every setting that does not must leave it alone —
+    // a signature that moves on an unrelated toggle throws away a whole
+    // thread's measured heights on every flip.
+    it('moves for each height-affecting display setting', async () => {
+      const before = typographySignature();
+      for (const [key, value] of [
+        ['fontSize', 18],
+        ['sansFont', 'system'],
+        ['monoFont', 'system'],
+        ['collapseDiffPreviews', false],
+        ['diffWordWrap', false],
+      ] as const) {
+        resetSettingsForTest();
+        setBindingMock('GetSettings', async () => FULL_SETTINGS);
+        await loadSettings();
+        await updateSetting(key, value as never);
+        expect(typographySignature(), key).not.toBe(before);
+      }
+    });
+
+    it('is stable across settings that cannot change a settled row height', async () => {
+      const before = typographySignature();
+      await updateSetting('lowPowerMode', true);
+      await updateSetting('streamingEnabled', false);
+      await updateSetting('paneDensity', 'spacious');
+      await updateSetting('timestampFormat', '24-hour');
+      expect(typographySignature()).toBe(before);
     });
   });
 });

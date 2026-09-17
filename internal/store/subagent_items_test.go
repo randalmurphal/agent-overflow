@@ -897,7 +897,7 @@ func TestSubagentResumeRoundProbeProbesTheParentIndexes(t *testing.T) {
 
 	rootArgs := []any{"loc-launch-2"}
 	sql, args := timelineArms(timelineParityThreadID, timelineSelection{
-		Columns: func(string) string {
+		Columns: func(string, string) string {
 			return `items.parent_id AS root, items.id AS id, items.meta AS meta,
 			        items.turn_index AS turn_index, items.item_index AS item_index`
 		},

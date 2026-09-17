@@ -138,7 +138,7 @@ function createChildChurn(
                 threadId: TID,
                 itemId: id,
                 kind: 'thinking',
-                patch: { status: 'completed', updatedAt: t },
+                patch: { rev: 0, status: 'completed', updatedAt: t },
               });
             }
             s.seq += 1;
@@ -224,7 +224,7 @@ describe('incident 2026-08-29 replay: fat-burst final text + instant settle', ()
               threadId: TID,
               itemId: 'text:4:0',
               kind: 'assistant_text',
-              patch: { status: 'completed', summary: INCIDENT_TEXT_FULL, updatedAt: 120 },
+              patch: { rev: 0, status: 'completed', summary: INCIDENT_TEXT_FULL, updatedAt: 120 },
             }),
         },
       ];
@@ -285,7 +285,7 @@ describe('incident 2026-08-29 replay: fat-burst final text + instant settle', ()
               threadId: TID,
               itemId: 'think:4:2',
               kind: 'thinking',
-              patch: { status: 'completed', summary: INCIDENT_THINK_FULL, updatedAt: 6760 },
+              patch: { rev: 0, status: 'completed', summary: INCIDENT_THINK_FULL, updatedAt: 6760 },
             }),
         },
         {
@@ -303,7 +303,7 @@ describe('incident 2026-08-29 replay: fat-burst final text + instant settle', ()
               threadId: TID,
               itemId: 'text:4:0',
               kind: 'assistant_text',
-              patch: { status: 'completed', summary: INCIDENT_TEXT_FULL, updatedAt: 6781 },
+              patch: { rev: 0, status: 'completed', summary: INCIDENT_TEXT_FULL, updatedAt: 6781 },
             }),
         },
         {
@@ -381,7 +381,7 @@ describe('incident 2026-08-29 replay: fat-burst final text + instant settle', ()
               threadId: TID,
               itemId: 'think:4:2',
               kind: 'thinking',
-              patch: { status: 'completed', summary: INCIDENT_THINK_FULL, updatedAt: 6760 },
+              patch: { rev: 0, status: 'completed', summary: INCIDENT_THINK_FULL, updatedAt: 6760 },
             }),
         },
         {
@@ -399,7 +399,7 @@ describe('incident 2026-08-29 replay: fat-burst final text + instant settle', ()
               threadId: TID,
               itemId: 'text:4:0',
               kind: 'assistant_text',
-              patch: { status: 'completed', summary: INCIDENT_TEXT_FULL, updatedAt: 6781 },
+              patch: { rev: 0, status: 'completed', summary: INCIDENT_TEXT_FULL, updatedAt: 6781 },
             }),
         },
         {
@@ -461,7 +461,7 @@ describe('incident 2026-08-29 replay: fat-burst final text + instant settle', ()
               threadId: TID,
               itemId: 'text:4:0',
               kind: 'assistant_text',
-              patch: { status: 'completed', summary: INCIDENT_TEXT_FULL, updatedAt: 130 },
+              patch: { rev: 0, status: 'completed', summary: INCIDENT_TEXT_FULL, updatedAt: 130 },
             }),
         },
       ];

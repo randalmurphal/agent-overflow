@@ -19,13 +19,19 @@ var ErrItemSettled = errors.New("store: item is no longer streaming")
 // imported branches can share this same scan order without joining the
 // compound timeline_payloads view. Keep both in sync with the Item struct;
 // adding a column means updating these lists, insertItemTx, and scanItemRow.
+//
+// `items.rev` rides last because it is the one column an import arm cannot
+// supply from its own row (imported history reads as -1); keeping it at the
+// tail means a hand-written arm projection appends one expression instead of
+// splicing one into the middle of a positional scan order.
 const itemColumns = `items.id, items.thread_id, items.turn_index, items.item_index,
     items.kind, items.role, items.status, items.summary,
     COALESCE(items.payload_id, ''), COALESCE(payloads.kind, ''), COALESCE(payloads.meta, ''),
     COALESCE(payloads.preview_spans, ''),
     COALESCE(items.input_payload_id, ''),
     items.parent_id, items.is_background, items.completion_of,
-    items.tool_name, items.decision, items.meta, items.created_at, items.updated_at`
+    items.tool_name, items.decision, items.meta, items.created_at, items.updated_at,
+    items.rev`
 
 const itemInsertPrefix = `INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary,
 		payload_id, input_payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
@@ -53,6 +59,7 @@ func scanItemRow(scanner interface{ Scan(...any) error }) (Item, error) {
 		&it.InputPayloadID,
 		&it.ParentID, &isBackground, &it.CompletionOf,
 		&it.ToolName, &it.Decision, &it.Meta, &it.CreatedAt, &it.UpdatedAt,
+		&it.Rev,
 	); err != nil {
 		return Item{}, err
 	}
@@ -164,7 +171,8 @@ const itemColumnsSansPayload = `items.id, items.thread_id, items.turn_index, ite
     items.kind, items.role, items.status, items.summary,
     COALESCE(items.payload_id, ''),
     items.parent_id, items.is_background, items.completion_of,
-    items.tool_name, items.decision, items.meta, items.created_at, items.updated_at`
+    items.tool_name, items.decision, items.meta, items.created_at, items.updated_at,
+    items.rev`
 
 // scanItemRowSansPayload hydrates an Item without the joined payload
 // kind / meta columns. PayloadKind and PayloadMeta are left empty on
@@ -178,6 +186,7 @@ func scanItemRowSansPayload(scanner interface{ Scan(...any) error }) (Item, erro
 		&it.PayloadID,
 		&it.ParentID, &isBackground, &it.CompletionOf,
 		&it.ToolName, &it.Decision, &it.Meta, &it.CreatedAt, &it.UpdatedAt,
+		&it.Rev,
 	); err != nil {
 		return Item{}, err
 	}

@@ -17,6 +17,10 @@ function coldLoadRecords(): unknown[] {
   return getUiRenderTraceRecords().filter((r) => r.label === 'timeline.coldload');
 }
 
+function syncRecords(): unknown[] {
+  return getUiRenderTraceRecords().filter((r) => r.label === 'timeline.coldload.sync');
+}
+
 describe('coldLoadTrace', () => {
   let mockNow = 0;
 
@@ -89,10 +93,36 @@ describe('coldLoadTrace', () => {
     });
   });
 
-  it('paint-source and sync-status stamps with no open session no-op', () => {
+  it('paint-source and sync-status stamps for a pane that never opened one no-op', () => {
     coldLoadPaintSource('pane-nope', 'replica');
     coldLoadSyncStatus('pane-nope', 'gone');
     expect(coldLoadRecords()).toHaveLength(0);
+    expect(syncRecords()).toHaveLength(0);
+  });
+
+  it('reports a sync verdict that lands after the session closed', () => {
+    // The warm gate settles over the replica paint before the answer
+    // returns, so the consolidated record goes out with syncStatus null.
+    coldLoadSwitchStart('pane-1', 'thread-a', 'fetch');
+    coldLoadPaintSource('pane-1', 'replica');
+    mockNow = 8;
+    coldLoadItemsApplied('pane-1', 4, true);
+    mockNow = 30;
+    coldLoadWarmEdge('pane-1', 'thread-a', true, 'quiet');
+    expect(coldLoadRecords()[0]).toMatchObject({ data: { syncStatus: null } });
+
+    mockNow = 45;
+    coldLoadSyncStatus('pane-1', 'fresh');
+
+    // The verdict is not lost: it names the pane, the thread it closed
+    // over, and how far past the close it arrived.
+    expect(coldLoadRecords()).toHaveLength(1);
+    expect(syncRecords()).toEqual([
+      expect.objectContaining({
+        label: 'timeline.coldload.sync',
+        data: { paneId: 'pane-1', threadId: 'thread-a', syncStatus: 'fresh', afterCloseMs: 15 },
+      }),
+    ]);
   });
 
   it('holds a fetch session through the empty-pane warm edge and closes on the post-items one', () => {

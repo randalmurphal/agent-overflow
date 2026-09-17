@@ -23,6 +23,7 @@ const mounted: Array<{ app: object; host: HTMLElement }> = [];
 
 function makeItem(summary: string): Item {
   return {
+    rev: 0,
     id: 'item-1',
     threadId: 'thread-1',
     turnIndex: 0,

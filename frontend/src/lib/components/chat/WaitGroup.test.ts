@@ -256,11 +256,11 @@ describe("<WaitGroup>", () => {
     // describes the pre-completion world.
     pane.applyItemPatch({
       threadId: "thread-1", itemId: "wait-1", kind: "tool_call",
-      patch: { status: "completed", updatedAt: 10 },
+      patch: { rev: 0, status: "completed", updatedAt: 10 },
     });
     pane.applyItemPatch({
       threadId: "thread-1", itemId: "complete-spawn-1", kind: "tool_completion",
-      patch: { summary: "Spawned Galileo -> done", updatedAt: 11 },
+      patch: { rev: 0, summary: "Spawned Galileo -> done", updatedAt: 11 },
     });
     await tick();
 

@@ -5,6 +5,7 @@ import TerminalInteractionRow from './TerminalInteractionRow.svelte';
 
 function makeItem(overrides: Partial<Item> = {}): Item {
   return {
+    rev: 0,
     id: 'waited:pid-42:0:0',
     threadId: 't-1',
     turnIndex: 0,

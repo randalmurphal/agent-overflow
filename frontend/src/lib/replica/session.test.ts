@@ -33,6 +33,7 @@ function freshBackendId(): string {
 
 function item(overrides: Partial<Item> = {}): Item {
   return {
+    rev: 0,
     id: 'i-1',
     threadId: 't-1',
     turnIndex: 0,

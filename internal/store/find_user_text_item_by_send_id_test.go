@@ -185,7 +185,7 @@ func TestSendIdentityLookupHonorsImportedHistoryAndOverrides(t *testing.T) {
 		t.Fatalf("imported identity: found=%v item=%q err=%v", found, row.ID, err)
 	}
 	meta := `{"sendId":"replacement-send"}`
-	if err := s.UpdateItemFields(thread, "import-user", ItemPartialUpdate{Meta: &meta}); err != nil {
+	if _, err := s.UpdateItemFields(thread, "import-user", ItemPartialUpdate{Meta: &meta}); err != nil {
 		t.Fatal(err)
 	}
 	if _, found, err := s.FindUserTextItemBySendID(thread, "original-send"); err != nil || found {
@@ -210,6 +210,9 @@ func TestMigrationV89IndexesExistingSendIdentities(t *testing.T) {
 	if err := applyMigration(db, migrationByVersion(t, 89)); err != nil {
 		t.Fatal(err)
 	}
+	// The accessors below read the current schema, so the rest of the
+	// chain has to run before they can answer.
+	migrateFrom(t, db, 89)
 	if row, found, err := s.FindUserTextItemBySendID("existing-send", "before-upgrade"); err != nil || !found || row.ID != "existing-send-user-before-upgrade" {
 		t.Fatalf("upgraded lookup: found=%v item=%q err=%v", found, row.ID, err)
 	}

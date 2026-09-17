@@ -270,7 +270,7 @@ async function runScenario(s: Scenario): Promise<Frame[]> {
       await wait(Math.max(4, c.length * msPerChar * (0.5 + rnd())));
     }
     marks.push(`${id}-complete`);
-    pane.applyItemPatch({ threadId, itemId: id, kind: 'thinking', patch: { status: 'completed', updatedAt: 2 } });
+    pane.applyItemPatch({ threadId, itemId: id, kind: 'thinking', patch: { rev: 0, status: 'completed', updatedAt: 2 } });
     await tick();
     await wait(80 + rnd() * 200);
     marks.push(`tool-after-${id}`);

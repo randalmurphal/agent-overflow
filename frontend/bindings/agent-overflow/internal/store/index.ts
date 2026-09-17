@@ -14,6 +14,7 @@ export {
     DiscussionDefinition,
     DiscussionParticipant,
     DiscussionSettings,
+    HeldWindow,
     Item,
     PagedItems,
     Project,

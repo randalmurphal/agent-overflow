@@ -16,7 +16,10 @@ import (
 // the item-window bindings (the composer history-recall read carries its
 // own row cap below).
 const (
-	maxWindowItems = 2000
+	// maxWindowItems is store.MaxHeldWindowItems by construction: the
+	// store refuses to verify a held window larger than a page can be, so
+	// the two numbers describe one budget.
+	maxWindowItems = store.MaxHeldWindowItems
 
 	// paginationItems is the default item budget for an explicit
 	// "load older" page: the cursor pagers select this many visible

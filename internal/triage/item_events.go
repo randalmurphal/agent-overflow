@@ -31,6 +31,8 @@ const (
 
 // ItemPatchFields carries the mutable subset of an Item for a patch event.
 // Non-nil pointer fields mean "set to this value"; nil means "unchanged".
+// It is what an emitter CHOOSES to change; the revision that write
+// produced is not a choice, so it is not here (see ItemPatch).
 type ItemPatchFields struct {
 	Status    *string `json:"status,omitempty"`
 	Summary   *string `json:"summary,omitempty"`
@@ -39,16 +41,32 @@ type ItemPatchFields struct {
 	UpdatedAt *int64  `json:"updatedAt,omitempty"`
 }
 
+// ItemPatch is the wire patch: the fields an emitter changed plus the
+// revision the write that changed them produced. One flat JSON object, so
+// the client reads `patch.rev` beside `patch.status`.
+type ItemPatch struct {
+	ItemPatchFields
+	// Rev is not optional and is not a field of the row's content: it is
+	// the row revision the patched content belongs to, read inside the
+	// write's own transaction. A client folds the patch into the row it
+	// holds, so without it the row would keep the revision its last
+	// upsert carried while SQLite moved on, and every held window
+	// containing a settled row would fail verification and pay a page
+	// (docs/architecture/thread-replica-sync.md §3.1). Emitters receive it
+	// from the writer rather than choosing it; see Router.emitItemPatch.
+	Rev int64 `json:"rev"`
+}
+
 type ItemStreamEvent struct {
-	Action    string           `json:"action"`
-	ThreadID  string           `json:"threadId"`
-	Item      *store.Item      `json:"item,omitempty"`
-	ItemID    string           `json:"itemId,omitempty"`
-	Kind      string           `json:"kind,omitempty"`
-	Delta     string           `json:"delta,omitempty"`
-	Meta      string           `json:"meta,omitempty"`
-	Patch     *ItemPatchFields `json:"patch,omitempty"`
-	UpdatedAt int64            `json:"updatedAt,omitempty"`
+	Action    string      `json:"action"`
+	ThreadID  string      `json:"threadId"`
+	Item      *store.Item `json:"item,omitempty"`
+	ItemID    string      `json:"itemId,omitempty"`
+	Kind      string      `json:"kind,omitempty"`
+	Delta     string      `json:"delta,omitempty"`
+	Meta      string      `json:"meta,omitempty"`
+	Patch     *ItemPatch  `json:"patch,omitempty"`
+	UpdatedAt int64       `json:"updatedAt,omitempty"`
 }
 
 // NewItemStreamUpsert is the single constructor every
@@ -111,13 +129,14 @@ func newItemStreamMeta(threadID, itemID, kind, meta string, updatedAt int64) Ite
 }
 
 // newItemStreamPatch carries the settle-time field update for a row the
-// client already holds. Its `meta` is the same value an upsert would
-// have carried, so it takes the same projection — a row must not be able
-// to arrive projected and then be patched back to its unprojected shape.
+// client already holds, at the revision that update produced. Its `meta`
+// is the same value an upsert would have carried, so it takes the same
+// projection — a row must not be able to arrive projected and then be
+// patched back to its unprojected shape.
 // The `payloadMeta` context the command-retention rule wants is not on a
 // patch, so the rule reads as "no second copy", which is the safe
 // direction: the leaf is kept.
-func newItemStreamPatch(threadID, itemID, kind string, patch ItemPatchFields) ItemStreamEvent {
+func newItemStreamPatch(threadID, itemID, kind string, rev int64, patch ItemPatchFields) ItemStreamEvent {
 	if patch.Meta != nil {
 		projected := itemwire.ProjectMeta(*patch.Meta, "")
 		patch.Meta = &projected
@@ -127,6 +146,6 @@ func newItemStreamPatch(threadID, itemID, kind string, patch ItemPatchFields) It
 		ThreadID: threadID,
 		ItemID:   itemID,
 		Kind:     kind,
-		Patch:    &patch,
+		Patch:    &ItemPatch{ItemPatchFields: patch, Rev: rev},
 	}
 }

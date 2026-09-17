@@ -21,7 +21,7 @@ describe('threadRevealGate', () => {
     for (const item of pane.items) {
       if (item.status !== 'streaming') continue;
       pane.applyItemPatch({ threadId: item.threadId, itemId: item.id, kind: item.kind,
-        patch: { status: 'completed', updatedAt: item.updatedAt + 1 } });
+        patch: { rev: 0, status: 'completed', updatedAt: item.updatedAt + 1 } });
     }
   }
 
@@ -181,6 +181,7 @@ describe('threadRevealGate', () => {
         itemId: item.id,
         kind: item.kind,
         patch: {
+          rev: 0,
           status: 'completed',
           summary: 'after',
           updatedAt: item.updatedAt + 1,
@@ -487,7 +488,7 @@ describe('threadRevealGate', () => {
           threadId: 't',
           itemId: 'think:0:0',
           kind: 'thinking',
-          patch: { status: 'killed', updatedAt: 4 },
+          patch: { rev: 0, status: 'killed', updatedAt: 4 },
         });
         expect(pane.revealBoundary).toBeNull();
       } finally {
@@ -540,6 +541,7 @@ describe('threadRevealGate', () => {
           itemId: 'text:0:0',
           kind: 'assistant_text',
           patch: {
+            rev: 0,
             status: 'completed',
             summary: 'hello world done',
             updatedAt: 4,
@@ -1241,7 +1243,7 @@ describe('threadRevealGate', () => {
           threadId: 't',
           itemId: 'text:0:0',
           kind: 'assistant_text',
-          patch: { status: 'completed', summary: text, updatedAt: 4 },
+          patch: { rev: 0, status: 'completed', summary: text, updatedAt: 4 },
         });
 
         const item = () => pane.items.find((i) => i.id === 'text:0:0');

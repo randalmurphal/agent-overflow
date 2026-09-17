@@ -30,7 +30,7 @@ export interface MemoryReport {
   caches: {
     threadItems: { threads: number; items: number; chars: number };
     codeSpans: { entries: number; approxKeyChars: number };
-    sizePriors: { threads: number; rows: number };
+    sizePriors: { threads: number; buckets: number; rows: number };
     proposedPlans: ReturnType<typeof proposedPlanCacheStats>;
   };
 }
