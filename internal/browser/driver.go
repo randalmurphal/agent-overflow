@@ -208,9 +208,10 @@ type pageDriver interface {
 	// WaitVisible blocks until a selector is visible or the context ends.
 	WaitVisible(ctx context.Context, selector string) error
 
-	// SetViewport pins the page's viewport to width x height CSS pixels:
-	// what the page lays out and captures at, presented or not. The pane
-	// never changes it; a presented page is shown scaled to fit.
+	// SetViewport lays the page out at width x height CSS pixels: what it
+	// lays out and captures at, presented or not. The Manager sets it from
+	// the pane size or a pinned browser_viewport; a presented page larger
+	// than the pane is shown scaled down to fit.
 	SetViewport(ctx context.Context, width, height int) error
 
 	// AssetInventory reports the page's referenced assets, unshaped.

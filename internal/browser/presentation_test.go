@@ -76,9 +76,9 @@ func TestPlacePageFitsDownCentersAndClips(t *testing.T) {
 	}
 }
 
-// browser_viewport is the ONE thing that sizes a page. Every page the thread
-// owns lays out at it, hidden or presented, and a reset returns them all to
-// the default rather than leaving them wherever the pane happened to be.
+// browser_viewport set is the ONE explicit way to size a page. Every page the
+// thread owns lays out at it, hidden or presented, and a reset returns them
+// all to the pane size, which with no pane ever mounted is the default.
 func TestViewportLaysOutEveryOwnedPageAndResetsToTheDefault(t *testing.T) {
 	manager, _, access, firstID, secondID := newPaneHostManager(t)
 	first, _, err := manager.lookupOwnedPage(access, firstID)

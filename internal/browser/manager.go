@@ -72,11 +72,13 @@ type Manager struct {
 	config  Config
 	closed  bool
 
-	scopes         map[string]*workspaceScope
-	idleTimer      *time.Timer
-	eventSink      func(CompanionEvent)
-	panes          map[string]paneMount
-	sessions       map[string]SessionInfo
+	scopes    map[string]*workspaceScope
+	idleTimer *time.Timer
+	eventSink func(CompanionEvent)
+	panes     map[string]paneMount
+	sessions  map[string]SessionInfo
+	// viewportSyncs serializes viewport application per thread (viewport.go).
+	viewportSyncs  map[string]*viewportSync
 	artifactRoot   string
 	artifactInitMu sync.Mutex
 	artifactReady  bool
@@ -85,6 +87,10 @@ type Manager struct {
 	// Production leaves it nil; the managed-Chrome integration test uses the
 	// signal instead of polling on wall-clock sleeps.
 	pageAdopted func()
+	// viewportApplied is a test seam for the asynchronous pane-size follow:
+	// called after each drain pass lays the thread's pages out. Production
+	// leaves it nil.
+	viewportApplied func(threadID string)
 	// revealFileInFileManager is the test seam over the production subprocess
 	// hand-off in companion_reveal.go. Production leaves it nil.
 	revealFileInFileManager func(ctx context.Context, path string) error
@@ -210,12 +216,13 @@ func (p *managedPage) attach(driver pageDriver) {
 
 func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 	m := &Manager{
-		config:       config,
-		profileDir:   filepath.Join(configDir, browserProfileDir),
-		scopes:       make(map[string]*workspaceScope),
-		panes:        make(map[string]paneMount),
-		sessions:     make(map[string]SessionInfo),
-		artifactRoot: filepath.Join(configDir, "browser-artifacts"),
+		config:        config,
+		profileDir:    filepath.Join(configDir, browserProfileDir),
+		scopes:        make(map[string]*workspaceScope),
+		panes:         make(map[string]paneMount),
+		sessions:      make(map[string]SessionInfo),
+		viewportSyncs: make(map[string]*viewportSync),
+		artifactRoot:  filepath.Join(configDir, "browser-artifacts"),
 	}
 	m.accelerators = opts.Accelerators
 	m.engine = selectEngine(configDir, opts, engineEvents{

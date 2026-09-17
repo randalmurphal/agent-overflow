@@ -279,9 +279,13 @@ positioned over.
   visibly not-a-DOM-element; every native embed has it.
 - Pane hidden / thread switched / layout drag in progress → view
   hidden. Nothing is torn down; page state lives on, the page keeps
-  its viewport and keeps producing frames, and the address row shows
+  its viewport and keeps producing frames. By default the viewport is
+  the pane's own size (`viewport.go`: the rect's whole pixels within the
+  viewport bounds, applied latest-wins per thread), so a presented
+  page is at 1:1 and reflows with the pane. When the agent pinned a
+  size with `browser_viewport set`, the address row shows
   `1280 × 720 · 62%` style labels so a scaled presentation is visible
-  as such. The pane never changes a page's size.
+  as such. The placement never changes a page's size.
 - DevTools: Windows — `OpenDevToolsWindow` on the pane controller
   (full Chromium devtools). Linux — WebKitGTK inspector,
   spike-verified opening docked in-app. macOS — `isInspectable`,

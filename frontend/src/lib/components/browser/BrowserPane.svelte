@@ -52,18 +52,21 @@
   // Boolean, not the view object: the re-report effect below must fire on
   // attach, never on every page-state push.
   let attached = $derived(view !== null);
-  // The page is always laid out at the thread's viewport and the pane only
-  // shows it scaled to fit (never up), so the label carries that size and, when
-  // the host rect is smaller, the percentage it is shown at.
+  // The page lays out at the thread's viewport. By default that is this host
+  // rect, so the page fills the pane at 1:1 and nothing needs saying. The
+  // label appears when the size is not the pane's: the agent pinned one, or
+  // the pane is below the viewport minimum, and then carries the size and,
+  // when the host rect is smaller, the percentage it is shown at.
   let viewportWidth = $derived(view?.state.viewportWidth ?? 0);
   let viewportHeight = $derived(view?.state.viewportHeight ?? 0);
+  let viewportPinned = $derived(view?.state.viewportSet === true);
   let viewScale = $derived(
     viewportWidth > 0 && viewportHeight > 0 && hostWidth > 0 && hostHeight > 0
       ? Math.min(1, hostWidth / viewportWidth, hostHeight / viewportHeight)
       : 1,
   );
   let sizeLabel = $derived(
-    viewportWidth > 0 && viewportHeight > 0
+    viewportWidth > 0 && viewportHeight > 0 && (viewportPinned || viewScale < 1)
       ? `${viewportWidth} × ${viewportHeight}` + (viewScale < 1 ? ` · ${Math.round(viewScale * 100)}%` : '')
       : '',
   );
@@ -382,7 +385,7 @@
       <span
         class="shrink-0 whitespace-nowrap px-1 font-mono text-[0.65rem] tabular-nums text-fg-muted"
         data-testid="browser-pane-size"
-        title="The page is laid out at the agent's viewport and shown scaled to fit"
+        title="The page is laid out at this size and shown scaled to fit the pane"
       >{sizeLabel}</span>
     {/if}
     {#if activeIsLocalFile}

@@ -150,6 +150,9 @@ type fakePage struct {
 	viewports [][2]int
 	// screenshot, when set, answers Screenshot instead of the no-page error.
 	screenshot func(context.Context) ([]byte, error)
+	// viewportErr, when set, makes SetViewport fail so a test can drive the
+	// failure path.
+	viewportErr error
 }
 
 func (p *fakePage) Lifetime() context.Context { return p.ctx }
@@ -287,13 +290,15 @@ func (p *fakePage) Scroll(context.Context, string, float64, float64) error {
 
 func (p *fakePage) WaitVisible(context.Context, string) error { return errFakeEngineHasNoPage }
 
-// SetViewport succeeds: a viewport is AO state the Manager applies to every
-// page, and refusing it would fail page creation itself.
+// SetViewport records the size and succeeds unless viewportErr is set: a
+// viewport is AO state the Manager applies to every page, and refusing it
+// would fail page creation itself.
 func (p *fakePage) SetViewport(_ context.Context, width, height int) error {
 	p.mu.Lock()
 	p.viewports = append(p.viewports, [2]int{width, height})
+	err := p.viewportErr
 	p.mu.Unlock()
-	return nil
+	return err
 }
 
 func (p *fakePage) lastViewport() (int, int) {

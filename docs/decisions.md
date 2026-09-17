@@ -195,6 +195,9 @@ and anti-changes that live only here:
   simulation, and no remote fallback for it. Clipboard file paste for Teams
   is impossible (Teams refuses every pasted file object); the toolbar button
   is "Show in folder". `docs/specs/embedded-browser.md`.
+- A browser page fills the pane at 1:1 and reflows with it, like a tab in
+  any browser. A fixed page size is an explicit `browser_viewport set`,
+  never a default the pane scales down.
 - Every thread/workspace event reaches any client with visibility; channel
   audience is by data class, loopback-only is for host directives only. A
   mutation that persists without emitting is a bug.

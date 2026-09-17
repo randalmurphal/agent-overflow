@@ -27,11 +27,17 @@ export class CompanionEvent {
 
     /**
      * ViewportWidth/Height ride a Kind "state" event: the size every page of
-     * the thread lays out at (the agent's override or the default), which
-     * the pane shows scaled to fit and labels.
+     * the thread lays out at (the pane size, a pinned size, or the default),
+     * which the pane shows scaled down to fit when it is larger than the pane.
      */
     "viewportWidth"?: number;
     "viewportHeight"?: number;
+
+    /**
+     * ViewportSet is whether browser_viewport pinned that size; otherwise it
+     * follows the pane and the pane shows the page at 1:1.
+     */
+    "viewportSet"?: boolean;
 
     /**
      * Accelerator rides a Kind "accelerator" event: a bound chord pressed
@@ -57,13 +63,13 @@ export class CompanionEvent {
      */
     static createFrom($$source: any = {}): CompanionEvent {
         const $$createField2_0 = $$createType1;
-        const $$createField10_0 = $$createType3;
+        const $$createField11_0 = $$createType3;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pages" in $$parsedSource) {
             $$parsedSource["pages"] = $$createField2_0($$parsedSource["pages"]);
         }
         if ("accelerator" in $$parsedSource) {
-            $$parsedSource["accelerator"] = $$createField10_0($$parsedSource["accelerator"]);
+            $$parsedSource["accelerator"] = $$createField11_0($$parsedSource["accelerator"]);
         }
         return new CompanionEvent($$parsedSource as Partial<CompanionEvent>);
     }

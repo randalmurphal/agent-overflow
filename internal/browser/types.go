@@ -29,10 +29,13 @@ type CompanionEvent struct {
 	Visible      *bool      `json:"visible,omitempty"`
 	SessionName  string     `json:"sessionName,omitempty"`
 	// ViewportWidth/Height ride a Kind "state" event: the size every page of
-	// the thread lays out at (the agent's override or the default), which
-	// the pane shows scaled to fit and labels.
+	// the thread lays out at (the pane size, a pinned size, or the default),
+	// which the pane shows scaled down to fit when it is larger than the pane.
 	ViewportWidth  int `json:"viewportWidth,omitempty"`
 	ViewportHeight int `json:"viewportHeight,omitempty"`
+	// ViewportSet is whether browser_viewport pinned that size; otherwise it
+	// follows the pane and the pane shows the page at 1:1.
+	ViewportSet bool `json:"viewportSet,omitempty"`
 	// Accelerator rides a Kind "accelerator" event: a bound chord pressed
 	// while the thread's page view held keyboard focus, for the frontend to
 	// dispatch as if the SPA had received it.
@@ -349,13 +352,18 @@ type ViewportOptions struct {
 }
 
 type SessionInfo struct {
-	Name         string    `json:"name,omitempty"`
-	ActivePageID string    `json:"activePageId,omitempty"`
-	Visible      bool      `json:"visible"`
-	ViewportW    int       `json:"viewportWidth"`
-	ViewportH    int       `json:"viewportHeight"`
-	ViewportSet  bool      `json:"viewportSet"`
-	UpdatedAt    time.Time `json:"-"`
+	Name         string `json:"name,omitempty"`
+	ActivePageID string `json:"activePageId,omitempty"`
+	Visible      bool   `json:"visible"`
+	ViewportW    int    `json:"viewportWidth"`
+	ViewportH    int    `json:"viewportHeight"`
+	ViewportSet  bool   `json:"viewportSet"`
+	// PaneW/PaneH is the last mounted pane host size, whole CSS pixels inside
+	// the viewport bounds; the viewport pages follow while none is pinned.
+	// Zero until a pane reports a rect.
+	PaneW     int       `json:"paneWidth,omitempty"`
+	PaneH     int       `json:"paneHeight,omitempty"`
+	UpdatedAt time.Time `json:"-"`
 }
 
 type Controller interface {

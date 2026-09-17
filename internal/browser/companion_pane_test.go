@@ -158,6 +158,11 @@ func TestPaneRectClipDefaultsAndEmptyClipHides(t *testing.T) {
 		t.Fatalf("attach pane: %v", err)
 	}
 	engine.take()
+	// A pinned viewport keeps the page larger than the pane, so the clip has
+	// a fitted rect to shrink to (an unpinned page would be the pane's size).
+	if _, err := manager.Viewport(t.Context(), access, ViewportOptions{Action: "set", Width: 1280, Height: 720}); err != nil {
+		t.Fatalf("pin viewport: %v", err)
+	}
 
 	var got []PanePlacement
 	engine.onBounds = func(placement PanePlacement) { got = append(got, placement) }
@@ -168,7 +173,7 @@ func TestPaneRectClipDefaultsAndEmptyClipHides(t *testing.T) {
 	if len(got) == 0 {
 		t.Fatal("no bounds reached the engine")
 	}
-	// The default 1280x720 page fits an 800x600 pane at 0.625: 800x450,
+	// The pinned 1280x720 page fits an 800x600 pane at 0.625: 800x450,
 	// centered 75px down, and the defaulted full-rect clip crops to that.
 	last := got[len(got)-1]
 	if last.PageWidth != 1280 || last.PageHeight != 720 || last.Scale != 0.625 {

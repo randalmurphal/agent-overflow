@@ -127,10 +127,10 @@ test('agent browser page stays headless until explicitly presented as an interac
   // Pixels are never in the DOM any more, on any engine.
   await expect(pane.getByTestId('browser-pane-host-rect')).toBeVisible();
   await expect(pane.locator('img')).toHaveCount(0);
-  // The page keeps the thread's viewport and the pane says so: the label
-  // carries the viewport, and the scale it is shown at when the host rect is
-  // smaller than the page (it always is at the harness window size).
-  await expect(pane.getByTestId('browser-pane-size')).toHaveText(/^1280 × 720( · \d+%)?$/);
+  // The page follows the pane: it lays out at the host rect and shows at 1:1,
+  // so there is no size label. One appears only when the agent pins a
+  // viewport or the pane is below the viewport minimum.
+  await expect(pane.getByTestId('browser-pane-size')).toHaveCount(0);
 
   await pane.getByRole('button', { name: 'Close browser' }).click();
   await expect(pane).toHaveCount(0);

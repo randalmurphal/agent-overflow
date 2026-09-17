@@ -68,15 +68,19 @@ per-platform no-op.
   thread's explicitly selected tab. No pixels cross the wire in either
   direction, so a hidden pane costs nothing and no connection can receive
   browser image data.
-- Every page lays out at the thread's viewport, `browser_viewport` or the
-  1280×720 default, capped at 1920×1200, whether or not a pane shows it. The
-  pane is a viewer: it draws the page scaled down to fit its host rect (never
-  up, centered with margins when the rect is larger) and labels the viewport
-  and scale in its address row. Resizing the pane changes only that scale;
-  screenshots, coordinates, and layout always mean the viewport the agent set.
-  Hidden pages keep rendering, so screenshots and scrolls work with the pane
-  closed, and a screenshot that produces no frame fails with a bounded error
-  instead of hanging.
+- Every page lays out at the thread's viewport whether or not a pane shows it.
+  By default the viewport follows the mounted pane's host rect (whole CSS
+  pixels, held within 320×240 and 1920×1200): the page fills the pane at 1:1
+  and reflows when the pane resizes, like a tab in any browser. With no pane
+  the last pane size stands; a thread that never mounted one lays out at
+  1280×720. `browser_viewport set` pins a size instead; the pane then draws
+  the page scaled down to fit (never up, centered with margins when the rect
+  is larger) and labels the size and scale in its address row. `reset`
+  returns to following the pane, and `get` reports the current size, whether
+  it is pinned, and the pane size. Screenshots, coordinates, and layout always
+  mean the current viewport. Hidden pages keep rendering, so screenshots and
+  scrolls work with the pane closed, and a screenshot that produces no frame
+  fails with a bounded error instead of hanging.
 - `pane.close` (Mod+W) on a focused browser companion closes the active tab;
   the companion closes when its last tab does. Closing the companion any other
   way hides the session and keeps its pages, so reopening shows the same tabs.
@@ -133,7 +137,7 @@ it without relying on an optional skill.
 | `browser_pages` / `browser_select_page` | List only thread-owned tabs and explicitly pin one as the companion tab. Selection does not show the companion. AO never inspects another system browser. |
 | `browser_label_page` | Set/clear a short case-insensitively unique label for cross-agent coordination. |
 | `browser_close_page` | Close one caller-owned page. |
-| `browser_visibility` / `browser_viewport` | Explicitly present a `page_id`, hide the companion without closing pages, and get/set/reset a bounded viewport override. Hidden companions present nothing and cost nothing. |
+| `browser_visibility` / `browser_viewport` | Explicitly present a `page_id`, hide the companion without closing pages, and get/set/reset the thread viewport: following the pane by default, or a pinned bounded size. Hidden companions present nothing and cost nothing. |
 | `browser_snapshot` | Return URL/title, bounded visible text, and bounded interactive-element records with CSS selectors and reusable DOM node IDs. |
 | `browser_screenshot` | Return a JPEG of the viewport, a bounded clip, or a height-capped full page. |
 | `browser_locator` | Stateless Playwright-equivalent locators (CSS, role/name, label, placeholder, text, test ID, scopes, filters, union/intersection, indexes, and nested frames) with strict query/read/action/check/select/wait behavior and optional navigation/download expectations. |

@@ -484,8 +484,8 @@ func (p *cdpPage) SetViewport(ctx context.Context, width, height int) error {
 	return p.applyMetricsLocked(ctx)
 }
 
-// SetViewScale sets the factor the presented view is drawn at: the pane
-// shows the page scaled to fit rather than resizing it. 1 while hidden.
+// SetViewScale sets the factor the presented view is drawn at: a page larger
+// than the pane is shown scaled down rather than resized. 1 while hidden.
 func (p *cdpPage) SetViewScale(ctx context.Context, scale float64) error {
 	p.metricsMu.Lock()
 	defer p.metricsMu.Unlock()

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"agent-overflow/internal/keybindings"
 
@@ -67,11 +68,12 @@ type PaneRect struct {
 
 // PanePlacement is where a presented page's view goes: the page keeps its
 // own viewport (PageWidth x PageHeight, the size the agent works against)
-// and the pane shows it scaled by Scale, never resized. Rect is the FITTED
-// rect in the SPA's CSS pixels — the page scaled to fit inside the pane's
-// host rect and centered — with its clip already intersected with the host
-// rect's visible clip. Rect's viewport, background and device pixel ratio
-// are the host rect's own.
+// and the pane shows it scaled by Scale, never resized by the placement. A
+// page following the pane is its size and Scale is 1; a pinned page larger
+// than the pane scales down. Rect is the FITTED rect in the SPA's CSS pixels,
+// the page scaled to fit inside the pane's host rect and centered, with its
+// clip already intersected with the host rect's visible clip. Rect's
+// viewport, background and device pixel ratio are the host rect's own.
 type PanePlacement struct {
 	Rect       PaneRect
 	PageWidth  int
@@ -183,16 +185,8 @@ func (m *Manager) threadState(threadID string) CompanionEvent {
 	}
 	event.ActivePageID = session.ActivePageID
 	event.ViewportWidth, event.ViewportHeight = sessionViewport(session)
+	event.ViewportSet = session.ViewportSet
 	return event
-}
-
-// sessionViewport is the page size every page of the thread lays out at:
-// the agent's override, or the default. It never follows the pane.
-func sessionViewport(session SessionInfo) (int, int) {
-	if session.ViewportW > 0 && session.ViewportH > 0 {
-		return session.ViewportW, session.ViewportH
-	}
-	return defaultViewportWidth, defaultViewportHeight
 }
 
 func (m *Manager) emit(event CompanionEvent) {
@@ -317,22 +311,52 @@ func (m *Manager) AttachPane(access Access) (CompanionSubscription, error) {
 
 // DetachPane releases one pane mount. The presentation sync runs so an engine
 // with a presented native view hides it rather than painting over whatever
-// replaced the pane.
+// replaced the pane. A mount that remains for the thread (a diagnostic mount
+// released while the UI's pane stays) hands the pages back its own size.
 func (m *Manager) DetachPane(id string) {
 	m.mu.Lock()
 	mount, ok := m.panes[id]
+	resize := false
 	if ok {
 		delete(m.panes, id)
+		for _, other := range m.panes {
+			if other.threadID == mount.threadID && other.hasRect {
+				resize = m.notePaneSizeLocked(other.threadID, other.rect)
+			}
+		}
 	}
 	m.mu.Unlock()
 	if ok {
+		if resize {
+			m.scheduleViewport(mount.threadID)
+		}
 		m.syncPanePresentation(mount.threadID)
 	}
 }
 
+// notePaneSizeLocked records a mounted pane's size on its thread's session
+// and reports whether the pages should take it: the size changed and no
+// viewport is pinned. Caller holds m.mu.
+func (m *Manager) notePaneSizeLocked(threadID string, rect PaneRect) bool {
+	w, h, sized := paneViewportSize(rect)
+	if !sized {
+		return false
+	}
+	info := m.sessionLocked(threadID)
+	if info.PaneW == w && info.PaneH == h {
+		return false
+	}
+	info.PaneW, info.PaneH = w, h
+	info.resolveViewport()
+	info.UpdatedAt = time.Now()
+	m.sessions[threadID] = info
+	return !info.ViewportSet
+}
+
 // SetPaneRect records the mounted pane's current host rect. The frontend
 // coalesces to one report per changed frame, so this path must stay cheap: a
-// bookkeeping write and one presentation sync.
+// bookkeeping write, one presentation sync, and while no viewport is pinned a
+// latest-wins request for the pages to take the rect's size (viewport.go).
 func (m *Manager) SetPaneRect(id string, rect PaneRect) error {
 	if rect.Width < 0 || rect.Height < 0 {
 		rect.Width, rect.Height = 0, 0
@@ -349,14 +373,22 @@ func (m *Manager) SetPaneRect(id string, rect PaneRect) error {
 	}
 	m.mu.Lock()
 	mount, ok := m.panes[strings.TrimSpace(id)]
+	resize := false
 	if ok {
 		mount.rect = rect
 		mount.hasRect = true
 		m.panes[strings.TrimSpace(id)] = mount
+		// The size is tracked whether or not the rect is paintable: a drag
+		// hides the view and the page must already be at the new size when
+		// the drop shows it again.
+		resize = m.notePaneSizeLocked(mount.threadID, rect)
 	}
 	m.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("browser: pane mount not found")
+	}
+	if resize {
+		m.scheduleViewport(mount.threadID)
 	}
 	m.syncPanePresentation(mount.threadID)
 	return nil

@@ -18,11 +18,15 @@ mode. Product behavior and authority are defined in
 - Pages start hidden. Present only the selected page for a visible companion
   pane. The pane uses a native view positioned over the SPA; pixels do not cross
   the transport.
-- A page always lays out at the thread viewport (`sessionViewport`, default
-  1280x720) whether hidden or presented. The pane is a viewer: `placePage` fits
-  the viewport into the host rect and every engine draws the page at that
-  `PanePlacement` scale without resizing it. Hidden pages must keep producing
-  frames so screenshots and scrolls work with the pane closed.
+- A page always lays out at the thread viewport (`sessionViewport`) whether
+  hidden or presented. The viewport follows the mounted pane's size (whole
+  pixels within the viewport bounds; the last size once the pane is gone;
+  1280x720 before any pane) unless `browser_viewport set` pinned one. Pane
+  sizes are applied latest-wins per thread in `viewport.go`, never inline in
+  the rect report. The pane is a viewer: `placePage` fits the viewport into
+  the host rect and every engine draws the page at that `PanePlacement`
+  scale without resizing it. Hidden pages must keep producing frames so
+  screenshots and scrolls work with the pane closed.
 - An omitted `page_id` may resolve only when the thread owns at most one page.
   With multiple pages, require an explicit handle. Never infer a caller or use
   MRU selection.

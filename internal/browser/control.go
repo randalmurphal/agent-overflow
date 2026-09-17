@@ -112,45 +112,6 @@ func (m *Manager) Visibility(_ context.Context, access Access, visible *bool, pa
 	return info, nil
 }
 
-func (m *Manager) Viewport(_ context.Context, access Access, opts ViewportOptions) (SessionInfo, error) {
-	m.mu.Lock()
-	info := m.sessionLocked(access.ThreadID)
-	switch strings.ToLower(strings.TrimSpace(opts.Action)) {
-	case "get", "":
-	case "reset":
-		info.ViewportW, info.ViewportH = defaultViewportWidth, defaultViewportHeight
-		info.ViewportSet = false
-	case "set":
-		if opts.Width < minCompanionWidth || opts.Width > maxCompanionWidth || opts.Height < minCompanionHeight || opts.Height > maxCompanionHeight {
-			m.mu.Unlock()
-			return SessionInfo{}, fmt.Errorf("browser: viewport must be between %dx%d and %dx%d", minCompanionWidth, minCompanionHeight, maxCompanionWidth, maxCompanionHeight)
-		}
-		info.ViewportW, info.ViewportH = opts.Width, opts.Height
-		info.ViewportSet = true
-	default:
-		m.mu.Unlock()
-		return SessionInfo{}, fmt.Errorf("browser: viewport action must be get, set, or reset")
-	}
-	info.UpdatedAt = time.Now()
-	m.sessions[access.ThreadID] = info
-	m.mu.Unlock()
-	if opts.Action != "get" && opts.Action != "" {
-		// Every page of the thread lays out at the session's viewport, hidden
-		// or presented; a reset is the default size applied, not an absence.
-		for _, p := range m.ownedPages(access.ThreadID) {
-			p.mu.Lock()
-			err := m.applyViewportLocked(p)
-			p.mu.Unlock()
-			if err != nil {
-				return SessionInfo{}, err
-			}
-		}
-		m.emitThreadState(access.ThreadID)
-		m.syncPanePresentation(access.ThreadID)
-	}
-	return info, nil
-}
-
 func (m *Manager) sessionLocked(threadID string) SessionInfo {
 	info, ok := m.sessions[threadID]
 	if !ok {
@@ -208,27 +169,4 @@ func (m *Manager) repairActivePage(threadID string) {
 		m.sessions[threadID] = info
 	}
 	m.mu.Unlock()
-}
-
-// applyViewport pins a page to its thread's viewport: the agent's override
-// or the default. Every page gets one at creation, so a hidden page lays out
-// and captures at a real size instead of whatever its parked view happens to
-// measure, and the size is the same on every engine.
-func (m *Manager) applyViewport(p *managedPage) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return m.applyViewportLocked(p)
-}
-
-// applyViewportLocked is applyViewport with p.mu held by the caller.
-func (m *Manager) applyViewportLocked(p *managedPage) error {
-	m.mu.Lock()
-	width, height := sessionViewport(m.sessionLocked(p.owner))
-	m.mu.Unlock()
-	ctx, cancel := operationContext(context.Background(), p.ctx, 5*time.Second)
-	defer cancel()
-	if err := p.driver.SetViewport(ctx, width, height); err != nil {
-		return fmt.Errorf("browser: apply viewport: %w", err)
-	}
-	return nil
 }
