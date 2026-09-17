@@ -47,8 +47,12 @@ FULL_SCALE = 32_767
 # Peak amplitude the tonal cues are normalised to. The swoosh is noise, whose
 # peak says little about how loud it sounds, so it is matched by RMS instead
 # (SWOOSH_RMS_DB) and clipped at SWOOSH_CEILING.
+#
+# The swoosh sits 6 dB below the tonal cues' RMS on purpose: broadband noise
+# reads louder than a tone at the same RMS (it fills the whole hearing range),
+# and at -19 dBFS it was heard as roughly twice as loud as the rest of the set.
 PEAK = 0.40
-SWOOSH_RMS_DB = -19.0
+SWOOSH_RMS_DB = -25.0
 SWOOSH_CEILING = 0.85
 
 # Seconds of linear fade at the very end of a cue, so playback stopping on a
