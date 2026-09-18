@@ -55,6 +55,10 @@ type PagedItems struct {
 
 type ActivityRunStub struct {
     FirstItemID, LastItemID string   // run edges, both physical rows
+    FirstTurnIndex, FirstItemIndex int // coordinates of those edges: a run
+    LastTurnIndex, LastItemIndex   int // is contiguous, so a top-level row
+                                       // is a member exactly when it lies
+                                       // between them (§6 jumps)
     MemberCount             int      // every physical member
     LoadedFirstItemID, LoadedLastItemID string // shipped span; "" when none
     UnshippedBefore, UnshippedAfter int // members outside the span, per side
@@ -292,8 +296,14 @@ Rules:
   in that direction and mounts them when they land; the boundary shows a
   pending state meanwhile and reports a failed fetch.
 - **Jumps.** `loadUntilItem` resolves the target's coordinates; when they
-  fall inside a held run's unshipped region it fetches `around` the target
-  and then reveals it, instead of reloading the window.
+  fall between a held run's stub edges but outside its loaded span it
+  fetches `around` the target and then reveals it, instead of reloading
+  the window. A target outside the edges is not the run's, whatever the
+  window holds beside the run: it takes the whole-window slice. The
+  server refuses a members call whose run or span no longer matches the
+  store with the public code `activity_run_stale`
+  (`app.ActivityRunStaleCode`); the pane branches on the code, never on
+  the message, and answers it with a window reload.
 - **Signatures and priors.** The run row signature and size prior include
   `MemberCount`, the loaded span edges, and the mount window; the trace
   schema records stub counts beside loaded counts.

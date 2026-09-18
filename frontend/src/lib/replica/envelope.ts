@@ -38,10 +38,11 @@ export const REPLICA_ENVELOPE_VERSION = 1;
  * changes — including a change to the wire `Item` DTO, since items ride
  * the envelope verbatim. A mismatch drops the whole database.
  */
-// The body gained `runs`: a window is only paintable with the stubs that
-// describe the activity-run members it does not hold, and a stored window
-// from an earlier build has none.
-export const REPLICA_SCHEMA_VERSION = 4;
+// Schema 4 gave the body `runs`: a window is only paintable with the
+// stubs that describe the activity-run members it does not hold. Schema 5
+// gave each stub its edge coordinates, which is how a jump tells a member
+// the pane does not hold from a row that is merely older than the run.
+export const REPLICA_SCHEMA_VERSION = 5;
 
 /**
  * Per-envelope caps, deliberately the same numbers `threadItemCache`
@@ -156,6 +157,10 @@ function plainRuns(runs: readonly ActivityRunStub[] | null | undefined): Activit
   return runs.map((run) => ({
     firstItemId: run.firstItemId,
     lastItemId: run.lastItemId,
+    firstTurnIndex: run.firstTurnIndex,
+    firstItemIndex: run.firstItemIndex,
+    lastTurnIndex: run.lastTurnIndex,
+    lastItemIndex: run.lastItemIndex,
     memberCount: run.memberCount,
     loadedFirstItemId: run.loadedFirstItemId,
     loadedLastItemId: run.loadedLastItemId,
@@ -268,13 +273,18 @@ export function readEnvelope(raw: unknown): ReplicaBody | null {
     }
     if (!Number.isInteger((item as Item).rev)) return null;
   }
-  // Schema 4's one new required field. A body without it was written by a
-  // build that could not describe its runs, and is dropped rather than
-  // painted as if every run were whole.
+  // A body without `runs` was written by a build that could not describe
+  // its runs, and is dropped rather than painted as if every run were
+  // whole; one whose stubs lack their edge coordinates would let a jump
+  // ask the wrong run for a row.
   if (!Array.isArray(body.runs)) return null;
   for (const run of body.runs) {
     if (!run || typeof run !== 'object') return null;
     if (typeof (run as ActivityRunStub).firstItemId !== 'string') return null;
+    if (!isFiniteNumber((run as ActivityRunStub).firstTurnIndex)) return null;
+    if (!isFiniteNumber((run as ActivityRunStub).firstItemIndex)) return null;
+    if (!isFiniteNumber((run as ActivityRunStub).lastTurnIndex)) return null;
+    if (!isFiniteNumber((run as ActivityRunStub).lastItemIndex)) return null;
     if (typeof (run as ActivityRunStub).unshippedDigest !== 'string') return null;
     if (!isFiniteNumber((run as ActivityRunStub).memberCount)) return null;
     if (!Array.isArray((run as ActivityRunStub).unshippedPairedLaunchIds)) return null;

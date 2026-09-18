@@ -99,6 +99,15 @@ type ActivityRunStub struct {
 	// the first member is stable for the life of the window.
 	FirstItemID string `json:"firstItemId"`
 	LastItemID  string `json:"lastItemId"`
+	// FirstTurnIndex/FirstItemIndex and LastTurnIndex/LastItemIndex are
+	// the coordinates of those edges. A run is contiguous over the rows a
+	// page returns, so a client can decide from these alone whether a
+	// top-level row it does not hold is a member: it is exactly when its
+	// coordinates fall between the edges (§6 jumps).
+	FirstTurnIndex int `json:"firstTurnIndex"`
+	FirstItemIndex int `json:"firstItemIndex"`
+	LastTurnIndex  int `json:"lastTurnIndex"`
+	LastItemIndex  int `json:"lastItemIndex"`
 	// MemberCount counts every physical member, shipped or not.
 	MemberCount int `json:"memberCount"`
 	// LoadedFirstItemID and LoadedLastItemID bound the shipped span, and
@@ -215,6 +224,10 @@ func buildActivityRunStub(rows []activityScanRow, shippedFrom, shippedTo int) Ac
 	stub := ActivityRunStub{
 		FirstItemID:                rows[0].ID,
 		LastItemID:                 rows[len(rows)-1].ID,
+		FirstTurnIndex:             rows[0].TurnIndex,
+		FirstItemIndex:             rows[0].ItemIndex,
+		LastTurnIndex:              rows[len(rows)-1].TurnIndex,
+		LastItemIndex:              rows[len(rows)-1].ItemIndex,
 		MemberCount:                len(rows),
 		UnshippedGroups:            []ActivityRunGroup{},
 		UnshippedPairedLaunchIDs:   []string{},

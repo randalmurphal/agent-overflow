@@ -116,9 +116,13 @@
 
   // The suites exercise the adapter without a scroll controller, so the
   // harness is the "chokepoint" for the required applyScrollTarget prop
-  // and writes directly.
+  // and writes directly, forwarding the readback the way the controller's
+  // chokepoint does: the next compensation starts from the authored
+  // offset, not from the last scroll event.
   function applyScrollTarget(top: number): void {
-    if (scrollEl) scrollEl.scrollTop = top;
+    if (!scrollEl) return;
+    scrollEl.scrollTop = top;
+    listRef?.noteScrollTopWritten(scrollEl.scrollTop);
   }
 
   /** Renders as '' — exists so the row snippet carries a template

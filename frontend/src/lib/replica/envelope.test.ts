@@ -88,6 +88,10 @@ describe('replica envelope', () => {
     const stub = {
       firstItemId: 'a',
       lastItemId: 'e',
+      firstTurnIndex: 3,
+      firstItemIndex: 1,
+      lastTurnIndex: 3,
+      lastItemIndex: 5,
       memberCount: 5,
       loadedFirstItemId: 'b',
       loadedLastItemId: 'd',

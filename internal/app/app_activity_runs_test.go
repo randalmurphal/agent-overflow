@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/store"
 )
 
@@ -308,7 +309,11 @@ func TestListActivityRunMembers_ReportsAStaleRun(t *testing.T) {
 	if !errors.Is(err, store.ErrActivityRunStale) {
 		t.Errorf("error %v does not carry the store's diagnosis", err)
 	}
-	if !strings.HasSuffix(err.Error(), errActivityRunChanged.Error()) {
-		t.Errorf("error %q does not end with the sentence a person is shown", err)
+	code, message, public := errorsx.PublicDetails(err)
+	if !public || code != ActivityRunStaleCode {
+		t.Errorf("error %q does not carry the public code %q the pane branches on (got %q)", err, ActivityRunStaleCode, code)
+	}
+	if message != activityRunStaleMessage {
+		t.Errorf("public message %q is not the sentence a person is shown", message)
 	}
 }

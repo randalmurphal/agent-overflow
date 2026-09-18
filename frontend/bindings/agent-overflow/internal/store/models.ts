@@ -152,6 +152,18 @@ export class ActivityRunStub {
     "lastItemId": string;
 
     /**
+     * FirstTurnIndex/FirstItemIndex and LastTurnIndex/LastItemIndex are
+     * the coordinates of those edges. A run is contiguous over the rows a
+     * page returns, so a client can decide from these alone whether a
+     * top-level row it does not hold is a member: it is exactly when its
+     * coordinates fall between the edges (§6 jumps).
+     */
+    "firstTurnIndex": number;
+    "firstItemIndex": number;
+    "lastTurnIndex": number;
+    "lastItemIndex": number;
+
+    /**
      * MemberCount counts every physical member, shipped or not.
      */
     "memberCount": number;
@@ -225,6 +237,18 @@ export class ActivityRunStub {
         if (!("lastItemId" in $$source)) {
             this["lastItemId"] = "";
         }
+        if (!("firstTurnIndex" in $$source)) {
+            this["firstTurnIndex"] = 0;
+        }
+        if (!("firstItemIndex" in $$source)) {
+            this["firstItemIndex"] = 0;
+        }
+        if (!("lastTurnIndex" in $$source)) {
+            this["lastTurnIndex"] = 0;
+        }
+        if (!("lastItemIndex" in $$source)) {
+            this["lastItemIndex"] = 0;
+        }
         if (!("memberCount" in $$source)) {
             this["memberCount"] = 0;
         }
@@ -269,26 +293,26 @@ export class ActivityRunStub {
      * Creates a new ActivityRunStub instance from a string or object.
      */
     static createFrom($$source: any = {}): ActivityRunStub {
-        const $$createField8_0 = $$createType4;
-        const $$createField9_0 = $$createType5;
-        const $$createField10_0 = $$createType5;
-        const $$createField12_0 = $$createType7;
-        const $$createField13_0 = $$createType7;
+        const $$createField12_0 = $$createType4;
+        const $$createField13_0 = $$createType5;
+        const $$createField14_0 = $$createType5;
+        const $$createField16_0 = $$createType7;
+        const $$createField17_0 = $$createType7;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("unshippedGroups" in $$parsedSource) {
-            $$parsedSource["unshippedGroups"] = $$createField8_0($$parsedSource["unshippedGroups"]);
+            $$parsedSource["unshippedGroups"] = $$createField12_0($$parsedSource["unshippedGroups"]);
         }
         if ("unshippedPairedLaunchIds" in $$parsedSource) {
-            $$parsedSource["unshippedPairedLaunchIds"] = $$createField9_0($$parsedSource["unshippedPairedLaunchIds"]);
+            $$parsedSource["unshippedPairedLaunchIds"] = $$createField13_0($$parsedSource["unshippedPairedLaunchIds"]);
         }
         if ("shippedSupersededLaunchIds" in $$parsedSource) {
-            $$parsedSource["shippedSupersededLaunchIds"] = $$createField10_0($$parsedSource["shippedSupersededLaunchIds"]);
+            $$parsedSource["shippedSupersededLaunchIds"] = $$createField14_0($$parsedSource["shippedSupersededLaunchIds"]);
         }
         if ("runningBefore" in $$parsedSource) {
-            $$parsedSource["runningBefore"] = $$createField12_0($$parsedSource["runningBefore"]);
+            $$parsedSource["runningBefore"] = $$createField16_0($$parsedSource["runningBefore"]);
         }
         if ("runningAfter" in $$parsedSource) {
-            $$parsedSource["runningAfter"] = $$createField13_0($$parsedSource["runningAfter"]);
+            $$parsedSource["runningAfter"] = $$createField17_0($$parsedSource["runningAfter"]);
         }
         return new ActivityRunStub($$parsedSource as Partial<ActivityRunStub>);
     }

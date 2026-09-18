@@ -10,6 +10,14 @@ const RUN_MEMBERS = 500;
 // numbers the boundary arithmetic below is written against.
 const WINDOW_ROWS = 30;
 const CHUNK_ROWS = 25;
+// SLICE_AROUND_ITEM_BUDGET: the row budget the pane asks for when it opens.
+const TAIL_ITEM_BUDGET = 200;
+
+interface TailPage {
+  items: Array<{ kind: string; summary: string }>;
+  runs: Array<{ memberCount: number; unshippedBefore: number }>;
+  oldestTurnIndex: number;
+}
 
 function heavyRun(count = RUN_MEMBERS) {
   return Array.from({ length: count }, (_, i) => ({
@@ -76,6 +84,56 @@ test('a run larger than its window ships its tail, counts the rest, and fetches 
   await expandRun(page);
   await expect(page.getByTestId('activity-run-earlier')).toContainText(/\d+ earlier/);
   await expect(page.getByTestId('command-output-row').last()).toContainText(`run call ${RUN_MEMBERS - 1}`);
+});
+
+// The tail page's oldest unit is the run itself: the walk takes whole units
+// until the row budget is met, and here the prose after the run leaves
+// room for exactly one more unit. The first user message is older than the
+// run's first member and is not in the window. Jumping to it must not ask
+// the run for it: the run's stub counts unshipped members before its window,
+// but the message is not one of them.
+test('jump to first from a window that opens on a run does not ask the run for the message', async ({ harness, page }) => {
+  const turns = [
+    {
+      userText: 'Rail question 0',
+      items: [...heavyRun(), { kind: 'assistant_text', summary: 'Rail answer 0' }],
+    },
+    ...Array.from({ length: 90 }, (_, i) => ({
+      userText: `Rail question ${i + 1}`,
+      items: [{ kind: 'assistant_text', summary: `Rail answer ${i + 1}` }],
+    })),
+  ];
+  const seeded = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [{ name: 'run-head', repo: {}, threads: [{ title: 'Run at the head', turns }] }],
+  });
+  // The page the pane opens on: 181 prose rows after the run leave room for
+  // one more whole unit, so the run is the page's oldest unit and the
+  // message that started its turn is the first row not in it.
+  const tail = await harness.rpc<TailPage>(
+    'ListThreadSliceAround', seeded.projects[0].threadIds[0], '', TAIL_ITEM_BUDGET, {},
+  );
+  expect(tail.runs.map((run) => run.memberCount)).toEqual([RUN_MEMBERS]);
+  expect(tail.runs[0].unshippedBefore).toBe(RUN_MEMBERS - WINDOW_ROWS);
+  expect(tail.oldestTurnIndex).toBe(0);
+  expect(tail.items.some((item) => item.summary === 'Rail question 0')).toBe(false);
+
+  await harness.open(page);
+  await page.getByText('Run at the head', { exact: true }).click();
+
+  const rail = page.getByTestId('message-nav-rail');
+  const scroller = page.getByTestId('message-timeline-scroll');
+  await expect(scroller.getByText('Rail question 90', { exact: true })).toBeInViewport();
+  await expect(scroller.getByText('Rail question 0', { exact: true })).toHaveCount(0);
+
+  for (let trip = 0; trip < 2; trip++) {
+    await rail.getByRole('button', { name: 'Jump to first message', exact: true }).click();
+    await expect(scroller.getByText('Rail question 0', { exact: true })).toBeInViewport();
+    await expect(page.getByText('Failed to load activity')).toHaveCount(0);
+    await expect(page.getByText('Activity moved while it was loading')).toHaveCount(0);
+    await rail.getByRole('button', { name: 'Jump to latest message', exact: true }).click();
+    await expect(scroller.getByText('Rail question 90', { exact: true })).toBeInViewport();
+    await expect(page.getByText('Failed to load activity')).toHaveCount(0);
+  }
 });
 
 test('the message rail jumps through a run whose members outnumber a page', async ({ harness, page }) => {

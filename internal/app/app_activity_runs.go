@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/itemwire"
 	"agent-overflow/internal/slicesx"
 	"agent-overflow/internal/store"
@@ -15,13 +16,15 @@ import (
 // jumps to a member the page did not ship, or refreshes a stub it marked
 // dirty.
 
-// errActivityRunChanged is what a caller whose picture of the run has
-// gone stale sees. The store refuses such a call outright — every count
-// the pane would fold into its header and its held window depends on the
-// span being real — and the pane follows the refusal with a window
-// reload. The sentence stands alone because the frontend's
-// userFacingError keeps only the last `: `-segment.
-var errActivityRunChanged = errors.New("this activity run changed while it was loading")
+// ActivityRunStaleCode is the wire code a caller whose picture of the run
+// has gone stale sees. The store refuses such a call outright — every
+// count the pane would fold into its header and its held window depends
+// on the span being real — and the pane follows the refusal with a window
+// reload. A code rather than a sentence because the pane branches on it,
+// and a non-loopback client is told only the public code and message.
+const ActivityRunStaleCode = "activity_run_stale"
+
+const activityRunStaleMessage = "This activity run changed while it was loading."
 
 // ActivityRunMembersRequest is the JSON request body for
 // ListActivityRunMembers: the store's request plus the shape the caller
@@ -95,13 +98,14 @@ func (a *App) ListActivityRunMembers(threadID string, req ActivityRunMembersRequ
 	return members, nil
 }
 
-// activityRunMembersError keeps the store's diagnosis in the chain and
-// ends the message with the sentence a person can act on.
+// activityRunMembersError keeps the store's diagnosis in the chain, and
+// marks a stale refusal with the public code the pane branches on.
 func activityRunMembersError(err error) error {
+	wrapped := fmt.Errorf("list activity run members: %w", err)
 	if errors.Is(err, store.ErrActivityRunStale) {
-		return fmt.Errorf("list activity run members: %w: %w", err, errActivityRunChanged)
+		return errorsx.Public(ActivityRunStaleCode, activityRunStaleMessage, wrapped)
 	}
-	return fmt.Errorf("list activity run members: %w", err)
+	return wrapped
 }
 
 // admittedMemberLimit is the largest member limit whose answer fits the

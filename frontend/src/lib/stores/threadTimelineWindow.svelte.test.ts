@@ -457,6 +457,7 @@ describe('threadTimelineWindow', () => {
         hasMore: false, hasMoreOlder: false, hasMoreNewer: false,
         runs: [{
           firstItemId: 'a', lastItemId: 'e', memberCount: 5,
+          firstTurnIndex: 0, firstItemIndex: 1, lastTurnIndex: 0, lastItemIndex: 5,
           loadedFirstItemId: 'b', loadedLastItemId: 'd',
           unshippedBefore: 1, unshippedAfter: 1, unshippedDigest: '0000000000000000',
           unshippedGroups: [], unshippedPairedLaunchIds: [], shippedSupersededLaunchIds: [],
@@ -469,6 +470,7 @@ describe('threadTimelineWindow', () => {
         items: [member('c', 3), member('d', 4), member('e', 5)],
         stub: {
           firstItemId: 'a', lastItemId: 'e', memberCount: 5,
+          firstTurnIndex: 0, firstItemIndex: 1, lastTurnIndex: 0, lastItemIndex: 5,
           loadedFirstItemId: 'c', loadedLastItemId: 'e',
           unshippedBefore: 2, unshippedAfter: 0, unshippedDigest: '0000000000000000',
           unshippedGroups: [], unshippedPairedLaunchIds: [], shippedSupersededLaunchIds: [],
@@ -484,6 +486,46 @@ describe('threadTimelineWindow', () => {
       expect(members.mock.calls[0]?.[1]).toMatchObject({ direction: 'around', aroundItemId: 'e' });
       expect(sliceCalls).toHaveBeenCalledTimes(1);
       expect(pane.items.map((it) => it.id)).toEqual(['p0', 'c', 'd', 'e']);
+    });
+
+    it('loadUntilItem reloads the window for a row older than a run the window opens on', async () => {
+      // The tail page's oldest unit is a run: the window holds b..d, the
+      // stub counts a before them, and the turn's user message u0 sits
+      // older than a. Jumping to u0 is a whole-window slice, not a members
+      // call: u0 is not a member, and asking the run for it is refused.
+      const pane = createThreadPane();
+      const member = (id: string, itemIndex: number) =>
+        makeItem({ id, threadId: 't', turnIndex: 0, itemIndex, kind: 'tool_call', toolName: 'Bash', rev: 1 });
+      const u0 = makeItem({ id: 'u0', threadId: 't', turnIndex: 0, itemIndex: 0, kind: 'user_message', role: 'user' });
+      const runStub = {
+        firstItemId: 'a', lastItemId: 'e', memberCount: 5,
+        firstTurnIndex: 0, firstItemIndex: 1, lastTurnIndex: 0, lastItemIndex: 5,
+        loadedFirstItemId: 'b', loadedLastItemId: 'd',
+        unshippedBefore: 1, unshippedAfter: 1, unshippedDigest: '0000000000000000',
+        unshippedGroups: [], unshippedPairedLaunchIds: [], shippedSupersededLaunchIds: [],
+        unshippedFailed: false, runningBefore: null, runningAfter: null,
+      };
+      const page = (items: Item[]) => ({
+        items,
+        oldestTurnIndex: 0, newestTurnIndex: 0,
+        hasMore: false, hasMoreOlder: false, hasMoreNewer: false,
+        runs: [runStub],
+      });
+      const sliceCalls = vi.fn(async (_threadId: unknown, anchor: unknown) =>
+        anchor === 'u0'
+          ? page([u0, member('b', 2), member('c', 3), member('d', 4)])
+          : page([member('b', 2), member('c', 3), member('d', 4)]));
+      setBindingMock('ListThreadSliceAround', sliceCalls);
+      setBindingMock('GetThreadItem', async () => u0);
+      const members = vi.fn(async (..._args: unknown[]) => ({ items: [], stub: runStub }));
+      setBindingMock('ListActivityRunMembers', members);
+      await pane.switchThread(makeThread({ id: 't' }));
+      expect(pane.items.map((it) => it.id)).toEqual(['b', 'c', 'd']);
+
+      expect(await pane.loadUntilItem('u0')).toBe('loaded');
+      expect(members).not.toHaveBeenCalled();
+      expect(sliceCalls).toHaveBeenCalledTimes(2);
+      expect(pane.items.map((it) => it.id)).toEqual(['u0', 'b', 'c', 'd']);
     });
 
     it('loadUntilItem reports missing when the item is unknown to the backend', async () => {

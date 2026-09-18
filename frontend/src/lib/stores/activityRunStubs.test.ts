@@ -44,6 +44,10 @@ function stub(overrides: Partial<ActivityRunStub> = {}): ActivityRunStub {
   return {
     firstItemId: 'a',
     lastItemId: 'e',
+    firstTurnIndex: 0,
+    firstItemIndex: 1,
+    lastTurnIndex: 0,
+    lastItemIndex: 5,
     memberCount: 5,
     loadedFirstItemId: 'b',
     loadedLastItemId: 'd',

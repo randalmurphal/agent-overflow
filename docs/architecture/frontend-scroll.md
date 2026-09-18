@@ -527,7 +527,14 @@ nothing left to animate.
 
 Both restores rely on `scrollToIndex` converging: the target is recomputed as
 measurements land, so one `tick()` is enough to schedule a restore whose rows
-have not been measured yet. The pending navigation outlives the transaction by
+have not been measured yet. The navigation holds its destination by row KEY
+and re-resolves the index on every pass: the data can change inside its
+settle window (the viewport fill's load-older prepending a page, a subtree
+hydrating), and an absolute index would re-fire onto whichever row then sat at
+it, a page above the target (the rail's "latest" jump landing rows early,
+bug-report-20260918T143935Z; regression: the prepend-mid-convergence test in
+`timelineVirtualizer.browser.test.ts`). A destination the data dropped ends
+the navigation. The pending navigation outlives the transaction by
 settle windows of real time, so it carries a takeover guard: a pass only
 continues while the viewport still sits where the navigation's own writes (and
 compensations delivered on its behalf, and the browser's clamp when the

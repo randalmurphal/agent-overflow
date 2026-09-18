@@ -36,6 +36,10 @@ function stub(overrides: Partial<ActivityRunStub> = {}): ActivityRunStub {
   return {
     firstItemId: 'a',
     lastItemId: 'e',
+    firstTurnIndex: 0,
+    firstItemIndex: 1,
+    lastTurnIndex: 0,
+    lastItemIndex: 5,
     memberCount: 5,
     loadedFirstItemId: 'b',
     loadedLastItemId: 'd',
@@ -148,28 +152,35 @@ describe('runCoveringUnshipped', () => {
     return f;
   }
 
-  it('claims a row between the older neighbour and the run\'s first member', () => {
+  // The stub places the run's edges at 1 (a) and 5 (e); the window holds
+  // b..d at 2..4 with prose either side. Membership is "between the
+  // edges": the side counts say a side has something to fetch, the edge
+  // coordinates say whether a given row is on it.
+  it('claims a row between the run\'s first edge and its loaded span', () => {
     const f = held();
     expect(f.runs.runCoveringUnshipped(row('new', 1))).toBe('a');
   });
 
-  it('claims a row between the run\'s last member and the newer neighbour', () => {
+  it('claims a row between its loaded span and the run\'s last edge', () => {
     const f = held();
-    expect(f.runs.runCoveringUnshipped(row('new', 6))).toBe('a');
+    expect(f.runs.runCoveringUnshipped(row('new', 5))).toBe('a');
   });
 
   it('claims nothing inside the loaded span, or outside the run', () => {
     const f = held();
     // Between two loaded members there is nothing unshipped to belong to.
     expect(f.runs.runCoveringUnshipped(row('new', 3))).toBeNull();
-    // Past the newer neighbour is outside the run entirely.
+    // Past an edge is outside the run, whether or not the window holds
+    // anything there: 6 sits between e and the prose at 8, 9 past it.
+    expect(f.runs.runCoveringUnshipped(row('new', 6))).toBeNull();
     expect(f.runs.runCoveringUnshipped(row('new', 9))).toBeNull();
+    expect(f.runs.runCoveringUnshipped(prose('older', 0))).toBeNull();
   });
 
   it('claims nothing on a side the stub says is empty', () => {
     const f = fixture(items);
     f.runs.syncRunSpans(items, [stub({ unshippedAfter: 0, unshippedDigest: windowDigest([{ id: 'a', rev: 1 }]) })]);
-    expect(f.runs.runCoveringUnshipped(row('new', 6))).toBeNull();
+    expect(f.runs.runCoveringUnshipped(row('new', 5))).toBeNull();
     expect(f.runs.runCoveringUnshipped(row('new', 1))).toBe('a');
   });
 
@@ -359,10 +370,36 @@ describe('fetchMembers', () => {
     expect(seen).toHaveLength(1);
   });
 
+  it('does not mistake a row beyond the run\'s edges for an unshipped member', async () => {
+    // The window opens ON the run: nothing loaded above b, and the stub
+    // counts one member (a) before it. A jump to the user message of that
+    // turn, older than a, is a jump into history this run does not cover.
+    // Asking the server "around" it would be refused as a stale run and
+    // reload the window under the reader. The stub's edge coordinates say
+    // where the run starts; the side count only says a is unshipped.
+    const items = [row('b', 2), row('c', 3), row('d', 4)];
+    const f = fixture(items);
+    f.runs.syncRunSpans(items, [stub()]);
+    const seen: unknown[] = [];
+    setBindingMock('ListActivityRunMembers', async (_threadId: unknown, req: unknown) => {
+      seen.push(req);
+      return { items: [], stub: stub() };
+    });
+    expect(await f.runs.loadUnshippedMember(prose('u', 0))).toBe(false);
+    expect(await f.runs.loadUnshippedMember(prose('later', 9))).toBe(false);
+    expect(seen).toHaveLength(0);
+    // The edges themselves are members.
+    expect(await f.runs.loadUnshippedMember(row('a', 1))).toBe(false);
+    expect(await f.runs.loadUnshippedMember(row('e', 5))).toBe(false);
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).toMatchObject({ direction: 'around', aroundItemId: 'a' });
+    expect(seen[1]).toMatchObject({ direction: 'around', aroundItemId: 'e' });
+  });
+
   it('reloads the window when the server says the run moved', async () => {
     const { f, runId } = heldRun();
     setBindingMock('ListActivityRunMembers', async () => {
-      throw new Error('list activity run members: this activity run changed while it was loading');
+      throw Object.assign(new Error('This activity run changed while it was loading.'), { code: 'activity_run_stale' });
     });
     expect(await f.runs.fetchMembers(runId, { direction: 'before', limit: 5 })).toEqual([]);
     expect(f.reloads).toHaveBeenCalledOnce();

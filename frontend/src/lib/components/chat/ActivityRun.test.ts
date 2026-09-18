@@ -61,6 +61,10 @@ function runStub(from: number, to: number, shipped: [number, number]): ActivityR
   return {
     firstItemId: `t${from}`,
     lastItemId: `t${to}`,
+    firstTurnIndex: 0,
+    firstItemIndex: from,
+    lastTurnIndex: 0,
+    lastItemIndex: to,
     memberCount: to - from + 1,
     loadedFirstItemId: `t${shipped[0]}`,
     loadedLastItemId: `t${shipped[1]}`,

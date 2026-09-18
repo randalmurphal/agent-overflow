@@ -30,19 +30,20 @@ import {
   createRefreshScheduler,
   type RefreshScheduler,
 } from '../utils/refreshScheduler';
-import { errString } from '../utils/errors';
 
 /**
- * The sentence `internal/app.errActivityRunChanged` ends with. The run no
- * longer starts where the caller thinks, or the span it named is not
- * membership any more: every count the pane would fold into a header and
- * into its held window is then a claim about rows that moved, so the
- * answer is a window reload rather than a retry.
+ * The wire code `ListActivityRunMembers` refuses with when the caller's
+ * picture of the run no longer matches the store's
+ * (`app.ActivityRunStaleCode`). A code, not the message: a client that is
+ * not on the backend's loopback is told only the public code and message,
+ * and the pane branches on this refusal.
  */
-const STALE_RUN_MESSAGE = 'this activity run changed while it was loading';
+export const ACTIVITY_RUN_STALE_CODE = 'activity_run_stale';
 
 export function isStaleActivityRunError(err: unknown): boolean {
-  return errString(err).includes(STALE_RUN_MESSAGE);
+  return typeof err === 'object'
+    && err !== null
+    && (err as { code?: unknown }).code === ACTIVITY_RUN_STALE_CODE;
 }
 
 export interface ActivityRunMemberFetchOptions {

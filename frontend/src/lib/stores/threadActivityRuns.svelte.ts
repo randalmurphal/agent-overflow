@@ -81,23 +81,10 @@ function compareCoordinates(a: RunCoordinate, b: RunCoordinate): number {
   return a.itemIndex - b.itemIndex;
 }
 
-/**
- * Where one run's loaded members sit in the pane's window, and what sits
- * next to them.
- *
- * The neighbours bound the run's COORDINATE range without the pane
- * knowing the coordinates of a single unshipped member: a page never
- * splits a run, so the loaded row on either side of a run's span is a row
- * outside that run. A null neighbour means the window ends there, and the
- * range is open on that side — every row past the edge in that direction
- * either belongs to this run or is history the window does not cover, and
- * the stub's side count says which.
- */
+/** Where one run's loaded members sit in the pane's window. */
 interface RunBounds {
   first: RunCoordinate;
   last: RunCoordinate;
-  olderNeighbour: RunCoordinate | null;
-  newerNeighbour: RunCoordinate | null;
 }
 
 export interface ActivityRunScrollSnapshot {
@@ -870,9 +857,6 @@ export function createThreadActivityRuns(
       recordBounds.set(key, {
         first: coordinateOf(windowed[first]),
         last: coordinateOf(windowed[last]),
-        olderNeighbour: first > 0 ? coordinateOf(windowed[first - 1]) : null,
-        newerNeighbour:
-          last + 1 < windowed.length ? coordinateOf(windowed[last + 1]) : null,
       });
     }
 
@@ -974,20 +958,33 @@ export function createThreadActivityRuns(
     return null;
   }
 
+  /**
+   * Whether `cursor` is a member of this run that the pane does not hold.
+   * A run is contiguous over top-level rows, so membership is exactly
+   * "between the run's edges", which the stub states as coordinates; the
+   * side counts only say whether that side has anything left to fetch. A
+   * row older than the run's first member is older history, whatever the
+   * window holds above the run, and is not this run's to fetch.
+   */
   function coversUnshipped(
     record: ActivityRunRecord,
     bounds: RunBounds,
     cursor: RunCoordinate,
   ): boolean {
+    const { stub } = record;
     if (compareCoordinates(cursor, bounds.first) < 0) {
-      if (record.stub.unshippedBefore + record.shed.length === 0) return false;
-      return bounds.olderNeighbour === null
-        || compareCoordinates(cursor, bounds.olderNeighbour) > 0;
+      if (stub.unshippedBefore + record.shed.length === 0) return false;
+      return compareCoordinates(cursor, {
+        turnIndex: stub.firstTurnIndex,
+        itemIndex: stub.firstItemIndex,
+      }) >= 0;
     }
     if (compareCoordinates(cursor, bounds.last) > 0) {
-      if (record.stub.unshippedAfter === 0) return false;
-      return bounds.newerNeighbour === null
-        || compareCoordinates(cursor, bounds.newerNeighbour) < 0;
+      if (stub.unshippedAfter === 0) return false;
+      return compareCoordinates(cursor, {
+        turnIndex: stub.lastTurnIndex,
+        itemIndex: stub.lastItemIndex,
+      }) <= 0;
     }
     return false;
   }

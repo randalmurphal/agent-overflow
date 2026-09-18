@@ -1066,6 +1066,54 @@ describe('scrollToIndex', () => {
     expect(Math.abs(scrollEl.scrollTop - takeover)).toBeLessThanOrEqual(2);
   });
 
+  it('a prepend mid-convergence keeps the navigation on its row, not on its old index', async () => {
+    // The production sequence behind a rail jump landing rows early: the
+    // navigation is still converging (its destination and the rows above
+    // it are estimates) when the viewport fill's load-older prepends a
+    // page. A navigation held as an absolute index would re-resolve to
+    // the row now sitting at that index, twenty rows up. Priors resolve
+    // per row against live data, so the prepended rows carry their own
+    // estimate: with one estimate for every row, index k's offset is k
+    // times it on both sides of the splice and a stale index would be
+    // invisible.
+    let liveRows: () => HarnessRow[] = () => [];
+    const ctx = mountHarness({
+      estimate: {
+        at: (index) => (liveRows()[index]?.id.startsWith('pre-') ? 2 * ROW_PX : ESTIMATE_PX),
+      },
+      // The controller's topology: the compensation write is authored
+      // through the chokepoint and read back, so the next compensation
+      // starts from it.
+      onCompensation: (c) => {
+        ctx.scrollEl.scrollTop = c.target;
+        ctx.harness.handle()?.noteScrollTopWritten(ctx.scrollEl.scrollTop);
+      },
+    });
+    const { harness, scrollEl } = ctx;
+    liveRows = () => harness.getRows();
+    await waitForStableGeometry(scrollEl, 'mount');
+    const handle = harness.handle()!;
+
+    handle.scrollToIndex(30, { align: 'start' });
+    await raf();
+    const prepended = Array.from({ length: 20 }, (_, index) => ({
+      id: `pre-${index}`,
+      heightPx: ROW_PX,
+      label: `Pre ${index}`,
+    }));
+    harness.setRows([...prepended, ...harness.getRows()]);
+    await waitForStableGeometry(scrollEl, 'prepend settle');
+
+    // The destination is still the row the caller named, now twenty
+    // indexes further down, and it is what sits at the viewport top.
+    const row = rowEl(scrollEl, 'row-30');
+    expect(row).not.toBeNull();
+    expect(row!.getAttribute('data-row-index')).toBe('50');
+    expect(
+      Math.abs(row!.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top),
+    ).toBeLessThanOrEqual(2);
+  });
+
   it('keeps converging when compensation writes move the position on its behalf', async () => {
     // The production topology: a consumer (the controller) performs every
     // compensation write. Converging into unmeasured content triggers
