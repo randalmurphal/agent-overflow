@@ -453,13 +453,16 @@ func (s *Store) ThreadHistoryStamp(threadID string) (HistoryStamp, bool, error) 
 // mid-turn. On the writer-fallback configurations that have no read pool
 // (`:memory:`, non-WAL) `reader()` IS the writer, so the transaction
 // serializes with flush writes like any other read there.
+// `runWindowRows` sizes the page exactly as it sizes ListThreadSliceAround's:
+// the two return the same window and must therefore compose it identically.
+//
 // `held` describes the rows the caller already has, and is nil when it has
 // none. It is the second way to earn `fresh`: when the stamps do not match
 // but the held rows still ARE the read (verifyHeldWindowTx), the answer is
 // page-less and the returned stamp attests the caller's own rows. That is
 // what keeps a reopen after a turn on the same thread free, where a stamp
 // the turn invalidated cannot.
-func (s *Store) SyncThreadWindow(ctx context.Context, threadID, anchorItemID string, itemBudget int, have HistoryStamp, held *HeldWindow) (ThreadWindowSync, error) {
+func (s *Store) SyncThreadWindow(ctx context.Context, threadID, anchorItemID string, itemBudget, runWindowRows int, have HistoryStamp, held *HeldWindow) (ThreadWindowSync, error) {
 	tx, err := s.reader().BeginTx(ctx, nil)
 	if err != nil {
 		return ThreadWindowSync{}, fmt.Errorf("store: begin sync thread window for %s: %w", threadID, err)
@@ -510,7 +513,7 @@ func (s *Store) SyncThreadWindow(ctx context.Context, threadID, anchorItemID str
 		}
 	}
 
-	page, err := s.listThreadSliceAround(tx, threadID, anchorItemID, itemBudget)
+	page, err := s.listThreadSliceAround(tx, threadID, anchorItemID, itemBudget, runWindowRows)
 	if err != nil {
 		return ThreadWindowSync{}, err
 	}

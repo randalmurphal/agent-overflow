@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { wholeRunNodeFields } from '../../test/helpers/activityRuns';
 import { makeItem } from '../../test/helpers/chat';
 import type { Item } from '../types/models';
 import type {
@@ -54,6 +55,7 @@ const activityRun: ActivityRunNode = {
   membershipEpoch: 1,
   memberItemIds: ['i1'],
   summaryItemIds: ['i1'],
+  ...wholeRunNodeFields(['i1']),
 };
 
 describe('timelineNodeHasRail', () => {

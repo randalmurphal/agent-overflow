@@ -17,6 +17,24 @@ export interface ApplyItemUpsertsToWindowOptions {
   newestLoadedTurnIndex?: number | null;
   hasMoreHistory?: boolean;
   hasMoreNewer: boolean;
+  /**
+   * The activity run whose UNSHIPPED region covers a pushed row's
+   * coordinate, or null — `threadActivityRuns.runCoveringUnshipped`.
+   *
+   * A history page ships only a window of each run's members
+   * (docs/architecture/timeline-window-pages.md §6), so a row can land
+   * inside the loaded window's coordinate range and still belong to a
+   * part of a run the pane does not hold. Inserting it would put a row
+   * next to members it is not adjacent to and make the run's loaded span
+   * discontiguous, which every count on the record is stated against.
+   * Such a row is refused and its run marked dirty instead; the debounced
+   * stub refresh restates the run and the reader sees the new member in
+   * the boundary's count.
+   *
+   * Omitted by callers with no registry (tests, the agent-scope view),
+   * which reads as "no run covers anything".
+   */
+  runCoveringUnshipped?: (item: Item) => string | null;
 }
 
 export interface ApplyItemUpsertsToWindowResult {
@@ -58,6 +76,13 @@ export interface ApplyItemUpsertsToWindowResult {
    * canonical rows, and hydration renders them once the anchor is back.
    */
   rejectedParentedItems: readonly Item[];
+  /**
+   * Run record keys of rows refused because they fell inside a held run's
+   * unshipped region. The caller marks each dirty
+   * (`threadActivityRuns.markRunDirty`), which schedules the stub
+   * refresh that restates the run.
+   */
+  dirtiedRunKeys: readonly string[];
 }
 
 /** Shared empty list, so the overwhelmingly common "nothing moved" batch allocates none. */
@@ -83,6 +108,7 @@ export function applyItemUpsertsToWindow({
   newestLoadedTurnIndex,
   hasMoreHistory,
   hasMoreNewer,
+  runCoveringUnshipped,
 }: ApplyItemUpsertsToWindowOptions): ApplyItemUpsertsToWindowResult | null {
   if (incoming.length === 0) return null;
 
@@ -109,6 +135,7 @@ export function applyItemUpsertsToWindow({
   let retentionChanged = false;
   let summaryFieldsChangedIds: string[] | null = null;
   let rejectedParentedItems: Item[] | null = null;
+  let dirtiedRunKeys: Set<string> | null = null;
   // MIN_SAFE_INTEGER, not 0: head-healed prompts sit at NEGATIVE item
   // indexes, so 0 is not the start of a turn — a fallback floor at 0
   // would misclassify those rows as below the loaded window (mirror of
@@ -198,6 +225,20 @@ export function applyItemUpsertsToWindow({
       continue;
     }
 
+    // A new TOP-LEVEL row inside a held run's unshipped region is not a
+    // row this window can hold: see `runCoveringUnshipped`. Checked after
+    // the floor/ceiling filters, so a row those already refused costs no
+    // lookup, and before the parent admission, which only concerns
+    // children. Rows at or past the newest edge are outside every run's
+    // range and append exactly as before.
+    if ((item.parentId ?? '') === '' && runCoveringUnshipped) {
+      const runKey = runCoveringUnshipped(item);
+      if (runKey !== null) {
+        (dirtiedRunKeys ??= new Set()).add(runKey);
+        continue;
+      }
+    }
+
     // Admission for new subagent children, checked against what actually
     // landed (batchIndexById excludes floor/ceiling-refused rows, and
     // a rejected anchor never enters it, so grandchildren are refused
@@ -230,7 +271,12 @@ export function applyItemUpsertsToWindow({
     changedItems.push(item);
   }
 
-  if (!changed && !droppedNewerItems && rejectedParentedItems === null) {
+  if (
+    !changed
+    && !droppedNewerItems
+    && rejectedParentedItems === null
+    && dirtiedRunKeys === null
+  ) {
     return null;
   }
   if (!changed) {
@@ -245,6 +291,7 @@ export function applyItemUpsertsToWindow({
       rowUiRetentionChanged: false,
       summaryFieldsChangedIds: NO_CHANGED_IDS,
       rejectedParentedItems: rejectedParentedItems ?? NO_REJECTED_ITEMS,
+      dirtiedRunKeys: dirtiedRunKeys ? [...dirtiedRunKeys] : NO_CHANGED_IDS,
     };
   }
   const result = next ?? current.slice();
@@ -263,5 +310,6 @@ export function applyItemUpsertsToWindow({
     rowUiRetentionChanged: retentionChanged,
     summaryFieldsChangedIds: summaryFieldsChangedIds ?? NO_CHANGED_IDS,
     rejectedParentedItems: rejectedParentedItems ?? NO_REJECTED_ITEMS,
+    dirtiedRunKeys: dirtiedRunKeys ? [...dirtiedRunKeys] : NO_CHANGED_IDS,
   };
 }

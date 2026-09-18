@@ -809,6 +809,22 @@ the default.
 `(mountedFrom, mountedRows)` per pass, dropping an anchor whose row has left
 the run and clamping one too late to fit a full window.
 
+The rows the window slides over are themselves a window. A history page
+ships a run's members only around what would mount and counts the rest in a
+stub ([timeline-window-pages](timeline-window-pages.md) §2, §6), so
+`ActivityRunNode.children` is the loaded span and `memberCount`,
+`unshippedBefore`, `unshippedAfter` and the `loadedFirst/LastItemId` edges
+say what lies past it. The boundaries count both kinds of hidden row, and
+mounting past the loaded span fetches first (`ThreadActivityRuns.fetchMembers`,
+a chunk `before` or `after`) and grows the window over the rows that land.
+The later edge pins the window's head before it fetches: rows land below the
+span, and a tail-following window would slide onto them and take the reader
+along. A jump whose target is a counted member re-centers the run's loaded
+span on it (`loadUnshippedMember`, `around`) instead of reloading the pane's
+whole window. The header sums the loaded rows, the rows a window cut shed,
+and the stub's aggregate (`summaryFacts`), so a collapsed run reports its
+whole self whatever part of it is loaded.
+
 ### Following the tail is a fact about the reader
 
 A tail-following window drops one head row for every row appended, an

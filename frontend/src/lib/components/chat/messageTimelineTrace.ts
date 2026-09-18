@@ -164,6 +164,15 @@ export function recordTimelineRenderTrace(
           runId: node.runId,
           childCount: node.children.length,
           itemCount: node.memberItemIds.length,
+          // What the pane holds of the run versus what the run has
+          // (docs/architecture/timeline-window-pages.md §6). Beside the
+          // loaded counts because a header that disagrees with the rows
+          // behind it is diagnosed by the gap between the two: `itemCount`
+          // well under `memberCount` is a partly loaded run, and the two
+          // unshipped sides say which boundary would fetch.
+          memberCount: node.memberCount,
+          unshippedBefore: node.unshippedBefore,
+          unshippedAfter: node.unshippedAfter,
           mountedFrom: node.mountedFrom,
           mountedRows: node.mountedRows,
           collapsed: node.collapsed,

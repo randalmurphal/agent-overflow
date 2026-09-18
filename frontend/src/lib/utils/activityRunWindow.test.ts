@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { wholeRunNodeFields } from '../../test/helpers/activityRuns';
 import { makeItem } from '../../test/helpers/chat';
 import {
   activityRunFocusWindow,
@@ -46,6 +47,7 @@ function run(
     membershipEpoch: 1,
     memberItemIds: [],
     summaryItemIds: [],
+    ...wholeRunNodeFields(),
   };
 }
 

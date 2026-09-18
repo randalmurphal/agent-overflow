@@ -627,7 +627,7 @@ var DefaultSettings = Settings{
 	// Collapsed keeps long tool/thinking runs out of the way until the
 	// user opens them (default flipped 2026-08-30).
 	ActivityRunDefault:    "collapsed",
-	ActivityRunWindowRows: 30,
+	ActivityRunWindowRows: DefaultActivityRunWindowRows,
 	// Text-generation defaults: Codex is cheap + fast for short JSON
 	// responses, so it's the sensible default. The model stays empty
 	// so the call site picks the per-provider default; if the user

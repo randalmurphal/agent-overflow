@@ -565,8 +565,9 @@ const (
 // the whole point of the window is that a run's mounted rows stay O(K)
 // regardless of how long the run is.
 const (
-	MinActivityRunWindowRows = 10
-	MaxActivityRunWindowRows = 200
+	MinActivityRunWindowRows     = 10
+	MaxActivityRunWindowRows     = 200
+	DefaultActivityRunWindowRows = 30
 )
 
 func validateActivityRunWindowRows(value int) error {

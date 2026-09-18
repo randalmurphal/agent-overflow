@@ -888,3 +888,71 @@ describe('revision carry on absorbed rows', () => {
     expect(held.rev).toBe(4);
   });
 });
+
+// A pushed top-level row can land inside the coordinate range of a run
+// the pane holds only part of (docs/architecture/timeline-window-pages.md
+// §6). Inserting it would make the run's loaded span discontiguous, which
+// every count on its record is stated against.
+describe('applyItemUpsertsToWindow activity-run routing', () => {
+  const current = [
+    makeItem({ id: 'p0', turnIndex: 0, itemIndex: 0 }),
+    makeItem({ id: 'b', turnIndex: 0, itemIndex: 4, kind: 'tool_call' }),
+  ];
+  const itemIndexById = new Map(current.map((item, index) => [item.id, index]));
+  const base = {
+    current,
+    itemIndexById,
+    currentThreadId: 'thread-1',
+    oldestLoadedCursor: { turnIndex: 0, itemIndex: 0 },
+    newestLoadedCursor: { turnIndex: 0, itemIndex: 4 },
+    hasMoreNewer: false,
+  };
+
+  it('refuses a row inside a held run and reports the run instead', () => {
+    const incoming = [makeItem({ id: 'new', turnIndex: 0, itemIndex: 2, kind: 'tool_call' })];
+    const next = applyWindowUpserts({
+      ...base,
+      incoming,
+      runCoveringUnshipped: (item) => (item.id === 'new' ? 'run-a' : null),
+    })!;
+    expect(next.items.map((item) => item.id)).toEqual(['p0', 'b']);
+    expect(next.appendedItems).toEqual([]);
+    expect(next.structureChanged).toBe(false);
+    expect(next.dirtiedRunKeys).toEqual(['run-a']);
+  });
+
+  it('reports each run once for a burst', () => {
+    const incoming = [
+      makeItem({ id: 'n1', turnIndex: 0, itemIndex: 2, kind: 'tool_call' }),
+      makeItem({ id: 'n2', turnIndex: 0, itemIndex: 3, kind: 'tool_call' }),
+    ];
+    const next = applyWindowUpserts({ ...base, incoming, runCoveringUnshipped: () => 'run-a' })!;
+    expect(next.dirtiedRunKeys).toEqual(['run-a']);
+  });
+
+  it('appends a row no run claims, and updates a loaded row', () => {
+    const incoming = [
+      makeItem({ id: 'tail', turnIndex: 0, itemIndex: 5, kind: 'tool_call' }),
+      makeItem({ id: 'b', turnIndex: 0, itemIndex: 4, kind: 'tool_call', status: 'errored' }),
+    ];
+    const next = applyWindowUpserts({ ...base, incoming, runCoveringUnshipped: () => null })!;
+    expect(next.items.map((item) => item.id)).toEqual(['p0', 'b', 'tail']);
+    expect(next.dirtiedRunKeys).toEqual([]);
+  });
+
+  it('never routes a subagent child', () => {
+    const claimed: string[] = [];
+    const incoming = [
+      makeItem({ id: 'child', turnIndex: 0, itemIndex: 2, parentId: 'b' }),
+    ];
+    applyWindowUpserts({
+      ...base,
+      incoming,
+      runCoveringUnshipped: (item) => {
+        claimed.push(item.id);
+        return 'run-a';
+      },
+    });
+    expect(claimed).toEqual([]);
+  });
+});

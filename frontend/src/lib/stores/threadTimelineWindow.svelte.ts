@@ -22,13 +22,16 @@ import {
   type TimelineCursorLike,
 } from './threadItems';
 import { getActiveTurn } from './threadStatuses.svelte';
+import { groupActivityRunSpans } from '../utils/activityRunSpans';
+import type { ThreadActivityRuns } from './threadActivityRuns.svelte';
 import {
   ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS,
   ACTIVE_TIMELINE_WINDOW_MAX_ITEMS,
   ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
   LOAD_OLDER_ITEM_BUDGET,
   loadOlderResult,
-  wantsInlinePreviews,
+  SLICE_AROUND_ITEM_BUDGET,
+  timelinePageShape,
   type LoadOlderResult,
   type LoadUntilItemResult,
   type PaneScrollController,
@@ -73,6 +76,16 @@ export interface ThreadTimelineWindowOptions {
    * `agentPaneHeldRows` exists to prevent (live incident 2026-08-22).
    */
   getHeldRowIds?(): ReadonlySet<string> | null;
+  /**
+   * The pane's activity-run registry. Read per call: it is constructed
+   * after this factory, so the option is an arrow, not a reference.
+   *
+   * The window owns where a cut's edges land; the registry owns what a
+   * run still counts once they have. Neither can decide alone — an edge
+   * inside a run is legal only if the run can record the members past it
+   * (see `snapCutEdgesOffRuns`).
+   */
+  activityRuns(): ThreadActivityRuns;
 }
 
 /**
@@ -339,6 +352,10 @@ export function createThreadTimelineWindow(
     );
     hasMoreHistory = pagedHasMoreOlder(paged);
     hasMoreNewer = pagedHasMoreNewer(paged);
+    // The page's run stubs describe the members it did NOT ship, against
+    // the span it did. Folded here, after the rows are installed, so the
+    // records are compared with the window the pane actually holds.
+    options.activityRuns().syncRunSpans(nextItems, paged.runs);
   }
 
   /**
@@ -466,10 +483,61 @@ export function createThreadTimelineWindow(
   }
 
   /**
+   * Move a chosen cut edge off the inside of an activity run, where that
+   * is free.
+   *
+   * A run is one held object: the pane holds its loaded members as rows
+   * and everything else as counts on its record
+   * (docs/architecture/timeline-window-pages.md §6). Where the edges may
+   * land follows from what a record can say:
+   *
+   *  - OLDER edge inside a run: allowed and unchanged. The members before
+   *    it are shed — narrow copies on the record, which is exactly the
+   *    shape §6 defines, contiguous with the surviving span's older side
+   *    — so the run keeps counting them and the header stays right.
+   *  - NEWER edge inside a run: a record cannot record members past its
+   *    span, so this edge is moved back to the run's first row, dropping
+   *    the run whole, whenever the kept range survives it. A run LARGER
+   *    than the whole target cannot be moved off: the edge stays inside
+   *    it, the members past it are dropped, and the record goes dirty —
+   *    one debounced stub refresh restates what the run now has after the
+   *    span. Bounded memory wins over an exact count for 200ms; keeping
+   *    such a run whole would defeat the cut entirely.
+   *
+   * Runs fully outside the kept range need nothing here: they leave with
+   * their rows and `activityRuns.applyWindowCut` drops their records in
+   * the same commit.
+   */
+  function snapCutEdgesOffRuns(
+    topLevel: readonly Item[],
+    start: number,
+    end: number,
+  ): { start: number; end: number } {
+    const spans = groupActivityRunSpans(topLevel);
+    if (spans.length === 0) return { start, end };
+    const indexById = new Map<string, number>();
+    for (let index = 0; index < topLevel.length; index += 1) {
+      indexById.set(topLevel[index].id, index);
+    }
+    let nextEnd = end;
+    for (const span of spans) {
+      const first = indexById.get(span.firstItemId);
+      const last = indexById.get(span.lastItemId);
+      if (first === undefined || last === undefined) continue;
+      if (nextEnd > first && nextEnd <= last && first > start) nextEnd = first;
+    }
+    return { start, end: nextEnd };
+  }
+
+  /**
    * The window cut. Keeps `targetCount` top-level rows: the visible range
    * whole, plus buffer placed by `policy`. A visible range wider than the
    * target is kept in full. Reports which edges were dropped so the
    * commit can mark them loadable again.
+   *
+   * The newer edge is then pulled off the inside of an activity run where
+   * that is free (`snapCutEdgesOffRuns`), which can keep FEWER rows than
+   * `targetCount`. The target is a retention target, not a floor.
    */
   function keepWindowNearReader(
     sourceItems: readonly Item[],
@@ -516,6 +584,9 @@ export function createThreadTimelineWindow(
     }
     start = Math.max(0, start);
     end = Math.min(length, end);
+    const snapped = snapCutEdgesOffRuns(topLevel, start, end);
+    start = Math.max(0, snapped.start);
+    end = Math.min(length, snapped.end);
     if (start === 0 && end === length) return unchanged();
     const oldestKeep = cursorFromItem(topLevel[start]);
     const newestKeep = cursorFromItem(topLevel[end - 1]);
@@ -570,12 +641,17 @@ export function createThreadTimelineWindow(
     next: PrunedWindow,
     afterCommit?: () => void,
   ): void {
+    // Before the swap: a shed row keeps narrow copies of fields that only
+    // exist while the `Item` does (§6), so the records have to see both
+    // windows while the outgoing rows are still in hand.
+    options.activityRuns().applyWindowCut(options.getItems(), next.items);
     options.replaceTimelineItems(next.items, {
       disposeDropped: true,
       afterCommit: () => {
         setLoadedCursors(next.oldestCursor, next.newestCursor);
         if (next.droppedHead) hasMoreHistory = true;
         if (next.droppedTail) hasMoreNewer = true;
+        options.activityRuns().syncRunSpans(options.getItems());
         afterCommit?.();
       },
     });
@@ -764,7 +840,7 @@ export function createThreadTimelineWindow(
         currentThread.id,
         cursorForBinding(floor),
         LOAD_OLDER_ITEM_BUDGET,
-        wantsInlinePreviews(),
+        timelinePageShape(),
       );
       if (
         gen !== options.getSwitchGeneration() ||
@@ -811,12 +887,18 @@ export function createThreadTimelineWindow(
       // page reports false itself (finalizePagedItems), and the auto-load
       // gate's progress guard keeps an unmoved floor from re-probing.
       const nextHasMoreHistory = pagedHasMoreOlder(paged);
+      // Fold the page's stubs against the merged window, then account for
+      // the cut over the same array — both while the rows the cut drops
+      // are still in hand (a shed row copies fields off the `Item`).
+      options.activityRuns().syncRunSpans(merged, paged.runs);
+      if (cut) options.activityRuns().applyWindowCut(merged, next);
       options.replaceTimelineItems(next, {
         disposeDropped: true,
         afterCommit: () => {
           setLoadedCursors(nextFloor, nextNewest);
           hasMoreHistory = nextHasMoreHistory;
           if (cut?.droppedTail) hasMoreNewer = true;
+          options.activityRuns().syncRunSpans(options.getItems());
         },
       });
       await tick();
@@ -900,6 +982,9 @@ export function createThreadTimelineWindow(
     // check reports the miss).
     let sliceAnchorID = itemID;
     let subagentRootID = '';
+    // The top-level row the window has to hold for the target to be
+    // scrollable: the target itself, or its launch root for a subagent child.
+    let anchorItem = fetched;
     if ((fetched.parentId ?? '') !== '') {
       let walker = fetched;
       const visited = new Set<string>([walker.id]);
@@ -926,16 +1011,33 @@ export function createThreadTimelineWindow(
       if ((walker.parentId ?? '') === '') {
         sliceAnchorID = walker.id;
         subagentRootID = walker.id;
+        anchorItem = walker;
       }
     }
+
+    // The anchor sits inside a run the window already holds, in the part
+    // of it the page did not ship (timeline-window-pages §6): one members
+    // call re-centers that run's loaded span on it, and the rest of the
+    // window stays exactly where the reader left it. A covering run that
+    // cannot produce the row (a failed fetch, already reported) falls
+    // through to the whole-window slice below.
+    if (await options.activityRuns().loadUnshippedMember(anchorItem)) {
+      if (superseded()) return 'superseded';
+      if (subagentRootID) {
+        await options.hydrateSubagentChildren(subagentRootID);
+        if (superseded()) return 'superseded';
+      }
+      if (options.getItems().some((it) => it.id === itemID)) return 'loaded';
+    }
+    if (superseded()) return 'superseded';
 
     loadingOlder = true;
     try {
       const paged = await ListThreadSliceAround(
         currentThread.id,
         sliceAnchorID,
-        ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
-        wantsInlinePreviews(),
+        SLICE_AROUND_ITEM_BUDGET,
+        timelinePageShape(),
       );
       if (superseded()) return 'superseded';
       const next = reconcileItemWindow(
@@ -986,7 +1088,7 @@ export function createThreadTimelineWindow(
         currentThread.id,
         cursorForBinding(ceiling),
         LOAD_OLDER_ITEM_BUDGET,
-        wantsInlinePreviews(),
+        timelinePageShape(),
       );
       if (
         gen !== options.getSwitchGeneration() ||
@@ -1029,12 +1131,17 @@ export function createThreadTimelineWindow(
         ? cut.oldestCursor
         : cloneCursor(oldestLoadedCursor) ?? oldestCursorFromItems(next);
       const nextHasMoreNewer = pagedHasMoreNewer(paged);
+      // Mirror of loadOlder: stubs first, then the cut, both over the
+      // merged array while the dropped rows still exist.
+      options.activityRuns().syncRunSpans(merged, paged.runs);
+      if (cut) options.activityRuns().applyWindowCut(merged, next);
       options.replaceTimelineItems(next, {
         disposeDropped: true,
         afterCommit: () => {
           setLoadedCursors(nextOldest, nextCeiling);
           hasMoreNewer = nextHasMoreNewer;
           if (cut?.droppedHead) hasMoreHistory = true;
+          options.activityRuns().syncRunSpans(options.getItems());
         },
       });
       await tick();
@@ -1063,8 +1170,8 @@ export function createThreadTimelineWindow(
       const paged = await ListThreadSliceAround(
         currentThread.id,
         '',
-        ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
-        wantsInlinePreviews(),
+        SLICE_AROUND_ITEM_BUDGET,
+        timelinePageShape(),
       );
       if (
         gen !== options.getSwitchGeneration() ||

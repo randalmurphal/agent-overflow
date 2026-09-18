@@ -16,6 +16,12 @@ function identity(): ThreadActivityRuns {
     windowRows: () => 30,
     windowVerified: () => true,
     scrollController: () => null,
+    items: () => [],
+    threadId: () => null,
+    pageShape: () => ({ inlinePreviews: true, runWindowRows: 5, maxBytes: 1024 }),
+    mountRunMembers: () => {},
+    reloadWindow: () => {},
+    reportFetchFailure: () => {},
   });
 }
 
@@ -397,6 +403,12 @@ describe('a window short of the thread tail', () => {
       windowRows: () => 30,
       windowVerified: () => true,
       scrollController: () => null,
+      items: () => [],
+      threadId: () => null,
+      pageShape: () => ({ inlinePreviews: true, runWindowRows: 5, maxBytes: 1024 }),
+      mountRunMembers: () => {},
+      reloadWindow: () => {},
+      reportFetchFailure: () => {},
     });
     const out = project([prose('p0'), tool('t0', 'Bash')], {
       identity: id,
@@ -587,6 +599,12 @@ describe('identity migration', () => {
       windowRows: () => 30,
       windowVerified: () => true,
       scrollController: () => null,
+      items: () => [],
+      threadId: () => null,
+      pageShape: () => ({ inlinePreviews: true, runWindowRows: 5, maxBytes: 1024 }),
+      mountRunMembers: () => {},
+      reloadWindow: () => {},
+      reportFetchFailure: () => {},
     });
     const nodes = project([tool('t1', 'Bash'), prose('p1'), tool('t2', 'Bash')], { identity: id });
 
@@ -608,6 +626,12 @@ describe('identity migration', () => {
       windowRows: () => 30,
       windowVerified: () => true,
       scrollController: () => null,
+      items: () => [],
+      threadId: () => null,
+      pageShape: () => ({ inlinePreviews: true, runWindowRows: 5, maxBytes: 1024 }),
+      mountRunMembers: () => {},
+      reloadWindow: () => {},
+      reportFetchFailure: () => {},
     });
     const first = project([tool('t1', 'Bash')], { identity: id, withheld: [prose('p1')] });
     expect(run(first, 0).live).toBe(false);

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -41,8 +42,8 @@ func TestWindowDigestMatchesSharedVectors(t *testing.T) {
 	if err := json.Unmarshal(raw, &file); err != nil {
 		t.Fatalf("decode vectors: %v", err)
 	}
-	if file.Algorithm != "fnv1a64" {
-		t.Fatalf("vector algorithm = %q, want fnv1a64", file.Algorithm)
+	if file.Algorithm != "fnv1a64-xor" {
+		t.Fatalf("vector algorithm = %q, want fnv1a64-xor", file.Algorithm)
 	}
 	if len(file.Cases) == 0 {
 		t.Fatal("vector file carries no cases")
@@ -77,29 +78,86 @@ func TestWindowDigestVectorsAreSharedByteForByte(t *testing.T) {
 	}
 }
 
+// TestWindowDigestIsOrderFreeAndComposable pins the two properties the
+// held window depends on and the vectors alone cannot state: the digest
+// does not depend on the order rows are folded in, and folding two
+// disjoint subsets separately and XORing the results equals folding the
+// whole. That is what lets a client compose loaded rows, shed rows and a
+// run stub's UnshippedDigest into one value the server can re-derive from
+// the range.
+func TestWindowDigestIsOrderFreeAndComposable(t *testing.T) {
+	rows := []WindowDigestRow{
+		{ID: "a", Rev: 1}, {ID: "b", Rev: 2}, {ID: "c", Rev: 3},
+		{ID: "d", Rev: 4}, {ID: "e", Rev: 5},
+	}
+	whole := WindowDigest(rows)
+
+	reversed := make([]WindowDigestRow, len(rows))
+	for i, row := range rows {
+		reversed[len(rows)-1-i] = row
+	}
+	if got := WindowDigest(reversed); got != whole {
+		t.Errorf("reversed digest = %s, want %s", got, whole)
+	}
+
+	for split := 0; split <= len(rows); split++ {
+		left, err := strconv.ParseUint(WindowDigest(rows[:split]), 16, 64)
+		if err != nil {
+			t.Fatalf("parse left digest: %v", err)
+		}
+		right, err := strconv.ParseUint(WindowDigest(rows[split:]), 16, 64)
+		if err != nil {
+			t.Fatalf("parse right digest: %v", err)
+		}
+		if got := formatWindowDigest(left ^ right); got != whole {
+			t.Errorf("split at %d composed to %s, want %s", split, got, whole)
+		}
+	}
+}
+
 // heldWindowFromStore builds the window a client that had just read this
 // thread would hold, so the verification tests start from a window that
 // IS the read and then break exactly one thing about it.
 func heldWindowFromStore(t *testing.T, s *Store, threadID string) HeldWindow {
 	t.Helper()
-	page, err := s.ListThreadSliceAround(threadID, "", 200)
+	page, err := s.ListThreadSliceAround(threadID, "", 200, testRunWindowRows)
 	if err != nil {
 		t.Fatalf("read window: %v", err)
 	}
+	return heldWindowFromPage(t, page)
+}
+
+// heldWindowFromPage folds a page exactly as a client does
+// (docs/architecture/timeline-window-pages.md §5): the rows the page
+// shipped, XORed with one UnshippedDigest per run it holds a stub for,
+// counted over every physical row in the page's RANGE, and bounded by
+// the page's own cursors — which may name rows the page never shipped.
+func heldWindowFromPage(t *testing.T, page PagedItems) HeldWindow {
+	t.Helper()
 	if len(page.Items) == 0 {
 		t.Fatal("window is empty")
 	}
-	rows := make([]WindowDigestRow, 0, len(page.Items))
+	var digest uint64
+	count := 0
 	for _, item := range page.Items {
-		rows = append(rows, WindowDigestRow{ID: item.ID, Rev: item.Rev})
+		digest ^= windowDigestRowHash(WindowDigestRow{ID: item.ID, Rev: item.Rev})
+		count++
+	}
+	for _, stub := range page.Runs {
+		bits, err := strconv.ParseUint(stub.UnshippedDigest, 16, 64)
+		if err != nil {
+			t.Fatalf("parse unshipped digest for run %s: %v", stub.FirstItemID, err)
+		}
+		digest ^= bits
+		count += stub.UnshippedBefore + stub.UnshippedAfter
 	}
 	return HeldWindow{
-		OldestItemID: page.Items[0].ID,
-		NewestItemID: page.Items[len(page.Items)-1].ID,
-		Count:        len(page.Items),
+		OldestItemID: page.OldestCursor.ItemID,
+		NewestItemID: page.NewestCursor.ItemID,
+		Count:        count,
 		HasMoreOlder: page.HasMoreOlder,
 		HasMoreNewer: page.HasMoreNewer,
-		Digest:       WindowDigest(rows),
+		Digest:       formatWindowDigest(digest),
 	}
 }
 
@@ -131,7 +189,7 @@ func TestSyncThreadWindowVerifiesHeldWindow(t *testing.T) {
 		t.Fatal("fixture no longer makes the client stamp stale")
 	}
 
-	got, err := s.SyncThreadWindow(ctx, "t", "", 200, stale, &held)
+	got, err := s.SyncThreadWindow(ctx, "t", "", 200, testRunWindowRows, stale, &held)
 	if err != nil {
 		t.Fatalf("sync with held window: %v", err)
 	}
@@ -146,7 +204,7 @@ func TestSyncThreadWindowVerifiesHeldWindow(t *testing.T) {
 	}
 
 	// Without the window, the same request pays for a page.
-	got, err = s.SyncThreadWindow(ctx, "t", "", 200, stale, nil)
+	got, err = s.SyncThreadWindow(ctx, "t", "", 200, testRunWindowRows, stale, nil)
 	if err != nil {
 		t.Fatalf("sync without held window: %v", err)
 	}
@@ -348,7 +406,7 @@ func TestSyncThreadWindowRejectsWrongHeldWindows(t *testing.T) {
 			}
 			tc.mutate(t, s, &held)
 
-			got, err := s.SyncThreadWindow(context.Background(), "t", "", 200, stale, &held)
+			got, err := s.SyncThreadWindow(context.Background(), "t", "", 200, testRunWindowRows, stale, &held)
 			if err != nil {
 				t.Fatalf("sync: %v", err)
 			}
@@ -422,7 +480,7 @@ func TestHeldWindowVerifiesExactlyUpToThePageCap(t *testing.T) {
 	s := newTestStore(t)
 	seedWideSyncThread(t, s, "t", MaxHeldWindowItems+1)
 
-	page, err := s.ListThreadSliceAround("t", "", MaxHeldWindowItems+2)
+	page, err := s.ListThreadSliceAround("t", "", MaxHeldWindowItems+2, testRunWindowRows)
 	if err != nil {
 		t.Fatalf("read window: %v", err)
 	}
@@ -433,7 +491,7 @@ func TestHeldWindowVerifiesExactlyUpToThePageCap(t *testing.T) {
 	stale.Rev--
 
 	atCap := heldWindowOverItems(page.Items[:MaxHeldWindowItems], false, true)
-	got, err := s.SyncThreadWindow(context.Background(), "t", "", 200, stale, &atCap)
+	got, err := s.SyncThreadWindow(context.Background(), "t", "", 200, testRunWindowRows, stale, &atCap)
 	if err != nil {
 		t.Fatalf("sync at the cap: %v", err)
 	}
@@ -443,7 +501,7 @@ func TestHeldWindowVerifiesExactlyUpToThePageCap(t *testing.T) {
 	}
 
 	overCap := heldWindowOverItems(page.Items, false, false)
-	got, err = s.SyncThreadWindow(context.Background(), "t", "", 200, stale, &overCap)
+	got, err = s.SyncThreadWindow(context.Background(), "t", "", 200, testRunWindowRows, stale, &overCap)
 	if err != nil {
 		t.Fatalf("sync over the cap: %v", err)
 	}
@@ -485,7 +543,7 @@ func TestHeldWindowIgnoresRowsAPageWouldNotReturn(t *testing.T) {
 		t.Fatalf("insert plan_update notification: %v", err)
 	}
 
-	got, err := s.SyncThreadWindow(context.Background(), "t", "", 200, stale, &held)
+	got, err := s.SyncThreadWindow(context.Background(), "t", "", 200, testRunWindowRows, stale, &held)
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}
@@ -511,7 +569,7 @@ func TestHeldWindowSeesThroughToChildWrites(t *testing.T) {
 		t.Fatalf("insert child: %v", err)
 	}
 
-	got, err := s.SyncThreadWindow(context.Background(), "t", "", 200, stale, &held)
+	got, err := s.SyncThreadWindow(context.Background(), "t", "", 200, testRunWindowRows, stale, &held)
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}
@@ -551,7 +609,7 @@ func TestHeldWindowRefusesImportedRows(t *testing.T) {
 	stale := historyStampOf(t, s, "t")
 	stale.Rev--
 
-	got, err := s.SyncThreadWindow(context.Background(), "t", "", 200, stale, &held)
+	got, err := s.SyncThreadWindow(context.Background(), "t", "", 200, testRunWindowRows, stale, &held)
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}
@@ -584,7 +642,7 @@ func TestHeldWindowVerifiesLocalTailOfImportedThread(t *testing.T) {
 		}
 	}
 
-	page, err := s.ListThreadSliceAround("t", "", 200)
+	page, err := s.ListThreadSliceAround("t", "", 200, testRunWindowRows)
 	if err != nil {
 		t.Fatalf("read window: %v", err)
 	}
@@ -605,7 +663,7 @@ func TestHeldWindowVerifiesLocalTailOfImportedThread(t *testing.T) {
 	stale := historyStampOf(t, s, "t")
 	stale.Rev--
 
-	got, err := s.SyncThreadWindow(context.Background(), "t", "", 200, stale, &held)
+	got, err := s.SyncThreadWindow(context.Background(), "t", "", 200, testRunWindowRows, stale, &held)
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}

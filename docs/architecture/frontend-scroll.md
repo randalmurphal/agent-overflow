@@ -421,6 +421,19 @@ bound every cut:
 - **A dropped edge is loadable again.** The commit sets `hasMoreHistory`
   or `hasMoreNewer` for whichever side it dropped, so the rows are one
   page away and the auto-load probes bring them back.
+- **An edge never lands inside a run the registry cannot describe.**
+  `snapCutEdgesOffRuns` moves a cut's edge off an activity run unless the
+  run's record can count the members past it, in which case the dropped
+  members are shed into the record and the run keeps its header honest
+  ([timeline-window-pages](timeline-window-pages.md) §6).
+
+Pages are sized in rows, and a window whose rows collapse into a few
+activity runs can be shorter than the viewport plus both auto-load
+zones, a height at which no scroll offset reaches a trigger. The quiet
+scheduler's `viewport-fill` pass (`timelinePaging.ts#maybeFillViewport`)
+pages one section per pass, older first, until the window is taller
+than `clientHeight + 2 × AUTO_LOAD_OFFSET_PX`, there is nothing more to
+page, or the window holds `ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS` rows.
 
 A mounted timeline normally defers the
 cut to visual quiet because reconciling hundreds of rows is still expensive

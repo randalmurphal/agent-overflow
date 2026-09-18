@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { wholeRunNodeFields } from '../../../test/helpers/activityRuns';
 import { tick } from 'svelte';
 import type { Item } from '../../types/models';
 import type { ThreadPane } from '../../stores/thread.svelte';
@@ -42,6 +43,12 @@ function harness(): Harness {
     windowRows: () => 30,
     windowVerified: () => true,
     scrollController: () => null,
+    items: () => [],
+    threadId: () => null,
+    pageShape: () => ({ inlinePreviews: true, runWindowRows: 5, maxBytes: 1024 }),
+    mountRunMembers: () => {},
+    reloadWindow: () => {},
+    reportFetchFailure: () => {},
   });
   const items = new Map<string, Item>();
   const expandedItemIds = new Set<string>();
@@ -130,6 +137,7 @@ function harness(): Harness {
 
 function runNode(memberItemIds: string[], threadId = 'thread-1'): ActivityRunNode {
   return {
+    ...wholeRunNodeFields(memberItemIds),
     kind: 'activity_run',
     runId: '',
     threadId,

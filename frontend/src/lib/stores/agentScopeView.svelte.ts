@@ -122,6 +122,7 @@ import {
   activityRunDefaultCollapsed,
   activityRunWindowRows,
 } from './activityRunPrefs.svelte';
+import { timelinePageShape } from './threadPaneShared';
 import type {
   LoadOlderResult,
   LoadUntilItemResult,
@@ -319,6 +320,17 @@ export function createAgentScopeView(
     // Scoped rows are local to the host pane; the view's `loading` is always false.
     windowVerified: () => true,
     scrollController: () => scrollController,
+    // Run records describe what a HISTORY PAGE left out, and a page never
+    // ships subagent children — this view's rows are the host pane's
+    // hydrated subtree, always held whole. So nothing here ever folds a
+    // stub, and the fetch surface is inert by construction: a null thread
+    // makes every members call return before it is issued.
+    items: () => scopedItems,
+    threadId: () => null,
+    pageShape: timelinePageShape,
+    mountRunMembers: () => {},
+    reloadWindow: () => {},
+    reportFetchFailure: () => {},
   });
 
   const overrides = {

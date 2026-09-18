@@ -6,6 +6,8 @@ import type {
 import type { SmoothingClock } from '../markdown/smoothing/PerItemSmoother';
 import type { ActiveTurn } from './threadStatuses.svelte';
 import { getSettings } from './settings.svelte';
+import { activityRunWindowRows } from './activityRunPrefs.svelte';
+import type { PageShape } from '../../../bindings/agent-overflow/internal/app/models';
 
 // Test-only injection: when set, every PerItemSmoother created by
 // `getOrCreateSmoothing` uses this clock instead of the default rAF +
@@ -70,6 +72,39 @@ export function wantsInlinePreviews(): boolean {
 }
 
 /**
+ * Projected bytes a history page may cost this pane
+ * (docs/architecture/timeline-window-pages.md §2.3). About 35 KB
+ * deflated, or a screen and a half of prose: enough that a page lands
+ * without a second round trip in the common case, small enough that a
+ * window of diff-heavy rows cannot stall the open. A page is sized in
+ * BYTES, so it may not fill a viewport of short rows — the pane fills the
+ * rest by height after the window settles (§7), never by asking for more
+ * rows up front.
+ */
+export const TIMELINE_PAGE_MAX_BYTES = 160 << 10;
+
+/**
+ * How this client wants a history page shaped: the projection it paints,
+ * how many members of each activity run its screen can mount, and the
+ * byte ceiling it wants the page trimmed to.
+ *
+ * Every page request goes through here so a new paging call site cannot
+ * quietly ask for a different shape than the rest of the window; mixed
+ * rows in one window is the failure mode. The backend cannot read any of
+ * the three for itself — one backend serves several clients that disagree
+ * about all of them.
+ */
+export type TimelinePageShape = Required<PageShape>;
+
+export function timelinePageShape(): TimelinePageShape {
+  return {
+    inlinePreviews: wantsInlinePreviews(),
+    runWindowRows: activityRunWindowRows(),
+    maxBytes: TIMELINE_PAGE_MAX_BYTES,
+  };
+}
+
+/**
  * Default raw-item budget passed to `ListItemsBeforeCursor` for an
  * explicit "Load older" page. The backend selects this many visible
  * top-level rows strictly before the caller's window floor, so one
@@ -84,6 +119,11 @@ export const LOAD_OLDER_ITEM_BUDGET = 200;
  * window is a sliding range near the viewport rather than a tail.
  * Subagent children travel with their anchor and are not counted, the
  * same rule as the backend pagers' `topLevelItemsFilter`.
+ *
+ * A RETENTION target only. No fetch asks for this many rows: a page is
+ * sized in bytes under `SLICE_AROUND_ITEM_BUDGET` rows, and the pane
+ * fills the viewport by height afterwards
+ * (docs/architecture/timeline-window-pages.md §7).
  */
 export const ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS = 800;
 
@@ -106,8 +146,12 @@ export const ACTIVE_TIMELINE_WINDOW_MAX_ITEMS = 1200;
 export const ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS = 2400;
 
 /**
- * Initial-load slice size on `switchThread`. Sized to cover several
- * desktop viewports and large enough that one dense subagent turn
+ * Row ceiling for every anchored page the pane asks for — the initial
+ * slice on `switchThread`, a jump's slice, the tail reload, and the
+ * recovery refresh. The byte ceiling (`TIMELINE_PAGE_MAX_BYTES`) is what
+ * normally binds; this is the SQL row cap under it, so a window of short
+ * rows cannot walk an unbounded stretch of the thread. Sized to cover
+ * several desktop viewports and large enough that one dense subagent turn
  * collapsing to a single card does not leave the timeline visually empty.
  */
 export const SLICE_AROUND_ITEM_BUDGET = 200;

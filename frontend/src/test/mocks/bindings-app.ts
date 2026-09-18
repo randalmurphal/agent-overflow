@@ -624,6 +624,7 @@ export const SyncThreadWindow = async (
   );
   return { status: 'stale', epoch: 1, rev: 1, generation: 'test-generation', page };
 };
+export const ListActivityRunMembers = dispatch('ListActivityRunMembers');
 export const ListItemsBeforeCursor = dispatch('ListItemsBeforeCursor');
 export const ListItemsAfterCursor = dispatch('ListItemsAfterCursor');
 export const ListSubagentDescendants = dispatch('ListSubagentDescendants');

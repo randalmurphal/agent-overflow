@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { wholeRunNodeFields } from '../../../test/helpers/activityRuns';
 import { makeItem } from '../../../test/helpers/chat';
 import type { ActivityRunNode, TimelineNode } from '../../utils/subagentGrouping';
 import { ACTIVITY_RUN_CAP_REM_PX } from '../../utils/activityRunClip';
@@ -28,6 +29,7 @@ function leaf(id: string): TimelineNode {
 function run(overrides: Partial<ActivityRunNode> = {}): ActivityRunNode {
   const children = overrides.children ?? Array.from({ length: 10 }, (_, i) => leaf(`i${i}`));
   return {
+    ...wholeRunNodeFields(),
     kind: 'activity_run',
     runId: 'r1',
     threadId: 'thread-1',

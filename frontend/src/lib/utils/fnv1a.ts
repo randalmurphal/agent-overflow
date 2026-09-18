@@ -40,28 +40,71 @@ const PRIME_HI_64 = 0x00000100;
 const PRIME_LO_64 = 0x000001b3;
 
 /**
- * 64-bit FNV-1a over `input`'s UTF-16 code units, as 16 lowercase hex
- * chars. Used for the held-window digest (`stores/threadWindowDigest.ts`),
- * whose Go counterpart folds the same code units so the two agree for
- * any input, not just ASCII.
+ * A 64-bit value as two 32-bit halves. The held-window digest XORs row
+ * hashes together (`stores/threadWindowDigest.ts`), so the hash has to be
+ * available as numbers rather than only as its rendered hex.
  */
-export function fnv1a64Hex(input: string): string {
+export interface Fnv1a64 {
+  hi: number;
+  lo: number;
+}
+
+/** The identity of the digest's XOR fold: what an empty set folds to. */
+export const FNV1A64_ZERO: Readonly<Fnv1a64> = Object.freeze({ hi: 0, lo: 0 });
+
+/**
+ * 64-bit FNV-1a over `input`'s UTF-16 code units. Used for the
+ * held-window digest (`stores/threadWindowDigest.ts`), whose Go
+ * counterpart folds the same code units so the two agree for any input,
+ * not just ASCII.
+ */
+export function fnv1a64(input: string): Fnv1a64 {
   let hi = OFFSET_HI_64;
   let lo = OFFSET_LO_64;
 
   // 64-bit multiply by the FNV prime, keeping the low 64 bits. Every
   // partial product below stays under 2^53, so plain number arithmetic
   // is exact: the largest term is (2^32 - 1) * 0x1b3 ~= 1.9e12.
-  const mixUnit = (unit: number): void => {
-    lo = (lo ^ unit) >>> 0;
+  for (let i = 0; i < input.length; i += 1) {
+    lo = (lo ^ input.charCodeAt(i)) >>> 0;
     const loProduct = lo * PRIME_LO_64;
     const nextLo = loProduct >>> 0;
     const carry = Math.floor(loProduct / 0x1_0000_0000);
     hi = (hi * PRIME_LO_64 + lo * PRIME_HI_64 + carry) >>> 0;
     lo = nextLo;
+  }
+
+  return { hi, lo };
+}
+
+/** 16 lowercase hex characters, the wire form of a 64-bit digest. */
+export function fnv1a64Hex(input: string): string {
+  return formatFnv1a64(fnv1a64(input));
+}
+
+/** Render a folded value as the digest's 16 lowercase hex characters. */
+export function formatFnv1a64(value: Fnv1a64): string {
+  return (
+    (value.hi >>> 0).toString(16).padStart(8, '0')
+    + (value.lo >>> 0).toString(16).padStart(8, '0')
+  );
+}
+
+/**
+ * Read a rendered digest back into halves, or null when it is not this
+ * algorithm's output. Callers fold a server-produced digest
+ * (`ActivityRunStub.unshippedDigest`) into their own, so a malformed one
+ * has to be refused rather than folded as garbage.
+ */
+export function parseFnv1a64(hex: string): Fnv1a64 | null {
+  if (hex.length !== 16 || !/^[0-9a-f]{16}$/.test(hex)) return null;
+  return {
+    hi: Number.parseInt(hex.slice(0, 8), 16) >>> 0,
+    lo: Number.parseInt(hex.slice(8), 16) >>> 0,
   };
+}
 
-  for (let i = 0; i < input.length; i += 1) mixUnit(input.charCodeAt(i));
-
-  return hi.toString(16).padStart(8, '0') + lo.toString(16).padStart(8, '0');
+/** XOR two folded values. Order-free, which is what makes the digest composable. */
+export function xorFnv1a64(a: Fnv1a64, b: Fnv1a64): Fnv1a64 {
+  return { hi: (a.hi ^ b.hi) >>> 0, lo: (a.lo ^ b.lo) >>> 0 };
 }

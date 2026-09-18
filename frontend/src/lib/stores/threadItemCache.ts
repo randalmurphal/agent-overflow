@@ -1,3 +1,4 @@
+import type { ActivityRunStub } from '../../../bindings/agent-overflow/internal/store/models';
 import type { Item } from '../types/models';
 import type { SubagentFoldSnapshot } from '../utils/subagentFold';
 import type { TimelineCursorLike } from './threadItems';
@@ -41,6 +42,14 @@ export interface ThreadItemSnapshot {
    * zeroed counts until the next live event or hydration.
    */
   subagentFolds?: SubagentFoldSnapshot | null;
+  /**
+   * The activity-run stubs describing the members `items` does not hold
+   * (docs/architecture/timeline-window-pages.md §2). Travels with the
+   * window for the same reason the folds do: a warm re-entry that painted
+   * the rows without them would render every run as complete and describe
+   * a held window missing every unshipped member.
+   */
+  runs?: ActivityRunStub[] | null;
   /**
    * The history stamp that described `items` at the moment they were
    * snapshotted (docs/architecture/thread-replica-sync.md §3). Paired here
@@ -168,6 +177,9 @@ export function createThreadItemCache(cap: number = THREAD_ITEM_CACHE_CAP): Thre
         // plain data each call and `restore()` copies out of it, so no
         // caller can mutate a stored fold after set().
         subagentFolds: snapshot.subagentFolds ?? null,
+        // Reference-shared for the same reason the folds are: every
+        // producer hands over freshly built plain stubs.
+        runs: snapshot.runs ?? null,
         historyStamp: snapshot.historyStamp ? { ...snapshot.historyStamp } : null,
       };
       const existing = byThread.get(threadId);
@@ -238,6 +250,14 @@ function estimateSnapshotChars(snapshot: ThreadItemSnapshot): number {
   for (const anchor of snapshot.subagentFolds?.anchors ?? []) {
     chars += anchor.terminalPreview.length;
     for (const id of anchor.evictedIds) chars += id.length;
+  }
+  // Same terms the replica's `estimateBodyChars` counts for a stub, so
+  // the two tiers stay on one scale.
+  for (const run of snapshot.runs ?? []) {
+    chars += run.unshippedDigest.length;
+    for (const group of run.unshippedGroups) chars += group.toolName.length + group.mcp.length;
+    for (const id of run.unshippedPairedLaunchIds) chars += id.length;
+    for (const id of run.shippedSupersededLaunchIds) chars += id.length;
   }
   return chars;
 }

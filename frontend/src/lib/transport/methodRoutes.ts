@@ -193,6 +193,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	850013031: 'thread', // InterruptTurn
 	2219602920: 'home', // IntroduceOwnDevice
 	2789068977: 'home', // IsWSL
+	1602023272: 'thread', // ListActivityRunMembers
 	2526318276: 'selected', // ListAgentComputers
 	2451527188: 'all', // ListArchivedThreads
 	1730798413: 'thread', // ListAttachments

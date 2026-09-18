@@ -100,6 +100,7 @@ import type {
 import type { ThreadStreamingReveal } from './threadStreamingReveal.svelte';
 import type { ThreadRowUiState } from './threadRowUiState.svelte';
 import type { ThreadActivityRuns } from './threadActivityRuns.svelte';
+import { mergeRunStubs } from './activityRunStubs';
 import type { ThreadChannelState } from './threadChannelState.svelte';
 import type { ThreadPendingInteractiveState } from './threadPendingInteractiveState.svelte';
 import type { LiveTodoState } from './liveTodoState.svelte';
@@ -108,7 +109,7 @@ import {
   REPLICA_WRITE_BACK_DELAY_MS,
   SLICE_AROUND_ITEM_BUDGET,
   SPINNER_THRESHOLD_MS,
-  wantsInlinePreviews,
+  timelinePageShape,
   type DraftThreadPlaceholder,
   type PaneErrorKind,
   type PaneScrollController,
@@ -552,6 +553,12 @@ export function createThreadSwitchLoad(
     const { rows, dropped } = optimisticFreeWindow();
     if (dropped) return;
     if (rows.length === 0) return;
+    // A window whose activity runs cannot be described is not written:
+    // restoring it would paint runs that claim to be whole
+    // (docs/architecture/timeline-window-pages.md §6). Same price as any
+    // other miss — one window fetch on the next open.
+    const runs = options.activityRuns.snapshotStubs();
+    if (!runs) return;
     void putReplicaWindow(threadId, {
       epoch: attestation.epoch,
       rev: attestation.rev,
@@ -561,6 +568,7 @@ export function createThreadSwitchLoad(
       newestCursor: options.timelineWindow.newestLoadedCursor ?? null,
       hasMoreOlder: options.timelineWindow.hasMoreHistory,
       hasMoreNewer: options.timelineWindow.hasMoreNewer,
+      runs,
       latestSettledTurn: options.getLatestSettledTurn(),
       subagentFolds: options.subagentMemory.snapshotFolds(),
     });
@@ -592,6 +600,7 @@ export function createThreadSwitchLoad(
         hasMore: body.hasMoreOlder,
         hasMoreOlder: body.hasMoreOlder,
         hasMoreNewer: body.hasMoreNewer,
+        runs: body.runs,
       },
       threadId,
     );
@@ -632,8 +641,14 @@ export function createThreadSwitchLoad(
     // stamp (see optimisticFreeWindow).
     const l1 = optimisticFreeWindow();
     const outgoingThreadId = cacheableThreadId;
+    // Null means a run the pane cannot describe right now (a record
+    // awaiting its stub refresh). A window cached without its stubs would
+    // repaint every run as complete, so the snapshot is skipped entirely
+    // — one cold page on the next open, the same price as any other miss.
+    const runStubs = options.activityRuns.snapshotStubs();
     if (
       outgoingThreadId &&
+      runStubs !== null &&
       !options.getLoading() &&
       l1.rows.length > 0 &&
       l1.rows.length <= MAX_CACHED_SNAPSHOT_ITEMS
@@ -660,6 +675,10 @@ export function createThreadSwitchLoad(
         // warm re-entry would render collapsed cards with zeroed counts
         // until the next live event or hydration.
         subagentFolds: options.subagentMemory.snapshotFolds(),
+        // Same reason as the folds: the cached items hold only part of
+        // each activity run, and the stubs are the only account of the
+        // rest (docs/architecture/timeline-window-pages.md §6).
+        runs: runStubs,
         // Paired, not looked up on the next open: the stamp is only
         // usable as `haveEpoch`/`haveRev` for the rows it described when
         // it was read. See ThreadItemSnapshot#historyStamp. Dropping a
@@ -848,6 +867,14 @@ export function createThreadSwitchLoad(
             ]),
         () => options.rowUiState.clear(),
         () => options.activityRuns.clear(),
+        // After the clear, which drops the outgoing thread's records:
+        // the restored window holds only part of each run, and these are
+        // its account of the rest until the sync page restates them.
+        () => {
+          if (cached?.runs?.length) {
+            options.activityRuns.syncRunSpans(options.getItems(), cached.runs);
+          }
+        },
         // A recent outgoing live-content stamp must not make settled incoming
         // content spring. An active incoming turn stamps its first delta.
         () => options.resetLiveContentStamp(),
@@ -1091,6 +1118,7 @@ export function createThreadSwitchLoad(
         options.getItems(),
         options.timelineWindow.hasMoreHistory,
         options.timelineWindow.hasMoreNewer,
+        options.activityRuns.heldRunFold(),
       );
     };
 
@@ -1111,7 +1139,7 @@ export function createThreadSwitchLoad(
         itemBudget: SLICE_AROUND_ITEM_BUDGET,
         haveEpoch: stamp ? stamp.epoch : UNKNOWN_STAMP_VALUE,
         haveRev: stamp ? stamp.rev : UNKNOWN_STAMP_VALUE,
-        inlinePreviews: wantsInlinePreviews(),
+        ...timelinePageShape(),
         ...(heldWindow ? { haveWindow: heldWindow } : {}),
       }));
 
@@ -1554,25 +1582,29 @@ export function createThreadSwitchLoad(
           ? (options.getItems().at(-1)?.id ?? '')
           : '';
         // Recovery must revalidate the history already loaded by the reader.
-        // Keep its existing budget, using bounded RPC pages for large windows.
+        // `retainedBudget` is the TOTAL it walks; each RPC asks at most
+        // `SLICE_AROUND_ITEM_BUDGET` rows, the same row ceiling every other
+        // page uses under the shape's byte ceiling.
         const retainedBudget = Math.max(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS, options.getItems().filter(item => !item.parentId).length);
         const ceiling = options.timelineWindow.newestLoadedCursor;
+        const shape = timelinePageShape();
         paged = options.timelineWindow.hasMoreNewer && ceiling
           ? await withBackendTarget(backend, () => ListItemsBeforeCursor(currentThread.id,
             { turnIndex: ceiling.turnIndex, itemIndex: ceiling.itemIndex + 1, itemId: '' },
-            Math.min(retainedBudget, 2000), wantsInlinePreviews()))
+            Math.min(retainedBudget, SLICE_AROUND_ITEM_BUDGET), shape))
           : await withBackendTarget(backend, () => ListThreadSliceAround(currentThread.id, anchorItemId,
-            Math.min(retainedBudget, 2000), wantsInlinePreviews()));
+            Math.min(retainedBudget, SLICE_AROUND_ITEM_BUDGET), shape));
         let remaining = retainedBudget - (paged.items?.filter(item => !item.parentId).length ?? 0);
         while (remaining > 0 && paged.hasMoreOlder && paged.oldestCursor?.itemId) {
           if (!refreshIsCurrent()) return;
-          const older = await withBackendTarget(backend, () => ListItemsBeforeCursor(currentThread.id, paged.oldestCursor!, Math.min(remaining, 2000), wantsInlinePreviews()));
+          const older = await withBackendTarget(backend, () => ListItemsBeforeCursor(currentThread.id, paged.oldestCursor!, Math.min(remaining, SLICE_AROUND_ITEM_BUDGET), shape));
           if (!older.items?.length) break;
           if (compareCursors(older.oldestCursor, paged.oldestCursor) >= 0) {
             throw new Error('Conversation recovery did not advance through loaded history');
           }
           paged = { ...paged, items: [...older.items, ...(paged.items ?? [])], oldestCursor: older.oldestCursor,
-            oldestTurnIndex: older.oldestTurnIndex, hasMore: older.hasMoreOlder, hasMoreOlder: older.hasMoreOlder };
+            oldestTurnIndex: older.oldestTurnIndex, hasMore: older.hasMoreOlder, hasMoreOlder: older.hasMoreOlder,
+            runs: mergeRunStubs(paged.runs, older.runs) };
           remaining -= older.items.filter(item => !item.parentId).length;
         }
       } catch (err) {

@@ -1,4 +1,5 @@
 // Direct unit coverage for createTimelineSizePriors, driven with a fake
+import { wholeRunNodeFields } from '../../../test/helpers/activityRuns';
 // TimelineVirtualizerHandle instead of a real component mount: happy-dom's
 // ResizeObserver is stubbed to a no-op (setup.ts), so a real
 // <MessageTimeline> render never delivers a measurement and can't prove
@@ -178,6 +179,7 @@ describe('createTimelineSizePriors', () => {
       membershipEpoch: 1,
       memberItemIds: [id],
       summaryItemIds: [id],
+      ...wholeRunNodeFields([id]),
       collapsed,
       live: false,
       atTail: false,

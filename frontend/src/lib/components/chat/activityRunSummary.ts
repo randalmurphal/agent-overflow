@@ -14,6 +14,10 @@ import { fileChangeDisplayRowCount } from '../../utils/fileChangeRows';
 import { classifyToolName, type ToolKindIcon } from './toolCardHeader';
 import { aoToolPresentation } from './aoTools';
 import { parseJsonObject } from '../../utils/parseJsonObject';
+import type { ActivityRunStubFacts, ShedRow } from '../../stores/activityRunStubs';
+
+/** Shared empty list: most runs are held whole and shed nothing. */
+const EMPTY_SHED: readonly ShedRow[] = Object.freeze([]);
 
 const THINKING_LABEL = 'thinking';
 const UNNAMED_TOOL_LABEL = 'Tool';
@@ -104,16 +108,55 @@ function activityRunPresentation(
   provider: ProviderID | null | undefined,
   cache: Map<string, ActivityRunPresentation>,
 ): ActivityRunPresentation {
-  if (item.kind === 'thinking') return THINKING_PRESENTATION;
-
-  if (item.kind === 'terminal_interaction') return WAIT_PRESENTATION;
-
-  if (item.kind === 'notification') return NOTIFICATION_PRESENTATION;
-
   const rawName = item.toolName?.trim() ?? '';
-  // Only MCP rows carry `meta.mcp`; parsing every native tool's meta on
-  // each streaming delta would be waste.
-  const ao = rawName.startsWith('MCP') ? aoToolPresentation(parseJsonObject(item.meta)) : null;
+  return presentationFor(
+    item.kind,
+    rawName,
+    // Only MCP rows carry `meta.mcp`; parsing every native tool's meta on
+    // each streaming delta would be waste.
+    rawName.startsWith('MCP') ? parseJsonObject(item.meta) : null,
+    provider,
+    cache,
+  );
+}
+
+/**
+ * The same presentation from a raw `(kind, toolName, mcp)` identity: the
+ * server's `ActivityRunGroupKey`, and the narrow copy a shed row keeps.
+ *
+ * One reading of the rule for both halves of a half-loaded run's header.
+ * `mcp` is the `{server, tool}` object as JSON text — exactly
+ * `json_extract(items.meta, '$.mcp')`, which is the field the server puts
+ * on the key — and "" for a native tool.
+ */
+export function presentationForGroupKey(
+  key: { kind: string; toolName: string; mcp: string },
+  provider: ProviderID | null | undefined,
+  cache: Map<string, ActivityRunPresentation>,
+): ActivityRunPresentation {
+  const rawName = key.toolName.trim();
+  const mcp = key.mcp === '' ? null : parseJsonObject(key.mcp);
+  return presentationFor(
+    key.kind,
+    rawName,
+    mcp === null ? null : { mcp },
+    provider,
+    cache,
+  );
+}
+
+function presentationFor(
+  kind: string,
+  rawName: string,
+  mcpMeta: Record<string, unknown> | null,
+  provider: ProviderID | null | undefined,
+  cache: Map<string, ActivityRunPresentation>,
+): ActivityRunPresentation {
+  if (kind === 'thinking') return THINKING_PRESENTATION;
+  if (kind === 'terminal_interaction') return WAIT_PRESENTATION;
+  if (kind === 'notification') return NOTIFICATION_PRESENTATION;
+
+  const ao = mcpMeta === null ? null : aoToolPresentation(mcpMeta);
   const sourceKey = ao ? `${rawName}@${ao.server}` : rawName || UNNAMED_TOOL_LABEL;
   const cached = cache.get(sourceKey);
   if (cached) return cached;
@@ -155,6 +198,17 @@ function nativeToolPresentation(
   }
 }
 
+function addRows(
+  buckets: Map<string, ActivityRunCountEntry>,
+  presentation: ActivityRunPresentation,
+  rows: number,
+): void {
+  if (rows === 0) return;
+  const bucket = buckets.get(presentation.key);
+  if (bucket) bucket.count += rows;
+  else buckets.set(presentation.key, { ...presentation, count: rows });
+}
+
 function isFailedStatus(status: Item['status']): boolean {
   // `declined` is a user decision, not a failure; `killed` and `errored`
   // are outcomes the user did not choose and a collapsed run must not hide.
@@ -173,18 +227,41 @@ function isRunningStatus(status: Item['status']): boolean {
  * one Bash call that finished is one Bash, not two. A completion whose call
  * is outside the run is an orphan and counts under its own presented tool
  * identity, so a run trimmed at the head still reports honestly.
+ *
+ * `stub` is what the pane knows about the members it does NOT hold
+ * (docs/architecture/timeline-window-pages.md §4, §6): shed rows, which
+ * are classified here like any other member, and the server's aggregate
+ * of the rest. Null for a run the pane holds whole, which is every run
+ * with no stub. Members from all three sources fold into one header, so a
+ * collapsed run reports its whole self whatever part of it is loaded.
  */
 export function activityRunSummary(
   items: readonly Item[],
   provider: ProviderID | null | undefined,
+  stub: ActivityRunStubFacts | null = null,
 ): ActivityRunSummary {
+  const shed = stub?.shed ?? EMPTY_SHED;
   const presentIds = new Set(items.map((item) => item.id));
+  for (const row of shed) presentIds.add(row.id);
   const completedCallIds = new Set<string>();
   for (const item of items) {
     if (item.kind === 'tool_completion' && item.completionOf) {
       completedCallIds.add(item.completionOf);
     }
   }
+  for (const row of shed) {
+    if (row.kind === 'tool_completion' && row.completionOf !== '') {
+      completedCallIds.add(row.completionOf);
+    }
+  }
+  // Members the pane does not hold whose completion it DOES hold (§4).
+  // The held completion pairs with them and counts zero, exactly as it
+  // would if both rows were loaded.
+  for (const id of stub?.unshippedPairedLaunchIds ?? []) presentIds.add(id);
+  // And the mirror: held launches whose completion the pane does not
+  // hold. Their status is superseded exactly as if the completion were
+  // loaded; a detached launch would otherwise read as running forever.
+  for (const id of stub?.shippedSupersededLaunchIds ?? []) completedCallIds.add(id);
   // A run can hold hundreds of repeated Bash/Edit rows and this summary
   // re-evaluates on streaming deltas. Classify each distinct source name once
   // per pass; a module-level cache would be unbounded by provider input.
@@ -193,6 +270,29 @@ export function activityRunSummary(
   let total = 0;
   let hasFailure = false;
   let runningLabel: string | null = null;
+
+  // Oldest first, so "last running wins" holds across the whole run: the
+  // stub's `runningBefore` edge, then the shed rows, then the loaded
+  // ones, then its `runningAfter` edge.
+  if (stub?.runningBefore) {
+    runningLabel = presentationForGroupKey(stub.runningBefore, provider, presentationCache).label;
+  }
+  for (const row of shed) {
+    if (!completedCallIds.has(row.id)) {
+      if (isFailedStatus(row.status as Item['status'])) hasFailure = true;
+      if (isRunningStatus(row.status as Item['status'])) {
+        runningLabel = presentationForGroupKey(row, provider, presentationCache).label;
+      }
+    }
+    // A shed completion pairs with a call the run still holds anywhere —
+    // loaded, shed, or named by the stub's pairing list.
+    if (row.kind === 'tool_completion' && row.completionOf !== ''
+      && presentIds.has(row.completionOf)) continue;
+    // `fileRows` was resolved when the row was shed, from the payload
+    // blob the record deliberately does not retain.
+    addRows(buckets, presentationForGroupKey(row, provider, presentationCache), row.fileRows);
+    total += row.fileRows;
+  }
 
   for (const item of items) {
     // A completion supersedes its immutable call record. Detached agent
@@ -213,10 +313,18 @@ export function activityRunSummary(
     }
     const displayRowCount = fileChangeDisplayRowCount(item);
     total += displayRowCount;
-    const presentation = activityRunPresentation(item, provider, presentationCache);
-    const bucket = buckets.get(presentation.key);
-    if (bucket) bucket.count += displayRowCount;
-    else buckets.set(presentation.key, { ...presentation, count: displayRowCount });
+    addRows(buckets, activityRunPresentation(item, provider, presentationCache), displayRowCount);
+  }
+
+  // Finally the members the pane holds neither as rows nor as shed
+  // copies: the server's aggregate of the same rule over the same rows.
+  for (const group of stub?.unshippedGroups ?? []) {
+    total += group.rows;
+    addRows(buckets, presentationForGroupKey(group, provider, presentationCache), group.rows);
+  }
+  if (stub?.unshippedFailed) hasFailure = true;
+  if (stub?.runningAfter) {
+    runningLabel = presentationForGroupKey(stub.runningAfter, provider, presentationCache).label;
   }
 
   const entries = [...buckets.values()]

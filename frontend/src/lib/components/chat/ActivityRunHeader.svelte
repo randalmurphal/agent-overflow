@@ -75,12 +75,16 @@
   let scopeCanBeRunning = $derived(
     pane.agentScopeRootId === '' || pane.timelineTurns.activeKey !== null,
   );
+  // The fourth signal is the registry's revision: the members the pane does
+  // NOT hold reach the header through the run's record (`summaryFacts`),
+  // and every change to a record bumps it.
   let summaryKey = $derived(compositeKey(
     pane.thread?.provider ?? '',
     run.runId,
     run.membershipEpoch,
     pane.activityRuns.memberContentRevision(run.runId),
     pane.activityRuns.wholesaleGeneration,
+    pane.activityRuns.revision,
     scopeCanBeRunning,
   ));
   let summary = $derived.by(() => {
@@ -89,7 +93,11 @@
       const items = run.summaryItemIds
         .map((id) => pane.getItemById(id))
         .filter((item) => item !== undefined);
-      const current = activityRunSummary(items, pane.thread?.provider);
+      const current = activityRunSummary(
+        items,
+        pane.thread?.provider,
+        pane.activityRuns.summaryFacts(run.runId),
+      );
       return scopeCanBeRunning ? current : { ...current, runningLabel: null };
     });
   });

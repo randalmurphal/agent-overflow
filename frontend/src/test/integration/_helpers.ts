@@ -136,6 +136,11 @@ export function installAppDefaults(): void {
     lastError: '',
     registeredDevices: 0,
   }));
+  // The idle memory trim (utils/idleMemoryTrim.ts) polls every 5s and asks
+  // for a trim once the page has been idle 10s. A suite that runs longer
+  // than that under a loaded full run reaches this binding from a timer,
+  // not from any assertion. Answer as a backend with nothing to trim.
+  setBindingMock('RequestWebviewMemoryTrim', async () => 'skipped-recent');
 }
 
 /**

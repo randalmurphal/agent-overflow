@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { wholeRunNodeFields } from '../../test/helpers/activityRuns';
 import type { TimelineNode } from './subagentGrouping';
 import { CLOSED_ACTIVITY_RUN_SIGNATURE, nodeSignature as signNode } from './timelineStructureSignature';
 import { makeItem } from '../../test/helpers/chat';
@@ -36,6 +37,37 @@ describe('nodeSignature', () => {
     expect(nodeSignature(leaf({ id: 'z', summary: 'hi', status: 'completed', updatedAt: 1 }))).not.toBe(base);
   });
 
+  it('signs whether a run has a boundary row on each edge, not what it counts', () => {
+    // A boundary is one row tall for any count, and the count moves on stub
+    // refreshes that change no geometry: signing the number would drop the
+    // prior on every refresh, signing presence keeps it exactly as long as
+    // the row's shape holds.
+    const run = (over: { unshippedBefore?: number; unshippedAfter?: number; mountedFrom?: number }): TimelineNode => ({
+      kind: 'activity_run',
+      runId: 'r1',
+      threadId: 'thread-1',
+      children: ['a', 'b', 'c'].map((id) => leaf({ id })),
+      mountedFrom: over.mountedFrom ?? 0,
+      mountedRows: 3 - (over.mountedFrom ?? 0),
+      membershipEpoch: 1,
+      memberItemIds: ['a', 'b', 'c'],
+      summaryItemIds: ['a', 'b', 'c'],
+      collapsed: false,
+      live: false,
+      atTail: false,
+      ...wholeRunNodeFields(['a', 'b', 'c']),
+      unshippedBefore: over.unshippedBefore ?? 0,
+      unshippedAfter: over.unshippedAfter ?? 0,
+      memberCount: 3 + (over.unshippedBefore ?? 0) + (over.unshippedAfter ?? 0),
+    });
+    const whole = nodeSignature(run({}));
+    expect(nodeSignature(run({ unshippedBefore: 4 }))).not.toBe(whole);
+    expect(nodeSignature(run({ unshippedAfter: 4 }))).not.toBe(whole);
+    expect(nodeSignature(run({ unshippedBefore: 4 }))).toBe(nodeSignature(run({ unshippedBefore: 40 })));
+    // A loaded row hidden above the window is the same boundary row.
+    expect(nodeSignature(run({ mountedFrom: 1 }))).not.toBe(whole);
+  });
+
   it('signs an activity run by its rendered shape, and liveness is not one', () => {
     // A stale prior replaying across a shape change is the failure this whole
     // signature exists to prevent. A run has TWO shapes, because its header is
@@ -55,6 +87,7 @@ describe('nodeSignature', () => {
       membershipEpoch: 1,
       memberItemIds: ['a'],
       summaryItemIds: ['a'],
+      ...wholeRunNodeFields(['a']),
       atTail: over.atTail ?? over.live,
       ...over,
     });
@@ -88,6 +121,7 @@ describe('nodeSignature', () => {
       membershipEpoch: 1,
       memberItemIds: over.members,
       summaryItemIds: over.members,
+      ...wholeRunNodeFields(over.members),
       collapsed: false,
       live: false,
       atTail: false,
@@ -158,6 +192,7 @@ describe('nodeSignature', () => {
       membershipEpoch: 1,
       memberItemIds: over.members,
       summaryItemIds: over.members,
+      ...wholeRunNodeFields(over.members),
       collapsed: over.collapsed,
       live: false,
       atTail: false,

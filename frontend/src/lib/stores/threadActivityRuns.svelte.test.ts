@@ -34,6 +34,12 @@ describe('collapse state', () => {
       windowRows: () => 30,
       windowVerified: () => true,
       scrollController: () => null,
+      items: () => [],
+      threadId: () => null,
+      pageShape: () => ({ inlinePreviews: true, runWindowRows: 5, maxBytes: 1024 }),
+      mountRunMembers: () => {},
+      reloadWindow: () => {},
+      reportFetchFailure: () => {},
     });
     const [run] = pass(runs, [['a']]);
     runs.setCollapsed(run.runId, true);
@@ -480,6 +486,12 @@ describe('mount window', () => {
       windowRows: () => windowRows,
       windowVerified: () => true,
       scrollController: () => null,
+      items: () => [],
+      threadId: () => null,
+      pageShape: () => ({ inlinePreviews: true, runWindowRows: 5, maxBytes: 1024 }),
+      mountRunMembers: () => {},
+      reloadWindow: () => {},
+      reportFetchFailure: () => {},
     });
     pass(runs, [rows(100)]);
 
@@ -567,6 +579,12 @@ describe('mount window', () => {
       windowRows: () => windowRows,
       windowVerified: () => true,
       scrollController: () => null,
+      items: () => [],
+      threadId: () => null,
+      pageShape: () => ({ inlinePreviews: true, runWindowRows: 5, maxBytes: 1024 }),
+      mountRunMembers: () => {},
+      reloadWindow: () => {},
+      reportFetchFailure: () => {},
     });
     const [run] = pass(runs, [rows(100)]);
 
@@ -933,6 +951,11 @@ function nodeFor(resolved: ActivityRunResolution, ids: readonly string[]): Activ
     membershipEpoch: resolved.membershipEpoch,
     memberItemIds: [...ids],
     summaryItemIds: [...ids],
+    memberCount: resolved.memberCount,
+    unshippedBefore: resolved.unshippedBefore,
+    unshippedAfter: resolved.unshippedAfter,
+    loadedFirstItemId: resolved.loadedFirstItemId,
+    loadedLastItemId: resolved.loadedLastItemId,
   };
 }
 
@@ -1110,6 +1133,12 @@ describe('viewport hold ownership', () => {
       windowRows: () => 30,
       windowVerified: () => true,
       scrollController: () => controller,
+      items: () => [],
+      threadId: () => null,
+      pageShape: () => ({ inlinePreviews: true, runWindowRows: 5, maxBytes: 1024 }),
+      mountRunMembers: () => {},
+      reloadWindow: () => {},
+      reportFetchFailure: () => {},
     });
     return { runs, holds };
   }

@@ -200,7 +200,7 @@ func TestTimelineArmsMatchTheViewForWindowReads(t *testing.T) {
 	assertTimelineParityFixtureIsRepresentative(t, s)
 
 	t.Run("tail slice", func(t *testing.T) {
-		page, err := s.ListThreadSliceAround(timelineParityThreadID, "", 5)
+		page, err := s.ListThreadSliceAround(timelineParityThreadID, "", 5, testRunWindowRows)
 		if err != nil {
 			t.Fatalf("tail slice: %v", err)
 		}
@@ -211,7 +211,7 @@ func TestTimelineArmsMatchTheViewForWindowReads(t *testing.T) {
 	})
 
 	t.Run("slice around an anchor", func(t *testing.T) {
-		page, err := s.ListThreadSliceAround(timelineParityThreadID, "loc-launch-2", 6)
+		page, err := s.ListThreadSliceAround(timelineParityThreadID, "loc-launch-2", 6, testRunWindowRows)
 		if err != nil {
 			t.Fatalf("slice around: %v", err)
 		}
@@ -234,7 +234,7 @@ func TestTimelineArmsMatchTheViewForWindowReads(t *testing.T) {
 
 	t.Run("before cursor", func(t *testing.T) {
 		cursor := TimelineCursor{TurnIndex: 2, ItemIndex: 5, ItemID: "loc-answer-2"}
-		page, err := s.ListItemsBeforeCursor(timelineParityThreadID, cursor, 4)
+		page, err := s.ListItemsBeforeCursor(timelineParityThreadID, cursor, 4, testRunWindowRows)
 		if err != nil {
 			t.Fatalf("before cursor: %v", err)
 		}
@@ -251,7 +251,7 @@ func TestTimelineArmsMatchTheViewForWindowReads(t *testing.T) {
 
 	t.Run("after cursor", func(t *testing.T) {
 		cursor := TimelineCursor{TurnIndex: 0, ItemIndex: 1, ItemID: "imp-launch-0"}
-		page, err := s.ListItemsAfterCursor(timelineParityThreadID, cursor, 4)
+		page, err := s.ListItemsAfterCursor(timelineParityThreadID, cursor, 4, testRunWindowRows)
 		if err != nil {
 			t.Fatalf("after cursor: %v", err)
 		}

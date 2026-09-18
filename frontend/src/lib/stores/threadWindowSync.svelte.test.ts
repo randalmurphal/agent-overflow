@@ -100,6 +100,7 @@ function page(items: Item[]): PagedItems {
     hasMore: false,
     hasMoreOlder: false,
     hasMoreNewer: false,
+    runs: [],
   };
 }
 
@@ -138,6 +139,7 @@ function replicaBody(items: Item[], epoch: number, rev: number) {
     hasMoreNewer: false,
     latestSettledTurn: null,
     subagentFolds: null,
+    runs: [],
   };
 }
 
@@ -836,7 +838,7 @@ describe('cold-open window sync', () => {
       });
     });
 
-    it('describes a window holding imported history and takes the page', async () => {
+    it('describes no window when it holds imported history, and takes the page', async () => {
       const pane = createThreadPane();
       let answer: () => Partial<SyncThreadWindowResult> = () => ({
         status: 'stale',
@@ -850,9 +852,11 @@ describe('cold-open window sync', () => {
       pane.applyProviderItemUpserts([row('i1', { itemIndex: 1, rev: 5, summary: 'settled' })]);
       await pane.switchThread(makeThread({ id: 'other-thread' }));
 
-      // Sent as-is rather than special-cased on the client: the server
-      // refuses a window containing an imported row, and that refusal
-      // costs exactly the page the pane would have asked for anyway.
+      // Restated: the digest now composes loaded rows with each held
+      // activity run's UnshippedDigest (timeline-window-pages §5), and a
+      // row with no revision makes that composition a claim the server
+      // cannot check. The pane describes nothing and pays the page it
+      // would have paid for the server's refusal anyway.
       answer = () => ({
         status: 'stale',
         epoch: 1,
@@ -864,14 +868,11 @@ describe('cold-open window sync', () => {
       });
       await pane.switchThread(makeThread({ id: THREAD_ID }));
 
-      expect(requests.at(-1)?.haveWindow).toMatchObject({
-        count: 2,
-        digest: windowDigest([{ id: 'i0', rev: -1 }, { id: 'i1', rev: 5 }]),
-      });
+      expect(requests.at(-1)?.haveWindow).toBeUndefined();
       expect(pane.items.map((it) => it.id)).toEqual(['i0', 'i1']);
     });
 
-    it('describes a mid-stream window holding an unstamped row', async () => {
+    it('describes no window mid-stream while a row is unstamped', async () => {
       const pane = createThreadPane();
       let answer: () => Partial<SyncThreadWindowResult> = () => ({
         status: 'stale',
@@ -900,13 +901,10 @@ describe('cold-open window sync', () => {
       });
       await pane.switchThread(makeThread({ id: THREAD_ID }));
 
-      // Sent as-is: the client does not second-guess a -1, the server
-      // refuses the window, and the replacing page brings the stamped
-      // rows back.
-      expect(requests.at(-1)?.haveWindow).toMatchObject({
-        count: 2,
-        digest: windowDigest([{ id: 'i0', rev: 2 }, { id: 'i1', rev: -1 }]),
-      });
+      // Same restatement as the imported case above: an unstamped row
+      // costs the description, not a refused round trip. The replacing
+      // page brings the stamped rows back either way.
+      expect(requests.at(-1)?.haveWindow).toBeUndefined();
       expect(pane.items.map((it) => it.id)).toEqual(['i0', 'i1']);
       expect(pane.items[1].rev).toBe(6);
     });

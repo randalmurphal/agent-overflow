@@ -1,9 +1,7 @@
 package app
 
 import (
-	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -11,199 +9,17 @@ import (
 	"agent-overflow/internal/store"
 )
 
-// --- deterministic heavy-thread fixture -------------------------------
-//
-// Shaped from the measurement in docs/specs/remote-access.md §14 — a
-// 200-row cold window on a real 65,877-item thread — so the numbers this
-// file asserts mean something against the numbers that motivated the
-// projection:
-//
-//	200 rows, 109 of them tool_call
-//	item meta        63 KB, 59 KB of it meta.input
-//	payload metadata 100 KB
-//	summary          48 KB
-//	preview spans    17 KB
-//	total            330 KB raw
-//
-// The `input` distribution is the skew §14 describes rather than a flat
-// average: a dozen multi-KB argument objects (its 4.2 KB Bash example)
-// against a long tail of short ones, which is what makes a size rule the
-// right instrument.
-
-// wordBank plus a stream of unique hex tokens gives the fixture text
-// realistic entropy. This matters because the compressed ceilings below
-// are the ones §14 states its budget in: word-salad from a small bank
-// deflates ~24:1, real tool arguments and diffs deflate ~5.6:1 (the
-// measured 330 KB window arrived as 59 KB), and a fixture that
-// compresses four times too well turns every compressed ceiling into a
-// number the projection clears without doing anything.
-var wordBank = strings.Fields(`
-func handler request context store thread item payload meta summary
-window projection budget elision marker recovery route client server
-return error nil string bytes encode decode append range switch case
-value index cursor status kind role parent child launch result assert
-`)
-
-// fixtureText builds n bytes of deterministic text mixing bank words
-// with unique hex tokens, in the proportion that lands the seeded window
-// on the ~5.6:1 deflate ratio measured on the real thread. A plain LCG
-// keyed by seed makes (seed, n) reproduce byte for byte.
-func fixtureText(seed, n int) string {
-	var b strings.Builder
-	b.Grow(n + 16)
-	state := uint32(seed)*2654435761 + 1
-	for b.Len() < n {
-		state = state*1664525 + 1013904223
-		if state>>28 < 1 {
-			b.WriteString(strconv.FormatUint(uint64(state), 16))
-		} else {
-			b.WriteString(wordBank[(state>>8)%uint32(len(wordBank))])
-		}
-		b.WriteByte(' ')
-	}
-	return b.String()[:n]
-}
-
-// heavyThreadRow describes one seeded row's variable-length content.
-type heavyThreadRow struct {
-	kind       string
-	inputBytes int
-	patchBytes int
-	spanBytes  int
-}
-
-// heavyThreadShape returns the 200-row window described above.
-func heavyThreadShape() []heavyThreadRow {
-	rows := make([]heavyThreadRow, 0, 200)
-	toolCallsLeft, resultsLeft := 109, 45
-	bigInputs := 12
-	for i := range 200 {
-		switch {
-		case toolCallsLeft > 0 && i%2 == 0:
-			toolCallsLeft--
-			// 12 argument objects at ~4.2 KB and 97 at ~90 B sum to the
-			// measured 59 KB of meta.input across 109 tool_call rows.
-			size := 90
-			if bigInputs > 0 {
-				size, bigInputs = 4200, bigInputs-1
-			}
-			rows = append(rows, heavyThreadRow{kind: "tool_call", inputBytes: size})
-		case resultsLeft > 0:
-			resultsLeft--
-			rows = append(rows, heavyThreadRow{kind: "tool_completion", patchBytes: 755, spanBytes: 380})
-		default:
-			rows = append(rows, heavyThreadRow{kind: "assistant_text"})
-		}
-	}
-	return rows
-}
-
-func seedHeavyThread(t *testing.T, app *App, rows []heavyThreadRow) store.Thread {
-	t.Helper()
-	thread, err := createTestThread(t, app, "claude", "/tmp/w-heavy", "claude-sonnet-4-6", "")
-	if err != nil {
-		t.Fatalf("createTestThread: %v", err)
-	}
-	for i, row := range rows {
-		item := store.Item{
-			ID:        fmt.Sprintf("item-%04d", i),
-			ThreadID:  thread.ID,
-			TurnIndex: i / 4,
-			ItemIndex: i,
-			Kind:      row.kind,
-			Role:      "assistant",
-			Status:    "completed",
-			// 240 B/row is the measured 48 KB of summary over 200 rows.
-			Summary:   fixtureText(i, 240),
-			CreatedAt: int64(i) * 1000,
-			UpdatedAt: int64(i) * 1000,
-		}
-		switch row.kind {
-		case "tool_call":
-			item.ToolName = "Write"
-			item.Meta = mustFixtureJSON(t, map[string]any{
-				"toolName": "Write",
-				"input": map[string]any{
-					"file_path": fmt.Sprintf("src/lib/mod%03d.ts", i),
-					"content":   fixtureText(i, row.inputBytes),
-				},
-			})
-		case "tool_completion":
-			item.PayloadID = fmt.Sprintf("payload-%04d", i)
-			item.PayloadKind = "diff"
-			item.PayloadMeta = mustFixtureJSON(t, map[string]any{
-				"itemType": "file_change",
-				"title":    fmt.Sprintf("Edited src/lib/mod%03d.ts", i),
-				// The measured window's payload metadata is ~2x its
-				// preview patches; this is the rest of it.
-				"preview": fixtureText(i+1, 1400),
-				"inlineDiff": map[string]any{
-					"availability": "exact_patch",
-					"files": []any{map[string]any{
-						"path":             fmt.Sprintf("src/lib/mod%03d.ts", i),
-						"kind":             "modified",
-						"insertions":       12,
-						"deletions":        4,
-						"previewPatch":     fixtureText(i+2, row.patchBytes),
-						"previewLineCount": 30,
-						"previewTruncated": true,
-					}},
-					"insertions": 12,
-					"deletions":  4,
-				},
-			})
-			item.PayloadPreviewSpans = mustFixtureJSON(t, map[string]any{
-				"version": 1,
-				"files":   []any{map[string]any{"path": "src/lib/mod.ts", "pad": fixtureText(i+3, row.spanBytes)}},
-			})
-		}
-		if item.PayloadID == "" {
-			if err := app.store.InsertItem(item); err != nil {
-				t.Fatalf("insert item %d: %v", i, err)
-			}
-			continue
-		}
-		// preview_spans is a payload column joined onto the item read,
-		// so it has to be written where it lives rather than set on the
-		// row struct.
-		previewSpans := item.PayloadPreviewSpans
-		item.PayloadPreviewSpans = ""
-		if err := app.store.InsertItemWithPayload(item, store.Payload{
-			ID:        item.PayloadID,
-			Kind:      item.PayloadKind,
-			Meta:      item.PayloadMeta,
-			Data:      []byte(fixtureText(i+4, 2048)),
-			CreatedAt: item.CreatedAt,
-		}); err != nil {
-			t.Fatalf("insert item %d with payload: %v", i, err)
-		}
-		if err := app.store.UpdatePayloadSpans(thread.ID, item.PayloadID, previewSpans, previewSpans); err != nil {
-			t.Fatalf("write preview spans %d: %v", i, err)
-		}
-	}
-	return thread
-}
-
-func mustFixtureJSON(t *testing.T, value any) string {
-	t.Helper()
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		t.Fatalf("marshal fixture: %v", err)
-	}
-	return string(encoded)
-}
-
 // --- the projection preference ---------------------------------------
 
 func TestItemWindow_ProjectionPreferenceRidesEachRequest(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := seedHeavyThread(t, app, heavyThreadShape())
 
-	on, err := app.ListThreadSliceAround(thread.ID, "", 200, true)
+	on, err := app.ListThreadSliceAround(thread.ID, "", 200, PageShape{InlinePreviews: true, RunWindowRows: 30})
 	if err != nil {
 		t.Fatalf("ListThreadSliceAround(previews on): %v", err)
 	}
-	off, err := app.ListThreadSliceAround(thread.ID, "", 200, false)
+	off, err := app.ListThreadSliceAround(thread.ID, "", 200, PageShape{RunWindowRows: 30})
 	if err != nil {
 		t.Fatalf("ListThreadSliceAround(previews off): %v", err)
 	}
@@ -238,12 +54,12 @@ func TestItemWindow_EveryPathProjectsTheSameWay(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := seedHeavyThread(t, app, heavyThreadShape())
 
-	slice, err := app.ListThreadSliceAround(thread.ID, "", 200, false)
+	slice, err := app.ListThreadSliceAround(thread.ID, "", 200, PageShape{RunWindowRows: 30})
 	if err != nil {
 		t.Fatalf("ListThreadSliceAround: %v", err)
 	}
 	synced, err := app.SyncThreadWindow(thread.ID, SyncThreadWindowRequest{
-		ItemBudget: 200, HaveEpoch: -1, HaveRev: -1,
+		ItemBudget: 200, HaveEpoch: -1, HaveRev: -1, RunWindowRows: 30,
 	})
 	if err != nil {
 		t.Fatalf("SyncThreadWindow: %v", err)
@@ -268,7 +84,7 @@ func TestItemWindow_EveryPathProjectsTheSameWay(t *testing.T) {
 
 	// The pagers, the single-row read and the unwindowed list are the
 	// same surface and must not leak an unprojected row.
-	older, err := app.ListItemsBeforeCursor(thread.ID, slice.NewestCursor, 50, false)
+	older, err := app.ListItemsBeforeCursor(thread.ID, slice.NewestCursor, 50, PageShape{RunWindowRows: 30})
 	if err != nil {
 		t.Fatalf("ListItemsBeforeCursor: %v", err)
 	}
@@ -311,7 +127,7 @@ func TestAdmittedRange_GrowsOutwardFromTheAnchor(t *testing.T) {
 		items[i] = store.Item{ID: fmt.Sprintf("item-%02d", i), Summary: strings.Repeat("x", rowBytes)}
 	}
 
-	from, to := admittedRange(items, 15)
+	from, to := admittedRange(items, 15, itemWindowMaxBytes)
 	if from > 15 || to <= 15 {
 		t.Fatalf("range [%d,%d) does not contain the anchor at 15", from, to)
 	}
@@ -326,10 +142,10 @@ func TestAdmittedRange_GrowsOutwardFromTheAnchor(t *testing.T) {
 	}
 
 	// The two cursor-page shapes: anchored at an end, the range is one-sided.
-	if from, to := admittedRange(items, newestIndex(items)); to != len(items) || from == 0 {
+	if from, to := admittedRange(items, newestIndex(items), itemWindowMaxBytes); to != len(items) || from == 0 {
 		t.Errorf("newest anchor: range [%d,%d), want the newest rows only", from, to)
 	}
-	if from, to := admittedRange(items, 0); from != 0 || to == len(items) {
+	if from, to := admittedRange(items, 0, itemWindowMaxBytes); from != 0 || to == len(items) {
 		t.Errorf("oldest anchor: range [%d,%d), want the oldest rows only", from, to)
 	}
 }
@@ -342,7 +158,7 @@ func TestAdmittedRange_OneSideExhaustedSpendsTheRestOnTheOther(t *testing.T) {
 	}
 	// Two rows older than the anchor: both fit, and the budget the older
 	// side no longer needs goes to the newer side.
-	from, to := admittedRange(items, 2)
+	from, to := admittedRange(items, 2, itemWindowMaxBytes)
 	if from != 0 {
 		t.Errorf("range [%d,%d) did not reach the oldest row", from, to)
 	}
@@ -353,14 +169,14 @@ func TestAdmittedRange_OneSideExhaustedSpendsTheRestOnTheOther(t *testing.T) {
 
 func TestAdmittedRange_AlwaysAdmitsTheAnchorEvenOversized(t *testing.T) {
 	huge := store.Item{ID: "huge", Summary: strings.Repeat("x", itemWindowMaxBytes*3)}
-	if from, to := admittedRange([]store.Item{huge}, 0); to-from != 1 {
+	if from, to := admittedRange([]store.Item{huge}, 0, itemWindowMaxBytes); to-from != 1 {
 		t.Fatal("refused the only row on the page; pagination would stall on it forever")
 	}
 	// And it is still exactly one: the oversized anchor does not license
 	// the rest of the page, whichever side it sits on.
 	items := []store.Item{huge, huge, huge}
 	for anchor := range items {
-		if from, to := admittedRange(items, anchor); to-from != 1 || from != anchor {
+		if from, to := admittedRange(items, anchor, itemWindowMaxBytes); to-from != 1 || from != anchor {
 			t.Errorf("anchor %d: range [%d,%d), want exactly the anchor", anchor, from, to)
 		}
 	}
@@ -368,27 +184,69 @@ func TestAdmittedRange_AlwaysAdmitsTheAnchorEvenOversized(t *testing.T) {
 
 func TestAdmittedRange_ClampsAnOutOfRangeAnchor(t *testing.T) {
 	items := []store.Item{{ID: "a"}, {ID: "b"}}
-	if from, to := admittedRange(items, 7); from != 0 || to != 2 {
+	if from, to := admittedRange(items, 7, itemWindowMaxBytes); from != 0 || to != 2 {
 		t.Errorf("anchor past the end: range [%d,%d), want [0,2)", from, to)
 	}
-	if from, to := admittedRange(items, -3); from != 0 || to != 2 {
+	if from, to := admittedRange(items, -3, itemWindowMaxBytes); from != 0 || to != 2 {
 		t.Errorf("anchor before the start: range [%d,%d), want [0,2)", from, to)
 	}
-	if from, to := admittedRange(nil, 0); from != 0 || to != 0 {
+	if from, to := admittedRange(nil, 0, itemWindowMaxBytes); from != 0 || to != 0 {
 		t.Errorf("empty page: range [%d,%d), want [0,0)", from, to)
 	}
 }
 
-func TestAnchorIndex_FallsBackToNewest(t *testing.T) {
-	items := []store.Item{{ID: "a"}, {ID: "b"}, {ID: "c"}}
-	if got := anchorIndex(items, "b"); got != 1 {
-		t.Errorf("anchorIndex(b) = %d, want 1", got)
+// The anchor a caller names need not be among the rows the page ships:
+// a subagent child anchors a window it can never appear in, and a run
+// member outside the run window is counted by a stub instead. The byte
+// trim still has to grow from where the READER is, which is the newest
+// shipped row at or before the anchor's coordinate.
+func TestPageAnchorIndex_ResolvesAnAnchorThePageDidNotShip(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread, err := createTestThread(t, app, "claude", "/tmp/w-anchor-coord", "claude-sonnet-4-6", "")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
 	}
-	if got := anchorIndex(items, ""); got != 2 {
-		t.Errorf("anchorIndex(empty) = %d, want the newest row", got)
+	shipped := make([]store.Item, 0, 6)
+	for i := range 6 {
+		item := store.Item{
+			ID: fmt.Sprintf("row-%02d", i), ThreadID: thread.ID,
+			TurnIndex: i, ItemIndex: i * 10,
+			Kind: "assistant_text", Role: "assistant", Status: "completed",
+		}
+		if err := app.store.InsertItem(item); err != nil {
+			t.Fatalf("seed row %d: %v", i, err)
+		}
+		shipped = append(shipped, item)
 	}
-	if got := anchorIndex(items, "missing"); got != 2 {
-		t.Errorf("anchorIndex(missing) = %d, want the newest row", got)
+	child := store.Item{
+		ID: "child", ThreadID: thread.ID, TurnIndex: 3, ItemIndex: 35, ParentID: "row-03",
+		Kind: "assistant_text", Role: "assistant", Status: "completed",
+	}
+	if err := app.store.InsertItem(child); err != nil {
+		t.Fatalf("seed child: %v", err)
+	}
+
+	cases := []struct {
+		name   string
+		anchor string
+		items  []store.Item
+		want   int
+	}{
+		{name: "shipped anchor", anchor: "row-01", items: shipped, want: 1},
+		{name: "unshipped child anchor", anchor: "child", items: shipped, want: 3},
+		{name: "anchor older than every shipped row", anchor: "child", items: shipped[4:], want: 0},
+		{name: "tail read", anchor: "", items: shipped, want: 5},
+		{name: "vanished anchor", anchor: "gone", items: shipped, want: 5},
+		{name: "empty page", anchor: "row-01", items: nil, want: -1},
+	}
+	for _, tc := range cases {
+		got, err := app.pageAnchorIndex(thread.ID, tc.anchor, tc.items)
+		if err != nil {
+			t.Fatalf("%s: pageAnchorIndex: %v", tc.name, err)
+		}
+		if got != tc.want {
+			t.Errorf("%s: pageAnchorIndex = %d, want %d", tc.name, got, tc.want)
+		}
 	}
 }
 
@@ -406,7 +264,7 @@ func TestProjectPage_ReportsWhatItDroppedOnBothSides(t *testing.T) {
 		OldestCursor: store.TimelineCursor{TurnIndex: 0, ItemIndex: 0, ItemID: "item-00"},
 		NewestCursor: store.TimelineCursor{TurnIndex: 11, ItemIndex: 11, ItemID: "item-11"},
 	}
-	trimmed := projectPage(page, false, anchorIndex(items, "item-06"))
+	trimmed := projectPage(page, PageShape{}.normalize(), 6)
 	if len(trimmed.Items) == len(items) {
 		t.Fatal("fixture is not over budget")
 	}
@@ -442,8 +300,12 @@ func TestListThreadSliceAround_KeepsTheAnchorOnAnOverBudgetPage(t *testing.T) {
 	}
 	const rows = 40
 	rowBytes := itemWindowMaxBytes/20 + 1
-	for i := 0; i < rows; i++ {
-		kind, role := "tool_call", "assistant"
+	for i := range rows {
+		// Prose, so every row is a unit of its own: a row this trim
+		// drops leaves the page's RANGE and moves its cursor. A run
+		// member instead folds into its stub and the range stays put,
+		// which is TestListThreadSliceAround_AnchorInsideALongRun.
+		kind, role := "assistant_text", "assistant"
 		if i == 0 {
 			kind, role = "user_text", "user"
 		}
@@ -455,7 +317,7 @@ func TestListThreadSliceAround_KeepsTheAnchorOnAnOverBudgetPage(t *testing.T) {
 			t.Fatalf("seed row %d: %v", i, err)
 		}
 	}
-	page, err := app.ListThreadSliceAround(thread.ID, "row-00", rows, false)
+	page, err := app.ListThreadSliceAround(thread.ID, "row-00", rows, PageShape{RunWindowRows: 200})
 	if err != nil {
 		t.Fatalf("ListThreadSliceAround: %v", err)
 	}
@@ -472,7 +334,7 @@ func TestListThreadSliceAround_KeepsTheAnchorOnAnOverBudgetPage(t *testing.T) {
 		t.Error("rows were trimmed from the newer side without HasMoreNewer")
 	}
 	// The tail fallback still anchors at the newest end.
-	tail, err := app.ListThreadSliceAround(thread.ID, "", rows, false)
+	tail, err := app.ListThreadSliceAround(thread.ID, "", rows, PageShape{RunWindowRows: 200})
 	if err != nil {
 		t.Fatalf("ListThreadSliceAround tail: %v", err)
 	}
@@ -504,7 +366,11 @@ func TestGetThreadItemProjectionSource_ReturnsWhatTheProjectionRemoved(t *testin
 	app := newTestAppWithStore(t)
 	thread := seedHeavyThread(t, app, heavyThreadShape())
 
-	page, err := app.ListThreadSliceAround(thread.ID, "", 200, false)
+	// A wide run window, because this is a test of the recovery ROUTE:
+	// the fixture's elided rows are members of its long run, and the
+	// default window would leave them off the page instead of eliding
+	// anything on them.
+	page, err := app.ListThreadSliceAround(thread.ID, "", 200, PageShape{RunWindowRows: 200})
 	if err != nil {
 		t.Fatalf("ListThreadSliceAround: %v", err)
 	}

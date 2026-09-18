@@ -456,6 +456,11 @@ graded by durability:
   cost the next open a page. What still understates is a row the client
   mutated locally (a streaming delta, a mid-stream `meta` action): it keeps
   the rev of its last stamped write, fails verification and earns a page.
+  Activity run members a page did not ship are still part of the window
+  it describes: each run stub carries their digest, and the client folds
+  it in (`windowDigestContribution` in `stores/activityRunStubs.ts`), so
+  a window of prose plus stubs verifies as the rows it stands for. See
+  [Timeline window pages](timeline-window-pages.md).
 
   **Attestation is a property of a WINDOW, not of a thread id.** What
   may be persisted is decided by the attestation the *pane holding the

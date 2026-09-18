@@ -503,6 +503,15 @@
           return pane.timelineRevision !== revision;
         },
       },
+      // The height-driven fill (timeline-window-pages §3). Each load it
+      // starts bumps `timelineRevision`, which schedules the next pass,
+      // so a short window pages one section at a time until it is tall
+      // enough — never inside a glide, and never past what retention keeps.
+      {
+        key: 'viewport-fill',
+        when: 'quiet',
+        run: () => paging.maybeFillViewport(),
+      },
       createTimelineActivityRunAutoCollapse({
         getPane: () => pane,
         getListRef: () => listRef,

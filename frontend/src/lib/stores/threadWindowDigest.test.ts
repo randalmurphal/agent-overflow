@@ -8,11 +8,13 @@ import { describe, expect, it } from 'vitest';
 import vectors from '../../test/fixtures/windowDigestVectors.json';
 import {
   MAX_HELD_WINDOW_ITEMS,
+  NO_HELD_RUNS,
   UNSTAMPED_ITEM_REV,
   heldWindowOf,
   isWindowedTimelineRow,
   windowDigest,
 } from './threadWindowDigest';
+import { FNV1A64_ZERO, formatFnv1a64, parseFnv1a64, xorFnv1a64 } from '../utils/fnv1a';
 import { makeItem } from '../../test/helpers/chat';
 import type { Item } from '../types/models';
 
@@ -22,7 +24,7 @@ function row(id: string, rev: number, overrides: Partial<Item> = {}): Item {
 
 describe('windowDigest', () => {
   it('declares the algorithm the Go side implements', () => {
-    expect(vectors.algorithm).toBe('fnv1a64');
+    expect(vectors.algorithm).toBe('fnv1a64-xor');
   });
 
   it('agrees with the shared vectors on the held-window cap', () => {
@@ -43,14 +45,32 @@ describe('windowDigest', () => {
     }
   });
 
-  it('separates the id from the rev, so no two windows share a canonical string', () => {
-    // Without the field separator `ab` + `1` and `a` + `b1` would fold
-    // identically; without the record separator so would one row `a`/`11`
-    // and two rows `a`/`1`, `` /`1`.
+  it('separates the id from the rev inside one row', () => {
+    // Per ROW now, not per window: the fold is an XOR of independent row
+    // hashes, so the separator is what keeps `ab`+`1` from hashing as
+    // `a`+`b1`. There is no record separator — that is what makes the
+    // digest composable across loaded rows, shed rows and stubs (§5).
     expect(windowDigest([{ id: 'ab', rev: 1 }])).not.toBe(windowDigest([{ id: 'a', rev: 0 }]));
     expect(windowDigest([{ id: 'a', rev: 11 }])).not.toBe(
       windowDigest([{ id: 'a', rev: 1 }, { id: '', rev: 1 }]),
     );
+  });
+
+  it('is order-free and composable', () => {
+    // The two properties the XOR fold buys, and the reason the client can
+    // add a run's UnshippedDigest to the rows it holds without knowing
+    // where those members sort.
+    const rows = [{ id: 'a', rev: 1 }, { id: 'b', rev: 2 }, { id: 'c', rev: 3 }];
+    expect(windowDigest([...rows].reverse())).toBe(windowDigest(rows));
+    const parts = [
+      parseFnv1a64(windowDigest(rows.slice(0, 1)))!,
+      parseFnv1a64(windowDigest(rows.slice(1)))!,
+    ];
+    expect(formatFnv1a64(xorFnv1a64(parts[0], parts[1]))).toBe(windowDigest(rows));
+  });
+
+  it('folds the empty window to zero, so an absent part contributes nothing', () => {
+    expect(windowDigest([])).toBe('0000000000000000');
   });
 
   it('folds a rev change and only a rev change', () => {
@@ -92,7 +112,7 @@ describe('isWindowedTimelineRow', () => {
 describe('heldWindowOf', () => {
   it('describes the window by its edges, count and digest', () => {
     const items = [row('i0', 3), row('i1', 4, { itemIndex: 1 }), row('i2', 9, { itemIndex: 2 })];
-    expect(heldWindowOf(items, false, true)).toEqual({
+    expect(heldWindowOf(items, false, true, NO_HELD_RUNS)).toEqual({
       oldestItemId: 'i0',
       newestItemId: 'i2',
       count: 3,
@@ -114,32 +134,65 @@ describe('heldWindowOf', () => {
       row('i1', 5, { itemIndex: 3 }),
       row('p1', 6, { itemIndex: 4, kind: 'notification', toolName: 'plan_update' }),
     ];
-    const held = heldWindowOf(items, true, false);
+    const held = heldWindowOf(items, true, false, NO_HELD_RUNS);
     expect(held).toMatchObject({ oldestItemId: 'i0', newestItemId: 'i1', count: 2 });
     expect(held?.digest).toBe(windowDigest([{ id: 'i0', rev: 3 }, { id: 'i1', rev: 5 }]));
   });
 
   it('returns null when no row survives the filter', () => {
-    expect(heldWindowOf([], false, false)).toBeNull();
+    expect(heldWindowOf([], false, false, NO_HELD_RUNS)).toBeNull();
     expect(
-      heldWindowOf([row('p0', 1, { kind: 'notification', toolName: 'plan_update' })], false, false),
+      heldWindowOf(
+        [row('p0', 1, { kind: 'notification', toolName: 'plan_update' })],
+        false,
+        false,
+        NO_HELD_RUNS,
+      ),
     ).toBeNull();
   });
 
-  it('still describes a window holding an imported (-1) row', () => {
-    // The server refuses it — imported history carries no per-row stamp —
-    // and that refusal costs one page, which is the same answer the pane
-    // would have got by sending nothing. Suppressing it here would be a
-    // silent special case with the same outcome and one more branch.
-    const held = heldWindowOf(
-      [row('imported', UNSTAMPED_ITEM_REV), row('i1', 4, { itemIndex: 1 })],
-      false,
-      false,
-    );
-    expect(held).toMatchObject({ count: 2, oldestItemId: 'imported' });
+  it('describes no window when a row carries no revision', () => {
+    // Restated from "describes it anyway and lets the server refuse":
+    // with runs folded in, a stub's UnshippedDigest is composed from the
+    // same rows, and an unstamped row makes the composition a claim the
+    // server cannot check. Refusing here costs the same one page the
+    // server's refusal cost, without spending the round trip.
+    expect(
+      heldWindowOf(
+        [row('imported', UNSTAMPED_ITEM_REV), row('i1', 4, { itemIndex: 1 })],
+        false,
+        false,
+        NO_HELD_RUNS,
+      ),
+    ).toBeNull();
+  });
+
+  it('describes no window when the pane cannot state its runs', () => {
+    expect(heldWindowOf([row('i0', 3)], false, false, null)).toBeNull();
+  });
+
+  it('folds a held run into the count and the digest', () => {
+    // The run's members the pane does NOT hold are physical rows of the
+    // window all the same (§5): they count, and their digest XORs in.
+    const items = [row('i0', 3), row('i1', 4, { itemIndex: 1 })];
+    const unshipped = parseFnv1a64(windowDigest([{ id: 'u0', rev: 2 }]))!;
+    const held = heldWindowOf(items, false, false, { count: 1, digest: unshipped });
+    expect(held).toMatchObject({ count: 3, oldestItemId: 'i0', newestItemId: 'i1' });
     expect(held?.digest).toBe(
-      windowDigest([{ id: 'imported', rev: UNSTAMPED_ITEM_REV }, { id: 'i1', rev: 4 }]),
+      windowDigest([{ id: 'i0', rev: 3 }, { id: 'i1', rev: 4 }, { id: 'u0', rev: 2 }]),
     );
+  });
+
+  it('counts a run\'s unheld members against the cap', () => {
+    const items = Array.from({ length: 10 }, (_, index) =>
+      row(`i${index}`, 1, { itemIndex: index }),
+    );
+    expect(
+      heldWindowOf(items, false, false, {
+        count: MAX_HELD_WINDOW_ITEMS - 9,
+        digest: FNV1A64_ZERO,
+      }),
+    ).toBeNull();
   });
 
   it('refuses a window past the cap the server would verify', () => {
@@ -149,8 +202,8 @@ describe('heldWindowOf', () => {
     const items = Array.from({ length: MAX_HELD_WINDOW_ITEMS + 1 }, (_, index) =>
       row(`i${index}`, 1, { itemIndex: index }),
     );
-    expect(heldWindowOf(items, false, false)).toBeNull();
-    expect(heldWindowOf(items.slice(0, MAX_HELD_WINDOW_ITEMS), false, false)).toMatchObject({
+    expect(heldWindowOf(items, false, false, NO_HELD_RUNS)).toBeNull();
+    expect(heldWindowOf(items.slice(0, MAX_HELD_WINDOW_ITEMS), false, false, NO_HELD_RUNS)).toMatchObject({
       count: MAX_HELD_WINDOW_ITEMS,
     });
   });

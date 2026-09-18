@@ -41,6 +41,7 @@
   import type { ActivityRunNode, TimelineNode } from '../../utils/subagentGrouping';
   import { timelineNodeItemId, timelineNodeKey } from '../../utils/subagentGrouping';
   import {
+    ACTIVITY_RUN_CHUNK_ROWS,
     activityRunRowIndexOfItem,
     activityRunWindowGrownNewer,
     activityRunWindowGrownOlder,
@@ -184,12 +185,19 @@
   // virtualizer provides at top level has to be re-established inside. The
   // window rests on the run's tail and relocates when a jump resolves into
   // the run (utils/activityRunWindow.ts).
+  //
+  // `children` is itself a window: the pane holds a span of the run's
+  // members and the server counts the rest (`run.unshippedBefore/After`,
+  // docs/architecture/timeline-window-pages.md §6). Each boundary counts
+  // both — the loaded rows it hides and the members past them — so the
+  // reader sees the run's true extent, and mounting past the loaded span
+  // fetches before it grows (`mountEarlier` / `mountLater`).
   let mountedChildren = $derived(
     run.children.slice(run.mountedFrom, run.mountedFrom + run.mountedRows),
   );
-  let hiddenEarlier = $derived(mountedFrom);
+  let hiddenEarlier = $derived(mountedFrom + run.unshippedBefore);
   let hiddenLater = $derived(
-    run.children.length - run.mountedFrom - run.mountedRows,
+    run.children.length - run.mountedFrom - run.mountedRows + run.unshippedAfter,
   );
   // The mounted SET as a primitive (same rule as `runId` above):
   // `mountedChildren` slices a fresh array on every projection pass, and a
@@ -216,10 +224,39 @@
     pane.activityRuns.setCollapsed(run.runId, !collapsed);
   }
 
-  // Guards `mountEarlier` against overlap. Deliberately a plain local, not
-  // `$state`: nothing renders from it, and a reactive read would invalidate
-  // the template twice per chunk for no visible difference.
+  // Guards `mountEarlier` / `mountLater` against overlap. Deliberately plain
+  // locals, not `$state`: nothing renders from them, and a reactive read
+  // would invalidate the template twice per chunk for no visible difference.
   let mountingEarlier = false;
+  let mountingLater = false;
+  // These two DO render: a chunk that has to come from the server takes a
+  // round trip, and the boundary that asked for it says so meanwhile.
+  let fetchingEarlier = $state(false);
+  let fetchingLater = $state(false);
+
+  /**
+   * Bring the run's next older chunk into the pane when no loaded row is
+   * left above the window. Resolves false when the fetch produced nothing
+   * (a failure, already reported to the reader) or the clip went away
+   * while it was in flight; the boundary then reads as it did, and the
+   * reader's next gesture asks again.
+   */
+  async function fetchEarlier(clip: HTMLElement): Promise<boolean> {
+    fetchingEarlier = true;
+    try {
+      const held = await pane.activityRuns.fetchMembers(run.runId, {
+        direction: 'before',
+        limit: ACTIVITY_RUN_CHUNK_ROWS,
+      });
+      if (held.length === 0) return false;
+    } finally {
+      fetchingEarlier = false;
+    }
+    // The projection after the mount hands this component the run with the
+    // fetched rows at the head of `children`, above the window it kept.
+    await tick();
+    return clip === clipEl;
+  }
 
   async function mountEarlier(): Promise<void> {
     // Narrowing, not a fallback: the boundary that calls this renders INSIDE
@@ -234,6 +271,9 @@
     if (!clip || mountingEarlier || hiddenEarlier <= 0) return;
     mountingEarlier = true;
     try {
+      // Nothing loaded above the window, so what `hiddenEarlier` counts is
+      // on the server: fetch first, then grow over the rows that landed.
+      if (run.mountedFrom === 0 && !(await fetchEarlier(clip))) return;
       const beforeHeight = clip.scrollHeight;
       const beforeTop = clip.scrollTop;
 
@@ -265,8 +305,37 @@
 
   // No compensation on this edge: rows appended BELOW the reading position
   // move nothing above it.
-  function mountLater(): void {
-    pane.activityRuns.setMountWindow(run.runId, activityRunWindowGrownNewer(run));
+  async function mountLater(): Promise<void> {
+    if (mountingLater || hiddenLater <= 0) return;
+    mountingLater = true;
+    try {
+      const loadedBelow = run.children.length - run.mountedFrom - run.mountedRows;
+      if (loadedBelow <= 0) {
+        // The chunk is on the server, and it lands BELOW the loaded span. A
+        // tail-following window would slide down onto it and take the rows
+        // the reader is looking at along, so the window is pinned to its
+        // head first — the same pin an escaped reader's scroll holds — and
+        // the fetched rows collect behind this boundary for the grow below.
+        const head = run.children[run.mountedFrom];
+        stick?.setEscapedFromLock(true);
+        if (head) pane.activityRuns.setWindowAnchor(run.runId, timelineNodeItemId(head));
+        fetchingLater = true;
+        try {
+          const held = await pane.activityRuns.fetchMembers(run.runId, {
+            direction: 'after',
+            limit: ACTIVITY_RUN_CHUNK_ROWS,
+          });
+          if (held.length === 0) return;
+        } finally {
+          fetchingLater = false;
+        }
+        await tick();
+        if (!clipEl) return;
+      }
+      pane.activityRuns.setMountWindow(run.runId, activityRunWindowGrownNewer(run));
+    } finally {
+      mountingLater = false;
+    }
   }
 
   // Expanded payloads lift the cap by their own height; the observer owns
@@ -921,7 +990,12 @@
         >
           <div bind:this={contentEl}>
             {#if hiddenEarlier > 0}
-              <ActivityRunBoundary count={hiddenEarlier} edge="earlier" onclick={mountEarlier} />
+              <ActivityRunBoundary
+                count={hiddenEarlier}
+                edge="earlier"
+                pending={fetchingEarlier}
+                onclick={mountEarlier}
+              />
             {/if}
             <!-- The wrapper carries the row's index because that is the only
                  handle a jump has on a non-leaf row: only leaves emit
@@ -934,7 +1008,12 @@
               </div>
             {/each}
             {#if hiddenLater > 0}
-              <ActivityRunBoundary count={hiddenLater} edge="later" onclick={mountLater} />
+              <ActivityRunBoundary
+                count={hiddenLater}
+                edge="later"
+                pending={fetchingLater}
+                onclick={mountLater}
+              />
             {/if}
           </div>
         </div>

@@ -27,10 +27,37 @@
 // is the `activityRunDefault` setting.
 
 import { compositeKey } from '../utils/compositeKey';
+import type { Item } from '../types/models';
+import type { PageShape } from '../../../bindings/agent-overflow/internal/app/models';
+import type { ActivityRunStub } from '../../../bindings/agent-overflow/internal/store/models';
 import type {
   ActivityRunIdentity,
   ActivityRunResolution,
 } from '../utils/activityRunGrouping';
+import {
+  groupActivityRunSpans,
+  type ActivityRunSpan,
+} from '../utils/activityRunSpans';
+import {
+  isWindowedTimelineRow,
+  type HeldRunFold,
+} from './threadWindowDigest';
+import {
+  foldedStub,
+  foldPageStub,
+  heldRunsFold,
+  noteSpanMoved,
+  shedOlderMembers,
+  stubFacts,
+  type ActivityRunStubFacts,
+  type ActivityRunRecord,
+  type ActivityRunRecords,
+} from './activityRunStubs';
+import {
+  createActivityRunMemberFetch,
+  type ActivityRunMemberFetch,
+  type FetchMembersRequest,
+} from './activityRunMemberFetch';
 import type {
   ActivityRunFocusRequest,
   ActivityRunMountWindow,
@@ -39,6 +66,39 @@ import { SvelteMap } from 'svelte/reactivity';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { withViewportBottomHeld } from './threadPaneShared';
 import type { PaneScrollController } from './threadPaneShared';
+
+/**
+ * A timeline coordinate, the only thing a jump holds for a row the window
+ * does not contain.
+ */
+export interface RunCoordinate {
+  turnIndex: number;
+  itemIndex: number;
+}
+
+function compareCoordinates(a: RunCoordinate, b: RunCoordinate): number {
+  if (a.turnIndex !== b.turnIndex) return a.turnIndex - b.turnIndex;
+  return a.itemIndex - b.itemIndex;
+}
+
+/**
+ * Where one run's loaded members sit in the pane's window, and what sits
+ * next to them.
+ *
+ * The neighbours bound the run's COORDINATE range without the pane
+ * knowing the coordinates of a single unshipped member: a page never
+ * splits a run, so the loaded row on either side of a run's span is a row
+ * outside that run. A null neighbour means the window ends there, and the
+ * range is open on that side — every row past the edge in that direction
+ * either belongs to this run or is history the window does not cover, and
+ * the stub's side count says which.
+ */
+interface RunBounds {
+  first: RunCoordinate;
+  last: RunCoordinate;
+  olderNeighbour: RunCoordinate | null;
+  newerNeighbour: RunCoordinate | null;
+}
 
 export interface ActivityRunScrollSnapshot {
   scrollTop: number;
@@ -72,6 +132,42 @@ export interface ThreadActivityRunsOptions {
    * "Every collapse/expand", incident 2026-08-17).
    */
   scrollController(): PaneScrollController | null;
+  /**
+   * The pane's loaded item window, in (turnIndex, itemIndex) order. Read
+   * per call. A run record describes the members the pane does NOT hold,
+   * so every statement it makes is relative to the ones it does.
+   */
+  items(): readonly Item[];
+  /** The pane's thread, or null while it holds none. */
+  threadId(): string | null;
+  /** The pane's page shape (`timelinePageShape()`), for member fetches. */
+  pageShape(): PageShape;
+  /**
+   * Install fetched run members in the pane's window: merge `rows`, drop
+   * `dropIds`, through the pane's items-replacement chokepoint. They are
+   * top-level rows INSIDE the window's range, so the floor/ceiling filters
+   * the streaming path applies do not get a say — this is the one door
+   * that admits them.
+   *
+   * `dropIds` is non-empty only for an `around` answer, whose span
+   * replaces the loaded one: the previous members become unshipped and are
+   * described by the answer's stub, so they must leave the window in the
+   * same commit the new ones enter it or the run would be counted twice.
+   */
+  mountRunMembers(rows: readonly Item[], dropIds: ReadonlySet<string>): void;
+  /**
+   * Reload the window around the reader's anchor. Called when the server
+   * refuses a members call because the run moved under it: the pane's
+   * picture of that run is wrong and no retry can repair it.
+   */
+  reloadWindow(): void;
+  /**
+   * Report a failed members fetch. `silent` marks a background stub
+   * refresh, which leaves the record dirty for the next trigger rather
+   * than interrupting the reader; a boundary or jump fetch is a gesture
+   * and its failure is shown.
+   */
+  reportFetchFailure(message: string, err: unknown, silent: boolean): void;
 }
 
 export interface ThreadActivityRuns extends ActivityRunIdentity {
@@ -207,6 +303,96 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
    * from a live node and the wrong one for a writer that cannot.
    */
   containsMember(runId: string, itemId: string): boolean;
+  /**
+   * Whether `cursor` falls inside the run's COORDINATE range but outside
+   * the members the pane holds — the unshipped region of
+   * docs/architecture/timeline-window-pages.md §6.
+   *
+   * Deliberately not part of `containsMember`, which answers about loaded
+   * members and is what every anchor writer needs. A jump asks this one:
+   * its target resolved to a coordinate the window does not hold, and the
+   * answer decides between fetching the run's members around it and
+   * reloading the whole window.
+   *
+   * The range is bounded by the loaded rows adjacent to the run rather
+   * than by the stub, because a page never splits a run: whatever sits
+   * next to a run in the pane's window is a row outside it.
+   */
+  spansItem(runId: string, itemId: string, cursor: RunCoordinate): boolean;
+  /**
+   * Fetch members of a run and mount them, returning the ids the pane
+   * holds for it afterwards (empty when the fetch failed, which it has
+   * already reported).
+   *
+   * The boundaries call this when the reader mounts past
+   * `ActivityRunNode.loadedFirst/LastItemId`; the jump calls it with
+   * `around` when its target is an unshipped member. `around` REPLACES the
+   * loaded span — the previous members become unshipped and the answer's
+   * stub describes them.
+   */
+  fetchMembers(runId: string, request: FetchMembersRequest): Promise<string[]>;
+  /**
+   * Bring a member the pane does not hold into the window, for a jump
+   * whose target resolved to a row inside a held run's unshipped region
+   * (`runCoveringUnshipped`). The run's loaded span is REPLACED by one
+   * centered on the row (`around`, a window's worth). Resolves whether the
+   * pane holds the row afterwards; false when no held run covers it, and
+   * when the fetch failed (already reported).
+   */
+  loadUnshippedMember(item: Item): Promise<boolean>;
+  /**
+   * What the header needs of the run's members the pane does NOT hold:
+   * the stub's aggregate and the shed rows (`stubFacts`), or null for a
+   * run held whole. Re-read on `revision`, which every stub change bumps.
+   */
+  summaryFacts(runId: string): ActivityRunStubFacts | null;
+  /**
+   * Re-derive every held run's loaded span from the pane's window, and
+   * fold a page's stubs into the records.
+   *
+   * Called after every wholesale change to the window — a page, a replica
+   * paint, a cut, a members mount. `stubs` is the page's `runs`, or
+   * omitted when the change carried no server description: a record whose
+   * span moved without one goes dirty and refreshes.
+   */
+  syncRunSpans(items: readonly Item[], stubs?: readonly ActivityRunStub[]): void;
+  /**
+   * Account for a window cut: shed the members it dropped from a run that
+   * straddles it, and drop the record of a run that left entirely.
+   *
+   * Called with the window as it was and as it will be, BEFORE the
+   * replacement is committed — a shed row keeps narrow copies of fields
+   * that only exist while the `Item` does.
+   */
+  applyWindowCut(previousItems: readonly Item[], nextItems: readonly Item[]): void;
+  /**
+   * What the runs the pane holds contribute to its held-window description
+   * (§5): the physical rows it describes without holding, and their folded
+   * digest. Null when any record is dirty or carries an unusable digest —
+   * the pane then describes no window and pays one page.
+   */
+  heldRunFold(): HeldRunFold | null;
+  /**
+   * The run whose unshipped region covers a pushed row's coordinate, or
+   * null. `threadItemUpserts.ts` routes on it: such a row is not inserted
+   * (it would leave a hole in the run's span) and instead marks the record
+   * dirty, which the debounced stub refresh answers.
+   */
+  runCoveringUnshipped(item: Item): string | null;
+  /** Mark a record dirty by the key `runCoveringUnshipped` returned. */
+  markRunDirty(runKey: string): void;
+  /**
+   * The stubs describing the runs the pane holds part of, for the caches
+   * that persist a window (the in-memory snapshot and the replica), with
+   * every shed row folded in (`foldedStub`) — a restored window holds
+   * neither the shed rows nor the `Item`s they came from.
+   *
+   * Null when any record cannot state its contribution, which is the
+   * signal not to persist: a window stored without a describable run
+   * would paint headers that under-count and claim a held window the
+   * server refuses.
+   */
+  snapshotStubs(): ActivityRunStub[] | null;
   /**
    * Ask the run's row to bring `itemId` into view once it is mounted. Held
    * on the entry rather than passed down a prop because the row may not
@@ -347,6 +533,18 @@ interface RunEntry {
   /** null → the run's tail. */
   windowStartItemId: string | null;
   focus: ActivityRunFocusRequest | null;
+  /**
+   * The run record this entry's members belong to (`firstItemId` of the
+   * physical run), or null when the pane holds the run whole and no server
+   * stub describes it. Re-linked on every `resolve` from the member index
+   * the record store maintains, because the two identities are minted by
+   * different authorities: the runId survives the window edges moving, the
+   * record key survives the pane dropping rows.
+   *
+   * Never archived. A revived run has no members, so it has nothing to
+   * link, and the record it used to point at was dropped with the window.
+   */
+  runFirstItemId: string | null;
 }
 
 /**
@@ -363,7 +561,7 @@ interface RunEntry {
 interface ArchivedRun extends Omit<
   RunEntry,
   | 'members' | 'membersList' | 'summaryMembers' | 'summaryList'
-  | 'focus' | 'clipOpen' | 'openedLive' | 'membershipEpoch'
+  | 'focus' | 'clipOpen' | 'openedLive' | 'membershipEpoch' | 'runFirstItemId'
 > {
   keys: string[];
 }
@@ -395,6 +593,7 @@ function emptyEntry(threadId: string): RunEntry {
     windowRows: null,
     windowStartItemId: null,
     focus: null,
+    runFirstItemId: null,
   };
 }
 
@@ -447,6 +646,9 @@ function rowIndexOfMember(
  * the anchor — it just stops reporting, and the first entries carry all the
  * signal.
  */
+/** No rows leave the window: an append-only members mount. */
+const EMPTY_ID_SET: ReadonlySet<string> = new Set<string>();
+
 const reportedAnchorRuns = new Set<string>();
 const MAX_REPORTED_ANCHOR_RUNS = 100;
 
@@ -521,11 +723,284 @@ export function createThreadActivityRuns(
   // it into an unrelated thread would surprise.
   let bulkCollapsed = $state<boolean | null>(null);
 
+  // The run records (docs/architecture/timeline-window-pages.md §6), keyed
+  // by the run's first physical member. Plain, not reactive: every value
+  // derived from them reaches a component through the projected node, which
+  // is rebuilt from `revision` like the rest of a run's resolved state.
+  const records: ActivityRunRecords = new Map();
+  // Loaded member id -> record key, and record key -> the coordinates that
+  // bound the run. Both are rebuilt by `syncRunSpans`, which is the one
+  // writer: a half-updated index would route a pushed row into a run whose
+  // span has already moved.
+  const runKeyByMemberId = new Map<string, string>();
+  const recordBounds = new Map<string, RunBounds>();
+
+  const memberFetch: ActivityRunMemberFetch = createActivityRunMemberFetch({
+    threadId: () => options.threadId(),
+    shape: () => options.pageShape(),
+    records: () => records,
+    mountMembers: (record, rows, replaces) => {
+      const dropIds = replaces ? loadedMemberIds(record) : EMPTY_ID_SET;
+      options.mountRunMembers(rows, dropIds);
+      // The pane has committed the replacement, so the spans it holds have
+      // moved: re-derive them before the answer's stub is applied over the
+      // top, or the record would name the span from before the mount.
+      syncRunSpans(options.items());
+      const span = spanOfRecord(spansByMemberId(options.items()), record);
+      return span ? span.items.map((item) => item.id) : [];
+    },
+    reloadWindow: () => options.reloadWindow(),
+    reportFailure: (message, err, silent) =>
+      options.reportFetchFailure(message, err, silent),
+    onStubApplied: () => {
+      revision += 1;
+    },
+  });
+
+  /** The ids of the members a record's run currently has loaded. */
+  function loadedMemberIds(record: ActivityRunRecord): ReadonlySet<string> {
+    const span = spanOfRecord(spansByMemberId(options.items()), record);
+    return new Set(span ? span.items.map((item) => item.id) : []);
+  }
+
+  /** Every loaded member id mapped to the span holding it. */
+  function spansByMemberId(items: readonly Item[]): Map<string, ActivityRunSpan> {
+    const byId = new Map<string, ActivityRunSpan>();
+    for (const span of groupActivityRunSpans(items)) {
+      for (const item of span.items) byId.set(item.id, span);
+    }
+    return byId;
+  }
+
+  /**
+   * The span holding a record's run, tried through every id that could
+   * still name one of its members: the span the record last saw, then the
+   * span its stub was built for, then the run's own edges. A run whose
+   * members have all left the window resolves to null and the record goes
+   * with them.
+   */
+  function spanOfRecord(
+    spansById: ReadonlyMap<string, ActivityRunSpan>,
+    record: ActivityRunRecord,
+  ): ActivityRunSpan | null {
+    const stub = record.stub;
+    const candidates = [
+      record.loadedLastItemId,
+      record.loadedFirstItemId,
+      stub.loadedLastItemId,
+      stub.loadedFirstItemId,
+      stub.firstItemId,
+      stub.lastItemId,
+    ];
+    for (const id of candidates) {
+      if (id === '') continue;
+      const span = spansById.get(id);
+      if (span) return span;
+    }
+    return null;
+  }
+
+  /**
+   * Re-derive every record's loaded span from the pane's window and fold a
+   * page's stubs into the records.
+   *
+   * Order matters: the stubs are folded against the spans the pane holds
+   * AFTER the page merged, so a stub that describes a different span (a
+   * cursor page that crossed into a held run, a live append the server has
+   * not seen) leaves the pane's span standing and the record dirty.
+   * Records whose run left the window are dropped with their shed rows —
+   * the run is no longer in the held window at all, and the has-more flag
+   * on that edge covers it.
+   */
+  function syncRunSpans(
+    items: readonly Item[],
+    stubs?: readonly ActivityRunStub[],
+  ): void {
+    const windowed = items.filter(isWindowedTimelineRow);
+    const positionById = new Map<string, number>();
+    for (let index = 0; index < windowed.length; index += 1) {
+      positionById.set(windowed[index].id, index);
+    }
+    const spansById = spansByMemberId(windowed);
+
+    // Claimed so two records cannot describe one span: a run whose first
+    // member changed identity would otherwise be counted twice in the held
+    // window. The first claim wins and the loser is dropped, which costs
+    // one stub refresh rather than a wrong digest.
+    const claimed = new Map<string, string>();
+    const resolvedSpans = new Map<string, ActivityRunSpan | null>();
+
+    for (const stub of stubs ?? []) {
+      const span = spansById.get(stub.loadedLastItemId)
+        ?? spansById.get(stub.loadedFirstItemId)
+        ?? (records.has(stub.firstItemId)
+          ? spanOfRecord(spansById, records.get(stub.firstItemId)!)
+          : null);
+      foldPageStub(records, stub, span);
+      resolvedSpans.set(stub.firstItemId, span);
+    }
+
+    for (const [key, record] of [...records]) {
+      const span = resolvedSpans.has(key)
+        ? resolvedSpans.get(key)!
+        : spanOfRecord(spansById, record);
+      if (!span) {
+        records.delete(key);
+        recordBounds.delete(key);
+        continue;
+      }
+      const owner = claimed.get(span.firstItemId);
+      if (owner !== undefined && owner !== key) {
+        records.delete(key);
+        recordBounds.delete(key);
+        continue;
+      }
+      claimed.set(span.firstItemId, key);
+      noteSpanMoved(record, span);
+      const first = positionById.get(span.firstItemId);
+      const last = positionById.get(span.lastItemId);
+      if (first === undefined || last === undefined) {
+        // Only reachable if a span named a row the filter excluded, which
+        // `groupActivityRunSpans` cannot produce. Drop rather than store
+        // bounds nothing can be compared against.
+        records.delete(key);
+        recordBounds.delete(key);
+        continue;
+      }
+      recordBounds.set(key, {
+        first: coordinateOf(windowed[first]),
+        last: coordinateOf(windowed[last]),
+        olderNeighbour: first > 0 ? coordinateOf(windowed[first - 1]) : null,
+        newerNeighbour:
+          last + 1 < windowed.length ? coordinateOf(windowed[last + 1]) : null,
+      });
+    }
+
+    runKeyByMemberId.clear();
+    for (const [key, record] of records) {
+      const span = spanOfRecord(spansById, record);
+      if (!span) continue;
+      for (const item of span.items) runKeyByMemberId.set(item.id, key);
+    }
+    for (const record of records.values()) {
+      if (record.dirty) {
+        memberFetch.scheduleRefresh();
+        break;
+      }
+    }
+    revision += 1;
+  }
+
+  function coordinateOf(item: Item): RunCoordinate {
+    return { turnIndex: item.turnIndex, itemIndex: item.itemIndex };
+  }
+
+  /**
+   * Account for a window cut.
+   *
+   * The cut moves the window's edges only across rows the pane holds, so
+   * every run is in one of three states afterwards, and each is handled
+   * here rather than by the cut:
+   *
+   *  - gone entirely: the record is dropped with the rows. The run is out
+   *    of the held window and the has-more flag on that edge covers it.
+   *  - unchanged: nothing to do.
+   *  - straddling the OLDER edge: the members before the cut are shed —
+   *    narrow copies, taken here because the fields they keep only exist
+   *    while the `Item` does — and the record survives to keep counting
+   *    them. `shedOlderMembers` refuses any other shape, which is what
+   *    stops a newer-edge cut (`keepWindowNearReader` drops such a run
+   *    whole instead) from silently losing rows out of the digest.
+   */
+  function applyWindowCut(
+    previousItems: readonly Item[],
+    nextItems: readonly Item[],
+  ): void {
+    const previousSpans = spansByMemberId(previousItems);
+    const nextSpans = spansByMemberId(nextItems);
+    for (const [key, record] of [...records]) {
+      const before = spanOfRecord(previousSpans, record);
+      const after = spanOfRecord(nextSpans, record);
+      if (!before) continue;
+      if (!after) {
+        records.delete(key);
+        recordBounds.delete(key);
+        for (const item of before.items) {
+          if (runKeyByMemberId.get(item.id) === key) runKeyByMemberId.delete(item.id);
+        }
+        continue;
+      }
+      if (before.firstItemId === after.firstItemId
+        && before.lastItemId === after.lastItemId) continue;
+      if (before.lastItemId !== after.lastItemId) {
+        // The cut took members off the run's NEWER end, which only
+        // happens for a run bigger than the whole retention target
+        // (`snapCutEdgesOffRuns`). Shed rows are contiguous with the
+        // span's OLDER side, so there is nowhere to record these: the
+        // record keeps the shorter span and goes dirty, and the
+        // debounced stub refresh restates what now follows it. The
+        // header under-counts on that side until it lands, and the pane
+        // describes no held window meanwhile.
+        record.loadedFirstItemId = after.firstItemId;
+        record.loadedLastItemId = after.lastItemId;
+        record.dirty = true;
+        memberFetch.scheduleRefresh();
+        continue;
+      }
+      const keptIds = new Set(after.items.map((item) => item.id));
+      const dropped = before.items.filter((item) => !keptIds.has(item.id));
+      shedOlderMembers(record, dropped, after.firstItemId, after.lastItemId);
+    }
+    revision += 1;
+  }
+
+  /**
+   * The run whose unshipped region covers `item`'s coordinate, or null.
+   *
+   * "Inside the run" is a claim about coordinates bounded by the loaded
+   * rows next to the run, and it requires the stub to say members exist on
+   * that side: a live row appended past the tail run's newest member is
+   * NOT inside it — the run has nothing unshipped after the span — so it
+   * appends as it always did.
+   */
+  function runCoveringUnshipped(item: Item): string | null {
+    if (!isWindowedTimelineRow(item)) return null;
+    const cursor = coordinateOf(item);
+    for (const [key, record] of records) {
+      const bounds = recordBounds.get(key);
+      if (!bounds) continue;
+      if (coversUnshipped(record, bounds, cursor)) return key;
+    }
+    return null;
+  }
+
+  function coversUnshipped(
+    record: ActivityRunRecord,
+    bounds: RunBounds,
+    cursor: RunCoordinate,
+  ): boolean {
+    if (compareCoordinates(cursor, bounds.first) < 0) {
+      if (record.stub.unshippedBefore + record.shed.length === 0) return false;
+      return bounds.olderNeighbour === null
+        || compareCoordinates(cursor, bounds.olderNeighbour) > 0;
+    }
+    if (compareCoordinates(cursor, bounds.last) > 0) {
+      if (record.stub.unshippedAfter === 0) return false;
+      return bounds.newerNeighbour === null
+        || compareCoordinates(cursor, bounds.newerNeighbour) < 0;
+    }
+    return false;
+  }
+
   // Collapse state and the mount window both ride on the projected node, so
   // both have to be able to trigger a rebuild; a focus request bumps it too,
   // because a jump can target an item the current window already holds and
-  // would otherwise change nothing the row could notice. Each moves only on
-  // a deliberate user action (toggle the run, mount a chunk, jump to a hit),
+  // would otherwise change nothing the row could notice. So does a change
+  // to what a run's record says about the members the pane does not hold
+  // (a page's stubs folded, a members answer, a cut's shed rows): the
+  // node's counts and the header's facts derive from it and no row moves
+  // for a `limit: 0` refresh. Each moves on a deliberate user action
+  // (toggle the run, mount a chunk, jump to a hit) or a debounced refresh,
   // so the rebuild is rare. Scroll snapshots are excluded on purpose — they
   // move every inner scroll frame and nothing on the node reads them.
   let revision = $state(0);
@@ -716,6 +1191,7 @@ export function createThreadActivityRuns(
           windowRows: revived.windowRows,
           windowStartItemId: revived.windowStartItemId,
           focus: null,
+          runFirstItemId: null,
         });
         return minted;
       }
@@ -813,11 +1289,40 @@ export function createThreadActivityRuns(
         mountedFrom = Math.min(anchored, tailFrom);
       }
     }
+    // Re-link the entry to its run record every pass. The two identities
+    // are minted by different authorities (the runId survives the window's
+    // edges moving; the record key is the run's first physical member), so
+    // the link is derived from the member index rather than stored once.
+    entry.runFirstItemId = null;
+    for (const row of rowMemberIds) {
+      for (const id of row) {
+        const key = runKeyByMemberId.get(id);
+        if (key !== undefined) {
+          entry.runFirstItemId = key;
+          break;
+        }
+      }
+      if (entry.runFirstItemId !== null) break;
+    }
+    const record = entry.runFirstItemId === null
+      ? undefined
+      : records.get(entry.runFirstItemId);
+    // No record means no stub: the pane holds this run whole, so every
+    // count is the loaded membership and neither side has anything
+    // unshipped.
+    const facts = record ? stubFacts(record) : null;
+    const loadedIds = entry.membersList;
     return {
       runId,
       mountedFrom,
       mountedRows: rows,
       membershipEpoch: entry.membershipEpoch,
+      memberCount: facts?.memberCount ?? loadedIds.length,
+      unshippedBefore: facts?.unshippedBefore ?? 0,
+      unshippedAfter: facts?.unshippedAfter ?? 0,
+      loadedFirstItemId: facts?.loadedFirstItemId ?? (loadedIds[0] ?? ''),
+      loadedLastItemId:
+        facts?.loadedLastItemId ?? (loadedIds[loadedIds.length - 1] ?? ''),
     };
   }
 
@@ -1097,6 +1602,58 @@ export function createThreadActivityRuns(
     },
     windowAnchor: (runId) => entries.get(runId)?.windowStartItemId ?? null,
     containsMember: (runId, itemId) => entries.get(runId)?.members.has(itemId) ?? false,
+    spansItem: (runId, itemId, cursor) => {
+      const entry = entries.get(runId);
+      if (!entry || entry.members.has(itemId)) return false;
+      const key = entry.runFirstItemId;
+      if (key === null) return false;
+      const record = records.get(key);
+      const bounds = recordBounds.get(key);
+      if (!record || !bounds) return false;
+      return coversUnshipped(record, bounds, cursor);
+    },
+    fetchMembers: (runId, request) => {
+      const key = entries.get(runId)?.runFirstItemId;
+      if (key === null || key === undefined) return Promise.resolve([]);
+      return memberFetch.fetch(key, request);
+    },
+    loadUnshippedMember: async (item) => {
+      const key = runCoveringUnshipped(item);
+      if (key === null) return false;
+      const held = await memberFetch.fetch(key, {
+        direction: 'around',
+        aroundItemId: item.id,
+        limit: options.windowRows(),
+      });
+      return held.includes(item.id);
+    },
+    summaryFacts: (runId) => {
+      const key = entries.get(runId)?.runFirstItemId;
+      if (key === null || key === undefined) return null;
+      const record = records.get(key);
+      return record ? stubFacts(record) : null;
+    },
+    syncRunSpans,
+    applyWindowCut,
+    heldRunFold: () => heldRunsFold(records),
+    runCoveringUnshipped,
+    markRunDirty: (runKey) => {
+      const record = records.get(runKey);
+      if (!record) return;
+      record.dirty = true;
+      memberFetch.scheduleRefresh();
+    },
+    snapshotStubs: () => {
+      const spansById = spansByMemberId(options.items());
+      const stubs: ActivityRunStub[] = [];
+      for (const record of records.values()) {
+        const span = spanOfRecord(spansById, record);
+        const folded = foldedStub(record, span?.items ?? []);
+        if (!folded) return null;
+        stubs.push(folded);
+      }
+      return stubs;
+    },
     requestFocus: (runId, request) => {
       const entry = entries.get(runId);
       if (!entry) return false;
@@ -1124,6 +1681,14 @@ export function createThreadActivityRuns(
       runIdsBySummaryMember.clear();
       memberContentRevisions.clear();
       claimed = new Set();
+      // Records describe the outgoing thread's rows and are never revived:
+      // the incoming thread's first page carries its own stubs, and a
+      // refresh in flight for a run of the old thread is dropped rather
+      // than applied to a window that no longer holds it.
+      records.clear();
+      recordBounds.clear();
+      runKeyByMemberId.clear();
+      memberFetch.reset();
       // The bulk override is scoped to the thread it was taken on (see its
       // declaration), so the incoming thread starts from the setting again.
       bulkCollapsed = null;

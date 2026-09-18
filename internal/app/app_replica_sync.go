@@ -43,6 +43,15 @@ type SyncThreadWindowRequest struct {
 	// several clients that can disagree; the server never reads the
 	// setting itself.
 	InlinePreviews bool `json:"inlinePreviews,omitempty"`
+	// RunWindowRows and MaxBytes are the rest of the page shape
+	// (PageShape, docs/architecture/timeline-window-pages.md §2.3), flat
+	// here because this request is a JSON body rather than an argument
+	// list. They ride the request for the same reason InlinePreviews
+	// does: both describe the SCREEN asking, and one backend serves
+	// several that disagree. RunWindowRows is clamped to the settings
+	// bounds, MaxBytes to itemWindowMaxBytes.
+	RunWindowRows int `json:"runWindowRows,omitempty"`
+	MaxBytes      int `json:"maxBytes,omitempty"`
 	// HaveWindow describes the ROWS the caller already holds, and is nil
 	// when it holds none. It is the answer to the case the stamps cannot
 	// serve: a turn on the open thread moves the thread's rev, so the
@@ -85,10 +94,12 @@ func (a *App) SyncThreadWindow(threadID string, req SyncThreadWindowRequest) (Sy
 	ctx, cancel := context.WithTimeout(context.Background(), syncThreadWindowTimeout)
 	defer cancel()
 
-	result, err := a.store.SyncThreadWindow(ctx, threadID, req.AnchorItemID, clampSliceItemBudget(req.ItemBudget), store.HistoryStamp{
-		Rev:   req.HaveRev,
-		Epoch: req.HaveEpoch,
-	}, req.HaveWindow)
+	shape := req.shape()
+	result, err := a.store.SyncThreadWindow(ctx, threadID, req.AnchorItemID,
+		clampSliceItemBudget(req.ItemBudget), shape.RunWindowRows, store.HistoryStamp{
+			Rev:   req.HaveRev,
+			Epoch: req.HaveEpoch,
+		}, req.HaveWindow)
 	if err != nil {
 		return SyncThreadWindowResponse{}, normalizeThreadWindowSyncError(ctx, err)
 	}
@@ -100,14 +111,30 @@ func (a *App) SyncThreadWindow(threadID string, req SyncThreadWindowRequest) (Sy
 		Generation: result.Generation,
 	}
 	if result.Page != nil {
-		// Same window as ListThreadSliceAround, so the same projection
-		// and the same byte backstop. A cold open that reached this RPC
-		// and a gap refresh that reached that one must not disagree
-		// about how a row is shaped, or one window would hold both.
-		page := projectPage(*result.Page, req.InlinePreviews, anchorIndex(result.Page.Items, req.AnchorItemID))
+		// Same window as ListThreadSliceAround, so the same shape, the
+		// same anchor resolution and the same byte backstop. A cold open
+		// that reached this RPC and a gap refresh that reached that one
+		// must not disagree about how a row is shaped or which rows a
+		// trim keeps, or one window would hold both answers.
+		anchor, err := a.pageAnchorIndex(threadID, req.AnchorItemID, result.Page.Items)
+		if err != nil {
+			return SyncThreadWindowResponse{}, normalizeThreadWindowSyncError(ctx, err)
+		}
+		page := projectPage(*result.Page, shape, anchor)
 		out.Page = &page
 	}
 	return out, nil
+}
+
+// shape is the request's flat page-shape fields as the one PageShape
+// every history read is served under, clamped exactly as the argument
+// form is.
+func (r SyncThreadWindowRequest) shape() PageShape {
+	return PageShape{
+		InlinePreviews: r.InlinePreviews,
+		RunWindowRows:  r.RunWindowRows,
+		MaxBytes:       r.MaxBytes,
+	}.normalize()
 }
 
 func normalizeThreadWindowSyncError(ctx context.Context, err error) error {

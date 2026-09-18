@@ -130,8 +130,14 @@ export function nodeSignature(
       // Identity is the first member id, NOT `runId`: run ids are minted by
       // the pane registry and re-minted on every mount (the registry clears
       // on a thread switch), so a runId-keyed prior could never replay. The
-      // member count already signs a changed membership.
-      return `A:${node.memberItemIds[0] ?? ''}:o:${node.children.length}:${node.mountedFrom}:${node.mountedRows}`;
+      // member count already signs a changed membership. Whether a
+      // boundary row exists on each edge is signed, not how many members it
+      // counts: an "N earlier" row is one row tall for any N, and the count
+      // moves on stub refreshes that change no geometry.
+      const before = node.mountedFrom > 0 || node.unshippedBefore > 0 ? 'b' : '';
+      const after = node.mountedFrom + node.mountedRows < node.children.length
+        || node.unshippedAfter > 0 ? 'a' : '';
+      return `A:${node.memberItemIds[0] ?? ''}:o:${node.children.length}:${node.mountedFrom}:${node.mountedRows}:${before}${after}`;
     default: {
       // Exhaustiveness guard: a new TimelineNode kind must extend the
       // signature, not silently sign as an empty/identical row (which

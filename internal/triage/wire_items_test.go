@@ -123,7 +123,7 @@ func TestSubagentTurnLeavesEveryPushedRowProvable(t *testing.T) {
 		Count:        len(topLevel),
 		Digest:       store.WindowDigest(held),
 	}
-	sync, err := st.SyncThreadWindow(context.Background(), "t1", "", 200, stamp, &window)
+	sync, err := st.SyncThreadWindow(context.Background(), "t1", "", 200, 200, stamp, &window)
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}

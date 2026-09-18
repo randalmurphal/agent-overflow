@@ -5,6 +5,8 @@ import { updateSetting } from '../../stores/settings.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
+import { windowDigest } from '../../stores/threadWindowDigest';
+import type { ActivityRunStub } from '../../../../bindings/agent-overflow/internal/store/models';
 import { makeSettings } from '../../../test/helpers/settings';
 import { clearThreadScrollSnapshotsForTest } from '../../utils/threadScrollSnapshots';
 import { ACTIVITY_RUN_CAP_CSS } from '../../utils/activityRunClip';
@@ -45,6 +47,50 @@ function tool(id: string, index: number, overrides: Partial<Item> = {}): Item {
 async function renderRun(items: Item[], provider: Thread['provider'] = 'claude') {
   const pane = await buildPane(makeThread({ provider }), items);
   return { ...render(MessageTimeline, { props: { pane } }), pane };
+}
+
+/**
+ * A page that shipped only `shipped` of a run whose members are
+ * `t${from}..t${to}`: the rest are on the server, described by the stub
+ * beside the rows. The server answer for a member fetch is built the same
+ * way, from the span the pane holds after the rows land.
+ */
+function runStub(from: number, to: number, shipped: [number, number]): ActivityRunStub {
+  const unshipped = (a: number, b: number) =>
+    Array.from({ length: Math.max(0, b - a + 1) }, (_, i) => ({ id: `t${a + i}`, rev: 0 }));
+  return {
+    firstItemId: `t${from}`,
+    lastItemId: `t${to}`,
+    memberCount: to - from + 1,
+    loadedFirstItemId: `t${shipped[0]}`,
+    loadedLastItemId: `t${shipped[1]}`,
+    unshippedBefore: shipped[0] - from,
+    unshippedAfter: to - shipped[1],
+    unshippedDigest: windowDigest([
+      ...unshipped(from, shipped[0] - 1),
+      ...unshipped(shipped[1] + 1, to),
+    ]),
+    unshippedGroups: [],
+    unshippedPairedLaunchIds: [],
+    shippedSupersededLaunchIds: [],
+    unshippedFailed: false,
+    runningBefore: null,
+    runningAfter: null,
+  };
+}
+
+async function renderStubbedRun(items: Item[], stub: ActivityRunStub) {
+  const pane = await buildPane(makeThread(), items, 'main', [stub]);
+  return { ...render(MessageTimeline, { props: { pane } }), pane };
+}
+
+/** A member fetch the test resolves by hand, so the pending state is observable. */
+function deferredMembers() {
+  let resolve!: (answer: { items: Item[]; stub: ActivityRunStub }) => void;
+  const answer = new Promise<{ items: Item[]; stub: ActivityRunStub }>((r) => { resolve = r; });
+  const call = vi.fn(async (..._args: unknown[]) => answer);
+  setBindingMock('ListActivityRunMembers', call);
+  return { call, resolve };
 }
 
 /**
@@ -245,6 +291,99 @@ describe('<ActivityRun>', () => {
 
       expect(fade.getAttribute('data-faded')).toBe('true');
       expect(fade.className).not.toContain('opacity-0');
+    });
+
+    it('counts unshipped earlier members in the boundary and fetches them on demand', async () => {
+      // The page shipped the run's last ten members; five more are on the
+      // server, described by the stub. The boundary counts them as if they
+      // were loaded, and its click fetches BEFORE the loaded span.
+      await updateSetting('activityRunWindowRows', 10);
+      const shipped = Array.from({ length: 10 }, (_, i) => tool(`t${i + 5}`, i + 5));
+      const { getByTestId, getAllByTestId, queryByTestId } = await renderStubbedRun(
+        shipped, runStub(0, 14, [5, 14]),
+      );
+      expect(getAllByTestId('command-output-row')).toHaveLength(10);
+      expect(getByTestId('activity-run-earlier').textContent).toContain('5 earlier');
+
+      const members = deferredMembers();
+      await fireEvent.click(getByTestId('activity-run-earlier'));
+      await tick();
+      expect(members.call).toHaveBeenCalledOnce();
+      expect(members.call.mock.calls[0][1]).toMatchObject({
+        runFirstItemId: 't0',
+        loadedFirstItemId: 't5',
+        loadedLastItemId: 't14',
+        direction: 'before',
+        limit: 25,
+      });
+      // The boundary says what it is doing while the round trip is out.
+      expect(getByTestId('activity-run-earlier').textContent).toContain('Loading earlier');
+
+      members.resolve({
+        items: Array.from({ length: 5 }, (_, i) => tool(`t${i}`, i)),
+        stub: runStub(0, 14, [0, 14]),
+      });
+      await flushJump();
+
+      // The fetched rows mounted above the window it kept, and with nothing
+      // left on either side the boundary retires.
+      expect(getAllByTestId('command-output-row')).toHaveLength(15);
+      expect(queryByTestId('activity-run-earlier')).toBeNull();
+    });
+
+    it('does not grow the window over a fetch that produced nothing', async () => {
+      await updateSetting('activityRunWindowRows', 10);
+      const shipped = Array.from({ length: 10 }, (_, i) => tool(`t${i + 5}`, i + 5));
+      const { getByTestId, getAllByTestId } = await renderStubbedRun(
+        shipped, runStub(0, 14, [5, 14]),
+      );
+      const members = deferredMembers();
+      await fireEvent.click(getByTestId('activity-run-earlier'));
+      members.resolve({ items: [], stub: runStub(0, 14, [5, 14]) });
+      await flushJump();
+
+      // The boundary reads as it did; the reader's next gesture asks again.
+      expect(getAllByTestId('command-output-row')).toHaveLength(10);
+      expect(getByTestId('activity-run-earlier').textContent).toContain('5 earlier');
+    });
+
+    it('pins the window to its head before fetching later members below it', async () => {
+      // The page shipped the run's first ten members and the tail is on the
+      // server. A tail-following window would slide down onto the fetched
+      // rows and carry the reader along, so the later edge pins the window
+      // to its head first, fetches AFTER the loaded span, then grows down.
+      await updateSetting('activityRunWindowRows', 10);
+      const shipped = Array.from({ length: 10 }, (_, i) => tool(`t${i}`, i));
+      const { getByTestId, getAllByTestId, queryByTestId } = await renderStubbedRun(
+        shipped, runStub(0, 14, [0, 9]),
+      );
+      expect(getAllByTestId('command-output-row')).toHaveLength(10);
+      expect(getByTestId('activity-run-later').textContent).toContain('5 later');
+
+      const members = deferredMembers();
+      await fireEvent.click(getByTestId('activity-run-later'));
+      await tick();
+      expect(members.call.mock.calls[0][1]).toMatchObject({
+        runFirstItemId: 't0',
+        loadedFirstItemId: 't0',
+        loadedLastItemId: 't9',
+        direction: 'after',
+        limit: 25,
+      });
+      expect(getByTestId('activity-run-later').textContent).toContain('Loading later');
+
+      members.resolve({
+        items: Array.from({ length: 5 }, (_, i) => tool(`t${i + 10}`, i + 10)),
+        stub: runStub(0, 14, [0, 14]),
+      });
+      await flushJump();
+
+      // Had the window stayed in tail mode it would have slid onto t5..t14
+      // and the grow would have left five rows behind an earlier boundary.
+      expect(getAllByTestId('command-output-row')).toHaveLength(15);
+      expect(getAllByTestId('command-output-row')[0].textContent).toContain('t0');
+      expect(queryByTestId('activity-run-earlier')).toBeNull();
+      expect(queryByTestId('activity-run-later')).toBeNull();
     });
 
     it('has no boundary when the whole run fits the window', async () => {
