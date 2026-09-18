@@ -4,10 +4,10 @@
 //   - merges opacity-80 default with caller's additional classes
 //   - swaps icon when the prop changes (via re-render)
 //
-// Since the mask-icons patch (frontend/AGENTS.md §Vendor Patches), a lucide
-// icon renders as a CSS-mask <span>, not an <svg> root: the shape is a
-// same-document sprite reference (`--mask-icon: url(#ao-lucide-N)` into the
-// patch's hidden <svg data-mask-sprite="lucide"> of <mask> elements — a
+// Since the mask-icons patch (frontend/patches, see frontend/AGENTS.md "Tests
+// and dependencies"), a lucide icon renders as a CSS-mask <span>, not an
+// <svg> root. The shape is an inline `mask-image: url(#ao-lucide-N)` into the
+// patch's hidden <svg data-mask-sprite="lucide"> of <mask> elements (a
 // data-URI image would cost an isolated SVG document per distinct URI) and
 // the box size is inline width/height. These assertions pin that patched
 // contract; if they fail against an unpatched @lucide/svelte, the patch was
@@ -26,7 +26,7 @@ describe('<Icon>', () => {
     const span = container.querySelector('span.lucide-icon');
     expect(span).not.toBeNull();
     expect(span!.classList.contains('lucide-search')).toBe(true);
-    expect(span!.getAttribute('style') ?? '').toContain('--mask-icon: url(');
+    expect(span!.getAttribute('style') ?? '').toMatch(/mask-image:\s*url\(/);
   });
 
   it('defaults to size=16', () => {
@@ -46,7 +46,7 @@ describe('<Icon>', () => {
   it('forwards a custom strokeWidth into the registered sprite mask', () => {
     const { container } = render(Icon, { props: { icon: Search, strokeWidth: 1.5 } });
     const style = container.querySelector('span.lucide-icon')!.getAttribute('style') ?? '';
-    const ref = /--mask-icon: url\(#(ao-lucide-\d+)\)/.exec(style);
+    const ref = /mask-image:\s*url\(\s*["']?#(ao-lucide-\d+)/.exec(style);
     expect(ref).not.toBeNull();
     const mask = document.getElementById(ref![1]);
     expect(mask).not.toBeNull();
@@ -58,7 +58,7 @@ describe('<Icon>', () => {
     const a = render(Icon, { props: { icon: Search } });
     const b = render(Icon, { props: { icon: Search } });
     const refOf = (c: Element) =>
-      /--mask-icon: (url\(#ao-lucide-\d+\))/.exec(
+      /mask-image:\s*url\(\s*["']?(#ao-lucide-\d+)/.exec(
         c.querySelector('span.lucide-icon')!.getAttribute('style') ?? '',
       )?.[1];
     expect(refOf(a.container)).toBeDefined();

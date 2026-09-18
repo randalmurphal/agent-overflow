@@ -53,7 +53,7 @@
 
 <span
   class="mask-icon h-3.5 w-3.5 shrink-0 {colorClass}"
-  style="--mask-icon:{maskRefFor(kind)}"
+  style="-webkit-mask-image:{maskRefFor(kind)};mask-image:{maskRefFor(kind)}"
   role="img"
   aria-label={titleText}
   data-icon={kind}

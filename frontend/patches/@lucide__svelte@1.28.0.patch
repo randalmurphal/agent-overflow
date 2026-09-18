@@ -1,8 +1,8 @@
 diff --git a/dist/Icon.svelte b/dist/Icon.svelte
-index 1f65faa12e726bc6a6e8f834986131a02177b7d5..b10315854eeab66c48405408e8b6e6056d063c36 100644
+index 1f65faa12e726bc6a6e8f834986131a02177b7d5..277d231936dcc900a8a4b8db2aee3eaabf218443 100644
 --- a/dist/Icon.svelte
 +++ b/dist/Icon.svelte
-@@ -1,26 +1,99 @@
+@@ -1,26 +1,105 @@
 -<script lang="ts">import defaultAttributes from './defaultAttributes.js';
 +<script lang="ts" module>
 +// AGENT OVERFLOW PATCH (mask-icons): render every lucide icon as a CSS-mask
@@ -18,10 +18,16 @@ index 1f65faa12e726bc6a6e8f834986131a02177b7d5..b10315854eeab66c48405408e8b6e605
 +// mask-sprite span has neither cost and preserves the same CSS geometry at
 +// these sizes. Soak rig layout and compositor probes cover the conversion.
 +//
-+// The span carries no inline background/mask-mode styling: the app stylesheet
-+// owns those via `.lucide-icon` (background-color: currentColor; mask:
-+// var(--mask-icon) ...), including the `forced-colors: active` fallback to
-+// CanvasText — without which masks render invisible in Windows High Contrast.
++// The span carries the shape as an inline `mask-image` (with the -webkit- twin
++// the app's other mask sites hand-write for WebKit builds), parsed once when the
++// attribute is set. An inline custom property instead (`--mask-icon`, what
++// shipped first) cost per-element inherited-variable trie nodes plus a
++// per-element re-parse of the consuming `mask: var(...)` declaration on every
++// style recalc (measured 2026-09-18: ~200KB of Oilpan garbage per timeline
++// mount). The app stylesheet owns the rest via `.lucide-icon` (display,
++// background-color: currentColor, mask-size/position/repeat), including the
++// `forced-colors: active` fallback to CanvasText, without which masks render
++// invisible in Windows High Contrast.
 +//
 +// The mask itself is a same-document sprite reference (`url(#ao-lucide-N)`
 +// into one hidden <svg> of <mask> elements), NOT a data-URI image: Blink
@@ -106,7 +112,7 @@ index 1f65faa12e726bc6a6e8f834986131a02177b7d5..b10315854eeab66c48405408e8b6e605
 -  height={size}
 -  stroke={color}
 -  stroke-width={calculatedStrokeWidth}
-+  style="width:{size}px;height:{size}px;--mask-icon:{mask};{props.style ?? ''}"
++  style="width:{size}px;height:{size}px;-webkit-mask-image:{mask};mask-image:{mask};{props.style ?? ''}"
    class={['lucide-icon lucide', globalProps.class, name && `lucide-${name}`, props.class]}
 ->
 -  {#each iconNode as [tag, attrs]}

@@ -42,5 +42,5 @@
 <span
   aria-hidden="true"
   class="mask-icon lucide-openai shrink-0 {className}"
-  style="width:{size}px;height:{size}px;--mask-icon:{maskRef()}"
+  style="width:{size}px;height:{size}px;-webkit-mask-image:{maskRef()};mask-image:{maskRef()}"
 ></span>

@@ -144,13 +144,13 @@ function wrapIconRef(): string {
 
 function copyIconHtml(): string {
   return '<span aria-hidden="true" data-static-code-copy-icon' +
-    attribute('style', `width:13px;height:13px;--mask-icon:${copyIconRef()}`) +
+    attribute('style', `width:13px;height:13px;-webkit-mask-image:${copyIconRef()};mask-image:${copyIconRef()}`) +
     ' class="lucide-icon lucide lucide-copy inline-block shrink-0 opacity-80"></span>';
 }
 
 function wrapIconHtml(): string {
   return '<span aria-hidden="true"' +
-    attribute('style', `width:13px;height:13px;--mask-icon:${wrapIconRef()}`) +
+    attribute('style', `width:13px;height:13px;-webkit-mask-image:${wrapIconRef()};mask-image:${wrapIconRef()}`) +
     ' class="lucide-icon lucide lucide-text-wrap inline-block shrink-0 opacity-80"></span>';
 }
 
@@ -272,7 +272,9 @@ function setCopiedState(button: HTMLButtonElement, copied: boolean): void {
   const label = copied ? 'Copied' : 'Copy code';
   button.setAttribute('aria-label', label);
   button.title = label;
-  icon.style.setProperty('--mask-icon', copied ? checkIconRef() : copyIconRef());
+  const ref = copied ? checkIconRef() : copyIconRef();
+  icon.style.setProperty('-webkit-mask-image', ref);
+  icon.style.setProperty('mask-image', ref);
   icon.classList.toggle('lucide-copy', !copied);
   icon.classList.toggle('lucide-check', copied);
 }

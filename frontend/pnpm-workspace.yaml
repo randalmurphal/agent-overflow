@@ -19,3 +19,4 @@ overrides:
 patchedDependencies:
   '@lucide/svelte@1.28.0': patches/@lucide__svelte@1.28.0.patch
   svelte@5.57.0: patches/svelte@5.57.0.patch
+  tailwindcss@4.3.3: patches/tailwindcss@4.3.3.patch

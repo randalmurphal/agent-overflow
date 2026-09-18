@@ -11,11 +11,14 @@ overrides:
 
 patchedDependencies:
   '@lucide/svelte@1.28.0':
-    hash: 4d132e4e3de3462a6741fa152891c8a7661e729b2f4b85fdb34195480491c552
+    hash: c8fd03d5c2f518e82a86b3f90d235bd49380138e87bc2e60b3a7fa2600cdbd61
     path: patches/@lucide__svelte@1.28.0.patch
   svelte@5.57.0:
     hash: 6476be36665934d002361eeaca503cd0d94b60678de1e96b49c39234e68dbb92
     path: patches/svelte@5.57.0.patch
+  tailwindcss@4.3.3:
+    hash: 1c7977efbc6e91a0bc29a8d1aa0e9cc23f085596f5533f3af1a2768f6d8ef1ff
+    path: patches/tailwindcss@4.3.3.patch
 
 importers:
 
@@ -41,7 +44,7 @@ importers:
         version: 5.3.0
       '@lucide/svelte':
         specifier: 1.28.0
-        version: 1.28.0(patch_hash=4d132e4e3de3462a6741fa152891c8a7661e729b2f4b85fdb34195480491c552)(svelte@5.57.0(patch_hash=6476be36665934d002361eeaca503cd0d94b60678de1e96b49c39234e68dbb92))
+        version: 1.28.0(patch_hash=c8fd03d5c2f518e82a86b3f90d235bd49380138e87bc2e60b3a7fa2600cdbd61)(svelte@5.57.0(patch_hash=6476be36665934d002361eeaca503cd0d94b60678de1e96b49c39234e68dbb92))
       '@wailsio/runtime':
         specifier: 3.0.0-beta.1
         version: 3.0.0-beta.1
@@ -79,6 +82,9 @@ importers:
       '@sveltejs/vite-plugin-svelte':
         specifier: 7.2.0
         version: 7.2.0(svelte@5.57.0(patch_hash=6476be36665934d002361eeaca503cd0d94b60678de1e96b49c39234e68dbb92))(vite@8.2.2(@types/node@25.6.0)(jiti@2.7.0))
+      '@tailwindcss/node':
+        specifier: 4.3.3
+        version: 4.3.3
       '@tailwindcss/vite':
         specifier: 4.3.3
         version: 4.3.3(vite@8.2.2(@types/node@25.6.0)(jiti@2.7.0))
@@ -120,7 +126,7 @@ importers:
         version: 4.7.4(picomatch@4.0.5)(svelte@5.57.0(patch_hash=6476be36665934d002361eeaca503cd0d94b60678de1e96b49c39234e68dbb92))(typescript@6.0.2)
       tailwindcss:
         specifier: 4.3.3
-        version: 4.3.3
+        version: 4.3.3(patch_hash=1c7977efbc6e91a0bc29a8d1aa0e9cc23f085596f5533f3af1a2768f6d8ef1ff)
       typescript:
         specifier: 6.0.2
         version: 6.0.2
@@ -1606,7 +1612,7 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  '@lucide/svelte@1.28.0(patch_hash=4d132e4e3de3462a6741fa152891c8a7661e729b2f4b85fdb34195480491c552)(svelte@5.57.0(patch_hash=6476be36665934d002361eeaca503cd0d94b60678de1e96b49c39234e68dbb92))':
+  '@lucide/svelte@1.28.0(patch_hash=c8fd03d5c2f518e82a86b3f90d235bd49380138e87bc2e60b3a7fa2600cdbd61)(svelte@5.57.0(patch_hash=6476be36665934d002361eeaca503cd0d94b60678de1e96b49c39234e68dbb92))':
     dependencies:
       svelte: 5.57.0(patch_hash=6476be36665934d002361eeaca503cd0d94b60678de1e96b49c39234e68dbb92)
 
@@ -1690,7 +1696,7 @@ snapshots:
       lightningcss: 1.32.0
       magic-string: 0.30.21
       source-map-js: 1.2.1
-      tailwindcss: 4.3.3
+      tailwindcss: 4.3.3(patch_hash=1c7977efbc6e91a0bc29a8d1aa0e9cc23f085596f5533f3af1a2768f6d8ef1ff)
 
   '@tailwindcss/oxide-android-arm64@4.3.3':
     optional: true
@@ -1747,7 +1753,7 @@ snapshots:
     dependencies:
       '@tailwindcss/node': 4.3.3
       '@tailwindcss/oxide': 4.3.3
-      tailwindcss: 4.3.3
+      tailwindcss: 4.3.3(patch_hash=1c7977efbc6e91a0bc29a8d1aa0e9cc23f085596f5533f3af1a2768f6d8ef1ff)
       vite: 8.2.2(@types/node@25.6.0)(jiti@2.7.0)
 
   '@testing-library/dom@10.4.1':
@@ -2681,7 +2687,7 @@ snapshots:
     transitivePeerDependencies:
       - '@typescript-eslint/types'
 
-  tailwindcss@4.3.3: {}
+  tailwindcss@4.3.3(patch_hash=1c7977efbc6e91a0bc29a8d1aa0e9cc23f085596f5533f3af1a2768f6d8ef1ff): {}
 
   tapable@2.3.3: {}
 

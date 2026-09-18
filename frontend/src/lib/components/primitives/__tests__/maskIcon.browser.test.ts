@@ -1,8 +1,8 @@
 import { describe, it, expect, afterEach } from 'vitest';
 // Import the REAL production stylesheet: the mask-icon contract is split
-// between the components (shape + box size, via --mask-icon and inline px)
+// between the components (shape + box size, via inline mask-image and px)
 // and app.css (`.lucide-icon`/`.mask-icon` — display, background-color:
-// currentColor, the mask shorthand, and the `forced-colors: active` →
+// currentColor, mask-size/position/repeat, and the `forced-colors: active` →
 // CanvasText fallback). These assertions are cascade-coupled on purpose:
 // delete the app.css rule and every icon in the app renders as an empty box,
 // which happy-dom cannot see.
