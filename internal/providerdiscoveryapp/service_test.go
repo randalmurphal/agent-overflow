@@ -2,12 +2,14 @@ package providerdiscoveryapp
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/claudecatalog"
+	"agent-overflow/internal/claudemodels"
 	"agent-overflow/internal/codexmodels"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
@@ -97,9 +99,9 @@ func TestClaudeProbeCommitsWireCatalogInAfterAdopt(t *testing.T) {
 			if err != nil {
 				return provider.AccountInfo{}, err
 			}
-			enrichedBeforeAdopt = hasModel(claudecatalog.Models(key, string(provider.Claude)), "claude-newthing-1")
+			enrichedBeforeAdopt = hasModel(catalogModels(key), "claude-newthing-1")
 			request.AfterAdopt(provideraccounts.Account{ID: "account"})
-			enrichedAfterAdopt = hasModel(claudecatalog.Models(key, string(provider.Claude)), "claude-newthing-1")
+			enrichedAfterAdopt = hasModel(catalogModels(key), "claude-newthing-1")
 			return info, nil
 		},
 		ClaudeConfig: func(string) claude.ProbeConfig { return claude.ProbeConfig{} },
@@ -118,6 +120,11 @@ func TestClaudeProbeCommitsWireCatalogInAfterAdopt(t *testing.T) {
 	if !enrichedAfterAdopt {
 		t.Error("wire catalog was not committed by the time AfterAdopt returned")
 	}
+}
+
+func catalogModels(key provider.ProbeCacheKey) []provider.ModelInfo {
+	models, _ := claudecatalog.Models(key, string(provider.Claude))
+	return models
 }
 
 func hasModel(models []provider.ModelInfo, slug string) bool {
@@ -244,5 +251,217 @@ func TestDefaultCachesConcurrentAccessReturnsOneSet(t *testing.T) {
 		if result != first {
 			t.Fatal("DefaultCaches returned more than one cache set")
 		}
+	}
+}
+
+// TestModelsForProviderStampsProvenance: a cold catalog and a probed one look
+// identical on the wire without this, so a client cannot tell "nobody has
+// asked the binary yet" from "the binary answered".
+func TestModelsForProviderStampsProvenance(t *testing.T) {
+	claudecatalog.Reset()
+	t.Cleanup(claudecatalog.Reset)
+	key := testProbeKey("", "/mock/claude", "account")
+	service := New(Deps{
+		ProviderBinary: func(string) string { return "/mock/claude" },
+		Selection:      func(string) AccountSelection { return AccountSelection{AccountID: "account"} },
+		ProbeKey:       testProbeKey,
+	}, testCaches())
+
+	before, err := service.ModelsForProvider(context.Background(), string(provider.Claude))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Provenance != provider.CatalogShipped {
+		t.Errorf("provenance before any probe = %q, want shipped", before.Provenance)
+	}
+	if len(before.Models) == 0 {
+		t.Error("the shipped answer must still carry the shipped models")
+	}
+
+	var capture claudecatalog.ModelCapture
+	capture.Capture([]claude.WireModel{{Value: "claude-newthing-1"}}, nil)
+	capture.Store(key)
+
+	after, err := service.ModelsForProvider(context.Background(), string(provider.Claude))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Provenance != provider.CatalogProbed {
+		t.Errorf("provenance after a probe = %q, want probed", after.Provenance)
+	}
+	if !hasModel(after.Models, "claude-newthing-1") {
+		t.Errorf("models = %v, want the probe's wire-only model", after.Models)
+	}
+
+	// claude-tui shares Claude's binary and login, so it shares the answer
+	// and its provenance.
+	static, err := service.ModelsForProvider(context.Background(), string(provider.ClaudeTUI))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if static.Provenance != provider.CatalogProbed {
+		t.Errorf("claude-tui provenance = %q, want probed", static.Provenance)
+	}
+	// A provider with neither a live nor a probe-enriched catalog is the
+	// shipped list and says so.
+	unknown, err := service.ModelsForProvider(context.Background(), "unknown")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unknown.Provenance != provider.CatalogShipped || unknown.Models != nil {
+		t.Errorf("unknown provider = %+v, want a shipped, empty answer", unknown)
+	}
+}
+
+// Codex's list is the app-server's own answer, so it is live — and an error
+// stays an error rather than degrading into a shipped-looking catalog.
+func TestModelsForProviderReportsCodexLive(t *testing.T) {
+	caches := testCaches()
+	caches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, string) ([]provider.ModelInfo, error) {
+		return []provider.ModelInfo{{Slug: "gpt-5.5", Name: "GPT-5.5", Provider: "codex"}}, nil
+	}, time.Now)
+	service := New(Deps{
+		ProviderBinary: func(string) string { return "/mock/codex" },
+	}, caches)
+
+	catalog, err := service.ModelsForProvider(context.Background(), string(provider.Codex))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if catalog.Provenance != provider.CatalogLive {
+		t.Errorf("codex provenance = %q, want live", catalog.Provenance)
+	}
+	if !hasModel(catalog.Models, "gpt-5.5") {
+		t.Errorf("models = %v, want the live answer", catalog.Models)
+	}
+
+	// A failed `model/list` is a failure, not a shipped-looking catalog: the
+	// picker must show the error rather than a list nobody vouched for.
+	failing := testCaches()
+	failing.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, string) ([]provider.ModelInfo, error) {
+		return nil, errors.New("app-server refused")
+	}, time.Now)
+	broken := New(Deps{ProviderBinary: func(string) string { return "/mock/codex" }}, failing)
+	answer, err := broken.ModelsForProvider(context.Background(), string(provider.Codex))
+	if err == nil {
+		t.Fatalf("ModelsForProvider = %+v, want the lister's error", answer)
+	}
+	if answer.Provenance != "" || answer.Models != nil {
+		t.Errorf("failed answer = %+v, want the zero catalog", answer)
+	}
+}
+
+// The probe is what fills the catalog, so it is also what has something worth
+// persisting. AfterAdopt hands the committed entry to the persistence dep,
+// including the models earlier probes of this binary learned.
+func TestClaudeProbePersistsTheCommittedCatalog(t *testing.T) {
+	claudecatalog.Reset()
+	t.Cleanup(claudecatalog.Reset)
+	key := testProbeKey("", "/mock/claude", "account")
+	// A model an earlier probe of this binary taught the catalog, which this
+	// probe's wire omits.
+	var earlier claudecatalog.ModelCapture
+	earlier.Capture([]claude.WireModel{{Value: "claude-oldthing-1"}}, nil)
+	earlier.Store(key)
+
+	var gotAccountID string
+	var got claudemodels.Snapshot
+	var calls int
+	service := New(Deps{
+		ProviderBinary:  func(string) string { return "/mock/claude" },
+		Selection:       func(string) AccountSelection { return AccountSelection{AccountID: "account"} },
+		ProbeKey:        testProbeKey,
+		RunAccountProbe: cachedProbeRunner,
+		ClaudeConfig:    func(string) claude.ProbeConfig { return claude.ProbeConfig{} },
+		ProbeClaude: func(_ context.Context, cfg claude.ProbeConfig) (provider.AccountInfo, error) {
+			cfg.OnModels([]claude.WireModel{{Value: "claude-newthing-1"}}, nil)
+			return provider.AccountInfo{SubscriptionType: "max"}, nil
+		},
+		RememberClaudeCatalog: func(accountID string, snapshot claudemodels.Snapshot) {
+			calls++
+			gotAccountID = accountID
+			got = snapshot
+		},
+	}, testCaches())
+
+	if _, err := service.ProbeClaudeAccount(); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("RememberClaudeCatalog called %d times, want 1", calls)
+	}
+	// The ADOPTED account, not the selection the key was built from: a first
+	// probe runs with no selection and the account it adopts is the one the
+	// next boot probes as.
+	if gotAccountID != "adopted-account" {
+		t.Errorf("account id = %q, want the adopted account", gotAccountID)
+	}
+	if len(got.Wire) != 1 || got.Wire[0].Value != "claude-newthing-1" {
+		t.Errorf("persisted wire = %+v, want this probe's rows", got.Wire)
+	}
+	if !hasModel(got.Learned, "claude-newthing-1") || !hasModel(got.Learned, "claude-oldthing-1") {
+		t.Errorf("persisted learned = %v, want both the new and the retained model", got.Learned)
+	}
+}
+
+// A nil dep is a supported wiring (focused tests, and any boot where account
+// metadata is unavailable), and must not turn a working probe into a panic.
+func TestClaudeProbeWithoutPersistenceDepStillProbes(t *testing.T) {
+	claudecatalog.Reset()
+	t.Cleanup(claudecatalog.Reset)
+	service := New(Deps{
+		ProviderBinary:  func(string) string { return "/mock/claude" },
+		Selection:       func(string) AccountSelection { return AccountSelection{AccountID: "account"} },
+		ProbeKey:        testProbeKey,
+		RunAccountProbe: cachedProbeRunner,
+		ClaudeConfig:    func(string) claude.ProbeConfig { return claude.ProbeConfig{} },
+		ProbeClaude: func(_ context.Context, cfg claude.ProbeConfig) (provider.AccountInfo, error) {
+			cfg.OnModels([]claude.WireModel{{Value: "claude-newthing-1"}}, nil)
+			return provider.AccountInfo{SubscriptionType: "max"}, nil
+		},
+	}, testCaches())
+
+	if _, err := service.ProbeClaudeAccount(); err != nil {
+		t.Fatal(err)
+	}
+	if !hasModel(catalogModels(testProbeKey("", "/mock/claude", "account")), "claude-newthing-1") {
+		t.Error("the probe must still commit its catalog without a persistence dep")
+	}
+}
+
+// A probe that adopts nothing (no credential to attribute the answer to) still
+// belongs to the selected account: that is the identity the key was built from
+// and the one the next boot will probe as.
+func TestClaudeProbePersistsUnderTheSelectionWhenAdoptionIsEmpty(t *testing.T) {
+	claudecatalog.Reset()
+	t.Cleanup(claudecatalog.Reset)
+	var gotAccountID string
+	service := New(Deps{
+		ProviderBinary: func(string) string { return "/mock/claude" },
+		Selection:      func(string) AccountSelection { return AccountSelection{AccountID: "selected"} },
+		ProbeKey:       testProbeKey,
+		RunAccountProbe: func(request AccountProbeRequest) (provider.AccountInfo, error) {
+			info, err := request.Probe(context.Background())
+			if err != nil {
+				return provider.AccountInfo{}, err
+			}
+			request.AfterAdopt(provideraccounts.Account{})
+			return info, nil
+		},
+		ClaudeConfig: func(string) claude.ProbeConfig { return claude.ProbeConfig{} },
+		ProbeClaude: func(_ context.Context, cfg claude.ProbeConfig) (provider.AccountInfo, error) {
+			cfg.OnModels([]claude.WireModel{{Value: "claude-newthing-1"}}, nil)
+			return provider.AccountInfo{SubscriptionType: "max"}, nil
+		},
+		RememberClaudeCatalog: func(accountID string, _ claudemodels.Snapshot) {
+			gotAccountID = accountID
+		},
+	}, testCaches())
+
+	if _, err := service.ProbeClaudeAccount(); err != nil {
+		t.Fatal(err)
+	}
+	if gotAccountID != "selected" {
+		t.Errorf("account id = %q, want the selected account", gotAccountID)
 	}
 }

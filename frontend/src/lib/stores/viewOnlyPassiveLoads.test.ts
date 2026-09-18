@@ -13,6 +13,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { setBindingMock } from '../../test/mocks/bindings-app';
+import { modelCatalog } from '../../test/helpers/modelCatalog';
 import { pairViewOnly, resetToLocalPage } from '../../test/helpers/scopes';
 import {
   hydrateBrowserCompanionState,
@@ -35,7 +36,7 @@ function stubBindings() {
     gitUnsubscribe: setBindingMock('GitStatusUnsubscribe', async () => undefined),
     gitRefresh: setBindingMock('GetGitStatus', async () => null),
     mcp: setBindingMock('ListThreadMcpServers', async () => []),
-    models: setBindingMock('GetModelsForProvider', async () => []),
+    models: setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped')),
     worktreeSetup: setBindingMock('GetThreadWorktreeSetup', async () => null),
     browserCompanion: setBindingMock('BrowserCompanionThreadState', async () => ({
       threadId: THREAD,

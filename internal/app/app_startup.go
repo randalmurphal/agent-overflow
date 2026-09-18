@@ -393,6 +393,14 @@ func (a *App) initStores() (string, *store.Store, error) {
 			errorsx.WrapLifecycle("close store after provider account attachment failure", closeErr),
 		)
 	}
+	// Restore each account's last probe-reported model catalog the moment its
+	// input exists, which is here: the account store is what holds the
+	// records. That is before the boot probe, before the window this process
+	// opens, and before MarkReady releases the headless and serve bootstraps,
+	// so the first GetModelsForProvider already answers with the enriched
+	// list. Never fatal — an unseeded catalog is the old behavior, a shipped
+	// list until the probe lands.
+	a.seedClaudeCatalogFromAccounts()
 	// The prune deletes credential slots, and a metadata store paired with
 	// the WRONG provider home deletes slots that were never its to manage
 	// (incident 2026-07-29: a scratch data dir against the real ~/.claude

@@ -94,6 +94,24 @@ func (m WireModel) DeclaresExtendedContext() bool {
 // inner payload. A missing array decodes to nil, which is a real answer (an
 // older CLI that does not report models) and not an error — callers must not
 // treat nil as "keep whatever you had".
+// CloneWireModels deep-copies wire rows so a holder can hand them out
+// without sharing the effort-level slice or the auto-mode pointer.
+func CloneWireModels(wire []WireModel) []WireModel {
+	if wire == nil {
+		return nil
+	}
+	cloned := make([]WireModel, len(wire))
+	for i, row := range wire {
+		cloned[i] = row
+		cloned[i].SupportedEffortLevels = append([]string(nil), row.SupportedEffortLevels...)
+		if row.SupportsAutoMode != nil {
+			supports := *row.SupportsAutoMode
+			cloned[i].SupportsAutoMode = &supports
+		}
+	}
+	return cloned
+}
+
 func decodeWireModels(payload json.RawMessage) ([]WireModel, error) {
 	if len(payload) == 0 {
 		return nil, nil

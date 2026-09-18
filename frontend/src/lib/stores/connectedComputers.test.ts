@@ -4,6 +4,7 @@ import { grantBackendScopes } from '../../test/helpers/scopes';
 import { account, deferred } from '../../test/helpers/providerAccounts';
 import { makeSettings } from '../../test/helpers/settings';
 import { setBindingMock } from '../../test/mocks/bindings-app';
+import { modelCatalog } from '../../test/helpers/modelCatalog';
 import { takePinnedBackend } from '../transport/backends';
 import { setSelectedBackend } from './selectedBackend.svelte';
 import { getSettings, loadSettings, resetSettingsForTest, resyncSettings, updateSetting } from './settings.svelte';
@@ -122,7 +123,7 @@ describe('computer ownership', () => {
   });
 
   it('keeps model catalogs and account-change generations specific to their computer', async () => {
-    setBindingMock('GetModelsForProvider', async () => [{ slug: takePinnedBackend() === GPU ? 'gpu-model' : 'mac-model' }] as ModelInfo[]);
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([{ slug: takePinnedBackend() === GPU ? 'gpu-model' : 'mac-model' }] as ModelInfo[]));
     await Promise.all([refreshProviderModels('codex', MAC), refreshProviderModels('codex', GPU)]);
     applyProviderAccount({ provider: 'codex', accountId: 'remote', generation: 100, account: { email: 'gpu@example.test' } }, GPU);
     applyProviderAccount({ provider: 'codex', accountId: 'local', generation: 1, account: { email: 'mac@example.test' } }, MAC);

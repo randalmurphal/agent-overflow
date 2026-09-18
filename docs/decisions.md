@@ -116,9 +116,13 @@ qualifies costs nothing.
 ## Providers and accounts
 
 - Model, effort and fast-mode selections trust previously observed capabilities
-  and remembered choices. Catalog expiry never blocks a selection. Refresh
-  contradictions are advisory toasts; keep the selection and allow sending.
-  Provider rejections remain timeline errors without a duplicate toast.
+  and remembered choices. Catalog expiry never blocks a selection. A refresh
+  warns only when a probed or live catalog withdraws a part of the selection
+  the previous probed or live catalog listed; the shipped list is a placeholder
+  and never warns. Warnings are advisory toasts; keep the selection and allow
+  sending. Provider rejections remain timeline errors without a duplicate toast.
+  The Claude catalog learned by an account probe is persisted per account and
+  seeded at boot while the binary is unchanged (`internal/claudemodels/AGENTS.md`).
 
 - AO never calls Codex `thread/queue/add`; a mid-turn send is `turn/steer`
   (`internal/provider/codex/AGENTS.md`).

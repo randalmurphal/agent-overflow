@@ -642,6 +642,17 @@ export interface FastModeTier {
   description?: string;
 }
 
+// Where a catalog answer came from, mirroring provider.CatalogProvenance.
+// "shipped" is the static list the app carries and says nothing about the
+// account; "probed" is Claude's list enriched by an account probe of the
+// configured binary; "live" is Codex's app-server answer.
+export type CatalogProvenance = 'shipped' | 'probed' | 'live';
+
+export interface ModelCatalog {
+  models: ModelInfo[];
+  provenance: CatalogProvenance;
+}
+
 export interface ModelInfo {
   slug: string;
   name: string;

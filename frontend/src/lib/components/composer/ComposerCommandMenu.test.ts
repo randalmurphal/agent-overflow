@@ -15,6 +15,7 @@ import {
 } from '../../stores/composerDraft.svelte';
 import { buildPane, makeThread } from '../../../test/helpers/chat';
 import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { modelCatalog } from '../../../test/helpers/modelCatalog';
 import { applyProviderCommands } from '../../stores/providerCommands.svelte';
 import { resetForTest as resetClaudeSkills } from '../../stores/claudeSkills.svelte';
 import { resetForTest as resetCodexSkills } from '../../stores/codexSkills.svelte';
@@ -65,11 +66,13 @@ function installBaseMocks() {
   // against. Two Opus rows on purpose: the ambiguity case is real.
   setBindingMock('GetModelsForProvider', async (provider: string) =>
     provider === 'claude'
-      ? [
-          { slug: 'claude-opus-5', name: 'Opus 5', capabilities: [] },
-          { slug: 'claude-sonnet-4-6', name: 'Sonnet 4.6', capabilities: [] },
-        ]
-      : [{ slug: 'gpt-5.6-codex', name: 'GPT-5.6 Codex', capabilities: [] }],
+      ? modelCatalog([
+          { slug: 'claude-opus-5', name: 'Opus 5', provider: 'claude', capabilities: [] },
+          { slug: 'claude-sonnet-4-6', name: 'Sonnet 4.6', provider: 'claude', capabilities: [] },
+        ])
+      : modelCatalog([
+          { slug: 'gpt-5.6-codex', name: 'GPT-5.6 Codex', provider: 'codex', capabilities: [] },
+        ]),
   );
 }
 

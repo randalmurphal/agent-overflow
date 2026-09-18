@@ -6,6 +6,7 @@ import { resetKeybindingsStore } from '../../stores/keybindings.svelte';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import type { Settings } from '../../types/settings';
 import { makeSettings } from '../../../test/helpers/settings';
+import { modelCatalog } from '../../../test/helpers/modelCatalog';
 import {
   SETTINGS_SECTION_GROUPS,
   SETTINGS_SECTION_IDS,
@@ -19,7 +20,7 @@ async function seed(): Promise<void> {
   setBindingMock('UpdateSettings', async () => BASE_SETTINGS);
   setBindingMock('Version', async () => '0.0.1');
   setBindingMock('GetProviderStatuses', async () => []);
-  setBindingMock('GetModelsForProvider', async () => []);
+  setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
   setBindingMock('ListProviderAccounts', async () => []);
   setBindingMock('ListDiscussions', async () => []);
   setBindingMock('GetKeybindings', async () => ({ bindings: [] }));

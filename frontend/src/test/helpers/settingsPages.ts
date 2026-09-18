@@ -1,3 +1,4 @@
+import { modelCatalog } from './modelCatalog';
 import { loadSettingsFixture as loadSettings } from './settingsFixture';
 import { resetKeybindingsStore } from '../../lib/stores/keybindings.svelte';
 import { setBindingMock } from '../mocks/bindings-app';
@@ -9,7 +10,7 @@ export async function seedSettingsPages(): Promise<void> {
   setBindingMock('UpdateSettings', async () => settings);
   setBindingMock('Version', async () => '0.0.1');
   setBindingMock('GetProviderStatuses', async () => []);
-  setBindingMock('GetModelsForProvider', async () => []);
+  setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
   setBindingMock('ListProviderAccounts', async () => []);
   setBindingMock('ListDiscussions', async () => []);
   setBindingMock('GetKeybindings', async () => ({ bindings: [] }));

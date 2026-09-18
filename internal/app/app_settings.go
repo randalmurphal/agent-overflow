@@ -213,17 +213,23 @@ func patchTouchesLiveClaudeAxis(patch map[string]any) bool {
 	return false
 }
 
-// GetModelsForProvider returns the known model registry for the given provider.
+// GetModelsForProvider returns the known model registry for the given
+// provider, with the provenance of the answer.
 //
 // Each provider's catalog source is declared by its Capabilities, not by a
 // name check here: Codex's list comes live off `model/list` (one CLI spawn,
-// TTL-cached), Claude's is the shipped catalog enriched by whatever the last
-// zero-token account probe reported (never a spawn of its own), and anything
-// else is the shipped list verbatim.
+// TTL-cached) and is `live`, Claude's is the shipped catalog enriched by
+// whatever the last zero-token account probe reported (never a spawn of its
+// own) and is `probed` once such an answer exists for the current identity,
+// and anything else is the shipped list verbatim.
+//
+// A `shipped` Claude answer means no probe of this binary has reported yet,
+// not that the binary stopped offering a model. Absence in a shipped catalog
+// is never evidence a model was withdrawn.
 //
 //ao:scope threads:operate
 //ao:route selected
-func (a *App) GetModelsForProvider(providerName string) ([]provider.ModelInfo, error) {
+func (a *App) GetModelsForProvider(providerName string) (provider.ModelCatalog, error) {
 	return a.providerDiscoveryService().ModelsForProvider(context.Background(), providerName)
 }
 

@@ -6,6 +6,7 @@
 // worker. Every test should call `resetAppState()` in beforeEach to return
 // to a known-good baseline.
 
+import { modelCatalog } from '../helpers/modelCatalog';
 import { tick } from 'svelte';
 import { clearCommandRegistry } from '../../lib/stores/commandRegistry.svelte';
 import { closePalette } from '../../lib/stores/palette.svelte';
@@ -108,7 +109,7 @@ export function installAppDefaults(): void {
   setBindingMock('ListThreadGroups', async () => []);
   setBindingMock('GetKeybindings', async () => ({ bindings: [] }));
   setBindingMock('GetProviderStatuses', async () => []);
-  setBindingMock('GetModelsForProvider', async () => []);
+  setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
   setBindingMock('GetRateLimitsSnapshots', async () => []);
   setBindingMock('ListProviderAccounts', async () => []);
   // Sidebar fetches projects on mount. Default to an empty list — tests

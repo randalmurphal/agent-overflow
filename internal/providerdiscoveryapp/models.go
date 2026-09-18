@@ -9,15 +9,23 @@ import (
 )
 
 // ModelsForProvider returns the catalog selected by the provider's declared
-// catalog capability.
-func (s *Service) ModelsForProvider(ctx context.Context, providerName string) ([]provider.ModelInfo, error) {
+// catalog capability, stamped with its provenance so a client can tell an
+// answer from the installed binary apart from the shipped fallback.
+func (s *Service) ModelsForProvider(ctx context.Context, providerName string) (provider.ModelCatalog, error) {
 	switch provider.CapabilitiesForProvider(providerName).ModelCatalog {
 	case provider.CodexLiveModelCatalog:
-		return s.CodexModelsForBinary(ctx, s.deps.ProviderBinary(providerName))
+		models, err := s.CodexModelsForBinary(ctx, s.deps.ProviderBinary(providerName))
+		if err != nil {
+			return provider.ModelCatalog{}, err
+		}
+		return provider.ModelCatalog{Models: models, Provenance: provider.CatalogLive}, nil
 	case provider.ClaudeProbeEnrichedCatalog:
-		return s.ClaudeModels(providerName), nil
+		return s.ClaudeCatalog(providerName), nil
 	default:
-		return provider.ModelsForProvider(providerName), nil
+		return provider.ModelCatalog{
+			Models:     provider.ModelsForProvider(providerName),
+			Provenance: provider.CatalogShipped,
+		}, nil
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
 )
 
 func TestStorePersistsMetadataAndAccountScopedLimits(t *testing.T) {
@@ -515,5 +516,198 @@ func TestRefreshTokenExpiryPersists(t *testing.T) {
 	saved, ok := reloaded.Get("claude", "one", time.Now())
 	if !ok || saved.RefreshTokenExpiresAt != deadline {
 		t.Fatalf("reloaded account = %+v, want the deadline to have persisted", saved)
+	}
+}
+
+func testClaudeCatalogRecord() ClaudeCatalogRecord {
+	enabled := true
+	return ClaudeCatalogRecord{
+		Binary:       "claude",
+		ResolvedPath: "/opt/node/bin/claude",
+		Size:         4096,
+		ModUnixNano:  1700000000000000000,
+		ProbedAt:     1700000000000,
+		Wire: []claude.WireModel{{
+			Value:                 "claude-newthing-1",
+			DisplayName:           "Newthing",
+			SupportedEffortLevels: []string{"low", "high"},
+			SupportsAutoMode:      &enabled,
+		}},
+		Learned: []provider.ModelInfo{{
+			Slug:         "claude-newthing-1",
+			Name:         "Claude Newthing 1",
+			Provider:     "claude",
+			Capabilities: []string{provider.ModelCapabilityFastMode},
+		}},
+	}
+}
+
+// The persisted model answer is the whole point of the record: a restart must
+// find it, so it survives a NewStore reload — and it stays beside the account
+// rows rather than on them, so no account card carries a model catalog.
+func TestStorePersistsClaudeCatalogAcrossReload(t *testing.T) {
+	configDir := t.TempDir()
+	store, err := NewStore(configDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := store.UpsertAndActivate(Account{ID: "acct", Provider: "claude", Email: "p@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RememberClaudeCatalog(account.ID, testClaudeCatalogRecord()); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded, err := NewStore(configDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, ok := reloaded.ClaudeCatalog("acct")
+	if !ok {
+		t.Fatal("the reloaded store has no catalog for the account")
+	}
+	if record.ResolvedPath != "/opt/node/bin/claude" || record.Size != 4096 ||
+		record.ModUnixNano != 1700000000000000000 || record.ProbedAt != 1700000000000 {
+		t.Errorf("binary identity did not survive the reload: %+v", record)
+	}
+	if len(record.Wire) != 1 || record.Wire[0].Value != "claude-newthing-1" ||
+		len(record.Wire[0].SupportedEffortLevels) != 2 ||
+		record.Wire[0].SupportsAutoMode == nil || !*record.Wire[0].SupportsAutoMode {
+		t.Errorf("wire rows did not survive the reload: %+v", record.Wire)
+	}
+	if len(record.Learned) != 1 || record.Learned[0].Slug != "claude-newthing-1" {
+		t.Errorf("learned models did not survive the reload: %+v", record.Learned)
+	}
+
+	// The account row itself carries nothing: it is the frontend-facing card.
+	raw, err := os.ReadFile(filepath.Join(configDir, stateFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"claudeCatalogs"`) {
+		t.Errorf("metadata does not hold the catalog map: %s", raw)
+	}
+	if strings.Contains(string(raw), `"claudeCatalog"`+":") {
+		t.Errorf("the catalog was written onto an account row: %s", raw)
+	}
+}
+
+// A probe can land after a removal, or before any account exists. Neither is
+// an error, and neither may invent a row or an orphan record.
+func TestStoreRememberClaudeCatalogIgnoresUnknownAccounts(t *testing.T) {
+	configDir := t.TempDir()
+	store, err := NewStore(configDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RememberClaudeCatalog("", testClaudeCatalogRecord()); err != nil {
+		t.Fatalf("empty account id: %v", err)
+	}
+	if err := store.RememberClaudeCatalog("missing", testClaudeCatalogRecord()); err != nil {
+		t.Fatalf("unknown account: %v", err)
+	}
+	if accounts := store.List("claude", time.Now()); len(accounts) != 0 {
+		t.Fatalf("accounts = %+v, want none invented", accounts)
+	}
+	if _, ok := store.ClaudeCatalog("missing"); ok {
+		t.Error("an unknown account must not get a record")
+	}
+	if _, err := os.Stat(filepath.Join(configDir, stateFilename)); !os.IsNotExist(err) {
+		t.Errorf("a no-op must not write the metadata file (stat err = %v)", err)
+	}
+}
+
+// The record lives beside the account rows, so identity rewrites cannot touch
+// it — and removal, the one path that shrinks the account list, must take it.
+func TestStoreClaudeCatalogSurvivesRewritesAndDiesWithTheAccount(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := store.UpsertAndActivate(Account{ID: "acct", Provider: "claude", Email: "p@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertAndActivate(Account{
+		ID: "keeper", Provider: "claude", Email: "keeper@example.com",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RememberClaudeCatalog(account.ID, testClaudeCatalogRecord()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RememberClaudeCatalog("keeper", testClaudeCatalogRecord()); err != nil {
+		t.Fatal(err)
+	}
+
+	// A re-probe re-adopts the same identity.
+	if _, err := store.UpsertAndActivate(Account{
+		ID: "acct", Provider: "claude", Email: "p@example.com", DisplayName: "Person",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.ClaudeCatalog("acct"); !ok {
+		t.Error("upsertAndActivate dropped the persisted catalog")
+	}
+	if _, err := store.UpdateMetadata(Account{
+		ID: "acct", Provider: "claude", Email: "p@example.com", DisplayName: "Renamed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.ClaudeCatalog("acct"); !ok {
+		t.Error("UpdateMetadata dropped the persisted catalog")
+	}
+
+	if err := store.Remove("claude", "acct", "keeper"); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := store.Get("claude", "acct", time.Now()); ok {
+		t.Fatalf("removed account still present: %+v", got)
+	}
+	if record, ok := store.ClaudeCatalog("acct"); ok {
+		t.Errorf("the removed account kept its catalog: %+v", record)
+	}
+	if _, ok := store.ClaudeCatalog("keeper"); !ok {
+		t.Error("removing one account dropped another's catalog")
+	}
+}
+
+// The reader hands out an independent copy, so a caller mutating what it got
+// cannot reach the stored record.
+func TestStoreClaudeCatalogReadIsIndependent(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertAndActivate(Account{ID: "acct", Provider: "claude"}); err != nil {
+		t.Fatal(err)
+	}
+	record := testClaudeCatalogRecord()
+	if err := store.RememberClaudeCatalog("acct", record); err != nil {
+		t.Fatal(err)
+	}
+	// The write took a copy too: the caller still owns what it passed in.
+	record.Wire[0].Value = "mutated"
+	record.Learned[0].Slug = "mutated"
+
+	got, ok := store.ClaudeCatalog("acct")
+	if !ok {
+		t.Fatal("no record saved")
+	}
+	if got.Wire[0].Value != "claude-newthing-1" || got.Learned[0].Slug != "claude-newthing-1" {
+		t.Errorf("the writer's later mutation reached the store: %+v", got)
+	}
+	got.Wire[0].Value = "mutated"
+	got.Wire[0].SupportedEffortLevels[0] = "mutated"
+	got.Learned[0].Slug = "mutated"
+	got.ResolvedPath = "/mutated"
+
+	again, _ := store.ClaudeCatalog("acct")
+	if again.Wire[0].Value != "claude-newthing-1" ||
+		again.Wire[0].SupportedEffortLevels[0] != "low" ||
+		again.Learned[0].Slug != "claude-newthing-1" ||
+		again.ResolvedPath != "/opt/node/bin/claude" {
+		t.Errorf("a reader's mutation reached the stored record: %+v", again)
 	}
 }

@@ -11,6 +11,7 @@ import (
 
 	"agent-overflow/internal/atomicfile"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
 )
 
 const (
@@ -54,12 +55,50 @@ type Account struct {
 	RateLimits            *provider.RateLimitsSnapshot `json:"rateLimits,omitempty"`
 }
 
+// ClaudeCatalogRecord is one account's persisted Claude model answer, together
+// with the identity of the binary that produced it. A model list is a claim
+// about a binary, so a record whose binary no longer matches is evidence about
+// software that is gone and is never served.
+//
+// Deliberately NOT a field on Account: Account is the frontend-facing account
+// card, and a model catalog on it would ride every card and every account
+// event to every client for data the picker already reads from
+// GetModelsForProvider. It lives beside the accounts instead, keyed by id.
+type ClaudeCatalogRecord struct {
+	// Binary is the configured path (Settings.ClaudeBinaryPath as the app
+	// resolves it), which is also the ProbeCacheKey dimension the catalog is
+	// keyed and dropped by.
+	Binary string `json:"binary"`
+	// ResolvedPath is Binary after LookPath and EvalSymlinks, with Size and
+	// ModUnixNano describing that file. Together they are the same identity
+	// the provider-binary watcher compares, so an in-place upgrade under an
+	// unchanged path invalidates the record.
+	ResolvedPath string `json:"resolvedPath"`
+	Size         int64  `json:"size"`
+	ModUnixNano  int64  `json:"modUnixNano"`
+	// ProbedAt is when the answer was captured, in epoch milliseconds.
+	ProbedAt int64 `json:"probedAt"`
+	// Wire is the rows the probe reported; Learned is the wire-only models
+	// the identity had accumulated, which survive a wire that omits them.
+	Wire    []claude.WireModel   `json:"wire"`
+	Learned []provider.ModelInfo `json:"learned,omitempty"`
+}
+
 // ProviderState is the persisted account set and current selection for one
 // provider.
 type ProviderState struct {
 	ActiveAccountID string    `json:"activeAccountId,omitempty"`
 	Generation      uint64    `json:"generation"`
 	Accounts        []Account `json:"accounts"`
+	// ClaudeCatalogs is the last probe-reported model answer per account id,
+	// for the Claude provider only. Backend state beside the account rows
+	// rather than on them: no client reads it, and the account card must not
+	// carry a copy of the model catalog.
+	//
+	// An entry is only meaningful while its account is listed, so Remove
+	// deletes it. It is the one forget site because Remove is the only path
+	// that shrinks Accounts.
+	ClaudeCatalogs map[string]ClaudeCatalogRecord `json:"claudeCatalogs,omitempty"`
 }
 
 type persistedState struct {
@@ -368,6 +407,13 @@ func (s *Store) Remove(providerName, accountID, replacementAccountID string) err
 	}
 
 	state.Accounts = append(state.Accounts[:index], state.Accounts[index+1:]...)
+	// The one forget site for the per-account model catalog: Remove is the
+	// only path that shrinks Accounts, and a record for an account that is
+	// gone would be served to whoever reused its id.
+	delete(state.ClaudeCatalogs, accountID)
+	if len(state.ClaudeCatalogs) == 0 {
+		state.ClaudeCatalogs = nil
+	}
 	s.state.Providers[providerName] = state
 	if err := s.saveLocked(); err != nil {
 		restoreProviderState(s.state.Providers, providerName, previous, existed)
@@ -497,6 +543,53 @@ func (s *Store) RememberRateLimits(providerName, accountID string, snapshot prov
 	return nil
 }
 
+// RememberClaudeCatalog records the model answer one Claude probe reported for
+// an account, together with the identity of the binary that reported it. The
+// provider is always Claude: no other provider has a probe-enriched catalog.
+//
+// An empty account id and an account this store does not know are both
+// no-ops — a probe can land after a removal, and there is then nothing to
+// remember.
+func (s *Store) RememberClaudeCatalog(accountID string, record ClaudeCatalogRecord) error {
+	if accountID == "" {
+		return nil
+	}
+	providerName := string(provider.Claude)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	previous, existed := s.state.Providers[providerName]
+	if indexOfAccount(previous.Accounts, accountID) < 0 {
+		return nil
+	}
+	state := cloneProviderState(previous)
+	if state.ClaudeCatalogs == nil {
+		state.ClaudeCatalogs = make(map[string]ClaudeCatalogRecord, 1)
+	}
+	state.ClaudeCatalogs[accountID] = cloneClaudeCatalogRecord(record)
+	s.state.Providers[providerName] = state
+	if err := s.saveLocked(); err != nil {
+		restoreProviderState(s.state.Providers, providerName, previous, existed)
+		return err
+	}
+	return nil
+}
+
+// ClaudeCatalog returns the model answer saved for one Claude account, as an
+// independent copy. Absent for an account that has never probed, or whose
+// record was dropped with it.
+func (s *Store) ClaudeCatalog(accountID string) (ClaudeCatalogRecord, bool) {
+	if accountID == "" {
+		return ClaudeCatalogRecord{}, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	record, ok := s.state.Providers[string(provider.Claude)].ClaudeCatalogs[accountID]
+	if !ok {
+		return ClaudeCatalogRecord{}, false
+	}
+	return cloneClaudeCatalogRecord(record), true
+}
+
 // ClaimProviderHome binds this metadata store to userHome, the home whose
 // provider trees hold the credential slots it describes. The first claim
 // wins and is persisted; later claims only compare. It returns the home the
@@ -572,7 +665,19 @@ func cloneAccounts(accounts []Account) []Account {
 
 func cloneProviderState(state ProviderState) ProviderState {
 	state.Accounts = cloneAccounts(state.Accounts)
+	state.ClaudeCatalogs = cloneClaudeCatalogs(state.ClaudeCatalogs)
 	return state
+}
+
+func cloneClaudeCatalogs(catalogs map[string]ClaudeCatalogRecord) map[string]ClaudeCatalogRecord {
+	if catalogs == nil {
+		return nil
+	}
+	cloned := make(map[string]ClaudeCatalogRecord, len(catalogs))
+	for id, record := range catalogs {
+		cloned[id] = cloneClaudeCatalogRecord(record)
+	}
+	return cloned
 }
 
 func restoreProviderState(
@@ -594,6 +699,12 @@ func cloneAccount(account Account) Account {
 		account.RateLimits = &copy
 	}
 	return account
+}
+
+func cloneClaudeCatalogRecord(record ClaudeCatalogRecord) ClaudeCatalogRecord {
+	record.Wire = claude.CloneWireModels(record.Wire)
+	record.Learned = provider.CloneModels(record.Learned)
+	return record
 }
 
 func cloneSnapshot(snapshot provider.RateLimitsSnapshot) provider.RateLimitsSnapshot {

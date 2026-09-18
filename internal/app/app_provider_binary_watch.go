@@ -3,9 +3,6 @@ package app
 import (
 	"fmt"
 	"log"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -44,18 +41,6 @@ type appProviderBinaryWatchState struct {
 	// shows. GetThreadLiveState reads it so a reconnecting webview
 	// converges without waiting for the next push.
 	stale map[string]staleProviderBinary
-}
-
-// providerBinaryIdentity is "the bytes we last looked at", cheap enough to
-// re-derive every tick. Path is included because a version manager switch
-// can repoint the symlink at an equally-old file with an equally-old mtime.
-// Comparable by ==, which is the whole point of the tick; mtime is carried
-// as unix nanos rather than a time.Time so that comparison is a plain value
-// compare and not time.Time's wall/monotonic/location equality.
-type providerBinaryIdentity struct {
-	path        string
-	size        int64
-	modUnixNano int64
 }
 
 type providerBinaryVersion struct {
@@ -172,39 +157,6 @@ func (a *App) refreshInstalledProviderVersion(providerName string) {
 	log.Printf("provider binary watch: %s upgraded %s -> %s; model catalog refreshed",
 		providerName, previous.version, version)
 	a.providerBinaries.storeInstalled(providerName, providerBinaryVersion{identity: identity, version: version})
-}
-
-// resolveProviderBinaryIdentity stats the binary a provider would spawn.
-// Stat only — a tick that finds nothing changed must cost no subprocess.
-//
-// A path that does not resolve is not an error here: an uninstalled provider
-// is a normal state the startup detect probe already reports through the
-// banner, and this watcher has nothing to say about it.
-func (a *App) resolveProviderBinaryIdentity(providerName string) (providerBinaryIdentity, bool) {
-	configured := a.providerBinaryPath(providerName)
-	if configured == "" {
-		return providerBinaryIdentity{}, false
-	}
-	resolved, err := exec.LookPath(configured)
-	if err != nil {
-		return providerBinaryIdentity{}, false
-	}
-	// A version manager (nvm, volta, mise) puts a symlink chain in front of
-	// the real file, and an upgrade repoints the chain without touching the
-	// shim. Follow it so size/mtime describe the file that will actually run.
-	if target, err := filepath.EvalSymlinks(resolved); err == nil {
-		resolved = target
-	}
-	info, err := os.Stat(resolved)
-	if err != nil {
-		log.Printf("provider binary watch: stat %s binary %s: %v", providerName, resolved, err)
-		return providerBinaryIdentity{}, false
-	}
-	return providerBinaryIdentity{
-		path:        resolved,
-		size:        info.Size(),
-		modUnixNano: info.ModTime().UnixNano(),
-	}, true
 }
 
 // refreshProviderCatalogAfterUpgrade re-reads everything the app cached

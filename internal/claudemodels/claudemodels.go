@@ -545,6 +545,10 @@ type catalogEntry struct {
 	// Absence is no information (see DriftRetained), so these survive a
 	// degraded probe answer and die only with the entry or the binary.
 	learned []provider.ModelInfo
+	// wire is the rows the last successful non-empty Store merged, kept so
+	// Export can hand a caller the evidence this entry was built from and
+	// Seed can rebuild the identical entry in the next process.
+	wire []claude.WireModel
 	// wireEmpty dedupes the DriftRetained notice for a wire that keeps
 	// reporting no models: the first empty answer is worth a line, the
 	// hundredth is not.
@@ -622,25 +626,7 @@ func (c *Catalog) Store(key provider.ProbeCacheKey, wire []claude.WireModel, wir
 		}}
 	}
 
-	models, drift := Merge(c.base, wire)
-	var learned []provider.ModelInfo
-	for _, model := range models {
-		if !c.baseSlugs[model.Slug] {
-			learned = append(learned, model)
-		}
-	}
-	for _, kept := range previous.learned {
-		if slices.ContainsFunc(models, func(m provider.ModelInfo) bool { return m.Slug == kept.Slug }) {
-			continue
-		}
-		models = append(models, kept)
-		learned = append(learned, kept)
-		drift = append(drift, Drift{
-			Model:  kept.Slug,
-			Kind:   DriftRetained,
-			Detail: "absent from this wire; retained from an earlier probe of this binary",
-		})
-	}
+	models, learned, drift := c.mergeRetainingLocked(wire, previous.learned)
 	report := FormatDrift(drift)
 
 	c.entries[encoded] = catalogEntry{
@@ -648,6 +634,7 @@ func (c *Catalog) Store(key provider.ProbeCacheKey, wire []claude.WireModel, wir
 		drift:   report,
 		binary:  key.Binary,
 		learned: learned,
+		wire:    claude.CloneWireModels(wire),
 	}
 	c.touchOrderLocked(encoded, existed)
 	if existed && previous.drift == report {
@@ -660,6 +647,98 @@ func (c *Catalog) Store(key provider.ProbeCacheKey, wire []claude.WireModel, wir
 		}}
 	}
 	return drift
+}
+
+// mergeRetainingLocked is the one merge-plus-retention step both Store and
+// Seed build an entry from: the wire folded into the shipped catalog, then
+// every model in retain that this wire omits appended back, because wire
+// absence carries no information (DriftRetained). Caller holds mu.
+func (c *Catalog) mergeRetainingLocked(
+	wire []claude.WireModel,
+	retain []provider.ModelInfo,
+) (models, learned []provider.ModelInfo, drift []Drift) {
+	models, drift = Merge(c.base, wire)
+	for _, model := range models {
+		if !c.baseSlugs[model.Slug] {
+			learned = append(learned, model)
+		}
+	}
+	for _, kept := range retain {
+		if slices.ContainsFunc(models, func(m provider.ModelInfo) bool { return m.Slug == kept.Slug }) {
+			continue
+		}
+		models = append(models, kept)
+		learned = append(learned, kept)
+		drift = append(drift, Drift{
+			Model:  kept.Slug,
+			Kind:   DriftRetained,
+			Detail: "absent from this wire; retained from an earlier probe of this binary",
+		})
+	}
+	return models, learned, drift
+}
+
+// Snapshot is one entry's evidence, in the shape a caller can persist and hand
+// back to Seed in the next process: the wire rows the last non-empty probe of
+// that identity reported, plus the wire-only models the identity had
+// accumulated by then.
+type Snapshot struct {
+	Wire    []claude.WireModel
+	Learned []provider.ModelInfo
+}
+
+// Export returns the evidence behind one identity's entry, deep-copied.
+//
+// Exact key only, with no same-binary fallback: a persisted snapshot is a
+// claim about the identity it is stored under, and borrowing another
+// account's answer to write into this one's record would outlive the process
+// that made the guess.
+func (c *Catalog) Export(key provider.ProbeCacheKey) (Snapshot, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[key.String()]
+	if !ok {
+		return Snapshot{}, false
+	}
+	return Snapshot{
+		Wire:    claude.CloneWireModels(entry.wire),
+		Learned: provider.CloneModels(entry.learned),
+	}, true
+}
+
+// Seed rebuilds the entry a previous process's probe of this identity left
+// behind, so a cold start serves the enriched picker before its own probe
+// answers. Models, learned models and wire rows are exactly what
+// Store(key, snapshot.Wire, nil) would have produced against an entry whose
+// learned models were snapshot.Learned.
+//
+// The drift report is deliberately NOT reconstructed. Drift dedup is per
+// process, so that each process's log carries every distinct report once;
+// restoring the previous process's dedup state would hide a stale-catalog
+// signal from this one's log for as long as the catalog stays stale.
+//
+// A snapshot with neither wire rows nor learned models is dropped: an entry
+// carrying no information would still claim this identity was probed, which
+// costs the same-binary fallback a real answer and buys nothing.
+//
+// The caller owns validating that the snapshot still describes the binary
+// behind key.Binary; this type cannot see the filesystem.
+func (c *Catalog) Seed(key provider.ProbeCacheKey, snapshot Snapshot) {
+	if len(snapshot.Wire) == 0 && len(snapshot.Learned) == 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	encoded := key.String()
+	_, existed := c.entries[encoded]
+	models, learned, _ := c.mergeRetainingLocked(snapshot.Wire, snapshot.Learned)
+	c.entries[encoded] = catalogEntry{
+		models:  models,
+		binary:  key.Binary,
+		learned: learned,
+		wire:    claude.CloneWireModels(snapshot.Wire),
+	}
+	c.touchOrderLocked(encoded, existed)
 }
 
 // DropBinary forgets every entry learned from one configured binary path and
@@ -717,29 +796,38 @@ func (c *Catalog) evictOldestLocked() {
 // picker: learned models are claims about the binary (see DropBinary), and
 // the new identity's own probe replaces the borrowed answer when it lands.
 //
+// enriched reports that the answer came from a stored entry — this identity's
+// own or the same binary's newest — rather than the shipped catalog. It is the
+// provenance a caller needs to tell "no probe has reported yet" from "this is
+// what the binary says", and it is false for a provider this catalog does not
+// serve.
+//
 // providerName must be a provider whose ModelCatalog is
 // provider.ClaudeProbeEnrichedCatalog (claude, claude-tui). Anything else
 // returns nil, so a miswired caller shows an empty picker rather than Claude's
 // models under another provider's name.
-func (c *Catalog) ModelsFor(key provider.ProbeCacheKey, providerName string) []provider.ModelInfo {
+func (c *Catalog) ModelsFor(
+	key provider.ProbeCacheKey,
+	providerName string,
+) (models []provider.ModelInfo, enriched bool) {
 	if provider.CapabilitiesForProvider(providerName).ModelCatalog != provider.ClaudeProbeEnrichedCatalog {
-		return nil
+		return nil, false
 	}
 
 	c.mu.Lock()
 	source := c.base
 	if entry, ok := c.entries[key.String()]; ok {
-		source = entry.models
+		source, enriched = entry.models, true
 	} else if entry, ok := c.newestForBinaryLocked(key.Binary); ok {
-		source = entry.models
+		source, enriched = entry.models, true
 	}
-	models := provider.CloneModels(source)
+	models = provider.CloneModels(source)
 	c.mu.Unlock()
 
 	for i := range models {
 		models[i].Provider = providerName
 	}
-	return models
+	return models, enriched
 }
 
 // newestForBinaryLocked finds the most recently stored entry learned from one
