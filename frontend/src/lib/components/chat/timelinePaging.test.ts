@@ -20,9 +20,11 @@ function fixture(over: {
   loadingOlder?: boolean;
   loadingNewer?: boolean;
   listRef?: boolean;
+  revealed?: number;
 }) {
   const loadOlder = vi.fn(async () => ({ status: 'loaded' as const, insertedBeforeWindow: true, insertedRows: true }));
   const loadNewer = vi.fn(async () => ({ status: 'loaded' as const, insertedBeforeWindow: false, insertedRows: true }));
+  const markEscaped = vi.fn();
   const pane = {
     items: Array.from({ length: over.items ?? 10 }, () => ({})),
     hasMoreHistory: over.hasMoreHistory ?? true,
@@ -35,7 +37,7 @@ function fixture(over: {
   } as unknown as Pane;
   const stick = {
     pauseAutoScroll: () => () => {},
-    setEscapedFromLock: () => {},
+    markEscaped,
     forceStick: () => {},
   } as unknown as UseStickToBottomController;
   const viewport = {
@@ -45,15 +47,16 @@ function fixture(over: {
   const paging = createTimelinePaging({
     getPane: () => pane,
     stick,
-    getListRef: () => (over.listRef === false ? undefined : ({} as TimelineVirtualizerHandle)),
+    getListRef: () =>
+      over.listRef === false ? undefined : ({ scrollToIndex: () => {} } as unknown as TimelineVirtualizerHandle),
     getScrollEl: () => viewport,
-    getRevealedNodes: () => [],
+    getRevealedNodes: () => Array.from({ length: over.revealed ?? 0 }, () => ({})) as never[],
     getRestoredThreadId: () => null,
     nextRestoreToken: () => 1,
     isRestoreTokenCurrent: () => true,
     saveScrollSnapshot: () => {},
   });
-  return { paging, loadOlder, loadNewer };
+  return { paging, loadOlder, loadNewer, markEscaped };
 }
 
 describe('maybeFillViewport', () => {
@@ -109,5 +112,40 @@ describe('maybeFillViewport', () => {
     const { paging, loadOlder } = fixture({ scrollHeight: 900, listRef: false });
     expect(paging.maybeFillViewport()).toBe(false);
     expect(loadOlder).not.toHaveBeenCalled();
+  });
+});
+
+// Intent is a reader fact. A load that fires without a gesture (the fill,
+// the button under a reader resting on the bottom) must leave the follow
+// state alone: the prepend lands above the reader and they are still at
+// the bottom. Only reader-asked navigation escapes.
+describe('loads and intent', () => {
+  it('the viewport fill never writes intent', async () => {
+    const { paging, loadOlder, markEscaped } = fixture({ scrollHeight: 900 });
+    expect(paging.maybeFillViewport()).toBe(true);
+    await vi.waitFor(() => expect(loadOlder).toHaveBeenCalledOnce());
+    await Promise.resolve();
+    expect(markEscaped).not.toHaveBeenCalled();
+  });
+
+  it('load-older never writes intent, whoever asked', async () => {
+    const { paging, loadOlder, markEscaped } = fixture({ scrollHeight: 3000 });
+    await paging.handleLoadOlder();
+    expect(loadOlder).toHaveBeenCalledOnce();
+    expect(markEscaped).not.toHaveBeenCalled();
+  });
+
+  it('auto load-newer never writes intent', async () => {
+    const { paging, loadNewer, markEscaped } = fixture({ scrollHeight: 3000, hasMoreNewer: true });
+    await paging.handleLoadNewerAuto();
+    expect(loadNewer).toHaveBeenCalledOnce();
+    expect(markEscaped).not.toHaveBeenCalled();
+  });
+
+  it('the manual load-newer jump is reader navigation and escapes', async () => {
+    const { paging, loadNewer, markEscaped } = fixture({ scrollHeight: 3000, hasMoreNewer: true, revealed: 3 });
+    await paging.handleLoadNewer();
+    expect(loadNewer).toHaveBeenCalledOnce();
+    expect(markEscaped).toHaveBeenCalledOnce();
   });
 });

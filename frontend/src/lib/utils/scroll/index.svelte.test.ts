@@ -159,7 +159,7 @@ describe('createUseStickToBottomController', () => {
     });
 
     it.each(['reading', 'up', 'down', 'cancel'] as const)('preserves user position: %s', (action) => {
-      if (action === 'reading') controller.setEscapedFromLock(true);
+      if (action === 'reading') controller.markEscaped();
       const recovery = controller.beginReconnectRecovery();
       if (action === 'up' || action === 'down') {
         scrollEl.dispatchEvent(new WheelEvent('wheel', { deltaY: action === 'up' ? -100 : 100 }));
@@ -259,7 +259,7 @@ describe('createUseStickToBottomController', () => {
     geom.clientHeight = 700;
     await nextFrame();
     expect(geom.scrollTop).toBeLessThanOrEqual(900);
-    controller.setEscapedFromLock(true);
+    controller.markEscaped();
     fireScroll(scrollEl);
     await nextTimer();
     expect(controller.isAtBottom).toBe(false);
@@ -275,7 +275,7 @@ describe('createUseStickToBottomController', () => {
 
     it('reports isAtBottom=false when escaped AND scrolled away', async () => {
       geom.scrollTop = 100; // distance = 1000 - 100 - 600 = 300, > 70
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
       fireScroll(scrollEl);
       await nextTimer();
       // isSticky=false (escaped), isNearBottom=false (geometrically away).
@@ -294,14 +294,14 @@ describe('createUseStickToBottomController', () => {
 
     it('escape suppresses both first-fire snap AND positive-delta sync-pin', async () => {
       // Regression for the open-thread scroll animation: MessageTimeline's
-      // $effect.pre calls setEscapedFromLock(true) on every threadId
+      // $effect.pre calls markEscaped() on every threadId
       // change so the engine's incremental row remeasurement (positive-delta
       // RO fires) doesn't sync-pin the viewport to the bottom from
       // scrollTop=0. This test locks that contract at the controller
       // level: while escaped, neither the first RO fire nor any
       // subsequent positive delta is allowed to advance scrollTop. Only
       // an explicit forceStick (chip click) can resume bottom-following.
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
       geom.scrollTop = 0;
       const ro = getRO();
       // First fire — would snap to bottom in the default sticky state,
@@ -656,7 +656,7 @@ describe('createUseStickToBottomController', () => {
       const ro = getRO();
       ro.fire(contentEl, 800); // initial
 
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
       expect(controller.escapedFromLock).toBe(true);
 
       const before = geom.scrollTop;
@@ -670,7 +670,7 @@ describe('createUseStickToBottomController', () => {
     it('escaped thinking-style grow, same-height, shrink, and grow updates do not re-stick', async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
       geom.scrollTop = 200;
 
       geom.scrollHeight = 1200;
@@ -737,7 +737,7 @@ describe('createUseStickToBottomController', () => {
       // new gate is `(isAtBottomState || isNearBottomState) &&
       // !escaped && pauseDepth === 0`. Verify the escape guard still
       // wins when the geometric disjunct (isNearBottomState=true)
-      // would otherwise fire the pin. setEscapedFromLock flips
+      // would otherwise fire the pin. markEscaped flips
       // isAtBottomState=false, so this isolates the isNearBottomState
       // branch — without the !escaped guard, the pre-fix behavior
       // (gate on isNearBottomState alone) would have written scrollTop
@@ -750,7 +750,7 @@ describe('createUseStickToBottomController', () => {
       const ro = getRO();
       ro.fire(contentEl, 800); // initial; scrollTop=400, target=400
       geom.scrollTop = 340; // distance = 1000 - 340 - 600 = 60 (near-bottom)
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
       expect(controller.escapedFromLock).toBe(true);
 
       // Shrink contentEl without changing scrollHeight: delta=-100,
@@ -805,7 +805,7 @@ describe('createUseStickToBottomController', () => {
       // as a side-effect of an above-viewport row remeasure.
       const ro = getRO();
       ro.fire(contentEl, 800); // initial — sets previousHeight=800
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
       // Simulate the shift-then-shrink scenario: scrollTop now
       // sits past the new target.
       geom.scrollTop = 500;
@@ -1046,7 +1046,7 @@ describe('createUseStickToBottomController', () => {
       // away-then-back gesture rather than a same-position re-fire.
       // The wheel-down while escaped clears the token FIFO, so the
       // back-scroll must re-stick.
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
       expect(controller.escapedFromLock).toBe(true);
       geom.scrollTop = 100;
       fireScroll(scrollEl);
@@ -1292,7 +1292,7 @@ describe('createUseStickToBottomController', () => {
 
   describe('forceStick', () => {
     it('clears escape and writes scrollTop to target', () => {
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
       geom.scrollTop = 100;
       expect(controller.escapedFromLock).toBe(true);
 
@@ -1338,7 +1338,7 @@ describe('createUseStickToBottomController', () => {
       // wheel-escaped previously slammed scrollTop to the bottom and
       // cleared escape. With the consent gate, the restore-reason
       // call no longer fires unless the entry point armed consent.
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
       geom.scrollTop = 100;
       expect(controller.escapedFromLock).toBe(true);
 
@@ -1351,7 +1351,7 @@ describe('createUseStickToBottomController', () => {
     it("forceStick({reason:'restore'}) with armRestoreSnap proceeds", () => {
       // Legitimate thread-switch restore: entry point arms consent,
       // restore $effect's forceStick consumes it.
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
       geom.scrollTop = 100;
       expect(controller.escapedFromLock).toBe(true);
 
@@ -1363,7 +1363,7 @@ describe('createUseStickToBottomController', () => {
     });
 
     it("armRestoreSnap is one-shot: second restore-reason call NO-OPs", () => {
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
       geom.scrollTop = 100;
 
       controller.armRestoreSnap();
@@ -1371,7 +1371,7 @@ describe('createUseStickToBottomController', () => {
       expect(geom.scrollTop).toBe(400);
 
       // Caller re-escapes, then a stale restore fires again.
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
       geom.scrollTop = 100;
       controller.forceStick({ reason: 'restore' });
       expect(controller.escapedFromLock).toBe(true);
@@ -1403,7 +1403,7 @@ describe('createUseStickToBottomController', () => {
       // Same path a wheel/key/touch escape takes: the escape flag is
       // already up, so only the consent moves, and the reader's intent
       // must reach the chip through it.
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
       geom.scrollTop = 100;
       expect(controller.restorePending).toBe(false);
       expect(controller.isAtBottom).toBe(false);
@@ -1439,7 +1439,7 @@ describe('createUseStickToBottomController', () => {
       expect(geom.scrollTop).toBe(400);
 
       // Re-escape and verify the arm was consumed.
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
       geom.scrollTop = 100;
       controller.forceStick({ reason: 'restore' });
       expect(controller.escapedFromLock).toBe(true);
@@ -1537,7 +1537,7 @@ describe('createUseStickToBottomController', () => {
       controller.markAtBottom();
 
       // Arm consumed; a follow-up restore-stick must NO-OP.
-      controller.setEscapedFromLock(true); // user escapes between
+      controller.markEscaped(); // user escapes between
       geom.scrollTop = 100;
       controller.forceStick({ reason: 'restore' });
 
@@ -1565,7 +1565,7 @@ describe('createUseStickToBottomController', () => {
     it('armRestoreSnap sets the defensive escape (suspends auto-follow until the restore commits)', () => {
       // Both consumers (MessageTimeline's thread-switch $effect.pre,
       // ChannelView's initial-poll setup) always paired a defensive
-      // setEscapedFromLock(true) with armRestoreSnap(), in that exact
+      // markEscaped() with armRestoreSnap(), in that exact
       // order — the escape clears any prior arm, so arming must come
       // second. The escape is folded into armRestoreSnap so the
       // ordering cannot be gotten wrong. Without it, content growth
@@ -1598,7 +1598,7 @@ describe('createUseStickToBottomController', () => {
       // markAtBottom must flip the intent flag WITHOUT also issuing a
       // redundant scrollTop write that would fight the virtualizer's measurement
       // loop still in progress.
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
       geom.scrollTop = 250;
       controller.markAtBottom();
       expect(controller.escapedFromLock).toBe(false);
@@ -1612,7 +1612,7 @@ describe('createUseStickToBottomController', () => {
       // streaming chunk arrives. The contentRO positive-delta path must
       // sync-pin to the new target so the user follows the live tail
       // without any visible scroll motion.
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
       geom.scrollTop = 400;
       controller.markAtBottom();
       const ro = getRO();
@@ -1634,7 +1634,7 @@ describe('createUseStickToBottomController', () => {
       // markAtBottom. If the first-fire branch leaked through escape,
       // it would snap to a stale target before the engine's measurement
       // loop ran — exactly the bug the new path avoids.
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
       geom.scrollTop = 250;
       const ro = getRO();
       ro.fire(contentEl, 800);
@@ -1691,7 +1691,7 @@ describe('createUseStickToBottomController', () => {
         toJSON: () => ({}),
       } as DOMRect));
 
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
       const ro = getRO();
       await controller.preserveScrollAnchor(anchor, () => {
         geom.scrollHeight = 1200;
@@ -1768,7 +1768,7 @@ describe('createUseStickToBottomController', () => {
     });
 
     it('release does NOT re-pin when escapedFromLock', () => {
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
       geom.scrollTop = 100;
       const release = controller.pauseAutoScroll();
       release();
@@ -1791,7 +1791,7 @@ describe('createUseStickToBottomController', () => {
     });
 
     it('no-op when escaped', () => {
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
       geom.scrollTop = 100;
       geom.scrollHeight = 1100;
       controller.observe('content');
@@ -1881,7 +1881,7 @@ describe('createUseStickToBottomController', () => {
     // These tests lock in the design choice that distinguishes the
     // unified controller from its predecessors: intent (escapedFromLock,
     // isAtBottomState) is mutated only by explicit signals — input events,
-    // forceStick, setEscapedFromLock, and input-backed scroll-handler paths.
+    // forceStick, markEscaped, and input-backed scroll-handler paths.
     // Pure geometry mutation does not cross the boundary. If a future
     // change reintroduces a bare "scrollTop direction" inference, these
     // tests fail.
@@ -1915,7 +1915,7 @@ describe('createUseStickToBottomController', () => {
     it('geometric near-bottom alone never flips isAtBottomState true after escape', async () => {
       // Escape explicitly. isAtBottomState is now false; near-bottom is
       // recomputed from geometry on each scroll event.
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
       expect(controller.escapedFromLock).toBe(true);
 
       // Mutate scrollTop to put us geometrically right at bottom WITHOUT
@@ -1936,7 +1936,7 @@ describe('createUseStickToBottomController', () => {
       // Companion to the test above: this proves the design DOES
       // re-stick when the user actually scrolls back, so the previous
       // assertion is about the absence of polling, not a regression.
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
       expect(controller.escapedFromLock).toBe(true);
 
       // Simulate the user actually moving away and then back to bottom.
@@ -2762,7 +2762,7 @@ describe('createUseStickToBottomController — spring chase', () => {
 
       // Set up a known geometry + escape state to confirm armWarmup
       // doesn't touch them.
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
       geom.scrollTop = 123;
       expect(controller.escapedFromLock).toBe(true);
 
@@ -3833,7 +3833,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
 
       geom.scrollHeight = 1400;
       geom.contentHeight = 1200;
@@ -4505,7 +4505,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(geom.scrollTop).toBe(afterEscape);
     });
 
-    it('setEscapedFromLock(true) cancels in-flight spring', async () => {
+    it('markEscaped() cancels in-flight spring', async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -4516,7 +4516,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       await nextFrame();
       const midScrollTop = geom.scrollTop;
 
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
 
       const afterStop = geom.scrollTop;
       for (let i = 0; i < 20; i++) await nextFrame();
@@ -4897,7 +4897,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(geom.scrollTop).toBe(500);
     });
 
-    it('setEscapedFromLock(true) cancels spring and flips isAtBottomState', async () => {
+    it('markEscaped() cancels spring and flips isAtBottomState', async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -4908,7 +4908,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       await nextFrame();
       expect(geom.scrollTop).toBeGreaterThan(400);
 
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
       expect(controller.escapedFromLock).toBe(true);
       expect(controller.isSticky).toBe(false);
 
@@ -5630,7 +5630,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(controller.escapedFromLock).toBe(true);
 
       // Thread-switch sequence as MessageTimeline performs it.
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
       controller.armWarmup();
       controller.armRestoreSnap();
       controller.forceStick({ reason: 'restore' });
@@ -5723,7 +5723,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       // ordering between scroll + contentRO that happy-dom doesn't model;
       // the bug from the wheel-handler's perspective is exactly: escape
       // is true and the user is at distFromBottom <= 4.
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
       // geom.scrollTop is already 400 (per beforeEach). distFromBottom =
       // 1000 - 400 - 600 = 0.
       expect(controller.escapedFromLock).toBe(true);
@@ -5747,7 +5747,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       ro.fire(contentEl, 800);
       await waitMs(150);
 
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
       expect(controller.escapedFromLock).toBe(true);
 
       fireWheel(scrollEl, 100, scrollEl);
@@ -6664,7 +6664,7 @@ describe('createUseStickToBottomController — spring chase', () => {
 
     it('re-stick after wheel-up escape re-arms the spring for subsequent streaming chunks', async () => {
       // Regression for the springStopRequested re-arm bug. After
-      // setEscapedFromLock(true) the controller sets
+      // markEscaped() the controller sets
       // springStopRequested=true, which would permanently disable the
       // spring even if the user later scrolls back to the bottom. The
       // scroll-handler's re-stick path must reset it so the next
@@ -7195,7 +7195,7 @@ describe('createUseStickToBottomController — external content-geometry source'
     });
 
     it('escape suppresses both the first-sample snap and delta sync-pins', () => {
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
       geom.scrollTop = 0;
       deliver(800);
       expect(geom.scrollTop).toBe(0);
@@ -7589,7 +7589,7 @@ describe('createUseStickToBottomController — external content-geometry source'
 
     it('a viewport that shrinks under an escaped reader leaves the reader alone', () => {
       deliverWithViewport(800, 400);
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
       geom.clientHeight = 300;
       deliverWithViewport(800, 100);
       expect(geom.scrollTop).toBe(400);
@@ -7624,7 +7624,7 @@ describe('createUseStickToBottomController — external content-geometry source'
 
     it('keeps sample geometry current across escaped grow, shrink, and repeated resize transitions', () => {
       deliverWithViewport(800, 400);
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
 
       // Grow while escaped. The observation must not move the reader,
       // but its zero-content-delta viewport sample must still refresh the
@@ -7664,7 +7664,7 @@ describe('createUseStickToBottomController — external content-geometry source'
 
     it('escaped + stable viewport: a delta delivery reads no geometry at all', () => {
       deliverWithViewport(800, 400);
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
       const reads = countGeometryReads();
       geom.scrollHeight = 1200;
       geom.contentHeight = 1000;
@@ -7703,7 +7703,7 @@ describe('createUseStickToBottomController — external content-geometry source'
       controller.attach(scrollEl, contentEl);
       deliverWithViewport(300, 400);
       expect(geom.scrollTop).toBe(0);
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
       const reads = countGeometryReads();
       geom.scrollHeight = 900;
       geom.contentHeight = 700;
@@ -7791,7 +7791,7 @@ describe('createUseStickToBottomController — two instances', () => {
   });
 
   it('keeps escape state per instance', () => {
-    inner.setEscapedFromLock(true);
+    inner.markEscaped();
 
     expect(inner.escapedFromLock).toBe(true);
     expect(outer.escapedFromLock).toBe(false);

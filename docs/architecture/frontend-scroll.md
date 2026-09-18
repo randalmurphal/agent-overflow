@@ -756,6 +756,11 @@ Programmatic scrolls go through the controller:
   consume the consent, through the restore itself or
   `clearRestoreConsent()`.
 - `markAtBottom()` for empty-timeline restore without writing scrollTop.
+- `markEscaped()` for reader-asked navigation away from the bottom (a
+  jump to an item, the anchor restore of a position the reader left).
+  Loads, fills and restores never write intent: a prepend under a
+  following reader leaves them following, and an escape asserted there
+  is saved into the thread snapshot and replayed on every later visit.
 - `requestBottom({ takeover })` for every out-of-band "put the reader at
   the bottom" placement: transaction restores
   (`timelineWindowAnchor.svelte.ts`), the pause-release re-pin, and the

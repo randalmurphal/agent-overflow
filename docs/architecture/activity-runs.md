@@ -704,7 +704,7 @@ A zero-width bar makes `offsetWidth - clientWidth === 0`, so `intent.ts`'s
 geometric scrollbar-gutter hit test can never fire for the clip. That is the
 correct outcome (no false positives from a bar that is not there), but it
 means a drag has to state its intent rather than have it inferred:
-`pointerdown` → `setEscapedFromLock(true)`, and a release at the bottom
+`pointerdown` → `markEscaped()`, and a release at the bottom
 re-sticks via `markAtBottom()`. That matches the package's own rule that
 intent is event-sourced, never geometry-inferred.
 

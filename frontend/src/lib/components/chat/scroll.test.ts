@@ -372,7 +372,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     const ctrl = timelineStick();
 
     clearThreadScrollSnapshotsForTest();
-    ctrl.setEscapedFromLock(true);
+    ctrl.markEscaped();
     await fireEvent.scroll(scroll);
     await waitForScrollIntent();
 
@@ -870,7 +870,7 @@ describe('scroll integration — scroll to item', () => {
     // token guard. The expansion alone cannot witness the jump landing — the
     // reveal writes it before the guards run — so a hold sneaking back into
     // `expandForReveal` shows up here as an expanded run nobody scrolled to.
-    const escaped = vi.spyOn(timelineStick(), 'setEscapedFromLock');
+    const escaped = vi.spyOn(timelineStick(), 'markEscaped');
     pane.requestScrollToItem('run-tool-1');
 
     await waitFor(() => {
@@ -878,7 +878,7 @@ describe('scroll integration — scroll to item', () => {
         container.querySelector('[data-item-id="run-tool-1"]'),
         'the jump must expand the run and mount the target',
       ).not.toBeNull();
-      expect(escaped, 'the jump must survive its token guards and land').toHaveBeenCalledWith(true);
+      expect(escaped, 'the jump must survive its token guards and land').toHaveBeenCalled();
     });
   });
 
@@ -1575,6 +1575,49 @@ describe('scroll integration — load older noop / error paths', () => {
   });
 });
 
+describe('scroll integration — a load under a following reader', () => {
+  // The ui-trace sequence behind the "at the bottom, chip showing, not
+  // following" thread switch: bottom restore, then a load-older that fired
+  // without a gesture (the viewport fill; the button here drives the same
+  // handler) marked escape, the next snapshot save recorded an anchor at
+  // the bottom row, and every later visit replayed that escape. A load is
+  // not a reader gesture: the reader is still following afterwards, the
+  // chip stays down, and the thread's snapshot stays `bottom`.
+  it('load-older leaves a bottom-following reader following, with no chip and a bottom snapshot', async () => {
+    setThreadScrollSnapshot('thread-load-older-following', { kind: 'bottom' });
+    const items = Array.from({ length: 3 }, (_, i) =>
+      makeItem({ id: `m:${i}`, turnIndex: i, summary: `m${i}` }),
+    );
+    const pane = await buildPane(undefined, items);
+    pane.thread!.id = 'thread-load-older-following';
+    Object.defineProperty(pane, 'hasMoreHistory', { configurable: true, get: () => true });
+    Object.defineProperty(pane, 'loadingOlder', { configurable: true, get: () => false });
+    const loadOlder = vi.spyOn(pane, 'loadOlder').mockResolvedValue({
+      status: 'loaded',
+      insertedRows: true,
+      insertedBeforeWindow: true,
+    });
+
+    const { container, getByTestId } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+    await tick();
+    const ctrl = timelineStick();
+    expect(ctrl.escapedFromLock).toBe(false);
+    expect(ctrl.isSticky).toBe(true);
+
+    await fireEvent.click(getByTestId('load-older-messages'));
+    await waitFor(() => expect(loadOlder).toHaveBeenCalled());
+    await tick();
+    await tick();
+
+    expect(ctrl.escapedFromLock).toBe(false);
+    expect(ctrl.isAtBottom).toBe(true);
+    expect(container.querySelector('[data-testid="scroll-to-bottom"]')).toBeNull();
+    expect(getThreadScrollSnapshot('thread-load-older-following')).toEqual({ kind: 'bottom' });
+  });
+});
+
 describe('scroll integration — auto-load-older trigger', () => {
   // The auto-load trigger fires from TimelineVirtualizer's `onscroll` prop
   // (handleTimelineScroll → maybeAutoLoadOlder → handleLoadOlder). Under
@@ -1914,7 +1957,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
     expect(ctrl?.canPreserveTimelineWindow).toBeTypeOf('function');
     if (!ctrl?.canPreserveTimelineWindow) return;
 
-    timelineStick().setEscapedFromLock(true);
+    timelineStick().markEscaped();
     const keepsItem = vi.fn(() => false);
 
     const result = ctrl.canPreserveTimelineWindow(keepsItem);
@@ -1949,7 +1992,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
     expect(controller.canPreserveTimelineWindow).toBeTypeOf('function');
     if (!controller.canPreserveTimelineWindow) return;
 
-    timelineStick().setEscapedFromLock(true);
+    timelineStick().markEscaped();
     const keepsItem = vi.fn((itemId: string) => itemId === 'a');
 
     const result = controller.canPreserveTimelineWindow(keepsItem);
@@ -2006,36 +2049,11 @@ describe('scroll integration — useStickToBottom wiring', () => {
     expect(stick.escapedFromLock).toBe(false);
     expect(stick.isSticky).toBe(true);
 
-    stick.setEscapedFromLock(true);
+    stick.markEscaped();
     expect(stick.isSticky).toBe(false);
     pane.scrollController?.observe('host-layout');
     expect(stick.escapedFromLock).toBe(true);
     expect(stick.isSticky).toBe(false);
-  });
-
-  it('host-layout reconciliation restores bottom intent when sticky state was stale but not escaped', async () => {
-    const pane = await buildPane(undefined, [
-      makeItem({ id: 'a', summary: 'a' }),
-      makeItem({ id: 'b', itemIndex: 1, summary: 'b' }),
-    ]);
-
-    render(MessageTimeline, { props: { pane } });
-    await tick();
-    await tick();
-
-    const stick = timelineStick();
-
-    stick.setEscapedFromLock(true);
-    stick.setEscapedFromLock(false);
-    expect(stick.escapedFromLock).toBe(false);
-    expect(stick.isSticky).toBe(false);
-
-    pane.scrollController?.observe('host-layout');
-
-    await waitFor(() => {
-      expect(stick.escapedFromLock).toBe(false);
-      expect(stick.isSticky).toBe(true);
-    });
   });
 
   it('the published controller honors a pauseAutoScroll lease (no throw, depth-counted release)', async () => {

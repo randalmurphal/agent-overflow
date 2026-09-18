@@ -317,7 +317,7 @@
         // head first — the same pin an escaped reader's scroll holds — and
         // the fetched rows collect behind this boundary for the grow below.
         const head = run.children[run.mountedFrom];
-        stick?.setEscapedFromLock(true);
+        stick?.markEscaped();
         if (head) pane.activityRuns.setWindowAnchor(run.runId, timelineNodeItemId(head));
         fetchingLater = true;
         try {
@@ -641,7 +641,7 @@
     // Escape is event-sourced, so it is carried into a new controller rather
     // than re-derived from the geometry just written.
     if (controller && escapedAtMount) {
-      controller.setEscapedFromLock(true);
+      controller.markEscaped();
     }
 
     return () => {
@@ -845,7 +845,7 @@
     // Explicit navigation inside the run, so it escapes bottom-follow the
     // same way the outer timeline does — otherwise the next streamed chunk
     // would yank the reader off the item they jumped to.
-    stick?.setEscapedFromLock(true);
+    stick?.markEscaped();
     // A relocated window inherited an offset into rows that are no longer
     // mounted, so where the target sits under it is an accident — center it.
     // An unmoved window means the reader is already looking at these rows;
@@ -1088,7 +1088,7 @@
             stick ? stick.positionOwnerDriven : followingBottom && !readerScrolling}
           onUserScrollStart={() => {
             armReaderScroll();
-            stick?.setEscapedFromLock(true);
+            stick?.markEscaped();
           }}
           onUserScrollEnd={(atBottom) => {
             if (atBottom) stick?.markAtBottom();

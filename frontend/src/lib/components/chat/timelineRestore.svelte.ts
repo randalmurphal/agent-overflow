@@ -542,7 +542,7 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
       // The anchor restore is a mid-thread position: escape bottom
       // follow (as any explicit navigation does), then jump. The write
       // itself is chokepoint-tagged via applyScrollTarget.
-      options.stick.setEscapedFromLock(true);
+      options.stick.markEscaped();
       listRef?.scrollToIndex(idx, { align: 'start', offset: -snap.offsetTop });
       saveScrollSnapshot();
     } finally {
@@ -598,7 +598,7 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
     }
     // Explicit navigation: escape bottom follow, then jump (the write is
     // chokepoint-tagged via applyScrollTarget).
-    options.stick.setEscapedFromLock(true);
+    options.stick.markEscaped();
     options.getListRef()?.scrollToIndex(idx, { align: 'center' });
     return true;
   }

@@ -23,7 +23,7 @@ function makeHarness(threadId: string) {
     skipWarmup: vi.fn(),
     armRestoreSnap: vi.fn(),
     forceStick: vi.fn(),
-    setEscapedFromLock: vi.fn(),
+    markEscaped: vi.fn(),
     pauseAutoScroll: vi.fn(() => () => {}),
     observe: vi.fn(),
   } as unknown as UseStickToBottomController;

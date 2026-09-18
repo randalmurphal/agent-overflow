@@ -235,13 +235,18 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
   // pre-request restore here. Scroll input keeps the virtualizer's candidate
   // current while the request is in flight, so a user who keeps moving is
   // never pulled back to the request's starting position. The pause lease
-  // keeps scrollHeight growth from re-sticking; `escaped` marks the user as
-  // reading older.
+  // keeps scrollHeight growth from re-sticking.
+  //
+  // Intent is not written here. A load is not a reader gesture: the
+  // upward-scroll trigger has already escaped through the intent machine,
+  // and the viewport fill and the button fire under a reader who may be
+  // following the bottom, where the prepend lands above them and leaves
+  // them following. Marking escape here showed the jump chip over a
+  // bottom-pinned viewport and saved that state as the thread's snapshot.
   async function handleLoadOlder(): Promise<void> {
     if (!options.getListRef()) return;
     const pane = options.getPane();
     await withGuardedDisarm(autoLoadOlderGate, async () => {
-      options.stick.setEscapedFromLock(true);
       await pane.loadOlder();
       await tick();
       options.saveScrollSnapshot();
@@ -268,7 +273,7 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
       if (lastIndex < 0) return;
       // Explicit navigation into the middle of history (more-newer may
       // remain below): escape bottom follow, then jump.
-      options.stick.setEscapedFromLock(true);
+      options.stick.markEscaped();
       // scrollToIndex(end) below can land in the bottom trigger zone;
       // withGuardedDisarm's disarm keeps that programmatic scroll from
       // auto-firing another load.

@@ -17,21 +17,21 @@ it('publishes escape transitions reactively and reads current intent during tear
   });
   try {
     flushSync();
-    controller.setEscapedFromLock(true);
+    controller.markEscaped();
     flushSync();
     expect(rendered).toEqual([false, true]);
     expect(retired).toEqual([{ escaped: true, ownerDriven: false }]);
 
-    controller.setEscapedFromLock(false);
+    controller.markAtBottom();
     flushSync();
     expect(rendered).toEqual([false, true, false]);
     expect(retired.at(-1)).toEqual({ escaped: false, ownerDriven: true });
 
-    controller.setEscapedFromLock(false);
+    controller.markAtBottom();
     flushSync();
     expect(rendered).toHaveLength(3);
 
-    controller.setEscapedFromLock(true);
+    controller.markEscaped();
     dispose(); // Destroy in the same batch as the input event.
     expect(retired.at(-1)).toEqual({ escaped: true, ownerDriven: false });
   } finally {

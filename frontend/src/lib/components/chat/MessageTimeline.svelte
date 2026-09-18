@@ -1208,7 +1208,7 @@
     ariaLabel="Scroll message history"
     placement="inset-y-0 right-0.5 w-1.5"
     ownerDrivenPosition={() => stick.positionOwnerDriven}
-    onUserScrollStart={() => stick.setEscapedFromLock(true)}
+    onUserScrollStart={() => stick.markEscaped()}
     onUserScrollEnd={(atBottom) => {
       if (atBottom) stick.forceStick();
     }}
