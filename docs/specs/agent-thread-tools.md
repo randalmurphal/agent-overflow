@@ -32,8 +32,10 @@ An in-process MCP server, `ao-thread-tools`, built on the shared
 `internal/threadmcp` transport like `ao-browser-tools` and
 `ao-remote-tools`: loopback HTTP, a per-thread capability URL, wired
 into Claude via `--mcp-config` and Codex via `mcp_servers` at session
-start, with the decision guide in the server's `instructions` string.
-Handlers resolve the capability to the calling thread and call the app
+start, with the decision guide in the server's `instructions` string
+for Claude and, because Codex never shows the model that string, as
+Codex developer instructions on thread start (see Server
+instructions). Handlers resolve the capability to the calling thread and call the app
 in-process. Claude and Codex get the tools identically; Claude TUI is not
 supported, as with the other two servers.
 
@@ -389,8 +391,12 @@ sleeping in a loop.
 
 The `instructions` string is the decision guide the model reads once
 per session. It is short enough to be read, and it covers every
-interaction the tools have with each other. The text, maintained beside
-the tool schemas in `internal/threadtools`:
+interaction the tools have with each other. Claude reads it from the
+server; Codex uses a server's instructions only to describe the server
+in its tool search, so a Codex session receives the same text appended
+to its `developerInstructions` on `thread/start`, `thread/resume` and
+`thread/fork`, after any developer instructions the user configured.
+The text, maintained beside the tool schemas in `internal/threadtools`:
 
 > These tools let you work with other Agent Overflow threads, on this
 > computer and on the user's other paired computers, the way the user
@@ -687,12 +693,18 @@ that. Read-only means the responder's own runtime, not what it may
 delegate: a read-only thread can still spawn, send and organize.
 
 Workflow phase sessions don't get it; their CLI stays grant-scoped.
-Read-only sessions allowlist the server's tools by exact name so
-`thread_reply` works under `dontAsk`. Every other runtime mode keeps its
-normal behavior: approval-required prompts per call, auto reviews per
-call (billed), full-access just runs. No spawn or wake-loop caps:
-spawned threads are visible and stoppable from the sidebar, and
-ephemeral ones are short.
+The tools never raise a permission prompt, in any runtime mode, on
+either provider: Claude sessions pass
+`--allowedTools "mcp__ao-thread-tools__*"` and the Codex
+`mcp_servers` entry carries `default_tools_approval_mode = "approve"`.
+Without those, both providers deny every call in a read-only session
+and prompt per call in the others, and Codex cannot switch the entry
+when the runtime mode changes mid-thread, so a read-only-only
+admission would go stale. What each call does is already visible in the
+sidebar (a spawned thread, a queued message, a renamed title), which is
+what a prompt would have shown. Read-only still governs the responder's
+own shell and files. No spawn or wake-loop caps: spawned threads are
+visible and stoppable from the sidebar, and ephemeral ones are short.
 
 ### Reaching another computer
 
@@ -861,13 +873,25 @@ collects that settlement like any other.
 
 ## Spikes before building
 
-- Claude honors `--allowedTools "mcp__ao-thread-tools__*"` (or the
-  per-tool spelling) under `dontAsk`, and `thread_reply` runs without a
-  prompt in a read-only session, including a scratch thread created by
-  a request from another computer.
-- Codex's read-only sandbox does not gate MCP tool calls.
-- A fifteen-minute parked `thread_ask` returns cleanly on both
-  providers under the existing call ceiling, as `remote_run` does.
+Run 2026-09-19 against a throwaway loopback server (claude 2.1.261,
+codex 0.153.4); outcomes recorded in the
+[plan](../architecture/agent-thread-tools-plan.md#verified-facts-the-design-rests-on):
+
+- Claude under `dontAsk` denies an MCP call until the server is
+  allowlisted; `--allowedTools "mcp__ao-thread-tools__*"` admits every
+  tool and widens nothing else.
+- Codex's read-only sandbox with `approval_policy = never` denies MCP
+  calls until the server entry sets `default_tools_approval_mode =
+  "approve"`; with it the call runs and shell writes stay refused.
+- Claude reads the server `instructions`; Codex does not, and a
+  `developer_instructions` override reaches the Codex model verbatim.
+- A fifteen-minute parked call returns on Codex under the existing
+  `tool_timeout_sec`. On Claude a call whose HTTP response has not
+  started fails at six minutes regardless of every configured timeout,
+  and completes when the loopback server streams the response as
+  server-sent events with a keepalive comment every fifteen seconds.
+  The shared `threadmcp` transport streams every call that way, which
+  also repairs `remote_run` waits above six minutes on Claude.
 
 ## Success criteria
 
@@ -966,7 +990,7 @@ collects that settlement like any other.
   capability resolution, as unit tests against a fake app.
 - App (kerneltest harness, mock providers, never a real CLI): server
   registration per session and its absence for phase sessions, the
-  live switch on both providers, the read-only allowlist flags, spawn
+  live switch on both providers, the admission flags on both providers, spawn
   inheritance and overrides including worktree creation, send
   queue-versus-lazy-start, waits (inline settle, timeout to
   backgrounded, interrupt, `thread_status` re-attach and inline

@@ -211,6 +211,15 @@ All folded into the spec on 2026-09-19; kept here as the record of why.
    threads (read-only is the responder's own runtime, a light safety
    option, not an isolation boundary).
 
+15. **The tools never prompt, in any runtime mode.** Planned as a
+    read-only-only allowlist; the spikes showed both providers deny
+    MCP calls in read-only and prompt per call elsewhere, and Codex
+    cannot follow a live mode change with a thread-start MCP entry.
+    Every session admits the server (Claude `--allowedTools
+    "mcp__ao-thread-tools__*"`, Codex `default_tools_approval_mode =
+    "approve"` on the entry). The spec's "every other runtime mode
+    keeps its normal behavior" line is replaced. Owner ruling pending.
+
 ## Verified facts the design rests on
 
 - FTS5 is compiled into `modernc.org/sqlite` v1.56.0 (SQLite 3.53.3):
@@ -259,8 +268,35 @@ All folded into the spec on 2026-09-19; kept here as the record of why.
   list.
 - Claude read-only mode is `--permission-mode dontAsk` plus
   `--disallowedTools` for the write tools; `Config.AllowedTools` exists
-  but nothing sets it. Codex read-only is approval `never` plus the
-  read-only sandbox.
+  but nothing sets it. Under `dontAsk` an MCP call is denied unless the
+  server's tools are allowlisted; `--allowedTools "mcp__<server>__*"`
+  admits every tool of that server and widens nothing else (spike,
+  claude 2.1.261, 2026-09-19).
+- Codex read-only is approval `never` plus the read-only sandbox. Under
+  `never` an MCP call is auto-approved only when the sandbox has full
+  disk write or the server entry sets
+  `default_tools_approval_mode = "approve"`; otherwise a tool without a
+  `readOnlyHint` annotation needs an approval that `never` turns into a
+  denial before the call runs (spike, codex 0.153.4;
+  `core/src/mcp_tool_call.rs`, `core/src/mcp/mod.rs`). With the key set
+  the call runs and the sandbox still refuses shell writes.
+- Claude shows the model the server `instructions` string (spike). Codex
+  never does: that string is only the namespace description of its tool
+  search (`codex-mcp/src/connection_manager/tool_catalog.rs`). A
+  `developer_instructions` override reaches the Codex model verbatim
+  (spike).
+- A long MCP call survives on Codex with `tool_timeout_sec` raised (15
+  minutes verified). On Claude it does not: with the server `timeout`
+  entry, `MCP_TOOL_TIMEOUT`, `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT` and
+  `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` all raised, a call whose HTTP
+  response is one JSON body fails at 359 s with "The operation timed
+  out" (three runs). The same call answered as a `text/event-stream`
+  response that carries a `: keepalive` comment every 15 s and the
+  JSON-RPC result as its final event completes (7 minutes verified;
+  `notifications/progress` events work the same and are not needed).
+  `internal/threadmcp` answers every call as one JSON body today, so
+  `remote_run` waits above six minutes fail on Claude the same way; the
+  fix is in `threadmcp` and covers all three servers.
 - `receiveRemoteArtifact(ctx, directory, path, threadID, read)` is
   already generic over its chunk reader and verifies a whole-file
   SHA-256; only the destination side is tied to jobs and workspaces.
@@ -273,7 +309,7 @@ All folded into the spec on 2026-09-19; kept here as the record of why.
 | Request ledger | `internal/store` | Migrations, `thread_requests`, `thread_request_receipts`, `scratch_threads`, the FTS index and its build progress, all queries. |
 | App glue | `internal/app/app_thread_tools*.go` (new files) | Server registration, the switch, live toggles, spawn/send/ask/reply/status/cancel handlers, waits, settlement observer, wake delivery, the poller, peer methods, lifecycle hooks, boot sweep. |
 | Peer transport | `internal/attachedbackends`, `internal/transport` | `CallThreadPeer`, `CapabilityThreadTools`, method annotations. |
-| Providers | `internal/provider/claude`, `internal/provider/codex` | Read-only allowlist plumbing only. |
+| Providers | `internal/provider/claude`, `internal/provider/codex` | Claude `AllowedTools` on the argv; Codex `DeveloperInstructions` on start, resume and fork. Nothing else. |
 | UI | `frontend/src/lib` | Origin chip, settings switch, `/side-chat`, `side-chat` companion pane, `aoTools` registry entry. |
 | Tests | beside each piece, `e2e/tests` | See Validation. |
 
@@ -539,16 +575,69 @@ for as long as the request is open". Local receipts never touch this:
 the switch already governs the caller, and a local target is the same
 computer.
 
-### Read-only allowlist
+### Admission without prompts
 
-Claude: `Config.AllowedTools` is plumbed into the argv builder beside
-`mcpConfigForCLI`, and read-only sessions pass
-`mcp__ao-thread-tools__*` (every tool: the owner ruled that read-only
-is the responder's own runtime, not an isolation boundary, and a
-scratch thread may spawn, send and organize; the spike confirms the
-wildcard spelling and that it widens nothing else). Codex: read-only
-sandbox does not gate MCP calls (spike). The allowlist is set only for
-`read-only`; other modes keep their prompts.
+Both providers deny every MCP call in a read-only session unless told
+otherwise, and every other mode prompts per call. The server is
+admitted in every mode on both providers (amendment 15):
+
+- Claude: `Config.AllowedTools` is plumbed into the argv builder beside
+  `mcpConfigForCLI`, and every session passes
+  `mcp__ao-thread-tools__*`. The spike confirms the wildcard spelling
+  and that it widens nothing else. Under `dontAsk` that is what admits
+  the call; under the prompting modes it is what skips the prompt.
+- Codex: `threadMCPConfigForThread` adds
+  `default_tools_approval_mode: "approve"` to the `ao-thread-tools`
+  entry of `mcp_servers`, the way `remoteMCPServerConfig` adds
+  `tool_timeout_sec`. `approve` short-circuits Codex's approval check
+  before the policy or sandbox is consulted, so the entry works under
+  `never` and under the prompting policies alike.
+
+Why every mode and not only `read-only`: Codex applies a runtime-mode
+change as a per-turn override with no restart, while `mcp_servers` is
+thread-start configuration, so a key that followed the mode would be
+stale after the first live switch, and a restart on that boundary would
+contradict the Codex live-override contract. Admitting in every mode is
+the only shape that is the same on both providers and survives a mode
+change. The tools are AO's own actions, each visible in the sidebar
+(a spawned thread, a queued message, a renamed title), which is what a
+per-call prompt would have shown. Owner ruling requested on this
+(see amendment 15); the spec's Availability section carries the
+same text.
+
+The read-only sandbox still applies to the responder itself: with the
+key set, the spike's Codex read-only session ran the tool and the
+sandbox refused its shell write.
+
+The same denial applies today to `ao-browser-tools` and
+`ao-remote-tools` in read-only sessions on both providers: neither is
+allowlisted, neither sets the approve key, and neither declares tool
+annotations, so a read-only Claude or Codex thread cannot use them. No
+spec or decision records that as intended. It is a product ruling
+(admit them, or leave read-only without them), raised with the owner
+and not changed by this work until ruled.
+
+### Decision guide delivery
+
+Claude reads the server `instructions` string at `initialize` and again
+on `ReconnectMcpServer`, so the guide travels with the server. Codex
+never shows the model that string, so a Codex session gets the same text
+as `developerInstructions` on `thread/start`, `thread/resume` and
+`thread/fork`: `codex.Config` gains `DeveloperInstructions`, and
+`buildThreadParams` sends it. Codex resolves developer instructions from
+its config on a cold start, so AO first reads the thread's cwd-scoped
+`developer_instructions` through `config/read` and sends that value with
+the guide appended, omitting the override entirely when the guide is
+absent (switch off, composer toggle off, phase session) so a user's own
+value is never replaced. The paragraphs follow `Shape` like the server
+string and come from the same `instructions.go`, so the two channels
+cannot drift. A pairing change reaches a live Codex thread only at its
+next start or resume, unlike the tool list, which reloads live; the
+`thread_options` result carries the computer list, so a stale guide
+costs one call. Phase 2 checks that the `developer_instructions: nil`
+AO sends in every turn's collaboration-mode settings leaves the
+thread-level text in place; if it does not, the guide moves into the
+collaboration-mode settings instead.
 
 ### Spawn, send, ask
 
@@ -607,6 +696,23 @@ reply is written; the collector checks `waitActive(token)` under the
 per-token mutex before queuing a wake, exactly as the remote watcher
 checks `remoteWaitActive`. A timed-out wait sets `notify = 1` on the
 row before returning `backgrounded`.
+
+A parked call only reaches the model if the HTTP response is already
+open: Claude drops a call whose response has not started after six
+minutes, whatever the configured timeouts say (spike). So
+`threadmcp` answers `tools/call` as a `text/event-stream` response:
+headers and a `: keepalive` comment at once, another comment every
+15 s while the handler runs, and the JSON-RPC result as the final
+`message` event, then end of stream. Both clients advertise
+`text/event-stream` in `Accept`, and Codex read the streamed result in
+the spike as well. This is one change in `threadmcp.Server.call` (a
+streaming writer that the handler's `ResponseWriter` wraps) and it
+applies to `ao-browser-tools` and `ao-remote-tools` too, which fixes
+`remote_run` waits above six minutes on Claude at the same time; the
+`WriteTimeout` of 35 minutes already covers the ceiling. Errors that
+happen before the handler runs keep their JSON bodies. Phase 2 lands
+this first, with a test that reads the stream with an MCP client and
+one that asserts a comment arrives within the interval.
 
 ### Settlement (destination side)
 
@@ -1116,13 +1222,23 @@ Switch and sessions:
 
 Each phase ends green on its own tests and leaves a usable increment.
 
-0. **Spikes**, isolated per the spike policy, before any product code:
-   Claude `--allowedTools` for the two MCP names under `dontAsk`
-   (including that it does not widen anything else); Codex read-only
-   sandbox with an MCP call; a 15-minute parked MCP call on both
-   providers under `remoteMCPCallCeiling`; whether server
-   `instructions` reach each model (if not, the decision guide moves
-   into the first tool description and the spec is amended).
+0. **Spikes**, done 2026-09-19 in a scratch directory per the spike
+   policy against a throwaway loopback MCP server (claude 2.1.261,
+   codex 0.153.4); nothing from them is kept. Outcomes, all folded into
+   Verified facts and the wiring above: Claude under `dontAsk` denies
+   MCP calls without `--allowedTools "mcp__<server>__*"` and admits
+   every tool of the server with it, and nothing else widens (A1, A2);
+   Claude reads the server `instructions` and Codex does not (B1, B2);
+   Codex read-only denies MCP calls until the server entry sets
+   `default_tools_approval_mode = "approve"`, after which the call runs
+   and the sandbox still refuses a shell write (C, C2); a Codex
+   `developer_instructions` override reaches the model (B3); a
+   15-minute MCP call parked under the ceiling
+   returns on Codex with `tool_timeout_sec` = 1200 (D2) but fails on
+   Claude at six minutes whatever timeout is configured (D1, three
+   runs), and completes once the response is a server-sent event stream
+   with a keepalive comment every 15 s (E, two variants). See Verified
+   facts and the Waiting section.
 1. **Store**: v101 to v103, `scratch_threads`, request tables and their
    queries, FTS index with settle-time hooks, background build,
    `DeleteThreadPaced` and `RestoreFrom` updates. Tests: migration on a
@@ -1140,7 +1256,7 @@ Each phase ends green on its own tests and leaves a usable increment.
 4. **Local start and settle**: `forkThreadTail` refactor, spawn (with
    `from_thread`), send, ask, reply, status (multi-token, blocked
    return), cancel, waits, settlement observer, wakes, scratch deletion,
-   boot sweep, lifecycle hooks, origin chip, read-only allowlist,
+   boot sweep, lifecycle hooks, origin chip, admission flags,
    `thread_update`, `thread_group`, `thread_remind`. After this phase
    everything in the spec works on one computer.
 5. **Cross-computer**: capability, `CallThreadPeer`, the five peer
@@ -1164,7 +1280,8 @@ Each phase ends green on its own tests and leaves a usable increment.
 - App: `kerneltest`-isolated tests with the mock providers, following
   `app_remote_watch_test.go` (capturing Claude session, Codex steer
   session): registration and its absence for phase sessions, the switch
-  on both providers, allowlist flags in the spawned argv, spawn
+  on both providers, the allowlist in the Claude argv and the approve
+  key in the Codex `mcp_servers` entry, spawn
   inheritance and overrides including worktree creation, send queue
   versus lazy start, wait settle and timeout and interrupt, status
   re-attach and inline delivery, reply once and late reply, rest without
