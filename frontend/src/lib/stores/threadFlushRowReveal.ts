@@ -7,21 +7,22 @@
 // SQLite holds) and the reveal gate's boundary (a row withheld behind a
 // still-draining smoother has not mounted yet).
 //
-// Mirrors `sliceRevealedNodes` (utils/subagentGrouping.ts): that slice
-// cuts the projected nodes at the first one after the boundary, so a row
-// renders exactly while its (turnIndex, itemIndex) is at or before the
-// boundary — or while there is no boundary at all.
+// Quiet reservations stay in the preview until confirmation or interrupt
+// promotion. Confirmed rows follow `sliceRevealedNodes`: their position must
+// be at or before the boundary, or the boundary must be absent.
 
 import type { Item } from '../types/models';
 import type { RevealBoundary } from '../utils/subagentGrouping';
 import type { FlushedItem } from './sendQueue.svelte';
 import { compareItemToCursor } from './threadItems';
+import { isPendingFlushRow } from '../utils/userMessageMeta';
 
-/** A loaded row renders iff the reveal gate is open past its position. */
+/** A loaded, confirmed row renders when the reveal gate passes its position. */
 export function itemIsRevealed(
   item: Item,
   revealBoundary: RevealBoundary | null,
 ): boolean {
+  if (isPendingFlushRow(item)) return false;
   if (revealBoundary === null) return true;
   return compareItemToCursor(item, revealBoundary) <= 0;
 }

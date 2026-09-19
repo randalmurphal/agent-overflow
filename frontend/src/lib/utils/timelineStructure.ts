@@ -1,5 +1,6 @@
 import type { Item } from '../types/models';
 import { userMessageIdentity } from './userMessageIdentity';
+import { isPendingFlushRow } from './userMessageMeta';
 import { extractClaudeTaskID } from './claudeTaskMeta';
 import { RAIL_EXEMPT_PAYLOAD_KINDS } from './timelineRail';
 
@@ -47,7 +48,8 @@ export function itemTimelineStructureChanged(previous: Item | undefined, next: I
   const metaChanged = (previous.meta ?? '') !== (next.meta ?? '');
 
   if (kind === 'user_text' && metaChanged
-    && userMessageIdentity(previous) !== userMessageIdentity(next)) return true;
+    && (userMessageIdentity(previous) !== userMessageIdentity(next)
+      || isPendingFlushRow(previous) !== isPendingFlushRow(next))) return true;
 
   // Subagent grouping + receiver labels: the metas those passes read.
   if (kind === 'terminal_interaction' && metaChanged) return true;

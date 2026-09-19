@@ -165,10 +165,9 @@ export function createThreadLiveStateHydration(
         }));
       replaceFlushedForThread(threadID, flushedItems);
       // The snapshot lists every send the backend still holds unconfirmed,
-      // including quiet rows it has already persisted — which this pane's
-      // window read can therefore be rendering right now. Hand those back
-      // to the timeline before returning, so the re-install is never
-      // observable as "pending AND on screen".
+      // including quiet reservations loaded by this pane's history read.
+      // Only confirmed rows may hand over to the timeline; pendingFlush
+      // keeps reservations in the preview across navigation and refresh.
       options.syncRenderedFlushRows();
       for (const item of queueItems) options.confirmOptimisticSend(threadID, item.sendId);
       for (const item of flushedItems) {

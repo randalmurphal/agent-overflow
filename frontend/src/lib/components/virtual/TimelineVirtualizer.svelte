@@ -291,8 +291,8 @@
     const compensation = pendingCompensation;
     pendingCompensation = null;
     untrack(() => {
-      if (compensation && onCompensation) {
-        onCompensation(compensation);
+      if (compensation) {
+        onCompensation?.(compensation);
         syncEngineToLiveScrollTop();
         // The controller's compensation write moves the position by the
         // content shift it preserves across; a pending index scroll's
@@ -300,7 +300,7 @@
         // own side's write as a takeover and die mid-restore. Only when a
         // consumer is attached: undelivered compensation writes nothing,
         // so the expectation must not move either.
-        noteCompensationForIndexScroll(compensation.delta);
+        if (onCompensation) noteCompensationForIndexScroll(compensation.delta);
       }
       convergeIndexScroll();
       const spliceCorrected = correctHeadSpliceAnchor();
@@ -703,7 +703,11 @@
     const top = observedScroller?.scrollTop;
     if (top === undefined) return;
     actualScrollOffset = top;
-    engine.noteScrollOffset(engineOffsetFor(top));
+    // Geometry updates select a window at their requested compensation.
+    // The controller can redirect that request to an already-pinned bottom,
+    // producing no scroll event. Reconcile the window with the readback now
+    // or it can keep mounting only rows outside the actual viewport.
+    applyUpdate(engine.reconcileScrollOffset(engineOffsetFor(top)));
   }
 
   // A head page can place the old reading row below one newly inserted,

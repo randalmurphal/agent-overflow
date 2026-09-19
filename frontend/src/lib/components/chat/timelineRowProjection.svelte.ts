@@ -35,6 +35,8 @@ import { timelineRowDecorations, type TimelineRowDecorationSets } from './timeli
 import { codexSubagentReceiverLabels } from '../../utils/subagentLaunch';
 import { PROVIDER_DEFINITIONS } from '../../providers/catalog';
 import { filterRedundantNotifications } from '../../utils/notificationFilter';
+import { isPendingFlushRow } from '../../utils/userMessageMeta';
+import { getFlushedForThread } from '../../stores/sendQueue.svelte';
 
 const EMPTY_RECEIVER_LABELS = new Map<string, string>();
 /** Shared, so the common "gate is holding nothing" case allocates nothing. */
@@ -84,13 +86,25 @@ export function createTimelineRowProjection(
   // the pane on each run (fold mutations always ride a timelineRevision
   // bump, so no extra reactivity is needed).
   const subagentAggregates = (anchorId: string) => options.getPane().subagentLiveAggregate(anchorId);
+  let pendingFlushIDs = $derived(JSON.stringify(
+    getFlushedForThread(options.getPane().threadId).map((entry) => entry.userItemId),
+  ));
   let groupedNodes = $derived.by(() => {
     options.getPane().timelineRevision;
-    return untrack(() =>
-      groupConsecutiveReads(
-        groupItemsBySubagent(filterRedundantNotifications(options.getPane().items), subagentAggregates),
-      ),
-    );
+    // The live snapshot owns pending delivery. A quiet SQLite reservation
+    // must not become history merely because navigation loaded its row.
+    // After session loss the registry is empty; retained history continues
+    // to follow the provider's normal recovery path.
+    const pendingIds = new Set<string>(JSON.parse(pendingFlushIDs));
+    return untrack(() => {
+      const items = options.getPane().items;
+      const visibleItems = pendingIds.size === 0 ? items : items.filter(
+        (item) => !pendingIds.has(item.id) || !isPendingFlushRow(item),
+      );
+      return groupConsecutiveReads(
+        groupItemsBySubagent(filterRedundantNotifications(visibleItems), subagentAggregates),
+      );
+    });
   });
   // Reveal gate: while a turn streams, the pane's sequencer holds the next
   // top-level row back until the current item's smoother drains

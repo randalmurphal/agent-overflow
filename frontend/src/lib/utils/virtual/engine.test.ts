@@ -107,6 +107,24 @@ describe('noteScrollOffset', () => {
   });
 });
 
+describe('compensation readback', () => {
+  it('reconciles a redirected position without waiting for a scroll event', () => {
+    const engine = mountedEngine();
+    engine.applyScroll(700);
+    const update = engine.applyKeyedReorder([7, 8, 9, 0, 1, 2, 3, 4, 5, 6]);
+    expect(update?.compensation?.target).toBe(0);
+    expect(engine.getWindow()).toEqual([0, 5]);
+    expect(engine.reconcileScrollOffset(700)?.window).toEqual([5, 9]);
+    expect(engine.reconcileScrollOffset(700)).toBeNull();
+  });
+
+  it('preserves tail seeding before the first scroll event', () => {
+    const engine = mountedEngine();
+    expect(engine.reconcileScrollOffset(0)).toBeNull();
+    expect(engine.applyMeasurements([[9, 200]])?.window).toEqual([6, 9]);
+  });
+});
+
 describe('applyMeasurements', () => {
   it('growth entirely above the viewport emits remeasure-above compensation', () => {
     const engine = mountedEngine();

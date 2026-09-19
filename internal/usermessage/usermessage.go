@@ -262,8 +262,13 @@ func MergeProviderIDs(existing, providerItemID, parentUUID string) (string, erro
 	merged := map[string]any{}
 	trimmed := strings.TrimSpace(existing)
 	if trimmed != "" {
-		if err := json.Unmarshal([]byte(trimmed), &merged); err != nil {
+		decoder := json.NewDecoder(strings.NewReader(trimmed))
+		decoder.UseNumber()
+		if err := decoder.Decode(&merged); err != nil {
 			return "", fmt.Errorf("decode existing meta: %w", err)
+		}
+		if strings.TrimSpace(trimmed[decoder.InputOffset():]) != "" {
+			return "", fmt.Errorf("decode existing meta: unexpected trailing JSON")
 		}
 		if merged == nil {
 			merged = map[string]any{}

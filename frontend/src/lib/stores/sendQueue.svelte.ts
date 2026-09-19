@@ -250,9 +250,8 @@ export function replaceQueueForThread(
 /** Replace Zone 2 from the backend's pending-send snapshot
  * (`GetThreadLiveState.flushedItems`). The snapshot names every send the
  * backend still considers unconfirmed — deferred rows that have no SQLite
- * row yet AND quiet rows it persisted without an item event — and each
- * send appears there or in the timeline window, never both
- * (internal/triage/live_state.go).
+ * row yet AND quiet rows it persisted without an item event. A loaded quiet
+ * reservation remains in the preview until its pendingFlush flag clears.
  *
  * Installing it can re-add an entry whose row this client already renders
  * (the snapshot was sampled before the echo). The caller resolves that

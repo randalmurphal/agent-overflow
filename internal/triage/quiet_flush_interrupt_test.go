@@ -1830,7 +1830,7 @@ func TestSelfHealUnanchoredFailureRestoresFrozenPlacement(t *testing.T) {
 	quietRow := store.Item{
 		ID: "user:0:flush:1", ThreadID: "t1", TurnIndex: 0,
 		Kind: "user_text", Role: "user", Status: "completed",
-		Summary: "queued text", CreatedAt: now, UpdatedAt: now,
+		Meta: `{"pendingFlush":true}`, Summary: "queued text", CreatedAt: now, UpdatedAt: now,
 	}
 	if err := router.PersistItemQuiet(quietRow, nil); err != nil {
 		t.Fatalf("persist quiet row: %v", err)
@@ -1876,6 +1876,13 @@ func TestSelfHealUnanchoredFailureRestoresFrozenPlacement(t *testing.T) {
 	healed, found, err := st.GetThreadItem("t1", "user:0:flush:1")
 	if err != nil || !found {
 		t.Fatalf("healed row after drain: found=%v err=%v", found, err)
+	}
+	var healedMeta map[string]any
+	if err := json.Unmarshal([]byte(healed.Meta), &healedMeta); err != nil {
+		t.Fatal(err)
+	}
+	if healedMeta["pendingFlush"] != false {
+		t.Fatalf("self-heal left the consumed row pending: %s", healed.Meta)
 	}
 	if healed.ItemIndex <= preEchoRow.ItemIndex {
 		t.Fatal("self-heal failed to restore captured display placement")

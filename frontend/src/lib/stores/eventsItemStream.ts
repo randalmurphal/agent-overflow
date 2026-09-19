@@ -25,6 +25,7 @@ import { isSmoothLiveContentKind } from './threadPaneShared';
 import { lookupDiscussionLiveTail } from './discussionLiveTail';
 import { isBoundedString, isFiniteNumber } from './eventsGuards';
 import { compositeKey } from '../utils/compositeKey';
+import { isPendingFlushRow } from '../utils/userMessageMeta';
 import type { ThreadPaneIngest } from './threadPaneRoles';
 import { itemEventQueued, itemEventsSettled, resetItemEventSettlement } from './itemEventSettlement';
 
@@ -268,7 +269,7 @@ function applyItemUpserts(upserts: Item[]): void {
     } else {
       itemsByThread.set(item.threadId, [item]);
     }
-    if (item.kind === 'user_text' && item.id.includes(':flush:')) {
+    if (item.kind === 'user_text' && item.id.includes(':flush:') && !isPendingFlushRow(item)) {
       const flushRowIds = flushRowIdsByThread.get(item.threadId);
       if (flushRowIds) flushRowIds.push(item.id);
       else flushRowIdsByThread.set(item.threadId, [item.id]);

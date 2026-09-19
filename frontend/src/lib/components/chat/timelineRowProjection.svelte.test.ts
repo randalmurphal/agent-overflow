@@ -208,3 +208,46 @@ describe('timeline row projection reactivity', () => {
     }
   });
 });
+
+describe('quiet queue reservations', () => {
+  it('keeps a restored pending row in the preview until its confirmation, including unchanged coordinates', async () => {
+    const { markItemsFlushed, getFlushedForThread, clearForThread, applyFlushedLifecycle } = await import('../../stores/sendQueue.svelte');
+    const row = makeItem({ id: 'user:0:flush:quiet', kind: 'user_text', role: 'user', status: 'completed', summary: 'Still queued', meta: '{"pendingFlush":true}', itemIndex: 1 });
+    const pane = await buildPane(undefined, [row]);
+    markItemsFlushed(pane.threadId!, [{ queueItemId: 'q-quiet', userItemId: row.id, message: row.summary }]);
+    pane.syncRenderedFlushRows();
+    const view = mountProjection(pane);
+    try {
+      expect(view.nodes).toHaveLength(0);
+      expect(getFlushedForThread(pane.threadId!)).toHaveLength(1);
+      const evaluations = view.evaluations;
+      applyFlushedLifecycle(pane.threadId!, row.id, { state: 'queued' });
+      flushSync();
+      expect(view.evaluations).toBe(evaluations);
+      pane.applyProviderItemUpserts([{ ...row, threadId: pane.threadId!, meta: '{"pendingFlush":false,"provider_item_id":"echo-1"}' }]);
+      flushSync();
+      expect(view.nodes).toHaveLength(1);
+      expect(getFlushedForThread(pane.threadId!)).toHaveLength(0);
+    } finally {
+      view.dispose();
+      clearForThread(pane.threadId!);
+    }
+  });
+});
+
+it('does not hide retained history after the live pending registry is cleared', async () => {
+  const { markItemsFlushed, clearForThread } = await import('../../stores/sendQueue.svelte');
+  const row = makeItem({ id: 'user:0:flush:lost-session', kind: 'user_text', role: 'user', meta: '{"pendingFlush":true}' });
+  const pane = await buildPane(undefined, [row]);
+  markItemsFlushed(pane.threadId!, [{ queueItemId: 'q-lost', userItemId: row.id, message: row.summary }]);
+  const view = mountProjection(pane);
+  try {
+    expect(view.nodes).toHaveLength(0);
+    clearForThread(pane.threadId!);
+    flushSync();
+    expect(view.nodes).toHaveLength(1);
+  } finally {
+    view.dispose();
+    clearForThread(pane.threadId!);
+  }
+});

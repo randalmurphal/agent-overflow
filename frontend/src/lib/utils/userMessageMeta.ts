@@ -19,6 +19,7 @@ export interface AttachmentPreviewSource {
 
 export interface UserMessageMeta {
   sendId?: unknown;
+  pendingFlush?: unknown;
   attachments?: unknown;
   sourceProposedPlan?: unknown;
   wire_only?: unknown;
@@ -89,6 +90,11 @@ export function parseUserMessageMeta(meta: string | undefined): UserMessageMeta 
   } catch {
     return {};
   }
+}
+
+/** A quiet stored copy, before provider consumption or interrupt promotion. */
+export function isPendingFlushRow(item: Item): boolean {
+  return item.kind === 'user_text' && parseUserMessageMeta(item.meta).pendingFlush === true;
 }
 
 /**

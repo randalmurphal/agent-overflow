@@ -11,6 +11,7 @@ import type { ContentGeometrySample, EngineCompensation, RowEstimate } from '../
 import { raf, waitFor } from '../../../test/helpers/browserFrames';
 import { captureResizeObserverLoopErrors } from '../../../test/helpers/resizeObserverLoopErrors';
 import { recordScrollEventObservation } from '../../utils/scroll/eventObservation';
+import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';
 
 const VIEWPORT_PX = 600;
 const BUFFER_PX = 400;
@@ -159,6 +160,60 @@ async function pinToBottomAndSettle(scrollEl: HTMLElement, label: string): Promi
 }
 
 describe('mount + tail seeding', () => {
+  for (const exact of [false, true]) it(`renders the actual viewport after an unchanged-bottom redirect (exact=${exact})`, async () => {
+    const controller = createUseStickToBottomController({ externalContentGeometry: true });
+    onTestFinished(() => controller.detach());
+    const compensations: EngineCompensation[] = [];
+    const ctx = mountHarness({
+      estimate: { at: () => ROW_PX, isExact: () => exact },
+      onCompensation: (compensation) => {
+        compensations.push(compensation);
+        controller.applyEngineCompensation(compensation);
+      },
+    });
+    const scroller = ctx.scrollEl;
+    await waitForStableGeometry(scroller, 'initial mount');
+    await pinToBottomAndSettle(scroller, 'initial bottom');
+    if (!exact) {
+      // Previously visited rows retain measurements. Mounting them again
+      // reports the same sizes, so RO cannot repair a stale render window.
+      for (let index = 0; index < ROW_COUNT; index += 6) {
+        ctx.harness.handle()!.scrollToIndex(index);
+        await waitForStableGeometry(scroller, 'visit history');
+      }
+      expect(ctx.harness.handle()!.takeSnapshot().every((size) => size === ROW_PX)).toBe(true);
+    }
+    await pinToBottomAndSettle(scroller, 'initial bottom');
+    controller.attach(scroller, scroller.querySelector('[data-virtual-row-plane]') as HTMLElement);
+    controller.skipWarmup();
+    const top = scroller.scrollTop;
+    const scrolls = vi.fn();
+    scroller.addEventListener('scroll', scrolls);
+    const before = ctx.harness.getRows();
+    ctx.harness.setRows([...before.slice(-6), ...before.slice(0, -6)]);
+    await waitForStableGeometry(scroller, 'redirected compensation');
+    const viewport = scroller.getBoundingClientRect();
+    const visible = [...scroller.querySelectorAll('[data-row-id]')].filter((row) => {
+      const rect = row.getBoundingClientRect();
+      return rect.bottom > viewport.top && rect.top < viewport.bottom;
+    });
+    expect(compensations).toHaveLength(1);
+    expect(compensations[0].target).toBe(0);
+    expect(scroller.scrollTop).toBe(top);
+    expect(scrolls).not.toHaveBeenCalled();
+    expect(visible.length).toBeGreaterThan(0);
+    expect(rowEl(scroller, 'row-53')).not.toBeNull();
+  });
+
+  it('renders the actual viewport when the surface has no compensation consumer', async () => {
+    const ctx = mountHarness({ estimate: { at: () => ROW_PX, isExact: () => true } });
+    await pinToBottomAndSettle(ctx.scrollEl, 'initial bottom');
+    const before = ctx.harness.getRows();
+    ctx.harness.setRows([...before.slice(-6), ...before.slice(0, -6)]);
+    await waitForStableGeometry(ctx.scrollEl, 'unconsumed compensation');
+    expect(rowEl(ctx.scrollEl, 'row-53')).not.toBeNull();
+  });
+
   it('reuses the intent owner scrollTop observation', async () => {
     const { scrollEl } = mountHarness();
     await waitFor(() => mountedRowIndexes(scrollEl).length > 0, 'rows to mount');

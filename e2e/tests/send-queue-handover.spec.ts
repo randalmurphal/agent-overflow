@@ -154,3 +154,61 @@ test('a message queued mid-turn is in the preview or the timeline, never neither
   await expect(page.getByTestId('send-queue-preview-row')).toHaveCount(0);
   await expect(page.getByText(QUEUED, { exact: true })).toHaveCount(1);
 });
+
+// Hold only this fixture's mock process, so the queued stdin write succeeds
+// without a replay echo. This models Claude waiting on a foreground tool and
+// avoids the mock adapter's automatic immediate acknowledgement.
+test('an unconsumed Claude message stays pending across navigation and reload', async ({ harness, page }) => {
+  await harness.rpc('HarnessSetScenario', {
+    scenario: claudeScenario('pending-queue-return', [
+      emit(textLines('working', 'Waiting for the foreground agent.')),
+      { waitSignal: { name: 'finish' } },
+      emit([RESULT_LINE]),
+    ]),
+  });
+  const threadId = await seedAgentThread(harness, 'pending-queue-return', 'Pending queue return');
+  await harness.open(page);
+  await page.getByText('Pending queue return', { exact: true }).click();
+  const mockId = await startMock(harness, threadId);
+  const input = page.getByLabel('Message Input');
+  await input.fill('Run the foreground agent.');
+  await input.press('Enter');
+  await waitForGate(harness, 'finish');
+
+  const mocks = await harness.rpc<Array<{ mockId: string; registration: { pid: number } }>>('HarnessListMocks');
+  const pid = mocks.find((mock) => mock.mockId === mockId)?.registration.pid;
+  expect(pid).toBeGreaterThan(0);
+  process.kill(pid!, 'SIGSTOP');
+  try {
+    const flushed = harness.waitForEvent('provider:queue_flushed', (ev: any) => ev.threadId === threadId);
+    await input.fill(QUEUED);
+    await input.press('Enter');
+    await flushed;
+    await expect.poll(async () => {
+      const rows = await harness.rpc<Array<{ summary: string }>>('ListItems', threadId, false);
+      return rows.some((row) => row.summary === QUEUED);
+    }).toBe(true);
+    const live = await harness.rpc<{ flushedItems: Array<{ message: string }> }>('GetThreadLiveState', threadId);
+    expect(live.flushedItems.some((item) => item.message === QUEUED)).toBe(true);
+    const preview = page.getByTestId('send-queue-preview-row').filter({ hasText: QUEUED });
+    const bubble = page.getByTestId('user-message-bubble').filter({ hasText: QUEUED });
+    await expect(preview).toBeVisible();
+    await expect(bubble).toHaveCount(0);
+
+    // A second thread gives the original pane a real detach/attach cycle.
+    await seedAgentThread(harness, 'queue-other', 'Queue other thread');
+    await page.getByText('Queue other thread', { exact: true }).click();
+    await page.getByText('Pending queue return', { exact: true }).click();
+    await expect(preview).toBeVisible();
+    await expect(bubble).toHaveCount(0);
+
+    await page.reload();
+    await expect(preview).toBeVisible();
+    await expect(bubble).toHaveCount(0);
+  } finally {
+    process.kill(pid!, 'SIGCONT');
+  }
+  await expect(page.getByTestId('user-message-bubble').filter({ hasText: QUEUED })).toBeVisible();
+  await expect(page.getByTestId('send-queue-preview-row').filter({ hasText: QUEUED })).toHaveCount(0);
+  await advance(harness, mockId, 'finish');
+});

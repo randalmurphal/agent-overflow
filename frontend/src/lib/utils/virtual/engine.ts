@@ -62,6 +62,9 @@ export interface VirtualEngine {
    * peak) — the yank the auto-collapse release suite guards against.
    */
   noteScrollOffset(offset: number): void;
+  /** Reconcile a compensation readback immediately, without ending initial
+   * tail seeding. A redirected or unconsumed request may emit no scroll event. */
+  reconcileScrollOffset(offset: number): EngineUpdate | null;
   applyViewportResize(size: number): EngineUpdate | null;
   /** One RO delivery batch of [index, size] pairs.
    *
@@ -205,6 +208,11 @@ export function createEngine(options: EngineOptions): VirtualEngine {
       // Deliberately leaves `hasScrollInput` alone: tail seeding ends on
       // the first scroll EVENT, as it always has.
       scrollOffset = offset;
+    },
+
+    reconcileScrollOffset(offset) {
+      scrollOffset = offset;
+      return refresh(undefined, false);
     },
 
     applyViewportResize(size) {

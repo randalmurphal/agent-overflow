@@ -100,11 +100,11 @@ func DecodePromotionState(raw string) (PromotionState, error) {
 }
 
 // MarkPromotedAtInterrupt returns raw with the promoted-at-interrupt
-// marker set. An empty meta becomes a one-key object. Malformed metas
+// marker set and pending-flush visibility cleared. Malformed metas
 // return an error — the caller is about to persist this row and must
 // not silently drop the marker.
 func MarkPromotedAtInterrupt(raw string) (string, error) {
-	return mergeKey(raw, promotedAtInterruptKey, true)
+	return mergeKeys(raw, map[string]any{promotedAtInterruptKey: true, pendingFlushKey: false})
 }
 
 // MarkPromotedEchoBoundary returns raw with the echo boundary set.

@@ -9,7 +9,7 @@ import {
   projectSendStarted,
   resetForTest as resetThreadStatuses,
 } from './threadStatuses.svelte';
-import { resetForTest as resetSendQueue } from './sendQueue.svelte';
+import { resetForTest as resetSendQueue, markItemsFlushed, getFlushedForThread } from './sendQueue.svelte';
 import { resetLiveUsageSnapshotsForTest } from './threadContextWindow';
 import { getThreads, getThreadLiveActivityAt, refreshThreads } from './threads.svelte';
 import { claimLocalReadMarker, resetLocalReadMarkersForTest } from './threadReadWrites';
@@ -3648,6 +3648,17 @@ describe('setupEventListeners', () => {
       turnIndex: Number.NaN,
     });
     expect(pane.items).toHaveLength(1);
+  });
+
+  it('retains an unmounted thread preview when a quiet reservation is emitted by a placement shift', async () => {
+    const row = makeItem({ id: 'user:flush:pending', threadId: 'unmounted', kind: 'user_text', meta: '{"pendingFlush":true}' });
+    markItemsFlushed(row.threadId, [{ queueItemId: 'q-pending', userItemId: row.id, message: row.summary }]);
+    emitWailsEvent('provider:item_event', { action: 'upsert', threadId: row.threadId, item: row });
+    await nextFrame();
+    expect(getFlushedForThread(row.threadId)).toHaveLength(1);
+    emitWailsEvent('provider:item_event', { action: 'upsert', threadId: row.threadId, item: { ...row, meta: '{"pendingFlush":false}', updatedAt: 1 } });
+    await nextFrame();
+    expect(getFlushedForThread(row.threadId)).toHaveLength(0);
   });
 
   // provider:queue_restored reports queued messages whose store rows

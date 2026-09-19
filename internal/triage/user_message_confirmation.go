@@ -27,6 +27,11 @@ func (r *Router) PersistAndRegisterPendingQuietFlushSendWithExpectation(
 	anchor := r.flushAnchor(threadID)
 	anchor.Lock()
 	defer anchor.Unlock()
+	meta, err := itemmeta.SetPendingFlush(item.Meta, true)
+	if err != nil {
+		return fmt.Errorf("mark pending flush: %w", err)
+	}
+	item.Meta = meta
 	if err := r.PersistItemQuiet(item, nil); err != nil {
 		return err
 	}
@@ -124,7 +129,7 @@ func (r *Router) commitUserConfirmation(threadID string, pending *pendingSend, n
 			}
 			return itemmeta.MarkPromotedEchoBoundary(merged, boundary)
 		}
-		return merged, nil
+		return itemmeta.SetPendingFlush(merged, false)
 	}
 	var rows []store.Item
 	if plan.Placement {
