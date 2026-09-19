@@ -3,12 +3,14 @@ import { BROWSER_TOOLS_SERVER } from '../../utils/browserTools';
 import {
   AO_TOOL_SERVERS,
   REMOTE_TOOLS_SERVER,
+  THREAD_TOOLS_SERVER,
   aoToolFacts,
   aoToolPresentation,
   aoToolServer,
   isAoToolMeta,
   remoteResultView,
   remoteRunCommand,
+  threadResultView,
   type AoToolNames,
 } from './aoTools';
 
@@ -27,7 +29,10 @@ const names: AoToolNames = {
 describe('AO tool presentation', () => {
   it('names the servers the Go side registers', () => {
     expect(REMOTE_TOOLS_SERVER).toBe('ao-remote-tools');
-    expect(Object.keys(AO_TOOL_SERVERS).sort()).toEqual([BROWSER_TOOLS_SERVER, REMOTE_TOOLS_SERVER].sort());
+    expect(THREAD_TOOLS_SERVER).toBe('ao-thread-tools');
+    expect(Object.keys(AO_TOOL_SERVERS).sort()).toEqual(
+      [BROWSER_TOOLS_SERVER, REMOTE_TOOLS_SERVER, THREAD_TOOLS_SERVER].sort(),
+    );
   });
 
   it('leaves native tools and other MCP servers alone', () => {
@@ -89,6 +94,61 @@ describe('AO tool presentation', () => {
       const p = aoToolPresentation(meta(REMOTE_TOOLS_SERVER, 'remote_future', { computer_id: 'mac', depth: 2, deep: { a: 1 } }))!;
       expect(p).toMatchObject({ icon: 'monitor', label: 'future', headerLabel: 'Remote future', computerId: 'mac' });
       expect(p.what).toBe('computer_id="mac", depth=2, deep={"a":1}');
+    });
+  });
+
+  describe('thread tools', () => {
+    const tid = '7f2c9a41-aaaa-bbbb-cccc-dddddddddddd';
+
+    it.each([
+      ['thread_search', { query: 'flaky test' }, 'search', '"flaky test"'],
+      ['thread_search', {}, 'search', 'threads'],
+      ['thread_search', { thread_id: tid }, 'search', 'thread 7f2c9a41'],
+      ['thread_show', { thread_id: '7f2c9a41' }, 'read', 'thread 7f2c9a41'],
+      ['thread_item', { thread_id: tid, item_id: 'it-9' }, 'item', 'it-9 in thread 7f2c9a41'],
+      ['thread_item', { thread_id: tid }, 'item', 'thread 7f2c9a41'],
+      ['thread_options', {}, 'options', 'spawn options'],
+      ['thread_spawn', { prompt: 'Port the fix\nto Windows' }, 'spawn', 'Port the fix'],
+      ['thread_send', { thread_id: tid, message: 'ping' }, 'send', 'ping → thread 7f2c9a41'],
+      ['thread_send', { message: 'ping' }, 'send', 'ping'],
+      ['thread_ask', { thread_id: tid, question: 'which branch?' }, 'ask', 'which branch? → thread 7f2c9a41'],
+      ['thread_reply', { token: 't', text: 'done' }, 'reply', 'done'],
+      ['thread_status', { tokens: ['a', 'b'] }, 'status', '2 requests'],
+      ['thread_status', {}, 'status', 'requests'],
+      ['thread_cancel', { token: 't' }, 'cancel', 'request'],
+      ['thread_cancel', { thread_id: tid }, 'cancel', 'thread 7f2c9a41'],
+      ['thread_update', { thread_ids: [tid, tid] }, 'update', '2 threads'],
+      ['thread_update', { thread_ids: [tid] }, 'update', 'thread 7f2c9a41'],
+      ['thread_group', { group_id: 'g1', rename: 'Release' }, 'group', 'rename g1 → Release'],
+      ['thread_group', { group: 'Bugs', pin: 'front' }, 'group', 'pin Bugs front'],
+      ['thread_group', { group: 'Bugs', delete: true }, 'group', 'delete Bugs'],
+      ['thread_remind', { note: 'check the queue' }, 'remind', 'check the queue'],
+    ])('%s', (tool, input, label, what) => {
+      const p = aoToolPresentation(meta(THREAD_TOOLS_SERVER, tool, input), names)!;
+      expect(p).toMatchObject({ icon: 'speech-bubble', label, what, headerLabel: `Thread ${label}` });
+    });
+
+    it('carries the computer a cross-computer call names', () => {
+      const p = aoToolPresentation(meta(THREAD_TOOLS_SERVER, 'thread_show', { computer_id: 'mac', thread_id: tid }), names)!;
+      expect(p).toMatchObject({ computerId: 'mac', computerName: 'Macaroni-air' });
+    });
+
+    it('reads a reply for the thread name the arguments could only abbreviate', () => {
+      expect(threadResultView(JSON.stringify({ thread_id: tid, title: 'Windows launcher', state: 'running' })))
+        .toEqual({ title: 'Windows launcher', state: 'running', summary: '' });
+      expect(threadResultView(JSON.stringify({ rows: [{ thread_id: tid }, { thread_id: tid }] })))
+        .toEqual({ title: '', state: '', summary: '2 threads' });
+      expect(threadResultView(JSON.stringify({ computers: [{ rows: [{}] }, { rows: [{}, {}] }] })))
+        .toEqual({ title: '', state: '', summary: '3 threads' });
+      expect(threadResultView(JSON.stringify({ rows: [{}] }))!.summary).toBe('1 thread');
+      expect(threadResultView('not json')).toBeNull();
+      expect(threadResultView(JSON.stringify({ ok: true }))).toBeNull();
+      expect(threadResultView(JSON.stringify([1, 2]))).toBeNull();
+    });
+
+    it('still presents a tool the table does not know', () => {
+      const p = aoToolPresentation(meta(THREAD_TOOLS_SERVER, 'thread_future', { thread_id: tid }))!;
+      expect(p).toMatchObject({ icon: 'speech-bubble', label: 'future', headerLabel: 'Thread future' });
     });
   });
 

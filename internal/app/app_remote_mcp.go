@@ -476,6 +476,10 @@ func (a *App) startRemoteMCPRefresh() {
 					if a.shuttingDown.Load() {
 						return
 					}
+					// The thread server's schemas and guide follow the
+					// same pairing change, and its registration is
+					// independent of the remote server's.
+					a.refreshThreadMCPOnWake(id, live)
 					if !a.remoteMCPServer().HasThread(id) || !a.remoteMCPServer().ThreadEnabled(id) {
 						continue
 					}

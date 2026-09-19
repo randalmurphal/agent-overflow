@@ -69,10 +69,27 @@ type ThreadSearchHit struct {
 
 // ThreadSearchFilter narrows a search. The zero value searches every thread
 // this computer owns except the hidden modes.
+//
+// ListThreadsByActivity takes the same filter for the query-less listing, so
+// a row a search would refuse is a row the listing refuses. Kinds and
+// SnippetBudget describe indexed item rows and mean nothing to the listing,
+// which ignores them.
 type ThreadSearchFilter struct {
 	// ThreadIDs restricts the search to these threads.
 	ThreadIDs []string
 	ProjectID string
+	// Provider restricts to threads running on one provider.
+	Provider string
+	// Archived is nil for "either"; a non-nil value restricts to archived
+	// or to unarchived threads.
+	Archived *bool
+	// SinceUnixMs restricts to threads whose last activity is at or after
+	// it. Last activity is the latest completed turn, or updated_at for a
+	// thread that has never completed one.
+	SinceUnixMs int64
+	// SpawnedBy restricts to the threads one caller thread spawned: the
+	// targets of its `spawn` rows in the request ledger.
+	SpawnedBy string
 	// Kinds restricts to user / assistant / tool / title rows.
 	Kinds []string
 	// ScratchThreadIDs are the scratch threads the caller may see. Scratch
@@ -85,6 +102,73 @@ type ThreadSearchFilter struct {
 	SnippetBudget int
 }
 
+// threadLastActivityExpr is the thread clock both the search filter and the
+// listing order read: the newest completed turn, falling back to updated_at
+// for a thread that has never completed one. `completed_at IS NOT NULL` is
+// stated so SQLite can use the partial idx_turns_thread_completed, and
+// NULLIF keeps the fallback identical to the Go projection, which treats a
+// zero stamp as no completed turn.
+//
+// alias is the qualified thread-row prefix ("t." or "threads.").
+func threadLastActivityExpr(alias string) string {
+	return `COALESCE(NULLIF((SELECT MAX(completed_at) FROM turns
+		             WHERE turns.thread_id = ` + alias + `id AND completed_at IS NOT NULL), 0),
+		   ` + alias + `updated_at)`
+}
+
+// threadRowConditions renders the predicates that narrow a thread ROW, for
+// the ranked search and the listing alike. Visibility comes first: hidden
+// modes are out unless the caller named that scratch thread, which is the
+// rule that keeps another agent's side chat out of both answers.
+//
+// It does not render the ThreadIDs restriction: the search applies that to
+// the index row it already has in hand, the listing to the thread id.
+func (f ThreadSearchFilter) threadRowConditions(alias string) ([]string, []any) {
+	var conditions []string
+	var args []any
+
+	hiddenClause, hiddenArgs := hiddenThreadModesClause(alias + "mode")
+	if len(f.ScratchThreadIDs) > 0 {
+		scratchClause, scratchArgs := inClause(alias+"id", f.ScratchThreadIDs)
+		conditions = append(conditions, "("+hiddenClause+" OR ("+alias+"mode = ? AND "+scratchClause+"))")
+		args = append(args, hiddenArgs...)
+		args = append(args, threadmode.ModeScratch)
+		args = append(args, scratchArgs...)
+	} else {
+		conditions = append(conditions, hiddenClause)
+		args = append(args, hiddenArgs...)
+	}
+
+	if f.ProjectID != "" {
+		conditions = append(conditions, alias+"project_id = ?")
+		args = append(args, f.ProjectID)
+	}
+	if f.Provider != "" {
+		conditions = append(conditions, alias+"provider = ?")
+		args = append(args, f.Provider)
+	}
+	if f.Archived != nil {
+		archived := 0
+		if *f.Archived {
+			archived = 1
+		}
+		conditions = append(conditions, alias+"archived = ?")
+		args = append(args, archived)
+	}
+	if f.SinceUnixMs > 0 {
+		conditions = append(conditions, threadLastActivityExpr(alias)+" >= ?")
+		args = append(args, f.SinceUnixMs)
+	}
+	if f.SpawnedBy != "" {
+		conditions = append(conditions, `EXISTS (SELECT 1 FROM thread_requests spawns
+		            WHERE spawns.caller_thread_id = ?
+		              AND spawns.kind = ?
+		              AND spawns.target_thread_id = `+alias+`id)`)
+		args = append(args, f.SpawnedBy, ThreadRequestSpawn)
+	}
+	return conditions, args
+}
+
 // SearchThreads runs one FTS5 query over settled message text, tool-call
 // summaries and thread titles, ranked by bm25.
 //
@@ -93,6 +177,10 @@ type ThreadSearchFilter struct {
 // are excluded by joining `owned_threads` at query time: a thread moved to
 // another computer stops matching without a reindex, and so does a scratch
 // thread the caller does not own.
+//
+// Every filter is applied in SQL, so LIMIT and OFFSET count the rows the
+// caller receives. A caller that drops rows of its own can no longer page
+// by the offset it passed in.
 func (s *Store) SearchThreads(query string, filter ThreadSearchFilter) ([]ThreadSearchHit, error) {
 	trimmed := strings.TrimSpace(query)
 	if trimmed == "" {
@@ -113,26 +201,14 @@ func (s *Store) SearchThreads(query string, filter ThreadSearchFilter) ([]Thread
 	conditions := []string{"thread_search MATCH ?"}
 	args := []any{trimmed}
 
-	hiddenClause, hiddenArgs := hiddenThreadModesClause("t.mode")
-	if len(filter.ScratchThreadIDs) > 0 {
-		scratchClause, scratchArgs := inClause("t.id", filter.ScratchThreadIDs)
-		conditions = append(conditions, "("+hiddenClause+" OR (t.mode = ? AND "+scratchClause+"))")
-		args = append(args, hiddenArgs...)
-		args = append(args, threadmode.ModeScratch)
-		args = append(args, scratchArgs...)
-	} else {
-		conditions = append(conditions, hiddenClause)
-		args = append(args, hiddenArgs...)
-	}
+	rowConditions, rowArgs := filter.threadRowConditions("t.")
+	conditions = append(conditions, rowConditions...)
+	args = append(args, rowArgs...)
 
 	if len(filter.ThreadIDs) > 0 {
 		clause, clauseArgs := inClause("r.thread_id", filter.ThreadIDs)
 		conditions = append(conditions, clause)
 		args = append(args, clauseArgs...)
-	}
-	if filter.ProjectID != "" {
-		conditions = append(conditions, "t.project_id = ?")
-		args = append(args, filter.ProjectID)
 	}
 	if len(filter.Kinds) > 0 {
 		for _, kind := range filter.Kinds {

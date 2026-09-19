@@ -168,6 +168,7 @@ url = "https://mcp.atlassian.com/v1/sse"
 			if err != nil {
 				t.Fatalf("ListThreadMcpServers: %v", err)
 			}
+			rows = providerMCPRows(rows)
 			if len(rows) != 1 {
 				t.Fatalf("got %d rows, want only atlassian (a startup state for a server absent from the list must not create a row): %#v", len(rows), rows)
 			}

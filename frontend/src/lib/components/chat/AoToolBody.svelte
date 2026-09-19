@@ -14,7 +14,14 @@
   import { nestedScroll } from '../../utils/scroll/wheelAttribution';
   import AnsiText from './AnsiText.svelte';
   import ExpandablePayloadBody from './ExpandablePayloadBody.svelte';
-  import { REMOTE_TOOLS_SERVER, remoteResultView, type AoToolFact, type AoToolPresentation } from './aoTools';
+  import {
+    REMOTE_TOOLS_SERVER,
+    THREAD_TOOLS_SERVER,
+    remoteResultView,
+    threadResultView,
+    type AoToolFact,
+    type AoToolPresentation,
+  } from './aoTools';
 
   let {
     pane,
@@ -78,12 +85,18 @@
   >
     {#snippet renderContent({ data, testId })}
       {@const view = tool.server === REMOTE_TOOLS_SERVER ? remoteResultView(data) : null}
+      {@const thread = tool.server === THREAD_TOOLS_SERVER ? threadResultView(data) : null}
       <div
         class="ansi-body min-w-0 max-w-full max-h-60 overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-words px-3 py-2 text-[0.6875rem] leading-relaxed text-fg-muted"
         use:nestedScroll
         data-testid={testId}
       >
-        {#if view}
+        {#if thread}
+          <p class="mb-1 text-fg-hint" data-testid="tool-call-card-thread-title">
+            {thread.title || thread.summary}{thread.state ? ` · ${thread.state}` : ''}
+          </p>
+          <AnsiText source={data} class="whitespace-pre-wrap break-all" />
+        {:else if view}
           <p class="mb-1 text-fg-hint" data-testid="tool-call-card-remote-outcome">{view.outcome}</p>
           {#if view.error}
             <p class="mb-1 break-words text-error">{view.error}</p>

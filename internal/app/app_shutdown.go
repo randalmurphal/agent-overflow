@@ -347,6 +347,13 @@ func (a *App) Shutdown(ctx context.Context) error {
 	}
 	a.remoteMCP.wg.Wait()
 	record("close remote MCP server", a.remoteMCPServer().Close())
+	// The boot-time thread search index writes FTS rows straight into
+	// SQLite, so it joins before Step 9's store close. The build is
+	// cancellable and resumable: an interrupted pass leaves its progress
+	// row behind and the next boot continues from it.
+	a.waitThreadSearchIndex()
+	record("stop thread search index", nil)
+	record("close thread MCP server", a.threadMCPServer().Close())
 	if a.backends != nil {
 		a.backends.WaitOwnDevices()
 	}

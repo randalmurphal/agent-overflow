@@ -166,6 +166,7 @@ func (a *App) Start(ctx context.Context) (startErr error) {
 func (a *App) startUnattendedWork() error {
 	a.startOwnDeviceConnections()
 	a.startRemoteMCPRefresh()
+	a.startThreadSearchIndex()
 	a.startRemoteWatches()
 	if err := a.startThreadTransfers(); err != nil {
 		return err

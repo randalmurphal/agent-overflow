@@ -858,6 +858,21 @@ func TestHandleCodexMCPOAuthCompleted_FailurePayloadCarriesError(t *testing.T) {
 	}
 }
 
+// providerMCPRows drops the app-managed servers so a provider-truth
+// assertion counts only what the provider itself reported. The
+// ao-thread-tools row rides on every interactive Claude/Codex thread and
+// says nothing about the provider's own answer.
+func providerMCPRows(in []ThreadMCPServer) []ThreadMCPServer {
+	out := make([]ThreadMCPServer, 0, len(in))
+	for _, s := range in {
+		if isAppManagedMCPServer(s.Name) {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
 // findServer is a tiny test helper that scans for a ThreadMCPServer by
 // name. Returns the zero value if missing.
 func findServer(in []ThreadMCPServer, name string) ThreadMCPServer {

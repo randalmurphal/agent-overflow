@@ -166,6 +166,11 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 // Interleaved with the spawn and handshake they read as a second constructor.
 // Nothing here touches the send or queue paths.
 func (s *Session) startOrResumeThread(ctx context.Context, cfg Config) error {
+	// Composed before the params so a failed config read omits the
+	// override rather than replacing the user's configured value.
+	cfg.DeveloperInstructions = s.resolveDeveloperInstructions(ctx, cfg.DeveloperInstructions)
+	s.setDeveloperInstructions(cfg.DeveloperInstructions)
+
 	// The version comes from the handshake recorded moments ago — the
 	// connected process's own statement of its build.
 	threadParams := buildThreadParams(cfg, s.AppServerVersion())

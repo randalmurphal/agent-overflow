@@ -56,7 +56,7 @@ describe('settings section map', () => {
     expect(SETTINGS_SECTION_GROUPS.map((g) => g.sections.map((s) => s.id))).toEqual([
       ['theme', 'typography', 'chat', 'sidebar', 'spinner'],
       ['threads', 'performance', 'keybindings', 'notifications', 'updates'],
-      ['claude', 'codex', 'commit-messages', 'browser', 'discussions'],
+      ['claude', 'codex', 'commit-messages', 'browser', 'thread-tools', 'discussions'],
       ['projects', 'git', 'editor'],
       ['systems', 'remote', 'agent-access'],
       ['observability', 'storage'],

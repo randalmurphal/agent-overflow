@@ -201,7 +201,7 @@ func (a *App) TriggerMcpAuth(threadID, name string) (MCPAuthInitResult, error) {
 //
 //ao:scope settings:write
 func (a *App) ReconnectMcpServer(threadID, name string) error {
-	if isAppManagedMCPServer(name) && name != remoteMCPName {
+	if isAppManagedMCPServer(name) && name != remoteMCPName && name != threadMCPName {
 		return errors.New("reconnect mcp server: built-in MCP server is controlled in Settings")
 	}
 	return a.mcpService().ReconnectMcpServer(threadID, name)
@@ -265,7 +265,7 @@ func (a *App) ListThreadMcpServers(threadID string) ([]ThreadMCPServer, error) {
 		return nil, err
 	}
 	_, live := a.sessionManager().get(threadID)
-	return a.withRemoteMCPRow(thread, a.withBrowserMCPRow(thread, threadMCPServers(rows), live), live), nil
+	return a.withThreadMCPRow(thread, a.withRemoteMCPRow(thread, a.withBrowserMCPRow(thread, threadMCPServers(rows), live), live), live), nil
 }
 
 // ListWorkspaceMcpServers returns the config+cache view of a
@@ -309,6 +309,9 @@ func (a *App) SetThreadMcpServerEnabled(threadID, name string, enabled bool) err
 		}
 		if name == remoteMCPName {
 			return a.setRemoteThreadMCPEnabled(thread, enabled)
+		}
+		if name == threadMCPName {
+			return a.setThreadToolsThreadMCPEnabled(thread, enabled)
 		}
 		return a.setBrowserThreadMCPEnabled(thread, enabled)
 	}

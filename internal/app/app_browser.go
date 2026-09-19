@@ -66,7 +66,11 @@ func (a *App) browserMCPConfigForThread(thread store.Thread) (map[string]any, er
 }
 
 func isAppManagedMCPServer(name string) bool {
-	return strings.TrimSpace(name) == appbrowser.ServerName || strings.TrimSpace(name) == remoteMCPName
+	switch strings.TrimSpace(name) {
+	case appbrowser.ServerName, remoteMCPName, threadMCPName:
+		return true
+	}
+	return false
 }
 
 func (a *App) withBrowserMCPRow(thread store.Thread, rows []ThreadMCPServer, live bool) []ThreadMCPServer {

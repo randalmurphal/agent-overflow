@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/errorsx"
 )
 
 func TestToolCallEnvelopeAllowsMetadataButArgumentsStayStrict(t *testing.T) {
@@ -196,5 +198,105 @@ func TestPlainJSONClientStillGetsAJSONBody(t *testing.T) {
 		if err := json.NewDecoder(resp.Body).Decode(&reply); err != nil || reply.ID != 7 {
 			t.Fatalf("Accept %q: %+v, %v", accept, reply, err)
 		}
+	}
+}
+
+// postRequest sends one JSON-RPC request to a capability URL and returns
+// the decoded top-level reply.
+func postRequest(t *testing.T, url, body string) map[string]json.RawMessage {
+	t.Helper()
+	resp, err := http.Post(url, "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var reply map[string]json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&reply); err != nil {
+		t.Fatal(err)
+	}
+	return reply
+}
+
+// TestInstructionsFuncReplacesTheFixedTextPerHandshake covers the optional
+// hook a server whose guide depends on the ACCESS needs: the text is
+// recomputed on every initialize, so a change reaches a running session's
+// next handshake without re-registering the thread.
+func TestInstructionsFuncReplacesTheFixedTextPerHandshake(t *testing.T) {
+	server := New("test-tools", "fixed text", func(string) []map[string]any { return nil }, nil)
+	t.Cleanup(func() { _ = server.Close() })
+	config, err := server.RegisterThread("thread", "access-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	url := config["test-tools"].(map[string]any)["url"].(string)
+	const handshake = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`
+
+	instructions := func(reply map[string]json.RawMessage) string {
+		t.Helper()
+		var result struct {
+			Instructions string `json:"instructions"`
+		}
+		if err := json.Unmarshal(reply["result"], &result); err != nil {
+			t.Fatal(err)
+		}
+		return result.Instructions
+	}
+
+	if got := instructions(postRequest(t, url, handshake)); got != "fixed text" {
+		t.Fatalf("instructions = %q, want the fixed text", got)
+	}
+
+	calls := 0
+	server.SetInstructionsFunc(func(access string) string {
+		calls++
+		return "computed for " + access
+	})
+	if got := instructions(postRequest(t, url, handshake)); got != "computed for access-1" {
+		t.Fatalf("instructions = %q, want the computed text", got)
+	}
+	if got := instructions(postRequest(t, url, handshake)); got != "computed for access-1" {
+		t.Fatalf("second handshake = %q", got)
+	}
+	if calls != 2 {
+		t.Fatalf("instructions were computed %d times, want one per handshake", calls)
+	}
+}
+
+// TestDisabledErrorCarriesTheOwnersCode covers the second hook: a server
+// that is switched off refuses with its own documented code, so the model
+// reads a capability that is off rather than a broken tool.
+func TestDisabledErrorCarriesTheOwnersCode(t *testing.T) {
+	server := New("test-tools", "", func(string) []map[string]any { return nil },
+		func(w http.ResponseWriter, _ context.Context, req Request, _ string) {
+			WriteResult(w, req.ID, map[string]any{"content": []map[string]any{}})
+		})
+	t.Cleanup(func() { _ = server.Close() })
+	config, err := server.RegisterThread("thread", "access")
+	if err != nil {
+		t.Fatal(err)
+	}
+	url := config["test-tools"].(map[string]any)["url"].(string)
+	const call = `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"x","arguments":{}}}`
+
+	server.SetDisabledError(errorsx.Public("feature_off", "Turn it on in settings.", nil))
+	server.SetThreadEnabled("thread", false)
+	reply := postRequest(t, url, call)
+	body := string(reply["result"])
+	if !strings.Contains(body, "feature_off") || !strings.Contains(body, "Turn it on in settings.") {
+		t.Fatalf("refusal did not carry the owner's code: %s", body)
+	}
+
+	// Without an override the default refusal still stands, so a server
+	// that sets none is unchanged.
+	plain := New("plain-tools", "", func(string) []map[string]any { return nil }, nil)
+	t.Cleanup(func() { _ = plain.Close() })
+	plainConfig, err := plain.RegisterThread("thread", "access")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain.SetThreadEnabled("thread", false)
+	plainBody := string(postRequest(t, plainConfig["plain-tools"].(map[string]any)["url"].(string), call)["result"])
+	if !strings.Contains(plainBody, "disabled") {
+		t.Fatalf("default refusal = %s", plainBody)
 	}
 }

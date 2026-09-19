@@ -305,6 +305,11 @@ type Session struct {
 	ctx      context.Context
 	threadID string // our internal thread ID
 	workDir  string // absolute workspace cwd used for project-scoped config/read
+	// developerInstructions is the composed thread-level value this
+	// session started with: the cwd's configured instructions plus AO's
+	// appended guide. Guarded by mu; read by ForkAt, which has to carry
+	// it onto the child thread. Empty means no override was sent.
+	developerInstructions string
 	// codexThreadID is the Codex app-server's thread ID for this session's
 	// root thread, learned from the thread/start (or thread/resume) response.
 	// Read it with rootThreadID(); write it with setRootThreadID().
@@ -669,6 +674,13 @@ type Config struct {
 	// Start-time only — the config map is not re-read per turn — which is
 	// why PlanLiveUpdate's whole-Config comparison must see this field.
 	DisabledTools []string
+	// DeveloperInstructions is AO's guide, appended to the thread cwd's
+	// own configured `developer_instructions` and sent as
+	// `developerInstructions` on thread/start, thread/resume and
+	// thread/fork. Empty omits the override entirely, which is what keeps
+	// a user's configured value from being replaced. See
+	// developer_instructions.go.
+	DeveloperInstructions string
 	// ServiceTier is Codex's native speed tier. "priority" is sent as
 	// serviceTier on thread/start|resume and turn/start. It must not rewrite
 	// Model; fast mode does not change the selected model.

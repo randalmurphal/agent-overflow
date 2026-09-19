@@ -78,6 +78,10 @@ var tierByKey = map[string]Tier{
 	// browserChromiumPath names an executable on THIS machine, like the
 	// provider binaries above it.
 	"browserChromiumPath": TierHost,
+	// threadToolsEnabled grants a provider session on this machine the
+	// authority to read and drive this computer's other threads. Host, for
+	// the reason the browser keys are.
+	"threadToolsEnabled": TierHost,
 	// Keep-awake inhibits THIS machine's sleep, and workflowPaused is the
 	// backend engine's own run state.
 	"keepAwakeEnabled": TierHost,

@@ -172,9 +172,14 @@ type App struct {
 	// app_remote_wait.go.
 	remoteWaitsRegistry remoteWaits
 	remoteMCP           appRemoteMCP
-	remoteWatchWG       sync.WaitGroup
-	remoteStartsOnce    sync.Once
-	remoteStarts        *keyedlock.Registry
+	// threadMCP owns the ao-thread-tools server and the threadtools
+	// contract bound to this app. Zero value ready; built on first use.
+	threadMCP appThreadMCP
+	// threadSearchIndex is the boot-time search index build.
+	threadSearchIndex threadSearchIndexBuild
+	remoteWatchWG     sync.WaitGroup
+	remoteStartsOnce  sync.Once
+	remoteStarts      *keyedlock.Registry
 	// providerTerminals is the per-connection take-control bookkeeping for
 	// claude-tui PTYs: which caller armed which attachment, so a dead socket
 	// releases exactly its own claim and its input lease. Zero value ready.

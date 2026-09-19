@@ -234,11 +234,24 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 			a.revokeRemoteMCP(threadID, sessionToken)
 		}
 	}()
+	threadServers, err := a.threadMCPConfigForThread(t, sessionToken)
+	if err != nil {
+		return fmt.Errorf("start session: register thread tools: %w", err)
+	}
+	registeredThread := false
+	defer func() {
+		if !registeredThread {
+			a.revokeThreadMCP(threadID, sessionToken)
+		}
+	}()
 	if browserServers == nil {
 		browserServers = map[string]any{}
 	}
 	for name, config := range remoteServers {
 		browserServers[name] = remoteMCPServerConfig(t.Provider, config)
+	}
+	for name, config := range threadServers {
+		browserServers[name] = threadMCPServerConfig(t.Provider, config)
 	}
 	if len(browserServers) == 0 {
 		browserServers = nil
@@ -274,6 +287,7 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 
 	a.sessionManager().put(threadID, newSess)
 	registeredRemote = true
+	registeredThread = true
 	if a.remoteMCP.revision.Load() != remoteRevision {
 		a.signalRemotePeers()
 	}
@@ -528,6 +542,13 @@ func (a *App) spawnProviderSession(
 		if mcpServers[remoteMCPName] != nil {
 			cfg.Env = withRemoteMCPClaudeEnv(cfg.Env)
 		}
+		// Admitting the thread tools without a prompt: under `dontAsk`
+		// this is what lets the call through at all, and under the
+		// prompting modes it is what skips the prompt. One argv value,
+		// wildcarded over the server so a new tool needs no second edit.
+		if mcpServers[threadMCPName] != nil {
+			cfg.AllowedTools = append(cfg.AllowedTools, ThreadToolsAllowedTool)
+		}
 		cfg.EventLogger = a.logger
 		cfg.MCPServers = mcpServers
 		// Injected, never resolved inside the provider package: a session
@@ -570,6 +591,19 @@ func (a *App) spawnProviderSession(
 		cfg.Env = a.sessionProcessEnv(t.Provider, cfg.Env, credential)
 		cfg.EventLogger = a.logger
 		cfg.MCPServers = mcpServers
+		// Codex has no server instructions channel of its own, so the
+		// thread tools' guide rides developer instructions instead. It
+		// follows the same shape the tool list does and comes from the
+		// same source, so the two cannot drift; a pairing change reaches
+		// a live thread at its next start or resume.
+		// The entry is registered whether or not the switch is on, so
+		// the tool list can be turned on live; the guide is only sent
+		// while the tools are on, since a guide to tools that are not
+		// listed would be noise, and a live switch reaches the text at
+		// the next start or resume.
+		if mcpServers[threadMCPName] != nil && a.threadToolsEnabledFor(threadID) {
+			cfg.DeveloperInstructions = a.threadToolsServer().Instructions(a.threadToolsShape(threadID))
+		}
 		// Ownership of a row sitting in the PROVIDER's queue is a store
 		// question — the id grammar is deterministic and therefore not a
 		// credential — so the codex package asks the app layer. AO writes no

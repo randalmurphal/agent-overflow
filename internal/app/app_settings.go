@@ -161,6 +161,12 @@ func (a *App) UpdateSettings(ctx context.Context, patch map[string]any) (setting
 		// app_power.go for why one mode string rather than the two keys.
 		a.applyKeepAwake(next)
 	}
+	if _, ok := patch["threadToolsEnabled"]; ok && prev.ThreadToolsEnabled != next.ThreadToolsEnabled {
+		// The switch applies to live sessions without a restart: the
+		// per-thread flag is pushed at every registered thread, so a
+		// running conversation gains or loses the tool list in place.
+		a.setThreadToolsEnabled(next.ThreadToolsEnabled)
+	}
 	if patchTouchesBrowserSettings(patch) {
 		// Disabling revokes tool calls synchronously; enabling publishes the
 		// tools after the manager accepts the new config. Process teardown and

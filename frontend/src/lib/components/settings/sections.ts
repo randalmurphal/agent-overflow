@@ -116,6 +116,12 @@ export const SETTINGS_SECTIONS = [
     description: 'The built-in browser agents drive from a companion pane.',
   },
   {
+    id: 'thread-tools',
+    label: 'Thread tools',
+    group: 'Agents',
+    description: "The built-in thread tools agents use to read, start and answer this computer's other conversations.",
+  },
+  {
     id: 'discussions',
     label: 'Discussions',
     group: 'Agents',
@@ -226,6 +232,6 @@ export function providerSettingsSection(provider: ProviderID): 'claude' | 'codex
 /** Pages that configure execution on a computer, rather than this frontend. */
 export function settingsUsesComputer(section: SettingsSection): boolean {
   return ['performance', 'notifications', 'claude', 'codex', 'commit-messages',
-    'browser', 'discussions', 'projects', 'git', 'editor', 'remote', 'agent-access',
+    'browser', 'thread-tools', 'discussions', 'projects', 'git', 'editor', 'remote', 'agent-access',
     'observability', 'storage'].includes(section);
 }

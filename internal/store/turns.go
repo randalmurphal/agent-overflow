@@ -526,3 +526,31 @@ func (s *Store) GetActiveTurn(threadID string) (Turn, bool, error) {
 	}
 	return turn, true, nil
 }
+
+// FirstTurnIndexAtOrAfter returns the lowest turn index of a thread whose
+// turn started at or after startedAt, which is the turn a "since this
+// timestamp" window begins at.
+//
+// found is false when no turn of the thread started that late. anyTurns
+// tells the two reasons apart in the same round trip: a thread that has
+// turns but none since the timestamp has simply been quiet, while a
+// thread with no turn rows at all has no anchor to resolve against and
+// leaves the caller to fall back to the whole thread.
+//
+// The aggregate is deliberately one statement over the thread's own turn
+// rows (turns_thread_index) rather than a walk of a bounded recent
+// listing: a thread with more turns than any listing cap would otherwise
+// resolve the anchor against the tail it happened to read.
+func (s *Store) FirstTurnIndexAtOrAfter(threadID string, startedAt int64) (turnIndex int, found, anyTurns bool, err error) {
+	var index sql.NullInt64
+	var total int64
+	err = s.reader().QueryRow(
+		`SELECT MIN(CASE WHEN started_at >= ? THEN turn_index END), COUNT(*)
+		   FROM turns WHERE thread_id = ?`,
+		startedAt, threadID,
+	).Scan(&index, &total)
+	if err != nil {
+		return 0, false, false, fmt.Errorf("store: first turn index at or after %d for %s: %w", startedAt, threadID, err)
+	}
+	return int(index.Int64), index.Valid, total > 0, nil
+}

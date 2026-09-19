@@ -149,6 +149,12 @@ func (c *session) searchQuery(args searchArgs) (SearchQuery, error) {
 	if args.SpawnedByMe {
 		query.SpawnedBy = c.caller.ThreadID
 	}
+	if query.Archived == nil && query.Query == "" {
+		// A listing is the sidebar's answer, which leaves archived threads
+		// out; a query still finds them because the text is the point.
+		excluded := false
+		query.Archived = &excluded
+	}
 	return query, nil
 }
 

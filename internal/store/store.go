@@ -52,6 +52,9 @@ type Store struct {
 	// readsQuiesced routes reads back to the writer pool while an
 	// operation needs the database to itself — see quiesceReads.
 	readsQuiesced atomic.Bool
+	// reads counts the read statements accessors have issued; see
+	// ReadCount.
+	reads atomic.Uint64
 	// convertHooks are test-only seams inside the conversion swap.
 	convertHooks convertHooks
 	// reclaimUnavailableOnce keeps ReclaimFreeSpace's "this database
@@ -160,11 +163,22 @@ func openReadPool(db *sql.DB, dbPath string, gate *connGate) (*sql.DB, error) {
 // BeginTx instead — quiesceReads' drain wait covers those the same way,
 // with its deadline as the backstop.
 func (s *Store) reader() *sql.DB {
+	s.reads.Add(1)
 	if s.read == nil || s.readsQuiesced.Load() {
 		return s.db
 	}
 	return s.read
 }
+
+// ReadCount is how many read statements this store has issued since it
+// opened, one per reader() call.
+//
+// It exists for the tests that pin a read path's round trips, where the
+// defect is a query per turn or per thread rather than one query per
+// call and no assertion on the returned rows can see it. The counter is
+// an atomic add on a path that is about to touch SQLite, and nothing in
+// production reads it.
+func (s *Store) ReadCount() uint64 { return s.reads.Load() }
 
 // quiesceReads routes new reads to the writer pool, waits for in-flight
 // read-pool queries to drain, runs fn, then restores read-pool routing.

@@ -259,6 +259,13 @@ export interface Settings {
    */
   browserChromiumPath: string;
   /**
+   * Expose Agent Overflow's built-in thread tools (ao-thread-tools) to
+   * Claude and Codex sessions on this computer. It says nothing about who
+   * may reach this computer's threads: a paired computer's agents reach it
+   * whether this is on or off.
+   */
+  threadToolsEnabled: boolean;
+  /**
    * Keep-awake master switch (the sidebar moon/sun toggle): while on,
    * the app holds an OS sleep inhibitor so the machine never
    * idle-sleeps. Persisted, so it survives restarts. Mirrors

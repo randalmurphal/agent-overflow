@@ -498,6 +498,15 @@ const STATIC_FIELDS = [
     keywords: ['cookies', 'reset', 'wipe'],
   },
 
+  // --- Thread tools --------------------------------------------------------
+  {
+    id: 'thread-tools.enabled',
+    section: 'thread-tools',
+    label: 'Built-in thread tools',
+    hint: "Let Claude and Codex read, start and answer this computer's other conversations.",
+    keywords: ['ao-thread-tools', 'threads', 'agents', 'mcp'],
+  },
+
   // --- Projects -----------------------------------------------------------
   {
     id: 'projects.project',

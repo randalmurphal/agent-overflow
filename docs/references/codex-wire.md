@@ -1161,6 +1161,38 @@ client on the same thread). Agent Overflow keeps the two apart.
 requested turn config stays owned by `ApplyLiveUpdate` so a stale echo
 cannot undo a pending user selection.
 
+### `developerInstructions`, and the collaboration-mode field of the same name
+
+`developerInstructions` (camelCase) is a thread-level parameter of
+`thread/start` (`v2/thread.rs` `ThreadStartParams`), `thread/resume`
+(`ThreadResumeParams`) and `thread/fork` (`ThreadForkParams`). There is no
+such parameter on `turn/start`.
+
+`collaborationMode.settings.developer_instructions` is a different field.
+It is snake_case, it is part of the collaboration mode's own settings, and
+it feeds a separate world-state section
+(`core/src/context/world_state/collaboration_mode.rs`). The per-turn
+`ThreadSettingsOverrides` struct carries no developer-instructions field at
+all, so sending `developer_instructions: null` in a turn's collaboration
+mode cannot clobber the thread-level value; null there means "use the
+built-in instructions for the selected mode"
+(`app-server/src/request_processors/turn_processor.rs`
+`normalize_collaboration_mode`). The turn's own instructions come from
+`TurnContext.developer_instructions`, cloned from the thread's session
+configuration (`core/src/session/turn_context.rs`).
+
+Unlike base instructions, developer instructions have no history fallback:
+a cold start resolves them from config, so an override that names only the
+client's own text silently replaces whatever the user configured. Read the
+cwd's value first with `config/read {cwd, includeLayers:false}` (the
+response's `config` object is `#[serde(rename_all = "snake_case")]`, so the
+key is `developer_instructions`) and append to it. Agent Overflow does this
+in `internal/provider/codex/developer_instructions.go` to deliver the
+`ao-thread-tools` decision guide, and omits the parameter entirely when it
+has nothing to append or when the read failed.
+
+Verified against `rust-v0.153.4`.
+
 ### `model/safetyBuffering/updated`
 
 ```json

@@ -295,6 +295,10 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		"close PR update subscriptions",
 		"close terminal sessions",
 		"close remote MCP server",
+		// "stop thread search index" MUST appear before "close store" —
+		// the boot-time FTS build writes straight into SQLite.
+		"stop thread search index",
+		"close thread MCP server",
 		"close logger",
 		"close store",
 	}

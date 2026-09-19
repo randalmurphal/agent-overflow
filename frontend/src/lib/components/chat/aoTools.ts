@@ -29,6 +29,9 @@ import { formatDurationMs } from '../../utils/format';
 /** Mirrors `internal/app/app_remote_mcp.go#remoteMCPName`. */
 export const REMOTE_TOOLS_SERVER = 'ao-remote-tools';
 
+/** Mirrors `internal/app/app_thread_tools_mcp.go#threadMCPName`. */
+export const THREAD_TOOLS_SERVER = 'ao-thread-tools';
+
 /** Names for the ids a tool input carries; '' when the name is unknown. */
 export interface AoToolNames {
   computer(id: string): string;
@@ -310,6 +313,88 @@ const BROWSER_TOOLS: Record<string, AoToolSpec> = {
   browser_assets: { label: 'assets', what: (input) => str(input, 'action') },
 };
 
+
+/**
+ * A thread by the title the result carried, else by the reference the call
+ * made. `thread_id` accepts an unambiguous prefix, so the input alone is
+ * often eight characters of a UUID; `threadResultTitle` recovers the name
+ * from the reply and the row prefers it.
+ */
+function threadRef(input: Input): string {
+  const id = str(input, 'thread_id');
+  if (!id) return '';
+  return id.length > SHORT_ID_CHARS ? `thread ${id.slice(0, SHORT_ID_CHARS)}` : `thread ${id}`;
+}
+
+function threadListRef(input: Input): string {
+  const ids = strings(input, 'thread_ids');
+  if (ids.length === 1) return threadRef({ thread_id: ids[0] });
+  if (ids.length > 1) return `${ids.length} threads`;
+  const tokens = strings(input, 'tokens');
+  if (tokens.length) return `${tokens.length} request${tokens.length === 1 ? '' : 's'}`;
+  return '';
+}
+
+/** The first line of a free-text argument, which is what the row shows. */
+function firstLine(input: Input, key: string): string {
+  const text = str(input, key);
+  if (!text) return '';
+  const [line] = text.split('\n');
+  return line.trim();
+}
+
+function withThread(what: string, input: Input): string {
+  const thread = threadRef(input);
+  if (!what) return thread;
+  return thread ? `${what} → ${thread}` : what;
+}
+
+/** Tool order mirrors `internal/threadtools/schemas.go#ToolNames`. */
+const THREAD_TOOLS: Record<string, AoToolSpec> = {
+  thread_search: {
+    label: 'search',
+    what: (input) => {
+      const query = str(input, 'query');
+      return query ? quoted(query) : threadRef(input) || 'threads';
+    },
+  },
+  thread_show: { label: 'read', what: (input) => threadRef(input) },
+  thread_item: {
+    label: 'item',
+    what: (input) => {
+      const item = str(input, 'item_id');
+      const thread = threadRef(input);
+      return item ? `${item}${thread ? ` in ${thread}` : ''}` : thread;
+    },
+  },
+  thread_options: { label: 'options', what: () => 'spawn options' },
+  thread_spawn: { label: 'spawn', what: (input) => firstLine(input, 'prompt') },
+  thread_send: { label: 'send', what: (input) => withThread(firstLine(input, 'message'), input) },
+  thread_ask: { label: 'ask', what: (input) => withThread(firstLine(input, 'question'), input) },
+  thread_reply: { label: 'reply', what: (input) => firstLine(input, 'text') },
+  thread_status: { label: 'status', what: (input) => threadListRef(input) || 'requests' },
+  thread_cancel: {
+    label: 'cancel',
+    what: (input) => threadRef(input) || (str(input, 'token') ? 'request' : ''),
+  },
+  thread_update: { label: 'update', what: (input) => threadListRef(input) },
+  thread_group: {
+    label: 'group',
+    what: (input) => {
+      // The schema takes exactly one of rename, pin or delete, and names
+      // the group by `group` or `group_id`.
+      const name = str(input, 'group') || str(input, 'group_id');
+      const rename = str(input, 'rename');
+      if (rename) return `rename ${name || 'group'} → ${rename}`;
+      const pin = str(input, 'pin');
+      if (pin) return `pin ${name || 'group'} ${pin}`;
+      if (input.delete === true) return `delete ${name || 'group'}`;
+      return name;
+    },
+  },
+  thread_remind: { label: 'remind', what: (input) => firstLine(input, 'note') },
+};
+
 export const AO_TOOL_SERVERS: Record<string, AoToolServer> = {
   [REMOTE_TOOLS_SERVER]: {
     family: 'Remote',
@@ -323,6 +408,13 @@ export const AO_TOOL_SERVERS: Record<string, AoToolServer> = {
     icon: 'globe',
     prefix: 'browser_',
     tools: BROWSER_TOOLS,
+  },
+  [THREAD_TOOLS_SERVER]: {
+    family: 'Thread',
+    icon: 'speech-bubble',
+    prefix: 'thread_',
+    tools: THREAD_TOOLS,
+    computerField: 'computer_id',
   },
 };
 
@@ -499,4 +591,52 @@ export function remoteResultView(data: string): RemoteResultView | null {
     output: typeof reply.output === 'string' ? reply.output : '',
     hint: str(reply, 'outputHint'),
   };
+}
+
+/** A thread tool reply as its row shows it: what the call touched. */
+export interface ThreadResultView {
+  /** The thread's title, when the reply names one. */
+  title: string;
+  /** Its state, when the reply carries one ("running", "idle"). */
+  state: string;
+  /** A one-line count for a reply that names many threads or rows. */
+  summary: string;
+}
+
+/**
+ * Reads a thread-tools reply (`internal/threadtools`) for the row's body.
+ * The header can only show the arguments, and `thread_id` accepts a
+ * prefix, so the thread's NAME is only ever in the result. Null for a
+ * reply that names no thread, which renders as it is.
+ */
+export function threadResultView(data: string): ThreadResultView | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(data);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const reply = parsed as Input;
+  const title = str(reply, 'title');
+  const state = str(reply, 'state');
+  const summary = threadRowSummary(reply);
+  if (!title && !state && !summary) return null;
+  return { title, state, summary };
+}
+
+/** "3 threads" for a search page, counting both result shapes. */
+function threadRowSummary(reply: Input): string {
+  let rows = Array.isArray(reply.rows) ? reply.rows.length : 0;
+  const computers = reply.computers;
+  if (Array.isArray(computers)) {
+    for (const group of computers) {
+      if (group && typeof group === 'object' && Array.isArray((group as Input).rows)) {
+        rows += ((group as Input).rows as unknown[]).length;
+      }
+    }
+  } else if (!Array.isArray(reply.rows)) {
+    return '';
+  }
+  return `${rows} thread${rows === 1 ? '' : 's'}`;
 }

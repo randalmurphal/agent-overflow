@@ -884,3 +884,34 @@ func TestCrossSessionGateIsStatedExplicitlyWhenEnabled(t *testing.T) {
 		t.Fatalf("%s = %q, want it absent — AO passes the name as --name", claudePeerSessionNameEnv, value)
 	}
 }
+
+// TestBuildArgsRendersAllowedTools is the allow-side half of the argv
+// contract. The app admits the built-in thread tools through this field,
+// so a grant the spawn path drops is a per-call permission prompt under
+// every prompting mode.
+func TestBuildArgsRendersAllowedTools(t *testing.T) {
+	cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude"})
+	cfg.AllowedTools = []string{"mcp__ao-thread-tools__*", "Read"}
+	args := buildArgs(cfg, "")
+	for _, tool := range cfg.AllowedTools {
+		idx := slices.Index(args, tool)
+		if idx <= 0 || args[idx-1] != "--allowedTools" {
+			t.Errorf("args missing --allowedTools %s: %v", tool, args)
+		}
+	}
+
+	// A name that is not one safe argv argument is dropped rather than
+	// reshaped: an allow entry is a grant, and a leading dash would be
+	// parsed as a flag.
+	cfg.AllowedTools = []string{"  ", "two words", "-rf", "mcp__ao-thread-tools__*"}
+	args = buildArgs(cfg, "")
+	var allowed []string
+	for i, arg := range args {
+		if arg == "--allowedTools" && i+1 < len(args) {
+			allowed = append(allowed, args[i+1])
+		}
+	}
+	if !slices.Equal(allowed, []string{"mcp__ao-thread-tools__*"}) {
+		t.Errorf("allowed tools reaching argv = %v, want only the wildcard entry", allowed)
+	}
+}

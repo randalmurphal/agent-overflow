@@ -1,0 +1,460 @@
+package app
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"slices"
+	"strconv"
+	"strings"
+
+	"agent-overflow/internal/errorsx"
+	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadtools"
+)
+
+func threadToolsOS() string { return runtime.GOOS }
+
+// The store's timeline coordinate is the pair (turn_index, item_index);
+// threadtools wants one comparable int64 position. A position packs the
+// pair into a single ascending number:
+//
+//	position = turn_index*turnPositionSpan + item_index + itemIndexBias
+//
+// turnPositionSpan is the per-turn slot count. itemIndexBias exists
+// because item_index can be negative: a head-healed prompt persists below
+// zero (UpsertItemAtTurnHead), and the bias keeps every real position
+// positive, which the renderer's "after > 0" cursor check relies on.
+const (
+	turnPositionSpan = int64(1) << 20
+	itemIndexBias    = int64(1) << 19
+)
+
+func encodePosition(turnIndex, itemIndex int) int64 {
+	return int64(turnIndex)*turnPositionSpan + int64(itemIndex) + itemIndexBias
+}
+
+func decodePosition(position int64) (turnIndex, itemIndex int) {
+	turn := position / turnPositionSpan
+	rest := position - turn*turnPositionSpan
+	return int(turn), int(rest - itemIndexBias)
+}
+
+// turnFloor and turnCeil are the first and last position a turn owns.
+// They are real positions in the ordering whether or not a row sits
+// exactly there, which is what lets a turn-granular window be expressed
+// without reading the turn's rows.
+func turnFloor(turnIndex int) int64 { return int64(turnIndex) * turnPositionSpan }
+func turnCeil(turnIndex int) int64  { return int64(turnIndex)*turnPositionSpan + turnPositionSpan - 1 }
+
+func itemPosition(item store.Item) int64 { return encodePosition(item.TurnIndex, item.ItemIndex) }
+
+func cursorPosition(cursor store.TimelineCursor) int64 {
+	return encodePosition(cursor.TurnIndex, cursor.ItemIndex)
+}
+
+// positionCursor is the inverse: the store coordinate a transport
+// position names. The pair is the store's own timeline coordinate, so a
+// position decodes into a bound a range query compares directly and no
+// caller ever walks turns to find it.
+func positionCursor(position int64) store.TimelineCursor {
+	turn, item := decodePosition(position)
+	return store.TimelineCursor{TurnIndex: turn, ItemIndex: item}
+}
+
+// ResolveWindow turns a requested window into absolute positions.
+func (t threadToolsApp) ResolveWindow(_ context.Context, q threadtools.WindowQuery) (threadtools.WindowBounds, error) {
+	thread, err := t.localThread(q.ThreadID)
+	if err != nil {
+		return threadtools.WindowBounds{}, err
+	}
+	// IsDraft is the store's own "this thread has no timeline row", which
+	// is exactly the empty window and costs no extra probe.
+	if thread.IsDraft {
+		return threadtools.WindowBounds{Empty: true}, nil
+	}
+	// One indexed probe per edge. A thread whose newest turn has no item
+	// yet, like one with nothing stored at all, has no window.
+	first, last, ok, err := t.app.store.ThreadTimelineBounds(q.ThreadID)
+	if err != nil {
+		return threadtools.WindowBounds{}, err
+	}
+	if !ok {
+		return threadtools.WindowBounds{Empty: true}, nil
+	}
+	bounds := threadtools.WindowBounds{From: cursorPosition(first), To: cursorPosition(last), HighWater: cursorPosition(last)}
+	firstTurn, lastTurn := first.TurnIndex, last.TurnIndex
+	turns := q.Turns
+	switch q.Kind {
+	case threadtools.WindowAll, "":
+	case threadtools.WindowTail:
+		if turns <= 0 {
+			turns = threadtools.DefaultTailTurns
+		}
+		if start := lastTurn - turns + 1; start > firstTurn {
+			bounds.From = turnFloor(start)
+		}
+	case threadtools.WindowHead:
+		if turns <= 0 {
+			turns = threadtools.DefaultTailTurns
+		}
+		if end := firstTurn + turns - 1; end < lastTurn {
+			bounds.To = turnCeil(end)
+		}
+	case threadtools.WindowSince:
+		from, empty, err := t.sinceFrom(q, firstTurn)
+		if err != nil {
+			return threadtools.WindowBounds{}, err
+		}
+		if empty || from > bounds.To {
+			return threadtools.WindowBounds{Empty: true}, nil
+		}
+		if from > bounds.From {
+			bounds.From = from
+		}
+	case threadtools.WindowAround:
+		anchor, err := t.itemRow(q.ThreadID, q.ItemID)
+		if err != nil {
+			return threadtools.WindowBounds{}, err
+		}
+		if low := anchor.TurnIndex - turns; low > firstTurn {
+			bounds.From = turnFloor(low)
+		}
+		if high := anchor.TurnIndex + turns; high < lastTurn {
+			bounds.To = turnCeil(high)
+		}
+	default:
+		return threadtools.WindowBounds{}, errorsx.Public(threadtools.CodeInvalidRequest,
+			fmt.Sprintf("There is no window named %q.", q.Kind), nil)
+	}
+	return bounds, nil
+}
+
+// sinceFrom resolves the `since` anchor. An item anchor starts at the row
+// after it. A timestamp anchor starts at the first turn that began at or
+// after it, because a turn is the unit this window counts in.
+func (t threadToolsApp) sinceFrom(q threadtools.WindowQuery, firstTurn int) (int64, bool, error) {
+	if strings.TrimSpace(q.ItemID) != "" {
+		anchor, err := t.itemRow(q.ThreadID, q.ItemID)
+		if err != nil {
+			return 0, false, err
+		}
+		return itemPosition(anchor) + 1, false, nil
+	}
+	if q.SinceUnixMs <= 0 {
+		return turnFloor(firstTurn), false, nil
+	}
+	start, found, anyTurns, err := t.app.store.FirstTurnIndexAtOrAfter(q.ThreadID, q.SinceUnixMs)
+	if err != nil {
+		return 0, false, err
+	}
+	if !found {
+		// Nothing started at or after it. A thread with turns has simply
+		// been quiet since; one with no turn rows has no anchor to
+		// resolve against and keeps the whole window.
+		if anyTurns {
+			return 0, true, nil
+		}
+		return turnFloor(firstTurn), false, nil
+	}
+	return turnFloor(start), false, nil
+}
+
+func (t threadToolsApp) itemRow(threadID, itemID string) (store.Item, error) {
+	item, found, err := t.app.store.GetThreadItem(threadID, strings.TrimSpace(itemID))
+	if err != nil {
+		return store.Item{}, err
+	}
+	if !found {
+		return store.Item{}, errorsx.Public(threadtools.CodeNotFound,
+			fmt.Sprintf("No item %s in thread %s.", itemID, threadID), nil)
+	}
+	return item, nil
+}
+
+// Transcript returns one page of the position range, oldest first.
+//
+// The range is a store query, not a walk: the transport's packed
+// positions decode into the (turn_index, item_index) pair the store
+// orders by, and the page's limit is the query's LIMIT. One call is one
+// round trip whatever the thread holds between the bounds.
+//
+// The include list decides whether subagent children are part of the
+// range at all, so every row the store returns is a row this page ships
+// and the limit cannot be spent on rows nobody asked for.
+func (t threadToolsApp) Transcript(ctx context.Context, q threadtools.TranscriptQuery) (threadtools.TranscriptSlice, error) {
+	if _, err := t.localThread(q.ThreadID); err != nil {
+		return threadtools.TranscriptSlice{}, err
+	}
+	_, last, ok, err := t.app.store.ThreadTimelineBounds(q.ThreadID)
+	if err != nil {
+		return threadtools.TranscriptSlice{}, err
+	}
+	slice := threadtools.TranscriptSlice{Items: []threadtools.Item{}}
+	if !ok {
+		return slice, nil
+	}
+	slice.HighWater = cursorPosition(last)
+	limit := q.Limit
+	if limit <= 0 {
+		return slice, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return threadtools.TranscriptSlice{}, err
+	}
+	rows, err := t.app.store.ListItemsInRange(q.ThreadID, positionCursor(q.From), positionCursor(q.To), limit,
+		threadToolsIncludes(q.Include, "subagent"))
+	if err != nil {
+		return threadtools.TranscriptSlice{}, err
+	}
+	for _, row := range rows {
+		item, err := t.projectItem(q, row, itemPosition(row))
+		if err != nil {
+			return threadtools.TranscriptSlice{}, err
+		}
+		slice.Items = append(slice.Items, item)
+	}
+	return slice, nil
+}
+
+// projectItem turns one store row into a transcript row. A subagent child
+// the caller did not ask for never reaches here: those rows are not part
+// of any timeline window in this app, and listing them as bodiless
+// one-liners would spend the whole page on them, so the range query
+// leaves them out.
+func (t threadToolsApp) projectItem(q threadtools.TranscriptQuery, row store.Item, position int64) (threadtools.Item, error) {
+	kind, role := threadToolsItemKind(row)
+	item := threadtools.Item{
+		ID:       row.ID,
+		Position: position,
+		Kind:     kind,
+		Role:     role,
+		TurnID:   strconv.Itoa(row.TurnIndex),
+		Name:     row.ToolName,
+	}
+	size, err := t.itemBodySize(row)
+	if err != nil {
+		return threadtools.Item{}, err
+	}
+	item.Size = size
+	if size == 0 || !threadToolsIncludes(q.Include, kind) {
+		return item, nil
+	}
+	maxBytes := q.MaxItemBytes
+	if maxBytes <= 0 || int64(maxBytes) > size {
+		maxBytes = int(size)
+	}
+	text, err := t.itemBodyText(row, maxBytes)
+	if err != nil {
+		return threadtools.Item{}, err
+	}
+	item.Text = text
+	item.Clipped = int64(len(text)) < size
+	return item, nil
+}
+
+// threadToolsItemKind maps a store row onto the transcript vocabulary and
+// the role its line is prefixed with.
+func threadToolsItemKind(row store.Item) (kind, role string) {
+	if row.ParentID != "" {
+		return "subagent", "assistant"
+	}
+	switch row.Kind {
+	case "user_text":
+		return "user_text", "user"
+	case "assistant_text":
+		return "assistant_text", "assistant"
+	case "thinking", "compaction_reasoning":
+		return "thinking", "assistant"
+	case "tool_call", "tool_completion", "command_result":
+		if row.PayloadKind == "diff" {
+			return "diff", "tool"
+		}
+		return "tool_call", "tool"
+	case "error", "api_error", "api_retry":
+		return "error", "system"
+	}
+	return row.Kind, "system"
+}
+
+// threadToolsIncludes mirrors the App contract: prose rows always carry
+// their body, everything else only when the include list asks.
+func threadToolsIncludes(include []string, kind string) bool {
+	switch kind {
+	case "user_text", "assistant_text", "error":
+		return true
+	}
+	if slices.Contains(include, threadtools.IncludeAll) {
+		return true
+	}
+	switch kind {
+	case "thinking":
+		return slices.Contains(include, threadtools.IncludeThinking)
+	case "tool_call", "tool_output":
+		return slices.Contains(include, threadtools.IncludeToolOutputs)
+	case "diff":
+		return slices.Contains(include, threadtools.IncludeDiffs)
+	case "subagent":
+		return slices.Contains(include, threadtools.IncludeSubagents)
+	}
+	return false
+}
+
+// itemBodySize is the whole stored size of the row's body: the linked
+// payload when there is one, otherwise the summary the row carries
+// inline. A zero-byte read of the payload answers the size without
+// materializing it.
+func (t threadToolsApp) itemBodySize(row store.Item) (int64, error) {
+	if row.PayloadID == "" {
+		return int64(len(row.Summary)), nil
+	}
+	_, total, _, err := t.app.store.GetPayloadChunk(row.ThreadID, row.PayloadID, 0, 0)
+	if err != nil {
+		return 0, err
+	}
+	return int64(total), nil
+}
+
+func (t threadToolsApp) itemBodyText(row store.Item, maxBytes int) (string, error) {
+	if row.PayloadID == "" {
+		if maxBytes < len(row.Summary) {
+			return row.Summary[:maxBytes], nil
+		}
+		return row.Summary, nil
+	}
+	data, _, _, err := t.app.store.GetPayloadChunk(row.ThreadID, row.PayloadID, 0, maxBytes)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// ItemPayload reads a byte range of one item's stored body. An offset at
+// or past the end is an empty read reporting the size.
+func (t threadToolsApp) ItemPayload(_ context.Context, q threadtools.PayloadQuery) (threadtools.Payload, error) {
+	if _, err := t.localThread(q.ThreadID); err != nil {
+		return threadtools.Payload{}, err
+	}
+	row, err := t.itemRow(q.ThreadID, q.ItemID)
+	if err != nil {
+		return threadtools.Payload{}, err
+	}
+	kind, _ := threadToolsItemKind(row)
+	size, err := t.itemBodySize(row)
+	if err != nil {
+		return threadtools.Payload{}, err
+	}
+	payload := threadtools.Payload{Kind: kind, Size: size, Offset: q.Offset}
+	if q.MaxBytes <= 0 || q.Offset >= size {
+		return payload, nil
+	}
+	if row.PayloadID == "" {
+		end := q.Offset + q.MaxBytes
+		if end > size {
+			end = size
+		}
+		payload.Bytes = []byte(row.Summary[q.Offset:end])
+		return payload, nil
+	}
+	data, _, _, err := t.app.store.GetPayloadChunk(row.ThreadID, row.PayloadID, int(q.Offset), int(q.MaxBytes))
+	if err != nil {
+		return threadtools.Payload{}, err
+	}
+	payload.Bytes = data
+	return payload, nil
+}
+
+// threadExportDirName is the directory under the app's data directory
+// where rendered transcripts land. Files are retained until removed.
+const threadExportDirName = "thread-exports"
+
+// ExportTranscript renders a whole window to a file and reports its path,
+// size and digest. It streams the window through the same turn walk the
+// transcript uses, so a long thread never lands in memory whole.
+func (t threadToolsApp) ExportTranscript(ctx context.Context, q threadtools.ExportQuery) (threadtools.ExportFile, error) {
+	thread, err := t.localThread(q.ThreadID)
+	if err != nil {
+		return threadtools.ExportFile{}, err
+	}
+	if t.app.configDir == "" {
+		return threadtools.ExportFile{}, errorsx.Public(threadtools.CodeInvalidRequest,
+			"This computer has no data directory configured, so a transcript cannot be exported to a file.", nil)
+	}
+	dir := filepath.Join(t.app.configDir, threadExportDirName)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return threadtools.ExportFile{}, fmt.Errorf("thread tools: create export directory: %w", err)
+	}
+	path := filepath.Join(dir, thread.ID+".txt")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return threadtools.ExportFile{}, fmt.Errorf("thread tools: open export file: %w", err)
+	}
+	digest := sha256.New()
+	size := int64(0)
+	write := func(text string) error {
+		n, err := file.WriteString(text)
+		size += int64(n)
+		digest.Write([]byte(text[:n]))
+		return err
+	}
+	exportErr := t.writeExport(ctx, q, write)
+	closeErr := file.Close()
+	if exportErr != nil {
+		os.Remove(path)
+		return threadtools.ExportFile{}, exportErr
+	}
+	if closeErr != nil {
+		os.Remove(path)
+		return threadtools.ExportFile{}, fmt.Errorf("thread tools: close export file: %w", closeErr)
+	}
+	return threadtools.ExportFile{Path: path, Size: size, SHA256: hex.EncodeToString(digest.Sum(nil))}, nil
+}
+
+func (t threadToolsApp) writeExport(ctx context.Context, q threadtools.ExportQuery, write func(string) error) error {
+	if q.Bounds.Empty {
+		return write("(no items)\n")
+	}
+	from := q.Bounds.From
+	turn := ""
+	for from <= q.Bounds.To {
+		slice, err := t.Transcript(ctx, threadtools.TranscriptQuery{
+			ThreadID: q.ThreadID, From: from, To: q.Bounds.To, Limit: 200,
+			Include: q.Include, MaxItemBytes: threadtools.MaxItemBytes,
+		})
+		if err != nil {
+			return err
+		}
+		if len(slice.Items) == 0 {
+			return nil
+		}
+		for _, item := range slice.Items {
+			if item.TurnID != "" && item.TurnID != turn {
+				turn = item.TurnID
+				if err := write("--- turn " + turn + " ---\n"); err != nil {
+					return err
+				}
+			}
+			role := item.Role
+			if role == "" {
+				role = item.Kind
+			}
+			head := "[" + role + " " + item.ID + "]"
+			if item.Name != "" {
+				head += " " + item.Name
+			}
+			body := item.Text
+			if body == "" && item.Size > 0 {
+				body = "(" + strconv.FormatInt(item.Size, 10) + " bytes not shown)"
+			}
+			if err := write(head + " " + strings.TrimRight(body, "\n") + "\n"); err != nil {
+				return err
+			}
+			from = item.Position + 1
+		}
+	}
+	return nil
+}

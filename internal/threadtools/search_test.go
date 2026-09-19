@@ -52,11 +52,17 @@ func TestSearchAppliesTheDocumentedDefaults(t *testing.T) {
 	if listing.Limit != DefaultListLimit {
 		t.Errorf("listing limit = %d, want %d", listing.Limit, DefaultListLimit)
 	}
+	if listing.Archived == nil || *listing.Archived {
+		t.Errorf("a listing must exclude archived threads by default, got %v", listing.Archived)
+	}
 
 	call(t, server, localCaller(), "thread_search", `{"query":"parser"}`)
 	ranked := app.searches[len(app.searches)-1]
 	if ranked.Limit != DefaultSearchLimit || ranked.Query != "parser" {
 		t.Errorf("query search = %+v", ranked)
+	}
+	if ranked.Archived != nil {
+		t.Errorf("a query must include archived threads by default, got %v", *ranked.Archived)
 	}
 
 	call(t, server, localCaller(), "thread_search", `{"spawned_by_me":true,"archived":true,"since":"2026-09-01T00:00:00Z","provider":"codex","state":"awaiting-input","kind":"tool","project_id":"p1"}`)

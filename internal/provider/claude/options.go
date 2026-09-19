@@ -460,6 +460,17 @@ func mergeDisallowedTools(modeTools, settingsTools []string) []string {
 // into mergeDisallowedTools, and claudetui.ConfigFromOptions calls it
 // directly on the settings list.
 func SanitizeDisallowedTools(tools []string) []string {
+	return sanitizeToolNames(tools, "disallowed-tool")
+}
+
+// SanitizeAllowedTools is the same argv boundary for `--allowedTools`.
+// An allow entry is a grant, so a malformed one must be dropped rather
+// than reshaped into whatever the CLI would make of it.
+func SanitizeAllowedTools(tools []string) []string {
+	return sanitizeToolNames(tools, "allowed-tool")
+}
+
+func sanitizeToolNames(tools []string, what string) []string {
 	if len(tools) == 0 {
 		return nil
 	}
@@ -471,10 +482,10 @@ func SanitizeDisallowedTools(tools []string) []string {
 		case trimmed == "":
 			continue
 		case strings.ContainsFunc(trimmed, unicode.IsSpace):
-			log.Printf("claude: dropping disallowed-tool name %q — a name containing whitespace is not one CLI argument", tool)
+			log.Printf("claude: dropping %s name %q — a name containing whitespace is not one CLI argument", what, tool)
 			continue
 		case strings.HasPrefix(trimmed, "-"):
-			log.Printf("claude: dropping disallowed-tool name %q — a leading dash parses as a CLI flag", tool)
+			log.Printf("claude: dropping %s name %q — a leading dash parses as a CLI flag", what, tool)
 			continue
 		}
 		if _, dup := seen[trimmed]; dup {

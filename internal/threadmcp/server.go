@@ -30,9 +30,18 @@ const maxMCPRequestBytes = 8 << 20
 type Server[T comparable] struct {
 	name         string
 	instructions string
-	tools        func(T) []map[string]any
-	call         func(http.ResponseWriter, context.Context, Request, T)
-	enabled      atomic.Bool
+	// instructionsFunc, when set, replaces the fixed instructions string on
+	// every initialize. A server whose instructions depend on state the
+	// caller recomputes per handshake (ao-thread-tools follows the paired
+	// computer list) sets it; the others keep passing a constant.
+	instructionsFunc func(T) string
+	// disabledErr is the refusal a tools/call gets while this server or
+	// this thread is switched off. Nil means the generic uncoded message;
+	// a server with a documented refusal code supplies its own.
+	disabledErr error
+	tools       func(T) []map[string]any
+	call        func(http.ResponseWriter, context.Context, Request, T)
+	enabled     atomic.Bool
 
 	mu            sync.Mutex
 	closed        bool
@@ -52,6 +61,16 @@ func New[T comparable](name, instructions string, tools func(T) []map[string]any
 }
 
 func (s *Server[T]) SetEnabled(enabled bool) { s.enabled.Store(enabled) }
+
+// SetInstructionsFunc makes the initialize instructions a function of the
+// calling thread's access value. Call it before the first registration; it is
+// not safe to change once threads are serving.
+func (s *Server[T]) SetInstructionsFunc(fn func(T) string) { s.instructionsFunc = fn }
+
+// SetDisabledError names the error a tools/call is refused with while the
+// server or the thread is off, so a documented public code reaches the model
+// instead of the generic message. Call it before the first registration.
+func (s *Server[T]) SetDisabledError(err error) { s.disabledErr = err }
 
 func (s *Server[T]) RegisterThread(threadID string, access T) (map[string]any, error) {
 	if strings.TrimSpace(threadID) == "" {
@@ -199,7 +218,7 @@ func (s *Server[T]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch req.Method {
 	case "initialize":
-		WriteResult(w, req.ID, map[string]any{"protocolVersion": mcpProtocolVersion, "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]any{"name": s.name, "version": "1.0.0"}, "instructions": s.instructions})
+		WriteResult(w, req.ID, map[string]any{"protocolVersion": mcpProtocolVersion, "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]any{"name": s.name, "version": "1.0.0"}, "instructions": s.instructionsFor(access)})
 	case "notifications/initialized":
 		w.WriteHeader(http.StatusNoContent)
 	case "tools/list":
@@ -212,13 +231,27 @@ func (s *Server[T]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		WriteResult(w, req.ID, map[string]any{"tools": tools})
 	case "tools/call":
 		if !s.enabled.Load() || !s.ThreadEnabled(threadID) {
-			WriteToolError(w, req.ID, fmt.Errorf("MCP tools are disabled"))
+			WriteToolError(w, req.ID, s.disabledError())
 			return
 		}
 		s.serveCall(w, r, req, access)
 	default:
 		WriteError(w, req.ID, http.StatusOK, -32601, "method not found")
 	}
+}
+
+func (s *Server[T]) instructionsFor(access T) string {
+	if s.instructionsFunc != nil {
+		return s.instructionsFunc(access)
+	}
+	return s.instructions
+}
+
+func (s *Server[T]) disabledError() error {
+	if s.disabledErr != nil {
+		return s.disabledErr
+	}
+	return fmt.Errorf("MCP tools are disabled")
 }
 
 // callKeepaliveInterval paces the comment lines a streamed call emits while

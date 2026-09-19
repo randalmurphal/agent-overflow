@@ -106,13 +106,19 @@ type Settings struct {
 	// nothing is ever downloaded. It has no effect on a windowed
 	// deployment, whose engine is the platform's own.
 	BrowserChromiumPath string `json:"browserChromiumPath,omitempty"`
-	ConfirmArchive      bool   `json:"confirmArchive"`
-	ConfirmDelete       bool   `json:"confirmDelete"`
-	AutoPinNewThreads   bool   `json:"autoPinNewThreads"`
-	ClaudeBinaryPath    string `json:"claudeBinaryPath"`
-	CodexBinaryPath     string `json:"codexBinaryPath"`
-	ClaudeEnabled       bool   `json:"claudeEnabled"`
-	CodexEnabled        bool   `json:"codexEnabled"`
+	// ThreadToolsEnabled exposes Agent Overflow's built-in thread MCP tools
+	// (ao-thread-tools) to Claude and Codex sessions on this computer.
+	// Default on. It says nothing about who may reach this computer's
+	// threads: pairing already says which computers belong to the user, and
+	// a paired computer's agents reach this one whether it is on or off.
+	ThreadToolsEnabled bool   `json:"threadToolsEnabled"`
+	ConfirmArchive     bool   `json:"confirmArchive"`
+	ConfirmDelete      bool   `json:"confirmDelete"`
+	AutoPinNewThreads  bool   `json:"autoPinNewThreads"`
+	ClaudeBinaryPath   string `json:"claudeBinaryPath"`
+	CodexBinaryPath    string `json:"codexBinaryPath"`
+	ClaudeEnabled      bool   `json:"claudeEnabled"`
+	CodexEnabled       bool   `json:"codexEnabled"`
 
 	// ClaudeTUIEnabled surfaces the claude-tui provider — the real
 	// interactive Claude TUI driven inside a PTY — in the model/provider
@@ -614,6 +620,7 @@ var DefaultSettings = Settings{
 	LowPowerMode:           false,
 	BrowserEnabled:         true,
 	BrowserPersistSiteData: true,
+	ThreadToolsEnabled:     true,
 	ConfirmArchive:         true,
 	ConfirmDelete:          true,
 	AutoPinNewThreads:      true,

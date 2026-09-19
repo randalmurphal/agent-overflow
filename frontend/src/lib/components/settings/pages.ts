@@ -19,6 +19,7 @@ import ClaudeSettings from './ClaudeSettings.svelte';
 import CodexSettings from './CodexSettings.svelte';
 import CommitMessageSettings from './CommitMessageSettings.svelte';
 import BrowserSettings from './BrowserSettings.svelte';
+import ThreadToolsSettings from './ThreadToolsSettings.svelte';
 import DiscussionsSettings from './DiscussionsSettings.svelte';
 import ProjectsSettings from './ProjectsSettings.svelte';
 import GitSettings from './GitSettings.svelte';
@@ -44,6 +45,7 @@ export const SETTINGS_PAGES: Record<SettingsSection, Component> = {
   codex: CodexSettings,
   'commit-messages': CommitMessageSettings,
   browser: BrowserSettings,
+  'thread-tools': ThreadToolsSettings,
   discussions: DiscussionsSettings,
   projects: ProjectsSettings,
   git: GitSettings,

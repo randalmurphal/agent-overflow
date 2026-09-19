@@ -50,7 +50,11 @@ type Config struct {
 	OutputSchema    string
 	ReasoningEffort string
 	FastMode        bool
-	AllowedTools    []string
+	// AllowedTools names tools admitted without a permission prompt via
+	// `--allowedTools`, one argv value each. Spawn-time only, like
+	// DisallowedTools, and compared by PlanLiveUpdate for the same
+	// reason: no control request can widen a live session's grants.
+	AllowedTools []string
 	// PermissionFlags carries the full permission flag sequence. Nil / empty
 	// means "don't pass any permission-related flag".
 	PermissionFlags []string
@@ -474,7 +478,10 @@ func buildArgs(cfg Config, systemPromptPath string) []string {
 	if cfg.MaxTurns > 0 {
 		args = append(args, "--max-turns", strconv.Itoa(cfg.MaxTurns))
 	}
-	for _, tool := range cfg.AllowedTools {
+	// Sanitized for the same reason the disallowed list is: a name that
+	// is not one safe argv argument turns a tool grant into an
+	// unpredictable invocation.
+	for _, tool := range SanitizeAllowedTools(cfg.AllowedTools) {
 		args = append(args, "--allowedTools", tool)
 	}
 

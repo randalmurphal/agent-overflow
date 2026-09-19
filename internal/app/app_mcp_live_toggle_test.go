@@ -199,6 +199,7 @@ func TestListThreadMcpServers_Claude_LiveSession_UsesSessionTruth(t *testing.T) 
 	if err != nil {
 		t.Fatalf("ListThreadMcpServers: %v", err)
 	}
+	got = providerMCPRows(got)
 	if len(got) != 2 {
 		t.Fatalf("want 2 rows (github + plugin, claude.ai filtered), got %d (%#v)", len(got), got)
 	}

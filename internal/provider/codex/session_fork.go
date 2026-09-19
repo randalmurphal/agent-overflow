@@ -71,6 +71,12 @@ func (s *Session) ForkAt(ctx context.Context, lastTurnID string) (string, error)
 	if lastTurnID != "" {
 		params["lastTurnId"] = lastTurnID
 	}
+	// A fork is a new thread and resolves developer instructions from
+	// config like any cold start, so the composed value has to ride the
+	// request or the child loses it.
+	if instructions := s.developerInstructionsValue(); instructions != "" {
+		params["developerInstructions"] = instructions
+	}
 	resp, err := s.sendRequest(ctx, "thread/fork", params)
 	if err != nil {
 		return "", fmt.Errorf("codex: thread/fork: %w", classifyThreadWriterConflict(err))
