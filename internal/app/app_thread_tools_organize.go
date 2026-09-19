@@ -17,4 +17,3 @@ func (t threadToolsApp) UpdateThreads(context.Context, threadtools.Caller, threa
 func (t threadToolsApp) UpdateGroup(context.Context, threadtools.Caller, threadtools.GroupCall) (threadtools.GroupReport, error) {
 	return threadtools.GroupReport{}, threadToolsWriteUnavailable("organizing groups")
 }
-
