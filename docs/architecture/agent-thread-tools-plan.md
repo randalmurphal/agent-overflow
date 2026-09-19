@@ -159,8 +159,8 @@ All folded into the spec on 2026-09-19; kept here as the record of why.
    ```
 
    `on <computer>` and `answered <age> ago` appear only when they apply.
-   A body over 24 KB ends with `[truncated; thread_show <thread id> for
-   the rest]`. A late reply after a finished wake is a second `Reply
+   A body over 24 KB ends with `[preview; thread_status <token> for the
+   whole answer]`. A late reply after a finished wake is a second `Reply
    from` block. Every incoming footer also carries one line, `The user's
    latest message in that thread: "<first 300 characters>"`, so the
    receiver knows what the person asked for; it is read from the
@@ -188,6 +188,28 @@ All folded into the spec on 2026-09-19; kept here as the record of why.
    - `thread_remind` is a clock-settled request.
    Not copied: Codex's 1,000-byte prompt and 999-byte result caps, its
    pull-only answers, sidebar reorder tools, `handoff_thread`.
+14. **Codex review (gpt-6-astra, high effort, 2026-09-19).** Adopted:
+   whole answers stored in the request record (the 24 KB cap was a cap
+   on the answer, and its pointer led to a deleted scratch thread);
+   receipts kept for the reply window instead of deleted at collection
+   (late replies and retry safety need them); settlement bound to the
+   turn that consumed the request's message; `thread_cancel` by token
+   removes a queued message or interrupts only the request's own turn;
+   every unsettled positive wait arms `notify`; `notify` defined once;
+   wakes and status rows carry the token and answer kind; a prefix
+   always fans out and a peer timeout is `incomplete`, not `not found`;
+   a request stays with the accepting computer on a move; a lost
+   computer can be forgotten by local abandon; the responder enable is
+   an effective per-thread rule because the transport requires both its
+   flags; `thread_update` validates the whole patch before touching a
+   thread; opaque `cursor` paging; `thread_status` on `thread_ids` and
+   `after_revision`; thinking opt-in; independent waiters per wait;
+   self-send refused at admission; three documented contradictions
+   fixed. Kept against its advice, by the owner's ruling: the no-pairing
+   schema shape (pairing is rare and one-way, and an agent must not see
+   parameters that cannot work) and all tools inside read-only scratch
+   threads (read-only is the responder's own runtime, a light safety
+   option, not an isolation boundary).
 
 ## Verified facts the design rests on
 
@@ -293,11 +315,13 @@ computer's threads made):
 | `target_computer_id` | `''` for this computer, else the paired backend id. Rewritten when the target moves. Empty for `remind`. |
 | `target_thread_id` | The thread the request runs in. For `ask` it is the scratch fork, set once the destination reports it. |
 | `origin_thread_id` | For `ask`, the thread that was forked. |
-| `notify` | Whether a wake is owed on settlement. Set by `notify: true` or by a wait that timed out. |
+| `notify` | Whether a wake is owed on settlement. Set by `notify: true` or by any positive wait that ended unsettled (timed out, blocked, interrupted). |
 | `state` | `unconfirmed`, `accepted`, `running`, `replied`, `finished`, `errored`, `cancelled`, `interrupted`, `expired`, `refused`. |
-| `answer`, `answer_kind` | Settled text (capped at 24 KB with a truncation note) and whether it was an explicit reply, the final assistant text, or an error. |
+| `answer`, `answer_kind` | The whole settled text, uncapped (`payloads`-style BLOB, never truncated), and whether it was an explicit `reply`, the `final` assistant text, an `error`, or a reminder `note`. Wakes carry a 24 KB preview; `thread_status` pages the whole. |
 | `late_reply`, `late_reply_at` | A `thread_reply` that arrived after `finished`. Delivered as a second wake. |
-| `settled_at`, `delivered_at`, `late_delivered_at` | When settlement was stored here; when each wake was queued or handed inline. |
+| `revision` | Increments on every settlement and late reply; `thread_status` waits with `after_revision`. |
+| `settled_at`, `delivered_at`, `delivered_how`, `late_delivered_at` | When settlement was stored here; when and how each wake was handed over: `inline`, `queued`, or `draft` (a queued wake restored into the composer by boot recovery, which never redispatches). |
+| `expires_at` | From the destination: when the uncollected answer is dropped there. |
 | `next_check`, `attempts`, `issue` | Poller schedule and last error text for remote targets. |
 | `created_at`, `updated_at` | |
 
@@ -322,15 +346,19 @@ against this computer's threads, including local ones):
 | `source_computer_id`, `source_computer_name`, `source_thread_id`, `source_thread_title` | Display metadata from the call for the footer and the chip. Never trusted for authorization. |
 | `kind` | As above. |
 | `target_thread_id` | The thread that answers. For `ask`, the scratch fork. |
-| `message_item_id` | The user row the request wrote, set when it is written to the provider. Distinguishes queued from running. |
+| `message_item_id`, `turn_id` | The user row the request wrote, and the turn that consumed it, both set when the row is written to the provider. Distinguishes queued from running, and binds settlement to that turn and no other. |
 | `state` | `accepted`, `running`, `replied`, `finished`, `errored`, `cancelled`, `interrupted`. |
-| `answer`, `answer_kind`, `late_reply`, `late_reply_at`, `settled_at` | As above. |
-| `collected_at` | When the source acknowledged the settlement. |
+| `answer`, `answer_kind`, `late_reply`, `late_reply_at`, `revision`, `settled_at` | As above. The answer is whole here too; it is the copy of record for a remote caller until collected. |
+| `collected_revision`, `collected_at` | The revision the source acknowledged and when. A late reply after collection is a new revision, collected again. |
+| `expires_at` | `settled_at` plus one day; the sweep drops `answer` and `late_reply` after it, never the row. |
 | `created_at`, `updated_at` | |
 
 Indexes: `(target_thread_id)` for the settlement observer and the
-responder enable rule; partial `(settled_at) WHERE collected_at IS NULL`
-for expiry.
+responder enable rule; `(expires_at)` for the sweep. Receipts are never
+deleted while their target thread exists and the row is younger than
+the retention floor (30 days): a token must keep answering "already
+ran" to a late retry and keep accepting a late `thread_reply`. Past the
+floor the row goes; a reply then gets `thread_request_unknown`.
 
 Both tables are in the `RestoreFrom` keep-local set, for the same reason
 as `remote_watches`: a history restore cannot revive a request or make
@@ -387,7 +415,17 @@ Background build: `initSubsystems` starts one goroutine when
 order in batches of 500 with a short pause between batches, then import
 chunks, then titles, advancing the cursor after each committed batch;
 restart resumes from the cursor; `INSERT OR IGNORE` on the unique key
-means rows settled during the build are indexed once. When done it
+means rows settled during the build are indexed once. The build skips
+rows still streaming (their settle hook indexes them later) and
+re-indexes a row whose text changed after indexing (an import override
+applied or removed, a title edit) by delete-then-insert inside the
+change's own transaction. `thread_search_rows` declares
+`FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE` and
+the item and import delete paths remove their rows explicitly; the FTS
+table is contentless, so a stale FTS row without a mapping row is
+harmless and the build's final pass sweeps any. Clone and restore:
+`RestoreFrom` drops and recreates the index tables and inserts a fresh
+progress row, since the restored history is a different corpus. When done it
 deletes the progress row. `thread_search` reports `indexing: true`
 while the row exists. Migration v103 inserts the progress row so a
 fresh install and an upgrade take the same path.
@@ -424,10 +462,16 @@ the local side and by the destination app on the peer side:
 Everything about how a result looks lives here: the transcript renderer
 (role and item id prefixes, turn delimiters, tool call one-liners with
 sizes, the clipped-item pointer to `thread_item`), the byte budget and
-`next` cursor, the `thread_item` range reader (absolute and negative
-offsets, `lines`, `query` with match offsets and context), the
-per-computer grouping with `errors` rows, the id resolution order
-(local, then fan-out, then follow one move), and the ambiguity error
+the opaque `cursor` (an encoded `{window, bounds, last item position,
+snapshot high-water item}` so a `head` or `around` page keeps its
+bounds and streaming growth never shifts a page; the same shape pages
+`thread_search` listings and ranked hits, `thread_item` matches, and
+`thread_status` answers and listings), the `thread_item` range reader
+(one selector per call, absolute and negative offsets widened to UTF-8
+boundaries, `lines`, `query` with up to 50 match offsets and context),
+the per-computer grouping with `errors` rows, the id resolution order
+(full id local-first, prefix always fanned out, one move followed,
+`incomplete` and `partial` on peer failure), and the ambiguity error
 listing candidates with their computers.
 
 Thread state derivation lives here too. There is no Go enum today; the
@@ -464,10 +508,16 @@ schemas for that shape.
 - `Settings.ThreadToolsEnabled` (default true) beside `BrowserEnabled`.
   `UpdateSettings` flipping it calls `setThreadToolsEnabled`, which
   walks live sessions and calls `ApplyManagedServerEnabled(threadID,
-  "ao-thread-tools", on)` for each, skipping any thread with an open
-  receipt from another computer (Lifecycle rule 4 of the spec), and
-  sets `threadMCPServer().SetEnabled(on)` so a racing call is refused
-  with `thread_tools_disabled`.
+  "ao-thread-tools", on)` for each thread whose effective state changed.
+  The transport refuses a call unless both `enabled` and
+  `ThreadEnabled(threadID)` are true, so the switch never touches the
+  server-wide flag (it stays true for the process lifetime). The
+  per-thread flag holds the effective value, `switch || openForeign(threadID)`,
+  recomputed by `setThreadToolsEnabled`, `openReceipt` and
+  `closeReceipt`. The composer's own per-conversation toggle is a
+  separate bit in `mcpapp` that the effective value is ANDed with, so a
+  user who turned the server off for one conversation keeps that. A
+  racing call is refused with `thread_tools_disabled`.
 - The per-thread composer toggle is already generic: `mcpapp` addresses
   managed servers by name. No new code beyond listing the server.
 - `startThreadMCPRefresh` is not a new worker: `startRemoteMCPRefresh`
@@ -476,21 +526,27 @@ schemas for that shape.
 
 ### Responder enable
 
-`openReceipt(receipt)` in `app_thread_tools_requests.go`: if the switch
-is off, `SetThreadEnabled(target, true)` and, when the session is live,
-`ApplyManagedServerEnabled(target, name, true)`. `closeReceipt` reverses
-it when no other open receipt targets the thread and the switch is still
-off. Local receipts never touch this: the switch already governs the
-caller, and a local target is the same computer.
+`openReceipt(receipt)` in `app_thread_tools_requests.go` recomputes the
+target's effective flag and, when it flipped on and the session is
+live, calls `ApplyManagedServerEnabled(target, name, true)`.
+`closeReceipt` recomputes when the receipt settles and applies the
+flip off if nothing else keeps it on. A settled receipt still accepts a
+late `thread_reply` through the transport only while the flag is on,
+so a responder whose switch is off has until its receipt settles to
+reply, and afterwards its late reply is accepted through the ordinary
+tool call only if the switch is on; that matches the spec's "server on
+for as long as the request is open". Local receipts never touch this:
+the switch already governs the caller, and a local target is the same
+computer.
 
 ### Read-only allowlist
 
-Claude: `Config.AllowedTools` is plumbed into `mcpConfigForCLI`'s
-sibling that builds argv, and read-only sessions pass
-`mcp__ao-thread-tools__thread_reply` and
-`mcp__ao-thread-tools__thread_status` (the two a scratch responder
-needs; the read tools prompt nothing under `dontAsk` because MCP reads
-are not permission-gated, a fact the spike confirms). Codex: read-only
+Claude: `Config.AllowedTools` is plumbed into the argv builder beside
+`mcpConfigForCLI`, and read-only sessions pass
+`mcp__ao-thread-tools__*` (every tool: the owner ruled that read-only
+is the responder's own runtime, not an isolation boundary, and a
+scratch thread may spawn, send and organize; the spike confirms the
+wildcard spelling and that it widens nothing else). Codex: read-only
 sandbox does not gate MCP calls (spike). The allowlist is set only for
 `read-only`; other modes keep their prompts.
 
@@ -508,19 +564,28 @@ same function, `acceptRequest(ctx, owner, call)`, which:
    `project_id` from another computer is refused with the registered
    projects and worktrees in the error, produced from the same query
    `RemoteCommandProjects` uses), then the first send;
-3. for `send`: `SendMessageWithOptions` on the target with
-   `SendID = "thread-request:" + token`, `meta.origin` and
-   `meta.originThread` set, and the reply footer appended when the
-   request waits or notifies;
+3. for `send`: refuse a target equal to the caller
+   (`thread_self_send`); then `SendMessageWithOptions` on the target
+   with `SendID = "thread-request:" + token`, `meta.origin` and
+   `meta.originThread` (token included) set, and the footer always
+   appended, worded for "an answer has been requested" when the request
+   waits or notifies and "no answer notification was requested"
+   otherwise, with the `thread_show` and `thread_send`-back lines only
+   when the sender's computer is paired from the destination;
 4. for `ask`: `forkThreadTail` (the new internal `ForkThread` core with
    `forkOptions{Mode: scratch, RuntimeMode: read-only, Title: "Ask: " +
    source title}`), a `scratch_threads` row, then the send as in 3;
-5. the send path marks the receipt `running` with `message_item_id`
-   when the user row is written to the provider (the queued case sets
-   it at flush; the idle case at once). Until then the receipt is
-   `accepted`.
+5. the send path marks the receipt `running` with `message_item_id` and
+   `turn_id` when the user row is written to the provider (the queued
+   case sets it at flush; the idle case at once), through the
+   `onDurable` hook of the queue item so a merged queued send still
+   reports the turn it joined. Until then the receipt is `accepted`.
 
-The source then marks its row `accepted` with the target thread id.
+The source then advances its row from `unconfirmed` to `accepted` with
+a conditional update (`WHERE state = 'unconfirmed'`), so a local
+request that already settled during dispatch keeps its settled state.
+Every state transition in both tables is a conditional update of this
+shape; a no-op result means the other path won and is not an error.
 Steps 1 and 2 to 4 are one durable transaction where the store allows
 it; where a provider call sits between (session start), the receipt is
 written first so a crash leaves a receipt the boot sweep settles as
@@ -546,8 +611,9 @@ row before returning `backgrounded`.
 ### Settlement (destination side)
 
 `app_thread_tools_settle.go`. One global turn observer
-(`subscribeGlobalTurnObserver`) reacts to turn end for any thread with a
-`running` receipt:
+(`subscribeGlobalTurnObserver`) reacts to the end of a turn whose id
+matches a `running` receipt's `turn_id` (a turn the user or another
+request started ends nothing):
 
 - turn completed: `finished` with the final assistant text of that turn
   (from the last `assistant_text` item), `answer_kind = final`;
@@ -558,13 +624,17 @@ row before returning `backgrounded`.
 
 `thread_reply(token, text)`: the token must name a receipt whose
 `target_thread_id` is the caller's thread; `running` becomes `replied`;
-`finished` with no `late_reply` stores the late reply; anything else is
-refused with the state as the reason. Unknown token: `thread_request_unknown`.
+`finished` with no `late_reply` stores the late reply; a repeat with the
+same text returns the existing acceptance; anything else is refused
+with the state as the reason. Unknown token: `thread_request_unknown`.
 
 Scratch receipts settle on any non-running state and the settle
 function deletes the scratch thread (through `threadapp.DeleteTree`
-outside the lock, DB rows only) right after the answer is stored. The
-`scratch_threads` row goes with it.
+outside the lock, DB rows only) after the answer is stored and after
+the `thread_reply` call that stored it has written its response, so the
+responder's own tool call never fails against a vanished thread. The
+`scratch_threads` row goes with it. The answer lives in the receipt and
+the source row, never in the thread, so nothing is lost.
 
 Every settlement calls `collectLocal(token)`: if a source row with that
 token exists on this computer, hand the settlement over now (this is
@@ -577,44 +647,55 @@ parked wait, and if `notify` is set and no wait is active, queues the
 wake: `registerQueueItem(callerThreadID, wakeMessage, SendMessageOptions{
 SendID: "thread-wake:" + token}, injectedQueueOptions{preserveDraft:
 true, persist: a.store.QueueThreadWake(token, item)})`, where
-`QueueThreadWake` inserts the queue row and sets `delivered_at` in one
-transaction. A late reply uses `SendID "thread-wake-late:" + token` and
-`late_delivered_at`. The caller archived: unarchive first (spec).
-Caller deleted or missing: mark delivered with nothing queued and log.
+`QueueThreadWake` inserts the queue row and sets `delivered_at` and
+`delivered_how = queued` in one transaction. Inline delivery sets
+`delivered_how = inline` only after the tool response was written. Boot
+recovery, which restores queued rows into the composer draft, marks the
+matching requests `delivered_how = draft` in the same pass. A late reply
+uses `SendID "thread-wake-late:" + token` and `late_delivered_at`. The
+caller archived after the request: unarchive first (spec). Caller
+deleted or missing: mark delivered with nothing queued and log.
 No live session: `startSession` after queuing, as `deliverRemoteCompletion`
 does. Workflow-mode callers never get here (phase sessions have no
 server).
 
 The wake body: status line (`Reply from <title>`, `<title> finished
 without replying`, `<title> errored`, `... on <computer>` when remote,
-`(answered <age> ago)` when old), the origin link, then the text capped
-at 24 KB with a pointer to `thread_show`.
+`(answered <age> ago)` when old, always with `token <token>`), the
+origin link, then the text capped at a 24 KB preview with a pointer to
+`thread_status` with the token for the whole answer.
 
 ### `thread_status` and `thread_cancel`
 
-`thread_status(tokens, wait_seconds)` reads the source rows, refuses
-duplicates and a token whose target is the caller's own thread, waits
-if asked on all of them at once (one registry entry per token, one
-shared broadcast), and returns each state, target, computer and answer.
-The wait ends on the first settlement or the first `blocked` target;
-blocked is checked at entry and on every live-state change of a local
-target, and on every poll of a remote one. An answer present with
-`delivered_at` null is marked delivered inline (amendment 6). Without
-tokens it lists the caller's rows, open first, latest 64.
+`thread_status(tokens | thread_ids, wait_seconds, after_revision,
+cursor, to_file)` reads the source rows or the threads' live state,
+refuses duplicates and the caller's own thread, and waits if asked on
+all of them at once. Waiters are independent: each call registers its
+own waiter per token or thread (a list per key, as `remoteWaits`
+models), so two concurrent calls sharing a token both return. The wait
+ends on the first settlement past `after_revision`, the first listed
+thread resting, or the first `blocked` target; blocked and rest are
+checked at entry and on every live-state change of a local target, and
+on every poll of a remote one. An answer present with `delivered_at`
+null is marked delivered inline after the response is written
+(amendment 6). The whole answer is returned; past `max_bytes` it pages
+by `cursor` or goes to a file. Without tokens or thread ids it lists
+the caller's rows, open first then newest first, paged by `cursor`.
 
 ### `thread_update` and `thread_group`
 
 `app_thread_tools_organize.go`. `thread_update` resolves each id (local
-or peer), groups the ids by computer, and on each computer applies the
-patch through the existing bindings in a fixed order so a refusal
-leaves a consistent state: `RenameThread` (after trim and non-empty
-check), then group membership through `SetThreadGroup` (creating the
-group with `CreateThreadGroup` when the name is new in the thread's
-project), then pin through `PinThread` / `SetThreadPinGroup` /
-`UnpinThread`, then `ArchiveThread` / `UnarchiveThread`. A refusal
-names the thread and the store's reason (`ErrThreadGrouped` for pin on
-a grouped thread, and a new `thread_is_caller` for archiving the
-calling thread). Each binding already emits its sidebar events, so the
+or peer), groups the ids by computer, and on each computer validates
+the whole resulting state per thread before touching it (title
+non-empty after trim; group and pin not both set; not archiving the
+caller; group name resolvable or creatable in the thread's project),
+then applies the patch inside one store transaction per thread through
+a new `threadapp.ApplyOrganizePatch` that the existing bindings'
+service calls share, and emits that thread's final `thread:updated`
+once. A refusal names the thread and the reason (`ErrThreadGrouped`
+for pin on a grouped thread, a new `thread_is_caller` for archiving
+the calling thread) and leaves that thread untouched; other threads in
+the call still apply, and the result is per id. Each binding already emits its sidebar events, so the
 UI follows live. `thread_group` maps to `RenameThreadGroup`,
 `DeleteThreadGroup`, `PinThreadGroup` / `SetThreadGroupPinGroup` /
 `UnpinThreadGroup`; a name resolves within the caller's project unless
@@ -633,11 +714,17 @@ wait. Restart-safe because it is only a row. `thread_cancel` on the
 token deletes it. A reminder for a thread that is deleted goes with the
 thread's other requests.
 
-`thread_cancel(thread_id | token)` resolves to a source row owned by the
-caller (any kind, any state that is still open), marks it `cancelled`
-on the destination through the same call path (`ThreadToolCall` with
-`cancel`), and the destination calls `interruptTurnCtx` on the target.
-A thread with no such lineage is refused with `thread_not_yours`.
+`thread_cancel(token)` resolves to a source row owned by the caller in
+an open state and cancels that request on the destination through
+`ThreadToolCall` with `cancel`: a receipt still `accepted` has its
+queued message removed by `SendID` (a new `removeQueuedItem` in the
+flush queue, durable and in-memory, refusing once the item reached the
+provider), a `running` receipt gets `interruptTurnCtx` only if the
+thread's current turn id equals the receipt's `turn_id`, and a
+reminder row is deleted. Either way the receipt settles `cancelled`.
+`thread_cancel(thread_id)` interrupts the thread's current turn when
+any source row, settled or not, links the caller to it. A thread with
+no such lineage is refused with `thread_not_yours`.
 
 ### Poller (source side, remote targets)
 
@@ -655,38 +742,49 @@ Rules per token:
 
 - `unknown` and the source row is `unconfirmed` and no retry is in
   flight: settle `refused` (never accepted).
-- `unknown` and the source row was `accepted` or later: settle
-  `expired` with the wake text the spec describes.
-- a settled state: `collect`.
-- a moved thread (`thread_moved` with the new backend id): rewrite
-  `target_computer_id` once and poll there next; a second move in a
-  row is followed again, a loop is bounded by the spec's "follows once"
-  per observation.
+- `unknown` and the source row was `accepted` or later: the
+  destination lost the row (past the retention floor, or restored from
+  a backup): settle `errored` ("the other computer no longer knows this
+  request"). `expired` is a distinct reply from a receipt whose answer
+  was dropped: settle `expired` with the answer's `settled_at` in the
+  wake text.
+- a settled state with a revision above `collected_revision`:
+  `collect`, then acknowledge with that revision.
 - pairing revoked or ended (`remote_pairing_expired`): settle `errored`
   with that reason.
+- a moved target never changes the destination: the accepting computer
+  settles it `interrupted` itself (Lifecycle hooks).
 
 Cadence: +5 s normal, +2 s while a wait is parked on the token, +30 s
 after an error, exactly the remote table.
 
 ### Expiry (destination side)
 
-A daily-scale sweep in the poller's process (every 10 minutes, cheap
-query): receipts settled more than one day ago and not collected are
-deleted. Export files older than a day are deleted with them.
-Collected receipts are deleted at acknowledgement. Local receipts are
-deleted at collection, which is immediate.
+A sweep in the poller's process (every 10 minutes, cheap query): a
+receipt past `expires_at` whose latest revision is uncollected has its
+`answer` and `late_reply` cleared and its state set `expired`; the row
+stays until the retention floor so the token keeps answering. Rows past
+the floor (30 days from `created_at`) are deleted, source rows the
+same. Destination-side export files awaiting transfer are deleted after
+one day; delivered export files stay until removed.
 
 ### Resolution
 
-`resolveThread(ctx, ref, hint)`: exact or prefix match locally
-(`ResolveThreadPrefix` queries `threads` by `id LIKE ?` bounded to 8
-rows, hidden modes included, scratch excluded unless the caller owns
-it); local miss and no paired computers: `thread_not_found`; hint given:
-ask that computer only; otherwise `ThreadToolResolve(prefix)` on every
-paired computer concurrently under a 10 s context. Each answer is
-matches, `moved_to`, or an error. One match wins; more than one across
-computers is `thread_ambiguous` with candidates and their computers; a
-`moved_to` naming a paired computer is followed once. The local store's
+`resolveThread(ctx, ref, hint)`: a full UUID matches locally first and
+fans out only on a miss; a prefix matches locally (`ResolveThreadPrefix`
+queries `threads` by `id LIKE ?` bounded to 8 rows, hidden modes
+included, scratch excluded unless the caller owns it) and always fans
+out as well, so an ambiguity across computers is seen. No paired
+computers: local is the whole answer. Hint given: ask that computer
+only. Otherwise `ThreadToolResolve(ref)` on every paired computer
+concurrently under a 10 s context. Each answer is matches, `moved_to`,
+or an error. One match wins; more than one across computers is
+`thread_ambiguous` with candidates and their computers; a computer
+that errored or timed out with no match elsewhere makes the result
+`thread_resolution_incomplete` naming it, and with a single match
+elsewhere the match is returned with a `partial` note listing the
+computers that did not answer; a `moved_to` naming a paired computer
+is followed once. The local store's
 own `thread_transfers` rows answer `moved_to` for threads this computer
 moved away, through `CheckThreadTransferAccess`.
 
@@ -698,7 +796,8 @@ In `app_thread_tools_peer.go`, all `//ao:route selected`:
 - `ThreadToolQuery(ctx, call ThreadPeerCall)` `//ao:scope threads:read`
   (`thread_search`, `thread_show`, `thread_item`, `thread_options`)
 - `ThreadToolCall(ctx, call ThreadPeerCall)` `//ao:scope terminal:operate`
-  (`spawn`, `send`, `ask`, `cancel`)
+  (`spawn` including `from_thread`, `send`, `ask`, `cancel`,
+  `thread_update`, `thread_group`)
 - `ThreadToolRequestStatus(ctx, poll ThreadPeerPoll)` `//ao:scope threads:read`
 - `ThreadToolExportChunk(ctx, exportID string, offset int64)` `//ao:scope threads:read`
 
@@ -727,7 +826,11 @@ The destination renders to `<configDir>/thread-exports/<id>.txt`,
 returns `{export_id, size, sha256}`, and serves `ThreadToolExportChunk`
 in 256 KiB pieces with the file stamp rule from `readRemoteArtifactChunk`.
 The source calls `receiveRemoteArtifact` with a reader that wraps the
-peer method and lands the file in its own `thread-exports/`. Local
+peer method and lands the file in its own `thread-exports/`. That
+receiver refuses files over `remoteArtifactMaxBytes` (1 GiB); an
+export larger than that is refused on the destination with its size
+and a suggestion to narrow `include` or the window, since no thread
+export should approach it. Local
 `to_file` writes there directly. Files are retained until the user or
 the agent removes them, except destination-side copies awaiting
 transfer, which expire with receipts.
@@ -745,16 +848,19 @@ transfer, which expire with receipts.
 - Target thread deleted while a receipt is open: `DeleteTree` settles
   its receipts `errored` ("the thread was deleted") through the same
   `StopRemoteWork` port before rows go.
-- Target moved: the old owner settles nothing; `ThreadToolRequestStatus`
-  answers `thread_moved` for tokens whose target now belongs elsewhere,
-  and the receipt itself travels nowhere (the new owner never saw the
-  request). The source re-addresses and the new owner answers `unknown`
-  for that token, which the source turns into `errored` ("moved while
-  the request was open") rather than `refused`, because the source row
-  was `accepted`. Simpler than transporting receipts and matches the
-  spec's promise that the caller learns what happened.
-- Forget computer: `RemoveBackend` adds `HasOpenThreadRequestsForComputer`
-  to its refusal with the same wording pattern.
+- Target moved: the transfer stops the thread's session, and the
+  transfer hook settles every open receipt on it `interrupted` ("moved
+  to <computer>") before the rows leave. The receipt stays on the
+  accepting computer, the source collects it as usual, and nothing is
+  re-addressed. The caller sends again to the new owner if it wants.
+- Forget computer: `RemoveBackend` refuses once with the open requests
+  listed; the confirm path (`abandon: true`) settles them `errored`
+  ("computer forgotten") locally, drops their wakes, and proceeds. No
+  remote call is made, and the wording says the other computer was not
+  told.
+- Caller archived: open requests get `notify = 0`; a later wait or
+  `thread_status` on them re-arms it, and delivery for a re-armed
+  request unarchives the caller (the two spec rules, reconciled).
 - Boot (`initSubsystems`): every receipt in `accepted` or `running`
   becomes `interrupted`; every `scratch_threads` row is deleted with its
   thread; the poller resumes; the search build resumes.
@@ -826,7 +932,8 @@ Requests and waits:
   `accepted` until flush; a restart before flush leaves the message in
   the draft and the receipt `interrupted`.
 - Responder rests on a pending approval: not settled; the human
-  decides; the caller's wait times out and backgrounds.
+  decides; the caller's wait returns `blocked` at once with `notify`
+  armed, and the answer arrives when the turn finally rests.
 - Responder's computer restarts mid-turn: `interrupted`, collected by
   the poller when the computer is back.
 - Scratch fork of a thread whose provider session cannot fork (no
@@ -834,6 +941,29 @@ Requests and waits:
   idempotency, is settled `errored` with the fork error and that is the
   reply; a retry with the same token returns the errored receipt instead
   of forking again.
+- A send queued behind the user's own message: the user's turn ends
+  and settles nothing; the request's turn is the one that consumed its
+  message.
+- Two queued sends merged into one provider turn: both receipts get
+  that `turn_id` and both settle on it with the same final text.
+- `thread_cancel` by token while the message is still queued: the
+  message is removed, nothing is interrupted, the receipt is
+  `cancelled`.
+- Same prefix on two computers, one of them local: `thread_ambiguous`,
+  because a prefix always fans out.
+- Resolution with one paired computer offline: a local match returns
+  with a `partial` note; no match anywhere is `incomplete`, not
+  `not found`.
+- Receiver's computer holds no credential for the sender's: the footer
+  offers `thread_reply` only; the reply still reaches the sender
+  through its own polling.
+- Late `thread_reply` after the source collected `finished`: a new
+  revision; the poller collects it and the second wake lands.
+- Two `thread_status` calls waiting on the same token: both return.
+- A thread sending to itself: refused at admission.
+- Wake restored to the composer draft by a restart: the request reads
+  `delivered: draft`; `thread_status` still returns the answer; the
+  user sees the text in the composer and decides.
 - Scratch responder needs a write: read-only refuses instantly; the
   model says so in its reply; nothing waits on a human.
 - Scratch responder calls `thread_ask` itself: allowed (all tools in
@@ -860,7 +990,7 @@ Requests and waits:
   group: the store ungroups members and drops the pin, as the sidebar
   does.
 - `thread_remind` with `at` in the past: settles on the next sweep,
-  which is what "now" means; `after_seconds` above one day is refused.
+  which is what "now" means; there is no ceiling.
 - Reminder due while the caller's turn is running: queued at the
   boundary like every wake.
 
@@ -969,6 +1099,18 @@ Switch and sessions:
 - **Per-tool pairing gating.** No tool is pairing-only; shaping the
   parameters and text is the whole difference, so the tool set is
   stable and the model never sees a tool appear or vanish.
+- **Always-present optional computer fields** (the Codex review's
+  alternative to the shape variants). Simpler to build, but an agent
+  on an unpaired computer would see parameters that cannot work, which
+  the owner ruled out; pairing is rare and one-way, so the refresh path
+  runs about once per install.
+- **Making read-only scratch threads unable to spawn or send.** Ruled
+  out: read-only is the responder's own runtime, not an isolation
+  boundary, and a consulted thread may legitimately hand work on.
+- **Following a moved target with the open request.** Transporting a
+  receipt to a computer that never accepted it, or re-addressing from
+  the source, both add a path for the rare case; settling
+  `interrupted` on the accepting computer and resending is one call.
 
 ## Build order
 
@@ -989,7 +1131,7 @@ Each phase ends green on its own tests and leaves a usable increment.
    restart, request state transitions, receipt idempotency, expiry.
 2. **`internal/threadtools`** read side against a fake app: schemas and
    instructions for both shapes, resolution rules, transcript rendering
-   with budgets and `next`, `thread_item` ranges and search, grouping
+   with budgets and cursors, `thread_item` ranges and search, grouping
    and error rows, state derivation with the shared fixture.
 3. **App wiring for reads**: registration in `app_session.go`, the
    settings switch and live toggle on both providers, per-thread toggle,
@@ -1029,8 +1171,13 @@ Each phase ends green on its own tests and leaves a usable increment.
   reply, errored turn, deleted and archived callers, scratch forced
   read-only, mid-turn tail fork, deletion once stored, boot sweep,
   cancel scoping, blocked return on a pending approval, multi-token
-  wait ordering, `from_thread`, `thread_update` ordering and refusals
-  with the sidebar events, `thread_group`, reminders across a restart.
+  wait ordering, `from_thread`, `thread_update` per-thread atomicity
+  and refusals with the sidebar events, `thread_group`, reminders
+  across a restart, cancel of a queued message, settlement bound to the
+  consuming turn, self-send refusal, late-reply revisions, watching by
+  thread id, whole answers after scratch deletion, `delivered: draft`
+  after a restart, the effective enable rule against the transport's
+  double guard, prefix fan-out ambiguity and partial resolution.
 - Two computers: `newPairedBackend` plus `attachedbackends.New`, the
   caller's switch, destination switch off and still serving, ownership
   by device (a second device's token is refused), fan-out resolution,
